@@ -835,7 +835,7 @@ shaping, IME and accessibility become the library's problem.
 The native host is `Ui.Native.Run` (`lyric-ui/native/`, D203, `docs/67-native-graphics-plan.md`
 phase G10), on a GPU renderer (`lyric-draw`, `webgpu.h`) and FreeType/HarfBuzz text rather
 than Skia. It is the protocol's client in-process: the same `route(url)` an application gives the web or
-desktop host runs unchanged. Multi-line fields wrap, grow and scroll (D204). Accessibility (AccessKit, #8430) and macOS are not done.
+desktop host runs unchanged. Multi-line fields wrap, grow and scroll (D204). The accessibility tree (`Ui.Native.Access`, roles and states as the web runtime assigns ARIA, D214) is built host-free; publishing it through AccessKit (#8489) and macOS are not done.
 
 ### 13.4 Server-side rendering for first paint
 

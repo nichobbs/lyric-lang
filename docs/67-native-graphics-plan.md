@@ -28,7 +28,7 @@ clean, which also fixed a race in the protected-type monitor); the coroutine sch
 tasks is still single-threaded (#7947). G10 is implemented except accessibility (D203, D204: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
-AccessKit and the macOS screen-reader smoke test remain, #8430, as do bidirectional carets, #8410, and
+the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional carets, #8410, and
 pruning the libraries of unused dependency kernels from the link, #8429). D204 also fixed two native
 backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
 enum-case patterns over two enums sharing a case name (#8421).
