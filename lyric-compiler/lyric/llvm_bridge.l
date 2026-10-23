@@ -556,7 +556,11 @@ pub func linkNativeIr(
     args.add("--target=" + windowsTriple)
     args.add("-fuse-ld=lld")
     if sanitize {
+      // clang's MSVC link step picks the DLL-CRT AddressSanitizer thunk only
+      // when `_DLL` is defined (as `/MD` does); `-fms-runtime-lib` alone gets
+      // the static-CRT thunk, whose malloc clashes with ucrt.lib's.
       args.add("-fms-runtime-lib=dll")
+      args.add("-D_DLL")
     }
   }
   args.add(llPath)
@@ -2467,8 +2471,10 @@ func linkAndEmitNative(
     clangArgs.add("--target=" + effTriple)
     clangArgs.add("-fuse-ld=lld")
     if windowsAsan {
-      // Windows AddressSanitizer runs only with the DLL C runtime.
+      // Windows AddressSanitizer runs only with the DLL C runtime; `-D_DLL`
+      // makes the link step pick the matching runtime thunk.
       clangArgs.add("-fms-runtime-lib=dll")
+      clangArgs.add("-D_DLL")
     }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
