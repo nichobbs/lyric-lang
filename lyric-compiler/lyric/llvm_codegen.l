@@ -144,6 +144,12 @@ pub record CodegenUnit {
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
+  // Names of the `protecteds` whose members the bridge did not lower because
+  // nothing reachable uses them (a pruned dependency package, #8429): the
+  // type itself registers, since a signature or field may still name it, but
+  // its lock/unlock wrappers would call member bodies that are not in the
+  // bundle.
+  deadProtecteds: List[String] = newList()
 }
 
 /// A module-level `val`/`const` binding. A literal initializer is inlined at
@@ -19640,6 +19646,15 @@ func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
   outV
 }
 
+func isDeadProtected(u: in CodegenUnit, name: in String): Bool {
+  for dead in u.deadProtecteds {
+    if dead == name {
+      return true
+    }
+  }
+  false
+}
+
 // ── Protected-method wrapper: lock, call inner, unlock ──────────────────────
 /// For every non-generic protected type's entries/funcs, register the
 /// lock/unlock wrapper's `NFuncSig` directly into `ctx.sigs` (so UFCS call
@@ -19657,7 +19672,11 @@ func registerProtectedMethods(ctx: in Ctx, units: in List[CodegenUnit], fns: in 
       match pd.generics {
         case Some(_) -> {
         }
-        case None -> registerProtectedMethodsFor(ctx, u.pkgName, pd, fns)
+        case None -> {
+          if not isDeadProtected(u, pd.name) {
+            registerProtectedMethodsFor(ctx, u.pkgName, pd, fns)
+          }
+        }
       }
       pi = pi + 1
     }

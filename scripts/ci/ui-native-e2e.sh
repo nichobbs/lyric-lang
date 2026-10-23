@@ -11,8 +11,8 @@
 #     mouse click on a customer opens the edit screen, and real typing changes the name.
 #
 # Needs SDL3 built with --x11 (scripts/ci/build-sdl3.sh), xvfb, x11-apps, xdotool, imagemagick, lavapipe,
-# FreeType/HarfBuzz, DejaVu fonts, and libwebview (any native build that depends on Lyric.Ui links it,
-# scripts/ci/install-webview.sh).
+# FreeType/HarfBuzz and DejaVu fonts.  It does not need libwebview: only the desktop host calls it, and a
+# dependency package is lowered by reachability (#8429), so this app never links it (checked below).
 # Usage: LYRIC_BIN=<lyric> SDL3_PREFIX=<prefix> bash scripts/ci/ui-native-e2e.sh
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -28,9 +28,6 @@ export LD_LIBRARY_PATH="$SDL3_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 for tool in xvfb-run xwd convert xdotool; do
   command -v "$tool" >/dev/null || { echo "::error::$tool is not installed (xvfb, x11-apps, imagemagick, xdotool)"; exit 1; }
 done
-if [ ! -e /usr/local/lib/libwebview.so ] && ! ldconfig -p | grep -q libwebview; then
-  flock /tmp/lyric-ci-webview.lock -c "[ -e /usr/local/lib/libwebview.so ] || bash scripts/ci/install-webview.sh"
-fi
 icd=""
 for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
   if [ -f "$candidate" ]; then icd="$candidate"; break; fi
@@ -52,6 +49,17 @@ manifest=lyric-ui/native/host/examples/customers/lyric.toml
 golden=lyric-ui/native/host/examples/customers/golden
 "$LYRIC_BIN" restore --manifest "$manifest"
 "$LYRIC_BIN" build --target native --manifest "$manifest" -o "$work/customers"
+
+echo "=== the app does not link libwebview (dependency packages are lowered by reachability, #8429) ==="
+if readelf -d "$work/customers" | grep -q 'NEEDED.*webview'; then
+  echo "::error::the native host links libwebview although only the desktop host uses it"
+  readelf -d "$work/customers" | grep NEEDED
+  exit 1
+fi
+if nm -D "$work/customers" 2>/dev/null | grep -q 'webview_'; then
+  echo "::error::the native host references a webview_ symbol"
+  exit 1
+fi
 
 echo "=== scripted headless run against the golden frames ==="
 SDL_VIDEODRIVER=offscreen "$work/customers" --check "$golden"

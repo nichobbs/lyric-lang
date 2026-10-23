@@ -730,4 +730,7 @@ The native target also has a host that draws the screens itself, with no webview
 
 The native target runs the rest of it too: `lyric build --target native` links the example
 and the desktop probe, and the desktop host needs the same `libwebview` as on the
-other targets (the install script above).
+other targets (the install script above). An application that does not use the desktop
+host does not need the library: a native build compiles a dependency by reachability, so
+the `webview` bindings of `lyric-ui` are linked only into a program that opens a desktop
+window. The native host above builds and runs on a machine without `libwebview`.

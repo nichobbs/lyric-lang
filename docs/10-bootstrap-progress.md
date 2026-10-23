@@ -300,6 +300,7 @@ deferred to Phase 3 by design.
 | C bindings on every target: `@library("name") extern func` lowers to P/Invoke on MSIL, a Foreign Function & Memory downcall on the JVM (JDK 22), and a `-l` link flag on native; `NativePtr[T]`/`nativeNullPtr()` type everywhere; T0149–T0151 | **Shipped** | D158 |
 | C memory and C strings on every target: `nativeLoadByte`/`nativeStoreByte` intrinsics (MSIL `ldind`/`stind`, JVM FFM `MemorySegment`, native GEP) and `Std.Ffi` (`allocate`, `release`, `toCString`, `tryFromCString` over libc `malloc`/`free`) | **Shipped** | D161 |
 | Desktop webview host (`Ui.Host.Desktop`, docs/65 U5): the web host on a loopback port with a per-run access token, shown in a `webview` window bound through `@library`; MSIL, JVM and native (`-lwebview`), tested in a real window under Xvfb | **Shipped** | D162 |
+| Native dependency pruning: `--target native` lowers the packages of path and workspace dependencies by reachability (record methods, protected types, `impl`s, module `val`s, defaults), so an unreached `@library` extern is not linked and a native `lyric-ui` app needs no `libwebview` | **Shipped** | D218 |
 
 ### Phase 2 — type system completion (complete)
 
