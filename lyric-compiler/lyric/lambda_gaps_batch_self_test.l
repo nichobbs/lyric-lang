@@ -258,6 +258,14 @@ test "return nested in a lambda returns the lambda's own result" {
   nestedReturnInUnit()
 }
 
+// ─── #8319 follow-up: Std.Core functions called on a union ──────────────────
+test "a stdlib function named on a union binds by its first argument" {
+  val o: Option[Int] = Some(4)
+  assertTrue(o.isSome(), "Std.Core isSome")
+  val r: Result[Int, String] = Ok(1)
+  assertTrue(r.isOk(), "Std.Core isOk")
+}
+
 // ─── #7219 ──────────────────────────────────────────────────────────────────
 record Host {
   start: (Int) -> Unit

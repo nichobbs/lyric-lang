@@ -4684,6 +4684,20 @@ func stringListContains(xs: in List[String], x: in String): Bool {
   false
 }
 
+// True when a plain function called `name` is registered, whatever its arity.
+func anyFunctionNamed(sigs: in Map[String, ResolvedSignature], name: in String): Bool {
+  if sigs.containsKey(name) {
+    return true
+  }
+  val prefix = name + "/"
+  for k in mapKeys(sigs) {
+    if k.startsWith(prefix) {
+      return true
+    }
+  }
+  false
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface,
 // local or imported (`symTableIsMemberComplete`; a restored contract's record
@@ -4711,6 +4725,12 @@ func maybeUnknownMemberDiag(
       // on one names nothing any backend can dispatch (#8319).
       val unionCall = isCall and tbl.unionDeclIndex.containsKey(toString(tid.id))
       if not symTableIsMemberComplete(tbl, tid) and not unionCall {
+        return
+      }
+      // A plain function of that name, in this package or any package the
+      // checker was given, is what a method call on a union binds to by its
+      // first argument (`o.isSome()`, `o.assertSome()`).
+      if unionCall and anyFunctionNamed(sigs, name) {
         return
       }
       if isUniversalMethodName(name) {
