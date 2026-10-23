@@ -23,8 +23,8 @@ LYRIC_BIN="$(cd "$(dirname "$LYRIC_BIN")" && pwd)/$(basename "$LYRIC_BIN")"
 latin=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 cjk=/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
 if ! pkg-config --exists freetype2 harfbuzz || [ ! -f "$latin" ] || [ ! -f "$cjk" ]; then
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
 fi
 [ -f "$latin" ] && [ -f "$cjk" ] || { echo "::error::the DejaVu Sans and WenQuanYi Zen Hei fonts are not installed"; exit 1; }
 

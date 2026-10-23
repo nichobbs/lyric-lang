@@ -36,7 +36,7 @@ command -v clang >/dev/null || { echo "::error::clang not found on the runner"; 
 # the rest of this job relies on (#4975).
 echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
 if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
-  sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq && sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
   clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
 fi
 make -C lyric-rt test
@@ -189,8 +189,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh
 # docs/67 G4 + G5: lyric-window on SDL3 and lyric-gpu's surface.  SDL3 is built once from the pinned
 # release tarball with its X11 driver (the headless offscreen/dummy/disk drivers stay available);
 # the window demo runs headless, the surface example on an Xvfb display with lavapipe.
-command -v cmake >/dev/null || sudo apt-get install -y -qq cmake
-sudo apt-get install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
+command -v cmake >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq cmake
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
   libxrender-dev libxtst-dev xvfb x11-apps imagemagick xdotool
 sdl3_prefix="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sdl3"
 bash scripts/ci/build-sdl3.sh --x11 "$sdl3_prefix"
