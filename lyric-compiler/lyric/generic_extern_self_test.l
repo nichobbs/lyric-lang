@@ -152,9 +152,8 @@ test "unannotated Int local key boxes into the Object-fallback wrapper (#6127)" 
   assertEqualInt(got2.n, 22, "second registered value round-trips")
 }
 
-// #7807: a generic BCL method whose parameter is `T[]` resolves; the scorer
-// takes any array for the method's own `T`, and the instantiation binds it
-// from the argument.
+// #7807: an `@externTarget` over a generic BCL method with a `T[]` parameter
+// binds `T` from the slice argument.
 @externTarget("System.Array.Reverse")
 @externStatic
 func arrReverse[T](a: in slice[T]): Unit = ()

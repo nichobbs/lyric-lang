@@ -2702,16 +2702,7 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
       // (score 3); a 2 (widening) on the element kind would mis-bind at the JIT.
-      // A generic parameter element (`!!0[]`, `Array.Reverse<T>(T[])`) takes
-      // any array: the method's own `T` is bound from it (#7807), the weak
-      // bare-VAR tier.
-      case STSzArray(ae) -> if scoreSigType(ae, pe) == 3 {
-        3
-      } else if (match pe { case STMVar(_) -> true; case STVar(_) -> true; case _ -> false }) {
-        1
-      } else {
-        -1
-      }
+      case STSzArray(ae) -> if scoreSigType(ae, pe) == 3 { 3 } else { -1 }
       case _ -> -1
     }
     // A by-ref / `out` / `ref` parameter matches a by-ref argument of the same
