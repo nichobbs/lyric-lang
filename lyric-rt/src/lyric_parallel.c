@@ -21,7 +21,8 @@
  *     decrements `active`; the caller acquires them when it re-locks `mu` to observe `active == 0`.
  *   - A panic in a body ends the process (no unwinding, D-N-003).
  *
- * wasm32-wasi has no threads: the pool is compiled out and the loop is serial. */
+ * wasm32-wasi has no threads: the pool is compiled out and the loop is serial.  Windows runs the
+ * same pool over SRW locks, condition variables and one-time initialisation (docs/67 G9). */
 #if defined(__linux__) || defined(__wasi__)
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
@@ -49,8 +50,87 @@ void lyric_parallel_for(int64_t count, void (*body)(int64_t, void*), void* ud) {
 
 #else
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <process.h>
+
+typedef SRWLOCK pool_mutex_t;
+typedef CONDITION_VARIABLE pool_cond_t;
+typedef INIT_ONCE pool_once_t;
+#define POOL_MUTEX_INIT SRWLOCK_INIT
+#define POOL_COND_INIT CONDITION_VARIABLE_INIT
+#define POOL_ONCE_INIT INIT_ONCE_STATIC_INIT
+#define pool_lock(m) AcquireSRWLockExclusive(m)
+#define pool_unlock(m) ReleaseSRWLockExclusive(m)
+#define pool_wait(c, m) SleepConditionVariableSRW((c), (m), INFINITE, 0)
+#define pool_broadcast(c) WakeAllConditionVariable(c)
+
+static void (*pool_once_fn)(void);
+
+static BOOL CALLBACK pool_once_thunk(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    pool_once_fn();
+    return TRUE;
+}
+
+static void pool_call_once(pool_once_t* once, void (*fn)(void)) {
+    pool_once_fn = fn;
+    InitOnceExecuteOnce(once, pool_once_thunk, NULL, NULL);
+}
+
+static unsigned __stdcall pool_thread_entry(void* arg);
+
+/* Starts a worker nobody joins; 0 on success. */
+static int pool_spawn_detached(void) {
+    uintptr_t h = _beginthreadex(NULL, 0, pool_thread_entry, NULL, 0, NULL);
+    if (h == 0) return -1;
+    CloseHandle((HANDLE)h);
+    return 0;
+}
+
+static long online_processors(void) {
+    return (long)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+}
+#else
 #include <pthread.h>
 #include <unistd.h>
+
+typedef pthread_mutex_t pool_mutex_t;
+typedef pthread_cond_t pool_cond_t;
+typedef pthread_once_t pool_once_t;
+#define POOL_MUTEX_INIT PTHREAD_MUTEX_INITIALIZER
+#define POOL_COND_INIT PTHREAD_COND_INITIALIZER
+#define POOL_ONCE_INIT PTHREAD_ONCE_INIT
+#define pool_lock(m) pthread_mutex_lock(m)
+#define pool_unlock(m) pthread_mutex_unlock(m)
+#define pool_wait(c, m) pthread_cond_wait((c), (m))
+#define pool_broadcast(c) pthread_cond_broadcast(c)
+
+static void pool_call_once(pool_once_t* once, void (*fn)(void)) {
+    pthread_once(once, fn);
+}
+
+static void* worker_main(void* arg);
+
+static int pool_spawn_detached(void) {
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int rc = pthread_create(&t, &attr, worker_main, NULL);
+    pthread_attr_destroy(&attr);
+    return rc == 0 ? 0 : -1;
+}
+
+static long online_processors(void) {
+    return sysconf(_SC_NPROCESSORS_ONLN);
+}
+#endif
 
 typedef struct {
     void (*body)(int64_t, void*);
@@ -60,11 +140,11 @@ typedef struct {
     _Atomic int64_t done;
 } LyricParallelJob;
 
-static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t work_cv = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t done_cv = PTHREAD_COND_INITIALIZER;
-static pthread_mutex_t submit_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_once_t pool_once = PTHREAD_ONCE_INIT;
+static pool_mutex_t mu = POOL_MUTEX_INIT;
+static pool_cond_t work_cv = POOL_COND_INIT;
+static pool_cond_t done_cv = POOL_COND_INIT;
+static pool_mutex_t submit_mu = POOL_MUTEX_INIT;
+static pool_once_t pool_once = POOL_ONCE_INIT;
 
 static LyricParallelJob* current_job = NULL; /* guarded by mu */
 static uint64_t generation = 0;              /* guarded by mu: bumped per job */
@@ -84,7 +164,7 @@ static int detect_threads(void) {
             return v > 256 ? 256 : (int)v;
         }
     }
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    long n = online_processors();
     if (n < 1) {
         n = 1;
     }
@@ -108,39 +188,40 @@ static void* worker_main(void* arg) {
     (void)arg;
     uint64_t seen = 0;
     for (;;) {
-        pthread_mutex_lock(&mu);
+        pool_lock(&mu);
         while (generation == seen || current_job == NULL) {
             if (generation != seen && current_job == NULL) {
                 seen = generation; /* the job finished before this worker woke */
             }
-            pthread_cond_wait(&work_cv, &mu);
+            pool_wait(&work_cv, &mu);
         }
         seen = generation;
         LyricParallelJob* job = current_job;
         active_workers++;
-        pthread_mutex_unlock(&mu);
+        pool_unlock(&mu);
 
         run_share(job);
 
-        pthread_mutex_lock(&mu);
+        pool_lock(&mu);
         active_workers--;
-        pthread_cond_broadcast(&done_cv);
-        pthread_mutex_unlock(&mu);
+        pool_broadcast(&done_cv);
+        pool_unlock(&mu);
     }
     return NULL;
 }
+
+#if defined(_WIN32)
+static unsigned __stdcall pool_thread_entry(void* arg) {
+    worker_main(arg);
+    return 0;
+}
+#endif
 
 static void pool_init(void) {
     configured_threads = detect_threads();
     int want = configured_threads - 1;
     for (int i = 0; i < want; i++) {
-        pthread_t t;
-        pthread_attr_t attr;
-        pthread_attr_init(&attr);
-        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-        int rc = pthread_create(&t, &attr, worker_main, NULL);
-        pthread_attr_destroy(&attr);
-        if (rc != 0) {
+        if (pool_spawn_detached() != 0) {
             break; /* run with the workers that started; the caller always helps */
         }
         pool_workers++;
@@ -148,7 +229,7 @@ static void pool_init(void) {
 }
 
 int32_t lyric_parallel_threads(void) {
-    pthread_once(&pool_once, pool_init);
+    pool_call_once(&pool_once, pool_init);
     return pool_workers + 1;
 }
 
@@ -156,7 +237,7 @@ void lyric_parallel_for(int64_t count, void (*body)(int64_t, void*), void* ud) {
     if (count <= 0) {
         return;
     }
-    pthread_once(&pool_once, pool_init);
+    pool_call_once(&pool_once, pool_init);
     if (count == 1 || pool_workers == 0 || in_body) {
         int saved = in_body;
         in_body = 1;
@@ -173,22 +254,22 @@ void lyric_parallel_for(int64_t count, void (*body)(int64_t, void*), void* ud) {
     atomic_store_explicit(&job.next, 0, memory_order_relaxed);
     atomic_store_explicit(&job.done, 0, memory_order_relaxed);
 
-    pthread_mutex_lock(&submit_mu);
-    pthread_mutex_lock(&mu);
+    pool_lock(&submit_mu);
+    pool_lock(&mu);
     current_job = &job;
     generation++;
-    pthread_cond_broadcast(&work_cv);
-    pthread_mutex_unlock(&mu);
+    pool_broadcast(&work_cv);
+    pool_unlock(&mu);
 
     run_share(&job);
 
-    pthread_mutex_lock(&mu);
+    pool_lock(&mu);
     while (atomic_load_explicit(&job.done, memory_order_acquire) < count || active_workers > 0) {
-        pthread_cond_wait(&done_cv, &mu);
+        pool_wait(&done_cv, &mu);
     }
     current_job = NULL;
-    pthread_mutex_unlock(&mu);
-    pthread_mutex_unlock(&submit_mu);
+    pool_unlock(&mu);
+    pool_unlock(&submit_mu);
 }
 
 #endif

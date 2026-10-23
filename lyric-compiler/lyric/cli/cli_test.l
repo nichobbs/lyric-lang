@@ -647,10 +647,9 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   val stem = stemOf(Path.basename(sourcePath), 2)
-  // Native binaries have no extension (language reference §"lyric build
-  // --target native": "the default output is the source stem with no
-  // extension").
-  val outExt = if targetJvm { ".jar" } else if targetNative { "" } else { ".dll" }
+  // Native binaries have no extension, or `.exe` on a Windows host
+  // (language reference §"lyric build --target native").
+  val outExt = if targetJvm { ".jar" } else if targetNative { outputExt(Emitter.Native, "") } else { ".dll" }
   val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + outExt)
 
   // #6868: resolve the same active/declared feature set the eventual

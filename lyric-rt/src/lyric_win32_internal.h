@@ -1,0 +1,33 @@
+/* lyric_win32_internal.h — helpers shared by the Win32 halves of lyric-rt
+ * (lyric_win32.c, lyric_fs_win32.c; docs/67 G9).  Not part of the public
+ * runtime surface in lyric_rt.h.
+ *
+ * Lyric strings are UTF-8 and Win32's narrow ("A") entry points use the ANSI
+ * code page, so every path, environment variable and command-line argument
+ * crosses the boundary through the wide ("W") entry points, converted here.
+ */
+#ifndef LYRIC_WIN32_INTERNAL_H
+#define LYRIC_WIN32_INTERNAL_H
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <stdint.h>
+
+/* A freshly malloc'd NUL-terminated UTF-16 copy of the NUL-terminated UTF-8
+ * string `s`, or NULL when `s` is not valid UTF-8 or memory runs out. */
+wchar_t* lyric_win32_wide(const char* s);
+
+/* A freshly malloc'd NUL-terminated UTF-8 copy of the first `n` UTF-16 units
+ * of `w` (n < 0: up to its NUL), writing the byte length (excluding the NUL)
+ * through *out_len when it is non-NULL.  Unpaired surrogates become U+FFFD.
+ * NULL when memory runs out. */
+char* lyric_win32_utf8(const wchar_t* w, int64_t n, int64_t* out_len);
+
+/* Nanoseconds since the Unix epoch of a FILETIME (100 ns ticks since
+ * 1601-01-01). */
+int64_t lyric_win32_filetime_to_unix_nanos(FILETIME ft);
+
+#endif

@@ -1335,12 +1335,14 @@ pub func buildOneNativeShaped(
   // Also check the output path: if the emitter reported no diagnostics but
   // still failed (e.g. the --internal-build subprocess exited non-zero with
   // errors already printed to stderr), outputPath will be None.
+  // The file actually written: a Windows native build adds `.exe` (D204).
+  var builtPath = outPath
   match result.outputPath {
     case None -> {
       printErr(sourcePath + ": build failed")
       return 1
     }
-    case Some(_) -> ()
+    case Some(p) -> if isNativeTarget { builtPath = p }
   }
 
   // A `.runtimeconfig.json` is a .NET-only artifact consumed by `dotnet exec`;
@@ -1382,7 +1384,7 @@ pub func buildOneNativeShaped(
     }
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
-  Console.println("built " + outPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
+  Console.println("built " + builtPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
   0
 }
 
@@ -2034,7 +2036,10 @@ func cmdBuild(argv: in slice[String]): Int {
       val ext = match axes.shape {
         case SModule -> ".wasm"
         case SComponent -> ".wasm"
-        case _ -> outputExt(target, buildKind)
+        case _ -> match target {
+          case Emitter.Native -> nativeOutputExt(tripleArg)
+          case _ -> outputExt(target, buildKind)
+        }
       }
       Path.join(dir, stem + ext)
     }
@@ -2918,7 +2923,10 @@ pub func buildProjectFromManifest(
       val ext = if shapeArgBase(wasmShape) == "module" or shapeArgBase(wasmShape) == "component" {
         ".wasm"
       } else {
-        outputExt(target, buildKind)
+        match target {
+          case Emitter.Native -> nativeOutputExt(nativeTriple)
+          case _ -> outputExt(target, buildKind)
+        }
       }
       val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
@@ -3220,6 +3228,11 @@ pub func buildProjectFromManifest(
     printErr(mfPath + ": project build failed")
     return 1
   }
+  // The file actually written: a Windows native build adds `.exe` (D204).
+  val builtPath = match result.outputPath {
+    case Some(p) -> if isNativeTarget { p } else { outPath }
+    case None -> outPath
+  }
 
   match target {
     case Emitter.Dotnet -> {
@@ -3257,7 +3270,7 @@ pub func buildProjectFromManifest(
         case Ok(_) -> ()
       }
     }
-    // A native build produces a self-contained POSIX binary directly (no
+    // A native build produces a self-contained executable directly (no
     // runtimeconfig.json / module-path.txt companion artifact needed); the
     // shared libraries it links ship beside it.
     case Emitter.Native -> {
@@ -3272,7 +3285,7 @@ pub func buildProjectFromManifest(
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(
-    "built " + outPath + " (" + toString(pkgs.count) + " package(s), " + Format.formatFixed(elapsedMs, 0) + "ms)"
+    "built " + builtPath + " (" + toString(pkgs.count) + " package(s), " + Format.formatFixed(elapsedMs, 0) + "ms)"
   )
   0
 }

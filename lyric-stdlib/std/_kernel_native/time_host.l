@@ -62,7 +62,7 @@ extern func rtEpochNanos(): Long = "lyric_epoch_nanos"
 
 extern func rtMonotonicNanos(): Long = "lyric_monotonic_nanos"
 
-extern func cUsleep(us: Int): Int = "usleep"
+extern func rtSleepNanos(ns: Long): Unit = "lyric_sleep_nanos"
 
 extern func cLlround(x: Double): Long = "llround"
 
@@ -515,15 +515,7 @@ pub func hostMonotonicNanos(): Long {
 }
 
 pub func hostSleepMillis(ms: in Int): Unit {
-  // usleep(3) rejects arguments of one second or more on some
-  // platforms, so sleep in 500 ms slices.
-  var remaining = ms
-  while remaining > 0 {
-    var chunk = remaining
-    if chunk > 500 {
-      chunk = 500
-    }
-    val _ignored = cUsleep(chunk * 1000)
-    remaining = remaining - chunk
+  if ms > 0 {
+    rtSleepNanos(ms.toLong() * 1000000i64)
   }
 }

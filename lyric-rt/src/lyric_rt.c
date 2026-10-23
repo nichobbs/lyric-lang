@@ -22,7 +22,9 @@
  * it); otherwise the symbol resolves to NULL, so this stays a safe no-op
  * in a plain (non-ASan) native build without needing to link against the
  * sanitizer runtime at all. */
+#if !defined(_WIN32)
 extern void __lsan_ignore_object(const void* p) __attribute__((weak));
+#endif
 
 /* Bytes this thread has requested from lyric_alloc since it started: every
  * heap object, collection and string buffer Lyric code allocates.  Read by
@@ -85,9 +87,14 @@ void lyric_free(void* p) {
  *
  * A no-op in a non-ASan build (the interface only exists when linked in). */
 void lyric_lsan_ignore_leak(void* p) {
+#if defined(_WIN32)
+    /* LeakSanitizer does not run on Windows. */
+    (void)p;
+#else
     if (p && __lsan_ignore_object) {
         __lsan_ignore_object(p);
     }
+#endif
 }
 
 void lyric_retain(void* obj) {

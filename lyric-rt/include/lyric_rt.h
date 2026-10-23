@@ -365,7 +365,7 @@ int32_t     lyric_stdin_wait(int32_t timeout_ms);
 LyricList*  lyric_stdin_read(int32_t max, int32_t* ok);
 int32_t     lyric_stdin_read_line(LyricString** out);
 
-/* ── Platform helpers (lyric_posix.c) ──────────────────────────────── */
+/* ── Platform helpers (lyric_posix.c; lyric_win32.c on Windows) ────── */
 
 /* open(2) flag values differ across platforms (O_CREAT is 0x40 on Linux,
  * 0x200 on macOS); expose them as functions so the Lyric kernel layer
@@ -391,6 +391,20 @@ int64_t lyric_read_fd(int32_t fd, void* buf, int64_t n);
 int32_t lyric_open_fd(const char* path, int32_t flags, int32_t mode);
 int64_t lyric_cstr_len(const char* s);
 void* lyric_malloc_raw(int64_t n);
+
+/* close / unlink / mkdir / rmdir with the POSIX return convention (0, or -1
+ * with errno set).  The kernel layer binds these rather than the raw libc
+ * names: Windows has no `mkdir(path, mode)`, and its narrow-character path
+ * functions take the ANSI code page where these take UTF-8 (docs/67 G9).
+ * `mode` is ignored on Windows. */
+int32_t lyric_close_fd(int32_t fd);
+int32_t lyric_unlink(const char* path);
+int32_t lyric_mkdir(const char* path, int32_t mode);
+int32_t lyric_rmdir(const char* path);
+
+/* Sleep the calling thread for at least `ns` nanoseconds (no-op when
+ * ns <= 0), resuming after a signal interrupts it. */
+void lyric_sleep_nanos(int64_t ns);
 
 /* sizeof(pthread_mutex_t) for the running platform, so protected-type
  * codegen can size the inline mutex slot without a hardcoded table. */
@@ -1029,6 +1043,8 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n);
 /* close(2) the fd.  Returns 0 on success, -1 on failure.  No-op on a
  * negative fd. */
 int32_t lyric_sock_close(int32_t fd);
+/* shutdown(2) of a connected socket (`how` 2 = both directions): 0, or -1. */
+int32_t lyric_sock_shutdown(int32_t fd, int32_t how);
 
 /* The peer's address of a connected socket as "ip:port" ("[ip]:port" for
  * IPv6), or "" when it cannot be determined (closed fd, unsupported family).

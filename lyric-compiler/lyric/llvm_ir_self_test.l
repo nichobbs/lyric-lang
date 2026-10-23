@@ -16,6 +16,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Encoding as Encoding
+import Std.String as Str
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
 
@@ -141,6 +142,15 @@ test "wasm32 triples get the pinned 32-bit-pointer datalayout" {
   val dl = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"
   assertEqual(datalayoutForTriple("wasm32-unknown-unknown"), dl, "wasm32-unknown-unknown")
   assertEqual(datalayoutForTriple("wasm32-wasi"), dl, "wasm32-wasi")
+}
+
+test "the Windows x64 triple gets clang's COFF datalayout" {
+  assertEqual(
+    datalayoutForTriple("x86_64-pc-windows-msvc"),
+    "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128",
+    "x86_64-pc-windows-msvc"
+  )
+  assertTrue(Str.startsWith(datalayoutForTriple("x86_64-unknown-linux-gnu"), "e-m:e-"), "Linux keeps ELF mangling")
 }
 
 test "sizeof renders as a target-sized constant expression" {

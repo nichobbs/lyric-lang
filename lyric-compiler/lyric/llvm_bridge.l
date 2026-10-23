@@ -361,6 +361,74 @@ pub func findLyricRtArchive(): String {
   walkUpFor(Environment.currentDirectory(), devRel)
 }
 
+/// The one Windows triple the native backend targets (docs/67 G9).
+pub val windowsTriple = "x86_64-pc-windows-msvc"
+
+/// Whether `triple` names a Windows target, of any architecture or ABI.
+pub func isWindowsTriple(triple: in String): Bool {
+  Str.contains(triple, "windows") or Str.contains(triple, "win32") or Str.contains(triple, "mingw")
+}
+
+/// Whether a native build for `triple` produces a Windows executable: the
+/// triple names Windows, or it is empty (the host) and the host is Windows.
+pub func nativeTargetIsWindows(triple: in String): Bool {
+  if triple.length == 0 {
+    Environment.isWindows()
+  } else {
+    isWindowsTriple(triple)
+  }
+}
+
+/// The path a native executable for `triple` is written to: `path` itself,
+/// or with `.exe` appended for a Windows target when it has no `.exe` already,
+/// since Windows starts a program only by its extension.
+pub func nativeExecutablePath(path: in String, triple: in String): String {
+  if nativeTargetIsWindows(triple) and not Str.endsWith(Str.toLower(path), ".exe") {
+    path + ".exe"
+  } else {
+    path
+  }
+}
+
+/// Locate the Windows `lyric_rt` archive: `$LYRIC_RT_WINDOWS_PATH`, then on a
+/// Windows host `$LYRIC_RT_PATH`, the installed layout
+/// (`<bin>/lib/lyric_rt-x86_64-pc-windows-msvc.lib`), then the dev layout
+/// (`lyric-rt/build-x86_64-pc-windows-msvc/lyric_rt.lib`, from
+/// `make -C lyric-rt windows`).
+func findWindowsRtArchive(): String {
+  val winOverride = Environment.getVarOrDefault("LYRIC_RT_WINDOWS_PATH", "")
+  if winOverride.length > 0 and File.fileExists(winOverride) {
+    return winOverride
+  }
+  if Environment.isWindows() {
+    val hostOverride = Environment.getVarOrDefault("LYRIC_RT_PATH", "")
+    if hostOverride.length > 0 and File.fileExists(hostOverride) {
+      return hostOverride
+    }
+  }
+  val appBase = Environment.appBaseDirectory()
+  val installed = Path.join(Path.join(appBase, "lib"), "lyric_rt-" + windowsTriple + ".lib")
+  if File.fileExists(installed) {
+    return installed
+  }
+  val devRel = Path.join(Path.join("lyric-rt", "build-" + windowsTriple), "lyric_rt.lib")
+  val hit = walkUpFor(appBase, devRel)
+  if hit.length > 0 {
+    return hit
+  }
+  walkUpFor(Environment.currentDirectory(), devRel)
+}
+
+/// The system import libraries every Windows link names: CNG entropy
+/// (`bcrypt`) and the UTF-16 command-line parser (`shell32`), both used by
+/// the runtime (lyric-rt's `WIN_LIBS`).
+func windowsSystemLibs(): List[String] {
+  val libs: List[String] = newList()
+  libs.add("-lbcrypt")
+  libs.add("-lshell32")
+  libs
+}
+
 /// Whether `triple` targets WebAssembly (docs/35): those builds link with a
 /// wasi-sdk clang against the per-triple `lyric_rt` archive, never the host's.
 func isWasmTriple(triple: in String): Bool {
@@ -371,11 +439,24 @@ func isWasmTriple(triple: in String): Bool {
 /// preview 1, which clang 23 (wasi-sdk 34) deprecates under that name and whose
 /// sysroot only carries headers as `wasm32-wasip1`; the short form also makes
 /// clang print an "overriding the module target triple" warning.
-func normalizeNativeTriple(triple: in String): String {
+pub func normalizeNativeTriple(triple: in String): String {
   if triple == "wasm32-wasi" {
     return "wasm32-unknown-wasip1"
   }
+  if isWindowsMsvcX64(triple) {
+    return windowsTriple
+  }
   triple
+}
+
+/// Whether `triple` is Windows x86-64 with the MSVC environment under any
+/// vendor or version spelling: `clang -print-effective-triple` on a Windows
+/// host prints the MSVC version (`x86_64-pc-windows-msvc19.40.33811`), and
+/// `x86_64-unknown-windows-msvc` names the same target.
+func isWindowsMsvcX64(triple: in String): Bool {
+  val parts = Str.split(triple, "-")
+  parts.length == 4 and (parts[0] == "x86_64" or parts[0] == "amd64") and parts[2] == "windows" and
+    Str.startsWith(parts[3], "msvc")
 }
 
 /// Locate the wasm32 `lyric_rt` archive: `$LYRIC_RT_WASM32_PATH` override, the
@@ -2015,7 +2096,7 @@ func linkAndEmitNative(
   // on it, as does how a by-value record crosses the C boundary).
   var effTriple = normalizeNativeTriple(triple)
   if effTriple.length == 0 {
-    effTriple = detectHostTriple()
+    effTriple = normalizeNativeTriple(detectHostTriple())
   }
   // docs/67 §4.2: a by-value aggregate the target's C ABI lowering does not
   // cover (#8009).
@@ -2023,6 +2104,17 @@ func linkAndEmitNative(
     return false
   }
   val isWasm = isWasmTriple(effTriple)
+  val isWindows = isWindowsTriple(effTriple)
+  // docs/67 G9: one Windows target, with the MSVC C runtime and ABI.
+  if isWindows and effTriple != windowsTriple {
+    Console.error(
+      "error[N0025]: unsupported Windows target '" + effTriple + "'; the native backend targets " + windowsTriple +
+        " (pass --triple " +
+        windowsTriple +
+        ")"
+    )
+    return false
+  }
   val spec = parseShapeSpec(shape)
   val isComponent = spec.base == "component"
   val isModule = spec.base == "module"
@@ -2082,9 +2174,19 @@ func linkAndEmitNative(
     }
   }
 
-  val rtPath = if isWasm { findWasmRtArchive() } else { findLyricRtArchive() }
+  val rtPath = if isWasm {
+    findWasmRtArchive()
+  } else if isWindows {
+    findWindowsRtArchive()
+  } else {
+    findLyricRtArchive()
+  }
   if rtPath.length == 0 {
-    if isWasm {
+    if isWindows {
+      Console.error(
+        "error[N0003]: the Windows lyric_rt archive was not found (set LYRIC_RT_WINDOWS_PATH, or build it with `make -C lyric-rt windows`)"
+      )
+    } else if isWasm {
       Console.error(
         "error[N0003]: the wasm32 lyric_rt archive was not found (set LYRIC_RT_WASM32_PATH, or build it with `make -C lyric-rt wasm32-wasi WASI_SDK=<wasi-sdk>`)"
       )
@@ -2125,6 +2227,13 @@ func linkAndEmitNative(
       clangArgs.add("-mexec-model=reactor")
       clangArgs.add("-Wl,-z,stack-size=" + shapeStackSize(spec))
     }
+  } else if isWindows {
+    // lld-link on every host: it is part of every LLVM install, so a Linux
+    // host cross-links with the MSVC CRT and Windows SDK named by the
+    // INCLUDE/LIB environment variables, and a Windows host needs no
+    // Visual Studio link.exe.
+    clangArgs.add("--target=" + effTriple)
+    clangArgs.add("-fuse-ld=lld")
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }
@@ -2145,8 +2254,16 @@ func linkAndEmitNative(
   }
   clangArgs.add(llPath)
   clangArgs.add(rtPath)
-  clangArgs.add("-lm")
-  if not isWasm {
+  if isWindows {
+    // The math functions are part of the UCRT, and there is no libpthread or
+    // libdl: threads and the (not yet ported) TLS seam use the Win32 API.
+    for lib in windowsSystemLibs() {
+      clangArgs.add(lib)
+    }
+  } else {
+    clangArgs.add("-lm")
+  }
+  if not isWasm and not isWindows {
     clangArgs.add("-lpthread")
     // libdl for the lyric_tls.c OpenSSL seam's dlopen/dlsym (a no-op stub on
     // glibc >= 2.34; a real dependency on older glibc / musl). A program that
@@ -2156,11 +2273,13 @@ func linkAndEmitNative(
   }
   var li = 0
   while li < npkg.nativeLibs.count {
-    clangArgs.add(nativeLinkArg(npkg.nativeLibs[li]))
+    if not (isWindows and isWindowsCrtLibrary(npkg.nativeLibs[li])) {
+      clangArgs.add(nativeLinkArg(npkg.nativeLibs[li], isWindows))
+    }
     li = li + 1
   }
   clangArgs.add("-o")
-  clangArgs.add(coreOut)
+  clangArgs.add(if isWindows { nativeExecutablePath(coreOut, effTriple) } else { coreOut })
   val clangExe = if isWasm { Path.join(Path.join(wasiSdk, "bin"), "clang") } else { "clang" }
   match Process.runCapture(clangExe, clangArgs, 300000) {
     case Ok(res) -> {
@@ -2182,7 +2301,15 @@ func linkAndEmitNative(
           "error[N0001]: clang was not found on PATH (install it via your platform's package manager: `apt install clang`, Xcode CLI tools, ...)"
         )
         Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
-        Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
+        if isWindows {
+          Console.error(
+            "  clang --target=" + effTriple + " -fuse-ld=lld -O" + effOpt + " " + llPath + " " + rtPath +
+              " -lbcrypt -lshell32 -o " +
+              nativeExecutablePath(outputPath, effTriple)
+          )
+        } else {
+          Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
+        }
       }
       Console.error("  (" + e + ")")
       return false
@@ -2892,14 +3019,27 @@ func unitOf(
   )
 }
 
+/// Whether `@library(lib)` names the C library or its maths half, which on
+/// Windows are the Universal C Runtime every program already links (there is
+/// no `c.lib` or `m.lib`).
+func isWindowsCrtLibrary(lib: in String): Bool {
+  lib == "c" or lib == "m"
+}
+
 /// The clang argument that links library `lib` (D158): a path is an input
 /// file, a file name (`libm.so.6`) is `-l:<name>`, and a base name
-/// (`webview`) is `-l<name>`.
-func nativeLinkArg(lib: in String): String {
-  if Str.contains(lib, "/") {
+/// (`webview`) is `-l<name>`.  On Windows a file name (`webview.lib`) is an
+/// input file too, which the linker looks for in the `LIB` directories; the
+/// MSVC linker has no `-l:` form.
+func nativeLinkArg(lib: in String, isWindows: in Bool): String {
+  if Str.contains(lib, "/") or (isWindows and Str.contains(lib, "\\")) {
     lib
   } else if Str.contains(lib, ".") {
-    "-l:" + lib
+    if isWindows {
+      lib
+    } else {
+      "-l:" + lib
+    }
   } else {
     "-l" + lib
   }

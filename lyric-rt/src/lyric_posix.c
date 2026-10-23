@@ -256,6 +256,31 @@ void* lyric_malloc_raw(int64_t n) {
     return malloc((size_t)n);
 }
 
+int32_t lyric_close_fd(int32_t fd) {
+    return (int32_t)close(fd);
+}
+
+int32_t lyric_unlink(const char* path) {
+    return (int32_t)unlink(path);
+}
+
+int32_t lyric_mkdir(const char* path, int32_t mode) {
+    return (int32_t)mkdir(path, (mode_t)mode);
+}
+
+int32_t lyric_rmdir(const char* path) {
+    return (int32_t)rmdir(path);
+}
+
+void lyric_sleep_nanos(int64_t ns) {
+    if (ns <= 0) return;
+    struct timespec ts;
+    ts.tv_sec = (time_t)(ns / 1000000000LL);
+    ts.tv_nsec = (long)(ns % 1000000000LL);
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    }
+}
+
 #if defined(__wasi__)
 /* wasm32-wasi runs a single thread (docs/35 §5.2, D-progress-1028): there is
  * no other thread to exclude, so a protected type's lock is a nesting-depth
