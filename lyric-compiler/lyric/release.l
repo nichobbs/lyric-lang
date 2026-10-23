@@ -73,6 +73,9 @@ pub func packageNameOf(source: in String): String {
 // in-string state (#3248).  Raw-string edge cases (a raw literal that itself
 // contains `"""`) and `//` inside ordinary one-line string literals remain
 // best-effort — the scan is a pre-build package picker, not a parser.
+//
+// A `@plugin(...)` record (D207) counts: `Lyric.PluginExpand` generates the
+// package's `func main(): Int`, and K0012 forbids writing one.
 pub func declaresEntryMain(source: in String): Bool {
   val lines = Str.split(source, "\n")
   var inTripleString = false
@@ -81,6 +84,9 @@ pub func declaresEntryMain(source: in String): Bool {
     val line = Str.trim(lines[i])
     // Match `func main()` / `pub func main()` with an empty parameter list,
     // tolerating whitespace before the `(`.
+    if not inTripleString and Str.startsWith(line, "@plugin(") {
+      return true
+    }
     if not inTripleString and (Str.startsWith(line, "func main") or Str.startsWith(line, "pub func main")) {
       val afterMain = afterToken(line, "main")
       val trimmed = Str.trim(afterMain)

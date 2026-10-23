@@ -6,7 +6,8 @@
 //! its own copy, and every pass-ordering fix had to land three times (band
 //! J2 / #2665, D-progress-642).  This package is the single authority for:
 //!
-//!   * the pass ORDER — parse → cfg erasure → wire-expand → alias rewrite →
+//!   * the pass ORDER — parse → cfg erasure → wire-expand → plugin-expand
+//!     (D207) → alias rewrite →
 //!     @stubbable synthesis → interface-default-method inheritance (#6433) →
 //!     typecheck → modecheck → contract elaboration → `?`-propagation →
 //!     derive → mono → weave → await-hoist — with the
@@ -67,6 +68,7 @@ import Lyric.Stubbable as Stubbable
 import Lyric.TypeAliasResolve as TypeAliasResolve
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Weaver as Weaver
@@ -418,13 +420,14 @@ pub func pipeExpandAndRewrite(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
-  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, runWireExpand, runStubbable, injectWeave)
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, runWireExpand, runStubbable, injectWeave)
   if gate(label, origins, r.diagnostics) {
     return None
   }
@@ -438,6 +441,7 @@ pub func pipeExpandAndRewriteCollect(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
@@ -452,6 +456,14 @@ pub func pipeExpandAndRewriteCollect(
     }
     f = weRes.file
   }
+  // D207 plugin desugaring, on every target: `plugins` holds the build's
+  // source packages (`PluginExpand.collectPluginPackage`).
+  val peRes = PluginExpand.expandFile(f, plugins)
+  appendDiagnostics(diags, peRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = f, diagnostics = diags)
+  }
+  f = peRes.file
   val prep = pipePrepareForCheck(f, runStubbable)
   appendDiagnostics(diags, prep.diagnostics)
   if hasErrorDiagnostic(diags) {

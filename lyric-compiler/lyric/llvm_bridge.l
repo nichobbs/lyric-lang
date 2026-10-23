@@ -44,6 +44,7 @@ import Lyric.Cfg as Cfg
 import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
@@ -1102,7 +1103,9 @@ pub func compileToNativeWithFeatures(
     noWires,
     noConfigs
   )
-  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(shimFile, plugins)
+  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, plugins, true, false, false, path, noOrigins) {
     case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
     case None -> return false
   }
@@ -1542,8 +1545,11 @@ pub func compileProjectToNativeWithShape(
   // alias-rewritten copies as on the managed targets.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // D207: every source package, for cross-package plugin references.
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   var wti = 0
   while wti < cfgFiles.count {
+    PluginExpand.collectPluginPackage(cfgFiles[wti], plugins)
     WireExpand.collectWireTemplates(
       Aliases.rewriteFile(cfgFiles[wti]).items,
       dottedPath(cfgFiles[wti].packageDecl.path),
@@ -1559,7 +1565,7 @@ pub func compileProjectToNativeWithShape(
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, plugins, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }
