@@ -64,39 +64,46 @@ int64_t lyric_win32_filetime_to_unix_nanos(FILETIME ft) {
     return (ticks - LYRIC_FILETIME_UNIX_EPOCH) * 100;
 }
 
-/* Map the calling thread's last Win32 error onto errno, for the wrappers
- * that keep the POSIX "-1 and errno" convention. */
-static void set_errno_from_win32(void) {
-    switch (GetLastError()) {
+int lyric_win32_errno(DWORD err) {
+    switch (err) {
     case ERROR_FILE_NOT_FOUND:
     case ERROR_PATH_NOT_FOUND:
     case ERROR_INVALID_NAME:
     case ERROR_BAD_NETPATH:
-        errno = ENOENT;
-        break;
+        return ENOENT;
     case ERROR_ALREADY_EXISTS:
     case ERROR_FILE_EXISTS:
-        errno = EEXIST;
-        break;
+        return EEXIST;
     case ERROR_ACCESS_DENIED:
     case ERROR_SHARING_VIOLATION:
     case ERROR_LOCK_VIOLATION:
-        errno = EACCES;
-        break;
+        return EACCES;
     case ERROR_DIR_NOT_EMPTY:
-        errno = ENOTEMPTY;
-        break;
+        return ENOTEMPTY;
     case ERROR_DIRECTORY:
-        errno = ENOTDIR;
-        break;
+        return ENOTDIR;
     case ERROR_NOT_ENOUGH_MEMORY:
     case ERROR_OUTOFMEMORY:
-        errno = ENOMEM;
-        break;
+        return ENOMEM;
+    case ERROR_BAD_EXE_FORMAT:
+    case ERROR_EXE_MACHINE_TYPE_MISMATCH:
+        return ENOEXEC;
+    case ERROR_FILENAME_EXCED_RANGE:
+        return ENAMETOOLONG;
+    case ERROR_BROKEN_PIPE:
+    case ERROR_NO_DATA:
+        return EPIPE;
+    case ERROR_INVALID_PARAMETER:
+        return EINVAL;
     default:
-        errno = EIO;
-        break;
+        return EIO;
     }
+}
+
+/* Map the calling thread's last Win32 error onto errno, for the wrappers
+ * that keep the POSIX "-1 and errno" convention. */
+static void set_errno_from_win32(void) {
+    errno = lyric_win32_errno(GetLastError());
 }
 
 /* ── Process start-up ──────────────────────────────────────────────── */

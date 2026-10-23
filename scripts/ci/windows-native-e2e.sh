@@ -12,6 +12,8 @@
 #   - UTF-8 text reaches stdout unchanged, arguments arrive as UTF-8, a
 #     file with a non-ASCII name round-trips, the environment, sleeping,
 #     the parallel worker pool and threads work;
+#   - child processes: captured runs with stdin and a deadline, an
+#     inherited run, a piped child, quoted and non-ASCII arguments;
 #   - a panic exits with status 3 and prints its message, with no dialog.
 #
 # On a Windows host the programs run directly.  On Linux the same build
@@ -292,6 +294,166 @@ set -e
 [ "$rc" -eq 0 ] || fail "platform.exe exited $rc"
 printf 'h\xc3\xa9llo \xe2\x98\x83 \xe6\x97\xa5\xe6\x9c\xac\n' > "$work/platform.want"
 cmp "$work/platform.out" "$work/platform.want" || fail "stdout was not the UTF-8 text the program wrote (no CRLF)"
+
+# ── Child processes ─────────────────────────────────────────────────────
+# The program runs itself as the child (`--child <mode>`), so the test needs
+# no shell or POSIX tools.
+cat > "$work/procs.l" <<'LYR'
+package Procs
+
+import Std.Core
+import Std.Collections
+import Std.Console as Console
+import Std.Environment as Environment
+import Std.Process
+import Std.Time as Time
+
+func childMain(args: in slice[String]): Int {
+  val mode = args[2]
+  if mode == "echo" {
+    var line = ""
+    var i = 3
+    while i < args.length {
+      if i > 3 {
+        line = line + "|"
+      }
+      line = line + args[i]
+      i = i + 1
+    }
+    Console.println(line)
+    return 0
+  }
+  if mode == "exit" {
+    return 5
+  }
+  if mode == "cat" {
+    // Streams stdin back as it arrives (Console.readLine is not available on
+    // the native target yet, #7968).
+    val r = Console.openStdinReader()
+    var going = true
+    while going {
+      match Console.readStdin(r) {
+        case Ok(chunk) -> match chunk {
+          case Some(bytes) -> Console.writeStdoutBytes(bytes)
+          case None -> {
+            going = false
+          }
+        }
+        case Err(_) -> return 1
+      }
+    }
+    return 0
+  }
+  if mode == "sleep" {
+    Console.println("pre")
+    Time.sleepMillis(30000)
+    return 0
+  }
+  9
+}
+
+func listOf(items: in slice[String]): List[String] {
+  val l: List[String] = []
+  for s in items {
+    l.add(s)
+  }
+  l
+}
+
+func main(): Int {
+  val args = Environment.args()
+  if args.length > 2 and args[1] == "--child" {
+    return childMain(args)
+  }
+  val exe = Environment.appBaseDirectory() + "\\procs.exe"
+
+  match runCapture(exe, listOf(["--child", "echo", "a b", "c\"d", "tr\\", "", "\u{3bb} \u{2713}"]), 10000) {
+    case Ok(r) -> if r.stdout != "a b|c\"d|tr\\||\u{3bb} \u{2713}\n" or r.exitCode != 0 or r.timedOut {
+      Console.println("echo: [" + r.stdout + "]")
+      return 1
+    }
+    case Err(e) -> {
+      Console.println("echo: " + e)
+      return 1
+    }
+  }
+  match runCapture(exe, listOf(["--child", "exit"]), 10000) {
+    case Ok(r) -> if r.exitCode != 5 {
+      return 2
+    }
+    case Err(_) -> return 2
+  }
+  match runCaptureWithInput(exe, listOf(["--child", "cat"]), "one\ntwo \u{e9}\n", 10000) {
+    case Ok(r) -> if r.stdout != "one\ntwo \u{e9}\n" {
+      return 3
+    }
+    case Err(_) -> return 3
+  }
+  match runCapture(exe, listOf(["--child", "sleep"]), 300) {
+    case Ok(r) -> if not r.timedOut or r.exitCode != 0 - 2 or r.stdout != "pre\n" {
+      Console.println("timeout: " + toString(r.exitCode) + " [" + r.stdout + "]")
+      return 4
+    }
+    case Err(_) -> return 4
+  }
+  match runCapture(Environment.appBaseDirectory() + "\\no-such-program.exe", listOf([]), 10000) {
+    case Ok(_) -> return 5
+    case Err(_) -> ()
+  }
+  match run(exe, listOf(["--child", "exit"])) {
+    case Ok(code) -> if code != 5 {
+      return 6
+    }
+    case Err(_) -> return 6
+  }
+  match spawnPiped(exe, listOf(["--child", "cat"])) {
+    case Ok(p) -> {
+      match pipedWriteLine(p, "ping") {
+        case Ok(_) -> ()
+        case Err(_) -> return 7
+      }
+      match pipedReadLine(p) {
+        case Ok(line) -> if line != Some(value = "ping") {
+          return 8
+        }
+        case Err(_) -> return 8
+      }
+      match pipedReadLineWithin(p, 100) {
+        case Ok(outcome) -> match outcome {
+          case PipedTimedOut -> ()
+          case _ -> return 9
+        }
+        case Err(_) -> return 9
+      }
+      pipedCloseStdin(p)
+      if not pipedWaitExit(p, 10000) or pipedExitCode(p) != 0 {
+        return 10
+      }
+      pipedClose(p)
+    }
+    case Err(_) -> return 7
+  }
+  match spawnPiped(exe, listOf(["--child", "sleep"])) {
+    case Ok(p) -> {
+      pipedKill(p)
+      if pipedIsAlive(p) {
+        return 11
+      }
+      pipedClose(p)
+    }
+    case Err(_) -> return 11
+  }
+  0
+}
+LYR
+echo "--- child processes"
+(cd "$work" && "$lyric_bin" build procs.l --target native --triple "$triple")
+[ -f "$work/procs.exe" ] || fail "the native build did not write procs.exe"
+set +e
+run_exe "$work/procs.exe"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "procs.exe exited $rc (the code names the first process check that failed)"
 
 # ── A panic exits with status 3 ─────────────────────────────────────────
 cat > "$work/boom.l" <<'LYR'

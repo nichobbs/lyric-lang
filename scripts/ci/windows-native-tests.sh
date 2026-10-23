@@ -4,16 +4,17 @@
 # (docs/67 G9, x86_64-pc-windows-msvc), run on a Windows host from Git Bash.
 #
 #   1. Builds lyric-rt with CMake, Ninja and clang and runs its C unit tests
-#      (lyric_rt_test, lyric_win32_test, lyric_parallel_test).
+#      (lyric_rt_test, lyric_win32_test, lyric_process_win32_test,
+#      lyric_parallel_test).
 #   2. Runs the cross-target @test_module suites and the stdlib suites the
 #      Linux native lane runs (scripts/ci/native-backend-self-tests.sh) with
-#      `lyric test --target native`.  The suites that need child processes,
-#      sockets or TLS are not listed: those runtime layers are not ported yet
-#      (they report the documented failure on Windows).
+#      `lyric test --target native`.  The suites that need sockets or TLS are
+#      not listed: that runtime layer is not ported yet (#8434).
 #   3. Builds and runs programs that check what is Windows-specific end to
 #      end: the `.exe` output name, by-value records crossing to C under the
 #      Microsoft x64 convention, UTF-8 console output and arguments, files
-#      with non-ASCII names, the environment, and a panic's exit status.
+#      with non-ASCII names, the environment, child processes, and a panic's
+#      exit status.
 #
 # Needs clang and lld-link (an LLVM install) and the MSVC C runtime and
 # Windows SDK (Visual Studio Build Tools), CMake and Ninja on PATH.

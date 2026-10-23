@@ -5,12 +5,13 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(WIN32)
-    # docs/67 G9: the Win32 twins of lyric_posix.c and lyric_fs.c; processes,
-    # sockets and TLS use the *_unsupported.c twins until their ports land.
+    # docs/67 G9: the Win32 twins of lyric_posix.c, lyric_fs.c and
+    # lyric_process.c; sockets and TLS use lyric_net_unsupported.c until
+    # their port lands (#8434).
     set(LYRIC_RT_PLATFORM_SRCS
         src/lyric_win32.c
         src/lyric_fs_win32.c
-        src/lyric_process_unsupported.c
+        src/lyric_process_win32.c
         src/lyric_net_unsupported.c
     )
 else()
@@ -45,6 +46,9 @@ if(WIN32)
     add_executable(lyric_win32_test test/lyric_win32_test.c)
     target_link_libraries(lyric_win32_test lyric_rt)
     add_test(NAME lyric_win32_test COMMAND lyric_win32_test)
+    add_executable(lyric_process_win32_test test/lyric_process_win32_test.c)
+    target_link_libraries(lyric_process_win32_test lyric_rt)
+    add_test(NAME lyric_process_win32_test COMMAND lyric_process_win32_test)
 else()
     # The TLS seam dlopen's OpenSSL at runtime, so it needs libdl (a no-op stub
     # on glibc >= 2.34) in addition to pthread; no link-time -lssl/-lcrypto.

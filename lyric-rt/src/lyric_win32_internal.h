@@ -26,6 +26,9 @@ wchar_t* lyric_win32_wide(const char* s);
  * NULL when memory runs out. */
 char* lyric_win32_utf8(const wchar_t* w, int64_t n, int64_t* out_len);
 
+/* The errno value closest to the Win32 error code `err` (EIO when none is). */
+int lyric_win32_errno(DWORD err);
+
 /* Nanoseconds since the Unix epoch of a FILETIME (100 ns ticks since
  * 1601-01-01). */
 int64_t lyric_win32_filetime_to_unix_nanos(FILETIME ft);
