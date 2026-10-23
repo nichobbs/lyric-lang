@@ -485,8 +485,9 @@ test "an unlisted document is proved with its manifest's features, as lyric buil
   }
 }
 
-// #8341: the editor proves without a type check, so a duplicate declaration
-// reaches the verifier; it is reported, never thrown on.
+// #8341: a duplicate declaration is reported by the editor's check (T0001),
+// never thrown on; like `lyric prove`, nothing is proved of the document
+// (#8304).
 test "a duplicate declaration in an open document is reported, not thrown on (#8341)" {
   val msgs = openDocMessages(
     lspInit(),
@@ -496,7 +497,8 @@ test "a duplicate declaration in an open document is reported, not thrown on (#8
       "pub func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x)\n}\n"
   )
   assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
-  assertTrue(Str.contains(msgs, "V0033"), "the duplicate is reported")
+  assertTrue(Str.contains(msgs, "T0001"), "the duplicate is reported")
+  assertFalse(Str.contains(msgs, "\"code\":\"V0"), "a document the build rejects is not proved")
 }
 
 // #8342: like `lyric prove`, the server proves nothing of a file whose
@@ -590,4 +592,114 @@ test "a client that registers watched files dynamically is asked for .l and lyri
     0,
     "no registration otherwise"
   )
+}
+
+func definitionAt(state: in LspState, uri: in String, line: in Int, character: in Int): String {
+  val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + "},\"position\":{\"line\":" + ("" + line) +
+    ",\"character\":" +
+    ("" + character) +
+    "}}"
+  val req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"textDocument/definition\",\"params\":" + params + "}"
+  val msgs = lspHandle(state, req)
+  if msgs.count == 0 {
+    ""
+  } else {
+    msgs[0]
+  }
+}
+
+func methodDoc(): String {
+  "package P\n" + "record Bag {\n  n: Int\n}\n" + "record Box {\n  n: Int\n}\n" +
+    "func Bag.extra(self: in Bag): Int { self.n }\n" +
+    "func Box.extra(self: in Box): String { \"box\" }\n" +
+    "func Int.twice(self: in Int): Int { self * 2 }\n" +
+    "func f(b: in Bag, c: in Box, k: in Int): Int {\n" +
+    "  val s = c.extra()\n" +
+    "  val t = k.twice()\n" +
+    "  b.extra()\n" +
+    "}\n"
+}
+
+// #8338: a method-syntax call to a dot-named function resolves to the
+// function bound for the receiver's type, not to nothing.
+test "hover and definition resolve a dot-named method call (#8338)" {
+  val state = lspInit()
+  val uri = "file:///lsp_self_test_method_calls.l"
+  openDoc(state, uri, methodDoc())
+  // Line 13 is `  b.extra()`; `extra` starts at column 4.
+  val onBag = hoverAt(state, uri, 13, 5)
+  assertTrue(Str.contains(onBag, "Bag.extra"), "b.extra() hovers as Bag.extra: " + onBag)
+  assertFalse(Str.contains(onBag, "Box.extra"), "b.extra() is not Box.extra")
+  val defBag = definitionAt(state, uri, 13, 5)
+  assertTrue(Str.contains(defBag, "\"line\":7"), "b.extra() jumps to the Bag.extra declaration: " + defBag)
+  // Line 11 is `  val s = c.extra()`; `extra` starts at column 12.
+  val onBox = hoverAt(state, uri, 11, 13)
+  assertTrue(Str.contains(onBox, "Box.extra"), "c.extra() hovers as Box.extra: " + onBox)
+  val defBox = definitionAt(state, uri, 11, 13)
+  assertTrue(Str.contains(defBox, "\"line\":8"), "c.extra() jumps to the Box.extra declaration: " + defBox)
+  // Line 12 is `  val t = k.twice()`: a primitive receiver.
+  val onInt = hoverAt(state, uri, 12, 13)
+  assertTrue(Str.contains(onInt, "Int.twice"), "k.twice() hovers as Int.twice: " + onInt)
+  val defInt = definitionAt(state, uri, 12, 13)
+  assertTrue(Str.contains(defInt, "\"line\":9"), "k.twice() jumps to the Int.twice declaration: " + defInt)
+}
+
+// #8338: a workspace package's extension is found, and hover shows its
+// package.
+test "hover and definition resolve a method call to an imported package's function (#8338)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-method-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  val depPath = Path.join(dir, "ext.l")
+  writeOrPanic(depPath, "package Ext\npub func Int.thrice(self: in Int): Int { self * 3 }\n")
+  val state = lspInit()
+  state.wsIndex.add("Ext", depPath)
+  val uri = "file:///lsp_self_test_method_imported.l"
+  openDoc(state, uri, "package App\nimport Ext\nfunc g(k: in Int): Int {\n  k.thrice()\n}\n")
+  val hover = hoverAt(state, uri, 3, 5)
+  val def = definitionAt(state, uri, 3, 5)
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Str.contains(hover, "Int.thrice"), "hover shows the imported function: " + hover)
+  assertTrue(Str.contains(hover, "Ext"), "hover names the declaring package: " + hover)
+  assertTrue(Str.contains(def, "ext.l"), "definition points into the imported package's file: " + def)
+}
+
+// #8304: the editor's type check loads the standard library, as a build
+// does, so a document using `Std` has no false unknown-name reports.
+test "a document importing the standard library has no false type errors (#8304)" {
+  val state = lspInit()
+  val msgs = openDocMessages(
+    state,
+    "file:///lsp_self_test_std_imports.l",
+    "package P\nimport Std.Collections\nfunc f(): Int {\n  val xs: List[Int] = newList()\n  xs.count\n}\n"
+  )
+  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
+  assertFalse(Str.contains(msgs, "T0010"), "List is a known type: " + msgs)
+  assertFalse(Str.contains(msgs, "T0020"), "newList is a known name: " + msgs)
+}
+
+func refutedContract(extra: in String): String {
+  "@proof_required\npackage P\nimport Std.Collections\n" +
+    "pub func bump(x: in Int): Int\n  ensures: result > x + 1\n{\n  x + 1\n}\n" +
+    extra
+}
+
+// #8304: like `lyric prove`, the editor proves nothing of a document its
+// check rejects (#8227).
+test "the editor does not prove a document with a type error (#8304)" {
+  val state = lspInit()
+  val clean = openDocMessages(state, "file:///lsp_self_test_prove_clean.l", refutedContract(""))
+  assertTrue(
+    Str.contains(clean, "\"code\":\"V0"),
+    "a clean document is proved: it gets the verifier's report: " + clean
+  )
+  val broken = openDocMessages(
+    state,
+    "file:///lsp_self_test_prove_broken.l",
+    refutedContract("func bad(): Int {\n  \"not an int\"\n}\n")
+  )
+  assertTrue(Str.contains(broken, "T00"), "the type error is reported: " + broken)
+  assertFalse(Str.contains(broken, "\"code\":\"V0"), "nothing is proved of a document the build rejects: " + broken)
 }

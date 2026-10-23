@@ -34,6 +34,18 @@ extern type Typ = "System.Type"
 
 extern type Obj = "System.Object"
 
+extern type SByteT = "System.SByte"
+
+extern type Int16T = "System.Int16"
+
+extern type UInt16T = "System.UInt16"
+
+extern type UInt32T = "System.UInt32"
+
+extern type ByteT = "System.Byte"
+
+extern type Conv = "System.Convert"
+
 extern type Enc = "System.Text.Encoding"
 
 // Unquoted dotted path declarations
@@ -379,4 +391,26 @@ test "@externTarget resolves an inherited property through the Extends chain (#5
   val nl = externWriterNewLine(w)
   assertTrue(nl.length >= 1, "inherited TextWriter.NewLine getter returns a non-empty line separator")
   w.Dispose()
+}
+
+// #7889: constant fields of the narrow and unsigned integer types decode with
+// the width and sign of their CLI element type.  SByte read as an unsigned
+// byte gave 128; a UInt32 pattern read as Int gave -1 (it now widens to Long).
+test "extern integer constants keep their width and sign (#7889)" {
+  assertEqualInt(SByteT.MinValue, -128, "SByte.MinValue")
+  assertEqualInt(SByteT.MaxValue, 127, "SByte.MaxValue")
+  assertEqualInt(Int16T.MinValue, -32768, "Int16.MinValue")
+  assertEqualInt(UInt16T.MaxValue, 65535, "UInt16.MaxValue")
+  assertEqualInt(ByteT.MaxValue, 255, "Byte.MaxValue")
+  assertTrue(UInt32T.MaxValue == 4294967295i64, "UInt32.MaxValue widens to Long, zero-extended")
+}
+
+// #7890: a BCL method whose result is a CLR primitive Lyric has no type for
+// resolves, and the result is widened by its sign: Int16 to Int, UInt32 to
+// Long (a value above Int.MaxValue stays positive).
+test "auto-FFI resolves methods returning Int16 and UInt32 (#7890)" {
+  assertEqualInt(Int16T.Parse("-12"), -12, "Int16.Parse widens to Int, sign preserved")
+  assertTrue(UInt32T.Parse("4000000000") == 4000000000i64, "UInt32.Parse widens to Long, zero-extended")
+  assertEqualInt(Conv.ToInt16("7"), 7, "Convert.ToInt16(String) among ~18 overloads")
+  assertEqualInt(Conv.ToInt16("-7"), -7, "Convert.ToInt16 sign")
 }

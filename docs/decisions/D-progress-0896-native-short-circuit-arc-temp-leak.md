@@ -1,5 +1,3 @@
-compiler behaviour. Reproducibility is unaffected: the byte-compare stages
-supply their own seed and never consult the fallback tier.
 # D-progress-0896 — Native codegen: `&&`/`||` short-circuit releases the right operand's ARC temps in a block the skip edge also reaches, corrupting the heap (#6645, #6719, #6722)
 
 **Context.** #6645 reported that changing a package-private native

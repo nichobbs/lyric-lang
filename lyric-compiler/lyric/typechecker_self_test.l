@@ -3528,6 +3528,34 @@ test "buffer[T] resolves, indexes and has a length" {
   assertEqualInt(diagCount(parseCheck(loop)), 0, "for: " + diagCodesOf(parseCheck(loop)))
 }
 
+// docs/67 §9 (#8395): a buffer copied out of another place and written by the
+// loop right after it.
+test "W0030: a buffer copy written by the loop right after it" {
+  val head = "package P\nfunc f(a: in buffer[Int]): Int {\n"
+  val tail = "  b[0]\n}\n"
+  val forLoop = head + "  var b = a\n  for i in 0 ..< 3 {\n    b[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(forLoop), "W0030"), 1, "for: " + diagCodesOf(parseCheck(forLoop)))
+  val nested = head +
+    "  var b: buffer[Int] = a\n  var i = 0\n  while i < 3 {\n    if i > 0 {\n      b[i] += 1\n    }\n    i = i + 1\n  }\n" +
+    tail
+  val nestedBad = head + "  var b: buffer[Int] = a\n  while true {\n    if true {\n      b[0] += 1\n    }\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(nestedBad), "W0030"), 1, "while + if: " + diagCodesOf(parseCheck(nestedBad)))
+  assertEqualInt(countDiagCode(parseCheck(nested), "W0030"), 0, "loop not directly after the var")
+}
+
+test "W0030 stays silent when the copy is not followed by a writing loop" {
+  val head = "package P\nimport Std.Buffer\nfunc f(a: in buffer[Int]): Int {\n"
+  val tail = "  b[0]\n}\n"
+  val fresh = head + "  var b = filled(3, 0)\n  for i in 0 ..< 3 {\n    b[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(fresh), "W0030"), 0, "a fresh buffer is not a copy")
+  val readOnly = head + "  var b = a\n  var t = 0\n  for i in 0 ..< 3 {\n    t = t + b[i]\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(readOnly), "W0030"), 0, "a read-only loop")
+  val otherTarget = head + "  var b = a\n  var c = filled(3, 0)\n  for i in 0 ..< 3 {\n    c[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(otherTarget), "W0030"), 0, "the loop writes another buffer")
+  val valBinding = head + "  val b = a\n  for i in 0 ..< 3 {\n    var c = filled(1, 0)\n    c[0] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(valBinding), "W0030"), 0, "a val never writes")
+}
+
 test "a buffer element must be Plain: T0173" {
   for arg in ["String", "array[2, String]", "slice[Int]"] {
     val src = "package P\nimport Std.Collections\nfunc f(b: in buffer[" + arg + "]): Unit {\n}\n"
@@ -8678,6 +8706,22 @@ test "a non-Std package declaring 'hashCode' is T0140" {
   assertTrue(hasDiagCode(parseCheck(src), "T0140"), "hashCode is a reserved built-in name")
 }
 
+test "a non-Std package declaring an extern func named like a built-in is T0140 (#7682)" {
+  val src = "package P\nextern func println(s: String): Unit = \"puts\"\n" +
+    "extern func toString(n: Int): String = \"ts\"\nextern func hashCode(n: Int): Int = \"hc\"\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0140"), 3, "each reserved extern func is T0140")
+  val ok = "package P\nextern func putsLine(s: String): Unit = \"puts\"\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0140"), "an ordinary extern func name is accepted")
+}
+
+test "every codegen builtin name is a reserved built-in name (#7682)" {
+  val names = ["println", "print", "toString", "format1", "format2", "format3", "format4"]
+  for n in names {
+    val src = "package P\nfunc " + n + "(n: in Int): Int {\n  n\n}\n"
+    assertTrue(hasDiagCode(parseCheck(src), "T0140"), n + " is reserved")
+  }
+}
+
 test "a Std.* package may declare a reserved name" {
   val src = "package Std.Foo\npub func println(s: in String): Unit {\n  ()\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0140"), "Std.* keeps the isCodegenBuiltinName-style exemption")
@@ -10631,6 +10675,13 @@ test "an extern func with a NativePtr parameter is checked in a native check (#7
     Str.contains(diagMessageFor(typed, "T0060"), "initialiser has type Long"),
     "strlen types as the declared Long (" + diagMessageFor(typed, "T0060") + ")"
   )
+}
+
+test "a record argument for an extern NativePtr[Byte] parameter is T0043 (#7624)" {
+  val src = "package T\nrecord R { n: Int }\nextern func free(p: NativePtr[Byte]): Unit = \"free\"\n" +
+    "@unsafe_ffi\nfunc f(r: in R): Unit {\n  free(r)\n}\n"
+  val cr = checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "record for NativePtr[Byte]: T0043 (" + diagCodesOf(cr) + ")")
 }
 
 test "NativePtr[Byte] (the null pointer, C's void*) passes for any typed pointer, a typed pointer does not pass for another" {

@@ -22,13 +22,6 @@ if (( ${#stdlib_dlls[@]} == 0 )); then
 fi
 mkdir -p lyric-stdlib/bin
 cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-# Route emitProject subprocess hops to the F# bootstrap CLI (the
-# AOT binary is a pure trampoline; same wiring as the steps above).
-cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-if [ -f "$cli_dll" ]; then
-  export LYRIC_BIN=dotnet
-  export LYRIC_CLI_DLL="$cli_dll"
-fi
 # Build the dependency libraries bottom-up so each example's
 # restored path deps resolve to an existing bin/<assembly>.dll.
 # lyric-otel/lyric-db/lyric-web's plain `build` auto-resolves their

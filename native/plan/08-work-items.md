@@ -2214,7 +2214,7 @@ type. Verified: `llvm_heap_self_test.l` 37/37 (was 15/37), plus
 signature"), and `llvm_self_test_n3.l` 10/10 (exercises the vtable
 dispatch path directly) — no regressions, all previously-passing
 non-dtor-touching cases stayed green throughout.
-### N9.8 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-896)
+### N9.11 — Fix `and`/`or` short-circuit ARC temp release crossing a non-dominating block (#6645, #6719, #6722) — ✅ SHIPPED (D-progress-896)
 
 Root-caused the heap-corruption bug N9.4's own review found and worked
 around (#6645), which then blocked two further real fixes surfaced
@@ -2274,7 +2274,7 @@ branch chains included — with new item coverage in
 
 ---
 
-### N9.8 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-877); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
+### N9.12 — Native `Std.Char` kernel (#6811), `List`/`Map` indexed-assignment codegen, and a cross-package `?`-propagation fix — ✅ SHIPPED (D-progress-899); HPACK *decode* + full `H2Conn` FSM now verified working on native, HPACK *encode* stays blocked on #6237
 
 Closes issue #6811 (`Std.Char` had no `_kernel_native` twin — see N9.5's
 D-progress-853 update above) and, in the process of verifying it against
@@ -2302,7 +2302,7 @@ check — a real `Std.HttpEngine.H2Conn.feed()` call (connection preface +
 SETTINGS + a static-table-indexed HEADERS frame) correctly decoding
 through the full FSM (all 38 `inout H2Connection` sites plus the `inout
 FrameDecoder` chain) to a `H2RequestHeaders` event, byte-for-byte matching
-`--target dotnet`. See D-progress-877 for the full bisection trail and
+`--target dotnet`. See D-progress-899 for the full bisection trail and
 exact repro commands.
 
 **Still blocked, narrower than before:** HPACK's *encode* path

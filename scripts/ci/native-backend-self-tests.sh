@@ -30,6 +30,9 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 command -v clang >/dev/null || { echo "::error::clang not found on the runner"; exit 1; }
+# Other background steps of this job run apt-get too; make every apt-get wait for
+# the dpkg lock instead of failing with "Could not get lock" (exit 100).
+printf 'DPkg::Lock::Timeout "900";\n' | sudo tee /etc/apt/apt.conf.d/99lyric-ci-lock-timeout >/dev/null
 # ASan preflight: the heap self-test links -fsanitize=address. Use $TMPDIR
 # (redirected to runner.temp by the job's earlier step), not a hardcoded
 # /tmp, so this step doesn't bypass the SIGBUS/resource-pressure mitigation
