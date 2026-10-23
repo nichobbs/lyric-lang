@@ -439,3 +439,32 @@ test "aspect's own ensures: clause is woven and enforced at runtime" {
   // with [contracts] enabled = false in the manifest (#7701).
   assertEqualInt(ensureTarget(), 150, "aspect-composed ensure (result >= 100) is enforced and passes")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A woven function with an `inout` parameter (#8368): the renamed target and
+// the wrapper agree on how the parameter is passed, so the callee's write
+// reaches the caller through the aspect.
+// ─────────────────────────────────────────────────────────────────────────────
+record ByRefBox {
+  var total: Int
+}
+
+aspect InoutPassThrough {
+  matches: name in { addAndRead }
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+func addAndRead(x: inout Int, r: in ByRefBox): Int {
+  x = x + r.total
+  x * 2
+}
+
+test "a woven function's inout parameter is written back to the caller (#8368)" {
+  var v = 10
+  val box = ByRefBox(total = 5)
+  val got = addAndRead(v, box)
+  assertEqualInt(got, 30, "the woven call returns the target's value")
+  assertEqualInt(v, 15, "the inout write reaches the caller through the wrapper")
+}

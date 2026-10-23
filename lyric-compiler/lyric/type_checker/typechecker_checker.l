@@ -3608,13 +3608,19 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
 func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
   for it in items {
     match it.kind {
-      case IFunc(fd) -> checkReceiverParams(diag, fd.params, fd.name, true)
+      case IFunc(fd) -> {
+        checkReceiverParams(diag, fd.params, fd.name, true)
+        checkByRefParams(diag, fd.params, fd.name, fd.isAsync)
+      }
       case IRecord(d) -> checkRecordReceivers(diag, d)
       case IExposedRec(d) -> checkRecordReceivers(diag, d)
       case IImpl(d) -> {
         for m in d.members {
           match m {
-            case IMplFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case IMplFunc(fn) -> {
+              checkReceiverParams(diag, fn.params, fn.name, false)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3622,8 +3628,14 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
       case IProtected(d) -> {
         for m in d.members {
           match m {
-            case PMEntry(ed) -> checkProtectedReceiver(diag, ed.params, ed.name)
-            case PMFunc(fn) -> checkProtectedReceiver(diag, fn.params, fn.name)
+            case PMEntry(ed) -> {
+              checkProtectedReceiver(diag, ed.params, ed.name)
+              checkByRefParams(diag, ed.params, ed.name, false)
+            }
+            case PMFunc(fn) -> {
+              checkProtectedReceiver(diag, fn.params, fn.name)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3631,8 +3643,14 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
       case IInterface(d) -> {
         for m in d.members {
           match m {
-            case IMSig(sig) -> checkReceiverParams(diag, sig.params, sig.name, false)
-            case IMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case IMSig(sig) -> {
+              checkReceiverParams(diag, sig.params, sig.name, false)
+              checkByRefParams(diag, sig.params, sig.name, sig.isAsync)
+            }
+            case IMFunc(fn) -> {
+              checkReceiverParams(diag, fn.params, fn.name, false)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3645,8 +3663,45 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
 func checkRecordReceivers(diag: in List[Diagnostic], d: in RecordDecl): Unit {
   for m in d.members {
     match m {
-      case RMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, true)
+      case RMFunc(fn) -> {
+        checkReceiverParams(diag, fn.params, fn.name, true)
+        checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+      }
       case _ -> ()
+    }
+  }
+}
+
+// T0182: an `out`/`inout` parameter refers to the caller's place, so it has
+// no value to default.  T0183: an `async` function's `out`/`inout` parameter
+// would have to stay a live reference to the caller's place across every
+// suspension, which no target can keep; the function returns the new value
+// instead.
+func checkByRefParams(diag: in List[Diagnostic], params: in List[Param], name: in String, isAsync: in Bool): Unit {
+  for p in params {
+    val modeText = match p.mode { case PMOut -> "out"; case PMInout -> "inout"; case PMIn -> "" }
+    if modeText.length > 0 {
+      match p.dflt {
+        case Some(d) -> diag.add(
+          errorDiagnostic(
+            "T0182",
+            "parameter '" + p.name + "' of '" + name + "' is `" + modeText +
+              "` and cannot have a default value: it refers to the caller's place, so every call must pass one",
+            d.span
+          )
+        )
+        case None -> ()
+      }
+      if isAsync {
+        diag.add(
+          errorDiagnostic(
+            "T0183",
+            "parameter '" + p.name + "' of async function '" + name + "' cannot be `" + modeText +
+              "`: it would have to refer to the caller's place across every `await`; return the new value instead (a tuple for several), or pass a record and change its `var` fields",
+            p.span
+          )
+        )
+      }
     }
   }
 }
