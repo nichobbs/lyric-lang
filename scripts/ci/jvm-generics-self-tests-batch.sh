@@ -19,7 +19,8 @@
 # #8181; async_sm_self_test.l, #8294;
 # the structural_equality self-tests, D172; slice_func_tolist_self_test.l,
 # slice_to_list_self_test.l and int_to_nat_self_test.l, #7661, #7662, #8323;
-# jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298),
+# jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298;
+# extern_upcast_jvm_self_test.l and jvm-stdlib-type-check-gate.sh, D212),
 # through one
 # `lyric test`
 # invocation per file.
@@ -176,11 +177,14 @@ for t in \
   lyric-compiler/lyric/int_to_nat_self_test.l \
   lyric-compiler/lyric/jvm_erased_types_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
-  lyric-compiler/lyric/println_extern_jvm_self_test.l ; do
+  lyric-compiler/lyric/println_extern_jvm_self_test.l \
+  lyric-compiler/lyric/extern_upcast_jvm_self_test.l ; do
   echo "=== $t ==="
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
 done
 # A numeric `array[N, T]` is a typed Java array that boxes nothing (#8041).
 bash scripts/ci/jvm-typed-arrays-nobox.sh "$lyric_bin"
+# A bundled stdlib package is type-checked, and a type error stops the build (#7976).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/jvm-stdlib-type-check-gate.sh
 echo "JVM generics self-tests ran:$ran" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -12223,3 +12223,38 @@ test "async Result operands, Unit operands and or-pattern duplicates (#8249, #79
   val orSrc = "package P\nunion U { case A; case B; case C }\nfunc f(u: in U): Int {\n  match u {\n    case A | B -> 1\n    case A -> 2\n    case C -> 3\n  }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(orSrc), "T0196"), 1, "a case an earlier or-pattern already matched")
 }
+
+// `externAsObject(x)` (D212, #7975): the explicit upcast from an extern type to
+// the host's root object type, so an extern value can sit in a `List[Obj]`.
+func externUpcastCollectionCheck(arg: in String): CheckResult {
+  val src = "package P\nimport Std.CollectionsHost\nextern type Obj = \"System.Object\"\nextern type Sb = \"System.Text.StringBuilder\"\nfunc f(xs: in List[Obj], b: in Sb): Unit {\n  xs.add(" +
+    arg +
+    ")\n}\n"
+  checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+}
+
+test "externAsObject lets an extern value into a List of the root object type" {
+  val upcast = externUpcastCollectionCheck("externAsObject(b)")
+  assertEqualInt(diagCount(upcast), 0, "with the upcast: clean (" + diagCodesOf(upcast) + ")")
+  val bare = externUpcastCollectionCheck("b")
+  assertEqualInt(countDiagCode(bare, "T0043"), 1, "without it the element check rejects: " + diagCodesOf(bare))
+}
+
+test "externAsObject rejects an operand that is not an extern type (T0205)" {
+  val src = "package P\nextern type Obj = \"System.Object\"\nfunc f(n: in Int): Obj = externAsObject(n)\n"
+  assertEqualInt(countDiagCode(preparedCheck(src), "T0205"), 1, "an Int operand: " + diagCodesOf(preparedCheck(src)))
+}
+
+test "externAsObject needs the root object type in scope (T0206)" {
+  val src = "package P\nextern type Sb = \"System.Text.StringBuilder\"\nfunc f(b: in Sb): Unit {\n  val o = externAsObject(b)\n}\n"
+  assertEqualInt(
+    countDiagCode(preparedCheck(src), "T0206"),
+    1,
+    "no root object extern type: " + diagCodesOf(preparedCheck(src))
+  )
+}
+
+test "a non-Std package declaring 'externAsObject' is T0140" {
+  val src = "package P\nfunc externAsObject(n: in Int): Int {\n  n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0140"), "externAsObject is a reserved built-in name")
+}

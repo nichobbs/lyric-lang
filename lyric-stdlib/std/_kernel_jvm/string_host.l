@@ -13,6 +13,8 @@ package Std.StringHost
 
 extern type HostStringBuilder = "java.lang.StringBuilder"
 
+extern type JString = "java.lang.String"
+
 // The code unit at `index` (D-progress-1006): see `Std.String.codeUnitAt`.
 pub func hostCodeUnitAt(s: in String, index: in Int): Int {
   s.codeUnitAt(index)
@@ -44,7 +46,8 @@ pub func hostBuilderToString(sb: in HostStringBuilder): String {
 // Ordinal search for `value` starting at UTF-16 index `from`; -1 when
 // absent. The caller guarantees 0 <= from <= s.length.
 pub func hostIndexOfFrom(s: in String, value: in String, from: in Int): Int {
-  s.indexOf(value, from)
+  val js: JString = JString.valueOf(s)
+  js.indexOf(value, from)
 }
 
 // ASCII case-insensitive comparison without allocating (#7269): 1 when the

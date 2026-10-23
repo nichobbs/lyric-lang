@@ -19712,6 +19712,13 @@ pub func lowerCallMsil(
   match fn.kind {
     case EPath(path) -> {
       val funcName = lastSegmentMsil(path)
+      // `externAsObject(x)` (D212): the extern operand as the CLR root
+      // object; a value-type operand is boxed, a reference needs no code.
+      if funcName == "externAsObject" and path.segments.count == 1 and args.count == 1 {
+        val opTy = lowerExprMsil(cctx, fctx, insns, callArgExpr(args[0]))
+        boxIfNeededMsil(cctx, insns, opTy)
+        return MObject
+      }
       // The C NULL pointer (D158): `native int` zero.
       if funcName == "nativeNullPtr" and path.segments.count == 1 and args.count == 0 {
         insns.add(MLdcI4(v = 0))

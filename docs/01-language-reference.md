@@ -2550,6 +2550,24 @@ func useExternalClass(): Unit {
 
 Validation is otherwise skipped, without a diagnostic, when an interface method's signature mentions a shape the structural comparison cannot yet represent (a method-level generic parameter, a pointer, a function pointer, or an array of rank greater than one) — the CLR still catches a genuine mismatch there at first use, as a `TypeLoadException`.
 
+#### Extern upcast: `externAsObject` (D212)
+
+Extern types are unrelated to one another: no extern type is assignable to another, and none to the host's root object type. A kernel that keeps extern values in a `List[JObject]`, or passes one to an `Object`-typed parameter, converts explicitly with the built-in `externAsObject(x)`:
+
+```lyric
+extern type JObject = "java.lang.Object"
+extern type JClassLoader = "java.lang.ClassLoader"
+
+@unsafe_ffi
+func track(loader: in JClassLoader, into: inout List[JObject]): Unit {
+  into.add(externAsObject(loader))
+}
+```
+
+The operand must be an extern type (`T0205` otherwise); the result is the root extern type, whichever `extern type X = "java.lang.Object"` (JVM) or `"System.Object"` (.NET) is declared, and the call is `T0206` when none is declared in the compilation. It is the only upcast: there is no implicit widening between extern types, no upcast to a type other than the root, and no downcast. It is allowed in a file annotated `@unsafe_ffi` at file level and in a function annotated `@unsafe_ffi`; anywhere else it is `N0103`. `externAsObject` is a reserved built-in name (`T0140`). On the JVM the value is unchanged and its static type becomes `java.lang.Object`; on .NET a reference operand needs no code and a value-typed extern operand (`System.TimeSpan`) is boxed. `--target native` has no host object type and reports `T0206`.
+
+The bundled stdlib is type-checked on every target that compiles it from source: `--target jvm` stops the build on a type error in any bundled `Std.*` package (reported as `<package>: error[T....]`), as `--target native` does (#7976).
+
 ### 11.5 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.

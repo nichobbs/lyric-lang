@@ -290,6 +290,24 @@ Because `import extern` and `extern type` resolve against real metadata, they ca
 Calling `System.Type.GetType` yourself through an `import extern` is a direct, statically-emitted `MemberRef` call — not runtime reflection, and fully AOT-compatible. This is distinct from §13.6, which is about the *compiler* never needing reflection to marshal Lyric's own opaque types.
 :::
 
+### §13.9.1 Putting extern values in an `Object` collection
+
+Extern types are unrelated to each other, so a `List[JObject]` does not accept a `JClassLoader`. Say the upcast out loud with `externAsObject`:
+
+```lyric
+@unsafe_ffi
+package Host.Kernel
+
+extern type JObject = "java.lang.Object"
+extern type JClassLoader = "java.lang.ClassLoader"
+
+func collect(loader: in JClassLoader, items: inout List[JObject]): Unit {
+  items.add(externAsObject(loader))
+}
+```
+
+It converts to the host's root object only, never between two named extern types, and there is no downcast. It is available in a file or function annotated `@unsafe_ffi` (`N0103` elsewhere), so the upcast stays at the audited boundary.
+
 ## §13.10 Calling C libraries with `@library`
 
 Some libraries exist only as C: a native GUI toolkit, a codec, a system API. An `extern func` with `@library` calls one directly, on every target:
