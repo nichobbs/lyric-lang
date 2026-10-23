@@ -5275,8 +5275,20 @@ func lowerMethodCall(
       // `Age.tryFrom(...)` call site silently validated against the wrong
       // package's range bounds.
       val distinctDotKey = lastSegment(path) + "." + memberName
-      val scopedDotSig = mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
-      val dotSig = match scopedDotSig { case Some(_) -> scopedDotSig; case None -> mapGet(ctx.funcSigs, distinctDotKey) }
+      // The overload the type checker resolved the call to, by its parameter
+      // count (#8355), before the first registered of its name.
+      val dotCount = toString(resolvedArityJvm(ctx, siteKey, args.count))
+      val scopedDotSig = match mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey + "@" + dotCount) {
+        case Some(sg) -> Some(value = sg)
+        case None -> mapGet(ctx.funcSigs, ctx.pkgName + "::" + distinctDotKey)
+      }
+      val dotSig = match scopedDotSig {
+        case Some(_) -> scopedDotSig
+        case None -> match mapGet(ctx.funcSigs, distinctDotKey + "@" + dotCount) {
+          case Some(sg) -> Some(value = sg)
+          case None -> mapGet(ctx.funcSigs, distinctDotKey)
+        }
+      }
       match dotSig {
         // Same disambiguation as `qualifiedDotNamedSigJvm`'s caller above
         // (#7501): `sig.jvmMethodName` is the exact classfile name the

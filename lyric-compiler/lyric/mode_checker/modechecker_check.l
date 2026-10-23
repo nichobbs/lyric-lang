@@ -90,7 +90,7 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
 /// The declarations of `infos` (one name's, in this file) a call writing
 /// `args` may reach: every one the call fits (`callDefaultsFilled`: each
 /// parameter it leaves out has a default, each named argument names one).
-/// The type checker binds the call to one of them by the rule of D208 (a
+/// The type checker binds the call to one of them by the rule of D210 (a
 /// call supplying every parameter first, then the fewest defaults filled),
 /// but only after the argument types have ruled declarations out, which this
 /// check cannot see; it takes each declaration the call fits as reachable

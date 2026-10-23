@@ -1,5 +1,5 @@
 //! The overload rule of a call that resolves through default arguments, as the
-//! type checker applies it (#8355, D208): which declaration a call binds, the
+//! type checker applies it (#8355, D210): which declaration a call binds, the
 //! parameter count the checker records for the backends, and T0200 for a call
 //! that two declarations take equally well.  The runtime half, on every
 //! target, is `default_overload_self_test.l`.

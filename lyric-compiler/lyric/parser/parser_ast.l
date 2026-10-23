@@ -2036,7 +2036,7 @@ pub func pairCallArgs(paramNames: in List[String], skip: in Int, args: in List[C
 /// be paired (`pairCallArgs`) or a parameter left out has no default.
 /// `hasDefault[k]` says whether parameter `k` of `paramNames` has a default.
 /// This is the shape of a call against a declaration, which the overload rule
-/// of calls resolving through defaults compares (#8355, D208): every
+/// of calls resolving through defaults compares (#8355, D210): every
 /// consumer (type checker, `Lyric.Mono`, mode, stability and verifier
 /// checks) decides which declaration a call binds from it.
 pub func callDefaultsFilled(

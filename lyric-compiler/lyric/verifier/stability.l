@@ -463,7 +463,7 @@ func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
 // Whether a declaration the call `cr` may reach is `@experimental`: among
 // the functions of its name, every one the call fits (`callDefaultsFilled`),
 // and any other item of its name.  The type checker binds the call to one of
-// the functions it fits by the rule of D208 (a call supplying every
+// the functions it fits by the rule of D210 (a call supplying every
 // parameter first, then the fewest defaults filled), but only after the
 // argument types have ruled some out, which this check cannot see, so each
 // counts.  Declarations in the package's other files are not seen here.

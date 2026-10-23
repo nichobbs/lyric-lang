@@ -1,7 +1,7 @@
 # Default-argument overload resolution, and conversion of covariant generic values (#8355, #8077, #7774)
 
 - **A call resolved through defaults binds the overload that fills the fewest
-  defaults** (D208, #8355, #8077). The checker overwrote one `sigs[name]` slot,
+  defaults** (D210, #8355, #8077). The checker overwrote one `sigs[name]` slot,
   so `f(a)` over `f(x, y = 1)` and `f(x, y = 10, z = 100)` bound whichever was
   declared last, and dotnet then emitted an `InvalidProgramException`. Candidates
   are the declarations the call fits whose parameter types the arguments
@@ -18,7 +18,7 @@
   `default_overload_diag_self_test.l`, and the updated `modechecker_self_test.l`
   and `verifier_self_test.l`.
 - **A covariant generic value is converted into the declared instantiation**
-  (D209, #7774). `Result[English, String]` returned, passed, bound, assigned or
+  (D211, #7774). `Result[English, String]` returned, passed, bound, assigned or
   stored where `Result[Greeter, String]` is declared made the caller's `match`
   panic on dotnet. The checker records the flow and synthesizes a conversion
   function; MSIL and native apply it, the JVM shares the value. Covariance is

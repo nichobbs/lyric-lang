@@ -4,7 +4,7 @@
 //! The checker used to overwrite one `sigs[name]` slot, so a call that no
 //! overload took exactly bound whichever was declared last, and dotnet then
 //! emitted a call to the other overload's token (an `InvalidProgramException`).
-//! The rule (decided by the repo owner, 2026-10-23, docs/decisions/D208): among
+//! The rule (decided by the repo owner, 2026-10-23, docs/decisions/D210): among
 //! the declarations a call fits (named arguments by name, the rest in order,
 //! every parameter left out having a default) whose parameter types the
 //! arguments satisfy, a call that supplies every parameter wins, then the

@@ -1267,7 +1267,7 @@ test "a call reaches every overload it fits, conservatively (#8341, #8355)" {
   infos.add(calleeInfoOf("f", VLProofRequired, namesOf("a", "b", "c"), 2))
   infos.add(calleeInfoOf("f", VLAxiom, namesOf("a", "b", ""), 0))
   // The type checker binds the call to the overload it supplies in full, or
-  // else the one filling the fewest defaults (D208), after the argument
+  // else the one filling the fewest defaults (D210), after the argument
   // types have ruled some out; the check sees no types, so each declaration
   // the call fits is reachable.
   val one = calleeCandidates(infos, positionalArgs(1))

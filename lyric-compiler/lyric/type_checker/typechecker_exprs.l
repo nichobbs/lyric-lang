@@ -4438,7 +4438,7 @@ func resolveMethodCallPick(
     picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
     d = d + 1
   }
-  // Which pick the call binds (#8355, D208), by the rule free calls follow
+  // Which pick the call binds (#8355, D210), by the rule free calls follow
   // (`pickByShape`): the declarations the call fits whose parameter types the
   // arguments satisfy, the one supplied in full first, then the one that
   // leaves the fewest parameters to their defaults.  A method of the type and
@@ -6298,7 +6298,7 @@ func sigDefaultsFilled(sig: in ResolvedSignature, args: in List[CallArg]): Int {
 }
 
 // The declaration a call binds among `cands`, the declarations of one name
-// that the file's imports make equally visible (#8355, D208).  A declaration
+// that the file's imports make equally visible (#8355, D210).  A declaration
 // is a candidate when the call fits it (`sigDefaultsFilled`: every parameter
 // the call leaves out has a default, a named argument names one of its
 // parameters) and the arguments' types satisfy its parameters.  Of those the
@@ -19095,7 +19095,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
             i = i + 1
           }
           // Only a type a value can be converted to the other instantiation
-          // of is covariant (D209).
+          // of is covariant (D211).
           if differs and covariantHeadKind(tbl, eid) == 0 {
             return false
           }
@@ -19110,7 +19110,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Covariant generic values (#7774, D209).
+// Covariant generic values (#7774, D211).
 // ─────────────────────────────────────────────────────────────────────────────
 // A value of `Result[English, E]` may be used where a `Result[Greeter, E]` is
 // declared when `English` implements `Greeter`: the type arguments are

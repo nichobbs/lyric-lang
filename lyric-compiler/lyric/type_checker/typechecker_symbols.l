@@ -334,7 +334,7 @@ pub record SymbolTable {
   argConversionSites: Map[String, ArgConversionSite]
   /// Values of a generic type that flow into a place of the same type over
   /// a supertype of its type argument (`Result[English, E]` into a
-  /// `Result[Greeter, E]` place, D209), keyed like `recordCopySites`, with
+  /// `Result[Greeter, E]` place, D211), keyed like `recordCopySites`, with
   /// the name of the helper in `covariantHelpers` that converts the value.
   /// A backend whose instantiations are distinct runtime types applies
   /// them after the check (`Lyric.Pipeline`).

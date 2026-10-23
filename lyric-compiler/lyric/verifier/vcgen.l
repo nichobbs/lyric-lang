@@ -8516,7 +8516,7 @@ func addOverloadDecl(callees: in Map[String, FunctionDecl], name: in String, fn:
 // declaration of this file that the call fits (`callDefaultsFilled`: each
 // parameter it leaves out has a default, each named argument names one).
 // The type checker binds a call to one of the declarations it fits by the
-// rule of D208 (a call supplying every parameter first, then the fewest
+// rule of D210 (a call supplying every parameter first, then the fewest
 // defaults filled), but only after the argument types have ruled some out,
 // which the verifier cannot see: a call that fits several, or that fits one
 // but may fit a declaration the verifier cannot read (another file's, a

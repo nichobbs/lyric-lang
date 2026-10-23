@@ -1044,7 +1044,7 @@ pub func pipeCheckFront(
   // JavaScript), so it gets none.
   // A target whose generic instantiations are distinct runtime types (MSIL,
   // native) converts each value that flowed into a place of the same generic
-  // type over a supertype of its type argument (D209); the JVM erases the
+  // type over a supertype of its type argument (D211); the JVM erases the
   // arguments and shares the value.
   val covered = if opts.bindListLiteralTypes and tcRes.symbols.covariantSites.count > 0 {
     applyCovariantSites(copyRes.file, tcRes.symbols)
@@ -3770,7 +3770,7 @@ pub func pipeDesugarChecked(
 /// `file` with each value the type check recorded as flowing into a place of
 /// the same generic type over a supertype of its type argument
 /// (`SymbolTable.covariantSites`, `Result[English, E]` into
-/// `Result[Greeter, E]`, D209) passed through the conversion function the
+/// `Result[Greeter, E]`, D211) passed through the conversion function the
 /// checker synthesized for it, which is added to the file.
 func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile {
   val pending: Map[String, String] = newMap()

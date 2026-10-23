@@ -1,7 +1,7 @@
 //! A value of a generic type whose type argument is a concrete type that
 //! implements an interface is accepted where the same generic type over the
 //! interface is declared, and converted into the declared instantiation
-//! (#7774, D209).
+//! (#7774, D211).
 //!
 //! `Result[English, String]` and `Result[Greeter, String]` are different CLR
 //! instantiations, so the value used to reach a caller's `match` as a type

@@ -478,7 +478,7 @@ test "expected type: no closed expectation keeps the bottom-up join (#7752)" {
 test "expected type: adoption never widens a value or a nested generic argument (#7752, #7774)" {
   // A `Res[En, String]` VALUE is a different runtime instantiation from
   // `Res[Greeter, String]` on a target with reified generics, so it is not
-  // adopted as one: it is converted where it flows in (D209).  The flow is
+  // adopted as one: it is converted where it flows in (D211).  The flow is
   // recorded for the conversion, and nothing is reported.
   val value = expectedBranchPrelude() +
     "func f(a: in Res[En, String]): Int {\n  val r: Res[Greeter, String] = a\n  useRes(r)\n}\n"
