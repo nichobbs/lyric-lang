@@ -520,6 +520,19 @@ pub func nativeTempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
+/// A test program's exit status as a POSIX host reports it: the low byte of
+/// what `main` returned.  Windows passes the full 32-bit value through, so the
+/// native self-tests compare this to keep one expected value on every host.  A
+/// negative Windows code (an NTSTATUS failure such as an access violation) is
+/// returned unchanged, so a crash never reads as a small status.
+pub func nativeExitStatus(code: in Int): Int {
+  if code < 0 {
+    code
+  } else {
+    code % 256
+  }
+}
+
 /// A scratch directory `name` under `nativeTempBase()`, created when
 /// missing.  The native self-tests write their binaries here.
 pub func nativeScratchDir(name: in String): String {

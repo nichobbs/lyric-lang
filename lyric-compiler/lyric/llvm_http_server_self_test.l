@@ -253,7 +253,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
