@@ -63,7 +63,7 @@ func oneItemFile(fn: in FunctionDecl, template: in Item): SourceFile {
   val items: List[Item] = newList()
   items.add(Item(docComments = template.docComments, annotations = template.annotations, visibility = template.visibility, kind = IFunc(decl = fn), span = template.span))
   SourceFile(
-    moduleDoc = None,
+    moduleDoc = newList(),
     fileAnnotations = newList(),
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = template.span), span = template.span),
     imports = newList(),
