@@ -429,6 +429,10 @@ static void* tls_server(void* p) {
 /* Drive one full client<->server TLS scenario.  Returns 1 iff the client
  * handshake succeeded; writes the client-side negotiated ALPN into
  * `client_alpn` and the round-trip success into `*rt_ok`. */
+/* Set by a test to free the client context as soon as it has connected, as
+ * Std.TcpHost does: the connection must keep working without it. */
+static int g_free_client_ctx_after_connect = 0;
+
 static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
                             const char* client_alpn_csv, char* client_alpn, int* rt_ok,
                             tls_server_arg* srv_out) {
@@ -452,6 +456,7 @@ static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
     CHECK(fd >= 0);
     set_timeout(fd);
     void* conn = lyric_tls_client_connect(client_ctx, fd, sni, client_alpn_csv);
+    if (g_free_client_ctx_after_connect) lyric_tls_ctx_free(client_ctx);
     int client_ok = conn != NULL;
     if (conn) {
         if (client_alpn) lyric_tls_alpn(conn, client_alpn, 32);
@@ -470,6 +475,27 @@ static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
     lyric_sock_close(listen_fd);
     if (srv_out) *srv_out = sa;
     return client_ok;
+}
+
+static void test_client_ctx_freed_after_connect(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        g_free_client_ctx_after_connect = 1;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        g_free_client_ctx_after_connect = 0;
+        CHECK(ok == 1);
+        CHECK(rt == 1); /* reads and writes after the context is gone */
+        CHECK(srv.echoed == 1);
+    } else {
+        lyric_tls_ctx_free(client);
+    }
+    lyric_tls_ctx_free(server);
 }
 
 static void test_tls_server_auth(void) {
@@ -1191,6 +1217,7 @@ int main(void) {
     test_tls_tls13_floor();
     test_mtls_accept();
     test_mtls_optional_no_client_cert();
+    test_client_ctx_freed_after_connect();
     test_mtls_reject_no_client_cert();
     test_hostname_mismatch_rejected();
     test_empty_host_refused();

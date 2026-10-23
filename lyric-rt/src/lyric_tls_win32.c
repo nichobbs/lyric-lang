@@ -387,6 +387,11 @@ typedef struct {
     SRWLOCK lock;
     CredHandle cred;
     int have_cred;
+    /* The caller's reference plus one per connection: a connection keeps
+     * using the credential (TLS 1.3 post-handshake messages, shutdown), and
+     * the stdlib frees a client context as soon as it has connected, as
+     * OpenSSL's reference-counted SSL_CTX allows. */
+    volatile LONG refs;
 } TlsCtx;
 
 /* ALPN "h2,http/1.1" in wire form (length-prefixed names). 0, or -1 for a
@@ -443,19 +448,23 @@ static TlsCtx* ctx_new(int is_server, int32_t min_version) {
     }
     c->is_server = is_server;
     c->tls13_only = min_version >= 13;
+    c->refs = 1;
     InitializeSRWLock(&c->lock);
     return c;
 }
 
-void lyric_tls_ctx_free(void* raw) {
-    TlsCtx* c = (TlsCtx*)raw;
-    if (!c) return;
+static void ctx_release(TlsCtx* c) {
+    if (!c || InterlockedDecrement(&c->refs) != 0) return;
     if (c->have_cred) FreeCredentialsHandle(&c->cred);
     if (c->engine) CertFreeCertificateChainEngine(c->engine);
     if (c->anchors) CertCloseStore(c->anchors, 0);
     if (c->have_identity) identity_free(&c->identity);
     free(c->alpn_wire);
     free(c);
+}
+
+void lyric_tls_ctx_free(void* raw) {
+    ctx_release((TlsCtx*)raw);
 }
 
 /* A chain engine whose only trust anchors are the certificates in `roots`. */
@@ -850,6 +859,7 @@ static void conn_free(TlsConn* t) {
     if (t->have_h) DeleteSecurityContext(&t->h);
     free(t->in);
     free(t->plain);
+    ctx_release(t->ctx);
     free(t);
 }
 
@@ -985,6 +995,7 @@ static TlsConn* conn_new(TlsCtx* c, int32_t fd) {
         set_err("out of memory");
         return NULL;
     }
+    InterlockedIncrement(&c->refs);
     t->ctx = c;
     t->s = (SOCKET)(intptr_t)fd;
     return t;
