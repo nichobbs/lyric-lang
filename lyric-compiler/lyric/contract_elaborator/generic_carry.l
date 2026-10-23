@@ -61,7 +61,15 @@ func hasAnnotation(anns: in List[Annotation], name: in String): Bool {
 
 func oneItemFile(fn: in FunctionDecl, template: in Item): SourceFile {
   val items: List[Item] = newList()
-  items.add(Item(docComments = template.docComments, annotations = template.annotations, visibility = template.visibility, kind = IFunc(decl = fn), span = template.span))
+  items.add(
+    Item(
+      docComments = template.docComments,
+      annotations = template.annotations,
+      visibility = template.visibility,
+      kind = IFunc(decl = fn),
+      span = template.span
+    )
+  )
   SourceFile(
     moduleDoc = newList(),
     fileAnnotations = newList(),
@@ -99,10 +107,7 @@ func boundNames(fn: in FunctionDecl, template: in Item): List[String] {
             }
           }
         }
-        case SScope(binding, _) -> match binding {
-          case Some(n) -> names.add(n)
-          case None -> ()
-        }
+        case SScope(binding, _) -> match binding { case Some(n) -> names.add(n); case None -> () }
         case _ -> ()
       }
       s

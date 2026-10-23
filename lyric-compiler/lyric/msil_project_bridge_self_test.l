@@ -3124,8 +3124,7 @@ test "a pub generic reaches the private generics of its own package from another
   packages.add(
     mkPkg(
       "PrivGen.LibA",
-      "package PrivGen.LibA\n" + "\n" +
-        "func step[S](x: S, f: (S) -> Int): Int { f(x) + 1 }\n" +
+      "package PrivGen.LibA\n" + "\n" + "func step[S](x: S, f: (S) -> Int): Int { f(x) + 1 }\n" +
         "func twice[S](x: S, f: (S) -> Int): Int { step(x, f) + step(x, f) }\n" +
         "pub func runA[S](x: S, f: (S) -> Int): Int { twice(x, f) }\n" +
         "pub func viaLambdaA[S](x: S, f: (S) -> Int): Int {\n" +
@@ -3137,8 +3136,7 @@ test "a pub generic reaches the private generics of its own package from another
   packages.add(
     mkPkg(
       "PrivGen.LibB",
-      "package PrivGen.LibB\n" + "\n" +
-        "func step[S](x: S, f: (S) -> Int): Int { f(x) * 100 }\n" +
+      "package PrivGen.LibB\n" + "\n" + "func step[S](x: S, f: (S) -> Int): Int { f(x) * 100 }\n" +
         "pub func runB[S](x: S, f: (S) -> Int): Int { step(x, f) }\n"
     )
   )
@@ -3155,7 +3153,7 @@ test "a pub generic reaches the private generics of its own package from another
   )
   val result = compileAndRun("privgen", packages, "PrivGen")
   assertEqualInt(result.exitCode, 0, "private generics: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "22\n18\n400", "each pub generic ran its own package's helpers")
+  assertEqual(Str.trim(result.stdout), "22\n19\n400", "each pub generic ran its own package's helpers")
 }
 
 // A parameter named like a private generic is not a call to it: the carried body keeps the parameter.
@@ -3164,18 +3162,16 @@ test "a parameter that shadows a private generic helper is left alone" {
   packages.add(
     mkPkg(
       "PrivShadow.Lib",
-      "package PrivShadow.Lib\n" + "\n" +
-        "func helper[S](x: S): S { x }\n" +
-        "pub func use[S](helper: (S) -> S, x: S): S { helper(x) }\n" +
+      "package PrivShadow.Lib\n" + "\n" + "func helper[S](x: S): S { x }\n" +
+        "pub func applyIt[S](helper: (S) -> S, x: S): S { helper(x) }\n" +
         "pub func plain[S](x: S): S { helper(x) }\n"
     )
   )
   packages.add(
     mkPkg(
       "PrivShadow.App",
-      "package PrivShadow.App\n" + "\n" + "import PrivShadow.Lib\n" + "\n" +
-        "func main(): Unit {\n" +
-        "  println(use({ n: Int -> n + 1 }, 4))\n" +
+      "package PrivShadow.App\n" + "\n" + "import PrivShadow.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(applyIt({ n: Int -> n + 1 }, 4))\n" +
         "  println(plain(9))\n" +
         "}\n"
     )
