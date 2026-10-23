@@ -891,7 +891,7 @@ test "decode: an unknown kind is an error, not a silent record" {
 
 test "decode: a missing member is an error naming it" {
   assertTrue(
-    match decodeText("{\"generatorArg\":\"G.X\"}") { case Err(msg) -> msg.contains("packageName"); case Ok(_) -> false },
+    match decodeText("{\"generatorArg\":\"G.X\"}") { case Err(msg) -> msg.contains("GeneratorRequest.typeDescriptor"); case Ok(_) -> false },
     "missing member rejected"
   )
 }
