@@ -314,13 +314,7 @@ To opt a block out of doctest execution — for pseudocode, incomplete examples,
 /// ```
 ```
 
-Doctests run when you pass `--doctests`:
-
-```sh
-lyric test --doctests
-```
-
-They are not included in the default `lyric test` run, since they require imports and setup that can make them slow or environment-dependent. Including them in CI alongside `lyric test --properties` is a good practice.
+Doctest extraction is planned for test-runner v2 (`docs/24-test-runner-plan.md`); `lyric test` does not run doc comment code blocks yet and rejects a `--doctests` flag as an unknown option.
 
 ## §15.7 Running tests
 
@@ -329,7 +323,6 @@ A summary of the available modes:
 ```sh
 lyric test                          # unit tests and snapshot tests
 lyric test --properties             # also run property tests (slower)
-lyric test --doctests               # also run doc comment code blocks
 lyric test --update-snapshots       # regenerate snapshot baselines
 lyric test --filter "transfer"      # substring match on test name
 lyric test --filter "debit" --properties  # flags compose
@@ -385,7 +378,7 @@ test "runs only on the JVM" {
 
 4. **Deliberately wrong doctest**
 
-   Add a `///` doc comment to a function with a code block that contains a false assertion — for example, `assertEqualInt(1 + 1, 3, "arithmetic")`. Run `lyric test --doctests` and observe the failure. Then fix the assertion and confirm the doctest passes.
+   Add a `///` doc comment to a function with a code block that contains a false assertion — for example, `assertEqualInt(1 + 1, 3, "arithmetic")`. Doctest execution is not implemented yet, so this exercise is a design thought experiment: write the doc comment and note what `lyric test` would need to extract and run.
 
 5. **Property test with a precondition guard**
 

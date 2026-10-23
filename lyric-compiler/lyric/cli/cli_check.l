@@ -47,6 +47,8 @@ func cmdCheck(argv: in slice[String]): Int {
         printErr("check: --target requires an argument (dotnet|jvm)")
         return 1
       }
+    } else if rejectUnknownOption("check", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1

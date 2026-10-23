@@ -310,6 +310,8 @@ func cmdBench(argv: in slice[String]): Int {
         printErr("bench: --target requires an argument (dotnet|jvm|native)")
         return 64
       }
+    } else if rejectUnknownOption("bench", arg) {
+      return 64
     } else {
       positional.add(arg)
       i += 1
@@ -401,6 +403,9 @@ func cmdBench(argv: in slice[String]): Int {
     return 0
   }
 
+  if rejectExtraPositional("bench", positional) {
+    return 64
+  }
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text

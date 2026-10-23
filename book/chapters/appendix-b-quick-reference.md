@@ -1161,7 +1161,7 @@ lyric test --properties \
 lyric test --update-snapshots          # project mode: rewrite snapshot baselines across every
                                        # [project.tests] entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
-                                       # (v2: --doctests, cross-package non-pub access)
+                                       # (v2: doctests, cross-package non-pub access)
 lyric test --features a,b              # project mode: activate manifest [features]
                                        # (same grammar/precedence as lyric build)
 lyric test --no-default-features       # suppress the manifest's default feature set
@@ -1347,6 +1347,7 @@ Errors and warnings emitted during lexical analysis of source files.
 |---|---|---|
 | `L0015` | error | Unrecognised numeric suffix (e.g. `100xyz`, `1u7`, `2i128`): the message names the suffix and lists the valid ones — `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` on a decimal literal, only the integer suffixes on a hex/octal/binary literal, only `f32`/`f64` on a float literal |
 | `L0016` | error | Radix prefix with no digit after it, separators aside (e.g. bare `0x`, `0b`, `0o`, `0b___`): reported on the prefix as the literal's only diagnostic, with no follow-on `L0010`; a suffix after it adds no `L0015`, so `0xu8` is one `L0016` |
+| `L0017` | error | A digit outside the base's digit set in a `0b` or `0o` literal (e.g. `0b12`, `0o9`, `0b1_2`): reported on the first offending digit alone, naming the base and its valid digits; the literal's only diagnostic (#7913). |
 
 ### Linter (L-series)
 
@@ -1558,6 +1559,7 @@ profile/shape codes); see those docs for their own F-series ranges.
 | `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
 | `F0046` | A direct call to an `async func` inside a `try`/`catch`/`finally` of another `async func`, on `--target dotnet`: the call awaits in place, and a suspend point inside a protected region cannot be lowered. Await the call explicitly before or after the `try` block (#7838). |
 | `F0047` | An untyped module-level `val` whose initializer's type (e.g. a call or numeric conversion) disagrees with the type the rest of the package was compiled against, on `--target dotnet`. Add an explicit annotation, `val x: Long = ...`. |
+| `F0050` | `--features` names a feature the governing manifest's `[features]` table does not declare (a manifest with no `[features]` table declares none), from `lyric build`, `run`, `test` or `prove`, in project mode and for a single file. Without the check a misspelt name selects nothing and the build silently lacks the feature; the message names the undeclared features and lists the declared ones (#8362). |
 | `F0049` | `--features` on a single source file no manifest applies to (no `--manifest`, and no `lyric.toml` with a `[package]` section in its directory or any parent), from `lyric build`, `run`, `test` or `prove`. Features are declared in a manifest's `[features]` table, so there is nothing to select; declare them in a `lyric.toml` or pass `--manifest` (D182). |
 
 ### Native codegen / build diagnostics (N-series)

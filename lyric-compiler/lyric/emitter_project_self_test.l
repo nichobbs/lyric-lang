@@ -3442,3 +3442,23 @@ test "emitProject a transitive type resolves when the entry package registers fi
   assertEqualInt(result.exitCode, 0, "entrytype MSIL: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "c", "entrytype MSIL: output")
 }
+
+test "importLinePackage names the package of a selective import (#7952)" {
+  assertEqual(
+    Emitter.importLinePackage("import Lyric.Pipeline.{pipeCBindingsToFuncs, CBinding}"),
+    "Lyric.Pipeline",
+    "selective import with a space in the item list"
+  )
+  assertEqual(Emitter.importLinePackage("import Lyric.Pipeline.{a}"), "Lyric.Pipeline", "single-item selective import")
+  assertEqual(Emitter.importLinePackage("import Lyric.Pipeline as Pipe"), "Lyric.Pipeline", "aliased import")
+  assertEqual(Emitter.importLinePackage("import Std.Core"), "Std.Core", "whole import")
+}
+
+test "collectImportLines keeps selective imports of one package with different item lists (#7952)" {
+  val acc: List[String] = newList()
+  Emitter.collectImportLines(
+    "package P\n\nimport Lyric.Pipeline.{a}\nimport Lyric.Pipeline.{b}\nimport Lyric.Pipeline.{a}\n\nfunc f(): Unit {\n}\n",
+    acc
+  )
+  assertEqualInt(acc.count, 2, "two distinct selective imports survive, the duplicate collapses")
+}

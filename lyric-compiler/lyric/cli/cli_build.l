@@ -1596,6 +1596,8 @@ func cmdBuild(argv: in slice[String]): Int {
         printErr("build: --opt requires an argument (0, 1, 2, 3, or s)")
         return 1
       }
+    } else if rejectUnknownOption("build", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
@@ -1777,6 +1779,13 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
+    match undeclaredFeaturesError("build", mfPath, cliFeatures) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
+    }
     // Parse `lyric.toml` once here and thread the value through the axis
     // resolution / defines-gate / plain-build calls below, instead of each of
     // those helpers re-reading and re-parsing the same file (#6193 — this
@@ -1947,6 +1956,9 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
+  if rejectExtraPositional("build", positional) {
+    return 1
+  }
   val sourcePath = positional[0]
   if not File.fileExists(sourcePath) {
     printErr("build: source file not found: " + sourcePath)
