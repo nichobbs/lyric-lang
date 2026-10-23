@@ -85,3 +85,13 @@ test "checkRateLimit: burstSize=0 violates its contract" {
   }
   assertTrue(violated, "burstSize > 0 is a documented requires: clause")
 }
+
+test "checkRateLimit: a different (rpm, burst) for the same method gets its own limiter (#7247)" {
+  val method = "svc/ReconfiguredLimits"
+  assertTrue(Grpc.checkRateLimit(method, 1000, 1), "1st call within burst=1 must be allowed")
+  assertFalse(Grpc.checkRateLimit(method, 1000, 1), "2nd call is denied by burst=1")
+  assertTrue(
+    Grpc.checkRateLimit(method, 1000, 5),
+    "a limiter configured with burst=5 must not inherit the exhausted burst=1 entry"
+  )
+}

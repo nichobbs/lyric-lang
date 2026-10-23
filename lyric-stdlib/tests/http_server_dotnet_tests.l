@@ -546,6 +546,25 @@ test "keep-alive reuses one connection for two requests" {
   assertTrue(got2, "second response received on the SAME (kept-alive) connection")
 }
 
+// #7859: two requests arriving in one read are both answered, not just the
+// first.
+test "two pipelined requests in one write are both answered (#7859)" {
+  val listener = startListener("http://127.0.0.1:19430/")
+  val server = taskRun({ -> serveN(listener, 2) })
+  threadSleep(100)
+  val conn = dial("127.0.0.1", 19430)
+  hostSetIoTimeout(conn, 10000)
+  val acc: List[String] = newList()
+  val _ = hostWrite(conn, encodeUtf8("GET /one HTTP/1.1\r\nHost: x\r\n\r\nGET /two HTTP/1.1\r\nHost: x\r\n\r\n"))
+  val got1 = readInto(conn, acc, "path=/one")
+  val got2 = readInto(conn, acc, "path=/two")
+  hostClose(conn)
+  taskWait(server)
+  stopListener(listener)
+  assertTrue(got1, "first pipelined response received: " + joined(acc))
+  assertTrue(got2, "second pipelined response received: " + joined(acc))
+}
+
 test "concurrent connections are all served" {
   val listener = startListener("http://127.0.0.1:19404/")
   val server = taskRun({ -> serveN(listener, 4) })

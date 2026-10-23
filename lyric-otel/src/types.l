@@ -58,6 +58,7 @@ pub opaque type Span {
   var attributes: List[SpanAttribute]
   var hasError: Bool
   var errorText: String
+  var ended: Bool
 }
 
 /// Construct a new span record.  Only `OTel.startSpan` should call this;
@@ -79,7 +80,8 @@ pub func newSpanRecord(
     endNanos = startNanos,
     attributes = newList(),
     hasError = false,
-    errorText = ""
+    errorText = "",
+    ended = false
   )
 }
 
@@ -131,10 +133,21 @@ pub func spanSetError(s: in Span, message: in String): Unit {
   s.errorText = message
 }
 
-/// Stamp the end timestamp.  Idempotent-ish: calling it twice just
-/// overwrites `endNanos` with the later value.
+/// Stamp the end timestamp.  Calling it twice just overwrites `endNanos`
+/// with the later value; `spanMarkEnded` is what makes export happen once.
 pub func spanFinish(s: in Span, endNanos: in Long): Unit {
   s.endNanos = endNanos
+}
+
+/// Record that the span has been handed to the exporter and report whether
+/// this is the first time.  A second `endSpan` on the same span must not
+/// export it twice (#7235).
+pub func spanMarkEnded(s: in Span): Bool {
+  if s.ended {
+    return false
+  }
+  s.ended = true
+  true
 }
 
 // ─── Span buffer ────────────────────────────────────────────────────────────

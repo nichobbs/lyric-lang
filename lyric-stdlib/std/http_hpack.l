@@ -52,9 +52,10 @@
 //! else a literal name) and added to the dynamic table. When the encoder is
 //! constructed with `huffman = true` every literal is Huffman-coded; with
 //! `huffman = false` none are. A size-optimal "shorter-of-{raw, Huffman}" per
-//! literal policy and a never-index policy for sensitive fields are valid
-//! future refinements — not correctness gaps, since any conforming decoder
-//! accepts this output — tracked for a follow-up. The low-level
+//! literal policy is a valid future refinement — not a correctness gap, since
+//! any conforming decoder accepts this output. `authorization`,
+//! `proxy-authorization`, `cookie` and `set-cookie` are always emitted as
+//! never-indexed literals (RFC 7541 §7.1.3). The low-level
 //! per-representation encoders (`encodeLiteralWithoutIndexing`,
 //! `encodeLiteralNeverIndexed`, `encodeDynamicTableSizeUpdate`, …) are exposed
 //! for callers that need explicit control, and the decoder accepts every
@@ -87,6 +88,10 @@ pub union HpackError {
   case HuffmanEosSymbol
   case TableSizeUpdateTooLarge(requested: Int, maxAllowed: Int)
   case SizeUpdateAfterHeader
+  // The decoder lowered its table-size ceiling below the peer's current size,
+  // so RFC 7541 section 4.2 requires the peer's next block to open with a
+  // Dynamic Table Size Update; it did not.
+  case MissingSizeUpdate
   case NonOctetValue(codepoint: Int)
   // The decoded header list outgrew the caller's limit, measured as RFC 7541
   // section 4.1 counts it (name + value octets + 32 per field).
@@ -771,6 +776,7 @@ pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte]
 pub record HpackDecoder {
   var table: DynamicTable
   var maxProtocolSize: Int
+  var sizeUpdateRequired: Bool
   // The Huffman decoding trie (`HuffTrie`'s three arrays), built once per
   // decoder rather than on every Huffman-coded string (#7266).
   huffZero: List[Int]
@@ -788,6 +794,7 @@ pub func newDecoder(maxProtocolSize: in Int): HpackDecoder
   HpackDecoder(
     table = newDynamicTable(maxProtocolSize),
     maxProtocolSize = maxProtocolSize,
+    sizeUpdateRequired = false,
     huffZero = trie.zero,
     huffOne = trie.one,
     huffSym = trie.sym
@@ -799,11 +806,19 @@ func decoderTrie(decoder: in HpackDecoder): HuffTrie {
 }
 
 /// Lower the protocol ceiling (called when this endpoint advertises a smaller
-/// `SETTINGS_HEADER_TABLE_SIZE`); the peer's next block must carry a size
-/// update at or below it.
+/// `SETTINGS_HEADER_TABLE_SIZE`). When the table is currently larger than the
+/// new ceiling it is shrunk now, and the peer's next block must open with a
+/// size update at or below the ceiling (RFC 7541 section 4.2), else
+/// `MissingSizeUpdate`.
 @experimental
-pub func decoderSetMaxProtocolSize(decoder: in HpackDecoder, newMax: in Int): Unit {
+pub func decoderSetMaxProtocolSize(decoder: in HpackDecoder, newMax: in Int): Unit
+  requires: newMax >= 0
+{
   decoder.maxProtocolSize = newMax
+  if decoder.table.maxSize > newMax {
+    decoder.table = dynamicTableResize(decoder.table, newMax)
+    decoder.sizeUpdateRequired = true
+  }
 }
 
 @pure
@@ -839,6 +854,9 @@ pub func decodeHeaderBlockLimited(
   var sawHeader = false
   while offset < block.length {
     val b0 = block[offset].toInt()
+    if decoder.sizeUpdateRequired and (b0 < 32 or b0 >= 64) {
+      return Err(error = MissingSizeUpdate)
+    }
     if b0 >= 128 {
       val ir = match decodeIntegerAt(block, offset, 7) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
       if ir.value == 0 {
@@ -863,6 +881,7 @@ pub func decodeHeaderBlockLimited(
         return Err(error = TableSizeUpdateTooLarge(requested = ir.value, maxAllowed = decoder.maxProtocolSize))
       }
       decoder.table = dynamicTableResize(decoder.table, ir.value)
+      decoder.sizeUpdateRequired = false
       offset = ir.offset
     } else {
       offset = match decodeLiteralField(decoder, block, offset, 4, false, outList) {
@@ -879,6 +898,9 @@ pub func decodeHeaderBlockLimited(
     if listSize > maxListSize {
       return Err(error = HeaderListTooLarge(size = listSize, maxSize = maxListSize))
     }
+  }
+  if decoder.sizeUpdateRequired {
+    return Err(error = MissingSizeUpdate)
   }
   Ok(value = outList)
 }
@@ -1032,19 +1054,33 @@ func encodeHeaderField(encoder: in HpackEncoder, acc: in List[Byte], h: in Heade
       Ok(value = ())
     }
     case None -> {
-      // Literal with Incremental Indexing (§6.2.1), name indexed when possible.
+      // Credentials are sent as Literal Never Indexed (§6.2.3, §7.1.3): they
+      // stay out of the dynamic table, where a CRIME-style guess could probe
+      // them, and intermediaries must keep the never-indexed form. Everything
+      // else is a Literal with Incremental Indexing (§6.2.1), name indexed when
+      // possible.
+      val sensitive = isSensitiveHeaderName(h.name)
+      val prefixBits = if sensitive { 4 } else { 6 }
+      val flags = if sensitive { 16 } else { 64 }
       match findNameIndex(encoder, h.name) {
-        case Some(n) -> encodeIntegerInto(acc, n, 6, 64)
+        case Some(n) -> encodeIntegerInto(acc, n, prefixBits, flags)
         case None -> {
-          encodeIntegerInto(acc, 0, 6, 64)
+          encodeIntegerInto(acc, 0, prefixBits, flags)
           appendStringLiteral(acc, encoder.huffCodes, encoder.huffLens, nameOctets, encoder.huffman)
         }
       }
       appendStringLiteral(acc, encoder.huffCodes, encoder.huffLens, valueOctets, encoder.huffman)
-      encoder.table = dynamicTableInsert(encoder.table, h.name, h.value)
+      if not sensitive {
+        encoder.table = dynamicTableInsert(encoder.table, h.name, h.value)
+      }
       Ok(value = ())
     }
   }
+}
+
+@pure
+func isSensitiveHeaderName(name: in String): Bool {
+  name == "authorization" or name == "proxy-authorization" or name == "cookie" or name == "set-cookie"
 }
 
 func findExactIndex(encoder: in HpackEncoder, name: in String, value: in String): Option[Int] {

@@ -122,3 +122,7 @@ test "tryWithMetadata reports an invalid entry as Err; withMetadata requires a v
   assertPanics("uppercase key", { -> val _ = withMetadata(defaultOptions(), "X-Id", "v") })
   assertPanics("non-positive timeout", { -> val _ = withTimeout(defaultOptions(), 0) })
 }
+
+test "serverConfigProblem is empty for the defaults (#7247)" {
+  assertEqual(Grpc.serverConfigProblem(), "", "the default GrpcServer config is valid")
+}

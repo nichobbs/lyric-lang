@@ -37,7 +37,6 @@ import Auth
 /// instead of C-mode's per-use-site recompile.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled     Bool   — master switch; false passes all calls through (default: true)
 ///   @sensitive
 ///   expectedKey String — REQUIRED: the expected API key value
 ///
@@ -47,23 +46,18 @@ import Auth
 @stable(since = "0.1")
 pub aspect ValidateKey {
   config {
-    enabled: Bool = true
     @sensitive
     expectedKey: String
   }
   around(call) -> ret where TArgs has { apiKey: String } {
-    if not enabled {
-      ret = call.proceed()
+    if args.apiKey == "" {
+      ret = Err("API key is missing")
     } else {
-      if args.apiKey == "" {
-        ret = Err("API key is missing")
+      val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
+      if ok {
+        ret = call.proceed()
       } else {
-        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
-        if ok {
-          ret = call.proceed()
-        } else {
-          ret = Err("API key is invalid")
-        }
+        ret = Err("API key is invalid")
       }
     }
   }

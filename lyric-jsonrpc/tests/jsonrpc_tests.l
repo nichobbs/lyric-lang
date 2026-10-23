@@ -533,6 +533,7 @@ test "callWithin: a peer that never answers times out with requestTimedOut" {
     case Err(e) -> {
       assertEqualInt(e.code, requestTimedOut, "requestTimedOut")
       assertTrue(isTimeoutError(e), "isTimeoutError")
+      assertTrue(isLocalError(e), "a deadline is a local error")
       assertTrue(e.message.contains("'slow'"), "the message names the method")
       match e.data {
         case Some(d) -> assertFieldInt(d, "timeoutMs", 150i64, "data carries the timeout")
@@ -627,8 +628,15 @@ test "callWithin: end of stream while waiting is internalError, not a timeout" {
     case Err(e) -> {
       assertEqualInt(e.code, internalError, "internalError")
       assertFalse(isTimeoutError(e), "not a timeout")
+      assertTrue(isLocalError(e), "a transport failure is a local error")
     }
   }
+}
+
+test "isLocalError is false for an error the peer sent (#7522)" {
+  val remote = RpcError(code = requestTimedOut, message = "upstream busy", data = None)
+  assertTrue(isTimeoutError(remote), "the code alone looks like a timeout")
+  assertFalse(isLocalError(remote), "but the peer sent it")
 }
 
 test "call timeouts outside 1 ms .. maxCallTimeoutMs violate the precondition" {

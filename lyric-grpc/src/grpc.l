@@ -414,10 +414,32 @@ config GrpcServer {
   maxConnectionIdleMs: Int = 300000
 }
 
-/// Start the gRPC server.  Blocks until SIGTERM / SIGINT.
+/// The reason `GrpcServer` cannot be used, or "" when it can.  The values come
+/// from the environment, so a bad one is reported when the server starts
+/// rather than as an obscure bind failure.
+pub func serverConfigProblem(): String {
+  if GrpcServer.port < 1 or GrpcServer.port > 65535 {
+    return "GrpcServer.port must be in 1..65535, got " + GrpcServer.port.toString()
+  }
+  if GrpcServer.maxConnectionIdleMs <= 0 {
+    return "GrpcServer.maxConnectionIdleMs must be positive, got " + GrpcServer.maxConnectionIdleMs.toString()
+  }
+  ""
+}
+
+func checkServerConfig(): Unit {
+  val problem = serverConfigProblem()
+  if problem != "" {
+    panic("Grpc: " + problem)
+  }
+}
+
+/// Start the gRPC server.  Blocks until SIGTERM / SIGINT.  Panics before
+/// binding when `GrpcServer` is misconfigured (`serverConfigProblem`).
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
+  checkServerConfig()
   Grpc.Kernel.Net.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -430,6 +452,7 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since = "0.1")
 @cfg(feature = "jvm")
 pub func start(registry: in ServiceRegistry): Unit {
+  checkServerConfig()
   Grpc.Kernel.Jvm.serve(
     GrpcServer.host,
     GrpcServer.port,
@@ -446,6 +469,7 @@ pub func start(registry: in ServiceRegistry): Unit {
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  checkServerConfig()
   return Grpc.Kernel.Net.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,
@@ -458,6 +482,7 @@ pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
 @stable(since = "0.1")
 @cfg(feature = "jvm")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
+  checkServerConfig()
   return Grpc.Kernel.Jvm.netStartHandle(
     GrpcServer.host,
     GrpcServer.port,

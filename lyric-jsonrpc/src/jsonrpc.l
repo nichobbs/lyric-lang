@@ -771,12 +771,46 @@ pub func call(peer: inout RpcPeer, method: in String, params: in Option[JsonValu
   callWithin(peer, method, params, peer.callTimeoutMs)
 }
 
+// Name of the `data` member that marks an `RpcError` as produced locally by
+// `call`/`callWithin` (a deadline, a transport failure, a malformed reply)
+// rather than reported by the peer. Local errors are never sent, so the
+// marker only ever distinguishes them from a peer's own error response.
+val localErrorMarker: String = "lyricLocal"
+
+/// True when `e` was produced locally by `call`/`callWithin` (deadline,
+/// transport failure or malformed reply) instead of being an error response
+/// the peer sent. A peer can put the same member in its own error `data`, so
+/// treat this as classification for retry decisions, not as authentication.
+@pure
+@stable(since = "0.2")
+pub func isLocalError(e: in RpcError): Bool {
+  match e.data {
+    case None -> false
+    case Some(d) -> match d {
+      case JObject(fields) -> {
+        var i = 0
+        while i < fields.count {
+          if fields[i].name == localErrorMarker {
+            return true
+          }
+          i = i + 1
+        }
+        false
+      }
+      case _ -> false
+    }
+  }
+}
+
 func callFailure(message: in String): Result[JsonValue, RpcError] {
-  Err(error = RpcError(code = internalError, message = message, data = None))
+  val detail: List[JsonField] = newList()
+  detail.add(JsonField(name = localErrorMarker, value = JBool(value = true)))
+  Err(error = RpcError(code = internalError, message = message, data = Some(value = JObject(fields = detail))))
 }
 
 func callTimedOut(method: in String, timeoutMs: in Int): Result[JsonValue, RpcError] {
   val detail: List[JsonField] = newList()
+  detail.add(JsonField(name = localErrorMarker, value = JBool(value = true)))
   detail.add(JsonField(name = "timeoutMs", value = JInt(value = timeoutMs.toLong())))
   Err(
     error = RpcError(

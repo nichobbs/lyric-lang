@@ -237,7 +237,6 @@ Config fields (env prefix `LYRIC_ASPECT_<INSTANTIATION>_`):
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `enabled` | `Bool` | `true` | Master switch |
 | `jwtSecret` | `String` | **required** | HMAC secret, at least 32 bytes |
 | `issuer` | `String` | **required** | Expected JWT `iss` claim |
 | `audience` | `String` | **required** | Expected JWT `aud` claim |

@@ -19,7 +19,6 @@ import Ws
 @stable(since = "0.1")
 pub aspect WsAuth {
   config {
-    enabled: Bool = true
     @sensitive
     jwtSecret: String
     issuer: String             // required — no default
@@ -27,9 +26,7 @@ pub aspect WsAuth {
     allowedAlgorithms: String = "HS256"
   }
   around(call) -> ret where TArgs has { authToken: String } {
-    if not enabled {
-      ret = call.proceed()
-    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+    if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
       // A configuration bug (a placeholder or short env-supplied secret):
       // raised before the request is handled, whatever its token (#7319).
       panic("Ws.Aspects.WsAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))

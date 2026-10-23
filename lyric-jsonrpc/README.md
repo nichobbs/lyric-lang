@@ -321,6 +321,7 @@ pub val defaultCallTimeoutMs: Int = 60000
 pub val maxCallTimeoutMs: Int = 86400000     // 24 h
 pub func isValidCallTimeout(timeoutMs: in Int): Bool   // 1 ..= maxCallTimeoutMs
 pub func isTimeoutError(e: in RpcError): Bool
+pub func isLocalError(e: in RpcError): Bool
 
 pub func newPeer(transport: in RpcTransport, handler: in RpcHandler): RpcPeer
 pub func newPeerWithTimeout(transport: in RpcTransport, handler: in RpcHandler, callTimeoutMs: in Int): RpcPeer
@@ -369,9 +370,10 @@ it passes, the call returns a local `RpcError` with code `requestTimedOut`
 (`-32001`, the implementation-defined server-error range; `data` carries
 `{"timeoutMs": N}`), which `isTimeoutError` recognizes. `isTimeoutError`
 matches the wire-level `-32001` code alone: a peer can legitimately send
-its own `-32001` failure for an unrelated reason, and this does not
-distinguish that from a local deadline (#7522 tracks typed `Mcp.Client`
-errors that would). Nothing is sent to
+its own `-32001` failure for an unrelated reason. `isLocalError(e)` is true
+only for an error `call`/`callWithin` produced itself (deadline, transport
+failure, malformed reply), and `Mcp.Client` uses it to report
+`McpClientError`'s `Timeout`, `Transport` and `RpcFailure` cases. Nothing is sent to
 the peer. Ids are never reused, so if the response turns up later it
 matches no call: `runLoop` and later calls drop it like any unsolicited
 response, and it is never handed to a different call.

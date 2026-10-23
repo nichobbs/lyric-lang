@@ -68,7 +68,6 @@ import Web.Kernel.Runtime as HttpKernel
 /// every matched handler while still typed-accessing args.authToken.
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
-///   enabled            Bool   — master switch; false passes all calls through (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 secret for JWT verification
 ///   issuer             String — REQUIRED: expected JWT `iss` claim.  There is no default:
@@ -82,7 +81,6 @@ import Web.Kernel.Runtime as HttpKernel
 @stable(since = "0.1")
 pub aspect RequiresAuth {
   config {
-    enabled: Bool = true
     @sensitive
     jwtSecret: String          // required — no default
     issuer: String             // required — no default
@@ -97,9 +95,7 @@ pub aspect RequiresAuth {
   // dotnet).  The empty case is handled below and fails closed.  Matches the
   // correct pattern in Auth.Aspects.ValidateKey.  See lyric-lang security review.
   around(call) -> ret where TArgs has { authToken: String } {
-    if not enabled {
-      ret = call.proceed()
-    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+    if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
       // A configuration bug (a placeholder or short env-supplied secret):
       // raised before the request is handled, whatever its token (#7319).
       panic("Web.Aspects.RequiresAuth: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
@@ -136,7 +132,6 @@ pub aspect RequiresAuth {
 /// args.authToken via `where TArgs has { authToken: String }`.
 ///
 /// Config fields:
-///   enabled            Bool   — master switch (default: true)
 ///   @sensitive
 ///   jwtSecret          String — REQUIRED: HMAC-SHA256 or RS256 secret
 ///   issuer             String — REQUIRED: expected `iss` claim (no default, #7232)
@@ -146,7 +141,6 @@ pub aspect RequiresAuth {
 @stable(since = "0.1")
 pub aspect RequiresRole {
   config {
-    enabled: Bool = true
     @sensitive
     jwtSecret: String
     issuer: String             // required — no default
@@ -158,9 +152,7 @@ pub aspect RequiresRole {
   // A precondition assert on client-controlled input crashes the server on an
   // empty token; the empty case is handled below and fails closed.
   around(call) -> ret where TArgs has { authToken: String } {
-    if not enabled {
-      ret = call.proceed()
-    } else if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
+    if Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms) != "" {
       // A configuration bug (a placeholder or short env-supplied secret):
       // raised before the request is handled, whatever its token (#7319).
       panic("Web.Aspects.RequiresRole: " + Auth.jwtConfigProblem(jwtSecret, allowedAlgorithms))
@@ -205,13 +197,11 @@ pub aspect RequiresRole {
 /// args.apiKey via `where TArgs has { apiKey: String }`.
 ///
 /// Config fields:
-///   enabled     Bool   — master switch (default: true)
 ///   @sensitive
 ///   expectedKey String — REQUIRED: the accepted API key
 @stable(since = "0.1")
 pub aspect ApiKey {
   config {
-    enabled: Bool = true
     @sensitive
     expectedKey: String
   }
@@ -219,18 +209,14 @@ pub aspect ApiKey {
   // A precondition assert on the client-controlled X-Api-Key value crashes the
   // server when the header is absent; the empty case is handled below.
   around(call) -> ret where TArgs has { apiKey: String } {
-    if not enabled {
-      ret = call.proceed()
+    if args.apiKey == "" {
+      ret = Err(WebPkg.unauthorized("X-Api-Key header missing"))
     } else {
-      if args.apiKey == "" {
-        ret = Err(WebPkg.unauthorized("X-Api-Key header missing"))
+      val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
+      if ok {
+        ret = call.proceed()
       } else {
-        val ok = Auth.verifyApiKey(args.apiKey, expectedKey)
-        if ok {
-          ret = call.proceed()
-        } else {
-          ret = Err(WebPkg.unauthorized("API key is invalid"))
-        }
+        ret = Err(WebPkg.unauthorized("API key is invalid"))
       }
     }
   }

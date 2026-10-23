@@ -949,7 +949,7 @@ test "a real McpClient round-trips server/discover + tools/list against a real M
       // deterministic — the peer's first call) will read.
       stage(serverPeer, box, reqText(1i64, "server/discover", None))
       match discoverServer(client) {
-        case Err(e) -> assertTrue(false, "discoverServer failed: " + e)
+        case Err(e) -> assertTrue(false, "discoverServer failed: " + describeClientError(e))
         case Ok(discovered) -> {
           assertEqual(discovered.serverInfo.name, "test-server", "discovered serverInfo.name")
           assertTrue(discovered.capabilities.hasTools, "discovered capabilities.hasTools (server has 4 tools registered)")
@@ -962,7 +962,7 @@ test "a real McpClient round-trips server/discover + tools/list against a real M
       // ever needed for either call above.
       stage(serverPeer, box, reqText(2i64, "tools/list", None))
       match listTools(client) {
-        case Err(e) -> assertTrue(false, "listTools failed: " + e)
+        case Err(e) -> assertTrue(false, "listTools failed: " + describeClientError(e))
         case Ok(tools) -> {
           assertEqualInt(tools.count, 4, "four tools registered")
           assertEqual(tools[0].name, "echo", "first tool name")
@@ -1038,7 +1038,7 @@ test "a real McpClient drives the full input_required resume loop against a real
       )
       stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
       match callResumableTool(client, "confirm_delete", Some(value = args)) {
-        case Err(e) -> assertTrue(false, "callResumableTool failed: " + e)
+        case Err(e) -> assertTrue(false, "callResumableTool failed: " + describeClientError(e))
         case Ok(outcome) -> match outcome {
           case InputRequired(ir) -> {
             assertEqual(ir.requestState, "delete:/tmp/z", "requestState from the first call")
@@ -1053,7 +1053,7 @@ test "a real McpClient drives the full input_required resume loop against a real
             )
             stage(serverPeer, box, reqText(2i64, "tools/call", Some(value = resumeWireParams)))
             match resumeToolCall(client, "confirm_delete", ir.requestState, inputResponses) {
-              case Err(e) -> assertTrue(false, "resumeToolCall failed: " + e)
+              case Err(e) -> assertTrue(false, "resumeToolCall failed: " + describeClientError(e))
               case Ok(resumed) -> match resumed {
                 case ToolResult(r) -> assertFalse(r.isError, "resumed call finished successfully")
                 case InputRequired(_) -> assertTrue(false, "expected a finished ToolResult after resume")
@@ -1167,7 +1167,10 @@ test "callTool against a resumable tool's input_required answer returns Err, not
       )
       stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
       match callTool(client, "confirm_delete", Some(value = args)) {
-        case Err(e) -> assertTrue(e.contains("input_required"), "callTool's Err should reference input_required, got: " + e)
+        case Err(e) -> assertTrue(
+          describeClientError(e).contains("input_required"),
+          "callTool's Err should reference input_required, got: " + describeClientError(e)
+        )
         case Ok(result) -> assertTrue(
           false,
           "expected an Err — callTool instead returned Ok(McpToolResult(content.count = " +
@@ -1200,7 +1203,7 @@ test "callTool against a plain tool's ordinary result returns Ok with the expect
       )
       stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = callWireParams)))
       match callTool(client, "echo", Some(value = args)) {
-        case Err(e) -> assertTrue(false, "callTool failed: " + e)
+        case Err(e) -> assertTrue(false, "callTool failed: " + describeClientError(e))
         case Ok(result) -> {
           assertFalse(result.isError, "successful call is not an error")
           match result.content[0] {
@@ -1223,14 +1226,66 @@ test "callToolWithin: a server that never answers fails the call at its deadline
       val start = monotonicNanos()
       match callToolWithin(client, "echo", None, 150) {
         case Ok(_) -> assertTrue(false, "expected the call to time out")
-        case Err(e) -> {
-          assertTrue(e.contains("'tools/call' failed"), "names the method: " + e)
-          assertTrue(e.contains("timed out after 150 ms"), "says it timed out: " + e)
+        case Err(e) -> match e {
+          case McpTimeout(method, timeoutMs) -> {
+            assertEqual(method, "tools/call", "names the method")
+            assertEqualInt(timeoutMs, 150, "carries the deadline")
+          }
+          case _ -> assertTrue(false, "expected McpTimeout, got: " + describeClientError(e))
         }
       }
       val elapsedMs = (monotonicNanos() - start) / 1000000i64
       assertTrue(elapsedMs >= 100i64, "waited for the deadline")
       assertTrue(elapsedMs < 10000i64, "returned promptly once it passed")
+    }
+  }
+}
+
+// #7522: a server error response is `McpRpcFailure`, not a timeout, so a caller
+// can retry the one and not the other.
+test "callTool: a server error response is McpRpcFailure, not McpTimeout" {
+  val box = newMailbox()
+  var serverPeer = newPeer(ServerSideTransport(box = box), newTestServer())
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      val params = JObject(fields = [JsonField(name = "name", value = JString(value = "no_such_tool"))])
+      stage(serverPeer, box, reqText(1i64, "tools/call", Some(value = params)))
+      match callTool(client, "no_such_tool", None) {
+        case Ok(_) -> assertTrue(false, "an unknown tool must fail")
+        case Err(e) -> match e {
+          case McpRpcFailure(method, code, _, _) -> {
+            assertEqual(method, "tools/call", "names the method")
+            assertTrue(code != 0 - 32001, "a server error is not the local timeout code")
+            assertFalse(isClientTimeout(e), "not a timeout")
+          }
+          case _ -> assertTrue(false, "expected McpRpcFailure, got: " + describeClientError(e))
+        }
+      }
+    }
+  }
+}
+
+// A peer that answers with its own -32001 is still an `McpRpcFailure`: only a
+// deadline the client itself enforced is `McpTimeout`.
+test "callTool: a server's own -32001 error is McpRpcFailure, not McpTimeout (#7522)" {
+  val box = newMailbox()
+  match connectTransport(ClientSideTransport(box = box)) {
+    case Err(e) -> assertTrue(false, "connectTransport failed: " + e)
+    case Ok(clientVal) -> {
+      var client = clientVal
+      box.toClient.add("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32001,\"message\":\"upstream busy\"}}")
+      match callTool(client, "echo", None) {
+        case Ok(_) -> assertTrue(false, "an error response must fail")
+        case Err(e) -> match e {
+          case McpRpcFailure(_, code, message, _) -> {
+            assertEqualInt(code, 0 - 32001, "the peer's code is preserved")
+            assertEqual(message, "upstream busy", "the peer's message is preserved")
+          }
+          case _ -> assertTrue(false, "expected McpRpcFailure, got: " + describeClientError(e))
+        }
+      }
     }
   }
 }
@@ -1245,14 +1300,17 @@ test "setClientCallTimeout bounds every operation, and a late answer is dropped"
       setClientCallTimeout(client, 100)
       match listTools(client) {
         case Ok(_) -> assertTrue(false, "expected tools/list (id 1) to time out")
-        case Err(e) -> assertTrue(e.contains("timed out after 100 ms"), "the client timeout applies: " + e)
+        case Err(e) -> assertTrue(
+          describeClientError(e).contains("timed out after 100 ms") and isClientTimeout(e),
+          "the client timeout applies: " + describeClientError(e)
+        )
       }
       // The server answers id 1 only now, then id 2: the late tools/list
       // answer must not be taken for the ping's.
       stage(serverPeer, box, reqText(1i64, "tools/list", None))
       stage(serverPeer, box, reqText(2i64, "ping", None))
       match ping(client) {
-        case Err(e) -> assertTrue(false, "ping failed: " + e)
+        case Err(e) -> assertTrue(false, "ping failed: " + describeClientError(e))
         case Ok(_) -> ()
       }
       assertEqualInt(box.toClient.count, 0, "both answers were read; the stale one was discarded")

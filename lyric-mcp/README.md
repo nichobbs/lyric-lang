@@ -64,18 +64,42 @@ also take a per-call timeout:
 
 ```lyric
 pub func setClientCallTimeout(client: inout McpClient, timeoutMs: in Int): Unit
-pub func callToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolResult, String]
-pub func callResumableToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolCallOutcome, String]
-pub func resumeToolCallWithin(client: inout McpClient, name: in String, requestState: in String, inputResponses: in JsonValue, timeoutMs: in Int): Result[McpToolCallOutcome, String]
+pub func callToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolResult, McpClientError]
+pub func callResumableToolWithin(client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int): Result[McpToolCallOutcome, McpClientError]
+pub func resumeToolCallWithin(client: inout McpClient, name: in String, requestState: in String, inputResponses: in JsonValue, timeoutMs: in Int): Result[McpToolCallOutcome, McpClientError]
 ```
 
-A timed-out call returns `Err("'<method>' failed: timed out after N ms
-awaiting response to '<method>'")`. Over the stdio transport the wait is
+A timed-out call returns `Err(McpTimeout(method, timeoutMs))`.
+
+Over the stdio transport the wait is
 `Std.Process.pipedReadLineWithin`; the child is left running (call
 `disconnect` to stop it), and if its answer arrives later it is dropped
 rather than handed to the next call. A tool that waits on a person
 should answer `input_required` (docs/64 §3.1) rather than hold the call
 open past the deadline.
+
+## Client errors
+
+Every `Mcp.Client` operation except `connectTransport`/`connectStdio`
+(whose `Err` is a spawn failure string) returns `Result[T, McpClientError]`
+(#7522), so a caller can retry a deadline and not a tool error:
+
+```lyric
+pub union McpClientError {
+  case McpTimeout(method: String, timeoutMs: Int)
+  case McpRpcFailure(method: String, code: Int, message: String, data: Option[JsonValue])
+  case McpTransportError(message: String)
+  case McpProtocolError(message: String)
+}
+pub func describeClientError(e: in McpClientError): String
+pub func isClientTimeout(e: in McpClientError): Bool
+```
+
+`McpTimeout` is a deadline the client itself enforced; a server that
+answers with its own `-32001` error is an `McpRpcFailure`.
+`McpTransportError` means the transport failed or closed, so the
+connection is likely unusable. `McpProtocolError` means the server
+answered, but not with what MCP defines for that method.
 
 `McpClient` never runs `JsonRpc.runLoop` (every operation is a plain
 `call`/`callWithin`), so it drains `RpcPeer.pendingQueue` itself
@@ -367,7 +391,7 @@ func main(): Unit {
             println("server advertises tools")
           }
         }
-        case Err(e) -> println("server/discover failed: " + e)
+        case Err(e) -> println("server/discover failed: " + describeClientError(e))
       }
       match listTools(client) {
         case Ok(tools) -> {
@@ -377,12 +401,12 @@ func main(): Unit {
             i = i + 1
           }
         }
-        case Err(e) -> println("listTools failed: " + e)
+        case Err(e) -> println("listTools failed: " + describeClientError(e))
       }
       val args = JObject(fields = [JsonField(name = "text", value = JString(value = "hello"))])
       match callTool(client, "echo", Some(value = args)) {
         case Ok(result) -> println("isError=" + result.isError.toString())
-        case Err(e) -> println("callTool failed: " + e)
+        case Err(e) -> println("callTool failed: " + describeClientError(e))
       }
       disconnect(client)
     }

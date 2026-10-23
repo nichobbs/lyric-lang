@@ -58,7 +58,6 @@ aspect KeyGuardDisabled from Auth.Aspects.ValidateKey {
   matches: name like "apiKeyBypassed*"
   config {
     expectedKey: String = "secret-key-abc"
-    enabled: Bool = false
   }
 }
 
@@ -66,9 +65,9 @@ pub func apiKeyBypassedHandler(apiKey: in String): Result[String, String] {
   return Ok("reached")
 }
 
-test "ValidateKey aspect: enabled=false bypasses the key check" {
+test "ValidateKey aspect: security guards have no off switch (#7249)" {
   match apiKeyBypassedHandler("wrong-key") {
-    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
-    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+    case Ok(_) -> assertTrue(false, "a security guard has no off switch: the call must be rejected")
+    case Err(_) -> assertTrue(true, "rejected")
   }
 }

@@ -158,7 +158,10 @@ test "Mcp.Client over a real silent server process: a tool call times out instea
       var client = clientVal
       match callToolWithin(client, "anything", None, 300) {
         case Ok(_) -> assertTrue(false, "a silent server must not produce a result")
-        case Err(e) -> assertTrue(e.contains("timed out after 300 ms"), "the call ends at its deadline: " + e)
+        case Err(e) -> assertTrue(
+          isClientTimeout(e) and describeClientError(e).contains("timed out after 300 ms"),
+          "the call ends at its deadline: " + describeClientError(e)
+        )
       }
       disconnect(client)
     }
@@ -184,10 +187,13 @@ test "Mcp.Client over a real server process: a late answer is dropped, the next 
       var client = clientVal
       match callToolWithin(client, "slow", None, 200) {
         case Ok(_) -> assertTrue(false, "the first call must time out")
-        case Err(e) -> assertTrue(e.contains("timed out"), "first call timed out: " + e)
+        case Err(e) -> assertTrue(isClientTimeout(e), "first call timed out: " + describeClientError(e))
       }
       match callToolWithin(client, "fast", None, 10000) {
-        case Err(e) -> assertTrue(false, "the second call failed (was the stale answer delivered to it?): " + e)
+        case Err(e) -> assertTrue(
+          false,
+          "the second call failed (was the stale answer delivered to it?): " + describeClientError(e)
+        )
         case Ok(result) -> match result.content[0] {
           case TextContent(t) -> assertEqual(t, "fresh", "the second call got its own answer")
           case _ -> assertTrue(false, "expected TextContent")

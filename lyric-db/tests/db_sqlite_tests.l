@@ -170,6 +170,43 @@ test "SQLite: transaction rollback discards writes" {
   }
 }
 
+test "SQLite: a finished transaction refuses further work and rollback stays idempotent (#7241)" {
+  match Db.connectSqlite("sqlite::memory:", 5000) {
+    case Err(e) -> assertTrue(false, "connect failed: " + e.message)
+    case Ok(conn) -> {
+      val _ = conn.execute("CREATE TABLE tx_done (id INTEGER)", [])
+      match conn.transaction() {
+        case Err(e) -> assertTrue(false, "begin tx failed: " + e.message)
+        case Ok(tx) -> {
+          assertTrue(tx.isActive(), "a new transaction is active")
+          match tx.commit() {
+            case Err(e) -> assertTrue(false, "commit failed: " + e.message)
+            case Ok(_) -> ()
+          }
+          assertFalse(tx.isActive(), "a committed transaction is not active")
+          match tx.execute("INSERT INTO tx_done (id) VALUES (@p0)", ["1"]) {
+            case Ok(_) -> assertTrue(false, "execute after commit must fail")
+            case Err(e) -> assertEqual(e.code, "TX_FINISHED", "execute after commit")
+          }
+          match tx.query("SELECT id FROM tx_done", []) {
+            case Ok(_) -> assertTrue(false, "query after commit must fail")
+            case Err(e) -> assertEqual(e.code, "TX_FINISHED", "query after commit")
+          }
+          match tx.commit() {
+            case Ok(_) -> assertTrue(false, "a second commit must fail")
+            case Err(e) -> assertEqual(e.code, "TX_FINISHED", "second commit")
+          }
+          match tx.rollback() {
+            case Err(e) -> assertTrue(false, "rollback after commit must be a no-op, got " + e.message)
+            case Ok(_) -> ()
+          }
+        }
+      }
+      conn.close()
+    }
+  }
+}
+
 test "SQLite: malformed SQL maps to a QUERY_ERROR DbError, not a panic" {
   match Db.connectSqlite("sqlite::memory:", 5000) {
     case Err(e) -> assertTrue(false, "connect failed: " + e.message)
