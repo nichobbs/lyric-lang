@@ -1890,6 +1890,28 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/async_spawn_self_test.l"
 
+      # Generic calls from record and protected-type members (#8271, #8370,
+      # #8301, #8280): `Lyric.Mono` rewrites their bodies and specialises a
+      # call at the type's own type parameter into a member of the type.
+      # The `--target jvm` half runs in `compiler-self-tests-jvm` below.
+      - name: Generic member calls self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"generic-member-calls self-test ran: generic_member_calls_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/generic_member_calls_self_test.l"
+
+      - name: Generic member calls on std generics self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"generic-member-calls std self-test ran: generic_member_calls_std_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/generic_member_calls_std_self_test.l"
+
+      - name: Generic protected calls self-test (native lyric test, --target dotnet)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"generic-protected-calls self-test ran: generic_protected_calls_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/generic_protected_calls_self_test.l"
+
       # Implicit await (#7838): a direct call to an `async func` awaits in
       # place with or without `await` (docs/01 §7.1).  On dotnet the call used
       # to leave the raw Task in a lambda body, `val`, match scrutinee, operand
@@ -2818,6 +2840,11 @@ jobs:
       - name: Native lyric test --target native smoke test (N7.2)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-target-smoke-test.sh
+
+      # Generic calls from record methods (#8271, #8370, #8280) on native.
+      - name: Generic member calls self-test (native lyric test --target native)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target native lyric-compiler/lyric/generic_member_calls_self_test.l
 
       # `lyric build --target native --define` end-to-end (docs/60 #5977): with
       # both native-codegen gaps closed (list literals + module-level `val`
@@ -4520,6 +4547,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/async_spawn_self_test.l"
+
+      - name: Generic member calls self-tests on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: "bash scripts/ci/self-test.sh --summary \"generic-member-calls self-test ran: generic_member_calls_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/generic_member_calls_self_test.l && bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_member_calls_std_self_test.l && bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/generic_protected_calls_self_test.l"
 
       # Implicit await (#7838) on JVM, whose synchronous `async func` lowering
       # already awaited a direct call in place; the file pins parity.
