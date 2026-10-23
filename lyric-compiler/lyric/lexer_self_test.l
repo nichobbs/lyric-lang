@@ -1202,3 +1202,35 @@ test "an empty radix literal does not swallow what follows" {
   assertEqual(punctNameAt(r, 1), "+", "0x + 1: lexing resumes after the prefix")
   assertTrue(intValueAt(r, 2) == 1i64, "0x + 1: 1")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7913: a digit outside the base's digit set is L0017 on that digit alone,
+// not an "out of range" L0010.
+// ─────────────────────────────────────────────────────────────────────────────
+func checkInvalidDigit(src: in String, digitAt: in Int, label: in String): Unit {
+  val r = lex(src)
+  assertEqualInt(diagCount(r), 1, label + ": one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0017", label + ": L0017")
+  assertEqualInt(r.diagnostics[0].span.startPos.offset, digitAt, label + ": the span starts at the digit")
+  assertEqualInt(r.diagnostics[0].span.endPos.offset, digitAt + 1, label + ": the span covers one digit")
+  assertEqual(tokenKindAt(r, 0), "int", label + ": still one int token")
+  assertEqual(tokenKindAt(r, 1), "eof", label + ": the whole literal is one token")
+}
+
+test "a digit invalid for its base is l0017" {
+  checkInvalidDigit("0b12", 3, "0b12")
+  checkInvalidDigit("0o9", 2, "0o9")
+  checkInvalidDigit("0o18", 3, "0o18")
+  checkInvalidDigit("0b1_2", 4, "0b1_2")
+  checkInvalidDigit("0b12u8", 3, "0b12u8 (a suffix adds no second diagnostic)")
+  val msg = lex("0b12").diagnostics[0].message
+  assertTrue(Str.contains(msg, "binary"), "0b12: the message names the base")
+  assertTrue(Str.contains(msg, "`0` and `1`"), "0b12: the message lists the valid digits")
+}
+
+test "decimal digits stay valid in hex and valid digits in octal and binary" {
+  assertEqualInt(diagCount(lex("0x9F")), 0, "0x9F")
+  assertEqualInt(diagCount(lex("0o17")), 0, "0o17")
+  assertEqualInt(diagCount(lex("0b1_01")), 0, "0b1_01")
+  assertTrue(intValueAt(lex("0o17"), 0) == 15i64, "0o17 is 15")
+}

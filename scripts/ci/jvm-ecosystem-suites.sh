@@ -76,7 +76,13 @@ run_suite() {
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"
   fi
-  "${runner[@]}" --target jvm --no-default-features --features "$features" \
+  # A manifest with no `[features]` table declares no feature to select
+  # (`--features` naming one is F0050, #8362).
+  local feature_args=(--no-default-features --features "$features")
+  if ! grep -q '^\[features\]' "lyric-$lib/lyric.toml"; then
+    feature_args=()
+  fi
+  "${runner[@]}" --target jvm "${feature_args[@]}" \
     > "$log_dir/$lib.log" 2>&1
   echo $? > "$log_dir/$lib.rc"
 }

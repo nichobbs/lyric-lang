@@ -25,12 +25,17 @@ func cmdClean(argv: in slice[String]): Int {
         printErr("clean: --manifest requires a path")
         return 1
       }
+    } else if rejectUnknownOption("clean", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  if rejectExtraPositional("clean", positional) {
+    return 1
+  }
   val rootDir = if positional.count > 0 {
     positional[0]
   } else {

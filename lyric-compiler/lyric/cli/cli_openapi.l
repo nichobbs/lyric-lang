@@ -45,6 +45,8 @@ func cmdOpenApi(argv: in slice[String]): Int {
         printErr("openapi: --package requires a value")
         return 1
       }
+    } else if rejectUnknownOption("openapi", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
@@ -56,6 +58,9 @@ func cmdOpenApi(argv: in slice[String]): Int {
     return 1
   }
 
+  if rejectExtraPositional("openapi", positional) {
+    return 1
+  }
   val specPath = positional[0]
   val json = match File.readText(specPath) {
     case Ok(text) -> text

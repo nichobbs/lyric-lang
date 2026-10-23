@@ -34,6 +34,8 @@ func cmdLint(argv: in slice[String]): Int {
         printErr("lint: --manifest requires a path")
         return 1
       }
+    } else if rejectUnknownOption("lint", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
@@ -114,6 +116,9 @@ func cmdLint(argv: in slice[String]): Int {
   }
 
   // Single-file mode (existing behaviour):
+  if rejectExtraPositional("lint", positional) {
+    return 1
+  }
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text

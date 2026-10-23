@@ -559,7 +559,9 @@ test "resolveProjectSources: explicit manifest with two package files resolves b
       assertTrue(listContains(paths, srcA), "resolveProjectSources: package A's source file is present")
       assertTrue(listContains(paths, srcB), "resolveProjectSources: package B's source file is present")
     }
-    case Cli.ProjSourcesMissingManifest -> panic("resolveProjectSources: expected ProjSourcesFound, got ProjSourcesMissingManifest")
+    case Cli.ProjSourcesMissingManifest -> panic(
+      "resolveProjectSources: expected ProjSourcesFound, got ProjSourcesMissingManifest"
+    )
     case Cli.ProjSourcesFatal -> panic("resolveProjectSources: expected ProjSourcesFound, got ProjSourcesFatal")
   }
 }
@@ -578,7 +580,9 @@ test "resolveProjectSources: a [project.packages] entry pointing at a missing fi
   match Cli.resolveProjectSources(Some(value = mfPath)) {
     case Cli.ProjSourcesFatal -> ()
     case Cli.ProjSourcesFound(_, _) -> panic("resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesFound")
-    case Cli.ProjSourcesMissingManifest -> panic("resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesMissingManifest")
+    case Cli.ProjSourcesMissingManifest -> panic(
+      "resolveProjectSources: expected ProjSourcesFatal, got ProjSourcesMissingManifest"
+    )
   }
 }
 
@@ -715,7 +719,10 @@ test "findNearestManifestDetailed: a corrupt lyric.toml nearer than a valid ance
         case _ -> panic("expected ParseError for malformed TOML, got a different ManifestError variant")
       }
     }
-    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the corrupt manifest)")
+    case FoundManifest(path) -> panic(
+      "expected FoundBrokenManifest, but silently found " + path +
+        " (walked past the corrupt manifest)"
+    )
     case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
   }
 
@@ -748,8 +755,15 @@ test "findNearestManifestDetailed: a workspace-root-only lyric.toml (no [package
   writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[workspace]\nexclude = []\n")
 
   match Disc.findNearestManifestDetailed(grandchildDir) {
-    case FoundManifest(path) -> assertEqual(path, Path.join(root, "lyric.toml"), "walks past the workspace-root-only manifest to the valid ancestor")
-    case FoundBrokenManifest(path, _) -> panic("MissingField should not be reported as broken, got FoundBrokenManifest at " + path)
+    case FoundManifest(path) -> assertEqual(
+      path,
+      Path.join(root, "lyric.toml"),
+      "walks past the workspace-root-only manifest to the valid ancestor"
+    )
+    case FoundBrokenManifest(path, _) -> panic(
+      "MissingField should not be reported as broken, got FoundBrokenManifest at " +
+        path
+    )
     case NoManifestFound -> panic("expected to find the valid ancestor manifest")
   }
 }
@@ -784,7 +798,10 @@ test "findNearestManifestDetailed: an incomplete [package] table nearer than a v
         case _ -> panic("expected MissingField for the incomplete [package] table")
       }
     }
-    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the incomplete [package] manifest)")
+    case FoundManifest(path) -> panic(
+      "expected FoundBrokenManifest, but silently found " + path +
+        " (walked past the incomplete [package] manifest)"
+    )
     case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
   }
 }
@@ -809,8 +826,15 @@ test "findNearestManifestDetailed: a bare zero-field [package] header is reporte
   writeFileOrPanic(Path.join(childDir, "lyric.toml"), "[package]\n")
 
   match Disc.findNearestManifestDetailed(grandchildDir) {
-    case FoundBrokenManifest(path, _) -> assertEqual(path, Path.join(childDir, "lyric.toml"), "reports the nearer, zero-field [package] manifest's path")
-    case FoundManifest(path) -> panic("expected FoundBrokenManifest, but silently found " + path + " (walked past the bare [package] manifest)")
+    case FoundBrokenManifest(path, _) -> assertEqual(
+      path,
+      Path.join(childDir, "lyric.toml"),
+      "reports the nearer, zero-field [package] manifest's path"
+    )
+    case FoundManifest(path) -> panic(
+      "expected FoundBrokenManifest, but silently found " + path +
+        " (walked past the bare [package] manifest)"
+    )
     case NoManifestFound -> panic("expected FoundBrokenManifest, got NoManifestFound")
   }
 }
@@ -920,7 +944,11 @@ test "resolveBareDispatch: a valid manifest resolves to BareShouldBuild with its
   writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
 
   match Cli.resolveBareDispatch(root) {
-    case BareShouldBuild(p) -> assertEqual(p, Path.join(root, "lyric.toml"), "resolves to the fixture's own manifest path")
+    case BareShouldBuild(p) -> assertEqual(
+      p,
+      Path.join(root, "lyric.toml"),
+      "resolves to the fixture's own manifest path"
+    )
     case BareReported(_) -> panic("expected BareShouldBuild for a valid manifest")
   }
 }
@@ -951,7 +979,10 @@ test "resolveTestAutoDiscovery: a corrupt lyric.toml prints the warning AND the 
         case None -> panic("expected a warning to be printed for a broken manifest")
       }
     }
-    case TestShouldRunManifest(p) -> panic("expected TestReported for a broken manifest, got TestShouldRunManifest(" + p + ")")
+    case TestShouldRunManifest(p) -> panic(
+      "expected TestReported for a broken manifest, got TestShouldRunManifest(" + p +
+        ")"
+    )
   }
 }
 
@@ -979,7 +1010,9 @@ test "resolveTestAutoDiscovery: no manifest anywhere prints only the missing-sou
         case Some(w) -> panic("unexpected warning printed with no manifest at all: " + w)
       }
     }
-    case TestShouldRunManifest(p) -> panic("expected TestReported with no manifest, got TestShouldRunManifest(" + p + ")")
+    case TestShouldRunManifest(p) -> panic(
+      "expected TestReported with no manifest, got TestShouldRunManifest(" + p + ")"
+    )
   }
 }
 
@@ -991,7 +1024,42 @@ test "resolveTestAutoDiscovery: a valid manifest resolves to TestShouldRunManife
   writeFileOrPanic(Path.join(root, "lyric.toml"), "[package]\nname = \"Root\"\nversion = \"0.1.0\"\n")
 
   match Cli.resolveTestAutoDiscovery(root) {
-    case TestShouldRunManifest(p) -> assertEqual(p, Path.join(root, "lyric.toml"), "resolves to the fixture's own manifest path")
+    case TestShouldRunManifest(p) -> assertEqual(
+      p,
+      Path.join(root, "lyric.toml"),
+      "resolves to the fixture's own manifest path"
+    )
     case TestReported(_) -> panic("expected TestShouldRunManifest for a valid manifest")
   }
+}
+
+test "undeclaredFeaturesError is F0050 for a --features name the manifest does not declare (#8362)" {
+  val dir = freshTempDir("f0050")
+  val withTable = Path.join(dir, "with.toml")
+  writeFileOrPanic(withTable, "[package]\nname = \"P\"\nversion = \"0.1.0\"\n\n[features]\ndefault = []\nwide = []\n")
+  val noTable = Path.join(dir, "without.toml")
+  writeFileOrPanic(noTable, "[package]\nname = \"P\"\nversion = \"0.1.0\"\n")
+  val good: List[String] = newList()
+  good.add("wide")
+  val bad: List[String] = newList()
+  bad.add("wide")
+  bad.add("wdie")
+  assertTrue(Cli.undeclaredFeaturesError("build", withTable, good).isNone(), "a declared name is accepted")
+  assertTrue(Cli.undeclaredFeaturesError("build", withTable, newList()).isNone(), "no --features is accepted")
+  match Cli.undeclaredFeaturesError("build", withTable, bad) {
+    case Some(msg) -> {
+      assertTrue(Str.contains(msg, "error[F0050]"), "carries F0050")
+      assertTrue(Str.contains(msg, "--features wdie"), "names only the undeclared feature")
+      assertTrue(
+        Str.contains(msg, "declared features: default, wide") or Str.contains(msg, "declared features: wide"),
+        "lists the declared features"
+      )
+    }
+    case None -> assertTrue(false, "expected F0050 for a misspelt feature")
+  }
+  match Cli.undeclaredFeaturesError("run", noTable, good) {
+    case Some(msg) -> assertTrue(Str.contains(msg, "no [features] table"), "says the manifest has no [features] table")
+    case None -> assertTrue(false, "expected F0050 against a manifest with no [features] table")
+  }
+  cleanup(dir)
 }

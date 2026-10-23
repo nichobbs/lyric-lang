@@ -827,6 +827,8 @@ func cmdSearch(argv: in slice[String]): Int {
     if arg == "--all" {
       allMode = true
       i += 1
+    } else if rejectUnknownOption("search", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1

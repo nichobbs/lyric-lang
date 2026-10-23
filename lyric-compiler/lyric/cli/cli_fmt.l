@@ -212,6 +212,8 @@ func cmdFmt(argv: in slice[String]): Int {
         printErr("fmt: --manifest requires a path")
         return 1
       }
+    } else if rejectUnknownOption("fmt", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1

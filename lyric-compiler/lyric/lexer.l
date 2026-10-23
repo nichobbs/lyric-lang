@@ -1582,6 +1582,32 @@ func unsignedMaxText(suffix: in IntSuffix): String {
   }
 }
 
+/// The index in `raw` (digits and `_` separators) of the first digit that is
+/// not valid in `base`, or -1.
+@pure
+func firstInvalidDigit(raw: in String, base: in Int): Int {
+  var i = 0
+  while i < raw.length {
+    val c = raw[i]
+    if c != '_' {
+      val d = digitValue(c)
+      if d < 0 or d >= base {
+        return i
+      }
+    }
+    i = i + 1
+  }
+  -1
+}
+
+/// The L0017 text for digit `digit` in a literal of base `base`.
+@pure
+func invalidDigitMessage(digit: in String, base: in Int, kind: in String): String {
+  val valid = if base == 2 { "`0` and `1`" } else { "`0` to `7`" }
+  "digit `" + digit + "` is not valid in a " + kind + " literal (base " + toString(base) + "); valid digits are " +
+    valid
+}
+
 /// Lex a `0x`/`0o`/`0b` literal.  A prefix with no digit after it (`0x`,
 /// `0b___`) is L0016 on the prefix alone: the literal has no value to
 /// range-check, so no L0010 follows, and any suffix after it (`0xu8`,
@@ -1614,6 +1640,15 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   if body.length == 0 {
     val prefix = sourceSlice(state, startP.offset, prefixEnd.offset)
     recordError(state, "L0016", emptyRadixMessage(prefix, kind), makeSpan(startP, prefixEnd))
+    val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
+    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    return
+  }
+  val badAt = firstInvalidDigit(raw, base)
+  if badAt >= 0 {
+    val digitP = Position(offset = startP.offset + 2 + badAt, line = startP.line, column = startP.column + 2 + badAt)
+    val digitEnd = Position(offset = digitP.offset + 1, line = digitP.line, column = digitP.column + 1)
+    recordError(state, "L0017", invalidDigitMessage(charToString(raw[badAt]), base, kind), makeSpan(digitP, digitEnd))
     val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
     emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     return
