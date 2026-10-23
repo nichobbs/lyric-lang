@@ -7,7 +7,10 @@
 //! `UCHAR_LINE_BREAK`, `UCHAR_EAST_ASIAN_WIDTH`, `UCHAR_EXTENDED_PICTOGRAPHIC` and the general
 //! category, `u_charMirror` (Bidi_Mirroring_Glyph) and `u_getBidiPairedBracket`, and are checked
 //! against FriBidi and libunibreak by the vectors in the tests.  To update them, regenerate all four
-//! from a newer ICU in the same record layout.
+//! from a newer ICU in the same record layout: a small C program loops over U+0000..U+10FFFF, calls the
+//! functions above and writes a record whenever the value changes (bidi, line break) or the mirror or
+//! bracket property is set; the records are cut into strings of 64 and written as the `val`s below.
+//! The generator is not in the repository (a Lyric one is tracked in #8497).
 //!
 //!   bidi     9 characters: first code point of a run (6 hex), Bidi_Class (3 hex, ICU's UCharDirection)
 //!   lineBreak 9 characters: first code point of a run (6 hex), then 3 hex digits holding the ICU
