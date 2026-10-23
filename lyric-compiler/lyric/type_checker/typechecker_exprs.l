@@ -16239,14 +16239,36 @@ func inferExprCore(
         }
         case _ -> ()
       }
-      val memberTy0 = inferMember(tbl, sigs, diag, rt, name, e.span)
       // A field declared as the record's own type parameter, read through an
       // instance at the enclosing generic's type parameter, is that type
-      // parameter (`eraseTyVars` otherwise leaves it an unknown type, #8018).
-      val memberTy = match memberTy0 {
-        case TyError -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
-        case _ -> memberTy0
+      // parameter; a member read of it is as unknown as one of the parameter
+      // itself (#8018).  The field read alone keeps its erased type: typing
+      // it `T` would send closures over it down the strongly typed path.
+      match unrefine(rt) {
+        case TyError -> match recv.kind {
+          case EMember(innerRecv, innerName) -> {
+            val scratch: List[Diagnostic] = newList()
+            val innerRecvTy = inferExpr(sc, tbl, sigs, scratch, innerRecv)
+            match rigidTypeParamField(tbl, innerRecvTy, innerName, sc.genericNames) {
+              case TyVar(tvName) -> {
+                diag.add(
+                  errorDiagnostic(
+                    "T0192",
+                    "no member '" + name + "' on type parameter '" + tvName +
+                      "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+                    e.span
+                  )
+                )
+                return TyError
+              }
+              case _ -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
       }
+      val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       recordResultTypeAt(tbl, memberTy, e.span)
       memberTy
     }

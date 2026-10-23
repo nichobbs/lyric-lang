@@ -5356,12 +5356,8 @@ test "generic record field from annotated param" {
 // instantiation could not be inferred (no targs) stays lenient — the erased
 // wildcard.
 test "generic record field degrades without targs" {
-  // A field read through the enclosing generic's own `T` is that `T` (#8018,
-  // #7974): it is no longer the erased wildcard, so it is not an `Int`.
-  val rigid = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(rigid), "T0060"), 1, "box-generic-ctx: T is not an Int")
-  val same = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): T {\n  val n: T = b.value\n  n\n}\n"
-  assertEqualInt(diagCount(parseCheck(same)), 0, "box-generic-ctx: T is a T")
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-generic-ctx: uninstantiated T stays lenient")
   val plain = "package P\nrecord Point { x: Int }\nfunc g(p: in Point): Int {\n  p.x + 1\n}\n"
   assertEqualInt(diagCount(parseCheck(plain)), 0, "plain record field access unchanged")
 }
