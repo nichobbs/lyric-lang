@@ -4890,15 +4890,16 @@ func hasFuncOverrideNative(ctx: in Ctx, funcName: in String, argc: in Int): Bool
 /// is in the import closure, rejected the call (#7858). A scalar prints what
 /// its `toString` returns.
 func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg], line: in Int): NVal {
+  lowerPreludeWrite(ctx, insns, args, line, true)
+}
+
+// `println(x)` and `print(x)`: stringify `x` as `toString` does and write it,
+// with a trailing newline for `println` only.  `println()` writes an empty line.
+func lowerPreludeWrite(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg], line: in Int, newline: in Bool): NVal {
+  val writeFn = if newline { "lyric_console_write_line" } else { "lyric_console_write" }
   if args.count == 0 {
     val empty = emitStringLiteral(ctx, insns, "")
-    return callRuntime(
-      ctx,
-      insns,
-      "lyric_console_write_line",
-      NVoid,
-      arg2(NI32, NLitInt(v = 1i64, ty = NI32), empty.ty, empty.value)
-    )
+    return callRuntime(ctx, insns, writeFn, NVoid, arg2(NI32, NLitInt(v = 1i64, ty = NI32), empty.ty, empty.value))
   }
   val pv = lowerPositionalArg(ctx, insns, args, 0)
   val text = if isStringNType(pv.ty) {
@@ -4912,18 +4913,13 @@ func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallA
     match lowerScalarMethodCall(ctx, insns, pv, "toString", noMethodArgs, line, pExpr) {
       case Some(sv) -> sv
       case None -> panic(
-        "Lyric.LlvmCodegen: println(x) on a value of this type is not yet supported for --target native; " +
+        "Lyric.LlvmCodegen: " + (if newline { "println" } else { "print" }) +
+          "(x) on a value of this type is not yet supported for --target native; " +
           "pass a String or a scalar"
       )
     }
   }
-  callRuntime(
-    ctx,
-    insns,
-    "lyric_console_write_line",
-    NVoid,
-    arg2(NI32, NLitInt(v = 1i64, ty = NI32), text.ty, text.value)
-  )
+  callRuntime(ctx, insns, writeFn, NVoid, arg2(NI32, NLitInt(v = 1i64, ty = NI32), text.ty, text.value))
 }
 
 func lowerCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in List[CallArg], line: in Int): NVal {
@@ -4975,6 +4971,9 @@ func lowerCallEx(
         }
         if n == "println" and args.count <= 1 and not hasFuncOverrideNative(ctx, n, args.count) {
           return lowerPreludePrintln(ctx, insns, args, line)
+        }
+        if n == "print" and args.count == 1 and not hasFuncOverrideNative(ctx, n, args.count) {
+          return lowerPreludeWrite(ctx, insns, args, line, false)
         }
         if (n == "nativeLoadByte" and args.count == 2) or (n == "nativeStoreByte" and args.count == 3) {
           return lowerNativeByteAccess(ctx, insns, n, args)
@@ -9598,6 +9597,16 @@ func lowerCollectionMethodCall(
         pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
         pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
         return Some(value = callRuntime(ctx, insns, "lyric_list_push", NVoid, pArgs))
+      }
+      // `xs.add(index, item)` inserts before `index` (docs/01 §2.7, #7800).
+      if name == "add" and args.count == 2 {
+        val idx = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
+        val v = lowerCallArgExpecting(ctx, insns, args, 1, elem)
+        val pArgs: List[NArg] = newList()
+        pArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        pArgs.add(NArg(ty = NI64, value = idx.value))
+        pArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, v)))
+        return Some(value = callRuntime(ctx, insns, "lyric_list_insert", NVoid, pArgs))
       }
       if name == "set" and args.count == 2 {
         val idx = lowerCallArgExpecting(ctx, insns, args, 0, NI64)
@@ -16071,6 +16080,7 @@ func runtimeDecls(): List[NFunc] {
   // bundled.  The width matters: wasm-ld rejects a call whose signature differs
   // from the definition's, where x86-64 silently tolerates it.
   decls.add(mkDecl2("lyric_console_write_line", NVoid, NI32, sTy))
+  decls.add(mkDecl2("lyric_console_write", NVoid, NI32, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))
@@ -16100,6 +16110,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_list_push", NVoid, p8, NI64))
   decls.add(mkDecl2("lyric_list_get", NI64, p8, NI64))
   decls.add(mkDecl3("lyric_list_set", NVoid, p8, NI64, NI64))
+  decls.add(mkDecl3("lyric_list_insert", NVoid, p8, NI64, NI64))
   decls.add(mkDecl2("lyric_list_remove_at", NVoid, p8, NI64))
   decls.add(mkDecl1("lyric_list_len", NI64, p8))
   decls.add(mkDecl1("lyric_list_clear", NVoid, p8))

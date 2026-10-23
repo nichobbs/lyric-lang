@@ -715,6 +715,28 @@ static void test_list_scalars(void) {
     lyric_release(l);
 }
 
+static void test_list_insert(void) {
+    LyricList* l = lyric_list_new(0);
+    lyric_list_insert(l, 0, 20);   /* into an empty list */
+    lyric_list_insert(l, 0, 10);   /* prepend */
+    lyric_list_insert(l, 2, 40);   /* index == len appends */
+    lyric_list_insert(l, 2, 30);   /* middle */
+    CHECK(lyric_list_len(l) == 4);
+    CHECK(lyric_list_get(l, 0) == 10);
+    CHECK(lyric_list_get(l, 1) == 20);
+    CHECK(lyric_list_get(l, 2) == 30);
+    CHECK(lyric_list_get(l, 3) == 40);
+    lyric_release(l);
+
+    LyricList* r = lyric_list_new(1);
+    LyricString* s = lyric_string_from_literal((const uint8_t*)"elem", 4);
+    lyric_list_insert(r, 0, (int64_t)(intptr_t)s);
+    CHECK(atomic_load(&s->rc) == 2); /* the list retained it */
+    lyric_release(r);
+    CHECK(atomic_load(&s->rc) == 1);
+    lyric_release(s);
+}
+
 static void test_list_refs(void) {
     LyricList* l = lyric_list_new(1);
     LyricString* s = lyric_string_from_literal((const uint8_t*)"elem", 4);
@@ -3662,6 +3684,7 @@ int main(void) {
     test_weak_uaf();
     test_weak_liveness();
     test_list_scalars();
+    test_list_insert();
     test_list_refs();
     test_map_int_keys();
     test_map_tombstone_churn();

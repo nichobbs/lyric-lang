@@ -193,8 +193,23 @@ func hostInstantToStringFmt(value: in Instant, fmt: in String): String {
   value.ToString(fmt)
 }
 
+// The canonical cross-target form (#8314) is java.time's: no fraction when it
+// is zero, else the shortest of 3, 6 or 9 digits that loses nothing.  The "o"
+// format always prints seven digits (100 ns ticks), so re-group them.
 pub func hostInstantToString(value: in Instant): String {
-  hostInstantToStringFmt(value, "o")
+  val o = hostInstantToStringFmt(value, "o")
+  val head = o.substring(0, 19)
+  val tail = o.substring(27)
+  val ticks = o.substring(20, 7)
+  if ticks == "0000000" {
+    head + tail
+  } else if ticks.substring(3) == "0000" {
+    head + "." + ticks.substring(0, 3) + tail
+  } else if ticks.substring(6) == "0" {
+    head + "." + ticks.substring(0, 6) + tail
+  } else {
+    head + "." + ticks + "00" + tail
+  }
 }
 
 // TryParse of a "Z"-suffixed string yields a LOCAL-kind DateTime with

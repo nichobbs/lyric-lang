@@ -1470,7 +1470,7 @@ func dotOwnerIsAlias(tbl: in SymbolTable, name: in String): Bool {
 // argument type from `TyError` (any) to the stdlib's concrete shape
 // (#1384).
 func isCodegenBuiltinName(name: in String): Bool {
-  name == "println" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
+  name == "println" or name == "print" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
     name == "assert" or
     name == "format1" or
     name == "format2" or

@@ -177,33 +177,40 @@ A `String` is not iterable — `for c in s` is a compile error — so walk its c
 ## §12.4 `Std.Collections`
 
 ```lyric
+import Std.Core
 import Std.Collections
 
-var list: List[String] = List.empty()
-list.add("alpha")
-list.add("beta")
-println(toString(list.count))               // 2
+func main(): Unit {
+  val list: List[String] = newList()
+  list.add("alpha")
+  list.add("beta")
+  list.add(0, "first")                        // insert at an index: first, alpha, beta
+  println(toString(list.count))               // 3
+  println(list[1])                            // alpha
 
-val m: Map[String, Int] = Map.empty()
-m.set("age", 30)
-val age    = m.get("age")                   // Option[Int]
-val exists = m.containsKey("age")           // Bool
+  val m: Map[String, Int] = newMap()
+  m.add("age", 30)
+  m.add("age", 31)                            // an existing key is replaced
+  val age    = mapGet(m, "age")               // Option[Int]
+  val exists = m.containsKey("age")           // Bool
+  println(toString(exists))                   // true
+}
 ```
 
 `List[T]` is a growable list backed by .NET's `List<T>`. `Map[K, V]` is a hash map backed by `Dictionary<K, V>`. Both support `for x in collection` iteration.
 
 You can leave a local built by `newList()` or `newMap()` unannotated. Its element types then come from how the function uses it. The first typed position it reaches decides: a parameter, the return type (`Ok(value = xs)` in a function returning `Result[List[Item], String]`), or a record field. When nothing like that is typed, the elements it is given decide (`xs.add(item)`, `m.add(key, value)`). If its uses disagree, or say nothing, annotate it: `val xs: List[Item] = newList()`. An unannotated `val o = None`, `val r = Ok(2)` or `val t = (None, 5)` works the same way, and so does a tuple literal you match on directly: in `match (None, 5) { case (o, n) -> addOpt(o, n) }` the use of `o` types the `None` (language reference §4.3). A name you bind to a nested tuple counts too: after `val (inner, n) = ((None, 1), 2)`, passing `inner` as an `(Option[Int], Int)` types the `None`. A list literal also needs no annotation when its elements between them fix its element type: `[Some(1), None]` is a `slice[Option[Int]]`, and `[Ok(1), Err("e")]` a `slice[Result[Int, String]]`.
 
-`m.get(key)` returns `Option[Int]`, not a nullable value and not a thrown exception. You pattern-match on it:
+`mapGet(m, key)` returns `Option[Int]`, not a nullable value and not a thrown exception. You pattern-match on it:
 
 ```lyric
-match m.get("age") {
+match mapGet(m, "age") {
   case Some(v) -> println(format1("age is {0}", toString(v)))
   case None    -> println("key not found")
 }
 ```
 
-`List[T]` also has `remove(index)`, `get(index)` (returns `Option[T]`), and `toSlice()` for converting to an immutable slice. If you need to remove by value rather than by index, use `Std.Iter` to filter and rebuild.
+`List[T]` also has `removeAt(index)`, `remove(item)` (by value), `contains(item)`, `indexOf(item)`, and `toArray()` for converting to a `slice[T]`; `xs[i]` reads an element. `m.add(key, value)` and `m[key] = value` both insert or replace, on every target.
 
 ::: sidebar
 **Why not immutable collections by default?** The decision log entry D038 frames the stdlib as evolving toward native Lyric implementations with verifiable invariants. `List[T]` and `Map[K, V]` are the mutable BCL-backed forms, which are the right default for most application code. `Std.Collections.Persistent` (below) ships the immutable, non-mutating variant for code that wants persistence.

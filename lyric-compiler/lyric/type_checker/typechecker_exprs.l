@@ -74,7 +74,7 @@ pub func typeOfLiteral(lit: in Literal): Type {
 // ─────────────────────────────────────────────────────────────────────────────
 // Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
-  if name == "println" {
+  if name == "println" or name == "print" {
     val ps: List[Type] = newList()
     ps.add(TyError)
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtUnit), isAsync = false))
@@ -7553,10 +7553,15 @@ func ctorResultType(sym: in Symbol): Type {
 }
 
 // How many trailing parameters of a codegen builtin's signature may be
-// omitted at a call: `assert`'s message.  Zero for every other callee.
+// omitted at a call: `assert`'s message and `println`'s value (`println()`
+// writes an empty line).  Zero for every other callee.
 func builtinOptionalTrailingArgs(fn: in Expr, recvTy: in Option[Type]): Int {
   match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "assert" { 1 } else { 0 }
+    case EPath(p) -> if p.segments.count == 1 and (p.segments[0] == "assert" or p.segments[0] == "println") {
+      1
+    } else {
+      0
+    }
     // #7335: `s.substring(start)` / `s.substring(start, count)` — the second
     // `Int` param `stringHostMethodType` declares is optional.  Only for a
     // `String` receiver: a user member that happens to be named `substring`
