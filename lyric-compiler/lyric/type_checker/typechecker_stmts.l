@@ -1335,6 +1335,7 @@ pub func checkBlock(
     i = i + 1
   }
   scopePop(sc)
+  warnBufferCopyBeforeWriteLoop(tbl, diag, blk)
   // A block whose final statement transfers control away (return/throw/break/
   // continue) yields no fall-through value: its type is `Never`.
   if blk.statements.count > 0 and statementDiverges(blk.statements[blk.statements.count - 1]) {

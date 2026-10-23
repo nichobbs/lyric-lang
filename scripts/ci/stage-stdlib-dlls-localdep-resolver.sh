@@ -23,19 +23,4 @@ if (( ${#stdlib_dlls[@]} == 0 )); then
 fi
 mkdir -p lyric-stdlib/bin
 cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-# lyric-session no longer needs a host shim: Session.Kernel.Net
-# binds StackExchange.Redis directly via @externTarget in native
-# Lyric (#1777). lyric-auth likewise needs no shim (pure Lyric
-# HMAC-SHA256 + constant-time comparison).
-# Route emitProject subprocess calls to the F# bootstrap CLI, which
-# handles --internal-project-build.  The AOT binary is a pure trampoline
-# into the Lyric CLI dispatcher and does not handle internal flags
-# (#1082 stripped the AOT entry point of its path-discovery shim).
-# Written to $GITHUB_ENV (not `export`) so it also applies to the
-# later "Build path dependencies" / "Run tests" steps in this job.
-cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-if [ -f "$cli_dll" ]; then
-  echo "LYRIC_BIN=dotnet" >> "$GITHUB_ENV"
-  echo "LYRIC_CLI_DLL=$cli_dll" >> "$GITHUB_ENV"
-fi
 

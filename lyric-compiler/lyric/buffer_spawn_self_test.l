@@ -2,12 +2,12 @@
 //! spawning task makes afterwards is not seen by the spawned task, and the
 //! spawned task's view is the buffer as it was handed over.
 //!
-//! Runs on dotnet and native.  On the JVM the spawned operand is evaluated
-//! inside the task, so the copy of an array or buffer argument happens after
-//! the later write (#8391); add `--target jvm` here and to its CI line when
-//! that is fixed.
+//! Runs on dotnet, the JVM and native.  The JVM evaluates a copied array or
+//! buffer argument of the spawned call when `spawn` runs, not inside the task
+//! (#8391); the array and object-element cases pin both copy lowerings.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/buffer_spawn_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/buffer_spawn_self_test.l
 //!   lyric test --target native lyric-compiler/lyric/buffer_spawn_self_test.l
 @test_module
 package Lyric.BufferSpawnSelfTest
@@ -33,4 +33,40 @@ async func spawnThenWrite(): Int {
 
 test "a buffer handed to spawn is a copy: a later write is not seen by the task" {
   assertEqualInt(spawnThenWrite(), 109, "the task read the buffer as it was handed over; the writer sees its own write")
+}
+
+async func firstOfArray(a: in array[2, Int]): Int {
+  return a[0]
+}
+
+async func spawnArrayThenWrite(): Int {
+  var a: array[2, Int] = [1, 1]
+  scope {
+    val t = spawn firstOfArray(a)
+    a[0] = 9
+    val seen = await t
+    return seen * 100 + a[0]
+  }
+}
+
+test "an array handed to spawn is a copy: a later write is not seen by the task" {
+  assertEqualInt(spawnArrayThenWrite(), 109, "the task read the array as it was handed over")
+}
+
+async func firstOfStrings(a: in array[2, String]): String {
+  return a[0]
+}
+
+async func spawnStringArrayThenWrite(): String {
+  var a: array[2, String] = ["x", "y"]
+  scope {
+    val t = spawn firstOfStrings(a)
+    a[0] = "z"
+    val seen = await t
+    return seen + a[0]
+  }
+}
+
+test "an array of references handed to spawn is copied when spawned" {
+  assertEqual(spawnStringArrayThenWrite(), "xz", "the task saw the original element")
 }

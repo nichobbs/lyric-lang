@@ -44,6 +44,7 @@ import Lyric.Emitter as Emitter
 import Lyric.Version as Ver
 import Lyric.Fmt
 import Msil.MetadataReader as Mdr
+import Msil.Bridge as MsilBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. State types.
@@ -82,6 +83,9 @@ pub record LspState {
   // The standard library's declarations a proof reads (`ImportScope`),
   // read once, on the first proof: empty until then (box[ImportScope]).
   stdlibScope: List[ImportScope]
+  // The standard library's packages as a build's type check imports them,
+  // read on the first check, then kept (box[List[ImportedPackage]]).
+  stdlibPackages: List[List[ImportedPackage]]
   // What a document's builds and proof read from disk, by its path
   // (`lspDocContext`): kept until a watched file changes (#8342).
   docContexts: Map[String, LspDocContext]
@@ -142,6 +146,7 @@ pub func lspInit(): LspState {
     ffiPathIndex = newMap(),
     ffiIndexInit = ffiInit,
     stdlibScope = newList(),
+    stdlibPackages = newList(),
     docContexts = newMap(),
     dynamicWatch = newList(),
     watchRegistered = newList()
@@ -165,18 +170,7 @@ pub func lspInit(): LspState {
 pub func lspEncodeFrame(json: in String): slice[Byte] {
   val bodyBytes = encodeUtf8(json)
   val header = "Content-Length: " + ("" + bodyBytes.length) + "\r\n\r\n"
-  val acc: List[Byte] = newList()
-  lspAppendBytes(acc, encodeUtf8(header))
-  lspAppendBytes(acc, bodyBytes)
-  acc.toArray()
-}
-
-func lspAppendBytes(acc: in List[Byte], s: in slice[Byte]): Unit {
-  var i = 0
-  while i < s.length {
-    acc.add(s[i])
-    i = i + 1
-  }
+  encodeUtf8(header).concat(bodyBytes)
 }
 
 /// Outcome of scanning a byte buffer for the next complete LSP frame.
@@ -667,6 +661,23 @@ func collectDiags(src: in List[Diagnostic], dst: in List[Diagnostic]): Unit {
   }
 }
 
+// The packages a document is checked against: the standard library, as
+// `lyric build` checks against it, and the workspace packages it imports.
+func checkImportedPackages(state: in LspState, file: in SourceFile): List[ImportedPackage] {
+  if state.stdlibPackages.count == 0 {
+    state.stdlibPackages.add(MsilBridge.stdlibImportedPackagesFromSources(Emitter.findStdlibSources()))
+  }
+  val packages: List[ImportedPackage] = newList()
+  val noImports: List[String] = newList()
+  packages.add(
+    ImportedPackage(name = "", items = buildImportedItems(state, file), imports = noImports, wholeImports = noImports)
+  )
+  for sp in state.stdlibPackages[0] {
+    packages.add(sp)
+  }
+  packages
+}
+
 func buildImportedItems(state: in LspState, file: in SourceFile): List[Item] {
   val items: List[Item] = newList()
   val fileImports = file.imports
@@ -752,7 +763,7 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   for b in checkedBuilds {
     val erasedFile = Cfg.applyCfgErasure(Cfg.withTargetFeature(b.activeFeatures, b.targetName), b.declaredFeatures, parsedFile).file
     val bPrep = pipePrepareForCheck(erasedFile, false)
-    val bCheck = checkWithImports(bPrep.file, buildImportedItems(state, bPrep.file))
+    val bCheck = checkWithImportedPackages(bPrep.file, checkImportedPackages(state, bPrep.file))
     if not isSome(firstCheck) {
       firstCheck = Some(value = bCheck)
       firstPrep = Some(value = bPrep)
@@ -771,7 +782,7 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   val prep = match firstPrep { case Some(fp) -> fp; case None -> pipePrepareForCheck(parsedFile, false) }
   val cr = match firstCheck {
     case Some(fc) -> fc
-    case None -> checkWithImports(prep.file, buildImportedItems(state, prep.file))
+    case None -> checkWithImportedPackages(prep.file, checkImportedPackages(state, prep.file))
   }
 
   // Update rev-deps: for each import in this file, register uri as a consumer.
@@ -805,19 +816,26 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   collectDiags(checkDiags, allDiags)
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
-  // Unlike `lyric prove`, which proves nothing of a program the build
-  // rejects (#8227), this proves the document whatever its check says: the
-  // server's check does not load the standard library, so it reports a type
-  // error for every `Std` name and cannot gate the proof (#8304).  It is
-  // otherwise proved as `lyric prove <file>` proves it (#8342): as each
-  // build that compiles it erases its `@cfg` items (the manifests that list
-  // it, with their default features, for `--target dotnet` — `lyric
-  // prove`'s defaults), each goal labelled with its build when there are
-  // several, reading the declarations of its package's other files (#8108),
-  // the standard library and those manifests' packages; and, like `lyric
-  // prove`, not at all when which packages build it cannot be known.
-  val inactive = if ctx.buildsKnown { inactiveItemsForBuilds(text, ctx.builds) } else { noInactiveItems() }
-  val proofSummary: Option[ProofSummary] = if not ctx.buildsKnown {
+  // Like `lyric prove`, which proves nothing of a program the build rejects
+  // (#8227), nothing is proved of a document whose parse or check reports an
+  // error: the diagnostics above are all the editor shows for it (#8304).
+  // Otherwise the document is proved as `lyric prove <file>` proves it
+  // (#8342): as each build that compiles it erases its `@cfg` items (the
+  // manifests that list it, with their default features, for `--target
+  // dotnet` — `lyric prove`'s defaults), each goal labelled with its build
+  // when there are several, reading the declarations of its package's other
+  // files (#8108), the standard library and those manifests' packages; and,
+  // like `lyric prove`, not at all when which packages build it cannot be
+  // known.
+  val rejected = hasErrorDiagnostic(parsed.diagnostics) or hasErrorDiagnostic(checkDiags)
+  val inactive = if ctx.buildsKnown and not rejected {
+    inactiveItemsForBuilds(text, ctx.builds)
+  } else {
+    noInactiveItems()
+  }
+  val proofSummary: Option[ProofSummary] = if rejected {
+    None
+  } else if not ctx.buildsKnown {
     allDiags.add(
       errorDiagnostic(
         "B0001",
@@ -1612,6 +1630,288 @@ func handleDocClose(state: in LspState, params: in String): List[String] {
   acc
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Method-syntax calls to dot-named functions (#8338).
+// ─────────────────────────────────────────────────────────────────────────────
+// `b.extra()` calls `func Bag.extra(self: in Bag)`: the item is named
+// `Bag.extra`, so a lookup of the bare word `extra` finds nothing.  The
+// receiver's type is read from its declaration in the text above the call —
+// the editor keeps the check's result, not its per-expression types — and
+// the function is bound as the type checker binds it (docs/01 §5.1): the
+// type's own package first, then the nearest imported extension.
+/// A dot-named function a method call can bind to, with where it lives.
+record MethodTarget {
+  item: Item
+  // The declaring file's URI; "" for a standard-library function, whose
+  // source the server has no path for.
+  uri: String
+  pkg: String
+  // The type names its package declares.
+  declaresType: List[String]
+}
+
+func dottedPackageName(file: in SourceFile): String {
+  val segs = file.packageDecl.path.segments
+  var pkg = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      pkg = pkg + "."
+    }
+    pkg = pkg + segs[i]
+    i = i + 1
+  }
+  pkg
+}
+
+func importedPackageName(imp: in ImportDecl): String {
+  val segs = imp.path.segments
+  var pkg = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 {
+      pkg = pkg + "."
+    }
+    pkg = pkg + segs[i]
+    i = i + 1
+  }
+  pkg
+}
+
+func typeItemNames(items: in List[Item]): List[String] {
+  val names: List[String] = newList()
+  for it in items {
+    match it.kind {
+      case IFunc(_) -> ()
+      case _ -> match itemName(it) { case Some(n) -> names.add(n); case None -> () }
+    }
+  }
+  names
+}
+
+func addMethodTargets(
+  acc: in List[MethodTarget],
+  items: in List[Item],
+  uri: in String,
+  pkg: in String,
+  suffix: in String,
+): Unit {
+  val declared = typeItemNames(items)
+  for it in items {
+    match it.kind {
+      case IFunc(fd) -> {
+        if fd.name.endsWith(suffix) {
+          acc.add(MethodTarget(item = it, uri = uri, pkg = pkg, declaresType = declared))
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+// Every function whose name ends in `.method`, nearest first: this
+// document's, its imported workspace packages' in import order, then the
+// standard library's.
+func methodTargetsFor(state: in LspState, cr: in CheckResult, uri: in String, method: in String): List[MethodTarget] {
+  val acc: List[MethodTarget] = newList()
+  val suffix = "." + method
+  val file = cr.file
+  addMethodTargets(acc, file.items, uri, dottedPackageName(file), suffix)
+  for imp in file.imports {
+    val pkg = importedPackageName(imp)
+    match mapGet(state.wsIndex, pkg) {
+      case None -> ()
+      case Some(fp) -> {
+        if hostFileExists(fp) {
+          addMethodTargets(acc, parse(hostReadAllText(fp)).file.items, pathToUri(fp), pkg, suffix)
+        }
+      }
+    }
+  }
+  if state.stdlibPackages.count > 0 {
+    for sp in state.stdlibPackages[0] {
+      addMethodTargets(acc, sp.items, "", sp.name, suffix)
+    }
+  }
+  acc
+}
+
+// The type name that starts at `pos` in `line` (a qualifier's last segment),
+// when it is capitalised.
+func typeNameAt(line: in String, pos: in Int): Option[String] {
+  var p = pos
+  while p < line.length and Str.charAtOrReplacement(line, p) == ' ' {
+    p = p + 1
+  }
+  var kw = 0
+  while kw < 3 {
+    var q = p
+    while q < line.length and isIdChar(Str.charAtOrReplacement(line, q)) {
+      q = q + 1
+    }
+    val word = line.substring(p, q - p)
+    if (word == "in" or word == "out" or word == "inout") and q < line.length and Str.charAtOrReplacement(line, q) == ' ' {
+      p = q
+      while p < line.length and Str.charAtOrReplacement(line, p) == ' ' {
+        p = p + 1
+      }
+    }
+    kw = kw + 1
+  }
+  var e = p
+  while e < line.length and (isIdChar(Str.charAtOrReplacement(line, e)) or Str.charAtOrReplacement(line, e) == '.') {
+    e = e + 1
+  }
+  if e <= p {
+    return None
+  }
+  val segs = line.substring(p, e - p).split(".")
+  val last = segs[segs.length - 1]
+  if last.length > 0 and isUpper(Str.charAtOrReplacement(last, 0)) {
+    Some(value = last)
+  } else {
+    None
+  }
+}
+
+// The type `word` is declared with in `line`: `word: Type` (a parameter or an
+// annotated binding), or `val word = Type...` (a constructor call).
+func declaredTypeInLine(line: in String, word: in String): Option[String] {
+  var from = 0
+  while from <= line.length - word.length {
+    val at = Str.indexOfFromRaw(line, word, from)
+    if at < 0 {
+      return None
+    }
+    val before = if at == 0 { ' ' } else { Str.charAtOrReplacement(line, at - 1) }
+    val afterPos = at + word.length
+    val after = if afterPos >= line.length { ' ' } else { Str.charAtOrReplacement(line, afterPos) }
+    if not isIdChar(before) and before != '.' and not isIdChar(after) {
+      val head = line.substring(0, at).trim()
+      val isBinding = head.endsWith("val") or head.endsWith("var")
+      var p = afterPos
+      while p < line.length and Str.charAtOrReplacement(line, p) == ' ' {
+        p = p + 1
+      }
+      if p < line.length and Str.charAtOrReplacement(line, p) == ':' {
+        match typeNameAt(line, p + 1) {
+          case Some(t) -> return Some(value = t)
+          case None -> ()
+        }
+      } else if p < line.length and Str.charAtOrReplacement(line, p) == '=' and isBinding {
+        match typeNameAt(line, p + 1) {
+          case Some(t) -> return Some(value = t)
+          case None -> ()
+        }
+      }
+    }
+    from = at + 1
+  }
+  None
+}
+
+// The type name of the receiver of the method call whose `.` is at `dotCol`
+// of `lines[lineIdx]`, when it is a literal or a name declared above with a
+// type.
+func receiverTypeName(source: in String, lineIdx: in Int, dotCol: in Int): Option[String] {
+  val lines = source.split("\n")
+  val line = lines[lineIdx]
+  if dotCol <= 0 {
+    return None
+  }
+  val last = Str.charAtOrReplacement(line, dotCol - 1)
+  if last == '"' {
+    return Some(value = "String")
+  }
+  if not isIdChar(last) {
+    return None
+  }
+  var start = dotCol
+  while start > 0 and isIdChar(Str.charAtOrReplacement(line, start - 1)) {
+    start = start - 1
+  }
+  if start > 0 and Str.charAtOrReplacement(line, start - 1) == '.' {
+    return None
+  }
+  val word = line.substring(start, dotCol - start)
+  if isDigit(Str.charAtOrReplacement(word, 0)) {
+    return Some(value = "Int")
+  }
+  var li = lineIdx
+  while li >= 0 {
+    val l = if li == lineIdx { line.substring(0, start) } else { lines[li] }
+    match declaredTypeInLine(l, word) {
+      case Some(t) -> return Some(value = t)
+      case None -> ()
+    }
+    li = li - 1
+  }
+  None
+}
+
+// The function the method call under the cursor binds to, or None when the
+// cursor is not on a method name or the binding cannot be told.
+func resolveMethodAt(
+  state: in LspState, cached: in CachedDoc, uri: in String, oneLine: in Int, oneCol: in Int
+): Option[MethodTarget] {
+  val lines = cached.source.split("\n")
+  if oneLine < 1 or oneLine > lines.length {
+    return None
+  }
+  val lineIdx = oneLine - 1
+  val line = lines[lineIdx]
+  var start = oneCol - 1
+  if start < 0 or start > line.length {
+    return None
+  }
+  while start > 0 and isIdChar(Str.charAtOrReplacement(line, start - 1)) {
+    start = start - 1
+  }
+  var stop = oneCol - 1
+  while stop < line.length and isIdChar(Str.charAtOrReplacement(line, stop)) {
+    stop = stop + 1
+  }
+  if start >= stop or start == 0 or Str.charAtOrReplacement(line, start - 1) != '.' {
+    return None
+  }
+  val method = line.substring(start, stop - start)
+  val targets = methodTargetsFor(state, cached.checkResult, uri, method)
+  if targets.count == 0 {
+    return None
+  }
+  match receiverTypeName(cached.source, lineIdx, start - 1) {
+    case None -> if targets.count == 1 { Some(value = targets[0]) } else { None }
+    case Some(tn) -> {
+      val wanted = tn + "." + method
+      var typeDeclPkg = ""
+      for t in targets {
+        if typeDeclPkg == "" and t.declaresType.contains(tn) {
+          typeDeclPkg = t.pkg
+        }
+      }
+      var best: Option[MethodTarget] = None
+      for t in targets {
+        match t.item.kind {
+          case IFunc(fd) -> {
+            if fd.name == wanted {
+              if isNone(best) {
+                best = Some(value = t)
+              } else if typeDeclPkg != "" and t.pkg == typeDeclPkg {
+                match best {
+                  case Some(b) -> if b.pkg != typeDeclPkg { best = Some(value = t) }
+                  case None -> ()
+                }
+              }
+            }
+          }
+          case _ -> ()
+        }
+      }
+      best
+    }
+  }
+}
+
 func handleHover(state: in LspState, params: in String): String {
   val pdoc = parseJson(params)
   val uri = jNested2Str(pdoc, "textDocument", "uri")
@@ -1631,6 +1931,14 @@ func handleHover(state: in LspState, params: in String): String {
           val crFile = cr.file
           val crItems = crFile.items
           var foundIt: Option[Item] = None
+          var foundPkg = ""
+          match resolveMethodAt(state, cached, uri, lineNum + 1, colNum + 1) {
+            case Some(mt) -> {
+              foundIt = Some(value = mt.item)
+              foundPkg = mt.pkg
+            }
+            case None -> ()
+          }
           var i = 0
           while i < crItems.count {
             match itemName(crItems[i]) {
@@ -1664,6 +1972,9 @@ func handleHover(state: in LspState, params: in String): String {
                 case _ -> itemSummary(it)
               }
               var fullBody = body
+              if foundPkg.length > 0 {
+                fullBody = fullBody + "\n// package " + foundPkg
+              }
               var di = 0
               while di < it.docComments.count {
                 if di == 0 {
@@ -1742,9 +2053,19 @@ func handleDefinition(state: in LspState, params: in String): String {
           val crItems = crFile.items
           var foundSpan: Option[Span] = None
           var foundUri: String = uri
+          var localDone = false
+          match resolveMethodAt(state, cached, uri, lineNum + 1, colNum + 1) {
+            case Some(mt) -> {
+              if mt.uri.length > 0 {
+                foundSpan = Some(value = mt.item.span)
+                foundUri = mt.uri
+                localDone = true
+              }
+            }
+            case None -> ()
+          }
           // Local search first.
           var i = 0
-          var localDone = false
           while i < crItems.count and not localDone {
             match itemName(crItems[i]) {
               case Some(n) -> {

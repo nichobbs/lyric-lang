@@ -19,12 +19,6 @@ if (( ${#stdlib_dlls[@]} == 0 )); then
 fi
 mkdir -p lyric-stdlib/bin
 cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-# Route emitProject subprocess hops to the F# bootstrap CLI.
-cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
-if [ -f "$cli_dll" ]; then
-  export LYRIC_BIN=dotnet
-  export LYRIC_CLI_DLL="$cli_dll"
-fi
 # Tier 0: libraries with no local path dependencies.
 tier0=(
   lyric-cache lyric-logging lyric-proto lyric-generator-sdk

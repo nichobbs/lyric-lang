@@ -29,7 +29,11 @@ done
 # in the background, wait for the "Listening on" line in its log,
 # smoke-test the endpoint, then SIGTERM the server.
 echo "=== smoke examples/rest_service.l ==="
-"$lyric_bin" run examples/rest_service.l > /tmp/rest_service.run.log 2>&1 &
+# Own process group: `lyric run` spawns the real server as a child, which
+# killing only the parent would leak, holding port 8080 (#7982).  A backgrounded
+# job in a non-interactive script is not a group leader, so `setsid` execs in
+# place and `$!` is the new group id that `kill -- "-$pid"` below relies on.
+setsid "$lyric_bin" run examples/rest_service.l > /tmp/rest_service.run.log 2>&1 &
 srv_pid=$!
 for _ in $(seq 1 20); do
   if grep -q "Listening on" /tmp/rest_service.run.log 2>/dev/null; then
@@ -43,8 +47,16 @@ if ! kill -0 "$srv_pid" 2>/dev/null; then
   exit 1
 fi
 body="$(curl -s --max-time 3 http://localhost:8080/ || true)"
-kill "$srv_pid" 2>/dev/null || true
+kill -- "-$srv_pid" 2>/dev/null || true
 wait "$srv_pid" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || break
+  sleep 0.25
+done
+if (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null; then
+  echo "FAIL: port 8080 still in use after stopping rest_service (leaked child)"
+  exit 1
+fi
 if [ "$body" != "Hello from Lyric!" ]; then
   echo "FAIL: unexpected body '$body'"
   tail -20 /tmp/rest_service.run.log
@@ -60,7 +72,7 @@ echo "PASS"
 # /health still serves 200 afterward; then kill the server (it no
 # longer exits on its own).
 echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
-"$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
+setsid "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
 sf_pid=$!
 # `lyric run` builds the workspace dependencies first (about 9 s on a CI runner),
 # so wait up to 30 s for the listener rather than 10 s.
@@ -78,24 +90,24 @@ fi
 sf_crash_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/crash || echo "000")
 if [ "$sf_crash_code" != "500" ]; then
   echo "FAIL: /crash returned '$sf_crash_code', expected 500 (#5261)"
-  kill "$sf_pid" 2>/dev/null || true
+  kill -- "-$sf_pid" 2>/dev/null || true
   tail -20 /tmp/serve_failure.run.log
   exit 1
 fi
 if ! grep -q "\[lyric-web\] request handling failed" /tmp/serve_failure.run.log; then
   echo "FAIL: missing [lyric-web] failure line in serve_failure log (#5261)"
-  kill "$sf_pid" 2>/dev/null || true
+  kill -- "-$sf_pid" 2>/dev/null || true
   tail -20 /tmp/serve_failure.run.log
   exit 1
 fi
 sf_health_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 http://127.0.0.1:8199/health || echo "000")
 if [ "$sf_health_code" != "200" ]; then
   echo "FAIL: /health returned '$sf_health_code' after a request-handler panic; server did not survive (#5261)"
-  kill "$sf_pid" 2>/dev/null || true
+  kill -- "-$sf_pid" 2>/dev/null || true
   tail -20 /tmp/serve_failure.run.log
   exit 1
 fi
-kill "$sf_pid" 2>/dev/null || true
+kill -- "-$sf_pid" 2>/dev/null || true
 wait "$sf_pid" 2>/dev/null || true
 echo "PASS"
 # Web.serveStreaming()/ResponseWriter (lyric-lang#5979): a chunk
@@ -105,7 +117,7 @@ echo "PASS"
 # chunks; time the request and require it took at least that long
 # (a buffered/instant response would come back near-instantly).
 echo "=== smoke lyric-web/tests/streaming_tests.l ==="
-"$lyric_bin" run lyric-web/tests/streaming_tests.l > /tmp/streaming.run.log 2>&1 &
+setsid "$lyric_bin" run lyric-web/tests/streaming_tests.l > /tmp/streaming.run.log 2>&1 &
 st_pid=$!
 for _ in $(seq 1 20); do
   if curl -s --max-time 1 http://127.0.0.1:8210/health >/dev/null 2>&1; then
@@ -168,7 +180,7 @@ if ! kill -0 "$st_pid" 2>/dev/null; then
   tail -20 /tmp/streaming.run.log
   exit 1
 fi
-kill "$st_pid" 2>/dev/null || true
+kill -- "-$st_pid" 2>/dev/null || true
 wait "$st_pid" 2>/dev/null || true
 echo "PASS"
 

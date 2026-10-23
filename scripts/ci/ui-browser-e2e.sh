@@ -42,16 +42,16 @@ PLAYWRIGHT_VERSION="1.56.1"
   fi
   # Images that ship Chromium set PLAYWRIGHT_BROWSERS_PATH; elsewhere fetch it.
   if [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    # `--with-deps` runs apt-get, which other steps of the job run concurrently.
+    printf 'DPkg::Lock::Timeout "900";\n' | sudo tee /etc/apt/apt.conf.d/99lyric-ci-lock-timeout >/dev/null
     npx playwright install --with-deps chromium
   fi
 )
 
 # The host serves the page and its session WebSocket on this one port (#7831).
-port=8080
-if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-  echo "::error::port $port is already in use; the example host needs it" >&2
-  exit 1
-fi
+# Ask the OS for a free one so a parallel job holding 8080 cannot collide (#8006).
+port="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
+export LYRIC_UI_PORT="$port"
 
 manifest="examples/ui-customers/lyric.toml"
 "$lyric_bin" build --manifest "$manifest" --target "$target"

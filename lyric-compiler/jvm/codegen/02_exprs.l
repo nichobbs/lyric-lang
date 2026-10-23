@@ -5402,10 +5402,78 @@ func lowerFutureGet(ctx: in FuncCtx, insns: in List[LInsn]): JvmType {
   objTy
 }
 
+// True when `e` is the copy `lowerArrays` wraps around an escaping read of an
+// `array[N, T]` or `buffer[T]` place: the primitive-array intrinsic call, or
+// the list-copy block it expands to otherwise.
+func isSpawnArgCopy(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> isSpawnArgCopy(inner)
+    case ECall(fn, _) -> match fn.kind {
+      case ETypeApp(f, _) -> match f.kind {
+        case EPath(p) -> p.segments.count == 1 and
+          p.segments[0] == arrayCopyIntrinsic()
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case EBlock(blk) -> blk.statements.count > 0 and
+      match blk.statements[0].kind {
+        case SLocal(LBVal(pat, _, _)) -> match pat.kind {
+          case PBinding(name, _) -> name.startsWith("__lyric_ac_")
+          case _ -> false
+        }
+        case _ -> false
+      }
+    case _ -> false
+  }
+}
+
+// A copied array or buffer argument of a spawned call is a snapshot taken when
+// the task is spawned, not when it starts (D185, #8391).  The `Callable` runs
+// the whole operand, so evaluate each such argument into a fresh local here and
+// let the task capture that local.  The operand keeps its `spawn f(args)` shape.
+func hoistSpawnCopyArgs(ctx: in FuncCtx, insns: in List[LInsn], operand: in Expr): Expr {
+  match operand.kind {
+    case ECall(fn, args) -> {
+      val newArgs: List[CallArg] = newList()
+      var changed = false
+      var i = 0
+      while i < args.count {
+        val a = args[i]
+        val ae = callArgExpr(a)
+        if isSpawnArgCopy(ae) {
+          val name = "__spawn_arg$" + toString(operand.span.startPos.offset) + "$" + toString(i)
+          val ty = lowerExpr(ctx, insns, ae)
+          val slot = allocSlot(ctx, name, ty)
+          emitStore(insns, slot, ty)
+          val segs: List[String] = newList()
+          segs.add(name)
+          val ref = Expr(kind = EPath(path = ModulePath(segments = segs, span = ae.span)), span = ae.span)
+          match a {
+            case CAPositional(_) -> newArgs.add(CAPositional(expr = ref))
+            case CANamed(n, _, sp) -> newArgs.add(CANamed(name = n, value = ref, span = sp))
+          }
+          changed = true
+        } else {
+          newArgs.add(a)
+        }
+        i = i + 1
+      }
+      if changed {
+        Expr(kind = ECall(fn = fn, args = newArgs), span = operand.span)
+      } else {
+        operand
+      }
+    }
+    case _ -> operand
+  }
+}
+
 // Submit `spawn e` to the innermost enclosing `scope { }` executor: load the
 // executor, synthesize a capturing `Callable` closure for `e`, and
 // `submit(Callable)` it.  Leaves the resulting `Future` on the stack.
-func lowerSpawnSubmit(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr): JvmType {
+func lowerSpawnSubmit(ctx: in FuncCtx, insns: in List[LInsn], operand: in Expr): JvmType {
+  val inner = hoistSpawnCopyArgs(ctx, insns, operand)
   val execTy = JRef(className = "java/util/concurrent/ExecutorService")
   val futureTy = JRef(className = "java/util/concurrent/Future")
   val execSlot = ctx.scopeExecSlots[ctx.scopeExecSlots.count - 1]

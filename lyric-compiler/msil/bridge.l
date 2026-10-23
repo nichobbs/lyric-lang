@@ -1397,6 +1397,14 @@ func checkOptions(
   )
 }
 
+/// The standard library's packages parsed from `stdlibSources` and shaped as a
+/// build's type check imports them (`checkSourceTypesForFeatures`), for a
+/// caller that checks a document itself and needs its result (the language
+/// server).
+pub func stdlibImportedPackagesFromSources(stdlibSources: in List[String]): List[ImportedPackage] {
+  stdlibImportedPackages(collectStdlibPackages(stdlibSources))
+}
+
 /// Each standard-library package as the type checker imports it.
 func stdlibImportedPackages(stdlibPkgs: in List[StdlibPkg]): List[ImportedPackage] {
   val importedPkgs: List[ImportedPackage] = newList()

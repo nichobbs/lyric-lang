@@ -215,7 +215,7 @@ enabled = false   # default: true
 
 When `enabled = false`, the compiler parses and type-checks all contract clauses (so errors in contract expressions are caught), but omits **user-level checks** (`requires:` and `ensures:` assertions). However, **system-level checks always run**: loop invariants, protected-type invariants, and range checks for refined types are never omitted. This is useful for production builds where contract overhead is unacceptable and all contracts have been formally verified offline, while still preserving language-level invariants and bounds checks. Proof obligations for `lyric prove` are unaffected by this setting.
 
-When `enabled = true` (the default), every `requires:` and `ensures:` clause is compiled into a runtime assertion. In `@runtime_checked` modules (§8 of the language reference), these checks execute in both debug and release builds. The setting applies to the entire project; if a project needs a mix of checked and unchecked code, split it across distinct `lyric.toml` projects.
+When `enabled = true` (the default), every `requires:` and `ensures:` clause is compiled into a runtime assertion. In `@runtime_checked` modules (§6.4 of the language reference), these checks execute in both debug and release builds. The setting applies to the entire project; if a project needs a mix of checked and unchecked code, split it across distinct `lyric.toml` projects.
 
 ### Native binaries — `lyric build --release --aot`
 

@@ -613,8 +613,10 @@ the GPU.
   together are why most UI toolkits embed a browser. G6 and G10 are sized
   accordingly and ship in slices, Latin first.
 - **COW surprises.** An unexpected second reference makes a hot loop copy
-  once. Mitigation: a `lyric lint` rule that flags a buffer copied
-  immediately before a loop that writes to it.
+  once. Mitigation: warning **W0030**, which flags a buffer copied
+  immediately before a loop that writes to it. It is a checker warning, not a
+  `lyric lint` rule: whether `var b = a` copies depends on the type of `a`, which
+  the AST-only linter does not have (#8395).
 - **Float migration** may surface code that silently relied on 64-bit
   precision. Mitigation: the audit in G1 moves such uses to `Double`
   before the switch.

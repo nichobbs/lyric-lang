@@ -1231,10 +1231,12 @@ A full `lyric` binary rebuild is **stage-1 (self-hosted DLLs + CLI bundle) → A
   **WARNING (#6331):** `stage1-fast` never rebuilds the CLI bundle or
   `./bin/lyric`.  After it, `./bin/lyric` still runs the OLD compiler —
   verify with `make self-test`, never `./bin/lyric` directly, until
-  `make lyric` has run.  It also leaves the `<libdir>/selfhosted/`
-  compiler DLLs stale (`lyric test` prefers those for compiler-package
-  imports like `Msil.Bridge`; `make selfhosted-compiler` refreshes just
-  them).  `make self-test` and `make stage1-fast` both
+  `make lyric` has run.  It also leaves the `<libdir>/selfhosted/Lyric.Compiler.dll`
+  bundle stale: `lyric test` links that single bundle for compiler-package
+  imports like `Msil.Bridge`, so a `@test_module` importing a compiler
+  package you just edited still sees the OLD code until you run
+  `make selfhosted-compiler` (re-emits just the bundle from source via
+  the current `./bin/lyric`; no AOT rebuild needed).  `make self-test` and `make stage1-fast` both
   print a staleness warning (`make check-lyric-stale`) when a stage-1
   DLL is newer than `./bin/lyric`, but that warning is best-effort, not
   a substitute for rebuilding before trusting `./bin/lyric`.
@@ -1248,8 +1250,8 @@ A full `lyric` binary rebuild is **stage-1 (self-hosted DLLs + CLI bundle) → A
   Equivalently by hand: `./scripts/bootstrap.sh --stage 1` then
   `dotnet build bootstrap/src/Lyric.Cli.Aot`.  **Rebuild both** after a
   compiler `.l` change or you'll run stale DLLs.
-  `make lyric` also stages the self-hosted per-package compiler DLLs
-  under `<libdir>/selfhosted/` (~80 s, #3086) — needed by `lyric test`
+  `make lyric` also stages the self-hosted compiler as one
+  `Lyric.Compiler.dll` bundle under `<libdir>/selfhosted/` (~80 s, #3086) — needed by `lyric test`
   for `@test_module`s that reference module-level `pub val` constants
   from compiler packages.
   Skip it with `SKIP_SELFHOSTED_COMPILER=1 make lyric` when iterating

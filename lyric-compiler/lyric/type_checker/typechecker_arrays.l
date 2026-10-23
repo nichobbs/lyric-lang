@@ -1670,3 +1670,100 @@ pub func withBoundArrayLengths(te: in TypeExpr, t: in Type, vps: in List[String]
     case _ -> t
   }
 }
+
+/// W0030 for a `var` initialised by copying a `buffer[T]` out of another place
+/// when the next statement is a loop that writes through the new binding
+/// (docs/67 §9).  The copy is O(n) and happens once, on the first write; the
+/// hint is to write through the original binding or build the buffer in place.
+/// Only the statement directly after the `var` is considered, and only writes
+/// spelled `name[i] = v` / `name[i] op= v` in statements and in `if`/block
+/// branches of that loop's body.
+pub func warnBufferCopyBeforeWriteLoop(tbl: in SymbolTable, diag: in List[Diagnostic], blk: in Block): Unit {
+  var i = 0
+  while i + 1 < blk.statements.count {
+    val s = blk.statements[i]
+    match s.kind {
+      case SLocal(LBVar(name, _, Some(init))) -> {
+        val key = recordCopySiteKey(peelParens(init).span)
+        val isBufferCopy = isPlaceExprKind(peelParens(init)) and
+          match mapGet(tbl.arrayCopySites, key) {
+            case Some(site) -> site.len == runtimeArrayLength() and
+              match site.arrayType { case Some(_) -> true; case None -> false }
+            case None -> false
+          }
+        if isBufferCopy and loopWritesIndexOf(blk.statements[i + 1], name) {
+          diag.add(
+            warningDiagnostic(
+              "W0030",
+              "'" + name +
+                "' is a copy of another buffer and the loop below writes to it: the first write copies the whole buffer (O(n)); write through the original binding, or construct the buffer directly (docs/67 §9)",
+              s.span
+            )
+          )
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+func loopWritesIndexOf(s: in Statement, name: in String): Bool {
+  match s.kind {
+    case SFor(_, _, _, body) -> blockWritesIndexOf(body, name)
+    case SWhile(_, _, body) -> blockWritesIndexOf(body, name)
+    case SLoop(_, body) -> blockWritesIndexOf(body, name)
+    case _ -> false
+  }
+}
+
+func blockWritesIndexOf(blk: in Block, name: in String): Bool {
+  for st in blk.statements {
+    if stmtWritesIndexOf(st, name) {
+      return true
+    }
+  }
+  false
+}
+
+func exprOrBlockWritesIndexOf(eob: in ExprOrBlock, name: in String): Bool {
+  match eob {
+    case EOBBlock(b) -> blockWritesIndexOf(b, name)
+    case EOBExpr(e) -> exprWritesIndexOf(e, name)
+  }
+}
+
+func exprWritesIndexOf(e: in Expr, name: in String): Bool {
+  match e.kind {
+    case EAssign(t, _, _) -> assignsIndexOf(t, name)
+    case EParen(inner) -> exprWritesIndexOf(inner, name)
+    case EBlock(b) -> blockWritesIndexOf(b, name)
+    case EIf(_, tb, eb, _) -> exprOrBlockWritesIndexOf(tb, name) or
+      match eb { case Some(x) -> exprOrBlockWritesIndexOf(x, name); case None -> false }
+    case _ -> false
+  }
+}
+
+func stmtWritesIndexOf(s: in Statement, name: in String): Bool {
+  match s.kind {
+    case SAssign(t, _, _) -> assignsIndexOf(t, name)
+    case SExpr(e) -> exprWritesIndexOf(e, name)
+    case SFor(_, _, _, b) -> blockWritesIndexOf(b, name)
+    case SWhile(_, _, b) -> blockWritesIndexOf(b, name)
+    case SLoop(_, b) -> blockWritesIndexOf(b, name)
+    case SScope(_, b) -> blockWritesIndexOf(b, name)
+    case _ -> false
+  }
+}
+
+func assignsIndexOf(target: in Expr, name: in String): Bool {
+  match target.kind {
+    case EParen(inner) -> assignsIndexOf(inner, name)
+    case EIndex(recv, _) -> match peelParens(recv).kind {
+      case EPath(p) -> p.segments.count == 1 and p.segments[0] == name
+      case EIndex(_, _) -> assignsIndexOf(recv, name)
+      case _ -> false
+    }
+    case _ -> false
+  }
+}

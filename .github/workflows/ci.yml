@@ -57,7 +57,10 @@ concurrency:
 #                     see that job's own OpenSSL step for why a bare distro
 #                     package can't be assumed) on the machine; falls back
 #                     to CI_HEAVY_RUNNER.
-# Unset (the default) means `ubuntu-latest`, i.e. unchanged behaviour.  A
+# Unset (the default) means `ubuntu-latest`, i.e. unchanged behaviour.  Pull
+# requests from forks always use `ubuntu-latest` (the `head.repo.fork` guard in
+# each `runs-on`), so untrusted PR code never executes on the self-hosted
+# machine (#6999).  A
 # `runs-on` is fixed when the run is created, so runs already queued keep
 # their pool; register several runners on the box, since each registration
 # executes one job at a time and these jobs fan out in parallel.  The
@@ -475,7 +478,7 @@ jobs:
     # (`lyric build --release-from-dll`, scripts/bootstrap.sh build_stage2)
     # with no portable .dll a dotnet-wrapper could exec, so it is used only
     # in this job, on the architecture that built it (#7025 follow-up).
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -826,7 +829,7 @@ jobs:
   # ~28 min sequential on a 4-vCPU machine), so two shards land near 15 min
   # apiece.
   compiler-self-tests-core:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     needs: [build]
     permissions:
@@ -854,7 +857,7 @@ jobs:
         run: bash scripts/ci/compiler-self-tests-batch.sh --shard "${{ matrix.shard }}"
 
   compiler-self-tests-dotnet-a:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -2476,7 +2479,7 @@ jobs:
   # behind unrelated self-tests, and keeps a slow native-backend run from
   # extending compiler-self-tests-dotnet-a's own `wait-all` barriers.
   native-backend-self-tests:
-    runs-on: ${{ vars.CI_NATIVE_RUNNER || vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && (vars.CI_NATIVE_RUNNER || vars.CI_HEAVY_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: [build]
     permissions:
@@ -2832,7 +2835,7 @@ jobs:
         wait-all: true
 
   compiler-self-tests-dotnet-b:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -3836,7 +3839,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-aot-publish-lyric-cli-macos.sh
   compiler-self-tests-jvm:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -5363,7 +5366,7 @@ jobs:
           fi
 
   compiler-self-tests-jvm-b:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -6262,7 +6265,7 @@ jobs:
   # 83 files in ~1m40s wall, jvm: 131 files in ~5m wall), so each set runs
   # as a single job. `--shard` stays available if a set outgrows that.
   compiler-self-tests-jvm-c:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     needs: [build]
     permissions:
       contents: read
@@ -6508,7 +6511,7 @@ jobs:
     # (below) but still needs a runner. Send those no-op shards to
     # `ubuntu-latest` so they never queue for the heavy pool: an msil shard
     # that ran for 12 s once waited ~22 h for a self-hosted runner.
-    runs-on: ${{ ((matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') || (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')) && (vars.CI_HEAVY_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
+    runs-on: ${{ ((matrix.set == 'msil' && needs.build.outputs.has_msil_changes == 'true') || (matrix.set == 'jvm' && needs.build.outputs.has_jvm_changes == 'true')) && (!github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest') || 'ubuntu-latest' }}
     # Fast-fail mitigation for #7087: the self-hosted lyric-labeled runner
     # pool has repeatedly left jobs queued for the full 24h GitHub job-
     # duration ceiling with zero runner pickup, burning a full day per
@@ -6973,7 +6976,7 @@ jobs:
   # separate temp directories (verify-reproducible-emit.sh's mktemp), so they
   # run concurrently.
   stdlib-reproducible-emit:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     needs: [build]
     permissions:
@@ -7021,7 +7024,7 @@ jobs:
 
   # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-tests.
   stdlib-builds:
-    runs-on: ${{ vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ !github.event.pull_request.head.repo.fork && vars.CI_HEAVY_RUNNER || 'ubuntu-latest' }}
     # Fast-fail mitigation for #7087 (see numbered-backend-self-tests'
     # identical comment above -- and same caveat: this bounds only
     # EXECUTION time once a runner picks the job up, not time spent queued
