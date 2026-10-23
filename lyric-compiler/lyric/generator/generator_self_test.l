@@ -430,7 +430,10 @@ test "a failed project read names the failure, not the host path" {
   assertEqual(missing, "'schemas/a.json' does not exist", "not found")
   val denied = projectReadError("schemas/a.json", PermissionDenied(path = "/home/u/proj/schemas/a.json"))
   assertEqual(denied, "'schemas/a.json' cannot be read (permission denied)", "permission denied")
-  val other = projectReadError("schemas/a.json", IoError(path = "/home/u/proj/schemas/a.json", message = "disk on fire"))
+  val other = projectReadError(
+    "schemas/a.json",
+    IoError(path = "/home/u/proj/schemas/a.json", message = "disk on fire")
+  )
   assertEqual(other, "'schemas/a.json' cannot be read", "other failures")
   assertFalse(Str.contains(missing + denied + other, "/home/u"), "no host path")
 }
