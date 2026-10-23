@@ -13584,18 +13584,39 @@ func normalizeIntCmpWidthMsil(
 // An arithmetic operator never guesses an operand's type: an operand lowered
 // to a bare `object` has no static numeric type, and `add`/`sub`/`mul`/`div`/
 // `rem` on object references is unverifiable IL that crashes or yields garbage
-// at run time.  Fail the build naming the expression instead (#8344).
-func requireTypedArithOperandsMsil(op: in String, lhs: in Expr, lhsTy: in MsilType, rhsTy: in MsilType): Unit {
-  val lhsErased = isErasedObjectMsil(lhsTy)
-  val rhsErased = isErasedObjectMsil(rhsTy)
+// at run time.  Fail the build naming the expression instead (#8344).  A bare
+// read of a module-level val is left to F0047, which reports the same
+// disagreement at the val's declaration with the annotation to add; this guard
+// would otherwise fire first, because function bodies are lowered before
+// module-val initialisers.
+func requireTypedArithOperandsMsil(
+  cctx: in CodegenCtx,
+  op: in String,
+  lhs: in Expr,
+  rhs: in Expr,
+  lhsTy: in MsilType,
+  rhsTy: in MsilType,
+): Unit {
+  val lhsErased = isErasedObjectMsil(lhsTy) and not isModuleValReadMsil(cctx, lhs)
+  val rhsErased = isErasedObjectMsil(rhsTy) and not isModuleValReadMsil(cctx, rhs)
   if lhsErased or rhsErased {
-    panic(
-      "error[T0120] " + toString(lhs.span.startPos.line) + ":" + toString(lhs.span.startPos.column) + ": operator '" + op +
-        "' has " +
-        (if lhsErased { "a left" } else { "a right" }) +
-        " operand of unknown static type (`object`); the type checker recorded no type for it, so the " +
-        "operation cannot be lowered (compiler bug: please report this program)"
+    val culprit = if lhsErased { lhs } else { rhs }
+    cctx.diagnostics.add(
+      errorDiagnostic(
+        "T0120",
+        "operator '" + op + "' has " + (if lhsErased { "a left" } else { "a right" }) +
+          " operand of unknown static type (`object`); the type checker recorded no type for it, so the " +
+          "operation cannot be lowered (compiler bug: please report this program)",
+        culprit.span
+      )
     )
+  }
+}
+
+func isModuleValReadMsil(cctx: in CodegenCtx, e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> path.segments.count == 1 and cctx.staticValMsilTypes.containsKey(path.segments[0])
+    case _ -> false
   }
 }
 
@@ -14142,7 +14163,7 @@ func lowerBinopMsil(
             -1
           }
           val baddIRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
-          requireTypedArithOperandsMsil("+", lhs, lhsTy, baddIRhsTy)
+          requireTypedArithOperandsMsil(cctx, "+", lhs, rhs, lhsTy, baddIRhsTy)
           val baddILhsUn = spellsUnsigned(lhs)
           val baddIRhsUn = spellsUnsigned(rhs)
           val baddIWide = if baddISpillIdx >= 0 {
@@ -14167,7 +14188,7 @@ func lowerBinopMsil(
         -1
       }
       val bsubRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
-      requireTypedArithOperandsMsil("-", lhs, bsubLhsTy, bsubRhsTy)
+      requireTypedArithOperandsMsil(cctx, "-", lhs, rhs, bsubLhsTy, bsubRhsTy)
       if bsubSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bsubRhsTy)
@@ -14211,7 +14232,7 @@ func lowerBinopMsil(
         -1
       }
       val bmulRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
-      requireTypedArithOperandsMsil("*", lhs, bmulLhsTy, bmulRhsTy)
+      requireTypedArithOperandsMsil(cctx, "*", lhs, rhs, bmulLhsTy, bmulRhsTy)
       val bmulLhsUn = spellsUnsigned(lhs)
       val bmulRhsUn = spellsUnsigned(rhs)
       val bmulWide = if bmulSpillIdx >= 0 {
@@ -14254,7 +14275,7 @@ func lowerBinopMsil(
         -1
       }
       val bdivRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
-      requireTypedArithOperandsMsil("/", lhs, bdivLhsTy, bdivRhsTy)
+      requireTypedArithOperandsMsil(cctx, "/", lhs, rhs, bdivLhsTy, bdivRhsTy)
       if bdivSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bdivRhsTy)
@@ -14315,7 +14336,7 @@ func lowerBinopMsil(
         -1
       }
       val bmodRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
-      requireTypedArithOperandsMsil("%", lhs, bmodLhsTy, bmodRhsTy)
+      requireTypedArithOperandsMsil(cctx, "%", lhs, rhs, bmodLhsTy, bmodRhsTy)
       if bmodSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bmodRhsTy)
