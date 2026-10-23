@@ -314,7 +314,7 @@ func annotationsJson(src: in String, anns: in List[Annotation]): String {
 }
 
 func fieldJson(src: in String, f: in FieldDecl, isPublic: in Bool): String {
-  val dflt = match f.dflt { case Some(e) -> ",\"default\":" + jsonStr(spanText(src, e.span)); case None -> "" }
+  val dflt = match f.dflt { case Some(e) -> ",\"defaultSource\":" + jsonStr(spanText(src, e.span)); case None -> "" }
   "{\"name\":" + jsonStr(f.name) + ",\"fieldType\":" + fieldTypeJson(src, f.ty) + ",\"isPublic\":" +
     (if isPublic { "true" } else { "false" }) +
     ",\"annotations\":" +

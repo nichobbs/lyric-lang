@@ -214,6 +214,10 @@ for t in \
   lyric-compiler/lyric/deflate_zip_self_test.l \
   lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l \
   lyric-compiler/lyric/generator/generator_self_test.l \
+  lyric-compiler/lyric/plugin_expand_self_test.l \
+  lyric-compiler/lyric/plugin_codec_self_test.l \
+  lyric-compiler/lyric/plugin_manifest_self_test.l \
+  lyric-compiler/lyric/plugin_sdk_self_test.l \
   lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
   lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \

@@ -362,7 +362,7 @@ test "an opaque type's descriptor carries field annotations, defaults and invari
     "T? is an option: " + d
   )
   assertTrue(d.contains("\"isPublic\":false"), "an opaque field is not public")
-  assertTrue(d.contains("\"default\":\"None\""), "field default")
+  assertTrue(d.contains("\"defaultSource\":\"None\""), "field default")
   assertTrue(
     d.contains("{\"source\":\"id > 0\",\"message\":\"Id must be positive\",\"line\":7,\"column\":3}"),
     "invariant: " + d

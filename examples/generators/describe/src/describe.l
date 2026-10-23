@@ -12,7 +12,7 @@ import Std.Core
 import Std.Collections
 import Lyric.GeneratorSdk
 
-pub func generate(req: in GeneratorRequest): GeneratorResponse {
+pub func generateSource(req: in GeneratorRequest): GeneratorResponse {
   val td = req.typeDescriptor
   val noImports: List[String] = newList()
   val diags: List[GeneratorDiagnostic] = newList()
@@ -50,6 +50,12 @@ func describeOnlyRecords(name: in String): String {
   "Acme.Describe describes records only; '" + name + "' gets no describe()"
 }
 
-func main(): Int {
-  runGenerator(generate)
+// ── The plugin ──────────────────────────────────────────────────────────────
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
+
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
 }

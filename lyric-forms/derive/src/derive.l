@@ -82,7 +82,7 @@ record Model {
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
-pub func generate(req: in GeneratorRequest): GeneratorResponse {
+pub func generateSource(req: in GeneratorRequest): GeneratorResponse {
   val diags: List[GeneratorDiagnostic] = newList()
   val model = buildModel(req, diags)
   var failed = false
@@ -925,6 +925,12 @@ func emitValidate(m: in Model): String {
   s + "  return Ok(value = " + m.typeName + "(" + args + "))\n}\n"
 }
 
-func main(): Int {
-  runGenerator(generate)
+// ── The plugin ──────────────────────────────────────────────────────────────
+@plugin(id = "lyric.forms.derive", version = "0.1.0", publisher = "lyric", implements(SourceGenerator))
+pub record FormsDerivePlugin {}
+
+impl SourceGenerator for FormsDerivePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
 }

@@ -113,7 +113,7 @@ func errorCodes(r: in GeneratorResponse): List[String] {
 }
 
 test "a customer form: draft, field enum, schema and validate" {
-  val r = generate(customer())
+  val r = generateSource(customer())
   assertEqualInt(r.diagnostics.length, 0, "no diagnostics")
   val src = r.lyricSource
   assertTrue(
@@ -189,7 +189,7 @@ test "an invariant without @message is reported by its source" {
     [],
     [InvariantDescriptor(source = "count > 0", message = None, line = 3, column = 3)]
   )
-  val src = generate(req).lyricSource
+  val src = generateSource(req).lyricSource
   assertTrue(
     src.contains("GenForms.CrossField(message = \"Customer: count > 0 does not hold\")"),
     "default message: " + src
@@ -203,14 +203,14 @@ test "an invariant without @message is reported by its source" {
 
 test "a field named like a generated local gets a fresh local" {
   val req = request(Record, [field("d", "String", Primitive, [], []), field("errs", "Bool", Primitive, [], [])], [], [])
-  val src = generate(req).lyricSource
+  val src = generateSource(req).lyricSource
   assertTrue(src.contains("pub func validateCustomer(d_: in CustomerDraft)"), "draft parameter renamed: " + src)
   assertTrue(src.contains("val errs_: List[GenForms.FieldError] = newList()"), "error list renamed")
   assertTrue(src.contains("GenFormsParse.flag(d_.errs)"), "a Bool is a checkbox flag")
 }
 
 test "a union, a generic type and an unsupported field are refused" {
-  assertTrue(errorCodes(generate(request(Union, [], [], []))).contains("FD001"), "FD001 for a union")
+  assertTrue(errorCodes(generateSource(request(Union, [], [], []))).contains("FD001"), "FD001 for a union")
   val boxed = GeneratorRequest(
     generatorArg = "Forms.Derive",
     typeDescriptor = TypeDescriptor(
@@ -224,8 +224,8 @@ test "a union, a generic type and an unsupported field are refused" {
     packageName = "P",
     sourceFile = "p.l"
   )
-  assertTrue(errorCodes(generate(boxed)).contains("FD004"), "FD004 for a generic type")
-  val r = generate(request(Record, [field("lines", "List[Line]", Generic, ["Line"], [])], [], []))
+  assertTrue(errorCodes(generateSource(boxed)).contains("FD004"), "FD004 for a generic type")
+  val r = generateSource(request(Record, [field("lines", "List[Line]", Generic, ["Line"], [])], [], []))
   assertTrue(errorCodes(r).contains("FD002"), "FD002 for a list field")
   assertEqual(r.lyricSource, "", "no code when an error is reported")
   assertEqualInt(r.additionalImports.length, 0, "and no imports")
@@ -233,7 +233,7 @@ test "a union, a generic type and an unsupported field are refused" {
 
 test "@form_parse needs @form_format, and together they edit any type" {
   val half = request(Record, [field("at", "Instant", Named, [], [ann("form_parse", ["parseInstant"])])], [], [])
-  assertTrue(errorCodes(generate(half)).contains("FD003"), "FD003 without @form_format")
+  assertTrue(errorCodes(generateSource(half)).contains("FD003"), "FD003 without @form_format")
   val both = request(
     Record,
     [
@@ -248,7 +248,7 @@ test "@form_parse needs @form_format, and together they edit any type" {
     [],
     []
   )
-  val r = generate(both)
+  val r = generateSource(both)
   assertEqualInt(r.diagnostics.length, 0, "accepted")
   assertTrue(
     r.lyricSource.contains(
@@ -260,7 +260,7 @@ test "@form_parse needs @form_format, and together they edit any type" {
 }
 
 test "@maxLength applies only to text" {
-  val r = generate(request(Record, [field("n", "Long", Primitive, [], [ann("maxLength", ["5"])])], [], []))
+  val r = generateSource(request(Record, [field("n", "Long", Primitive, [], [ann("maxLength", ["5"])])], [], []))
   assertTrue(errorCodes(r).contains("FD005"), "FD005")
 }
 
