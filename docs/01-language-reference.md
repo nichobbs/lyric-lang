@@ -1898,7 +1898,7 @@ flowing un-awaited into a value position); sibling cancellation and
 failure aggregation are not applicable on native — a failing task
 aborts the process (panics abort, D-N-003).
 
-**Multi-threaded scheduler (D214).** A native program started with
+**Multi-threaded scheduler (D217).** A native program started with
 `LYRIC_ASYNC_THREADS=N` (`N >= 2`) runs coroutines on `N` threads: a
 `spawn` queues its task for a worker instead of running its body on the
 spawner, an awaited call still runs hot on the caller, and a suspended

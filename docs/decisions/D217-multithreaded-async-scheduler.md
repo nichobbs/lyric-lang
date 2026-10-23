@@ -1,4 +1,4 @@
-# D214 - A multi-threaded scheduler for native `async` tasks
+# D217 - A multi-threaded scheduler for native `async` tasks
 
 **Status:** accepted, implemented (docs/67 phase G8, #7947; phase 2 of `native/plan/06-async-design.md`); builds on D-N-021, D-N-022 and D202
 
@@ -6,7 +6,7 @@
 
 1. **Opt in with `LYRIC_ASYNC_THREADS=N`, default cooperative.** The scheduler in
    `lyric-rt/src/lyric_async.c` runs in one of two modes, chosen once per process on the first
-   scheduler call. Unset or `1` (and always on wasm32-wasi): the pre-D214 cooperative,
+   scheduler call. Unset or `1` (and always on wasm32-wasi): the pre-D217 cooperative,
    single-threaded, hot-task scheduler, with no lock ever taken and the same behaviour as before.
    `N >= 2` (capped at 256): `N - 1` detached worker threads plus every thread blocked in
    `lyric_task_block_on` run ready coroutines from one shared FIFO queue. The default stays

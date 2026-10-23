@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# async-mt-e2e.sh: the multi-threaded native coroutine scheduler (docs/67 G8, D214).
+# async-mt-e2e.sh: the multi-threaded native coroutine scheduler (docs/67 G8, D217).
 #   - the scheduler's C unit tests, plain, under ThreadSanitizer and under AddressSanitizer
 #     (`make -C lyric-rt test test-tsan test-asan-async`);
 #   - a driver program (recursive fork-join, sleepers and await chains resumed on other threads)

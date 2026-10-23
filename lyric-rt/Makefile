@@ -94,7 +94,7 @@ test-tsan: | $(BUILD)
 	$(SAN_CC) $(CFLAGS) -fsanitize=thread -Iinclude test/lyric_async_mt_test.c $(ASYNC_SANITIZED_SRCS) $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test_tsan
 	TSAN_OPTIONS="halt_on_error=1 exitcode=66" $(BUILD)/lyric_async_mt_test_tsan
 
-# AddressSanitizer run of the multi-threaded coroutine scheduler (docs/67 G8, D214): a frame
+# AddressSanitizer run of the multi-threaded coroutine scheduler (docs/67 G8, D217): a frame
 # destroyed while running, a task freed while still queued, or a leaked task fails the run.
 # `make test-asan-async`
 test-asan-async: | $(BUILD)

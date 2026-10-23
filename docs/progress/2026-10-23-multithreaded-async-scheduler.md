@@ -1,4 +1,4 @@
-# A multi-threaded scheduler for native `async` tasks (docs/67 G8, #7947, D214)
+# A multi-threaded scheduler for native `async` tasks (docs/67 G8, #7947, D217)
 
 - `lyric-rt/src/lyric_async.c`: opt-in multi-threaded mode (`LYRIC_ASYNC_THREADS=N`, N >= 2): worker
   threads plus every `lyric_task_block_on` caller run coroutines from one shared FIFO queue; two-phase
@@ -14,6 +14,6 @@
   `make -C lyric-rt test test-tsan test-asan-async`; `llvm_self_test_async_mt.l` (rendezvous that needs
   three simultaneous task bodies, recursive fork-join, sleepers, protected counter, ASan);
   `lyric-stdlib/tests/async_mt_tsan_main.l` under ThreadSanitizer via `scripts/ci/async-mt-e2e.sh`.
-- Docs: D214, docs/01 section 7.4, docs/67, native/plan/06, book chapter 10 and appendix B, CLAUDE.md.
+- Docs: D217, docs/01 section 7.4, docs/67, native/plan/06, book chapter 10 and appendix B, CLAUDE.md.
 - Open: work stealing and a task-throughput benchmark (#8493), a compile-time sendability check so the
   mode can become the default (#8492), an async I/O reactor (#8494).

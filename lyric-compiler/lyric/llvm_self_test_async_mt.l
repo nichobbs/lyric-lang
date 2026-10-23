@@ -1,5 +1,5 @@
 //! llvm_self_test_async_mt.l — end-to-end self-test for the multi-threaded
-//! native coroutine scheduler (docs/67 G8, D214).  Each case compiles a small
+//! native coroutine scheduler (docs/67 G8, D217).  Each case compiles a small
 //! async program through the full native bridge, then runs the binary with
 //! `LYRIC_ASYNC_THREADS` set, so `spawn`ed tasks start on worker threads
 //! and awaiting coroutines resume on whichever thread finished the awaited

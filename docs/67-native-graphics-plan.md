@@ -25,7 +25,7 @@ and a Breakout sample whose recorded session is replayed headless, in a window u
 `lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
 clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
-tasks has an opt-in multi-threaded mode (D214: `LYRIC_ASYNC_THREADS=N`, a shared run queue, `spawn` started
+tasks has an opt-in multi-threaded mode (D217: `LYRIC_ASYNC_THREADS=N`, a shared run queue, `spawn` started
 on workers, ThreadSanitizer and AddressSanitizer clean; work stealing and a compile-time sendability check
 are follow-ups). G10 is implemented except accessibility (D203, D204: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and

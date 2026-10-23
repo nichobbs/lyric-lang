@@ -798,7 +798,7 @@ void       lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_r
 /* Park the RUNNING task on `dep` / on a timer; suspend right after. */
 void       lyric_async_await(LyricTask* waiter, LyricTask* dep);
 void       lyric_async_sleep(LyricTask* t, int64_t ms);
-/* Multi-threaded scheduler (LYRIC_ASYNC_THREADS=N, N >= 2; docs/67 G8, D214).  A `spawn` call
+/* Multi-threaded scheduler (LYRIC_ASYNC_THREADS=N, N >= 2; docs/67 G8, D217).  A `spawn` call
  * site raises the hint, the callee's prologue asks whether to start deferred on a worker, and
  * every async call is followed by lyric_ramp_done so a registration recorded inside the ramp is
  * published once the coroutine has really suspended.  All three are no-ops in the default

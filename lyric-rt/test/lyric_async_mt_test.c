@@ -1,4 +1,4 @@
-/* lyric_async_mt_test.c - the multi-threaded coroutine scheduler (docs/67 G8, D214).
+/* lyric_async_mt_test.c - the multi-threaded coroutine scheduler (docs/67 G8, D217).
  *
  * The scheduler resumes LLVM coroutine frames through lyric_coro_resume / lyric_coro_destroy,
  * which the generated IR defines.  Here they are defined over FakeCo handles instead: a

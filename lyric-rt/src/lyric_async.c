@@ -20,7 +20,7 @@
  *               it and queues the task instead of running its body on the
  *               spawner, so spawned tasks run in parallel with their
  *               spawner and with each other.  A plain (awaited) call
- *               stays hot on the calling thread.  See D214 for the proof
+ *               stays hot on the calling thread.  See D217 for the proof
  *               obligations and the sanitizer evidence.
  *
  * State machine (a task is in at most one queue at a time):
