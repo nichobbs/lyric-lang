@@ -1,4 +1,4 @@
-# D216 - Native dependency packages are lowered by reachability
+# D218 - Native dependency packages are lowered by reachability
 
 **Status:** accepted, implemented (docs/67, #8429; builds on D203 and the reachability of the bundled standard library)
 

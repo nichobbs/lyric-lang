@@ -1,4 +1,4 @@
-# Native dependency packages are lowered by reachability (#8429, D216)
+# Native dependency packages are lowered by reachability (#8429, D218)
 
 - `compileProjectToNativeWithShape` roots reachability at the project's own packages and lowers the packages of
   path and workspace dependencies like the stdlib closure: an extern nothing reachable calls never names its
