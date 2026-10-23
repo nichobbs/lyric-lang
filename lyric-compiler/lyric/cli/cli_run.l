@@ -465,6 +465,8 @@ func cmdRun(argv: in slice[String]): Int {
     } else if arg == "--all-features" {
       allFeatures = true
       i += 1
+    } else if not haveSource and rejectUnknownOption("run", arg) {
+      return 1
     } else if not haveSource {
       sourcePath = arg
       haveSource = true
@@ -509,6 +511,13 @@ func cmdRun(argv: in slice[String]): Int {
         printUsage()
         return 1
       }
+    }
+    match undeclaredFeaturesError("run", mfPath, cliFeatures) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
     }
     if watch {
       return watchLoop(

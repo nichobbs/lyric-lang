@@ -93,62 +93,23 @@ func compileAndRunSingleJvm(label: in String, source: in String, stdlibSources: 
   result
 }
 
-// ─── #6767: call-reachability must resolve a bare call the same way codegen
-// does ──────────────────────────────────────────────────────────────────────
+// ─── #6767: removed reachability case (D212) ──────────────────────────────────
 //
-// `PkgA` and `PkgB` both export a bare `choose(): Int`.  `PkgA` is bundled
-// FIRST (baseline `collectFileSigsSeeded` runs over `stdlibSources` in list
-// order), so the raw, non-import-aware registry's bare-key winner is `PkgA`.
-// `VictimPkg` imports `PkgA` THEN `PkgB` and calls `choose()` unqualified —
-// codegen's `importAwareRegistry` re-points the bare key to whichever import
-// was scanned LAST (`PkgB`, since imports are scanned in declaration order
-// and each match overwrites the previous one), so the REAL emitted bytecode
-// is `invokestatic PkgB.choose()`.  `PkgB.choose()` deliberately panics in
-// JVM codegen (`old(...)` is unsupported there — "EOld not supported in JVM
-// codegen").  The entry package imports `VictimPkg` and calls `run()`.
-//
-// Before the fix: reachability resolves `choose()` through the raw registry
-// (bare-key first-wins winner `PkgA`), so `PkgA` is marked "referenced" and
-// `PkgB` is NOT — `PkgB`'s panic is silently J003-skipped, and the JAR ships
-// without `PkgB`'s class even though `VictimPkg`'s REAL bytecode invokes it
-// — `NoClassDefFoundError` at runtime on a build that reported success.
-//
-// After the fix: reachability resolves `choose()` through the SAME
-// import-aware view codegen uses, correctly marking `PkgB` referenced —
-// `PkgB`'s panic becomes FATAL, and `compileToJarBundled` returns `false`
-// instead of shipping a broken JAR.
-test "reachability must mark the package codegen actually calls into as referenced (#6767)" {
-  val stdlibSources: List[String] = newList()
-  stdlibSources.add("package PkgA\n" + "\n" + "pub func choose(): Int {\n" + "  1\n" + "}\n")
-  stdlibSources.add("package PkgB\n" + "\n" + "pub func choose(): Int {\n" + "  old(2)\n" + "}\n")
-  stdlibSources.add(
-    "package VictimPkg\n" + "\n" + "import PkgA\n" + "import PkgB\n" + "\n" + "pub func run(): Int {\n" + "  choose()\n" +
-      "}\n"
-  )
-  val source = "package EntryPkg\n" + "\n" + "import VictimPkg\n" + "\n" + "func main(): Int {\n" +
-    "  println(VictimPkg.run())\n" +
-    "  0\n" +
-    "}\n"
-  val ok = compileSingleJvm("reach-mismatch", source, stdlibSources)
-  assertFalse(
-    ok,
-    "reachability_matches_codegen: PkgB.choose() is genuinely invoked (per codegen's own import-aware " +
-      "resolution) so its codegen panic must FAIL the build, not be silently J003-skipped into a broken JAR"
-  )
-}
-
-// A companion test isolating the SAME collision on the SUCCESS path: when
-// neither `PkgC` nor `PkgD` panics, both bare-name-colliding packages must
-// still bundle correctly and the REAL call must land on whichever import was
-// declared LAST (`PkgD`) — pins the codegen-side resolution this whole class
-// of bug depends on, independent of the reachability mismatch above.
-test "bare call to a colliding import resolves to the LAST-declared import at runtime" {
+// The #6767 case drove a bundled package into a codegen panic (`old(...)` in a
+// function body) to show that reachability resolved a colliding bare call the
+// way codegen does.  Bundled packages are type-checked now (#7976): the
+// unqualified `choose()` over two imports that both declare it is `T0123`, and
+// `old(...)` outside `ensures:` is `T0080`, so neither reaches codegen and the
+// case cannot be built from type-correct source.  The surviving case qualifies
+// the call and pins that the package the bytecode really invokes is bundled
+// and runs.
+test "a qualified call into one of two same-named bundled functions lands on the named package" {
   val stdlibSources: List[String] = newList()
   stdlibSources.add("package PkgC\n" + "\n" + "pub func choose(): String {\n" + "  \"from-C\"\n" + "}\n")
   stdlibSources.add("package PkgD\n" + "\n" + "pub func choose(): String {\n" + "  \"from-D\"\n" + "}\n")
   stdlibSources.add(
     "package VictimPkg2\n" + "\n" + "import PkgC\n" + "import PkgD\n" + "\n" + "pub func run(): String {\n" +
-      "  choose()\n" +
+      "  PkgD.choose()\n" +
       "}\n"
   )
   val source = "package EntryPkg2\n" + "\n" + "import VictimPkg2\n" + "\n" + "func main(): Int {\n" +
@@ -156,10 +117,10 @@ test "bare call to a colliding import resolves to the LAST-declared import at ru
     "  0\n" +
     "}\n"
   val result = compileAndRunSingleJvm("bare-collision-success", source, stdlibSources)
-  assertEqualInt(result.exitCode, 0, "bare_collision_success: exit 0 (stderr=" + result.stderr + ")")
+  assertEqualInt(result.exitCode, 0, "qualified_collision: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(
     Str.trim(result.stdout),
     "from-D",
-    "bare_collision_success: unqualified choose() resolves to the last import, PkgD"
+    "qualified PkgD.choose() resolves to PkgD"
   )
 }

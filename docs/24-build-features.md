@@ -157,7 +157,10 @@ every target — takes the features of `--manifest` when given (a
 the file (`Lyric.Discovery.singleFileSourceBuild`
 chooses them for every command), resolved by the rules above. With no
 manifest it has none, and `--features` is error `F0049`: there is no
-`[features]` table to select from.
+`[features]` table to select from. A `--features` name the manifest's
+`[features]` table does not declare is error `F0050` (a manifest with no
+table declares none), from `build`, `run`, `test` and `prove`, so a misspelt
+feature fails the command instead of building without it.
 
 ---
 

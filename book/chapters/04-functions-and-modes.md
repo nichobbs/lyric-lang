@@ -38,7 +38,7 @@ func logMessage(msg: String) {
 }
 ```
 
-`Unit` is not `void`. It is a real type with exactly one value, `()`. You can store it, pass it around, and return it explicitly with `return ()`. This matters for generic code where a type parameter might be instantiated as `Unit`.
+`Unit` is not `void`. It is a real type with exactly one value, `()`. You can store it, pass it around, and return it explicitly with `return ()`. This matters for generic code where a type parameter might be instantiated as `Unit`: `Result[Unit, E]`, `Option[Unit]`, `List[Unit]`, a record with a `Unit` field, a parameter `u: in Unit` and a function value of type `(Unit) -> Unit` all work, identically on .NET, the JVM and native. The value prints as `()`.
 
 ## Parameter modes: `in`, `out`, `inout`
 
@@ -286,6 +286,20 @@ func demoShelf(s: in Shelf): Unit {
   println(toString(s.put(3)))    // 2: put(slot, depth = 0), the only one that accepts an Int
 }
 ```
+
+Free functions and methods of one name that differ in how many parameters they take follow one rule when a call leaves arguments to defaults. A declaration is a candidate when the call fits it (everything the call leaves out has a default, every name it uses is one of the declaration's) and its parameter types accept the arguments. A candidate that the call supplies in full wins; otherwise a name only one candidate declares picks it, and then the one that fills the fewest defaults:
+
+```lyric
+func f(x: in Int, y: in Int = 1): Int { x + y }
+func f(x: in Int, y: in Int = 10, z: in Int = 100): Int { x + y + z }
+
+func demo(a: in Int): Unit {
+  println(toString(f(a)))         // f(x, y = 1): one default, not two
+  println(toString(f(a, 2, 3)))   // the second, supplied in full
+}
+```
+
+If two or more candidates still fill the same number of defaults, the call is ambiguous (`T0200`): name an argument only one of them declares, or pass the parameters of the one you mean. (Candidates fill the same number of defaults only when they take the same number of parameters, which the language already rejects in one package, so this is rare; a method of the type is always preferred to a dot-named function of the same name.)
 
 ## Closures and lambdas
 

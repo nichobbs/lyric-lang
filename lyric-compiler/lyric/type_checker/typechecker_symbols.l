@@ -332,6 +332,18 @@ pub record SymbolTable {
   /// the backends cannot see, and unsigned operands whose lowering depends
   /// on signedness (#7812).
   argConversionSites: Map[String, ArgConversionSite]
+  /// Values of a generic type that flow into a place of the same type over
+  /// a supertype of its type argument (`Result[English, E]` into a
+  /// `Result[Greeter, E]` place, D211), keyed like `recordCopySites`, with
+  /// the name of the helper in `covariantHelpers` that converts the value.
+  /// A backend whose instantiations are distinct runtime types applies
+  /// them after the check (`Lyric.Pipeline`).
+  covariantSites: Map[String, String]
+  /// The conversion functions `covariantSites` name, synthesized by the
+  /// checker (`covariantHelperName`) for the file being checked.
+  covariantHelpers: List[FunctionDecl]
+  /// `covariantHelpers` by the source and target types they convert between.
+  covariantHelperNames: Map[String, String]
   /// Result types of qualified and method calls and of field reads, keyed
   /// like `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
   /// signatures of other packages' non-generic functions (D-progress-969) or
@@ -741,6 +753,9 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     typeArgCalleeSites = newMap(),
     argConversionSites = newMap(),
+    covariantSites = newMap(),
+    covariantHelpers = newList(),
+    covariantHelperNames = newMap(),
     callResultTypes = newMap(),
     localBindingTypeSites = newMap(),
     openBindingSites = newMap(),

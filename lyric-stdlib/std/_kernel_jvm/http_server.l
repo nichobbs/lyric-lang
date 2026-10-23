@@ -151,6 +151,8 @@ extern type JList = "java.util.List"
 
 extern type JHttpsServer = "com.sun.net.httpserver.HttpsServer"
 
+extern type JObjects = "java.util.Objects"
+
 extern type JHttpsConfigurator = "com.sun.net.httpserver.HttpsConfigurator"
 
 extern type JCertificate = "java.security.cert.Certificate"
@@ -653,7 +655,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
   val addr = if host == "*" or host == "+" { JInetSocketAddress.new(port) } else { JInetSocketAddress.new(host, port) }
   val httpsServer: JHttpsServer = JHttpsServer.create(addr, 0)
   httpsServer.setHttpsConfigurator(JHttpsConfigurator.new(ctx))
-  val server: JHttpServer = httpsServer
+  val server: JHttpServer = JObjects.requireNonNull(httpsServer)
   val queue = JQueue.new()
   server.createContext("/", { ex: HttpContext -> admitExchange(ex, queue) })
   server.setExecutor(JExecutors.newVirtualThreadPerTaskExecutor())

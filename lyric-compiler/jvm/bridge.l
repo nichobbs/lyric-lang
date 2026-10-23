@@ -3759,7 +3759,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName)) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -3847,10 +3847,11 @@ pub func compileProjectToJarBundledWithRestored(
           )
           true
         }
-        // A fatal middle-end diagnostic (already reported) aborts the build only
-        // when the package is actually called; an imported-only package whose
-        // middle-end fails is skipped (its bytecode is never invoked).
-        case None -> not reachable
+        // A fatal middle-end diagnostic (already reported) aborts the build.
+        // That includes a type error in a bundled stdlib package (#7976): the
+        // bytecode is built from this source, so an ill-typed kernel must stop
+        // the build as it does on `--target native` (#7933), reachable or not.
+        case None -> false
       }
     } catch Bug as b {
       // Diagnostic code registry (J001-J003 are emitted directly in this file;

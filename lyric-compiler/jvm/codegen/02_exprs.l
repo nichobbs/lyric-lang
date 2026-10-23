@@ -930,6 +930,38 @@ func narrowErasedReceiverJvm(ctx: in FuncCtx, insns: in List[LInsn], recv: in Ex
   }
 }
 
+// Load a captured local into the closure constructor's argument.  A virtual
+// `Unit` local owns no stack value, but the capture field is an `Object`, so
+// the unit value (`null`) is materialised.
+func emitCaptureLocalLoadJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  name: in String,
+  slot: in Int,
+  captureType: in JvmType,
+): Unit {
+  match lookupType(ctx, name) {
+    case Some(JVoid) -> insns.add(LAconstNull)
+    case _ -> emitLoadLocalReadThrough(ctx, insns, slot, captureType)
+  }
+}
+
+// Lower an expression whose result is stored or passed on.  A `Unit`-typed
+// expression that left nothing on the stack (a void call, a virtual `Unit`
+// binding, `()`) is materialised as the unit value (`null`), so the consumer's
+// `Object` slot has something to take.  `func f(): Unit` keeps its `V` return;
+// only an observed result pays for the `aconst_null` (docs/18 "Unit").
+pub func lowerValueExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
+  val t = lowerExpr(ctx, insns, expr)
+  match t {
+    case JVoid -> {
+      insns.add(LAconstNull)
+      JRef(className = "java/lang/Object")
+    }
+    case _ -> t
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -3558,9 +3590,8 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
         )
       }
     }
-    case JVoid -> panic(
-      "Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker"
-    )
+    // The one `Unit` value renders as `()` on every target (D209).
+    case JVoid -> insns.add(LPushString(s = "()"))
     // A void operand left nothing on the stack; silently pushing "" here
     // would mask a type-checker or lowering bug as wrong output (#4685).
     case JArray(_) -> {
@@ -4510,12 +4541,13 @@ func addNameOnceJvm(xs: in List[String], nm: in String): Unit {
   }
 }
 
-// ── Free-variable / bound-name collection over the lambda body ───────────────
+// ── Free-variable collection over the lambda body ────────────────────────────
 // `collectRefNames*` accumulate every single-segment `EPath` reference (a bare
-// identifier) reachable in the body; `collectBoundNames*` accumulate the names
-// the body binds locally (its own `val`/`var`/`let`, `for`/`match` pattern
-// bindings, and nested-lambda params).  The capture set is the references that
-// are neither bound nor lambda params yet resolve to an enclosing-scope slot.
+// identifier) reachable in the body.  The capture set is the references that
+// are not lambda params yet resolve to an enclosing-scope slot.  A name the
+// body rebinds locally is still captured when it names an enclosing slot: the
+// local binding hides it only inside its own scope, and a reference outside
+// that scope (after a `for x` loop, say) reads the capture (#8345).
 func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
   match e.kind {
     case EPath(path) -> {
@@ -4680,201 +4712,6 @@ func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
       collectRefNamesExpr(lhs, acc)
       collectRefNamesExpr(rhs, acc)
     }
-    case _ -> ()
-  }
-}
-
-func collectBoundNamesPattern(p: in Pattern, acc: in List[String]): Unit {
-  match p.kind {
-    case PBinding(name, inner) -> {
-      addNameOnceJvm(acc, name)
-      match inner {
-        case Some(ip) -> collectBoundNamesPattern(ip, acc)
-        case None -> ()
-      }
-    }
-    case PConstructor(_, args) -> {
-      var i = 0
-      while i < args.count {
-        collectBoundNamesPattern(args[i], acc)
-        i = i + 1
-      }
-    }
-    case PRecord(_, fields, _) -> {
-      var i = 0
-      while i < fields.count {
-        match fields[i] {
-          case RPFNamed(_, pat, _) -> collectBoundNamesPattern(pat, acc)
-          case RPFShort(name, _) -> addNameOnceJvm(acc, name)
-        }
-        i = i + 1
-      }
-    }
-    case PTuple(patterns) -> {
-      var i = 0
-      while i < patterns.count {
-        collectBoundNamesPattern(patterns[i], acc)
-        i = i + 1
-      }
-    }
-    case PParen(inner) -> collectBoundNamesPattern(inner, acc)
-    case PTypeTest(inner, _) -> collectBoundNamesPattern(inner, acc)
-    case POr(patterns) -> {
-      var i = 0
-      while i < patterns.count {
-        collectBoundNamesPattern(patterns[i], acc)
-        i = i + 1
-      }
-    }
-    case _ -> ()
-  }
-}
-
-func collectBoundNamesBlock(b: in Block, acc: in List[String]): Unit {
-  var i = 0
-  while i < b.statements.count {
-    collectBoundNamesStmt(b.statements[i], acc)
-    i = i + 1
-  }
-}
-
-func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
-  match s.kind {
-    case SLocal(binding) -> match binding {
-      case LBVal(pat, _, _) -> collectBoundNamesPattern(pat, acc)
-      case LBLet(name, _, _) -> addNameOnceJvm(acc, name)
-      case LBVar(name, _, _) -> addNameOnceJvm(acc, name)
-    }
-    case SFor(_, pat, _, body) -> {
-      collectBoundNamesPattern(pat, acc)
-      collectBoundNamesBlock(body, acc)
-    }
-    case SWhile(_, _, body) -> collectBoundNamesBlock(body, acc)
-    case SLoop(_, body) -> collectBoundNamesBlock(body, acc)
-    case SScope(_, body) -> collectBoundNamesBlock(body, acc)
-    case SDefer(body) -> collectBoundNamesBlock(body, acc)
-    case STry(body, catches, finallyOpt) -> {
-      collectBoundNamesBlock(body, acc)
-      var i = 0
-      while i < catches.count {
-        match catches[i].bindName {
-          case Some(nm) -> addNameOnceJvm(acc, nm)
-          case None -> ()
-        }
-        collectBoundNamesBlock(catches[i].body, acc)
-        i = i + 1
-      }
-      match finallyOpt {
-        case Some(fb) -> collectBoundNamesBlock(fb, acc)
-        case None -> ()
-      }
-    }
-    case SExpr(e) -> collectBoundNamesExpr(e, acc)
-    case _ -> ()
-  }
-}
-
-// Walk an expression for nested `ELambda` nodes and add their params to `acc`.
-// This ensures a lambda param introduced inside an expression statement is
-// counted as bound when computing the outer lambda's capture set.
-func collectBoundNamesExpr(e: in Expr, acc: in List[String]): Unit {
-  match e.kind {
-    case ELambda(lparams, lbody) -> {
-      var i = 0
-      while i < lparams.count {
-        addNameOnceJvm(acc, lparams[i].name)
-        i = i + 1
-      }
-      collectBoundNamesBlock(lbody, acc)
-    }
-    case ECall(fn, args) -> {
-      collectBoundNamesExpr(fn, acc)
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case CAPositional(ae) -> collectBoundNamesExpr(ae, acc)
-          case CANamed(_, ae, _) -> collectBoundNamesExpr(ae, acc)
-        }
-        i = i + 1
-      }
-    }
-    case EBinop(_, lhs, rhs) -> {
-      collectBoundNamesExpr(lhs, acc)
-      collectBoundNamesExpr(rhs, acc)
-    }
-    case EPrefix(_, operand) -> collectBoundNamesExpr(operand, acc)
-    case EParen(inner) -> collectBoundNamesExpr(inner, acc)
-    case EMember(recv, _) -> collectBoundNamesExpr(recv, acc)
-    case ETypeApp(fn, _) -> collectBoundNamesExpr(fn, acc)
-    case EIf(cond, thenB, elseOpt, _) -> {
-      collectBoundNamesExpr(cond, acc)
-      match thenB {
-        case EOBExpr(te) -> collectBoundNamesExpr(te, acc)
-        case EOBBlock(tb) -> collectBoundNamesBlock(tb, acc)
-      }
-      match elseOpt {
-        case Some(eb) -> match eb {
-          case EOBExpr(ee) -> collectBoundNamesExpr(ee, acc)
-          case EOBBlock(eblk) -> collectBoundNamesBlock(eblk, acc)
-        }
-        case None -> ()
-      }
-    }
-    case EMatch(scrut, arms) -> {
-      collectBoundNamesExpr(scrut, acc)
-      var i = 0
-      while i < arms.count {
-        collectBoundNamesPattern(arms[i].pattern, acc)
-        match arms[i].body {
-          case EOBExpr(ae) -> collectBoundNamesExpr(ae, acc)
-          case EOBBlock(ab) -> collectBoundNamesBlock(ab, acc)
-        }
-        i = i + 1
-      }
-    }
-    case EBlock(block) -> collectBoundNamesBlock(block, acc)
-    case EUnsafe(block) -> collectBoundNamesBlock(block, acc)
-    case EList(elems) -> {
-      var i = 0
-      while i < elems.count {
-        collectBoundNamesExpr(elems[i], acc)
-        i = i + 1
-      }
-    }
-    case ETuple(elems) -> {
-      var i = 0
-      while i < elems.count {
-        collectBoundNamesExpr(elems[i], acc)
-        i = i + 1
-      }
-    }
-    case EIndex(recv, idxs) -> {
-      collectBoundNamesExpr(recv, acc)
-      var i = 0
-      while i < idxs.count {
-        collectBoundNamesExpr(idxs[i], acc)
-        i = i + 1
-      }
-    }
-    case EInterpolated(segments) -> {
-      var i = 0
-      while i < segments.count {
-        match segments[i] {
-          case ISExpr(ex) -> collectBoundNamesExpr(ex, acc)
-          case ISText(_, _) -> ()
-        }
-        i = i + 1
-      }
-    }
-    case EAssign(target, _, value) -> {
-      collectBoundNamesExpr(target, acc)
-      collectBoundNamesExpr(value, acc)
-    }
-    case EAwait(inner) -> collectBoundNamesExpr(inner, acc)
-    case ESpawn(inner) -> collectBoundNamesExpr(inner, acc)
-    case ETry(inner) -> collectBoundNamesExpr(inner, acc)
-    case EYield(inner) -> collectBoundNamesExpr(inner, acc)
-    case EPropagate(inner) -> collectBoundNamesExpr(inner, acc)
     case _ -> ()
   }
 }
@@ -5052,7 +4889,7 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
 }
 
 // The capture set: free references resolving to an enclosing slot, minus the
-// lambda's own params and any names bound inside the body.  Order-preserving and
+// lambda's own params.  Order-preserving and
 // deduped so capture-field / ctor-arg / load ordering stays consistent.
 func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body: in Block): List[String] {
   val refs: List[String] = newList()
@@ -5063,7 +4900,6 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
     addNameOnceJvm(bound, lparams[p].name)
     p = p + 1
   }
-  collectBoundNamesBlock(body, bound)
   val caps: List[String] = newList()
   var i = 0
   while i < refs.count {
@@ -5169,7 +5005,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
             case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
           }
         }
-        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+        captures.add(LClosureCapture(captureName = cn, captureType = unitStorageType(cty)))
       }
     }
     ci = ci + 1
@@ -5249,10 +5085,12 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while pi < lparams.count {
     val lp = lparams[pi]
     // A parameter typed by an enclosing type parameter erases to `Object`.
-    val pty = match lp.ty {
-      case Some(te) -> typeExprToJvmErasedExtern(te, ctx.pkgName, ctx.typeParams, ctx.externTypes)
-      case None -> JRef(className = "java/lang/Object")
-    }
+    val pty = unitStorageType(
+      match lp.ty {
+        case Some(te) -> typeExprToJvmErasedExtern(te, ctx.pkgName, ctx.typeParams, ctx.externTypes)
+        case None -> JRef(className = "java/lang/Object")
+      }
+    )
     val pslot = allocSlot(bodyCtx, lp.name, pty)
     bodyInsns.add(LAload(slot = argsSlot))
     bodyInsns.add(LIconst(v = pi))
@@ -5334,7 +5172,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
+        case Some(s) -> emitCaptureLocalLoadJvm(ctx, insns, cap.captureName, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.
@@ -5707,7 +5545,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
             case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> objTy }
           }
         }
-        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+        captures.add(LClosureCapture(captureName = cn, captureType = unitStorageType(cty)))
       }
     }
     ci = ci + 1
@@ -5817,7 +5655,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
       }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
+        case Some(s) -> emitCaptureLocalLoadJvm(ctx, insns, cap.captureName, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.

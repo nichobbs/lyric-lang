@@ -295,7 +295,7 @@ extern func rtSockPeerString(fd: Int): String = "lyric_sock_peer_string"
 // targets (unlike its behaviour on a LISTENING socket, which is Linux-only
 // and is why `hostStopListener` below uses the wake-pipe seam instead;
 // issue #6806). Bound through lyric-rt so a target without BSD sockets
-// (wasm32-wasi, and Windows until the Winsock port, #8434) still links.
+// (wasm32-wasi) still links.
 extern func rtShutdown(fd: Int, how: Int): Int = "lyric_sock_shutdown"
 
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"

@@ -56,6 +56,8 @@ extern type Match = "java.util.regex.Matcher"
 
 extern type JCharSequence = "java.lang.CharSequence"
 
+extern type JString = "java.lang.String"
+
 extern type JSystem = "java.lang.System"
 
 // ─── Compilation ─────────────────────────────────────────────────────────────
@@ -148,7 +150,7 @@ impl JCharSequence for DeadlineChars {
   // Group and replacement extraction copy out a plain `String`; the engine
   // never matches against a sub-sequence, so it needs no deadline of its own.
   func subSequence(from: in Int, until: in Int): JCharSequence {
-    self.text.substring(from, until - from)
+    JString.valueOf(self.text.substring(from, until - from))
   }
 
   func toString(): String {

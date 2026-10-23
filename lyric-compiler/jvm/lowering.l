@@ -52,11 +52,22 @@ pub func typeDescriptor(t: in JvmType): String {
   }
 }
 
+// `Unit` is an ordinary one-valued type (docs/18 "Unit"): a slot that must hold
+// it -- a parameter, a field, a captured or bound local -- is an `Object`
+// carrying `null`.  Only a method *return* keeps `V`, and only an expression
+// nothing observes lowers to `JVoid` (no stack value).
+pub func unitStorageType(t: in JvmType): JvmType {
+  match t {
+    case JVoid -> JRef(className = "java/lang/Object")
+    case _ -> t
+  }
+}
+
 pub func buildDescriptor(params: in List[JvmType], ret: in JvmType): String {
   var desc = "("
   var i = 0
   while i < params.count {
-    desc = desc + typeDescriptor(params[i])
+    desc = desc + typeDescriptor(unitStorageType(params[i]))
     i = i + 1
   }
   desc = desc + ")" + typeDescriptor(ret)

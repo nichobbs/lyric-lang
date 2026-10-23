@@ -93,6 +93,7 @@ for t in \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/unit_value_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/generic_ctor_widening_self_test.l \
@@ -110,6 +111,7 @@ for t in \
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
+  lyric-compiler/lyric/lambda_gaps_batch_self_test.l \
   lyric-compiler/lyric/literal_arg_shape_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
@@ -124,6 +126,8 @@ for t in \
   lyric-compiler/lyric/structural_equality_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
+  lyric-compiler/lyric/default_overload_self_test.l \
+  lyric-compiler/lyric/covariant_conversion_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \

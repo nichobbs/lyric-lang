@@ -305,8 +305,9 @@ output with non-ASCII characters work whatever the console code page. Child
 processes work as on Linux; a bare program name is looked up on `PATH` (never
 in the current directory), and a batch file (`.bat`, `.cmd`) is refused, since
 Windows would run it through `cmd.exe`: spawn `cmd.exe` with `/c` yourself if
-that is what you want. Sockets and TLS are not ported yet: a program that uses
-them builds, and the connect fails with its usual typed error.
+that is what you want. Sockets and HTTPS work too: TLS is Windows' own
+Schannel, so certificates are checked against the Windows certificate store
+and no OpenSSL is needed. TLS 1.3 needs Windows 11 or Server 2022.
 
 To call a program from JavaScript add `--shape module`; to publish it as a WebAssembly
 component add `--shape component`. Both, host imports, the `[wasm]` and `[npm]` manifest
@@ -621,7 +622,7 @@ See Appendix B §B.9 for the full module reference, and each library's `README.m
 
 1. **Different entry points**
 
-   Lyric's `main` function name is a convention, not a keyword. What happens if you rename it to `run`? Try it and see what error the compiler produces. Then look up how `lyric build --entrypoint` changes the convention.
+   Lyric's `main` function name is a convention, not a keyword. What happens if you rename it to `run`? Try it and see what error the compiler produces.
 
 2. **Named construction and `.copy()`**
 

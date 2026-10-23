@@ -3068,6 +3068,18 @@ func candidateArgsCompatible(
   (not conflict) and matchCount > 0
 }
 
+// How many parameters of `decl` a call writing `args` leaves to their
+// defaults, or -1 when the call does not fit it (`callDefaultsFilled`).
+func declDefaultsFilledMono(decl: in FunctionDecl, args: in List[CallArg]): Int {
+  val names: List[String] = newList()
+  val defaults: List[Bool] = newList()
+  for p in decl.params {
+    names.add(p.name)
+    defaults.add(isSome(p.dflt))
+  }
+  callDefaultsFilled(names, defaults, 0, args)
+}
+
 // Resolve a call site against `fname`'s ambiguous overload set (see
 // `MonoState.ambiguousFuncOverloads`): filter by argument COUNT first
 // (`del1(s: String)` vs `del2(b: SomeRecord, k: String)` sharing the name
@@ -3088,13 +3100,32 @@ func resolveAmbiguousOverload(
   match mapGet(state.ambiguousFuncOverloads, fname) {
     case None -> None
     case Some(cands) -> {
-      val arityMatched: List[FunctionDecl] = newList()
-      var i = 0
-      while i < cands.count {
-        if cands[i].params.count == args.count {
-          arityMatched.add(cands[i])
+      // The rule the type checker binds the call by (#8355): of the
+      // declarations the call fits, those whose parameter types the known
+      // argument types do not contradict, and of those the ones that leave the
+      // fewest parameters to their defaults.
+      val fitting: List[FunctionDecl] = newList()
+      for c in cands {
+        if declDefaultsFilledMono(c, args) >= 0 {
+          fitting.add(c)
         }
-        i = i + 1
+      }
+      val typeFit: List[FunctionDecl] = newList()
+      if fitting.count > 1 {
+        for c in fitting {
+          if candidateArgsCompatible(state, env, c, args) {
+            typeFit.add(c)
+          }
+        }
+      }
+      val pool = if typeFit.count > 0 { typeFit } else { fitting }
+      val arityMatched: List[FunctionDecl] = newList()
+      val fills: List[Int] = newList()
+      for c in pool {
+        fills.add(declDefaultsFilledMono(c, args))
+      }
+      for i in fewestDefaultsCandidates(fills) {
+        arityMatched.add(pool[i])
       }
       val bodyOrigin = state.originScope[state.originScope.count - 1]
       val ownPkg: List[FunctionDecl] = newList()

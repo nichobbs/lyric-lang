@@ -2667,6 +2667,20 @@ pub func resolveFeatureSelection(
   (activeFeatures, mfDeclared)
 }
 
+/// The names in `cliFeatures` that the manifest's `[features]` table does not
+/// declare, in command-line order without repeats; a manifest with no
+/// `[features]` table declares none (#8362).
+pub func undeclaredCliFeatures(mfText: in String, mfPath: in String, cliFeatures: in List[String]): List[String] {
+  val declared = readFeatureDeclaredFromToml(mfText, mfPath)
+  val missing: List[String] = newList()
+  for f in cliFeatures {
+    if not declared.contains(f) and not missing.contains(f) {
+      missing.add(f)
+    }
+  }
+  missing
+}
+
 /// Whether `name` is the plain feature name the ecosystem's `[features]`
 /// tables pair with a compile target (`dotnet`, `jvm`, `native`).
 pub func isTargetFeatureName(name: in String): Bool {

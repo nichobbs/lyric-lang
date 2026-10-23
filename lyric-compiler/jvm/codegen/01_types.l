@@ -1498,6 +1498,16 @@ pub func typeExprToJvmErasedExternL(
   externTypes: in Map[String, String],
   localTypeNames: in Map[String, Bool],
 ): JvmType {
+  unitStorageType(typeExprToJvmErasedExternLRaw(te, pkgName, typeParams, externTypes, localTypeNames))
+}
+
+func typeExprToJvmErasedExternLRaw(
+  te: in TypeExpr,
+  pkgName: in String,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+  localTypeNames: in Map[String, Bool],
+): JvmType {
   match te.kind {
     case TGenericApp(head, _) -> {
       val isBareLocal = head.segments.count == 1 and localTypeNames.containsKey(head.segments[0])
@@ -1507,7 +1517,7 @@ pub func typeExprToJvmErasedExternL(
         typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
       }
     }
-    case TParen(inner) -> typeExprToJvmErasedExternL(inner, pkgName, typeParams, externTypes, localTypeNames)
+    case TParen(inner) -> typeExprToJvmErasedExternLRaw(inner, pkgName, typeParams, externTypes, localTypeNames)
     case _ -> typeExprToJvmErasedExtern(te, pkgName, typeParams, externTypes)
   }
 }

@@ -85,6 +85,18 @@ pub union FCmpPred {
 /// Render an `NType` as its `.ll` spelling.  Struct types render as the
 /// `%Name` reference; the definition line is emitted separately by
 /// `Lyric.LlvmIr.emitTypeDefn`.
+/// `Unit` is an ordinary one-valued type (native/plan/03-type-mapping.md,
+/// "Unit"): wherever it occupies an operand slot -- a function or function-
+/// pointer parameter, a call argument -- it is an `i8` placeholder carrying
+/// no data.  Only a *return* type renders `void`, and an expression nothing
+/// observes keeps the `NVoid` type in the codegen (no SSA value).
+pub func unitOperandType(t: in NType): NType {
+  match t {
+    case NVoid -> NI8
+    case _ -> t
+  }
+}
+
 pub func nTypeToIrString(t: in NType): String {
   match t {
     case NVoid -> "void"
@@ -104,7 +116,7 @@ pub func nTypeToIrString(t: in NType): String {
         if i > 0 {
           acc = acc + ", "
         }
-        acc = acc + nTypeToIrString(params[i])
+        acc = acc + nTypeToIrString(unitOperandType(params[i]))
         i = i + 1
       }
       acc + ")*"

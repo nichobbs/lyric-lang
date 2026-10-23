@@ -92,6 +92,9 @@ for t in \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
+  lyric-compiler/lyric/default_overload_self_test.l \
+  lyric-compiler/lyric/covariant_conversion_self_test.l \
+  lyric-compiler/lyric/default_overload_diag_self_test.l \
   lyric-compiler/lyric/method_default_widening_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l \
@@ -104,6 +107,7 @@ for t in \
   lyric-compiler/lyric/generic_extern_methodspec_self_test.l \
   lyric-compiler/lyric/generic_extern_param_self_test.l \
   lyric-compiler/lyric/auto_ffi_generic_setter_self_test.l \
+  lyric-compiler/lyric/extern_upcast_self_test.l \
   lyric-compiler/lyric/enum_msil_self_test.l \
   lyric-compiler/lyric/contract_meta_self_test.l \
   lyric-compiler/lyric/annotation_meta_emit_self_test.l \
@@ -131,6 +135,7 @@ for t in \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
+  lyric-compiler/lyric/lambda_gaps_batch_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
@@ -195,6 +200,7 @@ for t in \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/unit_value_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
   lyric-compiler/lyric/format_builtin_self_test.l \
@@ -376,6 +382,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/single-file-features-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/single-file-features-e2e.sh
   ran="$ran single-file-features-e2e"
+fi
+# #8321 / #8362: unknown options and surplus positionals are errors, and a
+# `--features` name the manifest does not declare is F0050.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/cli-args-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/cli-args-e2e.sh
+  ran="$ran cli-args-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2

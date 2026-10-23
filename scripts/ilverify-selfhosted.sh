@@ -229,6 +229,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/async_sm_self_test.l
   lyric-compiler/lyric/aspect_weave_self_test.l
   lyric-compiler/lyric/method_default_args_self_test.l
+  lyric-compiler/lyric/default_overload_self_test.l
+  lyric-compiler/lyric/covariant_conversion_self_test.l
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l
   lyric-compiler/lyric/closure_shadow_self_test.l
@@ -244,6 +246,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/inout_aliasing_self_test.l
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l
+  lyric-compiler/lyric/unit_value_self_test.l
   lyric-compiler/lyric/member_local_shadow_self_test.l
   lyric-compiler/lyric/member_local_shadow_panics_self_test.l
   lyric-compiler/lyric/literal_arg_shape_self_test.l
@@ -299,6 +302,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/slice_func_unit_elem_self_test.l
   lyric-compiler/lyric/slice_func_tolist_self_test.l
   lyric-compiler/lyric/closure_correctness_self_test.l
+  lyric-compiler/lyric/lambda_gaps_batch_self_test.l
 )
 st_errors=0
 st_failed=()

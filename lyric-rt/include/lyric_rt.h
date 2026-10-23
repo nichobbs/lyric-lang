@@ -1132,8 +1132,10 @@ void* lyric_tls_client_new_additive(const char* ca_pem, int32_t min_version, int
 
 /* Present a client certificate + key on `client_ctx` for mutual TLS.
  * `key_pem` must be an unencrypted PKCS#8 key ("BEGIN PRIVATE KEY").
- * Returns 0 on success, -1 on a load / cert-key-mismatch failure
- * (last_error set). */
+ * Call it before the context's first `lyric_tls_client_connect`: the
+ * connections share the context's credential, so a later call fails.
+ * Returns 0 on success, -1 on a load / cert-key-mismatch failure or a call
+ * after the first connection (last_error set). */
 int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, const char* key_pem);
 
 /* Perform the CLIENT handshake over the already-connected `fd`.  SNI and

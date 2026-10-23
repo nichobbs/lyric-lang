@@ -14,9 +14,20 @@ missing or ambiguous, file an issue before inventing a representation.
 | `Long` | `i64` | 64-bit signed integer |
 | `Float` | `double` | 64-bit IEEE 754 double |
 | `Bool` | `i1` | 1-bit; `true` = 1, `false` = 0 |
-| `Unit` | `void` (return) / absent (field) | Functions returning Unit emit `ret void` |
+| `Unit` | `void` (return) / `i8` placeholder (any other slot) | See "`Unit`" below (D209) |
 | `Byte` | `i8` | Unsigned 8-bit (for `slice[Byte]`, I/O buffers) |
 | `Char` | `i32` | Unicode scalar value; NOT a character in a string buffer |
+
+**Note on `Unit` (D209):** `Unit` is an ordinary type with exactly one value.
+A function that returns it emits `ret void`, and an expression of type `Unit`
+that nothing reads has no SSA value (the codegen's `NVoid`).  Everywhere else
+the one value is materialised as an `i8` placeholder that carries no data: a
+function or function-pointer parameter is `i8` and a call passes `i8 undef`
+(`Lyric.LlvmIr` prints an `NVoid` operand that way; only a return type prints
+`void`), a record or union field keeps one `i8` slot, a closure capture field
+is `i8`, and a `List`/`Map`/`Task` slot holds the zero word.  A `Unit`
+parameter or capture is a virtual binding inside the callee: the incoming
+placeholder is ignored and a read of it yields the unit value.
 
 **Note on `Char`:** Lyric's `Char` represents a Unicode scalar value (U+0000 to
 U+10FFFF). It is stored as `i32`. It is NOT a UTF-8 code unit — `String` stores
