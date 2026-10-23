@@ -55,16 +55,7 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP "inst1"
           $w = Join-Path $env:RUNNER_TEMP "smoke"
           New-Item -ItemType Directory -Force -Path $w | Out-Null
-          @"
-          @test_module
-          package SmokeTests
-
-          import Std.Testing
-
-          test "one" {
-            assertEqualInt(1, 1, "one")
-          }
-          "@ | Set-Content -Path "$w\smoke_tests.l"
+          Copy-Item scripts/ci/windows-smoke/smoke_tests.l $w
           Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue
           Write-Host "TEMP=$env:TEMP TMP=$env:TMP"
           Push-Location $w
