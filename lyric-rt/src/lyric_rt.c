@@ -112,7 +112,7 @@ void lyric_release(void* obj) {
     LyricObjectHeader* h = (LyricObjectHeader*)obj;
     int32_t current = atomic_load_explicit(&h->rc, memory_order_relaxed);
     if (current == INT32_MAX) return; /* static object */
-    if (atomic_fetch_sub_explicit(&h->rc, 1, memory_order_release) == 1) {
+    if (atomic_fetch_sub_explicit(&h->rc, 1, LYRIC_RC_DEC_ORDER) == 1) {
         /* The acquire fence pairs with the release decrement so every
          * write made by other threads (while they held their strong
          * refs) is visible to the destructor. */

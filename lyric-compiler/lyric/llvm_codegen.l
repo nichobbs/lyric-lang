@@ -9183,7 +9183,17 @@ func emitAsyncCall(
   wantTask: in Bool,
 ): NVal {
   val dest = freshTmp(ctx)
+  if wantTask {
+    // `spawn`: let a multi-threaded scheduler start the callee on a worker
+    // (the callee's prologue consumes the hint; see lyric_task_defer_start).
+    val hintArgs: List[NArg] = newList()
+    insns.add(NCallVoid(fn = NGlobal(name = "lyric_spawn_hint"), args = hintArgs))
+  }
   insns.add(NCall(dest = dest, retTy = NPtr(pointee = NI8), fn = NGlobal(name = irName), args = callArgs))
+  // The ramp has returned, so a registration it recorded can be published to
+  // a multi-threaded scheduler (a no-op otherwise).
+  val rampDoneArgs: List[NArg] = newList()
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_ramp_done"), args = rampDoneArgs))
   val tty = taskNType(ctx, elem)
   val cast = freshTmp(ctx)
   insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = dest), toTy = tty))
@@ -16574,6 +16584,40 @@ func lowerFunctionEnv(
       )
     )
     ctx.curAsyncTask.add("coro.task")
+    // Deferred start (docs/67 G8, multi-threaded scheduler): a `spawn` call
+    // site raised the spawn hint just before this ramp, and when the
+    // scheduler runs on several threads `lyric_task_defer_start` consumes it
+    // and queues the task, so the first suspend point here hands the whole
+    // body to a worker.  With the default single-threaded scheduler it
+    // always returns 0 and the task stays hot.
+    body.add(
+      NCall(
+        dest = "coro.defer",
+        retTy = NI32,
+        fn = NGlobal(name = "lyric_task_defer_start"),
+        args = arg1(p8, NLocal(name = "coro.task"))
+      )
+    )
+    body.add(
+      NICmp(
+        dest = "coro.defer.b",
+        pred = INe,
+        ty = NI32,
+        a = NLocal(name = "coro.defer"),
+        b = NLitInt(v = 0i64, ty = NI32)
+      )
+    )
+    body.add(NCondBr(cond = NLocal(name = "coro.defer.b"), thenLabel = "coro.defer.susp", elseLabel = "coro.defer.cont"))
+    body.add(NLabel(name = "coro.defer.susp"))
+    val dsArgs: List[NArg] = newList()
+    dsArgs.add(NArg(ty = NToken, value = NLitTokenNone))
+    dsArgs.add(NArg(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+    body.add(NCall(dest = "coro.ds", retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = dsArgs))
+    val dsCases: List[NSwitchCase] = newList()
+    dsCases.add(NSwitchCase(matchVal = 0i64, label = "coro.defer.cont"))
+    dsCases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
+    body.add(NSwitch(ty = NI8, scrutinee = NLocal(name = "coro.ds"), defaultLabel = "coro.exit", cases = dsCases))
+    body.add(NLabel(name = "coro.defer.cont"))
   }
   // Parameters land in allocas so `var`-style reads/writes and address
   // uniformity hold; mem2reg cleans this up at -O1+.  `in` params are
@@ -16919,6 +16963,9 @@ func asyncRuntimeDecls(): List[NFunc] {
   decls.add(mkDecl1("llvm.coro.resume", NVoid, p8))
   decls.add(mkDecl1("llvm.coro.destroy", NVoid, p8))
   decls.add(mkDecl1("lyric_task_new", p8, p8))
+  decls.add(mkDecl1("lyric_task_defer_start", NI32, p8))
+  decls.add(mkDeclN("lyric_spawn_hint", NVoid, noTys))
+  decls.add(mkDeclN("lyric_ramp_done", NVoid, noTys))
   decls.add(mkDecl3("lyric_task_complete", NVoid, p8, NI64, NI32))
   decls.add(mkDecl1("lyric_task_result", NI64, p8))
   decls.add(mkDecl1("lyric_task_is_complete", NI32, p8))

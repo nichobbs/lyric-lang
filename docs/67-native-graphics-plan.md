@@ -24,8 +24,10 @@ deterministic core with PNG and WAV decoding, a native frame loop with input rec
 and a Breakout sample whose recorded session is replayed headless, in a window under Xvfb, and in
 `lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
-clean, which also fixed a race in the protected-type monitor); the coroutine scheduler for `async`
-tasks is still single-threaded (#7947). G10 is implemented except accessibility (D203, D204: the native
+clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
+tasks has an opt-in multi-threaded mode (D214: `LYRIC_ASYNC_THREADS=N`, a shared run queue, `spawn` started
+on workers, ThreadSanitizer and AddressSanitizer clean; work stealing and a compile-time sendability check
+are follow-ups). G10 is implemented except accessibility (D203, D204: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
 AccessKit and the macOS screen-reader smoke test remain, #8430, as do bidirectional carets, #8410, and
