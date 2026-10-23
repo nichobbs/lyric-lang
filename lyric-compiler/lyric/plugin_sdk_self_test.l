@@ -25,9 +25,7 @@ func api(): String {
     "\n" +
     "alias Name = String\n" +
     "\n" +
-    "pub type Age = Int range 0 ..= 150\n" +
-    "\n" +
-    "/// A greeting.\npub exposed record Greeting {\n  text: Name\n  age: Age\n  big: ULong\n  mood: Mood = Mood.Sad\n  note: Option[String]\n  data: List[Byte]\n  scores: Map[String, Long] = []\n  pair: (Int, Char)\n  extra: JsonValue\n}\n" +
+    "/// A greeting.\npub exposed record Greeting {\n  text: Name\n  age: Int\n  big: ULong\n  mood: Mood = Mood.Sad\n  note: Option[String]\n  data: List[Byte]\n  scores: Map[String, Long] = []\n  pair: (Int, Char)\n  extra: JsonValue\n}\n" +
     "\n" +
     "pub union GreetError {\n  case BadName(name: String)\n}\n" +
     "\n" +
@@ -113,7 +111,6 @@ test "the model reads points, capabilities and reachable types" {
   assertEqual(declKind(m, "DocRef"), "handle", "handle")
   assertEqual(declKind(m, "Greeting"), "record", "record")
   assertEqual(declKind(m, "Name"), "missing", "an alias crosses as what it names")
-  assertEqual(declKind(m, "Age"), "missing", "a range subtype crosses as its underlying type")
 }
 
 test "boundary types take their D207 encodings" {
@@ -122,7 +119,7 @@ test "boundary types take their D207 encodings" {
     case Some(d) -> match d.kind {
       case KRecord(fields) -> {
         assertEqual(canonType(fields[0].ty), "String", "alias expanded")
-        assertEqual(canonType(fields[1].ty), "Int", "range subtype as Int")
+        assertEqual(canonType(fields[1].ty), "Int", "Int")
         assertEqual(canonType(fields[2].ty), "ULong", "ULong")
         assertEqual(canonType(fields[5].ty), "List[Byte]", "bytes")
         assertEqual(canonType(fields[7].ty), "(Int, Char)", "tuple")
@@ -337,4 +334,11 @@ test "generator-specific name clashes and unknown languages" {
 
 test "quoted strings are valid in every target language" {
   assertEqual(quoteString("a\"b\\c\nd\u{0001}"), "\"a\\\"b\\\\c\\nd\\u0001\"", "escapes")
+}
+
+test "a distinct type or range subtype without @plugin_handle cannot cross" {
+  val distinct = withPoint("pub type Meters = Double\n", "  func f(m: in Meters): Result[Int, String]\n")
+  assertTrue(hasError(distinct, "the distinct type Meters cannot cross a plugin boundary"), errorsText(distinct.errors))
+  val ranged = withPoint("pub type Age = Int range 0 ..= 150\n", "  func f(a: in Age): Result[Int, String]\n")
+  assertTrue(hasError(ranged, "the distinct type Age cannot cross a plugin boundary"), errorsText(ranged.errors))
 }

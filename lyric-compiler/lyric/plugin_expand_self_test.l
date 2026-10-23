@@ -337,6 +337,11 @@ test "point items" {
     "editorExtensionContributions",
     "editorExtensionContributions(host: PluginHost): List[EditorExtensionContribution]"
   )
+  expectFunc(
+    r,
+    "editorExtensionContributionIssues",
+    "editorExtensionContributionIssues(host: PluginHost): List[PluginLoadIssue]"
+  )
   expectFunc(r, "editorExtensionPointInfo", "editorExtensionPointInfo(): PluginPointInfo")
   expectFunc(
     r,
@@ -599,6 +604,15 @@ test "K0006: a plugin without an id" {
       "@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(): Result[Int, String]\n}\n\n@plugin(version = \"1.0.0\", implements(Pt))\npub record X {\n}\n\nimpl Pt for X {\n  func f(): Result[Int, String] {\n    Ok(value = 1)\n  }\n}\n",
     "K0006",
     "missing id"
+  )
+}
+
+test "K0006: a plugin version that is not major.minor.patch" {
+  expectDiag(
+    head() +
+      "@plugin_point(version = \"1.0\")\npub interface Pt {\n  func f(): Result[Int, String]\n}\n\n@plugin(id = \"a\", version = \"1.2\", publisher = \"p\", implements(Pt))\npub record X {\n}\n\nimpl Pt for X {\n  func f(): Result[Int, String] {\n    Ok(value = 1)\n  }\n}\n",
+    "K0006",
+    "two-part plugin version"
   )
 }
 

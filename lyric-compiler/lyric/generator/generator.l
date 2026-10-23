@@ -1,7 +1,7 @@
 //! generator/generator.l — Lyric.Generator
 //!
 //! Source-text pre-processor for custom `@generate(Pkg.Name)` annotations
-//! (docs/40, D075, D150).
+//! (docs/40, D075, D150, D207).
 //!
 //! `Lyric.Cli` reads each source file of a project and calls `preprocess`
 //! before parsing.  For each `@generate(X.Y)` annotation (dotted names only;
@@ -10,8 +10,11 @@
 //!   1. Checks the generator is declared in the consumer's `[dependencies]`
 //!      and is a built `kind = "source-generator"` package (the CLI builds
 //!      each one for dotnet and passes its DLL in a `GeneratorSet`).
-//!   2. Runs it as `dotnet exec <dll>` with the GeneratorRequest JSON on
-//!      stdin and decodes the GeneratorResponse on stdout.
+//!   2. Hosts it as a `Lyric.GeneratorSdk.SourceGenerator` plugin
+//!      (Std.Plugin, process mode, a dotnet payload probed with
+//!      `--lyric-plugin-manifest`), calls `generate` with the
+//!      GeneratorRequest and decodes the GeneratorResponse it returns,
+//!      serving `ProjectRead` for the project's files.
 //!   3. Checks the generated code parses, then appends it, and places its
 //!      `additionalImports` after the `package` line.
 //!

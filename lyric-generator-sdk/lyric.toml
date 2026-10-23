@@ -1,15 +1,16 @@
-# lyric-generator-sdk — Types and driver for Lyric custom source generators.
+# lyric-generator-sdk - the SourceGenerator plugin point for Lyric custom
+# source generators.
 #
-# Generator authors depend on this package to get the GeneratorRequest /
-# GeneratorResponse contract types and the runGenerator driver that wires
-# stdin/stdout JSON I/O.
+# Generator authors depend on this package for the GeneratorRequest /
+# GeneratorResponse types, the SourceGenerator point and the ProjectRead
+# capability; a generator is a @plugin record implementing SourceGenerator.
 #
-# See docs/40-source-generators.md and D075.
+# See docs/40-source-generators.md, docs/69-plugins.md, D075 and D207.
 
 [package]
 name        = "Lyric.GeneratorSdk"
-version     = "1.0.0"
-description = "Types and driver for Lyric custom source generators."
+version     = "2.0.0"
+description = "The SourceGenerator plugin point for Lyric custom source generators."
 authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 

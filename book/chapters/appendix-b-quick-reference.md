@@ -1671,7 +1671,7 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0011` | A `@protocol_point` interface with members. |
 | `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records. |
 
-At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch).
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

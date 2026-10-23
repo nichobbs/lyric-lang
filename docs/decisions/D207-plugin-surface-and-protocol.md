@@ -310,6 +310,98 @@ runtime's to define; the generated code uses only the names above.
   unloads it.
 - **Q-PLG-010** (plugins declaring points): still deferred.
 
+## Implementation notes
+
+The implementation (`Lyric.PluginExpand`, `Std.Plugin`, `Lyric.PluginManifest`,
+`lyric plugin`, `Lyric.Generator`) differs from the text above in these points;
+where they disagree, these notes are the shipped behaviour.
+
+- **`target`, not `impl`.** `impl` is a keyword, so the generated capability
+  server is `pub record <C>Server { target: C }`, the provider constructor is
+  `pub func <c>Provider(target: in C): CapabilityProvider` and the point
+  dispatcher is `pluginDispatch<P>(target: in P, method, params)`. The plugin
+  record's server is `record <R>Server { var held: Option[R] = None }`,
+  private to the plugin package.
+- **Generated methods are dot-named.** `<C>Client` and `<P>Remote` methods are
+  top-level functions `pub func <C>Client.<m>(__stub: in <C>Client, ...)`, the
+  docs/01 method form, so they are called as `client.m(...)`.
+- **Protocol points and contributions.** A `@protocol_point` may declare
+  `contributions = K`; it then gets `<P>Contribution` and `<p>Contributions`
+  like a plugin point, and a plugin implementing it needs a
+  `@plugin_contributions(P)` function. A protocol point gets no `<P>Remote`
+  and no `pluginDispatch<P>`. `@protocol_point` takes an optional
+  `version = "major.minor"`, defaulting to `"1.0"`.
+- **`grant =` and `contributions =` name a type.** The argument is a type
+  name (optionally package-qualified), not a type expression; anything else is
+  K0006. A generic or `Option` contributions or grant type is written as a
+  named record that holds it.
+- **K0001 is wider than the boundary-type table suggests.** Besides the
+  exclusions of docs/69 §5 it reports `Option[T]` where `T`'s encoding can
+  already be `null` (`Option[Option[T]]`, `Option[Unit]`,
+  `Option[JsonValue]`), a union case with positional fields (a boundary union
+  needs named fields), a generic record, union or alias, a distinct type that
+  is not `@plugin_handle`, a range type, a fixed-size array, a `Map` with
+  non-`String` keys, and a generic type other than `Option`, `Result`, `List`,
+  `slice` and `Map[String, T]`.
+- **Distinct types cross only as handles in both tools.** `Lyric.PluginSdk`
+  (`lyric plugin sdk`) applies K0001's rule: an alias crosses as the type it
+  names, and a distinct type or range subtype without `@plugin_handle` is an
+  error, as in `Lyric.PluginExpand`.
+- **K0000.** If the pass ever generates text that does not parse, it reports
+  K0000 ("internal error ... please report it") instead of handing a broken
+  file to the type checker.
+- **The plugin's own version** is a semantic version, `major.minor.patch` with
+  an optional `-prerelease` and `+build` suffix, in `@plugin(version = ...)`
+  (K0006), in `Std.Plugin`'s manifest reader and in `lyric plugin check`, so
+  a plugin that compiles always has a manifest that loads. Point and
+  capability versions stay `major.minor`.
+- **Artifact directories are checked strictly.** `lyric plugin check` (and the
+  end of `lyric plugin pack`) requires the directory to be named
+  `<id>-<version>`, `schema` to be `1`, a non-empty `publisher`, at least one
+  point, and every payload path to be relative, `/`-separated and inside the
+  directory, and reports every problem at once. A plugin id is dot-separated
+  segments of letters, digits, `-` and `_`. `pack` refuses a jvm payload for a
+  package with `[maven]` dependencies, which a `java -jar` payload cannot
+  load.
+- **The wasm payload key is `module`**, as written in Decision 5; the runtime
+  calls the case `WasmPayload(wasmModule)`. A host prefers a native payload
+  for its own os and arch, then a managed payload of its own runtime, then the
+  other managed runtime (dotnet before jvm); a wasm payload comes first when
+  `preferWasm` is set and `wasmtime` is found, and last otherwise. The memory
+  ceiling is `PluginHostConfig.wasmMaxMemoryBytes` (256 MiB by default),
+  passed as `wasmtime run -W max-memory-size=<bytes>`.
+- **`PluginHostConfig`** also has `restartBackoffMs` (250), `maxRestartBackoffMs`
+  (10000) and `shutdownGraceMs` (2000), and `Std.Plugin` adds
+  `registerPlugin(host, manifest, dir)` for a host that builds a manifest in
+  memory (the compiler does), `parsePluginManifest`, `readPluginManifest`,
+  `pluginManifestToJson`, `addPluginPayload`, `selectPluginPayload`,
+  `pluginLaunchCommand`, `findWasmtime`, `grantAllRequested` and the
+  `GrantAllRequested` policy, `boundaryErrorMessage`, `boundaryErrorFromRpc`,
+  `boundaryErrorToRpc` and `pluginLoadIssueMessage`. A JSON-RPC `-32603` (the
+  callee failed inside its handler, for example a `requires:` of the
+  implementation failing) maps to `ContractViolated`.
+- **Contracts at the boundary.** The generated server checks the capability
+  `requires:` clauses that name `grant` (Decision 2) and answers `-32040`
+  `Denied`. Other `requires:`/`ensures:` run inside the implementation, on the
+  side that owns it. The host does not re-check a point method's `ensures:`
+  on the decoded result in v1, and K0104 (interface hash) is not checked. A
+  contributions value that does not decode is left out of `<p>Contributions`,
+  and the generated `<p>ContributionIssues(host)` reports it as a
+  `PluginLoadIssue` of kind `BadContributions` (K0101).
+- **Generators run as dotnet process payloads and are not sandboxed by
+  default.** The compiler builds every generator package for dotnet (D150),
+  so it registers a `dotnet exec` payload probed with
+  `--lyric-plugin-manifest`, sets `preferWasm = false` and `maxRestarts = 0`
+  (a generator that crashes fails the build with X0009 instead of being
+  restarted), grants exactly what the generator requests, and serves
+  `ProjectRead` itself with the same `projectPathWithin` rule the SDK's
+  guard uses. Building a wasm payload for generators, which would make
+  `ProjectRead` their only I/O, is left for later (docs/40 Q-SG-005).
+- **Deferred, unchanged:** trusted in-process mode, signing (Q-PLG-006), the
+  registry (Q-PLG-007), operating-system restrictions in process mode
+  (Q-PLG-002), the language server running `Lyric.PluginExpand`, and plugins
+  declaring points (Q-PLG-010).
+
 ## Consequences
 
 - No lexer, parser or formatter change; `Lyric.PluginExpand` is one new

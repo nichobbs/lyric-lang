@@ -290,6 +290,9 @@ func main(): Int {
   for issue in discoverPlugins(host, ["plugins"]) {
     println("not loaded: " + pluginLoadIssueMessage(issue))
   }
+  for issue in noteToolContributionIssues(host) {
+    println("bad contributions: " + pluginLoadIssueMessage(issue))
+  }
   for c in noteToolContributions(host) {
     println(c.pluginId + " contributes " + c.value.commands.count.toString() + " commands")
   }

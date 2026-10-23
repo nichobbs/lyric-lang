@@ -236,6 +236,45 @@ test "the generated manifest carries the point, its contributions and the capabi
   assertEqual(cs[0].pluginId, "lyric.test.notes", "contribution plugin id")
   assertEqualInt(cs[0].value.commands.count, 2, "decoded contributions")
   assertEqual(cs[0].value.commands[1], "notes.fetch", "contribution content")
+  assertEqualInt(noteToolContributionIssues(host).count, 0, "no contribution issues")
+  stopAllPlugins(host)
+}
+
+test "contributions that do not decode are left out and reported as K0101" {
+  val m = probedManifest()
+  val points: List[PluginPointDecl] = newList()
+  for p in m.points {
+    points.add(PluginPointDecl(point = p.point, version = p.version, contributions = Some(value = JString(value = "none"))))
+  }
+  val bad = PluginManifest(
+    id = m.id,
+    version = m.version,
+    publisher = m.publisher,
+    points = points,
+    required = m.required,
+    optional = m.optional,
+    payloads = m.payloads
+  )
+  val providers: List[CapabilityProvider] = newList()
+  providers.add(storeProvider(NoteStore(loads = 0)))
+  providers.add(logProvider(LineLog(lines = newList())))
+  val host = newPluginHost(
+    PluginHostConfig(
+      points = [noteToolPointInfo()],
+      providers = providers,
+      policy = NotesPolicy(),
+      callTimeoutMs = 60000,
+      startTimeoutMs = 60000
+    )
+  )
+  match registerPlugin(host, bad, fixtureDir()) {
+    case Some(issue) -> assertTrue(false, "load issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertEqualInt(noteToolContributions(host).count, 0, "the contribution is left out")
+  val issues = noteToolContributionIssues(host)
+  assertEqualInt(issues.count, 1, "one issue")
+  assertTrue(pluginLoadIssueMessage(issues[0]).contains("K0101"), pluginLoadIssueMessage(issues[0]))
   stopAllPlugins(host)
 }
 

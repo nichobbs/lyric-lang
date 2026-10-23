@@ -3446,7 +3446,7 @@ pub interface NoteTool {
 | `@plugin_point` | `pub interface P` | `version = "major.minor"` (required), `contributions = K` (optional): static data each plugin declares for the point, `allows(C, ...)`: the capabilities a plugin of this point may request |
 | `@protocol_point` | `pub interface L {}` (no members) | `protocol = "<name>/<version>"` (required), `version = "major.minor"` (default `"1.0"`), `contributions`, `allows` |
 | `@plugin_handle` | `pub type H = Long` | none: `H` crosses the boundary as a number, an opaque reference into the host |
-| `@plugin` | `pub record R` | `id = "<publisher>.<name>"`, `version = "major.minor[.patch]"` with an optional `-` or `+` suffix, `publisher = "..."`, `implements(P, ...)` |
+| `@plugin` | `pub record R` | `id = "<publisher>.<name>"`, `version = "major.minor.patch"` with an optional `-` or `+` suffix, `publisher = "..."`, `implements(P, ...)` |
 | `@plugin_contributions(P)` | a function with no parameters | returns `P`'s contributions type |
 | `@plugin_request(C)` | a function with no parameters | returns `C`'s grant type: the grant the plugin asks for |
 
@@ -3575,7 +3575,7 @@ contributions items):
 |---|---|
 | `pub record <P>Remote { conn: PluginConnection }`, one method per `P` method returning `Result[T, CallError[E]]` | host |
 | `pub func <p>Remotes(host: in PluginHost): List[<P>Remote]`: one per catalogued plugin implementing `P`, started on its first call | host |
-| `pub record <P>Contribution { pluginId: String, value: K }` and `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` (when `P` declares contributions) | host |
+| `pub record <P>Contribution { pluginId: String, value: K }`, `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` and `pub func <p>ContributionIssues(host: in PluginHost): List[PluginLoadIssue]` (K0101; when `P` declares contributions) | host |
 | `pub func <p>PointInfo(): PluginPointInfo` | host |
 | `pub func pluginDispatch<P>(target: in P, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]` | plugin |
 
@@ -3780,7 +3780,9 @@ Compile-time, reported by `Lyric.PluginExpand`:
 | `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records |
 
 Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request)
-and `K0103` (a point major-version mismatch).
+and `K0103` (a point major-version mismatch); the generated
+`<p>ContributionIssues(host)` returns one carrying `K0101` for each loaded
+plugin whose contributions do not decode as the point's contributions type.
 
 ### 15.11 Limits
 

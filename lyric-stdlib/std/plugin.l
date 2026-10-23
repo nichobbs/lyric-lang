@@ -370,8 +370,8 @@ pub record PluginManifest {
   payloads: List[PluginPayload]
 }
 
-/// Why a plugin was not loaded. `K0102` and `K0103` are the docs/69 §18 load
-/// codes (`pluginIssueCode`).
+/// Why a plugin was not loaded, or what is wrong with a loaded one. `K0101`,
+/// `K0102` and `K0103` are the docs/69 §18 load codes (`pluginIssueCode`).
 @experimental
 pub union PluginIssueKind {
   // `plugin.json` could not be read, or is not JSON.
@@ -399,6 +399,9 @@ pub union PluginIssueKind {
   case MissingProvider
   // No payload can run on this host.
   case NoUsablePayload
+  // K0101: a plugin's contributions do not decode as the point's
+  // contributions type (reported by the generated `<p>ContributionIssues`).
+  case BadContributions
 }
 
 /// A plugin that was not loaded: what went wrong, where (the plugin
@@ -417,6 +420,7 @@ pub record PluginLoadIssue {
 @experimental
 pub func pluginIssueCode(kind: in PluginIssueKind): String {
   match kind {
+    case BadContributions -> "K0101"
     case GrantWider -> "K0102"
     case MajorVersionMismatch -> "K0103"
     case _ -> ""

@@ -1,115 +1,150 @@
 # lyric-generator-sdk
 
-Source generator SDK for [Lyric](https://github.com/nichobbs/lyric-lang). Provides the type descriptors and response types needed to build custom code generators that run at compile time and emit Lyric source.
-
-> **Status**: Library source is complete. Use this to build custom `@generate` plugins for your applications.
+Source generator SDK for [Lyric](https://github.com/nichobbs/lyric-lang): the API
+package of the `SourceGenerator` plugin point (docs/40, docs/69 §15, D207). It
+declares the type descriptors the compiler sends, the response a generator
+returns, the point itself and the `ProjectRead` capability. A generator is a
+plugin; the compiler is its host.
 
 ## Packages
 
 | Package | Description |
 |---|---|
-| `Lyric.GeneratorSdk` | Generator request/response types, type descriptors, annotation introspection |
+| `Lyric.GeneratorSdk` | `SourceGenerator` (point version 3.0), `ProjectRead`, the request and response types, `declarationNamed`, `projectPathWithin` |
 
 ## Installation
 
-```toml
-[dependencies]
-"Lyric.GeneratorSdk" = { path = "../lyric-generator-sdk" }
-```
-
-Generator packages declare themselves with `kind = "source-generator"`:
+A generator package declares `kind = "source-generator"` and depends on the SDK
+by path or as a workspace member:
 
 ```toml
 [package]
-name = "MyOrg.Proto.Generator"
+name = "Acme.Describe"
 version = "0.1.0"
 kind = "source-generator"
 
 [dependencies]
-"Lyric.GeneratorSdk" = ">=1.0.0"
+"Lyric.GeneratorSdk" = { path = "../lyric-generator-sdk" }
 ```
 
 ## Quick start
 
-### Minimal generator
+A generator is a `@plugin` record implementing `SourceGenerator`.
+`Lyric.PluginExpand` generates the package's `main`, its manifest, the
+dispatcher and the JSON codecs, so the package declares no `main` of its own.
 
 ```lyric
-import Lyric.GeneratorSdk
-import Std.Core
+package Acme.Describe
 
-pub func generate(req: GeneratorRequest): GeneratorResponse {
-  val typeName = req.typeDescriptor.name
-  
-  val source = "
-    pub func toString(item: in " + typeName + "): String {
-      return \"" + typeName + "\"
-    }
-  "
-  
-  GeneratorResponse(
-    lyricSource = source,
-    additionalImports = [],
-    diagnostics = []
-  )
+import Std.Core
+import Std.Collections
+import Lyric.GeneratorSdk
+
+pub func generateSource(req: in GeneratorRequest): GeneratorResponse {
+  val td = req.typeDescriptor
+  val src = "pub func " + td.name + ".describe(v: in " + td.name + "): String {\n  \"" + td.name + "\"\n}\n"
+  val none: List[String] = newList()
+  val diags: List[GeneratorDiagnostic] = newList()
+  GeneratorResponse(lyricSource = src, additionalImports = none.toArray(), diagnostics = diags.toArray())
 }
-```
 
-### Generator with diagnostics
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
 
-```lyric
-import Lyric.GeneratorSdk
-import Std.Core
-
-pub func generate(req: GeneratorRequest): GeneratorResponse {
-  // Check that the type has at least one field
-  if req.typeDescriptor.fields.length == 0 {
-    return GeneratorResponse(
-      lyricSource = "",
-      additionalImports = [],
-      diagnostics = [
-        GeneratorDiagnostic(
-          severity = GeneratorDiagnosticSeverity.Error,
-          message = "Cannot generate for empty type",
-          code = Some("GEN001")
-        )
-      ]
-    )
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
   }
-  
-  // Generate code...
-  GeneratorResponse(
-    lyricSource = "...",
-    additionalImports = [],
-    diagnostics = []
-  )
 }
 ```
+
+Keeping the generation in an ordinary function (`generateSource` here) lets a
+`@test_module` call it directly with a hand-built `GeneratorRequest`, as
+`lyric-forms/derive` and `lyric-ui/routes` do. `examples/generators/describe/`
+is the complete example, with a consumer in `examples/generators/app/`.
+
+### Diagnostics and refusals
+
+A problem with the annotated type is a diagnostic in the response:
+
+```lyric
+if td.fields.length == 0 {
+  val diags: List[GeneratorDiagnostic] = newList()
+  diags.add(GeneratorDiagnostic(severity = Error, message = "cannot generate for an empty type", code = Some(value = "GEN001")))
+  return GeneratorResponse(lyricSource = "", additionalImports = [], diagnostics = diags.toArray())
+}
+```
+
+`Err(GeneratorError(message = ...))` from `generate` is for a request the
+generator cannot handle at all; the compiler reports it as X0009.
+
+### Reading project files
+
+The `ProjectRead` capability reads text files of the project being compiled,
+below the roots the generator asks for (relative to the consuming project's
+directory; `"."` is the whole project). Add a client field and a request
+function:
+
+```lyric
+@plugin(id = "acme.schemas", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record SchemaPlugin {
+  files: ProjectReadClient              // Option[ProjectReadClient] to make it optional
+}
+
+@plugin_request(ProjectRead)
+func schemaRoots(): ProjectReadGrant = ProjectReadGrant(roots = ["schemas"])
+
+impl SourceGenerator for SchemaPlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    match files.readText("schemas/" + req.typeDescriptor.name + ".json") {
+      case Ok(text) -> ...
+      case Err(CallError.App(e)) -> ...        // the file could not be read
+      case Err(CallError.Boundary(b)) -> ...   // Denied: outside the granted roots
+    }
+  }
+}
+```
+
+A path outside the roots, absolute, or with an empty, `.` or `..` segment, a
+backslash or a colon is denied before anything is read (`projectPathWithin`).
+`ProjectRead` is the route a generator should use for files, but a generator
+runs as a dotnet process and is not sandboxed (docs/40 §7).
+
+## The point and the capability
+
+```lyric
+@capability(grant = ProjectReadGrant)
+pub interface ProjectRead {
+  func readText(path: in String): Result[String, String]
+    requires: projectPathWithin(path, grant.roots)
+}
+
+@plugin_point(version = "3.0", allows(ProjectRead))
+pub interface SourceGenerator {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]
+}
+
+pub exposed record ProjectReadGrant { roots: List[String] }
+pub record GeneratorError { message: String }
+```
+
+`PROTOCOL.md` describes the JSON-RPC exchange and the request and response JSON.
 
 ## Generator request/response
 
 ### `GeneratorRequest`
 
-The compiler passes this to your generator's `generate()` function:
-
 ```lyric
 record GeneratorRequest {
-  generatorArg: String          // the argument to @generate, e.g. "Json", "Proto.Derive"
+  generatorArg: String          // the argument to @generate, e.g. "Proto.Derive"
   typeDescriptor: TypeDescriptor
   packageName: String           // package currently being compiled
   sourceFile: String            // source file path (for diagnostic spans)
+  declarations: slice[DeclarationDescriptor] = []  // same-file declarations
 }
 ```
 
-| Field | Description |
-|---|---|
-| `generatorArg` | The full argument to `@generate`, e.g. `"Proto.Derive"` (used to identify which generator in your package is being invoked) |
-| `typeDescriptor` | Full introspection of the type being generated |
-| `packageName` | Package name of the file containing `@generate` |
-| `sourceFile` | Source file path (for diagnostic attribution) |
-
 ### `GeneratorResponse`
-
-Your generator returns this:
 
 ```lyric
 record GeneratorResponse {
@@ -121,44 +156,9 @@ record GeneratorResponse {
 
 | Field | Description |
 |---|---|
-| `lyricSource` | Generated Lyric source (functions, `impl` blocks, type aliases). Must be syntactically complete. Parsed and injected into the file before type-checking. |
-| `additionalImports` | Import statements to prepend (e.g., `"import Std.Json"`). Deduplicated with existing imports. |
-| `diagnostics` | Errors, warnings, and info messages reported by the generator |
-
-### Parsing a subprocess response: `parseResponse`
-
-`parseResponse(json: in String): Result[GeneratorResponse, String]` deserializes
-the JSON a generator subprocess writes to stdout. Each `additionalImports`
-entry must be exactly a single `import <QualifiedName>` or
-`import extern <QualifiedName>` statement, optionally followed by
-`as <Identifier>` — `parseResponse` returns `Err` for any entry that isn't
-(a missing `import ` prefix, a malformed qualified name, or extra text such
-as an embedded newline or `;`-separated second statement). A generator
-subprocess is untrusted, and every `additionalImports` entry is spliced
-verbatim into the compiled program's source, so this rejects an entry that
-could otherwise inject arbitrary source disguised as an import line.
-
-`diagnostics` entries are fully deserialized (severity, message, and an
-optional `code`) — previously they were dropped unconditionally, so a
-generator's `Error`-severity diagnostics never reached the caller.
-
-`parseResponse` is otherwise lenient: a missing or malformed top-level
-field (including an unparseable request overall) degrades to an
-empty/default value rather than failing.
-
-### Decoding a request: `parseRequest`
-
-```lyric
-pub func parseRequest(json: in String): Result[GeneratorRequest, String]
-```
-
-`parseRequest` is the inverse of `serializeRequest`, and is what
-`runGenerator` uses to decode the request it reads from stdin. It returns
-`Err` for an unsupported `schemaVersion` (it accepts `"1"` and `"2"`; the
-compiler sends `"2"`, D151) or a missing
-`typeDescriptor.name`; `runGenerator` prints that message prefixed with
-`GeneratorSdk:` and exits with code 1. Call it directly to decode a request
-in a test without a subprocess round trip.
+| `lyricSource` | Generated Lyric items (functions, `impl` blocks, type aliases). Must parse (X0004). Appended to the file before type checking. |
+| `additionalImports` | Import statements to add, each exactly one `import <QualifiedName>` or `import extern <QualifiedName>`, optionally `as <Identifier>`. Any other entry fails the response (X0009), since entries are spliced into the consumer's source. |
+| `diagnostics` | Errors, warnings and notes, reported under X0005 with their own codes |
 
 ## Type descriptors
 
@@ -179,16 +179,13 @@ record TypeDescriptor {
 ```
 
 `name` must be non-empty; constructing a `TypeDescriptor` with an empty name
-panics. `parseRequest` (and so `runGenerator`) checks this explicitly
-before construction (a missing `typeDescriptor` block, or an unrecognized
-`kind`, used to silently fall through to an empty-named `Record` rather than
-failing): a malformed request now exits with code 1 and a clear message on
-stderr instead.
+panics. The compiler always sends a name, and the generated decoder rejects a
+request with a missing member or an unknown `kind`.
 
 ### `ItemKind`
 
 ```lyric
-union ItemKind {
+enum ItemKind {
   case Record        // regular record
   case ExposedRecord // exposed record (host-visible)
   case Union         // union (discriminated type)
@@ -269,7 +266,7 @@ record FieldType {
 ### `FieldTypeKind`
 
 ```lyric
-union FieldTypeKind {
+enum FieldTypeKind {
   case Primitive    // Bool, Int, Long, UInt, ULong, Float, Double, Char, String
   case Slice        // slice[T]
   case OptionType   // Option[T]
@@ -296,10 +293,10 @@ Each argument is its source text: `@label("Name")` has the single argument
 ### `GeneratorDiagnosticSeverity`
 
 ```lyric
-union GeneratorDiagnosticSeverity {
+enum GeneratorDiagnosticSeverity {
   case Error      // fails the build
   case Warning    // reported but build continues
-  case Info       // informational, not reported by default
+  case Info       // printed as a note
 }
 ```
 
@@ -315,175 +312,46 @@ record GeneratorDiagnostic {
 
 | Field | Description |
 |---|---|
-| `severity` | Error stops the build; Warning is reported; Info is usually silent |
+| `severity` | `Error` fails the build; `Warning` and `Info` are printed |
 | `message` | Human-readable message, e.g. `"Cannot generate for empty type"` |
 | `code` | Optional diagnostic code for documentation / suppression, e.g. `Some("GEN001")` |
 
-## Example: JSON serializer generator
-
-```lyric
-import Lyric.GeneratorSdk
-import Std.Core
-
-pub func generate(req: GeneratorRequest): GeneratorResponse {
-  val typeName = req.typeDescriptor.name
-  val fields = req.typeDescriptor.fields
-  
-  if fields.length == 0 {
-    return GeneratorResponse(
-      lyricSource = "",
-      additionalImports = [],
-      diagnostics = [
-        GeneratorDiagnostic(
-          severity = GeneratorDiagnosticSeverity.Error,
-          message = "Cannot generate serializer for empty type",
-          code = Some("JSON001")
-        )
-      ]
-    )
-  }
-  
-  // Generate toJson function
-  var toJsonBody = ""
-  for field in fields {
-    toJsonBody = toJsonBody + "    \"" + field.name + "\": " + field.fieldType.name + ".toJson(item." + field.name + "),\n"
-  }
-  
-  val toJson = "
-    pub func toJson(item: in " + typeName + "): String {
-      return \"{\\n" + toJsonBody + "    }\"
-    }
-  "
-  
-  // Generate fromJson function (simplified)
-  val fromJson = "
-    pub func fromJson(json: in String): Result[" + typeName + ", String] {
-      // Parse and validate JSON...
-      Ok(" + typeName + "(...))
-    }
-  "
-  
-  GeneratorResponse(
-    lyricSource = toJson + "\n\n" + fromJson,
-    additionalImports = ["import Std.Json"],
-    diagnostics = []
-  )
-}
-```
-
 ## Usage in user code
-
-Apply the generator with `@generate`:
 
 ```lyric
 package MyApp.Models
 
-import Std.Core
-
-@generate(MyOrg.JsonGen)
+@generate(Acme.Describe)
 pub record Order {
   id: Int
-  customerId: Int
-  amount: Double
-  status: String
+  note: String
 }
 ```
 
+The consumer declares `"Acme.Describe" = { path = "..." }` in `[dependencies]`.
 The compiler:
 
-1. Parses the file and finds `@generate(MyOrg.JsonGen)`
-2. Resolves `MyOrg.JsonGen` to your generator package (a `path` or `workspace = true` dependency whose manifest declares `kind = "source-generator"`) and builds it
-3. Runs it as `dotnet exec`, sending the request for `Order` on stdin; your `main` calls `runGenerator(generate)`
-4. Injects the returned source into the file
-5. Re-parses and type-checks the file (now including generated code)
+1. Finds `@generate(Acme.Describe)` and checks the generator is a declared
+   dependency (X0008) with `kind = "source-generator"` (X0002) and a `@plugin`
+   record (X0003).
+2. Builds it for dotnet and loads it as a plugin: it probes its manifest, then
+   starts one process for the build.
+3. Calls `generate` once per annotated type and reports the diagnostics.
+4. Checks the returned source parses, appends it to the file and adds the
+   imports.
+5. Type-checks the file, generated code included.
 
 ## Best practices
 
-### 1. Validate input
-
-Check that the type is appropriate for code generation:
-
-```lyric
-match req.typeDescriptor.kind {
-  case Record | ExposedRecord -> {}  // OK
-  case Union | Interface -> {
-    return GeneratorResponse(
-      lyricSource = "",
-      additionalImports = [],
-      diagnostics = [GeneratorDiagnostic(
-        severity = GeneratorDiagnosticSeverity.Error,
-        message = "Cannot generate for " + req.typeDescriptor.kind.toString(),
-        code = Some("GEN001")
-      )]
-    )
-  }
-}
-```
-
-### 2. Emit complete items
-
-The `lyricSource` must contain complete, parseable Lyric items:
-
-```lyric
-// Good: complete func
-"
-pub func fromJson(json: in String): Result[Order, String] {
-  ...
-}
-"
-
-// Bad: incomplete fragment
-"
-if isValid {
-  return Ok(order)
-}
-"
-```
-
-### 3. Use `additionalImports`
-
-Let the compiler deduplicate imports:
-
-```lyric
-GeneratorResponse(
-  lyricSource = "...",
-  additionalImports = ["import Std.Json", "import Std.Core"],
-  diagnostics = []
-)
-```
-
-The compiler deduplicates against existing imports in the file.
-
-### 4. Report errors vs. warnings
-
-Use `Error` for validation failures, `Warning` for suspicious patterns, `Info` for notices:
-
-```lyric
-GeneratorDiagnostic(
-  severity = GeneratorDiagnosticSeverity.Error,
-  message = "Type must have at least one field",
-  code = Some("GEN001")
-)
-```
-
-Parse errors in generated source are fatal (compiler diagnostic X0004 points at your generator package).
-
-### 5. Keep generators pure
-
-Generators run at compile time. Avoid:
-- Side effects (file I/O, network, environment)
-- Non-deterministic output (relying on `Std.Uuid.newUuid`, `Std.Time.now`, or any other runtime-state-dependent function)
-- Dependencies on type-checking state (generators can't call the type checker)
-
-## Generator discovery
-
-The compiler locates your generator by:
-
-1. **Package name**: resolving `@generate(MyOrg.Proto.Derive)` to a dependency
-2. **Kind**: verifying the dependency has `kind = "source-generator"`
-3. **Entry point**: looking for `pub func generate(req: GeneratorRequest): GeneratorResponse` and a `main` that calls `runGenerator(generate)`
-
-If the entry point is missing or mismatched, diagnostic **X0003** is reported at build time.
+- **Validate the input.** Check `req.typeDescriptor.kind` and report a
+  diagnostic for kinds the generator does not handle.
+- **Emit complete items.** `lyricSource` is parsed as top-level items.
+- **Use `additionalImports`** rather than writing `import` lines into
+  `lyricSource`.
+- **Keep generators deterministic.** The same request should give the same
+  response: no clocks, random numbers or environment. Read files only through
+  `ProjectRead`.
+- **Log to stderr.** Stdout carries the protocol.
 
 ## Package layout
 
@@ -491,13 +359,15 @@ If the entry point is missing or mismatched, diagnostic **X0003** is reported at
 lyric-generator-sdk/
   lyric.toml              package manifest
   README.md               this file
+  PROTOCOL.md             the JSON-RPC exchange and the request/response JSON
   src/
-    generator_sdk.l       Lyric.GeneratorSdk  (types, descriptors, responses)
+    generator_sdk.l       Lyric.GeneratorSdk
   tests/
-    *_tests.l             test modules
+    generator_sdk_tests.l the types, the generated codecs, projectPathWithin
 ```
 
 ## See also
 
-- `docs/40-source-generators.md` — complete design specification
-- `docs/03-decision-log.md` D075 — design decisions
+- `docs/40-source-generators.md`: the generator design
+- `docs/69-plugins.md`: plugin points and capabilities
+- `docs/decisions/D207-plugin-surface-and-protocol.md`: the plugin surface and wire protocol

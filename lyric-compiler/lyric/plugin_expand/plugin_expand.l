@@ -281,8 +281,9 @@ func isMajorMinor(s: in String): Bool {
   parts.count == 2 and isDigits(parts[0]) and isDigits(parts[1])
 }
 
-/// `major.minor` or `major.minor.patch`, optionally followed by a `-` or
-/// `+` suffix (a plugin's own release version).
+/// `major.minor.patch`, optionally followed by a `-` or `+` suffix of
+/// letters, digits, `.`, `-` and `+` (a plugin's own release version; the
+/// same rule as `Std.Plugin.isPluginVersion`, which checks manifests).
 func isReleaseVersion(s: in String): Bool {
   var core = s
   val dash = Str.indexOfRaw(s, "-")
@@ -298,12 +299,18 @@ func isReleaseVersion(s: in String): Bool {
     if cut == s.length - 1 {
       return false
     }
+    var j = cut + 1
+    while j < s.length {
+      val c = Str.codeUnitAt(s, j)
+      val ok = (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 46 or c == 45 or c == 43
+      if not ok {
+        return false
+      }
+      j = j + 1
+    }
     core = Str.substring(s, 0, cut)
   }
   val parts = splitDotted(core)
-  if parts.count == 2 {
-    return isDigits(parts[0]) and isDigits(parts[1])
-  }
   parts.count == 3 and isDigits(parts[0]) and isDigits(parts[1]) and isDigits(parts[2])
 }
 
@@ -1975,7 +1982,7 @@ func pluginModel(
         k(
           st,
           "K0006",
-          "@plugin(version = \"" + v + "\") on " + decl.name + " must be major.minor or major.minor.patch, such as \"0.4.1\"",
+          "@plugin(version = \"" + v + "\") on " + decl.name + " must be major.minor.patch, such as \"0.4.1\"",
           a.span
         )
       }
@@ -3463,12 +3470,30 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
       l.add("  value: " + cb.text)
       l.add("}")
       l.add("")
+      l.add("/// The contributions of the loaded plugins that implement " + p.name + ".  A plugin whose")
+      l.add("/// contributions do not decode is left out; " + pl + "ContributionIssues reports it (K0101).")
       l.add("pub func " + pl + "Contributions(host: in PluginHost): List[" + p.name + "Contribution] {")
       l.add("  val acc: List[" + p.name + "Contribution] = newList()")
       l.add("  for c in contributionsFor(host, " + lit(id) + ") {")
       l.add("    match " + decExpr(cb, "c.value", g) + " {")
       l.add("      case Ok(x) -> acc.add(" + p.name + "Contribution(pluginId = c.pluginId, value = x))")
       l.add("      case Err(_) -> ()")
+      l.add("    }")
+      l.add("  }")
+      l.add("  acc")
+      l.add("}")
+      l.add("")
+      l.add("/// K0101 for each loaded plugin whose " + p.name + " contributions do not decode as " + cb.text + ".")
+      l.add("pub func " + pl + "ContributionIssues(host: in PluginHost): List[PluginLoadIssue] {")
+      l.add("  val acc: List[PluginLoadIssue] = newList()")
+      l.add("  for c in contributionsFor(host, " + lit(id) + ") {")
+      l.add("    match " + decExpr(cb, "c.value", g) + " {")
+      l.add("      case Ok(_) -> ()")
+      l.add(
+        "      case Err(m) -> acc.add(PluginLoadIssue(kind = PluginIssueKind.BadContributions, location = c.pluginId, pluginId = c.pluginId, message = " +
+          lit("the " + id + " contributions do not decode: ") +
+          " + m))"
+      )
       l.add("    }")
       l.add("  }")
       l.add("  acc")

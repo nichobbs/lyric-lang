@@ -5,8 +5,9 @@
 //! `@capability` interface with its methods, and every record, union, enum
 //! and `@plugin_handle` type those methods, the contributions types and the
 //! grant types reach, with each type in the D207 Decision 4 encoding.  Type
-//! aliases and distinct types other than handles cross as the type they
-//! stand for, as range subtypes cross as their underlying type (docs/69 §5).
+//! aliases cross as the type they stand for; a distinct type or range
+//! subtype crosses only as a `@plugin_handle` (K0001 in Lyric.PluginExpand,
+//! the same rule).
 package Lyric.PluginSdk
 
 import Std.Core
@@ -519,11 +520,15 @@ func siteType(ctx: in Ctx, idx: in Int, sp: in Span, useScope: in FileScope): BT
       match annotationNamed(site.item, "plugin_handle") {
         case Some(_) -> ()
         case None -> {
-          if isSome(d.generics) {
-            report(ctx, fsc, d.span, "the generic type " + d.name + " cannot cross a plugin boundary")
-            return BUnit
-          }
-          return expandTransparent(ctx, fsc, key, d.underlying, d.span)
+          report(
+            ctx,
+            useScope,
+            sp,
+            "the distinct type " + d.name + " cannot cross a plugin boundary; mark it @plugin_handle (as `pub type " +
+              d.name +
+              " = Long`) to pass it as a handle"
+          )
+          return BUnit
         }
       }
     }
