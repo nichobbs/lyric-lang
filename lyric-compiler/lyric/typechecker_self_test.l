@@ -12270,6 +12270,7 @@ test "a bracket literal argument takes the shape its parameter gives it (#8277, 
     "package P\n" + lists + "func f(): Int {\n  val g: () -> List[Long] = { -> [1, 2] }\n  g().count\n}\n"
   )
   assertEqualInt(diagCount(lam), 0, "a lambda returning a literal where a List is expected (" + diagCodesOf(lam) + ")")
+}
 
 // `externAsObject(x)` (D212, #7975): the explicit upcast from an extern type to
 // the host's root object type, so an extern value can sit in a `List[Obj]`.
