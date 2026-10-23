@@ -731,7 +731,8 @@ static void test_alpn_empty_client_list_guard(void) {
 
 /* End-to-end no-ALPN-overlap: a client offering only a protocol the server
  * does not advertise completes the handshake with NO protocol negotiated —
- * exercises server_alpn_select's inlen>0 no-overlap path (NOACK), not a crash. */
+ * exercises server_alpn_select's inlen>0 no-overlap path (NOACK), not a crash.
+ * Schannel refuses the handshake instead, as RFC 7301 requires. */
 static void test_alpn_no_overlap_handshake(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "http/1.1");
     CHECK(server != NULL);
@@ -742,10 +743,19 @@ static void test_alpn_no_overlap_handshake(void) {
         int rt = 0;
         tls_server_arg srv;
         int ok = run_tls_scenario(server, client, "localhost", "spdy/3", calpn, &rt, &srv);
+#if defined(_WIN32)
+        /* Schannel follows RFC 7301 §3.2: a server that shares no protocol
+         * with the client's offer ends the handshake with a
+         * no_application_protocol alert (D209). */
+        (void)ok;
+        CHECK(rt == 0);
+        CHECK(srv.accept_ok == 0);
+#else
         CHECK(ok == 1); /* handshake completes despite no ALPN overlap */
         CHECK(rt == 1);
         CHECK(strcmp(calpn, "") == 0);    /* no protocol negotiated client-side */
         CHECK(strcmp(srv.alpn, "") == 0); /* nor server-side */
+#endif
     }
     lyric_tls_ctx_free(server);
     lyric_tls_ctx_free(client);

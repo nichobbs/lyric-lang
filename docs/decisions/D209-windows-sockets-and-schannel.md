@@ -45,7 +45,9 @@ change.
    disabled; a Windows release that predates `SCH_CREDENTIALS` falls back to `SCHANNEL_CRED` with TLS 1.2. TLS 1.3
    needs a release whose Schannel offers it (Windows 11, Server 2022); a TLS 1.3-only context reports that when
    credentials cannot be acquired. ALPN goes through `SECBUFFER_APPLICATION_PROTOCOLS`, and the server picks by
-   its own preference order.
+   its own preference order. A client whose offer shares no protocol with the server's list is refused with a
+   `no_application_protocol` alert, as RFC 7301 §3.2 requires; the OpenSSL twin completes such a handshake with
+   no protocol, and Schannel offers no way to do the same. A client that offers no ALPN at all is unaffected.
 7. **Records.** Reads decrypt in place and keep any unconsumed bytes for the next call; TLS 1.3 post-handshake
    messages (session tickets, key updates), which `DecryptMessage` hands back as `SEC_I_RENEGOTIATE`, are fed to
    the handshake function, across reads when they span records. A close_notify or the peer closing the

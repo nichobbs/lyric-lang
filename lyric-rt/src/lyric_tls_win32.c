@@ -57,16 +57,18 @@ int32_t lyric_tls_available(void) {
 
 /* ── PEM ───────────────────────────────────────────────────────────── */
 
-static int add_cert_to_store(const BYTE* der, DWORD len, void* store) {
-    return CertAddEncodedCertificateToStore((HCERTSTORE)store, X509_ASN_ENCODING, der, len, CERT_STORE_ADD_ALWAYS,
-                                            NULL)
-               ? 0
-               : -1;
+static int add_cert_to_store(const BYTE* der, DWORD len, HCERTSTORE store, PCCERT_CONTEXT* added) {
+    return CertAddEncodedCertificateToStore(store, X509_ASN_ENCODING, der, len, CERT_STORE_ADD_ALWAYS, added) ? 0
+                                                                                                             : -1;
 }
 
 /* A memory store holding every certificate in `pem`, or NULL (last_error
- * set) when there is none or one does not parse. */
-static HCERTSTORE read_cert_store(const char* pem, const char* what) {
+ * set) when there is none or one does not parse.  With `first` non-NULL it
+ * also returns the certificate of the first PEM block (the caller frees it):
+ * a memory store does not enumerate in the order certificates were added, so
+ * the leaf of a "leaf, then intermediates" PEM is taken from here. */
+static HCERTSTORE read_cert_store(const char* pem, const char* what, PCCERT_CONTEXT* first) {
+    if (first) *first = NULL;
     HCERTSTORE store = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, CERT_STORE_CREATE_NEW_FLAG, NULL);
     if (!store) {
         set_status_err(what, (long)GetLastError());
@@ -85,7 +87,7 @@ static HCERTSTORE read_cert_store(const char* pem, const char* what) {
         if (!stop || !CryptStringToBinaryA(body, (DWORD)(stop - body), CRYPT_STRING_BASE64, NULL, &len, NULL, NULL) ||
             (der = (BYTE*)malloc(len ? len : 1)) == NULL ||
             !CryptStringToBinaryA(body, (DWORD)(stop - body), CRYPT_STRING_BASE64, der, &len, NULL, NULL) ||
-            add_cert_to_store(der, len, store) != 0) {
+            add_cert_to_store(der, len, store, (first && count == 0) ? first : NULL) != 0) {
             failed = 1;
         } else {
             count++;
@@ -94,6 +96,10 @@ static HCERTSTORE read_cert_store(const char* pem, const char* what) {
         free(der);
     }
     if (failed || count == 0) {
+        if (first && *first) {
+            CertFreeCertificateContext(*first);
+            *first = NULL;
+        }
         CertCloseStore(store, 0);
         set_err("%s: no valid PEM certificate", what);
         return NULL;
@@ -235,10 +241,6 @@ static int key_matches_cert(NCRYPT_KEY_HANDLE key, PCCERT_CONTEXT cert) {
 
 /* The leaf certificate of a store read by read_cert_store: the first one
  * added (enumeration follows insertion order). */
-static PCCERT_CONTEXT first_cert(HCERTSTORE store) {
-    return CertEnumCertificatesInStore(store, NULL);
-}
-
 /* ── Identities ────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -261,9 +263,8 @@ static void identity_free(Identity* id) {
  * match, and persists the key for Schannel.  0 on success. */
 static int identity_load(Identity* id, const char* cert_pem, const char* key_pem) {
     memset(id, 0, sizeof *id);
-    id->chain = read_cert_store(cert_pem, "parse certificate");
+    id->chain = read_cert_store(cert_pem, "parse certificate", &id->leaf);
     if (!id->chain) return -1;
-    id->leaf = first_cert(id->chain);
     if (!id->leaf) {
         set_err("parse certificate: no certificate");
         identity_free(id);
@@ -313,7 +314,7 @@ static int identity_load(Identity* id, const char* cert_pem, const char* key_pem
 /* ── Validation (Std.TlsHost.fromPem) ──────────────────────────────── */
 
 int32_t lyric_tls_validate_cert_pem(const char* cert_pem) {
-    HCERTSTORE s = read_cert_store(cert_pem, "parse certificate");
+    HCERTSTORE s = read_cert_store(cert_pem, "parse certificate", NULL);
     if (!s) return 0;
     CertCloseStore(s, 0);
     return 1;
@@ -327,9 +328,9 @@ int32_t lyric_tls_validate_key_pem(const char* key_pem) {
 }
 
 int32_t lyric_tls_validate_identity_pem(const char* cert_pem, const char* key_pem) {
-    HCERTSTORE s = read_cert_store(cert_pem, "parse certificate");
+    PCCERT_CONTEXT leaf = NULL;
+    HCERTSTORE s = read_cert_store(cert_pem, "parse certificate", &leaf);
     if (!s) return 0;
-    PCCERT_CONTEXT leaf = first_cert(s);
     NCRYPT_KEY_HANDLE key = 0;
     int ok = leaf && import_key(key_pem, NULL, &key) == 0;
     if (ok && !key_matches_cert(key, leaf)) {
@@ -450,7 +451,7 @@ static HCERTCHAINENGINE exclusive_engine(HCERTSTORE roots) {
 }
 
 static int set_anchors(TlsCtx* c, const char* ca_pem) {
-    c->anchors = read_cert_store(ca_pem, "parse CA certificate");
+    c->anchors = read_cert_store(ca_pem, "parse CA certificate", NULL);
     if (!c->anchors) return -1;
     c->engine = exclusive_engine(c->anchors);
     return c->engine ? 0 : -1;
