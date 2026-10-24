@@ -12,7 +12,8 @@
 //!     from T { … }` materialisation, override validation (W0010–W0014);
 //!   - `contributes[T]`: entry lowering, List[T] synthesis, declaration
 //!     order, `wraps:`/`inside:` adjustment, cycle/unknown diagnostics
-//!     (W0020–W0022), `sealed` enforcement (W0023);
+//!     (W0020–W0022), `sealed` enforcement (W0023), `each` blocks and
+//!     keyed entries with the `<T>ByKey` map (W0028, docs/69 §14);
 //!   - wire templates: `pub wire` collection + drop, `include` splicing
 //!     (expose propagation, internal-name mangling, `@provided`
 //!     mapping/passthrough, replace/remove gating, reorder, aliasing,
@@ -457,6 +458,315 @@ test "mixing contributes[T] with a plain binding named T is W0020" {
     "}\n"
   val res = expandSrc(src)
   assertTrue(hasDiag(res, "W0020"), "instance/collection ambiguity reported")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §2b. `contributes[T] each` and keyed contributions (docs/69 §14).
+// ─────────────────────────────────────────────────────────────────────────────
+// The bare-name arguments of a call-shaped member init (`f(a, b)`).
+func callArgNames(decl: in WireDecl, name: in String): List[String] {
+  val init = findLocalInit(decl, name)
+  val names: List[String] = newList()
+  match init.kind {
+    case ECall(_, args) -> {
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(e) -> {
+            match e.kind {
+              case EPath(p) -> names.add(p.segments[p.segments.count - 1])
+              case _ -> names.add("<expr>")
+            }
+          }
+          case _ -> names.add("<named>")
+        }
+        i = i + 1
+      }
+    }
+    case _ -> panic("callArgNames: member '" + name + "' init is not a call")
+  }
+  names
+}
+
+func joinNames(xs: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < xs.count {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + xs[i]
+    i = i + 1
+  }
+  s
+}
+
+func findFunc(res: in WireExpandResult, name: in String): Option[FunctionDecl] {
+  var i = 0
+  while i < res.file.items.count {
+    match res.file.items[i].kind {
+      case IFunc(fd) -> {
+        if fd.name == name {
+          return Some(value = fd)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+func hasCollectionsImport(res: in WireExpandResult): Bool {
+  var i = 0
+  while i < res.file.imports.count {
+    if dotted(res.file.imports[i].path) == "Std.Collections" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The declared type of a wire local, rendered `Head[Arg]`-style.
+func localTypeStr(decl: in WireDecl, name: in String): String {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case WMLocal(n, ty, _, _) -> {
+        if n == name {
+          match ty {
+            case Some(t) -> {
+              match t.kind {
+                case TRef(p) -> return dotted(p)
+                case TGenericApp(head, args) -> {
+                  var s = dotted(head) + "["
+                  var j = 0
+                  while j < args.count {
+                    if j > 0 {
+                      s = s + ","
+                    }
+                    val argStr = match args[j] {
+                      case TAType(at) -> match at.kind { case TRef(ap) -> dotted(ap); case _ -> "?" }
+                      case _ -> "?"
+                    }
+                    s = s + argStr
+                    j = j + 1
+                  }
+                  return s + "]"
+                }
+                case _ -> return "?"
+              }
+            }
+            case None -> return "<none>"
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  "<missing>"
+}
+
+// The string-literal keys a synthesised map helper inserts, in order.
+func mapHelperKeys(fd: in FunctionDecl): List[String] {
+  val keys: List[String] = newList()
+  match fd.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> {
+          var i = 0
+          while i < block.statements.count {
+            match block.statements[i].kind {
+              case SExpr(e) -> {
+                match e.kind {
+                  case ECall(_, args) -> {
+                    if args.count == 2 {
+                      match args[0] {
+                        case CAPositional(k) -> {
+                          match k.kind {
+                            case ELiteral(lit) -> {
+                              match lit {
+                                case LString(s) -> keys.add(s)
+                                case _ -> {
+                                }
+                              }
+                            }
+                            case _ -> {
+                            }
+                          }
+                        }
+                        case _ -> {
+                        }
+                      }
+                    }
+                  }
+                  case _ -> {
+                  }
+                }
+              }
+              case _ -> {
+              }
+            }
+            i = i + 1
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  keys
+}
+
+func mwPrelude(): String {
+  "package P\n" + "interface Mw { func wrap(x: in Int): Int }\n" + "record A { v: Int }\n" +
+    "func extra(): List[Mw] { [] }\n"
+}
+
+test "an each entry is a List[T] local spliced into the collection by a helper" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] a = A(v = 1)\n" + "  contributes[Mw] each more = extra()\n" +
+    "  contributes[Mw] z = A(v = 9)\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  val w = firstWire(res, "W")
+  assertEqual(localTypeStr(w, "more"), "List[Mw]", "the block's local is a List[T]")
+  assertEqual(localTypeStr(w, "a"), "Mw", "a single entry stays a T")
+  assertEqual(callHeadName(findLocalInit(w, "Mw")), "__wire_W_Mw_list", "collection assembled by the helper")
+  assertEqual(joinNames(callArgNames(w, "Mw")), "a,more,z", "entries passed in collection order")
+  match findFunc(res, "__wire_W_Mw_list") {
+    case Some(fd) -> {
+      assertEqualInt(fd.params.count, 3, "one helper parameter per entry")
+      val isPrivate = match fd.visibility { case Some(_) -> false; case None -> true }
+      assertTrue(isPrivate, "helper is package-private")
+    }
+    case None -> assertTrue(false, "helper function synthesised")
+  }
+  assertTrue(hasCollectionsImport(res), "Std.Collections imported for the helper")
+  assertTrue(not hasMemberNamed(w, "MwByKey"), "no keyed map without keyed entries")
+}
+
+test "ordering clauses apply to an each block as a whole" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] each more = extra()\n" + "    inside: b\n" +
+    "  contributes[Mw] a = A(v = 1)\n" +
+    "    wraps: more\n" +
+    "  contributes[Mw] b = A(v = 2)\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  assertEqual(joinNames(callArgNames(firstWire(res, "W"), "Mw")), "a,b,more", "block ordered by its name")
+}
+
+test "a collection without each blocks stays a list literal" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] key \"one\" a = A(v = 1)\n" +
+    "  contributes[Mw] b = A(v = 2)\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  val order = listElemNames(firstWire(res, "W"), "Mw")
+  assertEqual(joinNames(order), "a,b", "keyed entries stay in the ordered list")
+}
+
+test "keyed entries are also reachable as Map[String, T] named TByKey" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] key \"stdout\" s = A(v = 1)\n" +
+    "  contributes[Mw] plain = A(v = 2)\n" +
+    "  contributes[Mw] key \"otlp\" o = A(v = 3)\n" +
+    "    wraps: s\n" +
+    "  expose MwByKey\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  val w = firstWire(res, "W")
+  assertEqual(localTypeStr(w, "MwByKey"), "Map[String,Mw]", "keyed map type")
+  assertEqual(callHeadName(findLocalInit(w, "MwByKey")), "__wire_W_Mw_byKey", "map assembled by the helper")
+  assertEqual(joinNames(callArgNames(w, "MwByKey")), "o,s", "only keyed entries, in collection order")
+  match findFunc(res, "__wire_W_Mw_byKey") {
+    case Some(fd) -> assertEqual(joinNames(mapHelperKeys(fd)), "otlp,stdout", "keys inserted in collection order")
+    case None -> assertTrue(false, "map helper synthesised")
+  }
+  assertEqual(joinNames(listElemNames(w, "Mw")), "plain,o,s", "the list holds every entry")
+}
+
+test "a duplicate contributes key for one type is W0028" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] key \"otlp\" a = A(v = 1)\n" +
+    "  contributes[Mw] key \"otlp\" b = A(v = 2)\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0028"), "duplicate key reported")
+  assertEqualInt(diagCount(res), 1, "reported once")
+}
+
+test "the same key under two contributed types is not a duplicate" {
+  val src = mwPrelude() + "interface Other { func id(): Int }\n" + "wire W {\n" +
+    "  contributes[Mw] key \"otlp\" a = A(v = 1)\n" +
+    "  contributes[Other] key \"otlp\" b = A(v = 2)\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertEqualInt(diagCount(res), 0, "keys are unique per contributed type")
+}
+
+test "a plain binding named like the keyed map is W0020" {
+  val src = mwPrelude() + "wire W {\n" + "  contributes[Mw] key \"otlp\" a = A(v = 1)\n" +
+    "  singleton MwByKey: Int = 3\n" +
+    "}\n"
+  val res = expandSrc(src)
+  assertTrue(hasDiag(res, "W0020"), "map/plain binding ambiguity reported")
+}
+
+func blockTemplate(): String {
+  "package Web\n" + "interface Mw { func wrap(x: in Int): Int }\n" + "record A { v: Int }\n" +
+    "func extra(): List[Mw] { [] }\n" +
+    "func countKeys(m: in Map[String, Mw]): Int { m.count }\n" +
+    "pub wire Core {\n" +
+    "  contributes[Mw] first = A(v = 1)\n" +
+    "  contributes[Mw] each more = extra()\n" +
+    "  contributes[Mw] key \"k\" keyed = A(v = 2)\n" +
+    "  singleton n: Int = countKeys(MwByKey)\n" +
+    "  expose n\n" +
+    "  overridable more\n" +
+    "}\n"
+}
+
+test "reorder and remove from an including wire apply to an each block" {
+  val reorderApp = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Core {\n" +
+    "    reorder more wraps: first\n" +
+    "  }\n" +
+    "  expose n\n" +
+    "}\n"
+  val r1 = expandTwo(blockTemplate(), reorderApp)
+  assertEqualInt(diagCount(r1), 0, "reorder: no diagnostics")
+  assertEqual(joinNames(callArgNames(firstWire(r1, "Prod"), "Mw")), "more,first,keyed", "block moved as one entry")
+  val removeApp = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Core {\n" + "    remove more\n" +
+    "  }\n" +
+    "  expose n\n" +
+    "}\n"
+  val r2 = expandTwo(blockTemplate(), removeApp)
+  assertEqualInt(diagCount(r2), 0, "remove: no diagnostics")
+  assertEqual(joinNames(listElemNames(firstWire(r2, "Prod"), "Mw")), "first,keyed", "block removed as a whole")
+}
+
+test "an aliased include isolates the keyed map under the alias prefix" {
+  val app = "package App\n" + "import Web\n" + "wire Prod {\n" + "  include Web.Core as C\n" +
+    "  singleton m: Int = C.n\n" +
+    "  expose m\n" +
+    "}\n"
+  val res = expandTwo(blockTemplate(), app)
+  assertEqualInt(diagCount(res), 0, "no diagnostics")
+  val w = firstWire(res, "Prod")
+  assertEqual(callHeadName(findLocalInit(w, "__incl1_MwByKey")), "__wire_Prod___incl1_Mw_byKey", "isolated map helper")
+  assertTrue(hasMemberNamed(w, "__incl1_MwByKey"), "keyed map isolated under the include prefix")
+  assertTrue(not hasMemberNamed(w, "MwByKey"), "no bare keyed map under an alias")
+  assertEqual(
+    joinNames(callArgNames(w, "__incl_C_n")),
+    "__incl1_MwByKey",
+    "template references follow the isolated map"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

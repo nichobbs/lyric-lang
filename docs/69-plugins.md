@@ -602,7 +602,10 @@ capability calls and the boundary error codes.
 
 ## 14. Wire integration
 
-_Not implemented (phase P4)._
+_The two entry forms are implemented (phase P4): `contributes[T] each` and
+keyed contributions, specified in docs/01 §10.5, expanded by
+`Lyric.WireExpand` on every target, diagnostics `W0028`, `P0348` and
+`P0349`._
 
 Plugins join a `wire` graph as contributions, so the rest of the graph sees
 the same `List[T]` whether its entries were compiled in or loaded:
@@ -629,6 +632,15 @@ Selecting from compiled-in implementations at startup needs no plugin
 machinery at all: a keyed contribution, `contributes[T] key "otlp" name = e`,
 makes `T` also available as `Map[String, T]`, and config picks the key. This
 is the right tool when every option ships with the application.
+
+As shipped: other entries order themselves against an `each` block by its
+name, and an including wire's `remove`, `reorder` and replace act on the whole
+block. A keyed entry also keeps its place in the ordered `List[T]`, so the list
+and the map agree; the map is the graph name `TByKey` (`CommandSourceByKey`),
+present once a collection has a keyed entry, with the keyed entries inserted
+in collection order. Keys are plain string literals, unique per `T` in one
+graph (`W0028`). `each` and `key` do not combine on one entry (`P0349`): a key
+names one value, and a block has none.
 
 ## 15. Generators: the first plugin point
 
