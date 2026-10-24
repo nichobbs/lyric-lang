@@ -362,3 +362,89 @@ test "generic-declaring-type member with its own method-level generic fails the 
       ")"
   )
 }
+
+// Build `src` as the single package `pkgName`, run the DLL and return its
+// trimmed stdout (the test fails with the diagnostics when the build fails).
+func buildAndRunFixture(label: in String, pkgName: in String, src: in String): String {
+  val dir = freshTempDir(label)
+  defer {
+    cleanup(dir)
+  }
+  val dllPath = Path.join(dir, pkgName + ".dll")
+  val srcs: List[String] = newList()
+  srcs.add(src)
+  val paths: List[String] = newList()
+  paths.add("")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = pkgName, sources = srcs, paths = paths))
+  val res = Emitter.emitProject(
+    Emitter.EmitProjectRequest(
+      packages = pkgs,
+      assemblyName = pkgName,
+      outputPath = dllPath,
+      target = Emitter.Dotnet,
+      restoredDllPaths = newList(),
+      activeFeatures = newList(),
+      declaredFeatures = newList(),
+      packageVersion = "",
+      depTemplateSrcs = newList(),
+      nugetAssemblyPaths = newList(),
+      defines = newList(),
+      packageFeatures = Emitter.noPackageFeatures(),
+      contractsEnabled = true
+    )
+  )
+  var diagText = ""
+  var di = 0
+  while di < res.diagnostics.count {
+    diagText = diagText + res.diagnostics[di].code + ": " + res.diagnostics[di].message + "\n"
+    di = di + 1
+  }
+  match res.outputPath {
+    case None -> panic(label + ": build failed unexpectedly (diagnostics: " + diagText + ")")
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  assertEqualInt(captured.exitCode, 0, label + ": runs to completion (stderr=" + captured.stderr + ")")
+  Str.trim(captured.stdout)
+}
+
+// #7148: an `async` wrapper over a generic BCL method that returns a
+// `ValueTask<T>` (a struct): the call's result is stored in a scratch local and
+// read through its address, instead of the build being refused.
+test "async extern wrapper over a generic ValueTask-returning BCL method (ValueTask.FromResult<T>) runs end-to-end (#7148)" {
+  val src = "package ValueTaskGenericFixture\n\n" + "@externTarget(\"System.Threading.Tasks.ValueTask.FromResult\")\n" +
+    "@externStatic\n" +
+    "async func vtFromResult(value: Int): Int = ()\n\n" +
+    "func main(): Unit {\n" +
+    "  val r = await vtFromResult(42)\n" +
+    "  println(r)\n" +
+    "}\n"
+  assertEqual(
+    buildAndRunFixture("vt-generic", "ValueTaskGenericFixture", src),
+    "42",
+    "ValueTask.FromResult<Int>(42) unwrapped back to 42"
+  )
+}
+
+// #7148: the plain (non-generic) async branch used to encode `Task` in the
+// MemberRef whatever the BCL method returns, so a `ValueTask`-returning member
+// bound at run time with a MissingMethodException.
+test "async extern wrapper over a non-generic ValueTask-returning BCL method (Stream.DisposeAsync) runs end-to-end (#7148)" {
+  val src = "package ValueTaskPlainFixture\n\n" + "extern type Strm = \"System.IO.Stream\"\n\n" +
+    "@externTarget(\"System.IO.MemoryStream..ctor\")\n" +
+    "func newStream(): Strm = ()\n\n" +
+    "@externInstance\n" +
+    "@externTarget(\"System.IO.Stream.DisposeAsync\")\n" +
+    "async func disposeStream(s: in Strm): Unit = ()\n\n" +
+    "func main(): Unit {\n" +
+    "  val s = newStream()\n" +
+    "  await disposeStream(s)\n" +
+    "  println(\"disposed\")\n" +
+    "}\n"
+  assertEqual(buildAndRunFixture("vt-plain", "ValueTaskPlainFixture", src), "disposed", "Stream.DisposeAsync awaited")
+}

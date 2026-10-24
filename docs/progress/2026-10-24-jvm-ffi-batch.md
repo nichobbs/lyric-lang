@@ -29,6 +29,10 @@ MSIL auto-FFI:
   `UInt16` or `UInt32` parameter with `conv.ovf.*`, so a value outside the range throws `OverflowException`; a `Long`
   is the bit pattern of a `UInt64`. The scorer admits these below every widening match.
 
+- **`async` externs over `ValueTask` (#7148).** A BCL member returning `ValueTask` or `ValueTask<T>` (a struct) is encoded
+  in the MemberRef as declared and unwrapped through a scratch local and its address (`AsTask().Wait()` / `get_Result()`),
+  for both the plain and the method-generic (`ValueTask.FromResult<T>`) `async` wrapper. The plain branch used to encode
+  `Task` whatever the member returned, which bound at run time with a `MissingMethodException`.
 - **F0027 on an SDK-less build (#7387).** With no reference pack, a hint-less `@externTarget` whose first parameter is its
   own declaring type is refused (it would default to a static call that cannot be verified); a plain hint-less static still
   builds. `LYRIC_REF_PACK_DIR` names the reference directory (or, when not a directory, no reference pack), which is the

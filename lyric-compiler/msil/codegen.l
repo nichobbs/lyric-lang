@@ -29501,6 +29501,46 @@ func eraseMethodTypeVarListToObjectMsil(tys: in List[MsilType]): List[MsilType] 
   result
 }
 
+// True for the closed `ValueTask` / `ValueTask`1<T>` struct types.
+func isValueTaskMsilType(t: in MsilType): Bool {
+  match t {
+    case MValueTypeRef(_, fqn) -> fqn == "System.Threading.Tasks.ValueTask"
+    case MValueTypeGenericInst(_, headFqn, typeArgs) -> headFqn == "System.Threading.Tasks.ValueTask`1" and
+      typeArgs.count == 1
+    case _ -> false
+  }
+}
+
+// Synchronously unwrap the `ValueTask` / `ValueTask`1<T>` the call left on the
+// stack.  A struct has no reference to call a method on, so it is stored in a
+// scratch local and read through its address: `AsTask().Wait()` for the void
+// form, `get_Result()` for the valued one (#7148).
+func emitUnwrapValueTaskMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], vt: in MsilType): Unit {
+  val vtSlot = allocSlotMsil(fctx, "__ffi_vt_ret_" + toString(fctx.slotTicker.count), vt)
+  insns.add(MStloc(slot = vtSlot - fctx.paramCount))
+  insns.add(MLdloca(slot = vtSlot - fctx.paramCount))
+  match vt {
+    case MValueTypeGenericInst(_, _, typeArgs) -> {
+      val vtKey = "ts_vt1_result_" + msilTypeKeyStr(typeArgs[0])
+      val vtRow = ctxAddGenericInstTypeSpec(cctx.lctx, vtKey, tdrTypeRef(cctx.trValueTask1), typeArgs, true)
+      val vtSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+      val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, vtRow, "get_Result", "mr_vt1_getresult_" + vtKey, vtSig)
+      insns.add(MCall(methodToken = 0x0A000000 + getResultRow))
+    }
+    case _ -> {
+      val asTaskRow = ctxAddMemberRef(
+        cctx.lctx,
+        cctx.trValueTask,
+        "AsTask",
+        "valuetask_astask",
+        buildInstanceMethodSig(newList(), forDisposeTaskTyMsil(cctx))
+      )
+      insns.add(MCall(methodToken = 0x0A000000 + asTaskRow))
+      insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
+    }
+  }
+}
+
 // Emit a call to a BCL method that is BOTH (a) declared with its own
 // method-level generics (the shape `emitGenericMethodExternCall` above
 // handles, needing a MethodSpec-instantiated OPEN MemberRef) AND (b)
@@ -29531,25 +29571,20 @@ func eraseMethodTypeVarListToObjectMsil(tys: in List[MsilType]): List[MsilType] 
 // TypeSpec below is built against the type the CLR produced, not the open
 // `!!0`.
 //
-// Scope: only a bare `Task` (void async) or `Task`1<T>` (value-returning
-// async) BCL return is supported — matching the plain (non-generic)
-// `decl.isAsync` branch's own EXISTING scope, which is ALSO hardcoded to
-// `Task`/`Task`1<T>` (see `emitExternTargetBody`'s `bclRetTy` construction)
-// and has never supported a `ValueTask`/`ValueTask`1<T>`-returning BCL
-// method. A `ValueTask`1<T>` return here would additionally need the call's
-// result (a STRUCT, not a reference) staged through a scratch local +
-// `ldloca` + a non-virtual `call` to invoke `get_Result()` on it — related
-// to, but distinct from, the value-type-RECEIVER handling #5809 already
-// covers (`isValueTypeReceiverMsil` below declines a value-type RECEIVER,
-// a different signature position from a value-type RETURN). Declining this
-// shape here and filing a scoped follow-up (rather than attempting it in
-// this change) keeps this fix bounded to the shape the issue's own
-// simplest repro (`Task.FromResult<T>`) needs; see #7023's follow-up issue
-// for `ValueTask<T>`.
+// Scope: a bare `Task` (void async), a `Task`1<T>` (value-returning async), or
+// a `ValueTask` / `ValueTask`1<T>` BCL return. A `ValueTask` is a STRUCT, not
+// a reference, so the call's result is staged through a scratch local and
+// read through its address (`stloc`, `ldloca`, a non-virtual `call` of
+// `AsTask()` then `Wait()`, or of `get_Result()`) (#7148) — related to, but
+// distinct from, the value-type-RECEIVER handling #5809 already covers
+// (`isValueTypeReceiverMsil` below declines a value-type RECEIVER, a
+// different signature position from a value-type RETURN). The plain
+// (non-generic) `decl.isAsync` branch of `emitExternTargetBody` is still
+// hardcoded to `Task`/`Task`1<T>` (see its `bclRetTy` construction).
 //
 // Returns `false` — having emitted nothing — for every shape outside this
 // scope (param/return conversion failure, arity mismatch, a value-type
-// receiver, or a BCL return that isn't `Task`/`Task`1<T>`), matching
+// receiver, or a BCL return that isn't a `Task` or `ValueTask`), matching
 // `emitGenericMethodExternCall`'s "decline, don't panic" contract; the
 // caller (`emitExternTargetBody`) turns a `false` here into the same clear
 // build-time panic the unimplemented combination used to raise
@@ -29600,6 +29635,7 @@ func emitGenericAsyncMethodExternCall(
   // see the scope note above; `ValueTask`/`ValueTask`1<T>` (and anything
   // else) decline here so the caller raises a clear build-time diagnostic.
   var isVoidTask = false
+  var isValueTask = false
   var taskInnerOpen: Option[MsilType] = None
   match mRet {
     case MClassRef(_, fqn) -> {
@@ -29612,6 +29648,25 @@ func emitGenericAsyncMethodExternCall(
     case MGenericInst(_, headFqn, typeArgs) -> {
       if headFqn == "System.Threading.Tasks.Task`1" and typeArgs.count == 1 {
         taskInnerOpen = Some(value = typeArgs[0])
+      } else {
+        return false
+      }
+    }
+    // A `ValueTask`/`ValueTask`1<T>` is a struct: the call leaves a value, not
+    // a reference, so it is staged in a scratch local and read through its
+    // address below (#7148).
+    case MValueTypeRef(_, fqn) -> {
+      if fqn == "System.Threading.Tasks.ValueTask" {
+        isVoidTask = true
+        isValueTask = true
+      } else {
+        return false
+      }
+    }
+    case MValueTypeGenericInst(_, headFqn, typeArgs) -> {
+      if headFqn == "System.Threading.Tasks.ValueTask`1" and typeArgs.count == 1 {
+        taskInnerOpen = Some(value = typeArgs[0])
+        isValueTask = true
       } else {
         return false
       }
@@ -29671,7 +29726,14 @@ func emitGenericAsyncMethodExternCall(
   // here rather than left to the caller because the CLOSED (post-witness)
   // inner type is only knowable here, where the OPEN `msig` and its
   // Object-witnessing are in scope.
-  if isVoidTask {
+  if isVoidTask and isValueTask {
+    emitUnwrapValueTaskMsil(
+      cctx,
+      fctx,
+      insns,
+      MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trValueTask), clrFqn = "System.Threading.Tasks.ValueTask")
+    )
+  } else if isVoidTask {
     insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
   } else {
     val openInner = match taskInnerOpen { case Some(v) -> v; case None -> MObject }
@@ -29679,11 +29741,24 @@ func emitGenericAsyncMethodExternCall(
     val closedInner = eraseMethodTypeVarsToObjectMsil(openInner)
     val tsArgs: List[MsilType] = newList()
     tsArgs.add(closedInner)
-    val tsKey = "ts_task1_result_" + msilTypeKeyStr(closedInner)
-    val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
-    val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
-    val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
-    insns.add(MCallvirt(methodToken = 0x0A000000 + getResultRow))
+    if isValueTask {
+      emitUnwrapValueTaskMsil(
+        cctx,
+        fctx,
+        insns,
+        MValueTypeGenericInst(
+          typeRefCode = tdrTypeRef(cctx.trValueTask1),
+          headFqn = "System.Threading.Tasks.ValueTask`1",
+          typeArgs = tsArgs
+        )
+      )
+    } else {
+      val tsKey = "ts_task1_result_" + msilTypeKeyStr(closedInner)
+      val tsRow = ctxAddGenericInstTypeSpec(cctx.lctx, tsKey, tdrTypeRef(cctx.trTask1), tsArgs, false)
+      val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+      val getResultRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "get_Result", "mr_task_getresult_" + tsKey, mrSig)
+      insns.add(MCallvirt(methodToken = 0x0A000000 + getResultRow))
+    }
     // Mirror of `emitGenericMethodExternCall`'s own return-unboxing dance
     // (#2972): only relevant when the Task's inner type WAS the method's
     // own generic parameter (erased to Object by the MethodSpec witness
@@ -30085,6 +30160,10 @@ func emitExternTargetBody(
       // not found.
       var resolvedMethodParams: Option[List[MsilType]] = None
       var resolvedMethodRet: Option[MsilType] = None
+      // The BCL member's own `ValueTask`/`ValueTask`1<T>` return when the
+      // wrapper is `async` (#7148): encoded in the MemberRef as declared, and
+      // unwrapped through a scratch local rather than `Task`'s methods.
+      var asyncValueTaskRet: Option[MsilType] = None
       // Lyric-declared argument SigTypes, used to disambiguate same-arity
       // overloads.  If any param can't be described as a SigType (a generic or
       // shape the metadata path can't express), skip metadata-direct resolution
@@ -30147,9 +30226,9 @@ func emitExternTargetBody(
                   // call plus the Task/Task`1<T>`-unwrap sequence for the
                   // shape this scope covers (#7023); it returns `false` —
                   // having emitted nothing — for anything outside that scope
-                  // (most notably a `ValueTask`1<T>`-returning BCL method,
-                  // filed as a tracked follow-up rather than attempted here,
-                  // see the function's own doc comment), and a `false` here
+                  // (a value-type receiver, or a return that is neither a
+                  // `Task` nor a `ValueTask`, see the function's own doc
+                  // comment), and a `false` here
                   // still raises the same clear build-time panic the whole
                   // combination used to raise unconditionally — mirroring
                   // the `#5809`/`#6995` "decline loudly, never silently
@@ -30161,9 +30240,8 @@ func emitExternTargetBody(
                   panic(
                     "Msil.Codegen: @externTarget '" + target + "' on '" + decl.name +
                       "' is an async wrapper over a BCL method that is itself declared with its own generics, but this " +
-                      "specific shape is unsupported (e.g. a ValueTask<T>-returning generic async BCL method, a " +
-                      "value-type receiver, or a param/return shape the metadata-direct signature encoder cannot " +
-                      "express) — see #7023."
+                      "specific shape is unsupported (e.g. a value-type receiver, a return that is not a Task or ValueTask, " +
+                      "or a param/return shape the metadata-direct signature encoder cannot express) — see #7023."
                   )
                 } else {
                   val mParams: List[MsilType] = newList()
@@ -30190,6 +30268,10 @@ func emitExternTargetBody(
                     if convOk and not r.isCtor {
                       emitIsStatic = not msig.hasThis
                       resolvedMethodParams = Some(value = mParams)
+                      match resolvedSigToMsil(cctx, msig.returnType) {
+                        case Some(rm) -> if isValueTaskMsilType(rm) { asyncValueTaskRet = Some(value = rm) }
+                        case None -> ()
+                      }
                     }
                   } else {
                     match resolvedSigToMsil(cctx, msig.returnType) {
@@ -30291,7 +30373,12 @@ func emitExternTargetBody(
       // callvirt appended below.  Ctors are never async in the BCL; skip them.
       val bclRetTy = if decl.isAsync and not r.isCtor {
         val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
-        if isVoidRet {
+        if (match asyncValueTaskRet { case Some(_) -> true; case None -> false }) {
+          match asyncValueTaskRet {
+            case Some(vt) -> vt
+            case None -> ffiRetTy
+          }
+        } else if isVoidRet {
           MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
         } else {
           val taskArgs: List[MsilType] = newList()
@@ -30452,7 +30539,12 @@ func emitExternTargetBody(
       // results, so the stack type is always T after this point (Phase A).
       if decl.isAsync {
         val isVoidRet = match retTy { case MVoid -> true; case _ -> false }
-        if isVoidRet {
+        if (match asyncValueTaskRet { case Some(_) -> true; case None -> false }) {
+          match asyncValueTaskRet {
+            case Some(vt) -> emitUnwrapValueTaskMsil(cctx, fctx, insns, vt)
+            case None -> ()
+          }
+        } else if isVoidRet {
           // BCL method returned Task (void). Call Task::Wait() to block.
           insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
         } else {
