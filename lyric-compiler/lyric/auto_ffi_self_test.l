@@ -46,6 +46,8 @@ extern type ByteT = "System.Byte"
 
 extern type Conv = "System.Convert"
 
+extern type NetCharT = "System.Char"
+
 extern type Enc = "System.Text.Encoding"
 
 // Unquoted dotted path declarations
@@ -429,4 +431,9 @@ test "auto-FFI passes a scalar Char result through (#8225)" {
   assertEqualInt(Conv.ToChar(55295).toInt(), 55295, "Convert.ToChar(0xD7FF)")
   assertEqualInt(Conv.ToChar(57344).toInt(), 57344, "Convert.ToChar(0xE000)")
   assertEqualInt(Conv.ToChar(65535).toInt(), 65535, "Convert.ToChar(0xFFFF)")
+}
+
+test "auto-FFI passes scalar Char constants through the boundary check (#8225)" {
+  assertEqualInt(NetCharT.MaxValue.toInt(), 65535, "Char.MaxValue")
+  assertEqualInt(NetCharT.MinValue.toInt(), 0, "Char.MinValue")
 }

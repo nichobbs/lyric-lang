@@ -892,3 +892,8 @@ test "auto-FFI passes a scalar Char result through (#8225)" {
   assertEqualInt(JCharacter.forDigit(7, 10).toInt(), 55, "Character.forDigit(7, 10) is '7'")
   assertEqualInt(JCharacter.toUpperCase(97.toChar()).toInt(), 65, "Character.toUpperCase('a')")
 }
+
+test "auto-FFI passes a scalar static char field through the boundary check (#8225)" {
+  assertEqualInt(JCharacter.MAX_VALUE.toInt(), 65535, "Character.MAX_VALUE")
+  assertEqualInt(JCharacter.MIN_VALUE.toInt(), 0, "Character.MIN_VALUE")
+}

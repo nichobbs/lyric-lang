@@ -42660,14 +42660,17 @@ func widenNarrowPrimResult(insns: in List[MInsn], t: in MsilType): MsilType {
 // boundary, and throws `OverflowException` (the checked-narrowing failure
 // `.toChar()` raises) rather than becoming a Lyric `Char`.
 func guardAutoFfiCharResultMsil(
-  cctx: in CodegenCtx,
-  fctxOpt: in Option[FuncCtx],
-  insns: in List[MInsn],
-  t: in MsilType,
+  cctx: in CodegenCtx, fctxOpt: in Option[FuncCtx], insns: in List[MInsn], t: in MsilType
 ): MsilType {
   match t {
     case MChar -> match fctxOpt {
-      case Some(fctx) -> emitSurrogateGuardMsil(cctx, fctx, insns, systemExcCtorTokenMsil(cctx, "OverflowException"), autoFfiSurrogateCharMessage())
+      case Some(fctx) -> emitSurrogateGuardMsil(
+        cctx,
+        fctx,
+        insns,
+        systemExcCtorTokenMsil(cctx, "OverflowException"),
+        autoFfiSurrogateCharMessage()
+      )
       case None -> ()
     }
     case _ -> ()
@@ -43726,7 +43729,11 @@ func emitExternConstMsil(
 // auto-FFI call-site path (docs/59 §6).  Returns None when the member matches
 // none of the three; the caller decides how loud to fail.
 func tryExternStaticMemberReadMsil(
-  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val noArgs: List[Mdr.SigType] = newList()
@@ -43773,7 +43780,14 @@ func tryExternStaticMemberReadMsil(
         }
         case _ -> ()
       }
-      return Some(value = guardAutoFfiCharResultMsil(cctx, Some(value = fctx), insns, emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv)))
+      return Some(
+        value = guardAutoFfiCharResultMsil(
+          cctx,
+          Some(value = fctx),
+          insns,
+          emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv)
+        )
+      )
     }
     case None -> ()
   }
