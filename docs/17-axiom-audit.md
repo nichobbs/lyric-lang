@@ -338,6 +338,29 @@ for a host outside the manifest vocabulary.
 
 **Review**: Stable.
 
+### `Std.PluginTrustedHost` — `lyric-stdlib/std/_kernel/plugin_trusted_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.Runtime.Loader.AssemblyLoadContext, System.Reflection and System.Threading.Monitor conform to their documented .NET contracts")
+@axiom("java.net.URLClassLoader, java.util.jar.JarFile, java.lang.reflect.Method and java.util.concurrent.locks.ReentrantLock conform to their documented JVM contracts")
+```
+
+**BCL surface**: a non-collectible `AssemblyLoadContext`, the entry point's
+declaring type and `MethodBase.Invoke` under a `Monitor` lock (.NET); a
+parent-first `URLClassLoader`, the jar manifest's `Main-Class`,
+`Method.invoke` under a `ReentrantLock` (JVM). Backs trusted in-process
+plugin loading (D231, docs/69 §10). The native twin binds `lyric-rt`'s
+`lyric_plugin_dl_*` (`dlopen`/`dlsym`).
+
+**Gap**: The prover does not model loaded code; a trusted plugin runs with
+the host's full authority.
+
+**Caller obligation**: Load only plugins the grant policy marks trusted.
+Load failures return `Err` and become `TrustedLoadFailed`; nothing is
+unloaded.
+
+**Review**: Stable.
+
 ---
 
 ### `Std.PluginWasmBind` — `lyric-stdlib/std/_kernel/plugin_wasm_bind.l` (+ `_kernel_native/`)
@@ -1002,6 +1025,7 @@ All are provisional pending weaver integration.
 | `Std.FileHost`           | `file_host.l`                | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
+| `Std.PluginTrustedHost`  | `plugin_trusted_host.l`      | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
 | `Std.EnvironmentHost`    | `environment_host.l`         | 3      | 0           |
@@ -1026,7 +1050,7 @@ All are provisional pending weaver integration.
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **35** | **2**       |
+| **Total**                |                              | **36** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1051,6 +1075,7 @@ recorded in the §19 baseline.
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
+| `Std.PluginTrustedHost`  | `plugin_trusted_host.l`      | 1      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
 | `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
@@ -1065,12 +1090,12 @@ recorded in the §19 baseline.
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **28** | **0**       |
+| **Total**                |                              | **29** | **0**       |
 
 ### Combined total
 
-.NET (35 stable + 2 provisional = 37) + JVM (28 stable + 0 provisional =
-28) = **65** `@axiom` annotations covering the entire extern boundary
+.NET (36 stable + 2 provisional = 38) + JVM (29 stable + 0 provisional =
+29) = **67** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.PluginWasmBind` (docs/69 §9.3) binds the
 in-process wasm host `lyric_wasmhost` through `@library`, so like
 `Std.FfiHost` its one file lowers on dotnet and the JVM and is counted once,
@@ -1152,6 +1177,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
 | `dotnet` | `Std.PluginHost` | `plugin_host.l` | System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts |
+| `dotnet` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | System.Runtime.Loader.AssemblyLoadContext, System.Reflection and System.Threading.Monitor conform to their documented .NET contracts |
 | `dotnet` | `Std.PluginWasmBind` | `plugin_wasm_bind.l` | lyric_wasmhost (lyric-rt/src/lyric_wasmhost.c) conforms to its contract in lyric_wasmhost.h: ids are positive, strings it returns come from lyric_wasmhost_alloc, and it returns the userdata it was given from lyric_wasmhost_close |
 | `dotnet` | `Std.PluginWasmLoad` | `plugin_wasm_load.l` | System.Runtime.InteropServices.NativeLibrary.Load conforms to its documented .NET contract |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
@@ -1183,6 +1209,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |
 | `jvm` | `Std.PluginHost` | `plugin_host.l` | java.lang.System.getProperty conforms to its documented JVM contract |
+| `jvm` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | java.net.URLClassLoader, java.util.jar.JarFile, java.lang.reflect.Method and java.util.concurrent.locks.ReentrantLock conform to their documented JVM contracts |
 | `jvm` | `Std.PluginWasmLoad` | `plugin_wasm_load.l` | java.lang.System.load conforms to its documented JVM contract |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
