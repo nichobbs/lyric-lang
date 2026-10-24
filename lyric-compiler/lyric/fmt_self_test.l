@@ -1808,6 +1808,22 @@ test "contributes entries with ordering clauses round trip" {
   assertTrue(Str.contains(acc, "inside: cors"), "contributes: ordering clause preserved")
 }
 
+test "each and keyed contributes entries round trip" {
+  val src = "package P\n\nwire W {\n" + "  contributes[Mw] each plugins = loadAll()\n" + "    inside: builtins\n" +
+    "  sealed contributes[Exporter] key \"otlp\" otlp = Otlp.make()\n" +
+    "  contributes[Exporter] key \"a\\\"b\" quoted = make()\n" +
+    "  contributes[Mw] each = make()\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "each/key: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "contributes[Mw] each plugins = loadAll()"), "each: marker preserved")
+  assertTrue(Str.contains(acc, "sealed contributes[Exporter] key \"otlp\" otlp = Otlp.make()"), "key: marker preserved")
+  assertTrue(Str.contains(acc, "key \"a\\\"b\" quoted"), "key: escapes preserved")
+  assertTrue(Str.contains(acc, "contributes[Mw] each = make()"), "an entry named each stays an entry name")
+  assertTrue(isFormatted(acc, parse(acc)), "each/key: idempotent")
+}
+
 test "include with alias and adjustments round trips" {
   val src = "package P\n\nwire W {\n" + "  include Web.ServerModule as Core {\n" + "    @provided config: appCfg\n" +
     "    Files {\n      root = \"./x\"\n    }\n" +

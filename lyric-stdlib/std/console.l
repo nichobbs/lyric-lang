@@ -47,17 +47,16 @@ pub func error(s: in String): Unit {
 /// - `EndOfInput("stdin")`: EOF before a line is available.
 /// - `IoError("stdin", message)`: host console read failure.
 ///
-/// EOF is not a Bug. Host exceptions are caught only here, at the
-/// stdlib boundary, and normalized to `IOError`.
+/// EOF is not a Bug. A host read failure is caught at the kernel boundary
+/// and normalized to `IOError`.
 @stable(since = "1.0")
 pub func readLine(): Result[String, IOError] {
-  return try {
-    match hostReadLineOpt() {
+  match hostReadLineResult() {
+    case Ok(read) -> match read {
       case Some(line) -> Ok(value = line)
       case None -> Err(error = EndOfInput(source = "stdin"))
     }
-  } catch Bug as b {
-    Err(error = IoError(path = "stdin", message = b.message))
+    case Err(message) -> Err(error = IoError(path = "stdin", message = message))
   }
 }
 

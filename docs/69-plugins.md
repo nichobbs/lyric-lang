@@ -192,13 +192,20 @@ pub exposed record LanguageContributions {
 pub interface LanguageServer {}
 ```
 
-`Std.Plugin` launches the process, restarts it on failure and stops it, and
-hands the application the connected process (`openProtocolPlugin`); the
-application's own protocol client (for LSP, the `Lyric.Lsp` code) does the
-rest. Capabilities on a protocol point are enforced only to the extent the
-host routes the protocol's own requests through them (for example the LSP
-`workspace/applyEdit` request through `WorkspaceEdit`). A protocol plugin's
-`plugin.json` is written by its author and checked with `lyric plugin check`.
+`Std.Plugin` launches the process in a supervised `ProtocolSession`
+(`openProtocolSession`, or the generated `open<P>Session`), restarts it after
+it exits with process mode's backoff and restart limit, and stops it;
+`protocolProcess` hands the application the running process, and the
+session's `generation` changes with each start so the client knows to repeat
+its handshake. The application's own protocol client does the rest.
+Capabilities on a protocol point are enforced to the extent the host routes
+the protocol's own requests through them: the generated `<C>As` record (or
+`callCapabilityAs`) calls a capability on the plugin's behalf with its grant,
+revocations and guards, so the LSP `workspace/applyEdit` request goes through
+`WorkspaceEdit`. A protocol plugin implements that one point, since its
+stdin and stdout carry its own protocol. Its `plugin.json` is written by its
+author and checked with `lyric plugin check`. `examples/plugins/lsp` is a
+complete editor and language server.
 
 ### 4.4 Plugins
 
@@ -428,14 +435,19 @@ stopAllPlugins(host)
   `<p>Remotes(host)` (a `<P>Remote` per loaded plugin of point `P`, each
   method returning `Result[T, CallError[E]]`), `<p>Contributions(host)`,
   `<c>CapabilityInfo()` and `<c>Provider(target)`, which wraps the host's
-  implementation of capability `C` in a server that checks the grant clauses.
+  implementation of capability `C` in a server that checks the grant clauses;
+  `<C>As(host, pluginId)`, the capability called on a plugin's behalf; and
+  `open<P>Session(host, pluginId)` for a protocol point.
 - **Runtime:** `newPluginHost(config)`, `discoverPlugins(host, dirs)` (each
   subdirectory holding a `plugin.json` is one plugin, in name order),
   `registerPlugin(host, manifest, dir)` (for a manifest built in memory),
   `pluginManifests`, `connectionsFor`, `contributionsFor`,
   `callPlugin(conn, method, params)` (the untyped call the generated remotes
-  use), `stopPlugin`, `stopAllPlugins`, `revokeCapability(host, id, capability)`
-  and `openProtocolPlugin(host, pointId, pluginId)`. Manifest helpers:
+  use), `stopPlugin`, `stopAllPlugins`, `revokeCapability(host, id, capability)`,
+  `openProtocolSession(host, pointId, pluginId)`, `protocolProcess(session)`
+  and `closeProtocolSession(session)` (§4.3), `callCapabilityAs(host, id,
+  method, params)`, and `openProtocolPlugin(host, pointId, pluginId)`, the
+  unsupervised form. Manifest helpers:
   `parsePluginManifest`, `readPluginManifest`, `pluginManifestToJson`,
   `addPluginPayload`, `selectPluginPayload`, `pluginLaunchCommand` and
   `findWasmtime`.
@@ -602,7 +614,10 @@ capability calls and the boundary error codes.
 
 ## 14. Wire integration
 
-_Not implemented (phase P4)._
+_The two entry forms are implemented (phase P4): `contributes[T] each` and
+keyed contributions, specified in docs/01 §10.5, expanded by
+`Lyric.WireExpand` on every target, diagnostics `W0028`, `P0348` and
+`P0349`._
 
 Plugins join a `wire` graph as contributions, so the rest of the graph sees
 the same `List[T]` whether its entries were compiled in or loaded:
@@ -629,6 +644,15 @@ Selecting from compiled-in implementations at startup needs no plugin
 machinery at all: a keyed contribution, `contributes[T] key "otlp" name = e`,
 makes `T` also available as `Map[String, T]`, and config picks the key. This
 is the right tool when every option ships with the application.
+
+As shipped: other entries order themselves against an `each` block by its
+name, and an including wire's `remove`, `reorder` and replace act on the whole
+block. A keyed entry also keeps its place in the ordered `List[T]`, so the list
+and the map agree; the map is the graph name `TByKey` (`CommandSourceByKey`),
+present once a collection has a keyed entry, with the keyed entries inserted
+in collection order. Keys are plain string literals, unique per `T` in one
+graph (`W0028`). `each` and `key` do not combine on one entry (`P0349`): a key
+names one value, and a block has none.
 
 ## 15. Generators: the first plugin point
 
@@ -709,7 +733,7 @@ What changed relative to the pre-D207 docs/40:
 | P2 | Generators migrated to `SourceGenerator` (§15); docs/40 updated; `examples/generators` and `scripts/ci/source-generator-e2e.sh` on the new path | Done |
 | P2 | `lyric plugin pack`, `check` and `sdk` (C#, Java, TypeScript, JSON Schema), with a plugin per language in CI | Done |
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
-| P4 | Protocol points: `openProtocolPlugin` ships; an LSP example, `contributes[T] each` and keyed contributions | Open |
+| P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open |
 | P6 | `lyric-ui` widget point (docs/65); trusted mode (§10) | Open |
 

@@ -3291,7 +3291,8 @@ func paramListText(m: in MethodModel): String {
 }
 
 /// A stub method (`<C>Client` or `<P>Remote`) calling `callFn`.
-func stubMethodText(recName: in String, m: in MethodModel, callFn: in String, methodId: in String, g: in Gen): String {
+/// `callHead` is the call up to the method id, such as `callHost(__stub.conn, `.
+func stubMethodText(recName: in String, m: in MethodModel, callHead: in String, methodId: in String, g: in Gen): String {
   val helper = callResultHelper(m, g)
   val l: List[String] = newList()
   l.add(
@@ -3306,7 +3307,7 @@ func stubMethodText(recName: in String, m: in MethodModel, callFn: in String, me
     l.add("  __ps.add(JsonField(name = " + lit(p.name) + ", value = " + encExpr(m.paramTys[i], p.name, g) + "))")
     i = i + 1
   }
-  l.add("  " + helper + "(" + callFn + "(__stub.conn, " + lit(methodId) + ", JsonValue.JObject(fields = __ps)))")
+  l.add("  " + helper + "(" + callHead + lit(methodId) + ", JsonValue.JObject(fields = __ps)))")
   l.add("}")
   joinLines(l)
 }
@@ -3402,7 +3403,7 @@ func capabilityText(c: in IfaceModel, pkg: in String, g: in Gen): String {
   l.add("}")
   l.add("")
   for m in c.methods {
-    l.add(stubMethodText(c.name + "Client", m, "callHost", "cap/" + id + "/" + m.name, g))
+    l.add(stubMethodText(c.name + "Client", m, "callHost(__stub.conn, ", "cap/" + id + "/" + m.name, g))
   }
   // Host side.
   l.add("pub func " + cl + "CapabilityInfo(): CapabilityInfo {")
@@ -3442,6 +3443,20 @@ func capabilityText(c: in IfaceModel, pkg: in String, g: in Gen): String {
   l.add("pub func " + cl + "Provider(target: in " + c.name + "): CapabilityProvider {")
   l.add("  " + c.name + "Server(target = target)")
   l.add("}")
+  l.add("")
+  // Host side: calling the capability on behalf of a plugin, for requests
+  // that reach the host through a protocol plugin's own protocol.
+  l.add("/// " + c.name + " called on behalf of plugin `pluginId`, with its grant, revocations and guards.")
+  l.add("pub record " + c.name + "As {")
+  l.add("  host: PluginHost")
+  l.add("  pluginId: String")
+  l.add("}")
+  l.add("")
+  for m in c.methods {
+    l.add(
+      stubMethodText(c.name + "As", m, "callCapabilityAs(__stub.host, __stub.pluginId, ", "cap/" + id + "/" + m.name, g)
+    )
+  }
   joinLines(l)
 }
 
@@ -3516,6 +3531,14 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
     case None -> ()
   }
   if p.kind == "protocol" {
+    l.add("/// Open a supervised session with protocol plugin `pluginId` for " + p.name + ".")
+    l.add(
+      "pub func open" + p.name +
+        "Session(host: in PluginHost, pluginId: in String): Result[ProtocolSession, BoundaryError] {"
+    )
+    l.add("  openProtocolSession(host, " + lit(id) + ", pluginId)")
+    l.add("}")
+    l.add("")
     return joinLines(l)
   }
   // Host side.
@@ -3524,7 +3547,7 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
   l.add("}")
   l.add("")
   for m in p.methods {
-    l.add(stubMethodText(p.name + "Remote", m, "callPlugin", id + "/" + m.name, g))
+    l.add(stubMethodText(p.name + "Remote", m, "callPlugin(__stub.conn, ", id + "/" + m.name, g))
   }
   l.add("pub func " + pl + "Remotes(host: in PluginHost): List[" + p.name + "Remote] {")
   l.add("  val acc: List[" + p.name + "Remote] = newList()")

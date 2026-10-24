@@ -1746,6 +1746,25 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
   if offered.count == 0 {
     return Some(value = plIssue(NoMatchingPoint, dir, id, "the plugin implements none of the points this host offers"))
   }
+  // A protocol plugin's stdin and stdout carry its own protocol, so its
+  // process cannot also serve this runtime's calls for another point.
+  if offered.count > 1 {
+    var q = 0
+    while q < offered.count {
+      if isSome(offered[q].protocol) {
+        return Some(
+          value = plIssue(
+            ManifestInvalid,
+            dir,
+            id,
+            "the plugin implements protocol point " + offered[q].id +
+              " and other points; a protocol plugin implements that one point only"
+          )
+        )
+      }
+      q = q + 1
+    }
+  }
   var r = 0
   while r < manifest.required.count {
     if not plCheckRequestAllowed(manifest.required[r], offered) {
@@ -2391,8 +2410,15 @@ func plHostCall(st: inout PluginProcessState, method: in String, params: in Json
   val pointId = Str.substring(method, 0, slash)
   val name = Str.substring(method, slash + 1)
   val wireParams = match plCallParams(params) { case Ok(p) -> p; case Err(b) -> return Err(error = b) }
-  if isNone(plFindPoint(st.points, pointId)) {
-    return Err(error = Unsupported(method = method))
+  match plFindPoint(st.points, pointId) {
+    case None -> return Err(error = Unsupported(method = method))
+    case Some(info) -> if isSome(info.protocol) {
+      return Err(
+        error = Protocol(
+          detail = "'" + pointId + "' is a protocol point; open it with openProtocolSession, not callPlugin"
+        )
+      )
+    }
   }
   val started = match plEnsureStarted(st) { case Ok(p) -> p; case Err(b) -> return Err(error = b) }
   val implemented = match plMethodsFor(st, pointId) {
@@ -2517,14 +2543,10 @@ pub func revokeCapability(host: in PluginHost, id: in String, capability: in Str
   }
 }
 
-/// Start plugin `pluginId` for protocol point `pointId` and hand its process
-/// to the caller, who speaks the point's protocol (an LSP server, for
-/// example) over its stdin and stdout and owns its lifetime. There is no
-/// `plugin/hello` and no capability serving on this channel.
-@experimental
-pub func openProtocolPlugin(
+// The state of protocol plugin `pluginId` for protocol point `pointId`.
+func plProtocolState(
   host: in PluginHost, pointId: in String, pluginId: in String
-): Result[PipedProcess, BoundaryError] {
+): Result[PluginProcessState, BoundaryError] {
   val conn = match plFindConnection(host, pluginId) {
     case Some(c) -> c
     case None -> return Err(error = Unsupported(method = pointId))
@@ -2540,6 +2562,18 @@ pub func openProtocolPlugin(
     case Some(b) -> return Err(error = b)
     case None -> ()
   }
+  Ok(value = st)
+}
+
+/// Start plugin `pluginId` for protocol point `pointId` and hand its process
+/// to the caller, who owns it from then on: nothing restarts it, and
+/// `stopPlugin` does not reach it. `openProtocolSession` is the supervised
+/// form and the one to prefer.
+@experimental
+pub func openProtocolPlugin(
+  host: in PluginHost, pointId: in String, pluginId: in String
+): Result[PipedProcess, BoundaryError] {
+  val st = match plProtocolState(host, pointId, pluginId) { case Ok(s) -> s; case Err(b) -> return Err(error = b) }
   val args: List[String] = newList()
   var i = 1
   while i < st.launch.count {
@@ -2549,6 +2583,134 @@ pub func openProtocolPlugin(
   match spawnPiped(st.launch[0], args) {
     case Ok(proc) -> Ok(value = proc)
     case Err(e) -> Err(error = Crashed(detail = "could not start '" + st.launch[0] + "': " + IOError.message(e)))
+  }
+}
+
+/// A supervised connection to a protocol plugin (docs/69 §4.3). The host
+/// starts the process and restarts it after it exits, with the backoff and
+/// the `maxRestarts` limit of process mode; the application speaks the
+/// point's protocol over the process `protocolProcess` returns. Each start
+/// increments `generation`, so a client that sees it change knows the
+/// process is new and repeats its protocol's handshake (for LSP,
+/// `initialize`). There is no `plugin/hello` on this channel: grants are
+/// fixed when the plugin is registered and apply to the requests the host
+/// routes through `callCapabilityAs`.
+@experimental
+pub record ProtocolSession {
+  pluginId: String
+  pointId: String
+  state: PluginProcessState
+  var generation: Int
+}
+
+/// Open a session with protocol plugin `pluginId` for protocol point
+/// `pointId` and start its process. `Unsupported` when the plugin or the
+/// point is unknown, `Protocol` when the point is not a protocol point or the
+/// plugin already has a session, `Crashed` when the process cannot start.
+@experimental
+pub func openProtocolSession(
+  host: in PluginHost, pointId: in String, pluginId: in String
+): Result[ProtocolSession, BoundaryError] {
+  val st = match plProtocolState(host, pointId, pluginId) { case Ok(s) -> s; case Err(b) -> return Err(error = b) }
+  match st.process {
+    case Some(proc) -> if pipedIsAlive(proc) {
+      return Err(error = Protocol(detail = "plugin '" + pluginId + "' already has an open protocol session"))
+    }
+    case None -> ()
+  }
+  val session = ProtocolSession(pluginId = pluginId, pointId = pointId, state = st, generation = 0)
+  match protocolProcess(session) {
+    case Ok(_) -> Ok(value = session)
+    case Err(b) -> Err(error = b)
+  }
+}
+
+/// The session's running process. When the process has exited, this counts
+/// a crash and starts a new one after the restart backoff (incrementing
+/// `generation`), or returns `Crashed` once the plugin has crashed more than
+/// `maxRestarts` times. A deliberate stop goes through
+/// `closeProtocolSession`, which is not counted.
+@experimental
+pub func protocolProcess(session: in ProtocolSession): Result[PipedProcess, BoundaryError] {
+  var st = session.state
+  match st.process {
+    case Some(proc) -> if pipedIsAlive(proc) {
+      return Ok(value = proc)
+    } else {
+      val code = pipedExitCode(proc)
+      val _ = plNoteCrash(st, "protocol plugin '" + session.pluginId + "' exited with code " + code.toString())
+    }
+    case None -> ()
+  }
+  match st.fatal {
+    case Some(b) -> return Err(error = b)
+    case None -> ()
+  }
+  if st.crashes > 0 {
+    val wait = plBackoffMs(st.config, st.crashes) - ((monotonicNanos() - st.lastCrashNanos) / 1000000i64).toInt()
+    if wait > 0 {
+      sleepMillis(wait)
+    }
+  }
+  val args: List[String] = newList()
+  var i = 1
+  while i < st.launch.count {
+    args.add(st.launch[i])
+    i = i + 1
+  }
+  match spawnPiped(st.launch[0], args) {
+    case Ok(proc) -> {
+      st.process = Some(value = proc)
+      var s = session
+      s.generation = s.generation + 1
+      Ok(value = proc)
+    }
+    case Err(e) -> {
+      val crash = plNoteCrash(st, "could not start '" + st.launch[0] + "': " + IOError.message(e))
+      match st.fatal {
+        case Some(b) -> Err(error = b)
+        case None -> Err(error = crash)
+      }
+    }
+  }
+}
+
+/// Stop the session's process: close its stdin, wait `shutdownGraceMs` for
+/// it to exit, then kill it. Speak the protocol's own shutdown first (for
+/// LSP, `shutdown` and `exit`) so the plugin can exit cleanly. The next
+/// `protocolProcess` starts the plugin again without counting a crash.
+@experimental
+pub func closeProtocolSession(session: in ProtocolSession): Unit {
+  var st = session.state
+  plShutdown(st)
+}
+
+/// Call capability method `method` (`<Pkg>.<C>/<name>`, with or without the
+/// `cap/` prefix) on behalf of plugin `pluginId`, exactly as if the plugin
+/// had called it: its grant, its revocations, the capability's `requires:`
+/// guards and the registered provider all apply. `params` is the object of
+/// named arguments. The answer is the provider's `{"ok": ...}` or
+/// `{"err": ...}` object; the generated `<C>As` record wraps this with typed
+/// arguments and results. A host routes a
+/// protocol plugin's own requests through its capabilities this way (an LSP
+/// `workspace/applyEdit` through a `WorkspaceEdit` capability); it works for
+/// a plugin of any point. `Denied` when the plugin lacks the grant or a guard
+/// fails, `Revoked` after `revokeCapability`, `Unsupported` for an unknown
+/// plugin.
+@experimental
+pub func callCapabilityAs(
+  host: in PluginHost, pluginId: in String, method: in String, params: in JsonValue
+): Result[JsonValue, BoundaryError] {
+  val wire = if Str.startsWith(method, "cap/") { method } else { "cap/" + method }
+  val conn = match plFindConnection(host, pluginId) {
+    case Some(c) -> c
+    case None -> return Err(error = Unsupported(method = wire))
+  }
+  val st = match conn.host { case Some(s) -> s; case None -> return Err(error = Unsupported(method = wire)) }
+  val caps = PluginCapabilityServer(providers = st.config.providers, grants = st.grants, revocations = st.revocations)
+  match plServeCapability(caps, wire, Some(value = params)) {
+    case Ok(v) -> Ok(value = v)
+    case Err(e) -> Err(error = boundaryErrorFromRpc(e, wire))
   }
 }
 

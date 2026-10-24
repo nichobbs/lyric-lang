@@ -128,13 +128,26 @@ pub func runCaptureWithInput(
 /// streaming protocols (e.g. an MCP server's stdio transport) rather than a
 /// single batch write-then-capture round trip. Stderr is inherited from
 /// this process — see `_kernel/process_piped_host.l`'s module doc.
+///
+/// The child's stdout can be read a line at a time (`pipedReadLine`,
+/// `pipedReadLineWithin`) or as raw bytes (`pipedReadBytes`,
+/// `pipedReadBytesWithin`), and the two may be mixed freely on one process:
+/// every read draws from a single buffer of the child's stdout bytes, so
+/// nothing is lost or reordered. A line read returns the bytes up to the next
+/// `\n` (a `\r` just before it is dropped) decoded as UTF-8 and leaves any
+/// bytes after it buffered; the next byte read returns those buffered bytes
+/// first, before reading more. A byte read never leaves bytes behind, so a
+/// line read after it starts at the first byte not yet returned. Likewise
+/// `pipedWriteLine` and `pipedWriteBytes` may be mixed: each write is flushed
+/// before it returns.
 @stable(since = "1.0")
 pub record PipedProcess {
   handle: PipedHandle
 }
 
 /// Spawn `executable` with `args`, redirecting stdin and stdout for
-/// line-oriented bidirectional communication (e.g. NDJSON framing).
+/// bidirectional communication, line-oriented (e.g. NDJSON framing) or
+/// byte-level (e.g. `Content-Length` framing).
 ///
 /// Returns `Err(IOError)` if the executable cannot be started.
 @stable(since = "1.0")
@@ -147,7 +160,8 @@ pub func spawnPiped(executable: in String, args: in List[String]): Result[PipedP
 
 /// Read one line from the child's stdout, excluding the trailing newline.
 /// `Ok(None)` marks clean EOF (typically because the child exited or closed
-/// its stdout).
+/// its stdout). At end of stream a final line with no newline is still
+/// returned. See `PipedProcess` for mixing line and byte reads.
 @stable(since = "1.0")
 pub func pipedReadLine(p: in PipedProcess): Result[Option[String], String] {
   hostPipedReadLineResult(p.handle)
@@ -168,14 +182,16 @@ pub union PipedReadOutcome {
 ///
 /// A read that times out loses nothing: bytes of an incomplete line stay
 /// buffered, and a line that arrives after the deadline is returned, in
-/// order, by the next `pipedReadLine` or `pipedReadLineWithin`. The child is
+/// order, by the next `pipedReadLine` or `pipedReadLineWithin` (and the
+/// buffered bytes are returned first by a `pipedReadBytes` or
+/// `pipedReadBytesWithin`, if one comes next). The child is
 /// not signalled; pair a timeout with `pipedKill` when the child should be
 /// abandoned.
 ///
 /// The blocking read behind a timed-out call is deliberately not cancelled:
 /// cancelling it would drop the partial line the guarantee above preserves.
 /// At most one such read is outstanding per handle, however many calls time
-/// out, and the next read on the handle joins it. It ends when data arrives
+/// out, and the next read of either kind joins it. It ends when data arrives
 /// or when `pipedKill` or `pipedClose` closes the stream, so a long-lived
 /// process abandoning a silent child should `pipedKill` it.
 @stable(since = "1.2")
@@ -197,6 +213,67 @@ pub func pipedReadLineWithin(p: in PipedProcess, timeoutMs: in Int): Result[Pipe
 @stable(since = "1.0")
 pub func pipedWriteLine(p: in PipedProcess, line: in String): Result[Unit, String] {
   hostPipedWriteLineResult(p.handle, line)
+}
+
+/// Outcome of `pipedReadBytesWithin`: bytes from the child's stdout (never
+/// empty), clean end of stream (the child closed its stdout or exited), or no
+/// bytes within the timeout.
+@stable(since = "1.2")
+pub union PipedBytesOutcome {
+  case PipedBytes(bytes: slice[Byte])
+  case PipedBytesEnd
+  case PipedBytesTimedOut
+}
+
+/// Read raw bytes from the child's stdout, for protocols that frame their
+/// own messages (e.g. a `Content-Length` body, which has no trailing
+/// newline). Blocks until at least one byte is available, then returns the
+/// bytes at hand (`Some`, never empty); `Ok(None)` marks clean end of stream.
+///
+/// Bytes a previous line read buffered past its line are returned first, in
+/// one piece; see `PipedProcess` for mixing line and byte reads. No text
+/// decoding is applied, so a multibyte UTF-8 character may be split across
+/// two reads.
+@stable(since = "1.2")
+pub func pipedReadBytes(p: in PipedProcess): Result[Option[slice[Byte]], String] {
+  match hostPipedReadBytesResult(p.handle) {
+    case Err(e) -> Err(error = e)
+    case Ok(read) -> match read {
+      case HostPipedChunk(bytes) -> Ok(value = Some(value = bytes))
+      case _ -> Ok(value = None)
+    }
+  }
+}
+
+/// Like `pipedReadBytes`, but waits at most `timeoutMs` milliseconds for
+/// bytes; `0` returns only bytes that are already available.
+///
+/// A read that times out loses nothing, under the same rule as
+/// `pipedReadLineWithin`: it consumes no bytes, and bytes that arrive after
+/// the deadline are returned, in order, by the next read of either kind. At
+/// most one blocking read is left outstanding per process, however many
+/// calls time out; it ends when data arrives or when `pipedKill` or
+/// `pipedClose` closes the stream.
+@stable(since = "1.2")
+pub func pipedReadBytesWithin(p: in PipedProcess, timeoutMs: in Int): Result[PipedBytesOutcome, String]
+  requires: timeoutMs >= 0
+{
+  match hostPipedReadBytesWithinResult(p.handle, timeoutMs) {
+    case Err(e) -> Err(error = e)
+    case Ok(read) -> match read {
+      case HostPipedChunk(bytes) -> Ok(value = PipedBytes(bytes = bytes))
+      case HostPipedBytesEof -> Ok(value = PipedBytesEnd)
+      case HostPipedBytesTimedOut -> Ok(value = PipedBytesTimedOut)
+    }
+  }
+}
+
+/// Write `bytes` to the child's stdin exactly as given: no newline is
+/// appended and no text encoding is applied. The write is flushed before
+/// this returns. Writing an empty slice only flushes.
+@stable(since = "1.2")
+pub func pipedWriteBytes(p: in PipedProcess, bytes: in slice[Byte]): Result[Unit, String] {
+  hostPipedWriteBytesResult(p.handle, bytes)
 }
 
 /// True while the child process has not yet exited.

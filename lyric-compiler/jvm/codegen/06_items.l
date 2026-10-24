@@ -2637,7 +2637,7 @@ func wireMemberNameJvm(m: in WireMember): String {
     case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegment(path); case _ -> "__bind" }
     case WMProvided(name, _, _) -> name
     case WMExpose(name, _) -> name
-    case WMContributes(_, name, _, _, _, _) -> name
+    case WMContributes(_, name, _, _, _, _, _) -> name
     case _ -> ""
   }
 }
@@ -8641,7 +8641,7 @@ func fileNeedsLambdaIface(file: in SourceFile): Bool {
                 case None -> ()
               }
             }
-            case WMContributes(iface, _, _, _, _, _) -> {
+            case WMContributes(iface, _, _, _, _, _, _) -> {
               if typeExprMentionsFunctionType(iface) {
                 return true
               }

@@ -1274,10 +1274,19 @@ LocalAlias =
 
 (* docs/58 (D121): ordered multi-value collection entry.  'sealed' blocks
  * external add/remove/reorder of the entry's collection.  Ordering clauses
- * may continue on the following lines (after NL). *)
+ * may continue on the following lines (after NL).
+ * docs/69 §14: 'each' contributes a List[T] as one block; 'key' names a
+ * keyed entry, also reachable through the graph's Map[String, T].  Both are
+ * contextual words: followed by '=' they are the entry's own name.  The key
+ * is a StringLit without interpolation holes (P0348); 'each' and 'key' do
+ * not combine (P0349). *)
 ContributesDecl =
-      [ 'sealed' ] 'contributes' '[' Type ']' IDENT '=' Expr
+      [ 'sealed' ] 'contributes' '[' Type ']' [ ContributesForm ] IDENT '=' Expr
         { { NL } WireOrderingClause } ;
+
+ContributesForm =
+      'each'
+    | 'key' StringLit ;
 
 WireOrderingClause =
       ( 'wraps' | 'inside' ) ':' IDENT ;

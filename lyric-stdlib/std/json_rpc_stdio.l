@@ -29,6 +29,16 @@
 //! of each surrogate pair), so its body read also stops at the exact byte the
 //! peer declared.
 //!
+//! **Over a child process.** `newContentLengthTransportOverProcess` and
+//! `newNdjsonTransportOverProcess` speak the same framings to a
+//! `Std.Process.spawnPiped` child (an LSP server, or a plugin over docs/69's
+//! protocol points): the child's stdout is the `ByteSource`
+//! (`PipedProcessSource`, over `Std.Process.pipedReadBytes`) and messages go
+//! to its stdin as UTF-8 bytes through `Std.Process.pipedWriteBytes`, so the
+//! Content-Length count matches the bytes on the wire. `PipedProcessSource`
+//! and `PipedProcessWriter` are public for callers that assemble their own
+//! transport.
+//!
 //! All of it is sans-IO: the framing logic is parameterized over the small
 //! `ByteSource`/`CharReader`/`LineReader`/`StringWriter`/`LineWriter`
 //! interfaces rather than calling the console directly, so
@@ -47,6 +57,7 @@ import Std.Console
 import Std.Encoding
 import Std.Errors
 import Std.Parse
+import Std.Process
 import Std.Time
 import Std.JsonRpc
 
@@ -900,4 +911,127 @@ pub func newNdjsonTransportOver(source: in ByteSource, writer: in LineWriter): N
 @stable(since = "0.2")
 pub func newContentLengthTransportOver(source: in ByteSource, writer: in StringWriter): ContentLengthTransport {
   ContentLengthTransport(source = source, writer = writer, buffer = newFrameBuffer())
+}
+
+// ── Framings over a piped child process ──────────────────────────────────────
+/// A `ByteSource` over a piped child's stdout (`Std.Process.pipedReadBytes` /
+/// `pipedReadBytesWithin`). It shares the process's stdout buffer with
+/// `Std.Process`'s line reads, so a line read on the same process before the
+/// source takes over loses nothing; once a transport owns the source, read
+/// stdout only through the transport, or its frame buffer and the line reads
+/// would each see part of the stream.
+@stable(since = "0.2")
+pub record PipedProcessSource {
+  process: PipedProcess
+}
+
+impl ByteSource for PipedProcessSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    pipedReadBytes(self.process)
+  }
+
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String] {
+    match pipedReadBytesWithin(self.process, timeoutMs) {
+      case Err(e) -> Err(error = e)
+      case Ok(outcome) -> match outcome {
+        case PipedBytes(bytes) -> Ok(value = BytesRead(bytes = bytes))
+        case PipedBytesEnd -> Ok(value = BytesEnd)
+        case PipedBytesTimedOut -> Ok(value = BytesTimedOut)
+      }
+    }
+  }
+}
+
+/// A `ByteSource` over `process`'s stdout.
+@stable(since = "0.2")
+pub func pipedProcessSource(process: in PipedProcess): PipedProcessSource {
+  PipedProcessSource(process = process)
+}
+
+/// A `StringWriter` that writes each string to a piped child's stdin as UTF-8
+/// bytes, exactly as given (no newline) and flushed — the encoding
+/// `clSendVia`'s Content-Length count assumes (see `HostStringWriter`).
+/// `StringWriter.write` cannot return an error, so the first failed write is
+/// kept in `failure` and later writes are skipped; the process transports
+/// below report a failed send directly instead.
+@stable(since = "0.2")
+pub record PipedProcessWriter {
+  process: PipedProcess
+  var failure: Option[String]
+}
+
+impl StringWriter for PipedProcessWriter {
+  func write(s: in String): Unit {
+    if isSome(self.failure) {
+      return
+    }
+    match pipedWriteBytes(self.process, encodeUtf8(s)) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        self.failure = Some(value = e)
+      }
+    }
+  }
+}
+
+/// A `StringWriter` over `process`'s stdin.
+@stable(since = "0.2")
+pub func pipedProcessWriter(process: in PipedProcess): PipedProcessWriter {
+  PipedProcessWriter(process = process, failure = None)
+}
+
+/// An `RpcTransport` over a piped child process, framing messages with
+/// `Content-Length` headers or one per line. `send` writes each framed
+/// message in a single `pipedWriteBytes` call and returns its error. `close`
+/// does nothing: the caller spawned the process and decides when to close its
+/// stdin, wait for it or kill it.
+@stable(since = "0.2")
+pub record PipedProcessTransport {
+  source: PipedProcessSource
+  buffer: FrameBuffer
+  contentLength: Bool
+}
+
+impl RpcTransport for PipedProcessTransport {
+  func receive(): Result[Option[String], String] {
+    if self.contentLength {
+      clReceiveFrom(self.source, self.buffer)
+    } else {
+      ndjsonReceiveFrom(self.source, self.buffer)
+    }
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    if self.contentLength {
+      clReceiveWithinFrom(self.source, self.buffer, timeoutMs)
+    } else {
+      ndjsonReceiveWithinFrom(self.source, self.buffer, timeoutMs)
+    }
+  }
+
+  func send(payload: in String): Result[Unit, String] {
+    val framed = if self.contentLength {
+      "Content-Length: " + encodeUtf8(payload).length.toString() + "\r\n\r\n" + payload
+    } else {
+      payload + "\n"
+    }
+    pipedWriteBytes(self.source.process, encodeUtf8(framed))
+  }
+
+  func close(): Unit {
+  }
+}
+
+/// A Content-Length (LSP-style) `RpcTransport` over a piped child process:
+/// reads the child's stdout, writes its stdin, byte-accurate on UTF-8.
+@stable(since = "0.2")
+pub func newContentLengthTransportOverProcess(process: in PipedProcess): PipedProcessTransport {
+  PipedProcessTransport(source = pipedProcessSource(process), buffer = newFrameBuffer(), contentLength = true)
+}
+
+/// An NDJSON `RpcTransport` over a piped child process. `writeValue` output
+/// is compact, so each message is written as exactly one line.
+@stable(since = "0.2")
+pub func newNdjsonTransportOverProcess(process: in PipedProcess): PipedProcessTransport {
+  PipedProcessTransport(source = pipedProcessSource(process), buffer = newFrameBuffer(), contentLength = false)
 }

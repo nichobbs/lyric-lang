@@ -11,7 +11,9 @@
 //! issued from inside a handler (an outbound request mid-dispatch) reads
 //! the transport inline until the matching response id arrives, queueing
 //! any interleaved incoming requests/notifications for dispatch after the
-//! call returns — the same discipline LSP servers use.
+//! call returns — the same discipline LSP servers use. A peer set with
+//! `setServeDuringCall` dispatches them inside `call` instead, which a client
+//! needs when the other side answers only after a request of its own.
 //!
 //! Every outbound call has a deadline (#7451): `call` applies the peer's
 //! call timeout (`defaultCallTimeoutMs` unless set with `newPeerWithTimeout`
@@ -212,6 +214,9 @@ pub record RpcPeer {
   var pendingQueue: List[JsonValue]
   // The deadline `call` applies, in milliseconds (`isValidCallTimeout`).
   var callTimeoutMs: Int
+  // When set, `call` dispatches the requests and notifications that arrive
+  // while it waits instead of queueing them (`setServeDuringCall`).
+  var serveDuringCall: Bool = false
 }
 
 /// Construct a peer over the given transport and handler, with
@@ -249,6 +254,19 @@ pub func setCallTimeout(peer: inout RpcPeer, callTimeoutMs: in Int): Unit
   requires: isValidCallTimeout(callTimeoutMs)
 {
   peer.callTimeoutMs = callTimeoutMs
+}
+
+/// Make `call` and `callWithin` answer the requests and notifications the
+/// other side sends while they wait for their own response, instead of
+/// queueing them for `runLoop`. A client needs this when the other side
+/// answers one of its requests only after a request of its own: an LSP
+/// client calling `workspace/executeCommand` on a server that first sends
+/// `workspace/applyEdit` would otherwise wait on the server while the server
+/// waits on it. The handler then runs inside `call`, so it may itself call.
+/// Off by default.
+@stable(since = "0.3")
+pub func setServeDuringCall(peer: inout RpcPeer, serve: in Bool): Unit {
+  peer.serveDuringCall = serve
 }
 
 /// Close the peer's underlying transport.
@@ -641,27 +659,46 @@ func classifyForCall(v: in JsonValue, waitId: in RpcId): CallItemOutcome {
   }
 }
 
+// Dispatch `v` (a request, a notification or a batch of them) now and send
+// its response, as `runLoop` would. A failed send surfaces on the next read.
+func serveNow(peer: inout RpcPeer, v: in JsonValue): Unit {
+  match dispatchTopLevel(peer, v) {
+    case Some(resp) -> {
+      val _ = peer.transport.send(writeValue(resp))
+    }
+    case None -> ()
+  }
+}
+
 func handleDuringCall(peer: inout RpcPeer, v: in JsonValue, waitId: in RpcId): Option[Result[JsonValue, RpcError]] {
   match v {
     case JArray(items) -> {
       var found: Option[Result[JsonValue, RpcError]] = None
+      val inbound: List[JsonValue] = newList()
       var i = 0
       while i < items.count {
         match classifyForCall(items[i], waitId) {
           case CallMatch(r) -> {
             found = Some(value = r)
           }
-          case CallQueue -> peer.pendingQueue.add(items[i])
+          case CallQueue -> if peer.serveDuringCall { inbound.add(items[i]) } else { peer.pendingQueue.add(items[i]) }
           case CallIgnore -> ()
         }
         i = i + 1
+      }
+      if inbound.count > 0 {
+        serveNow(peer, JArray(items = inbound))
       }
       found
     }
     case _ -> match classifyForCall(v, waitId) {
       case CallMatch(r) -> Some(value = r)
       case CallQueue -> {
-        peer.pendingQueue.add(v)
+        if peer.serveDuringCall {
+          serveNow(peer, v)
+        } else {
+          peer.pendingQueue.add(v)
+        }
         None
       }
       case CallIgnore -> None

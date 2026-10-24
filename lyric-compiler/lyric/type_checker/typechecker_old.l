@@ -119,7 +119,7 @@ func oldItem(diag: in List[Diagnostic], it: in Item): Unit {
             oldTypeOpt(diag, ty)
             oldExpr(diag, "a wire binding", false, init)
           }
-          case WMContributes(iface, _, init, _, _, _) -> {
+          case WMContributes(iface, _, init, _, _, _, _) -> {
             oldType(diag, iface)
             oldExpr(diag, "a wire binding", false, init)
           }

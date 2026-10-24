@@ -25,8 +25,10 @@
 //! independent wires per file, direct contributes with no include (the
 //! mint-toolchain LocalVarSig regression shape), a collection whose
 //! name doubles as the entries' constructor (false-W0001 regression),
-//! an aliased-include `reorder` adjustment (#5284), and a nested
-//! include with transitive re-expose (#5289).
+//! an aliased-include `reorder` adjustment (#5284), a nested
+//! include with transitive re-expose (#5289), and the docs/69 §14 entry
+//! forms: `contributes[T] each` blocks (ordering, empty block, include-site
+//! remove and reorder) and keyed entries reached through `<T>ByKey`.
 @test_module
 package Lyric.WireTemplatesSelfTest
 
@@ -197,6 +199,94 @@ wire NestedApp {
   expose router
 }
 
+func pluginMiddlewares(tag: in String): List[Middleware] {
+  val ms: List[Middleware] = newList()
+  ms.add(Auth(tag = tag + "-a"))
+  ms.add(Auth(tag = tag + "-b"))
+  ms
+}
+
+func noMiddlewares(): List[Middleware] {
+  val ms: List[Middleware] = newList()
+  ms
+}
+
+// `contributes[T] each` (docs/69 §14): the block's elements join the
+// collection together, in list order; the block is ordered by its name and
+// other entries order themselves against it.
+wire EachApp {
+  @provided tag: String
+  contributes[Middleware] cors = Cors(tag = tag)
+  contributes[Middleware] each plugins = pluginMiddlewares(tag)
+    inside: logging
+  contributes[Middleware] each nothing = noMiddlewares()
+  contributes[Middleware] last = Cors(tag = "z")
+    inside: plugins
+  contributes[Middleware] logging = Logging(tag = tag)
+  singleton eachRouter: Router = makeRouter(tag, Middleware)
+  expose eachRouter
+}
+
+// A template whose `each` block an including wire removes as a whole.
+pub wire PluginModule {
+  @provided tag: String
+  contributes[Middleware] base = Logging(tag = tag)
+  contributes[Middleware] each extras = pluginMiddlewares(tag)
+  singleton pluginRouter: Router = makeRouter(tag, Middleware)
+  expose pluginRouter
+  overridable extras
+}
+
+wire NoPluginsApp {
+  @provided tag: String
+  include PluginModule {
+    remove extras
+  }
+  expose pluginRouter
+}
+
+wire ReorderedPluginsApp {
+  @provided tag: String
+  include PluginModule {
+    reorder extras wraps: base
+  }
+  expose pluginRouter
+}
+
+func labelFor(m: in Map[String, Middleware], k: in String): String {
+  match mapGet(m, k) {
+    case Some(found) -> {
+      val mw: Middleware = found
+      mw.label()
+    }
+    case None -> "missing"
+  }
+}
+
+func keyTotal(m: in Map[String, Middleware]): Int {
+  m.count
+}
+
+// Keyed contributions (docs/69 §14): every entry is in the ordered list,
+// and the keyed ones are also reachable through `MiddlewareByKey`.
+wire KeyedApp {
+  @provided tag: String
+  contributes[Middleware] key "cors" cors = Cors(tag = tag)
+  contributes[Middleware] plain = Auth(tag = tag)
+  contributes[Middleware] key "log" logging = Logging(tag = tag)
+  contributes[Middleware] each plugins = pluginMiddlewares(tag)
+  singleton keyedRouter: Router = makeRouter(tag, Middleware)
+  singleton keyCount: Int = keyTotal(MiddlewareByKey)
+  singleton logLabel: String = labelFor(MiddlewareByKey, "log")
+  singleton corsLabel: String = labelFor(MiddlewareByKey, "cors")
+  singleton absentLabel: String = labelFor(MiddlewareByKey, "auth")
+  expose keyedRouter
+  expose keyCount
+  expose logLabel
+  expose corsLabel
+  expose absentLabel
+}
+
 // A binding initialiser that branches (#8372): the JVM bootstrap needs a
 // StackMapTable frame at each branch target.
 wire BranchApp {
@@ -265,6 +355,34 @@ test "nested include splices transitively and re-exposes" {
   // include first, then ExtendedModule's own contribution.
   assertEqual(r.labels, "cors:n1,log:n1,auth:n1", "entries from both include levels in order")
   assertEqual(r.tag, "note-n1", "provided value reaches the innermost template")
+}
+
+test "each block joins the collection in list order and keeps its position" {
+  EachApp.bootstrap("e1")
+  val r = EachApp.eachRouter()
+  // cors first; plugins inside logging; last inside plugins; the empty
+  // block contributes nothing.
+  assertEqual(r.labels, "cors:e1,log:e1,auth:e1-a,auth:e1-b,cors:z", "block spliced as one ordered entry")
+}
+
+test "an including wire removes or reorders an each block as a whole" {
+  NoPluginsApp.bootstrap("p1")
+  assertEqual(NoPluginsApp.pluginRouter().labels, "log:p1", "removed block contributes nothing")
+  ReorderedPluginsApp.bootstrap("p2")
+  assertEqual(ReorderedPluginsApp.pluginRouter().labels, "auth:p2-a,auth:p2-b,log:p2", "reordered block moves together")
+}
+
+test "keyed contributions are in the list and reachable by key" {
+  KeyedApp.bootstrap("k1")
+  assertEqual(
+    KeyedApp.keyedRouter().labels,
+    "cors:k1,auth:k1,log:k1,auth:k1-a,auth:k1-b",
+    "keyed entries keep their place in the ordered list"
+  )
+  assertEqualInt(KeyedApp.keyCount(), 2, "only keyed entries are in the map")
+  assertEqual(KeyedApp.logLabel(), "log:k1", "lookup by key")
+  assertEqual(KeyedApp.corsLabel(), "cors:k1", "second key")
+  assertEqual(KeyedApp.absentLabel(), "missing", "an unkeyed entry is not in the map")
 }
 
 test "wire binding initialisers may branch" {

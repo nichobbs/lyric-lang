@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "example.todo-lsp",
+  "version": "1.0.0",
+  "publisher": "lyric-examples",
+  "points": [
+    {
+      "point": "Editor.Lang.LanguageServer",
+      "version": "1.0",
+      "contributions": { "languageIds": ["plaintext"], "fileGlobs": ["**/*.txt"] }
+    }
+  ],
+  "capabilities": {
+    "required": [ { "name": "Editor.Lang.WorkspaceEdit", "grant": { "roots": ["file:///workspace/"] } } ],
+    "optional": []
+  },
+  "payloads": [
+    { "mode": "process", "runtime": "dotnet", "command": ["dotnet", "exec", "TodoLsp.dll"] },
+    { "mode": "process", "runtime": "jvm", "command": ["java", "-jar", "TodoLsp.jar"] }
+  ]
+}

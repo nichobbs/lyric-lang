@@ -1,0 +1,22 @@
+# Editor — hosts language servers as protocol plugins (docs/69 §4.3).
+#
+#   Editor.Lang  the plugin API: the LanguageServer protocol point and the
+#                WorkspaceEdit capability its servers' edits go through
+#   Editor.Host  the editor: discovers servers, opens sessions, speaks LSP
+#
+#   lyric build --manifest examples/plugins/lsp/editor/lyric.toml
+#   dotnet exec Editor.dll <plugins-directory>
+#
+# scripts/ci/plugin-lsp-e2e.sh builds it with ../todo-server and runs it.
+
+[package]
+name    = "Editor"
+version = "1.0.0"
+
+[project]
+name            = "Editor"
+output_assembly = "Editor.dll"
+
+[project.packages]
+"Editor.Lang" = "src/lang.l"
+"Editor.Host" = "src/host.l"

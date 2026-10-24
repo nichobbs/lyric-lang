@@ -1816,7 +1816,7 @@ test "contributes entry with continuation-line ordering clauses parses" {
   val ms = firstWireMembers(pr)
   assertEqualInt(ms.count, 1, "contributes: one member")
   match ms[0] {
-    case WMContributes(_, n, _, ordering, isSealed, _) -> {
+    case WMContributes(_, n, _, ordering, isSealed, _, _) -> {
       assertEqual(n, "auth", "contributes: entry name")
       assertEqualInt(ordering.count, 2, "contributes: both ordering clauses")
       assertTrue(not isSealed, "contributes: not sealed")
@@ -1837,9 +1837,69 @@ test "sealed contributes parses with the sealed flag" {
   val pr = parse("package P\nwire W {\n  sealed contributes[Mw] auth = make()\n}\n")
   assertEqualInt(diagCount(pr), 0, "sealed contributes: parses clean")
   match firstWireMembers(pr)[0] {
-    case WMContributes(_, _, _, _, isSealed, _) -> assertTrue(isSealed, "sealed contributes: flag set")
+    case WMContributes(_, _, _, _, isSealed, _, _) -> assertTrue(isSealed, "sealed contributes: flag set")
     case _ -> assertTrue(false, "sealed contributes: member is WMContributes")
   }
+}
+
+// The entry shape of the first wire member: "single", "each", "key:<k>".
+func firstContribForm(pr: in ParseResult): String {
+  match firstWireMembers(pr)[0] {
+    case WMContributes(_, _, _, _, _, form, _) -> match form {
+      case CFSingle -> "single"
+      case CFEach -> "each"
+      case CFKeyed(k, _) -> "key:" + k
+    }
+    case _ -> "<not contributes>"
+  }
+}
+
+func firstContribName(pr: in ParseResult): String {
+  match firstWireMembers(pr)[0] {
+    case WMContributes(_, n, _, _, _, _, _) -> n
+    case _ -> "<not contributes>"
+  }
+}
+
+test "contributes each parses as a block entry with ordering" {
+  val pr = parse("package P\nwire W {\n  sealed contributes[Mw] each plugins = loadAll()\n    inside: builtins\n}\n")
+  assertEqualInt(diagCount(pr), 0, "each: parses clean")
+  assertEqual(firstContribForm(pr), "each", "each: form")
+  assertEqual(firstContribName(pr), "plugins", "each: entry name")
+}
+
+test "contributes key parses the string literal key" {
+  val pr = parse("package P\nwire W {\n  contributes[Exporter] key \"otlp\" otlp = Otlp.make()\n}\n")
+  assertEqualInt(diagCount(pr), 0, "key: parses clean")
+  assertEqual(firstContribForm(pr), "key:otlp", "key: form and key")
+  assertEqual(firstContribName(pr), "otlp", "key: entry name")
+}
+
+test "each and key followed by = are entry names, not markers" {
+  val prEach = parse("package P\nwire W {\n  contributes[Mw] each = make()\n}\n")
+  assertEqualInt(diagCount(prEach), 0, "entry named each: parses clean")
+  assertEqual(firstContribForm(prEach), "single", "entry named each: single form")
+  assertEqual(firstContribName(prEach), "each", "entry named each: name")
+  val prKey = parse("package P\nwire W {\n  contributes[Mw] key \"k\" key = make()\n}\n")
+  assertEqualInt(diagCount(prKey), 0, "keyed entry named key: parses clean")
+  assertEqual(firstContribForm(prKey), "key:k", "keyed entry named key: form")
+  assertEqual(firstContribName(prKey), "key", "keyed entry named key: name")
+}
+
+test "a contributes key that is not a plain string literal is P0348" {
+  val prIdent = parse("package P\nwire W {\n  contributes[Mw] key otlp a = make()\n}\n")
+  assertTrue(hasDiagCode(prIdent, "P0348"), "identifier key: P0348")
+  val prInterp = parse("package P\nwire W {\n  contributes[Mw] key \"a\${n}\" a = make()\n}\n")
+  assertTrue(hasDiagCode(prInterp, "P0348"), "interpolated key: P0348")
+  assertEqual(firstContribName(prInterp), "a", "interpolated key: the entry still parses")
+}
+
+test "combining each and key in one contributes entry is P0349" {
+  val prA = parse("package P\nwire W {\n  contributes[Mw] each key \"k\" a = make()\n}\n")
+  assertTrue(hasDiagCode(prA, "P0349"), "each then key: P0349")
+  val prB = parse("package P\nwire W {\n  contributes[Mw] key \"k\" each a = make()\n}\n")
+  assertTrue(hasDiagCode(prB, "P0349"), "key then each: P0349")
+  assertEqual(firstContribForm(prB), "key:k", "key then each: the first marker is kept")
 }
 
 test "include with alias and every adjustment form parses" {

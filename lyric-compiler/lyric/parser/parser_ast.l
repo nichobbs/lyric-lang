@@ -847,6 +847,19 @@ pub union IncludeAdjust {
   case IAReorder(name: String, ordering: List[WireOrdering], span: Span)
 }
 
+/// Shape of a `contributes[T]` entry (docs/58 §4, docs/69 §14).
+pub union ContribForm {
+  /// `contributes[T] name = expr`: one value joins the collection.
+  case CFSingle
+  /// `contributes[T] each name = expr`: `expr` is a `List[T]` whose elements
+  /// join the collection as one block, in list order.
+  case CFEach
+  /// `contributes[T] key "k" name = expr`: one value that joins the
+  /// collection and is also reachable under `k` in the graph's
+  /// `Map[String, T]` (named `<T>ByKey`).
+  case CFKeyed(key: String, keySpan: Span)
+}
+
 pub union WireMember {
   case WMProvided(name: String, ty: TypeExpr, span: Span)
   case WMSingleton(name: String, ty: TypeExpr, init: Expr, span: Span)
@@ -854,9 +867,10 @@ pub union WireMember {
   case WMBind(iface: TypeExpr, provider: Expr, span: Span)
   case WMExpose(name: String, span: Span)
   case WMLocal(name: String, ty: Option[TypeExpr], init: Expr, span: Span)
-  /// `[sealed] contributes[T] name = expr [wraps:/inside: other]` — one named
-  /// entry of the ordered multi-value collection for `T` (docs/58 §4, D121).
-  case WMContributes(iface: TypeExpr, name: String, init: Expr, ordering: List[WireOrdering], isSealed: Bool, span: Span)
+  /// `[sealed] contributes[T] [each | key "k"] name = expr [wraps:/inside: other]`
+  /// — one named entry of the ordered multi-value collection for `T`
+  /// (docs/58 §4, D121; the `each` and `key` forms are docs/69 §14).
+  case WMContributes(iface: TypeExpr, name: String, init: Expr, ordering: List[WireOrdering], isSealed: Bool, form: ContribForm, span: Span)
   /// `include Pkg.Module [as Alias] [{ adjustments }]` — splices a `pub wire`
   /// template into this wire (docs/58 §5, D121).  `hasBody` records whether
   /// the source wrote an (possibly empty) adjustment block, so the formatter

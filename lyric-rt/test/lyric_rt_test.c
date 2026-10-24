@@ -3302,6 +3302,154 @@ static void test_process_piped_read_after_close_with_buffered_line(void) {
 }
 #endif /* !__wasi__ */
 
+#if LYRIC_TEST_POSIX
+/* A list of byte cells holding `n` bytes of `s`. */
+static LyricList* mk_bytes(const char* s, int64_t n) {
+    return lyric_list_from_bytes((const uint8_t*)s, n);
+}
+
+/* 1 when `list` holds exactly the `n` bytes at `s`. */
+static int bytes_equal(LyricList* list, const char* s, int64_t n) {
+    if (lyric_list_len(list) != n) return 0;
+    for (int64_t i = 0; i < n; i++) {
+        if ((uint8_t)(lyric_list_get(list, i) & 0xff) != (uint8_t)s[i]) return 0;
+    }
+    return 1;
+}
+
+/* Reads until `want` bytes have arrived (a pipe may split them), appending
+ * to `acc`; returns the number collected. */
+static int64_t read_bytes_until(void* p, uint8_t* acc, int64_t want) {
+    int64_t got = 0;
+    while (got < want) {
+        int32_t status = -1;
+        LyricList* chunk = lyric_process_piped_read_bytes_within(p, 5000, &status);
+        if (status != 1) {
+            lyric_release(chunk);
+            break;
+        }
+        int64_t n = lyric_list_len(chunk);
+        for (int64_t i = 0; i < n && got < want; i++) {
+            acc[got++] = (uint8_t)(lyric_list_get(chunk, i) & 0xff);
+        }
+        lyric_release(chunk);
+    }
+    return got;
+}
+
+static void test_process_piped_bytes_roundtrip(void) {
+    /* Raw bytes through `cat`: no newline is appended on the way in, and a
+     * body without a trailing newline comes back intact, multibyte UTF-8
+     * included. */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    const char body[] = "Content-Length: 7\r\n\r\n{\"\xc3\xa9\"}";
+    int64_t body_len = (int64_t)sizeof(body) - 1;
+    LyricList* out = mk_bytes(body, body_len);
+    CHECK(lyric_process_piped_write_bytes(p, out) == 0);
+    lyric_release(out);
+    uint8_t acc[64];
+    CHECK(read_bytes_until(p, acc, body_len) == body_len);
+    CHECK(memcmp(acc, body, (size_t)body_len) == 0);
+    /* Nothing beyond the body: no newline was added. */
+    int32_t status = -1;
+    LyricList* none = lyric_process_piped_read_bytes_within(p, 200, &status);
+    CHECK(status == 2);
+    CHECK(lyric_list_len(none) == 0);
+    lyric_release(none);
+    /* An empty write is a successful no-op. */
+    LyricList* empty = mk_bytes("", 0);
+    CHECK(lyric_process_piped_write_bytes(p, empty) == 0);
+    /* End of stream after the child exits. */
+    CHECK(lyric_process_piped_close_stdin(p) == 0);
+    CHECK(lyric_process_piped_write_bytes(p, empty) == -2);
+    lyric_release(empty);
+    LyricList* eof = lyric_process_piped_read_bytes_within(p, 5000, &status);
+    CHECK(status == 0);
+    CHECK(lyric_list_len(eof) == 0);
+    lyric_release(eof);
+    LyricList* eof2 = lyric_process_piped_read_bytes_within(p, -1, &status);
+    CHECK(status == 0);
+    lyric_release(eof2);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_bytes_timeout_resumes(void) {
+    /* A bounded byte read times out without consuming anything; bytes
+     * written afterwards are returned by the next read, and a zero budget
+     * still returns bytes already in the pipe. */
+    void* p = lyric_process_piped_spawn("/bin/cat", NULL);
+    CHECK(p != NULL);
+    int32_t status = -1;
+    int64_t t0 = lyric_monotonic_nanos();
+    LyricList* none = lyric_process_piped_read_bytes_within(p, 100, &status);
+    int64_t waited_ms = (lyric_monotonic_nanos() - t0) / 1000000;
+    CHECK(status == 2);
+    CHECK(waited_ms >= 90);
+    CHECK(waited_ms < 5000);
+    lyric_release(none);
+    LyricList* late = mk_bytes("late", 4);
+    CHECK(lyric_process_piped_write_bytes(p, late) == 0);
+    lyric_release(late);
+    int32_t rc0 = 2;
+    LyricList* got = NULL;
+    for (int i = 0; i < 500 && rc0 == 2; i++) {
+        got = lyric_process_piped_read_bytes_within(p, 0, &rc0);
+        if (rc0 == 2) {
+            lyric_release(got);
+            got = NULL;
+            usleep(10000);
+        }
+    }
+    CHECK(rc0 == 1);
+    if (rc0 == 1) {
+        CHECK(bytes_equal(got, "late", 4));
+        lyric_release(got);
+    }
+    CHECK(lyric_process_piped_close_stdin(p) == 0);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+}
+
+static void test_process_piped_bytes_mixed_with_lines(void) {
+    /* Line and byte reads share one buffer: a line read that pulled more
+     * than one line leaves the rest for the byte read, and a byte read
+     * after that returns the following bytes in order. */
+    LyricList* args = lyric_list_new(2);
+    LyricString* fmt = mk_str("%s");
+    LyricString* body = mk_str("first\nsecond\nthird");
+    lyric_list_push(args, (int64_t)(intptr_t)fmt);
+    lyric_list_push(args, (int64_t)(intptr_t)body);
+    lyric_release(fmt);
+    lyric_release(body);
+    void* p = lyric_process_piped_spawn("/usr/bin/printf", args);
+    lyric_release(args);
+    CHECK(p != NULL);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    LyricString* line = NULL;
+    CHECK(lyric_process_piped_read_line(p, &line) == 1);
+    CHECK(lyric_string_len(line) == 5);
+    CHECK(memcmp(LYRIC_STRING_DATA(line), "first", 5) == 0);
+    lyric_release(line);
+    uint8_t acc[32];
+    CHECK(read_bytes_until(p, acc, 12) == 12);
+    CHECK(memcmp(acc, "second\nthird", 12) == 0);
+    int32_t status = -1;
+    LyricList* eof = lyric_process_piped_read_bytes_within(p, 5000, &status);
+    CHECK(status == 0);
+    lyric_release(eof);
+    LyricString* after = NULL;
+    CHECK(lyric_process_piped_read_line(p, &after) == 0);
+    lyric_process_piped_close(p);
+    /* Reading after close reports end of stream, never touching freed
+     * buffers. */
+    LyricList* closed = lyric_process_piped_read_bytes_within(p, 0, &status);
+    CHECK(status == 0);
+    lyric_release(closed);
+}
+#endif /* LYRIC_TEST_POSIX */
+
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -3978,6 +4126,11 @@ int main(void) {
 #endif
 #if LYRIC_TEST_POSIX
     test_process_piped_read_after_close_with_buffered_line();
+#endif
+#if LYRIC_TEST_POSIX
+    test_process_piped_bytes_roundtrip();
+    test_process_piped_bytes_timeout_resumes();
+    test_process_piped_bytes_mixed_with_lines();
 #endif
     test_async_hot_completion();
     test_async_block_on_sleep();

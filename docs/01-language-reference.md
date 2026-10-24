@@ -2235,6 +2235,61 @@ against external add / remove / reorder (`W0023`); replacement of an
 position). Contributions are singleton-scope only (`scoped[X]`
 contributions are out of scope, as is `scoped` generally — #2972).
 
+**Blocks: `contributes[T] each`** (docs/69 §14). An entry written
+`contributes[T] each name = expr` takes an `expr` of type `List[T]` and
+contributes its elements as one block, in list order:
+
+```
+wire EditorApp {
+  contributes[Command] builtins = Commands.builtin()
+  contributes[Command] each extensions = loadExtensionCommands()
+    inside: builtins
+  contributes[Command] help = Commands.help()
+    inside: extensions
+
+  singleton palette: Palette = Palette.make(Command)
+}
+```
+
+The block is one entry of the collection: `wraps:` / `inside:` on it
+position the whole block, other entries order themselves against it by
+its name (`help` above follows the last extension command), and an
+including wire's `remove` / `reorder` / replace act on the whole block (a
+replacement is again a `List[T]`). `sealed` works as on a single entry.
+Inside the graph, `name` is the `List[T]` itself. An empty list
+contributes nothing.
+
+**Keyed entries: `contributes[T] key "k"`** (docs/69 §14). An entry
+written `contributes[T] key "otlp" name = expr` contributes one value
+like a plain entry, so it keeps its place in the ordered `List[T]`, and
+is also reachable by its key: when a collection has at least one keyed
+entry, the identifier `TByKey` (the collection's name followed by
+`ByKey`, here `ExporterByKey`) resolves as a `Map[String, T]` holding the
+keyed entries, inserted in collection order. Unkeyed entries are not in
+the map. The usual use is selecting among compiled-in implementations
+from configuration:
+
+```
+wire Telemetry {
+  @provided settings: TelemetrySettings
+
+  contributes[Exporter] key "otlp"   otlp   = Otlp.exporter()
+  contributes[Exporter] key "stdout" stdout = Stdout.exporter()
+
+  singleton active: Exporter = pickExporter(ExporterByKey, settings.exporter)
+}
+```
+
+The key is a plain string literal (an interpolated string or any other
+expression is `P0348`). A key is unique per contributed type in one graph
+(after `include` expansion): a second entry with the same key for the
+same `T` is `W0028`. A plain binding named `TByKey` beside keyed entries
+of `T` is `W0020`, as for the collection itself. An aliased include
+(§10.6) isolates its keyed map together with its collection. `each` and
+`key` do not combine on one entry (`P0349`): a key names one value, and a
+block has none. Both words are contextual: `contributes[T] each = expr`
+is an entry named `each`.
+
 ### 10.6 Wire templates: `pub wire` + `include` (D121)
 
 A `pub wire` in a library package is a **template** — a parameterized
@@ -2305,6 +2360,9 @@ own packages and path-dependency sources) — the same availability rule
 as cross-package aspect templates. Full semantics, the expansion model,
 and the `W0010`–`W0027` diagnostic table are specified in D121
 (`docs/03-decision-log.md`), backing `docs/58-wire-templates-sketch.md`.
+`W0028` (a duplicate contributes key, §10.5) and the parser codes `P0348`
+(a contributes key that is not a plain string literal) and `P0349`
+(`each` combined with `key`) come with the docs/69 §14 entry forms.
 
 ## 11. FFI
 
@@ -3586,8 +3644,11 @@ guard answers the plugin with `Denied` (`-32040`). A `requires:` clause that
 does not name `grant` stays an ordinary contract.
 
 **Protocol points.** A `@protocol_point` has no Lyric methods (`K0011`): the
-plugin speaks an existing protocol such as LSP over its stdin and stdout, and
-the host gets the raw process from `openProtocolPlugin` (§15.6).
+plugin speaks an existing protocol such as LSP over its stdin and stdout. The
+host runs it in a supervised `ProtocolSession` (§15.6) and routes the
+protocol's own requests through capabilities with `<C>As`. A protocol plugin
+implements its protocol point only; a manifest that pairs it with another
+point does not load (`ManifestInvalid`).
 
 ### 15.2 Plugins
 
@@ -3689,6 +3750,7 @@ lower-cased):
 | `pub record <C>Server { target: C }` with `impl CapabilityProvider` (decodes the grant, checks the guards, calls `target`) | host |
 | `pub func <c>Provider(target: in C): CapabilityProvider` | host |
 | `pub func <c>CapabilityInfo(): CapabilityInfo` | both |
+| `pub record <C>As { host: PluginHost, pluginId: String }`, one method per `C` method returning `Result[T, CallError[E]]`: the capability called on behalf of plugin `pluginId`, with its grant, revocations and guards (through `callCapabilityAs`) | host |
 
 For each `@plugin_point P` (and `@protocol_point P` for the info and
 contributions items):
@@ -3699,6 +3761,7 @@ contributions items):
 | `pub func <p>Remotes(host: in PluginHost): List[<P>Remote]`: one per catalogued plugin implementing `P`, started on its first call | host |
 | `pub record <P>Contribution { pluginId: String, value: K }`, `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` and `pub func <p>ContributionIssues(host: in PluginHost): List[PluginLoadIssue]` (K0101; when `P` declares contributions) | host |
 | `pub func <p>PointInfo(): PluginPointInfo` | host |
+| `pub func open<P>Session(host: in PluginHost, pluginId: in String): Result[ProtocolSession, BoundaryError]` (protocol points only) | host |
 | `pub func pluginDispatch<P>(target: in P, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]` | plugin |
 
 In a package with a `@plugin` record `R`: a `record <R>Server` with
@@ -3788,10 +3851,24 @@ the first call: the host then spawns the chosen payload and sends
 `plugin/hello`. A crashed plugin is restarted on the next call after an
 exponential backoff, up to `maxRestarts` times; after that every call is
 `Crashed`. `stopPlugin`, `stopAllPlugins` and `revokeCapability` control
-running plugins. `openProtocolPlugin(host, pointId, pluginId)` starts a
-protocol-point plugin and returns its `PipedProcess`; the caller speaks the
-protocol and owns the process (there is no handshake or capability serving on
-that channel).
+running plugins.
+
+A protocol plugin runs in a `ProtocolSession`, opened with
+`openProtocolSession(host, pointId, pluginId)` (or the generated
+`open<P>Session`). `protocolProcess(session)` returns the running
+`PipedProcess`; when the process has exited it counts a crash and starts a new
+one after the same backoff, up to `maxRestarts`, and increments
+`session.generation`, so a client that sees the generation change repeats its
+protocol's handshake. `closeProtocolSession` stops the process (close stdin,
+wait `shutdownGraceMs`, kill) without counting a crash, as `stopPlugin` does.
+There is no `plugin/hello` on a protocol channel; the grants decided at
+registration apply to requests the host routes with
+`callCapabilityAs(host, pluginId, "<Pkg>.<C>/<method>", params)` or the typed
+`<C>As`, with the same grant, revocation and guard checks as a plugin's own
+`cap/...` call. A second session on a running plugin, or `callPlugin` on a
+protocol point, is `Protocol`. `openProtocolPlugin` remains as the
+unsupervised form: it returns a process the caller owns, which nothing
+restarts.
 
 The lower-level API (`connectionsFor`, `contributionsFor`, `callPlugin`,
 `registerPlugin`, `parsePluginManifest`, `readPluginManifest`,
