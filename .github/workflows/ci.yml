@@ -6890,6 +6890,8 @@ jobs:
           sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
           LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$LYRIC_CLI_PATH" test --manifest lyric-db/lyric.toml
+          # SqlText negative test (#7241): a raw String must not type-check as SQL text.
+          bash scripts/ci/db-sqltext-negative-test.sh
 
       # Meilisearch backend is a mutually-exclusive alternative feature, so
       # it gets zero coverage from the default (elasticsearch) run (#5598).

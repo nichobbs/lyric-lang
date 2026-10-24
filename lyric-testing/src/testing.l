@@ -598,15 +598,11 @@ pub ref record MockDbTransaction {
 }
 
 impl Db.DbTransaction for MockDbTransaction {
-  func query(sql: in String, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError]
-    requires: sql.length > 0
-  {
+  func query(sql: in Db.SqlText, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError] {
     self.queryCount = self.queryCount + 1
     return Ok([])
   }
-  func execute(sql: in String, params: in slice[String]): Result[Int, Db.DbError]
-    requires: sql.length > 0
-  {
+  func execute(sql: in Db.SqlText, params: in slice[String]): Result[Int, Db.DbError] {
     self.executeCount = self.executeCount + 1
     return Ok(0)
   }
@@ -635,15 +631,11 @@ pub ref record MockDbConnection {
 }
 
 impl Db.DbConnection for MockDbConnection {
-  func query(sql: in String, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError]
-    requires: sql.length > 0
-  {
+  func query(sql: in Db.SqlText, params: in slice[String]): Result[slice[Db.DbRow], Db.DbError] {
     self.queryCount = self.queryCount + 1
     return Ok([])
   }
-  func execute(sql: in String, params: in slice[String]): Result[Int, Db.DbError]
-    requires: sql.length > 0
-  {
+  func execute(sql: in Db.SqlText, params: in slice[String]): Result[Int, Db.DbError] {
     self.executeCount = self.executeCount + 1
     return Ok(0)
   }

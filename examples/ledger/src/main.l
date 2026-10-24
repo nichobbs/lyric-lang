@@ -55,7 +55,16 @@ func liveness(): CheckStatus {
 func readiness(): CheckStatus {
   match Db.connectFromEnv() {
     case Err(e) -> Health.fail("database unreachable: " + e.message)
-    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Health.fail("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Health.pass() } }
+    case Ok(conn) -> match conn.query(Db.sql("SELECT 1 AS ok"), []) {
+      case Err(e) -> {
+        conn.close()
+        Health.fail("database ping failed: " + e.message)
+      }
+      case Ok(_) -> {
+        conn.close()
+        Health.pass()
+      }
+    }
   }
 }
 

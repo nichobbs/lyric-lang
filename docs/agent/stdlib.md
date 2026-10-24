@@ -322,7 +322,7 @@ val db: DbConnection = ...  // injected via wire
 
 // Query
 val rows = await db.query(
-  "SELECT id, name, email FROM users WHERE active = $1",
+  Db.sql("SELECT id, name, email FROM users WHERE active = $1"),
   [DbValue.Bool(true)]
 )?
 
@@ -340,8 +340,8 @@ val affected = await db.execute(
 
 // Transaction
 await db.transaction { tx ->
-  await tx.execute("INSERT INTO ...", [...])?
-  await tx.execute("UPDATE ...", [...])?
+  await tx.execute(Db.sql("INSERT INTO ..."), [...])?
+  await tx.execute(Db.sql("UPDATE ..."), [...])?
   Ok(())
 }?
 ```
@@ -393,7 +393,7 @@ lyric-health = "^1.0"
 import Health.{HealthCheck, HealthStatus}
 
 pub async func dbHealthCheck(): HealthStatus {
-  val result = await db.query("SELECT 1", [])
+  val result = await db.query(Db.sql("SELECT 1"), [])
   return match result {
     case Ok(_)  -> HealthStatus.healthy()
     case Err(e) -> HealthStatus.unhealthy("db: ${e.message()}")
