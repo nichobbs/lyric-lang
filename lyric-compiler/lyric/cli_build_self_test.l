@@ -310,6 +310,32 @@ test "shapeTargetError: module and component are native-only wasm32 shapes (docs
   }
 }
 
+test "shapeTargetError: plugin is a native-only shape (D229)" {
+  match Cli.shapeTargetError(Cli.SPlugin, Emitter.Native) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "native accepts plugin, got: " + m)
+  }
+  match Cli.shapeTargetError(Cli.SPlugin, Emitter.Dotnet) {
+    case None -> assertTrue(false, "dotnet must reject plugin")
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0043") and Str.contains(m, "assembly"),
+      "dotnet/plugin names F0043 and the ordinary assembly, got: " + m
+    )
+  }
+  match Cli.shapeTargetError(Cli.SPlugin, Emitter.Jvm) {
+    case None -> assertTrue(false, "jvm must reject plugin")
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0043") and Str.contains(m, "jar"),
+      "jvm/plugin names the jar, got: " + m
+    )
+  }
+  assertEqual(Cli.nativeShapeArg(Cli.SPlugin, "", false), "plugin", "the bridge's shape argument")
+  match Cli.watchShapeError(true, Cli.SPlugin) {
+    case Some(m) -> assertTrue(Str.contains(m, "plugin"), "names the shape: " + m)
+    case None -> assertTrue(false, "watch + plugin must be refused")
+  }
+}
+
 test "shapeUnsupportedError: module and component are both implemented" {
   match Cli.shapeUnsupportedError(Cli.SComponent, Emitter.Native) {
     case None -> ()
@@ -655,7 +681,7 @@ test "shapeName: every shape has a printable name (#6281)" {
 test "parseShapeName round-trips every shape through shapeName (#6281)" {
   // Guarantees a message built from `shapeName(parseShapeName(x))` can never
   // come out blank for a value the CLI accepted.
-  for nm in ["portable", "standalone", "aot", "module", "component"] {
+  for nm in ["portable", "standalone", "aot", "module", "component", "plugin"] {
     match Cli.parseShapeName(nm) {
       case Some(sh) -> assertEqual(Cli.shapeName(sh), nm, "round-trip " + nm)
       case None -> assertTrue(false, "parseShapeName rejected a valid shape: " + nm)

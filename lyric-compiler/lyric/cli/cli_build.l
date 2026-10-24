@@ -2048,6 +2048,7 @@ func cmdBuild(argv: in slice[String]): Int {
       val ext = match axes.shape {
         case SModule -> ".wasm"
         case SComponent -> ".wasm"
+        case SPlugin -> nativePluginLibraryExt(tripleArg)
         case _ -> match target {
           case Emitter.Native -> nativeOutputExt(tripleArg)
           case _ -> outputExt(target, buildKind)
@@ -2129,7 +2130,18 @@ pub func nativeShapeName(shape: in BuildShape): String {
   match shape {
     case SModule -> "module"
     case SComponent -> "component"
+    case SPlugin -> "plugin"
     case _ -> ""
+  }
+}
+
+/// The file suffix of a `--shape plugin` library for `triple` (the host's
+/// when empty): `.dylib` on macOS, `.so` elsewhere.
+pub func nativePluginLibraryExt(triple: in String): String {
+  if Emitter.nativeTargetOsOf(triple) == "macos" {
+    ".dylib"
+  } else {
+    ".so"
   }
 }
 
@@ -2934,6 +2946,8 @@ pub func buildProjectFromManifest(
     case None -> {
       val ext = if shapeArgBase(wasmShape) == "module" or shapeArgBase(wasmShape) == "component" {
         ".wasm"
+      } else if shapeArgBase(wasmShape) == "plugin" {
+        nativePluginLibraryExt(nativeTriple)
       } else {
         match target {
           case Emitter.Native -> nativeOutputExt(nativeTriple)

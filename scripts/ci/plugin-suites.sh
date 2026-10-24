@@ -15,12 +15,14 @@
 #      (scripts/ci/plugin-protocol-e2e.sh).
 #   6. The LSP example: an editor hosting a language server as a protocol
 #      plugin, with dotnet and JVM hosts (scripts/ci/plugin-lsp-e2e.sh).
-#   7. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
+#   7. Trusted mode: a dotnet and a JVM host loading a plugin of its own
+#      runtime into its own process (scripts/ci/plugin-trusted-e2e.sh).
+#   8. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
 #      plugins (scripts/ci/plugin-sdk-e2e.sh).
 #
-# Native hosts and plugins run in scripts/ci/native-backend-self-tests.sh and
-# the wasm plugin in scripts/ci/wasm32-wasi-rt-tests.sh, the jobs with those
-# toolchains.
+# Native hosts and plugins, the trusted native host included, run in
+# scripts/ci/native-backend-self-tests.sh and the wasm plugin in
+# scripts/ci/wasm32-wasi-rt-tests.sh, the jobs with those toolchains.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -59,6 +61,11 @@ done
 for host in dotnet jvm; do
   echo "== plugin-lsp-e2e: $host host"
   bash scripts/ci/plugin-lsp-e2e.sh "$lyric_bin" "$host"
+done
+
+for target in dotnet jvm; do
+  echo "== plugin-trusted-e2e: $target host, $target plugin in process"
+  bash scripts/ci/plugin-trusted-e2e.sh "$lyric_bin" "$target"
 done
 
 LYRIC="$lyric_bin" bash scripts/ci/plugin-sdk-e2e.sh

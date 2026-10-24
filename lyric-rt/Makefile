@@ -38,7 +38,8 @@ BUILD   := build
 
 SRCS := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
         src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
-        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c
+        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c \
+        src/lyric_plugin.c
 OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 
 # The TLS seam dlopen's OpenSSL at runtime (no link-time -lssl/-lcrypto);
@@ -134,7 +135,8 @@ WASM_CFLAGS := --target=wasm32-wasip1 --sysroot=$(WASI_SDK)/share/wasi-sysroot -
 WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
-               src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c
+               src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c \
+               src/lyric_plugin.c
 WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
 
 $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
@@ -189,7 +191,7 @@ WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32 -lws2_32 -lsecur32 -lcrypt32 -lncry
 WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_sock_win32.c \
-               src/lyric_tls_win32.c src/lyric_parallel.c
+               src/lyric_tls_win32.c src/lyric_parallel.c src/lyric_plugin.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
 # lyric_rt_md.lib is the same runtime against the DLL C runtime, which an
 # AddressSanitizer build links (Windows ASan works only with the DLL CRT);

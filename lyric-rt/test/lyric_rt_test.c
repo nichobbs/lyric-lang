@@ -3953,6 +3953,29 @@ static void test_char_classification(void) {
 
 /* The structured-key hash helpers agree with D172's equality (#8167): both
  * zeros hash alike, every NaN does, and equal strings hash alike. */
+/* Trusted plugins (D229): a library that does not exist is refused with a
+ * message, lookups on a null handle are null, and the text helpers copy. */
+static const char* plugin_test_text(void) { return "abi-fingerprint"; }
+
+static void test_plugin_loader(void) {
+    void* h = lyric_plugin_dl_open("/nonexistent/lyric-plugin-test.so");
+    CHECK(h == NULL);
+    LyricString* why = lyric_plugin_dl_error();
+    CHECK(lyric_string_len(why) > 0);
+    lyric_release(why);
+    CHECK(lyric_plugin_dl_sym(NULL, "lyric_plugin_entry_v1") == NULL);
+    CHECK(lyric_plugin_call_entry(NULL) == NULL);
+    LyricString* empty = lyric_plugin_text(NULL);
+    CHECK(lyric_string_len(empty) == 0);
+    lyric_release(empty);
+    void* fn;
+    const char* (*textFn)(void) = plugin_test_text;
+    memcpy(&fn, &textFn, sizeof fn);
+    LyricString* got = lyric_plugin_call_text(fn);
+    CHECK(string_is(got, "abi-fingerprint"));
+    lyric_release(got);
+}
+
 static void test_key_hash_helpers(void) {
     CHECK(lyric_hash_double(0.0) == lyric_hash_double(-0.0));
     CHECK(lyric_hash_double(0.0 / 0.0) == lyric_hash_double(-(0.0 / 0.0)));
@@ -4148,6 +4171,7 @@ int main(void) {
     test_host_task_fail_panics_reader();
     test_host_task_block_on_in_sync_call_aborts();
 #endif
+    test_plugin_loader();
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;

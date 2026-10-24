@@ -1,0 +1,23 @@
+# A plugin for `lyric-stdlib/tests/plugin_trusted_e2e_tests.l` (docs/69 §10):
+# the API package (PluginTrusted.Api, declared again by the suite, as a
+# shared API package would be) and the plugin package (PluginTrusted.Notes),
+# whose name the host does not use, as a trusted JVM plugin's packages must
+# be its own.  scripts/ci/plugin-trusted-e2e.sh builds it for one target:
+#
+#   lyric build --manifest <this> --target dotnet -o TrustedNotes.dll
+#   lyric build --manifest <this> --target jvm -o TrustedNotes.jar
+#   lyric build --manifest <this> --target native -o trusted-notes
+#   lyric build --manifest <this> --target native --shape plugin -o libtrusted-notes.so
+
+[package]
+name    = "TrustedNotes"
+version = "1.0.0"
+
+[project]
+name            = "TrustedNotes"
+output          = "single"
+output_assembly = "TrustedNotes.dll"
+
+[project.packages]
+"PluginTrusted.Api"   = "src/api.l"
+"PluginTrusted.Notes" = "src/notes.l"

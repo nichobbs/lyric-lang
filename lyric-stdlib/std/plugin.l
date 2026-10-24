@@ -24,6 +24,13 @@
 //!   capabilities, other requests go to `PluginServer.dispatch`, and
 //!   `callHost` makes a capability call from inside a dispatch.
 //!
+//! - **Trusted mode** (docs/69 §10, D229). A host with a `TrustedLoader`
+//!   (`Std.Plugin.Trusted`) loads a plugin its grant policy marks trusted
+//!   (`GrantDecision.trusted`) into its own process from the plugin's trusted
+//!   payload. The same server, grants and guards serve it: a point call is a
+//!   direct `dispatch`, a capability call reaches `plServeCapability` through
+//!   the connection's `HostLink`. No restarts, no call timeout, no unloading.
+//!
 //! Trust: a process payload (dotnet, JVM or native) is arbitrary code running
 //! with the host's user and privileges. Grants and guards limit what a plugin
 //! obtains through capability calls, not what it does directly. Only a wasm
@@ -284,11 +291,20 @@ pub record GrantedCapability {
 
 /// A grant policy's answer for one plugin. `allow = false` refuses the plugin
 /// (`reason` says why); otherwise `grants` lists the capabilities granted.
+///
+/// `trusted = true` lets the host load the plugin into its own process
+/// (docs/69 §10) when the plugin ships a trusted payload for the host and the
+/// host has a `TrustedLoader`; otherwise, and always when `trusted` is false,
+/// the plugin runs in process or wasm mode as usual. A trusted plugin runs
+/// with no isolation: a crash, a call that never returns or (on native, which
+/// has no unwinding) any panic in it stops the host. Mark only plugins whose
+/// code the host's owner trusts as their own.
 @experimental
 pub record GrantDecision {
   allow: Bool
   reason: String
   grants: List[GrantedCapability]
+  trusted: Bool = false
 }
 
 /// The application's decision on what a plugin may use. A grant may be
@@ -329,6 +345,45 @@ pub func grantAllRequested(manifest: in PluginManifest): GrantDecision {
   GrantDecision(allow = true, reason = "", grants = grants)
 }
 
+// ── Trusted mode ───────────────────────────────────────────────────────────
+/// A plugin library loaded into the host's process (docs/69 §10), from which
+/// the host takes plugin servers.
+@experimental
+pub interface TrustedLibrary {
+  /// Run the library's entry point and return the fresh server it hands
+  /// over. A plugin that is stopped and started again gets a new server from
+  /// the same library: nothing is ever unloaded.
+  func newServer(): Result[PluginServer, String]
+}
+
+/// Loads trusted plugin libraries into the host's process. A host enables
+/// trusted mode by setting `PluginHostConfig.trustedLoader` to
+/// `Std.Plugin.Trusted.trustedPluginLoader()`; without one, no plugin is ever
+/// loaded in process.
+@experimental
+pub interface TrustedLoader {
+  /// The runtime whose trusted payloads this loader loads: `"dotnet"`,
+  /// `"jvm"` or `"native"`.
+  func runtime(): String
+
+  /// Why this process cannot load plugins, or `""` when it can (a Native
+  /// AOT or GraalVM native-image host cannot load managed code; Windows and
+  /// wasm32 native hosts cannot load plugin libraries).
+  func unavailableReason(): String
+
+  /// Load the library at `path` (an absolute path) and check its entry
+  /// point, without running any of the plugin's code.
+  func open(path: in String): Result[TrustedLibrary, String]
+}
+
+/// The host side of an in-process plugin connection: a trusted plugin's
+/// capability calls (`callHost`) reach the host's grants, revocations,
+/// guards and providers through it, with no transport in between.
+@experimental
+pub interface HostLink {
+  func callCapability(method: in String, params: in JsonValue): Result[JsonValue, BoundaryError]
+}
+
 // ── Manifest model ─────────────────────────────────────────────────────────
 /// One point a plugin implements: the point's qualified id, the
 /// `major.minor` version the plugin was built against, and its contributions
@@ -357,11 +412,22 @@ pub record CapabilityRequest {
 ///   `windows`) and `arch` (`x86_64`, `aarch64`); `command[0]` is the
 ///   executable.
 /// - `WasmPayload`: a WASI command module run under `wasmtime run`.
+/// - `TrustedManagedPayload`: a dotnet assembly (`.dll`) or JVM jar (`.jar`)
+///   a host of the same runtime may load into its own process (docs/69
+///   §10); it is the same file as the plugin's process payload.
+/// - `TrustedNativePayload`: a shared library (`.so` on linux, `.dylib` on
+///   macos) built with `--shape plugin`, which a native host on that `os`
+///   and `arch` may load into its own process.
+///
+/// A trusted payload runs only when the grant policy marks the plugin
+/// trusted (`GrantDecision.trusted`) and the host has a `TrustedLoader`.
 @experimental
 pub union PluginPayload {
   case ManagedPayload(runtime: String, command: List[String])
   case NativePayload(os: String, arch: String, command: List[String])
   case WasmPayload(wasmModule: String)
+  case TrustedManagedPayload(runtime: String, library: String)
+  case TrustedNativePayload(os: String, arch: String, library: String)
 }
 
 /// A parsed `plugin.json` (schema 1). `required` and `optional` are the
@@ -409,6 +475,9 @@ pub union PluginIssueKind {
   // K0101: a plugin's contributions do not decode as the point's
   // contributions type (reported by the generated `<p>ContributionIssues`).
   case BadContributions
+  // The policy marked the plugin trusted and the host chose its trusted
+  // payload, but the library could not be loaded into the host's process.
+  case TrustedLoadFailed
 }
 
 /// A plugin that was not loaded: what went wrong, where (the plugin
@@ -913,8 +982,11 @@ func plParsePayload(v: in JsonValue, index: in Int): Result[PluginPayload, Strin
     }
     return Ok(value = WasmPayload(wasmModule = file))
   }
+  if mode == "trusted" {
+    return plParseTrustedPayload(v, ctx)
+  }
   if mode != "process" {
-    return Err(error = ctx + ": mode '" + mode + "' is not \"process\" or \"wasm\"")
+    return Err(error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\" or \"trusted\"")
   }
   val command = match plMemberStringList(v, "command", ctx) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
   if command.count == 0 {
@@ -954,6 +1026,62 @@ func plParsePayload(v: in JsonValue, index: in Int): Result[PluginPayload, Strin
         case Ok(_) -> ()
       }
       Ok(value = NativePayload(os = os, arch = arch, command = command))
+    }
+  }
+}
+
+/// The file suffix a trusted library has: `.dll` for dotnet, `.jar` for the
+/// JVM, and the operating system's shared-library suffix for a native one
+/// (`.so` on linux, `.dylib` on macos, `.dll` on windows).
+@pure
+@experimental
+pub func trustedLibrarySuffix(runtimeOrOs: in String): String {
+  if runtimeOrOs == "dotnet" or runtimeOrOs == "windows" {
+    ".dll"
+  } else if runtimeOrOs == "jvm" {
+    ".jar"
+  } else if runtimeOrOs == "macos" {
+    ".dylib"
+  } else {
+    ".so"
+  }
+}
+
+func plParseTrustedPayload(v: in JsonValue, ctx: in String): Result[PluginPayload, String] {
+  val library = match plMemberString(v, "library", ctx) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+  match plCheckRelativePath(library, ctx + ": library") {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
+  match plNonNull(getField(v, "runtime")) {
+    case Some(rt) -> {
+      val runtime = match rt { case JString(s) -> s; case _ -> return Err(error = ctx + ": \"runtime\" must be a string") }
+      if not (runtime == "dotnet" or runtime == "jvm") {
+        return Err(error = ctx + ": runtime '" + runtime + "' is not \"dotnet\" or \"jvm\"")
+      }
+      val suffix = trustedLibrarySuffix(runtime)
+      if not Str.endsWith(library, suffix) {
+        return Err(error = ctx + ": a trusted " + runtime + " library must be a " + suffix + " file, not '" + library + "'")
+      }
+      Ok(value = TrustedManagedPayload(runtime = runtime, library = library))
+    }
+    case None -> {
+      val os = match plMemberString(v, "os", ctx) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+      if not (os == "linux" or os == "macos" or os == "windows") {
+        return Err(error = ctx + ": os '" + os + "' is not linux, macos or windows")
+      }
+      val arch = match plMemberString(v, "arch", ctx) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+      if not (arch == "x86_64" or arch == "aarch64") {
+        return Err(error = ctx + ": arch '" + arch + "' is not x86_64 or aarch64")
+      }
+      val suffix = trustedLibrarySuffix(os)
+      if not Str.endsWith(library, suffix) {
+        return Err(
+          error = ctx + ": a trusted native library for " + os + " must be a " + suffix + " file, not '" + library +
+            "'"
+        )
+      }
+      Ok(value = TrustedNativePayload(os = os, arch = arch, library = library))
     }
   }
 }
@@ -1095,8 +1223,9 @@ func plParseManifestValue(root: in JsonValue): Result[PluginManifest, String] {
 /// (`isPluginVersion`), `publisher` non-empty; `points` lists at least one
 /// point, each a qualified name with a `major.minor` version, none twice;
 /// capability names are qualified and none is requested twice; each payload
-/// is one of the four shapes of D207 Decision 5 with paths that stay inside
-/// the plugin directory. `capabilities` and `payloads` may be absent (the
+/// is one of the four shapes of D207 Decision 5 or a trusted payload
+/// (`TrustedManagedPayload`, `TrustedNativePayload`), with paths that stay
+/// inside the plugin directory. `capabilities` and `payloads` may be absent (the
 /// output of `--lyric-plugin-manifest` has no payloads), and unknown members
 /// are ignored so a later minor schema can add optional ones.
 @experimental
@@ -1157,6 +1286,17 @@ func plPayloadToJson(p: in PluginPayload): JsonValue {
     case WasmPayload(file) -> {
       fields.add(plField("mode", JString(value = "wasm")))
       fields.add(plField("module", JString(value = file)))
+    }
+    case TrustedManagedPayload(runtime, library) -> {
+      fields.add(plField("mode", JString(value = "trusted")))
+      fields.add(plField("runtime", JString(value = runtime)))
+      fields.add(plField("library", JString(value = library)))
+    }
+    case TrustedNativePayload(os, arch, library) -> {
+      fields.add(plField("mode", JString(value = "trusted")))
+      fields.add(plField("os", JString(value = os)))
+      fields.add(plField("arch", JString(value = arch)))
+      fields.add(plField("library", JString(value = library)))
     }
   }
   JObject(fields = fields)
@@ -1332,6 +1472,27 @@ pub func selectPluginPayload(
   None
 }
 
+/// The trusted payload a host on `platform` can load into its own process,
+/// or `None`: a `TrustedManagedPayload` of the host's own runtime on dotnet
+/// and the JVM, a `TrustedNativePayload` for the host's os and arch on
+/// native.  `selectPluginPayload` never returns a trusted payload; a host
+/// runs one only when its grant policy marks the plugin trusted.
+@experimental
+pub func selectTrustedPayload(payloads: in List[PluginPayload], platform: in PluginPlatform): Option[PluginPayload] {
+  var i = 0
+  while i < payloads.count {
+    match payloads[i] {
+      case TrustedManagedPayload(runtime, _) -> if runtime == platform.runtime { return Some(value = payloads[i]) }
+      case TrustedNativePayload(os, arch, _) -> if platform.runtime == "native" and os == platform.os and arch == platform.arch {
+        return Some(value = payloads[i])
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
 /// Why no `wasmtime` was found: `$LYRIC_WASMTIME` names a file that does not
 /// exist (the override is not followed by a `PATH` search), or neither it nor
 /// `PATH` provides one.
@@ -1443,6 +1604,8 @@ pub func pluginLaunchCommand(
         i = i + 1
       }
     }
+    case TrustedManagedPayload(_, library) -> return Err(error = "the trusted payload " + library + " is loaded into the host's process, not launched")
+    case TrustedNativePayload(_, _, library) -> return Err(error = "the trusted payload " + library + " is loaded into the host's process, not launched")
     case WasmPayload(file) -> {
       val exe = match wasmtime { case Some(w) -> w; case None -> return Err(error = plWasmtimeMissingMessage()) }
       argv.add(exe)
@@ -1464,6 +1627,10 @@ pub func pluginLaunchCommand(
 /// plugin, doubled for each later one up to `maxRestartBackoffMs`;
 /// `shutdownGraceMs` is how long `stopPlugin` waits for a plugin to exit
 /// before killing it; `wasmMaxMemoryBytes` bounds a wasm plugin's memory.
+/// `trustedLoader` enables trusted mode (docs/69 §10): with one, a plugin
+/// the grant policy marks trusted is loaded into this process from its
+/// trusted payload; `callTimeoutMs`, `startTimeoutMs` and the restart
+/// settings do not apply to it.
 @experimental
 pub record PluginHostConfig {
   points: List[PluginPointInfo]
@@ -1477,6 +1644,7 @@ pub record PluginHostConfig {
   maxRestartBackoffMs: Int = 10000
   shutdownGraceMs: Int = 2000
   wasmMaxMemoryBytes: Long = 268435456i64
+  trustedLoader: Option[TrustedLoader] = None
 }
 
 /// Capabilities revoked from one plugin; shared by its process state and the
@@ -1487,8 +1655,9 @@ pub record PluginRevocations {
 }
 
 /// The host-side state of one catalogued plugin: what was decided at load
-/// time (offered points, grants, the command line) and the running process,
-/// if any. Reached through `PluginConnection`; applications do not build it.
+/// time (offered points, grants, the command line, or the trusted library
+/// it was loaded from) and the running process or in-process server, if any.
+/// Reached through `PluginConnection`; applications do not build it.
 @experimental
 pub record PluginProcessState {
   manifest: PluginManifest
@@ -1498,6 +1667,8 @@ pub record PluginProcessState {
   revocations: PluginRevocations
   config: PluginHostConfig
   launch: List[String]
+  trusted: Option[TrustedLibrary]
+  var server: Option[PluginServer]
   var peer: Option[RpcPeer]
   var process: Option[PipedProcess]
   var methods: List[PluginPointMethods]
@@ -1508,13 +1679,15 @@ pub record PluginProcessState {
 
 /// A connection to one plugin. On the host side (`connectionsFor`) it is the
 /// catalogued plugin, started on the first `callPlugin`; on the plugin side
-/// (`PluginServer.attach`) it is the link to the host for `callHost`. Every
-/// copy refers to the same connection.
+/// (`PluginServer.attach`) it is the link to the host for `callHost`, over the
+/// plugin's stdio (`peer`) or, for a trusted plugin in the host's process,
+/// directly (`link`). Every copy refers to the same connection.
 @experimental
 pub record PluginConnection {
   pluginId: String
   var peer: Option[RpcPeer]
   host: Option[PluginProcessState]
+  link: Option[HostLink] = None
 }
 
 /// A plugin's contributions to one point, as JSON, for the generated
@@ -1668,6 +1841,71 @@ func plCheckRequestAllowed(req: in CapabilityRequest, points: in List[PluginPoin
   false
 }
 
+// The trusted payload this host could load for `manifest`, or `None`: there
+// is none without a `TrustedLoader` that can load in this process, and none
+// for a protocol plugin, whose stdio carries its own protocol (D228).
+func plTrustedCandidate(
+  config: in PluginHostConfig,
+  manifest: in PluginManifest,
+  offered: in List[PluginPointInfo],
+  platform: in PluginPlatform,
+): Option[PluginPayload] {
+  val loader = match config.trustedLoader { case Some(l) -> l; case None -> return None }
+  if loader.unavailableReason().length > 0 {
+    return None
+  }
+  var i = 0
+  while i < offered.count {
+    if isSome(offered[i].protocol) {
+      return None
+    }
+    i = i + 1
+  }
+  selectTrustedPayload(
+    manifest.payloads,
+    PluginPlatform(os = platform.os, arch = platform.arch, runtime = loader.runtime())
+  )
+}
+
+record TrustedOpenCall {
+  loader: TrustedLoader
+  path: String
+  var outcome: Result[TrustedLibrary, String]
+}
+
+impl BugGuarded for TrustedOpenCall {
+  func invoke(): Unit {
+    self.outcome = self.loader.open(self.path)
+  }
+}
+
+// Load the library of trusted payload `payload` from plugin directory `dir`.
+func plOpenTrusted(
+  config: in PluginHostConfig, payload: in PluginPayload, dir: in String
+): Result[TrustedLibrary, String] {
+  val loader = match config.trustedLoader {
+    case Some(l) -> l
+    case None -> return Err(error = "the host has no TrustedLoader")
+  }
+  val library = match payload {
+    case TrustedManagedPayload(_, l) -> l
+    case TrustedNativePayload(_, _, l) -> l
+    case _ -> return Err(error = "not a trusted payload")
+  }
+  val within = match plWithin(dir, library) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
+  val path = if Path.isAbsolute(within) { within } else { Path.join(Env.currentDirectory(), within) }
+  if not File.fileExists(path) {
+    return Err(error = path + " does not exist")
+  }
+  val failed: Result[TrustedLibrary, String] = Err(error = "the trusted loader failed while loading " + path)
+  val openCall = TrustedOpenCall(loader = loader, path = path, outcome = failed)
+  if runCatchingBug(openCall) {
+    openCall.outcome
+  } else {
+    failed
+  }
+}
+
 // The policy and provider calls run under `runCatchingBug`, so a panic in
 // application code refuses the plugin or fails the one capability call
 // instead of unwinding through the host (on native a panic ends the process).
@@ -1794,13 +2032,21 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     o = o + 1
   }
   val wasmtime = findWasmtime()
-  val payload = match selectPluginPayload(manifest.payloads, currentPluginPlatform(), host.config.preferWasm, isSome(wasmtime)) {
-    case Some(pl) -> pl
-    case None -> return Some(value = plIssue(NoUsablePayload, dir, id, "no payload of this plugin can run on this host"))
+  val platform = currentPluginPlatform()
+  val processPayload = selectPluginPayload(manifest.payloads, platform, host.config.preferWasm, isSome(wasmtime))
+  val trustedPayload = plTrustedCandidate(host.config, manifest, offered, platform)
+  if isNone(processPayload) and isNone(trustedPayload) {
+    return Some(value = plIssue(NoUsablePayload, dir, id, "no payload of this plugin can run on this host"))
   }
-  val launch = match pluginLaunchCommand(payload, dir, wasmtime, host.config.wasmMaxMemoryBytes) {
-    case Ok(argv) -> argv
-    case Err(e) -> return Some(value = plIssue(ManifestInvalid, dir, id, e))
+  var launch: List[String] = newList()
+  match processPayload {
+    case Some(payload) -> match pluginLaunchCommand(payload, dir, wasmtime, host.config.wasmMaxMemoryBytes) {
+      case Ok(argv) -> {
+        launch = argv
+      }
+      case Err(e) -> return Some(value = plIssue(ManifestInvalid, dir, id, e))
+    }
+    case None -> ()
   }
   val refusal = GrantDecision(allow = false, reason = "the grant policy failed", grants = newList())
   val policyCall = PolicyCall(policy = host.config.policy, manifest = manifest, decision = refusal)
@@ -1864,6 +2110,37 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     }
     q = q + 1
   }
+  // In-process loading only ever follows the policy's explicit `trusted`;
+  // a plugin it does not trust runs from its process or wasm payload.
+  var trusted: Option[TrustedLibrary] = None
+  match trustedPayload {
+    case Some(tp) -> if decision.trusted {
+      match plOpenTrusted(host.config, tp, dir) {
+        case Ok(lib) -> {
+          trusted = Some(value = lib)
+        }
+        case Err(e) -> return Some(
+          value = plIssue(
+            TrustedLoadFailed,
+            dir,
+            id,
+            "the trusted payload could not be loaded into this process: " + e
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
+  if isNone(trusted) and isNone(processPayload) {
+    return Some(
+      value = plIssue(
+        NoUsablePayload,
+        dir,
+        id,
+        "the plugin ships only a trusted payload for this host, and the grant policy did not mark it trusted"
+      )
+    )
+  }
   val state = PluginProcessState(
     manifest = manifest,
     dir = dir,
@@ -1872,6 +2149,8 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     revocations = PluginRevocations(revoked = newList()),
     config = host.config,
     launch = launch,
+    trusted = trusted,
+    server = None,
     peer = None,
     process = None,
     methods = newList(),
@@ -2381,6 +2660,190 @@ func plEnsureStarted(st: inout PluginProcessState): Result[RpcPeer, BoundaryErro
   plStart(st)
 }
 
+// ── Host side: trusted (in-process) plugins ────────────────────────────────
+// The host end of a trusted plugin's connection: its capability calls take
+// the path a process plugin's `cap/...` requests take (grant lookup,
+// revocation, the generated server's guards, the provider), with no
+// transport in between.
+record TrustedHostLink {
+  caps: PluginCapabilityServer
+}
+
+impl HostLink for TrustedHostLink {
+  func callCapability(method: in String, params: in JsonValue): Result[JsonValue, BoundaryError] {
+    val wire = if Str.startsWith(method, "cap/") { method } else { "cap/" + method }
+    match plServeCapability(self.caps, wire, Some(value = params)) {
+      case Ok(v) -> Ok(value = v)
+      case Err(e) -> Err(error = boundaryErrorFromRpc(e, wire))
+    }
+  }
+}
+
+// The calls into a trusted plugin's code run under `runCatchingBug`, as the
+// policy and provider calls do: on dotnet and the JVM a panic in the plugin
+// then fails that call instead of unwinding through the host.  Native has no
+// unwinding (D-N-003), so there a panic in a trusted plugin ends the process.
+record TrustedServerCall {
+  library: TrustedLibrary
+  var outcome: Result[PluginServer, String]
+}
+
+impl BugGuarded for TrustedServerCall {
+  func invoke(): Unit {
+    self.outcome = self.library.newServer()
+  }
+}
+
+record TrustedAttachCall {
+  server: PluginServer
+  conn: PluginConnection
+  grants: List[GrantedCapability]
+  var outcome: Result[Unit, BoundaryError]
+  var methods: List[PluginPointMethods]
+  var description: JsonValue
+}
+
+impl BugGuarded for TrustedAttachCall {
+  func invoke(): Unit {
+    self.description = self.server.describe()
+    self.outcome = self.server.attach(self.conn, self.grants)
+    match self.outcome {
+      case Ok(_) -> {
+        self.methods = self.server.pointMethods()
+      }
+      case Err(_) -> ()
+    }
+  }
+}
+
+record TrustedDispatchCall {
+  server: PluginServer
+  method: String
+  params: Option[JsonValue]
+  var outcome: Result[JsonValue, RpcError]
+}
+
+impl BugGuarded for TrustedDispatchCall {
+  func invoke(): Unit {
+    self.outcome = self.server.dispatch(self.method, self.params)
+  }
+}
+
+// Fail the trusted plugin for good: there is no process to restart, and a
+// failure while it is being set up repeats on every attempt.
+func plTrustedFatal(st: inout PluginProcessState, b: in BoundaryError): BoundaryError {
+  st.server = None
+  st.methods = newList()
+  st.fatal = Some(value = b)
+  b
+}
+
+// Take a fresh server from the trusted library and attach it, as process
+// mode's start and `plugin/hello` do: the same grants (less the revoked
+// ones), the same `NotGranted` answer and the same check of the methods the
+// plugin reports for each point.
+func plStartTrusted(st: inout PluginProcessState, library: in TrustedLibrary): Result[PluginServer, BoundaryError] {
+  val serverCall = TrustedServerCall(library = library, outcome = Err(error = "the entry point failed"))
+  val server = if runCatchingBug(serverCall) {
+    match serverCall.outcome {
+      case Ok(sv) -> sv
+      case Err(e) -> return Err(error = plTrustedFatal(st, Crashed(detail = "plugin '" + st.manifest.id + "' gave no server: " + e)))
+    }
+  } else {
+    return Err(error = plTrustedFatal(st, Crashed(detail = "plugin '" + st.manifest.id + "' failed in its entry point")))
+  }
+  val grants: List[GrantedCapability] = newList()
+  var g = 0
+  while g < st.grants.count {
+    if not plContainsString(st.revocations.revoked, st.grants[g].capability) {
+      grants.add(st.grants[g])
+    }
+    g = g + 1
+  }
+  val caps = PluginCapabilityServer(providers = st.config.providers, grants = st.grants, revocations = st.revocations)
+  val conn = PluginConnection(
+    pluginId = st.manifest.id,
+    peer = None,
+    host = None,
+    link = Some(value = TrustedHostLink(caps = caps))
+  )
+  val attachCall = TrustedAttachCall(
+    server = server,
+    conn = conn,
+    grants = grants,
+    outcome = Err(error = Crashed(detail = "attach did not complete")),
+    methods = newList(),
+    description = JNull
+  )
+  if not runCatchingBug(attachCall) {
+    return Err(error = plTrustedFatal(st, Crashed(detail = "plugin '" + st.manifest.id + "' failed while attaching")))
+  }
+  match attachCall.outcome {
+    case Err(b) -> {
+      val fatal = match b {
+        case NotGranted(_) -> b
+        case _ -> Protocol(detail = "the plugin refused to attach: " + boundaryErrorMessage(b))
+      }
+      return Err(error = plTrustedFatal(st, fatal))
+    }
+    case Ok(_) -> ()
+  }
+  val pluginId = unwrapOr(getString(attachCall.description, "id"), "")
+  match plParseHello(st, plHelloAnswer(pluginId, attachCall.methods)) {
+    case Err(msg) -> Err(error = plTrustedFatal(st, Protocol(detail = msg)))
+    case Ok(methods) -> {
+      st.methods = methods
+      st.server = Some(value = server)
+      Ok(value = server)
+    }
+  }
+}
+
+// A point call to a trusted plugin: a direct call of its dispatcher with the
+// same params and result objects process mode sends over the pipe.
+func plTrustedCall(
+  st: inout PluginProcessState,
+  library: in TrustedLibrary,
+  method: in String,
+  pointId: in String,
+  name: in String,
+  params: in JsonValue,
+): Result[JsonValue, BoundaryError] {
+  match st.fatal {
+    case Some(b) -> return Err(error = b)
+    case None -> ()
+  }
+  val server = match st.server {
+    case Some(sv) -> sv
+    case None -> match plStartTrusted(st, library) {
+      case Ok(sv) -> sv
+      case Err(b) -> return Err(error = b)
+    }
+  }
+  val implemented = match plMethodsFor(st, pointId) {
+    case Some(pm) -> plContainsString(pm.methods, name)
+    case None -> false
+  }
+  if not implemented {
+    return Err(error = Unsupported(method = method))
+  }
+  val failed: Result[JsonValue, RpcError] = Err(
+    error = RpcError(
+      code = rpcInternalError,
+      message = "Internal error",
+      data = None
+    )
+  )
+  val call = TrustedDispatchCall(server = server, method = method, params = Some(value = params), outcome = failed)
+  if not runCatchingBug(call) {
+    return Err(error = ContractViolated(detail = "plugin '" + st.manifest.id + "' failed inside " + method))
+  }
+  match call.outcome {
+    case Ok(v) -> Ok(value = v)
+    case Err(e) -> Err(error = boundaryErrorFromRpc(e, method))
+  }
+}
+
 func plMethodsFor(st: in PluginProcessState, pointId: in String): Option[PluginPointMethods] {
   var i = 0
   while i < st.methods.count {
@@ -2419,6 +2882,10 @@ func plHostCall(st: inout PluginProcessState, method: in String, params: in Json
         )
       )
     }
+  }
+  match st.trusted {
+    case Some(library) -> return plTrustedCall(st, library, method, pointId, name, wireParams)
+    case None -> ()
   }
   val started = match plEnsureStarted(st) { case Ok(p) -> p; case Err(b) -> return Err(error = b) }
   val implemented = match plMethodsFor(st, pointId) {
@@ -2481,8 +2948,15 @@ pub func callPlugin(
 }
 
 // Ask the plugin to stop, close its stdin, and kill it if it has not exited
-// within the grace period.
+// within the grace period.  A trusted plugin's server is dropped instead: its
+// library stays loaded (nothing is unloaded in trusted mode, docs/69 Q-PLG-009)
+// and the next call attaches a fresh server from it.
 func plShutdown(st: inout PluginProcessState): Unit {
+  if isSome(st.trusted) {
+    st.server = None
+    st.methods = newList()
+    return ()
+  }
   match st.peer {
     case Some(p) -> {
       var peer = p
@@ -2932,6 +3406,10 @@ pub func runPlugin(server: in PluginServer): Int {
 pub func callHost(conn: in PluginConnection, method: in String, params: in JsonValue): Result[JsonValue, BoundaryError] {
   val wire = if Str.startsWith(method, "cap/") { method } else { "cap/" + method }
   val wireParams = match plCallParams(params) { case Ok(wp) -> wp; case Err(b) -> return Err(error = b) }
+  match conn.link {
+    case Some(l) -> return l.callCapability(wire, wireParams)
+    case None -> ()
+  }
   match conn.peer {
     case None -> Err(error = Protocol(detail = "callHost needs the connection PluginServer.attach received"))
     case Some(p) -> {
