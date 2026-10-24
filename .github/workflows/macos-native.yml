@@ -35,24 +35,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # The managed closure depends only on the compiler, stdlib and bootstrap
+      # sources, not on lyric-rt or this lane's scripts, so a runtime or script
+      # iteration reuses the previous build instead of repeating ~16 minutes.
+      - name: Restore managed compiler closure
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: managed-out
+          key: managed-stage2-${{ hashFiles('lyric-compiler/**', 'lyric-stdlib/**', 'bootstrap/**', 'scripts/bootstrap.sh') }}
+
       - name: Set up .NET
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
         with:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 22 (for the Maven resolver jar)
+        if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
           distribution: temurin
           java-version: '22'
 
       - name: Build stage 2 (self-hosted compiler)
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/bootstrap.sh --stage 3
 
       - name: Stage managed compiler closure
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
