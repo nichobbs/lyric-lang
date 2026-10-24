@@ -17169,6 +17169,10 @@ func mkDecl3(name: in String, ret: in NType, t0: in NType, t1: in NType, t2: in 
 
 func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
   val tys: List[NType] = newList()
+  // What `cAbiCovers` judges: a callback type the ABI lowering handled is already in its
+  // C form (an AArch64 homogeneous float aggregate is an `[N x float]` array there), so it
+  // stands in as a plain pointer instead of being mistaken for an inline array.
+  val coverTys: List[NType] = newList()
   var i = 0
   while i < ef.params.count {
     // Function-typed params stay raw C function pointers (N4.5 — the
@@ -17177,15 +17181,23 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
     // params/returns (slice/List/Map kernels, D-N-015) get the same
     // struct pointer type their call sites use.
     match ef.params[i].ty.kind {
-      case TFunction(_, _) -> tys.add(externCallbackNType(ctx, ef.params[i].ty))
-      case _ -> tys.add(typeToN(ctx, ef.params[i].ty))
+      case TFunction(cbParams, cbRet) -> {
+        val cbN = externCallbackNType(ctx, ef.params[i].ty)
+        tys.add(cbN)
+        coverTys.add(match callbackCAbi(ctx, cbParams, cbRet) { case Some(_) -> NPtr(pointee = NI8); case None -> cbN })
+      }
+      case _ -> {
+        val plain = typeToN(ctx, ef.params[i].ty)
+        tys.add(plain)
+        coverTys.add(plain)
+      }
     }
     i = i + 1
   }
   val retN = retTypeToN(ctx, ef.ret)
   // A by-value record crosses as the platform's C ABI passes the struct
   // (#8009), on a target `cAbiArch` knows.
-  if cAbiArch(ctx.abiTriple).length > 0 and cAbiCovers(tys, retN) {
+  if cAbiArch(ctx.abiTriple).length > 0 and cAbiCovers(coverTys, retN) {
     return cAbiExternDecl(ctx, ef.symbol, tys, retN)
   }
   // Backstop for `nativeByValueExternDiagnostics`: never emit an LLVM

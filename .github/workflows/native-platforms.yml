@@ -135,6 +135,10 @@ jobs:
           "$out/lyric" --version
           echo "LYRIC_BIN=$GITHUB_WORKSPACE/bootstrap/$out/lyric" >> "$GITHUB_ENV"
 
+      # lyric-rt's TLS seam loads OpenSSL 3 at run time; macOS ships none.
+      - name: Install OpenSSL 3
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+
       - name: Native suite (arm64-apple-darwin)
         shell: bash
         run: bash scripts/ci/native-platform-tests.sh

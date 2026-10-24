@@ -123,11 +123,118 @@ func resolveDirLib(
     errors.add("native library '" + spec.name + "': " + dir + " holds no lib" + link + ext + " or " + linkName)
     return
   }
+  if os == "darwin" and shared.count > 0 {
+    // A dylib records its own install name, and the executable records that name
+    // when it links: one built with a bare `clang -shared` names its build path,
+    // which the bundled copy would not satisfy (D230).
+    val stageDir = Path.join(Path.join(Path.join(Path.join(decl.baseDir, ".lyric"), "native"), "_dylibs"), spec.name)
+    val staged: List[String] = newList()
+    var anyStaged = false
+    for f in shared {
+      match stageDarwinDylib(f, stageDir) {
+        case Ok(p) -> {
+          staged.add(p)
+          if p != f {
+            anyStaged = true
+          }
+        }
+        case Err(msg) -> {
+          errors.add("native library '" + spec.name + "': " + msg)
+          return
+        }
+      }
+    }
+    if anyStaged {
+      args.add("-L" + stageDir)
+    }
+    args.add("-L" + dir)
+    args.add("-l" + link)
+    for f in staged {
+      bundle.add(f)
+    }
+    return
+  }
   args.add("-L" + dir)
   args.add("-l" + link)
   for f in shared {
     bundle.add(f)
   }
+}
+
+/// The install name (`LC_ID_DYLIB`) of a Mach-O dynamic library, "" when it cannot be read.
+func darwinInstallName(path: in String): String {
+  val args: List[String] = newList()
+  args.add("-D")
+  args.add(path)
+  match Process.runCapture("otool", args, 60000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        return ""
+      }
+      val lines = Str.split(Str.trim(res.stdout), "\n")
+      if lines.length < 2 {
+        return ""
+      }
+      Str.trim(lines[lines.length - 1])
+    }
+    case Err(_) -> ""
+  }
+}
+
+func runToolOrError(tool: in String, args: in List[String]): Option[String] {
+  match Process.runCapture(tool, args, 120000) {
+    case Ok(res) -> if res.exitCode == 0 {
+      None
+    } else {
+      Some(value = tool + " failed: " + Str.trim(res.stderr + res.stdout))
+    }
+    case Err(e) -> Some(value = tool + " could not be started: " + e)
+  }
+}
+
+/// A copy of the dylib `path` whose install name is `@rpath/<file name>`, in
+/// `stageDir`, so that a program linking it finds the copy bundled with the
+/// executable by run path.  A dylib that already names itself with `@rpath/`
+/// (SDL3, wgpu-native) is used as it is.  The copy is signed ad hoc again, since
+/// rewriting the install name invalidates the signature arm64 macOS demands.
+func stageDarwinDylib(path: in String, stageDir: in String): Result[String, String] {
+  val id = darwinInstallName(path)
+  if id.length == 0 {
+    return Err(error = "cannot read the install name of " + path + " (otool -D)")
+  }
+  if Str.startsWith(id, "@rpath/") {
+    return Ok(value = path)
+  }
+  match Dir.createRecursive(stageDir) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot create " + stageDir)
+  }
+  val dest = Path.join(stageDir, fileNameOf(path))
+  match File.readBytes(path) {
+    case Err(_) -> return Err(error = "cannot read " + path)
+    case Ok(bytes) -> match File.writeBytes(dest, bytes) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot write " + dest)
+    }
+  }
+  val idArgs: List[String] = newList()
+  idArgs.add("-id")
+  idArgs.add("@rpath/" + fileNameOf(path))
+  idArgs.add(dest)
+  match runToolOrError("install_name_tool", idArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  val signArgs: List[String] = newList()
+  signArgs.add("--force")
+  signArgs.add("-s")
+  signArgs.add("-")
+  signArgs.add(dest)
+  match runToolOrError("codesign", signArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  Ok(value = dest)
 }
 
 /// Where the prebuilt archive for `triple` is restored: beside the manifest
@@ -493,7 +600,13 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
     }
   }
   if bundle.count > 0 and os != "windows" {
-    args.add("-Wl,-rpath," + (if os == "darwin" { "@loader_path" } else { "$ORIGIN" }))
+    if os == "darwin" {
+      // Beside the executable, and where an `.app` bundle keeps its libraries (D230).
+      args.add("-Wl,-rpath,@loader_path")
+      args.add("-Wl,-rpath,@executable_path/../Frameworks")
+    } else {
+      args.add("-Wl,-rpath,$ORIGIN")
+    }
   }
   NativeLinkPlan(args = args, bundle = bundle, errors = errors)
 }

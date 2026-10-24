@@ -56,9 +56,9 @@ if [ "$(uname -s)" = Darwin ]; then
 elif [ "$x11" = 1 ]; then
   windowing=(-DSDL_X11=ON -DSDL_X11_XSCRNSAVER=OFF)
 fi
-cmake "${generator[@]}" -S "$work/src" -B "$work/build" \
+cmake ${generator[@]+"${generator[@]}"} -S "$work/src" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-  "${windowing[@]}" -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+  ${windowing[@]+"${windowing[@]}"} -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
   -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_VIVANTE=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
   -DSDL_VULKAN=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
   -DSDL_IBUS=OFF -DSDL_DBUS=OFF -DSDL_LIBUDEV=OFF -DSDL_LIBURING=OFF

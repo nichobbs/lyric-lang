@@ -2395,7 +2395,9 @@ static void test_process_run_inherited(void) {
 
     /* No args, zero exit. */
     int32_t code2 = -99;
-    CHECK(lyric_process_run_inherited("/bin/true", NULL, &code2) == 0);
+    /* macOS keeps true(1) in /usr/bin only. */
+    const char* true_path = access("/bin/true", X_OK) == 0 ? "/bin/true" : "/usr/bin/true";
+    CHECK(lyric_process_run_inherited(true_path, NULL, &code2) == 0);
     CHECK(code2 == 0);
 
     /* A missing executable is a spawn failure, and leaves the out-param
