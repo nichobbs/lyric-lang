@@ -2,6 +2,12 @@
 #
 #   make            -> build/lyric_rt.a
 #   make test       -> build and run the C unit tests
+#   make wasmhost   -> build/liblyric_wasmhost.so (.dylib on macOS), the
+#                      in-process wasmtime embedding for dotnet and JVM plugin
+#                      hosts (docs/69 §9.3); lyric_rt.a already contains it
+#   make test-wasmhost WASMTIME_CAPI=<dir> WASM_TOOLS=<wasm-tools>
+#                   -> its C unit tests against the wasmtime 49.0.3 C API
+#                      (scripts/ci/fetch-wasmtime-capi.sh fetches both)
 #   make clean              (host build only)
 #   make clean-wasm32-wasi
 #
@@ -14,9 +20,10 @@
 #   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build-wasm32-wasi/lyric_rt.a
 #   make test-wasm32-wasi WASI_SDK=/opt/wasi-sdk WASMTIME=wasmtime
 #
-# lyric_process.c and lyric_tls.c are replaced by their *_unsupported.c
-# twins there (WASI has no child processes, BSD sockets or dlopen); the
-# twins keep every symbol resolvable and report the documented failure.
+# lyric_process.c, lyric_tls.c and lyric_wasmhost.c are replaced by their
+# *_unsupported.c twins there (WASI has no child processes, BSD sockets or
+# dlopen); the twins keep every symbol resolvable and report the documented
+# failure.
 #
 # x86_64-pc-windows-msvc (docs/67 G9) is a third build, with clang on Windows
 # or cross-compiled from Linux against an MSVC CRT and Windows SDK named by
@@ -30,6 +37,8 @@
 # lyric_posix.c, lyric_fs.c, lyric_process.c and lyric_tls.c are replaced by
 # their Win32 twins (lyric_win32.c, lyric_fs_win32.c, lyric_process_win32.c,
 # and lyric_sock_win32.c with lyric_tls_win32.c, which uses Schannel).
+# lyric_wasmhost.c is replaced by lyric_wasmhost_unsupported.c until its
+# loader and timeout thread are ported to Win32.
 
 CC      ?= clang
 AR      ?= ar
@@ -38,8 +47,17 @@ BUILD   := build
 
 SRCS := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
         src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
-        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c
+        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c \
+        src/lyric_wasmhost.c
 OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
+
+# lyric_wasmhost.c compiles against the vendored wasmtime 49.0.3 C API headers
+# (types and prototypes only: it loads libwasmtime with dlopen at run time).
+WASMTIME_INCLUDE := third_party/wasmtime/include
+WASMHOST_LIB_EXT := $(if $(filter Darwin,$(shell uname -s)),dylib,so)
+WASMHOST_LIB     := $(BUILD)/liblyric_wasmhost.$(WASMHOST_LIB_EXT)
+WASMTIME_CAPI    ?=
+WASM_TOOLS       ?= wasm-tools
 
 # The TLS seam dlopen's OpenSSL at runtime (no link-time -lssl/-lcrypto);
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
@@ -54,7 +72,7 @@ SAN_CC ?= clang
 ASYNC_SANITIZED_SRCS := src/lyric_async.c src/lyric_rt.c src/lyric_weak.c src/lyric_posix.c \
                         src/lyric_string.c src/lyric_collections.c
 
-.PHONY: all test test-asan test-asan-async test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows
+.PHONY: all test test-asan test-asan-async test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows wasmhost test-wasmhost
 
 all: $(BUILD)/lyric_rt.a
 
@@ -65,8 +83,33 @@ $(BUILD)/%.o: src/%.c include/lyric_rt.h | $(BUILD)
 # (#6779); list it explicitly so editing the .inc alone triggers a rebuild.
 $(BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 
+$(BUILD)/lyric_wasmhost.o: src/lyric_wasmhost.c include/lyric_wasmhost.h | $(BUILD)
+	$(CC) $(CFLAGS) -Iinclude -isystem $(WASMTIME_INCLUDE) -c $< -o $@
+
 $(BUILD)/lyric_rt.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
+
+# The shared shim exports only the lyric_wasmhost_* API; its soname lets a
+# copy loaded by path ($LYRIC_WASMHOST_LIB) satisfy a later load by name.
+$(WASMHOST_LIB): src/lyric_wasmhost.c include/lyric_wasmhost.h | $(BUILD)
+	$(CC) $(CFLAGS) -fvisibility=hidden -shared -Iinclude -isystem $(WASMTIME_INCLUDE) \
+	  $(if $(filter so,$(WASMHOST_LIB_EXT)),-Wl$(comma)-soname$(comma)liblyric_wasmhost.so,-Wl$(comma)-install_name$(comma)@rpath/liblyric_wasmhost.dylib) \
+	  src/lyric_wasmhost.c -o $@ -ldl -lpthread
+
+comma := ,
+
+wasmhost: $(WASMHOST_LIB)
+
+# The shim's unit tests host test/wasmhost_fixture.wat, a hand-written
+# component, with the wasmtime 49.0.3 C API from WASMTIME_CAPI.
+test-wasmhost: | $(BUILD)
+	@test -n "$(WASMTIME_CAPI)" || { echo "set WASMTIME_CAPI to an unpacked wasmtime 49.0.3 C API release (scripts/ci/fetch-wasmtime-capi.sh)"; exit 1; }
+	$(WASM_TOOLS) parse test/wasmhost_fixture.wat -o $(BUILD)/wasmhost_fixture.wasm
+	printf 'not a component' > $(BUILD)/wasmhost_not_a_component.wasm
+	$(CC) $(CFLAGS) -Iinclude -isystem $(WASMTIME_INCLUDE) test/lyric_wasmhost_test.c src/lyric_wasmhost.c -ldl -lpthread -o $(BUILD)/lyric_wasmhost_test
+	LYRIC_WASMTIME_LIB=$(WASMTIME_CAPI)/lib/libwasmtime.$(WASMHOST_LIB_EXT) $(BUILD)/lyric_wasmhost_test $(BUILD)/wasmhost_fixture.wasm $(BUILD)/wasmhost_not_a_component.wasm
+	$(SAN_CC) $(CFLAGS) -fsanitize=address,undefined -Iinclude -isystem $(WASMTIME_INCLUDE) test/lyric_wasmhost_test.c src/lyric_wasmhost.c -ldl -lpthread -o $(BUILD)/lyric_wasmhost_test_asan
+	LYRIC_WASMTIME_LIB=$(WASMTIME_CAPI)/lib/libwasmtime.$(WASMHOST_LIB_EXT) $(BUILD)/lyric_wasmhost_test_asan $(BUILD)/wasmhost_fixture.wasm $(BUILD)/wasmhost_not_a_component.wasm
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -134,7 +177,8 @@ WASM_CFLAGS := --target=wasm32-wasip1 --sysroot=$(WASI_SDK)/share/wasi-sysroot -
 WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
-               src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c
+               src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c \
+               src/lyric_wasmhost_unsupported.c
 WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
 
 $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
@@ -189,7 +233,7 @@ WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32 -lws2_32 -lsecur32 -lcrypt32 -lncry
 WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_sock_win32.c \
-               src/lyric_tls_win32.c src/lyric_parallel.c
+               src/lyric_tls_win32.c src/lyric_parallel.c src/lyric_wasmhost_unsupported.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
 # lyric_rt_md.lib is the same runtime against the DLL C runtime, which an
 # AddressSanitizer build links (Windows ASan works only with the DLL CRT);
