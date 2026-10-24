@@ -26,7 +26,7 @@ Here is the full module inventory:
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `joinWithin` (rejects absolute, drive-qualified and `..` components, for untrusted input), `extension`, `basename`, `dirname`, `isAbsolute` |
 | `Std.Environment` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode`, `isWindows` |
-| `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult`; long-lived piped children: `spawnPiped`, `pipedReadLine`, `pipedReadLineWithin` (bounded wait), `pipedWriteLine`, `pipedKill` |
+| `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult`; long-lived piped children: `spawnPiped`, `pipedReadLine`, `pipedReadLineWithin` (bounded wait), `pipedWriteLine`, `pipedKill`; raw bytes for self-framing protocols: `pipedReadBytes`, `pipedReadBytesWithin`, `pipedWriteBytes` (mixable with the line reads) |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
 | `Std.Logging` *(service library — not in `stdlib/std/`)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 23; provided by the `lyric-logging` package, not the built-in stdlib |
@@ -46,7 +46,7 @@ Here is the full module inventory:
 | `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
 | `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
 | `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, the standard error codes |
-| `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses) |
+| `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses); the same framings to a child process: `newNdjsonTransportOverProcess`, `newContentLengthTransportOverProcess` |
 | `Std.AnnotationMeta` | Read the annotations written on `config { }` fields back at runtime, on dotnet and the JVM: `fieldsWithAnnotation`, `allAnnotatedFields`, `AnnotatedField`, `namedArg`, `positionalArg` |
 | `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
@@ -498,6 +498,30 @@ becomes an `internalError` response rather than ending the loop. Every
 `newPeerWithTimeout`), and `callWithin` takes a timeout per call, so a peer
 that never answers fails the call with `requestTimedOut` instead of blocking
 it.
+
+To speak JSON-RPC to a child process instead, such as a language server,
+spawn it with `Std.Process.spawnPiped` and build the transport over it:
+
+```lyric
+match spawnPiped("my-language-server", newList()) {
+  case Ok(child) -> {
+    var peer = newPeer(newContentLengthTransportOverProcess(child), PingHandler(reply = "pong"))
+    val answer = call(peer, "initialize", None)
+    // ...
+    pipedCloseStdin(child)
+  }
+  case Err(e) -> println("spawn failed: " + IOError.message(e))
+}
+```
+
+The transport reads the child's stdout with `pipedReadBytes` and writes each
+framed message to its stdin with `pipedWriteBytes`, as UTF-8, so the
+`Content-Length` count matches the bytes on the wire and no newline is added
+after a body. `send` returns the write error if the child has gone. Closing
+the transport does not touch the process: you decide when to close its
+stdin, wait for it or kill it. `pipedReadLine` and `pipedReadBytes` draw from
+one buffer of the child's stdout, so a program may read a line-oriented
+banner first and hand the rest of the stream to the transport.
 
 `@generate` is not limited to built-in generators. Chapter 30 covers how to write and publish your own source generator package so that consumers can annotate their types with `@generate(YourPkg.Name)` and receive whatever code your generator emits.
 
