@@ -338,6 +338,29 @@ for a host outside the manifest vocabulary.
 
 **Review**: Stable.
 
+### `Std.PluginTrustedHost` — `lyric-stdlib/std/_kernel/plugin_trusted_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.Runtime.Loader.AssemblyLoadContext, System.Reflection and System.Threading.Monitor conform to their documented .NET contracts")
+@axiom("java.net.URLClassLoader, java.util.jar.JarFile, java.lang.reflect.Method and java.util.concurrent.locks.ReentrantLock conform to their documented JVM contracts")
+```
+
+**BCL surface**: a non-collectible `AssemblyLoadContext`, the entry point's
+declaring type and `MethodBase.Invoke` under a `Monitor` lock (.NET); a
+parent-first `URLClassLoader`, the jar manifest's `Main-Class`,
+`Method.invoke` under a `ReentrantLock` (JVM). Backs trusted in-process
+plugin loading (D231, docs/69 §10). The native twin binds `lyric-rt`'s
+`lyric_plugin_dl_*` (`dlopen`/`dlsym`).
+
+**Gap**: The prover does not model loaded code; a trusted plugin runs with
+the host's full authority.
+
+**Caller obligation**: Load only plugins the grant policy marks trusted.
+Load failures return `Err` and become `TrustedLoadFailed`; nothing is
+unloaded.
+
+**Review**: Stable.
+
 ---
 
 ## 7. Time
@@ -954,6 +977,7 @@ All are provisional pending weaver integration.
 | `Std.FileHost`           | `file_host.l`                | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
+| `Std.PluginTrustedHost`  | `plugin_trusted_host.l`      | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
 | `Std.EnvironmentHost`    | `environment_host.l`         | 3      | 0           |
@@ -976,7 +1000,7 @@ All are provisional pending weaver integration.
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **33** | **2**       |
+| **Total**                |                              | **34** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1001,6 +1025,7 @@ recorded in the §19 baseline.
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
+| `Std.PluginTrustedHost`  | `plugin_trusted_host.l`      | 1      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
 | `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
@@ -1014,7 +1039,7 @@ recorded in the §19 baseline.
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **27** | **0**       |
+| **Total**                |                              | **28** | **0**       |
 
 ### Combined total
 
