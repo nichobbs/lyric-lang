@@ -12353,6 +12353,48 @@ test "externAsObject needs the root object type in scope (T0206)" {
   )
 }
 
+// `.length` is the size member of `String`/`slice`/array and `.count` of
+// `List`; `List` has no `length`, and the JVM backend rejects it (J009) while
+// MSIL used to lower it silently (#7218).
+func listLengthCheck(body: in String): CheckResult {
+  val src = "package P\nimport Std.CollectionsHost\nfunc f(xs: in List[Int], s: in String, a: in slice[Int]): Int {\n" +
+    body +
+    "\n}\n"
+  checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+}
+
+test ".length on a List is T0207 and names .count" {
+  val cr = listLengthCheck("  xs.length")
+  assertEqualInt(countDiagCode(cr, "T0207"), 1, diagCodesOf(cr))
+  var named = false
+  for d in cr.diagnostics {
+    if d.code == "T0207" and d.message.contains(".count") {
+      named = true
+    }
+  }
+  assertTrue(named, "the message names .count: " + diagCodesOf(cr))
+}
+
+test ".length as a bound member value on a List is T0207" {
+  val cr = listLengthCheck("  val n = xs.length\n  n")
+  assertEqualInt(countDiagCode(cr, "T0207"), 1, diagCodesOf(cr))
+}
+
+test ".length() call form on a List is T0207" {
+  val cr = listLengthCheck("  xs.length()")
+  assertEqualInt(countDiagCode(cr, "T0207"), 1, diagCodesOf(cr))
+}
+
+test ".length stays valid on String and slice, and .count on List" {
+  val cr = listLengthCheck("  s.length + a.length + xs.count")
+  assertEqualInt(diagCount(cr), 0, diagCodesOf(cr))
+}
+
+test ".length on a package's own List-named record is not T0207" {
+  val src = "package P\nrecord List[T] { length: Int }\nfunc f(xs: in List[Int]): Int {\n  xs.length\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(src), "T0207"), 0, diagCodesOf(parseCheck(src)))
+}
+
 test "a non-Std package declaring 'externAsObject' is T0140" {
   val src = "package P\nfunc externAsObject(n: in Int): Int {\n  n\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0140"), "externAsObject is a reserved built-in name")

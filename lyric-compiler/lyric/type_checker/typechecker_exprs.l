@@ -4900,7 +4900,20 @@ func maybeUnknownMemberDiag(
 ): Unit {
   val recv = unrefine(recvRaw)
   match recv {
-    case TyUser(tid, tname, _) -> {
+    case TyUser(tid, tname, targs) -> {
+      // `List` sizes with `.count`; only `String`, `slice` and arrays have
+      // `.length`.  MSIL lowered the bare name silently while the JVM
+      // rejected it (J009), so the front end decides (#7218).
+      if name == "length" and targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
+        diag.add(
+          errorDiagnostic(
+            "T0207",
+            "'List' has no member 'length'; use '.count' (only String, slice and array have '.length')",
+            span
+          )
+        )
+        return
+      }
       if isCall and isNonGenericDistinct(tbl, tid) {
         unknownDistinctMethodDiag(tbl, sigs, diag, recv, tname, name, span)
         return

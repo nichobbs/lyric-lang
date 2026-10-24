@@ -275,7 +275,7 @@ test "collectFixed32 gathers repeated fixed32 fields" {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
     case Ok(fields) -> {
       val got = collectFixed32(fields, 7)
-      assertEqualInt(got.length, 2, "two fixed32 fields collected")
+      assertEqualInt(got.count, 2, "two fixed32 fields collected")
       assertEqualInt(got[0], 0x0A0B0C0D, "first repeated fixed32")
       assertEqualInt(got[1], 0x11223344, "second repeated fixed32")
     }
@@ -293,7 +293,7 @@ test "collectFixed64 gathers repeated fixed64 fields" {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
     case Ok(fields) -> {
       val got = collectFixed64(fields, 8)
-      assertEqualInt(got.length, 2, "two fixed64 fields collected")
+      assertEqualInt(got.count, 2, "two fixed64 fields collected")
       assertTrue(got[0] == 0x0102030405060708i64, "first repeated fixed64")
       assertTrue(got[1] == 0x1122334455667788i64, "second repeated fixed64")
     }
@@ -328,8 +328,8 @@ test "collectFixed32/collectFixed64 return an empty list for an absent field num
   match decodeMessage(bytes) {
     case Err(e) -> assertTrue(false, "decode failed: " + e)
     case Ok(fields) -> {
-      assertEqualInt(collectFixed32(fields, 9).length, 0, "collectFixed32 absent -> empty")
-      assertEqualInt(collectFixed64(fields, 9).length, 0, "collectFixed64 absent -> empty")
+      assertEqualInt(collectFixed32(fields, 9).count, 0, "collectFixed32 absent -> empty")
+      assertEqualInt(collectFixed64(fields, 9).count, 0, "collectFixed64 absent -> empty")
     }
   }
 }

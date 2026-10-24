@@ -814,7 +814,7 @@ test "JobResult: failed result carries error field" {
 // ─── inProcess / enqueue ─────────────────────────────────────────────────────
 test "inProcess: creates scheduler with empty queue" {
   val scheduler = Jobs.inProcess()
-  assertTrue(scheduler.queue.length == 0, "fresh scheduler has empty queue")
+  assertTrue(scheduler.queue.count == 0, "fresh scheduler has empty queue")
 }
 
 test "enqueue: adds a job to the in-process queue" {
@@ -823,7 +823,7 @@ test "enqueue: adds a job to the in-process queue" {
     case Err(e) -> assertTrue(false, "enqueue must succeed: " + e)
     case Ok(jobId) -> {
       assertTrue(jobId.length > 0, "enqueue returns non-empty job ID")
-      assertTrue(scheduler.queue.length == 1, "queue has one job after enqueue")
+      assertTrue(scheduler.queue.count == 1, "queue has one job after enqueue")
     }
   }
 }
@@ -837,7 +837,7 @@ test "enqueue: successive enqueues each produce a unique job ID" {
         case Err(e) -> assertTrue(false, "second enqueue failed: " + e)
         case Ok(id2) -> {
           assertTrue(id1 != id2, "successive enqueues must produce distinct IDs")
-          assertTrue(scheduler.queue.length == 2, "queue has two jobs")
+          assertTrue(scheduler.queue.count == 2, "queue has two jobs")
         }
       }
     }
@@ -851,7 +851,7 @@ test "enqueue wrapper: uses default limits and queues the job (#3174)" {
     case Err(e) -> assertTrue(false, "enqueue wrapper must succeed: " + e)
     case Ok(jobId) -> {
       assertTrue(jobId.length > 0, "enqueue wrapper returns non-empty job ID")
-      assertTrue(scheduler.queue.length == 1, "queue has one job after enqueue wrapper")
+      assertTrue(scheduler.queue.count == 1, "queue has one job after enqueue wrapper")
     }
   }
 }
@@ -862,7 +862,7 @@ test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174, #3515)
     case Err(e) -> assertTrue(false, "enqueueWith wrapper must succeed: " + e)
     case Ok(jobId) -> {
       assertTrue(jobId.length > 0, "enqueueWith wrapper returns non-empty job ID")
-      assertTrue(scheduler.queue.length == 1, "queue has one job after enqueueWith wrapper")
+      assertTrue(scheduler.queue.count == 1, "queue has one job after enqueueWith wrapper")
       // Assert the explicit retry/timeout actually reached the stored JobSpec,
       // not just that the job was queued (#3515).
       val spec = scheduler.queue[0]

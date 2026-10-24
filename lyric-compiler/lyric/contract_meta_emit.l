@@ -46,12 +46,12 @@ func jsonBool(b: in Bool): String {
 }
 
 func jsonArray(items: in List[String]): String {
-  if items.length == 0 {
+  if items.count == 0 {
     "[]"
   } else {
     var buf = "["
     var i = 0
-    while i < items.length {
+    while i < items.count {
       if i > 0 {
         buf = buf + ","
       }
@@ -63,12 +63,12 @@ func jsonArray(items: in List[String]): String {
 }
 
 func jsonObject(fields: in List[(String, String)]): String {
-  if fields.length == 0 {
+  if fields.count == 0 {
     "{}"
   } else {
     var buf = "{"
     var i = 0
-    while i < fields.length {
+    while i < fields.count {
       if i > 0 {
         buf = buf + ","
       }
