@@ -22,7 +22,13 @@
  * it); otherwise the symbol resolves to NULL, so this stays a safe no-op
  * in a plain (non-ASan) native build without needing to link against the
  * sanitizer runtime at all. */
-#if !defined(_WIN32)
+#if defined(__APPLE__)
+/* Mach-O's linker rejects an undefined weak reference in a static archive
+ * ("Undefined symbols") unless every final link passes -U, so on macOS the
+ * sanitizer runtime (a dylib that exports the function) is looked up at run
+ * time instead. */
+#include <dlfcn.h>
+#elif !defined(_WIN32)
 extern void __lsan_ignore_object(const void* p) __attribute__((weak));
 #endif
 
@@ -90,6 +96,18 @@ void lyric_lsan_ignore_leak(void* p) {
 #if defined(_WIN32)
     /* LeakSanitizer does not run on Windows. */
     (void)p;
+#elif defined(__APPLE__)
+    typedef void (*lsan_ignore_fn)(const void*);
+    static _Atomic(lsan_ignore_fn) resolved = NULL;
+    static atomic_int looked_up = 0;
+    if (!p) return;
+    lsan_ignore_fn fn = atomic_load_explicit(&resolved, memory_order_acquire);
+    if (!fn && !atomic_load_explicit(&looked_up, memory_order_acquire)) {
+        fn = (lsan_ignore_fn)dlsym(RTLD_DEFAULT, "__lsan_ignore_object");
+        atomic_store_explicit(&resolved, fn, memory_order_release);
+        atomic_store_explicit(&looked_up, 1, memory_order_release);
+    }
+    if (fn) fn(p);
 #else
     if (p && __lsan_ignore_object) {
         __lsan_ignore_object(p);
