@@ -1126,7 +1126,7 @@ lyric build --watch                    # project/single build: rebuild on source
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
-lyric test <file.l> --list             # print test titles only; do not compile or run
+lyric test <file.l> --list             # print test titles only (honours @cfg); do not compile or run
 lyric test <file.l> --fail-fast        # stop after the first file with failing tests;
                                        # print an early summary and exit 1
 lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar

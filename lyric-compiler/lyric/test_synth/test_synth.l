@@ -862,7 +862,7 @@ pub func synthesizeFor(
         val bodyText = slice(source, t.body.span)
         val fname = "__lyric_test_" + toString(testIdx)
         testIdx = testIdx + 1
-        sb = sb + "\nfunc " + fname + "(): Unit " + bodyText
+        sb = sb + "func " + fname + "(): Unit " + bodyText
         if not cfgGated {
           tests.add(TestSlot(funcName = fname, title = t.title))
         }
@@ -936,6 +936,16 @@ pub func synthesizeFor(
 // ─────────────────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
 pub func listEntries(source: in String): Result[List[ListEntry], List[Diagnostic]] {
+  val noFeatures: List[String] = newList()
+  listEntriesFor(source, noFeatures, noFeatures)
+}
+
+// `--list` must show exactly what the runner would run, so an item whose
+// `@cfg` the downstream erasure pass drops (#7481) is left out; `active` and
+// `declared` are the same sets passed to `synthesizeFor` (#7540).
+pub func listEntriesFor(
+  source: in String, active: in List[String], declared: in List[String]
+): Result[List[ListEntry], List[Diagnostic]] {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
@@ -945,11 +955,13 @@ pub func listEntries(source: in String): Result[List[ListEntry], List[Diagnostic
   var i = 0
   while i < pf.file.items.count {
     val it = pf.file.items[i]
-    match it.kind {
-      case ITest(t) -> acc.add(TestEntry(title = t.title))
-      case IProperty(p) -> acc.add(PropertyEntry(title = p.title, reason = "property: not implemented in v1"))
-      case IFixture(f) -> acc.add(FixtureEntry(name = f.name))
-      case _ -> {
+    if not isItemCfgGatedOut(active, declared, it.annotations) {
+      match it.kind {
+        case ITest(t) -> acc.add(TestEntry(title = t.title))
+        case IProperty(p) -> acc.add(PropertyEntry(title = p.title, reason = "property: not implemented in v1"))
+        case IFixture(f) -> acc.add(FixtureEntry(name = f.name))
+        case _ -> {
+        }
       }
     }
     i = i + 1

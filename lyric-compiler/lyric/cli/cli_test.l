@@ -630,27 +630,6 @@ func cmdTest(argv: in slice[String]): Int {
     }
   }
 
-  if listMode {
-    match TestSynth.listEntries(source) {
-      case Err(diags) -> {
-        for d in diags.toArray() {
-          printDiag(d)
-        }
-        return 1
-      }
-      case Ok(entries) -> {
-        for e in entries.toArray() {
-          match e {
-            case TestEntry(title) -> Console.println("test: " + title)
-            case PropertyEntry(title, reason) -> Console.println("prop: " + title + " (" + reason + ")")
-            case FixtureEntry(name) -> Console.println("fixture: " + name)
-          }
-        }
-        return 0
-      }
-    }
-  }
-
   val stem = stemOf(Path.basename(sourcePath), 2)
   // Native binaries have no extension, or `.exe` on a Windows host
   // (language reference §"lyric build --target native").
@@ -719,6 +698,27 @@ func cmdTest(argv: in slice[String]): Int {
   } else {
     (cfgActiveWithTarget, cfgDeclared)
   }
+  if listMode {
+    match TestSynth.listEntriesFor(source, synthActive, synthDeclared) {
+      case Err(diags) -> {
+        for d in diags.toArray() {
+          printDiag(d)
+        }
+        return 1
+      }
+      case Ok(entries) -> {
+        for e in entries.toArray() {
+          match e {
+            case TestEntry(title) -> Console.println("test: " + title)
+            case PropertyEntry(title, reason) -> Console.println("prop: " + title + " (" + reason + ")")
+            case FixtureEntry(name) -> Console.println("fixture: " + name)
+          }
+        }
+        return 0
+      }
+    }
+  }
+
   // `propCfg` (computed above from `--property-trials`/`--seed`, always via
   // the same-package `propertyRunConfigFromOverrides` per #7203) is unused
   // by `synthesizeFor` whenever `runProperties` is false, but is still a
