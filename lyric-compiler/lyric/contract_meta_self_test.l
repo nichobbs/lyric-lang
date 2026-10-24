@@ -19,6 +19,8 @@ import Std.Environment as Environment
 import Lyric.ContractMeta
 import Lyric.ContractElaborator
 import Lyric.Parser
+import Lyric.Mono as Mono
+import Lyric.TypeChecker as TC
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
@@ -1614,4 +1616,46 @@ test "defaults that name a type or value parameter anywhere are not exported" {
   for n in names {
     assertTrue(Str.endsWith(n, "1_j"), "a j thunk: " + n)
   }
+}
+
+// D224: three packages each list the operator markers, and none can import the
+// others' helper, so a marker added to one list alone would silently disagree.
+test "the operator marker lists of the checker, mono and the contract metadata agree" {
+  val ops: List[BinOp] = newList()
+  ops.add(BAdd)
+  ops.add(BSub)
+  ops.add(BMul)
+  ops.add(BDiv)
+  ops.add(BMod)
+  ops.add(BLt)
+  ops.add(BLte)
+  ops.add(BGt)
+  ops.add(BGte)
+  ops.add(BAnd)
+  ops.add(BOr)
+  ops.add(BXor)
+  ops.add(BEq)
+  ops.add(BNeq)
+  ops.add(BCoalesce)
+  ops.add(BImplies)
+  val fromChecker: Map[String, Bool] = newMap()
+  for op in ops {
+    val m = TC.operatorMarker(op)
+    if m.length > 0 {
+      fromChecker.add(m, true)
+      assertTrue(Mono.isOperatorMarker(m), "mono knows the checker's marker " + m)
+      assertTrue(isBuiltinMarkerName(m), "the contract metadata keeps the checker's marker " + m)
+    }
+  }
+  val candidates = ["Add", "Sub", "Mul", "Div", "Mod", "Compare", "Equals", "Hash", "Default", "Plain", "Show", "Shape"]
+  for name in candidates {
+    assertTrue(
+      Mono.isOperatorMarker(name) == fromChecker.containsKey(name),
+      "mono and the checker agree on whether " + name + " is an operator marker"
+    )
+    if Mono.isOperatorMarker(name) {
+      assertTrue(isBuiltinMarkerName(name), "an operator marker is a built-in marker: " + name)
+    }
+  }
+  assertTrue(not isBuiltinMarkerName("Show"), "an arbitrary name is not a marker")
 }

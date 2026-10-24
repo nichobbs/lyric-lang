@@ -3103,11 +3103,18 @@ test "a specialisation binding an operator-bounded parameter to a named type is 
   }
 }
 
-test "an operator-bounded generic at a scalar primitive needs no re-check (#7996)" {
-  val src = "package P\nfunc sum2[T](a: in T, b: in T): T where T: Add { a + b }\nfunc f(a: in Int, b: in Int): Int { sum2(a, b) }\n"
+test "an operator-bounded generic at a non-integer scalar needs no re-check (#7996)" {
+  val src = "package P\nfunc sum2[T](a: in T, b: in T): T where T: Add { a + b }\nfunc f(a: in Double, b: in Double): Double { sum2(a, b) }\nfunc g(a: in String, b: in String): String { sum2(a, b) }\nfunc c[T](a: in T, b: in T): Bool where T: Compare { a < b }\nfunc h(a: in Int, b: in Int): Bool { c(a, b) }\n"
   val mr = runMono(src)
   assertEqualInt(mr.structSpecs.count, 0, "no struct specialisation")
   assertEqualInt(mr.unsignedSpecs.count, 0, "no unsigned specialisation")
+}
+
+test "an Add, Sub or Mul bound at an overflow-checked integer type is re-checked (#8532)" {
+  val src = "package P\nfunc sum2[T](a: in T, b: in T): T where T: Add { a + b }\nfunc f(a: in Int, b: in Int): Int { sum2(a, b) }\nfunc g(a: in Byte, b: in Byte): Byte { sum2(a, b) }\n"
+  val mr = runMono(src)
+  assertEqualInt(mr.structSpecs.count, 0, "no struct specialisation")
+  assertEqualInt(mr.unsignedSpecs.count, 2, "Int and Byte are re-checked")
 }
 
 test "re-checking an operator-bounded specialisation records the operators it holds (#7996)" {
