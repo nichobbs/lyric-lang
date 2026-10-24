@@ -1456,6 +1456,9 @@ func nativeIntrinsicCallType(
   if name == "nativeLoadByte" or name == "nativeStoreByte" {
     return nativeByteAccessType(sc, tbl, sigs, diag, name, args, span)
   }
+  if name == "nativeKeepCallback" or name == "nativeReleaseCallback" {
+    return nativeCallbackPinType(sc, tbl, sigs, diag, name, args, span)
+  }
   if name != "nativeNullPtr" and name != "nativeAddrOf" and name != "NativeWeak" {
     return None
   }
@@ -1752,6 +1755,58 @@ func nativeByteAccessType(
     return Some(value = TyPrim(pt = PtUnit))
   }
   Some(value = TyPrim(pt = PtByte))
+}
+
+// `nativeKeepCallback(f): NativePtr[Byte]` pins the closure `f` as the C
+// userdata pointer of a callback that outlives the call registering it, on
+// every target, until `nativeReleaseCallback(p)` unpins it (D229).  `f` is a
+// function value of any type; `p` a `NativePtr[Byte]`.  Placement is the mode
+// checker's N0100, as for `nativeNullPtr`.
+func nativeCallbackPinType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  name: in String,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Type] {
+  val argTypes: List[Type] = newList()
+  for a in args {
+    argTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(a)))
+  }
+  if args.count != 1 {
+    diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
+    return Some(value = TyError)
+  }
+  val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  if name == "nativeKeepCallback" {
+    match unrefine(argTypes[0]) {
+      case TyFunction(_, _, _) -> ()
+      case TyError -> ()
+      case _ -> diag.add(
+        errorDiagnostic(
+          "T0043",
+          name + ": the argument must be a closure (a function value), got " + renderType(argTypes[0]),
+          callArgExpr(args[0]).span
+        )
+      )
+    }
+    return Some(value = ptrTy)
+  }
+  if not argSatisfiesParam(tbl, ptrTy, argTypes[0]) {
+    diag.add(
+      errorDiagnostic(
+        "T0043",
+        name + ": the argument must be the NativePtr[Byte] nativeKeepCallback returned",
+        callArgExpr(args[0]).span
+      )
+    )
+  }
+  Some(value = TyPrim(pt = PtUnit))
 }
 
 // `w.upgrade()` on a `w: NativeWeak[T]`: `Option[T]`, `Some` while the
@@ -18854,6 +18909,9 @@ func checkPairedCallArgs(
       } else {
         argSatisfiesParam(tbl, p.ty, argTy)
       }
+      if sig.isExternFunc {
+        checkManagedCallbackCrossPackage(tbl, diag, sig, p.ty, argTy, callArgExpr(args[ai]).span)
+      }
       val rigidClash = not sig.isExternFunc and rigidVarClash(tbl, p.ty, argTy, sc.genericNames)
       if (not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai]))) or rigidClash {
         diag.add(
@@ -19129,7 +19187,50 @@ func argSatisfiesExternParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Ty
       case _ -> ()
     }
   }
+  // A `NativeUserdata` parameter is a `void*`: it also takes the pointer
+  // `nativeKeepCallback` returns (D229).
+  if isNativeUserdataType(tbl, paramTy) and isNativeBytePtrType(tbl, argTy) {
+    return true
+  }
   argSatisfiesParam(tbl, paramTy, argTy)
+}
+
+// T0184: on `--target dotnet` and `--target jvm` a C binding adapts a closure
+// (into a trampoline address, or a pinned userdata pointer) where it is called,
+// from the binding's declaration, so a callback argument, or a closure passed
+// as a C pointer, reaches the binding only from the package that declares it
+// (D229).  Another package calls a wrapper the declaring package exports.
+// Native passes the closure itself and has no such limit.
+func checkManagedCallbackCrossPackage(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  paramTy: in Type,
+  argTy: in Type,
+  span: in Span,
+): Unit {
+  if checkingForNative(tbl) or sig.originPackage.length == 0 {
+    return
+  }
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or curPkg == sig.originPackage {
+    return
+  }
+  val isCallback = match externCallbackClosureType(tbl, paramTy) { case Some(_) -> true; case None -> false }
+  val isClosureAsPointer = (isNativeBytePtrType(tbl, paramTy) or isNativeUserdataType(tbl, paramTy)) and
+    match unrefine(argTy) { case TyFunction(_, _, _) -> true; case _ -> false }
+  if isCallback or isClosureAsPointer {
+    diag.add(
+      errorDiagnostic(
+        "T0184",
+        "a closure reaches a C binding of package " + sig.originPackage +
+          " only from that package on --target dotnet and --target jvm; call a wrapper function " +
+          sig.originPackage +
+          " declares instead",
+        span
+      )
+    )
+  }
 }
 
 // T0043 suffix naming the closure an `extern func` callback parameter takes,

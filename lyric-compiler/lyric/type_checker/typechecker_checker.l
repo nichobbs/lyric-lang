@@ -5619,20 +5619,18 @@ func checkExternFuncBindings(diag: in List[Diagnostic], items: in List[Item], na
             )
           )
         }
-        if native {
-          for p in decl.params {
-            checkExternCallbackSlot(diag, decl.name, p.name, p.ty)
-          }
+        for p in decl.params {
+          checkExternCallbackSlot(diag, decl.name, p.name, p.ty)
         }
-        // Native lowers the full `extern func` surface (callbacks, `String`);
+        // Native lowers the full `extern func` surface (`String`, records);
         // the managed targets marshal only the types every runtime passes
-        // the same way.
+        // the same way, and C callbacks over them (D229).
         if libCount > 0 and libOk and not native {
           for p in decl.params {
-            checkCBindingType(diag, decl.name, p.ty, false)
+            checkCBindingType(diag, decl.name, p.ty, false, false)
           }
           match decl.ret {
-            case Some(te) -> checkCBindingType(diag, decl.name, te, true)
+            case Some(te) -> checkCBindingType(diag, decl.name, te, true, false)
             case None -> ()
           }
         }
@@ -5645,29 +5643,62 @@ func checkExternFuncBindings(diag: in List[Diagnostic], items: in List[Item], na
 // T0151 unless `te` is a type a C binding passes the same way on every
 // target: `Int` (int32), `Long` (int64), `Byte` (uint8), `Float` (float,
 // binary32 on every backend since D155, #7966), `Double` (double), a
-// `NativePtr[T]` (a pointer), or, as a result, `Unit` (void).
-func checkCBindingType(diag: in List[Diagnostic], fname: in String, te: in TypeExpr, isResult: in Bool): Unit {
+// `NativePtr[T]` (a pointer), or, as a result, `Unit` (void).  A parameter
+// may also be `NativeUserdata` (a `void*`) or a C callback (D229): a function
+// type whose parameters and result are again these types, which the managed
+// backends call through a trampoline.  `inCallback` checks such a callback's
+// own parameters and result, where a further function type is rejected.
+func checkCBindingType(
+  diag: in List[Diagnostic],
+  fname: in String,
+  te: in TypeExpr,
+  isResult: in Bool,
+  inCallback: in Bool,
+): Unit {
   val ok = match te.kind {
     case TRef(path) -> {
       val n = path.segments[path.segments.count - 1]
       path.segments.count == 1 and
-        (n == "Int" or n == "Long" or n == "Byte" or n == "Float" or n == "Double" or (isResult and n == "Unit"))
+        (
+          n == "Int" or n == "Long" or n == "Byte" or n == "Float" or n == "Double" or (isResult and n == "Unit") or
+            (not isResult and n == "NativeUserdata")
+        )
     }
     case TGenericApp(head, _) -> head.segments.count == 1 and head.segments[0] == "NativePtr"
     case TUnit -> isResult
     case TParen(inner) -> {
-      checkCBindingType(diag, fname, inner, isResult)
+      checkCBindingType(diag, fname, inner, isResult, inCallback)
       return
+    }
+    case TFunction(ps, r) -> {
+      if isResult or inCallback {
+        false
+      } else {
+        for cp in ps {
+          checkCBindingType(diag, fname, cp, false, true)
+        }
+        checkCBindingType(diag, fname, r, true, true)
+        return
+      }
     }
     case _ -> false
   }
   if not ok {
+    val what = if inCallback { "a C callback's parameter or result" } else { "this type" }
     diag.add(
       errorDiagnostic(
         "T0151",
-        "extern func '" + fname +
-          "': this type cannot cross a C binding; use Int, Long, Byte, Float, Double or NativePtr[T]" +
-          (if isResult { ", or Unit for no result" } else { "" }),
+        "extern func '" + fname + "': " + what +
+          " cannot cross a C binding; use Int, Long, Byte, Float, Double or NativePtr[T]" +
+          (
+            if isResult {
+              ", or Unit for no result"
+            } else if inCallback {
+              ", or NativeUserdata"
+            } else {
+              ", NativeUserdata, or a callback over these types"
+            }
+          ),
         te.span
       )
     )
@@ -6000,11 +6031,12 @@ pub func checkWithImportedPackagesForNative(
 // The FFI intrinsic types.  Every backend lowers them by name, so they are
 // declared here only to give their uses a type; the `clrName`s name no CLR
 // or JVM class and are never resolved.  `NativePtr[T]` is the raw pointer of
-// a C binding (`extern func`, D158) on every target; `NativeWeak[T]` exists
-// only on the native target, which alone has ARC.
-val ffiIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n"
+// a C binding (`extern func`, D158) on every target, and `NativeUserdata`
+// marks the userdata slot of a C callback type on every target (D229);
+// `NativeWeak[T]` exists only on the native target, which alone has ARC.
+val ffiIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n" + "extern type NativeUserdata = \"lyric.native.NativeUserdata\"\n"
 
-val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n" + "extern type NativeUserdata = \"lyric.native.NativeUserdata\"\n"
+val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n"
 
 // Register the FFI intrinsic types with no declaring package, so every file
 // sees them bare with no import, as codegen does.  They are registered

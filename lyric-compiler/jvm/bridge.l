@@ -1371,12 +1371,13 @@ func codegenPackageInto(
   // one bundle legitimately try to emit the identical class; keep only the
   // first copy so the JAR never carries duplicate entries for it.  The
   // `out`/`inout` place-reference interfaces `Lyric/Lyric$Ref$<K>`
-  // (`Jvm.Codegen.refIfaceName`, D183) are shared the same way.
+  // (`Jvm.Codegen.refIfaceName`, D183) and the C callback handle table
+  // `Lyric/Lyric$Callbacks` (D229) are shared the same way.
   val sharedLambdaIface = lambdaIfaceName()
   var j = 0
   while j < classFiles.count {
     val cf = classFiles[j]
-    val shared = cf.thisClass == sharedLambdaIface or isRefIfaceName(cf.thisClass)
+    val shared = cf.thisClass == sharedLambdaIface or isRefIfaceName(cf.thisClass) or cf.thisClass == callbacksClassJvm()
     if shared and builtClassNameExists(acc, cf.thisClass) {
       ()
     } else {

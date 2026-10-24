@@ -982,6 +982,12 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.implMaps.count > 0 {
     sorted = sorted + TABLE_BIT_IMPL_MAP
   }
+  // CustomAttribute rows are only the `UnmanagedCallersOnly` marks of C
+  // callback trampolines (D229), added as each MethodDef row is, so they are
+  // already in `parent` order.
+  if t.customAttrs.count > 0 {
+    sorted = sorted + TABLE_BIT_CUSTOM_ATTR
+  }
   w8(buf, sorted)
 
   // Row counts (only for present tables, in table-number order)

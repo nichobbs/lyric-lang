@@ -5195,6 +5195,9 @@ func lowerCallEx(
         if (n == "nativeLoadByte" and args.count == 2) or (n == "nativeStoreByte" and args.count == 3) {
           return lowerNativeByteAccess(ctx, insns, n, args)
         }
+        if (n == "nativeKeepCallback" or n == "nativeReleaseCallback") and args.count == 1 {
+          return lowerNativeCallbackPin(ctx, insns, n, args)
+        }
         if n == "nativeNullPtr" and args.count == 0 {
           // The C NULL pointer as a NativePtr[Byte] (N4.5) — e.g. the
           // attr argument of pthread_create.  Placement is the mode
@@ -8605,8 +8608,9 @@ func closureSigOfType(ctx: in Ctx, t: in NType): Option[NClosureSig] {
 //   }
 //
 // The call-duration borrow needs no retain; a C API that holds the
-// callback beyond the call requires the _kernel_native/ wrapper to
-// retain/release around the registration (native/plan/05-ffi-design.md).
+// callback beyond the call takes the pointer `nativeKeepCallback` returns
+// (an ARC retain) as its userdata, released by `nativeReleaseCallback`
+// (D229, `lowerNativeCallbackPin`).
 // Structural NativePtr[Byte] (i8*) test — string-comparing the IR
 // spelling would silently stop matching under an opaque-pointer
 // (`ptr`) rendering (#4733).
@@ -10364,6 +10368,22 @@ func lowerNativeByteAccess(ctx: in Ctx, insns: in List[NInsn], name: in String, 
   }
   val v = lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[2]), NI8)
   insns.add(NStore(ty = NI8, value = v.value, ptr = NLocal(name = addr)))
+  NVal(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+/// `nativeKeepCallback(f)` / `nativeReleaseCallback(p)` (D229): a closure is
+/// its own userdata pointer on native, so keeping it is one ARC retain, which
+/// holds it alive for a C API that stores the callback, and releasing it is
+/// the matching ARC release.
+func lowerNativeCallbackPin(ctx: in Ctx, insns: in List[NInsn], name: in String, args: in List[CallArg]): NVal {
+  val bytePtr = NPtr(pointee = NI8)
+  if name == "nativeKeepCallback" {
+    val f = lowerExpr(ctx, insns, nativeCallArgExpr(args[0]))
+    emitRetain(ctx, insns, f)
+    return NVal(ty = bytePtr, value = asI8Ptr(ctx, insns, f))
+  }
+  val p = lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[0]), bytePtr)
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(bytePtr, p.value)))
   NVal(ty = NVoid, value = NUndef(ty = NVoid))
 }
 
