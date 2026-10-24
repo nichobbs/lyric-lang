@@ -1167,11 +1167,12 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
 // unhandled `System.Exception` with a full host stack trace, not a
 // contained `EmitResult` failure.
 //
-// A field read through a record instance at the generic's own type parameter
-// stays an unknown type in a generic body (a bare `T` argument to a
-// `List[Int]` is T0043, #7974), so `put`'s `xs.add(b.value)` type-checks
-// against the `List[Int]`, and `put(xs, Box(value = "hello"))` instantiates it
-// with a `String`.  `xs.add("hello")` itself is a T0043 since #7969.  The
+// A payload bound by a pattern from a field of the generic's own type
+// parameter stays an unknown type in a generic body (a bare `T` argument to a
+// `List[Int]` is T0043, #7974, and so is a field read of that `T`), so `put`'s
+// `xs.add(v)` type-checks against the `List[Int]`, and
+// `put(xs, Box(value = Some(value = "hello")))` instantiates it with a
+// `String`.  `xs.add("hello")` itself is a T0043 since #7969.  The
 // monomorphized body is a genuinely
 // incompatible (non-numeric) mismatch that `coerceTo`'s `#7452` narrowing
 // cannot rescue, so it is the constructible "genuinely mismatched call" this
@@ -1180,16 +1181,19 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
   val dir = freshTempDir("native-contain-n0007")
   val source = "package ContainN0007.App\n" + "\n" + "import Std.Core\n" + "import Std.Collections\n" + "\n" +
     "record Box[T] {\n" +
-    "  value: T\n" +
+    "  value: Option[T]\n" +
     "}\n" +
     "\n" +
     "func put[T](xs: in List[Int], b: in Box[T]): Unit {\n" +
-    "  xs.add(b.value)\n" +
+    "  match b.value {\n" +
+    "    case Some(v) -> xs.add(v)\n" +
+    "    case None -> ()\n" +
+    "  }\n" +
     "}\n" +
     "\n" +
     "func main(): Int {\n" +
     "  val xs: List[Int] = newList()\n" +
-    "  put(xs, Box(value = \"hello\"))\n" +
+    "  put(xs, Box(value = Some(value = \"hello\")))\n" +
     "  0\n" +
     "}\n"
   val noDefines: List[String] = newList()
@@ -1247,12 +1251,12 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     val sp = result.diagnostics[n0007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      11,
+      12,
       "N0007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(
       sp.startPos.column,
-      10,
+      28,
       "N0007 span points at the real source column (got: " + toString(sp.startPos.column) + ")"
     )
   }
