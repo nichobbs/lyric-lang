@@ -1203,7 +1203,48 @@ func reprForFunc(fn: in FunctionDecl, dt: in DefaultThunks): String {
   // `@io` rides in the repr so a restored consumer's signature carries it
   // and the layer rules see the call (D149).
   val ioPrefix = if hasAnnotationNamed(fn.annotations, "io") { "@io " } else { "" }
-  ioPrefix + "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  ioPrefix + "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr +
+    renderMarkerWhere(fn.whereClause)
+}
+
+// The `where` bounds of a generic function that name a built-in marker
+// (`Add`, `Compare`, `Plain`, ...), as ` where T: Add + Sub`.  A consumer
+// specialising the restored generic needs them: an operator on a bounded
+// type parameter is lowered per specialisation (D224).  A bound naming an
+// interface is left out, because the consumer's scope need not resolve the
+// interface's bare name.
+func renderMarkerWhere(wc: in Option[WhereClause]): String {
+  match wc {
+    case None -> ""
+    case Some(w) -> {
+      val kept: List[WhereBound] = newList()
+      for b in w.bounds {
+        val cs: List[ConstraintRef] = newList()
+        for c in b.constraints {
+          if c.head.segments.count == 1 and c.args.count == 0 and isBuiltinMarkerName(c.head.segments[0]) {
+            cs.add(c)
+          }
+        }
+        if cs.count > 0 {
+          kept.add(WhereBound(name = b.name, constraints = cs, span = b.span))
+        }
+      }
+      if kept.count == 0 {
+        ""
+      } else {
+        " " + Fmt.whereClauseStr(Some(value = WhereClause(bounds = kept, span = w.span)))
+      }
+    }
+  }
+}
+
+// Keep in sync with `isOperatorMarker` (mono.l), plus the non-operator markers.
+func isBuiltinMarkerName(name: in String): Bool {
+  name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare" or
+    name == "Equals" or
+    name == "Hash" or
+    name == "Default" or
+    name == "Plain"
 }
 
 func hasAnnotationNamed(anns: in List[Annotation], name: in String): Bool {

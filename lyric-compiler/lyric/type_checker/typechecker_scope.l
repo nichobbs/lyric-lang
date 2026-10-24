@@ -79,6 +79,10 @@ pub record Scope {
   // Non-empty while a contract clause or loop invariant is being checked
   // (#7228): a call made there must resolve to a `@pure` function (T0133).
   contractDepth: List[Int]
+  // The enclosing function's resolved `where` bounds, so an operator on a
+  // type parameter can be checked against the markers it promises (#7996,
+  // #8017).  Empty outside a function body.
+  bounds: List[ResolvedBound]
 }
 
 pub func newScope(): Scope {
@@ -96,7 +100,8 @@ pub func newScope(): Scope {
     selfFields = noSelfFields,
     selfChecked = false,
     selfType = TyError,
-    contractDepth = newList()
+    contractDepth = newList(),
+    bounds = newList()
   )
 }
 
@@ -118,6 +123,22 @@ pub func newScopeForFunction(
   selfChecked: in Bool,
   selfType: in Type,
 ): Scope {
+  val noBounds: List[ResolvedBound] = newList()
+  newScopeForBoundedFunction(returnTy, genericNames, noBounds, returnTyExpr, selfFields, selfChecked, selfType)
+}
+
+// `newScopeForFunction` for a function body whose generic parameters carry
+// `where` bounds: an operator on a parameter is accepted when a bound promises
+// it.
+pub func newScopeForBoundedFunction(
+  returnTy: in Type,
+  genericNames: in List[String],
+  bounds: in List[ResolvedBound],
+  returnTyExpr: in Option[TypeExpr],
+  selfFields: in Map[String, Type],
+  selfChecked: in Bool,
+  selfType: in Type,
+): Scope {
   val bindings: List[LocalBinding] = newList()
   val starts: List[Int] = newList()
   starts.add(0)
@@ -130,7 +151,8 @@ pub func newScopeForFunction(
     selfFields = selfFields,
     selfChecked = selfChecked,
     selfType = selfType,
-    contractDepth = newList()
+    contractDepth = newList(),
+    bounds = bounds
   )
 }
 

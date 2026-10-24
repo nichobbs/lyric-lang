@@ -1375,9 +1375,31 @@ pub func pipeCheckAndMono(
   // where a type this package binds it to is not visible; its `==` reaches
   // the bound type's own structural equality (D172 item 3) instead.
   for ss in monoRes0.structSpecs {
-    if ss.originPkg == "" and specUsesEquality(ss.specDecl) {
+    if ss.originPkg == "" and (specUsesEquality(ss.specDecl) or ss.opBound) {
       toRecheck.add(ss)
     }
+  }
+  // An operator on a type parameter bounded by `Add`, `Compare` and the like
+  // is lowered for the type it is bound to, which only a check in the scope
+  // that sees that type can do; another package's generic body is checked in
+  // its own package's scope, where the type is not visible (#7996, #8017).
+  val opDiags: List[Diagnostic] = newList()
+  for ss in monoRes0.structSpecs {
+    if ss.originPkg != "" and ss.opBound {
+      opDiags.add(
+        errorDiagnostic(
+          "M0008",
+          "cannot specialise '" + ss.specName + "': the generic is declared in package '" + ss.originPkg +
+            "' and applies an operator to a type parameter that is bound here to a distinct or record type, which only the declaring package's own types can be lowered for; call it from a function declared in '" +
+            ss.originPkg +
+            "' or use a scalar type argument",
+          ss.callSpan
+        )
+      )
+    }
+  }
+  if gate(opts.pkgLabel, opts.lineOrigins, opDiags) {
+    return None
   }
   if toRecheck.count == 0 {
     return match finishValueRecords(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), file0, importedPkgs, tcRes, opts) {
@@ -1490,6 +1512,13 @@ pub record SpecArraySites {
   /// Each construction of a case of a union with value generic parameters,
   /// for a target with one union per length (#8149).
   valueUnionCtors: Map[String, ValueUnionCtorSite]
+  /// The operators on distinct types (#7361), compound assignments to them,
+  /// and the derived component-wise operators on records (D155) the
+  /// specialised body holds, which its generic body, checked over a type
+  /// parameter, could not record (#7996, #8017).
+  distinctOps: Map[String, String]
+  distinctCompound: Map[String, String]
+  recordArith: Map[String, RecordArithSite]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -2184,7 +2213,10 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.wrapEq.count > 0 or
     sa.lens.count > 0 or
     sa.valueCtors.count > 0 or
-    sa.valueUnionCtors.count > 0
+    sa.valueUnionCtors.count > 0 or
+    sa.distinctOps.count > 0 or
+    sa.distinctCompound.count > 0 or
+    sa.recordArith.count > 0
 }
 
 func specArraySitesOf(
@@ -2215,7 +2247,10 @@ func specArraySitesOf(
     wrapEq = siteSlice(syms.wrapEqSites, p.wrapEqSites, usePrior, lo, hi),
     lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi),
     valueCtors = siteSlice(syms.valueRecordCtorSites, p.valueRecordCtorSites, usePrior, lo, hi),
-    valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi)
+    valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi),
+    distinctOps = siteSlice(syms.distinctOpSites, p.distinctOpSites, usePrior, lo, hi),
+    distinctCompound = siteSlice(syms.distinctCompoundSites, p.distinctCompoundSites, usePrior, lo, hi),
+    recordArith = siteSlice(syms.recordArithSites, p.recordArithSites, usePrior, lo, hi)
   )
 }
 
@@ -2315,10 +2350,14 @@ func lowerSpecArrays(
           val arraySites = (if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }).copy(
             bufferHandles = not unionPerLength
           )
+          val operatorsLowered = lowerRecordArith(
+            lowerDistinctOps(oneFile, sa.distinctOps, sa.distinctCompound),
+            sa.recordArith
+          )
           val lowered = lowerArrays(
             lowerRecordEq(
               markValueUnionCtors(
-                markValueRecordCtors(withArrayLens(oneFile, sa.lens), sa.valueCtors),
+                markValueRecordCtors(withArrayLens(operatorsLowered, sa.lens), sa.valueCtors),
                 if unionPerLength { sa.valueUnionCtors } else { noUnionCtorSites() }
               ),
               sa.recordEq,

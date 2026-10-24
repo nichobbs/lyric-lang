@@ -556,6 +556,41 @@ pub func checkStatement(
           case None -> checkRecordCompoundAssign(tbl, diag, op, target, targetType, valueType, stmt.span)
         }
       }
+      // `x op= y` on a type parameter is `x = x op y`: it needs the bound
+      // that makes the operator valid, and a value of the same parameter
+      // (#7996, #8017).
+      match op {
+        case AssEq -> ()
+        case _ -> match targetType {
+          case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
+            val marker = compoundAssignDerive(op)
+            if not tyVarBoundedBy(sc, targetType, marker) {
+              diag.add(
+                errorDiagnostic(
+                  "T0030",
+                  "compound assignment on type parameter '" + tvName + "' needs a `where " + tvName + ": " + marker + "` bound",
+                  stmt.span
+                )
+              )
+            } else {
+              val sameParam = match valueType { case TyVar(vn) -> vn == tvName; case TyError -> true; case _ -> false }
+              if not sameParam {
+                diag.add(
+                  errorDiagnostic(
+                    "T0031",
+                    "arithmetic operands must have the same type (got " + renderType(targetType) + " and " + renderType(valueType) +
+                      "); an operator bounded by `" +
+                      marker +
+                      "` takes two values of the one type parameter",
+                    stmt.span
+                  )
+                )
+              }
+            }
+          }
+          case _ -> ()
+        }
+      }
       // A literal that does not fit the target (`x += -1` on a `UInt`) is
       // T0015, as for a binding, rather than a type mismatch (#7841).
       val literalOutOfRange = not stringPlusAssign and reportIntLiteralOutOfRange(targetType, value, diag)
@@ -1742,7 +1777,7 @@ func checkFunctionBodyAt(
   // #6467: `fn.ret` also seeds the scope's `returnTyExpr`, so T0064/T0065
   // (raised deep inside a nested block via `checkStatement`) render the same
   // alias-aware display as T0070/T0114 below.
-  val sc = newScopeForFunction(sig.returnTy, sig.generics, fn.ret, selfFields, selfChecked, selfType)
+  val sc = newScopeForBoundedFunction(sig.returnTy, sig.generics, sig.bounds, fn.ret, selfFields, selfChecked, selfType)
   // #6481/#6487: a member body (protected `entry`/`func`, a record-body
   // method, or an impl method — #6173) reads/writes the enclosing type's
   // fields as bare names (the implicit-`self` idiom every one of these
