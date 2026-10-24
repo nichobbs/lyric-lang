@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# macos-native-tests.sh -- the `--target native` suite on macOS arm64
-# (docs/67, #8419, #8401), run on a macOS host (macos-latest, Apple clang).
+# native-platform-tests.sh -- the `--target native` suite on a host the main
+# Linux x86-64 lane (native-backend-self-tests.sh) does not cover: macOS arm64
+# (macos-latest, Apple clang) and Linux arm64 (ubuntu-24.04-arm), #8419, #8401.
 #
-#   1. Builds lyric-rt and runs its C unit tests with the host clang.
+#   1. Builds lyric-rt and runs its C unit tests with the host clang (and, on
+#      Linux, gcc and the AddressSanitizer run of the TLS seam).
 #   2. Runs the cross-target @test_module suites and the stdlib suites the
 #      Linux native lane runs (scripts/ci/native-backend-self-tests.sh) with
 #      `lyric test --target native`.
@@ -14,7 +16,7 @@
 # Every suite runs even when an earlier one fails; the script prints a
 # summary and exits non-zero if any did.
 #
-# Usage: LYRIC_BIN=path/to/lyric bash scripts/ci/macos-native-tests.sh
+# Usage: LYRIC_BIN=path/to/lyric bash scripts/ci/native-platform-tests.sh
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -36,10 +38,19 @@ run_suite() {
 echo "=== toolchain ==="
 uname -a
 clang --version
-sw_vers || true
+case "$(uname -s)" in
+  Darwin) sw_vers || true; platform=macos ;;
+  *) platform=linux ;;
+esac
 
 echo "=== lyric-rt (clang) ==="
 run_suite "lyric-rt unit tests" make -C lyric-rt test
+if [ "$platform" = linux ]; then
+  # gcc builds the runtime too, and its AddressSanitizer covers the TLS seam
+  # (real loopback OpenSSL handshakes); Apple's cc is clang, so neither applies.
+  run_suite "lyric-rt unit tests (gcc)" bash -c 'make -C lyric-rt clean && make -C lyric-rt test CC=gcc'
+  run_suite "lyric-rt TLS seam under AddressSanitizer" make -C lyric-rt test-asan CC=gcc
+fi
 
 echo "=== cross-target suites (--target native) ==="
 for t in \
@@ -159,6 +170,17 @@ for t in \
   lyric-compiler/lyric/llvm_self_test_impl_direct.l ; do
   run_suite "$t" env LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
 done
+
+echo "=== end-to-end programs ==="
+# #7858, D163, D167: byte printing, the debug/release overflow profile, fixed-array bounds.
+run_suite "byte-println-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh native
+run_suite "overflow-profile-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
+run_suite "fixed-array-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
+# #8031, D169, D173, #8179, #8279: refinement, value generics and inout across packages.
+run_suite "range-refinement-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
+run_suite "value-generic-record-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+run_suite "inout-receiver-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
+run_suite "hoisted-callee-cross-package-e2e" env LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
 
 echo "=== summary ==="
 if [ "${#failed[@]}" -gt 0 ]; then

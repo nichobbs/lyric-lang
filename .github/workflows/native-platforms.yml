@@ -1,26 +1,28 @@
-name: macOS native
+name: Native platforms
 
-# The `--target native` suite on macOS arm64 (docs/67, #8419, #8401).  This is
-# its own workflow, not a job in ci.yml: ci.yml sits just under the soft size
+# The `--target native` suite on the hosts the Linux x86-64 lane in ci.yml does
+# not cover: macOS arm64 and Linux arm64 (docs/67, #8419, #8401).  This is its
+# own workflow, not jobs in ci.yml: ci.yml sits just under the soft size
 # ceiling scripts/ci/check-workflow-size.sh enforces (#6387), the same reason
 # windows-build.yml is separate.
 #
-# Like windows-build.yml, no Lyric seed ever runs on the Mac.  The self-hosted
-# stage-2 compiler DLLs are managed IL (RID-independent), so the `managed` job
-# builds them once on Linux and the `macos` job NativeAOT-links them into an
-# osx-arm64 `lyric` and runs scripts/ci/macos-native-tests.sh with it.
+# Like windows-build.yml, no Lyric seed ever runs on these hosts.  The
+# self-hosted stage-2 compiler DLLs are managed IL (RID-independent), so the
+# `managed` job builds them once on Linux x86-64 and each platform job
+# NativeAOT-links them into a `lyric` for its own runtime identifier and runs
+# scripts/ci/native-platform-tests.sh with it.
 on:
   workflow_dispatch:
   pull_request:
     paths:
-      - '.github/workflows/macos-native.yml'
+      - '.github/workflows/native-platforms.yml'
       - 'bootstrap/src/Lyric.Cli.Aot/**'
       - 'lyric-rt/**'
       - 'lyric-compiler/lyric/llvm_*.l'
       - 'lyric-compiler/lyric/emitter.l'
       - 'lyric-compiler/lyric/cli/**'
       - 'lyric-stdlib/std/_kernel_native/**'
-      - 'scripts/ci/macos-*.sh'
+      - 'scripts/ci/native-platform-tests.sh'
 
 permissions:
   contents: read
@@ -130,4 +132,61 @@ jobs:
 
       - name: Native suite (arm64-apple-darwin)
         shell: bash
-        run: bash scripts/ci/macos-native-tests.sh
+        run: bash scripts/ci/native-platform-tests.sh
+
+  linux-arm64:
+    needs: [managed]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 22
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+
+      - name: Download managed compiler closure
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: managed-stage2
+          path: managed
+
+      - name: Install the native AOT and test toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq clang zlib1g-dev gcc libssl-dev
+          clang --version
+
+      - name: Publish self-contained AOT binary (linux-arm64)
+        shell: bash
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          STAGE="$GITHUB_WORKSPACE/managed/lib"
+          test -f "$STAGE/Lyric.Stdlib.dll" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime linux-arm64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:Version=0.0.0-dryrun \
+            -p:StageDir="$STAGE" \
+            --output publish/linux-arm64
+          out=publish/linux-arm64
+          mkdir -p "$out/lib"
+          cp "$STAGE"/Lyric.Stdlib*.dll "$out/lib/"
+          file "$out/lyric"
+          "$out/lyric" --version
+          echo "LYRIC_BIN=$GITHUB_WORKSPACE/bootstrap/$out/lyric" >> "$GITHUB_ENV"
+
+      - name: Native suite (aarch64-unknown-linux-gnu)
+        shell: bash
+        run: bash scripts/ci/native-platform-tests.sh
