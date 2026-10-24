@@ -8,15 +8,19 @@ SendGrid, behind one `MailSender` interface.
 | Feature | `dotnet` | `jvm` |
 |---|---|---|
 | `smtp` (SMTP) | Available — `System.Net.Mail` (BCL, no extra NuGet dependency) | **Not implemented** — `Mail.Kernel.Jvm.connectSmtp` returns `Err(code = "NOT_IMPLEMENTED")`; needs a genuine Jakarta Mail auto-FFI kernel (`extern type` bindings to `jakarta.mail.Session`/`Transport`/`MimeMessage`, the same idiom `Auth.Kernel.Jvm.hmacSha256` uses for `javax.crypto.Mac`). Tracked in #7462. |
-| `ses` (Amazon SES) | **Not implemented** — `Err(code = "NOT_IMPLEMENTED")` after config validation (#7462) | Same |
-| `sendgrid` (SendGrid) | **Not implemented** — `Err(code = "NOT_IMPLEMENTED")` after config validation (#7462) | Same |
+| `ses` (Amazon SES) | Available — SES v2 over `Std.Http` with AWS Signature V4, pure Lyric (#7462) | Same code |
+| `sendgrid` (SendGrid) | Available — v3 `mail/send` over `Std.Http`, pure Lyric (#7462) | Same code |
 
 `Mail`, the public package, compiles and its whole test suite passes on
 *both* targets (`lyric test --manifest lyric-mail/lyric.toml` and `lyric
 test --target jvm --manifest lyric-mail/lyric.toml`) — the JVM build used
 to fail outright because the package imported `System.Net.Mail` externs
 unconditionally; that kernel-boundary violation is fixed (#7254). SMTP is
-the only backend with a real transport, and only on `--target dotnet`.
+the only backend that is still dotnet-only; SES and SendGrid are plain HTTPS
+APIs implemented once in Lyric, so they run on both targets with no provider
+SDK. Neither has been driven against the live provider in CI; their request
+bodies and the SigV4 signature are pinned by unit tests (the signature against
+the published AWS test vector).
 
 The `dotnet`/`jvm` platform features are resolved automatically from
 `--target` (D-N-013 target normalization; see
@@ -173,20 +177,31 @@ Used as the envelope `from` address by `sendSimple`/`sendHtml`.
 
 ### Amazon SES (`LYRIC_CONFIG_SES_*`)
 
-Not implemented on any target — `connectSes()` validates config, then
-always returns `Err(code = "NOT_IMPLEMENTED")`.
+`connectSes()` returns a sender that calls SES v2 `SendEmail` over HTTPS,
+signed with AWS Signature Version 4. Messages without attachments use `Simple`
+content; messages with attachments are rendered as `Raw` MIME.
 
 | Env var | Meaning |
 |---|---|
-| `LYRIC_CONFIG_SES_REGION` | AWS region — required (non-empty), else `Err(code = "INVALID_CONFIG")` |
-| `LYRIC_CONFIG_SES_ACCESSKEY` | AWS Access Key ID |
-| `LYRIC_CONFIG_SES_SECRETKEY` | AWS Secret Access Key |
+| `LYRIC_CONFIG_SES_REGION` | AWS region (lowercase letters, digits, `-`) — required, else `Err(code = "INVALID_CONFIG")` |
+| `LYRIC_CONFIG_SES_ACCESSKEY` | AWS Access Key ID — required |
+| `LYRIC_CONFIG_SES_SECRETKEY` | AWS Secret Access Key — required |
+| `LYRIC_CONFIG_SES_SESSIONTOKEN` | Session token for temporary credentials (optional) |
+| `LYRIC_CONFIG_SES_ENDPOINT` | Endpoint override, an absolute `http(s)` URL (default `https://email.<region>.amazonaws.com`) |
 
-### SendGrid (`LYRIC_CONFIG_SENDGRIDMAIL_APIKEY`)
+### SendGrid (`LYRIC_CONFIG_SENDGRIDMAIL_*`)
 
-Not implemented on any target — `connectSendGrid()` validates config, then
-always returns `Err(code = "NOT_IMPLEMENTED")`. `LYRIC_CONFIG_SENDGRIDMAIL_APIKEY`
-is required (non-empty), else `Err(code = "INVALID_CONFIG")`.
+`connectSendGrid()` returns a sender that calls `POST /v3/mail/send` with a
+bearer API key.
+
+| Env var | Meaning |
+|---|---|
+| `LYRIC_CONFIG_SENDGRIDMAIL_APIKEY` | API key — required, else `Err(code = "INVALID_CONFIG")` |
+| `LYRIC_CONFIG_SENDGRIDMAIL_ENDPOINT` | Endpoint override (default `https://api.sendgrid.com`) |
+
+A provider rejection is returned as `Err` with the HTTP status and the start of
+the response body in `message`, and `code` `AUTH_FAILED` (401/403),
+`QUOTA_EXCEEDED` (429), `PROVIDER_ERROR` (5xx) or `SEND_ERROR`.
 
 The region/apiKey preconditions above are enforced identically on every
 target — previously they existed only as a dead-code precondition in

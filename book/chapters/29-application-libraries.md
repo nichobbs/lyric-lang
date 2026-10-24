@@ -181,12 +181,12 @@ boilerplate for at-least-once delivery patterns.
 
 ## lyric-mail — Email
 
-`lyric-mail` sends email through one `MailSender` interface. Only the
-`smtp` provider has a working transport, and only on `dotnet`
-(`System.Net.Mail`, no extra NuGet dependency); `ses` and `sendgrid`
-return `Err(code = "NOT_IMPLEMENTED")` on every target once config
-validation passes, and `smtp` itself returns the same on `jvm` pending a
-Jakarta Mail extern kernel (#7462). Senders take no constructor
+`lyric-mail` sends email through one `MailSender` interface. `ses` (SES v2
+with AWS Signature V4) and `sendgrid` (v3 `mail/send`) are plain HTTPS APIs
+implemented once in Lyric over `Std.Http`, so they work on `dotnet` and
+`jvm` alike. The `smtp` provider uses `System.Net.Mail` on `dotnet` (no
+extra NuGet dependency) and returns `Err(code = "NOT_IMPLEMENTED")` on `jvm`
+pending a Jakarta Mail extern kernel (#7462). Senders take no constructor
 arguments — configuration (host, port, credentials, the envelope `From`
 address) is read from `LYRIC_CONFIG_SMTP_*` / `LYRIC_CONFIG_SENDER_*`
 environment variables.
@@ -369,7 +369,7 @@ func main(): Unit {
 | lyric-grpc | channel lifecycle + rate limiting real; unary/streaming/hosting blocked on #6581 | planned (Phase 6) | D068 |
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
 | lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
-| lyric-mail | `smtp` real; `ses`/`sendgrid` `NOT_IMPLEMENTED` | all providers `NOT_IMPLEMENTED` (#7462) | D062 |
+| lyric-mail | `smtp`, `ses`, `sendgrid` real | `ses`/`sendgrid` real; `smtp` `NOT_IMPLEMENTED` (#7462) | D062 |
 | lyric-storage | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | local filesystem real; S3/Azure Blob `NOT_IMPLEMENTED` | D056 |
 | lyric-search | kernel bindings exist, unreachable from public API (#5067) | same | D056 |
 | lyric-i18n | stable | stable (1 known gap, #5439) | D-progress-628 |
