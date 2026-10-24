@@ -248,6 +248,8 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
   match e.kind {
     case EIndex(recv, idxs) -> match mapGet(sites.index, key) {
       case Some(site) -> {
+        // An index site is only recorded for a single index; a buffer or array
+        // has exactly one, so a multi-index `EIndex` is left as written.
         if idxs.count == 1 {
           val handles = sites.bufferHandles and site.len < 0
           val storage = if handles { storageOf(recv, e.span) } else { recv }
@@ -300,7 +302,7 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
         case EMember(recv, name) -> if name == "toSlice" and args.count == 0 {
           match mapGet(sites.slice, recordCopySiteKey(fn.span)) {
             case Some(site) -> {
-              r = toSliceOf(recv, site, e.span)
+              r = toSliceOf(recv, site, e.span, sites.bufferHandles)
             }
             case None -> ()
           }
@@ -577,7 +579,7 @@ func listTypeOf(elem: in TypeExpr, sp: in Span): TypeExpr {
 //     val out: List[T] = newList()
 //     for i in 0 ..< N { out.add(a'[i]) }
 //     out.toArray() }
-func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
+func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span, handles: in Bool): Expr {
   val wsp = syntheticSpan(sp)
   val base = "__lyric_ts_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
   val aName = base + "_a"
@@ -585,8 +587,15 @@ func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
   val iName = base + "_i"
   val stmts: List[Statement] = newList()
   stmts.add(typedLocal(aName, site.arrayType, recv, wsp))
+  // A buffer's length is its storage's count, read at run time.
+  val storage = if handles and site.len < 0 { storageOf(localRef(aName, wsp), wsp) } else { localRef(aName, wsp) }
+  val countE = if site.len < 0 {
+    mkExpr(EMember(receiver = storage, memberName = "count"), wsp)
+  } else {
+    intLit(site.len, wsp)
+  }
   val listTy = match site.elemType { case Some(et) -> Some(value = listTypeOf(et, wsp)); case None -> None }
-  stmts.add(typedLocal(oName, listTy, callOf("newListWithCapacity", oneExpr(intLit(site.len, wsp)), wsp), wsp))
+  stmts.add(typedLocal(oName, listTy, callOf("newListWithCapacity", oneExpr(countE), wsp), wsp))
   val body: List[Statement] = newList()
   body.add(
     mkStmt(
@@ -594,14 +603,14 @@ func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
         expr = method1(
           localRef(oName, wsp),
           "add",
-          copyArrayElement(uncheckedIndex(localRef(aName, wsp), localRef(iName, wsp), wsp), site.elemType, wsp),
+          copyArrayElement(uncheckedIndex(storage, localRef(iName, wsp), wsp), site.elemType, wsp),
           wsp
         )
       ),
       wsp
     )
   )
-  stmts.add(rangeFor(None, iName, site.len, body, wsp))
+  stmts.add(rangeForTo(None, iName, countE, body, wsp))
   stmts.add(mkStmt(SExpr(expr = method0(localRef(oName, wsp), "toArray", wsp)), wsp))
   blockOf(stmts, wsp)
 }
@@ -1151,7 +1160,9 @@ func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Spa
 //     val d: List[List[T]] = newListWithCapacity(2)
 //     d.add(s[0]); d.add(s[0]); d }
 // The first binding keeps the `__lyric_ac_` prefix of the copy it replaces,
-// which the JVM's `spawn` lowering finds to snapshot an argument.
+// which the JVM's `spawn` lowering finds to snapshot an argument.  The source
+// handle stays marked after the share, so its next write copies even if the
+// other handle has been dropped: one copy more than native, never a wrong one.
 func shareHandle(arr: in ArrayShape, h: in Expr, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
   val base = "__lyric_ac_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset) + "_" +

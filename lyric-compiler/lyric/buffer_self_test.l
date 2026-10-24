@@ -323,6 +323,34 @@ test "returning a copy of a large buffer does not copy it" {
   assertEqualInt(r[0], 4, "the result after a write")
 }
 
+test "toSlice called as a method reads the buffer, including a call's result" {
+  val bytes = fromSlice([1u8, 2u8, 3u8])
+  val s = bytes.toSlice()
+  assertEqualInt(s.length, 3, "length")
+  assertTrue(s[2] == 3u8, "last byte")
+  assertEqualInt(fromSlice([4, 5]).toSlice()[1], 5, "a call's result")
+  var w = filled(2, 7)
+  val t = w.toSlice()
+  w[0] = 1
+  assertEqualInt(t[0], 7, "the slice is a copy")
+}
+
+test "only the first write to a shared buffer copies it" {
+  var a = filled(50000, 5)
+  var b = a
+  val before = allocatedBytes()
+  var i = 0
+  while i < 1000 {
+    b[i] = 1
+    i = i + 1
+  }
+  val used = allocatedBytes() - before
+  assertTrue(used > 100000i64, "the first write copied the storage")
+  assertTrue(used < 1000000i64, "1000 writes allocated " + used.toString() + " bytes: one copy, not a copy per write")
+  assertEqualInt(a[999], 5, "a")
+  assertEqualInt(b[999], 1, "b")
+}
+
 test "a copy shares storage until the first write, which copies once" {
   var a = filled(50000, 5)
   val before = allocatedBytes()
