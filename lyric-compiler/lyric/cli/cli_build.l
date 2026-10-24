@@ -16,6 +16,7 @@ import Lyric.BuildDefines as BD
 import Lyric.Lexer
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
+import Lyric.TestSynth as TestSynth
 import Lyric.Release as Release
 import Lyric.PackageMerge as PM
 import Lyric.Generator as Generator
@@ -673,8 +674,18 @@ func collectImportedOwnPackages(
   mfPath: in String,
   source: in String,
   ownPkgName: in String,
+  extraSources: in List[String],
 ): Option[List[Emitter.ProjectPackage]] {
   val needed = importedPackageNames(source)
+  // The other files of the package the source is merged into (`mergeOwnPackage`
+  // of `emitSingleFileOrProject`) import packages of their own.
+  for extra in extraSources {
+    for n in importedPackageNames(extra) {
+      if not stringListContains(needed, n) {
+        needed.add(n)
+      }
+    }
+  }
   // Never include a manifest entry carrying the source's own package name:
   // building one of the project's own package files directly (`lyric build
   // src/web.l`) can pull the file's own package back into `needed` through
@@ -791,6 +802,7 @@ func emitSingleFileOrProject(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  mergeOwnPackage: in Bool,
 ): NonNativeEmitOutcome {
   val loaded = match loadManifestForSingleFileBuild(sourcePath, manifestPath) {
     case Err(msg) -> return failedEmitOutcome(msg)
@@ -837,8 +849,44 @@ func emitSingleFileOrProject(
   val pkgName = if pkgNameRaw.length > 0 { pkgNameRaw } else { req.assemblyName }
 
   val noOwnPkgs: List[Emitter.ProjectPackage] = newList()
+  // `lyric test` (`mergeOwnPackage`): a test module that declares the package
+  // of a `[project.packages]` entry is merged into it, so its tests reach the
+  // package's non-`pub` items (#678, D245).  The entry's other files join the
+  // source as one package; the source's own file is not added twice.
+  val mergeSrcs: List[String] = newList()
+  val mergePaths: List[String] = newList()
+  var mergesIntoOwn = false
+  match lm.manifest.project {
+    case Some(proj) -> if mergeOwnPackage {
+      val (mergeGenMf, mergeGens) = generatorContext(Some(value = lm.mfPath))
+      val absSource = Disc.normalizePath(sourcePath)
+      for entry in proj.packages {
+        if entry.name == pkgName and not mergesIntoOwn {
+          match readProjectPackageSources(entry, proj, Path.dirname(lm.mfPath), lm.mfPath, mergeGenMf, mergeGens) {
+            case Some(read) -> {
+              mergesIntoOwn = true
+              var ri = 0
+              while ri < read.sources.count {
+                val rp = if ri < read.paths.count { read.paths[ri] } else { "" }
+                if rp.length == 0 or Disc.normalizePath(rp) != absSource {
+                  mergeSrcs.add(read.sources[ri])
+                  mergePaths.add(rp)
+                }
+                ri += 1
+              }
+            }
+            case None -> return failedEmitOutcome(
+              sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath +
+                "; see above)"
+            )
+          }
+        }
+      }
+    }
+    case None -> ()
+  }
   val ownPkgs = match lm.manifest.project {
-    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName) {
+    case Some(proj) -> match collectImportedOwnPackages(proj, Path.dirname(lm.mfPath), lm.mfPath, req.source, pkgName, mergeSrcs) {
       case Some(ps) -> ps
       case None -> return failedEmitOutcome(
         sourcePath + ": build failed (cannot read a [project.packages] source declared in " + lm.mfPath +
@@ -857,6 +905,7 @@ func emitSingleFileOrProject(
     declaredFeatures.count > 0 or
     resolvedDeps.depTemplateSrcs.count > 0 or
     ownPkgs.count > 0 or
+    mergesIntoOwn or
     jvmNeedsMaven
 
   if not hasContribution {
@@ -882,8 +931,18 @@ func emitSingleFileOrProject(
   // beneath the manifest's well-known `version` in the bridges.
 
   val srcs: List[String] = newList()
-  srcs.add(req.source)
   val ownPaths: List[String] = newList()
+  if mergesIntoOwn {
+    for ms in mergeSrcs {
+      srcs.add(ms)
+    }
+    for mp in mergePaths {
+      ownPaths.add(mp)
+    }
+    srcs.add(TestSynth.withoutTestModuleAnnotation(req.source))
+  } else {
+    srcs.add(req.source)
+  }
   ownPaths.add(sourcePath)
   val pkgs: List[Emitter.ProjectPackage] = newList()
   // The source's own package goes FIRST: the JVM bundled compile takes
@@ -1310,7 +1369,15 @@ pub func buildOneNativeShaped(
       nativeBuild.declaredFeatures
     )
   } else {
-    val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
+    val outcome = emitSingleFileOrProject(
+      req,
+      sourcePath,
+      manifestPath,
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures,
+      false
+    )
     resolvedRestoredDlls = outcome.restoredDlls
     resolvedNugetPaths = outcome.nugetThirdPartyPaths
     resolvedNativePaths = outcome.nativeAssetPaths

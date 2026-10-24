@@ -264,6 +264,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/cfg-gated-test-items-e2e.sh
   ran="$ran cfg-gated-test-items-e2e"
 fi
+# #678: a `@test_module` merged into the package it declares (non-`pub` access)
+# and `lyric test --doctests`, manifest + single-file, both targets (this job has
+# Java 21, same precedent as the e2e scripts above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/test-package-merge-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/test-package-merge-e2e.sh
+  ran="$ran test-package-merge-e2e"
+fi
 # #7548: package-qualified distinct-factory call (`Pkg.Type.tryFrom(x)`),
 # both targets (this job already has Java 21, same as cfg-gated-test-items-e2e.sh).
 idx=$((idx + 1))

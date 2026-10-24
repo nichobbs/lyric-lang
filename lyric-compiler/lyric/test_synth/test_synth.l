@@ -931,6 +931,233 @@ pub func synthesizeFor(
   Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count)
 }
 
+/// Whether `rawSource` carries a file-level `@test_module`.
+pub func isTestModule(rawSource: in String): Bool {
+  hasTestModule(parse(rawSource).file)
+}
+
+// `rawSource` with a file-level `@test_module` annotation added on the line
+// before its `package` declaration, when it has none.
+pub func withTestModuleAnnotation(rawSource: in String): String {
+  val pf = parse(rawSource)
+  if hasTestModule(pf.file) {
+    return pf.source
+  }
+  val at = pf.file.packageDecl.span.startPos.offset
+  pf.source.substring(0, at) + "@test_module\n" + pf.source.substring(at, pf.source.length - at)
+}
+
+// `source` with its file-level `@test_module` annotation blanked out (spaces
+// in its place, so every line and column keeps its position).  The rewrite
+// `synthesizeFor` returns keeps the annotation; a test module that is
+// merged into the package under test must not carry it, because the files of
+// a package agree on `@test_module` (B0014) and the files under test do not
+// have it.
+pub func withoutTestModuleAnnotation(rawSource: in String): String {
+  val pf = parse(rawSource)
+  val source = pf.source
+  var result = source
+  var i = 0
+  while i < pf.file.fileAnnotations.count {
+    val a = pf.file.fileAnnotations[i]
+    if annotationName(a) == "test_module" {
+      val s = a.span.startPos.offset
+      val e = a.span.endPos.offset
+      if s >= 0 and e <= result.length and e > s {
+        var blank = ""
+        var k = s
+        while k < e {
+          blank = blank + " "
+          k = k + 1
+        }
+        result = result.substring(0, s) + blank + result.substring(e, result.length - e)
+      }
+    }
+    i = i + 1
+  }
+  result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4b. Doctests — `lyric test --doctests` (#678, D245, docs/24 §5 Stage 3).
+// ─────────────────────────────────────────────────────────────────────────────
+/// One fenced ` ```lyric ` block of a doc comment: `line` is the source line
+/// of its first code line, `code` the block's text (the doc comment's `///`
+/// and one leading space removed), lines joined with `\n`.
+pub record DocSnippet {
+  line: Int
+  code: String
+}
+
+/// The doctests of one source file as a `@test_module` of the file's package:
+/// `source` is empty when the file has none.
+pub record DoctestModule {
+  source: String
+  count: Int
+}
+
+// Whether a fence's info string selects a runnable Lyric block: the word
+// `lyric`, with optional `,`/space separated attributes, none of which is
+// `no_test` or `ignore`.
+func fenceRunsLyric(info: in String): Bool {
+  val words = Str.split(Str.replace(info, ",", " "), " ")
+  var first = true
+  var isLyric = false
+  var optedOut = false
+  for w in words {
+    if w.length > 0 {
+      if first {
+        isLyric = w == "lyric"
+        first = false
+      } else if w == "no_test" or w == "ignore" {
+        optedOut = true
+      }
+    }
+  }
+  isLyric and not optedOut
+}
+
+// The runnable blocks of one run of consecutive doc-comment lines; `startLine`
+// is the source line of `texts[0]`.
+func snippetsOfRun(startLine: in Int, texts: in List[String], found: in List[DocSnippet]): Unit {
+  var inBlock = false
+  var runs = false
+  var blockLine = 0
+  var code: List[String] = newList()
+  var i = 0
+  while i < texts.count {
+    val trimmed = Str.trim(texts[i])
+    if Str.startsWith(trimmed, "```") {
+      if inBlock {
+        if trimmed == "```" {
+          if runs and code.count > 0 and Str.trim(code[0]) != "// no_test" {
+            found.add(DocSnippet(line = blockLine, code = Str.joinList("\n", code)))
+          }
+          inBlock = false
+        }
+      } else {
+        inBlock = true
+        runs = fenceRunsLyric(Str.trim(Str.substring(trimmed, 3, trimmed.length - 3)))
+        blockLine = startLine + i + 1
+        code = newList()
+      }
+    } else if inBlock {
+      code.add(texts[i])
+    }
+    i = i + 1
+  }
+}
+
+/// Every runnable ` ```lyric ` block in the doc comments (`///` and `//!`) of
+/// `rawSource`, in source order.  A block whose fence names `no_test` or
+/// `ignore` (` ```lyric,no_test `), or whose first line is `// no_test`, is
+/// left out, as is a fence with another language or none.
+pub func extractDoctests(rawSource: in String): List[DocSnippet] {
+  val found: List[DocSnippet] = newList()
+  val toks = lex(rawSource).tokens
+  var texts: List[String] = newList()
+  var startLine = 0
+  var lastLine = -2
+  var i = 0
+  while i < toks.count {
+    val line = toks[i].span.startPos.line
+    val text = match toks[i].token {
+      case TDocComment(t) -> Some(value = t)
+      case TModuleDocComment(t) -> Some(value = t)
+      case _ -> None
+    }
+    match text {
+      case Some(t) -> {
+        if texts.count > 0 and line != lastLine + 1 {
+          snippetsOfRun(startLine, texts, found)
+          texts = newList()
+        }
+        if texts.count == 0 {
+          startLine = line
+        }
+        texts.add(t)
+        lastLine = line
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  if texts.count > 0 {
+    snippetsOfRun(startLine, texts, found)
+  }
+  found
+}
+
+// The import path an `import ...` line names, without a selector or alias.
+func importLinePath(line: in String): String {
+  var rest = Str.trim(Str.substring(line, 7, line.length - 7))
+  match Str.indexOf(rest, " ") {
+    case Some(si) -> {
+      rest = Str.substring(rest, 0, si)
+    }
+    case None -> ()
+  }
+  match Str.indexOf(rest, ".{") {
+    case Some(gi) -> {
+      rest = Str.substring(rest, 0, gi)
+    }
+    case None -> ()
+  }
+  rest
+}
+
+/// The doctests of `rawSource` (read from `path`) as a `@test_module` of the
+/// file's own package, one `test` per block titled `doctest <path>:<line>`.
+/// A block's leading `import` lines are hoisted to the module (an import of
+/// the file's own package is dropped: its names are in scope, because the
+/// module is merged into that package); the rest is the test's body.
+pub func buildDoctestModule(rawSource: in String, path: in String): DoctestModule {
+  val pf = parse(rawSource)
+  val pkg = importPathText(pf.file.packageDecl.path)
+  val snippets = extractDoctests(rawSource)
+  if pkg.length == 0 or snippets.count == 0 or parseErrors(pf.diagnostics).count > 0 {
+    return DoctestModule(source = "", count = 0)
+  }
+  val imports: List[String] = newList()
+  imports.add("import Std.Testing")
+  val tests: List[String] = newList()
+  for sn in snippets {
+    val lines = Str.split(sn.code, "\n")
+    val body: List[String] = newList()
+    var inHeader = true
+    for l in lines {
+      val t = Str.trim(l)
+      if inHeader and Str.startsWith(t, "import ") {
+        if importLinePath(t) != pkg and not stringInList(imports, t) {
+          imports.add(t)
+        }
+        body.add("")
+      } else {
+        if t.length > 0 {
+          inHeader = false
+        }
+        body.add(l)
+      }
+    }
+    val title = "doctest " + escapeForLiteral(path) + ":" + toString(sn.line)
+    tests.add(
+      "// doctest of " + path + ":" + toString(sn.line) + "\ntest \"" + title + "\" {\n" + Str.joinList("\n", body) +
+        "\n}\n"
+    )
+  }
+  val src = "@test_module\npackage " + pkg + "\n\n" + Str.joinList("\n", imports) + "\n\n" + Str.joinList("\n", tests)
+  DoctestModule(source = src, count = tests.count)
+}
+
+func stringInList(xs: in List[String], x: in String): Bool {
+  for y in xs {
+    if y == x {
+      return true
+    }
+  }
+  false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. `listEntries` — used by `lyric test --list`.
 // ─────────────────────────────────────────────────────────────────────────────
