@@ -318,6 +318,28 @@ fails loudly.
 
 ---
 
+### `Std.ConfigOverrideHost` — `lyric-stdlib/std/_kernel/config_override_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.AppDomain.SetData and GetData conform to their documented .NET contracts")
+@axiom("java.lang.System.setProperty and getProperty conform to their documented JVM contracts")
+```
+
+**BCL surface**: `AppDomain.CurrentDomain.SetData` / `GetData` (.NET);
+`System.setProperty` / `getProperty` (JVM). The store the compiler-emitted
+`config { }` initialisers consult before the environment (D230); it is not the
+environment block, so a registered value is not inherited by child processes.
+Only strings are stored. The native twin declares no externs and reports
+"unsupported", since the native backend lowers no config blocks (#7435).
+
+**Caller obligation**: None. `Std.ConfigOverride` restricts keys to the
+`LYRIC_CONFIG_` prefix, so the JVM system-property table cannot be written
+through it.
+
+**Review**: Stable.
+
+---
+
 ### `Std.PluginHost` — `lyric-stdlib/std/_kernel/plugin_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
 
 ```
@@ -976,7 +998,8 @@ All are provisional pending weaver integration.
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **33** | **2**       |
+| `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
+| **Total**                |                              | **34** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1014,12 +1037,13 @@ recorded in the §19 baseline.
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **27** | **0**       |
+| `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
+| **Total**                |                              | **28** | **0**       |
 
 ### Combined total
 
-.NET (33 stable + 2 provisional = 35) + JVM (27 stable + 0 provisional =
-27) = **62** `@axiom` annotations covering the entire extern boundary
+.NET (34 stable + 2 provisional = 36) + JVM (28 stable + 0 provisional =
+28) = **64** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.FfiHost` (D161) binds the C library's `malloc`
 and `free` through `@library("c")`; it has no `_kernel_jvm/` or
 `_kernel_native/` twin because the one file lowers on every target (D158),
@@ -1077,6 +1101,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | Platform | Package | File | Axiom |
 |---|---|---|---|
 | `dotnet` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | System.AppDomain.GetAssemblies and System.Reflection.Assembly manifest-resource enumeration conform to their documented .NET contracts |
+| `dotnet` | `Std.ConfigOverrideHost` | `config_override_host.l` | System.AppDomain.SetData and GetData conform to their documented .NET contracts |
 | `dotnet` | `Std.BenchHost` | `bench_host.l` | System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
@@ -1112,6 +1137,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
 | `jvm` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | java.util.zip.ZipInputStream and java.lang.System.getProperty conform to their documented JVM contracts |
+| `jvm` | `Std.ConfigOverrideHost` | `config_override_host.l` | java.lang.System.setProperty and getProperty conform to their documented JVM contracts |
 | `jvm` | `Std.BenchHost` | `bench_host.l` | com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |

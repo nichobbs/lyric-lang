@@ -80,16 +80,18 @@ test "parseAnnotationMeta decodes an empty document" {
 }
 
 test "parseAnnotationMeta decodes fields, annotations and every argument kind" {
-  val json = "[{\"config\":\"Db\",\"field\":\"password\",\"annotation\":\"secretsManager\",\"args\":[" +
+  val json = "[{\"package\":\"P\",\"config\":\"Db\",\"field\":\"password\",\"annotation\":\"secretsManager\",\"envVar\":\"LYRIC_CONFIG_P_X_Y\",\"args\":[" +
     "{\"name\":\"\",\"kind\":\"string\",\"value\":\"prod/db\"}," +
     "{\"name\":\"key\",\"kind\":\"string\",\"value\":\"pw\"}," +
     "{\"name\":\"ttl\",\"kind\":\"int\",\"value\":\"30\"}," +
     "{\"name\":\"\",\"kind\":\"bare\",\"value\":\"sticky\"}]}," +
-    "{\"config\":\"Db\",\"field\":\"host\",\"annotation\":\"sensitive\",\"args\":[]}]"
+    "{\"package\":\"P\",\"config\":\"Db\",\"field\":\"host\",\"annotation\":\"sensitive\",\"envVar\":\"LYRIC_CONFIG_P_X_Y\",\"args\":[]}]"
   val fs = mustFields(parseAnnotationMeta(json))
   assertEqualInt(fs.count, 2, "two entries")
+  assertEqual(fs[0].packageName, "P", "package name")
   assertEqual(fs[0].configName, "Db", "config name")
   assertEqual(fs[0].fieldName, "password", "field name")
+  assertEqual(fs[0].envVar, "LYRIC_CONFIG_P_X_Y", "env var key")
   assertEqual(fs[0].annotationName, "secretsManager", "annotation name")
   assertEqualInt(fs[0].args.count, 4, "four args")
   assertEqual(fs[0].args[2].kind, "int", "int arg kind")
@@ -104,7 +106,7 @@ test "parseAnnotationMeta decodes fields, annotations and every argument kind" {
 }
 
 test "parseAnnotationMeta preserves non-ASCII and escaped text" {
-  val json = "[{\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"args\":[" +
+  val json = "[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"envVar\":\"LYRIC_CONFIG_P_X_Y\",\"args\":[" +
     "{\"name\":\"\",\"kind\":\"string\",\"value\":\"caf\\u00e9 \\\"q\\\"\"}]}]"
   val fs = mustFields(parseAnnotationMeta(json))
   assertSomeString(positionalArg(fs[0], 0), "café \"q\"", "unescaped value")
@@ -114,11 +116,29 @@ test "parseAnnotationMeta rejects malformed documents" {
   assertMalformed("", "empty", "empty input")
   assertMalformed("{", "unexpected", "truncated JSON")
   assertMalformed("{}", "not a JSON array", "object root")
-  assertMalformed("[1]", "missing string member 'config'", "non-object entry")
-  assertMalformed("[{\"config\":\"C\",\"field\":\"f\",\"args\":[]}]", "'annotation'", "missing annotation")
-  assertMalformed("[{\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\"}]", "'args'", "missing args")
+  assertMalformed("[1]", "missing string member 'package'", "non-object entry")
   assertMalformed(
-    "[{\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"args\":[{\"name\":\"\",\"kind\":\"string\"}]}]",
+    "[{\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"envVar\":\"E\",\"args\":[]}]",
+    "'package'",
+    "missing package"
+  )
+  assertMalformed(
+    "[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"args\":[]}]",
+    "'envVar'",
+    "missing envVar"
+  )
+  assertMalformed(
+    "[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"args\":[]}]",
+    "'annotation'",
+    "missing annotation"
+  )
+  assertMalformed(
+    "[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"envVar\":\"E\"}]",
+    "'args'",
+    "missing args"
+  )
+  assertMalformed(
+    "[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"envVar\":\"LYRIC_CONFIG_P_X_Y\",\"args\":[{\"name\":\"\",\"kind\":\"string\"}]}]",
     "args[0]",
     "arg missing value"
   )
@@ -130,6 +150,8 @@ test "fieldsWithAnnotation finds every field carrying an annotation" {
   assertEqual(fieldNames(fs), "Database.password,Auth.jwtSecret", "secretsManager fields in source order")
   assertSomeString(positionalArg(fs[0], 0), "my-service/prod", "secret name")
   assertSomeString(namedArg(fs[0], "key"), "dbPassword", "secret key")
+  assertEqual(fs[0].packageName, "Std.AnnotationMeta.Tests", "compiler-recorded package")
+  assertEqual(fs[0].envVar, "LYRIC_CONFIG_STD_ANNOTATIONMETA_TESTS_DATABASE_PASSWORD", "compiler-recorded env var key")
   assertSomeString(namedArg(fs[1], "key"), "jwtSecret", "second secret key")
 }
 

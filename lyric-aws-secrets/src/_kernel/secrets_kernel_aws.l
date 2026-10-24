@@ -49,11 +49,12 @@
 //! passed explicitly here via `Std.Task.noCancellation()`).
 //!
 //! initFromAnnotations():
-//!   NOT_IMPLEMENTED — separate, genuine compiler gap (issue #6866):
-//!   scanning a compiled DLL's config-block metadata for
-//!   @secretsManager/@parameterStore annotations at runtime has no
-//!   supporting capability anywhere in the compiler or runtime (confirmed
-//!   by a repo-wide grep as part of #5411's original investigation).
+//!   Delegates to `AwsSecrets.registerAnnotated`: the compiler-embedded
+//!   annotation metadata (Std.AnnotationMeta, #6866/#7180) names every
+//!   @secretsManager/@parameterStore config field, each value is fetched
+//!   through this kernel's fetchSecret/fetchParameter and registered with
+//!   Std.ConfigOverride, which the config-block initialiser reads before the
+//!   environment (D230, #7181).
 //!
 //! fetchSecret(name, key, ttlSeconds):
 //!   Calls AmazonSecretsManagerClient.GetSecretValueAsync. If key is Some,
@@ -341,21 +342,15 @@ pub func classifyParameterError(path: in String, message: in String): AwsSecrets
 // =====================================================================
 // Public entry points.
 // =====================================================================
-/// NOT_IMPLEMENTED: scanning compiled DLL config-block metadata for
-/// @secretsManager/@parameterStore annotations at runtime has no
-/// supporting compiler capability today. See the file header (issue
-/// #6866 — a separate, genuine compiler gap, unrelated to #6864's
-/// async-API-shape question this file otherwise resolves).
+/// Fetch every @secretsManager / @parameterStore config-block field and
+/// register its value with Std.ConfigOverride (D230).  The scanning and
+/// registration are target-independent and live in `AwsSecrets.registerAnnotated`,
+/// which calls back into this kernel's `fetchSecret` / `fetchParameter`.
 @stable(since = "0.1")
 pub func initFromAnnotations(ttlSeconds: in Int): Result[Unit, AwsSecrets.SecretsError]
   requires: ttlSeconds >= 0
 {
-  return Err(
-    error = NotImplemented(
-      feature = "initFromAnnotations",
-      message = "config-block annotation scanning (@secretsManager/@parameterStore) is not implemented on the aws feature: the compiler has no runtime metadata-reading capability for custom annotations (issue #6866). Use getSecret/getSecretField/getParameter/getParameterRaw directly, or set the field's env var override for local development."
-    )
-  )
+  AwsSecrets.registerAnnotated(ttlSeconds)
 }
 
 // Pure — no network/client dependency, so it's directly unit-testable
