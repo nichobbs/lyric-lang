@@ -2221,7 +2221,17 @@ func probeRefPackRoot(root: in String): RefPackProbe {
 
 // Locate the reference-assembly directory
 // (`<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`).
+//
+// `LYRIC_REF_PACK_DIR` overrides the search: when set, it names the reference
+// directory itself (a folder of `*.dll` reference assemblies), and a value
+// that is not a directory means no reference pack at all, with no fallback to
+// the candidate roots.  Used to run the compiler as if on a machine without
+// the SDK (#7387).
 pub func refPackDir(): Option[String] {
+  val forced = Environment.getVarOrDefault("LYRIC_REF_PACK_DIR", "")
+  if forced.length > 0 {
+    return if File.dirExists(forced) { Some(value = forced) } else { None }
+  }
   val roots = candidateDotnetRoots()
   var i = 0
   while i < roots.count {
@@ -2246,6 +2256,10 @@ pub func refPackDir(): Option[String] {
 // into an unreproducible-looking macOS-only TypeLoadException in
 // Std.ConsoleHost).
 pub func refPackDirDebugInfo(): String {
+  val forced = Environment.getVarOrDefault("LYRIC_REF_PACK_DIR", "")
+  if forced.length > 0 {
+    return "LYRIC_REF_PACK_DIR=" + forced + (if File.dirExists(forced) { " (a directory)" } else { " (not a directory)" })
+  }
   val roots = candidateDotnetRoots()
   if roots.count == 0 {
     return "no candidate roots (DOTNET_ROOT and HOME both unset)"

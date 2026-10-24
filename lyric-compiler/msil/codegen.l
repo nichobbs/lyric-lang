@@ -30225,11 +30225,9 @@ func emitExternTargetBody(
       // resolution succeeded (it populated `resolvedMethodParams`).  Fire only
       // when the declaring type IS present in the reference-assembly index: a
       // type absent from the index is either a non-BCL Lyric host
-      // (legitimately hint-less-static) or an SDK-less build (W0007 already
-      // covers that; promoting THAT case too is tracked separately, #7387,
-      // since it needs a dedicated ref-pack-hidden test harness this PR does
-      // not add). Ctors always use `newobj` regardless of hint, so they are
-      // exempt.  Originally shipped as a warning (D-progress-671) so the
+      // (legitimately hint-less-static) or an SDK-less build (the `None` arm
+      // below refuses the instance-shaped ones, #7387). Ctors always use
+      // `newobj` regardless of hint, so they are exempt.  Originally shipped as a warning (D-progress-671) so the
       // ecosystem could be annotated incrementally; that audit is now
       // complete (#7169 found and fixed the only two remaining hint-less
       // patterns ecosystem-wide), so this is promoted to a hard error
@@ -30255,7 +30253,31 @@ func emitExternTargetBody(
                 )
               )
             }
-            case None -> ()
+            case None -> {
+              // No reference pack at all (an SDK-less build, W0007) cannot
+              // verify anything, so a hint-less member whose first parameter
+              // is its own declaring type (instance-shaped: `StringBuilder.
+              // Append(sb, x)`) is the very guess F0027 exists to stop.  A
+              // hint-less extern of a type the index merely lacks (a Lyric
+              // host type) stays a legitimate static (#7387).
+              val sdkLess = match Mdr.assemblyForType(cctx.metadataTypeIndex, "System.Object") {
+                case Some(_) -> false
+                case None -> true
+              }
+              if sdkLess and paramTypes.count > 0 and externRefFqn(paramTypes[0]) == resolvedFqn {
+                cctx.diagnostics.add(
+                  errorDiagnostic(
+                    "F0027",
+                    "@externTarget '" + target + "' on '" + decl.name + "' is hint-less (no @externInstance / " +
+                      "@externStatic) and takes its declaring type first, but no .NET reference pack was found " +
+                      "(W0007), so its calling convention cannot be verified and it would default to a STATIC call.  " +
+                      "Install the .NET SDK, point LYRIC_REF_PACK_DIR at a reference directory, or add " +
+                      "@externInstance or @externStatic to make the convention explicit.",
+                    decl.span
+                  )
+                )
+              }
+            }
           }
         }
       }

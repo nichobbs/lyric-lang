@@ -29,5 +29,10 @@ MSIL auto-FFI:
   `UInt16` or `UInt32` parameter with `conv.ovf.*`, so a value outside the range throws `OverflowException`; a `Long`
   is the bit pattern of a `UInt64`. The scorer admits these below every widening match.
 
+- **F0027 on an SDK-less build (#7387).** With no reference pack, a hint-less `@externTarget` whose first parameter is its
+  own declaring type is refused (it would default to a static call that cannot be verified); a plain hint-less static still
+  builds. `LYRIC_REF_PACK_DIR` names the reference directory (or, when not a directory, no reference pack), which is the
+  harness the issue asked for; `ffi-f0015-negative-test.sh` runs it.
+
 Tests: `nested_generic_result_jvm_self_test.l` (JVM generics batch), `restored_default_args_self_test.l` (restored
 dependency batch), `auto_ffi_self_test.l`.
