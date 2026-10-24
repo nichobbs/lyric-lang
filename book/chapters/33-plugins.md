@@ -357,7 +357,8 @@ runtime is installed. `lyric plugin check` validates a directory and prints
 each problem it finds.
 
 Each target needs its toolchain when packing: the .NET SDK, a JDK 21 or later,
-`clang` for native, and the wasi-sdk plus `wasmtime` for wasm. A project with
+`clang` for native, the wasi-sdk plus `wasmtime` for wasm, and for a component
+also `wasm-tools` and the preview1 reactor adapter. A project with
 `[maven]` dependencies cannot be packed for `jvm`.
 
 ## Running a plugin as WebAssembly
@@ -379,6 +380,41 @@ by default) and no directories, environment variables or network. The module
 speaks the same protocol on its stdin and stdout, so the host code above does
 not change, but the plugin's only way to reach anything outside itself is a
 capability call, which the host's grants and guards control.
+
+### As a WebAssembly component
+
+A wasm payload still runs as a separate `wasmtime` process and talks JSON over
+its stdin and stdout. A **component** payload skips both: it is the plugin
+compiled with `--shape component` (Chapter 32), whose point methods are
+WIT-typed exports and whose capability calls are WIT-typed host imports, so a
+host can instantiate it inside its own process.
+
+```sh
+WASI_SDK_PATH=/opt/wasi-sdk WASM_TOOLS=/opt/wasm-tools/wasm-tools \
+LYRIC_WASI_ADAPTER=/opt/wasi_snapshot_preview1.reactor.wasm \
+  lyric plugin pack --manifest notes-summary/lyric.toml --targets dotnet,component -o plugins
+```
+
+The plugin's source does not change. For the notes plugin, the component's WIT
+has the exported interface `lyric:notes-summary/notes-summary` with
+`plugin-describe`, `plugin-attach`, `plugin-methods` and one function per point
+method (`note-tool-summarize: func(note: note) -> result<string, level>`), and
+one imported interface per capability it requests
+(`notes-api-store`, with `load: func(title: string) -> result<note,
+store-call-error-wire>`). The `store-call-error-wire` variant carries either
+the capability's own error (`app`) or a boundary error (`denied`, `revoked`,
+`timeout`, ...), which `StoreClient` turns back into `CallError` for your code.
+
+Two things are stricter than in process mode. Names must read back from their
+WIT spelling: `customer_id` and `getURL` become `customer-id` and `get-url`,
+which a host reads as `customerId` and `getUrl`, so the compiler refuses them
+(`K0013`); write `customerId` and `getUrl`. And a few boundary types have no WIT
+form: `UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a union case with
+several fields, and recursive types (`K0014`). Both checks run only when you
+build a component, so the same plugin still packs for the other targets.
+
+A host that can run components in process prefers a component payload to a
+wasm payload; one that cannot ignores it and picks among the others.
 
 ## Protocol plugins: hosting a language server
 
@@ -511,7 +547,7 @@ one with `..` in it.
 
 ## Diagnostics
 
-The compiler reports plugin declarations it cannot accept as `K0000`-`K0012`;
+The compiler reports plugin declarations it cannot accept as `K0000`-`K0014`;
 appendix B has the table. The ones you will meet first:
 
 | Code | Typical cause |

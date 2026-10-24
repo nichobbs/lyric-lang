@@ -1310,7 +1310,7 @@ lyric bindgen ft.h --package Ft.Kernel --allow ft.allow -o ft_windows.l \
 
 # Plugins (chapter 33, D207)
 lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/
-lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm -o <dir>
+lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm,component -o <dir>
                                        # one payload per target; every payload's manifest must agree
 lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
@@ -1707,6 +1707,8 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0010` | A plugin record field without a default that is not a capability client. |
 | `K0011` | A `@protocol_point` interface with members. |
 | `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records. |
+| `K0013` | Component builds: a name crossing the component boundary does not survive the WIT round trip (`customer_id`, `getURL`), or two names become one WIT name. |
+| `K0014` | Component builds: a boundary type or plugin a component cannot carry (`UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a multi-field union case, a recursive type, a protocol point). |
 
 At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 

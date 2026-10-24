@@ -238,6 +238,8 @@ are entirely in the `exposed` tier.
 | `Option[T]` | `option<T>` | |
 | `Result[T, E]` | `result<T, E>` | |
 | `List[T]` | `list<T>` | |
+| `Map[K, V]` | `list<tuple<K, V>>` | a `Map` built from the pairs on the way in |
+| `@plugin_handle` type | `u64` | its `Long` bits; plugin components only (docs/69 §9.3) |
 | `exposed record Foo` | `record foo { ... }` | fields mapped recursively |
 | Union type | `variant` | each constructor becomes a case |
 | `async func` result (`Task[T]`) | the export or import is a WIT `async func` returning `T` | §11, D184; a `Task[T]` value is not exportable |
