@@ -480,7 +480,7 @@ test "MockFlagStore: getValue returns None for unknown flag" {
 // interface method's token (`MissingMethodException`).
 test "MockDbConnection: query returns Ok and increments queryCount" {
   val ctx = Testing.newTestContext()
-  match ctx.db.query("select 1", []) {
+  match ctx.db.query(Db.sql("select 1"), []) {
     case Err(e) -> Testing.assertTrue(false, "query() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
@@ -489,7 +489,7 @@ test "MockDbConnection: query returns Ok and increments queryCount" {
 
 test "MockDbConnection: execute returns Ok and increments executeCount" {
   val ctx = Testing.newTestContext()
-  match ctx.db.execute("update t set x = 1", []) {
+  match ctx.db.execute(Db.sql("update t set x = 1"), []) {
     case Err(e) -> Testing.assertTrue(false, "execute() must return Ok: " + e.message)
     case Ok(_) -> ()
   }
@@ -523,11 +523,11 @@ test "MockDbConnection: transaction's query/execute work on the extracted interf
   val ctx = Testing.newTestContext()
   match ctx.db.transaction() {
     case Ok(tx) -> {
-      match tx.query("select 2", []) {
+      match tx.query(Db.sql("select 2"), []) {
         case Ok(_) -> ()
         case Err(_) -> Testing.assertTrue(false, "tx.query() must return Ok")
       }
-      match tx.execute("insert into t values (1)", []) {
+      match tx.execute(Db.sql("insert into t values (1)"), []) {
         case Ok(_) -> ()
         case Err(_) -> Testing.assertTrue(false, "tx.execute() must return Ok")
       }

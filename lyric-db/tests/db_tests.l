@@ -153,3 +153,50 @@ test "col: boolean column is accessible" {
     case _ -> assertTrue(false, "expected DbBool")
   }
 }
+
+// ─── SqlText (#7241) ─────────────────────────────────────────────────────────
+test "sql: a literal statement with positional placeholders round-trips" {
+  val stmt = Db.sql("SELECT id, name FROM users WHERE id = @p0 AND name = @p1")
+  assertEqual(Db.sqlToString(stmt), "SELECT id, name FROM users WHERE id = @p0 AND name = @p1", "text is preserved")
+}
+
+test "sql: a trailing semicolon, quoted literals and doubled quotes are accepted" {
+  assertTrue(Db.sqlIsWellFormed("SELECT 1;"), "trailing semicolon")
+  assertTrue(Db.sqlIsWellFormed("SELECT 1;  \n"), "trailing semicolon then whitespace")
+  assertTrue(Db.sqlIsWellFormed("UPDATE jobs SET status = 'pending' WHERE id = @p0"), "terminated literal")
+  assertTrue(Db.sqlIsWellFormed("SELECT 'it''s' AS s"), "doubled quote inside a literal")
+  assertTrue(Db.sqlIsWellFormed("SELECT '--' AS dashes, '@x' AS at, ';' AS semi"), "markers inside a literal are data")
+  assertTrue(Db.sqlIsWellFormed("SELECT @p0, @p10, @p2"), "multi-digit placeholder")
+}
+
+test "sqlIsWellFormed: rejects the shapes an interpolated value produces" {
+  val name = "x'; DROP TABLE users; --"
+  assertFalse(Db.sqlIsWellFormed("SELECT * FROM users WHERE name = '" + name + "'"), "classic quote-breakout payload")
+  assertFalse(Db.sqlIsWellFormed("SELECT * FROM users WHERE name = 'x"), "unterminated literal")
+  assertFalse(Db.sqlIsWellFormed("SELECT 1; DROP TABLE users"), "second statement")
+  assertFalse(Db.sqlIsWellFormed("SELECT 1 -- trailing comment"), "line comment")
+  assertFalse(Db.sqlIsWellFormed("SELECT 1 /* block */"), "block comment")
+  assertFalse(Db.sqlIsWellFormed("SELECT * FROM t WHERE a = @name"), "named placeholder")
+  assertFalse(Db.sqlIsWellFormed("SELECT * FROM t WHERE a = @p"), "placeholder without an index")
+  assertFalse(Db.sqlIsWellFormed("SELECT * FROM t WHERE a = @p0x"), "placeholder run into an identifier")
+  assertFalse(Db.sqlIsWellFormed("SELECT @@version"), "system variable")
+  assertFalse(Db.sqlIsWellFormed(""), "empty text")
+  assertFalse(Db.sqlIsWellFormed("  \n\t "), "blank text")
+}
+
+test "trySql: a rejected text is an Err with code SQL_REJECTED, an accepted one an Ok" {
+  match Db.trySql("SELECT 1; DROP TABLE users") {
+    case Ok(_) -> assertTrue(false, "a two-statement text must be rejected")
+    case Err(e) -> assertEqual(e.code, "SQL_REJECTED", "rejection code")
+  }
+  match Db.trySql("SELECT 1") {
+    case Ok(stmt) -> assertEqual(Db.sqlToString(stmt), "SELECT 1", "accepted text")
+    case Err(e) -> assertTrue(false, "SELECT 1 must be accepted: " + e.message)
+  }
+}
+
+test "unsafeRawSql: builds a SqlText from a run-time string without the structural check" {
+  val table = "users"
+  val stmt = Db.unsafeRawSql("SELECT count(*) FROM " + table + " -- audited fixed fragment")
+  assertEqual(Db.sqlToString(stmt), "SELECT count(*) FROM users -- audited fixed fragment", "text is preserved")
+}

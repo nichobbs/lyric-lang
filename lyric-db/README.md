@@ -69,7 +69,7 @@ import Db
 // Requires the "postgres" feature and LYRIC_CONFIG_DB_CONNECTION_URL
 val conn = Db.connectFromEnv()?
 
-match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
+match conn.query(Db.sql("SELECT id, name FROM users WHERE id = @p0"), ["42"]) {
   case Ok(rows) ->
     for row in rows {
       match Db.col(row, "name") {
@@ -145,12 +145,39 @@ implements that today (a `config { }` block's `@sensitive` field
 annotation exists per docs/25-config-blocks.md, but is declared-and-inert
 in v1, and doesn't apply to a plain env-var read like this one regardless).
 
+## SQL text (`SqlText`)
+
+`query`, `execute`, `queryOne`, `dbQuery` and `dbExecute` take a `SqlText`,
+never a `String`. A statement built by concatenation or interpolation
+(`"... WHERE name = '" + name + "'"`) therefore does not type-check; values go
+in the `params` list as `@p0`, `@p1`, ....
+
+| Constructor | Use | Check |
+|---|---|---|
+| `Db.sql(text)` | SQL literals (including literals joined with `+`) | contract: `sqlIsWellFormed(text)` |
+| `Db.trySql(text)` | text you want rejected as an `Err` (`SQL_REJECTED`), not a panic | same check |
+| `Db.unsafeRawSql(text)` | text really assembled at run time (a table name from an allow-list, a fixed column list) | non-blank only |
+
+`sqlIsWellFormed` accepts a single statement (optional trailing `;`) with
+terminated string literals, no `--` or `/* */` comments outside a literal, and
+only `@p<N>` placeholders. It is defence in depth against spliced text, not a
+proof of safety: a number or identifier interpolated into otherwise valid SQL
+still passes. Keep `sql(...)` arguments literal, and review every
+`unsafeRawSql` call (`grep -rn unsafeRawSql`). `Db.sqlToString(stmt)` returns
+the text for `DbConnection` implementations.
+
+**Migrating from `String`:** wrap each literal in `Db.sql(...)`; wrap a
+deliberately dynamic fragment in `Db.unsafeRawSql(...)` with a comment saying
+why it is safe. A `DbConnection`/`DbTransaction` implementation changes its
+`sql` parameter type to `Db.SqlText`. This is a breaking change to the
+`@stable` surface (decision D220).
+
 ## DbConnection interface
 
 ```lyric
 pub interface DbConnection {
-  func query(sql: in String, params: in [String]): Result[[DbRow], DbError]
-  func execute(sql: in String, params: in [String]): Result[Int, DbError]
+  func query(sql: in SqlText, params: in [String]): Result[[DbRow], DbError]
+  func execute(sql: in SqlText, params: in [String]): Result[Int, DbError]
   func transaction(): Result[DbTransaction, DbError]
   func close(): Unit
 }
@@ -160,8 +187,8 @@ pub interface DbConnection {
 
 ```lyric
 pub interface DbTransaction {
-  func query(sql: in String, params: in [String]): Result[[DbRow], DbError]
-  func execute(sql: in String, params: in [String]): Result[Int, DbError]
+  func query(sql: in SqlText, params: in [String]): Result[[DbRow], DbError]
+  func execute(sql: in SqlText, params: in [String]): Result[Int, DbError]
   func isActive(): Bool
   func commit(): Result[Unit, DbError]
   func rollback(): Result[Unit, DbError]
@@ -266,7 +293,7 @@ rather than a dedicated typed variant.
 ```lyric
 val tx = conn.transaction()?
 
-match tx.execute("INSERT INTO events (name) VALUES (@p0)", ["login"]) {
+match tx.execute(Db.sql("INSERT INTO events (name) VALUES (@p0)"), ["login"]) {
   case Ok(_)  -> tx.commit()?
   case Err(e) -> { tx.rollback(); Err(e) }
 }

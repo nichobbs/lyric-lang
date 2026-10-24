@@ -19,7 +19,7 @@ func checkDb(): CheckStatus {
     case Ok(c)  -> c
     case Err(e) -> return Health.fail("connect: " + e.message)
   }
-  val status = match conn.execute("SELECT 1", []) {
+  val status = match conn.execute(Db.sql("SELECT 1"), []) {
     case Ok(_)  -> Health.pass()
     case Err(e) -> Health.fail("db: " + e.message)
   }
