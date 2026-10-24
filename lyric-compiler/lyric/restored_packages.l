@@ -566,6 +566,41 @@ func isSynthesizedBodyDiag(d: in Diagnostic): Bool {
     d.code == "T0114"
 }
 
+// True iff `d` is a bare-name T0010 that the contract's own recorded `Std.*`
+// imports resolve (#7668).  The synthesised source drops those imports, so a
+// signature naming `JsonElement` through the package's `import Std.Json`
+// cannot resolve in the standalone recheck.  A whole `Std.*` import covers any
+// bare name (the recheck loads no stdlib to tell which); a selective import
+// covers only the names it lists.  Sound for the same reason as
+// `isWhitelistedStdQualified`: the DLL compiled cleanly and each consumer
+// re-resolves the type against the real stdlib.  A contract with no `Std.*`
+// import still errors.
+func isResolvedByStdImport(d: in Diagnostic, contract: in Meta.Contract): Bool {
+  if d.code != "T0010" {
+    return false
+  }
+  val name = extractT0010Name(d.message)
+  if Str.isEmpty(name) {
+    return false
+  }
+  var i = 0
+  while i < contract.wholeImports.count {
+    if contract.wholeImports[i].startsWith("Std.") {
+      return true
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < contract.selectedImports.count {
+    val entry = contract.selectedImports[j]
+    if entry.startsWith("Std.") and entry.endsWith("::" + name) {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
 // True iff `d` is a DiagError (vs DiagWarning).
 func isErrorDiag(d: in Diagnostic): Bool {
   var isErr = false
@@ -582,12 +617,12 @@ func isErrorDiag(d: in Diagnostic): Bool {
 // anchors.  Warnings are dropped — the bridge only cares whether a
 // real (non-whitelisted) error fired; warning-only sets count as
 // "synthesise succeeded" (#1264).
-func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
+func filterRealErrors(diags: in List[Diagnostic], contract: in Meta.Contract): List[Diagnostic] {
   val kept: List[Diagnostic] = newList()
   var i = 0
   while i < diags.count {
     val d = diags[i]
-    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isWhitelistedStdQualified(d) and not isSynthesizedBodyDiag(d) {
+    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isResolvedByStdImport(d, contract) and not isWhitelistedStdQualified(d) and not isSynthesizedBodyDiag(d) {
       kept.add(d)
     }
     i = i + 1
@@ -619,7 +654,7 @@ pub func synthesiseArtifact(
 
   // Parse errors are always real — contract Repr should be valid
   // Lyric source by construction.
-  val parseErrors = filterRealErrors(pr.diagnostics)
+  val parseErrors = filterRealErrors(pr.diagnostics, art.contract)
   if parseErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = parseErrors))
   }
@@ -628,7 +663,7 @@ pub func synthesiseArtifact(
   // (#1228) because the sibling-type preamble is deliberately partial —
   // see `Lyric.TypeChecker.checkContractSurface`.
   val cr = checkContractSurface(pr.file)
-  val checkErrors = filterRealErrors(cr.diagnostics)
+  val checkErrors = filterRealErrors(cr.diagnostics, art.contract)
   if checkErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
   }
