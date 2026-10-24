@@ -2640,9 +2640,11 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   within them, `nativeAddrOf` operands must be local `var`s and the
   resulting pointer must not escape the frame (no returns, no heap
   stores).  See `native/plan/05-ffi-design.md`.
-- `NativePtr[T]`, `nativeNullPtr()` (a `NativePtr[Byte]`) and the byte
-  intrinsics `nativeLoadByte`/`nativeStoreByte` (§11.7) type on every
-  target, since a C binding (§11.7) passes pointers on all three.
+- `NativePtr[T]`, `nativeNullPtr()` (a `NativePtr[Byte]`), the byte
+  intrinsics `nativeLoadByte`/`nativeStoreByte`, `NativeUserdata` and the
+  callback intrinsics `nativeKeepCallback`/`nativeReleaseCallback` (§11.7)
+  type on every target, since a C binding (§11.7) passes pointers and
+  callbacks on all three.
   The rest are native-only: the type checker knows them only when it
   checks for `--target native`, where `nativeAddrOf(x)` for a local
   `x: T` is a `NativePtr[T]`, `NativeWeak(x)` for an `x: T` is a
@@ -2675,15 +2677,16 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   (`List[String]` for a `LyricList*`).
 - On the managed targets an `extern func` must name its library with
   `@library` (§11.7); one without it is `T0149`.  The callback and
-  closure adaptations above are native-only: a C binding on `--target
-  dotnet` or `--target jvm` takes only the scalar and pointer types §11.7
-  lists.  `_kernel_native/` packages are loaded only by native builds.
+  closure adaptations above apply on every target (D229), with the
+  managed-target limits §11.7 lists: a C binding on `--target dotnet` or
+  `--target jvm` takes only the scalar and pointer types, and callbacks
+  over them.  `_kernel_native/` packages are loaded only by native builds.
 
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 
 - `foreign record` declares a struct with C layout for the target triple. It is allowed only in a file that declares itself part of the FFI boundary, a stdlib `_kernel_native/` package or a file annotated `@unsafe_ffi` at file level (`N0101` elsewhere), and is not generic, its fields are `Plain` types, `NativePtr[T]`, `NativeUserdata`, `array[N, T]`, other foreign records, or a C callback (a function type with a `NativeUserdata` parameter, stored as a function pointer; the construction takes a bound Lyric closure of the type without that parameter, and a closure given for a `void*` field is its own pointer, the userdata C hands back), and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
 - `NativePtr[Byte]` is C's `void *`: it converts to any `NativePtr[T]` (so `nativeNullPtr()` fits every pointer parameter and field; this direction is unchecked, as in C), and a `NativePtr[R]` where `R` is a record converts to `NativePtr[Byte]`. A pointer to a primitive or to another pointer does not convert to `NativePtr[Byte]` (T0043); a chained C descriptor's `nextInChain` is set from the first-member struct's address held as a `NativePtr[Byte]`.
-- `NativeUserdata`, written as a parameter type of a callback function type, names the parameter that carries the closure pointer, so a trampoline is synthesised for it when the C API does not put userdata last (SDL3 puts it first). It is a native-only built-in type like `NativeWeak[T]`; a closure passed in a `NativeUserdata` argument position lowers to the closure pointer, as for `NativePtr[Byte]`, and the type is under `N0100` like `NativePtr`.
+- `NativeUserdata`, written as a parameter type of a callback function type, names the parameter that carries the closure pointer, so a trampoline is synthesised for it when the C API does not put userdata last (SDL3 puts it first). It is a built-in type on every target (D229; it was native-only before); a closure passed in a `NativeUserdata` argument position lowers to the userdata pointer, as for `NativePtr[Byte]`, a `NativePtr[Byte]` (such as one `nativeKeepCallback` returned) passes as itself, and the type is under `N0100` like `NativePtr`.
 - `b.withPointer({ p: NativePtr[T] -> ... })` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure and return its result (D187, `--target native` only: T0175 elsewhere); `withMutPointer` first makes the storage unique and needs a writable place (T0157). The closure writes its parameter's type (T0176), which puts the call under the `N0100` FFI boundary (a lambda parameter written `NativePtr[T]` is allowed only in `@unsafe_ffi` functions and `_kernel_native/` packages), and the pointer may not escape the closure: it may be only a call argument or a member receiver (`N0102`).
 
 Target-specific kernel selection follows the `_kernel_jvm/` precedent:
@@ -2772,17 +2775,86 @@ extern func labs(x: Long): Long = "labs"
 - **Types.** On `--target dotnet` and `--target jvm` a parameter is
   `Int` (C `int32_t`), `Long` (`int64_t`),
   `Byte` (`uint8_t`), `Float` (`float`), `Double` (`double`) or
-  `NativePtr[T]` (a pointer); the result may also be `Unit` (`void`).
-  Any other type is `T0151`.  Strings,
-  records and callbacks do not cross a C binding on the managed targets;
+  `NativePtr[T]` (a pointer); the result may also be `Unit` (`void`).  A
+  parameter may also be `NativeUserdata` (a `void*`) or a C callback
+  (below) whose own parameters and result are these types.
+  Any other type is `T0151`, as is a function type as a result or nested in
+  a callback's signature.  Strings and
+  records do not cross a C binding on the managed targets;
   pass a pointer to C memory instead (below).  On `--target native` a
   `@library` binding keeps the full §11.6 surface, so T0151 is never
   reported there.  A `NativePtr[T]` is a 64-bit address in Lyric code on the JVM
   and a native-sized integer on .NET; it is opaque in Lyric either way.
+- **C callbacks (D229).**  A callback parameter (a function type with a
+  `NativeUserdata` slot, or ending in `NativePtr[Byte]`, §11.6) takes a
+  Lyric closure of the type without the slot on every target, and the same
+  closure passed for a `NativePtr[Byte]` or `NativeUserdata` parameter is the
+  userdata C hands back to it:
+
+  ```
+  @library("cb")
+  extern func forEach(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = "for_each"
+
+  func sumOfSquares(n: in Int): Int {
+    val sq = { i: Int -> i * i }
+    forEach(sq, sq, n)
+  }
+  ```
+
+  C may call the callback any number of times, from any thread.  On
+  `--target dotnet` the callback is a static trampoline method marked
+  `[UnmanagedCallersOnly]` (so `ldftn` gives an address C calls with the
+  platform convention, with no delegate marshalling, which Native AOT also
+  supports), and the userdata a `GCHandle` to the closure.  On `--target jvm`
+  the callback is an upcall stub (`Linker.upcallStub`, made on first use, one
+  per callback parameter, bound to `Arena.global()`) over a static trampoline
+  method, and the userdata a key in a process-wide handle table; pointer
+  arguments cross the stub as 64-bit integers.  On `--target native` the
+  trampoline is a synthesised C function and the userdata is the closure
+  pointer itself.  Each trampoline recovers the closure from the userdata and
+  calls it.  A panic or exception escaping a callback ends the process on
+  every target, since it cannot unwind through C frames.
+
+  **Lifetime.**  A closure passed directly is valid as userdata until the C
+  function returns: the managed targets pin it for the call and release it
+  afterwards, and native borrows it.  A callback the C library keeps and
+  calls later needs a pointer that outlives the call:
+  `nativeKeepCallback(f): NativePtr[Byte]` pins `f` (a `GCHandle` on .NET, a
+  handle-table entry on the JVM, an ARC retain on native) and returns the
+  userdata to pass for it; `nativeReleaseCallback(p)` unpins it once C will
+  call it no more.  Both are confined by `N0100` like `nativeNullPtr()`.  The
+  callback parameter itself needs no lifetime: a trampoline (and on the JVM
+  its upcall stub) lives as long as the program.  The kept pointer must be
+  passed beside a callback parameter of the same closure type; C calling a
+  userdata after its call returned, or after its release, is undefined on
+  .NET and native and an `IllegalStateException` (which ends the process) on
+  the JVM, and releasing a pointer twice is undefined on .NET and native and
+  an `IllegalStateException` on the JVM.
+
+  ```
+  @library("cb")
+  extern func setHandler(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte]): Unit = "set_handler"
+
+  @unsafe_ffi
+  func install(onEvent: in (Int) -> Int): NativePtr[Byte] {
+    val ud = nativeKeepCallback(onEvent)
+    setHandler(onEvent, ud)
+    ud    // release with nativeReleaseCallback(ud) after unregistering
+  }
+  ```
+
+  On the managed targets a C binding adapts the closure where it is called,
+  from its declaration, so a closure reaches a callback or userdata
+  parameter only from the package that declares the binding (`T0184`
+  otherwise); another package calls a wrapper function the declaring package
+  exports, as a kernel's safe wrappers do.
 - **Diagnostics.** `T0149`: an `extern func` without `@library` on a
   managed target.  `T0150`: an `@library` whose argument is not one
   non-empty string, or more than one `@library` on a declaration.
   `T0151`: a parameter or result type that cannot cross a C binding.
+  `T0181`: a function-typed parameter with no userdata slot (every target).
+  `T0184`: a closure passed to another package's C binding on a managed
+  target.
 - **Safety.** The `N0100` boundary of §11.6 applies unchanged: pointer
   values are confined to `@unsafe_ffi` functions, and the `extern func`
   signature itself is the audited boundary.

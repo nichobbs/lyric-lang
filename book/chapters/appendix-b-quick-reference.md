@@ -625,6 +625,23 @@ For third-party classes, set `LYRIC_FFI_JARS` to a colon-separated JAR classpath
 
 No `@axiom` block needed: the signature is read from the assembly/jmod/JAR at compile time. No overload match is a compile-time error (never silently mis-bound).
 
+### C libraries — `@library` (chapter 13 §13.10)
+
+```lyric
+@library("c")                                   // every target (D158)
+extern func labs(x: Long): Long = "labs"
+
+// A C callback (D229): a function type with a userdata slot (NativeUserdata,
+// or a trailing NativePtr[Byte]); pass a closure for it and for the userdata.
+@library("cb")
+extern func forEach(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = "for_each"
+val sq = { i: Int -> i * i }
+forEach(sq, sq, 5)                              // valid as userdata until the call returns
+
+val ud = nativeKeepCallback(sq)                 // @unsafe_ffi: a kept callback C calls later
+nativeReleaseCallback(ud)                       // once C will call it no more
+```
+
 ### Pre-state snapshots in ensures
 
 ```lyric
@@ -999,6 +1016,7 @@ lyric build --target native --triple x86_64-pc-windows-msvc <file.l>  # Windows 
                                        # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
                                        # nativeLoadByte/nativeStoreByte,
+                                       # nativeKeepCallback/nativeReleaseCallback,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi
                                        # functions / _kernel_native packages (N0100).
                                        # Not yet lowered (build fails naming the construct):
@@ -1490,7 +1508,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0148` | A renamed import's new name (`import P.{f as g}`) is also a declaration or case of this package, another import's bare name, a public name or case of a package imported whole, a package alias, or the first segment of an imported package's path; choose another name. |
 | `T0149` | An `extern func` names no `@library` on `--target dotnet` or `--target jvm`; add `@library("name")` so the managed target knows which C library to bind. |
 | `T0150` | An `@library` argument is not one non-empty string, or a declaration has more than one `@library`. |
-| `T0151` | A C binding's parameter or result type cannot cross the call; use `Int`, `Long`, `Byte`, `Float`, `Double`, `NativePtr[T]`, or `Unit` as a result. |
+| `T0151` | A C binding's parameter or result type cannot cross the call; use `Int`, `Long`, `Byte`, `Float`, `Double`, `NativePtr[T]`, or `Unit` as a result. A parameter may also be `NativeUserdata` or a C callback whose own parameters and result are these types; a function type as a result, or nested in a callback, is rejected (D229). |
 | `T0152` | A record derives arithmetic it cannot have: only `Add` and `Sub`, and only on a non-generic record with no invariant whose fields all have one numeric type (component-wise, D155). |
 | `T0153` | `==` or `!=` on a record that compares field by field (no `var` field, or `@derive(Equals)`) reaches a function-typed field, which has no `==` (D164). The same for `==` on an array whose elements are functions (D167). |
 | `T0154` | A method-call receiver evaluated before an `await` or `?` in its arguments has a type argument that neither the receiver, the other arguments nor the expected result type fixes; bind the receiver to an annotated local (#7844). |
@@ -1507,7 +1525,9 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0171` | A dot-named function declared through a type alias of a type no dot-named function is declared for: a generic instance (`alias Ints = List[Int]`, `func Ints.total`), a function or a tuple type. Declare it for the generic type with the instance as the receiver's type (`func List.total(self: in List[Int])`), which the message suggests; through an alias of a named type (`alias Num = Int`, `func Num.neg`), it is that type's function (#8217). |
 | `T0165` | A method receiver with a mode it cannot have: `self: out T` anywhere, `self: inout` on an interface method or an `impl` method, or an `out`/`inout` receiver on a protected type's entry or function. Use `self: inout` on a record method or dot-named function, or return the new value (#8179). |
 | `T0166` | The receiver of a method whose receiver is `self: inout` (or of any call passing a by-reference first parameter with method syntax) is not a writable place: a `val`, an `in` receiver, a module-level binding, a call result, a field path starting at a call result, an element of an array that may not be written, or an element of a `List`, `Map` or slice. Pass a `var`, an `out`/`inout` parameter, a field path starting at a named binding (#8179) or an element of a writable array (#8180). |
+| `T0181` | A function-typed `extern func` parameter has no userdata slot: C can call a Lyric closure only through the pointer it hands back, so mark that parameter `NativeUserdata` (or end the parameter list with `NativePtr[Byte]`). Reported on every target (D189, D229). |
 | `T0182` | An `out`/`inout` parameter has a default value. It refers to the caller's place, so every call must pass one; drop the default (D205). |
+| `T0184` | On `--target dotnet` or `--target jvm`, a closure is passed to a callback or userdata parameter of a C binding another package declares. The managed targets turn the closure into a function pointer where the binding is called, so call a wrapper function the binding's package exports (D229). |
 | `T0183` | An `async` function (or interface member, `impl` method or record method) declares an `out`/`inout` parameter. The parameter cannot stay a live reference to the caller's place across an `await`; return the new value or pass a record (D205). |
 | `T0164` | Retired (D173): a value-generic record may be used from any package. |
 | `T0168` | A protected type with a value generic parameter (`protected type Ring[N: Nat]`) is `pub`. Each length is specialised, whole, in the package that uses it, so for now the type is not shared across packages (#8149, D178). |

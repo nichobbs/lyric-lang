@@ -342,7 +342,44 @@ func scratch(): Unit {
 }
 ```
 
-Records and callbacks do not cross a C binding on .NET or the JVM. On `--target native` they do: a record with no `var` field whose fields are all values (a `Vec3`, a colour) is passed and returned the way C passes the matching struct on x86-64 (Linux, macOS and Windows, each with its own convention), AArch64 and wasm32, so a C function taking a `struct { float x, y, z; }` by value can take your record, and a Lyric closure can be the callback C calls with one. Keep the C surface small, give it pointer-and-integer signatures, and wrap it in a safe Lyric function, as §13.4 does for BCL calls. On `--target dotnet` and `--target jvm` an `extern func` with no `@library` is error T0149.
+Records do not cross a C binding on .NET or the JVM. On `--target native` they do: a record with no `var` field whose fields are all values (a `Vec3`, a colour) is passed and returned the way C passes the matching struct on x86-64 (Linux, macOS and Windows, each with its own convention), AArch64 and wasm32, so a C function taking a `struct { float x, y, z; }` by value can take your record. Keep the C surface small, give it pointer-and-integer signatures, and wrap it in a safe Lyric function, as §13.4 does for BCL calls. On `--target dotnet` and `--target jvm` an `extern func` with no `@library` is error T0149.
+
+### Callbacks
+
+Many C libraries call back into your code: a sort comparator, an event handler, a host function an embedded interpreter calls. C passes such a callback as a function pointer plus a `void*` "userdata" that it hands back on every call. Declare the callback parameter as a function type with that userdata slot, written `NativeUserdata` wherever the C API puts it, or as a trailing `NativePtr[Byte]`, and pass a Lyric closure for it on any target. Pass the same closure for the userdata:
+
+```lyric
+@library("cb")
+extern func forEach(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = "for_each"
+
+func sumOfSquares(n: in Int): Int {
+  val sq = { i: Int -> i * i }
+  forEach(sq, sq, n)
+}
+```
+
+The closure you pass has the callback's type without the userdata slot, here `(Int) -> Int`. C may call it as often as it likes and from any thread. A callback's own parameters and result take the same simple types as the binding (T0151 otherwise), so an embedded interpreter's "array of values" arrives as a `NativePtr` you read with `nativeLoadByte`. Each target builds the function pointer its own way: a static method marked `[UnmanagedCallersOnly]` on .NET (which also works under Native AOT), an upcall stub through the Foreign Function & Memory API on the JVM, and a synthesised C function on native. A panic inside a callback ends the program, because it cannot unwind through C.
+
+A closure passed directly is only good as userdata until the C function returns. When the library keeps the callback and calls it later, keep the closure for it and pass the pointer you get back as the userdata, then release it once the library will no longer call it:
+
+```lyric
+@library("cb")
+extern func setHandler(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte]): Unit = "set_handler"
+
+@library("cb")
+extern func clearHandler(): Unit = "clear_handler"
+
+@unsafe_ffi
+func withHandler(onEvent: in (Int) -> Int, run: in () -> Unit): Unit {
+  val ud = nativeKeepCallback(onEvent)
+  setHandler(onEvent, ud)
+  run()
+  clearHandler()
+  nativeReleaseCallback(ud)
+}
+```
+
+On .NET and the JVM a binding turns your closure into a function pointer where you call it, so pass closures only to the C bindings of your own package; calling another package's binding with a closure is error T0184. A library that binds a callback API exports a wrapper function that takes the closure instead.
 
 A C function that takes `const char*` wants a NUL-terminated UTF-8 buffer in C memory, not a Lyric `String`. `Std.Ffi` makes one on every target: `toCString(s)` copies the string into a new buffer on the C heap, and `release(p)` frees it. Going the other way, `tryFromCString(p)` copies a C string back, returning `None` for the null pointer or bytes that are not UTF-8. Release a buffer exactly once, after the C side is done with it:
 
