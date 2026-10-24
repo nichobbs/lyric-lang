@@ -743,8 +743,8 @@ but cannot be loaded is the load issue `TrustedLoadFailed`, never a silent
 fallback to another mode.
 
 The loader reports why it cannot load (`unavailableReason()`) on a Native AOT
-dotnet host, a GraalVM native-image JVM host, and Windows or wasm32 native
-hosts; such a host runs every plugin out of process.
+dotnet host, a GraalVM native-image JVM host, and Windows (#8558) or wasm32
+native hosts; such a host runs every plugin out of process.
 
 ### 10.2 The call path
 
@@ -847,7 +847,8 @@ with the host's compiler.
 
 `--shape plugin` is `N0027` for a target other than Linux or macOS (a Windows
 DLL cannot import the runtime from the executable that loads it, and wasm32
-has no dynamic loading) and `N0028` for a package without a `@plugin` record.
+has no dynamic loading; Windows support is #8558) and `N0028` for a package
+without a `@plugin` record.
 
 ### 10.6 Failure model
 
@@ -1095,7 +1096,7 @@ plugin and a screen that uses it.
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D232) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
-| P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done |
+| P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode

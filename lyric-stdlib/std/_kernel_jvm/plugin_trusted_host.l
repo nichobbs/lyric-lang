@@ -114,6 +114,8 @@ pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
 // §10).  The host loads the plugin so that the plugin's stdlib is the
 // host's own; `trustedHostNewServer` runs the plugin's `lyricPluginEntryV1`,
 // which writes its server here, and takes it while it holds the load lock.
+// The slot is process-global, so `offerTrustedPluginServer` must only ever
+// be called from inside `trustedHostNewServer`, under `trustedLoadGate`.
 record TrustedOfferSlot {
   var offered: Option[PluginServer]
 }
@@ -140,6 +142,9 @@ func takeOfferedPluginServer(): Option[PluginServer] {
 pub func trustedHostNewServer(library: in TrustedHostLibrary): Result[PluginServer, String] {
   val noArgs: slice[JObject] = []
   trustedLoadGate.lock()
+  defer {
+    trustedLoadGate.unlock()
+  }
   var outcome: Result[PluginServer, String] = Err(
     error = "the entry point of " + library.path +
       " offered no server to this host; a plugin built by another Lyric release than the host cannot be loaded in process"
@@ -156,6 +161,5 @@ pub func trustedHostNewServer(library: in TrustedHostLibrary): Result[PluginServ
   } catch Bug as b {
     outcome = Err(error = "the entry point of " + library.path + " failed: " + b.message)
   }
-  trustedLoadGate.unlock()
   outcome
 }
