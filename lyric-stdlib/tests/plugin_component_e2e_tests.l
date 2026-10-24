@@ -1,5 +1,5 @@
 //! tests/plugin_component_e2e_tests.l — Std.Plugin's component mode end to
-//! end (docs/69 §9.3, D233): the `@plugin` package
+//! end (docs/69 §9.3, D247): the `@plugin` package
 //! `plugin_fixtures/greeter_component.l`, packed by `lyric plugin pack
 //! --targets component` (so its exports, imports and type hints are generated
 //! by `Lyric.PluginExpand`), hosted in this process by `Std.PluginWasm`'s

@@ -148,7 +148,7 @@ pub protected type IdempotencyLedger {
     if succeeded {
       Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
     }
-    inFlight.remove(key)
+    val _ = inFlight.remove(key)
   }
 }
 

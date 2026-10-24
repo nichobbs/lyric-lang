@@ -71,19 +71,27 @@ record Cell[T] {
 // on its own, so an operand typed `T` that reaches a comparison, `/`, `%`
 // or a stringification through a field, a method result or a closure is
 // unsigned there.
-func fieldGreater[T](c: in Cell[T], y: in T): Bool {
+func fieldGreater[T](c: in Cell[T], y: in T): Bool
+  where T: Compare
+{
   c.value > y
 }
 
-func fieldAtMost[T](c: in Cell[T], y: in T): Bool {
+func fieldAtMost[T](c: in Cell[T], y: in T): Bool
+  where T: Compare
+{
   c.value <= y
 }
 
-func fieldQuotient[T](c: in Cell[T], y: in T): T {
+func fieldQuotient[T](c: in Cell[T], y: in T): T
+  where T: Div
+{
   c.value / y
 }
 
-func fieldRemainder[T](c: in Cell[T], y: in T): T {
+func fieldRemainder[T](c: in Cell[T], y: in T): T
+  where T: Mod
+{
   c.value % y
 }
 

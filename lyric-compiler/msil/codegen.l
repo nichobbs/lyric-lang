@@ -9577,6 +9577,17 @@ func isValueType(ty: in MsilType): Bool {
   }
 }
 
+// A reified type parameter of the enclosing generic type or method: its
+// value may be a value type, so `Object.Equals(object, object)` needs it boxed
+// like an extern struct, and the left operand sits under the right one.
+func isTypeVarMsil(ty: in MsilType): Bool {
+  match ty {
+    case MTypeVar(_) -> true
+    case MMethodTypeVar(_) -> true
+    case _ -> false
+  }
+}
+
 // True when `ty` is a CLR value type usable as an instance-call receiver — the
 // primitives plus the struct-extern encodings (`MValueTypeRef` such as
 // `System.TimeSpan` / `System.DateTime`, and `MValueTypeGenericInst`).  A
@@ -14127,7 +14138,7 @@ func lowerBinopMsil(
             // references.  A value-type LHS (an extern struct such as a Guid —
             // primitives never reach this arm) sits UNDER the rhs on the
             // stack, so box it by spilling the rhs first (docs/59 §3.2 F6).
-            if isValueType(beqLhsTy) {
+            if isValueType(beqLhsTy) or isTypeVarMsil(beqLhsTy) {
               val beqRSlot = allocSlotMsil(fctx, "__beq_r_" + toString(fctx.slotTicker.count), beqRhsTy)
               emitStoreSlot(insns, beqRSlot, fctx.paramCount)
               boxIfNeededMsil(cctx, insns, beqLhsTy)
@@ -14168,7 +14179,7 @@ func lowerBinopMsil(
           } else {
             // See the BEq arm: a value-type LHS must be boxed under the rhs
             // before Object.Equals (docs/59 §3.2 F6).
-            if isValueType(bneqLhsTy) {
+            if isValueType(bneqLhsTy) or isTypeVarMsil(bneqLhsTy) {
               val bneqRSlot = allocSlotMsil(fctx, "__bneq_r_" + toString(fctx.slotTicker.count), bneqRhsTy)
               emitStoreSlot(insns, bneqRSlot, fctx.paramCount)
               boxIfNeededMsil(cctx, insns, bneqLhsTy)

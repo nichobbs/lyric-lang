@@ -1,0 +1,224 @@
+name: Native platforms
+
+# The `--target native` suite on the hosts the Linux x86-64 lane in ci.yml does
+# not cover: macOS arm64 and Linux arm64 (docs/67, #8419, #8401).  This is its
+# own workflow, not jobs in ci.yml: ci.yml sits just under the soft size
+# ceiling scripts/ci/check-workflow-size.sh enforces (#6387), the same reason
+# windows-build.yml is separate.
+#
+# Like windows-build.yml, no Lyric seed ever runs on these hosts.  The
+# self-hosted stage-2 compiler DLLs are managed IL (RID-independent), so the
+# `managed` job builds them once on Linux x86-64 and each platform job
+# NativeAOT-links them into a `lyric` for its own runtime identifier and runs
+# scripts/ci/native-platform-tests.sh with it.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/native-platforms.yml'
+      - 'bootstrap/src/Lyric.Cli.Aot/**'
+      - 'lyric-rt/**'
+      - 'lyric-compiler/lyric/llvm_*.l'
+      - 'lyric-compiler/lyric/emitter.l'
+      - 'lyric-compiler/lyric/cli/**'
+      - 'lyric-stdlib/std/_kernel_native/**'
+      - 'scripts/ci/native-platform-tests.sh'
+
+permissions:
+  contents: read
+
+# A newer push supersedes the run in flight: macOS runners are scarce.
+concurrency:
+  group: native-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  managed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # The managed closure depends only on the compiler, stdlib and bootstrap
+      # sources, not on lyric-rt or this lane's scripts, so a runtime or script
+      # iteration reuses the previous build instead of repeating ~16 minutes.
+      - name: Restore managed compiler closure
+        id: cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: managed-out
+          key: managed-stage2-${{ hashFiles('lyric-compiler/**', 'lyric-stdlib/**', 'bootstrap/**', 'scripts/bootstrap.sh') }}
+
+      - name: Set up .NET
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 22 (for the Maven resolver jar)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+
+      - name: Build stage 2 (self-hosted compiler)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/bootstrap.sh --stage 3
+
+      - name: Stage managed compiler closure
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p managed-out/lib
+          cp .bootstrap/stage2/lib/Lyric.*.dll managed-out/lib/
+          test -f managed-out/lib/Lyric.Stdlib.dll || { echo "::error::Lyric.Stdlib.dll missing from stage2"; exit 1; }
+
+      - name: Upload managed compiler closure
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: managed-stage2
+          if-no-files-found: error
+          retention-days: 7
+          path: managed-out
+
+  macos:
+    needs: [managed]
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 22
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+
+      - name: Download managed compiler closure
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: managed-stage2
+          path: managed
+
+      - name: Publish self-contained AOT binary (osx-arm64)
+        shell: bash
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          STAGE="$GITHUB_WORKSPACE/managed/lib"
+          test -f "$STAGE/Lyric.Stdlib.dll" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime osx-arm64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:Version=0.0.0-dryrun \
+            -p:StageDir="$STAGE" \
+            --output publish/osx-arm64
+          out=publish/osx-arm64
+          mkdir -p "$out/lib"
+          cp "$STAGE"/Lyric.Stdlib*.dll "$out/lib/"
+          file "$out/lyric"
+          "$out/lyric" --version
+          echo "LYRIC_BIN=$GITHUB_WORKSPACE/bootstrap/$out/lyric" >> "$GITHUB_ENV"
+
+      # lyric-rt's TLS seam loads OpenSSL 3 at run time; macOS ships none.
+      - name: Install OpenSSL 3
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+
+      - name: Native suite (arm64-apple-darwin)
+        shell: bash
+        run: bash scripts/ci/native-platform-tests.sh
+
+      # docs/67 G4: lyric-window on SDL3 built from the pinned tarball (Cocoa
+      # video plus the headless drivers); the demo runs on the offscreen video
+      # driver and the disk audio driver.
+      - name: Install SDL3 build dependencies
+        if: always()
+        run: brew install pkgconf ninja
+
+      - name: Cache SDL3
+        if: always()
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3
+          key: sdl3-macos-${{ hashFiles('scripts/ci/build-sdl3.sh') }}
+
+      - name: lyric-window on SDL3 (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdl3_prefix="$RUNNER_TEMP/sdl3"
+          bash scripts/ci/build-sdl3.sh "$sdl3_prefix"
+          LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
+
+  linux-arm64:
+    needs: [managed]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 22
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+
+      - name: Download managed compiler closure
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: managed-stage2
+          path: managed
+
+      - name: Install the native AOT and test toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq clang zlib1g-dev gcc libssl-dev
+          clang --version
+
+      - name: Publish self-contained AOT binary (linux-arm64)
+        shell: bash
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          STAGE="$GITHUB_WORKSPACE/managed/lib"
+          test -f "$STAGE/Lyric.Stdlib.dll" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime linux-arm64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:Version=0.0.0-dryrun \
+            -p:StageDir="$STAGE" \
+            --output publish/linux-arm64
+          out=publish/linux-arm64
+          mkdir -p "$out/lib"
+          cp "$STAGE"/Lyric.Stdlib*.dll "$out/lib/"
+          file "$out/lyric"
+          "$out/lyric" --version
+          echo "LYRIC_BIN=$GITHUB_WORKSPACE/bootstrap/$out/lyric" >> "$GITHUB_ENV"
+
+      - name: Native suite (aarch64-unknown-linux-gnu)
+        shell: bash
+        run: bash scripts/ci/native-platform-tests.sh

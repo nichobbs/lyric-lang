@@ -978,7 +978,7 @@ func getOrCreateAccum(state: in H2ConnState, streamId: in Int): H2ReqAccum {
 }
 
 func removeAccum(state: in H2ConnState, streamId: in Int): Unit {
-  state.accums.remove(streamId)
+  val _ = state.accums.remove(streamId)
 }
 
 // Mark `streamId` as terminally rejected (over `maxBodyBytes`) and drop its
@@ -999,7 +999,7 @@ func isRejectedStream(state: in H2ConnState, streamId: in Int): Bool {
 // Prune the rejected-stream marker once the stream is fully closed (its
 // END_STREAM seen, or a reset), so the marker set does not retain closed streams.
 func forgetRejectedStream(state: in H2ConnState, streamId: in Int): Unit {
-  state.rejectedStreams.remove(streamId)
+  val _ = state.rejectedStreams.remove(streamId)
 }
 
 // How many trailing client stream-id slots (each 2 apart, matching

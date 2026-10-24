@@ -20,6 +20,7 @@ LYRIC_BIN="$(cd "$(dirname "$LYRIC_BIN")" && pwd)/$(basename "$LYRIC_BIN")"
 : "${SDL3_PREFIX:?SDL3_PREFIX must name a prefix holding SDL3}"
 export PKG_CONFIG_PATH="$SDL3_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export LD_LIBRARY_PATH="$SDL3_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export DYLD_LIBRARY_PATH="$SDL3_PREFIX/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 clang -fsyntax-only -I "$SDL3_PREFIX/include" lyric-window/native/sdl_layout_check.c
 

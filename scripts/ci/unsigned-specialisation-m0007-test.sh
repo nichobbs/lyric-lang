@@ -36,18 +36,23 @@ package M0007Fixture
 import Std.Core
 
 record Box[T] {
-  value: T
+  value: Option[T]
 }
 
-// Generically the field read is an unknown type, but specialised with
+// Generically the bound payload is an unknown type, but specialised with
 // `T = UInt` the binding is a `String` initialised with a `UInt`.
 func asText[T](b: in Box[T]): String {
-  val s: String = b.value
-  s
+  match b.value {
+    case Some(v) -> {
+      val s: String = v
+      s
+    }
+    case None -> ""
+  }
 }
 
 func main(): Unit {
-  println(asText(Box(value = 4000000000u32)))
+  println(asText(Box(value = Some(value = 4000000000u32))))
 }
 LYR
 

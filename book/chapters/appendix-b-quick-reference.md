@@ -722,6 +722,11 @@ extra_libs = ["ssl", "crypto"]            # extra clang -l<name> link flags (man
 pkg_config = "sdl3"                       # system library via pkg-config, or:
 # dir = "native"                          # a directory holding libsdl3.so (copied beside the executable)
 
+[native.app]                              # macOS only: also write <output>.app (D233); ignored elsewhere
+identifier = "au.id.example.viewer"       # CFBundleIdentifier (default lyric.<executable>)
+name       = "Viewer"                     # CFBundleName (default the executable's name)
+version    = "1.4.0"                      # CFBundleVersion (default the [package] version)
+
 # Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
 [project]
 name           = "myapp"
@@ -1185,12 +1190,12 @@ lyric test <file.l>                    # a loose test file next to a lyric.toml 
                                        # that manifest's dependencies (D123/#5341), exactly like
                                        # `lyric build`/`lyric run` — an unbuilt dependency fails
                                        # the run rather than silently compiling without it
-lyric test <file.l> --target jvm \
-  --coverage                           # instrument with JaCoCo, write
-                                       # <dir>/.lyric-test/coverage/<stem>-cobertura.xml
-                                       # (+ <stem>-jacoco.xml); single-file JVM-target only
-                                       # for now (D135). Needs jacocoagent.jar/jacococli.jar
-                                       # via LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI or `make jacoco`.
+lyric test <file.l> --coverage         # (#5294) count the statement lines of the code under test
+                                       # (dotnet or jvm), write <dir>/.lyric-test/coverage.info
+                                       # (lcov) and coverage.xml (Cobertura), print a summary
+lyric test --coverage                  # project mode: every [project.packages] source is
+                                       # counted, over all [project.tests] runs
+lyric test --coverage --min-coverage 80 # fail when under 80% of lines are covered
 lyric test <file.l> --update-snapshots # (#678) rewrite every Std.Testing.Snapshot baseline this
                                        # test file touches to match its actual output instead of
                                        # failing on mismatch; commit the rewritten snapshot files.
@@ -1333,7 +1338,7 @@ lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --che
 lyric bindgen ft.h --package Ft.Kernel --allow ft.allow -o ft_windows.l \
   --triple x86_64-pc-windows-msvc --cfg 'target_os = "windows"'                       # a Windows (LLP64) variant
 
-# Plugins (chapter 33, D207, D231, D233)
+# Plugins (chapter 33, D207, D231, D247)
 lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/
 lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm,component -o <dir>
 lyric plugin pack --targets dotnet,jvm,native --trusted   # also list trusted (in-process) payloads
@@ -1572,6 +1577,8 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0205` | `externAsObject(x)` with an operand that is not an extern type. The explicit upcast exists only for extern values; convert other values with ordinary Lyric conversions (D212). |
 | `T0206` | `externAsObject(x)` where no root object extern type (`extern type X = "java.lang.Object"` on the JVM, `"System.Object"` on .NET) is declared in the compilation, or on `--target native`, which has no host object type (D212). |
 | `T0207` | `.length` (or `.length()`) on a stdlib `List`. A `List` sizes with `.count`; only `String`, `slice[T]` and arrays have `.length`. The message names `.count` (D227, #7218). |
+| `T0208` | A generic record constructor written with explicit type arguments (`Box[Long](value = 5)`). Only a generic function takes `name[T](...)`; give the binding or parameter its type instead (`val b: Box[Long] = Box(value = 5)`) (#7786). |
+| `T0209` | Two members (`entry` or `func`) of one protected type with the same name. A protected type's members are told apart by name alone, so they cannot be overloaded; give each its own name (#8104). |
 | `N0103` | `externAsObject(x)` outside the extern boundary: use it in a file or function annotated `@unsafe_ffi` (D212). |
 | `T0147` | Unary minus on an unsigned operand (`Byte`, `UInt`, `ULong`) or a `Nat`, or a range over one, including a negated unsigned constant written in a range bound. No non-zero unsigned value has a negation of its own type, so `-(5u8)` used to wrap (#7854); convert a `Byte` first (`-(b.toInt())`), a `UInt` or `Nat` with `.toLong()` |
 | `T0200` | A call that fills defaults binds several declarations equally well: after the declarations it does not fit, and those whose parameter types its arguments do not satisfy, are set aside, none of the rest is one the call supplies in full, and two or more leave the same number of parameters to their defaults (the same-named methods of two `impl` blocks of one type, for example, which is also `T0139`). Name an argument only one of them declares, or supply the parameters of the one meant (D210). |

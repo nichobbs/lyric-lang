@@ -258,6 +258,16 @@ int32_t lyric_sock_local_port(int32_t fd) {
     return -1;
 }
 
+/* An accepted socket is blocking whatever the listener is: BSD-derived systems
+ * (macOS) hand it the listener's O_NONBLOCK, Linux does not, and every read and
+ * write here assumes a blocking descriptor with SO_RCVTIMEO/SO_SNDTIMEO. */
+static void accepted_fd_blocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0 && (flags & O_NONBLOCK)) {
+        (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    }
+}
+
 int32_t lyric_sock_accept(int32_t listen_fd) {
     /* listen_fd is O_NONBLOCK (lyric_sock_listen, issue #6962), but this
      * function's contract is a blocking accept -- wait via poll(2) whenever
@@ -284,6 +294,7 @@ int32_t lyric_sock_accept(int32_t listen_fd) {
         set_err("accept: %s", strerror(errno));
         return -1;
     }
+    accepted_fd_blocking(fd);
     g_sock_accept_errno = 0;
     return (int32_t)fd;
 }
@@ -428,6 +439,7 @@ int32_t lyric_sock_accept_interruptible(int32_t listen_fd, int32_t wake_read_fd)
                 set_err("accept: %s", strerror(errno));
                 return -1;
             }
+            accepted_fd_blocking(fd);
             g_sock_accept_errno = 0;
             return (int32_t)fd;
         }
@@ -662,6 +674,20 @@ static void* dlopen_any(const char* const* names) {
          * libssl/libcrypto exports. */
         void* h = dlopen(names[i], RTLD_NOW | RTLD_LOCAL);
         if (h) return h;
+#if defined(__APPLE__)
+        /* macOS ships no OpenSSL 3 and dyld's fallback path covers neither
+         * Homebrew's Apple-silicon prefix nor MacPorts, so look in the places
+         * a package manager puts the versioned library. */
+        static const char* const prefixes[] = {
+            "/opt/homebrew/opt/openssl@3/lib", "/opt/homebrew/lib",
+            "/usr/local/opt/openssl@3/lib", "/usr/local/lib", "/opt/local/lib", NULL};
+        for (int p = 0; prefixes[p]; p++) {
+            char path[512];
+            snprintf(path, sizeof path, "%s/%s", prefixes[p], names[i]);
+            h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+            if (h) return h;
+        }
+#endif
     }
     return NULL;
 }

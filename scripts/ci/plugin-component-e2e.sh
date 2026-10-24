@@ -12,7 +12,7 @@
 #
 # Packs the @plugin package lyric-stdlib/tests/plugin_fixtures/greeter_component.l
 # with `lyric plugin pack --targets component` (so the component is generated
-# by Lyric.PluginExpand, docs/69 §9.3, D233), builds the in-process embedding
+# by Lyric.PluginExpand, docs/69 §9.3, D247), builds the in-process embedding
 # (`make -C lyric-rt wasmhost`, and lyric_rt.a for a native host), and fetches
 # the pinned wasmtime C API (scripts/ci/fetch-wasmtime-capi.sh).  Each host
 # then runs the suite twice: with libwasmtime available

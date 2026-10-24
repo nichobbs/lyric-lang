@@ -22,6 +22,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <limits.h>
+#include <mach-o/dyld.h>
+#endif
 
 /* ── Files ─────────────────────────────────────────────────────────── */
 
@@ -531,11 +535,11 @@ int32_t lyric_env_cwd_ok(LyricString** out) {
     return 0;
 }
 
-/* Directory containing the running executable (issue #6937). Linux only
- * (this project's only CI target, matching lyric_sock_wake_pipe_new's
- * disclosure precedent for POSIX portability gaps) -- resolves
- * /proc/self/exe, then strips the trailing basename, keeping a trailing
- * '/' to match .NET's AppContext.BaseDirectory contract exactly. */
+/* Directory containing the running executable (issue #6937). Linux resolves
+ * /proc/self/exe; macOS asks dyld for the executable path and resolves it with
+ * realpath (the same symlink-free path /proc/self/exe gives).  Either way the
+ * trailing basename is stripped, keeping a trailing '/' to match .NET's
+ * AppContext.BaseDirectory contract exactly. */
 int32_t lyric_env_app_base_directory_ok(LyricString** out) {
 #if defined(__linux__) || defined(__wasi__)
     size_t cap = 256;
@@ -571,6 +575,36 @@ int32_t lyric_env_app_base_directory_ok(LyricString** out) {
     size_t dir_len = (size_t)(slash - buf) + 1; /* include the '/' itself */
     LyricString* s = lyric_string_from_literal((const uint8_t*)buf, (int64_t)dir_len);
     free(buf);
+    *out = s;
+    return 0;
+#elif defined(__APPLE__)
+    uint32_t cap = 1024;
+    char* raw = (char*)malloc(cap);
+    if (!raw) return -1;
+    if (_NSGetExecutablePath(raw, &cap) != 0) {
+        /* cap now holds the size needed */
+        char* nb = (char*)realloc(raw, cap);
+        if (!nb) {
+            free(raw);
+            return -1;
+        }
+        raw = nb;
+        if (_NSGetExecutablePath(raw, &cap) != 0) {
+            free(raw);
+            return -1;
+        }
+    }
+    char* resolved = realpath(raw, NULL);
+    free(raw);
+    if (!resolved) return -1;
+    char* slash = strrchr(resolved, '/');
+    if (!slash) {
+        free(resolved);
+        return -1;
+    }
+    size_t dir_len = (size_t)(slash - resolved) + 1;
+    LyricString* s = lyric_string_from_literal((const uint8_t*)resolved, (int64_t)dir_len);
+    free(resolved);
     *out = s;
     return 0;
 #else

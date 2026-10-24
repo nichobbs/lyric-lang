@@ -1305,6 +1305,7 @@ pub func buildOneNativeShaped(
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
   var nativeLibPlan = emptyNativeLinkPlan()
+  var nativeApp: Option[Mf.NativeApp] = None
   var wasmVersion = ""
   var wasmWorld = ""
   var wasmStack = 0
@@ -1329,6 +1330,7 @@ pub func buildOneNativeShaped(
           wasmVersion = effectiveWasmVersion("", nc.wasmVersion)
           wasmWorld = nc.wasmWorld
           wasmStack = nc.wasmStack
+          nativeApp = macAppFor(Some(value = nc), effTriple)
         }
         case None -> ()
       }
@@ -1447,6 +1449,16 @@ pub func buildOneNativeShaped(
           printErr("build: " + e)
         }
         return 1
+      }
+      match nativeApp {
+        case Some(app) -> match assembleMacApp(app, nativeLibPlan, builtPath) {
+          case Ok(bundlePath) -> Console.println("built " + bundlePath)
+          case Err(msg) -> {
+            printErr("build: " + msg)
+            return 1
+          }
+        }
+        case None -> ()
       }
     }
   }
@@ -3215,6 +3227,7 @@ pub func buildProjectFromManifest(
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
   var nativeLibPlan = emptyNativeLinkPlan()
+  var nativeApp: Option[Mf.NativeApp] = None
   var wasmVersion = projReq.packageVersion
   var wasmWorld = ""
   var wasmStack = 0
@@ -3233,6 +3246,7 @@ pub func buildProjectFromManifest(
         wasmVersion = effectiveWasmVersion(projReq.packageVersion, nc.wasmVersion)
         wasmWorld = nc.wasmWorld
         wasmStack = nc.wasmStack
+        nativeApp = macAppFor(Some(value = nc), effTriple)
       }
       case None -> ()
     }
@@ -3373,6 +3387,16 @@ pub func buildProjectFromManifest(
           printErr("build: " + e)
         }
         return 1
+      }
+      match nativeApp {
+        case Some(app) -> match assembleMacApp(app, nativeLibPlan, builtPath) {
+          case Ok(bundlePath) -> Console.println("built " + bundlePath)
+          case Err(msg) -> {
+            printErr("build: " + msg)
+            return 1
+          }
+        }
+        case None -> ()
       }
     }
   }

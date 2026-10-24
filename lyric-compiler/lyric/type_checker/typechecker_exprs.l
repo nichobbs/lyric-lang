@@ -2561,12 +2561,12 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BAnd -> {
-      if not typeEquiv(lhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(lhs) {
         diag.add(
           errorDiagnostic("T0034", "left operand of logical operator must be Bool (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(rhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(rhs) {
         diag.add(
           errorDiagnostic("T0034", "right operand of logical operator must be Bool (got " + renderType(rhs) + ")", span)
         )
@@ -2574,12 +2574,12 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BOr -> {
-      if not typeEquiv(lhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(lhs) {
         diag.add(
           errorDiagnostic("T0034", "left operand of logical operator must be Bool (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(rhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(rhs) {
         diag.add(
           errorDiagnostic("T0034", "right operand of logical operator must be Bool (got " + renderType(rhs) + ")", span)
         )
@@ -2587,12 +2587,12 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BXor -> {
-      if not typeEquiv(lhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(lhs) {
         diag.add(
           errorDiagnostic("T0034", "left operand of logical operator must be Bool (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(rhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(rhs) {
         diag.add(
           errorDiagnostic("T0034", "right operand of logical operator must be Bool (got " + renderType(rhs) + ")", span)
         )
@@ -2600,12 +2600,12 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BImplies -> {
-      if not typeEquiv(lhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(lhs) {
         diag.add(
           errorDiagnostic("T0034", "left operand of logical operator must be Bool (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(rhs, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(rhs) {
         diag.add(
           errorDiagnostic("T0034", "right operand of logical operator must be Bool (got " + renderType(rhs) + ")", span)
         )
@@ -2682,7 +2682,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
       inner
     }
     case PreNot -> {
-      if not typeEquiv(inner, TyPrim(pt = PtBool)) {
+      if not typeIsBoolOperand(inner) {
         diag.add(errorDiagnostic("T0037", "'not' requires a Bool operand (got " + renderType(inner) + ")", span))
       }
       TyPrim(pt = PtBool)
@@ -6583,6 +6583,17 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
   }
 }
 
+// True when `t` can stand where a `Bool` is required.  `typeEquiv` treats a
+// type variable as a wildcard, but a bare type parameter is not `Bool` for
+// every instantiation, so a condition, clause or operand of that type is
+// rejected (#8332).
+func typeIsBoolOperand(t: in Type): Bool {
+  match t {
+    case TyVar(_) -> false
+    case _ -> typeEquiv(t, TyPrim(pt = PtBool))
+  }
+}
+
 // A quantifier's `where` guard and body are propositions (#8322): T0132,
 // the contract-clause type error, when either is not `Bool`.  An operand
 // already in error, or one that never yields, was reported where it fails.
@@ -6592,7 +6603,7 @@ func requireQuantifierBool(diag: in List[Diagnostic], kw: in String, part: in St
     case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
     case _ -> false
   }
-  if not reported and not typeEquiv(t, TyPrim(pt = PtBool)) {
+  if not reported and not typeIsBoolOperand(t) {
     val article = if kw == "exists" { "an " } else { "a " }
     diag.add(errorDiagnostic("T0132", article + kw + " " + part + " must be Bool (got " + renderType(t) + ")", sp))
   }
@@ -12204,12 +12215,14 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
         (isList and name == "removeAt" and argCount == 1) or
         (isMap and name == "add" and argCount == 2)
       val isSet = targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set")
-      // Membership tests are `Bool` and positions `Int` on every backend, so
-      // a mistyped use (`val s: String = xs.contains(x)`) is reported (#7978).
+      // Membership tests and `remove` (true iff something was removed) are
+      // `Bool` and positions `Int` on every backend, so a mistyped use
+      // (`val s: String = xs.contains(x)`) is reported (#7978).
       val boolResult = (argCount == 1) and
         (
           (isList and name == "contains") or (isMap and name == "containsKey") or
-            (isSet and name == "contains")
+            (isSet and name == "contains") or
+            ((isList or isMap or isSet) and name == "remove")
         )
       val intResult = isList and argCount == 1 and (name == "indexOf" or name == "lastIndexOf")
       if unitResult {
@@ -14249,6 +14262,34 @@ func sigExpectedArgTypes(
   expected
 }
 
+// T0208: a generic record constructor written with explicit type arguments
+// (`Box[Long](value = 5)`).  Only generic functions take them; a record's
+// arguments come from the expected type, so the form is indexing a
+// constructor name, which no backend can lower.
+func reportExplicitCtorTypeArgs(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], fn: in Expr): Unit {
+  val inner = match fn.kind { case EIndex(i, _) -> i; case _ -> return }
+  val path = match inner.kind { case EPath(p) -> p; case _ -> return }
+  if path.segments.count == 0 or isNoSourceSpan(fn.span) {
+    return
+  }
+  if scopeHasName(sc, path.segments[0]) or sc.selfFields.containsKey(path.segments[0]) {
+    return
+  }
+  match constructorSymbolOf(tbl, inner) {
+    case Some(ctorSym) -> if ctorIsGeneric(ctorSym) {
+      diag.add(
+        errorDiagnostic(
+          "T0208",
+          "'" + path.segments[path.segments.count - 1] +
+            "' is a generic record constructor and does not take explicit type arguments; give the binding or parameter its type instead, as in `val b: Box[Long] = Box(value = 5)`",
+          fn.span
+        )
+      )
+    }
+    case None -> ()
+  }
+}
+
 // Record the callee `fn` of a call in `typeArgCalleeSites` when it is a
 // generic function under explicit type arguments written as an index of its
 // name (`firstOf[Int]`): the name is not a local or a field of the implicit
@@ -16152,6 +16193,7 @@ func inferExprCore(
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
+      reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
       // (a function-typed FIELD keeps winning over a same-named method).
@@ -16992,8 +17034,12 @@ func inferExprCore(
         case _ -> ()
       }
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
-      recordResultTypeAt(tbl, memberTy, e.span)
-      memberTy
+      val readTy = match memberTy {
+        case TyError -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
+        case _ -> memberTy
+      }
+      recordResultTypeAt(tbl, readTy, e.span)
+      readTy
     }
 
     case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, TyError)

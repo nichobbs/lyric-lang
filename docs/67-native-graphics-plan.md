@@ -533,7 +533,9 @@ them:
 - **Bundling.** `lyric build --target native` places the shared libraries
   next to the executable with an `$ORIGIN` rpath on Linux, and produces an
   `.app` bundle with `@rpath` and an `Info.plist` on macOS. Code signing
-  and notarisation are a later slice.
+  and notarisation are a later slice. The `.app` shipped in D233 (a
+  `[native.app]` manifest table; verified on a macOS runner by
+  `native_libs_self_test.l`).
 - **Windows.** A Windows x86-64 native target (clang targeting
   `x86_64-pc-windows-msvc`, with `lyric-rt`'s POSIX layer ported to Win32
   for files, processes, sockets, threads and TLS). Games without Windows
