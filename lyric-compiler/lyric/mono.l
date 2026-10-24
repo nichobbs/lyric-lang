@@ -10289,6 +10289,9 @@ func operatorBoundToOverflowScalar(decl: in FunctionDecl, subst: in Map[String, 
   }
 }
 
+// Type aliases are already resolved to their targets before monomorphisation
+// (`bounded_generic_ops_self_test.l` pins an alias of `Int` and of `Long`), so
+// the bare primitive names are the only spelling that reaches here.
 func isOverflowScalarTypeExpr(te: in TypeExpr): Bool {
   match te.kind {
     case TRef(p) -> if p.segments.count == 1 {

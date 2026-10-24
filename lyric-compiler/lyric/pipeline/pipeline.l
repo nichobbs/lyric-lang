@@ -1805,6 +1805,9 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
+  // A specialisation is lowered in the consuming file, so whether its
+  // overflow checks apply follows the consumer's profile and package (the
+  // marker on `file0`), not the file the generic was declared in.
   match finishValueRecords(lowerSpecArrays(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), specArrays, opts.primitiveArrays, not opts.arraysAsLists, not hasWrappingArith(file0)), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None

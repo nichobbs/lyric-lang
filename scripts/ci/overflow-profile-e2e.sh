@@ -85,40 +85,40 @@ out_name() {
 fail=0
 for target in "${targets[@]}"; do
   for prog in ovf ovfg; do
-  for profile in debug release; do
-    out="$(out_name "$target" "$profile" "$prog")"
-    mkdir -p "$(dirname "$out")"
-    flags=(--target "$target")
-    if [[ "$profile" == release ]]; then
-      flags+=(--release)
-      if [[ "$target" != native ]]; then
-        flags+=(--shape portable)
+    for profile in debug release; do
+      out="$(out_name "$target" "$profile" "$prog")"
+      mkdir -p "$(dirname "$out")"
+      flags=(--target "$target")
+      if [[ "$profile" == release ]]; then
+        flags+=(--release)
+        if [[ "$target" != native ]]; then
+          flags+=(--shape portable)
+        fi
       fi
-    fi
-    if ! "$lyric_bin" build "${flags[@]}" "$work/$prog.l" -o "$out" >"$work/build.log" 2>&1; then
-      echo "::error::$prog $profile build failed on --target $target" >&2
-      cat "$work/build.log" >&2
-      fail=1
-      continue
-    fi
-    set +e
-    run_built "$target" "$out" >"$work/run.log" 2>&1
-    status=$?
-    set -e
-    if [[ "$profile" == debug ]]; then
-      if [[ $status -eq 0 ]] || ! grep -q "arithmetic overflow: Int addition" "$work/run.log"; then
-        echo "::error::$prog debug build on --target $target did not panic on Int overflow (exit $status)" >&2
-        cat "$work/run.log" >&2
+      if ! "$lyric_bin" build "${flags[@]}" "$work/$prog.l" -o "$out" >"$work/build.log" 2>&1; then
+        echo "::error::$prog $profile build failed on --target $target" >&2
+        cat "$work/build.log" >&2
         fail=1
+        continue
       fi
-    else
-      if [[ $status -ne 0 ]] || ! grep -qx "wrapped -2147483648" "$work/run.log"; then
-        echo "::error::$prog release build on --target $target did not wrap on Int overflow (exit $status)" >&2
-        cat "$work/run.log" >&2
-        fail=1
+      set +e
+      run_built "$target" "$out" >"$work/run.log" 2>&1
+      status=$?
+      set -e
+      if [[ "$profile" == debug ]]; then
+        if [[ $status -eq 0 ]] || ! grep -q "arithmetic overflow: Int addition" "$work/run.log"; then
+          echo "::error::$prog debug build on --target $target did not panic on Int overflow (exit $status)" >&2
+          cat "$work/run.log" >&2
+          fail=1
+        fi
+      else
+        if [[ $status -ne 0 ]] || ! grep -qx "wrapped -2147483648" "$work/run.log"; then
+          echo "::error::$prog release build on --target $target did not wrap on Int overflow (exit $status)" >&2
+          cat "$work/run.log" >&2
+          fail=1
+        fi
       fi
-    fi
-  done
+    done
   done
 done
 

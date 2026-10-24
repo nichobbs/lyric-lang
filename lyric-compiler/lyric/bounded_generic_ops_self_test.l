@@ -248,6 +248,19 @@ test "operand order and a result at the limit are unchanged by the overflow chec
   assertEqualInt(sum2(-5, 3), -2, "negative operands")
 }
 
+alias Count = Int
+
+alias Wide = Long
+
+func addCounts(a: in Count, b: in Count): Count = sum2(a, b)
+
+func mulWide(a: in Wide, b: in Wide): Wide = scale2(a, b)
+
+test "a specialisation at an alias of an integer type panics on overflow" {
+  assertPanicsWith("alias of Int", "arithmetic overflow: Int addition", { -> val _ = addCounts(maxInt(), 1) })
+  assertPanicsWith("alias of Long", "arithmetic overflow: Long multiplication", { -> val _ = mulWide(maxLong(), 2i64) })
+}
+
 test "a distinct type over Int and a record keep their own operators" {
   assertEqual(toString(sum2(Score.from(20), Score.from(22))), "42", "distinct")
   val d = diff2(Pair2(a = 10, b = 20), Pair2(a = 1, b = 2))
