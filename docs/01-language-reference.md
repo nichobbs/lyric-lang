@@ -189,7 +189,11 @@ A `Char` value is a BMP scalar value, never a lone surrogate, and every way of o
 - `s[i]` fails when the code unit at `i` is a surrogate half, the same class of failure as an out-of-range index (§12.1). `s.codeUnitAt(i)` reads the raw unit as an `Int`, and `Std.String.codePointAt`/`codePoints` decode whole scalar values.
 - A `String` is not iterable (`for c in s` is **T0126**); iterate `Std.String.codePoints(s)` instead.
 
-A supplementary-plane code point has no `Char`; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms).
+- A `char` that an auto-FFI call, a static property or field read, or a constant returns is checked at the boundary: a UTF-16 surrogate half panics (`OverflowException` on .NET, `ArithmeticException` on the JVM) instead of becoming a `Char` (D219, #8225). `@externTarget` kernel declarations are audited and not checked.
+
+A supplementary-plane code point has no `Char` today; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms).
+
+**Decided, not yet implemented (D219, #8225):** `Char` becomes a Unicode scalar value, U+0000..U+10FFFF excluding U+D800..U+DFFF, identical on every target and carried as a 32-bit value (native already is). `'😀'` and `'\u{1F600}'` become valid literals (L0022 is retired, L0023 stays); `Std.Char` classification and case mapping, `toInt`, `fromInt`/`tryFromInt` and `.toChar()` work on the whole range; a `Char` above U+FFFF passed to a .NET/JDK `char` parameter panics rather than truncating. Strings stay code-unit indexed (`s.length`, `s[i]`, `s.codeUnitAt(i)`), with `Std.String.scalarAt` and `scalars` decoding whole pairs. Until the staged change lands, the BMP rules above and in §4.1 and §12.1 are what every target enforces.
 
 ### 2.2 Range subtypes
 

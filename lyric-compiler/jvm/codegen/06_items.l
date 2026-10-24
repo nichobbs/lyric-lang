@@ -7423,6 +7423,27 @@ func makeToCharHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = "__lyricToChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
 }
 
+// `static char __lyricFfiChar(char c)`: the identity on a scalar value,
+// throwing `ArithmeticException` (the checked-narrowing failure, as in
+// `__lyricToChar`) when a `char` returned across the auto-FFI boundary is a
+// surrogate half (#8225).
+func makeFfiCharHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LIload(slot = 0))
+  insns.add(LIconst(v = 55296))
+  insns.add(LIfIcmplt(label = "__fc_ok"))
+  insns.add(LIload(slot = 0))
+  insns.add(LIconst(v = 57343))
+  insns.add(LIfIcmpgt(label = "__fc_ok"))
+  emitJvmThrowWithMessage(insns, "java/lang/ArithmeticException", Lex.autoFfiSurrogateCharMessage())
+  insns.add(LLabel(name = "__fc_ok"))
+  insns.add(LIload(slot = 0))
+  insns.add(LIreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JChar)
+  LFunc(flags = 0x0009, name = "__lyricFfiChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 1)
+}
+
 // `static long __lyricToNat(long v)`: `.toNat()` from an `Int`/`Long`,
 // throwing `ArithmeticException` on a negative value (#7661).
 func makeToNatHelperFunc(): LFunc {
@@ -9661,6 +9682,9 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToCharD") {
     fns.add(makeToCharDoubleHelperFunc(funcsClass))
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricFfiChar") {
+    fns.add(makeFfiCharHelperFunc())
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToNat") {
     fns.add(makeToNatHelperFunc())

@@ -1862,6 +1862,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                         case Some(f) -> {
                           val fTy = descStrToJvmType(f.descriptor)
                           insns.add(LGetstatic(owner = ci.binaryName, name = memberName, t = fTy))
+                          match fTy {
+                            case JChar -> guardAutoFfiCharResultJvm(ctx, insns)
+                            case _ -> ()
+                          }
                           return fTy
                         }
                         case None -> ()

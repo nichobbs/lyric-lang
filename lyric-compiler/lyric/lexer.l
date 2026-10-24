@@ -2079,6 +2079,12 @@ pub func stringIndexSurrogateMessage(): String {
     "use s.codeUnitAt(i) or Std.String.codePointAt(s, i)"
 }
 
+// A `char` returned across the auto-FFI boundary that is a surrogate half
+// (#8225); shared by the MSIL and JVM backends:
+pub func autoFfiSurrogateCharMessage(): String {
+  "auto-FFI: the returned char is a UTF-16 surrogate, which is not a Char (docs/01 section 2.1)"
+}
+
 // `.toChar()` on a value that is not a BMP scalar value:
 pub func toCharRangeMessage(): String {
   "toChar: value out of range [0, 65535] or in the UTF-16 surrogate range [55296, 57343]"
