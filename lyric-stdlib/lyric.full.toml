@@ -180,3 +180,13 @@ output_assembly = "Lyric.Stdlib.dll"
 # (Tier 9), which precedes it.
 "Std.AnnotationMetaHost" = "std/_kernel/annotation_meta_host.l"
 "Std.AnnotationMeta"     = "std/annotation_meta.l"
+
+# Tier 14 — the in-process wasm runtime for component plugins (docs/69 §9.3):
+# the shared-library loader kernel, the `@library("lyric_wasmhost")`
+# bindings and `Std.PluginWasm`.  Appended last for the same reason as Tier 8.
+# They use `@library` callbacks (D229), newer than the released seed, and the
+# compiler does not import them (`Std.Plugin` takes the runtime through
+# `PluginHostConfig.componentRuntime` precisely so that it need not).
+"Std.PluginWasmLoad" = "std/_kernel/plugin_wasm_load.l"  # seed: current
+"Std.PluginWasmBind" = "std/_kernel/plugin_wasm_bind.l"  # seed: current
+"Std.PluginWasm"     = "std/plugin_wasm.l"               # seed: current

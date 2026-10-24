@@ -92,6 +92,7 @@ static char* dup_cstr(const char* s) {
     X(wasmtime_error_delete)                          \
     X(wasmtime_error_wasm_trace)                      \
     X(wasm_frame_vec_delete)                          \
+    X(wasmtime_frame_func_name)                       \
     X(wasmtime_store_new)                             \
     X(wasmtime_store_context)                         \
     X(wasmtime_store_limiter)                         \
@@ -255,13 +256,93 @@ LYRIC_WASMHOST_API char* lyric_wasmhost_unavailable_reason(void) {
 
 LYRIC_WASMHOST_API char* lyric_wasmhost_last_error(void) { return dup_cstr(g_last_error); }
 
+/* Appends the lines of `causes` (the text after "Caused by:") to `out`, each without its
+ * "N: " numbering, separated by "; ". */
+static void append_causes(char* out, size_t cap, const char* causes) {
+    size_t n = strlen(out);
+    const char* p = causes;
+    bool first = n == 0;
+    while (*p != '\0' && n + 1 < cap) {
+        const char* eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        const char* line = p;
+        while (len > 0 && (*line == ' ' || *line == '\t')) {
+            line++;
+            len--;
+        }
+        if (len > 2 && line[0] >= '0' && line[0] <= '9') {
+            const char* colon = memchr(line, ':', len);
+            if (colon != NULL && colon - line <= 3) {
+                len -= (size_t)(colon + 1 - line);
+                line = colon + 1;
+                while (len > 0 && *line == ' ') {
+                    line++;
+                    len--;
+                }
+            }
+        }
+        if (len > 0) {
+            int w = snprintf(out + n, cap - n, "%s%.*s", first ? "" : "; ", (int)len, line);
+            if (w < 0) break;
+            n += (size_t)w < cap - n ? (size_t)w : cap - n - 1;
+            first = false;
+        }
+        if (eol == NULL) break;
+        p = eol + 1;
+    }
+}
+
+/* A one-line description of `err`, which it consumes.  A trap is its cause
+ * and the innermost wasm functions ("wasm trap: ... (in abort <- lyric_alloc
+ * <- ...)"); any other error is its first line and its causes. */
 static void take_error_message(wasmtime_error_t* err, char* out, size_t cap) {
     wasm_name_t msg;
     p_wasmtime_error_message(err, &msg);
-    size_t n = msg.size < cap - 1 ? msg.size : cap - 1;
-    if (n > 0) memcpy(out, msg.data, n);
-    out[n] = '\0';
+    char* full = (char*)malloc(msg.size + 1);
+    if (full == NULL) {
+        snprintf(out, cap, "out of memory describing an error");
+        p_wasm_byte_vec_delete(&msg);
+        p_wasmtime_error_delete(err);
+        return;
+    }
+    if (msg.size > 0) memcpy(full, msg.data, msg.size);
+    full[msg.size] = '\0';
     p_wasm_byte_vec_delete(&msg);
+    wasm_frame_vec_t frames;
+    p_wasmtime_error_wasm_trace(err, &frames);
+    const char* caused = strstr(full, "Caused by:");
+    out[0] = '\0';
+    if (frames.size > 0) {
+        if (caused != NULL) {
+            append_causes(out, cap, caused + strlen("Caused by:"));
+        } else {
+            const char* eol = strchr(full, '\n');
+            snprintf(out, cap, "%.*s", eol ? (int)(eol - full) : (int)strlen(full), full);
+        }
+        size_t n = strlen(out);
+        size_t shown = 0;
+        for (size_t i = 0; i < frames.size && shown < 4 && n + 1 < cap; i++) {
+            const wasm_name_t* fname = p_wasmtime_frame_func_name(frames.data[i]);
+            if (fname == NULL || fname->size == 0) continue;
+            int w = snprintf(out + n, cap - n, "%s%.*s", shown == 0 ? " (in " : " <- ", (int)fname->size, fname->data);
+            if (w < 0) break;
+            n += (size_t)w < cap - n ? (size_t)w : cap - n - 1;
+            shown++;
+        }
+        if (shown > 0 && n + 1 < cap) snprintf(out + n, cap - n, ")");
+    } else {
+        const char* eol = strchr(full, '\n');
+        snprintf(out, cap, "%.*s", eol ? (int)(eol - full) : (int)strlen(full), full);
+        if (caused != NULL) {
+            size_t n = strlen(out);
+            if (n + 2 < cap) {
+                snprintf(out + n, cap - n, ": ");
+                append_causes(out, cap, caused + strlen("Caused by:"));
+            }
+        }
+    }
+    p_wasm_frame_vec_delete(&frames);
+    free(full);
     p_wasmtime_error_delete(err);
 }
 
@@ -907,7 +988,7 @@ static bool base64_decode(const char* s, size_t n, uint8_t** out, size_t* outlen
 /* ── Component value -> JSON ────────────────────────────────────────────── */
 
 typedef struct {
-    char msg[512];
+    char msg[1024];
 } Err;
 
 static void err_set(Err* e, const char* fmt, ...) {
@@ -1351,7 +1432,7 @@ static bool build_record(wasmtime_component_val_t* out, const JNode* j, const wa
         } else {
             ok = build_val(&out->of.record.data[i].val, m, &ft, jget_n(rh, fname, flen), e);
             if (!ok) {
-                char inner[512];
+                char inner[1024];
                 snprintf(inner, sizeof(inner), "%s", e->msg);
                 err_set(e, "%s: %s", key.p, inner);
             }
@@ -1837,7 +1918,7 @@ static bool add_import(Component* c, wasmtime_component_linker_instance_t* li, c
     wasmtime_error_t* err =
         p_wasmtime_component_linker_instance_add_func(li, func, flen, import_callback, (void*)(uintptr_t)c->nimports, NULL);
     if (err != NULL) {
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         set_error("cannot define import %.*s#%.*s: %s", (int)ilen, inst, (int)flen, func, msg);
         return false;
@@ -1850,7 +1931,7 @@ static bool define_instance_imports(Component* c, wasmtime_component_linker_inst
     wasmtime_component_linker_instance_t* li = NULL;
     wasmtime_error_t* err = p_wasmtime_component_linker_instance_add_instance(root, name, nlen, &li);
     if (err != NULL) {
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         set_error("cannot define import instance %.*s: %s", (int)nlen, name, msg);
         return false;
@@ -1951,7 +2032,7 @@ static bool build_linker(Component* c, const wasmtime_component_type_t* cty) {
     }
     wasmtime_error_t* err = p_wasmtime_component_linker_add_wasip2(c->linker);
     if (err != NULL) {
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         set_error("cannot add WASI p2 to the linker: %s", msg);
         return false;
@@ -2032,7 +2113,7 @@ LYRIC_WASMHOST_API int64_t lyric_wasmhost_load(const char* path) {
     wasmtime_error_t* err = p_wasmtime_component_new(g_engine, bytes, len, &c->component);
     free(bytes);
     if (err != NULL) {
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         set_error("'%s' is not a valid component: %s", path, msg);
         free(c);
@@ -2125,7 +2206,7 @@ LYRIC_WASMHOST_API int64_t lyric_wasmhost_instantiate(int64_t component, int64_t
     p_wasi_config_inherit_stderr(wasi);
     wasmtime_error_t* err = p_wasmtime_context_set_wasi(in->ctx, wasi);
     if (err != NULL) {
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         instance_free(in);
         set_error("cannot configure WASI: %s", msg);
@@ -2147,7 +2228,7 @@ LYRIC_WASMHOST_API int64_t lyric_wasmhost_instantiate(int64_t component, int64_t
         p_wasmtime_error_wasm_trace(err, &frames);
         bool trapped = frames.size > 0 || in->host_error[0] != '\0';
         p_wasm_frame_vec_delete(&frames);
-        char msg[512];
+        char msg[1024];
         take_error_message(err, msg, sizeof(msg));
         int64_t code = in->timed_out ? LYRIC_WASMHOST_TIMEOUT : (trapped ? LYRIC_WASMHOST_TRAP : LYRIC_WASMHOST_ERROR);
         if (in->timed_out) {
@@ -2303,7 +2384,7 @@ static char* call_export(Instance* in, const char* name, const char* params_json
             result = envelope_message("invalid", msg);
             ok = false;
         } else if (!build_val(&args[i], m, &pt, hint_param(phints, i), &e)) {
-            char msg[900];
+            char msg[1400];
             snprintf(msg, sizeof(msg), "parameter '%s': %s", key.p, e.msg);
             result = envelope_message("invalid", msg);
             ok = false;
@@ -2327,7 +2408,7 @@ static char* call_export(Instance* in, const char* name, const char* params_json
             in->busy = false;
             running_end();
             if (err != NULL) {
-                char msg[512];
+                char msg[1024];
                 take_error_message(err, msg, sizeof(msg));
                 in->dead = true;
                 if (in->timed_out) {
@@ -2350,14 +2431,14 @@ static char* call_export(Instance* in, const char* name, const char* params_json
                 sb_puts(&sb, "}");
                 wasmtime_error_t* perr2 = p_wasmtime_component_func_post_return(&func, in->ctx);
                 if (perr2 != NULL) {
-                    char msg[512];
+                    char msg[1024];
                     take_error_message(perr2, msg, sizeof(msg));
                     in->dead = true;
                     free(sb.p);
                     result = envelope_message("trap", msg);
                 } else if (!emitted) {
                     free(sb.p);
-                    char msg[600];
+                    char msg[1400];
                     snprintf(msg, sizeof(msg), "the result of '%s' cannot be written as JSON: %s", name, e.msg);
                     result = envelope_message("invalid", msg);
                 } else {

@@ -298,6 +298,7 @@ func describePayload(p: in Option[PluginPayload]): String {
     case None -> "none"
     case Some(pl) -> match pl {
       case WasmPayload(_) -> "wasm"
+      case ComponentPayload(_) -> "component"
       case NativePayload(os, arch, _) -> "native-" + os + "-" + arch
       case ManagedPayload(runtime, _) -> runtime
     }
@@ -307,51 +308,123 @@ func describePayload(p: in Option[PluginPayload]): String {
 test "payload selection order" {
   val all = parseGood().payloads
   assertEqual(
-    describePayload(selectPluginPayload(all, linuxDotnet(), true, true)),
+    describePayload(selectPluginPayload(all, linuxDotnet(), true, true, false)),
     "wasm",
     "wasm preferred and available"
   )
   assertEqual(
-    describePayload(selectPluginPayload(all, linuxDotnet(), true, false)),
+    describePayload(selectPluginPayload(all, linuxDotnet(), true, false, false)),
     "native-linux-x86_64",
     "no wasmtime: native"
   )
   assertEqual(
-    describePayload(selectPluginPayload(all, linuxDotnet(), false, true)),
+    describePayload(selectPluginPayload(all, linuxDotnet(), false, true, false)),
     "native-linux-x86_64",
     "wasm not preferred: native"
   )
   val mac = PluginPlatform(os = "macos", arch = "aarch64", runtime = "jvm")
   assertEqual(
-    describePayload(selectPluginPayload(all, mac, false, false)),
+    describePayload(selectPluginPayload(all, mac, false, false, false)),
     "jvm",
     "no native for the platform: own runtime first"
   )
   val macDotnet = PluginPlatform(os = "macos", arch = "aarch64", runtime = "dotnet")
   assertEqual(
-    describePayload(selectPluginPayload(all, macDotnet, false, false)),
+    describePayload(selectPluginPayload(all, macDotnet, false, false, false)),
     "dotnet",
     "dotnet host: dotnet payload"
   )
   val nativeHost = PluginPlatform(os = "macos", arch = "aarch64", runtime = "native")
   assertEqual(
-    describePayload(selectPluginPayload(all, nativeHost, false, false)),
+    describePayload(selectPluginPayload(all, nativeHost, false, false, false)),
     "dotnet",
     "native host: dotnet before jvm"
   )
   val wasmOnly: List[PluginPayload] = [WasmPayload(wasmModule = "p.wasm")]
   assertEqual(
-    describePayload(selectPluginPayload(wasmOnly, linuxDotnet(), false, true)),
+    describePayload(selectPluginPayload(wasmOnly, linuxDotnet(), false, true, false)),
     "wasm",
     "wasm as a last resort"
   )
   assertEqual(
-    describePayload(selectPluginPayload(wasmOnly, linuxDotnet(), true, false)),
+    describePayload(selectPluginPayload(wasmOnly, linuxDotnet(), true, false, false)),
     "none",
     "wasm only, no wasmtime"
   )
   val none: List[PluginPayload] = newList()
-  assertEqual(describePayload(selectPluginPayload(none, linuxDotnet(), true, true)), "none", "no payloads")
+  assertEqual(describePayload(selectPluginPayload(none, linuxDotnet(), true, true, false)), "none", "no payloads")
+}
+
+test "payload selection with an in-process component runtime" {
+  val withComponent: List[PluginPayload] = [
+    WasmPayload(wasmModule = "p.wasm"),
+    ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec", "p.dll"]),
+    ComponentPayload(component = "p.component.wasm")
+  ]
+  assertEqual(
+    describePayload(selectPluginPayload(withComponent, linuxDotnet(), true, true, true)),
+    "component",
+    "a component comes first when the host can run it in-process"
+  )
+  assertEqual(
+    describePayload(selectPluginPayload(withComponent, linuxDotnet(), false, false, true)),
+    "component",
+    "even when wasm is not preferred"
+  )
+  assertEqual(
+    describePayload(selectPluginPayload(withComponent, linuxDotnet(), true, true, false)),
+    "wasm",
+    "without a component runtime the component is skipped"
+  )
+  val componentOnly: List[PluginPayload] = [ComponentPayload(component = "p.wasm")]
+  assertEqual(
+    describePayload(selectPluginPayload(componentOnly, linuxDotnet(), true, true, false)),
+    "none",
+    "a component alone needs the runtime"
+  )
+}
+
+test "component payloads parse, serialise and refuse to launch as a command" {
+  val text = variant(
+    "{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}",
+    "{\"mode\":\"component\",\"component\":\"plugin.component.wasm\"}"
+  )
+  match parsePluginManifest(text) {
+    case Ok(m) -> {
+      match m.payloads[0] {
+        case ComponentPayload(file) -> assertEqual(file, "plugin.component.wasm", "component file")
+        case _ -> assertTrue(false, "payload 0 is a component")
+      }
+      val again = writeValue(pluginManifestToJson(m))
+      assertTrue(again.contains("\"mode\":\"component\""), "serialised mode")
+      assertTrue(again.contains("\"component\":\"plugin.component.wasm\""), "serialised file")
+      match pluginLaunchCommand(m.payloads[0], "/plugins/p", None, 1024i64) {
+        case Ok(_) -> assertTrue(false, "a component has no command")
+        case Err(e) -> assertTrue(e.contains("in the host's process"), "the refusal says why")
+      }
+    }
+    case Err(issue) -> assertTrue(false, "component manifest rejected: " + issue.message)
+  }
+  expectInvalid(
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"../x.wasm\"}"),
+    "component",
+    "a component path must stay inside the plugin"
+  )
+  expectInvalid(
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"x.bin\"}"),
+    "must be a .wasm file",
+    "a component is a .wasm file"
+  )
+}
+
+test "WIT names round-trip as the component shape writes them" {
+  assertEqual(pluginWitName("noteToolSummarize"), "note-tool-summarize", "camel case")
+  assertEqual(pluginWitName("Editor.Api.WorkspaceRead"), "editor-api-workspace-read", "a qualified capability")
+  assertEqual(pluginWitName("IOError"), "io-error", "an acronym is one word")
+  assertEqual(pluginWitName("list"), "%list", "a keyword is escaped")
+  assertEqual(pluginCamelName("note-tool-summarize"), "noteToolSummarize", "back to camel case")
+  assertEqual(pluginCamelName("%list"), "list", "the escape is dropped")
+  assertEqual(pluginCamelName("read"), "read", "one word")
 }
 
 test "launch commands resolve paths inside the plugin directory" {
