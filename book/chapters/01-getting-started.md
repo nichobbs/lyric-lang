@@ -452,6 +452,7 @@ Core commands you will use constantly:
 | `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
 | `lyric build --target native <file.l>` | Compile to a self-contained POSIX executable via the LLVM backend + clang |
 | `lyric build --target native --triple wasm32-wasi --shape module\|component <file.l>` | Compile to WebAssembly: a module with JS glue, or a component with a WIT interface (Chapter 32) |
+| `lyric build --target native --shape plugin <file.l>` | Build a trusted plugin's shared library, which a native host loads into its own process (Linux, macOS; Chapter 33) |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute a single file |
 | `lyric run <file.l> --features a,b` | Run with features from the file's `lyric.toml` `[features]` (`--features` with no manifest is `F0049`) |
@@ -468,7 +469,7 @@ Core commands you will use constantly:
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric bindgen` | Generate native FFI bindings (`extern func`, `foreign record`, constants) from a C header with clang |
-| `lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]` | Build a plugin for each target and write its artifact directory `<dir>/<id>-<version>/` (Chapter 33) |
+| `lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]` | Build a plugin for each target and write its artifact directory `<dir>/<id>-<version>/`; `--trusted` adds payloads a trusted host may load into its own process (Chapter 33) |
 | `lyric plugin check <dir>` | Validate a plugin artifact directory |
 | `lyric plugin sdk --api <dir\|file.l\|lyric.toml> --lang csharp\|java\|typescript -o <dir>` | Generate a plugin SDK in another language from a plugin API package |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |

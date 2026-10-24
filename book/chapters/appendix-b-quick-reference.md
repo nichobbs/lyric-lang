@@ -817,6 +817,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.JsonRpc` | JSON-RPC 2.0 peer, dotnet and JVM (D204) | `RpcPeer`, `newPeer`, `newPeerWithTimeout`, `runLoop`, `call`, `callWithin`, `notify`, `setServeDuringCall`, `RpcHandler`, `RpcTransport`, `RpcRequest`, `RpcResponse`, `RpcError`, `applicationError`, `isTimeoutError`, `isLocalError`, `parseError`, `invalidRequest`, `methodNotFound`, `invalidParams`, `internalError`, `requestTimedOut` |
 | `Std.JsonRpc.Stdio` | JSON-RPC stdio framings, dotnet and JVM (D204) | `newNdjsonTransport`, `newContentLengthTransport`, `NdjsonTransport`, `ContentLengthTransport`, `newNdjsonTransportOver`, `newContentLengthTransportOver`, `newNdjsonTransportOverProcess`, `newContentLengthTransportOverProcess`, `PipedProcessTransport`, `PipedProcessSource`, `PipedProcessWriter` |
 | `Std.Plugin` | Plugin runtime: hosts on dotnet, the JVM and native, plugins on every target including wasm32-wasi (D207, chapter 33; `@experimental`) | `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `registerPlugin`, `pluginManifests`, `connectionsFor`, `contributionsFor`, `callPlugin`, `stopPlugin`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `ProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`, `GrantPolicy`, `GrantDecision`, `GrantedCapability`, `GrantAllRequested`, `CapabilityProvider`, `CapabilityInfo`, `PluginPointInfo`, `BoundaryError`, `CallError`, `boundaryErrorMessage`, `PluginManifest`, `PluginPayload`, `parsePluginManifest`, `readPluginManifest`, `PluginLoadIssue`, `pluginLoadIssueMessage`, `findWasmtime`, `PluginServer`, `runPlugin`, `callHost` |
+| `Std.Plugin.Trusted` | Trusted (in-process) plugin loading on dotnet, the JVM and native Linux/macOS hosts (D229, chapter 33; `@experimental`) | `trustedPluginLoader()` for `PluginHostConfig.trustedLoader`; a plugin runs in process when the policy answers `GrantDecision(trusted = true)` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
 | `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this); on `--target dotnet` a pure-Lyric sans-IO engine over `System.Net.Sockets`/`SslStream` (the `HttpListener` server was retired, docs/61 §6). Over TLS it advertises `h2` then `http/1.1` via ALPN and serves **HTTP/2** end-to-end through `Std.HttpEngine.H2Conn` when the client offers it, falling back to HTTP/1.1 otherwise — same handlers, no code change (docs/61 §6.4). On `--target native` (N9.3, #6104) the same sans-IO engine runs thread-per-connection over real `pthread_create`d OS threads (native `spawn`/`scope` is not yet real concurrency); HTTP/1.1 only — a negotiated-`h2` TLS connection is closed rather than mis-parsed (N9.5 tracks native h2) — with no `startListener{,Tls}WithLimits`/backpressure cap yet | `startListener`, `startListenerTls` (real TLS + h2 on `--target dotnet`, real TLS on `--target jvm`, real TLS (no h2) on `--target native`; dotnet/native return `InvalidConfig` for a `requireClientCert`-without-`clientCa` mTLS misconfig, docs/61 §6.3), `startListenerWithLimits`/`startListenerTlsWithLimits` (dotnet only — raise the engine's request-size caps, e.g. the default 10 MiB body limit; the JVM server applies the same fixed 10 MiB cap, answering `413`), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders`, `takeConnection` (dotnet and native only: hand an HTTP/1.1 connection to another protocol after an `Upgrade` request, as `Web.addWebSocket` does; the JDK server exposes no raw connection, so on `--target jvm` a WebSocket upgrade goes through Undertow in `lyric-ws` instead), `beginChunkedResponse`/`streamWriteChunk`/`endChunkedResponse` (every target); dotnet/native handshake off the accept loop with `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS` timeouts (`resolveTlsHandshakeTimeoutMs`/`resolveConnectionIdleTimeoutMs`) |
@@ -952,6 +953,7 @@ lyric build --release <file.l>         # optimized, debug info stripped. On --ta
 lyric build --shape portable <file.l>  # framework-dependent (default)
 lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
+lyric build --target native --shape plugin <file.l>  # trusted plugin library lib<stem>.so / .dylib (D229; Linux, macOS)
 lyric build --target native --triple wasm32-wasi --shape module <file.l>  # .wasm + .js glue + .d.ts for a JS host (--shape component builds a WebAssembly component, needs wasm-tools and $LYRIC_WASI_ADAPTER)
                                        # a manifest's own [build] shape = "portable"/"standalone" on
                                        # --target native raises F0043 too (#6268) -- not silently
@@ -1308,9 +1310,10 @@ lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --che
 lyric bindgen ft.h --package Ft.Kernel --allow ft.allow -o ft_windows.l \
   --triple x86_64-pc-windows-msvc --cfg 'target_os = "windows"'                       # a Windows (LLP64) variant
 
-# Plugins (chapter 33, D207)
+# Plugins (chapter 33, D207, D229)
 lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/
 lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm -o <dir>
+lyric plugin pack --targets dotnet,jvm,native --trusted   # also list trusted (in-process) payloads
                                        # one payload per target; every payload's manifest must agree
 lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
@@ -1653,6 +1656,8 @@ span, exactly like `T0120`/`J008`.
 | `N0024` | A variable a closure captures is passed to an `out`/`inout` parameter from inside the closure, on `--target native` (#7891). Native closures capture a variable's value rather than the variable, so the call would write a copy the variable never sees. Pass a variable declared inside the closure, or make the call outside it; a field of a captured record (`h.n`) can be passed. Reported at the argument. |
 | `N0025` | A native build names a Windows triple other than `x86_64-pc-windows-msvc` (for example `x86_64-w64-windows-gnu` or `aarch64-pc-windows-msvc`); the native backend targets Windows x86-64 with the MSVC C runtime and ABI only (docs/67 G9, D205). |
 | `N0026` | An AddressSanitizer build for Windows (`-fsanitize=address`) cannot bundle clang's `clang_rt.asan_dynamic-x86_64.dll` beside the executable: this clang has no such runtime (an LLVM install without compiler-rt), or the copy failed (docs/67 G9, D213). |
+| `N0027` | `--shape plugin` was given a target other than Linux or macOS: a Windows DLL cannot import the runtime from the executable that loads it, and wasm32 has no dynamic loading (docs/69 §10, D229). |
+| `N0028` | `--shape plugin` builds a trusted plugin library from a package with a `@plugin` record, and the package declares none (D229). |
 
 ### Custom source generators (X-series)
 
@@ -1708,7 +1713,7 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0011` | A `@protocol_point` interface with members. |
 | `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records. |
 
-At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D229); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 
