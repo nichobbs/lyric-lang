@@ -55,6 +55,7 @@ fi
 ran=""
 for t in \
   lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l \
+  lyric-compiler/lyric/bounded_generic_ops_self_test.l \
   lyric-compiler/jvm/match_return_defer_jvm_self_test.l \
   lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_free_func_return_jvm_self_test.l \
