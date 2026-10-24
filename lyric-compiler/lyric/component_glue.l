@@ -134,6 +134,11 @@ pub union WitTy {
   case WOption(inner: WitTy)
   case WResult(ok: WitTy, err: WitTy)
   case WList(elem: WitTy)
+  /// `Map[K, V]`: the WIT `list<tuple<k, v>>`, laid out as that list.
+  case WMap(key: WitTy, value: WitTy)
+  /// A plugin handle (`@plugin_handle pub type H = Long`, docs/69 §4.5): the WIT
+  /// `u64`, carrying the handle's `Long` bits.
+  case WHandle(name: String)
   case WTuple(elems: List[WitTy])
   case WRecord(name: String, fields: List[WitField])
   case WVariant(name: String, cases: List[WitCase])
@@ -174,6 +179,8 @@ func lyricTy(t: in WitTy): String {
     case WOption(inner) -> "Option[" + lyricTy(inner) + "]"
     case WResult(ok, err) -> "Result[" + lyricTy(ok) + ", " + lyricTy(err) + "]"
     case WList(elem) -> "List[" + lyricTy(elem) + "]"
+    case WMap(key, value) -> "Map[" + lyricTy(key) + ", " + lyricTy(value) + "]"
+    case WHandle(name) -> name
     case WTuple(elems) -> {
       val parts: List[String] = newList()
       for e in elems {
@@ -193,6 +200,7 @@ func tyKey(t: in WitTy): String {
     case WRecord(name, _) -> "R:" + name
     case WVariant(name, _) -> "V:" + name
     case WEnum(name, _) -> "E:" + name
+    case WHandle(name) -> "H:" + name
     case WTuple(_) -> "T:" + lyricTy(t)
     case _ -> lyricTy(t)
   }
@@ -218,6 +226,9 @@ record PeerPkg {
   records: List[RecordDecl]
   unions: List[UnionDecl]
   enums: List[EnumDecl]
+  /// Its plugin handles: distinct types over `Long` that `Lyric.PluginExpand`
+  /// marked `@__componentHandle` (the WIT `u64`).
+  handles: List[String]
   /// The names of its `pub` (or `internal`) types: the ones another package may name.
   pubs: List[String]
   imports: List[ImportDecl]
@@ -232,6 +243,7 @@ record TypeTable {
   records: List[RecordDecl]
   unions: List[UnionDecl]
   enums: List[EnumDecl]
+  handles: List[String]
   pubs: List[String]
   imports: List[ImportDecl]
   peers: List[PeerPkg]
@@ -244,10 +256,23 @@ func isVisibleOutside(v: in Option[Visibility]): Bool {
   }
 }
 
+/// The marker `Lyric.PluginExpand` puts on a `@plugin_handle` distinct type in a
+/// component build, so the handle crosses as the WIT `u64` (docs/69 §9.3).
+val componentHandleMarker: String = "__componentHandle"
+
+func isComponentHandle(it: in Item, d: in DistinctTypeDecl): Bool {
+  val overLong = match d.underlying.kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Long"
+    case _ -> false
+  }
+  overLong and not hasGenerics(d.generics) and isSome(findAnnotation(it.annotations, componentHandleMarker))
+}
+
 func peerOf(file: in SourceFile): PeerPkg {
   val records: List[RecordDecl] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
+  val handles: List[String] = newList()
   val pubs: List[String] = newList()
   for it in file.items {
     match it.kind {
@@ -255,6 +280,20 @@ func peerOf(file: in SourceFile): PeerPkg {
         records.add(d)
         if isVisibleOutside(it.visibility) {
           pubs.add(d.name)
+        }
+      }
+      case IExposedRec(d) -> {
+        records.add(d)
+        if isVisibleOutside(it.visibility) {
+          pubs.add(d.name)
+        }
+      }
+      case IDistinctType(d) -> {
+        if isComponentHandle(it, d) {
+          handles.add(d.name)
+          if isVisibleOutside(it.visibility) {
+            pubs.add(d.name)
+          }
         }
       }
       case IUnion(d) -> {
@@ -272,7 +311,15 @@ func peerOf(file: in SourceFile): PeerPkg {
       case _ -> ()
     }
   }
-  PeerPkg(pkg = pkgNameOf(file), records = records, unions = unions, enums = enums, pubs = pubs, imports = file.imports)
+  PeerPkg(
+    pkg = pkgNameOf(file),
+    records = records,
+    unions = unions,
+    enums = enums,
+    handles = handles,
+    pubs = pubs,
+    imports = file.imports
+  )
 }
 
 /// The table of `file`, which can also name the `pub` types of `peers` (the
@@ -291,6 +338,7 @@ func tableOf(file: in SourceFile, peers: in List[SourceFile]): TypeTable {
     records = own.records,
     unions = own.unions,
     enums = own.enums,
+    handles = own.handles,
     pubs = own.pubs,
     imports = own.imports,
     peers = others
@@ -312,6 +360,7 @@ func tableOfPeer(peer: in PeerPkg, tbl: in TypeTable): TypeTable {
     records = peer.records,
     unions = peer.unions,
     enums = peer.enums,
+    handles = peer.handles,
     pubs = peer.pubs,
     imports = peer.imports,
     peers = others
@@ -408,6 +457,21 @@ func resolveGeneric(head: in String, args: in List[TypeArg], tbl: in TypeTable, 
       }
     }
   }
+  if head == "Map" {
+    match typeArgAt(args, 0) {
+      case None -> return failTy("Map needs two type arguments")
+      case Some(keyTe) -> match typeArgAt(args, 1) {
+        case None -> return failTy("Map needs two type arguments")
+        case Some(valueTe) -> match resolveValueTy(keyTe, tbl, depth + 1) {
+          case Err(e) -> return failTy(e)
+          case Ok(keyT) -> match resolveValueTy(valueTe, tbl, depth + 1) {
+            case Err(e) -> return failTy(e)
+            case Ok(valueT) -> return okTy(WMap(key = keyT, value = valueT))
+          }
+        }
+      }
+    }
+  }
   if head == "Result" {
     match typeArgAt(args, 0) {
       case None -> return failTy("Result needs two type arguments")
@@ -460,6 +524,11 @@ func declaresType(name: in String, tbl: in TypeTable): Bool {
       return true
     }
   }
+  for h in tbl.handles {
+    if h == name {
+      return true
+    }
+  }
   false
 }
 
@@ -485,6 +554,11 @@ func resolveDeclared(name: in String, tbl: in TypeTable, depth: in Int): Result[
         return failTy("enum " + name + " has more than 256 cases")
       }
       return okTy(WEnum(name = tbl.qual + name, cases = names))
+    }
+  }
+  for h in tbl.handles {
+    if h == name {
+      return okTy(WHandle(name = tbl.qual + name))
     }
   }
   failTy("the type " + name + " is not a record, union or enum of this package")
@@ -721,8 +795,18 @@ func tupleFields(elems: in List[WitTy]): List[WitField] {
   fields
 }
 
+/// The list of pairs a `Map[K, V]` is carried as.
+func mapAsList(key: in WitTy, value: in WitTy): WitTy {
+  val pair: List[WitTy] = newList()
+  pair.add(key)
+  pair.add(value)
+  WList(elem = WTuple(elems = pair))
+}
+
 func alignOf(t: in WitTy): Int {
   match t {
+    case WMap(k, v) -> alignOf(mapAsList(k, v))
+    case WHandle(_) -> 8
     case WBool -> 1
     case WByte -> 1
     case WInt -> 4
@@ -753,6 +837,8 @@ func alignOf(t: in WitTy): Int {
 
 func sizeOf(t: in WitTy): Int {
   match t {
+    case WMap(k, v) -> sizeOf(mapAsList(k, v))
+    case WHandle(_) -> 8
     case WBool -> 1
     case WByte -> 1
     case WInt -> 4
@@ -820,6 +906,12 @@ func flatOf(t: in WitTy): List[String] {
     case WInt -> r.add("i32")
     case WEnum(_, _) -> r.add("i32")
     case WLong -> r.add("i64")
+    case WHandle(_) -> r.add("i64")
+    case WMap(k, v) -> {
+      for kind in flatOf(mapAsList(k, v)) {
+        r.add(kind)
+      }
+    }
     case WFloat -> r.add("f32")
     case WDouble -> r.add("f64")
     case WUnit -> ()
@@ -878,6 +970,7 @@ func needsFree(t: in WitTy): Bool {
   match t {
     case WString -> true
     case WList(_) -> true
+    case WMap(_, _) -> true
     case WTuple(elems) -> needsFree(WRecord(name = "tuple", fields = tupleFields(elems)))
     case WRecord(_, fields) -> {
       for f in fields {
@@ -944,6 +1037,7 @@ func liftExpr(g: in Gen, t: in WitTy): String {
     case WByte -> "cabiNextI32().toByte()"
     case WInt -> "cabiNextI32()"
     case WLong -> "cabiNextI64()"
+    case WHandle(name) -> name + ".from(cabiNextI64())"
     case WFloat -> "cabiNextF32()"
     case WDouble -> "cabiNextF64()"
     case WUnit -> "()"
@@ -957,6 +1051,7 @@ func loadExpr(g: in Gen, t: in WitTy, ptr: in String): String {
     case WByte -> "cabiLoadU8(" + ptr + ").toByte()"
     case WInt -> "cabiLoadI32(" + ptr + ")"
     case WLong -> "cabiLoadI64(" + ptr + ")"
+    case WHandle(name) -> name + ".from(cabiLoadI64(" + ptr + "))"
     case WFloat -> "cabiLoadF32(" + ptr + ")"
     case WDouble -> "cabiLoadF64(" + ptr + ")"
     case WUnit -> "()"
@@ -970,6 +1065,7 @@ func storeStmt(g: in Gen, t: in WitTy, ptr: in String, v: in String): String {
     case WByte -> "cabiStoreU8(" + ptr + ", " + v + ".toInt())"
     case WInt -> "cabiStoreI32(" + ptr + ", " + v + ")"
     case WLong -> "cabiStoreI64(" + ptr + ", " + v + ")"
+    case WHandle(_) -> "cabiStoreI64(" + ptr + ", " + v + ".value)"
     case WFloat -> "cabiStoreF32(" + ptr + ", " + v + ")"
     case WDouble -> "cabiStoreF64(" + ptr + ", " + v + ")"
     case WUnit -> "()"
@@ -992,6 +1088,7 @@ func lowerFlatStmt(g: in Gen, t: in WitTy, v: in String): String {
     case WByte -> "cabiSetRetI32(" + v + ".toInt())"
     case WInt -> "cabiSetRetI32(" + v + ")"
     case WLong -> "cabiSetRetI64(" + v + ")"
+    case WHandle(_) -> "cabiSetRetI64(" + v + ".value)"
     case WFloat -> "cabiSetRetF32(" + v + ")"
     case WDouble -> "cabiSetRetF64(" + v + ")"
     case WUnit -> "()"
@@ -999,15 +1096,11 @@ func lowerFlatStmt(g: in Gen, t: in WitTy, v: in String): String {
   }
 }
 
-/// What precedes a union case's name: nothing for a union of this package, the
-/// union's package-qualified name for one of another package (a bare case name is
-/// not visible through a package import).
+/// What precedes a union case's name: the union's name, package-qualified for
+/// one of another package (a bare case name is not visible through a package
+/// import, and two unions of one package may share a case name).
 func caseQualifier(unionName: in String): String {
-  if Str.contains(unionName, ".") {
-    unionName + "."
-  } else {
-    ""
-  }
+  unionName + "."
 }
 
 /// The pattern that matches case `i` of the sum type `t`, binding its payload to `x`.
@@ -1221,6 +1314,42 @@ func emitType(g: in Gen, t: in WitTy, id: in Int) {
         }
         lines.add("}")
       }
+    }
+    case WMap(key, value) -> {
+      val asList = mapAsList(key, value)
+      val listTy = lyricTy(asList)
+      val pair: List[WitTy] = newList()
+      pair.add(key)
+      pair.add(value)
+      val pairTy = lyricTy(WTuple(elems = pair))
+      lines.add("func __cabi_tomap_" + n + "(l: " + listTy + "): " + lt + " {")
+      lines.add("  val m: " + lt + " = newMap()")
+      lines.add("  for e in l {")
+      lines.add("    val (k, v) = e")
+      lines.add("    m[k] = v")
+      lines.add("  }")
+      lines.add("  m")
+      lines.add("}")
+      lines.add("func __cabi_tolist_" + n + "(m: " + lt + "): " + listTy + " {")
+      lines.add("  val l: " + listTy + " = newList()")
+      lines.add("  for k in mapKeys(m) {")
+      lines.add("    val e: " + pairTy + " = (k, m[k])")
+      lines.add("    l.add(e)")
+      lines.add("  }")
+      lines.add("  l")
+      lines.add("}")
+      lines.add("func __cabi_lift_" + n + "(): " + lt + " {")
+      lines.add("  __cabi_tomap_" + n + "(" + liftExpr(g, asList) + ")")
+      lines.add("}")
+      lines.add("func __cabi_load_" + n + "(ptr: Int): " + lt + " {")
+      lines.add("  __cabi_tomap_" + n + "(" + loadExpr(g, asList, "ptr") + ")")
+      lines.add("}")
+      lines.add("func __cabi_store_" + n + "(ptr: Int, v: " + lt + "): Unit {")
+      lines.add("  " + storeStmt(g, asList, "ptr", "__cabi_tolist_" + n + "(v)"))
+      lines.add("}")
+      lines.add("func __cabi_free_" + n + "(ptr: Int): Unit {")
+      lines.add("  " + freeStmt(g, asList, "ptr"))
+      lines.add("}")
     }
     case WList(elem) -> {
       val size = sizeOf(elem)
@@ -1530,6 +1659,10 @@ func collectDefs(t: in WitTy, defs: in List[WitTy]): Unit {
   match t {
     case WOption(inner) -> collectDefs(inner, defs)
     case WList(elem) -> collectDefs(elem, defs)
+    case WMap(k, v) -> {
+      collectDefs(k, defs)
+      collectDefs(v, defs)
+    }
     case WTuple(elems) -> {
       for e in elems {
         collectDefs(e, defs)
@@ -2297,12 +2430,14 @@ func witRef(t: in WitTy): String {
     case WByte -> "u8"
     case WInt -> "s32"
     case WLong -> "s64"
+    case WHandle(_) -> "u64"
     case WFloat -> "f32"
     case WDouble -> "f64"
     case WString -> "string"
     case WUnit -> "_"
     case WOption(inner) -> "option<" + witRef(inner) + ">"
     case WList(elem) -> "list<" + witRef(elem) + ">"
+    case WMap(k, v) -> witRef(mapAsList(k, v))
     case WTuple(elems) -> {
       val parts: List[String] = newList()
       for e in elems {
@@ -2673,6 +2808,12 @@ func slotExprs(t: in WitTy, p: in String): List[String] {
     case WEnum(_, _) -> r.add("(int32_t)lyric_cabi_load_u8(" + p + ")")
     case WInt -> r.add("lyric_cabi_load_i32(" + p + ")")
     case WLong -> r.add("lyric_cabi_load_i64(" + p + ")")
+    case WHandle(_) -> r.add("lyric_cabi_load_i64(" + p + ")")
+    case WMap(k, v) -> {
+      for e in slotExprs(mapAsList(k, v), p) {
+        r.add(e)
+      }
+    }
     case WFloat -> r.add("lyric_cabi_load_f32(" + p + ")")
     case WDouble -> r.add("lyric_cabi_load_f64(" + p + ")")
     case WUnit -> ()
