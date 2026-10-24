@@ -1315,6 +1315,10 @@ lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm -o <d
 lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
                                        # generate a plugin SDK for an API package in another language
+lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
+                                       # a lyric-ui widget plugin (Ui.Plugins.WidgetPlugin, D230, chapters 31 and 33);
+                                       # a screen places it with Ui.PluginWidgets.placeWidget / widgetView and
+                                       # runs its calls as effects with Ui.PluginWidgets.Host.runWidgetRequest
 
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
