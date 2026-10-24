@@ -1512,6 +1512,30 @@ test "multi-segment qualified call is not hijacked by a fewer-param same-named g
   )
 }
 
+// The same-arity sibling of #3627: `Build.button("Add", "inc")` names
+// package `Ui.Plugins.Build`'s own non-generic `button(String, String)`, but
+// the only `button` in genDecls is `Ui.Widgets.button[Msg](String, Msg)`,
+// which the arguments fit with `Msg = String`.  The call's qualifier names a
+// different imported package than the generic's, so the call must be left
+// alone; specialising it built a `View` where a `WidgetTree` was expected
+// (an ArrayTypeMismatchException on dotnet).
+test "a qualified call into another imported package is not hijacked by a same-arity generic" {
+  val callerSrc = "package App\nimport Ui.Plugins.Build as Build\nimport Ui.Widgets\n" +
+    "func caller(): Unit {\n  val t = Build.button(\"Add\", \"inc\")\n  val v = Widgets.button(\"Go\", 1)\n}\n"
+  val importedSrc = "package Ui.Widgets\npub func button[Msg](label: in String, msg: in Msg): Msg { msg }\n"
+  val callerRewritten = rewriteFile(parse(callerSrc).file)
+  val importedGen: List[FunctionDecl] = newList()
+  for item in parse(importedSrc).file.items {
+    match item.kind {
+      case IFunc(decl) -> importedGen.add(withOriginPkgMono(decl, "Ui.Widgets"))
+      case _ -> ()
+    }
+  }
+  val res = monoFileWithImports(callerRewritten, importedGen)
+  assertTrue(hasFunc(res.file, "button__Int"), "the generic is still specialised for its own call")
+  assertFalse(hasFunc(res.file, "button__String"), "Build.button is not a call to Ui.Widgets.button")
+}
+
 // Single-segment (unqualified) sibling of #3627 (#3677): the same arity guard
 // applies to the unqualified-call branch of `rewriteExpr`.  An unqualified
 // `assertEq("x","y","z")` (three args) must not be specialised against a

@@ -1,0 +1,18 @@
+# UiPluginE2e.Flaky — a widget plugin that fails, crashes, hangs or answers
+# too much on request, for the plugin-widget end-to-end test (../host,
+# scripts/ci/ui-widget-plugins-e2e.sh).  Not an example to copy.
+
+[package]
+name    = "UiPluginE2e.Flaky"
+version = "1.0.0"
+
+[project]
+name            = "UiPluginE2e.Flaky"
+output_assembly = "FlakyWidgets.dll"
+
+[project.packages]
+"UiPluginE2e.Flaky" = "src/flaky.l"
+
+[dependencies]
+"Ui.Plugins"       = { path = "../.." }
+"Ui.Plugins.Build" = { path = "../../build" }

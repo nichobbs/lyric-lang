@@ -74,6 +74,8 @@ func stdClasses(): Map[String, String] {
   m["Ui.Widgets"] = "pure"
   m["Ui.Routing"] = "pure"
   m["Ui.Grid"] = "pure"
+  m["Ui.PluginWidgets"] = "pure"
+  m["Ui.PluginWidgets.Host"] = "io"
   m["Ui.Host"] = "io"
   m
 }
@@ -204,6 +206,35 @@ test "logic, effects and views may keep data-grid state with Ui.Grid, the domain
   )
   assertEqualInt(ok.count, 0, "no diagnostics, got:\n" + codesText(ok))
   onlyCode(check([src("domain.l", "package Shop.Domain\nimport Ui.Grid\n")]), "Y0001", "domain imports Ui.Grid")
+}
+
+test "plugin widgets: logic, effects and views place them, only effects run their calls" {
+  val ok = check(
+    [
+      src("logic.l", "package Shop.Screens.Edit.Logic\nimport Ui.PluginWidgets\n"),
+      src(
+        "effects.l",
+        "package Shop.Screens.Edit.Effects\nimport Ui.PluginWidgets\nimport Ui.PluginWidgets.Host\n"
+      ),
+      src("view.l", "package Shop.Screens.Edit.View\nimport Ui.PluginWidgets\n")
+    ]
+  )
+  assertEqualInt(ok.count, 0, "no diagnostics, got:\n" + codesText(ok))
+  onlyCode(
+    check([src("logic.l", "package Shop.Screens.Edit.Logic\nimport Ui.PluginWidgets.Host\n")]),
+    "Y0001",
+    "logic runs plugin calls"
+  )
+  onlyCode(
+    check([src("view.l", "package Shop.Screens.Edit.View\nimport Ui.PluginWidgets.Host\n")]),
+    "Y0001",
+    "a view runs plugin calls"
+  )
+  onlyCode(
+    check([src("domain.l", "package Shop.Domain\nimport Ui.PluginWidgets\n")]),
+    "Y0001",
+    "domain imports Ui.PluginWidgets"
+  )
 }
 
 test "a view may not import ports (Y0001)" {
