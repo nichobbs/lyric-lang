@@ -148,6 +148,22 @@ func onThread(x: in Int): Int {
   cbtCallOnThread(f, f, x)
 }
 
+// A local or parameter named like a C binding is called as itself, not as
+// the binding (the D229 call rewrite must not take it for the binding).
+func shadowedBinding(n: in Int): Int {
+  val cbtSum: ((Int) -> Int, Int, Int) -> Int = { f, ud, k -> f(k) + ud }
+  cbtSum({ v: Int -> v * 3 }, 1, n)
+}
+
+func shadowedByParameter(cbtSum: in (Int, Int, Int) -> Int): Int {
+  cbtSum(1, 2, 3)
+}
+
+test "a local or parameter named like a C binding is called as itself" {
+  assertEqualInt(shadowedBinding(4), 13, "the local closure, 4 * 3 + 1")
+  assertEqualInt(shadowedByParameter({ a: Int, b: Int, c: Int -> a + b + c }), 6, "the parameter, 1 + 2 + 3")
+}
+
 test "a callback runs once per call the C function makes" {
   assertEqualInt(sumOfSquares(5), 30, "0 + 1 + 4 + 9 + 16")
   assertEqualInt(countedSum(10), 45010, "sum 45, ten calls")

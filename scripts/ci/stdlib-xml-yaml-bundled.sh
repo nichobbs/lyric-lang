@@ -17,7 +17,7 @@
 # Xml and Yaml APIs is covered by the stdlib emitter test suite.
 # ---------------------------------------------------------------------------
 set -euo pipefail
-lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/net10.0/lyric"
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin"
   exit 1
