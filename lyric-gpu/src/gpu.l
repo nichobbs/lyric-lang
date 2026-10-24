@@ -17,6 +17,7 @@ import Std.Buffer as Buf
 import Std.Encoding
 import Std.Ffi as Ffi
 import Std.String as Str
+import Std.Time as Time
 import Gpu.Kernel.Wgpu
 
 /// A GPU device with its queue, ready for buffers and compute passes.
@@ -165,7 +166,8 @@ val vertexLayoutSize: Long = 40
 
 val bindGroupEntrySize: Long = 56
 
-val waitIterations: Int = 1000000
+// How long a wait for a GPU callback may take before it is reported as timed out.
+val waitMillis: Long = 30000
 
 @library("c")
 @unsafe_ffi
@@ -282,13 +284,14 @@ func onUncapturedError(
 
 @unsafe_ffi
 func waitSlot(instance: Long, device: Long, slot: Slot): Bool {
-  var spins = 0
-  while slot.status == 0 - 1 and spins < waitIterations {
+  val deadline = Time.nowEpochMillis() + waitMillis
+  while slot.status == 0 - 1 and Time.nowEpochMillis() < deadline {
     wgpuInstanceProcessEvents(longToPtr(instance))
     if device != 0 {
-      val _ = wgpuDevicePoll(longToPtr(device), 0, nativeNullPtr())
+      // Blocks until the submitted work is done, so a slow device (a software
+      // rasteriser) is waited for rather than spun past.
+      val _ = wgpuDevicePoll(longToPtr(device), 1, nativeNullPtr())
     }
-    spins = spins + 1
   }
   slot.status != 0 - 1
 }
