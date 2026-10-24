@@ -8,9 +8,9 @@ through phase P3 of §16: the annotations and `Lyric.PluginExpand`
 (`K0000`-`K0012`), `Std.Plugin` process mode on dotnet, JVM and native hosts,
 plugins on every target including wasm32-wasi under `wasmtime run`,
 `lyric plugin pack`/`check`/`sdk` with C#, Java and TypeScript SDKs, and source
-generators (docs/40) as the first plugin point. Protocol points ship as a
-launch-and-hand-over API; phases P4 (the rest) to P6 are open, except for
-trusted (in-process) mode, P6's second half, which shipped in D231 (§10). Extends docs/01
+generators (docs/40) as the first plugin point, protocol points (P4, D228),
+the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
+(in-process) mode (P6's second half, D231, §10); P5 is open. Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -26,7 +26,7 @@ The motivating cases are:
   subprocesses with a hand-written JSON protocol on stdin and stdout, one
   process per annotated type, with no sandbox (Q-SG-005).
 - **UI widgets.** `lyric-ui` (docs/65) has a closed set of semantic widgets.
-  Third-party widgets need a way in.
+  Third-party widgets need a way in (§15.1).
 - **Application plugins.** An editor in the shape of VS Code has extensions,
   menu providers and language servers, each with a different interface and a
   different set of things it may do.
@@ -878,6 +878,42 @@ What changed relative to the pre-D207 docs/40:
 - A generator runs on the build host whatever the consumer's `--target`
   (D150).
 
+### 15.1 Widgets: the `lyric-ui` point
+
+`Ui.Plugins` (`lyric-ui/plugins/`, D230) is the API package of the second
+plugin point, `WidgetPlugin` (docs/65 §6.5):
+
+```lyric
+@plugin_point(version = "1.0", contributions = WidgetContributions)
+pub interface WidgetPlugin {
+  func init(req: in WidgetInit): Result[WidgetStep, WidgetError]
+  func update(req: in WidgetUpdate): Result[WidgetStep, WidgetError]
+  func configure(req: in WidgetConfigure): Result[WidgetStep, WidgetError]
+}
+```
+
+- **State lives in the host.** A `WidgetStep` is the next state (a
+  `JsonValue` the host passes back on the next call), the view and the
+  outcomes. A crashed plugin is restarted on the next call and continues from
+  the last state.
+- **Views cross as `WidgetTree`**, a `Ui.Core.View` without closures: a
+  handler names an event and a message string. `Ui.PluginWidgets` turns a tree
+  into a `View` with host closures that produce `WidgetSignal`s.
+- **Calls are effects** of the embedding screen
+  (`Ui.PluginWidgets.Host.runWidgetRequest`).
+- **No capabilities.** A widget asks its screen for anything else through
+  `WidgetOutcome`s, so it is deterministic and a wasm payload has no access to
+  anything.
+- **The host distrusts the tree.** It bounds the tree, drops unknown
+  properties and unsafe links, and shows an error banner with a Retry button
+  for every failure (the plugin's error, a timeout, a crash, a refused view)
+  over the last good view.
+
+The widgets a plugin offers are its contributions (`WidgetDecl`: name, title,
+description, a JSON Schema of the configuration and a default), listed by
+`widgetCatalog` without starting anything. `examples/plugins/ui-widgets` is a
+plugin and a screen that uses it.
+
 ## 16. Phases
 
 | Phase | Deliverable | Status |
@@ -889,9 +925,9 @@ What changed relative to the pre-D207 docs/40:
 | P2 | `lyric plugin pack`, `check` and `sdk` (C#, Java, TypeScript, JSON Schema), with a plugin per language in CI | Done |
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
-| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open |
+| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open; its prerequisite, C callbacks through `@library` bindings on every host target (wasmtime host functions are C function pointers with a `void *env`), shipped in D229 |
+| P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done |
-| P6 | `lyric-ui` widget point (docs/65) | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode

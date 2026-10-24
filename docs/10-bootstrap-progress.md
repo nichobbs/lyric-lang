@@ -299,6 +299,7 @@ deferred to Phase 3 by design.
 | Renamed selective imports `import P.{f as g}`: `g` names `P.f` in every bare-name position (calls, values, constructors, types, pattern heads), lowered by `Lyric.AliasRewriter` to the qualified form with lexical shadowing; collisions are T0148; T0138 retired (#7564) | **Shipped** | D160 |
 | C bindings on every target: `@library("name") extern func` lowers to P/Invoke on MSIL, a Foreign Function & Memory downcall on the JVM (JDK 22), and a `-l` link flag on native; `NativePtr[T]`/`nativeNullPtr()` type everywhere; T0149–T0151 | **Shipped** | D158 |
 | C memory and C strings on every target: `nativeLoadByte`/`nativeStoreByte` intrinsics (MSIL `ldind`/`stind`, JVM FFM `MemorySegment`, native GEP) and `Std.Ffi` (`allocate`, `release`, `toCString`, `tryFromCString` over libc `malloc`/`free`) | **Shipped** | D161 |
+| C callbacks on every target: a closure passed to a callback parameter of an `@library` binding becomes a C function pointer (MSIL `[UnmanagedCallersOnly]` trampoline with a `GCHandle` userdata, JVM `Linker.upcallStub` over a static trampoline with a handle-table userdata, native synthesised trampoline); `NativeUserdata` on every target; `nativeKeepCallback`/`nativeReleaseCallback` for a callback C keeps; T0184 | **Shipped** | D229 |
 | Desktop webview host (`Ui.Host.Desktop`, docs/65 U5): the web host on a loopback port with a per-run access token, shown in a `webview` window bound through `@library`; MSIL, JVM and native (`-lwebview`), tested in a real window under Xvfb | **Shipped** | D162 |
 | Native dependency pruning: `--target native` lowers the packages of path and workspace dependencies by reachability (record methods, protected types, `impl`s, module `val`s, defaults), so an unreached `@library` extern is not linked and a native `lyric-ui` app needs no `libwebview` | **Shipped** | D218 |
 
@@ -413,6 +414,9 @@ deferred to Phase 3 by design.
   the first plugin point (`Lyric.GeneratorSdk` 2.0, `SourceGenerator` 3.0).
   Protocol points run in supervised sessions with requests routed through
   the plugin's grants, shown by the LSP example (D228).
+  `lyric-ui` widgets come from plugins of point `Ui.Plugins.WidgetPlugin`,
+  whose views cross as `WidgetTree`s and whose state the host keeps
+  (`Ui.PluginWidgets`, D230).
   Trusted in-process mode (D231) loads a plugin the grant policy marks trusted
   into a dotnet, JVM or native (Linux, macOS) host of its own runtime, with
   `Std.Plugin.Trusted`, `trusted` payloads, `--shape plugin` native libraries

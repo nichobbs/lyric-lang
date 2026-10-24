@@ -1,0 +1,49 @@
+# Review — a lyric-ui screen whose rating and tag widgets come from a widget
+# plugin (docs/65 §6.5, docs/69 §16 P6): ../widgets, packed into a plugins
+# directory.
+#
+#   logic    Review.Logic    Model / Msg / Effect / update; plugin calls are effects
+#   effects  Review.Effects  runs the plugin calls (the only I/O)
+#   view     Review.View     places the plugin widgets with widgetView
+#   app      Review.App      loads the plugins, maps URLs to the screen
+#   app      Review          serves it on the web host
+#
+# Test:  lyric test --manifest examples/plugins/ui-widgets/review/lyric.toml
+# Run:   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
+#        lyric run --manifest examples/plugins/ui-widgets/review/lyric.toml -- plugins
+#        then open http://localhost:8080/review
+
+[package]
+name    = "Lyric.Examples.Review"
+version = "1.0.0"
+
+[project]
+name            = "Lyric.Examples.Review"
+output          = "single"
+output_assembly = "Review.dll"
+
+[project.packages]
+"Review.Logic"   = "src/logic.l"
+"Review.Effects" = "src/effects.l"
+"Review.View"    = "src/view.l"
+"Review.App"     = "src/app.l"
+"Review"         = "src/main.l"
+
+[project.tests]
+"Review.Tests" = "tests/review_tests.l"
+
+[layers]
+preset = "ui"
+
+[layers.packages]
+"Review.Logic"   = "logic"
+"Review.Effects" = "effects"
+"Review.View"    = "view"
+
+[dependencies]
+"Lyric.Ui"    = { path = "../../../../lyric-ui" }
+"Ui.Plugins"  = { path = "../../../../lyric-ui/plugins" }
+"Lyric.Forms" = { path = "../../../../lyric-forms" }
+"Lyric.Web"   = { path = "../../../../lyric-web" }
+"Lyric.Ws"    = { path = "../../../../lyric-ws" }
+"Lyric.Auth"  = { path = "../../../../lyric-auth" }

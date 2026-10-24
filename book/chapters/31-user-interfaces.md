@@ -333,6 +333,74 @@ val child: View[ChildMsg] = Picker.view(m.picker)
 val lifted: View[Msg] = mapView(child, { c: ChildMsg -> FromPicker(msg = c) })
 ```
 
+### Widgets from plugins
+
+A widget the built-in set lacks can come from a plugin (chapter 33). The
+plugin runs in its own process, or under wasmtime, and returns its view as
+data; `Ui.PluginWidgets` shows that view with the host's own widgets, so it
+looks like the rest of the screen on every host.
+
+The screen keeps one `PluginWidget` per placed widget in its model, and every
+call to the plugin is an effect:
+
+```lyric
+import Ui.PluginWidgets
+import Ui.PluginWidgets.{PluginWidget, WidgetRef, WidgetSignal, WidgetReply, WidgetChange}
+
+pub union Msg {
+  case FromWidget(signal: WidgetSignal)   // the user touched the widget
+  case Replied(reply: WidgetReply)        // the plugin answered
+}
+
+pub union Effect {
+  case CallWidget(request: WidgetRequest)
+}
+
+pub func init(): Step[Model, Effect] {
+  val c = PluginWidgets.placeWidget("rating", WidgetRef(plugin = "example.ui-widgets", widget = "rating"), cfg)
+  stepAll(Model(rating = c.widget, stars = 0), c.requests.map({ r -> CallWidget(request = r) }))
+}
+
+pub func update(m: in Model, msg: in Msg): Step[Model, Effect] {
+  val change = match msg {
+    case FromWidget(s) -> PluginWidgets.signalWidget(m.rating, s)
+    case Replied(r) -> PluginWidgets.replyWidget(m.rating, r)
+  }
+  // change.widget replaces m.rating; change.requests become effects;
+  // change.outcomes are what the widget tells the screen ("rated", 4)
+  ...
+}
+```
+
+The effects package runs each request, and the view places the widget:
+
+```lyric
+case CallWidget(r) -> Some(value = Replied(reply = runWidgetRequest(runner, r)))   // effects
+widgetView(m.rating, { s: WidgetSignal -> FromWidget(signal = s) })                 // view
+```
+
+`runner` is a `WidgetRunner` made once from a `Std.Plugin` host that has the
+point `widgetPluginPointInfo()`. Give that host a short `callTimeoutMs`,
+since a widget call answers a click.
+
+The plugin keeps nothing between calls. The screen holds the widget's state
+and sends it with each call, so a plugin that crashes is restarted on the
+next call and carries on where it was.
+
+When a call fails, `widgetView` shows an error banner and a Retry button
+above the widget's last view. A call fails when the plugin answers with an
+error, does not answer in time, crashes, is not installed, or returns a view
+too large to show. The rest of the screen keeps working.
+
+A widget cannot navigate, open a dialog or do I/O. It returns outcomes, and
+the screen decides what they mean; the screen changes a widget's
+configuration with `reconfigureWidget`. The `ui` layer preset lets logic and
+views import `Ui.PluginWidgets`, and only effects import
+`Ui.PluginWidgets.Host`.
+
+`examples/plugins/ui-widgets/review` is a complete screen with two plugin
+widgets, and chapter 33 shows how to write the plugin.
+
 ## Forms
 
 `lyric-forms` is independent of any UI. It describes fields, parses the
@@ -685,6 +753,9 @@ The example splits one screen across five packages, one per layer:
 | `Customers.Edit.Effects` | effects | logic, ports |
 | `Customers.Edit.View` | view | logic, domain, `Ui.Widgets`, `Ui.Forms` |
 
+Logic, effects and views may also import `Ui.Routing`, `Ui.Grid` and
+`Ui.PluginWidgets`. Only effects may import `Ui.PluginWidgets.Host`.
+
 Only the composition root (`Customers`) sees every layer. Keeping I/O in
 the effects layer is what makes the logic and view testable without mocks.
 
@@ -726,7 +797,7 @@ the language reference §9.4.
 The library, the forms helpers and the example build and pass their tests
 on both `--target dotnet` and `--target jvm`. The web host serves browsers
 from either runtime, and the desktop host opens its window from either.
-The native target also has a host that draws the screens itself, with no webview (`Ui.Native.Run.run(cfg, route)` in `lyric-ui/native/`, taking the same `route` function): layout, text, focus, a caret and selection, the clipboard and input-method composition are the library's own, and `examples/ui-customers` runs on it unchanged (its composition below the host is `Customers.App`). A multi-line field (`@multiline`, the `textArea` widget) wraps its text to the box, grows with it and scrolls past a limit, and Up and Down move by line. Its accessibility tree (roles, names, values, states and actions for every widget, derived from the same layout) is built in `Ui.Native.Access`; publishing it to a screen reader through AccessKit is still to do.
+The native target also has a host that draws the screens itself, with no webview (`Ui.Native.Run.run(cfg, route)` in `lyric-ui/native/`, taking the same `route` function): layout, text, focus, a caret and selection, the clipboard and input-method composition are the library's own, and `examples/ui-customers` runs on it unchanged (its composition below the host is `Customers.App`). A multi-line field (`@multiline`, the `textArea` widget) wraps its text to the box, grows with it and scrolls past a limit, and Up and Down move by line. Lines break at the Unicode line breaking opportunities, and Hebrew, Arabic and other right to left text is reordered with the Unicode Bidirectional Algorithm: a right to left paragraph is aligned to the right, Left and Right move by screen position, and a selection across a reversed word is one band for each run it touches. Its accessibility tree (roles, names, values, states and actions for every widget, derived from the same layout) is built in `Ui.Native.Access`; publishing it to a screen reader through AccessKit is still to do.
 
 The native target runs the rest of it too: `lyric build --target native` links the example
 and the desktop probe, and the desktop host needs the same `libwebview` as on the

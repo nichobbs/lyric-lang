@@ -19,6 +19,11 @@
 #      runtime into its own process (scripts/ci/plugin-trusted-e2e.sh).
 #   8. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
 #      plugins (scripts/ci/plugin-sdk-e2e.sh).
+#   8. lyric-ui widget plugins (docs/65 §6.5, D230): the Ui.Plugins.Build tests and
+#      the review example's tests on dotnet, then a screen of plugin widgets
+#      against real plugin processes, every pair of a dotnet or JVM host and
+#      a dotnet or JVM plugin (scripts/ci/ui-widget-plugins-e2e.sh). The JVM
+#      unit runs are in scripts/ci/ui-jvm-suites.sh.
 #
 # Native hosts and plugins, the trusted native host included, run in
 # scripts/ci/native-backend-self-tests.sh and the wasm plugin in
@@ -69,3 +74,17 @@ for target in dotnet jvm; do
 done
 
 LYRIC="$lyric_bin" bash scripts/ci/plugin-sdk-e2e.sh
+
+# A dotnet project build links its path dependencies' DLLs from their bin/
+# directories, so the libraries are built first.
+for manifest in lyric-ui/plugins/lyric.toml lyric-ui/plugins/build/lyric.toml lyric-ui/lyric.toml; do
+  "$lyric_bin" build --manifest "$manifest"
+done
+"$lyric_bin" test --manifest lyric-ui/plugins/build/lyric.toml
+"$lyric_bin" test --manifest examples/plugins/ui-widgets/review/lyric.toml
+for host in dotnet jvm; do
+  for plugin in dotnet jvm; do
+    echo "== ui-widget-plugins-e2e: $host host, $plugin plugin"
+    bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" "$host" "$plugin"
+  done
+done

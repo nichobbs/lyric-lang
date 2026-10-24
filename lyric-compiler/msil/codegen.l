@@ -9529,6 +9529,9 @@ func isValueType(ty: in MsilType): Bool {
     case MBool -> true
     case MChar -> true
     case MByte -> true
+    // A `NativePtr[T]` (D158): boxed as `System.IntPtr` when it crosses an
+    // `object` slot, a closure argument or result among them (D229).
+    case MNativeInt -> true
     // An extern BCL struct (System.Guid / System.TimeSpan / ...) is as much a
     // value type as the six primitives: it must be boxed into every object
     // context (Object.Equals for `==`, ToString for interpolation, erased
@@ -9867,6 +9870,7 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MBool -> 0x01000000 + cctx.trBoolean
     case MChar -> 0x01000000 + cctx.trChar
     case MByte -> 0x01000000 + cctx.trByte
+    case MNativeInt -> 0x01000000 + ffiTypeRefMsil(cctx, "System", "IntPtr")
     case MValueTypeRef(code, _) -> 0x01000000 + (code - 1) / 4
     case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
       val tsKey = "box_vtgi_" + msilTypeKeyStr(ty)
@@ -19836,6 +19840,13 @@ pub func lowerCallMsil(
         lowerExprMsil(cctx, fctx, insns, callArgExpr(args[2]))
         insns.add(MStind(ty = MByte))
         return MVoid
+      }
+      // C callbacks (D229).
+      if path.segments.count == 1 and (funcName.startsWith("__lyric_cb_") or funcName == "nativeKeepCallback" or funcName == "nativeReleaseCallback") {
+        match lowerCallbackIntrinsicMsil(cctx, fctx, insns, funcName, args) {
+          case Some(t) -> return t
+          case None -> ()
+        }
       }
       lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, funcName, path, args)
     }
@@ -35104,6 +35115,347 @@ func pinvokeFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in Str
   )
 }
 
+// ── C callbacks (D229) ────────────────────────────────────────────────────────
+// A Lyric closure reaches C as a pair: a trampoline's address for the callback
+// parameter and a pinned handle for the userdata (`Lyric.Pipeline.
+// pipeCBindingsToFuncs` rewrites each call site into the `__lyric_cb_*`
+// intrinsics lowered below).  The trampoline is a static method marked
+// `[UnmanagedCallersOnly]`, so `ldftn` yields an address C calls with the
+// platform convention, with no delegate marshalling stub: the form Native AOT
+// supports and the one `Marshal.GetFunctionPointerForDelegate` cannot match,
+// since a Lyric closure is a generic `Func`/`Action` delegate.  The userdata is
+// a `GCHandle` to the closure: `GCHandle.ToIntPtr` hands C an opaque
+// pointer-sized value, and the trampoline recovers the closure with
+// `GCHandle.FromIntPtr(ud).Target`.  A handle keeps the closure alive until it
+// is freed: at the end of the extern call for a closure passed directly, at
+// `nativeReleaseCallback` for one pinned by `nativeKeepCallback`.
+// A TypeRef row in System.Runtime, cached per bundle.
+func ffiTypeRefMsil(cctx: in CodegenCtx, ns: in String, name: in String): Int {
+  ffiTypeRefInMsil(cctx, ns, name, "System.Runtime")
+}
+
+func ffiTypeRefInMsil(cctx: in CodegenCtx, ns: in String, name: in String, assembly: in String): Int {
+  val key = "ffi_tr:" + assembly + ":" + ns + "." + name
+  match mapGet(cctx.actionTypeRefs, key) {
+    case Some(r) -> r
+    case None -> {
+      val ar = if assembly == "System.Runtime" {
+        cctx.lctx.arRuntime
+      } else {
+        val arKey = "ffi_ar:" + assembly
+        match mapGet(cctx.actionTypeRefs, arKey) {
+          case Some(a) -> a
+          case None -> {
+            val a = ctxAddAssemblyRef(cctx.lctx, assembly, 10, 0)
+            cctx.actionTypeRefs.add(arKey, a)
+            a
+          }
+        }
+      }
+      val row = ctxAddTypeRef(cctx.lctx, ns, name, ar)
+      cctx.actionTypeRefs.add(key, row)
+      row
+    }
+  }
+}
+
+func gcHandleTyMsil(cctx: in CodegenCtx): MsilType {
+  MValueTypeRef(
+    typeRefCode = tdrTypeRef(ffiTypeRefMsil(cctx, "System.Runtime.InteropServices", "GCHandle")),
+    clrFqn = "System.Runtime.InteropServices.GCHandle"
+  )
+}
+
+// A `call` token for one `GCHandle` member: `Alloc(object)`, `ToIntPtr(h)`,
+// `FromIntPtr(p)`, the instance `get_Target()` or the instance `Free()`.
+func gcHandleMemberTokMsil(cctx: in CodegenCtx, member: in String): Int {
+  val key = "ffi_mr:GCHandle." + member
+  match mapGet(cctx.actionTypeRefs, key) {
+    case Some(r) -> return 0x0A000000 + r
+    case None -> ()
+  }
+  val tr = ffiTypeRefMsil(cctx, "System.Runtime.InteropServices", "GCHandle")
+  val gch = gcHandleTyMsil(cctx)
+  val ps: List[MsilType] = newList()
+  val sig = if member == "Alloc" {
+    ps.add(MObject)
+    buildStaticMethodSig(ps, gch)
+  } else if member == "ToIntPtr" {
+    ps.add(gch)
+    buildStaticMethodSig(ps, MNativeInt)
+  } else if member == "FromIntPtr" {
+    ps.add(MNativeInt)
+    buildStaticMethodSig(ps, gch)
+  } else if member == "get_Target" {
+    buildInstanceMethodSig(ps, MObject)
+  } else {
+    buildInstanceMethodSig(ps, MVoid)
+  }
+  val row = ctxAddMemberRef(cctx.lctx, tr, member, "gchandle_" + member, sig)
+  cctx.actionTypeRefs.add(key, row)
+  0x0A000000 + row
+}
+
+// The MemberRef row of `UnmanagedCallersOnlyAttribute::.ctor()`.
+func unmanagedCallersOnlyCtorMsil(cctx: in CodegenCtx): Int {
+  val key = "ffi_mr:UnmanagedCallersOnly.ctor"
+  match mapGet(cctx.actionTypeRefs, key) {
+    case Some(r) -> return r
+    case None -> ()
+  }
+  val tr = ffiTypeRefInMsil(
+    cctx,
+    "System.Runtime.InteropServices",
+    "UnmanagedCallersOnlyAttribute",
+    "System.Runtime.InteropServices"
+  )
+  val noPs: List[MsilType] = newList()
+  val row = ctxAddMemberRef(cctx.lctx, tr, ".ctor", "uco_ctor", buildInstanceMethodSig(noPs, MVoid))
+  cctx.actionTypeRefs.add(key, row)
+  row
+}
+
+// The userdata slot of a `@__cbtrampoline(<slot>)` IFunc, or -1.
+func cbTrampolineSlotMsil(decl: in FunctionDecl): Int {
+  for a in decl.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__cbtrampoline" and a.args.count == 1 {
+      match a.args[0] {
+        case ALiteral(v, _) -> match v { case AVInt(x, _) -> return x.toInt(); case _ -> () }
+        case _ -> ()
+      }
+    }
+  }
+  -1
+}
+
+// Push the closure a callback's userdata handle names (on the stack as a
+// `native int`), through the `GCHandle` local `gchLocal`.
+func emitClosureFromHandleMsil(cctx: in CodegenCtx, insns: in List[MInsn], gchLocal: in Int): Unit {
+  insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "FromIntPtr")))
+  insns.add(MStloc(slot = gchLocal))
+  insns.add(MLdloca(slot = gchLocal))
+  insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "get_Target")))
+}
+
+// The trampoline for one callback parameter: a static
+// `[UnmanagedCallersOnly]` method with the callback's C signature that
+// recovers the closure from the userdata argument and invokes it with the
+// other arguments, boxed for the uniform delegate ABI (#1877).  A `Unit`
+// closure may be an `Action` or a `Func` returning `null`, as an erased
+// function value may (`invokeErasedFuncValueMsil`), so both are handled.  An
+// exception escaping the closure ends the process, as a panic in a C callback
+// does on every target: unwinding through C frames is undefined.
+func cbTrampolineFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, slot: in Int): MFunc {
+  val ps: List[MsilType] = newList()
+  for p in decl.params {
+    ps.add(typeExprToMsilCtx(cctx, p.ty, pkgName))
+  }
+  val ret = match decl.ret {
+    case Some(te) -> {
+      val r = typeExprToMsilCtx(cctx, te, pkgName)
+      if elementTypeByte(r) == 0 {
+        MVoid
+      } else {
+        r
+      }
+    }
+    case None -> MVoid
+  }
+  val locals: List[MsilType] = newList()
+  locals.add(gcHandleTyMsil(cctx))
+  locals.add(MObject)
+  val insns: List[MInsn] = newList()
+  insns.add(MLdarg(slot = slot))
+  emitClosureFromHandleMsil(cctx, insns, 0)
+  insns.add(MStloc(slot = 1))
+  val arity = ps.count - 1
+  val pushArgs: List[MInsn] = newList()
+  var i = 0
+  while i < ps.count {
+    if i != slot {
+      pushArgs.add(MLdarg(slot = i))
+      boxIfNeededMsil(cctx, pushArgs, ps[i])
+    }
+    i = i + 1
+  }
+  match ret {
+    case MVoid -> {
+      val funcL = 1
+      insns.add(MLdloc(slot = 1))
+      match actionTypeOfArityMsil(arity) {
+        case MGenericInstByName(head, targs) -> insns.add(MIsinstGeneric(className = head, typeArgs = targs))
+        case _ -> insns.add(MIsinstByName(className = "System.Action"))
+      }
+      insns.add(MDup)
+      insns.add(MBrFalse(label = funcL))
+      for x in pushArgs {
+        insns.add(x)
+      }
+      insns.add(MCallvirt(methodToken = if arity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, arity) }))
+      insns.add(MRet)
+      insns.add(MLabel(id = funcL))
+      insns.add(MPop)
+      insns.add(MLdloc(slot = 1))
+      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, arity)))
+      for x in pushArgs {
+        insns.add(x)
+      }
+      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, arity)))
+      insns.add(MPop)
+      insns.add(MRet)
+    }
+    case _ -> {
+      insns.add(MLdloc(slot = 1))
+      insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, arity)))
+      for x in pushArgs {
+        insns.add(x)
+      }
+      insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, arity)))
+      materializeBoxedElemMsil(cctx, insns, ret)
+      insns.add(MRet)
+    }
+  }
+  val key = pkgName + "::" + decl.name + "/" + toString(decl.params.count)
+  if not cctx.lctx.unmanagedCallersOnly.containsKey(key) {
+    cctx.lctx.unmanagedCallersOnly.add(key, unmanagedCallersOnlyCtorMsil(cctx))
+  }
+  MFunc(
+    flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+    name = decl.name,
+    params = ps,
+    ret = ret,
+    insns = insns,
+    maxStack = computeMaxStackMsil(insns),
+    locals = locals
+  )
+}
+
+// The text of a string-literal argument the call-site rewrite wrote.
+func cbIntrinsicNameArgMsil(a: in CallArg): String {
+  match callArgExpr(a).kind {
+    case ELiteral(lit) -> match lit { case LString(t) -> t; case _ -> "" }
+    case _ -> ""
+  }
+}
+
+// Whether `ty` is a closure value on the stack: a delegate, or a function
+// value erased to `object`.  Every pointer is a `native int`.
+func isClosureValueMsil(ty: in MsilType): Bool {
+  match ty {
+    case MNativeInt -> false
+    case MObject -> true
+    case MClass(cn) -> cn == "System.Action"
+    case MGenericInstByName(head, _) -> head.startsWith("System.Func`") or head.startsWith("System.Action`")
+    case _ -> false
+  }
+}
+
+// `__lyric_cb_fnptr`, `__lyric_cb_ud`, `__lyric_cb_call` (the C callback call
+// site, see `Lyric.Pipeline.pipeCBindingsToFuncs`) and the
+// `nativeKeepCallback` / `nativeReleaseCallback` intrinsics.  None when
+// `funcName` is none of them.
+func lowerCallbackIntrinsicMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  funcName: in String,
+  args: in List[CallArg],
+): Option[MsilType] {
+  if funcName == "__lyric_cb_fnptr" and args.count == 2 {
+    // The closure argument only fixes the trampoline; C receives its address.
+    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    match argTy {
+      case MVoid -> ()
+      case _ -> insns.add(MPop)
+    }
+    val tramp = cbIntrinsicNameArgMsil(args[1])
+    match mapGet(cctx.funcTokens, fctx.pkgName + "." + tramp) {
+      case Some(tok) -> insns.add(MLdftn(methodToken = tok))
+      case None -> panic("Msil.Codegen ICE: no C callback trampoline '" + tramp + "' in " + fctx.pkgName)
+    }
+    return Some(value = MNativeInt)
+  }
+  if funcName == "__lyric_cb_ud" and args.count == 2 {
+    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    if not isClosureValueMsil(argTy) {
+      return Some(value = argTy)
+    }
+    // A closure passed as the userdata is pinned for the duration of the
+    // call; the slot holds its handle, or zero when nothing was pinned.
+    val hSlot = allocSlotMsil(fctx, cbIntrinsicNameArgMsil(args[1]), MNativeInt)
+    match argTy {
+      case MObject -> {
+        // A value erased to `object` (a generic field, say) may be a
+        // closure or a boxed pointer; only the run-time type tells.
+        val pinL = freshLabelMsil(fctx)
+        val doneL = freshLabelMsil(fctx)
+        insns.add(MDup)
+        insns.add(MIsinst(typeToken = 0x01000000 + ffiTypeRefMsil(cctx, "System", "Delegate")))
+        insns.add(MBrTrue(label = pinL))
+        insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MNativeInt)))
+        insns.add(MLdcI4(v = 0))
+        insns.add(MConvI)
+        emitStoreSlot(insns, hSlot, fctx.paramCount)
+        insns.add(MBr(label = doneL))
+        insns.add(MLabel(id = pinL))
+        insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "Alloc")))
+        insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "ToIntPtr")))
+        insns.add(MDup)
+        emitStoreSlot(insns, hSlot, fctx.paramCount)
+        insns.add(MLabel(id = doneL))
+      }
+      case _ -> {
+        insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "Alloc")))
+        insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "ToIntPtr")))
+        insns.add(MDup)
+        emitStoreSlot(insns, hSlot, fctx.paramCount)
+      }
+    }
+    return Some(value = MNativeInt)
+  }
+  if funcName == "__lyric_cb_call" and args.count >= 1 {
+    val resTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    var i = 1
+    while i < args.count {
+      val name = cbIntrinsicNameArgMsil(args[i])
+      match mapGet(fctx.slots, name) {
+        case Some(hSlot) -> {
+          val skipL = freshLabelMsil(fctx)
+          emitLoadSlot(insns, hSlot, fctx.paramCount)
+          insns.add(MBrFalse(label = skipL))
+          emitLoadSlot(insns, hSlot, fctx.paramCount)
+          emitFreeHandleMsil(cctx, fctx, insns)
+          insns.add(MLabel(id = skipL))
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+    return Some(value = resTy)
+  }
+  if funcName == "nativeKeepCallback" and args.count == 1 {
+    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "Alloc")))
+    insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "ToIntPtr")))
+    return Some(value = MNativeInt)
+  }
+  if funcName == "nativeReleaseCallback" and args.count == 1 {
+    val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    emitFreeHandleMsil(cctx, fctx, insns)
+    return Some(value = MVoid)
+  }
+  None
+}
+
+// Free the `GCHandle` whose `native int` form is on the stack.
+func emitFreeHandleMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn]): Unit {
+  insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "FromIntPtr")))
+  val gSlot = allocSlotMsil(fctx, "__lyric_cb_gch_" + toString(fctx.slotTicker.count), gcHandleTyMsil(cctx))
+  emitStoreSlot(insns, gSlot, fctx.paramCount)
+  insns.add(MLdloca(slot = gSlot - fctx.paramCount))
+  insns.add(MCall(methodToken = gcHandleMemberTokMsil(cctx, "Free")))
+}
+
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
   enterTypeScopeOriginMsil(cctx, decl, pkgName)
   val lowered = lowerFuncMsilScoped(cctx, decl, pkgName)
@@ -46015,6 +46367,8 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
           synthesizeGeneratorMsil(cctx, decl, pkgName, items, fns)
         } else if isPinvokeFuncMsil(decl) {
           fns.add(pinvokeFuncMsil(cctx, decl, pkgName))
+        } else if cbTrampolineSlotMsil(decl) >= 0 {
+          fns.add(cbTrampolineFuncMsil(cctx, decl, pkgName, cbTrampolineSlotMsil(decl)))
         } else if closureHostGenericsMsil(decl.annotations).count > 0 {
           // A hosted lambda is an instance method of its generic closure
           // class (#8284), registered where the lambda is built, which is
@@ -48296,6 +48650,25 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       di = di + 1
     }
     ai = ai + 1
+  }
+  // Pass 1b: every artifact's enums, before any member signature is encoded.
+  // An enum is an I4 in a signature only once `enumTypeNames` knows it, so a
+  // function of one artifact naming another artifact's enum
+  // (`Ui.PluginWidgets.hostKind(Ui.Plugins.NodeKind)`) was encoded with a
+  // class reference when its artifact came first, and the call faulted with
+  // `Method not found`.  Pass 2 registers them again, which is a no-op.
+  var ae = 0
+  while ae < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[ae]
+    if not startsWith(art.packageName, "Std.") {
+      for it in art.source.items {
+        match it.kind {
+          case IEnum(decl) -> registerEnumDeclMsil(cctx, art.packageName, decl)
+          case _ -> ()
+        }
+      }
+    }
+    ae = ae + 1
   }
   // Pass 2: member MemberRef rows (record ctors / fields, free funcs,
   // union cases, impl methods) now that every type's TypeRef exists.

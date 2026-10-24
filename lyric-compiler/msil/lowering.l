@@ -1469,6 +1469,10 @@ pub record LoweringCtx {
   // `<library>\t<symbol>`, and each library's ModuleRef row once added.
   pinvokeTargets: Map[String, String]
   moduleRefRows: Map[String, Int]
+  // C callback trampolines (D229): `<hostClass>::<name>/<arity>` of each
+  // method marked `UnmanagedCallersOnly`, mapped to the attribute
+  // constructor's MemberRef row.
+  unmanagedCallersOnly: Map[String, Int]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1630,7 +1634,8 @@ pub func newLoweringCtxWithVersions(
     allProjFqnKeys = newList(),
     resolvedAssemblyVersions = resolvedAssemblyVersions,
     pinvokeTargets = newMap(),
-    moduleRefRows = newMap()
+    moduleRefRows = newMap(),
+    unmanagedCallersOnly = newMap()
   )
 }
 
@@ -6097,6 +6102,34 @@ func addPinvokeImplMap(ctx: in LoweringCtx, hostClass: in String, f: in MFunc, m
   )
 }
 
+// `[UnmanagedCallersOnly]` on a C callback trampoline (D229), so `ldftn`
+// yields an address C can call with the platform calling convention.  The
+// blob is the attribute's no-argument constructor call: prolog 0x0001 and no
+// named arguments.
+func addUnmanagedCallersOnlyAttr(ctx: in LoweringCtx, hostClass: in String, f: in MFunc, methodRow: in Int): Unit {
+  val key = hostClass + "::" + f.name + "/" + toString(f.params.count)
+  match mapGet(ctx.unmanagedCallersOnly, key) {
+    case Some(ctorRow) -> addUnmanagedCallersOnlyRow(ctx, ctorRow, methodRow)
+    case None -> ()
+  }
+}
+
+func addUnmanagedCallersOnlyRow(ctx: in LoweringCtx, ctorRow: in Int, methodRow: in Int): Unit {
+  val w = bufNew()
+  bufU1(w, 0x01)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  bufU1(w, 0x00)
+  val _ = addCustomAttr(
+    ctx.tables,
+    CustomAttrRow(
+      parent = hcaMethodDef(methodRow),
+      type_ = catMemberRef(ctorRow),
+      value = internBlob(ctx.blobs, "__uco_ctor_call__", bufToList(w))
+    )
+  )
+}
+
 pub func lowerMFuncsToHostClass(
   hostClass: in String,
   funcs: in List[MFunc],
@@ -6257,6 +6290,9 @@ pub func lowerMFuncsToHostClass(
       t,
       MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp)
     )
+    if ctx.discovering.count == 0 {
+      addUnmanagedCallersOnlyAttr(ctx, hostClass, f, mRow)
+    }
     recordPredictedMethodRow(ctx, joinTypeFqn(hostClass, "Program"), f.name, f.params.count, mRow)
     fi = fi + 1
   }

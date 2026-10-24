@@ -188,6 +188,42 @@ func run(lib: Text.TextLib, latinPath: String, cjkPath: String): Int {
     return fail("the right-to-left paragraph is not right-aligned")
   }
 
+  // A run of one direction (layoutRun) is shaped in the direction it is given, whatever its
+  // characters are: right to left text is swapped (mirrored) and ordered right to left, left to
+  // right text keeps its order even if it is Hebrew.
+  val closeBracket = Text.shape(latin, ")")[0].glyph
+  val openBracket = Text.shape(latin, "(")[0].glyph
+  val mirrored = Text.layoutRun(chain, "(", true)
+  if mirrored.glyphs.count != 1 or mirrored.glyphs[0].glyph != closeBracket {
+    return fail("a right to left run did not mirror its bracket")
+  }
+  val straight = Text.layoutRun(chain, "(", false)
+  if straight.glyphs.count != 1 or straight.glyphs[0].glyph != openBracket {
+    return fail("a left to right run changed its bracket")
+  }
+  val alefBet = "אב"
+  val alefGlyph = Text.shape(latin, "א")[0].glyph
+  val betGlyph = Text.shape(latin, "ב")[0].glyph
+  val hebrewLtr = Text.layoutRun(chain, alefBet, false)
+  if hebrewLtr.glyphs.count != 2 or hebrewLtr.glyphs[0].glyph != alefGlyph or hebrewLtr.glyphs[1].glyph != betGlyph {
+    return fail("a left to right run of Hebrew was reordered")
+  }
+  val hebrewRtl = Text.layoutRun(chain, alefBet, true)
+  if hebrewRtl.glyphs.count != 2 or hebrewRtl.glyphs[0].glyph != betGlyph or hebrewRtl.glyphs[1].glyph != alefGlyph {
+    return fail("a right to left run of Hebrew was not placed right to left")
+  }
+  val ab = Text.layoutRun(chain, "ab", true)
+  val abGlyphs = Text.shape(latin, "ab")
+  if ab.glyphs.count != 2 or ab.glyphs[0].glyph != abGlyphs[1].glyph {
+    return fail("a right to left run of Latin letters was not placed right to left")
+  }
+  if Text.measureRun(chain, "Hello", false) != Text.runWidth(hello) {
+    return fail("a run is not as wide as its shaped glyphs")
+  }
+  if hebrewRtl.lineCount != 1 {
+    return fail("a run is not one line")
+  }
+
   val pgmPath = Environment.getVarOrDefault("LYRIC_TEXT_RENDER_PGM", "")
   if pgmPath.length > 0 {
     val scene = Text.layoutText(chain, "Hello, Lyric! مرحبا 你好\nwrapped text wraps at the column width, 你好世界", 360.0)
@@ -238,7 +274,7 @@ func run(lib: Text.TextLib, latinPath: String, cjkPath: String): Int {
   }
   Console.println(
     "hello: " + hello.count.toString() + " glyphs, AV kerned, arabic: " + arabic.count.toString() +
-      " glyphs, H ink > 40, fallback + wrap ok"
+      " glyphs, H ink > 40, fallback + wrap ok, runs ok"
   )
   Text.closeFont(latin)
   Text.closeFont(cjk)

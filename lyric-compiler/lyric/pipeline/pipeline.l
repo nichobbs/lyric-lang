@@ -491,15 +491,60 @@ pub record CheckReadyFile {
 /// P/Invoke method on MSIL, a foreign-function downcall on the JVM.  An
 /// extern func without `@library` is left alone (the type checker reports
 /// it, T0149, on every target but native).
+///
+/// C callbacks (D229).  A callback parameter (a function type with a
+/// `NativeUserdata` slot, or a trailing `NativePtr[Byte]`) becomes a
+/// `NativePtr[Byte]`, the C function pointer, and so does a `NativeUserdata`
+/// parameter.  Each callback parameter gets a body-less trampoline
+/// `__lyric_cbt_<f>_<i>` marked `@__cbtrampoline(<slot>)`, whose parameters
+/// are the callback's C signature: the MSIL backend emits it as an
+/// `UnmanagedCallersOnly` method and the JVM backend as the target of an
+/// upcall stub, and either recovers the closure from the userdata slot.
+/// Every call to such a binding in this package is rewritten so the backends
+/// see the adaptation explicitly:
+///
+///   f(cb, ud)  ~>  __lyric_cb_call(f(__lyric_cb_fnptr(cb, "__lyric_cbt_f_0"),
+///                                    __lyric_cb_ud(ud, "__lyric_cbud_3")),
+///                                  "__lyric_cbud_3")
+///
+/// `__lyric_cb_fnptr` evaluates its operand and yields the trampoline's
+/// address.  `__lyric_cb_ud` passes a pointer through unchanged; a closure
+/// it pins for the call (a `GCHandle` on .NET, a handle-table entry on the
+/// JVM) in the named local, and `__lyric_cb_call` releases every such pin
+/// once the C function returns.  Arguments to the other `NativePtr[Byte]`
+/// parameters of a binding are wrapped the same way, since the type checker
+/// admits a closure for any of them (docs/01 §11.6).
 pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
   val items: List[Item] = newList()
+  val adapted: Map[String, List[String]] = newMap()
+  val adaptedParams: Map[String, List[String]] = newMap()
   var changed = false
   for it in file.items {
     match it.kind {
       case IExternFunc(decl) -> match cBindingLibrary(it.annotations) {
         case Some(lib) -> {
           changed = true
-          items.add(cBindingFuncItem(it, decl, lib))
+          val roles = cBindingParamRoles(decl)
+          items.add(cBindingFuncItem(it, cBindingPointerSignature(decl), lib))
+          var pi = 0
+          var needsAdapt = false
+          while pi < roles.count {
+            if roles[pi].length > 0 {
+              needsAdapt = true
+            }
+            if roles[pi].startsWith("__lyric_cbt_") {
+              items.add(cBindingTrampolineItem(decl, decl.params[pi], roles[pi]))
+            }
+            pi = pi + 1
+          }
+          if needsAdapt {
+            adapted.add(decl.name, roles)
+            val names: List[String] = newList()
+            for p in decl.params {
+              names.add(p.name)
+            }
+            adaptedParams.add(decl.name, names)
+          }
         }
         case None -> items.add(it)
       }
@@ -509,7 +554,7 @@ pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
   if not changed {
     return file
   }
-  SourceFile(
+  val converted = SourceFile(
     moduleDoc = file.moduleDoc,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
@@ -517,6 +562,326 @@ pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
     items = items,
     span = file.span
   )
+  if adapted.count == 0 {
+    return converted
+  }
+  val counter = CBindingTempCounter(next = 0)
+  val pkg = file.packageDecl.path.segments
+  mapExprsInFile(converted, { e: Expr -> adaptCBindingCall(e, pkg, adapted, adaptedParams, counter) })
+}
+
+/// The next free suffix for a call's pinned-userdata locals.
+record CBindingTempCounter {
+  var next: Int
+}
+
+/// Each parameter's role at a call of the C binding `decl`: the trampoline's
+/// name for a callback parameter, `"ud"` for a parameter that may receive a
+/// closure as its userdata pointer (`NativePtr[Byte]` or `NativeUserdata`),
+/// and `""` for any other.
+func cBindingParamRoles(decl: in ExternFuncDecl): List[String] {
+  val roles: List[String] = newList()
+  var i = 0
+  while i < decl.params.count {
+    val te = decl.params[i].ty
+    if cBindingCallbackSlot(te) >= 0 {
+      roles.add("__lyric_cbt_" + decl.name + "_" + toString(i))
+    } else if isCBindingUserdataType(te) {
+      roles.add("ud")
+    } else {
+      roles.add("")
+    }
+    i = i + 1
+  }
+  roles
+}
+
+func unparenType(te: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TParen(inner) -> unparenType(inner)
+    case _ -> te
+  }
+}
+
+func isNativeUserdataTypeExpr(te: in TypeExpr): Bool {
+  match unparenType(te).kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == "NativeUserdata"
+    case _ -> false
+  }
+}
+
+func isBytePointerTypeExpr(te: in TypeExpr): Bool {
+  match unparenType(te).kind {
+    case TGenericApp(head, args) -> {
+      if head.segments.count != 1 or head.segments[0] != "NativePtr" or args.count != 1 {
+        return false
+      }
+      match args[0] {
+        case TAType(inner) -> match unparenType(inner).kind {
+          case TRef(ip) -> ip.segments.count == 1 and ip.segments[0] == "Byte"
+          case _ -> false
+        }
+        case TAValue(_) -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func isCBindingUserdataType(te: in TypeExpr): Bool = isNativeUserdataTypeExpr(te) or isBytePointerTypeExpr(te)
+
+/// The userdata slot of a callback type: its first `NativeUserdata`
+/// parameter, else a trailing `NativePtr[Byte]`; -1 when `te` is not a
+/// callback type (the type checker reports a function type without one,
+/// T0181).
+pub func cBindingCallbackSlot(te: in TypeExpr): Int {
+  match unparenType(te).kind {
+    case TFunction(ps, _) -> {
+      var i = 0
+      while i < ps.count {
+        if isNativeUserdataTypeExpr(ps[i]) {
+          return i
+        }
+        i = i + 1
+      }
+      if ps.count > 0 and isBytePointerTypeExpr(ps[ps.count - 1]) {
+        return ps.count - 1
+      }
+      -1
+    }
+    case _ -> -1
+  }
+}
+
+func bytePointerTypeExpr(span: in Span): TypeExpr {
+  val head: List[String] = newList()
+  head.add("NativePtr")
+  val inner: List[String] = newList()
+  inner.add("Byte")
+  val targs: List[TypeArg] = newList()
+  targs.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = inner, span = span)), span = span)))
+  TypeExpr(kind = TGenericApp(head = ModulePath(segments = head, span = span), args = targs), span = span)
+}
+
+/// `decl` with every callback and `NativeUserdata` parameter written as the
+/// `NativePtr[Byte]` it is in C.
+func cBindingPointerSignature(decl: in ExternFuncDecl): ExternFuncDecl {
+  val ps: List[Param] = newList()
+  for p in decl.params {
+    if cBindingCallbackSlot(p.ty) >= 0 or isNativeUserdataTypeExpr(p.ty) {
+      ps.add(
+        Param(
+          mode = p.mode,
+          modeExplicit = p.modeExplicit,
+          name = p.name,
+          ty = bytePointerTypeExpr(p.ty.span),
+          dflt = p.dflt,
+          annotations = p.annotations,
+          span = p.span
+        )
+      )
+    } else {
+      ps.add(p)
+    }
+  }
+  ExternFuncDecl(name = decl.name, params = ps, ret = decl.ret, symbol = decl.symbol, span = decl.span)
+}
+
+/// The trampoline C calls for callback parameter `p` of `decl`: a body-less
+/// function with the callback's C signature (its userdata slot a
+/// `NativePtr[Byte]`), marked `@__cbtrampoline(<slot>)`.
+func cBindingTrampolineItem(decl: in ExternFuncDecl, p: in Param, name: in String): Item {
+  val span = decl.span
+  val slot = cBindingCallbackSlot(p.ty)
+  val cParams: List[Param] = newList()
+  var retTe: Option[TypeExpr] = None
+  match unparenType(p.ty).kind {
+    case TFunction(ps, r) -> {
+      var i = 0
+      while i < ps.count {
+        val pty = if i == slot { bytePointerTypeExpr(ps[i].span) } else { ps[i] }
+        val noAnns: List[Annotation] = newList()
+        cParams.add(
+          Param(
+            mode = p.mode,
+            modeExplicit = false,
+            name = "p" + toString(i),
+            ty = pty,
+            dflt = None,
+            annotations = noAnns,
+            span = span
+          )
+        )
+        i = i + 1
+      }
+      retTe = Some(value = r)
+    }
+    case _ -> ()
+  }
+  val args: List[AnnotationArg] = newList()
+  args.add(ALiteral(value = AVInt(value = slot.toLong(), span = span), span = span))
+  val segs: List[String] = newList()
+  segs.add("__cbtrampoline")
+  val anns: List[Annotation] = newList()
+  anns.add(Annotation(name = ModulePath(segments = segs, span = span), args = args, span = span))
+  val noDocs: List[DocComment] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val fn = FunctionDecl(
+    docComments = noDocs,
+    annotations = anns,
+    visibility = None,
+    isAsync = false,
+    name = name,
+    generics = None,
+    params = cParams,
+    ret = retTe,
+    whereClause = None,
+    contracts = noContracts,
+    body = None,
+    span = span
+  )
+  val noItemAnns: List[Annotation] = newList()
+  Item(docComments = noDocs, annotations = noItemAnns, visibility = None, kind = IFunc(decl = fn), span = span)
+}
+
+/// The userdata slot of a `@__cbtrampoline` IFunc, if it is one.
+pub func cBindingTrampolineSlot(decl: in FunctionDecl): Option[Int] {
+  for a in decl.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__cbtrampoline" and a.args.count == 1 {
+      match a.args[0] {
+        case ALiteral(v, _) -> match v { case AVInt(x, _) -> return Some(value = x.toInt()); case _ -> () }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
+func intrinsicCallExpr(name: in String, args: in List[CallArg], span: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(name)
+  val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = span)), span = span)
+  Expr(kind = ECall(fn = callee, args = args), span = span)
+}
+
+func stringLitExpr(s: in String, span: in Span): Expr = Expr(kind = ELiteral(lit = LString(text = s)), span = span)
+
+func cBindingArgValue(a: in CallArg): Expr {
+  match a {
+    case CANamed(_, v, _) -> v
+    case CAPositional(e) -> e
+  }
+}
+
+func withCBindingArgValue(a: in CallArg, v: in Expr): CallArg {
+  match a {
+    case CANamed(n, _, sp) -> CANamed(name = n, value = v, span = sp)
+    case CAPositional(_) -> CAPositional(expr = v)
+  }
+}
+
+/// Whether `path` names a declaration of package `pkg`: a bare name, or one
+/// qualified by the package's own path.
+func namesOwnPackageItem(path: in ModulePath, pkg: in List[String]): Bool {
+  val n = path.segments.count
+  if n == 0 {
+    return false
+  }
+  if n == 1 {
+    return true
+  }
+  if n - 1 != pkg.count {
+    return false
+  }
+  var k = 0
+  while k < n - 1 {
+    if path.segments[k] != pkg[k] {
+      return false
+    }
+    k = k + 1
+  }
+  true
+}
+
+/// Rewrite one call of an adapted C binding of package `pkg` (see
+/// `pipeCBindingsToFuncs`); any other expression is returned unchanged.
+func adaptCBindingCall(
+  e: in Expr,
+  pkg: in List[String],
+  adapted: in Map[String, List[String]],
+  adaptedParams: in Map[String, List[String]],
+  counter: in CBindingTempCounter,
+): Expr {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(path) -> adaptCBindingCallTo(
+        e,
+        fn,
+        path,
+        args,
+        pkg,
+        adapted,
+        adaptedParams,
+        counter
+      )
+      case _ -> e
+    }
+    case _ -> e
+  }
+}
+
+func adaptCBindingCallTo(
+  e: in Expr,
+  fnExpr: in Expr,
+  path: in ModulePath,
+  args: in List[CallArg],
+  pkg: in List[String],
+  adapted: in Map[String, List[String]],
+  adaptedParams: in Map[String, List[String]],
+  counter: in CBindingTempCounter,
+): Expr {
+  if not namesOwnPackageItem(path, pkg) {
+    return e
+  }
+  val name = path.segments[path.segments.count - 1]
+  val roles = match mapGet(adapted, name) { case Some(r) -> r; case None -> return e }
+  val paramNames = match mapGet(adaptedParams, name) { case Some(pn) -> pn; case None -> return e }
+  val paired = match pairCallArgs(paramNames, 0, args) { case Ok(p) -> p; case Err(_) -> return e }
+  val newArgs: List[CallArg] = newList()
+  for a in args {
+    newArgs.add(a)
+  }
+  val temps: List[CallArg] = newList()
+  var k = 0
+  while k < paired.count {
+    val ai = paired[k]
+    if ai >= 0 and roles[k].length > 0 {
+      val v = cBindingArgValue(args[ai])
+      val wrapArgs: List[CallArg] = newList()
+      wrapArgs.add(CAPositional(expr = v))
+      if roles[k] == "ud" {
+        val tmp = "__lyric_cbud_" + toString(counter.next)
+        counter.next = counter.next + 1
+        wrapArgs.add(CAPositional(expr = stringLitExpr(tmp, v.span)))
+        temps.add(CAPositional(expr = stringLitExpr(tmp, v.span)))
+        newArgs[ai] = withCBindingArgValue(args[ai], intrinsicCallExpr("__lyric_cb_ud", wrapArgs, v.span))
+      } else {
+        wrapArgs.add(CAPositional(expr = stringLitExpr(roles[k], v.span)))
+        newArgs[ai] = withCBindingArgValue(args[ai], intrinsicCallExpr("__lyric_cb_fnptr", wrapArgs, v.span))
+      }
+    }
+    k = k + 1
+  }
+  val call = Expr(kind = ECall(fn = fnExpr, args = newArgs), span = e.span)
+  if temps.count == 0 {
+    return call
+  }
+  val outer: List[CallArg] = newList()
+  outer.add(CAPositional(expr = call))
+  for t in temps {
+    outer.add(t)
+  }
+  intrinsicCallExpr("__lyric_cb_call", outer, e.span)
 }
 
 /// The library an `@library("name")` annotation among `anns` names.

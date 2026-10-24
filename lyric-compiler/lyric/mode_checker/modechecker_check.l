@@ -1615,14 +1615,20 @@ func isNativeNullPtrCall(e: in Expr): Bool {
 }
 
 // `nativeLoadByte(p, offset)` / `nativeStoreByte(p, offset, value)` read
-// and write C memory, so they are placement-gated like `nativeNullPtr`;
+// and write C memory, and `nativeKeepCallback(f)` / `nativeReleaseCallback(p)`
+// pin and unpin a closure as a C pointer (D229), so they are placement-gated
+// like `nativeNullPtr`;
 // their arguments are walked as ordinary expressions (D161).
 func isNativeByteAccessCall(e: in Expr): Bool {
   match e.kind {
     case ECall(fn, _) -> {
       match fn.kind {
         case EPath(path) -> path.segments.count == 1 and
-          (path.segments[0] == "nativeLoadByte" or path.segments[0] == "nativeStoreByte")
+          (
+            path.segments[0] == "nativeLoadByte" or path.segments[0] == "nativeStoreByte" or
+              path.segments[0] == "nativeKeepCallback" or
+              path.segments[0] == "nativeReleaseCallback"
+          )
         case _ -> false
       }
     }
@@ -1635,7 +1641,7 @@ func n0100Placement(ctx: in N0100Ctx, sp: in Span): Unit {
   ctx.diag.add(
     errorDiagnostic(
       "N0100",
-      "NativePtr[T], nativeAddrOf, nativeNullPtr and nativeLoadByte/nativeStoreByte are only allowed in @unsafe_ffi functions and _kernel_native/ packages (function '" +
+      "NativePtr[T], nativeAddrOf, nativeNullPtr, nativeLoadByte/nativeStoreByte and nativeKeepCallback/nativeReleaseCallback are only allowed in @unsafe_ffi functions and _kernel_native/ packages (function '" +
         ctx.fnName +
         "')",
       sp

@@ -2657,7 +2657,10 @@ func decExpr(b: in BT, j: in String, g: in Gen): String {
       }
       "__pluginDec" + n + "(" + j + ")"
     }
-    case BJson -> "Ok(value = " + j + ")"
+    case BJson -> {
+      needPrimHelpers(g)
+      "__pluginDecJson(" + j + ")"
+    }
     case BBytes(sl) -> {
       needPrimHelpers(g)
       g.flags["bytes"] = true
@@ -2920,6 +2923,12 @@ func needPrimHelpers(g: in Gen): Unit {
   f.add("    case JsonValue.JString(s) -> Ok(value = s)")
   f.add("    case _ -> Err(error = \"expected a string, got \" + __pluginKind(j))")
   f.add("  }")
+  f.add("}")
+  f.add("")
+  // A typed function, not an inline `Ok(value = j)`: a `match` on a bare
+  // `Ok` has no error type to infer on native (N0007).
+  f.add("func __pluginDecJson(j: in JsonValue): Result[JsonValue, String] {")
+  f.add("  Ok(value = j)")
   f.add("}")
   f.add("")
   f.add("func __pluginDecUnit(j: in JsonValue): Result[Unit, String] {")
