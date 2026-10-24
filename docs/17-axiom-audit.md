@@ -1098,6 +1098,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
 | `dotnet` | `Std.PluginHost` | `plugin_host.l` | System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts |
+| `dotnet` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | System.Runtime.Loader.AssemblyLoadContext, System.Reflection and System.Threading.Monitor conform to their documented .NET contracts |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
 | `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
 | `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout, System.IO.Stream/MemoryStream, System.Text.Encoding.UTF8 and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
@@ -1127,6 +1128,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |
 | `jvm` | `Std.PluginHost` | `plugin_host.l` | java.lang.System.getProperty conforms to its documented JVM contract |
+| `jvm` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | java.net.URLClassLoader, java.util.jar.JarFile, java.lang.reflect.Method and java.util.concurrent.locks.ReentrantLock conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessPipedHost` | `process_piped_host.l` | java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts |
