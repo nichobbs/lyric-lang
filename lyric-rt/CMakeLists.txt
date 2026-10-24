@@ -38,6 +38,7 @@ add_library(lyric_rt STATIC
     src/lyric_collections.c
     src/lyric_async.c
     src/lyric_parallel.c
+    src/lyric_plugin.c
     ${LYRIC_RT_PLATFORM_SRCS}
 )
 target_include_directories(lyric_rt PUBLIC include)
@@ -51,6 +52,7 @@ if(WIN32)
         src/lyric_collections.c
         src/lyric_async.c
         src/lyric_parallel.c
+        src/lyric_plugin.c
         ${LYRIC_RT_PLATFORM_SRCS}
     )
     set_property(TARGET lyric_rt_md PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")

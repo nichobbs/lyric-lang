@@ -9,8 +9,8 @@ through phase P3 of §16: the annotations and `Lyric.PluginExpand`
 plugins on every target including wasm32-wasi under `wasmtime run`,
 `lyric plugin pack`/`check`/`sdk` with C#, Java and TypeScript SDKs, and source
 generators (docs/40) as the first plugin point, protocol points (P4, D228),
-and the `lyric-ui` widget point (the first half of P6, D230, §15.1); P5 and
-trusted mode are open. Extends docs/01
+the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
+(in-process) mode (P6's second half, D231, §10); P5 is open. Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -90,7 +90,7 @@ Every plugin runs in one of three **hosting modes**:
 |---|---|---|---|---|
 | **Process** | Separate OS process; a crash or hang cannot take the host down; unloading is killing the process | All, including Native AOT | Any language, through generated SDKs | Yes |
 | **Wasm** | A wasm32-wasi command module under `wasmtime run` with no directories, environment or network; the plugin reaches the outside only through capability calls | All hosts that can run `wasmtime` (§9.2) | Lyric (`--target native --triple wasm32-wasi`), any language that builds a WASI command | Yes |
-| **Trusted** | None; runs in the host process | Same target as the host; not Native AOT | Lyric, C#, Java | No (§10) |
+| **Trusted** | None; runs in the host process | Same target as the host; dotnet (not Native AOT), JVM (not a native image), native on Linux and macOS | Lyric | P6 (§10) |
 
 The plugin author writes one declaration. Which mode a plugin runs in is
 decided by the artifact the author ships and by the host's policy, never by the
@@ -448,7 +448,11 @@ stopAllPlugins(host)
   `openProtocolSession(host, pointId, pluginId)`, `protocolProcess(session)`
   and `closeProtocolSession(session)` (§4.3), `callCapabilityAs(host, id,
   method, params)`, and `openProtocolPlugin(host, pointId, pluginId)`, the
-  unsupervised form. Manifest helpers:
+  unsupervised form. Trusted mode (§10) adds
+  `GrantDecision.trusted`, `PluginHostConfig.trustedLoader` (with
+  `Std.Plugin.Trusted.trustedPluginLoader()`), the `TrustedLoader`,
+  `TrustedLibrary` and `HostLink` interfaces and `selectTrustedPayload`.
+  Manifest helpers:
   `parsePluginManifest`, `readPluginManifest`, `pluginManifestToJson`,
   `addPluginPayload`, `selectPluginPayload`, `pluginLaunchCommand` and
   `findWasmtime`.
@@ -538,29 +542,179 @@ generates its `PluginServer` and `main`.
   They remain the later optimisation of Q-PLG-001, with no change to plugin
   source.
 
-## 10. Trusted mode (later phase)
+## 10. Trusted mode
 
-_Deferred by D207, with Q-PLG-009. Every v1 plugin runs out of process._
+_Shipped in D231 (phase P6, the trusted half). Resolves Q-PLG-009: nothing
+is unloaded in this mode._
 
-For first-party plugins where the cost of a boundary matters, a plugin can be
-loaded into the host's process:
+For first-party plugins where the cost of a boundary matters, a host can load
+a plugin into its own process. Trusted mode is a third transport for the same
+protocol, not a second plugin model: the plugin keeps its generated server,
+its capability clients, its grants and the host's guards, so the same source
+runs in process, wasm and trusted mode.
 
-- **dotnet:** a plugin assembly in a collectible `AssemblyLoadContext` that
-  resolves the API packages to the host's loaded copies, so the plugin's
-  `EditorExtension` is the host's `EditorExtension`. The entry point is a
-  compiler-generated type with a fixed name; the kernel looks it up by that
-  name and nothing else.
-- **jvm:** a child class loader that delegates the API packages to the parent;
-  discovery through a generated `META-INF/services` entry.
-- **native:** `dlopen` of a shared library and `dlsym` of a fixed versioned
-  symbol, against a shared-library build of `lyric_rt` so ARC state is not
-  duplicated.
+### 10.1 Who decides
 
-The host policy must explicitly mark a plugin trusted; in-process loading is
-never chosen automatically. Native AOT hosts do not offer it. The plugin still
-sees the same capability clients and the same boundary-type rules, so a plugin can move
-between modes without source changes. Unloading is not offered in this mode
-(Q-PLG-009).
+In-process loading is never chosen automatically. It needs both:
+
+- **the host** to hold a loader: `PluginHostConfig.trustedLoader =
+  Some(value = Std.Plugin.Trusted.trustedPluginLoader())`. The loader is a
+  separate package, so a host that never loads plugins in process does not link
+  the loading code at all; and
+- **the grant policy** to mark the plugin trusted: `GrantDecision(..., trusted
+  = true)`.
+
+A plugin the policy trusts runs in process when it ships a trusted payload for
+the host's runtime (and, on native, its os and arch) and the loader can load
+in this process; otherwise it runs from its process or wasm payload with the
+payload order of §9.2. A plugin the policy does not trust always runs from its
+process or wasm payload, and one that ships only a trusted payload is then not
+loaded (`NoUsablePayload`). A protocol plugin (§4.3) is never loaded in
+process: its stdio carries its own protocol. A trusted payload that is chosen
+but cannot be loaded is the load issue `TrustedLoadFailed`, never a silent
+fallback to another mode.
+
+The loader reports why it cannot load (`unavailableReason()`) on a Native AOT
+dotnet host, a GraalVM native-image JVM host, and Windows or wasm32 native
+hosts; such a host runs every plugin out of process.
+
+### 10.2 The call path
+
+A point call is a direct call of the plugin server's `dispatch(method,
+params)`, with the same params object and `{"ok"}`/`{"err"}` result that
+process mode writes to the pipe; the generated `<P>Remote` is unchanged. The
+handshake is the same too: the host attaches the server with the granted
+capabilities (less the revoked ones), reads the methods it reports per point,
+and checks them as it checks a `plugin/hello` answer. A capability call from
+the plugin goes through `callHost` on a connection whose `HostLink` reaches
+the host's capability server directly: the grant lookup, revocation, the
+generated server's guards and the provider are the code a process plugin's
+`cap/...` request runs. There is one dispatcher (D207 Decision 6).
+
+A typed path (the host calling the plugin's implementation of the point
+interface) was considered and rejected: it would need the API package's types
+to be one type on both sides, which a .NET plugin assembly cannot give (it
+carries its own copy) and which would break §11's minor-version rule on the
+JVM; and it would need a second copy of every guard and revocation check. The
+JSON value objects cross directly, with no text, so the remaining cost is
+encoding and decoding them: D231 records the measured cost of a call in
+process and over a pipe.
+
+### 10.3 Artifacts
+
+A trusted payload is a manifest payload of mode `trusted`:
+
+| Payload | Loaded by |
+|---|---|
+| `{"mode": "trusted", "runtime": "dotnet", "library": "<file>.dll"}` | a dotnet host, into its own `AssemblyLoadContext` |
+| `{"mode": "trusted", "runtime": "jvm", "library": "<file>.jar"}` | a JVM host, with its own `URLClassLoader` |
+| `{"mode": "trusted", "os": ..., "arch": ..., "library": "<lib>.so"}` | a native host on that os and arch (`.dylib` on macOS), with `dlopen` |
+
+The managed trusted payloads are the process payloads' own files: the same
+assembly or jar runs either way. A native trusted payload is a shared library
+built with `lyric build --target native --shape plugin`. `lyric plugin pack
+--trusted` adds the trusted payloads for its dotnet, jvm and native targets
+(building the native library), and `lyric plugin check` validates them (the
+suffix for the runtime or os, the file, one trusted payload per runtime or
+os/arch pair).
+
+### 10.4 Entry points
+
+`Lyric.PluginExpand` generates two fixed, versioned functions in the package
+of a `@plugin` record `R`:
+
+- `pub func lyricPluginServerV1(): PluginServer`, a fresh `<R>Server`;
+- `pub func lyricPluginEntryV1(): Unit`, which hands such a server to
+  `offerTrustedPluginServer` of the loading kernel, `Std.PluginTrustedHost`.
+
+The kernels find them by name only:
+
+- **dotnet:** the plugin assembly goes into a non-collectible
+  `AssemblyLoadContext` of its own. `Lyric.Stdlib` resolves to the host's
+  loaded copy (the context does not load it, so the runtime falls back to the
+  default context); every other assembly beside the plugin is loaded into the
+  plugin's context first, so the plugin keeps its own packages and
+  dependencies. The assembly's declared entry point (the generated `main`)
+  names the plugin package's `Program` class, whose `lyricPluginEntryV1` the
+  kernel invokes; the server it offers lands in the host's own copy of the
+  kernel.
+- **jvm:** a `URLClassLoader` over the jar whose parent is the loader of the
+  host's stdlib. Loading is parent first, so every class the host has (the
+  `Std.*` packages, and an API package host and plugin share) is the host's;
+  the plugin's own packages come from the jar, and a plugin package whose
+  name the host also uses is refused. The jar's `Main-Class` (the plugin
+  package's class) names the class whose `lyricPluginEntryV1` is invoked.
+- **native:** `dlopen` of the library and `dlsym` of `lyric_plugin_abi_v1`
+  and `lyric_plugin_entry_v1`, which returns `lyricPluginServerV1()`.
+
+A managed plugin hands its server over through the host's stdlib rather
+than returning it, because Lyric has no downcast (D212): a host cannot turn
+the `object` a reflective call returns into a `PluginServer`, while a plugin
+whose stdlib is the host's own can pass the server to it as the host's type.
+The host holds a lock while the entry point runs and it takes the offer, so
+two threads loading plugins never take each other's server. The payload's own entry point names the class, so no extra
+generated type or `META-INF/services` entry is needed, and the trusted and
+process payloads are one file.
+
+### 10.5 Native specifics
+
+A `--shape plugin` library contains its own compiled copy of the Lyric code it
+uses but no `lyric_rt`: its runtime symbols stay undefined and bind to the
+host executable when the library is opened. A native build that reaches the
+trusted loader links its whole runtime and exports it (`-rdynamic` with the
+archive linked whole on Linux, `-force_load` and `-export_dynamic` on macOS),
+so the process has one heap, one reference-counting discipline and one
+scheduler. The host stays a self-contained executable; there is no shared
+build of `lyric_rt` to install, and a plugin cannot bring a second runtime.
+The library exports only the two entry symbols (a version script on Linux, an
+exported-symbol list on macOS).
+
+Objects cross between the host's code and the plugin's with no copying, so
+both must lay them out alike. Both embed a fingerprint of the Lyric release
+and of the boundary packages' sources (`Std.Core`, `Std.JsonValue`,
+`Std.JsonRpc`, `Std.Plugin`); a library whose `lyric_plugin_abi_v1` differs
+from the host's is refused. The fingerprint does not distinguish two builds of
+an unreleased compiler that differ only in code generation: rebuild plugins
+with the host's compiler.
+
+`--shape plugin` is `N0027` for a target other than Linux or macOS (a Windows
+DLL cannot import the runtime from the executable that loads it, and wasm32
+has no dynamic loading) and `N0028` for a package without a `@plugin` record.
+
+### 10.6 Failure model
+
+A trusted plugin has no isolation. A crash, a call that never returns, a
+stack overflow or a call to exit stops the host, and native has no unwinding
+(D-N-003), so any panic in a native trusted plugin stops the host too. The
+policy's `trusted` flag means accepting that on every target; there is no
+separate native acknowledgement, which would suggest that managed trusted
+mode is safe.
+
+On dotnet and the JVM a panic inside a call is caught: the call fails with
+`ContractViolated`, as a process plugin's `-32603` does, and the plugin keeps
+running. A failure while the plugin is set up (its entry point offers no
+server, `attach` fails or refuses with `NotGranted`, its methods do not match
+the host's point versions) fails it for good: every call returns that error,
+since a restart would repeat it. There is no restart and no call timeout:
+`callTimeoutMs`, `startTimeoutMs`, `maxRestarts` and the backoff settings do
+not apply. Errors that are not panics map as in process mode: the plugin's own
+errors travel in `{"err"}`, and a dispatcher's JSON-RPC error goes through
+`boundaryErrorFromRpc`.
+
+### 10.7 Lifecycle and unloading (Q-PLG-009)
+
+`stopPlugin` drops the plugin's server; the next call takes a fresh one from
+the entry point and attaches it, so the plugin's record state starts again,
+as a restarted process's does. Its library stays loaded, and its static state
+with it.
+
+Nothing is unloaded. A .NET collectible context and a released JVM class
+loader leak through statics, thread locals and any object the host still
+holds, and a native library's code runs the destructors of the objects it
+allocated, which outlive every call into it. The context is therefore not
+collectible, the class loader is never closed and the library is never
+`dlclose`d. A plugin that must be replaceable while the host runs belongs in
+process or wasm mode.
 
 ## 11. Versioning
 
@@ -773,10 +927,12 @@ plugin and a screen that uses it.
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open; its prerequisite, C callbacks through `@library` bindings on every host target (wasmtime host functions are C function pointers with a `void *env`), shipped in D229 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
-| P6 | Trusted mode (§10) | Open |
+| P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
-from one plugin to another, and hot reload in trusted mode.
+from one plugin to another, and unloading or hot reload in trusted mode
+(Q-PLG-009). Trusted plugins written in C# or Java against the generated SDKs
+are not offered: those SDKs implement process mode.
 
 ## 17. Open questions
 
@@ -832,7 +988,9 @@ Whether such points should be required to be wasm-only, batched by design, or
 marked so the host can refuse process-mode payloads for them. Unknown until a
 real point needs it.
 
-**Q-PLG-009: unloading in trusted mode.** _Deferred with trusted mode (D207)._
+**Q-PLG-009: unloading in trusted mode.** _Resolved in D231: trusted mode never
+unloads (§10.7); a plugin that must be replaced while the host runs belongs in
+process or wasm mode._
 Collectible load contexts on .NET
 and class-loader release on the JVM can leak through statics and thread
 locals; native unloading invalidates ARC objects whose code is gone. Whether
@@ -871,6 +1029,9 @@ docs/69 codes (`pluginIssueCode`):
 | K0101 | (load) A plugin's contributions do not decode as the point's contributions type; the generated `<p>ContributionIssues(host)` reports it and `<p>Contributions` leaves the plugin out |
 | K0102 | (load) A grant policy returned a grant wider than the request |
 | K0103 | (load) Major version mismatch between plugin and host |
+
+A trusted payload that the policy chose but that cannot be loaded into the host's
+process is the load issue `TrustedLoadFailed` (no code).
 
 `K0104` (interface hash) is reserved and not checked in v1. `lyric plugin check`
 reports manifest problems as text, without codes.

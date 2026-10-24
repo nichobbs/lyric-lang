@@ -3160,6 +3160,8 @@ the remainder with `.substring` after each match is not.
 **Dependency packages on `--target native` (D218, #8429).** A project's own packages are compiled in full. The packages of its path and workspace dependencies are compiled by reachability, like the bundled standard library: only the code the project's own packages can reach is lowered, so an `extern func` of a dependency that nothing reachable calls does not name its `@library`, the link does not need that library, and the dead code adds nothing to the binary. A record's methods, a protected type and the `impl` of a record are lowered once reachable code calls a method of that name, constructs the type, or (for an `impl`) constructs the record; a module `val` initializer, a field default and an invariant run only when the `val` is read or the record is constructed. A `--shape module` or `--shape component` build exports every `pub` function of every package it links and so lowers dependencies in full. On `--target dotnet` and `--target jvm` a dependency is a compiled library and is unaffected.
 `lyric build <source.l> --target native --triple wasm32-wasi --shape module` (docs/35 W3, D-progress-1029) builds the **browser / JS-host module**: the same wasi-sdk link as the plain wasm32 build, as a reactor module (`-mexec-model=reactor`: no `_start`, an `_initialize` the glue calls, a 1 MiB stack) that exports every `pub func` of the program's own packages whose parameters and result are `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit` (not generic, overloaded or `out`/`inout`; an `async func` over those types is exported too and becomes a Promise-returning JS function), plus `__main_argc_argv` when a `main` exists. The build writes `<name>.wasm` (the default output), `<name>.js` and `<name>.d.ts`: an ES module whose `instantiate(source?, { stdout, stderr, stdin, args, env, imports })` satisfies the module's few `wasi_snapshot_preview1` imports (stdio, clock, random, args, environment; every other call answers `ENOSYS`), returns an object with one typed wrapper per export (`Long` is a `bigint`, a `String` argument is copied into linear memory and released after the call, a returned `String` is copied out and released), `run(args)` for a `main`, and `flush()`. An async export is not blocked on: the glue starts the task, then drives the runtime's cooperative scheduler (`lyric_wasm_poll`) from `setTimeout` until the task completes and resolves the Promise with its decoded result, so `Std.Time.sleepMillis` and concurrent async calls interleave on the host event loop; a synchronous `run()` whose program sleeps blocks through `poll_oneoff` instead (`Atomics.wait` where the host allows it, a spin elsewhere). A `pub func` the glue cannot carry (a record, list or option in its signature, one of the exclusions above, or a name the glue object itself uses: `run`, `memory`, `flush`, `raw`, `then`) is left out with a `W0040` note on stderr; nothing is dropped silently. A panic traps (`WebAssembly.RuntimeError`) with its message already delivered to the `stderr` hook, and the instance must not be reused. A program calls JavaScript through **host imports**: an `extern func` marked `@wasmImport("module")` (the string after `=` is the import name, so `@wasmImport("ui") extern func applyPatch(json: String): Unit = "apply"` imports `ui.apply`) compiles to a wasm import from `module`, with `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` and `Unit` parameters and results (`N0014` otherwise, and for a malformed annotation: no argument, a non-string argument, an empty module name, or a name containing a quote or backslash). The glue wraps the function the host passes as `instantiate(source, { imports: { ui: { apply(json) { ... } } } })`: a String argument arrives as a JS string, a `Long` as a `bigint`, a String result is copied into a fresh Lyric String, and instantiation fails with a `missing host imports` error naming each import the host did not supply; the generated `.d.ts` types the `imports` option (`LyricHostImports`), so a TypeScript host cannot omit one. The imported function's LLVM name is namespaced, so an import named `log` never collides with libm's. `@wasmImport` is accepted only with `--shape module` (`N0015`). A synchronous import is the route for a host call that returns at once (rendering a patch, a clock, logging); an operation that completes later (`fetch`) is a **promise import**, `@wasmImport("module", promise)` (D-progress-1048): the extern is declared with the plain result type, the JS function may return a Promise (or the value), and a call from an `async func` suspends the calling task until it settles, like any async call (`spawn` inside a `scope` runs several at once); a rejected promise panics the waiting code with `host import failed: <message>`, and a call from a synchronous function aborts with a message naming the fix, since the host cannot finish the operation until the call returns. `Std.Http` compiles against a `fetch`-backed kernel twin in the module shape (D-progress-1049): requests go through a built-in `std.http.fetch` promise import (replaceable through `imports['std.http']`), and TLS options and Unix sockets fail every request with `ConnectionFailed` instead of being ignored (`tlsConfigSupported()` is `false`). In `--shape component` a promise import is a WIT `async func` import (D184 item 5): the generated wrapper is an `async func` that stores the arguments into a memory image, makes the async-lowered core call (flat arguments up to 4, else the image's address, and a return area for the result), and awaits a host task that the subtask's `RETURNED` event finishes, then reads the result from the return area; the image and area stay allocated until then, so the host may read the arguments and write the result late. Any parameter and result type a component host import allows works. A host-side rejection is not delivered to the Lyric code, since the Component Model carries a failure only as a `result` in the signature: under jco the pending export call rejects with the host's error instead. A subtask the host cancels fails the awaiting code with `host import was cancelled before it returned`. `--shape module` is valid only with `--target native` (`F0043` otherwise) and needs a wasm32 triple (`N0011`); `--shape component` (docs/35 W4, D-progress-1032) builds a **WebAssembly component** instead: the same reactor link, with a WIT document generated from the exports (one interface per exporting Lyric package, one world `<package>-world`, package `lyric:<package>@<version>`; names kebab-cased, `Int`/`Byte`/`Bool` -> `s32`/`u8`/`bool`, `Long` -> `s64`, `Float`/`Double` -> `f32`/`f64`, `String` -> `string`, `Unit` -> no result; also `Option[T]`/`T?` -> `option<T>`, `Result[T, E]` -> `result<T, E>`, a tuple `(A, B)` (two or more elements, none `Unit`) -> `tuple<a, b>`, `List[T]` -> `list<T>`, and the program's own non-generic records, single-payload-field unions and enums -> `record`/`variant`/`enum`, to any nesting, including `pub` types another package of the project declares, reached through any import form and declared again in the exporting package's interface under their simple names, D-progress-1047) and canonical-ABI lift/lower code compiled in: the compiler appends generated Lyric shims to each exporting package (`__cabi_*`, never written by hand) that read the flat core arguments or linear memory, call the function, and write the result (flattened, or through a return area with a `cabi_post_*` that frees what it allocated), over a small generated C file (`<name>.cabi.c`) of memory and slot primitives; a caller-allocated buffer is released after it is read. The core module is then componentized by `wasm-tools component embed` and `component new --adapt wasi_snapshot_preview1=<adapter>`; the build needs `wasm-tools` (`$WASM_TOOLS` or PATH) and the preview1 reactor adapter (`$LYRIC_WASI_ADAPTER`), and fails with `N0016` when either is missing or a tool step fails. The output is `<name>.wasm` (the component) and `<name>.wit`. An `async func` export is a WIT `async func` (D184): the generated wrappers lift it with the Component Model's callback ABI (`[async-lift]` plus a callback the host re-enters per event), run the cooperative scheduler on each turn, and return the result through `task.return`, so the host is never blocked (jco presents it as a Promise-returning function, wasmtime as a concurrent call). A task asleep in `Std.Time.sleepMillis` parks the call on an async-lowered `wasi:clocks/monotonic-clock@0.3.0` `wait-for`, so a component with an async export imports that WASI 0.3 interface (its WIT is written into the generated `.wit`), and a host needs WASIp3 clocks: wasmtime 49 or later, or jco's output on node 24 or later with `@bytecodealliance/preview3-shim`. Calls into one instance may overlap (D184 slice A3): each call keeps its own record, found from its callbacks through `context.get`, its result is kept for it when the scheduler turn that completes its task belongs to another call (or to a synchronous export), and such a call is woken through a private unit `future` it waits on; outstanding subtasks live in one live call's waitable set and move to another's when it ends. A `TASK_CANCELLED` event is acknowledged and the call runs to completion. `W0041` is no longer issued. An export the component ABI cannot carry (a generic, `out`/`inout` or type-alias-typed signature; a type from another package, a generic or multi-field-case type, a `Unit` parameter or element; or a function whose WIT name collides with a type's, since both share one WIT namespace) is left out with a `W0040` note naming the reason. A host import works in the component shape too: an `extern func` marked `@wasmImport("module")` becomes a function of a WIT interface named for the module (`lyric:<package>/<module>@<version>`, imported by the world), with `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double` and `String` parameters and results (a `Bool` is the WIT `bool`, a `Byte` the `u8`; any other type is an error), and the compiler generates the C function the Lyric extern calls, which lowers the arguments to the canonical form and lifts the result. A host import the shim generator cannot lower (an unsupported type, a module or import name that is not a WIT identifier - a letter first, then letters, digits, `.`, `-` and `_` - or more than 16 flat core parameters) is `N0018`, and two externs for one host function with different signatures, or whose module or function names fold to the same WIT name (`ui.log` and `ui-log`), or a module named like an exported package, is `N0019`. Under `jco transpile` the host supplies each interface with `--map lyric:<package>/<module>@<version>=<file>`. `--wit-out <path>` writes the generated WIT there instead of beside the component, and `--js-bindings` also runs `jco transpile` (`$JCO`, else `jco` on `PATH`) into `<stem>-js/`, with a `--map` for every host import: an `npm:<package>` import is mapped to the package, any other module `m` to `../m.js` (a file the caller writes beside the component); both flags apply to `--shape component` only (`N0021`, also for a `;` in the path) and a missing or failing `jco` is `N0022`. The component runs in any component host (`wasmtime`, `jco transpile` for node and browsers); `[build] shape = "module"` selects it from a manifest, and a `[wasm]` table tunes the build: `version` (the component's WIT package version as `major.minor.patch`; default the project's `[package]` version, else `0.1.0`), `world` (the WIT world name; default `<package>-world`) and `stack` (the shadow-stack size in bytes, a multiple of 16 from 65536 to 67108864; default 1 MiB, for both wasm32 shapes), `--watch` is refused with it, and `N0012`/`N0013` report an unknown shape name and an unwritable glue file.
 
+`lyric build <source.l | --manifest lyric.toml> --target native --shape plugin` (D231, docs/69 §10) builds a **trusted plugin library** from a package with a `@plugin` record: a shared library (`lib<stem>.so` by default, `.dylib` for macOS) compiled with `-fPIC` that exports only `lyric_plugin_entry_v1` (a fresh server from the generated `lyricPluginServerV1`) and `lyric_plugin_abi_v1` (the ABI fingerprint), and links no `lyric_rt`: its runtime references bind to the host executable that loads it. A native program that reaches `Std.Plugin.Trusted`'s loader is linked with its whole runtime archive exported for that (`-rdynamic` and `--whole-archive` on Linux, `-force_load` and `-export_dynamic` on macOS) and carries the host side of the fingerprint. `--shape plugin` is valid only with `--target native` (`F0043` otherwise), is **N0027** for a target other than Linux or macOS (a Windows DLL cannot import the runtime from the executable that loads it; wasm32 has no dynamic loading) and **N0028** for a package without a `@plugin` record.
+
 `--shape aot` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** and **JVM** targets. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references.
 
 `lyric build --release --aot --target jvm` (i.e. `--shape aot` on the JVM target) produces a native binary through GraalVM **`native-image`** instead of `ilc`. The compiler first builds the ordinary bundled JAR (user package + transitive `Std.*` import closure + sibling project packages) into `.lyric-release/`, then runs `native-image` over it; the image entry point comes from the JAR manifest's `Main-Class`, so no wrapper class is generated. Restored `[maven]` dependencies are passed as the image classpath. The build always passes `--no-fallback`: GraalVM otherwise silently emits a "fallback image" that still requires a JVM at runtime, which would make the build exit 0 having produced a non-self-contained artifact. The `native-image` driver is located via `$GRAALVM_HOME/bin`, then `$JAVA_HOME/bin`, then `PATH`; when none has one the build fails with the probed locations and installation instructions. Because `native-image` has no cross-compilation mode, `--rid` may only name the host platform — any other value is rejected up front rather than producing a host binary under a cross-target name. Linux and macOS are supported; Windows (which additionally needs an initialized MSVC environment) is tracked in #1975.
@@ -3676,7 +3678,9 @@ for the capabilities it needs. The compiler pass `Lyric.PluginExpand` turns
 the declarations into ordinary Lyric (codecs, clients, servers, the plugin's
 `main`) before type checking, on every target, so no backend knows about
 plugins. A plugin runs in its own process and talks to the host over JSON-RPC
-on its stdin and stdout; the runtime on both sides is `Std.Plugin`.
+on its stdin and stdout, or, when the host's grant policy marks it trusted, in
+the host's own process with direct calls (§15.7); the runtime on both sides is
+`Std.Plugin`.
 
 There are no plugin keywords: every declaration is an existing item with an
 annotation.
@@ -3859,8 +3863,12 @@ contributions items):
 
 In a package with a `@plugin` record `R`: a `record <R>Server` with
 `impl PluginServer` (builds the manifest, constructs `R` with a client per
-granted capability, routes calls to `pluginDispatch<P>`) and
-`func main(): Int = runPlugin(<R>Server())`.
+granted capability, routes calls to `pluginDispatch<P>`),
+`func main(): Int = runPlugin(<R>Server())`, and the trusted-mode entry points
+(§15.7) `pub func lyricPluginServerV1(): PluginServer` (a fresh `<R>Server`)
+and `pub func lyricPluginEntryV1(): Unit` (hands one to the host loading the
+plugin in process, through `Std.PluginTrustedHost.offerTrustedPluginServer`,
+which the pass imports too).
 
 The pass adds `import Std.Core`, `Std.Collections`, `Std.JsonValue`,
 `Std.JsonRpc` and `Std.Plugin` (deduplicated) to a file it generates code
@@ -3931,8 +3939,8 @@ stopAllPlugins(host)
 
 `PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
 (10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`
-(10000), `shutdownGraceMs` (2000), `preferWasm` (true) and
-`wasmMaxMemoryBytes` (256 MiB).
+(10000), `shutdownGraceMs` (2000), `preferWasm` (true),
+`wasmMaxMemoryBytes` (256 MiB) and `trustedLoader` (`None`; see §15.7).
 
 Loading reads each `<dir>/<id>-<version>/plugin.json`, matches the plugin's
 points (a different major version is `K0103`), asks the policy for grants,
@@ -3997,13 +4005,53 @@ host's user and privileges, and the grant policy and guards limit only what it
 does through capability calls, not what it does directly. Wasm mode is the
 isolation for untrusted code; it caps memory, and a call's CPU time is bounded
 only by the call timeout (a plugin that ignores the cancellation keeps running
-until the host stops it, #8465). A trusted in-process mode, signing and a plugin
-registry are not part of v1 (D207).
+until the host stops it, #8465). Signing and a plugin registry are not part of
+v1 (D207).
+
+**Trusted mode** (docs/69 §10, D231) loads a plugin into the host's own
+process. It needs both a host that holds a loader,
+`PluginHostConfig(..., trustedLoader = Some(value = trustedPluginLoader()))`
+with `import Std.Plugin.Trusted`, and a grant policy that answers
+`GrantDecision(..., trusted = true)` for the plugin; it is never chosen
+otherwise. The plugin must ship a trusted payload for the host:
+
+| Payload | Loaded by |
+|---|---|
+| `{"mode": "trusted", "runtime": "dotnet", "library": "<file>.dll"}` | a dotnet host, into its own non-collectible `AssemblyLoadContext` |
+| `{"mode": "trusted", "runtime": "jvm", "library": "<file>.jar"}` | a JVM host, with a `URLClassLoader` whose parent is the host's |
+| `{"mode": "trusted", "os": ..., "arch": ..., "library": "<lib>.so"}` | a native host on that os and arch (`.dylib` on macOS) |
+
+The dotnet and JVM trusted payloads are the process payloads' own files. A
+native one is built with `lyric build --target native --shape plugin`, a
+shared library without its own runtime: its `lyric_rt` references bind to the
+host executable, which a native build that reaches the loader links with its
+whole runtime exported. The library exports `lyric_plugin_entry_v1` and
+`lyric_plugin_abi_v1`, a fingerprint of the Lyric release and of the
+`Std.Core`, `Std.JsonValue`, `Std.JsonRpc` and `Std.Plugin` sources, which
+must equal the host's. `--shape plugin` is `N0027` for a target other than
+Linux or macOS and `N0028` for a package without a `@plugin` record. The
+plugin keeps its generated server, clients, grants and the host's guards:
+a point call is a direct call of its dispatcher with the same params and
+`{"ok"}`/`{"err"}` objects process mode sends, and its capability calls reach
+the host's grant checks, revocations, guards and providers through
+`HostLink`. A plugin the policy does not trust, a host without a loader, a
+host whose loader cannot load code (`unavailableReason()`: Native AOT, a
+GraalVM native image, Windows or wasm32 native) and a protocol plugin all run
+the plugin from its process or wasm payload in the usual order; a plugin with
+only a trusted payload is then `NoUsablePayload`. A chosen trusted payload
+that cannot be loaded is the load issue `TrustedLoadFailed`. A trusted plugin
+has no isolation: a crash, a hang or (on native, which has no unwinding) any
+panic stops the host; on dotnet and the JVM a panic inside a call fails it
+with `ContractViolated`. There are no restarts and no call timeout.
+`stopPlugin` drops the plugin's server, and the next call attaches a fresh
+one; nothing is ever unloaded. A trusted JVM plugin's own packages must not
+share names with the host's (the class loader delegates to the host first,
+so such a plugin is refused at load).
 
 ### 15.8 `lyric plugin`
 
 ```
-lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]
+lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]
 lyric plugin check <dir>
 lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
 ```
@@ -4016,9 +4064,12 @@ lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -
   toolchain: the .NET SDK, a JDK 21 or later, `clang` for native, and the
   wasi-sdk (`WASI_SDK_PATH`) plus `wasmtime` for wasm. A project with `[maven]`
   dependencies cannot be packed for `jvm`, since a `java -jar` payload cannot
-  load them.
+  load them. `--trusted` also lists trusted payloads (§15.7): the dotnet and
+  jvm payloads themselves, and for `native` a `--shape plugin` library built
+  as `native/lib<name>.so` (`.dylib` on macOS; Linux and macOS only).
 - **`check`** validates an artifact directory (schema, required fields,
-  version spellings, payload forms, payload files present) and prints each
+  version spellings, payload forms including the trusted ones and their file
+  suffixes, payload files present) and prints each
   problem as `<path>: <location>: <message>`.
 - **`sdk`** generates a plugin SDK in C#, Java or TypeScript from an API
   package: the boundary types and codecs, a process-mode server, capability
@@ -4077,7 +4128,8 @@ Compile-time, reported by `Lyric.PluginExpand`:
 | `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records |
 
 Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request)
-and `K0103` (a point major-version mismatch); the generated
+and `K0103` (a point major-version mismatch), and `TrustedLoadFailed` (no
+code) reports a trusted payload that could not be loaded in process; the generated
 `<p>ContributionIssues(host)` returns one carrying `K0101` for each loaded
 plugin whose contributions do not decode as the point's contributions type.
 
@@ -4092,7 +4144,10 @@ plugin whose contributions do not decode as the point's contributions type.
   interrupt a call already running.
 - `--target native` has no unwinding: a panic in a native plugin's method ends
   the plugin process (the host sees `Crashed` and may restart it), and a panic
-  in a native host's capability provider ends the host.
+  in a native host's capability provider ends the host, as does any panic in
+  a trusted native plugin.
+- Trusted mode offers no unloading (docs/69 Q-PLG-009) and loads only Lyric
+  plugins; the C#, Java and TypeScript SDKs implement process mode.
 
 ---
 

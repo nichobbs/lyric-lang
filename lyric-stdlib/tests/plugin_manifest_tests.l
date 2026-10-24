@@ -1,9 +1,12 @@
 //! tests/plugin_manifest_tests.l — Std.Plugin without child processes:
 //! manifest parsing and validation (every rejection), the manifest round
 //! trip, the Q-PLG-004 grant rule, payload selection and launch commands,
-//! loading plugins into a host (`registerPlugin` and every load issue), and
-//! the BoundaryError <-> JSON-RPC error mapping. The end-to-end suite with
-//! a real plugin process is `plugin_e2e_tests.l`.
+//! loading plugins into a host (`registerPlugin` and every load issue), the
+//! BoundaryError <-> JSON-RPC error mapping, and trusted mode (docs/69 §10)
+//! against an in-memory loader and server: trusted payloads, the policy's
+//! `trusted` flag and the fallback to process mode, and the in-process call
+//! path with its capability calls. The end-to-end suites with a real plugin
+//! are `plugin_e2e_tests.l` and `plugin_trusted_e2e_tests.l`.
 @test_module
 package Std.Plugin.ManifestTests
 
@@ -14,6 +17,8 @@ import Std.JsonValue
 import Std.JsonRpc
 import Std.Plugin
 import Std.Environment as Env
+import Std.File as File
+import Std.Path as Path
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 val goodManifest: String = "{\"schema\":1,\"id\":\"acme.git-tools\",\"version\":\"0.4.1\",\"publisher\":\"acme\"," + "\"points\":[{\"point\":\"Editor.Api.EditorExtension\",\"version\":\"1.2\",\"contributions\":{\"commands\":[\"git.blame\"]}}]," + "\"capabilities\":{\"required\":[{\"name\":\"Editor.Api.WorkspaceRead\",\"grant\":{\"roots\":[\"/a\",\"/b\"],\"mode\":\"ro\"}}]," + "\"optional\":[{\"name\":\"Editor.Api.Notify\"}]}," + "\"payloads\":[{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}," + "{\"mode\":\"process\",\"os\":\"linux\",\"arch\":\"x86_64\",\"command\":[\"bin/git-tools\",\"--serve\"]}," + "{\"mode\":\"process\",\"runtime\":\"dotnet\",\"command\":[\"dotnet\",\"exec\",\"lib/GitTools.dll\"]}," + "{\"mode\":\"process\",\"runtime\":\"jvm\",\"command\":[\"java\",\"-jar\",\"lib/git-tools.jar\"]}]," + "\"future\":\"ignored\"}"
@@ -300,6 +305,8 @@ func describePayload(p: in Option[PluginPayload]): String {
       case WasmPayload(_) -> "wasm"
       case NativePayload(os, arch, _) -> "native-" + os + "-" + arch
       case ManagedPayload(runtime, _) -> runtime
+      case TrustedManagedPayload(runtime, _) -> "trusted-" + runtime
+      case TrustedNativePayload(os, arch, _) -> "trusted-native-" + os + "-" + arch
     }
   }
 }
@@ -701,4 +708,433 @@ test "boundary errors: standard JSON-RPC codes" {
     case _ -> assertTrue(false, "an unknown code is Protocol")
   }
   assertTrue(boundaryErrorMessage(Timeout(timeoutMs = 9)).contains("9 ms"), "message")
+}
+
+// ── Trusted mode (docs/69 §10) ──────────────────────────────────────────────
+test "parse: trusted payloads, managed and native, round trip" {
+  val text = goodManifest.replace(
+    "{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"},",
+    "{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}," +
+      "{\"mode\":\"trusted\",\"runtime\":\"dotnet\",\"library\":\"lib/GitTools.dll\"}," +
+      "{\"mode\":\"trusted\",\"runtime\":\"jvm\",\"library\":\"lib/git-tools.jar\"}," +
+      "{\"mode\":\"trusted\",\"os\":\"linux\",\"arch\":\"x86_64\",\"library\":\"native/libgit.so\"}," +
+      "{\"mode\":\"trusted\",\"os\":\"macos\",\"arch\":\"aarch64\",\"library\":\"native/libgit.dylib\"},"
+  )
+  val m = match parsePluginManifest(text) {
+    case Ok(pm) -> pm
+    case Err(issue) -> panic("trusted payloads must parse: " + pluginLoadIssueMessage(issue))
+  }
+  assertEqualInt(m.payloads.count, 8, "eight payloads")
+  assertEqual(describePayload(Some(value = m.payloads[1])), "trusted-dotnet", "trusted dotnet")
+  assertEqual(describePayload(Some(value = m.payloads[2])), "trusted-jvm", "trusted jvm")
+  assertEqual(describePayload(Some(value = m.payloads[3])), "trusted-native-linux-x86_64", "trusted linux")
+  assertEqual(describePayload(Some(value = m.payloads[4])), "trusted-native-macos-aarch64", "trusted macos")
+  match m.payloads[1] {
+    case TrustedManagedPayload(_, library) -> assertEqual(library, "lib/GitTools.dll", "library path")
+    case _ -> assertTrue(false, "payload 1 is a trusted managed payload")
+  }
+  match parsePluginManifestValue(pluginManifestToJson(m), "round trip") {
+    case Ok(back) -> {
+      assertEqualInt(back.payloads.count, 8, "the payloads survive a round trip")
+      assertEqual(describePayload(Some(value = back.payloads[3])), "trusted-native-linux-x86_64", "native kept")
+    }
+    case Err(issue) -> assertTrue(false, "round trip: " + pluginLoadIssueMessage(issue))
+  }
+}
+
+test "reject: malformed trusted payloads" {
+  val wasm = "{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}"
+  expectInvalid(
+    variant(wasm, "{\"mode\":\"trusted\",\"runtime\":\"dotnet\"}"),
+    "library",
+    "a trusted payload needs a library"
+  )
+  expectInvalid(
+    variant(wasm, "{\"mode\":\"trusted\",\"runtime\":\"dotnet\",\"library\":\"lib/GitTools.jar\"}"),
+    ".dll",
+    "a dotnet library is a .dll"
+  )
+  expectInvalid(
+    variant(wasm, "{\"mode\":\"trusted\",\"runtime\":\"python\",\"library\":\"p.py\"}"),
+    "python",
+    "an unknown runtime"
+  )
+  expectInvalid(
+    variant(wasm, "{\"mode\":\"trusted\",\"os\":\"linux\",\"arch\":\"x86_64\",\"library\":\"native/libgit.dylib\"}"),
+    ".so",
+    "a linux library is a .so"
+  )
+  expectInvalid(
+    variant(wasm, "{\"mode\":\"trusted\",\"runtime\":\"jvm\",\"library\":\"../escape.jar\"}"),
+    "inside the plugin directory",
+    "a library outside the plugin directory"
+  )
+  expectInvalid(variant(wasm, "{\"mode\":\"inproc\",\"library\":\"x.dll\"}"), "trusted", "an unknown mode")
+  assertEqual(trustedLibrarySuffix("dotnet"), ".dll", "dotnet suffix")
+  assertEqual(trustedLibrarySuffix("jvm"), ".jar", "jvm suffix")
+  assertEqual(trustedLibrarySuffix("linux"), ".so", "linux suffix")
+  assertEqual(trustedLibrarySuffix("macos"), ".dylib", "macos suffix")
+}
+
+test "trusted payload selection: the host's own runtime, never chosen by selectPluginPayload" {
+  val payloads: List[PluginPayload] = [
+    ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec", "lib/G.dll"]),
+    TrustedManagedPayload(runtime = "jvm", library = "lib/g.jar"),
+    TrustedManagedPayload(runtime = "dotnet", library = "lib/G.dll"),
+    TrustedNativePayload(os = "linux", arch = "x86_64", library = "native/libg.so")
+  ]
+  assertEqual(describePayload(selectTrustedPayload(payloads, linuxDotnet())), "trusted-dotnet", "dotnet host")
+  val jvmHost = PluginPlatform(os = "linux", arch = "x86_64", runtime = "jvm")
+  assertEqual(describePayload(selectTrustedPayload(payloads, jvmHost)), "trusted-jvm", "jvm host")
+  val nativeHost = PluginPlatform(os = "linux", arch = "x86_64", runtime = "native")
+  assertEqual(describePayload(selectTrustedPayload(payloads, nativeHost)), "trusted-native-linux-x86_64", "native host")
+  val macNative = PluginPlatform(os = "macos", arch = "aarch64", runtime = "native")
+  assertEqual(describePayload(selectTrustedPayload(payloads, macNative)), "none", "no library for macos")
+  assertEqual(
+    describePayload(selectPluginPayload(payloads, linuxDotnet(), false, false)),
+    "dotnet",
+    "process selection"
+  )
+  val trustedOnly: List[PluginPayload] = [TrustedManagedPayload(runtime = "dotnet", library = "lib/G.dll")]
+  assertEqual(describePayload(selectPluginPayload(trustedOnly, linuxDotnet(), true, true)), "none", "never trusted")
+  match pluginLaunchCommand(trustedOnly[0], "/plugins/p", None, 1024i64) {
+    case Ok(_) -> assertTrue(false, "a trusted payload has no launch command")
+    case Err(e) -> assertTrue(e.contains("not launched"), e)
+  }
+}
+
+// An in-memory trusted plugin: the server a generated `<R>Server` would be,
+// for point `Editor.Api.EditorExtension`, calling `WorkspaceRead` back.
+pub ref record FakeServer {
+  var conn: Option[PluginConnection]
+  var attaches: Int
+  var granted: List[String]
+  var calls: Int
+}
+
+impl PluginServer for FakeServer {
+  func describe(): JsonValue {
+    json("{\"schema\":1,\"id\":\"acme.git-tools\"}")
+  }
+
+  func attach(conn: in PluginConnection, grants: in List[GrantedCapability]): Result[Unit, BoundaryError] {
+    self.attaches = self.attaches + 1
+    val names: List[String] = newList()
+    for g in grants {
+      names.add(g.capability)
+    }
+    self.granted = names
+    self.conn = Some(value = conn)
+    Ok(value = ())
+  }
+
+  func pointMethods(): List[PluginPointMethods] {
+    [PluginPointMethods(point = "Editor.Api.EditorExtension", version = "1.2", methods = ["echo", "read", "count"])]
+  }
+
+  func dispatch(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
+    val conn = match self.conn {
+      case Some(c) -> c
+      case None -> return Err(error = boundaryErrorToRpc(Protocol(detail = "not attached")))
+    }
+    if method == "Editor.Api.EditorExtension/echo" {
+      return Ok(value = JObject(fields = [JsonField(name = "ok", value = unwrapOr(params, JNull))]))
+    }
+    if method == "Editor.Api.EditorExtension/count" {
+      self.calls = self.calls + 1
+      return Ok(value = JObject(fields = [JsonField(name = "ok", value = JInt(value = self.calls.toLong()))]))
+    }
+    if method == "Editor.Api.EditorExtension/read" {
+      return match callHost(conn, "cap/Editor.Api.WorkspaceRead/readFile", json("{\"path\":\"/a/x\"}")) {
+        case Ok(v) -> Ok(value = v)
+        case Err(b) -> Err(error = boundaryErrorToRpc(b))
+      }
+    }
+    Err(error = RpcError(code = methodNotFound, message = method, data = None))
+  }
+}
+
+pub ref record FakeLibrary {
+  var servers: Int
+}
+
+impl TrustedLibrary for FakeLibrary {
+  func newServer(): Result[PluginServer, String] {
+    self.servers = self.servers + 1
+    val server: PluginServer = FakeServer(conn = None, attaches = 0, granted = newList(), calls = 0)
+    Ok(value = server)
+  }
+}
+
+pub record FakeLoader {
+  library: FakeLibrary
+  reason: String
+  failOpen: Bool
+}
+
+impl TrustedLoader for FakeLoader {
+  func runtime(): String {
+    "dotnet"
+  }
+
+  func unavailableReason(): String {
+    self.reason
+  }
+
+  func open(path: in String): Result[TrustedLibrary, String] {
+    if self.failOpen {
+      return Err(error = "no such image: " + path)
+    }
+    assertTrue(Path.isAbsolute(path), "the loader is given an absolute path: " + path)
+    assertTrue(path.endsWith("lib/GitTools.dll"), "the library of the trusted payload: " + path)
+    val library: TrustedLibrary = self.library
+    Ok(value = library)
+  }
+}
+
+pub ref record CountingRead {
+  var reads: Int
+}
+
+impl CapabilityProvider for CountingRead {
+  func info(): CapabilityInfo {
+    CapabilityInfo(id = "Editor.Api.WorkspaceRead", hasGrant = true)
+  }
+
+  func serve(method: in String, params: in Option[JsonValue], grant: in Option[JsonValue]): Result[JsonValue, RpcError] {
+    self.reads = self.reads + 1
+    Ok(value = json("{\"ok\":\"contents\"}"))
+  }
+}
+
+// A plugin directory holding the trusted library file the payloads name.
+func trustedPluginDir(label: in String): String {
+  val dir = Path.join(Env.getVarOrDefault("TMPDIR", "/tmp"), "lyric_plugin_trusted_" + label)
+  val _ = File.createDir(Path.join(dir, "lib"))
+  match File.writeText(Path.join(Path.join(dir, "lib"), "GitTools.dll"), "not an assembly") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write the fixture library: " + IOError.message(e))
+  }
+  dir
+}
+
+func withTrusted(m: in PluginManifest): PluginManifest {
+  addPluginPayload(m, TrustedManagedPayload(runtime = "dotnet", library = "lib/GitTools.dll"))
+}
+
+func trustedOnly(m: in PluginManifest): PluginManifest {
+  PluginManifest(
+    id = m.id,
+    version = m.version,
+    publisher = m.publisher,
+    points = m.points,
+    required = m.required,
+    optional = m.optional,
+    payloads = [TrustedManagedPayload(runtime = "dotnet", library = "lib/GitTools.dll")]
+  )
+}
+
+func trustedHost(decision: in GrantDecision, loader: in Option[TrustedLoader], read: in CountingRead): PluginHost {
+  val ps: List[CapabilityProvider] = newList()
+  ps.add(read)
+  ps.add(NullProvider(id = "Editor.Api.Notify"))
+  newPluginHost(
+    PluginHostConfig(
+      points = [editorPoint("1.4")],
+      providers = ps,
+      policy = FixedPolicy(decision = decision),
+      trustedLoader = loader
+    )
+  )
+}
+
+func trusting(grants: in List[GrantedCapability]): GrantDecision {
+  GrantDecision(allow = true, reason = "", grants = grants, trusted = true)
+}
+
+func stateOf(host: in PluginHost): PluginProcessState {
+  val conns = connectionsFor(host, "Editor.Api.EditorExtension")
+  assertEqualInt(conns.count, 1, "one plugin")
+  match conns[0].host {
+    case Some(st) -> st
+    case None -> panic("a host-side connection has its state")
+  }
+}
+
+func okValue(r: in Result[JsonValue, BoundaryError], label: in String): JsonValue {
+  match r {
+    case Ok(v) -> match getField(v, "ok") {
+      case Some(x) -> x
+      case None -> panic(label + ": no ok member in " + writeValue(v))
+    }
+    case Err(b) -> panic(label + ": " + boundaryErrorMessage(b))
+  }
+}
+
+func boundaryOf(r: in Result[JsonValue, BoundaryError], label: in String): BoundaryError {
+  match r {
+    case Ok(v) -> panic(label + ": expected a boundary error, got " + writeValue(v))
+    case Err(b) -> b
+  }
+}
+
+test "registerPlugin: a trusted decision loads the trusted payload in process" {
+  val dir = trustedPluginDir("loads")
+  val library = FakeLibrary(servers = 0)
+  val loader: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = false)
+  val read = CountingRead(reads = 0)
+  val host = trustedHost(trusting([readGrant("[\"/a\"]")]), Some(value = loader), read)
+  match registerPlugin(host, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertTrue(isSome(stateOf(host).trusted), "the trusted library is open")
+  assertEqualInt(library.servers, 0, "no plugin code ran at load time")
+  val conn = connectionsFor(host, "Editor.Api.EditorExtension")[0]
+  val echoed = okValue(callPlugin(conn, "Editor.Api.EditorExtension/echo", json("{\"x\":7}")), "echo")
+  assertTrue(jsonValuesEqual(echoed, json("{\"x\":7}")), "the params reach the server unchanged")
+  assertEqualInt(library.servers, 1, "the first call takes a server")
+  val contents = okValue(callPlugin(conn, "Editor.Api.EditorExtension/read", JNull), "read")
+  assertTrue(jsonValuesEqual(contents, JString(value = "contents")), "a capability call reaches the provider")
+  assertEqualInt(read.reads, 1, "the provider ran once")
+  val unreported = boundaryOf(callPlugin(conn, "Editor.Api.EditorExtension/other", JNull), "unreported method")
+  match unreported {
+    case Unsupported(_) -> ()
+    case _ -> assertTrue(
+      false,
+      "a method the plugin did not report is Unsupported, got " + boundaryErrorMessage(unreported)
+    )
+  }
+}
+
+test "trusted: revocation, restarts and stopping take effect in process" {
+  val dir = trustedPluginDir("revoke")
+  val library = FakeLibrary(servers = 0)
+  val loader: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = false)
+  val read = CountingRead(reads = 0)
+  val host = trustedHost(trusting([readGrant("[\"/a\"]")]), Some(value = loader), read)
+  match registerPlugin(host, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  val conn = connectionsFor(host, "Editor.Api.EditorExtension")[0]
+  assertTrue(
+    jsonValuesEqual(okValue(callPlugin(conn, "Editor.Api.EditorExtension/count", JNull), "count"), JInt(value = 1i64)),
+    "count 1"
+  )
+  assertTrue(
+    jsonValuesEqual(okValue(callPlugin(conn, "Editor.Api.EditorExtension/count", JNull), "count"), JInt(value = 2i64)),
+    "count 2"
+  )
+  revokeCapability(host, "acme.git-tools", "Editor.Api.WorkspaceRead")
+  match callPlugin(conn, "Editor.Api.EditorExtension/read", JNull) {
+    case Ok(v) -> assertTrue(false, "a revoked capability must not be served: " + writeValue(v))
+    case Err(b) -> match b {
+      case Revoked(c) -> assertEqual(c, "Editor.Api.WorkspaceRead", "the revoked capability")
+      case _ -> assertTrue(false, "expected Revoked, got " + boundaryErrorMessage(b))
+    }
+  }
+  assertEqualInt(read.reads, 0, "the provider never ran")
+  stopPlugin(host, "acme.git-tools")
+  assertTrue(
+    jsonValuesEqual(okValue(callPlugin(conn, "Editor.Api.EditorExtension/count", JNull), "count"), JInt(value = 1i64)),
+    "a stopped plugin starts again with fresh state"
+  )
+  assertEqualInt(library.servers, 2, "the restart took a new server from the same library")
+}
+
+test "registerPlugin: an untrusted plugin, or a host that cannot load, falls back to its process payload" {
+  val dir = trustedPluginDir("fallback")
+  val library = FakeLibrary(servers = 0)
+  val loader: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = false)
+  val untrusted = trustedHost(allow([readGrant("[\"/a\"]")]), Some(value = loader), CountingRead(reads = 0))
+  match registerPlugin(untrusted, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertTrue(isNone(stateOf(untrusted).trusted), "not trusted: process mode")
+  assertTrue(stateOf(untrusted).launch.count > 0, "with a launch command")
+  val noLoader = trustedHost(trusting([readGrant("[\"/a\"]")]), None, CountingRead(reads = 0))
+  match registerPlugin(noLoader, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertTrue(isNone(stateOf(noLoader).trusted), "no TrustedLoader: process mode")
+  val aotLoader: TrustedLoader = FakeLoader(library = library, reason = "a Native AOT host", failOpen = false)
+  val aot = trustedHost(trusting([readGrant("[\"/a\"]")]), Some(value = aotLoader), CountingRead(reads = 0))
+  match registerPlugin(aot, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertTrue(isNone(stateOf(aot).trusted), "a loader that cannot load: process mode")
+  assertEqualInt(library.servers, 0, "no in-process plugin ran")
+}
+
+test "registerPlugin: trusted-only payloads need a trusting policy and a working loader" {
+  val dir = trustedPluginDir("only")
+  val library = FakeLibrary(servers = 0)
+  val loader: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = false)
+  val only = trustedOnly(parseGood())
+  match registerPlugin(trustedHost(allow([readGrant("[\"/a\"]")]), Some(value = loader), CountingRead(reads = 0)), only, dir) {
+    case None -> assertTrue(false, "an untrusted plugin with only a trusted payload has nothing to run")
+    case Some(issue) -> {
+      match issue.kind {
+        case NoUsablePayload -> ()
+        case _ -> assertTrue(false, "expected NoUsablePayload: " + pluginLoadIssueMessage(issue))
+      }
+      assertTrue(issue.message.contains("did not mark it trusted"), issue.message)
+    }
+  }
+  match registerPlugin(trustedHost(trusting([readGrant("[\"/a\"]")]), None, CountingRead(reads = 0)), only, dir) {
+    case None -> assertTrue(false, "a host without a loader has nothing to run")
+    case Some(issue) -> match issue.kind {
+      case NoUsablePayload -> ()
+      case _ -> assertTrue(false, "expected NoUsablePayload: " + pluginLoadIssueMessage(issue))
+    }
+  }
+  val failing: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = true)
+  match registerPlugin(trustedHost(trusting([readGrant("[\"/a\"]")]), Some(value = failing), CountingRead(reads = 0)), withTrusted(parseGood()), dir) {
+    case None -> assertTrue(false, "a library that does not load is a load issue, never a silent fallback")
+    case Some(issue) -> {
+      match issue.kind {
+        case TrustedLoadFailed -> ()
+        case _ -> assertTrue(false, "expected TrustedLoadFailed: " + pluginLoadIssueMessage(issue))
+      }
+      assertTrue(issue.message.contains("no such image"), issue.message)
+    }
+  }
+  val missingDir = Path.join(Env.getVarOrDefault("TMPDIR", "/tmp"), "lyric_plugin_trusted_missing_library")
+  match registerPlugin(trustedHost(trusting([readGrant("[\"/a\"]")]), Some(value = loader), CountingRead(reads = 0)), withTrusted(parseGood()), missingDir) {
+    case None -> assertTrue(false, "a missing library file is a load issue")
+    case Some(issue) -> assertTrue(issue.message.contains("does not exist"), issue.message)
+  }
+}
+
+test "registerPlugin: a protocol plugin is never loaded in process" {
+  val dir = trustedPluginDir("protocol")
+  val library = FakeLibrary(servers = 0)
+  val loader: TrustedLoader = FakeLoader(library = library, reason = "", failOpen = false)
+  val lsp = PluginPointInfo(
+    id = "Editor.Api.EditorExtension",
+    version = "1.4",
+    allows = ["Editor.Api.WorkspaceRead", "Editor.Api.Notify"],
+    hasContributions = true,
+    protocol = Some(value = "lsp/3.17")
+  )
+  val ps: List[CapabilityProvider] = newList()
+  ps.add(CountingRead(reads = 0))
+  ps.add(NullProvider(id = "Editor.Api.Notify"))
+  val host = newPluginHost(
+    PluginHostConfig(
+      points = [lsp],
+      providers = ps,
+      policy = FixedPolicy(decision = trusting([readGrant("[\"/a\"]")])),
+      trustedLoader = Some(value = loader)
+    )
+  )
+  match registerPlugin(host, withTrusted(parseGood()), dir) {
+    case Some(issue) -> assertTrue(false, "unexpected issue: " + pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  assertTrue(isNone(stateOf(host).trusted), "a protocol plugin's stdio carries its protocol")
 }
