@@ -1142,6 +1142,103 @@ func hasFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePat
   }
 }
 
+// The shared class holding the C callback handle table (D229); see
+// `callbacksRuntimeItems` in 06_items.l.
+pub func callbacksClassJvm(): String = "Lyric/Lyric$Callbacks"
+
+// The static method of a package class returning the upcall stub address of
+// C callback trampoline `trampoline` (D229).
+pub func cbStubGetterName(trampoline: in String): String = "__cbstub$" + trampoline + "$addr"
+
+// `__lyric_cb_fnptr`, `__lyric_cb_ud`, `__lyric_cb_call` (the C callback call
+// site `Lyric.Pipeline.pipeCBindingsToFuncs` writes, D229) and the
+// `nativeKeepCallback` / `nativeReleaseCallback` intrinsics.  No branch is
+// emitted, so no stack map frame ever sees the call's other arguments on the
+// operand stack: the run-time decisions live in `Lyric$Callbacks`.
+func lowerCallbackIntrinsicJvm(
+  ctx: in FuncCtx, insns: in List[LInsn], funcName: in String, args: in List[CallArg]
+): JvmType {
+  val cls = callbacksClassJvm()
+  val objTy = JRef(className = "java/lang/Object")
+  val longPs: List[JvmType] = newList()
+  longPs.add(JLong)
+  val objPs: List[JvmType] = newList()
+  objPs.add(objTy)
+  markRuntimeHelper(ctx, cls)
+  if funcName == "__lyric_cb_fnptr" and args.count == 2 {
+    // The closure argument only fixes the trampoline; C receives its stub.
+    val argTy = lowerCallArg(ctx, insns, args[0])
+    match argTy {
+      case JVoid -> ()
+      case JLong -> insns.add(LPop2)
+      case JDouble -> insns.add(LPop2)
+      case _ -> insns.add(LPop)
+    }
+    val none: List[JvmType] = newList()
+    insns.add(
+      LInvokestatic(owner = ctx.pkgName, name = cbStubGetterName(cbIntrinsicNameArg(args[1])), params = none, ret = JLong)
+    )
+    return JLong
+  }
+  if funcName == "__lyric_cb_ud" and args.count == 2 {
+    val argTy = lowerCallArg(ctx, insns, args[0])
+    match argTy {
+      case JRef(_) -> ()
+      case _ -> return argTy
+    }
+    // A closure is kept for the duration of the call under the key in the
+    // named local (0 when the value was a boxed pointer, not a closure).
+    val name = cbIntrinsicNameArg(args[1])
+    val oSlot = allocSlot(ctx, name + "$value", objTy)
+    insns.add(LAstore(slot = oSlot))
+    insns.add(LAload(slot = oSlot))
+    insns.add(LInvokestatic(owner = cls, name = "keepIfClosure", params = objPs, ret = JLong))
+    val hSlot = allocSlot(ctx, name, JLong)
+    insns.add(LLstore(slot = hSlot))
+    insns.add(LAload(slot = oSlot))
+    insns.add(LLload(slot = hSlot))
+    val udPs: List[JvmType] = newList()
+    udPs.add(objTy)
+    udPs.add(JLong)
+    insns.add(LInvokestatic(owner = cls, name = "userdata", params = udPs, ret = JLong))
+    return JLong
+  }
+  if funcName == "__lyric_cb_call" and args.count >= 1 {
+    val resTy = lowerCallArg(ctx, insns, args[0])
+    var i = 1
+    while i < args.count {
+      match mapGet(ctx.slots, cbIntrinsicNameArg(args[i])) {
+        case Some(hSlot) -> {
+          insns.add(LLload(slot = hSlot))
+          insns.add(LInvokestatic(owner = cls, name = "releaseIfKept", params = longPs, ret = JVoid))
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+    return resTy
+  }
+  if funcName == "nativeKeepCallback" and args.count == 1 {
+    val _ = lowerCallArg(ctx, insns, args[0])
+    insns.add(LInvokestatic(owner = cls, name = "keep", params = objPs, ret = JLong))
+    return JLong
+  }
+  if funcName == "nativeReleaseCallback" and args.count == 1 {
+    val _ = lowerCallArg(ctx, insns, args[0])
+    insns.add(LInvokestatic(owner = cls, name = "release", params = longPs, ret = JVoid))
+    return JVoid
+  }
+  panic("Jvm.Codegen: internal — malformed C callback intrinsic call " + funcName)
+}
+
+// The text of a string-literal argument the call-site rewrite wrote.
+func cbIntrinsicNameArg(a: in CallArg): String {
+  match callArgExpr(a).kind {
+    case ELiteral(lit) -> match lit { case LString(t) -> t; case _ -> "" }
+    case _ -> ""
+  }
+}
+
 // Lower a builtin or static function call.
 // The one-byte `MemorySegment` at `p + offset` for `nativeLoadByte` /
 // `nativeStoreByte` (D161).  The pointer and offset are evaluated into
@@ -1282,6 +1379,9 @@ func lowerBuiltinOrStaticCall(
     // A `NativePtr[T]` is a `long` address on the JVM (D158).
     insns.add(LLconst(v = 0i64))
     JLong
+  } else if (not hasOverride) and (funcName.startsWith("__lyric_cb_") or funcName == "nativeKeepCallback" or funcName == "nativeReleaseCallback") {
+    // C callbacks (D229).
+    lowerCallbackIntrinsicJvm(ctx, insns, funcName, args)
   } else if (not hasOverride) and funcName == "nativeLoadByte" and args.count == 2 {
     // C memory access (D161): a one-byte `MemorySegment` at `p + offset`.
     val segSlot = nativeByteSegmentJvm(ctx, insns, args)

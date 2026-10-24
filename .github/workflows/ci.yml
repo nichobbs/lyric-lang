@@ -1457,12 +1457,13 @@ jobs:
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/import_rename_self_test.l
 
       # C bindings (D158): `@library("c") extern func` called through
-      # P/Invoke, with Int, Long and NativePtr arguments and results.
+      # P/Invoke, with Int, Long and NativePtr arguments and results; then C
+      # callbacks into closures (D229).
       - name: C-binding self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/extern_cbinding_self_test.l
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/extern_cbinding_self_test.l && bash scripts/ci/extern-callback-e2e.sh dotnet
 
       # Std.String StringBuilder / join / indexOfFrom (#7257, #7258).  Each is
       # backed by a different kernel per target; the JVM job and the native
@@ -4200,7 +4201,7 @@ jobs:
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_cbinding_self_test.l
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_cbinding_self_test.l && bash scripts/ci/extern-callback-e2e.sh jvm
 
       # JVM half of the String-builder self-test (#7257, #7258).
       - name: String-builder self-test on JVM (native lyric test --target jvm)

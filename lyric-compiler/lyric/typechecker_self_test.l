@@ -11946,6 +11946,68 @@ test "a foreign record's callback field takes a closure, and needs a userdata pa
   assertTrue(hasDiagCode(wrong, "T0104"), "a closure of the wrong shape: " + diagCodesOf(wrong))
 }
 
+// D229: C callbacks cross a C binding on every target.
+val cCallbackSrc: String = "package T\n" + "@library(\"cb\")\nextern func each(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = \"each\"\n" + "@library(\"cb\")\nextern func first(f: (NativeUserdata, Double) -> Unit, ud: NativeUserdata): Unit = \"first\"\n" + "func run(): Int {\n" + "  val f = { i: Int -> i * 2 }\n" + "  val g = { d: Double -> () }\n" + "  first(g, g)\n" + "  each(f, f, 3)\n" + "}\n" + "@unsafe_ffi\n" + "func kept(): Unit {\n" + "  val g = { d: Double -> () }\n" + "  val ud = nativeKeepCallback(g)\n" + "  first(g, ud)\n" + "  nativeReleaseCallback(ud)\n" + "}\n"
+
+test "a C binding with callback parameters checks clean on every target (D229)" {
+  val managed = checkWithImportedPackages(parse(cCallbackSrc).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(managed), 0, "managed: clean (" + diagCodesOf(managed) + ")")
+  val native = checkWithImportedPackagesForNative(parse(cCallbackSrc).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(native), 0, "native: clean (" + diagCodesOf(native) + ")")
+}
+
+test "a callback's own parameters and result take the C binding types (D229)" {
+  val src = "package T\n" +
+    "@library(\"cb\")\nextern func a(f: (String, NativePtr[Byte]) -> Int, ud: NativePtr[Byte]): Unit = \"a\"\n" +
+    "@library(\"cb\")\nextern func b(f: (Int, NativePtr[Byte]) -> Bool, ud: NativePtr[Byte]): Unit = \"b\"\n" +
+    "@library(\"cb\")\nextern func c(f: ((Int) -> Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte]): Unit = \"c\"\n" +
+    "@library(\"cb\")\nextern func d(): (Int, NativePtr[Byte]) -> Int = \"d\"\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(src), "T0151"),
+    4,
+    "a String parameter, a Bool result, a nested function type and a callback result: T0151"
+  )
+}
+
+test "a callback type with no userdata slot is T0181 on a managed target too (D229)" {
+  val src = "package T\n@library(\"cb\")\nextern func reg(f: (Int) -> Int, n: Int): Int = \"reg\"\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0181"), "managed: T0181")
+}
+
+test "the callback pin intrinsics check their arguments (D229)" {
+  val src = "package T\n@unsafe_ffi\nfunc f(p: NativePtr[Byte]): Unit {\n" + "  val a = nativeKeepCallback(3)\n" +
+    "  nativeReleaseCallback(\"x\")\n" +
+    "  val b = nativeKeepCallback()\n" +
+    "}\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(countDiagCode(cr, "T0043"), 2, "an Int to keep, a String to release: T0043 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0042"), 1, "keep with no argument: T0042 (" + diagCodesOf(cr) + ")")
+}
+
+test "a closure reaches another package's C binding only on native (D229)" {
+  val lib = parse(
+    "package CbLib\n@library(\"cb\")\npub extern func each(f: (Int, NativePtr[Byte]) -> Int, ud: NativePtr[Byte], n: Int): Int = \"each\"\n"
+  )
+  val packages = stdCoreOptionPackages()
+  packages.add(
+    ImportedPackage(
+      name = "CbLib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val src = "package App\nimport CbLib\nfunc run(): Int {\n  val f = { i: Int -> i }\n  each(f, f, 3)\n}\n"
+  val managed = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(
+    countDiagCode(managed, "T0184"),
+    2,
+    "managed: the callback and the userdata (" + diagCodesOf(managed) + ")"
+  )
+  val native = checkWithImportedPackagesForNative(parse(src).file, packages)
+  assertEqualInt(countDiagCode(native, "T0184"), 0, "native passes the closure itself (" + diagCodesOf(native) + ")")
+}
+
 test "with two NativeUserdata slots the first is the userdata, and a callback type with none is T0181 (D189)" {
   val two = "package T\n" +
     "extern func reg(f: (NativeUserdata, Int, NativeUserdata) -> Int, ud: NativeUserdata): Int = \"reg\"\n" +

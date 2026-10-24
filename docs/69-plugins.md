@@ -734,7 +734,7 @@ What changed relative to the pre-D207 docs/40:
 | P2 | `lyric plugin pack`, `check` and `sdk` (C#, Java, TypeScript, JSON Schema), with a plugin per language in CI | Done |
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
-| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open |
+| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open; its prerequisite, C callbacks through `@library` bindings on every host target (wasmtime host functions are C function pointers with a `void *env`), shipped in D229 |
 | P6 | `lyric-ui` widget point (docs/65); trusted mode (§10) | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
