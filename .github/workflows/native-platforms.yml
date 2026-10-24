@@ -27,6 +27,11 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes the run in flight: macOS runners are scarce.
+concurrency:
+  group: native-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
   DOTNET_NOLOGO: true
