@@ -4936,6 +4936,8 @@ pub func pipeIsPrivatePlainFunc(it: in Item): Bool {
 /// The private non-generic functions of `items` as written, keyed `f:<name>/<arity>`.
 /// The contract builders take them from the file as it stood before the middle end, since
 /// a copy is specialised from its source in the package that calls the generic.
+/// `Lyric.ContractElaborator.carryPrivateGenerics` copies no helper whose name is overloaded,
+/// and this map leaves out a key two functions share, so the two agree on which helpers exist.
 pub func pipePrivatePlainFuncItems(items: in List[Item]): Map[String, Item] {
   val byKey: Map[String, Item] = newMap()
   val repeated: Map[String, Bool] = newMap()

@@ -63,6 +63,11 @@ answers have different costs:
 
 ## Limits
 
+- The test sees the whole package: a package that spans several files is merged into one unit before any backend
+  runs (`Lyric.PackageMerge`, docs/19), so a private value or type declared in a sibling file is seen too.
+- A copied helper that calls a helper which is not copied (a stateful one) is reported as T0123 naming the inner
+  helper and the copy it was called from, not the function the user's generic called.
+
 - Aspects are not applied to a copy, as for a `pub` generic specialised into another package. A helper that a
   `matches:` aspect weaves in its own package runs unwoven in the copy.
 - A copy has its own identity: a private helper that returns a fresh object is unaffected, but two functions that
