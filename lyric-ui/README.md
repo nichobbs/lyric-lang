@@ -44,6 +44,15 @@ packages, with its tests.
 | `Ui.Host.Web` | app | server-driven web host over `lyric-web` + `lyric-ws` |
 | `Ui.Host.Desktop` | app | the web host on loopback, shown in a `webview` window |
 | `Ui.Host.Assets` | runtime | the embedded TypeScript runtime and theme (generated) |
+| `Ui.PluginWidgets` | logic, effects, view | widgets from plugins: placements, their transitions and `widgetView` (docs/65 §6.5, D230) |
+| `Ui.PluginWidgets.Host` | effects | runs plugin-widget calls (`runWidgetRequest`) and lists the widgets plugins offer |
+
+`Ui.Plugins` (`plugins/`) holds the `WidgetPlugin` point and the
+`WidgetTree` view form, and `Ui.Plugins.Build` (`plugins/build/`) the builders
+for a plugin's view.  They are libraries of their own: a widget plugin
+depends on them and the standard library alone.  See
+`examples/plugins/ui-widgets/` for a widget plugin and a screen that places
+its widgets.
 
 ## Typed routes
 

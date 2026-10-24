@@ -1,0 +1,39 @@
+# Ui.Plugins — the widget plugin point of lyric-ui (docs/69 §15.1,
+# docs/65 §6.5, D230).
+#
+#   Ui.Plugins  the WidgetPlugin point and its boundary types
+#               (WidgetTree, WidgetStep, WidgetContributions, ...)
+#
+# A widget plugin depends on it and on Ui.Plugins.Build (./build, the
+# builders for its view).  Both need only the standard library, so a widget
+# plugin builds for every target, wasm32-wasi included:
+#
+#   [dependencies]
+#   "Ui.Plugins"       = { path = "../lyric-ui/plugins" }
+#   "Ui.Plugins.Build" = { path = "../lyric-ui/plugins/build" }
+#
+# The host side (Ui.PluginWidgets, Ui.PluginWidgets.Host) is in Lyric.Ui.
+# The tests of this package's generated codecs are in ./build.
+
+[package]
+name        = "Ui.Plugins"
+version     = "0.1.0"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "The lyric-ui widget plugin point: widgets that run out of process and return views as data."
+
+[project]
+name            = "Ui.Plugins"
+output          = "single"
+output_assembly = "Ui.Plugins.dll"
+
+[project.packages]
+"Ui.Plugins" = "src/plugins.l"
+
+# Pure Lyric over Std.*; the features exist so the target-selection flags CI
+# passes are checked against a declared set.
+[features]
+default = ["dotnet"]
+dotnet  = []
+jvm     = []
+native  = []
