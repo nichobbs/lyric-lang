@@ -121,8 +121,119 @@ static int set_nonblocking(SOCKET s, int on) {
 
 /* ── Connections ───────────────────────────────────────────────────── */
 
+/* ── Sockets whose read side was shut down ─────────────────────────
+ *
+ * A read that another thread must be able to end (Std.TcpHost.hostShutdown on
+ * an idle keep-alive connection) cannot rely on CancelIoEx alone: it cancels
+ * only I/O already pending, so a reader that has not yet issued its recv when
+ * the shutdown runs would then block for good, and Winsock does not promise
+ * that a recv issued after shutdown(SD_RECEIVE) fails.  The shutdown is
+ * therefore also recorded here, and every blocking read waits in short
+ * WSAPoll slices that re-check the record (lyric_win32_sock_recv). */
+
+static SRWLOCK g_down_lock = SRWLOCK_INIT;
+static SOCKET* g_down;
+static size_t g_down_len;
+static size_t g_down_cap;
+
+static void down_mark(SOCKET s) {
+    AcquireSRWLockExclusive(&g_down_lock);
+    int present = 0;
+    for (size_t i = 0; i < g_down_len; i++) {
+        if (g_down[i] == s) {
+            present = 1;
+            break;
+        }
+    }
+    if (!present) {
+        if (g_down_len == g_down_cap) {
+            size_t cap = g_down_cap ? g_down_cap * 2 : 16;
+            SOCKET* p = (SOCKET*)realloc(g_down, cap * sizeof *p);
+            if (p) {
+                g_down = p;
+                g_down_cap = cap;
+            }
+        }
+        if (g_down_len < g_down_cap) g_down[g_down_len++] = s;
+    }
+    ReleaseSRWLockExclusive(&g_down_lock);
+}
+
+static int down_has(SOCKET s) {
+    int found = 0;
+    AcquireSRWLockShared(&g_down_lock);
+    for (size_t i = 0; i < g_down_len; i++) {
+        if (g_down[i] == s) {
+            found = 1;
+            break;
+        }
+    }
+    ReleaseSRWLockShared(&g_down_lock);
+    return found;
+}
+
+/* A closed socket's handle value can be reused, so its record goes with it. */
+static void down_clear(SOCKET s) {
+    AcquireSRWLockExclusive(&g_down_lock);
+    for (size_t i = 0; i < g_down_len; i++) {
+        if (g_down[i] == s) {
+            g_down[i] = g_down[--g_down_len];
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_down_lock);
+}
+
+/* How long a waiting read sleeps between looks at the shutdown record. */
+#define LYRIC_SOCK_WAKE_SLICE_MS 50
+
+/* recv() that a concurrent lyric_sock_shutdown always ends: returns the bytes
+ * read, 0 at end of stream or once the read side was shut down, or -1 with
+ * the Winsock error set (WSAETIMEDOUT when the socket's SO_RCVTIMEO elapses,
+ * as for a plain recv). */
+int lyric_win32_sock_recv(uintptr_t sock, char* buf, int len) {
+    SOCKET s = (SOCKET)sock;
+    DWORD timeout_ms = 0;
+    int optlen = (int)sizeof timeout_ms;
+    if (getsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_ms, &optlen) != 0) timeout_ms = 0;
+    ULONGLONG deadline = timeout_ms ? GetTickCount64() + timeout_ms : 0;
+    for (;;) {
+        if (down_has(s)) return 0;
+        int slice = LYRIC_SOCK_WAKE_SLICE_MS;
+        if (deadline) {
+            ULONGLONG now = GetTickCount64();
+            if (now >= deadline) {
+                WSASetLastError(WSAETIMEDOUT);
+                return -1;
+            }
+            if (deadline - now < (ULONGLONG)slice) slice = (int)(deadline - now);
+        }
+        WSAPOLLFD pfd;
+        pfd.fd = s;
+        pfd.events = POLLRDNORM;
+        pfd.revents = 0;
+        int ready = WSAPoll(&pfd, 1, slice);
+        if (ready == SOCKET_ERROR) {
+            int e = WSAGetLastError();
+            if (e == WSAEINTR) continue;
+            return -1;
+        }
+        if (ready == 0) continue;
+        /* Readable, hung up or failed: recv reports which without blocking. A
+         * shutdown that landed in between is seen first. */
+        if (down_has(s)) return 0;
+        int got = recv(s, buf, len, 0);
+        if (got >= 0) return got;
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e == WSAEWOULDBLOCK) continue;
+        return -1;
+    }
+}
+
 int32_t lyric_sock_close(int32_t fd) {
     if (fd < 0) return 0;
+    down_clear(to_socket(fd));
     return closesocket(to_socket(fd)) == 0 ? 0 : -1;
 }
 
@@ -134,10 +245,13 @@ int32_t lyric_sock_close(int32_t fd) {
  * blocked call fails with WSA_OPERATION_ABORTED. */
 int32_t lyric_sock_shutdown(int32_t fd, int32_t how) {
     SOCKET s = to_socket(fd);
+    /* Recorded before the shutdown, so a read that starts at any later point
+     * sees it (lyric_win32_sock_recv). */
+    if (how != 1) down_mark(s);
     int rc = shutdown(s, how);
     /* A write-only half-close leaves reads alone.  The cancel is a best-effort
-     * wake-up: with nothing pending it fails with ERROR_NOT_FOUND, which is
-     * not an error for the caller. */
+     * wake-up of pending writes and handshakes: with nothing pending it fails
+     * with ERROR_NOT_FOUND, which is not an error for the caller. */
     if (how != 1) CancelIoEx((HANDLE)s, NULL);
     return rc == 0 ? 0 : -1;
 }
@@ -513,7 +627,7 @@ int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n) {
     if (n <= 0) return 0;
     int want = n > INT32_MAX ? INT32_MAX : (int)n;
     for (;;) {
-        int got = recv(to_socket(fd), (char*)buf, want, 0);
+        int got = lyric_win32_sock_recv(to_socket(fd), (char*)buf, want);
         if (got >= 0) return (int64_t)got;
         int e = WSAGetLastError();
         if (e == WSAEINTR) continue;
