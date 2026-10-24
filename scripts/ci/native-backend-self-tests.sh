@@ -191,6 +191,10 @@ bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native native
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native dotnet
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet native
+# D230: lyric-ui plugin widgets with a native host and native plugins, and a
+# dotnet host with native plugins.
+bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" native native
+bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet native
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
