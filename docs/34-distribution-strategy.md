@@ -377,6 +377,15 @@ Apple Developer ID (SHA-1):          <pending — update when certificate issued
 5. Adds the directory to the shell profile (`.bashrc`, `.zshrc`, or fish config)
    unless `--no-path` is passed.
 
+`scripts/install.ps1` is the Windows counterpart (Windows PowerShell 5.1 and
+PowerShell 7+): it resolves the release, downloads `lyric-<version>-win-x64.zip`,
+verifies it against `SHASUMS256.txt` (failing closed), installs to
+`%USERPROFILE%\.lyric\bin` (or `-Dir`), and adds the directory to the user
+`PATH` unless `-NoPath`.  It upgrades an existing installation in place, even
+while `lyric.exe` is running, by renaming replaced files to `<name>.old`.
+`lyric upgrade --github` runs it on Windows; `install.ps1.sha256` pins its
+digest.
+
 ```sh
 # Install latest:
 curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh

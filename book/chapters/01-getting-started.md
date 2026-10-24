@@ -22,6 +22,14 @@ curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/in
 
 The script detects your platform, downloads the appropriate release archive from GitHub, verifies it against the release's `SHASUMS256.txt` checksum manifest (refusing to install on any mismatch), extracts it to `~/.lyric/bin`, and adds that directory to your shell profile.
 
+On Windows, use `scripts/install.ps1` (Windows PowerShell 5.1 or PowerShell 7). It does the same verification, installs to `%USERPROFILE%\.lyric\bin`, and adds that directory to your user `PATH`:
+
+```powershell
+irm https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.ps1 -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# options: -Version 0.7.10  -Dir C:\Tools\lyric  -NoPath
+```
+
 Alternatively, download the archive directly from the project's GitHub releases page and place the `lyric` binary (or `lyric.exe` on Windows) somewhere on your `PATH`. Each release also publishes a `SHASUMS256.txt` checksum manifest covering every archive and the VS Code extension; verify a downloaded archive against it with:
 
 ```sh
@@ -61,6 +69,8 @@ lyric upgrade --github --version 0.4.6
 ```
 
 You can also use `--dry-run` to preview the exact upgrade commands that would be run.
+
+On Windows, `lyric upgrade --github` downloads and runs `install.ps1` instead of `install.sh`. The running `lyric.exe` cannot be overwritten, so the installer renames each file it replaces to `<name>.old` and removes those leftovers the next time it runs.
 
 
 ## Hello, world
