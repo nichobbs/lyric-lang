@@ -97,6 +97,13 @@ pub record UnsignedSpecRequest {
   valueSubst: Map[String, Expr]
   /// The call that first required the specialisation.
   callSpan: Span
+  /// The generic bounds a type parameter by an operator marker (`Add`,
+  /// `Sub`, `Mul`, `Div`, `Mod`, `Compare`) and this specialisation binds it
+  /// to a type that is not a scalar primitive (#7996, #8017).  The body's
+  /// operators on that parameter are lowered per type (a distinct type, a
+  /// homogeneous numeric record), which only the specialised body's own
+  /// check can record, so `Lyric.Pipeline` re-checks it.
+  opBound: Bool = false
 }
 
 /// Result of the monomorphisation pass.
@@ -159,6 +166,7 @@ record SpecRequest {
   subst: Map[String, TypeExpr]
   valueSubst: Map[String, Expr]
   callSpan: Span
+  opBound: Bool
 }
 
 record MonoState {
@@ -3779,6 +3787,82 @@ func substTypesEOB(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
 // rewrites the call to a type application over the substituted types
 // (#8280).  Only when every index is a bare name and at least one is a
 // substituted parameter; any other index is a genuine value index.
+// `T.default()` over a type parameter bound to a scalar primitive is that
+// primitive's zero value (#8017): `0`, `0i64`, `0u32`, `0.0`, `false`, `""`, ...
+// Any other binding keeps the call, which names the bound type.
+func scalarDefaultOfParamMono(subst: in Map[String, TypeExpr], fn: in Expr, args: in List[CallArg]): Option[ExprKind] {
+  if args.count != 0 {
+    return None
+  }
+  match fn.kind {
+    case EMember(recv, memberName) -> {
+      if memberName != "default" {
+        return None
+      }
+      match recv.kind {
+        case EPath(p) -> {
+          if p.segments.count != 1 {
+            return None
+          }
+          match mapGet(subst, p.segments[0]) {
+            case Some(te) -> scalarZeroMono(te)
+            case None -> None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func scalarZeroMono(te: in TypeExpr): Option[ExprKind] {
+  match te.kind {
+    case TParen(inner) -> scalarZeroMono(inner)
+    case TRef(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      val n = path.segments[0]
+      if n == "Int" or n == "Nat" {
+        return Some(value = ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix, raw = "")))
+      }
+      if n == "Long" {
+        return Some(value = ELiteral(lit = LInt(value = 0i64, suffix = I64, raw = "")))
+      }
+      if n == "UInt" {
+        return Some(value = ELiteral(lit = LInt(value = 0i64, suffix = U32, raw = "")))
+      }
+      if n == "ULong" {
+        return Some(value = ELiteral(lit = LInt(value = 0i64, suffix = U64, raw = "")))
+      }
+      if n == "Byte" {
+        return Some(value = ELiteral(lit = LInt(value = 0i64, suffix = U8, raw = "")))
+      }
+      if n == "Float" {
+        return Some(value = ELiteral(lit = LFloat(value = 0.0, suffix = F32, raw = "")))
+      }
+      if n == "Double" {
+        return Some(value = ELiteral(lit = LFloat(value = 0.0, suffix = F64, raw = "")))
+      }
+      if n == "Bool" {
+        return Some(value = ELiteral(lit = LBool(value = false)))
+      }
+      if n == "String" {
+        return Some(value = ELiteral(lit = LString(text = "")))
+      }
+      if n == "Char" {
+        return Some(value = ELiteral(lit = LChar(codepoint = 0)))
+      }
+      if n == "Unit" {
+        return Some(value = ELiteral(lit = LUnit))
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
 func explicitTypeArgsOverParamsMono(subst: in Map[String, TypeExpr], fn: in Expr): Option[Expr] {
   match fn.kind {
     case EIndex(recv, idxs) -> {
@@ -3924,9 +4008,12 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
         }
         i = i + 1
       }
-      match explicitTypeArgsOverParamsMono(subst, fn) {
-        case Some(typeApp) -> ECall(fn = typeApp, args = na)
-        case None -> ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+      match scalarDefaultOfParamMono(subst, fn, na) {
+        case Some(zero) -> zero
+        case None -> match explicitTypeArgsOverParamsMono(subst, fn) {
+          case Some(typeApp) -> ECall(fn = typeApp, args = na)
+          case None -> ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+        }
       }
     }
     case ETypeApp(fn, args) -> {
@@ -7713,7 +7800,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                             state.seenSpecs.add(name, true)
                             val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
                             state.allSpecs.add(
-                              SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = valueSubst, callSpan = fn.span)
+                              SpecRequest(
+                                specName = name,
+                                baseDecl = specDecl,
+                                subst = subst,
+                                valueSubst = valueSubst,
+                                callSpan = fn.span,
+                                opBound = operatorBoundToStructured(baseDecl, subst)
+                              )
                             )
                             // A specialised copy's concrete signature joins the inference
                             // surface, so `val v = f(...)` types `v` once `f` is rewritten.
@@ -7924,7 +8018,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         state.seenSpecs.add(name, true)
                         val specDecl = specializeFunc(baseDecl, name, subst, checkedValues)
                         state.allSpecs.add(
-                          SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = checkedValues, callSpan = fn.span)
+                          SpecRequest(
+                            specName = name,
+                            baseDecl = specDecl,
+                            subst = subst,
+                            valueSubst = checkedValues,
+                            callSpan = fn.span,
+                            opBound = operatorBoundToStructured(baseDecl, subst)
+                          )
                         )
                         // A specialised copy's concrete signature joins the inference
                         // surface, so `val v = f(...)` types `v` once `f` is rewritten.
@@ -8020,7 +8121,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                       state.seenSpecs.add(qName, true)
                       val qSpecDecl = specializeFunc(qBaseDecl, qName, qSubst, qEmptyVS)
                       state.allSpecs.add(
-                        SpecRequest(specName = qName, baseDecl = qSpecDecl, subst = qSubst, valueSubst = qEmptyVS, callSpan = fn.span)
+                        SpecRequest(
+                          specName = qName,
+                          baseDecl = qSpecDecl,
+                          subst = qSubst,
+                          valueSubst = qEmptyVS,
+                          callSpan = fn.span,
+                          opBound = operatorBoundToStructured(qBaseDecl, qSubst)
+                        )
                       )
                       // A specialised copy's concrete signature joins the inference
                       // surface, so `val v = f(...)` types `v` once `f` is rewritten.
@@ -9970,7 +10078,8 @@ pub func monoFileWithLambdaTypes(
         ),
         subst = req.subst,
         valueSubst = req.valueSubst,
-        callSpan = req.callSpan
+        callSpan = req.callSpan,
+        opBound = req.opBound
       )
       if unsignedSpec {
         state.unsignedSpecs.add(specReq)
@@ -10120,6 +10229,35 @@ func substMentionsArrayMono(subst: in Map[String, TypeExpr]): Bool {
 
 // True when a type argument of `subst` is or holds a named type other than a
 // scalar, or a tuple: `==` on it may compare by structure (D172).
+// True when `decl` bounds a type parameter by an operator marker and `subst`
+// binds that parameter to a type that is not a scalar primitive (#7996,
+// #8017).  A scalar primitive needs no lowering: the operator is the
+// primitive's own.
+func operatorBoundToStructured(decl: in FunctionDecl, subst: in Map[String, TypeExpr]): Bool {
+  match decl.whereClause {
+    case None -> false
+    case Some(wc) -> {
+      for bound in wc.bounds {
+        match mapGet(subst, bound.name) {
+          case Some(te) -> if teMentionsStructuredMono(te) {
+            for cref in bound.constraints {
+              if cref.head.segments.count == 1 and isOperatorMarker(cref.head.segments[0]) {
+                return true
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+      false
+    }
+  }
+}
+
+func isOperatorMarker(name: in String): Bool {
+  name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare"
+}
+
 func substMentionsStructuredMono(subst: in Map[String, TypeExpr]): Bool {
   for k in mapKeys(subst) {
     match mapGet(subst, k) {

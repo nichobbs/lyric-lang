@@ -1031,3 +1031,74 @@ test "generic call over a restored package's record field chain infers its type 
   assertEqualInt(captured.exitCode, 0, "cpgen_fieldchain: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "3", "cpgen_fieldchain: the values' lengths summed")
 }
+
+// A restored generic whose body applies an operator its `where` bound
+// promises, called at a scalar primitive (#7996, #8017): the operator is the
+// primitive's own.
+test "cross-package operator-bounded generic at a scalar primitive (#7996)" {
+  val tmpDir = freshTempDir("cpgen-op-scalar")
+  val producerSrc = "package CpGenOp.Lib\n" + "\n" + "pub func sum2[T](a: in T, b: in T): T where T: Add {\n" +
+    "  a + b\n" +
+    "}\n" +
+    "\n" +
+    "pub func biggest[T](a: in T, b: in T): T where T: Compare {\n" +
+    "  if a > b { a } else { b }\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGenOp.Lib", producerSrc, "CpGenOp.Lib")
+  val consumerSrc = "package CpGenOp.App\n" + "\n" + "import CpGenOp.Lib\n" + "\n" + "func main(): Unit {\n" +
+    "  println(sum2(40, 2))\n" +
+    "  println(biggest(2.5, 1.5))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(tmpDir, "CpGenOp.App", consumerSrc, "CpGenOp.App", "CpGenOp.Lib", producerDll)
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpgen_op_scalar: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqualInt(lines.count, 2, "cpgen_op_scalar: two output lines")
+  assertEqual(lines[0], "42", "cpgen_op_scalar: Int +")
+  assertEqual(lines[1], "2.5", "cpgen_op_scalar: Double >")
+}
+
+// The same generic called at a distinct type the consumer declares: the
+// declaring package's scope does not see the type, so the operator cannot be
+// lowered for it and the build is refused (M0008) rather than miscompiled.
+test "cross-package operator-bounded generic at a consumer distinct type is M0008 (#7996)" {
+  val tmpDir = freshTempDir("cpgen-op-distinct")
+  val producerSrc = "package CpGenOpD.Lib\n" + "\n" + "pub func sum2[T](a: in T, b: in T): T where T: Add {\n" +
+    "  a + b\n" +
+    "}\n"
+  val producerDll = buildDll(tmpDir, "CpGenOpD.Lib", producerSrc, "CpGenOpD.Lib")
+  val consumerSrc = "package CpGenOpD.App\n" + "\n" + "import CpGenOpD.Lib\n" + "\n" + "type Score = Int derives Add\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(sum2(Score.from(40), Score.from(2)).value)\n" +
+    "}\n"
+  val dllPath = Path.join(tmpDir, "CpGenOpD.App.dll")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("CpGenOpD.App", consumerSrc))
+  val restored: List[String] = newList()
+  restored.add("CpGenOpD.Lib" + "\t" + producerDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "CpGenOpD.App",
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  val result = Emitter.emitProject(req)
+  cleanup(tmpDir)
+  val refused = match result.outputPath { case None -> true; case Some(_) -> false }
+  var codes = ""
+  for d in result.diagnostics {
+    codes = codes + d.code + " "
+  }
+  // M0008 itself goes to stderr; the result carries the build-level B0001.
+  assertTrue(refused, "cpgen_op_distinct: the build is refused (diagnostics: " + codes + ")")
+}

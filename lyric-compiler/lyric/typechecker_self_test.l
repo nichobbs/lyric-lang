@@ -12473,3 +12473,72 @@ test "a wrapper named like an extern package block member keeps its own signatur
   val bad = parseCheck(src + "func g(): String {\n  lyric.demo.Host.query(\"x\")\n}\n")
   assertEqualInt(countDiagCode(bad, "T0043"), 1, "the member call is checked: T0043 (" + diagCodesOf(bad) + ")")
 }
+
+// #7996, #8017: an operator on a type parameter is valid when its `where`
+// clause bounds the parameter by the operator's marker.
+func genericOp(sigBound: in String, body: in String): String {
+  "package P\nfunc f[T](a: in T, b: in T): T " + sigBound + " {\n  " + body + "\n}\n"
+}
+
+func genericCmp(bound: in String, op: in String): String {
+  "package P\nfunc f[T](a: in T, b: in T): Bool " + bound + " {\n  a " + op + " b\n}\n"
+}
+
+test "arithmetic operators on a bounded type parameter type-check (#7996, #8017)" {
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Add", "a + b"))), 0, "Add")
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Sub", "a - b"))), 0, "Sub")
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Mul", "a * b"))), 0, "Mul")
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Div", "a / b"))), 0, "Div")
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Mod", "a % b"))), 0, "Mod")
+  assertEqualInt(diagCount(parseCheck(genericOp("where T: Add + Sub", "a + (b - a)"))), 0, "two bounds")
+}
+
+test "relational operators on a Compare-bounded type parameter type-check (#8017)" {
+  assertEqualInt(diagCount(parseCheck(genericCmp("where T: Compare", "<"))), 0, "<")
+  assertEqualInt(diagCount(parseCheck(genericCmp("where T: Compare", "<="))), 0, "<=")
+  assertEqualInt(diagCount(parseCheck(genericCmp("where T: Compare", ">"))), 0, ">")
+  assertEqualInt(diagCount(parseCheck(genericCmp("where T: Compare", ">="))), 0, ">=")
+}
+
+test "an operator on a type parameter without its bound is still rejected (#8017)" {
+  assertTrue(hasDiagCode(parseCheck(genericOp("", "a + b")), "T0030"), "+ without a bound")
+  assertTrue(hasDiagCode(parseCheck(genericOp("where T: Sub", "a + b")), "T0030"), "+ under Sub")
+  assertTrue(hasDiagCode(parseCheck(genericOp("where T: Add", "a - b")), "T0030"), "- under Add")
+  assertTrue(hasDiagCode(parseCheck(genericOp("where T: Add", "a * b")), "T0030"), "* under Add")
+  assertTrue(hasDiagCode(parseCheck(genericOp("where T: Compare", "a / b")), "T0030"), "/ under Compare")
+  assertTrue(hasDiagCode(parseCheck(genericOp("where T: Add", "a % b")), "T0030"), "% under Add")
+  assertTrue(hasDiagCode(parseCheck(genericCmp("", "<")), "T0033"), "< without a bound")
+  assertTrue(hasDiagCode(parseCheck(genericCmp("where T: Add", ">")), "T0033"), "> under Add")
+}
+
+test "a bounded operator takes two values of the one type parameter (#7996)" {
+  val withInt = "package P\nfunc f[T](a: in T): T where T: Add {\n  a + 1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(withInt), "T0031"), "T + Int")
+  val intFirst = "package P\nfunc f[T](a: in T): T where T: Add {\n  1 + a\n}\n"
+  assertTrue(hasDiagCode(parseCheck(intFirst), "T0031"), "Int + T")
+  val twoParams = "package P\nfunc f[T, U](a: in T, b: in U): T where T: Add, U: Add {\n  a + b\n}\n"
+  assertTrue(hasDiagCode(parseCheck(twoParams), "T0031"), "T + U")
+  val cmpInt = "package P\nfunc f[T](a: in T): Bool where T: Compare {\n  a < 3\n}\n"
+  assertTrue(hasDiagCode(parseCheck(cmpInt), "T0033"), "T < Int")
+}
+
+test "the result of a bounded arithmetic operator is the type parameter (#7996)" {
+  val ok = "package P\nfunc f[T](a: in T, b: in T): T where T: Add {\n  val s: T = a + b\n  s\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "T + T is T")
+}
+
+test "compound assignment on a type parameter needs its bound (#8017)" {
+  val ok = "package P\nfunc f[T](a: in T, b: in T): T where T: Add {\n  var x = a\n  x += b\n  x\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "+= under Add")
+  val bad = "package P\nfunc f[T](a: in T, b: in T): T {\n  var x = a\n  x += b\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0030"), "+= without a bound")
+  val wrong = "package P\nfunc f[T](a: in T, b: in T): T where T: Sub {\n  var x = a\n  x += b\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(wrong), "T0030"), "+= under Sub")
+  val mixed = "package P\nfunc f[T](a: in T): T where T: Add {\n  var x = a\n  x += 1\n  x\n}\n"
+  assertTrue(hasDiagCode(parseCheck(mixed), "T0031"), "+= with an Int")
+}
+
+test "the docs sum example type-checks (#8017)" {
+  val src = "package P\nfunc sum[T](xs: in slice[T]): T\n  where T: Add + Default\n{\n  var total = T.default()\n  for x in xs { total = total + x }\n  return total\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "sum[T] where T: Add + Default")
+}

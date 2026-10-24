@@ -165,8 +165,10 @@ pub func openAccount(owner: in CustomerId): AccountId { ... }
 func identity[T](x: T): T = x
 func unwrapOr[T, E](r: Result[T, E], default: T): T = ...
 
-// Generic with where clause
+// Generic with where clause: a bound makes its operator valid in the body
+// (`Add` for `+`/`+=`, `Sub`, `Mul`, `Div`, `Mod`, `Compare` for `<`/`<=`/`>`/`>=`)
 func sum[T](xs: slice[T]): T where T: Add + Default { ... }
+func maxOf[T](a: in T, b: in T): T where T: Compare { if a > b { a } else { b } }
 
 // Dot-named (type-associated): `b.area()` or `Box.area(b)`; a primitive
 // type works too: `k.twice()` or `Int.twice(k)`
@@ -1405,8 +1407,8 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function), including a type or package-qualified path whose package is not reachable from the file's imports (add the `import` it names) — the same check covers a qualified path in TYPE position (`val c: Pkg.Sub.Type`, a parameter/field/return type, or a generic type argument) and a qualified PATTERN head (`case Pkg.Sub.Kind.A -> ...`) |
-| `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`) |
-| `T0031` | Arithmetic operands have mismatched types |
+| `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`), or on a type parameter its `where` clause does not bound by the operator's marker |
+| `T0031` | Arithmetic operands have mismatched types (including an operator bounded by a marker whose operands are not the one type parameter) |
 | `T0032` | Equality operands have mismatched types |
 | `T0033` | Comparison operands must be matching ordered types |
 | `T0034` | Logical operator applied to non-Bool operand |

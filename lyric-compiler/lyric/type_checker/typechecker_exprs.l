@@ -2183,9 +2183,86 @@ func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span
   }
 }
 
+// The `where` marker an arithmetic or relational operator is valid under on a
+// type parameter: `Add` for `+`, `Compare` for `<`, and so on.  "" for every
+// other operator.
+func operatorMarker(op: in BinOp): String {
+  match op {
+    case BAdd -> "Add"
+    case BSub -> "Sub"
+    case BMul -> "Mul"
+    case BDiv -> "Div"
+    case BMod -> "Mod"
+    case BLt -> "Compare"
+    case BLte -> "Compare"
+    case BGt -> "Compare"
+    case BGte -> "Compare"
+    case _ -> ""
+  }
+}
+
+// True when `t` is a type parameter of the enclosing function whose `where`
+// clause bounds it by `marker` (#7996, #8017).
+func tyVarBoundedBy(sc: in Scope, t: in Type, marker: in String): Bool {
+  match t {
+    case TyVar(name) -> {
+      for b in sc.bounds {
+        if b.name == name and listContainsStr(b.constraints, marker) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// An operator whose operand is a type parameter bounded by the operator's
+// marker takes two operands of that one parameter: a specialisation
+// substitutes a single type for it, so `a + 1` over `T` has no meaning at a
+// distinct type or a record.  The result is the parameter (`Bool` for a
+// comparison).
+func boundedOperandsClash(sc: in Scope, op: in BinOp, lhs: in Type, rhs: in Type): Bool {
+  val marker = operatorMarker(op)
+  if marker.length == 0 {
+    return false
+  }
+  if not tyVarBoundedBy(sc, lhs, marker) and not tyVarBoundedBy(sc, rhs, marker) {
+    return false
+  }
+  match lhs {
+    case TyVar(ln) -> match rhs { case TyVar(rn) -> ln != rn; case TyError -> false; case _ -> true }
+    case TyError -> false
+    case _ -> match rhs { case TyError -> false; case _ -> true }
+  }
+}
+
 func inferBinop(
-  tbl: in SymbolTable, diag: in List[Diagnostic], op: in BinOp, lhs: in Type, rhs: in Type, span: in Span
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  op: in BinOp,
+  lhs: in Type,
+  rhs: in Type,
+  span: in Span,
 ): Type {
+  if boundedOperandsClash(sc, op, lhs, rhs) {
+    val code = if operatorMarker(op) == "Compare" { "T0033" } else { "T0031" }
+    val what = if code == "T0033" {
+      "comparison operands must be matching ordered types"
+    } else {
+      "arithmetic operands must have the same type"
+    }
+    diag.add(
+      errorDiagnostic(
+        code,
+        what + " (got " + renderType(lhs) + " and " + renderType(rhs) + "); an operator bounded by `" + operatorMarker(op) +
+          "` takes two values of the one type parameter",
+        span
+      )
+    )
+    return if operatorMarker(op) == "Compare" { TyPrim(pt = PtBool) } else { lhs }
+  }
   match op {
     case BAdd -> {
       match lhs {
@@ -2193,7 +2270,7 @@ func inferBinop(
         case _ -> {
         }
       }
-      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Add", lhs)
+      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Add", lhs) or tyVarBoundedBy(sc, lhs, "Add")
       if not isNumericType(lhs) and hasDerive(tbl, "Add", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
         recordRecordArith(tbl, lhs, rhs, BAdd, span)
@@ -2224,7 +2301,7 @@ func inferBinop(
       }
     }
     case BSub -> {
-      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs)
+      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs) or tyVarBoundedBy(sc, lhs, "Sub")
       if not isNumericType(lhs) and hasDerive(tbl, "Sub", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
         recordRecordArith(tbl, lhs, rhs, BSub, span)
@@ -2252,7 +2329,7 @@ func inferBinop(
       }
     }
     case BMul -> {
-      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mul", lhs)
+      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mul", lhs) or tyVarBoundedBy(sc, lhs, "Mul")
       if not isNumericType(lhs) and hasDerive(tbl, "Mul", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
       }
@@ -2279,7 +2356,7 @@ func inferBinop(
       }
     }
     case BDiv -> {
-      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Div", lhs)
+      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Div", lhs) or tyVarBoundedBy(sc, lhs, "Div")
       if not isNumericType(lhs) and hasDerive(tbl, "Div", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
       }
@@ -2306,7 +2383,7 @@ func inferBinop(
       }
     }
     case BMod -> {
-      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mod", lhs)
+      val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mod", lhs) or tyVarBoundedBy(sc, lhs, "Mod")
       if not isNumericType(lhs) and hasDerive(tbl, "Mod", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
       }
@@ -2365,7 +2442,7 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BLt -> {
-      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
+      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs) or tyVarBoundedBy(sc, lhs, "Compare")
       val ltWiden = widenArithmetic(lhs, rhs)
       val ltCompat = match ltWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
       if not lhsOk or not ltCompat {
@@ -2381,7 +2458,7 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BLte -> {
-      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
+      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs) or tyVarBoundedBy(sc, lhs, "Compare")
       val lteWiden = widenArithmetic(lhs, rhs)
       val lteCompat = match lteWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
       if not lhsOk or not lteCompat {
@@ -2397,7 +2474,7 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BGt -> {
-      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
+      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs) or tyVarBoundedBy(sc, lhs, "Compare")
       val gtWiden = widenArithmetic(lhs, rhs)
       val gtCompat = match gtWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
       if not lhsOk or not gtCompat {
@@ -2413,7 +2490,7 @@ func inferBinop(
       TyPrim(pt = PtBool)
     }
     case BGte -> {
-      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
+      val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs) or tyVarBoundedBy(sc, lhs, "Compare")
       val gteWiden = widenArithmetic(lhs, rhs)
       val gteCompat = match gteWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
       if not lhsOk or not gteCompat {
@@ -15572,7 +15649,7 @@ func inferExprCore(
         recordHoistOperandType(sc, tbl, l, lt, rt)
         recordHoistedComposite(sc, tbl, r, rt, lt)
       }
-      val binT = inferBinop(tbl, diag, op, lt, rt, e.span)
+      val binT = inferBinop(sc, tbl, diag, op, lt, rt, e.span)
       match op {
         case BEq -> {
           exemptArrayCopy(tbl, l)
@@ -17270,7 +17347,8 @@ func inferLambda(
     selfFields = sc.selfFields,
     selfChecked = sc.selfChecked,
     selfType = sc.selfType,
-    contractDepth = sc.contractDepth
+    contractDepth = sc.contractDepth,
+    bounds = sc.bounds
   )
   match declaredRet {
     case Some(rt) -> {

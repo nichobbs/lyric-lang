@@ -3329,6 +3329,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/distinct_collections_self_test.l
+      # Operators on a type parameter bounded by Add, Sub, Mul, Div, Mod, Compare (#7996, #8017).
+      - name: Bounded generic operator self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/bounded_generic_ops_self_test.l
 
       - name: Wait for parallel tests (dotnet-b batch 4 split, #4975)
         wait-all: true
@@ -5530,6 +5536,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/distinct_collections_self_test.l
+      - name: Bounded generic operator self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bounded_generic_ops_self_test.l
       # Extern-handle-across-a-loop self-test (#3307) — pins StackMapTable
       # local-variable typing for `JRef`/extern locals at basic-block
       # boundaries: an `extern type` value driven through a `while`/`if` (loop
