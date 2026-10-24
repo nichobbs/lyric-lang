@@ -13,7 +13,9 @@
 #   5. Protocol points: a supervised session with a protocol plugin and
 #      requests routed through its grants, the same pairs
 #      (scripts/ci/plugin-protocol-e2e.sh).
-#   6. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
+#   6. The LSP example: an editor hosting a language server as a protocol
+#      plugin, with dotnet and JVM hosts (scripts/ci/plugin-lsp-e2e.sh).
+#   7. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
 #      plugins (scripts/ci/plugin-sdk-e2e.sh).
 #
 # Native hosts and plugins run in scripts/ci/native-backend-self-tests.sh and
@@ -52,6 +54,11 @@ for host in dotnet jvm; do
     echo "== plugin-protocol-e2e: $host host, $plugin plugin"
     bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" "$host" "$plugin"
   done
+done
+
+for host in dotnet jvm; do
+  echo "== plugin-lsp-e2e: $host host"
+  bash scripts/ci/plugin-lsp-e2e.sh "$lyric_bin" "$host"
 done
 
 LYRIC="$lyric_bin" bash scripts/ci/plugin-sdk-e2e.sh

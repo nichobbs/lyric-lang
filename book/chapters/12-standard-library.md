@@ -45,7 +45,7 @@ Here is the full module inventory:
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
 | `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
-| `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, the standard error codes |
+| `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `setServeDuringCall`, `RpcHandler`, `RpcTransport`, the standard error codes |
 | `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses); the same framings to a child process: `newNdjsonTransportOverProcess`, `newContentLengthTransportOverProcess` |
 | `Std.AnnotationMeta` | Read the annotations written on `config { }` fields back at runtime, on dotnet and the JVM: `fieldsWithAnnotation`, `allAnnotatedFields`, `AnnotatedField`, `namedArg`, `positionalArg` |
 | `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
@@ -497,7 +497,11 @@ becomes an `internalError` response rather than ending the loop. Every
 `call` waits at most the peer's call timeout (60 seconds unless set with
 `newPeerWithTimeout`), and `callWithin` takes a timeout per call, so a peer
 that never answers fails the call with `requestTimedOut` instead of blocking
-it.
+it. While a `call` waits, requests the other side sends are queued for
+`runLoop`; `setServeDuringCall(peer, true)` answers them inside the call
+instead, which a client needs when the other side replies only after a
+request of its own (an LSP server sending `workspace/applyEdit` before it
+answers `workspace/executeCommand`).
 
 To speak JSON-RPC to a child process instead, such as a language server,
 spawn it with `Std.Process.spawnPiped` and build the transport over it:
