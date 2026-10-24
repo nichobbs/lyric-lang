@@ -17,6 +17,10 @@
 //!   - a package with a `@plugin` record `R` gets `<R>Server`, an
 //!     `impl PluginServer for <R>Server`, and `func main(): Int`.
 //!
+//! A `--shape component` build calls `expandFileForComponent` instead (§9,
+//! docs/69 §9.3): the plugin package gets component exports and capability
+//! host imports, and K0013/K0014 report what a component cannot carry.
+//!
 //! The generated items are produced as Lyric source text and parsed with
 //! `Lyric.Parser`; each chunk is padded so its first line is the line of the
 //! declaration it comes from, so a diagnostic inside generated code points
@@ -43,6 +47,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
+import Lyric.ComponentGlue as Glue
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
@@ -1156,6 +1161,8 @@ record PluginModel {
   requestTys: Map[String, BT]
   pointMethodNames: Map[String, List[String]]
   line: Int
+  /// The `@plugin` annotation, where component-build diagnostics point.
+  span: Span
 }
 
 func k(st: in St, code: in String, msg: in String, sp: in Span): Unit {
@@ -2354,7 +2361,8 @@ func pluginModel(
       requestFns = requestFns,
       requestTys = requestTys,
       pointMethodNames = pointMethodNames,
-      line = it.span.startPos.line
+      line = it.span.startPos.line,
+      span = a.span
     )
   )
 }
@@ -2449,10 +2457,23 @@ record Gen {
   helperNames: List[String]
   helperTexts: List[String]
   flags: Map[String, Bool]
+  /// Generating for a `--shape component` build (docs/69 §9.3).
+  component: Bool
 }
 
-func newGen(pkg: in String): Gen {
-  Gen(pkg = pkg, helperNames = newList(), helperTexts = newList(), flags = newMap())
+func newGen(pkg: in String, component: in Bool): Gen {
+  Gen(pkg = pkg, helperNames = newList(), helperTexts = newList(), flags = newMap(), component = component)
+}
+
+/// How a generated function another package calls is declared: `pub func`, or
+/// `internal func` in a component build, where every `pub func` of the program
+/// becomes a component export and only the plugin's own exports should.
+func pubFunc(g: in Gen): String {
+  if g.component {
+    "internal func "
+  } else {
+    "pub func "
+  }
 }
 
 func addHelper(g: in Gen, name: in String, text: in String): Unit {
@@ -3018,7 +3039,7 @@ func decodeMemberLines(
 func recordCodecText(name: in String, fields: in List[FieldDecl], bts: in List[BT], g: in Gen): String {
   needPrimHelpers(g)
   val l: List[String] = newList()
-  l.add("pub func pluginEncode" + name + "(v: in " + name + "): JsonValue {")
+  l.add(pubFunc(g) + "pluginEncode" + name + "(v: in " + name + "): JsonValue {")
   l.add("  val fs: List[JsonField] = newList()")
   var i = 0
   while i < fields.count {
@@ -3030,7 +3051,7 @@ func recordCodecText(name: in String, fields: in List[FieldDecl], bts: in List[B
   l.add("  JsonValue.JObject(fields = fs)")
   l.add("}")
   l.add("")
-  l.add("pub func pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
+  l.add(pubFunc(g) + "pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
   l.add("  val fs: List[JsonField] = match j {")
   l.add("    case JsonValue.JObject(xs) -> xs")
   l.add("    case _ -> return Err(error = " + lit(name + ": expected an object, got ") + " + __pluginKind(j))")
@@ -3054,7 +3075,7 @@ func recordCodecText(name: in String, fields: in List[FieldDecl], bts: in List[B
 func unionCodecText(name: in String, cases: in List[UnionCase], bts: in List[List[BT]], g: in Gen): String {
   needPrimHelpers(g)
   val l: List[String] = newList()
-  l.add("pub func pluginEncode" + name + "(v: in " + name + "): JsonValue {")
+  l.add(pubFunc(g) + "pluginEncode" + name + "(v: in " + name + "): JsonValue {")
   l.add("  match v {")
   var ci = 0
   for c in cases {
@@ -3093,7 +3114,7 @@ func unionCodecText(name: in String, cases: in List[UnionCase], bts: in List[Lis
   l.add("  }")
   l.add("}")
   l.add("")
-  l.add("pub func pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
+  l.add(pubFunc(g) + "pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
   l.add("  val fs: List[JsonField] = match j {")
   l.add("    case JsonValue.JObject(xs) -> xs")
   l.add("    case _ -> return Err(error = " + lit(name + ": expected an object, got ") + " + __pluginKind(j))")
@@ -3137,7 +3158,7 @@ func unionCodecText(name: in String, cases: in List[UnionCase], bts: in List[Lis
 func enumCodecText(name: in String, cases: in List[EnumCase], g: in Gen): String {
   needPrimHelpers(g)
   val l: List[String] = newList()
-  l.add("pub func pluginEncode" + name + "(v: in " + name + "): JsonValue {")
+  l.add(pubFunc(g) + "pluginEncode" + name + "(v: in " + name + "): JsonValue {")
   l.add("  match v {")
   for c in cases {
     l.add("    case " + name + "." + c.name + " -> JsonValue.JString(value = " + lit(c.name) + ")")
@@ -3145,7 +3166,7 @@ func enumCodecText(name: in String, cases: in List[EnumCase], g: in Gen): String
   l.add("  }")
   l.add("}")
   l.add("")
-  l.add("pub func pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
+  l.add(pubFunc(g) + "pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
   l.add("  val s: String = match j {")
   l.add("    case JsonValue.JString(x) -> x")
   l.add("    case _ -> return Err(error = " + lit(name + ": expected a string, got ") + " + __pluginKind(j))")
@@ -3163,11 +3184,11 @@ func enumCodecText(name: in String, cases: in List[EnumCase], g: in Gen): String
 func handleCodecText(name: in String, g: in Gen): String {
   needPrimHelpers(g)
   val l: List[String] = newList()
-  l.add("pub func pluginEncode" + name + "(v: in " + name + "): JsonValue {")
+  l.add(pubFunc(g) + "pluginEncode" + name + "(v: in " + name + "): JsonValue {")
   l.add("  JsonValue.JInt(value = v.value)")
   l.add("}")
   l.add("")
-  l.add("pub func pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
+  l.add(pubFunc(g) + "pluginDecode" + name + "(j: in JsonValue): Result[" + name + ", String] {")
   l.add("  match j {")
   l.add("    case JsonValue.JInt(n) -> Ok(value = " + name + ".from(n))")
   l.add("    case _ -> Err(error = " + lit(name + ": expected an integer handle, got ") + " + __pluginKind(j))")
@@ -3398,19 +3419,29 @@ func capabilityText(c: in IfaceModel, pkg: in String, g: in Gen): String {
   val cl = lowerFirst(c.name)
   val l: List[String] = newList()
   // Plugin side.
-  l.add("pub record " + c.name + "Client {")
-  l.add("  conn: PluginConnection")
-  l.add("}")
-  l.add("")
-  for m in c.methods {
-    l.add(stubMethodText(c.name + "Client", m, "callHost(__stub.conn, ", "cap/" + id + "/" + m.name, g))
+  if g.component {
+    for x in componentClientLines(c, g) {
+      l.add(x)
+    }
+  } else {
+    l.add("pub record " + c.name + "Client {")
+    l.add("  conn: PluginConnection")
+    l.add("}")
+    l.add("")
+    for m in c.methods {
+      l.add(stubMethodText(c.name + "Client", m, "callHost(__stub.conn, ", "cap/" + id + "/" + m.name, g))
+    }
   }
   // Host side.
-  l.add("pub func " + cl + "CapabilityInfo(): CapabilityInfo {")
+  l.add(pubFunc(g) + cl + "CapabilityInfo(): CapabilityInfo {")
   val hasGrant = match c.grant { case Some(_) -> "true"; case None -> "false" }
   l.add("  CapabilityInfo(id = " + lit(id) + ", hasGrant = " + hasGrant + ")")
   l.add("}")
   l.add("")
+  // A component is never a host: the rest serves capabilities to plugins.
+  if g.component {
+    return joinLines(l)
+  }
   l.add("pub record " + c.name + "Server {")
   l.add("  target: " + c.name)
   l.add("}")
@@ -3476,7 +3507,7 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
   val id = pkg + "." + p.name
   val pl = lowerFirst(p.name)
   val l: List[String] = newList()
-  l.add("pub func " + pl + "PointInfo(): PluginPointInfo {")
+  l.add(pubFunc(g) + pl + "PointInfo(): PluginPointInfo {")
   for x in allowsLines(p, ctx, st) {
     l.add(x)
   }
@@ -3491,6 +3522,10 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
   )
   l.add("}")
   l.add("")
+  // A component is never a host: the rest reads and calls loaded plugins.
+  if g.component {
+    return joinLines(l)
+  }
   match p.contributions {
     case Some(cb) -> {
       l.add("pub record " + p.name + "Contribution {")
@@ -3578,6 +3613,71 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
   joinLines(l)
 }
 
+/// The statements of `describe()`: they build and yield the manifest (without
+/// payloads) as a `JsonValue`.
+func describeBodyLines(pm: in PluginModel, g: in Gen): List[String] {
+  val l: List[String] = newList()
+  l.add("val points: List[JsonValue] = newList()")
+  var i = 0
+  for p in pm.points {
+    val info = "__pi" + i.toString()
+    l.add("val " + info + " = " + p.qualifier + lowerFirst(p.declName) + "PointInfo()")
+    l.add("val __pf" + i.toString() + ": List[JsonField] = newList()")
+    l.add("__pf" + i.toString() + ".add(JsonField(name = \"point\", value = JsonValue.JString(value = " + info + ".id)))")
+    l.add(
+      "__pf" + i.toString() + ".add(JsonField(name = \"version\", value = JsonValue.JString(value = " + info +
+        ".version)))"
+    )
+    val contrib = match mapGet(pm.contribFns, p.key) {
+      case Some(fnName) -> match mapGet(pm.contribTys, p.key) {
+        case Some(b) -> encExpr(b, fnName + "()", g)
+        case None -> "JsonValue.JNull"
+      }
+      case None -> "JsonValue.JNull"
+    }
+    l.add("__pf" + i.toString() + ".add(JsonField(name = \"contributions\", value = " + contrib + "))")
+    l.add("points.add(JsonValue.JObject(fields = __pf" + i.toString() + "))")
+    i = i + 1
+  }
+  l.add("val required: List[JsonValue] = newList()")
+  l.add("val optional: List[JsonValue] = newList()")
+  var ci = 0
+  for c in pm.caps {
+    val cf = "__cf" + ci.toString()
+    l.add("val " + cf + ": List[JsonField] = newList()")
+    l.add(
+      cf + ".add(JsonField(name = \"name\", value = JsonValue.JString(value = " + c.qualifier + lowerFirst(c.capName) +
+        "CapabilityInfo().id)))"
+    )
+    val grantExpr = match mapGet(pm.requestFns, c.key) {
+      case Some(fnName) -> match mapGet(pm.requestTys, c.key) {
+        case Some(b) -> encExpr(b, fnName + "()", g)
+        case None -> "JsonValue.JNull"
+      }
+      case None -> "JsonValue.JNull"
+    }
+    l.add(cf + ".add(JsonField(name = \"grant\", value = " + grantExpr + "))")
+    if c.optional {
+      l.add("optional.add(JsonValue.JObject(fields = " + cf + "))")
+    } else {
+      l.add("required.add(JsonValue.JObject(fields = " + cf + "))")
+    }
+    ci = ci + 1
+  }
+  l.add("val caps: List[JsonField] = newList()")
+  l.add("caps.add(JsonField(name = \"required\", value = JsonValue.JArray(items = required)))")
+  l.add("caps.add(JsonField(name = \"optional\", value = JsonValue.JArray(items = optional)))")
+  l.add("val top: List[JsonField] = newList()")
+  l.add("top.add(JsonField(name = \"schema\", value = JsonValue.JInt(value = 1i64)))")
+  l.add("top.add(JsonField(name = \"id\", value = JsonValue.JString(value = " + lit(pm.id) + ")))")
+  l.add("top.add(JsonField(name = \"version\", value = JsonValue.JString(value = " + lit(pm.version) + ")))")
+  l.add("top.add(JsonField(name = \"publisher\", value = JsonValue.JString(value = " + lit(pm.publisher) + ")))")
+  l.add("top.add(JsonField(name = \"points\", value = JsonValue.JArray(items = points)))")
+  l.add("top.add(JsonField(name = \"capabilities\", value = JsonValue.JObject(fields = caps)))")
+  l.add("JsonValue.JObject(fields = top)")
+  l
+}
+
 func pluginText(pm: in PluginModel, g: in Gen): String {
   rpcHelpers(g)
   val srv = pm.name + "Server"
@@ -3589,67 +3689,9 @@ func pluginText(pm: in PluginModel, g: in Gen): String {
   l.add("impl PluginServer for " + srv + " {")
   // describe
   l.add("  func describe(): JsonValue {")
-  l.add("    val points: List[JsonValue] = newList()")
-  var i = 0
-  for p in pm.points {
-    val info = "__pi" + i.toString()
-    l.add("    val " + info + " = " + p.qualifier + lowerFirst(p.declName) + "PointInfo()")
-    l.add("    val __pf" + i.toString() + ": List[JsonField] = newList()")
-    l.add(
-      "    __pf" + i.toString() + ".add(JsonField(name = \"point\", value = JsonValue.JString(value = " + info + ".id)))"
-    )
-    l.add(
-      "    __pf" + i.toString() + ".add(JsonField(name = \"version\", value = JsonValue.JString(value = " + info +
-        ".version)))"
-    )
-    val contrib = match mapGet(pm.contribFns, p.key) {
-      case Some(fnName) -> match mapGet(pm.contribTys, p.key) {
-        case Some(b) -> encExpr(b, fnName + "()", g)
-        case None -> "JsonValue.JNull"
-      }
-      case None -> "JsonValue.JNull"
-    }
-    l.add("    __pf" + i.toString() + ".add(JsonField(name = \"contributions\", value = " + contrib + "))")
-    l.add("    points.add(JsonValue.JObject(fields = __pf" + i.toString() + "))")
-    i = i + 1
+  for x in describeBodyLines(pm, g) {
+    l.add("    " + x)
   }
-  l.add("    val required: List[JsonValue] = newList()")
-  l.add("    val optional: List[JsonValue] = newList()")
-  var ci = 0
-  for c in pm.caps {
-    val cf = "__cf" + ci.toString()
-    l.add("    val " + cf + ": List[JsonField] = newList()")
-    l.add(
-      "    " + cf + ".add(JsonField(name = \"name\", value = JsonValue.JString(value = " + c.qualifier +
-        lowerFirst(c.capName) +
-        "CapabilityInfo().id)))"
-    )
-    val grantExpr = match mapGet(pm.requestFns, c.key) {
-      case Some(fnName) -> match mapGet(pm.requestTys, c.key) {
-        case Some(b) -> encExpr(b, fnName + "()", g)
-        case None -> "JsonValue.JNull"
-      }
-      case None -> "JsonValue.JNull"
-    }
-    l.add("    " + cf + ".add(JsonField(name = \"grant\", value = " + grantExpr + "))")
-    if c.optional {
-      l.add("    optional.add(JsonValue.JObject(fields = " + cf + "))")
-    } else {
-      l.add("    required.add(JsonValue.JObject(fields = " + cf + "))")
-    }
-    ci = ci + 1
-  }
-  l.add("    val caps: List[JsonField] = newList()")
-  l.add("    caps.add(JsonField(name = \"required\", value = JsonValue.JArray(items = required)))")
-  l.add("    caps.add(JsonField(name = \"optional\", value = JsonValue.JArray(items = optional)))")
-  l.add("    val top: List[JsonField] = newList()")
-  l.add("    top.add(JsonField(name = \"schema\", value = JsonValue.JInt(value = 1i64)))")
-  l.add("    top.add(JsonField(name = \"id\", value = JsonValue.JString(value = " + lit(pm.id) + ")))")
-  l.add("    top.add(JsonField(name = \"version\", value = JsonValue.JString(value = " + lit(pm.version) + ")))")
-  l.add("    top.add(JsonField(name = \"publisher\", value = JsonValue.JString(value = " + lit(pm.publisher) + ")))")
-  l.add("    top.add(JsonField(name = \"points\", value = JsonValue.JArray(items = points)))")
-  l.add("    top.add(JsonField(name = \"capabilities\", value = JsonValue.JObject(fields = caps)))")
-  l.add("    JsonValue.JObject(fields = top)")
   l.add("  }")
   l.add("")
   // attach (D207's `bind`: `bind` is a reserved keyword)
@@ -3834,7 +3876,11 @@ func keepNonGrant(cs: in List[ContractClause]): List[ContractClause] {
   kept
 }
 
-func strippedItem(it: in Item): Item {
+// The marker `Lyric.ComponentGlue` reads to carry a handle as the WIT `u64`;
+// the same string as its `componentHandleMarker`.
+val componentHandleMarker: String = "__componentHandle"
+
+func strippedItem(it: in Item, component: in Bool): Item {
   val anns = withoutPluginAnns(it.annotations)
   match it.kind {
     case IInterface(d) -> {
@@ -3847,6 +3893,20 @@ func strippedItem(it: in Item): Item {
       annotations = anns,
       kind = IFunc(decl = fn.copy(annotations = withoutPluginAnns(fn.annotations)))
     )
+    case IDistinctType(_) -> {
+      match findAnn(it.annotations, annHandle) {
+        case Some(a) -> {
+          if component {
+            val segs: List[String] = newList()
+            segs.add(componentHandleMarker)
+            val noArgs: List[AnnotationArg] = newList()
+            anns.add(Annotation(name = ModulePath(segments = segs, span = a.span), args = noArgs, span = a.span))
+          }
+        }
+        case None -> ()
+      }
+      it.copy(annotations = anns)
+    }
     case _ -> it.copy(annotations = anns)
   }
 }
@@ -3854,6 +3914,23 @@ func strippedItem(it: in Item): Item {
 /// Expand `file`'s plugin annotations.  `packages` holds every source
 /// package of the build (`collectPluginPackage`), this one included or not.
 pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]): PluginExpandResult {
+  expandFileMode(file, packages, false)
+}
+
+/// `expandFile` for a `--shape component` build (docs/69 §9.3): a `@plugin`
+/// package gets the component exports and capability imports instead of a
+/// JSON-RPC server and `main`, a capability's `<C>Client` calls those imports,
+/// the generated functions are `internal` (so only the plugin's exports become
+/// component exports), the host-side items are left out, and K0013/K0014
+/// report what a component cannot carry.  The bridge runs it before the
+/// component shims, which then see the exports.
+pub func expandFileForComponent(file: in SourceFile, packages: in Map[String, PluginPackage]): PluginExpandResult {
+  expandFileMode(file, packages, true)
+}
+
+func expandFileMode(
+  file: in SourceFile, packages: in Map[String, PluginPackage], component: in Bool
+): PluginExpandResult {
   val noDiags: List[Diagnostic] = newList()
   if not usesPluginAnnotations(file) {
     return PluginExpandResult(file = file, diagnostics = noDiags)
@@ -3984,7 +4061,7 @@ pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]
     }
   }
   // Boundary types of this package.
-  val g = newGen(pkg)
+  val g = newGen(pkg, component)
   val chunks: List[Chunk] = newList()
   val reached: List[String] = newList()
   computeReach(ctx, reached)
@@ -4012,7 +4089,14 @@ pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]
     }
   }
   for pm in plugins {
-    chunks.add(Chunk(text = pluginText(pm, g), line = pm.line))
+    if component {
+      match componentPlugin(pm, ctx, st) {
+        case Some(cp) -> chunks.add(Chunk(text = componentPluginText(pm, cp, g), line = pm.line))
+        case None -> ()
+      }
+    } else {
+      chunks.add(Chunk(text = pluginText(pm, g), line = pm.line))
+    }
   }
   if hasErrorDiag(st.diags) {
     return PluginExpandResult(file = file, diagnostics = st.diags)
@@ -4026,7 +4110,7 @@ pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]
   }
   val items: List[Item] = newList()
   for it in file.items {
-    items.add(strippedItem(it))
+    items.add(strippedItem(it, component))
   }
   for c in chunks {
     parseChunk(pkg, c, st, file.packageDecl.span, items)
@@ -4087,4 +4171,886 @@ func codecForUnion(d: in UnionDecl, ctx: in Ctx, st: in St, g: in Gen): String {
     bts.add(row)
   }
   unionCodecText(d.name, d.cases, bts, g)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §9. Component builds (docs/69 §9.3).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// In a `--shape component` build the plugin is a WebAssembly component that a
+// host instantiates in process: its point methods are component exports and
+// its capability calls are host imports, both WIT-typed.  The plugin package
+// gets `pluginDescribe`, `pluginAttach`, `pluginMethods` and one export per
+// implemented point method; each requested capability gets a `@wasmImport`
+// extern per method returning `Result[T, <C>CallErrorWire]`, and an
+// implementation of the API package's `__<C>Calls` that the `<C>Client` the
+// plugin record holds calls.  `Lyric.ComponentGlue` turns the exports and
+// externs into WIT and canonical-ABI code afterwards.
+/// One point or capability method, its types spelled in the plugin package.
+record CompMethod {
+  name: String
+  params: List[Param]
+  paramTys: List[BT]
+  okTy: BT
+  errTy: BT
+}
+
+/// An implemented point and the methods the plugin reports for it.
+record CompPoint {
+  id: String
+  declName: String
+  qualifier: String
+  methods: List[CompMethod]
+}
+
+/// A requested capability and all its methods.
+record CompCap {
+  id: String
+  capName: String
+  qualifier: String
+  methods: List[CompMethod]
+}
+
+record CompPlugin {
+  points: List[CompPoint]
+  caps: List[CompCap]
+}
+
+/// The WIT names one interface declares, for the collision checks: a type's
+/// WIT name maps to the type it names, a function's to its description.
+record WitScope {
+  label: String
+  types: Map[String, String]
+  funcs: Map[String, String]
+}
+
+func newWitScope(label: in String): WitScope {
+  WitScope(label = label, types = newMap(), funcs = newMap())
+}
+
+func upperFirst(s: in String): String {
+  if s.length == 0 {
+    s
+  } else {
+    Str.toUpper(Str.substring(s, 0, 1)) + Str.substring(s, 1)
+  }
+}
+
+/// The Lyric name a host reads back from a WIT name: the segments joined with
+/// the first letter of each later one capitalised (camel case), and the first
+/// one's too when `pascal` (a type or case name).
+func nameFromWit(wit: in String, pascal: in Bool): String {
+  val w = if Str.startsWith(wit, "%") { Str.substring(wit, 1) } else { wit }
+  var acc = ""
+  var first = true
+  for seg in Str.split(w, "-") {
+    if first and not pascal {
+      acc = acc + seg
+    } else {
+      acc = acc + upperFirst(seg)
+    }
+    first = false
+  }
+  acc
+}
+
+func startsUpper(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  val c = Str.charAtOrReplacement(s, 0)
+  c >= 'A' and c <= 'Z'
+}
+
+/// A diagnostic, unless the same one was already reported.
+func kOnce(st: in St, code: in String, msg: in String, sp: in Span): Unit {
+  for d in st.diags {
+    if d.code == code and d.message == msg {
+      return ()
+    }
+  }
+  k(st, code, msg, sp)
+}
+
+/// K0013 unless `name` survives the WIT round trip; `desc` names it.
+func checkWitName(name: in String, desc: in String, st: in St, sp: in Span): Unit {
+  val wit = Glue.witName(name)
+  val back = nameFromWit(wit, startsUpper(name))
+  if back != name {
+    kOnce(
+      st,
+      "K0013",
+      desc + " becomes the WIT name '" + wit + "', which reads back as '" + back +
+        "'; a component plugin's names must survive that round trip (camelCase members, PascalCase types and cases, an acronym written as a word such as Http)",
+      sp
+    )
+  }
+}
+
+func k0014(st: in St, msg: in String, sp: in Span): Unit {
+  kOnce(st, "K0014", msg, sp)
+}
+
+func addWitType(ws: in WitScope, witName: in String, key: in String, st: in St, sp: in Span): Unit {
+  match mapGet(ws.types, witName) {
+    case Some(other) -> {
+      if other != key {
+        kOnce(
+          st,
+          "K0013",
+          "the types " + other + " and " + key + " both become the WIT type '" + witName + "' in the " + ws.label +
+            " interface, which can declare one",
+          sp
+        )
+      }
+    }
+    case None -> {
+      ws.types[witName] = key
+    }
+  }
+}
+
+func addWitFunc(ws: in WitScope, witName: in String, what: in String, st: in St, sp: in Span): Unit {
+  match mapGet(ws.funcs, witName) {
+    case Some(other) -> kOnce(
+      st,
+      "K0013",
+      what + " and " + other + " both become the WIT function '" + witName + "' in the " + ws.label +
+        " interface",
+      sp
+    )
+    case None -> {
+      ws.funcs[witName] = what
+    }
+  }
+}
+
+func mapGetOr(m: in Map[String, String], key: in String, dflt: in String): String {
+  match mapGet(m, key) {
+    case Some(v) -> v
+    case None -> dflt
+  }
+}
+
+/// K0013 for a function and a type of `ws` with the same WIT name.
+func checkScopeNamespace(ws: in WitScope, st: in St, sp: in Span): Unit {
+  for wn in mapKeys(ws.funcs) {
+    match mapGet(ws.types, wn) {
+      case Some(t) -> kOnce(
+        st,
+        "K0013",
+        mapGetOr(ws.funcs, wn, wn) + " and the type " + t + " both become '" + wn + "' in the " + ws.label +
+          " interface (functions and types share one WIT namespace)",
+        sp
+      )
+      case None -> ()
+    }
+  }
+}
+
+/// The package a `BNamed` qualifier names, seen from `home`.
+func qualifierPkg(q: in String, home: in String): String {
+  if q == "" {
+    home
+  } else if Str.endsWith(q, ".") {
+    Str.substring(q, 0, q.length - 1)
+  } else {
+    q
+  }
+}
+
+func declItemIn(pkg: in String, name: in String, ctx: in Ctx, st: in St): Option[Item] {
+  if pkg == ctx.pkg {
+    return mapGet(ctx.decls, name)
+  }
+  match mapGet(st.packages, pkg) {
+    case Some(pp) -> pubItemNamed(pp.items, name)
+    case None -> None
+  }
+}
+
+func isUnitBT(b: in BT): Bool {
+  match b.kind {
+    case BPrim(n) -> n == "Unit"
+    case _ -> false
+  }
+}
+
+/// Classify `te`, written in package `declPkg`, for code in the plugin package;
+/// K0001 problems are reported, and a bad type yields None.
+func classifyFrom(te: in TypeExpr, declPkg: in String, ctx: in Ctx, st: in St, whereText: in String): Option[BT] {
+  match ctxOf(declPkg, ctx, st) {
+    case None -> None
+    case Some(dc) -> {
+      val b = classify(te, dc, ctx.pkg, st, te.span, whereText, 0)
+      if isBad(b) {
+        None
+      } else {
+        Some(value = b)
+      }
+    }
+  }
+}
+
+/// K0013/K0014 for a type crossing a component boundary in `ws`.  `depth`
+/// counts nesting as `Lyric.ComponentGlue` does (it carries at most 8 levels).
+func checkCarry(
+  b: in BT,
+  whereText: in String,
+  ws: in WitScope,
+  stack: in List[String],
+  depth: in Int,
+  ctx: in Ctx,
+  st: in St,
+  sp: in Span,
+): Unit {
+  if depth > 8 {
+    k0014(st, whereText + " nests types more than 8 levels deep, more than a component can carry", sp)
+    return ()
+  }
+  match b.kind {
+    case BPrim(n) -> {
+      if n == "UInt" or n == "ULong" or n == "Char" {
+        k0014(st, whereText + " uses " + n + ", which a component cannot carry (use Int, Long or String)", sp)
+      }
+    }
+    case BJson -> k0014(
+      st,
+      whereText +
+        " uses JsonValue, which has no WIT type (a WIT type cannot be recursive); pass it as a String",
+      sp
+    )
+    case BOption(i) -> checkCarry(i, whereText, ws, stack, depth + 1, ctx, st, sp)
+    case BResult(o, e) -> {
+      checkCarry(o, whereText, ws, stack, depth + 1, ctx, st, sp)
+      checkCarry(e, whereText, ws, stack, depth + 1, ctx, st, sp)
+    }
+    case BList(e, isSlice) -> {
+      if isSlice {
+        k0014(st, whereText + " uses " + b.text + ", which a component cannot carry (use List[T])", sp)
+      } else {
+        checkCarry(e, whereText, ws, stack, depth + 1, ctx, st, sp)
+      }
+    }
+    case BBytes(isSlice) -> {
+      if isSlice {
+        k0014(st, whereText + " uses slice[Byte], which a component cannot carry (use List[Byte])", sp)
+      }
+    }
+    case BMap(v) -> checkCarry(v, whereText, ws, stack, depth + 1, ctx, st, sp)
+    case BTuple(es) -> {
+      for e in es {
+        if isUnitBT(e) {
+          k0014(st, whereText + " has a Unit tuple element, which a component cannot carry", sp)
+        } else {
+          checkCarry(e, whereText, ws, stack, depth + 1, ctx, st, sp)
+        }
+      }
+    }
+    case BNamed(n, q, kind) -> checkNamedCarry(n, q, kind, whereText, ws, stack, depth, ctx, st, sp)
+    case BBad -> ()
+  }
+}
+
+func checkNamedCarry(
+  n: in String,
+  q: in String,
+  kind: in String,
+  whereText: in String,
+  ws: in WitScope,
+  stack: in List[String],
+  depth: in Int,
+  ctx: in Ctx,
+  st: in St,
+  sp: in Span,
+): Unit {
+  if kind == "restored" {
+    k0014(
+      st,
+      whereText + " uses " + q + n +
+        ", whose declaration is not part of this build (a component is built from the source of every package it uses)",
+      sp
+    )
+    return ()
+  }
+  val pkg = qualifierPkg(q, ctx.pkg)
+  val key = pkg + "." + n
+  if stack.contains(key) {
+    k0014(st, whereText + " reaches the recursive type " + key + ", and a WIT type cannot be recursive", sp)
+    return ()
+  }
+  checkWitName(n, "the type " + key, st, sp)
+  addWitType(ws, Glue.witName(n), key, st, sp)
+  if kind == "handle" {
+    return ()
+  }
+  val it = match declItemIn(pkg, n, ctx, st) { case Some(x) -> x; case None -> return () }
+  val inner: List[String] = newList()
+  for s in stack {
+    inner.add(s)
+  }
+  inner.add(key)
+  match it.kind {
+    case IRecord(d) -> checkRecordCarry(d, pkg, key, whereText, ws, inner, depth, ctx, st, sp)
+    case IExposedRec(d) -> checkRecordCarry(d, pkg, key, whereText, ws, inner, depth, ctx, st, sp)
+    case IUnion(d) -> {
+      if d.cases.count == 0 or d.cases.count > 256 {
+        k0014(st, "the union " + key + " needs between 1 and 256 cases to cross a component boundary", sp)
+      }
+      for c in d.cases {
+        checkWitName(c.name, "the case " + key + "." + c.name, st, sp)
+        if c.fields.count > 1 {
+          k0014(
+            st,
+            "the case " + key + "." + c.name +
+              " has several fields, and a WIT variant case carries one payload (wrap them in a record)",
+            sp
+          )
+        } else if c.fields.count == 1 {
+          match c.fields[0] {
+            case UFNamed(fname, fty, _) -> match classifyFrom(fty, pkg, ctx, st, "field '" + fname + "' of " + key + "." + c.name) {
+              case Some(fb) -> {
+                if isUnitBT(fb) {
+                  k0014(st, "the case " + key + "." + c.name + " carries Unit, which a component cannot carry", sp)
+                } else {
+                  checkCarry(fb, whereText, ws, inner, depth + 1, ctx, st, sp)
+                }
+              }
+              case None -> ()
+            }
+            case UFPos(_, _) -> ()
+          }
+        }
+      }
+    }
+    case IEnum(d) -> {
+      if d.cases.count > 256 {
+        k0014(st, "the enum " + key + " has more than 256 cases, more than a component can carry", sp)
+      }
+      for c in d.cases {
+        checkWitName(c.name, "the case " + key + "." + c.name, st, sp)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func checkRecordCarry(
+  d: in RecordDecl,
+  pkg: in String,
+  key: in String,
+  whereText: in String,
+  ws: in WitScope,
+  stack: in List[String],
+  depth: in Int,
+  ctx: in Ctx,
+  st: in St,
+  sp: in Span,
+): Unit {
+  val fields = recordFields(d)
+  if fields.count == 0 {
+    k0014(st, "the record " + key + " has no fields, and a WIT record needs one", sp)
+  }
+  for f in fields {
+    checkWitName(f.name, "the field " + key + "." + f.name, st, sp)
+    match classifyFrom(f.ty, pkg, ctx, st, "field '" + f.name + "' of " + key) {
+      case Some(fb) -> {
+        if isUnitBT(fb) {
+          k0014(st, "the field " + key + "." + f.name + " is Unit, which a component cannot carry", sp)
+        } else {
+          checkCarry(fb, whereText, ws, stack, depth + 1, ctx, st, sp)
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
+/// The parameters and result of `m`; its error sits `errDepth` levels deep
+/// (1 in an export's result, 2 inside an import's `<C>CallErrorWire`).
+func checkMethodCarry(
+  m: in CompMethod,
+  site: in String,
+  ws: in WitScope,
+  errDepth: in Int,
+  ctx: in Ctx,
+  st: in St,
+  sp: in Span,
+): Unit {
+  var i = 0
+  for p in m.params {
+    checkWitName(p.name, "the parameter '" + p.name + "' of " + site, st, sp)
+    if isUnitBT(m.paramTys[i]) {
+      k0014(st, "the parameter '" + p.name + "' of " + site + " is Unit, which a component cannot carry", sp)
+    } else {
+      checkCarry(m.paramTys[i], "parameter '" + p.name + "' of " + site, ws, newList(), 0, ctx, st, sp)
+    }
+    i = i + 1
+  }
+  checkCarry(m.okTy, "the result of " + site, ws, newList(), 1, ctx, st, sp)
+  checkCarry(m.errTy, "the error of " + site, ws, newList(), errDepth, ctx, st, sp)
+}
+
+/// The method models of interface `it` (declared in `declPkg`) named in
+/// `only`, or all of them when `all`, spelled for the plugin package.
+func compMethods(
+  it: in Item, declPkg: in String, only: in List[String], all: in Bool, ctx: in Ctx, st: in St
+): Option[List[CompMethod]] {
+  val decl = match it.kind { case IInterface(d) -> d; case _ -> return None }
+  val acc: List[CompMethod] = newList()
+  for m in decl.members {
+    var name = ""
+    var params: List[Param] = newList()
+    var ret: Option[TypeExpr] = None
+    match m {
+      case IMSig(sig) -> {
+        name = sig.name
+        params = sig.params
+        ret = sig.ret
+      }
+      case IMFunc(fn) -> {
+        name = fn.name
+        params = fn.params
+        ret = fn.ret
+      }
+      case IMAssoc(_) -> ()
+    }
+    if name != "" and (all or only.contains(name)) {
+      val retTe = match ret { case Some(r) -> r; case None -> return None }
+      val pair = match isResultTy(retTe) { case Some(p) -> p; case None -> return None }
+      val ptys: List[BT] = newList()
+      for p in params {
+        match classifyFrom(p.ty, declPkg, ctx, st, "parameter '" + p.name + "' of " + decl.name + "." + name) {
+          case Some(b) -> ptys.add(b)
+          case None -> return None
+        }
+      }
+      val okB = match classifyFrom(pair.first, declPkg, ctx, st, "the result of " + decl.name + "." + name) {
+        case Some(b) -> b
+        case None -> return None
+      }
+      val errB = match classifyFrom(pair.second, declPkg, ctx, st, "the error of " + decl.name + "." + name) {
+        case Some(b) -> b
+        case None -> return None
+      }
+      acc.add(CompMethod(name = name, params = params, paramTys = ptys, okTy = okB, errTy = errB))
+    }
+  }
+  Some(value = acc)
+}
+
+/// The export a point method becomes: `<point, first letter lowered><Method>`.
+func exportName(pointName: in String, method: in String): String {
+  lowerFirst(pointName) + upperFirst(method)
+}
+
+/// The error variant method `i` of `c` returns from its host import:
+/// `<C>CallErrorWire` for every method whose error type is the first
+/// method's, `<C><Method>CallErrorWire` for one with another error type.
+func wireNameFor(c: in CompCap, i: in Int): String {
+  if i == 0 or c.methods[i].errTy.text == c.methods[0].errTy.text {
+    c.capName + "CallErrorWire"
+  } else {
+    c.capName + upperFirst(c.methods[i].name) + "CallErrorWire"
+  }
+}
+
+func notInBuild(st: in St, what: in String, sp: in Span): Unit {
+  k0014(
+    st,
+    what +
+      ", whose declaration is not part of this build (a component is built from the source of every package it uses)",
+    sp
+  )
+}
+
+/// The component models of plugin `pm`, after K0013/K0014; None when the
+/// plugin cannot be a component.
+func componentPlugin(pm: in PluginModel, ctx: in Ctx, st: in St): Option[CompPlugin] {
+  val sp = pm.span
+  val points: List[CompPoint] = newList()
+  for p in pm.points {
+    val item = match p.item {
+      case Some(x) -> x
+      case None -> {
+        notInBuild(st, "plugin record " + pm.name + " implements " + p.declName, sp)
+        return None
+      }
+    }
+    if isAnnotatedIface(item, annProtocol) {
+      k0014(
+        st,
+        "plugin record " + pm.name + " implements the protocol point " + p.declName +
+          ", which speaks its own protocol on stdin and stdout, so it cannot be built as a component",
+        sp
+      )
+      return None
+    }
+    val only = match mapGet(pm.pointMethodNames, p.key) { case Some(l) -> l; case None -> newList() }
+    match compMethods(item, p.pkg, only, false, ctx, st) {
+      case Some(ms) -> points.add(CompPoint(id = p.key, declName = p.declName, qualifier = p.qualifier, methods = ms))
+      case None -> return None
+    }
+  }
+  val caps: List[CompCap] = newList()
+  for c in pm.caps {
+    val item = match c.item {
+      case Some(x) -> x
+      case None -> {
+        notInBuild(st, "plugin record " + pm.name + " requests " + c.capName, sp)
+        return None
+      }
+    }
+    for other in caps {
+      if other.capName == c.capName {
+        kOnce(
+          st,
+          "K0013",
+          "plugin record " + pm.name + " requests two capabilities named " + c.capName + " (" + other.id + " and " + c.key +
+            "); a component build names its generated " +
+            c.capName +
+            "CallErrorWire after the capability, so the names must differ",
+          sp
+        )
+      }
+    }
+    val none: List[String] = newList()
+    match compMethods(item, c.pkg, none, true, ctx, st) {
+      case Some(ms) -> caps.add(CompCap(id = c.key, capName = c.capName, qualifier = c.qualifier, methods = ms))
+      case None -> return None
+    }
+  }
+  // The exported interface: the plugin functions and the point methods.
+  val ex = newWitScope("exported")
+  addWitFunc(ex, Glue.witName("pluginDescribe"), "pluginDescribe", st, sp)
+  addWitFunc(ex, Glue.witName("pluginAttach"), "pluginAttach", st, sp)
+  addWitFunc(ex, Glue.witName("pluginMethods"), "pluginMethods", st, sp)
+  for p in points {
+    checkWitName(p.declName, "the point " + p.id, st, sp)
+    for m in p.methods {
+      val en = exportName(p.declName, m.name)
+      val site = p.declName + "." + m.name
+      checkWitName(m.name, "the method " + p.id + "." + m.name, st, sp)
+      checkWitName(en, "the export " + en + " of " + site, st, sp)
+      addWitFunc(ex, Glue.witName(en), "the export of " + site, st, sp)
+      checkMethodCarry(m, site, ex, 1, ctx, st, sp)
+    }
+  }
+  checkScopeNamespace(ex, st, sp)
+  // One imported interface per capability.
+  for c in caps {
+    val ws = newWitScope(Glue.witName(c.id))
+    checkWitName(c.capName, "the capability " + c.id, st, sp)
+    var mi = 0
+    for m in c.methods {
+      val site = c.capName + "." + m.name
+      val wire = wireNameFor(c, mi)
+      addWitType(ws, Glue.witName(wire), "the generated " + wire, st, sp)
+      checkWitName(m.name, "the method " + c.id + "." + m.name, st, sp)
+      addWitFunc(ws, Glue.witName(m.name), "the import of " + site, st, sp)
+      checkMethodCarry(m, site, ws, 2, ctx, st, sp)
+      mi = mi + 1
+    }
+    checkScopeNamespace(ws, st, sp)
+  }
+  if hasErrorDiag(st.diags) {
+    return None
+  }
+  Some(value = CompPlugin(points = points, caps = caps))
+}
+
+func paramsText(m: in MethodModel): String {
+  val t = paramListText(m)
+  if t.length >= 2 {
+    Str.substring(t, 2)
+  } else {
+    ""
+  }
+}
+
+func compParamsText(m: in CompMethod, withMode: in Bool): String {
+  var s = ""
+  var i = 0
+  for p in m.params {
+    if i > 0 {
+      s = s + ", "
+    }
+    s = s + p.name + (if withMode { ": in " } else { ": " }) + m.paramTys[i].text
+    i = i + 1
+  }
+  s
+}
+
+func compArgsText(m: in CompMethod): String {
+  var s = ""
+  var i = 0
+  for p in m.params {
+    if i > 0 {
+      s = s + ", "
+    }
+    s = s + p.name
+    i = i + 1
+  }
+  s
+}
+
+/// The API package's `<C>Client` in a component build: it calls an
+/// `__<C>Calls` the plugin package implements over the host imports, so the
+/// API package stays independent of which plugin requests the capability.
+func componentClientLines(c: in IfaceModel, g: in Gen): List[String] {
+  val l: List[String] = newList()
+  l.add("/// What " + c.name + "Client calls in a component build; the @plugin package implements it")
+  l.add("/// over the component's host imports (docs/69 §9.3).")
+  l.add("pub interface __" + c.name + "Calls {")
+  for m in c.methods {
+    l.add("  func " + m.name + "(" + paramsText(m) + "): Result[" + m.okTy.text + ", " + callErrorText(m.errTy) + "]")
+  }
+  l.add("}")
+  l.add("")
+  l.add("pub record " + c.name + "Client {")
+  l.add("  calls: __" + c.name + "Calls")
+  l.add("}")
+  l.add("")
+  for m in c.methods {
+    var args = ""
+    var i = 0
+    for p in m.params {
+      if i > 0 {
+        args = args + ", "
+      }
+      args = args + p.name
+      i = i + 1
+    }
+    l.add(
+      pubFunc(g) + c.name + "Client." + m.name + "(__stub: in " + c.name + "Client" + paramListText(m) + "): Result[" +
+        m.okTy.text +
+        ", " +
+        callErrorText(m.errTy) +
+        "] {"
+    )
+    l.add("  __stub.calls." + m.name + "(" + args + ")")
+    l.add("}")
+    l.add("")
+  }
+  l
+}
+
+/// A boundary-error case of `<C>CallErrorWire`: its name (that of the
+/// `BoundaryError` case it maps to), field and field type.
+record WireCase {
+  name: String
+  field: String
+  ty: String
+}
+
+/// The cases of `<C>CallErrorWire` between `App` and `Stale`, in the order
+/// docs/69 §9.3 fixes.
+func wireErrorCases(): List[WireCase] {
+  val acc: List[WireCase] = newList()
+  acc.add(WireCase(name = "Denied", field = "reason", ty = "String"))
+  acc.add(WireCase(name = "NotGranted", field = "capability", ty = "String"))
+  acc.add(WireCase(name = "Revoked", field = "capability", ty = "String"))
+  acc.add(WireCase(name = "Unsupported", field = "method", ty = "String"))
+  acc.add(WireCase(name = "ContractViolated", field = "detail", ty = "String"))
+  acc.add(WireCase(name = "Timeout", field = "timeoutMs", ty = "Int"))
+  acc.add(WireCase(name = "Crashed", field = "detail", ty = "String"))
+  acc.add(WireCase(name = "Protocol", field = "detail", ty = "String"))
+  acc
+}
+
+/// A capability's error variants, host imports and `__<C>Calls` implementation.
+func componentCapText(c: in CompCap, l: in List[String]): Unit {
+  val emitted: List[String] = newList()
+  var i = 0
+  for m in c.methods {
+    val w = wireNameFor(c, i)
+    val unitErr = isUnitBT(m.errTy)
+    if not emitted.contains(w) {
+      emitted.add(w)
+      l.add("/// The error of a " + c.id + " host import: the capability's own error or a")
+      l.add("/// boundary error (docs/69 §9.3).")
+      l.add("union " + w + " {")
+      if unitErr {
+        l.add("  case App")
+      } else {
+        l.add("  case App(error: " + m.errTy.text + ")")
+      }
+      for wc in wireErrorCases() {
+        l.add("  case " + wc.name + "(" + wc.field + ": " + wc.ty + ")")
+      }
+      l.add("  case Stale")
+      l.add("}")
+      l.add("")
+      l.add("func __pluginWireError_" + w + "(w: in " + w + "): " + callErrorText(m.errTy) + " {")
+      l.add("  match w {")
+      if unitErr {
+        l.add("    case " + w + ".App -> CallError.App(error = ())")
+      } else {
+        l.add("    case " + w + ".App(e) -> CallError.App(error = e)")
+      }
+      for wc in wireErrorCases() {
+        l.add(
+          "    case " + w + "." + wc.name + "(x) -> CallError.Boundary(error = BoundaryError." + wc.name + "(" + wc.field +
+            " = x))"
+        )
+      }
+      l.add("    case " + w + ".Stale -> CallError.Boundary(error = BoundaryError.Stale)")
+      l.add("  }")
+      l.add("}")
+      l.add("")
+    }
+    l.add("@wasmImport(" + lit(c.id) + ")")
+    l.add(
+      "extern func __pluginImport_" + c.capName + "_" + m.name + "(" + compParamsText(m, false) + "): Result[" +
+        m.okTy.text +
+        ", " +
+        w +
+        "] = " +
+        lit(m.name)
+    )
+    l.add("")
+    i = i + 1
+  }
+  l.add("record __" + c.capName + "ComponentCalls {}")
+  l.add("")
+  l.add("impl " + c.qualifier + "__" + c.capName + "Calls for __" + c.capName + "ComponentCalls {")
+  var j = 0
+  for m in c.methods {
+    val w = wireNameFor(c, j)
+    l.add(
+      "  func " + m.name + "(" + compParamsText(m, true) + "): Result[" + m.okTy.text + ", " + callErrorText(m.errTy) +
+        "] {"
+    )
+    l.add("    match __pluginImport_" + c.capName + "_" + m.name + "(" + compArgsText(m) + ") {")
+    if isUnitBT(m.okTy) {
+      l.add("      case Ok(_) -> Ok(value = ())")
+    } else {
+      l.add("      case Ok(x) -> Ok(value = x)")
+    }
+    l.add("      case Err(w) -> Err(error = __pluginWireError_" + w + "(w))")
+    l.add("    }")
+    l.add("  }")
+    j = j + 1
+  }
+  l.add("}")
+  l.add("")
+}
+
+/// The plugin package's component items: the attached record's holder, the
+/// exports and the capability imports.
+func componentPluginText(pm: in PluginModel, cp: in CompPlugin, g: in Gen): String {
+  val holderTy = "__" + pm.name + "Component"
+  val holder = "__pluginComponentState"
+  val l: List[String] = newList()
+  l.add("ref record " + holderTy + " {")
+  l.add("  var held: Option[" + pm.name + "] = None")
+  l.add("}")
+  l.add("")
+  l.add("val " + holder + ": " + holderTy + " = " + holderTy + "()")
+  l.add("")
+  l.add("func __pluginBound(): " + pm.name + " {")
+  l.add("  match " + holder + ".held {")
+  l.add("    case Some(p) -> p")
+  l.add("    case None -> panic(" + lit("plugin " + pm.id + ": a point method was called before pluginAttach") + ")")
+  l.add("  }")
+  l.add("}")
+  l.add("")
+  l.add("func __pluginGranted(names: in List[String], id: in String): Bool {")
+  l.add("  for n in names {")
+  l.add("    if n == id {")
+  l.add("      return true")
+  l.add("    }")
+  l.add("  }")
+  l.add("  false")
+  l.add("}")
+  l.add("")
+  l.add("func __pluginDescribeJson(): JsonValue {")
+  for x in describeBodyLines(pm, g) {
+    l.add("  " + x)
+  }
+  l.add("}")
+  l.add("")
+  l.add("/// The manifest of plugin " + pm.id + " without payloads (docs/69 §9.3).")
+  l.add("pub func pluginDescribe(): String {")
+  l.add("  writeValue(__pluginDescribeJson())")
+  l.add("}")
+  l.add("")
+  l.add("/// Attach plugin " + pm.id + " to the capabilities in `grants`, the JSON array")
+  l.add("/// `[{\"capability\": ..., \"grant\": ...}]`; called once, before any point method.")
+  l.add("pub func pluginAttach(grants: in String): Result[Unit, String] {")
+  l.add("  val __doc: JsonValue = match parseValue(grants) {")
+  l.add("    case Ok(v) -> v")
+  l.add(
+    "    case Err(e) -> return Err(error = \"pluginAttach: the grants are not JSON: \" + JsonParseError.message(e))"
+  )
+  l.add("  }")
+  l.add("  val __items: List[JsonValue] = match __doc {")
+  l.add("    case JsonValue.JArray(xs) -> xs")
+  l.add("    case _ -> return Err(error = \"pluginAttach: the grants must be a JSON array\")")
+  l.add("  }")
+  l.add("  val __granted: List[String] = newList()")
+  l.add("  for __g in __items {")
+  l.add("    match getString(__g, \"capability\") {")
+  l.add("      case Some(c) -> __granted.add(c)")
+  l.add("      case None -> return Err(error = \"pluginAttach: each grant needs a \\\"capability\\\" string\")")
+  l.add("    }")
+  l.add("  }")
+  var args = ""
+  var ai = 0
+  for c in pm.caps {
+    val calls = "__calls" + ai.toString()
+    val field = "__f" + ai.toString()
+    l.add("  val " + calls + ": " + c.qualifier + "__" + c.capName + "Calls = __" + c.capName + "ComponentCalls()")
+    val client = c.qualifier + c.capName + "Client(calls = " + calls + ")"
+    if c.optional {
+      l.add("  val " + field + ": " + Fmt.typeStr(c.fieldTy) + " = if __pluginGranted(__granted, " + lit(c.key) + ") {")
+      l.add("    Some(value = " + client + ")")
+      l.add("  } else {")
+      l.add("    None")
+      l.add("  }")
+    } else {
+      l.add("  if not __pluginGranted(__granted, " + lit(c.key) + ") {")
+      l.add("    return Err(error = boundaryErrorMessage(BoundaryError.NotGranted(capability = " + lit(c.key) + ")))")
+      l.add("  }")
+      l.add("  val " + field + ": " + Fmt.typeStr(c.fieldTy) + " = " + client)
+    }
+    if ai > 0 {
+      args = args + ", "
+    }
+    args = args + c.fieldName + " = " + field
+    ai = ai + 1
+  }
+  l.add("  " + holder + ".held = Some(value = " + pm.name + "(" + args + "))")
+  l.add("  Ok(value = ())")
+  l.add("}")
+  l.add("")
+  l.add("/// The `<point>/<method>` names plugin " + pm.id + " implements.")
+  l.add("pub func pluginMethods(): List[String] {")
+  l.add("  val acc: List[String] = newList()")
+  for p in cp.points {
+    for m in p.methods {
+      l.add("  acc.add(" + lit(p.id + "/" + m.name) + ")")
+    }
+  }
+  l.add("  acc")
+  l.add("}")
+  l.add("")
+  for p in cp.points {
+    for m in p.methods {
+      l.add("/// " + p.id + "/" + m.name + " on the attached plugin.")
+      l.add(
+        "pub func " + exportName(p.declName, m.name) + "(" + compParamsText(m, true) + "): Result[" + m.okTy.text + ", " +
+          m.errTy.text +
+          "] {"
+      )
+      l.add("  val __t: " + p.qualifier + p.declName + " = __pluginBound()")
+      l.add("  __t." + m.name + "(" + compArgsText(m) + ")")
+      l.add("}")
+      l.add("")
+    }
+  }
+  for c in cp.caps {
+    componentCapText(c, l)
+  }
+  joinLines(l)
 }

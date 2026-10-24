@@ -1249,6 +1249,23 @@ func shimForComponent(
   Some(value = r.file)
 }
 
+/// For `--shape component`, expand a `@plugin` package (and the API packages
+/// it uses) into component exports and host imports before the shims are
+/// generated, so the shims carry them (docs/69 §9.3); any other shape passes
+/// the file through.  `plugins` holds every source package of the build.
+func pluginExpandForComponent(
+  file: in SourceFile,
+  shape: in String,
+  plugins: in Map[String, PluginExpand.PluginPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  if parseShapeSpec(shape).base != "component" {
+    return Some(value = file)
+  }
+  pipePluginExpandForComponent(file, plugins, label, origins)
+}
+
 /// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
 /// binary, "module" for the wasm32 browser/JS-host module plus JS glue
 /// (docs/35 W3).
@@ -1312,7 +1329,13 @@ pub func compileToNativeWithFeatures(
   }
   val componentPkgs: List[ComponentPkg] = newList()
   val noPeers: List[SourceFile] = newList()
-  val shimFile = match shimForComponent(cfgFile, shape, componentPkgs, noPeers) {
+  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(cfgFile, componentPlugins)
+  val pluginFile = match pluginExpandForComponent(cfgFile, shape, componentPlugins, path, noOrigins) {
+    case Some(f) -> f
+    case None -> return false
+  }
+  val shimFile = match shimForComponent(pluginFile, shape, componentPkgs, noPeers) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1777,12 +1800,24 @@ pub func compileProjectToNativeWithShape(
     cfgFiles[cci] = canonicalCfg[cci]
     cci = cci + 1
   }
+  // A component build expands its `@plugin` package into exports and host
+  // imports first, against every source package (docs/69 §9.3).
+  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  for pf in cfgFiles {
+    PluginExpand.collectPluginPackage(pf, componentPlugins)
+  }
   // The component shims of one package may name another package's `pub` types, so
   // they are generated once every own package is parsed (docs/35 W4, cross-package
   // types).  Other shapes pass the files through.
   val parsedPeers: List[SourceFile] = newList()
-  for pf in cfgFiles {
+  var cpi = 0
+  while cpi < cfgFiles.count {
+    val pf = match pluginExpandForComponent(cfgFiles[cpi], shape, componentPlugins, nativePkgLabelAt(packages, cpi), nativePkgOriginsAt(originsByPkg, cpi)) {
+      case Some(f) -> f
+      case None -> return false
+    }
     parsedPeers.add(pf)
+    cpi = cpi + 1
   }
   var shi = 0
   while shi < parsedPeers.count {
