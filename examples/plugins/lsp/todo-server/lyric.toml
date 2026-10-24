@@ -1,0 +1,20 @@
+# TodoLsp — a language server packaged as a protocol plugin for the editor
+# in ../editor (docs/69 §4.3). It is an ordinary program; a protocol plugin
+# has no generated code, and its manifest is hand-written in plugin/plugin.json.
+#
+#   lyric build --manifest examples/plugins/lsp/todo-server/lyric.toml
+#   lyric build --manifest examples/plugins/lsp/todo-server/lyric.toml --target jvm
+#
+# scripts/ci/plugin-lsp-e2e.sh builds it into an artifact directory, checks
+# it with `lyric plugin check`, and drives it from the editor.
+
+[package]
+name    = "TodoLsp"
+version = "1.0.0"
+
+[project]
+name            = "TodoLsp"
+output_assembly = "TodoLsp.dll"
+
+[project.packages]
+"TodoLsp" = "src/server.l"

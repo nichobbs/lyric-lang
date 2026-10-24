@@ -315,6 +315,12 @@ test "capability items" {
   expectFunc(r, "notifyCapabilityInfo", "notifyCapabilityInfo(): CapabilityInfo")
   val served = implMethods(r, "CapabilityProvider", "WorkspaceReadServer")
   assertTrue(served.contains("info") and served.contains("serve"), "impl CapabilityProvider for WorkspaceReadServer")
+  assertTrue(hasRecord(r, "WorkspaceReadAs"), "WorkspaceReadAs")
+  expectFunc(
+    r,
+    "WorkspaceReadAs.readFile",
+    "WorkspaceReadAs.readFile(__stub: WorkspaceReadAs, path: String): Result[String, CallError[String]]"
+  )
 }
 
 test "point items" {
@@ -689,6 +695,7 @@ test "a protocol point without members is clean" {
   val r = expandOne(head() + "@protocol_point(protocol = \"lsp/3.17\")\npub interface L {\n}\n")
   expectClean(r, "protocol point")
   expectFunc(r, "lPointInfo", "lPointInfo(): PluginPointInfo")
+  expectFunc(r, "openLSession", "openLSession(host: PluginHost, pluginId: String): Result[ProtocolSession, BoundaryError]")
 }
 
 test "K0012: a plugin package that declares main" {
