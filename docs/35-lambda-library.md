@@ -383,13 +383,13 @@ config Database {
   host: String = "localhost"
   port: Int    = 5432
   @sensitive
-  @secretsManager("my-service/prod", key: "dbPassword")
+  @secretsManager("my-service/prod", key = "dbPassword")
   password: String
 }
 
 config Auth {
   @sensitive
-  @secretsManager("my-service/prod", key: "jwtSecret")
+  @secretsManager("my-service/prod", key = "jwtSecret")
   jwtSecret: String
 
   @sensitive
@@ -415,28 +415,23 @@ func main(): Int {
 }
 ```
 
-`init()` scans the compiled DLL for `@secretsManager` / `@parameterStore`
-annotations on config fields, fetches each value from AWS, and stores it in
-the process-level config cache under the same key used by env vars
-(`LYRIC_CONFIG_<PACKAGE>_<FIELD>`).  The existing config-block access mechanism
-then reads from the cache unchanged.
+`init()` reads the annotations the compiler embeds for `config { }` fields
+(`Std.AnnotationMeta`, D225), fetches each `@secretsManager` / `@parameterStore`
+value from AWS, and registers it with `Std.ConfigOverride` under the field's
+`LYRIC_CONFIG_<PACKAGE>_<BLOCK>_<FIELD>` name (D230).  A config block is
+initialised once, on its first access, and its initialiser consults that
+override store before the environment and the declared default, so the block
+reads the fetched value unchanged.  The value never enters the process
+environment, so child processes do not inherit it.  Call `init()` before the
+first read of an annotated block.
 
-**This annotation-scanning path only works on `feature = "local"` today**
-(where it is correctly a no-op, since `local` mode relies entirely on env
-var overrides — see §7.3). On `aws` (.NET) and `jvm`, `init()` always
-returns a typed `NOT_IMPLEMENTED` error: no compiler/runtime capability
-exists yet to read a custom annotation off a compiled field at runtime
-(tracked in #6866). Building the "Startup wiring" example above with
-`--features aws` or `--features jvm` will fail this way on every deploy —
-see `lyric-aws-secrets/README.md`'s platform-parity table for the current,
-per-feature status of `init()`, `getSecret()`, `getSecretField()`,
-`getParameter()`, and `getParameterRaw()` (the last four take the
-secret/parameter name as an explicit runtime argument and need no
-annotation reflection, so they work normally on both `jvm` and `aws` —
-the `aws`/.NET client binding shipped in #6864, resolving the
-async-`Task<T>`-API-shape question that previously blocked it via the
-compiler's existing blocking-`await`-in-a-plain-function mechanism, the
-same one `Std.HttpHost` uses).
+This works on `aws` (.NET) and `jvm`; on `local` it is a no-op (§7.7), and on
+`--target native`, which lowers no `config { }` blocks yet (#7435), it returns
+`NotImplemented`.  `getSecret()`, `getSecretField()`, `getParameter()` and
+`getParameterRaw()` take the secret/parameter name as an explicit runtime
+argument and need no annotation metadata (the `aws`/.NET client binding
+shipped in #6864 via the compiler's blocking-`await`-in-a-plain-function
+mechanism, the same one `Std.HttpHost` uses).
 
 ### 7.3 Env var override
 
@@ -450,7 +445,7 @@ works identically.
 | Annotation | Description |
 |---|---|
 | `@secretsManager("name")` | Fetch entire secret value (plain-string secret) |
-| `@secretsManager("name", key: "field")` | Extract a JSON field from a structured secret |
+| `@secretsManager("name", key = "field")` | Extract a JSON field from a structured secret |
 | `@parameterStore("/path")` | Fetch a Parameter Store String or SecureString (auto-decrypted) |
 
 ### 7.5 Caching

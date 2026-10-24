@@ -318,6 +318,28 @@ fails loudly.
 
 ---
 
+### `Std.ConfigOverrideHost` — `lyric-stdlib/std/_kernel/config_override_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.AppDomain.SetData and GetData conform to their documented .NET contracts")
+@axiom("java.lang.System.setProperty and getProperty conform to their documented JVM contracts")
+```
+
+**BCL surface**: `AppDomain.CurrentDomain.SetData` / `GetData` (.NET);
+`System.setProperty` / `getProperty` (JVM). The store the compiler-emitted
+`config { }` initialisers consult before the environment (D230); it is not the
+environment block, so a registered value is not inherited by child processes.
+Only strings are stored. The native twin declares no externs and reports
+"unsupported", since the native backend lowers no config blocks (#7435).
+
+**Caller obligation**: None. `Std.ConfigOverride` restricts keys to the
+`LYRIC_CONFIG_` prefix, so the JVM system-property table cannot be written
+through it.
+
+**Review**: Stable.
+
+---
+
 ### `Std.PluginHost` — `lyric-stdlib/std/_kernel/plugin_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
 
 ```
@@ -1048,9 +1070,10 @@ All are provisional pending weaver integration.
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
+| `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **36** | **2**       |
+| **Total**                |                              | **37** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1089,13 +1112,14 @@ recorded in the §19 baseline.
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
+| `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **29** | **0**       |
+| **Total**                |                              | **30** | **0**       |
 
 ### Combined total
 
-.NET (36 stable + 2 provisional = 38) + JVM (29 stable + 0 provisional =
-29) = **67** `@axiom` annotations covering the entire extern boundary
+.NET (37 stable + 2 provisional = 39) + JVM (30 stable + 0 provisional =
+30) = **69** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.PluginWasmBind` (docs/69 §9.3) binds the
 in-process wasm host `lyric_wasmhost` through `@library`, so like
 `Std.FfiHost` its one file lowers on dotnet and the JVM and is counted once,
@@ -1159,6 +1183,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.BenchHost` | `bench_host.l` | System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
+| `dotnet` | `Std.ConfigOverrideHost` | `config_override_host.l` | System.AppDomain.SetData and GetData conform to their documented .NET contracts |
 | `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
 | `dotnet` | `Std.EncodingHost` | `encoding_host.l` | .NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
@@ -1197,6 +1222,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.BenchHost` | `bench_host.l` | com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
+| `jvm` | `Std.ConfigOverrideHost` | `config_override_host.l` | java.lang.System.setProperty and getProperty conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts |
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System and java.util.concurrent.ConcurrentHashMap operations conform to their documented JVM contracts |

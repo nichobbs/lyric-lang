@@ -186,7 +186,13 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.AnnotationMetaHost" = "std/_kernel/annotation_meta_host.l"
 "Std.AnnotationMeta"     = "std/annotation_meta.l"
 
-# Tier 14 — the in-process wasm runtime for component plugins (docs/69 §9.3):
+# Tier 14 - the config-override seam (D230): the per-target store the
+# `config { }` initialisers consult, and `Std.ConfigOverride`.  Appended last
+# for the same reason as Tier 8; it imports only `Std.Core`.
+"Std.ConfigOverrideHost" = "std/_kernel/config_override_host.l"
+"Std.ConfigOverride"     = "std/config_override.l"
+
+# Tier 15 — the in-process wasm runtime for component plugins (docs/69 §9.3):
 # the shared-library loader kernel, the `@library("lyric_wasmhost")`
 # bindings and `Std.PluginWasm`.  Appended last for the same reason as Tier 8.
 # They use `@library` callbacks (D229), newer than the released seed, and the

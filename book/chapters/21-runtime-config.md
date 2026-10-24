@@ -56,7 +56,35 @@ func connectDb(): Result[DbConnection, DbError] {
 ```
 
 Config fields are read-only.  There is no mechanism to mutate a config value
-at runtime.
+once its block has been initialised, which happens the first time the block is
+read.
+
+## Setting a field from code
+
+A value that only exists at run time, such as a secret fetched at startup, can
+be handed to a block before it is first read with `Std.ConfigOverride`:
+
+```lyric
+import Std.ConfigOverride
+
+func main(): Int {
+  match setConfigOverride("LYRIC_CONFIG_MYAPP_DATABASE_PASSWORD", fetchPassword()) {
+    case Err(e) -> return 1
+    case Ok(_) -> ()
+  }
+  connect(Database.password)   // first read: the block initialises, and sees the value
+  0
+}
+```
+
+The key is the field's environment variable name.  An override beats the
+environment and the default, and satisfies a required field.  Unlike
+`Std.Environment.setVar`, it is not written to the process environment, so child
+processes do not inherit it.  An empty value is no override, which is also how
+`clearConfigOverride` works.  Register before the block's first read: a value
+set afterwards is not seen.  `lyric-aws-secrets` (`@secretsManager`,
+`@parameterStore`, `AwsSecrets.init()`) is built on this.  On dotnet and the
+JVM only; native has no config blocks yet.
 
 ## Sensitive fields
 

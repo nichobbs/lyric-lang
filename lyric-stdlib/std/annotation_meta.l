@@ -40,12 +40,17 @@ pub record AnnotationArg {
 }
 
 /// One annotation on one `config { }` field.  `annotationName` is the
-/// dotted annotation name without the leading `@`.
+/// dotted annotation name without the leading `@`.  `envVar` is the
+/// `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` name the field's initialiser reads
+/// (D046), which is also the key `Std.ConfigOverride` takes (D230); the
+/// compiler records it so no consumer re-derives the naming rule.
 @stable(since = "0.1")
 pub record AnnotatedField {
+  packageName: String
   configName: String
   fieldName: String
   annotationName: String
+  envVar: String
   args: List[AnnotationArg]
 }
 
@@ -118,22 +123,34 @@ func decodeArgs(v: in JsonValue, site: in String): Result[List[AnnotationArg], A
 }
 
 func decodeField(v: in JsonValue, site: in String): Result[AnnotatedField, AnnotationMetaError] {
-  match requireString(v, "config", site) {
+  match requireString(v, "package", site) {
     case Err(e) -> Err(error = e)
-    case Ok(configName) -> match requireString(v, "field", site) {
+    case Ok(packageName) -> match requireString(v, "config", site) {
       case Err(e) -> Err(error = e)
-      case Ok(fieldName) -> match requireString(v, "annotation", site) {
+      case Ok(configName) -> match requireString(v, "field", site) {
         case Err(e) -> Err(error = e)
-        case Ok(annotationName) -> match decodeArgs(v, site) {
+        case Ok(fieldName) -> match requireString(v, "annotation", site) {
           case Err(e) -> Err(error = e)
-          case Ok(args) -> Ok(
-            value = AnnotatedField(
-              configName = configName,
-              fieldName = fieldName,
-              annotationName = annotationName,
-              args = args
+          case Ok(annotationName) -> match requireString(v, "envVar", site) {
+            case Err(e) -> Err(
+              error = e
             )
-          )
+            case Ok(envVar) -> match decodeArgs(v, site) {
+              case Err(e) -> Err(
+                error = e
+              )
+              case Ok(args) -> Ok(
+                value = AnnotatedField(
+                  packageName = packageName,
+                  configName = configName,
+                  fieldName = fieldName,
+                  annotationName = annotationName,
+                  envVar = envVar,
+                  args = args
+                )
+              )
+            }
+          }
         }
       }
     }
@@ -141,7 +158,8 @@ func decodeField(v: in JsonValue, site: in String): Result[AnnotatedField, Annot
 }
 
 /// Decode one `Lyric.AnnotationMeta` JSON document (a JSON array of
-/// `{config, field, annotation, args: [{name, kind, value}]}` objects) into
+/// `{package, config, field, annotation, envVar, args: [{name, kind, value}]}`
+/// objects) into
 /// its annotated fields, in document order.  Pure; exposed so the decoder is
 /// testable without an embedded resource.
 @stable(since = "0.1")

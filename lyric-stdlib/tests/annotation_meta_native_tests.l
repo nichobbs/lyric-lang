@@ -24,7 +24,7 @@ test "native queries report Unsupported, not an empty answer" {
 }
 
 test "the pure decoder works on native" {
-  match parseAnnotationMeta("[{\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"args\":[]}]") {
+  match parseAnnotationMeta("[{\"package\":\"P\",\"config\":\"C\",\"field\":\"f\",\"annotation\":\"a\",\"envVar\":\"E\",\"args\":[]}]") {
     case Ok(fs) -> assertEqualInt(fs.count, 1, "one field decoded")
     case Err(e) -> assertTrue(false, errorMessage(e))
   }

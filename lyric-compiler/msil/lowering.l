@@ -1107,6 +1107,12 @@ pub record ConfigTokens {
   tokStrZero: Int        // ldstr token for "0"
   tokStrTrue: Int        // ldstr token for "true"
   tokStrFalse: Int       // ldstr token for "false"
+  // Config-override seam (D230): every read of a field's value first asks
+  // `AppDomain.CurrentDomain.GetData(envVarName)` and uses a string found
+  // there, falling back to the environment only on a miss.
+  tokCurrentDomain: Int  // AppDomain.get_CurrentDomain(): AppDomain  (static)
+  tokGetData: Int        // AppDomain.GetData(string): object  (instance)
+  stringTypeTok: Int     // TypeRef token of System.String (the isinst type)
 }
 
 // One field inside a config block.  `defaultInsns` is a one-instruction list
@@ -6418,6 +6424,26 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 //    for Float/Double fields — omitted for String fields]
 //   stsfld fieldToken_i
 //   doneLabel_i:
+// Push the field's raw configured value (a string, or null when none):
+//   AppDomain.CurrentDomain.GetData(name) as string  ??  Environment.GetEnvironmentVariable(name)
+// The override store is consulted first (D230), so a value registered through
+// `Std.ConfigOverride` wins over the environment; an empty override counts as
+// none, which is how a registration is cleared.  `labelId` must be unique
+// within the `.cctor`; the stack holds exactly the string at the merge.
+func emitConfigLookupMsil(insns: in List[MInsn], f: in MConfigField, configToks: in ConfigTokens, labelId: in Int): Unit {
+  insns.add(MCall(methodToken = configToks.tokCurrentDomain))
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCallvirt(methodToken = configToks.tokGetData))
+  insns.add(MIsinst(typeToken = configToks.stringTypeTok))
+  insns.add(MDup)
+  insns.add(MCall(methodToken = configToks.tokIsNullOrEmpty))
+  insns.add(MBrFalse(label = labelId))
+  insns.add(MPop)
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  insns.add(MLabel(id = labelId))
+}
+
 // G0003 (#7436): print the field's parse message to stderr and exit 78.
 func emitConfigParseFailMsil(insns: in List[MInsn], f: in MConfigField, configToks: in ConfigTokens): Unit {
   insns.add(MCall(methodToken = configToks.tokConsoleError))
@@ -6439,10 +6465,10 @@ func emitConfigNumericParseMsil(
   tryStartL: in Int,
   catchL: in Int,
   catchEndL: in Int,
+  lookupL: in Int,
 ): Unit {
   insns.add(MLabel(id = tryStartL))
-  insns.add(MLdStr(token = f.envVarTok))
-  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  emitConfigLookupMsil(insns, f, configToks, lookupL)
   match f.fieldType {
     case MInt -> insns.add(MCall(methodToken = configToks.tokInt32Parse))
     case MLong -> insns.add(MCall(methodToken = configToks.tokInt64Parse))
@@ -6490,25 +6516,22 @@ func emitConfigBoolParseMsil(
   configToks: in ConfigTokens,
   trueL: in Int,
   falseL: in Int,
+  lookupL: in Int,
 ): Unit {
-  insns.add(MLdStr(token = f.envVarTok))
-  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  emitConfigLookupMsil(insns, f, configToks, lookupL)
   insns.add(MLdStr(token = configToks.tokStrOne))
   insns.add(MCall(methodToken = configToks.tokObjectEquals))
   insns.add(MBrTrue(label = trueL))
-  insns.add(MLdStr(token = f.envVarTok))
-  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  emitConfigLookupMsil(insns, f, configToks, lookupL + 1)
   insns.add(MLdStr(token = configToks.tokStrZero))
   insns.add(MCall(methodToken = configToks.tokObjectEquals))
   insns.add(MBrTrue(label = falseL))
-  insns.add(MLdStr(token = f.envVarTok))
-  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  emitConfigLookupMsil(insns, f, configToks, lookupL + 2)
   insns.add(MCallvirt(methodToken = configToks.tokToLowerInvariant))
   insns.add(MLdStr(token = configToks.tokStrTrue))
   insns.add(MCall(methodToken = configToks.tokObjectEquals))
   insns.add(MBrTrue(label = trueL))
-  insns.add(MLdStr(token = f.envVarTok))
-  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  emitConfigLookupMsil(insns, f, configToks, lookupL + 3)
   insns.add(MCallvirt(methodToken = configToks.tokToLowerInvariant))
   insns.add(MLdStr(token = configToks.tokStrFalse))
   insns.add(MCall(methodToken = configToks.tokObjectEquals))
@@ -6619,8 +6642,10 @@ func lowerMConfig(
       val doneLabel = 2 * ci + 1
 
       // Check whether the env var is set.
-      cctorInsns.add(MLdStr(token = f.envVarTok))
-      cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+      // Lookup labels sit above the four disjoint blocks the field labels use:
+      // 5 per field (the check, then up to 4 more reads of a Bool).
+      val lookupBase = 7 * fields.count + 5 * ci
+      emitConfigLookupMsil(cctorInsns, f, configToks, lookupBase)
       cctorInsns.add(MCall(methodToken = configToks.tokIsNullOrEmpty))
       // brfalse to parseLabel when IsNullOrEmpty returns false (env var is set).
       cctorInsns.add(MBrFalse(label = parseLabel))
@@ -6659,10 +6684,18 @@ func lowerMConfig(
       val catchL = tryStartL + 1
       val catchEndL = tryStartL + 2
       match f.fieldType {
-        case MBool -> emitConfigBoolParseMsil(cctorInsns, f, fieldTok, doneLabel, configToks, tryStartL, catchL)
+        case MBool -> emitConfigBoolParseMsil(
+          cctorInsns,
+          f,
+          fieldTok,
+          doneLabel,
+          configToks,
+          tryStartL,
+          catchL,
+          lookupBase + 1
+        )
         case MString -> {
-          cctorInsns.add(MLdStr(token = f.envVarTok))
-          cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+          emitConfigLookupMsil(cctorInsns, f, configToks, lookupBase + 1)
           cctorInsns.add(MStsfld(fieldToken = fieldTok))
         }
         case MInt -> emitConfigNumericParseMsil(
@@ -6673,7 +6706,8 @@ func lowerMConfig(
           configToks,
           tryStartL,
           catchL,
-          catchEndL
+          catchEndL,
+          lookupBase + 1
         )
         case MLong -> emitConfigNumericParseMsil(
           cctorInsns,
@@ -6683,7 +6717,8 @@ func lowerMConfig(
           configToks,
           tryStartL,
           catchL,
-          catchEndL
+          catchEndL,
+          lookupBase + 1
         )
         case MDouble -> emitConfigNumericParseMsil(
           cctorInsns,
@@ -6693,7 +6728,8 @@ func lowerMConfig(
           configToks,
           tryStartL,
           catchL,
-          catchEndL
+          catchEndL,
+          lookupBase + 1
         )
         case MFloat -> emitConfigNumericParseMsil(
           cctorInsns,
@@ -6703,7 +6739,8 @@ func lowerMConfig(
           configToks,
           tryStartL,
           catchL,
-          catchEndL
+          catchEndL,
+          lookupBase + 1
         )
         case _ -> panic(
           "Msil.Lowering ICE: config field '" + f.name +
