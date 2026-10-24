@@ -46,6 +46,8 @@ extern type ByteT = "System.Byte"
 
 extern type Conv = "System.Convert"
 
+extern type NetCharT = "System.Char"
+
 extern type Enc = "System.Text.Encoding"
 
 // Unquoted dotted path declarations
@@ -413,4 +415,25 @@ test "auto-FFI resolves methods returning Int16 and UInt32 (#7890)" {
   assertTrue(UInt32T.Parse("4000000000") == 4000000000i64, "UInt32.Parse widens to Long, zero-extended")
   assertEqualInt(Conv.ToInt16("7"), 7, "Convert.ToInt16(String) among ~18 overloads")
   assertEqualInt(Conv.ToInt16("-7"), -7, "Convert.ToInt16 sign")
+}
+
+// #8225: a `Char` is a Unicode scalar value (docs/01 §2.1), never a lone
+// surrogate, so a `char` an auto-FFI call returns is checked at the boundary.
+test "auto-FFI rejects a surrogate Char result (#8225)" {
+  val hi = 55296
+  val lo = 57343
+  assertPanicsWith("Convert.ToChar(0xD800)", "surrogate", { -> val _ = Conv.ToChar(hi) })
+  assertPanicsWith("Convert.ToChar(0xDFFF)", "surrogate", { -> val _ = Conv.ToChar(lo) })
+}
+
+test "auto-FFI passes a scalar Char result through (#8225)" {
+  assertEqualInt(Conv.ToChar(65).toInt(), 65, "Convert.ToChar(65)")
+  assertEqualInt(Conv.ToChar(55295).toInt(), 55295, "Convert.ToChar(0xD7FF)")
+  assertEqualInt(Conv.ToChar(57344).toInt(), 57344, "Convert.ToChar(0xE000)")
+  assertEqualInt(Conv.ToChar(65535).toInt(), 65535, "Convert.ToChar(0xFFFF)")
+}
+
+test "auto-FFI passes scalar Char constants through the boundary check (#8225)" {
+  assertEqualInt(NetCharT.MaxValue.toInt(), 65535, "Char.MaxValue")
+  assertEqualInt(NetCharT.MinValue.toInt(), 0, "Char.MinValue")
 }
