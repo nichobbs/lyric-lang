@@ -363,6 +363,54 @@ unloaded.
 
 ---
 
+### `Std.PluginWasmBind` — `lyric-stdlib/std/_kernel/plugin_wasm_bind.l` (+ `_kernel_native/`)
+
+```
+@axiom("lyric_wasmhost (lyric-rt/src/lyric_wasmhost.c) conforms to its contract in lyric_wasmhost.h: ids are positive, strings it returns come from lyric_wasmhost_alloc, and it returns the userdata it was given from lyric_wasmhost_close")
+```
+
+**C surface**: the `lyric_wasmhost_*` functions of `lyric-rt` (docs/69
+§9.3), the in-process wasmtime embedding behind `Std.PluginWasm`: through
+`@library("lyric_wasmhost")` on dotnet and the JVM (D158, with the import
+callback per D229), and as plain `extern func`s bound in `lyric_rt.a` on
+native. The shim loads libwasmtime 49 at run time.
+
+**Gap**: The prover does not model the component runtime, wasmtime's
+sandbox (the memory limiter, epoch interruption, the WASI p2 context) or the
+JSON conversion. `lyric-rt/test/lyric_wasmhost_test.c` (also under ASan and
+UBSan) and `scripts/ci/plugin-component-e2e.sh` test them.
+
+**Caller obligation**: release every string the shim returns with
+`lyric_wasmhost_free`, hand it import answers allocated with
+`lyric_wasmhost_alloc`, and close each instance (which returns the kept
+callback for `nativeReleaseCallback`). `Std.PluginWasm` is the only caller
+and does all three.
+
+**Review**: Stable.
+
+---
+
+### `Std.PluginWasmLoad` — `lyric-stdlib/std/_kernel/plugin_wasm_load.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.Runtime.InteropServices.NativeLibrary.Load conforms to its documented .NET contract")
+@axiom("java.lang.System.load conforms to its documented JVM contract")
+```
+
+**BCL surface**: `NativeLibrary.Load(string)` (.NET) and
+`System.load(String)` (JVM), loading `liblyric_wasmhost` from
+`$LYRIC_WASMHOST_LIB` before `Std.PluginWasmBind`'s binding resolves it by
+name. The native twin has nothing to load (the shim is in `lyric_rt.a`).
+
+**Gap**: The prover does not model the dynamic loader.
+
+**Caller obligation**: None. A path that cannot be loaded is an `Err` with
+the runtime's reason, never a panic.
+
+**Review**: Stable.
+
+---
+
 ## 7. Time
 
 ### `Std.TimeHost` — `lyric-stdlib/std/_kernel/time_host.l`
@@ -1000,7 +1048,9 @@ All are provisional pending weaver integration.
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **34** | **2**       |
+| `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
+| `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
+| **Total**                |                              | **36** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1039,13 +1089,17 @@ recorded in the §19 baseline.
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
-| **Total**                |                              | **28** | **0**       |
+| `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
+| **Total**                |                              | **29** | **0**       |
 
 ### Combined total
 
-.NET (33 stable + 2 provisional = 35) + JVM (27 stable + 0 provisional =
-27) = **62** `@axiom` annotations covering the entire extern boundary
-across both targets.  `Std.FfiHost` (D161) binds the C library's `malloc`
+.NET (36 stable + 2 provisional = 38) + JVM (29 stable + 0 provisional =
+29) = **67** `@axiom` annotations covering the entire extern boundary
+across both targets.  `Std.PluginWasmBind` (docs/69 §9.3) binds the
+in-process wasm host `lyric_wasmhost` through `@library`, so like
+`Std.FfiHost` its one file lowers on dotnet and the JVM and is counted once,
+in the .NET table; `Std.PluginWasmLoad` has a .NET and a JVM twin.  `Std.FfiHost` (D161) binds the C library's `malloc`
 and `free` through `@library("c")`; it has no `_kernel_jvm/` or
 `_kernel_native/` twin because the one file lowers on every target (D158),
 so it is counted once, in the .NET table.  `Std.BenchHost` (both targets)
@@ -1124,6 +1178,8 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
 | `dotnet` | `Std.PluginHost` | `plugin_host.l` | System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts |
 | `dotnet` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | System.Runtime.Loader.AssemblyLoadContext, System.Reflection and System.Threading.Monitor conform to their documented .NET contracts |
+| `dotnet` | `Std.PluginWasmBind` | `plugin_wasm_bind.l` | lyric_wasmhost (lyric-rt/src/lyric_wasmhost.c) conforms to its contract in lyric_wasmhost.h: ids are positive, strings it returns come from lyric_wasmhost_alloc, and it returns the userdata it was given from lyric_wasmhost_close |
+| `dotnet` | `Std.PluginWasmLoad` | `plugin_wasm_load.l` | System.Runtime.InteropServices.NativeLibrary.Load conforms to its documented .NET contract |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
 | `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
 | `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout, System.IO.Stream/MemoryStream, System.Text.Encoding.UTF8 and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
@@ -1154,6 +1210,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |
 | `jvm` | `Std.PluginHost` | `plugin_host.l` | java.lang.System.getProperty conforms to its documented JVM contract |
 | `jvm` | `Std.PluginTrustedHost` | `plugin_trusted_host.l` | java.net.URLClassLoader, java.util.jar.JarFile, java.lang.reflect.Method and java.util.concurrent.locks.ReentrantLock conform to their documented JVM contracts |
+| `jvm` | `Std.PluginWasmLoad` | `plugin_wasm_load.l` | java.lang.System.load conforms to its documented JVM contract |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessPipedHost` | `process_piped_host.l` | java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts |

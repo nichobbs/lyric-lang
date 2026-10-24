@@ -481,8 +481,9 @@ func checkTrustedPayload(
 }
 
 /// Checks one payload and returns the key that identifies its kind
-/// (`dotnet`, `jvm`, `native:<os>/<arch>`, `wasm`, `trusted dotnet`,
-/// `trusted jvm` or `trusted native:<os>/<arch>`), "" when it is malformed.
+/// (`dotnet`, `jvm`, `native:<os>/<arch>`, `wasm`, `component`, `trusted
+/// dotnet`, `trusted jvm` or `trusted native:<os>/<arch>`), "" when it is
+/// malformed.
 func checkPayload(dir: in String, v: in JsonValue, at: in String, acc: in List[ManifestProblem]): String {
   val fields = match v {
     case JObject(fs) -> fs
@@ -508,11 +509,24 @@ func checkPayload(dir: in String, v: in JsonValue, at: in String, acc: in List[M
   if mode == "trusted" {
     return checkTrustedPayload(dir, fields, at, acc)
   }
+  if mode == "component" {
+    match requireString(fields, at, "component", acc) {
+      case Some(c) -> {
+        if not Str.endsWith(c, ".wasm") {
+          problem(acc, fieldPath(at, "component"), "expected a .wasm file, found \"" + c + "\"")
+          return ""
+        }
+        checkPayloadFile(dir, c, fieldPath(at, "component"), acc)
+        return "component"
+      }
+      case None -> return ""
+    }
+  }
   if mode != "process" {
     problem(
       acc,
       fieldPath(at, "mode"),
-      "unknown payload mode \"" + mode + "\" (expected \"process\", \"wasm\" or \"trusted\")"
+      "unknown payload mode \"" + mode + "\" (expected \"process\", \"wasm\", \"trusted\" or \"component\")"
     )
     return ""
   }
@@ -559,7 +573,11 @@ func checkPayloads(dir: in String, fields: in List[JsonField], acc: in List[Mani
           val kind = checkPayload(dir, items[i], at, acc)
           if kind.length > 0 {
             if listContains(kinds, kind) {
-              problem(acc, at, "a second " + kind + " payload; each runtime, os/arch pair and wasm appears once in each mode")
+              problem(
+                acc,
+                at,
+                "a second " + kind + " payload; each runtime, os/arch pair, wasm and component appears once in each mode"
+              )
             } else {
               kinds.add(kind)
             }
@@ -783,6 +801,14 @@ pub func trustedNativePayload(os: in String, arch: in String, file: in String): 
   fields.add(member("os", JString(value = os)))
   fields.add(member("arch", JString(value = arch)))
   fields.add(member("library", JString(value = file)))
+  writeValue(JObject(fields = fields))
+}
+
+/// `{"mode": "component", "component": componentFile}` (docs/69 §9.3).
+pub func componentPayload(componentFile: in String): String {
+  val fields: List[JsonField] = newList()
+  fields.add(member("mode", JString(value = "component")))
+  fields.add(member("component", JString(value = componentFile)))
   writeValue(JObject(fields = fields))
 }
 

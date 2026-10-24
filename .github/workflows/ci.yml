@@ -2802,9 +2802,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ui-desktop-e2e.sh --target native
 
-      # docs/35 W2: lyric-rt cross-compiled for wasm32-wasi (pinned wasi-sdk),
-      # C unit tests run under a pinned wasmtime, then llvm_wasm32_self_test.l
-      # compiles and runs real Lyric programs for wasm32-wasi under wasmtime.
+      # docs/35 W2, docs/69 §9.3: see scripts/ci/wasm32-wasi-rt-tests.sh.
       - name: lyric-rt wasm32-wasi build + unit tests
         background: true
         working-directory: ${{ github.workspace }}
@@ -4196,12 +4194,12 @@ jobs:
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/import_rename_self_test.l
 
       # JVM half of the C-binding self-test (D158): the same libc calls
-      # through the Foreign Function & Memory API (JDK 22).
+      # through the FFM API (JDK 22); then the component host (docs/69 §9.3).
       - name: C-binding self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_cbinding_self_test.l && bash scripts/ci/extern-callback-e2e.sh jvm
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_cbinding_self_test.l && bash scripts/ci/extern-callback-e2e.sh jvm && bash scripts/ci/plugin-component-e2e.sh jvm
 
       # JVM half of the String-builder self-test (#7257, #7258).
       - name: String-builder self-test on JVM (native lyric test --target jvm)

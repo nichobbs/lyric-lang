@@ -21,6 +21,7 @@ if(WIN32)
         src/lyric_process_win32.c
         src/lyric_sock_win32.c
         src/lyric_tls_win32.c
+        src/lyric_wasmhost_unsupported.c
     )
 else()
     set(LYRIC_RT_PLATFORM_SRCS
@@ -28,6 +29,7 @@ else()
         src/lyric_fs.c
         src/lyric_process.c
         src/lyric_tls.c
+        src/lyric_wasmhost.c
     )
 endif()
 
@@ -42,7 +44,20 @@ add_library(lyric_rt STATIC
     ${LYRIC_RT_PLATFORM_SRCS}
 )
 target_include_directories(lyric_rt PUBLIC include)
+# lyric_wasmhost.c compiles against the vendored wasmtime C API headers; it
+# loads libwasmtime at run time, so nothing links against it.
+target_include_directories(lyric_rt SYSTEM PRIVATE third_party/wasmtime/include)
 target_compile_options(lyric_rt PRIVATE -Wall -Wextra -Werror)
+
+if(NOT WIN32)
+    # The shared shim for dotnet and JVM plugin hosts (docs/69 §9.3).
+    add_library(lyric_wasmhost SHARED src/lyric_wasmhost.c)
+    target_include_directories(lyric_wasmhost PRIVATE include)
+    target_include_directories(lyric_wasmhost SYSTEM PRIVATE third_party/wasmtime/include)
+    target_compile_options(lyric_wasmhost PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(lyric_wasmhost PROPERTIES C_VISIBILITY_PRESET hidden)
+    target_link_libraries(lyric_wasmhost PRIVATE pthread ${CMAKE_DL_LIBS})
+endif()
 
 if(WIN32)
     add_library(lyric_rt_md STATIC
