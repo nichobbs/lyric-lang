@@ -2692,7 +2692,7 @@ func linkAndEmitNative(
   var li = 0
   while li < npkg.nativeLibs.count {
     if not (isWindows and isWindowsCrtLibrary(npkg.nativeLibs[li])) {
-      clangArgs.add(nativeLinkArg(npkg.nativeLibs[li], isWindows))
+      clangArgs.add(nativeLinkArg(npkg.nativeLibs[li], isWindows, nativeTargetOs(effTriple) == "macos"))
     }
     li = li + 1
   }
@@ -3956,17 +3956,31 @@ func isWindowsCrtLibrary(lib: in String): Bool {
   lib == "c" or lib == "m"
 }
 
+/// `-l<stem>` for a macOS library file name `lib<stem>.dylib` / `.a` / `.tbd`; any other
+/// name is passed through as an input file.
+func macLibraryLinkArg(lib: in String): String {
+  if Str.startsWith(lib, "lib") and (Str.endsWith(lib, ".dylib") or Str.endsWith(lib, ".a") or Str.endsWith(lib, ".tbd")) {
+    val dot = Str.lastIndexOfRaw(lib, ".")
+    "-l" + Str.substring(lib, 3, dot - 3)
+  } else {
+    lib
+  }
+}
+
 /// The clang argument that links library `lib` (D158): a path is an input
 /// file, a file name (`libm.so.6`) is `-l:<name>`, and a base name
 /// (`webview`) is `-l<name>`.  On Windows a file name (`webview.lib`) is an
 /// input file too, which the linker looks for in the `LIB` directories; the
 /// MSVC linker has no `-l:` form.
-func nativeLinkArg(lib: in String, isWindows: in Bool): String {
+func nativeLinkArg(lib: in String, isWindows: in Bool, isMac: in Bool = false): String {
   if Str.contains(lib, "/") or (isWindows and Str.contains(lib, "\\")) {
     lib
   } else if Str.contains(lib, ".") {
     if isWindows {
       lib
+    } else if isMac {
+      // Apple's linker has no `-l:<file>`: `libm.dylib` (or `.a`, `.tbd`) is `-lm`.
+      macLibraryLinkArg(lib)
     } else {
       "-l:" + lib
     }

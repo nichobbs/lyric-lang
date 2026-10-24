@@ -14,8 +14,13 @@
  *
  * LYRIC_ASYNC_THREADS is set here, before the first scheduler call, so the scheduler starts in
  * its multi-threaded mode. */
+#if defined(__APPLE__)
+/* A strict _POSIX_C_SOURCE hides sysconf(_SC_NPROCESSORS_ONLN) on macOS. */
+#define _DARWIN_C_SOURCE 1
+#else
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#endif
 #include "lyric_rt.h"
 
 #include <sched.h>
