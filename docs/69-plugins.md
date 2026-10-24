@@ -11,7 +11,9 @@ plugins on every target including wasm32-wasi under `wasmtime run`,
 generators (docs/40) as the first plugin point, protocol points (P4, D228),
 the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
 (in-process) mode (P6's second half, D231, §10), and WIT-typed components
-hosted in-process by wasmtime (P5, D247, §9.3). Extends docs/01
+hosted in-process by wasmtime (P5, D247, §9.3). Signing and per-application
+catalogues (§12, Q-PLG-006/007) are specced in D248 and not yet implemented
+(phases P7 and P8). Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -906,13 +908,31 @@ process or wasm mode.
 
 ## 12. Distribution and trust
 
-- **Signing** is deferred (Q-PLG-006, D207). A host loads the artifact
-  directories its owner put on its plugin path, and its `GrantPolicy` sees
-  each manifest's `publisher` before anything runs.
+_Specced in D248 (Q-PLG-006, Q-PLG-007); not yet implemented (P7, P8).
+Until then a host loads the artifact directories its owner put on its plugin
+path, and its `GrantPolicy` sees each manifest's `publisher` unverified._
+
+- **Signing.** An artifact carries `plugin.sig`: an Ed25519 signature
+  (`Std.Ed25519`, pure Lyric on every target) by the publisher's key over the
+  artifact's id, version and a SHA-256 of every file in the directory, in a
+  canonical listing (D248 Decisions 4 and 5). `Std.Plugin` verifies it at load,
+  before points are matched and before `GrantPolicy` runs, which then sees a
+  verified publisher. `PluginHostConfig.trust` holds pinned publisher keys,
+  followed catalogues and the unsigned policy (`Refuse` by default,
+  `AllowSandboxed` for development); trusted payloads always need a signature
+  (`K0105`-`K0110`).
 - **Build-time plugins** (generators) are pinned by `lyric.lock` with a
-  checksum, as docs/40 §7 already does.
-- **Runtime catalogues.** Discovery scans the directories the host names. A
-  registry or marketplace is deferred (Q-PLG-007, D207).
+  checksum, as docs/40 §7 already does; a restored generator's lock entry also
+  records its signing key id, and a change of key needs an explicit update.
+- **Catalogues.** There is no global registry: plugins exist for one
+  application's points. An application follows one or more catalogues, a
+  signed static `catalogue.json` listing publishers and their keys, revoked
+  keys and plugin entries (id, version, points, zip URL and digests), with a
+  serial and an expiry against rollback and freeze (`K0120`-`K0123`). Artifacts
+  travel as zips (`Std.Zip`) and load as directories. A catalogue is signed by
+  one key, rotated through the catalogue itself; publisher keys are rotated and
+  revoked only through the catalogue. Discovery still scans the directories the
+  host names; installing from a catalogue writes into one of them.
 - **Consent.** Showing a user what a plugin requests and recording their
   decision is the application's job, through `GrantPolicy`, which receives the
   parsed `PluginManifest` (its `required` and `optional` capability requests
@@ -1097,6 +1117,8 @@ plugin and a screen that uses it.
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
+| P7 | Signing (§12, D248): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | Open |
+| P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode
@@ -1145,11 +1167,15 @@ syntax anyway. Recommendation: keywords, following D051's "one keyword,
 different modifiers" precedent where it fits (`pub plugin point` is one
 option).
 
-**Q-PLG-006: signing.** _Deferred (D207)._ Sigstore, a publisher key scheme, or reusing NuGet and
+**Q-PLG-006: signing.** _Resolved in D248: Ed25519 publisher keys in pure
+Lyric, verified at load; Sigstore and NuGet/Maven signing rejected for v1._
+Sigstore, a publisher key scheme, or reusing NuGet and
 Maven signing for plugins distributed through them (docs/39).
 
-**Q-PLG-007: a plugin registry.** _Deferred (D207)._ Whether plugins publish through the
-docs/39 channels with a `kind = "plugin"` tag, or need their own registry.
+**Q-PLG-007: a plugin registry.** _Resolved in D248: per-application signed
+static catalogues; no global registry and no docs/39 channel._ Whether plugins
+publish through the docs/39 channels with a `kind = "plugin"` tag, or need
+their own registry.
 
 **Q-PLG-008: per-frame and per-keystroke calls.** _No rule in v1 (D207);
 batched point methods are the guidance._ Some points may be called
@@ -1204,6 +1230,21 @@ docs/69 codes (`pluginIssueCode`):
 
 A trusted payload that the policy chose but that cannot be loaded into the host's
 process is the load issue `TrustedLoadFailed` (no code).
+
+Specced in D248 and not yet reported (P7, P8):
+
+| Code | Meaning |
+|---|---|
+| K0105 | (load) Missing or malformed `plugin.sig` (unsigned plugins refused, or a trusted payload) |
+| K0106 | (load) The signing key is not trusted by the host or a followed catalogue |
+| K0107 | (load) The signature does not verify |
+| K0108 | (load) The files on disk do not match the signed listing |
+| K0109 | (load) `plugin.json`'s id, version or publisher does not match the signature or the key |
+| K0110 | (load) The signing key is revoked by a followed catalogue |
+| K0120 | (catalogue) No signature verifies under the current catalogue key |
+| K0121 | (catalogue) The catalogue has expired; installs and updates are refused |
+| K0122 | (catalogue) Serial rollback, or the same serial with different contents |
+| K0123 | (catalogue) A downloaded artifact does not match its catalogue entry |
 
 `K0104` (interface hash) is reserved and not checked in v1. `lyric plugin check`
 reports manifest problems as text, without codes.
