@@ -103,7 +103,8 @@ import AwsSecrets.Kernel.Net as SecretsKernel
 // ─── Annotations ─────────────────────────────────────────────────────────────
 // @secretsManager and @parameterStore are user-facing annotation names.
 // Bootstrap does not support pub annotation declarations; these are documented
-// in the module header and enforced at runtime by the kernel's initFromAnnotations.
+// in the module header and enforced at runtime by registerSecrets, which
+// registerAnnotated (the kernels' initFromAnnotations) drives.
 // ─── SecretsError ─────────────────────────────────────────────────────────────
 /// Typed error union for Secrets Manager and Parameter Store failures.
 @stable(since = "0.1")

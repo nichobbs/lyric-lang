@@ -1101,10 +1101,10 @@ spaces; consult the kernel file itself for the unfolded source.
 | Platform | Package | File | Axiom |
 |---|---|---|---|
 | `dotnet` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | System.AppDomain.GetAssemblies and System.Reflection.Assembly manifest-resource enumeration conform to their documented .NET contracts |
-| `dotnet` | `Std.ConfigOverrideHost` | `config_override_host.l` | System.AppDomain.SetData and GetData conform to their documented .NET contracts |
 | `dotnet` | `Std.BenchHost` | `bench_host.l` | System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
+| `dotnet` | `Std.ConfigOverrideHost` | `config_override_host.l` | System.AppDomain.SetData and GetData conform to their documented .NET contracts |
 | `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
 | `dotnet` | `Std.EncodingHost` | `encoding_host.l` | .NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
@@ -1137,10 +1137,10 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
 | `jvm` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | java.util.zip.ZipInputStream and java.lang.System.getProperty conform to their documented JVM contracts |
-| `jvm` | `Std.ConfigOverrideHost` | `config_override_host.l` | java.lang.System.setProperty and getProperty conform to their documented JVM contracts |
 | `jvm` | `Std.BenchHost` | `bench_host.l` | com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
+| `jvm` | `Std.ConfigOverrideHost` | `config_override_host.l` | java.lang.System.setProperty and getProperty conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts |
 | `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | java.lang.System and java.util.concurrent.ConcurrentHashMap operations conform to their documented JVM contracts |

@@ -19,6 +19,8 @@
 //! Targets: .NET (the `AppDomain` data table) and JVM (system properties).
 //! The native backend has no `config { }` lowering yet (N0025, #7435), so
 //! every call reports `Unsupported` there.
+//! `Unsupported` on native is the only case where a registration is not
+//! effective: it is always reported, never silently dropped.
 @runtime_checked
 @io
 package Std.ConfigOverride
