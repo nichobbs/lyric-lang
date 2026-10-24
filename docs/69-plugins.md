@@ -917,7 +917,8 @@ path, and its `GrantPolicy` sees each manifest's `publisher` unverified._
   artifact's id, version and a SHA-256 of every file in the directory, in a
   canonical listing (D248 Decisions 4 and 5). `Std.Plugin` verifies it at load,
   before points are matched and before `GrantPolicy` runs, which then sees a
-  verified publisher. `PluginHostConfig.trust` holds pinned publisher keys,
+  verified publisher. Listing paths may not contain control characters, and
+  the signature type is part of the signed message. `PluginHostConfig.trust` holds pinned publisher keys,
   followed catalogues and the unsigned policy (`Refuse` by default,
   `AllowSandboxed` for development); trusted payloads always need a signature
   (`K0105`-`K0110`).
@@ -1238,7 +1239,7 @@ Specced in D248 and not yet reported (P7, P8):
 | K0105 | (load) Missing or malformed `plugin.sig` (unsigned plugins refused, or a trusted payload) |
 | K0106 | (load) The signing key is not trusted by the host or a followed catalogue |
 | K0107 | (load) The signature does not verify |
-| K0108 | (load) The files on disk do not match the signed listing |
+| K0108 | (load) The files on disk do not match the signed listing, or a path breaks the listing rules |
 | K0109 | (load) `plugin.json`'s id, version or publisher does not match the signature or the key |
 | K0110 | (load) The signing key is revoked by a followed catalogue |
 | K0120 | (catalogue) No signature verifies under the current catalogue key |

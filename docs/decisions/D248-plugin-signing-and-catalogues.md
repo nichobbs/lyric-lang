@@ -74,14 +74,20 @@ verification code on dotnet, the JVM, native (including Windows) and wasm32.
    ```
 
    The signed message is text, so no JSON canonicalisation is needed: the
-   line `lyric-plugin-sig-v1`, then the lines `id`, `version` and `keyId`,
-   then one line `<sha256> <path>` per file in listing order, each line
-   ending in `\n`, encoded as UTF-8.
+   line `lyric-plugin-sig-v1`, then the lines `type`, `id`, `version` and
+   `keyId`, then one line `<sha256> <path>` per file in listing order, each
+   line ending in `\n`, encoded as UTF-8. Binding `type` means a signature
+   made for one type can never be read as another's. Lines must not be
+   ambiguous: `id`, `version` and `keyId` already exclude control characters
+   by their formats (docs/69 §7 and Decision 3), and Decision 5 excludes them
+   from paths, so no field can contain a `\n` that forges an extra line.
 
 5. **The canonical listing.** The listing is every regular file under the
    artifact directory, recursively, except `plugin.sig`:
    - paths are relative, separated by `/`, valid UTF-8 in NFC, with no empty,
-     `.` or `..` segment;
+     `.` or `..` segment and no C0 or C1 control character (a file named
+     `p\n<digest> q` would otherwise produce the same message lines as the
+     two files `p` and `q`);
    - entries are sorted by the bytes of their UTF-8 path;
    - a symbolic link, device, socket or other non-regular file anywhere in
      the directory fails signing and verification;
@@ -105,7 +111,7 @@ verification code on dotnet, the JVM, native (including Windows) and wasm32.
    3. verifies the signature over the message of Decision 4 (`K0107`);
    4. recomputes the listing from disk and requires it to equal `files`
       exactly: no missing file, no extra file, no differing digest, no
-      non-regular file (`K0108`);
+      non-regular file, no path that breaks Decision 5's rules (`K0108`);
    5. requires `plugin.json`'s `id` and `version` to equal the signature's,
       and its `publisher` to be the name the key is trusted for (`K0109`);
    6. continues with the existing load steps.
@@ -211,7 +217,14 @@ verification code on dotnet, the JVM, native (including Windows) and wasm32.
     signatures by both the old and the new key. A host that verifies it under
     its current key and finds a valid signature by the named new key stores
     the new key as current; the key pinned in the application's
-    configuration is only the starting point. Publisher keys are rotated and
+    configuration is only the starting point. Rotations do not chain for a
+    host that missed one: a catalogue is verified only under the host's
+    current key, so a catalogue signed only by a key two rotations on fails
+    with `K0120`. A catalogue owner therefore keeps signing with both keys
+    for a transition window at least as long as the catalogue's expiry
+    interval, so every host that is not already stale sees the rotation; a
+    host that misses it anyway is re-pinned by an update of the application
+    that carries the new key. Publisher keys are rotated and
     revoked only through the catalogue: the owner adds the new key to the
     publisher's `keys` (both may be listed during a transition), then removes
     the old one or adds its id to `revokedKeys`. `plugin.sig` carries no key
@@ -247,7 +260,7 @@ Load issues (`PluginLoadIssue`, `pluginIssueCode`):
 | K0105 | Missing or malformed `plugin.sig` (and unsigned plugins are refused, or the payload is trusted) |
 | K0106 | The signing key is not trusted by the host or any followed catalogue |
 | K0107 | The signature does not verify |
-| K0108 | The files on disk do not match the signed listing |
+| K0108 | The files on disk do not match the signed listing, or a path breaks the listing rules |
 | K0109 | `plugin.json`'s id, version or publisher does not match the signature or the key |
 | K0110 | The signing key is revoked by a followed catalogue |
 
