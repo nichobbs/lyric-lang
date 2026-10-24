@@ -7,7 +7,7 @@ Closes the open items of test runner v2 (#678):
   and in single-file mode (`lyric test tests/account_tests.l` near a
   manifest), on dotnet and the JVM.  Its tests reach the non-`pub` items of
   every file of the package.  A test module of another package name stays a
-  separate, `pub`-only package.  Decision: D230.
+  separate, `pub`-only package.  Decision: D245.
 - `lyric test --doctests` runs the ` ```lyric ` blocks of `///` and `//!`
   comments as tests (`Lyric.TestSynth.extractDoctests` / `buildDoctestModule`),
   titled `doctest <path>:<line>`, merged into the documented package by the

@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # test-package-merge-e2e.sh — end-to-end regression test for `lyric test`
 # merging a `@test_module` into the package it declares, and for
-# `lyric test --doctests` (#678, D230).
+# `lyric test --doctests` (#678, D245).
 #
 #   BUILD_CONFIG=Release bash scripts/ci/test-package-merge-e2e.sh
 #

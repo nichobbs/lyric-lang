@@ -1216,7 +1216,7 @@ the synthesised source (D-progress-474).
 `--filter <substring>` and `--list` ship; the richer surface
 (`--manifest` discovery, `--properties`, `--doctests`,
 `--update-snapshots`, a test module merged into the package it declares
-for non-`pub` access) has since shipped (#677, #678, D230; see
+for non-`pub` access) has since shipped (#677, #678, D245; see
 `docs/24-test-runner-plan.md` §5).  CLI integration tests live
 at `bootstrap/tests/Lyric.Cli.Tests/TestRunnerTests.fs` (8 cases
 covering pass / fail / no-`@test_module` / user-main / fixture /

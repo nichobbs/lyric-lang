@@ -979,7 +979,7 @@ pub func withoutTestModuleAnnotation(rawSource: in String): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4b. Doctests — `lyric test --doctests` (#678, D230, docs/24 §5 Stage 3).
+// §4b. Doctests — `lyric test --doctests` (#678, D245, docs/24 §5 Stage 3).
 // ─────────────────────────────────────────────────────────────────────────────
 /// One fenced ` ```lyric ` block of a doc comment: `line` is the source line
 /// of its first code line, `code` the block's text (the doc comment's `///`

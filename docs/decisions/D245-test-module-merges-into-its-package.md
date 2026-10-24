@@ -1,4 +1,4 @@
-# D230 — A `@test_module` that declares a project package is merged into it; `--doctests`
+# D245 — A `@test_module` that declares a project package is merged into it; `--doctests`
 
 **Status:** accepted, implemented (#678)
 

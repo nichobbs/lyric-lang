@@ -851,7 +851,7 @@ func emitSingleFileOrProject(
   val noOwnPkgs: List[Emitter.ProjectPackage] = newList()
   // `lyric test` (`mergeOwnPackage`): a test module that declares the package
   // of a `[project.packages]` entry is merged into it, so its tests reach the
-  // package's non-`pub` items (#678, D230).  The entry's other files join the
+  // package's non-`pub` items (#678, D245).  The entry's other files join the
   // source as one package; the source's own file is not added twice.
   val mergeSrcs: List[String] = newList()
   val mergePaths: List[String] = newList()

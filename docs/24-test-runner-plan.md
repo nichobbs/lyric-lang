@@ -3,7 +3,7 @@
 Status: shipped (v1 — D-progress-138); property execution partially
 shipped as v1.x (#677, D-progress-784, §5 Stage 3); `--manifest`
 discovery, `--update-snapshots`, merging a test module into the package it
-declares, and `--doctests` shipped (#678, D230).
+declares, and `--doctests` shipped (#678, D245).
 
 This document describes the native `lyric test` command and the
 `@test_module` / `test "…" { … }` surface it consumes.  v1 scope:
@@ -216,7 +216,7 @@ keeps the emitter self-contained.
 
 §3.2 of the language reference grants `@test_module` packages access
 to non-`pub` declarations of the package they test.  The rule (#678,
-D230) is a merge, not a visibility exception: **a `@test_module` that
+D245) is a merge, not a visibility exception: **a `@test_module` that
 declares the same package name as a `[project.packages]` entry is
 compiled as one more file of that package.**  Its tests then reach the
 package's non-`pub` functions, types and `val`s, in every file of a
@@ -252,7 +252,7 @@ under test (one file, one package), needs no merge and still works.
 * **Stage 2** _(shipped — D-progress-297, #465)_ — `--manifest` discovery,
   multi-file test runs via `Emitter.emitProject`, feature-default resolution,
   local-path dep resolution.  Cross-package non-pub access (§3.2) shipped
-  later (#678, D230; see §4); the F# Expecto bridge is gone.
+  later (#678, D245; see §4); the F# Expecto bridge is gone.
 * **Stage 3** — property execution. **Partially shipped (#677,
   D-progress-784; v2 slice 1 in D-progress-942):** `lyric test
   --properties` synthesises a real sampling-and-shrinking harness
@@ -276,7 +276,7 @@ under test (one file, one package), needs no merge and still works.
   property with any other binder type still reports `# skip` (naming
   the unsupported type) under `--properties`, exactly as it does
   without the flag.
-* **`--doctests`** _(shipped, #678, D230)_ — `lyric test --doctests` also
+* **`--doctests`** _(shipped, #678, D245)_ — `lyric test --doctests` also
   runs the ` ```lyric ` blocks of `///` (and `//!`) doc comments as tests
   of the package that holds them.  `Lyric.TestSynth.extractDoctests` finds
   the blocks from the lexer's doc-comment tokens (a run of consecutive
@@ -396,7 +396,7 @@ T-codes 0900–0999 are reserved for the test runner.
   level, or always fall back to the source-text label? v1 uses the
   source-text label exclusively; v2 may special-case `==`/`!=`.
 * **Q-test-4** — Doctest discovery: how do we extract ` ```lyric `
-  blocks from doc comments without a CST? _Resolved (#678, D230):_ the
+  blocks from doc comments without a CST? _Resolved (#678, D245):_ the
   lexer keeps doc comments as tokens, so the extractor works on those
   (§5 Stage 3, `--doctests`).
 

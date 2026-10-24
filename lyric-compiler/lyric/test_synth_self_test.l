@@ -632,7 +632,7 @@ test "listEntriesFor honours @cfg (#7540)" {
   testListEntriesHonoursCfg()
 }
 
-// #678 (D230): doctests and the merge of a test module into its package.
+// #678 (D245): doctests and the merge of a test module into its package.
 func doctestFileSource(): String {
   "package Shape\n\n/// Doubles.\n///\n/// ```lyric\n/// import Std.Testing\n/// import Shape.{double}\n/// assertEqualInt(double(2), 4, \"d\")\n/// ```\npub func double(x: in Int): Int { x * 2 }\n\n/// ```lyric\n/// // no_test\n/// bogus\n/// ```\n///\n/// ```lyric,no_test\n/// bogus\n/// ```\n///\n/// ```text\n/// bogus\n/// ```\nfunc other(): Int { 1 }\n\n/// ```lyric\n/// assertTrue(true, \"second\")\n/// ```\nfunc third(): Int { 3 }\n"
 }
@@ -686,6 +686,31 @@ func testTestModuleAnnotationRoundTrip(): Unit {
   val without = withoutTestModuleAnnotation(withMod)
   assertEqualInt(without.length, withMod.length, "blanking keeps every offset")
   assertEqualInt(Str.split(without, "\n").length, Str.split(withMod, "\n").length, "blanking keeps every line")
+}
+
+// Only `import` lines at the head of a block, one per line, are hoisted; an
+// import after the first statement stays in the body (and fails to compile
+// there), so the rule is pinned rather than accidental.
+func lateImportSource(): String {
+  "package Shape\n\n/// ```lyric\n/// import Std.Testing\n/// val x = 1\n/// import Std.Math\n/// assertEqualInt(x, 1, \"x\")\n/// ```\nfunc f(): Int { 1 }\n"
+}
+
+func testOnlyHeadImportsAreHoisted(): Unit {
+  val dm = buildDoctestModule(lateImportSource(), "late.l")
+  assertEqualInt(dm.count, 1, "one doctest")
+  val headerEnd = match Str.indexOf(dm.source, "// doctest of") {
+    case Some(at) -> at
+    case None -> panic("doctest comment missing")
+  }
+  val header = Str.substring(dm.source, 0, headerEnd)
+  val body = Str.substring(dm.source, headerEnd, dm.source.length - headerEnd)
+  assertTrue(Str.contains(header, "import Std.Testing"), "the head import is hoisted")
+  assertTrue(not Str.contains(header, "import Std.Math"), "a late import is not hoisted")
+  assertTrue(Str.contains(body, "import Std.Math"), "a late import stays in the body")
+}
+
+test "only head-of-block imports are hoisted (#678)" {
+  testOnlyHeadImportsAreHoisted()
 }
 
 test "extractDoctests finds the runnable blocks only (#678)" {

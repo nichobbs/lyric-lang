@@ -679,7 +679,7 @@ func cmdTest(argv: in slice[String]): Int {
   // (this was reachable: `lyric-mcp/tests/mcp_stdio_process_tests.l` uses
   // exactly this pattern and is run in CI via `lyric test --manifest`).
   val cfgActiveWithTarget = Cfg.withTargetFeature(cfgActive, targetFeatureName(cfgTestTarget))
-  // `--doctests` (#678, D230): the file's ` ```lyric ` doc-comment blocks run
+  // `--doctests` (#678, D245): the file's ` ```lyric ` doc-comment blocks run
   // as tests of the file's own package, so they are merged into it as one
   // more file of the package.
   var source = fileText
@@ -1132,7 +1132,7 @@ func indexOfPackageNamed(pkgs: in List[Emitter.ProjectPackage], name: in String)
 
 // The package `lib` with the synthesised test module `testRewritten` (read
 // from `testPath`) added as a last file, so the tests are compiled as part of
-// the package and reach its non-`pub` items (#678, D230).  The module's
+// the package and reach its non-`pub` items (#678, D245).  The module's
 // `@test_module` is dropped from the merged file (the package under test is
 // not a test module, B0014), and a file of `lib` that is `testPath` itself
 // (a test that lives in its package's directory) is not added twice.
@@ -1294,6 +1294,9 @@ func cmdTestManifest(
         return 1
       }
     }
+    // Without --doctests the fallback is the whole run, so it ends here.  With
+    // it, the packages' doctests still have to run below, so the fallback's
+    // verdict is carried in `fallbackFailed` and folded into the final exit.
     if not doctests {
       if anyFailed {
         return 1
@@ -2022,7 +2025,7 @@ func cmdTestManifest(
     // entry point by the first-wins semantics in addPackageTokens (#2885).
     val allPkgs: List[Emitter.ProjectPackage] = newList()
     // A `@test_module` that declares the package of a `[project.packages]`
-    // entry is merged into that package (#678, D230): its tests reach the
+    // entry is merged into that package (#678, D245): its tests reach the
     // package's non-`pub` items.
     val mergeIdx = indexOfPackageNamed(libPkgs, Release.packageNameOf(rewritten))
     var mainClass = jobName

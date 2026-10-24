@@ -323,7 +323,9 @@ lyric test --doctests                  # every source file of every [project.pac
 lyric test src/shape.l --doctests      # one file
 ```
 
-In a project, each source file that has doctests is one more run after the `[project.tests]` entries; a failing block shows up as `not ok N - doctest src/shape.l:12`, named by the line of the block's first code line. A block is a list of statements, so it cannot declare functions or types. Its leading `import` lines are lifted out of the test body; an import of the package the comment belongs to is not needed (and is ignored), because the doctest runs inside that package, where even its non-`pub` helpers are visible.
+In a project, each source file that has doctests is one more run after the `[project.tests]` entries; a failing block shows up as `not ok N - doctest src/shape.l:12`, named by the line of the block's first code line. A block is a list of statements, so it cannot declare functions or types. Its leading `import` lines are lifted out of the test body; an import of the package the comment belongs to is not needed (and is ignored), because the doctest runs inside that package, where even its non-`pub` helpers are visible. Only `import` lines at the head of the block, one per line, are lifted; an `import` after the first statement, or one split over several lines, stays in the body and is a compile error there.
+
+Diagnostics of a doctest cite the doctest module, not the comment: in a project the path is `<file>#doctests` and the line numbers are those of the synthesised module (the title `doctest <file>:<line>` tells you which comment it came from); in single-file mode the file and its doctests are merged first, so lines past the file's header are reported against the merged text.
 
 A fence opts out with ` ```lyric,no_test ` (or `ignore`), or with `// no_test` as the first line. Fences in another language, or with no language, are never run.
 
