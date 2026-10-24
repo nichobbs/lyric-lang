@@ -117,6 +117,12 @@ func isSqlDigit(c: in Char): Bool {
 /// string literal, every string literal terminated, and every `@` outside a
 /// literal a positional placeholder of the form `@p<digits>`.
 ///
+/// The scan is dialect-agnostic and conservative: it knows only `'...'` literals
+/// with `''` as the quote escape. It does not understand backslash escapes
+/// (`E'it\'s'`), dollar quoting (`$$...$$`), double-quoted identifiers, or `@`
+/// operators such as Postgres `@>`; text using those is rejected (or, for a
+/// backslash escape, mis-scanned) and should go through `unsafeRawSql`.
+///
 /// This is defence in depth against text that was spliced together at run
 /// time (an interpolated `'; DROP TABLE users; --` fails three of these
 /// rules); it cannot prove arbitrary text safe.  Use `params` for values.

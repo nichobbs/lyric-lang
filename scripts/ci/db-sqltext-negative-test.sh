@@ -58,6 +58,18 @@ write_fixture() {
   } > "$work/src/app.l"
 }
 
+# A path dependency must already be built into its own bin/ (no --out).
+"$bin_abs" restore --manifest "$REPO_ROOT/lyric-db/lyric.toml" > "$work/db-restore.out" 2>&1 || {
+  cat "$work/db-restore.out"
+  echo "::error::restore of lyric-db failed"
+  exit 1
+}
+"$bin_abs" build --manifest "$REPO_ROOT/lyric-db/lyric.toml" > "$work/db-build.out" 2>&1 || {
+  cat "$work/db-build.out"
+  echo "::error::build of lyric-db failed"
+  exit 1
+}
+
 "$bin_abs" restore --manifest "$work/lyric.toml" > "$work/restore.out" 2>&1 || {
   cat "$work/restore.out"
   echo "::error::restore of the fixture failed"

@@ -32,5 +32,8 @@ change now, while the library has few consumers.
 
 ## Not done
 
-Placeholder-count versus `params.length` checking, and JVM kernel
-reachability (#5324), remain open on #7241.
+Placeholder-count versus `params.length` checking and the `sql(...)` lint rule
+are tracked in #8520. JVM kernel reachability (#5324) remains open on #7241.
+`sqlIsWellFormed` is dialect-agnostic: it does not understand backslash string
+escapes, dollar quoting or `@` operators such as Postgres `@>`; such text uses
+`unsafeRawSql`.
