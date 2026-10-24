@@ -844,7 +844,7 @@ that directory without the original one. On macOS a dylib whose install name is
 not `@rpath/...` (a bare `clang -shared` names its build path) is first copied
 to `.lyric/native/_dylibs/<name>/`, renamed `@rpath/<file>` with
 `install_name_tool -id` and signed ad hoc again, and the build links and bundles
-that copy (D230).
+that copy (D233).
 On Windows (D205) a `dir` library is `<link>.lib`, a static library or the import
 library of `<link>.dll`, which must be present; the DLL is copied next to the
 `.exe`, where the Windows loader looks first, and there is no run path. A
@@ -872,7 +872,7 @@ triple is given), also writes `<output>.app` beside the executable
 (`Contents/MacOS/<exe>`, `Contents/Frameworks/<bundled dylibs>`,
 `Contents/Info.plist`); the loose executable is still produced. The table is
 ignored for other targets, and it needs at least one key to be seen. Code
-signing, hardened runtime and notarisation are not done (D230).
+signing, hardened runtime and notarisation are not done (D233).
 
 A library with no system package and no source checkout is a prebuilt
 archive per target triple:

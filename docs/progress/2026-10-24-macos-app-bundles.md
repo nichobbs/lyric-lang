@@ -1,4 +1,4 @@
-# macOS `.app` bundles and dylib install names for native builds (#8401 item 1, D230)
+# macOS `.app` bundles and dylib install names for native builds (#8401 item 1, D233)
 
 A native build of a project with a `[native.app]` manifest table, for a Darwin
 target, now also writes `<output>.app` (`Contents/MacOS`, `Contents/Frameworks`,
@@ -15,7 +15,7 @@ resolves to the bundled file (before this, a `dir` library built with a bare
 - Tests: `native_libs_self_test.l` (manifest and `Info.plist` tests everywhere;
   a macOS-only build/run test of the bundle). Run on `macos-latest` by
   `native-platforms.yml`.
-- Docs: D230, language reference section 3.6, book chapter 13 and appendix B,
+- Docs: D233, language reference section 3.6, book chapter 13 and appendix B,
   docs/67 section 6.
 - Not done: signing and notarisation (#8555), `.tar.gz` prebuilt archives
-  (#8401 item 2, D231).
+  (#8401 item 2, D232).

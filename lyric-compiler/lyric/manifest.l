@@ -226,7 +226,7 @@ pub record NativeLibSpec {
   prebuilt: List[NativePrebuilt] = newList()
 }
 
-/// `[native.app]` (docs/67 §6, D230): a Darwin native build of this project is a
+/// `[native.app]` (docs/67 §6, D233): a Darwin native build of this project is a
 /// macOS `.app` bundle.  Every field is optional; "" takes the default noted.
 pub record NativeApp {
   /// `CFBundleIdentifier`: a reverse-DNS name ("" = `lyric.<executable>`).

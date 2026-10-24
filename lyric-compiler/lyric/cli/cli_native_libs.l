@@ -126,7 +126,7 @@ func resolveDirLib(
   if os == "darwin" and shared.count > 0 {
     // A dylib records its own install name, and the executable records that name
     // when it links: one built with a bare `clang -shared` names its build path,
-    // which the bundled copy would not satisfy (D230).
+    // which the bundled copy would not satisfy (D233).
     val stageDir = Path.join(Path.join(Path.join(Path.join(decl.baseDir, ".lyric"), "native"), "_dylibs"), spec.name)
     val staged: List[String] = newList()
     var anyStaged = false
@@ -601,7 +601,7 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
   }
   if bundle.count > 0 and os != "windows" {
     if os == "darwin" {
-      // Beside the executable, and where an `.app` bundle keeps its libraries (D230).
+      // Beside the executable, and where an `.app` bundle keeps its libraries (D233).
       args.add("-Wl,-rpath,@loader_path")
       args.add("-Wl,-rpath,@executable_path/../Frameworks")
     } else {
@@ -644,7 +644,7 @@ pub func nativeLibDeclsOf(manifest: in Mf.Manifest, manifestDir: in String): Lis
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `[native.app]`: a macOS `.app` bundle (docs/67 §6, D230).
+// `[native.app]`: a macOS `.app` bundle (docs/67 §6, D233).
 // ─────────────────────────────────────────────────────────────────────────────
 /// Whether `triple` ("" is the host) names a macOS target.
 pub func isDarwinTarget(triple: in String): Bool {

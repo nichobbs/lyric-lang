@@ -1,4 +1,4 @@
-# D230 - macOS `.app` bundles for native builds
+# D233 - macOS `.app` bundles for native builds
 
 **Status:** accepted, implemented for `--target native` on Darwin triples (docs/67 phase G3 follow-up, #8401 item 1);
 code signing and notarisation are a later slice
