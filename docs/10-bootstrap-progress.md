@@ -414,6 +414,9 @@ deferred to Phase 3 by design.
   the first plugin point (`Lyric.GeneratorSdk` 2.0, `SourceGenerator` 3.0).
   Protocol points run in supervised sessions with requests routed through
   the plugin's grants, shown by the LSP example (D228).
+  `lyric-ui` widgets come from plugins of point `Ui.Plugins.WidgetPlugin`,
+  whose views cross as `WidgetTree`s and whose state the host keeps
+  (`Ui.PluginWidgets`, D230).
   Trusted in-process mode, signing and the registry are deferred (D207).
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /

@@ -1,0 +1,25 @@
+# Example.UiWidgets — a lyric-ui widget plugin (docs/65 §6.5, docs/69 §16 P6)
+# providing the `rating` and `tags` widgets that ../dashboard shows.
+#
+# It depends on Ui.Plugins and Ui.Plugins.Build alone, so it builds for
+# every target:
+#
+#   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml \
+#     --targets dotnet,jvm -o <plugins-directory>
+#
+# scripts/ci/ui-widget-plugins-e2e.sh packs it and drives it from real hosts.
+
+[package]
+name    = "Example.UiWidgets"
+version = "1.0.0"
+
+[project]
+name            = "Example.UiWidgets"
+output_assembly = "UiWidgets.dll"
+
+[project.packages]
+"Example.UiWidgets" = "src/widgets.l"
+
+[dependencies]
+"Ui.Plugins"       = { path = "../../../../lyric-ui/plugins" }
+"Ui.Plugins.Build" = { path = "../../../../lyric-ui/plugins/build" }

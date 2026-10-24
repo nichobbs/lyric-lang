@@ -134,3 +134,5 @@ WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bi
 # A plugin built as a wasm32-wasi module and run under wasmtime by a dotnet host (D207 Decision 6).
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-e2e.sh "$lyric_bin" dotnet wasm
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet wasm
+# lyric-ui plugin widgets with wasm payloads (D230).
+LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet wasm

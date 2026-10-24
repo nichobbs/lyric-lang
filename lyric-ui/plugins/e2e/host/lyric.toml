@@ -1,0 +1,28 @@
+# UiPluginE2e.Host — the plugin-widget end-to-end test (docs/65 §6.5,
+# docs/69 §16 P6): a screen of plugin widgets driven through Ui.Host's
+# session driver against real plugin processes.
+#
+#   UiPluginE2e.Host <plugins-directory>
+#
+# scripts/ci/ui-widget-plugins-e2e.sh packs the example plugin and the
+# ../flaky fixture into a plugins directory, builds this program for the
+# host target, and runs it.
+
+[package]
+name    = "UiPluginE2e.Host"
+version = "1.0.0"
+
+[project]
+name            = "UiPluginE2e.Host"
+output_assembly = "UiPluginE2e.Host.dll"
+
+[project.packages]
+"UiPluginE2e.Host" = "src/host.l"
+
+[dependencies]
+"Lyric.Ui"    = { path = "../../.." }
+"Ui.Plugins"  = { path = "../.." }
+"Lyric.Forms" = { path = "../../../../lyric-forms" }
+"Lyric.Web"   = { path = "../../../../lyric-web" }
+"Lyric.Ws"    = { path = "../../../../lyric-ws" }
+"Lyric.Auth"  = { path = "../../../../lyric-auth" }

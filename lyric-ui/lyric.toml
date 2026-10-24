@@ -14,6 +14,7 @@ output_assembly = "Ui.dll"
 "Lyric.Forms"   = { workspace = true }
 "Lyric.Web"     = { workspace = true }
 "Lyric.Ws"      = { workspace = true }
+"Ui.Plugins"    = { workspace = true }
 
 [project.packages]
 "Ui.Core"     = "src/core.l"
@@ -37,6 +38,8 @@ output_assembly = "Ui.dll"
   "src/_kernel/guard_native.l",
 ]
 "Ui.Host.Desktop"   = "src/host_desktop.l"
+"Ui.PluginWidgets"      = "src/plugin_widgets.l"
+"Ui.PluginWidgets.Host" = "src/plugin_widgets_host.l"
 
 [project.tests]
 "Ui.CoreTests"     = "tests/core_tests.l"
@@ -49,6 +52,7 @@ output_assembly = "Ui.dll"
 "Ui.LazyTests"     = "tests/lazy_tests.l"
 "Ui.GridTests"     = "tests/grid_tests.l"
 "Ui.DesktopTests"  = "tests/desktop_tests.l"
+"Ui.PluginWidgetTests" = "tests/plugin_widget_tests.l"
 
 [features]
 default = ["dotnet"]

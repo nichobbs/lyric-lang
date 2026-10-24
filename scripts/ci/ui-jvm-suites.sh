@@ -2,7 +2,8 @@
 # ---------------------------------------------------------------------------
 # ui-jvm-suites.sh — the UI library on JVM (#7378, D139): the erased-receiver
 # JVM self-test that pins the backend fixes it needed, then the lyric-forms,
-# lyric-ui and examples/ui-customers suites on --target jvm, then the
+# lyric-ui, Ui.Plugins.Build (lyric-ui/plugins/build), examples/ui-customers and the
+# plugin-widget review example (D230) suites on --target jvm, then the
 # browser end-to-end test and the desktop-window end-to-end test against the
 # JVM host.  lyric-ui's web
 # host reaches Undertow only through lyric-web and lyric-ws, so the restore
@@ -27,7 +28,8 @@ flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
 export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
 "$lyric_bin" restore --manifest "$PWD/lyric-ui/lyric.toml"
 "$lyric_bin" restore --manifest "$PWD/examples/ui-customers/lyric.toml"
-for manifest in lyric-forms lyric-ui examples/ui-customers; do
+"$lyric_bin" restore --manifest "$PWD/examples/plugins/ui-widgets/review/lyric.toml"
+for manifest in lyric-forms lyric-ui lyric-ui/plugins/build examples/ui-customers examples/plugins/ui-widgets/review; do
   "$lyric_bin" test --manifest "$manifest/lyric.toml" --target jvm
 done
 # The example driven in headless Chromium against the JVM host (#7836).
