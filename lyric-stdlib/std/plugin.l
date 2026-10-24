@@ -357,11 +357,14 @@ pub record CapabilityRequest {
 ///   `windows`) and `arch` (`x86_64`, `aarch64`); `command[0]` is the
 ///   executable.
 /// - `WasmPayload`: a WASI command module run under `wasmtime run`.
+/// - `ComponentPayload`: a WIT-typed WebAssembly component a host runs in
+///   process (docs/69 §9.3), built with `--shape component`.
 @experimental
 pub union PluginPayload {
   case ManagedPayload(runtime: String, command: List[String])
   case NativePayload(os: String, arch: String, command: List[String])
   case WasmPayload(wasmModule: String)
+  case ComponentPayload(component: String)
 }
 
 /// A parsed `plugin.json` (schema 1). `required` and `optional` are the
@@ -913,8 +916,19 @@ func plParsePayload(v: in JsonValue, index: in Int): Result[PluginPayload, Strin
     }
     return Ok(value = WasmPayload(wasmModule = file))
   }
+  if mode == "component" {
+    val file = match plMemberString(v, "component", ctx) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+    match plCheckRelativePath(file, ctx + ": component") {
+      case Err(e) -> return Err(error = e)
+      case Ok(_) -> ()
+    }
+    if not Str.endsWith(file, ".wasm") {
+      return Err(error = ctx + ": component '" + file + "' must be a .wasm file")
+    }
+    return Ok(value = ComponentPayload(component = file))
+  }
   if mode != "process" {
-    return Err(error = ctx + ": mode '" + mode + "' is not \"process\" or \"wasm\"")
+    return Err(error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\" or \"component\"")
   }
   val command = match plMemberStringList(v, "command", ctx) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
   if command.count == 0 {
@@ -1158,6 +1172,10 @@ func plPayloadToJson(p: in PluginPayload): JsonValue {
       fields.add(plField("mode", JString(value = "wasm")))
       fields.add(plField("module", JString(value = file)))
     }
+    case ComponentPayload(file) -> {
+      fields.add(plField("mode", JString(value = "component")))
+      fields.add(plField("component", JString(value = file)))
+    }
   }
   JObject(fields = fields)
 }
@@ -1275,6 +1293,18 @@ func plFindWasm(payloads: in List[PluginPayload]): Option[PluginPayload] {
   None
 }
 
+func plFindComponent(payloads: in List[PluginPayload]): Option[PluginPayload] {
+  var i = 0
+  while i < payloads.count {
+    match payloads[i] {
+      case ComponentPayload(_) -> return Some(value = payloads[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
 func plFindManaged(payloads: in List[PluginPayload], runtime: in String): Option[PluginPayload] {
   var i = 0
   while i < payloads.count {
@@ -1287,20 +1317,28 @@ func plFindManaged(payloads: in List[PluginPayload], runtime: in String): Option
   None
 }
 
-/// Choose the payload to run (D207 Decisions 5 and 6), or `None` when none
-/// can run here. In order: a wasm payload when `preferWasm` and
-/// `wasmtimeAvailable`; the native executable for `platform`'s os and arch;
+/// Choose the payload to run (D207 Decisions 5 and 6, docs/69 §9.3), or
+/// `None` when none can run here. `inProcessWasm` says whether this host can
+/// run a component payload in process. In order: when `preferWasm`, a
+/// component payload (with `inProcessWasm`), then a wasm payload (with
+/// `wasmtimeAvailable`); the native executable for `platform`'s os and arch;
 /// the managed payload of the host's own runtime, then the other managed
-/// runtime (dotnet before jvm); and last a wasm payload when `wasmtime` is
-/// available even though it was not preferred.
+/// runtime (dotnet before jvm); and last, even though wasm was not preferred,
+/// a component payload and then a wasm payload under the same conditions.
+/// Without `inProcessWasm` a component payload is never chosen.
 @experimental
 pub func selectPluginPayload(
   payloads: in List[PluginPayload],
   platform: in PluginPlatform,
   preferWasm: in Bool,
   wasmtimeAvailable: in Bool,
+  inProcessWasm: in Bool,
 ): Option[PluginPayload] {
+  val component = plFindComponent(payloads)
   val wasm = plFindWasm(payloads)
+  if preferWasm and inProcessWasm and isSome(component) {
+    return component
+  }
   if preferWasm and wasmtimeAvailable and isSome(wasm) {
     return wasm
   }
@@ -1325,6 +1363,9 @@ pub func selectPluginPayload(
   val jvm = plFindManaged(payloads, "jvm")
   if isSome(jvm) {
     return jvm
+  }
+  if inProcessWasm and isSome(component) {
+    return component
   }
   if wasmtimeAvailable {
     return wasm
@@ -1442,6 +1483,12 @@ pub func pluginLaunchCommand(
         argv.add(command[i])
         i = i + 1
       }
+    }
+    case ComponentPayload(file) -> {
+      return Err(
+        error = "the component payload '" + file +
+          "' runs in process, not as a command; a host loads it through its wasmtime embedding"
+      )
     }
     case WasmPayload(file) -> {
       val exe = match wasmtime { case Some(w) -> w; case None -> return Err(error = plWasmtimeMissingMessage()) }
@@ -1794,7 +1841,10 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     o = o + 1
   }
   val wasmtime = findWasmtime()
-  val payload = match selectPluginPayload(manifest.payloads, currentPluginPlatform(), host.config.preferWasm, isSome(wasmtime)) {
+  // A component payload runs in an in-process wasmtime embedding, which this
+  // process-hosting runtime does not have, so component payloads are skipped.
+  val inProcessWasm = false
+  val payload = match selectPluginPayload(manifest.payloads, currentPluginPlatform(), host.config.preferWasm, isSome(wasmtime), inProcessWasm) {
     case Some(pl) -> pl
     case None -> return Some(value = plIssue(NoUsablePayload, dir, id, "no payload of this plugin can run on this host"))
   }
