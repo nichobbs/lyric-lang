@@ -2241,7 +2241,7 @@ func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span
 // The `where` marker an arithmetic or relational operator is valid under on a
 // type parameter: `Add` for `+`, `Compare` for `<`, and so on.  "" for every
 // other operator.
-func operatorMarker(op: in BinOp): String {
+pub func operatorMarker(op: in BinOp): String {
   match op {
     case BAdd -> "Add"
     case BSub -> "Sub"

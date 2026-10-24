@@ -167,6 +167,7 @@ record SpecRequest {
   valueSubst: Map[String, Expr]
   callSpan: Span
   opBound: Bool
+  opOverflow: Bool
 }
 
 record MonoState {
@@ -7837,7 +7838,8 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                                 subst = subst,
                                 valueSubst = valueSubst,
                                 callSpan = fn.span,
-                                opBound = operatorBoundToStructured(baseDecl, subst)
+                                opBound = operatorBoundToStructured(baseDecl, subst),
+                                opOverflow = operatorBoundToOverflowScalar(baseDecl, subst)
                               )
                             )
                             // A specialised copy's concrete signature joins the inference
@@ -8055,7 +8057,8 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                             subst = subst,
                             valueSubst = checkedValues,
                             callSpan = fn.span,
-                            opBound = operatorBoundToStructured(baseDecl, subst)
+                            opBound = operatorBoundToStructured(baseDecl, subst),
+                            opOverflow = operatorBoundToOverflowScalar(baseDecl, subst)
                           )
                         )
                         // A specialised copy's concrete signature joins the inference
@@ -8166,7 +8169,8 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           subst = qSubst,
                           valueSubst = qEmptyVS,
                           callSpan = fn.span,
-                          opBound = operatorBoundToStructured(qBaseDecl, qSubst)
+                          opBound = operatorBoundToStructured(qBaseDecl, qSubst),
+                          opOverflow = operatorBoundToOverflowScalar(qBaseDecl, qSubst)
                         )
                       )
                       // A specialised copy's concrete signature joins the inference
@@ -10093,9 +10097,14 @@ pub func monoFileWithLambdaTypes(
     // Another package's generic is lowered only when its specialisation is
     // checked again, so one whose signature holds a buffer (D185) is.
     val foreignBufferSpec = specOrigin.length > 0 and declMentionsBufferMono(req.baseDecl)
+    // `+`, `-` and `*` on a parameter bound to an overflow-checked integer type
+    // are checked only on the specialised body (D163, #8532); the standard
+    // library always wraps, so its generics are left as they are.
+    val overflowSpec = req.opOverflow and specOrigin != "Std" and not Str.startsWith(specOrigin, "Std.")
     val unsignedSpec = substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or
       req.valueSubst.count > 0 or
-      foreignBufferSpec
+      foreignBufferSpec or
+      overflowSpec
     val structSpec = not unsignedSpec and substMentionsStructuredMono(req.subst)
     if unsignedSpec or structSpec or specOrigin.length > 0 {
       val specReq = UnsignedSpecRequest(
@@ -10291,9 +10300,52 @@ func operatorBoundToStructured(decl: in FunctionDecl, subst: in Map[String, Type
   }
 }
 
+// True when `decl` bounds a type parameter by `Add`, `Sub` or `Mul` and
+// `subst` binds it to `Int`, `Long`, `UInt`, `ULong` or `Byte`: the operators
+// the bound allows are overflow-checked (D163) at that type, which the
+// generic body, checked over the parameter, could not record (#8532).
+func operatorBoundToOverflowScalar(decl: in FunctionDecl, subst: in Map[String, TypeExpr]): Bool {
+  match decl.whereClause {
+    case None -> false
+    case Some(wc) -> {
+      for bound in wc.bounds {
+        match mapGet(subst, bound.name) {
+          case Some(te) -> if isOverflowScalarTypeExpr(te) {
+            for cref in bound.constraints {
+              if cref.head.segments.count == 1 {
+                val m = cref.head.segments[0]
+                if m == "Add" or m == "Sub" or m == "Mul" {
+                  return true
+                }
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+      false
+    }
+  }
+}
+
+// Type aliases are already resolved to their targets before monomorphisation
+// (`bounded_generic_ops_self_test.l` pins an alias of `Int` and of `Long`), so
+// the bare primitive names are the only spelling that reaches here.
+func isOverflowScalarTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> if p.segments.count == 1 {
+      val n = p.segments[0]
+      n == "Int" or n == "Long" or n == "UInt" or n == "ULong" or n == "Byte"
+    } else {
+      false
+    }
+    case _ -> false
+  }
+}
+
 // Keep in sync with the checker's `operatorMarker` (typechecker_exprs.l) and
 // `isBuiltinMarkerName` (contract_meta.l); the packages cannot share a helper.
-func isOperatorMarker(name: in String): Bool {
+pub func isOperatorMarker(name: in String): Bool {
   name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare"
 }
 
