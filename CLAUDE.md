@@ -1061,8 +1061,9 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `lyric-jobs/README.md`**; `JobHandler`/`JobScheduler` interfaces;
   `InProcessJobScheduler` for tests; `Retryable` and `Timed` aspects.
 - `lyric-mail/` — `lyric-mail` library: email sending (`Lyric.Mail`).
-  SMTP via `System.Net.Mail` on `dotnet` — **Amazon SES and SendGrid, and
-  every provider on `jvm`, return `NOT_IMPLEMENTED` (#7462)**; typed
+  SMTP via `System.Net.Mail` on `dotnet` — **SMTP on `jvm` returns
+  `NOT_IMPLEMENTED` (#7462)**; Amazon SES (v2, SigV4) and SendGrid (v3) are
+  pure-Lyric HTTPS clients over `Std.Http` on both targets; typed
   `EmailMessage`/`EmailAddress`/`Attachment`; `sendSimple`/`sendHtml`
   helpers.
 - `lyric-storage/` — `lyric-storage` library: object storage

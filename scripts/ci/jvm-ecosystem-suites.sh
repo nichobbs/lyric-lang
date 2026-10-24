@@ -70,8 +70,8 @@ run_suite() {
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared
   # behind their own `[features]` flags, off by default under
   # `--no-default-features`; activate all three so the suite exercises
-  # (and honestly asserts the `NOT_IMPLEMENTED` status of) every provider
-  # on this target, matching its `dotnet` default feature set.
+  # every provider on this target, matching its `dotnet` default feature
+  # set.
   local features="jvm"
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"

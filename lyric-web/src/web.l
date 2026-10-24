@@ -87,7 +87,63 @@ import Std.Iter
 // JVM compilation reach class-load at all).
 @cfg(feature = "dotnet")
 @externTarget("System.IO.Path.GetFullPath")
-func pathGetFullPath(path: in String): String = ()
+func netGetFullPath(path: in String): String = ()
+
+@cfg(feature = "dotnet")
+extern type NetDirInfo = "System.IO.DirectoryInfo"
+
+// `Path.GetFullPath` is purely lexical, so on its own a symlink inside the
+// static root could point outside it and still pass `withinRoot` (the JVM
+// `getCanonicalPath` resolves links; #7249).  This walks the absolute path
+// one segment at a time and replaces every symlink with its target, like
+// `realpath(3)`.  A loop (or a chain longer than 40 links) yields "", which
+// is never within any root.
+@cfg(feature = "dotnet")
+func pathGetFullPath(path: in String): String {
+  var pending: List[String] = netGetFullPath(path).split("/").toList()
+  var cur = ""
+  var idx = 0
+  var hops = 0
+  while idx < pending.count {
+    val seg = pending[idx]
+    idx = idx + 1
+    if seg.length == 0 or seg == "." {
+      continue
+    }
+    if seg == ".." {
+      val cut = lastIndexOfRaw(cur, "/")
+      cur = if cut <= 0 { "" } else { cur.substring(0, cut) }
+      continue
+    }
+    val candidate = cur + "/" + seg
+    val link = NetDirInfo.new(candidate).LinkTarget ?? ""
+    if link.length == 0 {
+      cur = candidate
+      continue
+    }
+    hops = hops + 1
+    if hops > 40 {
+      return ""
+    }
+    val base = if link.startsWith("/") { link } else { cur + "/" + link }
+    val next: List[String] = newList()
+    for part in base.split("/") {
+      next.add(part)
+    }
+    while idx < pending.count {
+      next.add(pending[idx])
+      idx = idx + 1
+    }
+    pending = next
+    idx = 0
+    cur = ""
+  }
+  if cur.length == 0 {
+    "/"
+  } else {
+    cur
+  }
+}
 
 // `--target native`: lexical normalisation, the same contract as
 // `Path.GetFullPath` (no symlink resolution) — a relative path is taken from
@@ -141,9 +197,15 @@ func canonFileGetCanonicalPath(f: in JCanonFile): String = ()
 
 // `File.getCanonicalPath` collapses `.`/`..` and resolves symlinks — at
 // least as strict as `Path.GetFullPath` for the traversal guard's purpose.
+// It throws `IOException` on a symlink loop; that yields "", which is within
+// no root, so the request is a 404 rather than a crash.
 @cfg(feature = "jvm")
 func pathGetFullPath(path: in String): String {
-  return canonFileGetCanonicalPath(canonFileNew(path))
+  return try {
+    canonFileGetCanonicalPath(canonFileNew(path))
+  } catch Bug as _ {
+    ""
+  }
 }
 
 func webJsonStr(s: in String): String {
