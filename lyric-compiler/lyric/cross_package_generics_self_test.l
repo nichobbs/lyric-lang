@@ -860,7 +860,7 @@ test "qualified restored calls widen Int arguments and type generics from their 
     "  val errs: List[String] = newList()\n" +
     "  val big = Parse.collect(errs, Parse.longOr(\"big\"), 0)\n" +
     "  val dflt = Parse.collect(errs, Parse.longOr(\"x\"), 7)\n" +
-    "  println(Parse.span(-5, 1_000_000).toString() + \" \" + big.toString() + \" \" + dflt.toString() + \" \" + errs.length.toString())\n" +
+    "  println(Parse.span(-5, 1_000_000).toString() + \" \" + big.toString() + \" \" + dflt.toString() + \" \" + errs.count.toString())\n" +
     "}\n"
   val captured = buildAndRunConsumerWithStdlib(
     tmpDir,
