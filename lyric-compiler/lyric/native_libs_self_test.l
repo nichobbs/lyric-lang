@@ -471,6 +471,84 @@ test "a .tar.gz member that the archive lacks, or a stream that is not gzip, fai
   assertTrue(Str.contains(errs2[0], "not a gzip stream"), "says why: " + errs2[0])
 }
 
+test "a corrupt or truncated gzip stream is refused" {
+  val root = freshTempDir("gzbad")
+  defer {
+    cleanup(root)
+  }
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val archive = tarGzLibrary(scratch, root, "cdep-prebuilt.tar.gz")
+  val good = match File.readBytes(archive) { case Ok(b) -> b; case Err(_) -> panic("cannot read " + archive) }
+  match Cli.gunzip(good) {
+    case Ok(bytes) -> assertTrue(bytes.count > 0, "the intact archive inflates")
+    case Err(msg) -> assertTrue(false, "the intact archive inflates: " + msg)
+  }
+  // The trailer's length field no longer matches.
+  val flipped: List[Byte] = newList()
+  var i = 0
+  while i < good.length {
+    flipped.add(if i == good.length - 4 { (good[i].toInt() + 1).toByte() } else { good[i] })
+    i += 1
+  }
+  match Cli.gunzip(flipped.toArray()) {
+    case Ok(_) -> assertTrue(false, "a wrong trailer length is refused")
+    case Err(msg) -> assertTrue(Str.contains(msg, "truncated or corrupt"), "says why: " + msg)
+  }
+  // Cut short in the middle of the stream.
+  val cut: List[Byte] = newList()
+  var j = 0
+  while j < good.length / 2 {
+    cut.add(good[j])
+    j += 1
+  }
+  match Cli.gunzip(cut.toArray()) {
+    case Ok(_) -> assertTrue(false, "a truncated stream is refused")
+    case Err(_) -> ()
+  }
+}
+
+test "a chain of links that never reaches a file fails the restore" {
+  val root = freshTempDir("tarloop")
+  defer {
+    cleanup(root)
+  }
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val stage = Path.join(root, "loopstage")
+  mkdirOrPanic(stage)
+  mkdirOrPanic(Path.join(stage, "loop"))
+  val lnA: List[String] = newList()
+  lnA.add("-s")
+  lnA.add("b")
+  lnA.add(Path.join(Path.join(stage, "loop"), "a"))
+  runTool("ln", lnA)
+  val lnB: List[String] = newList()
+  lnB.add("-s")
+  lnB.add("a")
+  lnB.add(Path.join(Path.join(stage, "loop"), "b"))
+  runTool("ln", lnB)
+  val archive = Path.join(root, "loop.tar.gz")
+  val tarArgs: List[String] = newList()
+  tarArgs.add("-czf")
+  tarArgs.add(archive)
+  tarArgs.add("-C")
+  tarArgs.add(stage)
+  tarArgs.add("loop")
+  runTool("tar", tarArgs)
+  val mfPath = Path.join(scratch, "lyric.toml")
+  val original = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  val section = "[native.libs.cdep.prebuilt." + hostTriple() + "]\nurl = \"file://" + archive + "\"\nsha256 = \"" +
+    zipSha(archive) +
+    "\"\nmembers = [\"loop/a -> libcdep" +
+    sharedExt() +
+    "\"]\n"
+  writeFileOrPanic(mfPath, Str.replace(original, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n", section))
+  val triples: List[String] = newList()
+  triples.add(hostTriple())
+  val errs = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs.count, 1, "one error")
+  assertTrue(Str.contains(errs[0], "chain of links"), "names the loop: " + errs[0])
+}
+
 test "a .tar.gz prebuilt url needs members" {
   val base = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
   val bare = Mf.parseManifest(

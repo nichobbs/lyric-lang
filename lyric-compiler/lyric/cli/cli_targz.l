@@ -89,11 +89,18 @@ func cString(buf: in List[Int], off: in Int, maxLen: in Int): String {
   s
 }
 
+// A size or field the archive claims beyond what an Int holds is clamped to this, which no
+// real archive reaches: the callers' bounds checks then reject it as truncated.
+val tarNumberCap: Int = 2147483647
+
 func parseTarNumber(buf: in List[Int], off: in Int, len: in Int): Int {
   if buf[off] >= 128 {
     var v = buf[off] - 128
     var i = 1
     while i < len {
+      if v > 8388607 {
+        return tarNumberCap
+      }
       v = v * 256 + buf[off + i]
       i += 1
     }
@@ -104,6 +111,9 @@ func parseTarNumber(buf: in List[Int], off: in Int, len: in Int): Int {
   while i < len {
     val c = buf[off + i]
     if c >= 48 and c <= 55 {
+      if v > 268435455 {
+        return tarNumberCap
+      }
       v = v * 8 + (c - 48)
     }
     i += 1
@@ -172,7 +182,7 @@ pub func readTarEntries(buf: in List[Int]): Result[List[TarEntry], String] {
     val kind = buf[pos + 156]
     val headerSize = parseTarNumber(buf, pos + 124, 12)
     val dataOff = pos + 512
-    if dataOff + headerSize > buf.count and headerSize > 0 {
+    if headerSize > buf.count - dataOff {
       return Err(error = "the tar archive is truncated")
     }
     if kind == 120 {
@@ -209,6 +219,10 @@ pub func readTarEntries(buf: in List[Int]): Result[List[TarEntry], String] {
       val link = if pendingLink.length > 0 { pendingLink } else { cString(buf, pos + 157, 100) }
       val size = if pendingSize >= 0 { pendingSize } else { headerSize }
       val isData = kind == 0 or kind == 48 or kind == 55
+      // A pax `size` replaces the header's, so it needs the same bounds check.
+      if isData and size > buf.count - dataOff {
+        return Err(error = "the tar archive is truncated")
+      }
       entries.add(
         TarEntry(
           name = name,
@@ -281,6 +295,7 @@ pub func extractTarMember(buf: in List[Int], entries: in List[TarEntry], name: i
             tarDirname(normalizeTarPath(e.name)) + "/" + e.linkName
           }
         } else if e.kind == 49 {
+          // A hard link names its target by the target's path in the archive, from the root.
           current = e.linkName
         } else {
           val bytes: List[Int] = newList()
