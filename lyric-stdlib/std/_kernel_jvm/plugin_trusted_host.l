@@ -78,7 +78,8 @@ pub func trustedHostUnavailableReason(): String {
 }
 
 /// Open the plugin jar at `path` (absolute) with a new class loader and find
-/// its entry point.  Runs none of the plugin's code.
+/// its entry point.  Runs none of the plugin's Lyric code; the plugin can
+/// still take the host down from its first call (docs/69 §10.6).
 pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   try {
     val jar = JJarFile.new(path)
