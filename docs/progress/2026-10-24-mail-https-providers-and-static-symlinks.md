@@ -34,3 +34,13 @@ the path one segment at a time and replaces each symlink by its target, like
 `realpath(3)`; a link loop yields an empty path that is within no root.
 `dispatch_tests.l` covers a file symlink and a directory symlink pointing out of
 root.
+
+The symlink check is resolve-then-open: the path is resolved and compared with
+the root, and the file is opened afterwards, so a link swapped between the two
+steps by someone who can write to the static root can still win the race. The
+static root must not be writable by untrusted parties; the check defends
+against links that already exist.
+
+Provider endpoint overrides must use `https://`; plain `http://` is accepted
+only for `localhost`, `127.0.0.1` and `[::1]` so credentials never travel in
+clear text.

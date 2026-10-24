@@ -555,6 +555,31 @@ test "dispatch: static symlinks are resolved through relative chains, loops and 
   assertEqualInt(Web.dispatch(router, getRequest("/long0")).status, 404, "a 45-link chain exceeds the link limit")
 }
 
+test "dispatch: a static root that is itself a symlink still serves its files" {
+  val dir = scratchDir("static_symlink_root")
+  val _ = Process.run("rm", ["-rf", dir])
+  val _ = createDir(dir + "/real")
+  val _ = writeText(dir + "/real/ok.txt", "fine to serve")
+  val _ = writeText(dir + "/secret.txt", "top secret")
+  val _ = Process.run("ln", ["-s", dir + "/real", dir + "/rootlink"])
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = dir + "/rootlink",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
+  assertEqualInt(Web.dispatch(router, getRequest("/ok.txt")).status, 200, "file under a symlinked root is served")
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/../secret.txt")).status,
+    404,
+    "traversal from a symlinked root is refused"
+  )
+}
+
 test "dispatch: fallbackToIndex serves index.html for an unmatched static path" {
   val dir = scratchDir("static_fallback_index")
   val _ = createDir(dir)

@@ -187,7 +187,7 @@ content; messages with attachments are rendered as `Raw` MIME.
 | `LYRIC_CONFIG_SES_ACCESSKEY` | AWS Access Key ID — required |
 | `LYRIC_CONFIG_SES_SECRETKEY` | AWS Secret Access Key — required |
 | `LYRIC_CONFIG_SES_SESSIONTOKEN` | Session token for temporary credentials (optional) |
-| `LYRIC_CONFIG_SES_ENDPOINT` | Endpoint override, an absolute `http(s)` URL (default `https://email.<region>.amazonaws.com`) |
+| `LYRIC_CONFIG_SES_ENDPOINT` | Endpoint override (default `https://email.<region>.amazonaws.com`); must be `https://`, or `http://` for `localhost`/`127.0.0.1`/`[::1]` only |
 
 ### SendGrid (`LYRIC_CONFIG_SENDGRIDMAIL_*`)
 
@@ -197,7 +197,7 @@ bearer API key.
 | Env var | Meaning |
 |---|---|
 | `LYRIC_CONFIG_SENDGRIDMAIL_APIKEY` | API key — required, else `Err(code = "INVALID_CONFIG")` |
-| `LYRIC_CONFIG_SENDGRIDMAIL_ENDPOINT` | Endpoint override (default `https://api.sendgrid.com`) |
+| `LYRIC_CONFIG_SENDGRIDMAIL_ENDPOINT` | Endpoint override (default `https://api.sendgrid.com`); `https://`, or `http://` for loopback only |
 
 A provider rejection is returned as `Err` with the HTTP status and the start of
 the response body in `message`, and `code` `AUTH_FAILED` (401/403),

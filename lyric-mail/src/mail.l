@@ -1211,11 +1211,35 @@ func normalizeEndpoint(raw: in String): Result[String, MailError] {
   if not (raw.startsWith("https://") or raw.startsWith("http://")) or endpointHost(raw).length == 0 {
     return Err(MailError(message = "provider endpoint must be an absolute http(s) URL: " + raw, code = "INVALID_CONFIG"))
   }
+  // The API key or SigV4 headers would travel in clear text over http://, so
+  // that is accepted only for a loopback test server.
+  if raw.startsWith("http://") and not isLoopbackAuthority(endpointHost(raw)) {
+    return Err(
+      MailError(
+        message = "provider endpoint must use https:// (http:// is allowed only for localhost, 127.0.0.1 and [::1]): " +
+          raw,
+        code = "INVALID_CONFIG"
+      )
+    )
+  }
   var stop = raw.length
   while stop > 0 and charAtOrReplacement(raw, stop - 1) == '/' {
     stop = stop - 1
   }
   return Ok(raw.substring(0, stop))
+}
+
+/// True when the `host[:port]` authority names the loopback interface.
+pub func isLoopbackAuthority(authority: in String): Bool {
+  var host = authority
+  if host.startsWith("[") {
+    val close = lastIndexOfRaw(host, "]")
+    host = if close > 0 { host.substring(0, close + 1) } else { host }
+  } else {
+    val colon = lastIndexOfRaw(host, ":")
+    host = if colon >= 0 { host.substring(0, colon) } else { host }
+  }
+  return host == "localhost" or host == "127.0.0.1" or host == "[::1]"
 }
 
 /// True for a plausible AWS region name (`us-east-1`): lowercase letters,

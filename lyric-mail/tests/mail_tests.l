@@ -835,6 +835,86 @@ test "Mail provider helpers: endpoint host, status codes, regions" {
   assertFalse(Mail.isValidAwsRegion("evil.com/x"), "a region may not change the host")
 }
 
+test "Mail provider endpoints must be https unless they are loopback" {
+  match Mail.newSendGridSender("key", "http://example.com") {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "plain http to a remote host is refused")
+    case Ok(_) -> assertTrue(false, "http://example.com would send the API key in clear text")
+  }
+  match Mail.newSesSender("us-east-1", "AK", "SK", "", "http://email.us-east-1.amazonaws.com") {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "SES over plain http is refused")
+    case Ok(_) -> assertTrue(false, "plain http SES endpoint must be rejected")
+  }
+  match Mail.newSendGridSender("key", "https://api.eu.sendgrid.com") {
+    case Ok(_) -> assertTrue(true, "https is accepted")
+    case Err(e) -> assertTrue(false, "https endpoint rejected: " + e.message)
+  }
+  assertTrue(Mail.isLoopbackAuthority("localhost:8025"), "localhost with port")
+  assertTrue(Mail.isLoopbackAuthority("127.0.0.1"), "ipv4 loopback")
+  assertTrue(Mail.isLoopbackAuthority("[::1]:8025"), "ipv6 loopback with port")
+  assertFalse(Mail.isLoopbackAuthority("localhost.evil.com"), "prefix is not loopback")
+  assertFalse(Mail.isLoopbackAuthority("example.com:80"), "remote host")
+  match Mail.newSendGridSender("key", "http://localhost:8025") {
+    case Ok(_) -> assertTrue(true, "loopback http is accepted")
+    case Err(e) -> assertTrue(false, "loopback http rejected: " + e.message)
+  }
+}
+
+test "Mail.sigV4Authorization signs the host including its port" {
+  val bare = Mail.sigV4Authorization(
+    "POST",
+    "/p",
+    "localhost",
+    "us-east-1",
+    "ses",
+    "AK",
+    "SK",
+    "",
+    "20150830T123600Z",
+    "{}"
+  )
+  val withPort = Mail.sigV4Authorization(
+    "POST",
+    "/p",
+    "localhost:8025",
+    "us-east-1",
+    "ses",
+    "AK",
+    "SK",
+    "",
+    "20150830T123600Z",
+    "{}"
+  )
+  assertTrue(bare != withPort, "a different host authority changes the signature")
+  assertEqual(Mail.endpointHost("http://localhost:8025/x"), "localhost:8025", "the port stays in the signed host")
+}
+
+test "Mail.validateNoInjection rejects CR/LF in attachment contentType and filename" {
+  val bad = Mail.EmailMessage(
+    from = Mail.makeAddress("a@x.com"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [Mail.makeAttachment("f.txt", "text/plain\r\nBcc: evil@x.com", "QUJD")],
+    replyTo = None
+  )
+  assertTrue(Mail.validateNoInjection(bad).isSome(), "contentType with CRLF is rejected")
+  val badName = Mail.EmailMessage(
+    from = bad.from,
+    to = bad.to,
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [Mail.makeAttachment("f\r\n.txt", "text/plain", "QUJD")],
+    replyTo = None
+  )
+  assertTrue(Mail.validateNoInjection(badName).isSome(), "filename with CRLF is rejected")
+}
+
 test "Mail SendGrid and SES senders validate before dispatch and report transport failures" {
   val sg = match Mail.newSendGridSender("key", "http://127.0.0.1:1") {
     case Ok(s) -> s
