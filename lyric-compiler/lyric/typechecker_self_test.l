@@ -12375,6 +12375,11 @@ test ".length on a List is T0207 and names .count" {
   assertTrue(named, "the message names .count: " + diagCodesOf(cr))
 }
 
+test ".length as a bound member value on a List is T0207" {
+  val cr = listLengthCheck("  val n = xs.length\n  n")
+  assertEqualInt(countDiagCode(cr, "T0207"), 1, diagCodesOf(cr))
+}
+
 test ".length() call form on a List is T0207" {
   val cr = listLengthCheck("  xs.length()")
   assertEqualInt(countDiagCode(cr, "T0207"), 1, diagCodesOf(cr))

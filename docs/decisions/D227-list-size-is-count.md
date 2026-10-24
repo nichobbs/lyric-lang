@@ -1,4 +1,4 @@
-# D223 - `List` sizes with `.count`; `.length` on a `List` is T0207
+# D227 - `List` sizes with `.count`; `.length` on a `List` is T0207
 
 **Status:** shipped (#7218).
 
