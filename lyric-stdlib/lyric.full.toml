@@ -173,3 +173,10 @@ output_assembly = "Lyric.Stdlib.dll"
 # neither line may be `seed: current`.
 "Std.PluginHost" = "std/_kernel/plugin_host.l"
 "Std.Plugin"     = "std/plugin.l"
+
+# Tier 13 — runtime access to `config { }` field annotations (#6866,
+# #7180): the per-target resource-reading kernel and `Std.AnnotationMeta`.
+# Appended last for the same reason as Tier 8; it imports `Std.JsonValue`
+# (Tier 9), which precedes it.
+"Std.AnnotationMetaHost" = "std/_kernel/annotation_meta_host.l"
+"Std.AnnotationMeta"     = "std/annotation_meta.l"

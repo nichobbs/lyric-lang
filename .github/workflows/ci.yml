@@ -4599,6 +4599,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --summary "${t}_tests.l ran (--target jvm)" --target jvm lyric-stdlib/tests/${t}_tests.l || exit 1; done
 
+      - name: Std.AnnotationMeta test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/annotation_meta_tests.l
+
       - name: Std.Linalg test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -7108,6 +7114,13 @@ jobs:
       - name: Std.JsonValue and Std.JsonRpc test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/${t}_tests.l || exit 1; done
+
+      # Std.AnnotationMeta (#7180): reads the Lyric.AnnotationMeta resource the
+      # compiler embeds in the test's own assembly.  Its JVM half runs in the
+      # JVM batch job; native embeds no metadata yet (#8524).
+      - name: Std.AnnotationMeta test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/annotation_meta_tests.l
 
       - name: Std.Linalg test coverage (native lyric test)
         working-directory: ${{ github.workspace }}

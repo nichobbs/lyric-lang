@@ -47,6 +47,7 @@ Here is the full module inventory:
 | `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
 | `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, the standard error codes |
 | `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses) |
+| `Std.AnnotationMeta` | Read the annotations written on `config { }` fields back at runtime, on dotnet and the JVM: `fieldsWithAnnotation`, `allAnnotatedFields`, `AnnotatedField`, `namedArg`, `positionalArg` |
 | `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
@@ -406,6 +407,46 @@ func main(): Unit {
 An integral number in the `Long` range is `JInt`; a fraction, an exponent
 or a larger integer is `JFloat`. Object fields keep their order, and a
 duplicate key is kept, with the accessors reading the last one.
+
+### Config-field annotations at runtime: `Std.AnnotationMeta`
+
+The compiler records every annotation written on a `config { }` field in a
+small document embedded in the compiled program. `Std.AnnotationMeta` reads it
+back, so a library can find the fields that carry its own annotation without
+reflection. Arguments come back as the text the source wrote, tagged with their
+kind; nothing is evaluated.
+
+```lyric
+import Std.Core
+import Std.Collections
+import Std.AnnotationMeta
+
+config Database {
+  @secretsManager("my-service/prod", key = "dbPassword")
+  password: String
+}
+
+func secretNames(): List[String] {
+  val names: List[String] = newList()
+  match fieldsWithAnnotation("secretsManager") {
+    case Ok(fields) -> {
+      var i = 0
+      while i < fields.count {
+        match positionalArg(fields[i], 0) {
+          case Some(name) -> names.add(name)
+          case None -> ()
+        }
+        i = i + 1
+      }
+    }
+    case Err(e) -> panic(errorMessage(e))
+  }
+  names
+}
+```
+
+An annotation nobody used gives `Ok` with an empty list. The native backend does
+not embed this metadata yet, so there every query returns `Unsupported`.
 
 ### JSON-RPC: `Std.JsonRpc`
 

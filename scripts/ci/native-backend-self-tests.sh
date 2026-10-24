@@ -179,6 +179,7 @@ for t in \
   lyric-stdlib/tests/plugin_manifest_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
   lyric-stdlib/tests/json_value_tests.l \
+  lyric-stdlib/tests/annotation_meta_native_tests.l \
   lyric-stdlib/tests/linalg_tests.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
