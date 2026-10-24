@@ -42,7 +42,9 @@ func offsetOf(text: in String, line: in Int, character: in Int): Int {
   var l = 0
   while l < line {
     match Str.indexOfFrom(text, "\n", offset) {
-      case Some(at) -> offset = at + 1
+      case Some(at) -> {
+        offset = at + 1
+      }
       case None -> return text.length
     }
     l = l + 1
@@ -69,17 +71,17 @@ func applyTextEdits(text: in String, edits: in List[TextEdit]): String {
   var result = text
   for e in ordered {
     val start = offsetOf(result, e.startLine, e.startCharacter)
-    val end = offsetOf(result, e.endLine, e.endCharacter)
-    result = Str.substring(result, 0, start) + e.newText + Str.substring(result, end)
+    val stop = offsetOf(result, e.endLine, e.endCharacter)
+    result = Str.substring(result, 0, start) + e.newText + Str.substring(result, stop)
   }
   result
 }
 
 impl WorkspaceEdit for Workspace {
   func applyEdit(edit: in DocumentEdit): Result[Bool, String] {
-    match self.documents.get(edit.uri) {
+    match mapGet(self.documents, edit.uri) {
       case Some(text) -> {
-        self.documents.set(edit.uri, applyTextEdits(text, edit.edits))
+        self.documents.add(edit.uri, applyTextEdits(text, edit.edits))
         Ok(value = true)
       }
       case None -> Ok(value = false)
@@ -153,10 +155,12 @@ func routeApplyEdit(client: in Client, params: in Option[JsonValue]): JsonValue 
   for d in docs {
     val edits: List[TextEdit] = newList()
     match d.value {
-      case JArray(items) -> for it in items {
-        match textEditOf(it) {
-          case Some(te) -> edits.add(te)
-          case None -> return applied(false, "malformed TextEdit")
+      case JArray(items) -> {
+        for it in items {
+          match textEditOf(it) {
+            case Some(te) -> edits.add(te)
+            case None -> return applied(false, "malformed TextEdit")
+          }
         }
       }
       case _ -> return applied(false, "the edits of " + d.name + " are not an array")
@@ -190,7 +194,7 @@ impl RpcHandler for Client {
     if method == "textDocument/publishDiagnostics" {
       match params {
         case Some(p) -> match (getString(p, "uri"), getArray(p, "diagnostics")) {
-          case (Some(uri), Some(items)) -> self.diagnostics.set(uri, items.count)
+          case (Some(uri), Some(items)) -> self.diagnostics.add(uri, items.count)
           case _ -> ()
         }
         case None -> ()
@@ -251,8 +255,8 @@ func hostConfig(workspace: in Workspace): PluginHostConfig {
 func run(pluginsDir: in String): Int {
   val report = Report(failures = 0)
   val workspace = Workspace(documents = newMap())
-  workspace.documents.set(workspaceDoc, "buy milk\nTODO: call bob\nfix TODO later\n")
-  workspace.documents.set(outsideDoc, "TODO: not yours\n")
+  workspace.documents.add(workspaceDoc, "buy milk\nTODO: call bob\nfix TODO later\n")
+  workspace.documents.add(outsideDoc, "TODO: not yours\n")
   val host = newPluginHost(hostConfig(workspace))
   for issue in discoverPlugins(host, [pluginsDir]) {
     println("# load issue: " + pluginLoadIssueMessage(issue))
@@ -298,22 +302,22 @@ func run(pluginsDir: in String): Int {
   }
   val _ = notify(peer, "initialized", Some(value = obj([])))
 
-  didOpen(peer, workspaceDoc, unwrapOr(workspace.documents.get(workspaceDoc), ""))
+  didOpen(peer, workspaceDoc, unwrapOr(mapGet(workspace.documents, workspaceDoc), ""))
   check(report, answered(markDone(peer, workspaceDoc), true), "markDone in the workspace is applied")
-  check(report, unwrapOr(client.diagnostics.get(workspaceDoc), 0) == 2, "didOpen published two TODO diagnostics")
+  check(report, unwrapOr(mapGet(client.diagnostics, workspaceDoc), 0) == 2, "didOpen published two TODO diagnostics")
   check(
     report,
-    unwrapOr(workspace.documents.get(workspaceDoc), "") == "buy milk\nDONE: call bob\nfix DONE later\n",
+    unwrapOr(mapGet(workspace.documents, workspaceDoc), "") == "buy milk\nDONE: call bob\nfix DONE later\n",
     "the edit went through WorkspaceEdit"
   )
 
-  didOpen(peer, outsideDoc, unwrapOr(workspace.documents.get(outsideDoc), ""))
+  didOpen(peer, outsideDoc, unwrapOr(mapGet(workspace.documents, outsideDoc), ""))
   check(report, answered(markDone(peer, outsideDoc), false), "an edit outside the grant is refused")
   check(report, Str.contains(client.lastFailure, "denied"), "by the capability's requires: guard")
-  check(report, unwrapOr(workspace.documents.get(outsideDoc), "") == "TODO: not yours\n", "the document is unchanged")
+  check(report, unwrapOr(mapGet(workspace.documents, outsideDoc), "") == "TODO: not yours\n", "the document is unchanged")
 
   revokeCapability(host, session.pluginId, "Editor.Lang.WorkspaceEdit")
-  workspace.documents.set(workspaceDoc, "TODO again\n")
+  workspace.documents.add(workspaceDoc, "TODO again\n")
   didOpen(peer, workspaceDoc, "TODO again\n")
   check(report, answered(markDone(peer, workspaceDoc), false), "a revoked capability refuses the edit")
   check(report, Str.contains(client.lastFailure, "revoked"), "and says it was revoked")
@@ -328,10 +332,10 @@ func run(pluginsDir: in String): Int {
 }
 
 func main(): Int {
-  val args = getArgs()
-  if args.count != 1 {
+  val argv = args()
+  if argv.length != 1 {
     println("usage: Editor.Host <plugins-directory>")
     return 2
   }
-  run(args[0])
+  run(argv[0])
 }

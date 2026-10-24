@@ -955,7 +955,7 @@ pub func pipedProcessSource(process: in PipedProcess): PipedProcessSource {
 /// kept in `failure` and later writes are skipped; the process transports
 /// below report a failed send directly instead.
 @stable(since = "0.2")
-pub ref record PipedProcessWriter {
+pub record PipedProcessWriter {
   process: PipedProcess
   var failure: Option[String]
 }

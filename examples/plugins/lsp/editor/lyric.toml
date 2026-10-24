@@ -5,7 +5,7 @@
 #   Editor.Host  the editor: discovers servers, opens sessions, speaks LSP
 #
 #   lyric build --manifest examples/plugins/lsp/editor/lyric.toml
-#   dotnet Editor.dll <plugins-directory>
+#   dotnet exec Editor.dll <plugins-directory>
 #
 # scripts/ci/plugin-lsp-e2e.sh builds it with ../todo-server and runs it.
 

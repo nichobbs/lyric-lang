@@ -2592,7 +2592,7 @@ pub func openProtocolPlugin(
 /// fixed when the plugin is registered and apply to the requests the host
 /// routes through `callCapabilityAs`.
 @experimental
-pub ref record ProtocolSession {
+pub record ProtocolSession {
   pluginId: String
   pointId: String
   state: PluginProcessState

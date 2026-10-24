@@ -41,8 +41,8 @@ func position(line: in Int, character: in Int): JsonValue {
   obj([field("line", int(line)), field("character", int(character))])
 }
 
-func range(line: in Int, start: in Int, end: in Int): JsonValue {
-  obj([field("start", position(line, start)), field("end", position(line, end))])
+func range(line: in Int, start: in Int, stop: in Int): JsonValue {
+  obj([field("start", position(line, start)), field("end", position(line, stop))])
 }
 
 /// The zero-based line and character of every `TODO` in `text`.
@@ -113,7 +113,7 @@ pub ref record Server {
 }
 
 func publish(server: in Server, uri: in String): Unit {
-  val text = match server.documents.get(uri) { case Some(t) -> t; case None -> return }
+  val text = match mapGet(server.documents, uri) { case Some(t) -> t; case None -> return }
   match server.peer {
     case Some(p) -> {
       var peer = p
@@ -157,7 +157,7 @@ impl RpcHandler for Server {
         }
         case None -> return Err(error = badParams("todo.markDone takes one URI"))
       }
-      val text = match self.documents.get(uri) {
+      val text = match mapGet(self.documents, uri) {
         case Some(t) -> t
         case None -> return Err(error = badParams("document is not open: " + uri))
       }
@@ -179,7 +179,7 @@ impl RpcHandler for Server {
         case Some(p) -> match getField(p, "textDocument") {
           case Some(td) -> match (getString(td, "uri"), getString(td, "text")) {
             case (Some(uri), Some(text)) -> {
-              self.documents.set(uri, text)
+              self.documents.add(uri, text)
               publish(self, uri)
             }
             case _ -> ()
@@ -195,7 +195,7 @@ impl RpcHandler for Server {
           case Some(changes) -> if changes.count > 0 {
             match getString(changes[changes.count - 1], "text") {
               case Some(text) -> {
-                self.documents.set(uri, text)
+                self.documents.add(uri, text)
                 publish(self, uri)
               }
               case None -> ()
