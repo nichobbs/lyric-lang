@@ -1470,14 +1470,15 @@ func plFindManaged(payloads: in List[PluginPayload], runtime: in String): Option
   None
 }
 
-/// Choose the payload to run (D207 Decisions 5 and 6), or `None` when none
-/// can run here. In order: a component payload when `inProcessWasm` (the
-/// host has an available `componentRuntime`); a wasm payload when
-/// `preferWasm` and `wasmtimeAvailable`; the native executable for
-/// `platform`'s os and arch; the managed payload of the host's own runtime,
-/// then the other managed runtime (dotnet before jvm); and last a wasm payload
-/// when `wasmtime` is available even though it was not preferred. Without
-/// `inProcessWasm` component payloads are skipped.
+/// Choose the payload to run (D207 Decisions 5 and 6, docs/69 §9.3), or
+/// `None` when none can run here. `inProcessWasm` says whether this host can
+/// run a component payload in process. In order: when `preferWasm`, a
+/// component payload (with `inProcessWasm`), then a wasm payload (with
+/// `wasmtimeAvailable`); the native executable for `platform`'s os and arch;
+/// the managed payload of the host's own runtime, then the other managed
+/// runtime (dotnet before jvm); and last, even though wasm was not preferred,
+/// a component payload and then a wasm payload under the same conditions.
+/// Without `inProcessWasm` a component payload is never chosen.
 @experimental
 pub func selectPluginPayload(
   payloads: in List[PluginPayload],
@@ -1486,13 +1487,11 @@ pub func selectPluginPayload(
   wasmtimeAvailable: in Bool,
   inProcessWasm: in Bool,
 ): Option[PluginPayload] {
-  if inProcessWasm {
-    val component = plFindComponent(payloads)
-    if isSome(component) {
-      return component
-    }
-  }
+  val component = plFindComponent(payloads)
   val wasm = plFindWasm(payloads)
+  if preferWasm and inProcessWasm and isSome(component) {
+    return component
+  }
   if preferWasm and wasmtimeAvailable and isSome(wasm) {
     return wasm
   }
@@ -1517,6 +1516,9 @@ pub func selectPluginPayload(
   val jvm = plFindManaged(payloads, "jvm")
   if isSome(jvm) {
     return jvm
+  }
+  if inProcessWasm and isSome(component) {
+    return component
   }
   if wasmtimeAvailable {
     return wasm

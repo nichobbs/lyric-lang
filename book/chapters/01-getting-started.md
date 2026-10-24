@@ -469,7 +469,7 @@ Core commands you will use constantly:
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric bindgen` | Generate native FFI bindings (`extern func`, `foreign record`, constants) from a C header with clang |
-| `lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]` | Build a plugin for each target and write its artifact directory `<dir>/<id>-<version>/`; `--trusted` adds payloads a trusted host may load into its own process (Chapter 33) |
+| `lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [-o <dir>]` | Build a plugin for each target and write its artifact directory `<dir>/<id>-<version>/`; `component` builds a WIT-typed component a host runs in process, `--trusted` adds payloads a trusted host may load into its own process (Chapter 33) |
 | `lyric plugin check <dir>` | Validate a plugin artifact directory |
 | `lyric plugin sdk --api <dir\|file.l\|lyric.toml> --lang csharp\|java\|typescript -o <dir>` | Generate a plugin SDK in another language from a plugin API package |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |

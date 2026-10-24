@@ -9,6 +9,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Process as Process
 import Std.String as Str
+import Std.Char as Ch
 import Std.JsonValue as Jv
 import Lyric.Manifest as Mf
 import Lyric.PluginManifest as Pm
@@ -21,7 +22,7 @@ import Lyric.PluginSdk as Sdk
 // ─────────────────────────────────────────────────────────────────────────────
 func pluginUsageText(): String {
   "Usage: lyric plugin <command> [args]\n" + "\n" +
-    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]\n" +
+    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [-o <dir>]\n" +
     "                     (build the plugin project for each target (default: dotnet), read its manifest\n" +
     "                      with --lyric-plugin-manifest, and write <dir>/<id>-<version>/plugin.json and\n" +
     "                      the payloads; <dir> defaults to bin/plugin beside the manifest; --trusted also\n" +
@@ -211,6 +212,7 @@ func packTargetNames(): List[String] {
   names.add("jvm")
   names.add("native")
   names.add("wasm")
+  names.add("component")
   names
 }
 
@@ -223,7 +225,7 @@ pub func parsePackTargets(raw: in String): Result[List[String], String] {
       continue
     }
     if not listContains(packTargetNames(), t) {
-      return Err(error = "unknown target '" + t + "' (expected dotnet, jvm, native or wasm)")
+      return Err(error = "unknown target '" + t + "' (expected dotnet, jvm, native, wasm or component)")
     }
     if listContains(targets, t) {
       return Err(error = "target '" + t + "' is listed twice")
@@ -279,16 +281,20 @@ func missingToolchain(target: in String, wasmtime: in String): String {
     if not toolRuns("clang", oneArg("--version")) {
       return "a native payload is linked with clang, and `clang` could not be run; install clang or drop native from --targets"
     }
-  } else if target == "wasm" {
+  } else if target == "wasm" or target == "component" {
     val sdk = Environment.getVarOrDefault("WASI_SDK_PATH", "")
     if sdk.length == 0 {
-      return "a wasm payload is built with the wasi-sdk; set WASI_SDK_PATH to its install directory (docs/35 section 5.1) or drop wasm from --targets"
+      return "a " + target +
+        " payload is built with the wasi-sdk; set WASI_SDK_PATH to its install directory (docs/35 section 5.1) or drop " +
+        target +
+        " from --targets"
     }
     if not File.dirExists(sdk) {
       return "WASI_SDK_PATH is " + sdk + ", which is not a directory; point it at a wasi-sdk install"
     }
     if wasmtime.length == 0 {
-      return "the wasm payload is run with `wasmtime run` to read its manifest, and wasmtime was not found; put it on PATH or set LYRIC_WASMTIME (D207 Decision 6)"
+      return "the " + target +
+        " payload is run with wasmtime to read its manifest, and wasmtime was not found; put it on PATH or set LYRIC_WASMTIME (D207 Decision 6)"
     }
   }
   ""
@@ -307,6 +313,8 @@ func packPayloadFile(target: in String, stem: in String): String {
     "jvm/" + stem + ".jar"
   } else if target == "native" {
     "native/" + stem + nativeOutputExt("")
+  } else if target == "component" {
+    "component/" + stem + ".wasm"
   } else {
     "wasm/" + stem + ".wasm"
   }
@@ -325,11 +333,14 @@ func packBuild(mfPath: in String, target: in String, outPath: in String, shape: 
   } else {
     args.add("native")
   }
-  if target == "wasm" {
+  if target == "wasm" or target == "component" {
     args.add("--triple")
     args.add("wasm32-wasi")
   }
-  if shape.length > 0 {
+  if target == "component" {
+    args.add("--shape")
+    args.add("component")
+  } else if shape.length > 0 {
     args.add("--shape")
     args.add(shape)
   }
@@ -338,9 +349,118 @@ func packBuild(mfPath: in String, target: in String, outPath: in String, shape: 
   cmdBuild(args.toArray())
 }
 
-/// Runs a built payload with `--lyric-plugin-manifest`: its manifest text, or
-/// an error saying what went wrong.
+/// The value of a WAVE-encoded string (`"..."` with `\"`, `\\`, `\'`, `\n`,
+/// `\r`, `\t` and `\u{hex}` escapes), as `wasmtime run --invoke` prints a
+/// `string` result.
+pub func waveStringValue(text: in String): Result[String, String] {
+  val t = Str.trim(text)
+  if t.length < 2 or not Str.startsWith(t, "\"") or not Str.endsWith(t, "\"") {
+    return Err(error = "expected a quoted string, got: " + t)
+  }
+  var acc = ""
+  var i = 1
+  val last = t.length - 1
+  while i < last {
+    val c = Str.substring(t, i, 1)
+    if c != "\\" {
+      acc = acc + c
+      i = i + 1
+      continue
+    }
+    if i + 1 >= last {
+      return Err(error = "the string ends inside an escape")
+    }
+    val e = Str.substring(t, i + 1, 1)
+    if e == "\"" or e == "\\" or e == "'" {
+      acc = acc + e
+      i = i + 2
+    } else if e == "n" {
+      acc = acc + "\n"
+      i = i + 2
+    } else if e == "r" {
+      acc = acc + "\r"
+      i = i + 2
+    } else if e == "t" {
+      acc = acc + "\t"
+      i = i + 2
+    } else if e == "u" {
+      val close = Str.indexOfRaw(Str.substring(t, i), "}")
+      if close < 0 or i + 2 >= last or Str.substring(t, i + 2, 1) != "{" {
+        return Err(error = "a malformed \\u{...} escape")
+      }
+      val hex = Str.substring(t, i + 3, close - 3)
+      var code = 0
+      var h = 0
+      while h < hex.length {
+        val d = Str.codeUnitAt(hex, h)
+        val v = if d >= 48 and d <= 57 {
+          d - 48
+        } else if d >= 97 and d <= 102 {
+          d - 87
+        } else if d >= 65 and d <= 70 {
+          d - 55
+        } else {
+          return Err(error = "a malformed \\u{...} escape")
+        }
+        code = code * 16 + v
+        h = h + 1
+      }
+      match Ch.tryFromInt(code) {
+        case Some(ch) -> {
+          acc = acc + ch.toString()
+        }
+        case None -> return Err(error = "\\u{" + hex + "} is not a BMP character (wasmtime escapes only control characters)")
+      }
+      i = i + close + 1
+    } else {
+      return Err(error = "an unknown escape \\" + e)
+    }
+  }
+  Ok(value = acc)
+}
+
+/// The manifest of a component payload: its `plugin-describe` export, called
+/// with `wasmtime run --invoke`.  Its imports, WASI and the capabilities, are
+/// linked as traps (`-S cli=n -W unknown-imports-trap=y`; wasmtime cannot trap
+/// the capabilities while it provides WASI), so the manifest is computed without
+/// I/O, as a plugin's contributions and requests are.
+func probeComponentManifest(payload: in String, wasmtime: in String): Result[String, String] {
+  val args: List[String] = newList()
+  args.add("run")
+  args.add("-W")
+  args.add("unknown-imports-trap=y")
+  args.add("-S")
+  args.add("cli=n")
+  args.add("--invoke")
+  args.add("plugin-describe()")
+  args.add(payload)
+  match Process.runCapture(wasmtime, args, 120000) {
+    case Err(e) -> Err(error = "could not run " + wasmtime + ": " + e)
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        val detail = Str.trim(res.stderr)
+        return Err(
+          error = "the component payload's plugin-describe export failed under wasmtime (exit " +
+            res.exitCode.toString() +
+            ")" +
+            (if detail.length > 0 { ":\n" + detail } else { "" })
+        )
+      }
+      match waveStringValue(res.stdout) {
+        case Ok(text) -> Ok(value = text)
+        case Err(e) -> Err(error = "the component payload's plugin-describe export did not return a string: " + e)
+      }
+    }
+  }
+}
+
+/// Runs a built payload with `--lyric-plugin-manifest` (a component: calls its
+/// `plugin-describe` export under wasmtime): its manifest text, or an error
+/// saying what went wrong.
 func probeManifest(target: in String, payload: in String, wasmtime: in String): Result[String, String] {
+  if target == "component" {
+    return probeComponentManifest(payload, wasmtime)
+  }
   val args: List[String] = newList()
   var exe = payload
   if target == "dotnet" {
@@ -485,7 +605,7 @@ func cmdPluginPack(argv: in slice[String]): Int {
     } else {
       printErr("plugin pack: unexpected argument " + arg)
       printErr(
-        "usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]"
+        "usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [-o <dir>]"
       )
       return 1
     }
@@ -673,6 +793,8 @@ func packStaged(
       payloads.add(Pm.dotnetPayload(file))
     } else if t == "jvm" {
       payloads.add(Pm.jvmPayload(file))
+    } else if t == "component" {
+      payloads.add(Pm.componentPayload(file))
     } else if t == "native" {
       match markExecutable(Path.join(artifact, file)) {
         case Ok(_) -> ()

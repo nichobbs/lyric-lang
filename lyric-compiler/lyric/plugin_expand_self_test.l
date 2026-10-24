@@ -5,13 +5,15 @@
 //! The compiler-package imports resolve by linking the stage-1 compiler DLLs
 //! as restored dependencies, like `wire_expand_self_test.l`.
 //!
-//! Covers, at the AST level: every K0001-K0012 diagnostic on a minimal bad
+//! Covers, at the AST level: every K0001-K0014 diagnostic on a minimal bad
 //! input, a clean expansion of a representative API package and of a plugin
 //! package that implements its point, the names and signatures of the
 //! generated items, the moved `requires:` clause, the injected imports, and
 //! (through `Msil.Bridge.checkProjectTypes`) that the expanded API and plugin
 //! packages type-check.  The runtime encoding is covered by
-//! `plugin_codec_self_test.l` on dotnet and the JVM.
+//! `plugin_codec_self_test.l` on dotnet and the JVM; the component items
+//! (`expandFileForComponent`) are checked here and built and run by
+//! `llvm_wasm32_plugin_component_self_test.l`.
 @test_module
 package Lyric.PluginExpandSelfTest
 
@@ -714,4 +716,359 @@ test "K0012: two plugin records" {
     "@plugin(id = \"p.y\", version = \"1.0.0\", implements(Pt))\npub record Y {\n}\n\n" +
     "impl Pt for Y {\n  func f(): Result[Int, String] {\n    Ok(value = 2)\n  }\n}\n"
   expectDiag(src, "K0012", "two plugins")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Component builds (docs/69 §9.3).
+// ─────────────────────────────────────────────────────────────────────────────
+func compApiSource(): String {
+  "package Acme.Tools\n" + "\n" + "@plugin_handle\n" + "pub type DocId = Long\n" + "\n" + "pub enum Level {\n" +
+    "  case Low\n" +
+    "  case High\n" +
+    "}\n" +
+    "\n" +
+    "pub record Item {\n" +
+    "  doc: DocId\n" +
+    "  tags: Map[String, Int]\n" +
+    "  data: List[Byte]\n" +
+    "  pinned: Option[Bool]\n" +
+    "  pair: (Int, String)\n" +
+    "}\n" +
+    "\n" +
+    "pub union Change {\n" +
+    "  case Added(item: Item)\n" +
+    "  case Removed(doc: DocId)\n" +
+    "  case Cleared\n" +
+    "}\n" +
+    "\n" +
+    "pub exposed record StoreGrant {\n" +
+    "  prefixes: List[String]\n" +
+    "}\n" +
+    "\n" +
+    "@capability(grant = StoreGrant)\n" +
+    "pub interface Store {\n" +
+    "  func load(doc: in DocId): Result[Item, String]\n" +
+    "  func touch(doc: in DocId): Result[Unit, Level]\n" +
+    "}\n" +
+    "\n" +
+    "@capability\n" +
+    "pub interface Log {\n" +
+    "  func write(level: in Level, line: in String): Result[Unit, String]\n" +
+    "}\n" +
+    "\n" +
+    "pub record ToolContributions {\n" +
+    "  commands: List[String]\n" +
+    "}\n" +
+    "\n" +
+    "@plugin_point(version = \"1.0\", contributions = ToolContributions, allows(Store, Log))\n" +
+    "pub interface ItemTool {\n" +
+    "  func summarize(item: in Item): Result[String, Level]\n" +
+    "  func fetch(doc: in DocId): Result[Change, String]\n" +
+    "}\n"
+}
+
+func compPluginSource(): String {
+  "package Acme.Summary\n" + "\n" + "import Acme.Tools\n" + "\n" +
+    "@plugin(id = \"acme.summary\", version = \"1.0.0\", publisher = \"acme\", implements(ItemTool))\n" +
+    "pub record Summary {\n" +
+    "  store: StoreClient\n" +
+    "  log: Option[LogClient]\n" +
+    "  var calls: Int = 0\n" +
+    "}\n" +
+    "\n" +
+    "impl ItemTool for Summary {\n" +
+    "  func summarize(item: in Item): Result[String, Level] {\n" +
+    "    Ok(value = item.tags.count.toString())\n" +
+    "  }\n" +
+    "\n" +
+    "  func fetch(doc: in DocId): Result[Change, String] {\n" +
+    "    match store.load(doc) {\n" +
+    "      case Ok(i) -> Ok(value = Change.Added(item = i))\n" +
+    "      case Err(_) -> Err(error = \"no\")\n" +
+    "    }\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "@plugin_contributions(ItemTool)\n" +
+    "func toolContributions(): ToolContributions {\n" +
+    "  val cmds: List[String] = newList()\n" +
+    "  cmds.add(\"summary.run\")\n" +
+    "  ToolContributions(commands = cmds)\n" +
+    "}\n" +
+    "\n" +
+    "@plugin_request(Store)\n" +
+    "func storeRequest(): StoreGrant {\n" +
+    "  val prefixes: List[String] = newList()\n" +
+    "  prefixes.add(\"items/\")\n" +
+    "  StoreGrant(prefixes = prefixes)\n" +
+    "}\n"
+}
+
+func expandComponentOne(src: in String): PluginExpandResult {
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "fixture parses")
+  val pkgs: Map[String, PluginPackage] = newMap()
+  collectPluginPackage(pr.file, pkgs)
+  expandFileForComponent(pr.file, pkgs)
+}
+
+func expandComponentSecond(first: in String, second: in String): PluginExpandResult {
+  val a = parse(first)
+  val b = parse(second)
+  assertEqualInt(a.diagnostics.count + b.diagnostics.count, 0, "fixtures parse")
+  val pkgs: Map[String, PluginPackage] = newMap()
+  collectPluginPackage(a.file, pkgs)
+  collectPluginPackage(b.file, pkgs)
+  expandFileForComponent(b.file, pkgs)
+}
+
+func expectComponentDiag(src: in String, code: in String, needle: in String, label: in String): Unit {
+  val r = expandComponentOne(src)
+  var found = false
+  for d in r.diagnostics {
+    if d.code == code and Str.contains(d.message, needle) {
+      found = true
+    }
+  }
+  assertTrue(found, label + ": expected " + code + " mentioning '" + needle + "', got:\n" + diagText(r))
+}
+
+func isInternal(fn: in FunctionDecl): Bool {
+  match fn.visibility {
+    case Some(VisInternal(_)) -> true
+    case _ -> false
+  }
+}
+
+func isPubFn(fn: in FunctionDecl): Bool {
+  match fn.visibility {
+    case Some(VisPub(_)) -> true
+    case _ -> false
+  }
+}
+
+func externNamed(r: in PluginExpandResult, name: in String): Option[Item] {
+  for it in r.file.items {
+    match it.kind {
+      case IExternFunc(d) -> {
+        if d.name == name {
+          return Some(value = it)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+func unionCases(r: in PluginExpandResult, name: in String): List[String] {
+  val acc: List[String] = newList()
+  for it in r.file.items {
+    match it.kind {
+      case IUnion(d) -> {
+        if d.name == name {
+          for c in d.cases {
+            acc.add(c.name)
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  acc
+}
+
+func hasInterface(r: in PluginExpandResult, name: in String): Bool {
+  for it in r.file.items {
+    match it.kind {
+      case IInterface(d) -> {
+        if d.name == name {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+test "component: the API and plugin packages expand without diagnostics" {
+  expectClean(expandComponentOne(compApiSource()), "component api")
+  expectClean(expandComponentSecond(compApiSource(), compPluginSource()), "component plugin")
+}
+
+test "component: the API package's client calls an interface, and nothing host-side is generated" {
+  val r = expandComponentOne(compApiSource())
+  assertTrue(hasInterface(r, "__StoreCalls"), "__StoreCalls")
+  assertTrue(hasInterface(r, "__LogCalls"), "__LogCalls")
+  assertTrue(hasRecord(r, "StoreClient"), "StoreClient")
+  expectFunc(
+    r,
+    "StoreClient.load",
+    "StoreClient.load(__stub: StoreClient, doc: DocId): Result[Item, CallError[String]]"
+  )
+  for name in ["StoreClient.load", "pluginEncodeItem", "pluginDecodeItem", "storeCapabilityInfo", "itemToolPointInfo"] {
+    match funcNamed(r, name) {
+      case Some(fn) -> assertTrue(isInternal(fn), name + " is internal, so it is no component export")
+      case None -> panic("no generated function " + name)
+    }
+  }
+  for absent in ["StoreServer", "StoreAs", "ItemToolRemote", "ItemToolContribution"] {
+    assertFalse(hasRecord(r, absent), absent + " is host-side and not generated")
+  }
+  for absent in ["storeProvider", "itemToolRemotes", "pluginDispatchItemTool", "itemToolContributions"] {
+    assertTrue(isNone(funcNamed(r, absent)), absent + " is host-side and not generated")
+  }
+}
+
+test "component: a handle is marked for the WIT u64" {
+  val r = expandComponentOne(compApiSource())
+  assertTrue(anyAnnotationNamed(r, "__componentHandle"), "the handle carries @__componentHandle")
+  assertFalse(anyAnnotationNamed(r, "plugin_handle"), "@plugin_handle is stripped")
+  assertFalse(anyAnnotationNamed(expandOne(compApiSource()), "__componentHandle"), "process mode does not mark it")
+}
+
+test "component: the plugin's exports" {
+  val r = expandComponentSecond(compApiSource(), compPluginSource())
+  expectFunc(r, "pluginDescribe", "pluginDescribe(): String")
+  expectFunc(r, "pluginAttach", "pluginAttach(grants: String): Result[Unit, String]")
+  expectFunc(r, "pluginMethods", "pluginMethods(): List[String]")
+  expectFunc(r, "itemToolSummarize", "itemToolSummarize(item: Acme.Tools.Item): Result[String, Acme.Tools.Level]")
+  expectFunc(r, "itemToolFetch", "itemToolFetch(doc: Acme.Tools.DocId): Result[Acme.Tools.Change, String]")
+  for name in ["pluginDescribe", "pluginAttach", "pluginMethods", "itemToolSummarize", "itemToolFetch"] {
+    match funcNamed(r, name) {
+      case Some(fn) -> assertTrue(isPubFn(fn), name + " is pub, so it becomes an export")
+      case None -> panic("no export " + name)
+    }
+  }
+  assertTrue(isNone(funcNamed(r, "main")), "no main in a component")
+  assertFalse(hasRecord(r, "SummaryServer"), "no JSON-RPC server in a component")
+}
+
+test "component: capability imports and their error variants" {
+  val r = expandComponentSecond(compApiSource(), compPluginSource())
+  match externNamed(r, "__pluginImport_Store_load") {
+    case Some(it) -> {
+      match findAnnotation(it.annotations, "wasmImport") {
+        case Some(a) -> assertEqual(unwrapOr(annotationLeadingString(a), ""), "Acme.Tools.Store", "the import module")
+        case None -> panic("no @wasmImport on the Store.load import")
+      }
+      match it.kind {
+        case IExternFunc(d) -> {
+          assertEqual(d.symbol, "load", "the import name")
+          match d.ret {
+            case Some(t) -> assertEqual(Fmt.typeStr(t), "Result[Acme.Tools.Item, StoreCallErrorWire]", "the import's result")
+            case None -> panic("the import has no result")
+          }
+        }
+        case _ -> ()
+      }
+    }
+    case None -> panic("no import for Store.load")
+  }
+  assertTrue(isSome(externNamed(r, "__pluginImport_Log_write")), "the Log.write import (optional capability)")
+  val expected: List[String] = newList()
+  for c in ["App", "Denied", "NotGranted", "Revoked", "Unsupported", "ContractViolated", "Timeout", "Crashed", "Protocol", "Stale"] {
+    expected.add(c)
+  }
+  assertEqual(Str.joinList(",", unionCases(r, "StoreCallErrorWire")), Str.joinList(",", expected), "the cases in order")
+  assertEqual(
+    Str.joinList(",", unionCases(r, "StoreTouchCallErrorWire")),
+    Str.joinList(",", expected),
+    "touch has another error type, so its own variant"
+  )
+  assertEqualInt(unionCases(r, "LogCallErrorWire").count, 10, "LogCallErrorWire")
+  val calls = implMethods(r, "Acme.Tools.__StoreCalls", "__StoreComponentCalls")
+  assertTrue(calls.contains("load") and calls.contains("touch"), "the plugin implements __StoreCalls over the imports")
+}
+
+test "component: process mode is unchanged by the component path" {
+  val r = expandSecond(compApiSource(), compPluginSource())
+  expectClean(r, "process plugin")
+  assertTrue(hasRecord(r, "SummaryServer"), "SummaryServer")
+  expectFunc(r, "main", "main(): Int")
+  assertTrue(isNone(funcNamed(r, "pluginDescribe")), "no component exports in process mode")
+}
+
+// A package with declarations `decls`, a point with the one method `sig`, and
+// a plugin implementing it by returning `Err(error = errValue)`.
+func compPlugin(decls: in String, sig: in String, errValue: in String): String {
+  head() + decls + "\n" + "@plugin_point(version = \"1.0\")\npub interface Pt {\n  " + sig + "\n}\n\n" +
+    "@plugin(id = \"p.x\", version = \"1.0.0\", implements(Pt))\npub record X {\n}\n\n" +
+    "impl Pt for X {\n  " +
+    sig +
+    " {\n    Err(error = " +
+    errValue +
+    ")\n  }\n}\n"
+}
+
+func compBadSource(recordBody: in String, method: in String): String {
+  compPlugin("pub record R {\n" + recordBody + "}\n", Str.trim(method), "\"x\"")
+}
+
+test "K0013: a field whose name does not survive the WIT round trip" {
+  val src = compBadSource("  customer_id: Int\n", "  func f(r: in R): Result[Int, String]")
+  expectComponentDiag(src, "K0013", "customer_id", "snake-case field")
+  expectClean(expandOne(src), "process mode accepts the same field")
+}
+
+test "K0013: a method with an acronym" {
+  expectComponentDiag(
+    compBadSource("  n: Int\n", "  func getURL(r: in R): Result[Int, String]"),
+    "K0013",
+    "getURL",
+    "acronym method"
+  )
+}
+
+test "K0013: a parameter and a type case" {
+  expectComponentDiag(
+    compBadSource("  n: Int\n", "  func f(r_x: in R): Result[Int, String]"),
+    "K0013",
+    "r_x",
+    "parameter"
+  )
+  val src = compPlugin("pub enum E {\n  case HTTPError\n}\n", "func f(): Result[Int, E]", "E.HTTPError")
+  expectComponentDiag(src, "K0013", "HTTPError", "enum case")
+}
+
+test "K0013: an export that collides with a type in the exported interface" {
+  val src = compPlugin("pub record PtRun {\n  n: Int\n}\n", "func run(x: in PtRun): Result[Int, String]", "\"x\"")
+  expectComponentDiag(src, "K0013", "pt-run", "export and type share a WIT name")
+}
+
+test "K0014: types a component cannot carry" {
+  expectComponentDiag(compBadSource("  n: UInt\n", "  func f(r: in R): Result[Int, String]"), "K0014", "UInt", "UInt")
+  expectComponentDiag(compBadSource("  c: Char\n", "  func f(r: in R): Result[Int, String]"), "K0014", "Char", "Char")
+  expectComponentDiag(
+    compBadSource("  n: Int\n", "  func f(b: in slice[Byte]): Result[Int, String]"),
+    "K0014",
+    "slice[Byte]",
+    "slice"
+  )
+  expectComponentDiag(
+    compBadSource("  n: Int\n", "  func f(j: in JsonValue): Result[Int, String]"),
+    "K0014",
+    "JsonValue",
+    "JsonValue"
+  )
+  val multi = compPlugin(
+    "pub union U {\n  case Two(a: Int, b: Int)\n}\n",
+    "func f(u: in U): Result[Int, String]",
+    "\"x\""
+  )
+  expectComponentDiag(multi, "K0014", "several fields", "a multi-field case")
+  val recursive = compPlugin(
+    "pub record Tree {\n  kids: List[Tree]\n}\n",
+    "func f(t: in Tree): Result[Int, String]",
+    "\"x\""
+  )
+  expectComponentDiag(recursive, "K0014", "recursive", "a recursive record")
+}
+
+test "K0014: a protocol point cannot be a component" {
+  val src = head() + "@protocol_point(protocol = \"lsp/3.17\")\npub interface Ls {}\n\n" +
+    "@plugin(id = \"p.x\", version = \"1.0.0\", implements(Ls))\npub record X {\n}\n\n" +
+    "impl Ls for X {\n}\n"
+  expectComponentDiag(src, "K0014", "protocol point", "protocol point")
 }

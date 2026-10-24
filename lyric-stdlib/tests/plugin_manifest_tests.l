@@ -362,66 +362,87 @@ test "payload selection order" {
   assertEqual(describePayload(selectPluginPayload(none, linuxDotnet(), true, true, false)), "none", "no payloads")
 }
 
-test "payload selection with an in-process component runtime" {
-  val withComponent: List[PluginPayload] = [
-    WasmPayload(wasmModule = "p.wasm"),
-    ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec", "p.dll"]),
-    ComponentPayload(component = "p.component.wasm")
-  ]
+test "payload selection with a component payload (docs/69 section 9.3)" {
+  val all = parseGood().payloads
+  all.add(ComponentPayload(component = "component/p.wasm"))
   assertEqual(
-    describePayload(selectPluginPayload(withComponent, linuxDotnet(), true, true, true)),
+    describePayload(selectPluginPayload(all, linuxDotnet(), true, true, true)),
     "component",
-    "a component comes first when the host can run it in-process"
+    "in-process wasm and wasm preferred: the component before the wasm command"
   )
   assertEqual(
-    describePayload(selectPluginPayload(withComponent, linuxDotnet(), false, false, true)),
-    "component",
-    "even when wasm is not preferred"
-  )
-  assertEqual(
-    describePayload(selectPluginPayload(withComponent, linuxDotnet(), true, true, false)),
+    describePayload(selectPluginPayload(all, linuxDotnet(), true, true, false)),
     "wasm",
-    "without a component runtime the component is skipped"
+    "no in-process wasm: the component is skipped"
+  )
+  assertEqual(
+    describePayload(selectPluginPayload(all, linuxDotnet(), false, true, true)),
+    "native-linux-x86_64",
+    "wasm not preferred: native before the component"
   )
   val componentOnly: List[PluginPayload] = [ComponentPayload(component = "p.wasm")]
   assertEqual(
+    describePayload(selectPluginPayload(componentOnly, linuxDotnet(), false, false, true)),
+    "component",
+    "a component as a last resort"
+  )
+  assertEqual(
     describePayload(selectPluginPayload(componentOnly, linuxDotnet(), true, true, false)),
     "none",
-    "a component alone needs the runtime"
+    "component only, no in-process wasm"
+  )
+  val both: List[PluginPayload] = [WasmPayload(wasmModule = "w.wasm"), ComponentPayload(component = "c.wasm")]
+  assertEqual(
+    describePayload(selectPluginPayload(both, linuxDotnet(), false, true, true)),
+    "component",
+    "last resort: the component before the wasm command"
   )
 }
 
-test "component payloads parse, serialise and refuse to launch as a command" {
+test "parse: a component payload, its checks and its round trip" {
   val text = variant(
     "{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}",
-    "{\"mode\":\"component\",\"component\":\"plugin.component.wasm\"}"
+    "{\"mode\":\"component\",\"component\":\"component/plugin.wasm\"}"
   )
   match parsePluginManifest(text) {
+    case Err(issue) -> assertTrue(false, "component payload: " + pluginLoadIssueMessage(issue))
     case Ok(m) -> {
       match m.payloads[0] {
-        case ComponentPayload(file) -> assertEqual(file, "plugin.component.wasm", "component file")
+        case ComponentPayload(file) -> assertEqual(file, "component/plugin.wasm", "component file")
         case _ -> assertTrue(false, "payload 0 is a component")
       }
       val again = writeValue(pluginManifestToJson(m))
-      assertTrue(again.contains("\"mode\":\"component\""), "serialised mode")
-      assertTrue(again.contains("\"component\":\"plugin.component.wasm\""), "serialised file")
-      match pluginLaunchCommand(m.payloads[0], "/plugins/p", None, 1024i64) {
-        case Ok(_) -> assertTrue(false, "a component has no command")
-        case Err(e) -> assertTrue(e.contains("in the host's process"), "the refusal says why")
+      assertTrue(again.contains("{\"mode\":\"component\",\"component\":\"component/plugin.wasm\"}"), again)
+      match parsePluginManifest(again) {
+        case Ok(m2) -> assertEqualInt(m2.payloads.count, m.payloads.count, "round trip keeps the payloads")
+        case Err(issue) -> assertTrue(false, "round trip: " + pluginLoadIssueMessage(issue))
       }
     }
-    case Err(issue) -> assertTrue(false, "component manifest rejected: " + issue.message)
   }
   expectInvalid(
-    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"../x.wasm\"}"),
-    "component",
-    "a component path must stay inside the plugin"
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"p.so\"}"),
+    "must be a .wasm file",
+    "component not .wasm"
   )
   expectInvalid(
-    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"x.bin\"}"),
-    "must be a .wasm file",
-    "a component is a .wasm file"
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\",\"component\":\"../p.wasm\"}"),
+    "inside the plugin directory",
+    "component outside the directory"
   )
+  expectInvalid(
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"component\"}"),
+    "component",
+    "component without a file"
+  )
+  expectInvalid(
+    variant("{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}", "{\"mode\":\"jit\"}"),
+    "\"component\"",
+    "unknown mode lists component"
+  )
+  match pluginLaunchCommand(ComponentPayload(component = "p.wasm"), "/plugins/p", Some(value = "/opt/wasmtime"), 1024i64) {
+    case Ok(_) -> assertTrue(false, "a component payload has no command line")
+    case Err(e) -> assertTrue(e.contains("in the host's process"), e)
+  }
 }
 
 test "WIT names round-trip as the component shape writes them" {

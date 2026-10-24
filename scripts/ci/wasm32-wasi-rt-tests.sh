@@ -107,6 +107,14 @@ LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_wasm_npm_projec
 WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bin/node" WAC="$wac" \
   JCO="$jco_dir/node_modules/.bin/jco" LYRIC_JCO_NODE_MODULES="$jco_dir/node_modules" \
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_component_self_test.l
+# A plugin built as a component: its WIT against the docs/69 §9.3 contract, run
+# under wasmtime and through jco with a JavaScript host serving its capabilities.
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bin/node" \
+  JCO="$jco_dir/node_modules/.bin/jco" LYRIC_JCO_NODE_MODULES="$jco_dir/node_modules" \
+  LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_plugin_component_self_test.l
+# `lyric plugin pack --targets component` and `lyric plugin check` on the result.
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" LYRIC_WASMTIME="$wasmtime_dir/wasmtime" \
+  bash scripts/ci/plugin-component-pack-e2e.sh "$lyric_bin"
 # A plugin built as a wasm32-wasi module and run under wasmtime by a dotnet host (D207 Decision 6).
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-e2e.sh "$lyric_bin" dotnet wasm
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet wasm
