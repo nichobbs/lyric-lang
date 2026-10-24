@@ -1,6 +1,6 @@
 //! std/_kernel_jvm/plugin_trusted_host.l - JVM twin of
 //! `_kernel/plugin_trusted_host.l`: loading a trusted plugin's jar into the
-//! host's process (docs/69 §10, D229).
+//! host's process (docs/69 §10, D230).
 //!
 //! The jar gets its own `URLClassLoader` whose parent is the loader of the
 //! host's stdlib.  Class loading delegates to the parent first, so every

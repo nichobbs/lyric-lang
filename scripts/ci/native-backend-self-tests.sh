@@ -191,7 +191,7 @@ bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native native
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native dotnet
 bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet native
-# D229: a native host loading a trusted plugin's `--shape plugin` library into
+# D230: a native host loading a trusted plugin's `--shape plugin` library into
 # its own process (docs/69 §10).
 bash scripts/ci/plugin-trusted-e2e.sh "$lyric_bin" native
 # Std.Parse is a plain program, not a test module.

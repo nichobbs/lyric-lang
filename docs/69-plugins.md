@@ -10,7 +10,7 @@ plugins on every target including wasm32-wasi under `wasmtime run`,
 `lyric plugin pack`/`check`/`sdk` with C#, Java and TypeScript SDKs, and source
 generators (docs/40) as the first plugin point. Protocol points ship as a
 launch-and-hand-over API; phases P4 (the rest) to P6 are open, except for
-trusted (in-process) mode, P6's second half, which shipped in D229 (§10). Extends docs/01
+trusted (in-process) mode, P6's second half, which shipped in D230 (§10). Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -544,7 +544,7 @@ generates its `PluginServer` and `main`.
 
 ## 10. Trusted mode
 
-_Shipped in D229 (phase P6, the trusted half). Resolves Q-PLG-009: nothing
+_Shipped in D230 (phase P6, the trusted half). Resolves Q-PLG-009: nothing
 is unloaded in this mode._
 
 For first-party plugins where the cost of a boundary matters, a host can load
@@ -597,7 +597,7 @@ to be one type on both sides, which a .NET plugin assembly cannot give (it
 carries its own copy) and which would break §11's minor-version rule on the
 JVM; and it would need a second copy of every guard and revocation check. The
 JSON value objects cross directly, with no text, so the remaining cost is
-encoding and decoding them: D229 records the measured cost of a call in
+encoding and decoding them: D230 records the measured cost of a call in
 process and over a pipe.
 
 ### 10.3 Artifacts
@@ -890,7 +890,7 @@ What changed relative to the pre-D207 docs/40:
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001) | Open |
-| P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D229) | Done |
+| P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D230) | Done |
 | P6 | `lyric-ui` widget point (docs/65) | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
@@ -952,7 +952,7 @@ Whether such points should be required to be wasm-only, batched by design, or
 marked so the host can refuse process-mode payloads for them. Unknown until a
 real point needs it.
 
-**Q-PLG-009: unloading in trusted mode.** _Resolved in D229: trusted mode never
+**Q-PLG-009: unloading in trusted mode.** _Resolved in D230: trusted mode never
 unloads (§10.7); a plugin that must be replaced while the host runs belongs in
 process or wasm mode._
 Collectible load contexts on .NET

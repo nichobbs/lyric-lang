@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # plugin-trusted-e2e.sh — run lyric-stdlib/tests/plugin_trusted_e2e_tests.l:
-# a host loading a trusted plugin into its own process (docs/69 §10, D229).
+# a host loading a trusted plugin into its own process (docs/69 §10, D230).
 #
 # Usage: plugin-trusted-e2e.sh <lyric-binary> <target>
 #

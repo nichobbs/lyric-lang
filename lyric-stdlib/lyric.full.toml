@@ -173,7 +173,7 @@ output_assembly = "Lyric.Stdlib.dll"
 # neither line may be `seed: current`.
 "Std.PluginHost" = "std/_kernel/plugin_host.l"
 "Std.Plugin"     = "std/plugin.l"
-# Trusted (in-process) plugin loading (docs/69 §10, D229).  The compiler does
+# Trusted (in-process) plugin loading (docs/69 §10, D230).  The compiler does
 # not load plugins in process, and the kernel uses `externAsObject` (D212),
 # which postdates the seed.
 "Std.PluginTrustedHost" = "std/_kernel/plugin_trusted_host.l"  # seed: current

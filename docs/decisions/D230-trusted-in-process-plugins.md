@@ -1,4 +1,4 @@
-# D229 - Trusted (in-process) plugins (docs/69 §10, P6): the call path, trusted payloads, the policy flag, entry points, native libraries and the failure model
+# D230 - Trusted (in-process) plugins (docs/69 §10, P6): the call path, trusted payloads, the policy flag, entry points, native libraries and the failure model
 
 **Status:** shipped. Extends D207 and D228; implements docs/69 §10 and
 resolves Q-PLG-009. Tracking issue #8483.

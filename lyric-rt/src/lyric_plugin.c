@@ -1,4 +1,4 @@
-/* lyric_plugin.c — loading trusted in-process plugins (docs/69 §10, D229).
+/* lyric_plugin.c — loading trusted in-process plugins (docs/69 §10, D230).
  *
  * Std.PluginTrustedHost's native kernel opens a plugin shared library built
  * with `--shape plugin`, checks its `lyric_plugin_abi_v1` fingerprint and

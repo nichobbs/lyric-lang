@@ -2876,7 +2876,7 @@ func linkAndEmitNative(
   true
 }
 
-// ── Trusted plugins (docs/69 §10, D229) ──────────────────────────────────────
+// ── Trusted plugins (docs/69 §10, D230) ──────────────────────────────────────
 // The C symbols of the in-process plugin ABI, version 1.
 val pluginEntrySymbol: String = "lyric_plugin_entry_v1"
 
