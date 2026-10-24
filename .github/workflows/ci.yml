@@ -6980,9 +6980,6 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
 
-      # lyric-game's pure core and Breakout's rules build on every target
-      # (D201); the native job runs them on dotnet only when native code
-      # changes, so both managed targets run here on every change (#8516).
       - name: Set up Java 22 (game)
         if: matrix.id == 'game'
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
@@ -6991,12 +6988,7 @@ jobs:
           java-version: '22'
       - name: Run tests (game, dotnet and jvm)
         if: matrix.id == 'game'
-        run: |
-          set -euo pipefail
-          for target in dotnet jvm; do
-            "$LYRIC_CLI_PATH" test --target "$target" --manifest lyric-game/lyric.toml
-            "$LYRIC_CLI_PATH" test --target "$target" --manifest lyric-game/examples/breakout/logic/lyric.toml
-          done
+        run: bash scripts/ci/game-managed-tests.sh
 
   # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
   # was the longest step, ~3 min, run after everything else) so it runs on
