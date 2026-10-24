@@ -454,6 +454,40 @@ func testFilterSkipsNonMatching(): Unit {
   }
 }
 
+// #7540: 0-based line number of the first occurrence of `needle`.
+func lineOf(text: in String, needle: in String): Int {
+  val at = Str.indexOfRaw(text, needle)
+  Str.split(text.substring(0, at), "\n").length - 1
+}
+
+func lineDriftSource(): String {
+  "@test_module\npackage P\n\nimport Std.Testing\n\ntest \"a\" { assertTrue(true, \"x\") }\n" +
+    "test \"b\" {\n  assertTrue(true, \"y\")\n}\n\n@cfg(feature = \"exp\")\ntest \"c\" { assertTrue(true, \"z\") }\n\nfunc marker(): Int { 1 }\n"
+}
+
+func testRewritePreservesLineNumbers(): Unit {
+  val src = lineDriftSource()
+  match synthesize(src, None) {
+    case Synthesised(rewritten, _, _) -> assertEqualInt(
+      lineOf(rewritten, "func marker"),
+      lineOf(src, "func marker"),
+      "later declarations keep their source line"
+    )
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+func testListEntriesHonoursCfg(): Unit {
+  match listEntriesFor(annotatedCfgTestSource(), emptyFeatureList(), emptyFeatureList()) {
+    case Ok(xs) -> assertEqualInt(xs.count, 1, "gated test left out when feature inactive")
+    case Err(_) -> panic("listEntriesFor unexpectedly errored")
+  }
+  match listEntriesFor(annotatedCfgTestSource(), singletonFeatureList("exp"), emptyFeatureList()) {
+    case Ok(xs) -> assertEqualInt(xs.count, 2, "gated test listed when feature active")
+    case Err(_) -> panic("listEntriesFor unexpectedly errored")
+  }
+}
+
 func testListEntriesEnumerates(): Unit {
   match listEntries(propertySource()) {
     case Ok(xs) -> {
@@ -588,4 +622,12 @@ test "gated property driver is absent with --properties unless active (#7481)" {
 
 test "listEntries enumerates entries" {
   testListEntriesEnumerates()
+}
+
+test "rewrite preserves line numbers across earlier tests (#7540)" {
+  testRewritePreservesLineNumbers()
+}
+
+test "listEntriesFor honours @cfg (#7540)" {
+  testListEntriesHonoursCfg()
 }
