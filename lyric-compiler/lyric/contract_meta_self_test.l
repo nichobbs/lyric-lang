@@ -847,6 +847,10 @@ func testBuildCarriesPrivatePlainHelpers(): Unit {
     "func namesType(n: in Int): Int { val s: Secret = n; s }\n" +
     "func checked(n: in Int): Int\n  requires: n > 0\n{ n }\n" +
     "func unused(n: in Int): Int { n }\n" +
+    "func withDefault(n: in Int, k: in Int = 2): Int { n * k }\n" +
+    "@deprecated\nfunc annotated(n: in Int): Int { n }\n" +
+    "pub func viaDefault[S](x: in S, f: in (S) -> Int): Int { withDefault(f(x)) }\n" +
+    "pub func viaAnnotated[S](x: in S, f: in (S) -> Int): Int { annotated(f(x)) }\n" +
     "func twin(n: in Int): Int { n }\n" +
     "func twin(n: in Int, m: in Int): Int { n + m }\n" +
     "pub func viaScale[S](x: in S, f: in (S) -> Int): Int { bump(f(x)) }\n" +
@@ -879,13 +883,13 @@ func testBuildCarriesPrivatePlainHelpers(): Unit {
     match findDeclByKind(c.decls, "func", "__priv_Plain_Lib_scale") { case Some(_) -> true; case None -> false },
     "plain: the helper reached through another helper is carried"
   )
-  for gone in ["readsState", "namesType", "checked", "unused", "twin"] {
+  for gone in ["readsState", "namesType", "checked", "unused", "twin", "withDefault", "annotated"] {
     assertTrue(
       match findDeclByKind(c.decls, "func", "__priv_Plain_Lib_" + gone) { case Some(_) -> false; case None -> true },
       "plain: " + gone + " is not carried"
     )
   }
-  for kept in ["viaState", "viaType", "viaChecked", "viaTwin"] {
+  for kept in ["viaState", "viaType", "viaChecked", "viaTwin", "viaDefault", "viaAnnotated"] {
     val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", kept), "plain: pub " + kept + " missing")
     match d.body {
       case None -> panic("plain: " + kept + " has no body")

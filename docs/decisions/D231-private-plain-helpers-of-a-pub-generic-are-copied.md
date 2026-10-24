@@ -63,6 +63,12 @@ answers have different costs:
 
 ## Limits
 
+- Shadowing is scope-insensitive: a name bound anywhere in a body (parameter, `val`, pattern, lambda parameter)
+  suppresses the rename and the reach for that name in the whole body. A helper that a generic also calls where no
+  such binding is in scope is therefore not copied, and the call is T0123 (conservative, never a wrong binding).
+- A copied helper's reference to a `pub` sibling of its package resolves in the consuming package as the `pub`
+  generic's own references do, so only if the consumer imports the library unaliased and wholesale.
+
 - The test sees the whole package: a package that spans several files is merged into one unit before any backend
   runs (`Lyric.PackageMerge`, docs/19), so a private value or type declared in a sibling file is seen too.
 - A copied helper that calls a helper which is not copied (a stateful one) is reported as T0123 naming the inner
