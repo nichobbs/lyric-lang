@@ -18,12 +18,12 @@
 //! shapes inspected via `javap` against the downloaded artifacts).
 //!
 //! initFromAnnotations():
-//!   NOT_IMPLEMENTED. Scanning compiled JVM class metadata for
-//!   @secretsManager/@parameterStore annotations at runtime has no
-//!   supporting compiler capability anywhere in this codebase (confirmed
-//!   by a repo-wide grep as part of issue #5411's investigation — tracked
-//!   in issue #6866). Returns a typed error rather than silently
-//!   reporting success.
+//!   Delegates to `AwsSecrets.registerAnnotated`: the compiler-embedded
+//!   annotation metadata (Std.AnnotationMeta, #6866/#7180) names every
+//!   @secretsManager/@parameterStore config field, each value is fetched
+//!   through this kernel's fetchSecret/fetchParameter and registered with
+//!   Std.ConfigOverride, which the config-block `<clinit>` reads before the
+//!   environment (D230, #7181).
 //!
 //! fetchSecret(name, key, ttlSeconds):
 //!   Calls SecretsManagerClient.getSecretValue().  If key is Some, parses
@@ -251,19 +251,15 @@ pub func classifyParameterError(path: in String, message: in String): AwsSecrets
 // =====================================================================
 // Public entry points.
 // =====================================================================
-/// NOT_IMPLEMENTED: scanning compiled JVM class metadata for
-/// @secretsManager/@parameterStore annotations at runtime has no
-/// supporting compiler capability today. See the file header.
+/// Fetch every @secretsManager / @parameterStore config-block field and
+/// register its value with Std.ConfigOverride (D230).  The scanning and
+/// registration are target-independent and live in `AwsSecrets.registerAnnotated`,
+/// which calls back into this kernel's `fetchSecret` / `fetchParameter`.
 @stable(since = "0.1")
 pub func initFromAnnotations(ttlSeconds: in Int): Result[Unit, AwsSecrets.SecretsError]
   requires: ttlSeconds >= 0
 {
-  return Err(
-    error = NotImplemented(
-      feature = "initFromAnnotations",
-      message = "config-block annotation scanning (@secretsManager/@parameterStore) is not implemented on the jvm feature: the compiler has no runtime metadata-reading capability for custom annotations (issue #6866). Use getSecret/getSecretField/getParameter/getParameterRaw directly, or set the field's env var override for local development."
-    )
-  )
+  AwsSecrets.registerAnnotated(ttlSeconds)
 }
 
 // Pure — no network/client dependency, so it's directly unit-testable

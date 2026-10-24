@@ -297,6 +297,31 @@ The trade-off is simplicity. The verifier and the LSP can both treat
 `Settings.port` as an opaque static value of type `Int`, with no
 control-flow analysis needed.
 
+### 6.0 The override store (D230)
+
+A field's initialiser reads, in this order: the **override store**
+(`Std.ConfigOverride`), `Std.Environment.setVar` and the real environment, then
+the declared default (or, for a required field, the exit-78 abort). The store is
+keyed by the same `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>` name (§5), and exists so
+a value known only at run time -- a secret fetched at startup -- can reach a
+block without being written to the process environment, where every child
+process would inherit it.
+
+- .NET: `AppDomain.CurrentDomain.GetData(name)` in the block's `.cctor`.
+- JVM: `System.getProperty(name)` in the block's `<clinit>`.
+- An empty value is no override (the same rule as an empty environment value,
+  #6204); `clearConfigOverride` registers the empty string.
+- A block is initialised **once, on its first access**, and reads the store
+  then. Register before that access (normally at the start of `main`); a value
+  registered afterwards is not seen by that block.
+- `--target native` has no `config { }` lowering (`N0025`, #7435), so
+  `Std.ConfigOverride` reports `Unsupported` there.
+
+`Std.AnnotationMeta` records each annotated field's store key in
+`AnnotatedField.envVar`, so a library that reads a custom annotation
+(`lyric-aws-secrets`' `@secretsManager` / `@parameterStore`) registers under
+it instead of re-deriving the naming rule.
+
 ### 6.1 Initialiser ordering
 
 Multiple `config` blocks in the same process initialise in the order

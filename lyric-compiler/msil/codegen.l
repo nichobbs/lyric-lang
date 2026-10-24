@@ -849,6 +849,10 @@ pub record CodegenCtx {
   tokCfgInt64Parse: Int     // Int64.Parse(string): int64  (static)
   tokCfgDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
   tokCfgSingleParse: Int    // Single.Parse(string, IFormatProvider): float32  (static, D155)
+  // Config-override seam (D230): the initialiser reads
+  // `AppDomain.CurrentDomain.GetData(envVarName)` before the environment.
+  tokCfgCurrentDomain: Int  // AppDomain.get_CurrentDomain(): AppDomain  (static)
+  tokCfgGetData: Int        // AppDomain.GetData(string): object  (instance)
   // Async SM synthesis (Phase B, Epic #2070).
   // TypeRef rows for System.Runtime.CompilerServices types.
   trAtmb: Int  // AsyncTaskMethodBuilder (void variant, row)
@@ -2298,6 +2302,30 @@ pub func newCodegenCtx(
   bufU1(wlULongSigW, 0x0B)
   val tokWLULong = 0x0A000000 + ctxAddMemberRef(lctx, trConsole, "WriteLine", "wl_ulong", bufToList(wlULongSigW))
 
+  // Appended after the table above for the same reason: no earlier row moves.
+  val trAppDomain = ctxAddTypeRef(lctx, "System", "AppDomain", lctx.arRuntime)
+  val tokCfgCurrentDomain = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trAppDomain,
+      "get_CurrentDomain",
+      "cfg_appdomain_current",
+      buildStaticMethodSig(
+        newList(),
+        MClassRef(typeRefCode = tdrTypeRef(trAppDomain), clrFqn = "System.AppDomain")
+      )
+    )
+  val cfgGetDataPs: List[MsilType] = newList()
+  cfgGetDataPs.add(MString)
+  val tokCfgGetData = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trAppDomain,
+      "GetData",
+      "cfg_appdomain_getdata",
+      buildInstanceMethodSig(cfgGetDataPs, MObject)
+    )
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks: Map[String, Int] = newMap()
   val funcToks: Map[String, Int] = newMap()
@@ -2559,7 +2587,9 @@ pub func newCodegenCtx(
     tokCfgBoolParse = tokCfgBoolParse,
     tokCfgInt64Parse = tokCfgInt64Parse,
     tokCfgDoubleParse = tokCfgDoubleParse,
-    tokCfgSingleParse = tokCfgSingleParse
+    tokCfgSingleParse = tokCfgSingleParse,
+    tokCfgCurrentDomain = tokCfgCurrentDomain,
+    tokCfgGetData = tokCfgGetData
   )
   // Seed `ffiTypeRefs`' cache with the `ValueTask`1` TypeRef already
   // registered above (`trValueTask1`) so every `internFfiTypeRef` caller —
@@ -46828,6 +46858,9 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
                 tokInt64Parse = cctx.tokCfgInt64Parse,
                 tokDoubleParse = cctx.tokCfgDoubleParse,
                 tokSingleParse = cctx.tokCfgSingleParse,
+                tokCurrentDomain = cctx.tokCfgCurrentDomain,
+                tokGetData = cctx.tokCfgGetData,
+                stringTypeTok = 0x01000000 + cctx.trString,
                 tokInvariantCulture = cctx.tokInvariantCulture,
                 catchExceptionTok = 0x01000000 + cctx.trException,
                 tokObjectEquals = cctx.tokObjectStaticEquals,

@@ -13,11 +13,12 @@
 # Config-block integration (primary usage):
 #   Apply @secretsManager or @parameterStore to @sensitive fields in any
 #   config block.  Call AwsSecrets.init() once before Lambda.serve() or
-#   Web.start() to fetch all annotated values.  The fetched value is stored
-#   in the process-level config cache under the same key as the env var
-#   (LYRIC_CONFIG_<PACKAGE>_<FIELD>) so the existing config-block access
-#   mechanism works unchanged.  An env var override always takes precedence,
-#   enabling local development without AWS credentials.
+#   Web.start() to fetch all annotated values, before the first read of any
+#   annotated block.  Each fetched value is registered with Std.ConfigOverride
+#   under the field's LYRIC_CONFIG_<PACKAGE>_<BLOCK>_<FIELD> name, which the
+#   block's one-time initialiser reads before the environment (D230).  An env
+#   var override always takes precedence, enabling local development without
+#   AWS credentials.
 #
 #   Example:
 #     import AwsSecrets

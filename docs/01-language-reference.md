@@ -3643,6 +3643,17 @@ range. A module-scope block's env value outside the range, including `NaN`,
 stops startup with exit code 78 (`G0004`) on dotnet and the JVM
 (`docs/25-config-blocks.md` §3, D-progress-995, #7229).
 
+A `config { }` block is initialised once, on its first access. Its initialiser
+reads, per field, the config-override store (`Std.ConfigOverride`:
+`AppDomain.GetData` on dotnet, `System.getProperty` on the JVM, keyed by
+`LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>`) before the environment and before the
+default, so a value registered with `setConfigOverride` ahead of the block's
+first access reaches the field without entering the process environment; an
+empty override is no override, and a value registered after the first access is
+not seen (`docs/25-config-blocks.md` §6.0, D230, #7181). `--target native`
+rejects `config { }` blocks (`N0025`, #7435), so `Std.ConfigOverride` reports
+`Unsupported` there.
+
 ---
 
 ## 15. Plugins

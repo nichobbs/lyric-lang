@@ -180,3 +180,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # (Tier 9), which precedes it.
 "Std.AnnotationMetaHost" = "std/_kernel/annotation_meta_host.l"
 "Std.AnnotationMeta"     = "std/annotation_meta.l"
+
+# Tier 14 - the config-override seam (D230): the per-target store the
+# `config { }` initialisers consult, and `Std.ConfigOverride`.  Appended last
+# for the same reason as Tier 8; it imports only `Std.Core`.
+"Std.ConfigOverrideHost" = "std/_kernel/config_override_host.l"
+"Std.ConfigOverride"     = "std/config_override.l"

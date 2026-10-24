@@ -24,6 +24,7 @@ package Lyric.AnnotationMetaEmit
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Std.Json
 import Lyric.Parser
 
@@ -43,9 +44,11 @@ pub record AnnotatedArg {
 }
 
 pub record AnnotatedField {
+  packageName: String
   configName: String
   fieldName: String
   annotationName: String
+  envVar: String
   args: List[AnnotatedArg]
 }
 
@@ -110,16 +113,41 @@ func collectArgs(anns: in Annotation): List[AnnotatedArg] {
   acc
 }
 
-func collectFieldAnnotations(configName: in String, field: in ConfigField): List[AnnotatedField] {
+/// The environment variable a `config { }` field reads at initialisation
+/// (D046, docs/25 section 3): `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>`, dots in the
+/// package name becoming underscores, everything upper-cased.  This is the same
+/// name the MSIL and JVM config initialisers derive; it doubles as the key of
+/// the config-override seam (D230), so the runtime reader takes it from this
+/// document instead of re-deriving it.
+pub func configEnvVarName(packageName: in String, blockName: in String, fieldName: in String): String {
+  "LYRIC_CONFIG_" + packageName.replace(".", "_").toUpper() + "_" + blockName.toUpper() + "_" + fieldName.toUpper()
+}
+
+func joinPackageName(file: in SourceFile): String {
+  var s = ""
+  var i = 0
+  while i < file.packageDecl.path.segments.count {
+    if i > 0 {
+      s = s + "."
+    }
+    s = s + file.packageDecl.path.segments[i]
+    i = i + 1
+  }
+  s
+}
+
+func collectFieldAnnotations(packageName: in String, configName: in String, field: in ConfigField): List[AnnotatedField] {
   val acc: List[AnnotatedField] = newList()
   var i = 0
   while i < field.annotations.count {
     val a = field.annotations[i]
     acc.add(
       AnnotatedField(
+        packageName = packageName,
         configName = configName,
         fieldName = field.name,
         annotationName = dottedAnnotationName(a),
+        envVar = configEnvVarName(packageName, configName, field.name),
         args = collectArgs(a)
       )
     )
@@ -135,13 +163,14 @@ func collectFieldAnnotations(configName: in String, field: in ConfigField): List
 /// never has to distinguish "no resource" from "no annotated fields".
 pub func collectAnnotatedFields(file: in SourceFile): List[AnnotatedField] {
   val acc: List[AnnotatedField] = newList()
+  val packageName = joinPackageName(file)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IConfig(decl) -> {
         var fi = 0
         while fi < decl.fields.count {
-          val found = collectFieldAnnotations(decl.name, decl.fields[fi])
+          val found = collectFieldAnnotations(packageName, decl.name, decl.fields[fi])
           var fj = 0
           while fj < found.count {
             acc.add(found[fj])
@@ -230,15 +259,17 @@ func emitArgs(args: in List[AnnotatedArg]): String {
 
 func emitField(f: in AnnotatedField): String {
   val fields: List[JsonField] = newList()
+  fields.add(JsonField(key = "package", value = jsonString(f.packageName)))
   fields.add(JsonField(key = "config", value = jsonString(f.configName)))
   fields.add(JsonField(key = "field", value = jsonString(f.fieldName)))
   fields.add(JsonField(key = "annotation", value = jsonString(f.annotationName)))
+  fields.add(JsonField(key = "envVar", value = jsonString(f.envVar)))
   fields.add(JsonField(key = "args", value = emitArgs(f.args)))
   jsonObject(fields)
 }
 
 /// Serialize `fields` to the `Lyric.AnnotationMeta` JSON payload: a bare
-/// JSON array of `{config, field, annotation, args: [{name, kind, value}]}`
+/// JSON array of `{package, config, field, annotation, envVar, args: [{name, kind, value}]}`
 /// objects, in the order `collectAnnotatedFields` returned them.
 pub func emitAnnotationMetaJson(fields: in List[AnnotatedField]): String {
   val items: List[String] = newList()
