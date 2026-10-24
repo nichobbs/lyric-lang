@@ -21,10 +21,12 @@ import Lyric.PluginSdk as Sdk
 // ─────────────────────────────────────────────────────────────────────────────
 func pluginUsageText(): String {
   "Usage: lyric plugin <command> [args]\n" + "\n" +
-    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]\n" +
+    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]\n" +
     "                     (build the plugin project for each target (default: dotnet), read its manifest\n" +
     "                      with --lyric-plugin-manifest, and write <dir>/<id>-<version>/plugin.json and\n" +
-    "                      the payloads; <dir> defaults to bin/plugin beside the manifest)\n" +
+    "                      the payloads; <dir> defaults to bin/plugin beside the manifest; --trusted also\n" +
+    "                      lists trusted payloads a host may load into its own process: the dotnet and\n" +
+    "                      jvm payloads themselves, and a native --shape plugin library)\n" +
     "  lyric plugin check <dir>\n" +
     "                     (validate a plugin artifact directory; prints each problem and exits 1)\n" +
     "  lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>\n" +
@@ -292,6 +294,12 @@ func missingToolchain(target: in String, wasmtime: in String): String {
   ""
 }
 
+/// The trusted native library of a `--trusted` pack: `native/lib<stem>.so`
+/// (`.dylib` for macOS).
+func packTrustedLibraryFile(stem: in String, os: in String): String {
+  "native/lib" + stem + Pm.trustedLibrarySuffix(os)
+}
+
 func packPayloadFile(target: in String, stem: in String): String {
   if target == "dotnet" {
     "dotnet/" + stem + ".dll"
@@ -304,7 +312,7 @@ func packPayloadFile(target: in String, stem: in String): String {
   }
 }
 
-func packBuild(mfPath: in String, target: in String, outPath: in String): Int {
+func packBuild(mfPath: in String, target: in String, outPath: in String, shape: in String = ""): Int {
   val args: List[String] = newList()
   args.add("build")
   args.add("--manifest")
@@ -320,6 +328,10 @@ func packBuild(mfPath: in String, target: in String, outPath: in String): Int {
   if target == "wasm" {
     args.add("--triple")
     args.add("wasm32-wasi")
+  }
+  if shape.length > 0 {
+    args.add("--shape")
+    args.add(shape)
   }
   args.add("-o")
   args.add(outPath)
@@ -449,10 +461,14 @@ func cmdPluginPack(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var targetsRaw = "dotnet"
   var outArg = ""
+  var trusted = false
   var i = 2
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--manifest" or arg == "--targets" or arg == "-o" or arg == "--out" {
+    if arg == "--trusted" {
+      trusted = true
+      i += 1
+    } else if arg == "--manifest" or arg == "--targets" or arg == "-o" or arg == "--out" {
       if i + 1 >= argv.length {
         printErr("plugin pack: " + arg + " requires a value")
         return 1
@@ -468,7 +484,9 @@ func cmdPluginPack(argv: in slice[String]): Int {
       i += 2
     } else {
       printErr("plugin pack: unexpected argument " + arg)
-      printErr("usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]")
+      printErr(
+        "usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [--trusted] [-o <dir>]"
+      )
       return 1
     }
   }
@@ -478,6 +496,10 @@ func cmdPluginPack(argv: in slice[String]): Int {
       printErr("plugin pack: " + msg)
       return 1
     }
+  }
+  if trusted and not (listContains(targets, "dotnet") or listContains(targets, "jvm") or listContains(targets, "native")) {
+    printErr("plugin pack: --trusted needs a dotnet, jvm or native target; a wasm payload has no trusted form")
+    return 1
   }
   val mfPath = match discoverManifest(manifestArg) {
     case Some(p) -> p
@@ -542,6 +564,13 @@ func cmdPluginPack(argv: in slice[String]): Int {
         return 1
       }
     }
+    if trusted and not (nativeOs == "linux" or nativeOs == "macos") {
+      printErr(
+        "plugin pack: a trusted native library is built for a Linux or macOS host, not " + nativeOs +
+          " (docs/69 section 10); drop --trusted or native"
+      )
+      return 1
+    }
   }
   val mfDir = Path.dirname(mfPath)
   val outDir = if outArg.length > 0 { outArg } else { Path.join(Path.join(mfDir, "bin"), "plugin") }
@@ -554,7 +583,7 @@ func cmdPluginPack(argv: in slice[String]): Int {
       return 1
     }
   }
-  val rc = packStaged(mfPath, proj.name, targets, outDir, staging, wasmtime, nativeOs, nativeArch)
+  val rc = packStaged(mfPath, proj.name, targets, outDir, staging, wasmtime, nativeOs, nativeArch, trusted)
   removeDirIfPresent(staging)
   rc
 }
@@ -568,12 +597,21 @@ func packStaged(
   wasmtime: in String,
   nativeOs: in String,
   nativeArch: in String,
+  trusted: in Bool,
 ): Int {
   for t in targets {
     Console.println("plugin pack: building the " + t + " payload")
     val built = packBuild(mfPath, t, Path.join(staging, packPayloadFile(t, stem)))
     if built != 0 {
       printErr("plugin pack: the " + t + " build failed (see the errors above)")
+      return 1
+    }
+  }
+  if trusted and listContains(targets, "native") {
+    Console.println("plugin pack: building the trusted native library")
+    val built = packBuild(mfPath, "native", Path.join(staging, packTrustedLibraryFile(stem, nativeOs)), "plugin")
+    if built != 0 {
+      printErr("plugin pack: the trusted native library build failed (see the errors above)")
       return 1
     }
   }
@@ -646,6 +684,17 @@ func packStaged(
       payloads.add(Pm.nativePayload(nativeOs, nativeArch, file))
     } else {
       payloads.add(Pm.wasmPayload(file))
+    }
+  }
+  if trusted {
+    // The managed trusted payloads are the process payloads' own files; the
+    // native one is the `--shape plugin` library built above.
+    for t in targets {
+      if t == "dotnet" or t == "jvm" {
+        payloads.add(Pm.trustedManagedPayload(t, packPayloadFile(t, stem)))
+      } else if t == "native" {
+        payloads.add(Pm.trustedNativePayload(nativeOs, nativeArch, packTrustedLibraryFile(stem, nativeOs)))
+      }
     }
   }
   val pluginJson = Pm.prettyJson(Pm.withPayloads(manifestText, payloads))

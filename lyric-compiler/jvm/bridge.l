@@ -2570,7 +2570,9 @@ pub func compileProjectToJarBundledWithRestored(
       case Some(f) -> f
       case None -> return false
     }
-    if not sawMain and fileHasTopLevelMain(uf) {
+    // A `@plugin` record's package gets its `main` from Lyric.PluginExpand,
+    // which runs after this scan.
+    if not sawMain and (fileHasTopLevelMain(uf) or PluginExpand.declaresPluginRecord(uf)) {
       mainIdx = psi
       sawMain = true
     }

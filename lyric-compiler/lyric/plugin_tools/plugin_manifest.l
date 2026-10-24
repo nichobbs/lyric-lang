@@ -418,8 +418,71 @@ func checkRuntimeCommand(
   checkPayloadFile(dir, cmd[2], indexPath(fieldPath(at, "command"), 2), acc)
 }
 
+/// The file suffix of a trusted library: `.dll` for dotnet, `.jar` for the
+/// JVM, and the operating system's shared-library suffix for a native one.
+pub func trustedLibrarySuffix(runtimeOrOs: in String): String {
+  if runtimeOrOs == "dotnet" or runtimeOrOs == "windows" {
+    ".dll"
+  } else if runtimeOrOs == "jvm" {
+    ".jar"
+  } else if runtimeOrOs == "macos" {
+    ".dylib"
+  } else {
+    ".so"
+  }
+}
+
+/// Checks a trusted payload (docs/69 §10): a `library` file, with a
+/// `runtime` (`dotnet`, `jvm`) or an `os` and `arch` (a native shared
+/// library).  Returns its kind key, "" when it is malformed.
+func checkTrustedPayload(
+  dir: in String, fields: in List[JsonField], at: in String, acc: in List[ManifestProblem]
+): String {
+  val library = match requireString(fields, at, "library", acc) { case Some(l) -> l; case None -> return "" }
+  if hasKey(fields, "command") or hasKey(fields, "module") {
+    problem(acc, at, "a trusted payload names a \"library\", not a \"command\" or \"module\"")
+    return ""
+  }
+  if hasKey(fields, "runtime") {
+    if hasKey(fields, "os") or hasKey(fields, "arch") {
+      problem(acc, at, "a payload names either a \"runtime\" or an \"os\" and \"arch\", not both")
+      return ""
+    }
+    val runtime = match requireString(fields, at, "runtime", acc) { case Some(r) -> r; case None -> return "" }
+    if runtime != "dotnet" and runtime != "jvm" {
+      problem(acc, fieldPath(at, "runtime"), "unknown runtime \"" + runtime + "\" (expected \"dotnet\" or \"jvm\")")
+      return ""
+    }
+    val ext = trustedLibrarySuffix(runtime)
+    if not Str.endsWith(library, ext) {
+      problem(acc, fieldPath(at, "library"), "expected a " + ext + " file, found \"" + library + "\"")
+      return ""
+    }
+    checkPayloadFile(dir, library, fieldPath(at, "library"), acc)
+    return "trusted " + runtime
+  }
+  val os = match requireString(fields, at, "os", acc) { case Some(o) -> o; case None -> return "" }
+  val arch = match requireString(fields, at, "arch", acc) { case Some(a) -> a; case None -> return "" }
+  if os != "linux" and os != "macos" and os != "windows" {
+    problem(acc, fieldPath(at, "os"), "unknown os \"" + os + "\" (expected \"linux\", \"macos\" or \"windows\")")
+    return ""
+  }
+  if arch != "x86_64" and arch != "aarch64" {
+    problem(acc, fieldPath(at, "arch"), "unknown arch \"" + arch + "\" (expected \"x86_64\" or \"aarch64\")")
+    return ""
+  }
+  val ext = trustedLibrarySuffix(os)
+  if not Str.endsWith(library, ext) {
+    problem(acc, fieldPath(at, "library"), "a " + os + " library is a " + ext + " file, found \"" + library + "\"")
+    return ""
+  }
+  checkPayloadFile(dir, library, fieldPath(at, "library"), acc)
+  "trusted native:" + os + "/" + arch
+}
+
 /// Checks one payload and returns the key that identifies its kind
-/// (`dotnet`, `jvm`, `native:<os>/<arch>` or `wasm`), "" when it is malformed.
+/// (`dotnet`, `jvm`, `native:<os>/<arch>`, `wasm`, `trusted dotnet`,
+/// `trusted jvm` or `trusted native:<os>/<arch>`), "" when it is malformed.
 func checkPayload(dir: in String, v: in JsonValue, at: in String, acc: in List[ManifestProblem]): String {
   val fields = match v {
     case JObject(fs) -> fs
@@ -442,8 +505,15 @@ func checkPayload(dir: in String, v: in JsonValue, at: in String, acc: in List[M
       case None -> return ""
     }
   }
+  if mode == "trusted" {
+    return checkTrustedPayload(dir, fields, at, acc)
+  }
   if mode != "process" {
-    problem(acc, fieldPath(at, "mode"), "unknown payload mode \"" + mode + "\" (expected \"process\" or \"wasm\")")
+    problem(
+      acc,
+      fieldPath(at, "mode"),
+      "unknown payload mode \"" + mode + "\" (expected \"process\", \"wasm\" or \"trusted\")"
+    )
     return ""
   }
   val cmd = match commandOf(fields, at, acc) { case Some(c) -> c; case None -> return "" }
@@ -489,7 +559,7 @@ func checkPayloads(dir: in String, fields: in List[JsonField], acc: in List[Mani
           val kind = checkPayload(dir, items[i], at, acc)
           if kind.length > 0 {
             if listContains(kinds, kind) {
-              problem(acc, at, "a second " + kind + " payload; each runtime, os/arch pair and wasm appears once")
+              problem(acc, at, "a second " + kind + " payload; each runtime, os/arch pair and wasm appears once in each mode")
             } else {
               kinds.add(kind)
             }
@@ -692,6 +762,27 @@ pub func wasmPayload(wasmFile: in String): String {
   val fields: List[JsonField] = newList()
   fields.add(member("mode", JString(value = "wasm")))
   fields.add(member("module", JString(value = wasmFile)))
+  writeValue(JObject(fields = fields))
+}
+
+/// `{"mode": "trusted", "runtime": runtime, "library": file}`: the dotnet
+/// assembly or JVM jar a host of that runtime may load into its own process.
+pub func trustedManagedPayload(runtime: in String, file: in String): String {
+  val fields: List[JsonField] = newList()
+  fields.add(member("mode", JString(value = "trusted")))
+  fields.add(member("runtime", JString(value = runtime)))
+  fields.add(member("library", JString(value = file)))
+  writeValue(JObject(fields = fields))
+}
+
+/// `{"mode": "trusted", "os": os, "arch": arch, "library": file}`: a
+/// `--shape plugin` shared library.
+pub func trustedNativePayload(os: in String, arch: in String, file: in String): String {
+  val fields: List[JsonField] = newList()
+  fields.add(member("mode", JString(value = "trusted")))
+  fields.add(member("os", JString(value = os)))
+  fields.add(member("arch", JString(value = arch)))
+  fields.add(member("library", JString(value = file)))
   writeValue(JObject(fields = fields))
 }
 

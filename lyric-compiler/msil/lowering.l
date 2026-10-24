@@ -312,7 +312,10 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MArray(_) -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MCellArray(_) -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
-    case MClassRef(_, _) -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
+    // An extern alias of System.Object is the root type's own element: a
+    // CLASS TypeRef to System.Object is a different signature, which no
+    // member taking `object` (`MethodBase.Invoke`, `Monitor.Enter`) matches.
+    case MClassRef(_, fqn) -> if fqn == "System.Object" { 0x1C } else { 0x12 }
     case MByRef(_) -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
     case MValueTypeGenericInst(_, _, _) -> 0x15  // GENERICINST prefix; VALUETYPE byte + args follow
     case MIAsyncEnumerable(_) -> 0x1C  // erased to object in signatures
@@ -460,9 +463,13 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
         writeCompressedInt(w, typeRefCode)
       }
     }
-    case MClassRef(typeRefCode, _) -> {
-      bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS
-      writeCompressedInt(w, typeRefCode)
+    case MClassRef(typeRefCode, fqn) -> {
+      if fqn == "System.Object" {
+        bufU1(w, 0x1C)   // ELEMENT_TYPE_OBJECT (see elementTypeByte)
+      } else {
+        bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, typeRefCode)
+      }
     }
     // NOTE: `MArray` also encodes the return type of BCL `List<T>.ToArray()`
     // MemberRef signatures via `buildInstanceMethodSig` (`lowering.l`'s
@@ -2211,9 +2218,13 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
       writeCompressedInt(w, typeRefCode)
     }
-    case MClassRef(typeRefCode, _) -> {
-      bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
-      writeCompressedInt(w, typeRefCode)
+    case MClassRef(typeRefCode, fqn) -> {
+      if fqn == "System.Object" {
+        bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT (see elementTypeByte)
+      } else {
+        bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, typeRefCode)
+      }
     }
     // See the matching `bufMsilType` comment: `MArray` also encodes real
     // BCL-generic-array-return signatures (`List<T>.ToArray()`'s `!0[]`)

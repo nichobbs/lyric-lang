@@ -126,6 +126,19 @@ val annContributions: String = "plugin_contributions"
 
 val annRequest: String = "plugin_request"
 
+/// The trusted-mode entry point generated for a `@plugin` record (docs/69
+/// §10): a managed host invokes this static function by name, and it hands
+/// the plugin's server to the host's `Std.Plugin`.  `V1` is the version of
+/// the in-process ABI.
+///
+/// A function rather than a `pub val`: the stage-0 seed that builds the
+/// compiler does not resolve another package's `pub val`.
+pub func trustedEntryName(): String = "lyricPluginEntryV1"
+
+/// The function returning a fresh plugin server, which a native plugin
+/// library exports as the C symbol `lyric_plugin_entry_v1`.
+pub func trustedServerEntryName(): String = "lyricPluginServerV1"
+
 func annName(a: in Annotation): String {
   modulePathJoin(a.name.segments)
 }
@@ -139,6 +152,19 @@ func hasPluginAnnotation(anns: in List[Annotation]): Bool {
   for a in anns {
     if isPluginAnnName(annName(a)) {
       return true
+    }
+  }
+  false
+}
+
+/// Whether `file` declares a `@plugin` record, for which the pass generates
+/// the package's `main`: a multi-package build looking for the package that
+/// declares `main` before the pass runs counts such a package as declaring it.
+pub func declaresPluginRecord(file: in SourceFile): Bool {
+  for it in file.items {
+    match it.kind {
+      case IRecord(_) -> if hasAnn(it.annotations, annPlugin) { return true }
+      case _ -> ()
     }
   }
   false
@@ -3589,6 +3615,7 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
 
 func pluginText(pm: in PluginModel, g: in Gen): String {
   rpcHelpers(g)
+  g.flags["trusted"] = true
   val srv = pm.name + "Server"
   val l: List[String] = newList()
   l.add("ref record " + srv + " {")
@@ -3742,6 +3769,15 @@ func pluginText(pm: in PluginModel, g: in Gen): String {
   l.add("}")
   l.add("")
   l.add("func main(): Int = runPlugin(" + srv + "())")
+  l.add("")
+  // Trusted mode (docs/69 §10): the fixed, versioned entry points a host
+  // loading this plugin in its own process reaches.  A dotnet or JVM host
+  // runs `lyricPluginEntryV1`, which hands a fresh server to the host's
+  // shared `Std.Plugin`; a native host calls the shared library's
+  // `lyric_plugin_entry_v1`, which returns `lyricPluginServerV1()`.
+  l.add("pub func " + trustedServerEntryName() + "(): PluginServer = " + srv + "()")
+  l.add("")
+  l.add("pub func " + trustedEntryName() + "(): Unit = offerTrustedPluginServer(" + trustedServerEntryName() + "())")
   joinLines(l)
 }
 
@@ -4051,6 +4087,10 @@ pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]
   paths.add("Std.Plugin")
   if g.flags.containsKey("bytes") {
     paths.add("Std.Encoding")
+  }
+  if g.flags.containsKey("trusted") {
+    // `offerTrustedPluginServer`, called by the trusted entry point.
+    paths.add("Std.PluginTrustedHost")
   }
   val out2 = SourceFile(
     moduleDoc = file.moduleDoc,

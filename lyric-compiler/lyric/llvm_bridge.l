@@ -58,6 +58,9 @@ import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.WasmGlue
 import Lyric.ComponentGlue
+import Lyric.Version as Ver
+import Std.Hash as Hash
+import Std.Encoding as Enc
 
 func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
@@ -1530,7 +1533,17 @@ pub func compileToNativeWithFeatures(
   units.add(unitOf(userFile, reachable, true, optsCallArities))
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, 1, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
+  linkAndEmitNative(
+    units,
+    1,
+    outputPath,
+    triple,
+    optLevel,
+    extraClangFlags,
+    shape,
+    componentPkgs,
+    pluginAbiFingerprint(stdlibFiles)
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2134,7 +2147,17 @@ pub func compileProjectToNativeWithShape(
   }
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
+  linkAndEmitNative(
+    units,
+    ownFiles.count,
+    outputPath,
+    triple,
+    optLevel,
+    extraClangFlags,
+    shape,
+    componentPkgs,
+    pluginAbiFingerprint(stdlibFiles)
+  )
 }
 
 /// `N0025`: a `config { }` block (D046, docs/25) has no lowering on native
@@ -2487,6 +2510,7 @@ func linkAndEmitNative(
   extraClangFlags: in List[String],
   shape: in String,
   componentPkgs: in List[ComponentPkg],
+  pluginAbi: in String,
 ): Bool {
   // #7585: `Self` nested inside a generic type argument (`List[Self]`,
   // `Option[Self]`) in an interface method signature has no uniform
@@ -2525,10 +2549,27 @@ func linkAndEmitNative(
   val spec = parseShapeSpec(shape)
   val isComponent = spec.base == "component"
   val isModule = spec.base == "module"
+  val isPlugin = spec.base == "plugin"
   val witVersion = if spec.version.length > 0 { spec.version } else { componentVersion() }
-  if spec.base.length > 0 and not isModule and not isComponent {
+  if spec.base.length > 0 and not isModule and not isComponent and not isPlugin {
     Console.error(
-      "error[N0012]: unknown native output shape '" + spec.base + "'; the wasm32 shapes are 'module' and 'component'"
+      "error[N0012]: unknown native output shape '" + spec.base +
+        "'; the native shapes are 'plugin' (a trusted plugin library) and the wasm32 shapes 'module' and 'component'"
+    )
+    return false
+  }
+  val targetOs = nativeTargetOs(effTriple)
+  if isPlugin and not (targetOs == "linux" or targetOs == "macos") {
+    Console.error(
+      "error[N0027]: --shape plugin builds a trusted plugin library for a Linux or macOS host; " +
+        (
+          if isWasm {
+            "wasm32 has no dynamic loading"
+          } else {
+            "a " + effTriple + " library cannot import the runtime from the host that loads it"
+          }
+        ) +
+        " (docs/69 §10); build a process or wasm payload instead"
     )
     return false
   }
@@ -2569,6 +2610,17 @@ func linkAndEmitNative(
   }
 
   val npkg = codegenNativeBundle(units, effTriple)
+  if isPlugin and not addPluginEntryPoint(npkg, units[0].pkgName) {
+    Console.error(
+      "error[N0028]: --shape plugin builds a trusted plugin library from a package with a @plugin record, and package " +
+        units[0].pkgName +
+        " declares none (docs/69 §10)"
+    )
+    return false
+  }
+  // A program that can load trusted plugins exports its whole runtime, so a
+  // plugin library (which carries no runtime of its own) binds to it.
+  val loadsPlugins = reachesTrustedPluginLoader(npkg)
   val ll = lowerNativePackage(npkg)
 
   val llPath = outputPath + ".ll"
@@ -2660,6 +2712,40 @@ func linkAndEmitNative(
   // afterwards.
   val cabiPath = wasmGlueStem(outputPath) + ".cabi.c"
   val coreOut = if isComponent { wasmGlueStem(outputPath) + ".core.wasm" } else { outputPath }
+  // The trusted-plugin ABI fingerprint, as a C function of the plugin library
+  // (`lyric_plugin_abi_v1`) or of a host that loads plugins
+  // (`lyric_plugin_host_abi_v1`), and the plugin library's export list.
+  val pluginStubPath = outputPath + ".plugin.c"
+  val pluginMapPath = outputPath + ".plugin.map"
+  if isPlugin or loadsPlugins {
+    match File.writeText(pluginStubPath, pluginAbiStub(pluginAbi, isPlugin, loadsPlugins)) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        Console.error("error[N0002]: cannot write " + pluginStubPath + ": " + IOError.message(e))
+        return false
+      }
+    }
+    clangArgs.add(pluginStubPath)
+  }
+  if isPlugin {
+    clangArgs.add("-fPIC")
+    if targetOs == "macos" {
+      clangArgs.add("-dynamiclib")
+      clangArgs.add("-Wl,-undefined,dynamic_lookup")
+      clangArgs.add("-Wl,-exported_symbol,_lyric_plugin_abi_v1")
+      clangArgs.add("-Wl,-exported_symbol,_lyric_plugin_entry_v1")
+    } else {
+      match File.writeText(pluginMapPath, "{\n  global: lyric_plugin_abi_v1; lyric_plugin_entry_v1;\n  local: *;\n};\n") {
+        case Ok(_) -> ()
+        case Err(e) -> {
+          Console.error("error[N0002]: cannot write " + pluginMapPath + ": " + IOError.message(e))
+          return false
+        }
+      }
+      clangArgs.add("-shared")
+      clangArgs.add("-Wl,--version-script=" + pluginMapPath)
+    }
+  }
   if isComponent {
     match File.writeText(cabiPath, renderCabi(componentPkgs, witVersion)) {
       case Ok(_) -> ()
@@ -2671,7 +2757,22 @@ func linkAndEmitNative(
     clangArgs.add(cabiPath)
   }
   clangArgs.add(llPath)
-  clangArgs.add(rtPath)
+  if isPlugin {
+    // No runtime of its own: its lyric_rt references bind to the host's.
+    ()
+  } else if loadsPlugins and not isWasm and not isWindows {
+    if targetOs == "macos" {
+      clangArgs.add("-Wl,-force_load," + rtPath)
+      clangArgs.add("-Wl,-export_dynamic")
+    } else {
+      clangArgs.add("-rdynamic")
+      clangArgs.add("-Wl,--whole-archive")
+      clangArgs.add(rtPath)
+      clangArgs.add("-Wl,--no-whole-archive")
+    }
+  } else {
+    clangArgs.add(rtPath)
+  }
   if isWindows {
     // The math functions are part of the UCRT, and there is no libpthread or
     // libdl: threads, sockets and TLS use the Win32 API.
@@ -2757,6 +2858,10 @@ func linkAndEmitNative(
       case Err(_) -> {
       }
     }
+    if isPlugin or loadsPlugins {
+      val _ = File.deleteFile(pluginStubPath)
+      val _ = File.deleteFile(pluginMapPath)
+    }
     if isComponent {
       match File.deleteFile(cabiPath) {
         case Ok(_) -> ()
@@ -2769,6 +2874,91 @@ func linkAndEmitNative(
     }
   }
   true
+}
+
+// ── Trusted plugins (docs/69 §10, D231) ──────────────────────────────────────
+// The C symbols of the in-process plugin ABI, version 1.
+val pluginEntrySymbol: String = "lyric_plugin_entry_v1"
+
+val pluginAbiSymbol: String = "lyric_plugin_abi_v1"
+
+val pluginHostAbiSymbol: String = "lyric_plugin_host_abi_v1"
+
+// The runtime symbol only the trusted-plugin kernel calls.
+val pluginOpenSymbol: String = "lyric_plugin_dl_open"
+
+/// The fingerprint a trusted native plugin and the host that loads it must
+/// share: objects cross between their code with no copying, so both must
+/// come from the same compiler release and the same declarations of the
+/// boundary packages (`Std.Core`, `Std.JsonValue`, `Std.JsonRpc`,
+/// `Std.Plugin`).  A SHA-256 over the release version and those packages'
+/// sources, as hex.
+pub func pluginAbiFingerprint(stdlibFiles: in List[NativeStdlibFile]): String {
+  var text = "lyric-plugin-abi-1\n" + Ver.VERSION() + "\n"
+  for name in ["core.l", "json_value.l", "json_rpc.l", "plugin.l"] {
+    for f in stdlibFiles {
+      val norm = Str.replace(f.path, "\\", "/")
+      if Str.endsWith(norm, "/std/" + name) {
+        text = text + name + "\n" + f.source + "\n"
+      }
+    }
+  }
+  Hash.sha256OfBytes(Enc.encodeUtf8(text))
+}
+
+/// The C file that gives a plugin library (`isPlugin`) or a host that loads
+/// plugins (`isHost`) its ABI fingerprint function.
+func pluginAbiStub(abi: in String, isPlugin: in Bool, isHost: in Bool): String {
+  var c = "/* Generated by lyric build: the trusted-plugin ABI fingerprint (docs/69 section 10). */\n"
+  if isPlugin {
+    c = c + "const char* " + pluginAbiSymbol + "(void) { return \"" + abi + "\"; }\n"
+  }
+  if isHost {
+    c = c + "const char* " + pluginHostAbiSymbol + "(void) { return \"" + abi + "\"; }\n"
+  }
+  c
+}
+
+/// Whether the program reaches the trusted-plugin loader (it calls
+/// `lyric_plugin_dl_open`), and so must export its runtime.
+func reachesTrustedPluginLoader(npkg: in NPackage): Bool {
+  for d in npkg.externDecls {
+    if d.name == pluginOpenSymbol {
+      return true
+    }
+  }
+  false
+}
+
+/// Append `lyric_plugin_entry_v1` to a `--shape plugin` build: a C function
+/// returning a fresh server from the generated `lyricPluginServerV1`.  False
+/// when the package has no such function (it declares no `@plugin` record).
+func addPluginEntryPoint(npkg: in NPackage, pkgName: in String): Bool {
+  val serverFn = pkgName + "." + PluginExpand.trustedServerEntryName()
+  for f in npkg.functions {
+    if f.name == serverFn and f.params.count == 0 and not f.isExtern {
+      val body: List[NInsn] = newList()
+      body.add(NLabel(name = "entry"))
+      val noArgs: List[NArg] = newList()
+      body.add(NCall(dest = "server", retTy = f.retTy, fn = NGlobal(name = f.name), args = noArgs))
+      body.add(NRet(ty = f.retTy, value = NLocal(name = "server")))
+      val noParams: List[NParam] = newList()
+      val noAttrs: List[String] = newList()
+      npkg.functions.add(
+        NFunc(
+          name = pluginEntrySymbol,
+          params = noParams,
+          retTy = f.retTy,
+          isPublic = true,
+          isExtern = false,
+          body = body,
+          attributes = noAttrs
+        )
+      )
+      return true
+    }
+  }
+  false
 }
 
 /// The WIT package version of a component whose build was given no version (no

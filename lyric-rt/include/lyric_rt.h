@@ -1272,6 +1272,31 @@ int32_t lyric_tls_validate_identity_pem(const char* cert_pem, const char* key_pe
 LyricString* lyric_tls_last_error_string(void);
 LyricString* lyric_tls_alpn_string(void* conn);
 
+/* ── Trusted in-process plugins (docs/69 §10, D230; lyric_plugin.c) ──────
+ *
+ * A trusted native plugin is a shared library built with `--shape plugin`.
+ * It holds no copy of this runtime: its lyric_rt references resolve against
+ * the host executable, which a build reaching Std.PluginTrustedHost links
+ * with this whole archive exported.  The library exports
+ * `const char* lyric_plugin_abi_v1(void)` and `void* lyric_plugin_entry_v1(void)`.
+ *
+ * lyric_plugin_dl_open dlopen(3)s `path` with RTLD_NOW | RTLD_LOCAL and
+ * returns the handle, or NULL with lyric_plugin_dl_error() describing the
+ * failure (this thread's last one).  Nothing is ever dlclose(3)d: the
+ * destructors of the plugin's objects are code inside the library.
+ * lyric_plugin_dl_sym returns the address of `name`, or NULL.
+ * lyric_plugin_call_text calls a `const char* (*)(void)` and copies its
+ * result; lyric_plugin_call_entry calls a `void* (*)(void)` and returns its
+ * owned result; lyric_plugin_text copies a NUL-terminated string.  On
+ * Windows and wasm32 dl_open always fails with a message saying the platform
+ * has no trusted native plugins. */
+void* lyric_plugin_dl_open(const char* path);
+LyricString* lyric_plugin_dl_error(void);
+void* lyric_plugin_dl_sym(void* handle, const char* name);
+LyricString* lyric_plugin_call_text(void* fn);
+void* lyric_plugin_call_entry(void* fn);
+LyricString* lyric_plugin_text(const char* text);
+
 #ifdef __cplusplus
 }
 #endif

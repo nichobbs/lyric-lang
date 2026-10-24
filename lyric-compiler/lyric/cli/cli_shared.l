@@ -626,6 +626,9 @@ pub union BuildShape {
   case SModule
   /// wasm32 WASI component plus WIT (docs/35 W4); native only.
   case SComponent
+  /// A trusted plugin's shared library (docs/69 §10, D231); native only,
+  /// Linux and macOS.
+  case SPlugin
 }
 
 pub func profileName(p: in BuildProfile): String {
@@ -642,6 +645,7 @@ pub func shapeName(s: in BuildShape): String {
     case SAot -> "aot"
     case SModule -> "module"
     case SComponent -> "component"
+    case SPlugin -> "plugin"
   }
 }
 
@@ -666,6 +670,8 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
     Some(value = SModule)
   } else if s == "component" {
     Some(value = SComponent)
+  } else if s == "plugin" {
+    Some(value = SPlugin)
   } else {
     None
   }
@@ -789,19 +795,32 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
       case SAot -> None
       case SModule -> None
       case SComponent -> None
+      case SPlugin -> None
       case _ -> {
         val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) +
           "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " +
-          "its only host shape (omit --shape, or pass --shape aot explicitly; --shape module is the wasm32 shape)"
+          "its only executable shape (omit --shape, or pass --shape aot explicitly; --shape module and --shape component are the wasm32 shapes, --shape plugin a trusted plugin library)"
         Some(value = msg)
       }
     }
     case _ -> match shape {
       case SModule -> Some(value = wasmShapeNeedsNativeError(shape, target))
       case SComponent -> Some(value = wasmShapeNeedsNativeError(shape, target))
+      case SPlugin -> Some(value = pluginShapeNeedsNativeError(target))
       case _ -> None
     }
   }
+}
+
+// A trusted dotnet or JVM plugin loads from the ordinary assembly or jar, so
+// only a native build has a plugin shape.
+func pluginShapeNeedsNativeError(target: in Emitter.CompileTarget): String {
+  val targetName = match target { case Emitter.Dotnet -> "dotnet"; case _ -> "jvm" }
+  "error[F0043]: --shape plugin builds a trusted native plugin library and needs --target native; a trusted " +
+    targetName +
+    " plugin is loaded from the plugin's ordinary " +
+    (if targetName == "dotnet" { "assembly" } else { "jar" }) +
+    " (docs/69 section 10)"
 }
 
 // Only reached for the managed targets: `shapeTargetError` accepts these

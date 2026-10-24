@@ -10,9 +10,10 @@ from ordinary interfaces and records, so neither side writes any JSON.
 
 This chapter builds a small note-taking extension point end to end: the API
 package, a plugin, a host that loads it, packing the plugin into an artifact,
-running it as WebAssembly, and finally a source generator, which is the
-compiler's own plugin point. The language reference covers the same ground in
-§15; the design is docs/69 and decision D207.
+running it as WebAssembly, loading a trusted plugin into the host's own
+process, and finally a source generator, which is the compiler's own plugin
+point. The language reference covers the same ground in §15; the design is
+docs/69 and decisions D207 and D231.
 
 ## The pieces
 
@@ -380,6 +381,83 @@ speaks the same protocol on its stdin and stdout, so the host code above does
 not change, but the plugin's only way to reach anything outside itself is a
 capability call, which the host's grants and guards control.
 
+## Trusted plugins in the host's process
+
+A process boundary costs every call a round trip through a pipe. For a plugin
+you wrote yourself, or one from a team whose code you would link into the
+application anyway, the host can load it into its own process instead. The
+plugin's source does not change; only the host decides, and it has to decide
+twice. The host gives its configuration a loader:
+
+```lyric
+import Std.Plugin.Trusted
+
+val host = newPluginHost(
+  PluginHostConfig(
+    points = [noteToolPointInfo()],
+    providers = providers,
+    policy = FirstPartyPolicy(),
+    trustedLoader = Some(value = trustedPluginLoader())
+  )
+)
+```
+
+and its grant policy marks the plugins it trusts:
+
+```lyric
+impl GrantPolicy for FirstPartyPolicy {
+  func decide(manifest: in PluginManifest): GrantDecision {
+    val decision = grantAllRequested(manifest)
+    GrantDecision(
+      allow = decision.allow,
+      reason = decision.reason,
+      grants = decision.grants,
+      trusted = manifest.publisher == "acme"
+    )
+  }
+}
+```
+
+The plugin also has to ship a trusted payload for the host's runtime. Pack it
+with `--trusted`:
+
+```sh
+lyric plugin pack --manifest notes-summary/lyric.toml --targets dotnet,jvm,native --trusted -o plugins
+```
+
+For dotnet and the JVM the trusted payload is the plugin's ordinary assembly or
+jar, listed a second time with `"mode": "trusted"`; for native, pack builds a
+shared library with `lyric build --target native --shape plugin`. A plugin the
+policy trusts and that has such a payload is loaded into the host: the dotnet
+host gives it an `AssemblyLoadContext`, the JVM host a class loader, the native
+host `dlopen`s the library. Every other plugin runs exactly as before, from its
+process or wasm payload, so one policy can trust some plugins and sandbox the
+rest.
+
+Nothing else changes for either side. The generated remote still calls the
+plugin's generated dispatcher, the plugin's capability clients still reach the
+host's providers through the grants and the guards, and `revokeCapability`
+still takes effect at once; the calls are simply direct. On the notes example a
+`summarize` call takes a few microseconds in process against a few hundred over
+a pipe.
+
+What you give up is isolation. A trusted plugin can read any file the host can,
+and if it crashes, hangs or calls `exit`, the host goes with it. On dotnet and
+the JVM a panic inside a plugin method is caught and the call fails with
+`ContractViolated`; on native, which has no unwinding, any panic in a trusted
+plugin ends the host. There are no restarts and no call timeouts. Stopping a
+trusted plugin forgets its state, and the next call starts a fresh one, but its
+code stays loaded: trusted plugins are never unloaded, so a plugin you need to
+replace while the host runs should stay out of process.
+
+A few limits follow from loading code into a running program. A Native AOT
+dotnet host or a GraalVM native-image JVM host cannot load code, and native
+hosts load plugins on Linux and macOS only; on those hosts the loader says why
+(`unavailableReason()`) and every plugin runs out of process. A native plugin
+library must be built by the same Lyric release as the host: both carry a
+fingerprint of the release and of the boundary packages, and a mismatch is
+refused. A JVM plugin's own packages must not share names with the host's.
+
 ## Protocol plugins: hosting a language server
 
 Some plugins already speak a protocol of their own. A language server speaks
@@ -591,7 +669,8 @@ appendix B has the table. The ones you will meet first:
 
 ## What is not supported yet
 
-- A trusted in-process mode, plugin signing and a plugin registry (D207).
+- Plugin signing and a plugin registry (D207), and unloading a trusted plugin
+  (D231).
 - A widget plugin's point (`WidgetPlugin` 1.0) allows no capabilities.
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.

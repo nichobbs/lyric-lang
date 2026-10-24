@@ -3337,6 +3337,12 @@ pub func nativeExecutableOutputPath(path: in String, triple: in String): String 
   LlvmBridge.nativeExecutablePath(path, triple)
 }
 
+/// The operating system a native build for `triple` ("" = the host) targets:
+/// `linux`, `macos`, `windows`, `wasi`, or "".
+pub func nativeTargetOsOf(triple: in String): String {
+  LlvmBridge.nativeTargetOs(triple)
+}
+
 // In-process single-source JVM emit — direct call into the self-hosted
 // `Jvm.Bridge.compileToJarBundled` (#1611).  Replaces the legacy
 // `--internal-build --target jvm` subprocess hop into the F# emitter, whose
