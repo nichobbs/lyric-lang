@@ -281,7 +281,7 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool
     }
     case Some(cfg) -> {
       val spans = globalSpanBuffer.snapshot()
-      if spans.length > 0 {
+      if spans.count > 0 {
         val payload = Codec.encodeExportTraceServiceRequest(spans)
         val url = joinUrl(cfg.endpoint, "/v1/traces")
         match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), timeoutMs) {
@@ -290,7 +290,7 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool
           }
           case Ok(status) -> {
             if isSuccessStatus(status) {
-              globalSpanBuffer.removeExported(spans.length)
+              globalSpanBuffer.removeExported(spans.count)
             } else {
               allOk = false
             }

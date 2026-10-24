@@ -439,6 +439,8 @@ func widths(rows: in List[slice[Int]]): Int { rows[1].length }
 val w = widths([[1], [5, 6]])    // 2
 ```
 
+Note which member sizes which container. A `List` has `.count`; `String`, `slice[T]` and arrays have `.length`. The line above reads `.length` of a slice (`rows[1]`), and `rows.count` would be the number of rows. Writing `rows.length` on the `List` itself is the compile error T0207, which names `.count`: the JVM never had a `length` on `List`, and the check keeps a program that builds on one target from failing on the other.
+
 The position decides the literal's shape wherever the expected type is known, not only for a `List`. An integer literal passed to a `slice[Long]` or `List[Long]` parameter is widened element by element, as it would be under a `val` annotation, and a tuple argument gives its components the same treatment:
 
 ```lyric

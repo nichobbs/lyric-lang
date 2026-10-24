@@ -688,7 +688,7 @@ func identOf(name: in String, fallback: in String): String {
     return fallback
   }
   var i = 0
-  while i < reservedWords.length {
+  while i < reservedWords.count {
     if reservedWords[i] == name {
       return name + "_"
     }

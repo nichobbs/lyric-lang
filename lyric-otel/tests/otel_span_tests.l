@@ -82,7 +82,7 @@ test "endSpan stamps an end timestamp >= the start timestamp and buffers the spa
   endSpan(span)
   assertTrue(spanEndNanos(span) >= spanStartNanos(span), "end >= start")
   val drained = globalSpanBuffer.drain()
-  assertTrue(drained.length >= 1, "at least the span just ended was buffered")
+  assertTrue(drained.count >= 1, "at least the span just ended was buffered")
 }
 
 test "globalSpanBuffer.drain empties the buffer" {
@@ -102,7 +102,7 @@ test "globalSpanBuffer.snapshot does not clear the buffer" {
   val span = startSpan("snapshot.op", 0)
   endSpan(span)
   val seen = globalSpanBuffer.snapshot()
-  assertTrue(seen.length >= 1, "snapshot sees the buffered span")
+  assertTrue(seen.count >= 1, "snapshot sees the buffered span")
   assertTrue(globalSpanBuffer.count() >= 1, "snapshot is non-destructive")
 }
 
@@ -110,7 +110,7 @@ test "globalSpanBuffer.removeExported only removes the snapshotted prefix" {
   val _ = globalSpanBuffer.drain()
   val first = startSpan("removeExported.first", 0)
   endSpan(first)
-  val exportedCount = globalSpanBuffer.snapshot().length
+  val exportedCount = globalSpanBuffer.snapshot().count
   // Simulate a span arriving while the (simulated) export POST is in
   // flight — it must survive the removal below.
   val second = startSpan("removeExported.second", 0)
@@ -132,8 +132,8 @@ test "globalSpanBuffer.snapshot is a copy that later pushes do not change" {
   val held = globalSpanBuffer.snapshot()
   val second = startSpan("snapshotCopy.second", 0)
   endSpan(second)
-  assertEqualInt(held.length, 1, "the held snapshot still has one span")
-  globalSpanBuffer.removeExported(held.length)
+  assertEqualInt(held.count, 1, "the held snapshot still has one span")
+  globalSpanBuffer.removeExported(held.count)
   assertEqualInt(globalSpanBuffer.count(), 1, "the span pushed during the export survives")
   assertEqual(spanName(globalSpanBuffer.snapshot()[0]), "snapshotCopy.second", "and it is the late one")
 }
