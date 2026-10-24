@@ -13,7 +13,7 @@ package, a plugin, a host that loads it, packing the plugin into an artifact,
 running it as WebAssembly, loading a trusted plugin into the host's own
 process, and finally a source generator, which is the compiler's own plugin
 point. The language reference covers the same ground in §15; the design is
-docs/69 and decisions D207 and D230.
+docs/69 and decisions D207 and D231.
 
 ## The pieces
 
@@ -604,7 +604,7 @@ appendix B has the table. The ones you will meet first:
 ## What is not supported yet
 
 - Plugin signing and a plugin registry (D207), and unloading a trusted plugin
-  (D230).
+  (D231).
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.
 - The language server does not run the plugin pass, so the generated names

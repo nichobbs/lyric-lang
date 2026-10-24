@@ -1,5 +1,5 @@
 //! std/plugin_trusted.l - Std.Plugin.Trusted: loading trusted plugins into
-//! the host's process (docs/69 §10, D230).
+//! the host's process (docs/69 §10, D231).
 //!
 //! A host enables trusted mode by giving its `PluginHostConfig` the loader
 //! this package provides:

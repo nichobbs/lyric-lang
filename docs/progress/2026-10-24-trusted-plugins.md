@@ -1,4 +1,4 @@
-# Plugins P6: trusted (in-process) mode (D230)
+# Plugins P6: trusted (in-process) mode (D231)
 
 - **Policy and host** (`Std.Plugin`):
   - `GrantDecision.trusted` and `PluginHostConfig.trustedLoader`

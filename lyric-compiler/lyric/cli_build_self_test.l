@@ -310,7 +310,7 @@ test "shapeTargetError: module and component are native-only wasm32 shapes (docs
   }
 }
 
-test "shapeTargetError: plugin is a native-only shape (D230)" {
+test "shapeTargetError: plugin is a native-only shape (D231)" {
   match Cli.shapeTargetError(Cli.SPlugin, Emitter.Native) {
     case None -> ()
     case Some(m) -> assertTrue(false, "native accepts plugin, got: " + m)

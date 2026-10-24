@@ -1,6 +1,6 @@
 //! std/_kernel_native/plugin_trusted_host.l - native twin of
 //! `_kernel/plugin_trusted_host.l`: loading a trusted plugin's shared library
-//! into the host's process (docs/69 §10, D230).
+//! into the host's process (docs/69 §10, D231).
 //!
 //! A trusted native plugin is a shared library built with `--shape plugin`.
 //! It contains its own compiled copy of the Lyric code it uses but no

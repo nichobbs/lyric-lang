@@ -626,7 +626,7 @@ pub union BuildShape {
   case SModule
   /// wasm32 WASI component plus WIT (docs/35 W4); native only.
   case SComponent
-  /// A trusted plugin's shared library (docs/69 §10, D230); native only,
+  /// A trusted plugin's shared library (docs/69 §10, D231); native only,
   /// Linux and macOS.
   case SPlugin
 }

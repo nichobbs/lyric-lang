@@ -24,7 +24,7 @@
 //!   capabilities, other requests go to `PluginServer.dispatch`, and
 //!   `callHost` makes a capability call from inside a dispatch.
 //!
-//! - **Trusted mode** (docs/69 §10, D230). A host with a `TrustedLoader`
+//! - **Trusted mode** (docs/69 §10, D231). A host with a `TrustedLoader`
 //!   (`Std.Plugin.Trusted`) loads a plugin its grant policy marks trusted
 //!   (`GrantDecision.trusted`) into its own process from the plugin's trusted
 //!   payload. The same server, grants and guards serve it: a point call is a

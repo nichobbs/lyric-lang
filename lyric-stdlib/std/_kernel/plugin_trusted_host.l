@@ -1,5 +1,5 @@
 //! std/_kernel/plugin_trusted_host.l - loading a trusted plugin's assembly
-//! into the host's process on .NET (docs/69 §10, D230).
+//! into the host's process on .NET (docs/69 §10, D231).
 //!
 //! The plugin assembly goes into its own `AssemblyLoadContext`.  The context
 //! does not resolve `Lyric.Stdlib` itself, so the runtime falls back to the

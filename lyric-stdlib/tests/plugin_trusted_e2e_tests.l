@@ -1,5 +1,5 @@
 //! tests/plugin_trusted_e2e_tests.l — trusted (in-process) plugins end to end
-//! (docs/69 §10, D230).
+//! (docs/69 §10, D231).
 //!
 //! The plugin is `plugin_fixtures/trusted_notes/` (packages
 //! `PluginTrusted.Api` and `PluginTrusted.Notes`), built for the host's own

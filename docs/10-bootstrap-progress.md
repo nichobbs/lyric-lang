@@ -405,7 +405,7 @@ deferred to Phase 3 by design.
   D-progress-775).
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): six AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts, L007 a `pub`/`internal` signature naming a same-file package-private type (#7549; single-file, see #7607). L006 is retired and not reused. `--error-on-warning` flag. Runs on non-compiling code.
-- Plugins (docs/69, D204, D207, D228, D230) — **shipped** on every target: the plugin
+- Plugins (docs/69, D204, D207, D228, D231) — **shipped** on every target: the plugin
   annotations and `Lyric.PluginExpand` (K0000-K0012), `Std.Plugin` hosts on
   dotnet, the JVM and native, process-mode payloads for dotnet, the JVM and
   native, wasm-mode plugins under `wasmtime run`, `lyric plugin
@@ -413,7 +413,7 @@ deferred to Phase 3 by design.
   the first plugin point (`Lyric.GeneratorSdk` 2.0, `SourceGenerator` 3.0).
   Protocol points run in supervised sessions with requests routed through
   the plugin's grants, shown by the LSP example (D228).
-  Trusted in-process mode (D230) loads a plugin the grant policy marks trusted
+  Trusted in-process mode (D231) loads a plugin the grant policy marks trusted
   into a dotnet, JVM or native (Linux, macOS) host of its own runtime, with
   `Std.Plugin.Trusted`, `trusted` payloads, `--shape plugin` native libraries
   and `lyric plugin pack --trusted`. Signing and the registry are deferred
