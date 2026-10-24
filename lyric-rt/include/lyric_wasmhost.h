@@ -62,7 +62,7 @@ LYRIC_WASMHOST_API char* lyric_wasmhost_last_error(void);
  * in `lyric_wasmhost_last_error`. */
 LYRIC_WASMHOST_API int64_t lyric_wasmhost_load(const char* path);
 
-/* Release a component.  Its instances must have been closed. */
+/* Release a component.  Instances still open keep it alive until they close. */
 LYRIC_WASMHOST_API void lyric_wasmhost_unload(int64_t component);
 
 /* Instantiate a component in a new store whose linear memories are capped at

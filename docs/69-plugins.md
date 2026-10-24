@@ -566,7 +566,7 @@ interface `lyric:<p>/<a>-<c>` per capability).
   `$LYRIC_WASMHOST_LIB` (`Std.PluginWasmLoad` loads that path first) or the
   runtime's own search (on .NET the application and assembly directories, so
   beside the program or `Lyric.Stdlib.dll`, then the loader path; on the JVM
-  the loader path). On wasm32 and Windows an unsupported twin keeps the
+  the loader path). On wasm32 and Windows (#8542) an unsupported twin keeps the
   symbols and reports the runtime unavailable.
 - **Isolation.** One engine per process, with epoch interruption on and
   signal-based traps off (explicit bounds checks, so wasmtime never handles

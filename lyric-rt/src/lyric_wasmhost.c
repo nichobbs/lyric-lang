@@ -1794,7 +1794,8 @@ typedef struct {
     size_t nexports;
     JNode hints; /* J_NULL until loaded */
     bool hints_loaded;
-    int instances;
+    int instances; /* live instances; the component outlives them */
+    bool unloaded;  /* released by its owner, freed with its last instance */
 } Component;
 
 struct Instance;
@@ -2136,6 +2137,11 @@ LYRIC_WASMHOST_API int64_t lyric_wasmhost_load(const char* path) {
 
 LYRIC_WASMHOST_API void lyric_wasmhost_unload(int64_t id) {
     Component* c = (Component*)handle_take(id, 1);
+    if (c == NULL) return;
+    if (c->instances > 0) {
+        c->unloaded = true;
+        return;
+    }
     component_free(c);
 }
 
@@ -2164,7 +2170,10 @@ static void arm_deadline(Instance* in, int32_t timeout_ms) {
 static void instance_free(Instance* in) {
     if (in == NULL) return;
     if (in->store) p_wasmtime_store_delete(in->store);
-    if (in->comp) in->comp->instances--;
+    if (in->comp) {
+        in->comp->instances--;
+        if (in->comp->unloaded && in->comp->instances == 0) component_free(in->comp);
+    }
     free(in);
 }
 

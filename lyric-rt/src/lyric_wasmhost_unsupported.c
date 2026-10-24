@@ -1,10 +1,10 @@
 /* lyric_wasmhost_unsupported.c — the in-process wasm embedding where the
  * runtime cannot load wasmtime: wasm32-wasi (no dlopen, and a plugin host is
  * not itself a wasm guest) and x86_64-pc-windows-msvc (the shim's loader and
- * ticker are POSIX; #8540 ports them to LoadLibrary and Win32 threads).
+ * ticker are POSIX; #8542 ports them to LoadLibrary and Win32 threads).
  *
- * Every symbol of lyric_wasmhost.h resolves, so Std.Plugin links unchanged;
- * `lyric_wasmhost_available` answers 0 and Std.Plugin skips component
+ * Every symbol of lyric_wasmhost.h resolves, so Std.PluginWasm links unchanged;
+ * `lyric_wasmhost_available` answers 0 and a host skips component
  * payloads, as it does on a host without libwasmtime.
  */
 #include "lyric_wasmhost.h"

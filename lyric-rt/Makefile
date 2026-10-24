@@ -38,7 +38,7 @@
 # their Win32 twins (lyric_win32.c, lyric_fs_win32.c, lyric_process_win32.c,
 # and lyric_sock_win32.c with lyric_tls_win32.c, which uses Schannel).
 # lyric_wasmhost.c is replaced by lyric_wasmhost_unsupported.c until its
-# loader and timeout thread are ported to Win32.
+# loader and timeout thread are ported to Win32 (#8542).
 
 CC      ?= clang
 AR      ?= ar

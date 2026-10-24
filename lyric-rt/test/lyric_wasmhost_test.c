@@ -293,9 +293,13 @@ int main(int argc, char** argv) {
 
     check(lyric_wasmhost_instantiate(999999, 1 << 20, 5000, host_import, &log) == LYRIC_WASMHOST_ERROR,
           "an unknown component id is an error");
+    int64_t keep = lyric_wasmhost_instantiate(comp, 64ll << 20, 5000, host_import, &log);
     lyric_wasmhost_unload(comp);
     check(lyric_wasmhost_instantiate(comp, 1 << 20, 5000, host_import, &log) == LYRIC_WASMHOST_ERROR,
           "an unloaded component cannot be instantiated");
+    expect_call(keep, "add", "{\"leftSide\":20,\"rightSide\":22}", "{\"ok\":42}",
+                "an instance open at unload keeps its component alive");
+    check(lyric_wasmhost_close(keep) == &log, "closing the last instance frees the unloaded component");
 
     if (g_failures == 0) {
         printf("lyric_wasmhost_test: all %d checks passed\n", g_checks);

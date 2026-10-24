@@ -575,7 +575,7 @@ appendix B has the table. The ones you will meet first:
 - A process or wasm-module plugin that ignores the cancellation of a timed-out
   call keeps its CPU until the host stops it (#8465); only a component plugin
   is stopped at the timeout.
-- The in-process component runtime is not available on Windows hosts yet.
+- The in-process component runtime is not available on Windows hosts yet (#8542).
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.
 - The language server does not run the plugin pass, so the generated names

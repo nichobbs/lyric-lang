@@ -4026,7 +4026,7 @@ search (next to the program or `Lyric.Stdlib.dll` on .NET, the loader path on
 both); a native host links it from `lyric_rt.a`. Either way it loads
 libwasmtime at run time from `$LYRIC_WASMTIME_LIB`, next to itself, or the
 loader path, so a host links no wasmtime and `hasInProcessWasm()` is false
-where it is missing. The runtime is not available on Windows hosts yet.
+where it is missing. The runtime is not available on Windows hosts yet (#8542).
 
 ### 15.8 `lyric plugin`
 
