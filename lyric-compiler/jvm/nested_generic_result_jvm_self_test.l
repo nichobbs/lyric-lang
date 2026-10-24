@@ -72,6 +72,24 @@ func readFirst(): Int {
   }
 }
 
+// The abandoned slots sit before wide (two-slot) locals, so a frame that
+// dropped the gap would also misplace the Long and Double.
+func readWide(): Long {
+  val bytes: slice[Byte] = [7, 8, 9]
+  try {
+    val din = JNrDataIn.new(JNrBytesIn.new(bytes))
+    val wide: Long = 5000000000i64
+    val d: Double = 1.5
+    din.read().toLong() + wide + d.toLong()
+  } catch Bug as _ {
+    -1i64
+  }
+}
+
+test "frame gap before Long and Double locals in a try body" {
+  assertEqualLong(readWide(), 5000000008i64, "7 + 5e9 + 1")
+}
+
 test "constructor nested in a constructor inside a try body" {
   assertEqualInt(readFirst(), 7, "read through nested constructors")
 }

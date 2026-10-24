@@ -29,6 +29,10 @@ MSIL auto-FFI:
   `UInt16` or `UInt32` parameter with `conv.ovf.*`, so a value outside the range throws `OverflowException`; a `Long`
   is the bit pattern of a `UInt64`. The scorer admits these below every widening match.
 
+- **Generic static BCL methods through auto-FFI (#7807, #7890).** `Array.IndexOf(a, x)`, `Array.Reverse(a)` and
+  `ValueTuple.Create(1, 2)` resolve: an open MemberRef instantiated by a MethodSpec whose type arguments are the argument
+  types (parameters that are exactly `T` or `T[]`), so the call is exact and the result is the closed generic type. A
+  generic parameter no argument fixes, or a parameter that only mentions one (`IEnumerable<T>`), still declines.
 - **`async` externs over `ValueTask` (#7148).** A BCL member returning `ValueTask` or `ValueTask<T>` (a struct) is encoded
   in the MemberRef as declared and unwrapped through a scratch local and its address (`AsTask().Wait()` / `get_Result()`),
   for both the plain and the method-generic (`ValueTask.FromResult<T>`) `async` wrapper. The plain branch used to encode

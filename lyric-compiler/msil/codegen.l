@@ -44006,6 +44006,131 @@ func autoFfiValidateParams(
   true
 }
 
+// A type a method's own generic parameter can be instantiated at: anything
+// that is a real CLR type (not `void`, not a by-ref, not itself open).
+func autoFfiWitnessUsable(t: in MsilType): Bool {
+  match t {
+    case MVoid -> false
+    case MByRef(_) -> false
+    case MMethodTypeVar(_) -> false
+    case MTypeVar(_) -> false
+    case _ -> true
+  }
+}
+
+// Emit a call to a generic static BCL method resolved by auto-FFI
+// (`Array.IndexOf(a, x)`, `ValueTuple.Create(1, 2)`): an OPEN MemberRef
+// (`!!n` preserved) instantiated by a MethodSpec whose type arguments are the
+// types the call's arguments have, so the call is exact (no object erasure)
+// and its result is the closed generic type (`ValueTuple<int, int>`).  Each
+// method generic parameter must be pinned by a parameter that is exactly `T`
+// or `T[]`; a parameter that merely mentions one (`IEnumerable<T>`), a
+// generic parameter no argument fixes, or two arguments that disagree on it
+// decline (None), as before (#7807, #7890).
+func emitResolvedGenericAutoFfi(
+  cctx: in CodegenCtx,
+  fctxOpt: in Option[FuncCtx],
+  insns: in List[MInsn],
+  asmName: in String,
+  clrFqn: in String,
+  clrMethodName: in String,
+  argBufs: in List[List[MInsn]],
+  argTys: in List[MsilType],
+  m: in Mdr.ResolvedMethod,
+): Option[MsilType] {
+  if argTys.count != m.paramTypes.count {
+    return None
+  }
+  val witness: Map[Int, MsilType] = newMap()
+  val coercions: List[List[MInsn]] = newList()
+  val mParams: List[MsilType] = newList()
+  var i = 0
+  while i < m.paramTypes.count {
+    val psig = m.paramTypes[i]
+    match resolvedSigToMsil(cctx, psig) {
+      case Some(pm) -> mParams.add(pm)
+      case None -> return None
+    }
+    var bound = -1
+    var boundTy: MsilType = MObject
+    match Mdr.sigMVarIndex(psig) {
+      case Some(k) -> {
+        bound = k
+        boundTy = argTys[i]
+      }
+      case None -> match Mdr.sigSzArrayElem(psig) {
+        case Some(el) -> match Mdr.sigMVarIndex(el) {
+          case Some(k) -> match argTys[i] {
+            case MArray(ae) -> {
+              bound = k
+              boundTy = ae
+            }
+            case _ -> return None
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+    if bound >= 0 {
+      if not autoFfiWitnessUsable(boundTy) {
+        return None
+      }
+      match mapGet(witness, bound) {
+        case Some(prev) -> if msilTypeKeyStr(prev) != msilTypeKeyStr(boundTy) { return None }
+        case None -> witness.add(bound, boundTy)
+      }
+      coercions.add(newList())
+    } else {
+      if Mdr.sigMentionsMVar(psig) {
+        return None
+      }
+      match argCoercionInsns(cctx, argTys[i], psig) {
+        case Some(c) -> coercions.add(c)
+        case None -> return None
+      }
+    }
+    i = i + 1
+  }
+  val specArgs: List[MsilType] = newList()
+  var k = 0
+  while k < m.genericArity {
+    match mapGet(witness, k) {
+      case Some(w) -> specArgs.add(w)
+      case None -> return None
+    }
+    k = k + 1
+  }
+  val retOpen = match resolvedSigToMsil(cctx, m.returnType) { case Some(r) -> r; case None -> return None }
+  val sp = splitTypeFqn(clrFqn)
+  val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
+  var openKey = "autoffi_gm_" + clrFqn + "." + clrMethodName + "_" + toString(m.genericArity)
+  var ki = 0
+  while ki < mParams.count {
+    openKey = openKey + "_" + msilTypeKeyStr(mParams[ki])
+    ki = ki + 1
+  }
+  openKey = openKey + "_ret_" + msilTypeKeyStr(retOpen)
+  val openSig = buildOpenGenericMethodSigCtx(cctx, mParams, retOpen, false, m.genericArity)
+  val mrRow = ctxAddMemberRef(cctx.lctx, tRef, clrMethodName, openKey, openSig)
+  var specKey = openKey + "_spec"
+  var wi = 0
+  while wi < specArgs.count {
+    specKey = specKey + "_" + msilTypeKeyStr(specArgs[wi])
+    wi = wi + 1
+  }
+  val specRow = ctxAddMethodSpec(cctx.lctx, mdorMemberRef(mrRow), specKey, buildMethodSpecBlob(specArgs))
+  var bi = 0
+  while bi < argBufs.count {
+    appendInsnsMsil(insns, argBufs[bi])
+    appendInsnsMsil(insns, coercions[bi])
+    bi = bi + 1
+  }
+  insns.add(MCall(methodToken = 0x2B000000 + specRow))
+  val closedRet = substMethodTypeVarsMsil(retOpen, specArgs)
+  Some(value = guardAutoFfiCharResultMsil(cctx, fctxOpt, insns, widenNarrowPrimResult(insns, closedRet)))
+}
+
 // Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
 // `fctxOpt` supplies the function context when the caller has one — required
@@ -44031,6 +44156,9 @@ func emitResolvedAutoFfi(
   val isConstructor = originalMethodName == "new"
   if not isConstructor and not m.isStatic {
     return None
+  }
+  if m.genericArity > 0 and not isConstructor {
+    return emitResolvedGenericAutoFfi(cctx, fctxOpt, insns, asmName, clrFqn, clrMethodName, argBufs, argTys, m)
   }
   // Build the parameter MsilTypes (from the resolved signature) and the
   // per-argument coercion (exact / widening conv / box) needed to adapt each

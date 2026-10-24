@@ -2002,6 +2002,27 @@ pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] 
   }
 }
 
+// Whether `t` mentions a method-level generic parameter (`!!n`) anywhere:
+// bare, as an array element, by reference, or inside a generic instantiation.
+pub func sigMentionsMVar(t: in SigType): Bool {
+  match t {
+    case STMVar(_) -> true
+    case STSzArray(e) -> sigMentionsMVar(e)
+    case STByRef(inner) -> sigMentionsMVar(inner)
+    case STNamedGenericInst(_, _, args) -> {
+      var i = 0
+      while i < args.count {
+        if sigMentionsMVar(args[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 // Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
 // D105 §A's F0022/F0023 validation pass to compare an iface method's
 // signature (which carries `STVar` for each iface generic param) against
@@ -2600,6 +2621,9 @@ pub record ResolvedMethod {
   isAbstract: Bool
   returnType: SigType
   paramTypes: List[SigType]
+  // The method's own generic parameter count (`!!0 .. !!n-1` in the
+  // signature); 0 for a non-generic method.
+  genericArity: Int
   // Aligned with `paramTypes`: EPDNone for every caller-supplied position;
   // trailing positions the caller did not supply carry the decoded default
   // the emitter must synthesize (#5605).  Same count as `paramTypes`.
@@ -3316,6 +3340,7 @@ pub func resolveOverloadInBases(
                 isAbstract = methodIsAbstract(md.flags),
                 returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
                 paramTypes = normParams,
+                genericArity = sig.genParamCount,
                 paramDefaults = defaults
               )
             )
@@ -3953,6 +3978,7 @@ pub func allMethodSigsOn(
             isAbstract = methodIsAbstract(md.flags),
             returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
             paramTypes = normParams,
+            genericArity = sig.genParamCount,
             paramDefaults = epdNoneList(normParams.count)
           )
         )
