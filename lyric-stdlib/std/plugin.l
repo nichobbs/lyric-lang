@@ -30,12 +30,22 @@
 //!   payload. The same server, grants and guards serve it: a point call is a
 //!   direct `dispatch`, a capability call reaches `plServeCapability` through
 //!   the connection's `HostLink`. No restarts, no call timeout, no unloading.
+//! - **Component mode** (docs/69 §9.3). A plugin with a `component` payload
+//!   runs inside the host's process when the host's `PluginHostConfig` has a
+//!   `componentRuntime` (`Std.PluginWasm.inProcessWasmRuntime()`, which embeds
+//!   wasmtime) and that runtime is available. Point calls become calls of the
+//!   component's exports, capability calls arrive as its imports and are
+//!   served from its grants exactly as in process mode, a trap is `Crashed`
+//!   and restarts by re-instantiating, a call past `callTimeoutMs` is stopped
+//!   by epoch interruption and returns `Timeout`, and linear memory is capped
+//!   at `wasmMaxMemoryBytes`.
 //!
 //! Trust: a process payload (dotnet, JVM or native) is arbitrary code running
 //! with the host's user and privileges. Grants and guards limit what a plugin
 //! obtains through capability calls, not what it does directly. Only a wasm
-//! payload, run by `wasmtime` with no directories, environment or network, is
-//! confined to its capabilities; set `preferWasm` and pack untrusted plugins
+//! payload, run by `wasmtime` with no directories, environment or network, and
+//! a component payload, run in-process with the same restrictions, are
+//! confined to their capabilities; set `preferWasm` and pack untrusted plugins
 //! for wasm.
 //!
 //! Everything here is synchronous: a host is an ordinary program that calls
@@ -61,6 +71,7 @@ import Std.JsonRpc.Stdio
 import Std.PluginHost
 import Std.PanicGuardHost
 import Std.String as Str
+import Std.Char as Ch
 import Std.Path as Path
 import Std.File as File
 import Std.Environment as Env
@@ -418,6 +429,8 @@ pub record CapabilityRequest {
 /// - `TrustedNativePayload`: a shared library (`.so` on linux, `.dylib` on
 ///   macos) built with `--shape plugin`, which a native host on that `os`
 ///   and `arch` may load into its own process.
+/// - `ComponentPayload`: a WIT-typed component run in the host's process by
+///   its `componentRuntime` (docs/69 §9.3).
 ///
 /// A trusted payload runs only when the grant policy marks the plugin
 /// trusted (`GrantDecision.trusted`) and the host has a `TrustedLoader`.
@@ -428,6 +441,7 @@ pub union PluginPayload {
   case WasmPayload(wasmModule: String)
   case TrustedManagedPayload(runtime: String, library: String)
   case TrustedNativePayload(os: String, arch: String, library: String)
+  case ComponentPayload(component: String)
 }
 
 /// A parsed `plugin.json` (schema 1). `required` and `optional` are the
@@ -985,8 +999,21 @@ func plParsePayload(v: in JsonValue, index: in Int): Result[PluginPayload, Strin
   if mode == "trusted" {
     return plParseTrustedPayload(v, ctx)
   }
+  if mode == "component" {
+    val file = match plMemberString(v, "component", ctx) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+    match plCheckRelativePath(file, ctx + ": component") {
+      case Err(e) -> return Err(error = e)
+      case Ok(_) -> ()
+    }
+    if not Str.endsWith(file, ".wasm") {
+      return Err(error = ctx + ": component '" + file + "' must be a .wasm file")
+    }
+    return Ok(value = ComponentPayload(component = file))
+  }
   if mode != "process" {
-    return Err(error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\" or \"trusted\"")
+    return Err(
+      error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\", \"trusted\" or \"component\""
+    )
   }
   val command = match plMemberStringList(v, "command", ctx) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
   if command.count == 0 {
@@ -1298,6 +1325,10 @@ func plPayloadToJson(p: in PluginPayload): JsonValue {
       fields.add(plField("arch", JString(value = arch)))
       fields.add(plField("library", JString(value = library)))
     }
+    case ComponentPayload(file) -> {
+      fields.add(plField("mode", JString(value = "component")))
+      fields.add(plField("component", JString(value = file)))
+    }
   }
   JObject(fields = fields)
 }
@@ -1415,6 +1446,18 @@ func plFindWasm(payloads: in List[PluginPayload]): Option[PluginPayload] {
   None
 }
 
+func plFindComponent(payloads: in List[PluginPayload]): Option[PluginPayload] {
+  var i = 0
+  while i < payloads.count {
+    match payloads[i] {
+      case ComponentPayload(_) -> return Some(value = payloads[i])
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
 func plFindManaged(payloads: in List[PluginPayload], runtime: in String): Option[PluginPayload] {
   var i = 0
   while i < payloads.count {
@@ -1428,18 +1471,27 @@ func plFindManaged(payloads: in List[PluginPayload], runtime: in String): Option
 }
 
 /// Choose the payload to run (D207 Decisions 5 and 6), or `None` when none
-/// can run here. In order: a wasm payload when `preferWasm` and
-/// `wasmtimeAvailable`; the native executable for `platform`'s os and arch;
-/// the managed payload of the host's own runtime, then the other managed
-/// runtime (dotnet before jvm); and last a wasm payload when `wasmtime` is
-/// available even though it was not preferred.
+/// can run here. In order: a component payload when `inProcessWasm` (the
+/// host has an available `componentRuntime`); a wasm payload when
+/// `preferWasm` and `wasmtimeAvailable`; the native executable for
+/// `platform`'s os and arch; the managed payload of the host's own runtime,
+/// then the other managed runtime (dotnet before jvm); and last a wasm payload
+/// when `wasmtime` is available even though it was not preferred. Without
+/// `inProcessWasm` component payloads are skipped.
 @experimental
 pub func selectPluginPayload(
   payloads: in List[PluginPayload],
   platform: in PluginPlatform,
   preferWasm: in Bool,
   wasmtimeAvailable: in Bool,
+  inProcessWasm: in Bool,
 ): Option[PluginPayload] {
+  if inProcessWasm {
+    val component = plFindComponent(payloads)
+    if isSome(component) {
+      return component
+    }
+  }
   val wasm = plFindWasm(payloads)
   if preferWasm and wasmtimeAvailable and isSome(wasm) {
     return wasm
@@ -1606,6 +1658,9 @@ pub func pluginLaunchCommand(
     }
     case TrustedManagedPayload(_, library) -> return Err(error = "the trusted payload " + library + " is loaded into the host's process, not launched")
     case TrustedNativePayload(_, _, library) -> return Err(error = "the trusted payload " + library + " is loaded into the host's process, not launched")
+    case ComponentPayload(_) -> return Err(
+      error = "a component payload runs in the host's process (PluginHostConfig.componentRuntime), not as a command"
+    )
     case WasmPayload(file) -> {
       val exe = match wasmtime { case Some(w) -> w; case None -> return Err(error = plWasmtimeMissingMessage()) }
       argv.add(exe)
@@ -1621,16 +1676,59 @@ pub func pluginLaunchCommand(
   Ok(value = argv)
 }
 
+// ── Component runtime ──────────────────────────────────────────────────────
+/// Serves a component's imports: the import's instance name
+/// (`lyric:<p>/<a>-<c>`), its function name and its arguments as a JSON
+/// object keyed by parameter name; the answer is the JSON of the import's
+/// result value.
+@experimental
+pub interface ComponentImports {
+  func serve(instance: in String, function: in String, paramsJson: in String): String
+}
+
+/// Why a component instance did not start.
+@experimental
+pub union ComponentStartFailure {
+  /// The component cannot be linked (an import that is not a function), or
+  /// the runtime failed.
+  case ComponentLinkFailed(message: String)
+  /// The component trapped while it started.
+  case ComponentStartTrapped(message: String)
+  /// Starting took longer than the timeout.
+  case ComponentStartTimedOut(message: String)
+}
+
+/// An in-process runtime for component payloads (docs/69 §9.3), given to a
+/// host through `PluginHostConfig.componentRuntime`.
+/// `Std.PluginWasm.inProcessWasmRuntime()` embeds wasmtime. Components and
+/// instances are positive ids; every value crosses as JSON text in D207's
+/// encoding. `callExport` answers an envelope: `{"ok": <result>}`,
+/// `{"trap": "<message>"}`, `{"timeout": <ms>}`, `{"missing": "<export>"}`,
+/// `{"invalid": "<message>"}` or `{"busy": "<message>"}`.
+@experimental
+pub interface ComponentRuntime {
+  func available(): Bool
+  func unavailableReason(): String
+  func load(path: in String): Result[Long, String]
+  func unload(component: in Long): Unit
+  func instantiate(component: in Long, maxMemoryBytes: in Long, timeoutMs: in Int, imports: in ComponentImports): Result[Long, ComponentStartFailure]
+  func callExport(instance: in Long, name: in String, paramsJson: in String, timeoutMs: in Int): String
+  func hasExport(instance: in Long, name: in String): Bool
+  func close(instance: in Long): Unit
+}
+
 // ── Host ───────────────────────────────────────────────────────────────────
 /// The host's configuration (D207 Decision 7). Timeouts are milliseconds.
 /// `restartBackoffMs` is the wait before the first restart of a crashed
 /// plugin, doubled for each later one up to `maxRestartBackoffMs`;
 /// `shutdownGraceMs` is how long `stopPlugin` waits for a plugin to exit
-/// before killing it; `wasmMaxMemoryBytes` bounds a wasm plugin's memory.
-/// `trustedLoader` enables trusted mode (docs/69 §10): with one, a plugin
-/// the grant policy marks trusted is loaded into this process from its
-/// trusted payload; `callTimeoutMs`, `startTimeoutMs` and the restart
-/// settings do not apply to it.
+/// before killing it; `wasmMaxMemoryBytes` bounds a wasm or component
+/// plugin's memory. `trustedLoader` enables trusted mode (docs/69 §10):
+/// with one, a plugin the grant policy marks trusted is loaded into this
+/// process from its trusted payload; `callTimeoutMs`, `startTimeoutMs` and
+/// the restart settings do not apply to it. `componentRuntime` hosts
+/// component payloads in-process (`Std.PluginWasm.inProcessWasmRuntime()`);
+/// without one they are skipped.
 @experimental
 pub record PluginHostConfig {
   points: List[PluginPointInfo]
@@ -1645,6 +1743,7 @@ pub record PluginHostConfig {
   shutdownGraceMs: Int = 2000
   wasmMaxMemoryBytes: Long = 268435456i64
   trustedLoader: Option[TrustedLoader] = None
+  componentRuntime: Option[ComponentRuntime] = None
 }
 
 /// Capabilities revoked from one plugin; shared by its process state and the
@@ -1669,6 +1768,9 @@ pub record PluginProcessState {
   launch: List[String]
   trusted: Option[TrustedLibrary]
   var server: Option[PluginServer]
+  component: String
+  var wasmComponent: Long
+  var wasmInstance: Long
   var peer: Option[RpcPeer]
   var process: Option[PipedProcess]
   var methods: List[PluginPointMethods]
@@ -2033,18 +2135,45 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
   }
   val wasmtime = findWasmtime()
   val platform = currentPluginPlatform()
-  val processPayload = selectPluginPayload(manifest.payloads, platform, host.config.preferWasm, isSome(wasmtime))
+  // A protocol plugin speaks its own protocol on stdin and stdout, which a
+  // component does not have.
+  var protocolPlugin = false
+  var pp = 0
+  while pp < offered.count {
+    if isSome(offered[pp].protocol) {
+      protocolPlugin = true
+    }
+    pp = pp + 1
+  }
+  val inProcess = not protocolPlugin and isSome(plFindComponent(manifest.payloads)) and
+    plComponentRuntimeAvailable(host.config)
+  val processPayload = selectPluginPayload(
+    manifest.payloads,
+    platform,
+    host.config.preferWasm,
+    isSome(wasmtime),
+    inProcess
+  )
   val trustedPayload = plTrustedCandidate(host.config, manifest, offered, platform)
   if isNone(processPayload) and isNone(trustedPayload) {
-    return Some(value = plIssue(NoUsablePayload, dir, id, "no payload of this plugin can run on this host"))
+    return Some(value = plIssue(NoUsablePayload, dir, id, plNoPayloadMessage(host.config, manifest)))
   }
   var launch: List[String] = newList()
+  var component = ""
   match processPayload {
-    case Some(payload) -> match pluginLaunchCommand(payload, dir, wasmtime, host.config.wasmMaxMemoryBytes) {
-      case Ok(argv) -> {
-        launch = argv
+    case Some(payload) -> match payload {
+      case ComponentPayload(file) -> match plWithin(dir, file) {
+        case Ok(path) -> {
+          component = path
+        }
+        case Err(e) -> return Some(value = plIssue(ManifestInvalid, dir, id, e))
       }
-      case Err(e) -> return Some(value = plIssue(ManifestInvalid, dir, id, e))
+      case _ -> match pluginLaunchCommand(payload, dir, wasmtime, host.config.wasmMaxMemoryBytes) {
+        case Ok(argv) -> {
+          launch = argv
+        }
+        case Err(e) -> return Some(value = plIssue(ManifestInvalid, dir, id, e))
+      }
     }
     case None -> ()
   }
@@ -2151,6 +2280,9 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     launch = launch,
     trusted = trusted,
     server = None,
+    component = if isSome(trusted) { "" } else { component },
+    wasmComponent = 0i64,
+    wasmInstance = 0i64,
     peer = None,
     process = None,
     methods = newList(),
@@ -2443,8 +2575,10 @@ impl RpcHandler for PluginHostInbound {
 }
 
 // ── Host side: lifecycle ───────────────────────────────────────────────────
-// Kill the plugin's process (if any) and forget it.
+// Kill the plugin's process (if any), or drop its component instance, and
+// forget it. A compiled component stays loaded for the restart.
 func plTeardown(st: inout PluginProcessState): Unit {
+  plCloseComponentInstance(st)
   match st.process {
     case Some(proc) -> {
       pipedKill(proc)
@@ -2577,6 +2711,501 @@ func plParseHello(st: in PluginProcessState, v: in JsonValue): Result[List[Plugi
     i = i + 1
   }
   Ok(value = acc)
+}
+
+// ── Host side: component mode (docs/69 §9.3) ───────────────────────────────
+func plComponentRuntimeAvailable(config: in PluginHostConfig): Bool {
+  match config.componentRuntime {
+    case Some(rt) -> rt.available()
+    case None -> false
+  }
+}
+
+// Why `selectPluginPayload` found nothing, naming the missing component
+// runtime when the plugin ships only payloads that need one.
+func plNoPayloadMessage(config: in PluginHostConfig, manifest: in PluginManifest): String {
+  val base = "no payload of this plugin can run on this host"
+  if isNone(plFindComponent(manifest.payloads)) {
+    return base
+  }
+  match config.componentRuntime {
+    case None -> base + " (its component payload needs PluginHostConfig.componentRuntime)"
+    case Some(rt) -> if rt.available() {
+      base
+    } else {
+      base + " (its component payload cannot run: " + rt.unavailableReason() + ")"
+    }
+  }
+}
+
+func plIsWitKeyword(w: in String): Bool {
+  w == "use" or w == "type" or w == "func" or w == "u8" or w == "u16" or w == "u32" or w == "u64" or w == "s8" or
+    w == "s16" or
+    w == "s32" or
+    w == "s64" or
+    w == "f32" or
+    w == "f64" or
+    w == "char" or
+    w == "record" or
+    w == "flags" or
+    w == "variant" or
+    w == "enum" or
+    w == "bool" or
+    w == "string" or
+    w == "option" or
+    w == "result" or
+    w == "list" or
+    w == "tuple" or
+    w == "as" or
+    w == "from" or
+    w == "static" or
+    w == "interface" or
+    w == "world" or
+    w == "import" or
+    w == "export" or
+    w == "package" or
+    w == "constructor" or
+    w == "include" or
+    w == "with" or
+    w == "resource" or
+    w == "own" or
+    w == "borrow" or
+    w == "future" or
+    w == "stream"
+}
+
+func plIsUpper(c: in Char): Bool {
+  c >= 'A' and c <= 'Z'
+}
+
+func plIsLower(c: in Char): Bool {
+  c >= 'a' and c <= 'z'
+}
+
+/// The WIT kebab-case spelling of a Lyric name, as the component shape
+/// writes it (`Lyric.ComponentGlue.witName`): `noteToolSummarize` and
+/// `NoteTool_summarize` become `note-tool-summarize`, an acronym stays one
+/// word, `.` separates words, and a WIT keyword is escaped with `%`.
+@pure
+@experimental
+pub func pluginWitName(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    val prev = if i > 0 { Str.charAtOrReplacement(s, i - 1) } else { ' ' }
+    val next = if i + 1 < s.length { Str.charAtOrReplacement(s, i + 1) } else { ' ' }
+    if c == '_' or c == '.' or c == '-' {
+      if acc.length > 0 and not Str.endsWith(acc, "-") {
+        acc = acc + "-"
+      }
+    } else if plIsUpper(c) {
+      val boundary = plIsLower(prev) or plIsDigit(prev) or (plIsUpper(prev) and plIsLower(next))
+      if boundary and acc.length > 0 and not Str.endsWith(acc, "-") {
+        acc = acc + "-"
+      }
+      acc = acc + Ch.asciiToLower(c).toString()
+    } else {
+      acc = acc + c.toString()
+    }
+    i = i + 1
+  }
+  if plIsWitKeyword(acc) {
+    "%" + acc
+  } else {
+    acc
+  }
+}
+
+/// The Lyric spelling of a WIT name: the first segment as written, every
+/// later segment with its first letter capitalised (`note-tool` is
+/// `noteTool`); a `%` keyword escape is dropped.
+@pure
+@experimental
+pub func pluginCamelName(wit: in String): String {
+  val bare = if Str.startsWith(wit, "%") { Str.substring(wit, 1) } else { wit }
+  val parts = plSplit(bare, "-")
+  var acc = ""
+  var i = 0
+  while i < parts.count {
+    val part = parts[i]
+    if i == 0 or part.length == 0 {
+      acc = acc + part
+    } else {
+      acc = acc + Ch.asciiToUpper(Str.charAtOrReplacement(part, 0)).toString() + Str.substring(part, 1)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The export a point method maps to: witName(<ptLower><M>), where <Pt> is
+// the point's simple name (`Editor.Api.NoteTool` -> `noteTool`).
+func plPointExportName(pointId: in String, method: in String): String {
+  val dot = match Str.lastIndexOf(pointId, ".") { case Some(d) -> d; case None -> -1 }
+  val simple = Str.substring(pointId, dot + 1)
+  if simple.length == 0 or method.length == 0 {
+    return pluginWitName(simple + method)
+  }
+  val ptLower = Ch.asciiToLower(Str.charAtOrReplacement(simple, 0)).toString() + Str.substring(simple, 1)
+  val upper = Ch.asciiToUpper(Str.charAtOrReplacement(method, 0)).toString() + Str.substring(method, 1)
+  pluginWitName(ptLower + upper)
+}
+
+// A `CallErrorWire` value for a boundary error (contract §2): the case and
+// the field names of `BoundaryError`.
+func plCallErrorWire(b: in BoundaryError): JsonValue {
+  val fields: List[JsonField] = newList()
+  match b {
+    case Denied(r) -> {
+      fields.add(plField("case", JString(value = "Denied")))
+      fields.add(plField("reason", JString(value = r)))
+    }
+    case NotGranted(c) -> {
+      fields.add(plField("case", JString(value = "NotGranted")))
+      fields.add(plField("capability", JString(value = c)))
+    }
+    case Stale -> fields.add(plField("case", JString(value = "Stale")))
+    case Unsupported(m) -> {
+      fields.add(plField("case", JString(value = "Unsupported")))
+      fields.add(plField("method", JString(value = m)))
+    }
+    case Revoked(c) -> {
+      fields.add(plField("case", JString(value = "Revoked")))
+      fields.add(plField("capability", JString(value = c)))
+    }
+    case ContractViolated(d) -> {
+      fields.add(plField("case", JString(value = "ContractViolated")))
+      fields.add(plField("detail", JString(value = d)))
+    }
+    case Timeout(ms) -> {
+      fields.add(plField("case", JString(value = "Timeout")))
+      fields.add(plField("timeoutMs", JInt(value = ms.toLong())))
+    }
+    case Crashed(d) -> {
+      fields.add(plField("case", JString(value = "Crashed")))
+      fields.add(plField("detail", JString(value = d)))
+    }
+    case Protocol(d) -> {
+      fields.add(plField("case", JString(value = "Protocol")))
+      fields.add(plField("detail", JString(value = d)))
+    }
+  }
+  JObject(fields = fields)
+}
+
+func plErrAnswer(v: in JsonValue): String {
+  val fields: List[JsonField] = newList()
+  fields.add(plField("err", v))
+  writeValue(JObject(fields = fields))
+}
+
+// Serves a component plugin's imports: each capability import instance is
+// matched to a capability the plugin requested, and the call runs through
+// `plServeCapability` with the plugin's grants and revocations, exactly as a
+// process plugin's `cap/...` request does.
+record PluginComponentImports {
+  caps: PluginCapabilityServer
+  requested: List[String]
+}
+
+impl ComponentImports for PluginComponentImports {
+  func serve(instance: in String, function: in String, paramsJson: in String): String {
+    plServeComponentImport(self, instance, function, paramsJson)
+  }
+}
+
+func plServeComponentImport(
+  imports: in PluginComponentImports,
+  instance: in String,
+  function: in String,
+  paramsJson: in String,
+): String {
+  val at = match Str.lastIndexOf(instance, "@") { case Some(a) -> a; case None -> -1 }
+  val unversioned = if at > 0 { Str.substring(instance, 0, at) } else { instance }
+  val slash = match Str.lastIndexOf(unversioned, "/") { case Some(x) -> x; case None -> -1 }
+  val iface = Str.substring(unversioned, slash + 1)
+  var capability = ""
+  var i = 0
+  while i < imports.requested.count {
+    if pluginWitName(imports.requested[i]) == iface {
+      capability = imports.requested[i]
+    }
+    i = i + 1
+  }
+  if capability.length == 0 {
+    return plErrAnswer(
+      plCallErrorWire(
+        Denied(reason = "the plugin imports '" + instance + "', which is not a capability it requested")
+      )
+    )
+  }
+  val method = "cap/" + capability + "/" + pluginCamelName(function)
+  val params = match parseValue(paramsJson) {
+    case Ok(v) -> v
+    case Err(_) -> return plErrAnswer(plCallErrorWire(Protocol(detail = "the arguments of " + method + " are not JSON")))
+  }
+  match plServeCapability(imports.caps, method, Some(value = params)) {
+    case Ok(answer) -> match getField(answer, "ok") {
+      case Some(_) -> writeValue(answer)
+      case None -> match getField(answer, "err") {
+        case Some(e) -> {
+          val app: List[JsonField] = newList()
+          app.add(plField("case", JString(value = "App")))
+          app.add(plField("error", e))
+          plErrAnswer(JObject(fields = app))
+        }
+        case None -> plErrAnswer(
+          plCallErrorWire(
+            Protocol(
+              detail = "the provider of " + method +
+                " answered neither ok nor err"
+            )
+          )
+        )
+      }
+    }
+    case Err(e) -> plErrAnswer(plCallErrorWire(boundaryErrorFromRpc(e, method)))
+  }
+}
+
+func plRequestedCapabilities(m: in PluginManifest): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < m.required.count {
+    acc.add(m.required[i].name)
+    i = i + 1
+  }
+  var j = 0
+  while j < m.optional.count {
+    acc.add(m.optional[j].name)
+    j = j + 1
+  }
+  acc
+}
+
+func plCloseComponentInstance(st: inout PluginProcessState): Unit {
+  if st.wasmInstance > 0i64 {
+    match st.config.componentRuntime {
+      case Some(rt) -> rt.close(st.wasmInstance)
+      case None -> ()
+    }
+    st.wasmInstance = 0i64
+  }
+}
+
+// One parsed envelope from `ComponentRuntime.callExport`.
+union ComponentOutcome {
+  case ComponentOk(value: JsonValue)
+  case ComponentTrap(message: String)
+  case ComponentTimedOut
+  case ComponentMissing(name: String)
+  case ComponentInvalid(message: String)
+}
+
+func plComponentOutcome(envelope: in String): ComponentOutcome {
+  val v = match parseValue(envelope) {
+    case Ok(parsed) -> parsed
+    case Err(_) -> return ComponentInvalid(message = "the component runtime answered something that is not JSON")
+  }
+  match getField(v, "ok") {
+    case Some(ok) -> return ComponentOk(value = ok)
+    case None -> ()
+  }
+  match getString(v, "trap") {
+    case Some(t) -> return ComponentTrap(message = t)
+    case None -> ()
+  }
+  match getField(v, "timeout") {
+    case Some(_) -> return ComponentTimedOut
+    case None -> ()
+  }
+  match getString(v, "missing") {
+    case Some(m) -> return ComponentMissing(name = m)
+    case None -> ()
+  }
+  match getString(v, "busy") {
+    case Some(b) -> return ComponentInvalid(message = b)
+    case None -> ()
+  }
+  ComponentInvalid(
+    message = unwrapOr(getString(v, "invalid"), "unexpected answer from the component runtime: " + envelope)
+  )
+}
+
+// The methods a component reports through `plugin-methods`, grouped by the
+// points the host offered it.
+func plComponentMethods(st: in PluginProcessState, names: in JsonValue): Result[List[PluginPointMethods], String] {
+  val items = match names {
+    case JArray(xs) -> xs
+    case _ -> return Err(error = "plugin-methods must return a list of strings")
+  }
+  val acc: List[PluginPointMethods] = newList()
+  var p = 0
+  while p < st.points.count {
+    val info = st.points[p]
+    val methods: List[String] = newList()
+    var k = 0
+    while k < items.count {
+      match items[k] {
+        case JString(s) -> {
+          val slash = match Str.lastIndexOf(s, "/") { case Some(x) -> x; case None -> -1 }
+          if slash > 0 and Str.substring(s, 0, slash) == info.id {
+            methods.add(Str.substring(s, slash + 1))
+          }
+        }
+        case _ -> return Err(error = "plugin-methods must return a list of strings")
+      }
+      k = k + 1
+    }
+    var version = info.version
+    var d = 0
+    while d < st.manifest.points.count {
+      if st.manifest.points[d].point == info.id {
+        version = st.manifest.points[d].version
+      }
+      d = d + 1
+    }
+    acc.add(PluginPointMethods(point = info.id, version = version, methods = methods))
+    p = p + 1
+  }
+  Ok(value = acc)
+}
+
+func plComponentFatal(st: inout PluginProcessState, b: in BoundaryError): BoundaryError {
+  plTeardown(st)
+  st.fatal = Some(value = b)
+  b
+}
+
+// Instantiate the component (loading it on the first start), attach it to
+// its grants and read its methods. A trap or a timeout while starting is a
+// crash, restarted under process mode's rules; a component that cannot be
+// loaded or linked, or that refuses its grants, fails for good.
+func plStartComponent(st: inout PluginProcessState, rt: in ComponentRuntime): Result[Unit, BoundaryError] {
+  if st.crashes > 0 {
+    val wait = plBackoffMs(st.config, st.crashes) - ((monotonicNanos() - st.lastCrashNanos) / 1000000i64).toInt()
+    if wait > 0 {
+      sleepMillis(wait)
+    }
+  }
+  if st.wasmComponent <= 0i64 {
+    match rt.load(st.component) {
+      case Ok(id) -> {
+        st.wasmComponent = id
+      }
+      case Err(e) -> return Err(error = plComponentFatal(st, Protocol(detail = "cannot load the component: " + e)))
+    }
+  }
+  val imports = PluginComponentImports(
+    caps = PluginCapabilityServer(
+      providers = st.config.providers,
+      grants = st.grants,
+      revocations = st.revocations
+    ),
+    requested = plRequestedCapabilities(st.manifest)
+  )
+  match rt.instantiate(st.wasmComponent, st.config.wasmMaxMemoryBytes, st.config.startTimeoutMs, imports) {
+    case Ok(inst) -> {
+      st.wasmInstance = inst
+    }
+    case Err(f) -> match f {
+      case ComponentLinkFailed(m) -> return Err(error = plComponentFatal(st, Protocol(detail = "the component cannot be linked: " + m)))
+      case ComponentStartTrapped(m) -> return Err(error = plNoteCrash(st, "the component trapped while starting: " + m))
+      case ComponentStartTimedOut(m) -> return Err(error = plNoteCrash(st, m))
+    }
+  }
+  val hello = plHelloParams(st)
+  val grants = unwrapOr(getField(hello, "grants"), JArray(items = newList()))
+  val attachParams: List[JsonField] = newList()
+  attachParams.add(plField("grants", JString(value = writeValue(grants))))
+  val attached = rt.callExport(
+    st.wasmInstance,
+    "plugin-attach",
+    writeValue(JObject(fields = attachParams)),
+    st.config.startTimeoutMs
+  )
+  match plComponentOutcome(attached) {
+    case ComponentOk(v) -> match getField(v, "err") {
+      case Some(e) -> {
+        val why = match e { case JString(s) -> s; case _ -> writeValue(e) }
+        return Err(error = plComponentFatal(st, Protocol(detail = "the plugin refused its grants: " + why)))
+      }
+      case None -> ()
+    }
+    case ComponentTrap(m) -> return Err(error = plNoteCrash(st, "plugin-attach trapped: " + m))
+    case ComponentTimedOut -> return Err(
+      error = plNoteCrash(st, "plugin-attach did not finish within " + st.config.startTimeoutMs.toString() + " ms")
+    )
+    case ComponentMissing(_) -> return Err(error = plComponentFatal(st, Protocol(detail = "the component exports no plugin-attach")))
+    case ComponentInvalid(m) -> return Err(error = plComponentFatal(st, Protocol(detail = "plugin-attach: " + m)))
+  }
+  match plComponentOutcome(rt.callExport(st.wasmInstance, "plugin-methods", "{}", st.config.startTimeoutMs)) {
+    case ComponentOk(v) -> match plComponentMethods(st, v) {
+      case Ok(methods) -> {
+        st.methods = methods
+      }
+      case Err(m) -> return Err(error = plComponentFatal(st, Protocol(detail = m)))
+    }
+    case ComponentTrap(m) -> return Err(error = plNoteCrash(st, "plugin-methods trapped: " + m))
+    case ComponentTimedOut -> return Err(
+      error = plNoteCrash(
+        st,
+        "plugin-methods did not finish within " + st.config.startTimeoutMs.toString() + " ms"
+      )
+    )
+    case ComponentMissing(_) -> return Err(error = plComponentFatal(st, Protocol(detail = "the component exports no plugin-methods")))
+    case ComponentInvalid(m) -> return Err(error = plComponentFatal(st, Protocol(detail = "plugin-methods: " + m)))
+  }
+  Ok(value = ())
+}
+
+// A point call of a component plugin: the export `witName(<ptLower><M>)`
+// with the params object, bounded by `callTimeoutMs`. A trap is `Crashed`
+// (re-instantiated on the next call, counted towards `maxRestarts`); a
+// timeout stops the guest, returns `Timeout` and drops the instance, which
+// the next call replaces without counting a crash.
+func plComponentCall(
+  st: inout PluginProcessState,
+  method: in String,
+  pointId: in String,
+  name: in String,
+  params: in JsonValue,
+): Result[JsonValue, BoundaryError] {
+  match st.fatal {
+    case Some(b) -> return Err(error = b)
+    case None -> ()
+  }
+  val rt = match st.config.componentRuntime {
+    case Some(r) -> r
+    case None -> return Err(error = Protocol(detail = "a component plugin needs PluginHostConfig.componentRuntime"))
+  }
+  if st.wasmInstance <= 0i64 {
+    match plStartComponent(st, rt) {
+      case Ok(_) -> ()
+      case Err(b) -> return Err(error = b)
+    }
+  }
+  val implemented = match plMethodsFor(st, pointId) {
+    case Some(pm) -> plContainsString(pm.methods, name)
+    case None -> false
+  }
+  if not implemented {
+    return Err(error = Unsupported(method = method))
+  }
+  val timeoutMs = st.config.callTimeoutMs
+  val exportName = plPointExportName(pointId, name)
+  match plComponentOutcome(rt.callExport(st.wasmInstance, exportName, writeValue(params), timeoutMs)) {
+    case ComponentOk(v) -> Ok(value = v)
+    case ComponentTrap(m) -> Err(error = plNoteCrash(st, "the plugin trapped in " + method + ": " + m))
+    case ComponentTimedOut -> {
+      plCloseComponentInstance(st)
+      st.methods = newList()
+      Err(error = Timeout(timeoutMs = timeoutMs))
+    }
+    case ComponentMissing(_) -> Err(error = Unsupported(method = method))
+    case ComponentInvalid(m) -> Err(error = Protocol(detail = method + ": " + m))
+  }
 }
 
 // Start the plugin and complete the handshake.
@@ -2887,6 +3516,9 @@ func plHostCall(st: inout PluginProcessState, method: in String, params: in Json
     case Some(library) -> return plTrustedCall(st, library, method, pointId, name, wireParams)
     case None -> ()
   }
+  if st.component.length > 0 {
+    return plComponentCall(st, method, pointId, name, wireParams)
+  }
   val started = match plEnsureStarted(st) { case Ok(p) -> p; case Err(b) -> return Err(error = b) }
   val implemented = match plMethodsFor(st, pointId) {
     case Some(pm) -> plContainsString(pm.methods, name)
@@ -2950,12 +3582,21 @@ pub func callPlugin(
 // Ask the plugin to stop, close its stdin, and kill it if it has not exited
 // within the grace period.  A trusted plugin's server is dropped instead: its
 // library stays loaded (nothing is unloaded in trusted mode, docs/69 Q-PLG-009)
-// and the next call attaches a fresh server from it.
+// and the next call attaches a fresh server from it.  A component plugin's
+// instance is dropped and its compiled component released.
 func plShutdown(st: inout PluginProcessState): Unit {
   if isSome(st.trusted) {
     st.server = None
     st.methods = newList()
     return ()
+  }
+  plCloseComponentInstance(st)
+  if st.wasmComponent > 0i64 {
+    match st.config.componentRuntime {
+      case Some(rt) -> rt.unload(st.wasmComponent)
+      case None -> ()
+    }
+    st.wasmComponent = 0i64
   }
   match st.peer {
     case Some(p) -> {

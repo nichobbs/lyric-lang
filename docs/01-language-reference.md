@@ -3919,7 +3919,25 @@ stopAllPlugins(host)
 `PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
 (10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`
 (10000), `shutdownGraceMs` (2000), `preferWasm` (true),
-`wasmMaxMemoryBytes` (256 MiB) and `trustedLoader` (`None`; see §15.7).
+`wasmMaxMemoryBytes` (256 MiB), `trustedLoader` (`None`; see §15.7) and
+`componentRuntime` (`None`), the in-process runtime for component payloads
+(§15.7). `Std.PluginWasm` provides it: `inProcessWasmRuntime()` embeds wasmtime, `hasInProcessWasm()` reports
+whether the embedding can run in this process, and
+`inProcessWasmUnavailableReason()` says why not. `Std.Plugin` does not import
+`Std.PluginWasm`, so a host opts in:
+
+```lyric
+import Std.PluginWasm
+
+val host = newPluginHost(
+  PluginHostConfig(
+    points = [noteToolPointInfo()],
+    providers = providers,
+    policy = NotesPolicy(),
+    componentRuntime = Some(value = inProcessWasmRuntime())
+  )
+)
+```
 
 Loading reads each `<dir>/<id>-<version>/plugin.json`, matches the plugin's
 points (a different major version is `K0103`), asks the policy for grants,
@@ -3971,6 +3989,7 @@ A plugin artifact is a directory, `<id>-<version>/`, holding `plugin.json`
 | `{"mode": "process", "runtime": "jvm", ...}` | `java -jar <jar>` (`$JAVA_HOME/bin/java` when set) |
 | `{"mode": "process", "os": ..., "arch": ..., ...}` | the native executable, on a matching host |
 | `{"mode": "wasm", "module": "<file>.wasm"}` | `wasmtime run -W max-memory-size=<bytes> <module>` |
+| `{"mode": "component", "component": "<file>.wasm"}` | a WIT-typed component, in the host's process |
 
 **Process mode** runs every target's payload, and a host on any target runs a
 plugin built for any other. **Wasm mode** runs a plugin built with
@@ -4026,6 +4045,36 @@ with `ContractViolated`. There are no restarts and no call timeout.
 one; nothing is ever unloaded. A trusted JVM plugin's own packages must not
 share names with the host's (the class loader delegates to the host first,
 so such a plugin is refused at load).
+
+**Component mode** runs a component payload inside the host's process on
+dotnet, JVM and native hosts, when the host's `componentRuntime` is available
+(`hasInProcessWasm()`); a host without one skips component payloads and
+chooses among the others as above, and with one it prefers a component payload
+to every other. The runtime (`lyric-rt/src/lyric_wasmhost.c` over the
+wasmtime 49 C API) gives each plugin its own store and a WASI p2 context with
+no directories, environment, arguments or network, inheriting only stderr. A
+plugin's first call instantiates it, passes its grants to its
+`plugin-attach` export (a refusal is final, `Protocol`) and reads its methods
+from `plugin-methods`; a point call `<Pkg>.<P>/<m>` calls the export
+`<p>-<m>` (the WIT name of `<pLower><M>`) with the arguments taken from the
+params object by parameter name. Its capability imports are served exactly as
+a process plugin's `cap/...` requests: the plugin's grants, revocations and
+`requires:` guards apply, and the answer is the import's
+`result<T, call-error-wire>`. Values cross in the JSON encoding of §15.5,
+converted to and from component values by the runtime. A trap is `Crashed`
+and the next call re-instantiates the plugin, with process mode's backoff and
+`maxRestarts`; a call that runs past `callTimeoutMs` is stopped where it is by
+epoch interruption and returns `Timeout`, and the next call re-instantiates
+without counting a crash, so a component plugin's CPU is bounded by the
+call timeout even when it never yields (#8465 remains for process and wasm
+mode); linear memory is capped at `wasmMaxMemoryBytes`. On dotnet and the JVM
+the runtime is the shared library `liblyric_wasmhost` (`make -C lyric-rt
+wasmhost`), loaded from `$LYRIC_WASMHOST_LIB` or found by the runtime's own
+search (next to the program or `Lyric.Stdlib.dll` on .NET, the loader path on
+both); a native host links it from `lyric_rt.a`. Either way it loads
+libwasmtime at run time from `$LYRIC_WASMTIME_LIB`, next to itself, or the
+loader path, so a host links no wasmtime and `hasInProcessWasm()` is false
+where it is missing. The runtime is not available on Windows hosts yet (#8542).
 
 ### 15.8 `lyric plugin`
 

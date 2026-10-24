@@ -23,13 +23,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-WASI_SDK_VERSION="34"
-WASI_SDK_SHA256="b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4"
+# wasi-sdk, wasm-tools and the preview1 adapter are pinned in
+# fetch-wasm-toolchain.sh, which scripts/ci/plugin-component-e2e.sh shares.
 WASMTIME_VERSION="49.0.3"
 WASMTIME_SHA256="4001225413f208345b980525f31c4080e1873808b38d0ddc7918497340667fbb"
-WASM_TOOLS_VERSION="1.262.0"
-WASM_TOOLS_SHA256="655b8df67d54c3ef9b52fc237c4e94bbfbb5f5f43825245cb0940a7002a9ed65"
-WASI_ADAPTER_SHA256="79fa20ff8d49f1aba13d25af4fd616a1431028fff954b2927e55fcac4fefd6e3"
 JCO_VERSION="1.39.0"
 PREVIEW2_SHIM_VERSION="0.30.0"
 PREVIEW3_SHIM_VERSION="0.11.0"
@@ -42,23 +39,11 @@ WAC_SHA256="7cd490edbd452221ef89e6750fc43eacc9b71b1242095eb577cb9a3bf0d3beda"
 NODE_VERSION="24.22.0"
 NODE_SHA256="cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008"
 
-tools="${LYRIC_WASM_TOOLCACHE:-${RUNNER_TEMP:-$(mktemp -d)}/wasm-tools}"
-mkdir -p "$tools"
-
-fetch() { # url sha256 dest-tarball
-  if [ ! -f "$3" ]; then
-    curl -fsSL "$1" -o "$3.part"
-    echo "$2  $3.part" | sha256sum -c -
-    mv "$3.part" "$3"
-  fi
-}
-
-wasi_dir="$tools/wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux"
-if [ ! -d "$wasi_dir" ]; then
-  fetch "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-x86_64-linux.tar.gz" \
-    "$WASI_SDK_SHA256" "$tools/wasi-sdk.tar.gz"
-  tar -xzf "$tools/wasi-sdk.tar.gz" -C "$tools"
-fi
+# shellcheck source=scripts/ci/fetch-wasm-toolchain.sh
+source scripts/ci/fetch-wasm-toolchain.sh
+tools="$LYRIC_WASM_TOOLCACHE"
+wasi_dir="$LYRIC_WASI_SDK_DIR"
+fetch() { lyric_wasm_fetch "$@"; }
 
 wasmtime_dir="$tools/wasmtime-v${WASMTIME_VERSION}-x86_64-linux"
 if [ ! -d "$wasmtime_dir" ]; then
@@ -67,17 +52,8 @@ if [ ! -d "$wasmtime_dir" ]; then
   tar -xJf "$tools/wasmtime.tar.xz" -C "$tools"
 fi
 
-wt_dir="$tools/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux"
-if [ ! -d "$wt_dir" ]; then
-  fetch "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" \
-    "$WASM_TOOLS_SHA256" "$tools/wasm-tools.tar.gz"
-  tar -xzf "$tools/wasm-tools.tar.gz" -C "$tools"
-fi
-
-# The preview1 reactor adapter ships with wasmtime's releases.
-adapter="$tools/wasi_snapshot_preview1.reactor.wasm"
-fetch "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VERSION}/wasi_snapshot_preview1.reactor.wasm" \
-  "$WASI_ADAPTER_SHA256" "$adapter"
+wt_dir="$(dirname "$LYRIC_WASM_TOOLS_BIN")"
+adapter="$LYRIC_WASI_ADAPTER_FILE"
 
 # jco transpiles the component for node; pinned alongside its WASI shims (the
 # preview3 shim backs the WASI 0.3 clock an async component waits on).
@@ -136,3 +112,9 @@ LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-e2e.sh "$lyric_bi
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet wasm
 # lyric-ui plugin widgets with wasm payloads (D230).
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet wasm
+# The in-process wasmtime embedding (docs/69 §9.3): its C unit tests against a
+# hand-written component, then a component plugin hosted by dotnet and native
+# hosts (the JVM host runs in the JVM job, which has JDK 22).
+make -C lyric-rt test-wasmhost WASMTIME_CAPI="$(bash scripts/ci/fetch-wasmtime-capi.sh)" WASM_TOOLS="$wt_dir/wasm-tools"
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" \
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/plugin-component-e2e.sh dotnet native
