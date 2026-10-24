@@ -1238,6 +1238,7 @@ func renderMarkerWhere(wc: in Option[WhereClause]): String {
   }
 }
 
+// Keep in sync with `isOperatorMarker` (mono.l), plus the non-operator markers.
 func isBuiltinMarkerName(name: in String): Bool {
   name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare" or
     name == "Equals" or

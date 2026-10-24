@@ -3781,12 +3781,6 @@ func substTypesEOB(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
   }
 }
 
-// `f[T](...)` inside a generic whose own parameter `T` is an explicit type
-// argument of the call: the parser spells the type application as an index,
-// whose `T` is a name, not a type, so specialising the enclosing generic
-// rewrites the call to a type application over the substituted types
-// (#8280).  Only when every index is a bare name and at least one is a
-// substituted parameter; any other index is a genuine value index.
 // `T.default()` over a type parameter bound to a scalar primitive is that
 // primitive's zero value (#8017): `0`, `0i64`, `0u32`, `0.0`, `false`, `""`, ...
 // Any other binding keeps the call, which names the bound type.
@@ -3863,6 +3857,12 @@ func scalarZeroMono(te: in TypeExpr): Option[ExprKind] {
   }
 }
 
+// `f[T](...)` inside a generic whose own parameter `T` is an explicit type
+// argument of the call: the parser spells the type application as an index,
+// whose `T` is a name, not a type, so specialising the enclosing generic
+// rewrites the call to a type application over the substituted types
+// (#8280).  Only when every index is a bare name and at least one is a
+// substituted parameter; any other index is a genuine value index.
 func explicitTypeArgsOverParamsMono(subst: in Map[String, TypeExpr], fn: in Expr): Option[Expr] {
   match fn.kind {
     case EIndex(recv, idxs) -> {
@@ -10227,8 +10227,6 @@ func substMentionsArrayMono(subst: in Map[String, TypeExpr]): Bool {
   false
 }
 
-// True when a type argument of `subst` is or holds a named type other than a
-// scalar, or a tuple: `==` on it may compare by structure (D172).
 // True when `decl` bounds a type parameter by an operator marker and `subst`
 // binds that parameter to a type that is not a scalar primitive (#7996,
 // #8017).  A scalar primitive needs no lowering: the operator is the
@@ -10254,10 +10252,14 @@ func operatorBoundToStructured(decl: in FunctionDecl, subst: in Map[String, Type
   }
 }
 
+// Keep in sync with the checker's `operatorMarker` (typechecker_exprs.l) and
+// `isBuiltinMarkerName` (contract_meta.l); the packages cannot share a helper.
 func isOperatorMarker(name: in String): Bool {
   name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare"
 }
 
+// True when a type argument of `subst` is or holds a named type other than a
+// scalar, or a tuple: `==` on it may compare by structure (D172).
 func substMentionsStructuredMono(subst: in Map[String, TypeExpr]): Bool {
   for k in mapKeys(subst) {
     match mapGet(subst, k) {
