@@ -764,6 +764,12 @@ pub union MInsn {
   case MConvU1
   case MConvU2
   case MConvU8
+  // Checked narrowing of a signed `int32`/`int64` to a CLR integer Lyric has
+  // no type for (#8482): throws `OverflowException` outside the target's range.
+  case MConvOvfI1
+  case MConvOvfI2
+  case MConvOvfU2
+  case MConvOvfU4
   case MConvI      // conv.i: to native int (a C pointer, D158)
 
   // Object model
@@ -2540,6 +2546,10 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MConvU1 -> emitConv_U1(mb)
     case MConvU2 -> emitConv_U2(mb)
     case MConvU8 -> emitConv_U8(mb)
+    case MConvOvfI1 -> emitConv_Ovf_I1(mb)
+    case MConvOvfI2 -> emitConv_Ovf_I2(mb)
+    case MConvOvfU2 -> emitConv_Ovf_U2(mb)
+    case MConvOvfU4 -> emitConv_Ovf_U4(mb)
     case MConvI -> emitConv_I(mb)
     case MNewobj(tok) -> emitNewobj(mb, tok)
     case MLdfld(tok) -> emitLdfld(mb, tok)

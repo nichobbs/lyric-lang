@@ -418,7 +418,8 @@ pub func compileToJar(
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
     arraysAsLists = true,
-    primitiveArrays = true
+    primitiveArrays = true,
+    foreignRecvClasses = true
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -579,6 +580,7 @@ func runMiddleEnd(
     foreignValueRecordsOut = newList(),
     arraysAsLists = true,
     primitiveArrays = true,
+    foreignRecvClasses = true,
     ioForbiddenReason = ioForbiddenReason,
     quietWarnings = quietWarnings
   )
@@ -680,6 +682,22 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     val isStdlibPkg = pkgName == "Std" or Str.startsWith(pkgName, "Std.")
     pipeAddGenericFuncs(f.items, pkgName, false, true, genFuncs, not isStdlibPkg)
     fi = fi + 1
+  }
+  genFuncs
+}
+
+func collectRestoredGenericFuncsJvm(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    pipeAddGenericFuncs(
+      pipeRestoredItemsWithImports(artifacts[ai].source, artifacts[ai].contract.imports),
+      dottedPath(artifacts[ai].source.packageDecl.path),
+      true,
+      false,
+      genFuncs
+    )
+    ai = ai + 1
   }
   genFuncs
 }
@@ -3498,6 +3516,16 @@ pub func compileProjectToJarBundledWithRestored(
   while sgfj < stdlibGenFuncs.count {
     allMonoFuncs.add(stdlibGenFuncs[sgfj])
     sgfj = sgfj + 1
+  }
+  // A restored dependency's generic `pub func` is never emitted into its
+  // JAR (the library's own monomorphisation drops it), so a call from this
+  // bundle specialises a copy of the contract's body here (#8089; parity
+  // with `Msil.Bridge.collectRestoredGenericFuncs`, #1498).
+  val restoredGenFuncs = collectRestoredGenericFuncsJvm(restoredArtifacts)
+  var rgfj = 0
+  while rgfj < restoredGenFuncs.count {
+    allMonoFuncs.add(restoredGenFuncs[rgfj])
+    rgfj = rgfj + 1
   }
   var sgfi = 0
   while sgfi < stdlibNonGenFuncs.count {

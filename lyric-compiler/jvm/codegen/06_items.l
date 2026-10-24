@@ -6711,10 +6711,18 @@ pub func originScopedExternTypes(
   // seen here under their bare site keys.
   val view: Map[String, String] = newMap()
   val originArity = "~arity~" + origin + "|"
+  val originRecv = "~recv~" + origin + "|"
   for k in mapKeys(externTypes) {
     if k.startsWith(originArity) {
       match mapGet(externTypes, k) {
         case Some(v) -> view.add("~arity~" + k.substring(originArity.length), v)
+        case None -> ()
+      }
+      continue
+    }
+    if k.startsWith(originRecv) {
+      match mapGet(externTypes, k) {
+        case Some(v) -> view.add("~recv~" + k.substring(originRecv.length), v)
         case None -> ()
       }
       continue

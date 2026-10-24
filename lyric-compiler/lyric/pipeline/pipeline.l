@@ -196,6 +196,14 @@ pub record MiddleEndOptions {
   /// intrinsics, for a backend that has typed primitive arrays (the JVM,
   /// #8041).
   primitiveArrays: Bool = false
+  /// Also record, in `memberRecvClassesOut` under `<origin>|<siteKey>`, the
+  /// receiver classes of the bodies of other packages' generics specialised
+  /// into this one, resolved by checking those bodies in the declaring
+  /// package's scope (`foreignMemberRecvClasses`).  For a backend that
+  /// erases generics and narrows an erased receiver with them (the JVM): a
+  /// specialised copy carries the declaring package's spans, which this
+  /// package's own check never saw (#7868).
+  foreignRecvClasses: Bool = false
   /// Leave the type checker's warnings unreported: a dependency compiled
   /// from source into a consumer's build was already reported when the
   /// dependency itself was built.
@@ -1722,6 +1730,16 @@ pub func pipeCheckAndMono(
     opts.methodCallAritiesOut,
     foreignDotCalls
   )
+  if opts.foreignRecvClasses {
+    foreignMemberRecvClasses(
+      monoRes0.foreignSpecs,
+      file0,
+      importedPkgs,
+      monoGenFuncs,
+      opts.nativeIntrinsics,
+      opts.memberRecvClassesOut
+    )
+  }
   val foreignUnitSites = foreignUnitLambdaSites(
     monoRes0.foreignSpecs,
     file0,
@@ -2035,6 +2053,79 @@ pub func foreignMethodCallArities(
       case None -> ()
     }
   }
+}
+
+// The receiver classes (`SymbolTable.memberRecvClasses`) of the bodies of
+// `specs`, specialisations of other packages' generics, resolved in the scope
+// of the package declaring each generic and recorded in `acc` under
+// `<origin>|<siteKey>`.  A receiver's class is that of its nominal type, which
+// no specialisation of the generic changes (a type parameter has none), so one
+// specialisation of each generic stands for all.
+pub func foreignMemberRecvClasses(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, String],
+): Unit {
+  if specs.count == 0 {
+    return
+  }
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    if sp.originPkg.length == 0 {
+      continue
+    }
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) and specHasMemberAccess(sp.specDecl) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+        case Some(res) -> {
+          for k in mapKeys(res.symbols.memberRecvClasses) {
+            if not acc.containsKey(origin + "|" + k) {
+              match mapGet(res.symbols.memberRecvClasses, k) {
+                case Some(cls) -> acc.add(origin + "|" + k, cls)
+                case None -> ()
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+}
+
+func specHasMemberAccess(decl: in FunctionDecl): Bool {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val f = SourceFile(
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  anyExprInFile(f, { e: Expr -> match e.kind { case EMember(_, _) -> true; case _ -> false } })
 }
 
 func foreignOriginArities(
