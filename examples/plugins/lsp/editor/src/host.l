@@ -66,7 +66,7 @@ func applyTextEdits(text: in String, edits: in List[TextEdit]): String {
       }
       i = i + 1
     }
-    ordered.insert(at, e)
+    ordered.add(at, e)
   }
   var result = text
   for e in ordered {
@@ -281,6 +281,9 @@ func run(pluginsDir: in String): Int {
   val proc = match protocolProcess(session) { case Ok(p) -> p; case Err(_) -> return 1 }
   val client = Client(host = host, pluginId = session.pluginId, diagnostics = newMap(), lastFailure = "")
   var peer = newPeerWithTimeout(newContentLengthTransportOverProcess(proc), client, 60000)
+  // The server answers workspace/executeCommand only after its own
+  // workspace/applyEdit request, so the client serves requests while it waits.
+  setServeDuringCall(peer, true)
 
   val init = obj([field("processId", JNull), field("rootUri", str("file:///workspace/")), field("capabilities", obj([]))])
   match call(peer, "initialize", Some(value = init)) {
@@ -332,10 +335,12 @@ func run(pluginsDir: in String): Int {
 }
 
 func main(): Int {
+  // `args()` follows the host's convention on argv0, so the directory is the
+  // last argument.
   val argv = args()
-  if argv.length != 1 {
+  if argv.length == 0 {
     println("usage: Editor.Host <plugins-directory>")
     return 2
   }
-  run(argv[0])
+  run(argv[argv.length - 1])
 }

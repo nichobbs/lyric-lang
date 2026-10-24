@@ -489,6 +489,53 @@ test "call: a request/notification arriving from the peer while awaiting a respo
   assertEqualInt(h.notificationCount, 1, "the queued notification is dispatched by the next runLoop")
 }
 
+test "call: with setServeDuringCall, a request from the peer is answered before our response arrives" {
+  val t = newInMemoryTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  setServeDuringCall(peer, true)
+  // The peer asks us something (id 7), sends a notification, then answers.
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"echo\",\"params\":{\"k\":1}}")
+  feed(t, "{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}")
+  feed(t, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"pong\"}")
+  match call(peer, "ping-remote", None) {
+    case Err(e) -> assertTrue(false, "unexpected call error: " + e.message)
+    case Ok(v) -> assertJString(v, "pong", "call resolves with its own matching response")
+  }
+  assertEqualInt(h.requestCount, 1, "the inbound request was dispatched inside call")
+  assertEqualInt(h.notificationCount, 1, "the inbound notification was dispatched inside call")
+  assertEqualInt(peer.pendingQueue.count, 0, "nothing was queued")
+  // outbox: our request, then the response to id 7.
+  assertEqualInt(t.outbox.count, 2, "our request and one response were sent")
+  val resp = parseOrFail(t.outbox[1], "response to the inbound request")
+  assertFieldInt(resp, "id", 7i64, "the response carries the inbound id")
+  match getField(resp, "result") {
+    case Some(r) -> assertFieldInt(r, "k", 1i64, "echo answered with the params")
+    case None -> assertTrue(false, "the response has a result")
+  }
+}
+
+test "call: with setServeDuringCall, an inbound batch is answered as one batch" {
+  val t = newInMemoryTransport()
+  val h = newRecordingHandler()
+  var peer = newPeer(t, h)
+  setServeDuringCall(peer, true)
+  feed(
+    t,
+    "[{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"echo\",\"params\":[1]},{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":true}]"
+  )
+  match call(peer, "ping-remote", None) {
+    case Err(e) -> assertTrue(false, "unexpected call error: " + e.message)
+    case Ok(_) -> ()
+  }
+  assertEqualInt(h.requestCount, 1, "the batched request was dispatched")
+  assertEqualInt(t.outbox.count, 2, "our request and one batch response")
+  match parseOrFail(t.outbox[1], "batch response") {
+    case JArray(items) -> assertEqualInt(items.count, 1, "one response in the batch")
+    case _ -> assertTrue(false, "the response to a batch is an array")
+  }
+}
+
 test "call: an error code outside the Int range maps to internalError" {
   val t = newInMemoryTransport()
   var peer = newPeer(t, newRecordingHandler())
