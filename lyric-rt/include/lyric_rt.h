@@ -957,6 +957,15 @@ int32_t lyric_process_piped_read_line(void* p, LyricString** out_line);
  * stream, 2 timed out with any partial line kept buffered (issue #7451). */
 int32_t lyric_process_piped_read_line_within(void* p, LyricString** out_line, int32_t timeout_ms);
 int32_t lyric_process_piped_write_line(void* p, LyricString* line);
+/* Byte-level stdout read bounded by `timeout_ms` (negative: no bound).
+ * *status: 1 the returned list holds at least one byte, 0 end of stream,
+ * 2 timed out (the list is empty unless *status is 1). Bytes a line read
+ * already buffered are returned first, so line and byte reads may be mixed
+ * on one handle without losing or reordering anything. */
+LyricList* lyric_process_piped_read_bytes_within(void* p, int32_t timeout_ms, int32_t* status);
+/* Writes `data` to stdin exactly as given (no newline appended), blocking
+ * until all of it is accepted: 0, -2 stdin already closed, -1 failed. */
+int32_t lyric_process_piped_write_bytes(void* p, LyricList* data);
 int32_t lyric_process_piped_is_alive(void* p);
 int32_t lyric_process_piped_kill(void* p);
 int32_t lyric_process_piped_wait_exit(void* p, int32_t timeout_ms);

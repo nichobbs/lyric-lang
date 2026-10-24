@@ -112,6 +112,17 @@ int32_t lyric_process_piped_write_line(void* p, LyricString* line) {
     return -1;
 }
 
+LyricList* lyric_process_piped_read_bytes_within(void* p, int32_t timeout_ms, int32_t* status) {
+    (void)p; (void)timeout_ms;
+    *status = 0; /* end of stream */
+    return lyric_list_from_bytes(NULL, 0);
+}
+
+int32_t lyric_process_piped_write_bytes(void* p, LyricList* data) {
+    (void)p; (void)data;
+    return -1;
+}
+
 int32_t lyric_process_piped_is_alive(void* p) {
     (void)p;
     return 0;

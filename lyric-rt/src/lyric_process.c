@@ -1154,6 +1154,102 @@ int32_t lyric_process_piped_write_line(void* raw, LyricString* line) {
     return n == 1 ? 0 : -1;
 }
 
+/* The bytes of one byte-level read: everything already buffered by an
+ * earlier line read when there is any, otherwise at most this many bytes
+ * from one read(2). */
+#define PIPED_READ_CHUNK 65536
+
+/* Takes the buffered stdout bytes line reads have not returned yet, so
+ * line and byte reads on one handle share one buffer and never reorder or
+ * drop a byte. NULL when nothing is buffered. */
+static LyricList* piped_take_buffered(ProcBuf* b, int64_t* head, int64_t* scanned) {
+    int64_t rest = b->len - *head;
+    if (rest <= 0) return NULL;
+    LyricList* out = lyric_list_from_bytes(b->data + *head, rest);
+    b->len = 0;
+    *head = 0;
+    *scanned = 0;
+    return out;
+}
+
+/* Reads raw stdout bytes, waiting at most `timeout_ms` milliseconds (a
+ * negative value waits without a bound). *status is 1 when the returned
+ * list holds at least one byte, 0 at end of stream and 2 on timeout; the
+ * list is empty unless *status is 1. Bytes an earlier line read buffered
+ * are returned first, in one piece. A timed-out read consumes nothing, and
+ * like the line read it still takes bytes already in the pipe once the
+ * deadline has passed, so a zero budget returns output the child has
+ * already written. */
+LyricList* lyric_process_piped_read_bytes_within(void* raw, int32_t timeout_ms, int32_t* status) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    LyricList* buffered = piped_take_buffered(&p->linebuf, &p->line_head, &p->line_scanned);
+    if (buffered) {
+        *status = 1;
+        return buffered;
+    }
+    if (p->stdout_rd < 0) {
+        *status = 0;
+        return lyric_list_from_bytes(NULL, 0);
+    }
+    if (timeout_ms >= 0) {
+        int64_t deadline_ns = lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000;
+        if (!piped_wait_readable(p->stdout_rd, deadline_ns) && !piped_ready_now(p->stdout_rd)) {
+            *status = 2;
+            return lyric_list_from_bytes(NULL, 0);
+        }
+    }
+    uint8_t* chunk = (uint8_t*)malloc(PIPED_READ_CHUNK);
+    if (!chunk) lyric_panic_msg("out of memory reading a piped child's stdout", "lyric_process.c", __LINE__);
+    ssize_t n;
+    do {
+        n = read(p->stdout_rd, chunk, PIPED_READ_CHUNK);
+    } while (n < 0 && errno == EINTR);
+    if (n > 0) {
+        LyricList* out = lyric_list_from_bytes(chunk, (int64_t)n);
+        free(chunk);
+        *status = 1;
+        return out;
+    }
+    free(chunk);
+    /* EOF or a hard read error: no more bytes will arrive (the line read
+     * treats both the same way). */
+    close(p->stdout_rd);
+    p->stdout_rd = -1;
+    *status = 0;
+    return lyric_list_from_bytes(NULL, 0);
+}
+
+/* Writes `data` (a list of byte cells) to the child's stdin exactly as
+ * given, with no newline appended, blocking until the pipe accepts all of
+ * it. Same results as lyric_process_piped_write_line: 0, -2 when stdin was
+ * already closed, -1 when the write failed. */
+int32_t lyric_process_piped_write_bytes(void* raw, LyricList* data) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (p->stdin_wr < 0) return -2;
+    int64_t len = data ? data->len : 0;
+    if (len <= 0) return 0;
+    uint8_t* buf = (uint8_t*)malloc((size_t)len);
+    if (!buf) lyric_panic_msg("out of memory writing a piped child's stdin", "lyric_process.c", __LINE__);
+    for (int64_t i = 0; i < len; i++) {
+        buf[i] = (uint8_t)(data->data[i] & 0xff);
+    }
+    int64_t off = 0;
+    int32_t rc = 0;
+    while (off < len) {
+        ssize_t n = stdin_write(p->stdin_wr, buf + off, (size_t)(len - off));
+        if (n > 0) {
+            off += n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            rc = -1;
+            break;
+        }
+    }
+    free(buf);
+    return rc;
+}
+
 /* True while the child has not yet been observed to exit (a
  * nonblocking WNOHANG reap -- the same technique lyric_process_pump
  * uses -- caches the exit status the first time it's seen so a later
