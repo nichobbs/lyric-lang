@@ -150,6 +150,39 @@ for target in dotnet jvm; do
   fi
 done
 
+# A test module merged into the package under test (D245) counts the same lines.
+merged="$work/merged"
+mkdir -p "$merged/src" "$merged/tests"
+cp "$proj/lyric.toml" "$merged/lyric.toml"
+cp "$proj/src/calc.l" "$merged/src/calc.l"
+cat > "$merged/tests/calc_tests.l" <<'EOF'
+@test_module
+package Calc
+
+import Std.Testing
+
+test "negative" {
+  assertEqual(classify(-1), "negative", "negative")
+}
+
+test "positive" {
+  assertEqual(classify(5), "positive", "positive")
+}
+EOF
+sed "s|$proj|$merged|" "$expected" > "$work/expected-merged.info"
+for target in dotnet jvm; do
+  rc=0
+  "$lyric_bin" test --manifest "$merged/lyric.toml" --target "$target" --coverage > "$work/merged-$target.txt" 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail "merged $target" "exited $rc"
+    cat "$work/merged-$target.txt"
+  elif ! diff -u "$work/expected-merged.info" "$merged/.lyric-test/coverage.info"; then
+    fail "merged $target" "coverage.info differs"
+  else
+    echo "ok   [merged test module, $target]"
+  fi
+done
+
 # Single file: a test module's helpers are the code under test.
 single="$work/single"
 mkdir -p "$single"
