@@ -5,7 +5,8 @@
 # and sound-server backend is switched off explicitly (a runner image may carry some
 # of their development packages) and the console-build flag acknowledges that, so the
 # offscreen/dummy video drivers and the dummy/disk audio drivers are what it provides.
-# A developer machine uses its distribution's SDL3.
+# A developer machine uses its distribution's SDL3.  On macOS the build is the default one
+# (Cocoa video, which needs no flag) and the headless drivers stay available beside it.
 #
 # With --x11 the X11 video driver is built too (for the window-system tests under Xvfb); the
 # caller installs the X11 development packages first (libx11-dev libxext-dev libxcursor-dev
@@ -14,6 +15,7 @@
 #
 # Usage: bash scripts/ci/build-sdl3.sh [--x11] <prefix>
 # Afterwards: PKG_CONFIG_PATH=<prefix>/lib/pkgconfig LD_LIBRARY_PATH=<prefix>/lib
+# (DYLD_LIBRARY_PATH on macOS)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -38,14 +40,20 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 curl -fsSL --retry 3 -o "$work/sdl3.tar.gz" "$SDL_URL"
-echo "$SDL_SHA256  $work/sdl3.tar.gz" | sha256sum -c -
+if command -v sha256sum >/dev/null; then
+  echo "$SDL_SHA256  $work/sdl3.tar.gz" | sha256sum -c -
+else
+  echo "$SDL_SHA256  $work/sdl3.tar.gz" | shasum -a 256 -c -
+fi
 mkdir "$work/src"
 tar -xzf "$work/sdl3.tar.gz" -C "$work/src" --strip-components=1
 
 generator=()
 command -v ninja >/dev/null && generator=(-G Ninja)
 windowing=(-DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_X11=OFF)
-if [ "$x11" = 1 ]; then
+if [ "$(uname -s)" = Darwin ]; then
+  windowing=()
+elif [ "$x11" = 1 ]; then
   windowing=(-DSDL_X11=ON -DSDL_X11_XSCRNSAVER=OFF)
 fi
 cmake "${generator[@]}" -S "$work/src" -B "$work/build" \
@@ -54,6 +62,6 @@ cmake "${generator[@]}" -S "$work/src" -B "$work/build" \
   -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_VIVANTE=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
   -DSDL_VULKAN=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
   -DSDL_IBUS=OFF -DSDL_DBUS=OFF -DSDL_LIBUDEV=OFF -DSDL_LIBURING=OFF
-cmake --build "$work/build" -j"$(nproc)"
+cmake --build "$work/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 cmake --install "$work/build"
 touch "$marker"

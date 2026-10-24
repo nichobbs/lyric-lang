@@ -134,6 +134,29 @@ jobs:
         shell: bash
         run: bash scripts/ci/native-platform-tests.sh
 
+      # docs/67 G4: lyric-window on SDL3 built from the pinned tarball (Cocoa
+      # video plus the headless drivers); the demo runs on the offscreen video
+      # driver and the disk audio driver.
+      - name: Install SDL3 build dependencies
+        if: always()
+        run: brew install pkgconf ninja
+
+      - name: Cache SDL3
+        if: always()
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3
+          key: sdl3-macos-${{ hashFiles('scripts/ci/build-sdl3.sh') }}
+
+      - name: lyric-window on SDL3 (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdl3_prefix="$RUNNER_TEMP/sdl3"
+          bash scripts/ci/build-sdl3.sh "$sdl3_prefix"
+          LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
+
   linux-arm64:
     needs: [managed]
     runs-on: ubuntu-24.04-arm
