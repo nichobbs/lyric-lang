@@ -1,4 +1,4 @@
-# D219 - `Char` is a Unicode scalar value, identical on every target
+# D221 - `Char` is a Unicode scalar value, identical on every target
 
 **Status:** accepted (#8225). Slice 1 shipped: the FFI boundary check (item 6). Slices 2 and 3 (items 1 to 5, the
 literal, library and representation change) are specified here and not yet implemented; they are tracked in #8225.

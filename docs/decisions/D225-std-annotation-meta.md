@@ -1,4 +1,4 @@
-# D223 - `Std.AnnotationMeta`: the runtime reader for `config { }` field annotations (#7180)
+# D225 - `Std.AnnotationMeta`: the runtime reader for `config { }` field annotations (#7180)
 
 **Status:** shipped (dotnet and JVM; native tracked in #8524)
 

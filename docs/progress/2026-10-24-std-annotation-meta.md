@@ -1,7 +1,7 @@
 # `Std.AnnotationMeta`: runtime reader for `config { }` field annotations (#7180)
 
 Shipped the stdlib half of the custom-annotation metadata capability (#6866,
-D-progress-941, API decision D223):
+D-progress-941, API decision D225):
 
 - `lyric-stdlib/std/annotation_meta.l` (`Std.AnnotationMeta`): decoder, queries
   and argument accessors over the `Lyric.AnnotationMeta` documents the compiler
@@ -16,4 +16,4 @@ D-progress-941, API decision D223):
 
 Status: `Std.AnnotationMeta` is in the full stdlib bundle (Tier 13 of
 `lyric-stdlib/lyric.full.toml`). #7181 (wiring `lyric-aws-secrets`) stays open:
-config blocks have no post-initialisation override seam, see D223 item 5.
+config blocks have no post-initialisation override seam, see D225 item 5.
