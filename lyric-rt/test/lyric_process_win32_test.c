@@ -729,6 +729,64 @@ static void test_piped_read_line_within(void) {
     lyric_process_piped_close(r);
 }
 
+/* Reads until `want` bytes have arrived, appending to `acc`. */
+static int64_t read_bytes_until(void* p, uint8_t* acc, int64_t want) {
+    int64_t got = 0;
+    while (got < want) {
+        int32_t status = -1;
+        LyricList* chunk = lyric_process_piped_read_bytes_within(p, 5000, &status);
+        if (status != 1) {
+            lyric_release(chunk);
+            break;
+        }
+        int64_t n = lyric_list_len(chunk);
+        for (int64_t i = 0; i < n && got < want; i++) acc[got++] = (uint8_t)(lyric_list_get(chunk, i) & 0xff);
+        lyric_release(chunk);
+    }
+    return got;
+}
+
+static void test_piped_bytes(void) {
+    /* Raw bytes through `cat`, no newline appended, multibyte UTF-8 kept. */
+    LyricList* cat = child_args("cat", NULL, NULL, NULL);
+    void* p = lyric_process_piped_spawn(self_path, cat);
+    lyric_release(cat);
+    CHECK(p != NULL);
+    if (!p) return;
+    const char body[] = "Content-Length: 7\r\n\r\n{\"\xc3\xa9\"}";
+    int64_t body_len = (int64_t)sizeof(body) - 1;
+    LyricList* out = lyric_list_from_bytes((const uint8_t*)body, body_len);
+    CHECK(lyric_process_piped_write_bytes(p, out) == 0);
+    lyric_release(out);
+    uint8_t acc[64];
+    CHECK(read_bytes_until(p, acc, body_len) == body_len);
+    CHECK(memcmp(acc, body, (size_t)body_len) == 0);
+    int32_t status = -1;
+    LyricList* none = lyric_process_piped_read_bytes_within(p, 200, &status);
+    CHECK(status == 2);
+    CHECK(lyric_list_len(none) == 0);
+    lyric_release(none);
+    /* A byte read after a line read gets the bytes the line read buffered. */
+    LyricString* two = mk_str("one\ntwo");
+    CHECK(lyric_process_piped_write_line(p, two) == 0);
+    lyric_release(two);
+    LyricString* got = NULL;
+    CHECK(lyric_process_piped_read_line_within(p, &got, 5000) == 1);
+    CHECK(str_is(got, "one"));
+    lyric_release(got);
+    CHECK(read_bytes_until(p, acc, 4) == 4);
+    CHECK(memcmp(acc, "two\n", 4) == 0);
+    CHECK(lyric_process_piped_close_stdin(p) == 0);
+    LyricList* empty = lyric_list_from_bytes(NULL, 0);
+    CHECK(lyric_process_piped_write_bytes(p, empty) == -2);
+    lyric_release(empty);
+    LyricList* eof = lyric_process_piped_read_bytes_within(p, 5000, &status);
+    CHECK(status == 0);
+    lyric_release(eof);
+    CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
+    lyric_process_piped_close(p);
+}
+
 static void test_piped_kill_and_failure(void) {
     LyricList* sl = child_args("sleep", "30000", NULL, NULL);
     void* p = lyric_process_piped_spawn(self_path, sl);
@@ -844,6 +902,7 @@ int main(int argc, char** argv) {
     test_piped_roundtrip();
     test_piped_lines();
     test_piped_read_line_within();
+    test_piped_bytes();
     test_piped_kill_and_failure();
     test_piped_stderr_inherited();
     test_concurrent_spawns();

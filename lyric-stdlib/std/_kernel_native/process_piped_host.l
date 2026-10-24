@@ -31,6 +31,13 @@
 //! managed twins, splits a `Std.ProcessArgs`-joined string back into a
 //! list with `argvSplit`.
 //!
+//! ## Line and byte reads share one buffer
+//!
+//! lyric-rt keeps the stdout bytes a line read has not returned yet in the
+//! handle (`linebuf`), and `lyric_process_piped_read_bytes_within` hands
+//! those back before reading the pipe again, so `Std.Process`'s line and
+//! byte reads can be mixed on one child without losing or reordering a byte.
+//!
 //! ## `Std.Process` reaches this kernel through Result seams
 //!
 //! `Std.Process.spawnPiped`/`pipedReadLine`/`pipedWriteLine` call the
@@ -89,6 +96,20 @@ extern func rtPipedWriteLineRaw(p: NativePtr[Byte], line: String): Int = "lyric_
 
 func rtPipedWriteLine(p: Long, line: String): Int {
   rtPipedWriteLineRaw(rtLongToPtr(p), line)
+}
+
+// Byte reads: the status out-param is 1 for bytes, 0 for end of stream, 2
+// for a timeout; the list is empty unless it is 1.
+extern func rtPipedReadBytesWithinRaw(p: NativePtr[Byte], timeoutMs: Int, status: NativePtr[Int]): slice[Byte] = "lyric_process_piped_read_bytes_within"
+
+func rtPipedReadBytesWithin(p: Long, timeoutMs: Int, status: NativePtr[Int]): slice[Byte] {
+  rtPipedReadBytesWithinRaw(rtLongToPtr(p), timeoutMs, status)
+}
+
+extern func rtPipedWriteBytesRaw(p: NativePtr[Byte], bytes: slice[Byte]): Int = "lyric_process_piped_write_bytes"
+
+func rtPipedWriteBytes(p: Long, bytes: slice[Byte]): Int {
+  rtPipedWriteBytesRaw(rtLongToPtr(p), bytes)
 }
 
 extern func rtPipedIsAliveRaw(p: NativePtr[Byte]): Int = "lyric_process_piped_is_alive"
@@ -174,11 +195,36 @@ pub func hostPipedReadLineOpt(p: in PipedHandle): Option[String] {
   }
 }
 
-/// Outcome of a bounded read (`hostPipedReadLineWithinResult`).
+/// Outcome of a bounded line read (`hostPipedReadLineWithinResult`).
 pub union HostPipedRead {
   case HostPipedLine(line: String)
   case HostPipedEof
   case HostPipedTimedOut
+}
+
+/// Outcome of a byte read (`hostPipedReadBytesResult`,
+/// `hostPipedReadBytesWithinResult`): at least one byte, end of stream, or
+/// (bounded reads only) nothing within the timeout.
+pub union HostPipedBytes {
+  case HostPipedChunk(bytes: slice[Byte])
+  case HostPipedBytesEof
+  case HostPipedBytesTimedOut
+}
+
+// lyric-rt's byte read (a negative `timeoutMs` waits without a bound). It
+// takes the bytes a line read left in the handle's buffer first, so line and
+// byte reads share one buffer.
+@unsafe_ffi
+func pipedReadBytesWithin(p: in PipedHandle, timeoutMs: in Int): HostPipedBytes {
+  var status: Int = 0
+  val bytes = rtPipedReadBytesWithin(p.raw, timeoutMs, nativeAddrOf(status))
+  if status == 1 {
+    HostPipedChunk(bytes = bytes)
+  } else if status == 2 {
+    HostPipedBytesTimedOut
+  } else {
+    HostPipedBytesEof
+  }
 }
 
 // lyric-rt's bounded read: 1 line, 0 end of stream, 2 timed out (a partial
@@ -283,6 +329,30 @@ pub func hostPipedReadLineResult(p: in PipedHandle): Result[Option[String], Stri
 /// `hostPipedReadLineResult`, never `Err` on this target.
 pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedRead, String] {
   Ok(value = pipedReadLineWithin(p, timeoutMs))
+}
+
+/// Block until stdout yields at least one byte (bytes a line read buffered
+/// come first) or reaches end of stream. Never `HostPipedBytesTimedOut`, and,
+/// like the line reads, never `Err` on this target.
+pub func hostPipedReadBytesResult(p: in PipedHandle): Result[HostPipedBytes, String] {
+  Ok(value = pipedReadBytesWithin(p, 0 - 1))
+}
+
+/// Like `hostPipedReadBytesResult`, but waits at most `timeoutMs`
+/// milliseconds.
+pub func hostPipedReadBytesWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedBytes, String] {
+  Ok(value = pipedReadBytesWithin(p, timeoutMs))
+}
+
+/// Write `bytes` to the child's stdin exactly as given (no newline),
+/// blocking until the pipe accepts all of them.
+pub func hostPipedWriteBytesResult(p: in PipedHandle, bytes: in slice[Byte]): Result[Unit, String] {
+  val rc = rtPipedWriteBytes(p.raw, bytes)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = pipedWriteFailureMessage(rc))
+  }
 }
 
 pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Unit, String] {

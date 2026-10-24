@@ -54,6 +54,17 @@
 //! caused the original symptom entirely, rather than attempting to
 //! diagnose it further.
 //!
+//! **Byte reads share the line buffer.** `hostPipedReadBytesResult` /
+//! `hostPipedReadBytesWithinResult` drain into the same `lineBuf`, and
+//! complete lines split out of it stay as their raw bytes (`pending`, each
+//! including its `\n`) until a line read decodes one. A byte read returns
+//! every pending line's bytes and then the unterminated tail before reading
+//! anything new, so line and byte reads can be mixed on one handle without
+//! losing or reordering a byte. `hostPipedWriteBytes` writes straight to the
+//! child's stdin `OutputStream` and flushes it; the `PrintWriter` used for
+//! lines flushes on every `println`, so nothing of a line is left behind in
+//! it when bytes follow.
+//!
 //! **Bounded reads (#7451).** `hostPipedReadLineWithinResult` runs the same
 //! polling loop with a deadline checked every non-sleeping iteration too
 //! (#7520 review), so a timed-out read returns without losing bytes: a partial
@@ -152,6 +163,14 @@ func writerPrintln(w: in JPrintWriter, s: in String): Unit {
   w.println(s)
 }
 
+func streamWrite(o: in JOutputStream, bytes: in slice[Byte]): Unit {
+  o.write(bytes)
+}
+
+func streamFlush(o: in JOutputStream): Unit {
+  o.flush()
+}
+
 func procIsAlive(p: in JProcess): Bool {
   p.isAlive()
 }
@@ -214,6 +233,10 @@ func atomicSet(a: in JAtomicInt, v: in Int): Unit {
   a.set(v)
 }
 
+func baosWrite(acc: in JBAOS, bytes: in slice[Byte]): Unit {
+  acc.write(bytes)
+}
+
 func bufferSize(acc: in JBAOS): Int {
   acc.size()
 }
@@ -233,15 +256,18 @@ func resetBufferTo(acc: in JBAOS, remaining: in slice[Byte]): Unit {
 pub record PipedHandle {
   proc: JProcess
   writer: JPrintWriter
+  stdin: JOutputStream
   stdout: JInputStream
   // Bytes read from stdout that do not yet form a complete line.
   lineBuf: JBAOS
   // Leading bytes of `lineBuf` already scanned without finding a newline.
   scanned: JAtomicInt
-  // Complete lines split out of `lineBuf` but not yet returned, from
-  // `pendingHead` on. One burst of output is split in a single pass instead
-  // of copying and rescanning the whole buffer for every line (#7277).
-  pending: List[String]
+  // The raw bytes (each ending in its `\n`) of complete lines split out of
+  // `lineBuf` but not yet returned, from `pendingHead` on. One burst of
+  // output is split in a single pass instead of copying and rescanning the
+  // whole buffer for every line (#7277); a line is decoded only when a line
+  // read takes it, so a byte read can still return its exact bytes.
+  pending: List[slice[Byte]]
   pendingHead: JAtomicInt
 }
 
@@ -254,13 +280,15 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   val cmdList = parseArgString(fileName, arguments)
   val pb = buildProcessBuilder(cmdList)
   val proc = procStart(pb)
-  val writer = newLineWriter(procStdin(proc))
+  val stdin = procStdin(proc)
+  val writer = newLineWriter(stdin)
   val stdout = procStdout(proc)
   val scanned: JAtomicInt = JAtomicInt.new(0)
   val pendingHead: JAtomicInt = JAtomicInt.new(0)
   PipedHandle(
     proc = proc,
     writer = writer,
+    stdin = stdin,
     stdout = stdout,
     lineBuf = JBAOS.new(),
     scanned = scanned,
@@ -269,11 +297,20 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
   )
 }
 
-/// Outcome of a bounded read (`hostPipedReadLineWithinResult`).
+/// Outcome of a bounded line read (`hostPipedReadLineWithinResult`).
 pub union HostPipedRead {
   case HostPipedLine(line: String)
   case HostPipedEof
   case HostPipedTimedOut
+}
+
+/// Outcome of a byte read (`hostPipedReadBytesResult`,
+/// `hostPipedReadBytesWithinResult`): at least one byte, end of stream, or
+/// (bounded reads only) nothing within the timeout.
+pub union HostPipedBytes {
+  case HostPipedChunk(bytes: slice[Byte])
+  case HostPipedBytesEof
+  case HostPipedBytesTimedOut
 }
 
 // Option seam avoiding `case null`'s catch-all miscompile (#4775); NUL-marker
@@ -369,13 +406,15 @@ func pastDeadline(deadlineNanos: in Long): Bool {
   deadlineNanos >= 0i64 and nanoTime() >= deadlineNanos
 }
 
-// The next split-out line, if any.
+// The next split-out line, if any, decoded (its `\n`, and a `\r` before
+// it, dropped).
 func takePending(p: in PipedHandle): Option[String] {
   val head = atomicGet(p.pendingHead)
   if head >= p.pending.count {
     return None
   }
-  val line = p.pending[head]
+  val raw = p.pending[head]
+  val line = decodeLine(raw, 0, raw.length - 1)
   if head + 1 == p.pending.count {
     p.pending.clear()
     atomicSet(p.pendingHead, 0)
@@ -398,7 +437,7 @@ func splitCompleteLines(p: in PipedHandle): Unit {
   var i = from
   while i < snapshot.length {
     if snapshot[i] == 10 {
-      p.pending.add(decodeLine(snapshot, lineStart, i))
+      p.pending.add(snapshot.slice(lineStart, i + 1))
       lineStart = i + 1
     }
     i = i + 1
@@ -420,10 +459,76 @@ func takeUnterminatedTail(p: in PipedHandle): Option[String] {
   Some(value = decodeLine(tail, 0, tail.length))
 }
 
+// Every buffered byte not yet returned, in order: the pending lines' raw
+// bytes, then the unterminated tail. `None` when nothing is buffered.
+func takeAllBuffered(p: in PipedHandle): Option[slice[Byte]] {
+  val head = atomicGet(p.pendingHead)
+  if head >= p.pending.count and bufferSize(p.lineBuf) == 0 {
+    return None
+  }
+  val acc: JBAOS = JBAOS.new()
+  var i = head
+  while i < p.pending.count {
+    baosWrite(acc, p.pending[i])
+    i = i + 1
+  }
+  p.pending.clear()
+  atomicSet(p.pendingHead, 0)
+  if bufferSize(p.lineBuf) > 0 {
+    val tail: slice[Byte] = p.lineBuf.toByteArray()
+    baosWrite(acc, tail)
+    p.lineBuf.reset()
+  }
+  atomicSet(p.scanned, 0)
+  val all: slice[Byte] = acc.toByteArray()
+  Some(value = all)
+}
+
+// The byte-level twin of `readLineUntil`: buffered bytes first, then
+// whatever `available()` reports, polling (never a blocking JDK call) until
+// bytes arrive, the child exits with nothing left to read, or
+// `deadlineNanos` (negative: no bound) passes. A bounded read drains before
+// it checks the deadline, so a zero budget still returns bytes the child has
+// already written.
+func readBytesUntil(p: in PipedHandle, deadlineNanos: in Long): HostPipedBytes {
+  while true {
+    match takeAllBuffered(p) {
+      case Some(bytes) -> return HostPipedChunk(bytes = bytes)
+      case None -> ()
+    }
+    drainAvailableInto(p.stdout, p.lineBuf)
+    if bufferSize(p.lineBuf) == 0 {
+      if procIsAlive(p.proc) {
+        if pastDeadline(deadlineNanos) {
+          return HostPipedBytesTimedOut
+        }
+        JThread.sleep(1i64)
+      } else {
+        // Exited: one more drain for bytes flushed after the `isAlive`
+        // check (as `readLineUntil` does).
+        drainAvailableInto(p.stdout, p.lineBuf)
+        if bufferSize(p.lineBuf) == 0 {
+          return HostPipedBytesEof
+        }
+      }
+    }
+  }
+  HostPipedBytesEof
+}
+
 /// Write one line to the child's stdin (a trailing newline is appended and
 /// the write is flushed immediately — `autoFlush` is set at spawn time).
 pub func hostPipedWriteLine(p: in PipedHandle, line: in String): Unit {
   writerPrintln(p.writer, line)
+}
+
+/// Write `bytes` to the child's stdin exactly as given (no newline) and
+/// flush.
+pub func hostPipedWriteBytes(p: in PipedHandle, bytes: in slice[Byte]): Unit {
+  if bytes.length > 0 {
+    streamWrite(p.stdin, bytes)
+  }
+  streamFlush(p.stdin)
 }
 
 /// True while the child process has not yet exited.
@@ -535,6 +640,36 @@ pub func hostPipedReadLineWithinResult(p: in PipedHandle, timeoutMs: in Int): Re
 pub func hostPipedWriteLineResult(p: in PipedHandle, line: in String): Result[Unit, String] {
   try {
     hostPipedWriteLine(p, line)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Block until stdout yields at least one byte (bytes a line read buffered
+/// come first) or the child exits with nothing left to read. Never
+/// `HostPipedBytesTimedOut`.
+pub func hostPipedReadBytesResult(p: in PipedHandle): Result[HostPipedBytes, String] {
+  try {
+    Ok(value = readBytesUntil(p, 0i64 - 1i64))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Like `hostPipedReadBytesResult`, but waits at most `timeoutMs`
+/// milliseconds.
+pub func hostPipedReadBytesWithinResult(p: in PipedHandle, timeoutMs: in Int): Result[HostPipedBytes, String] {
+  try {
+    Ok(value = readBytesUntil(p, nanoTime() + timeoutMs.toLong() * 1000000i64))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+pub func hostPipedWriteBytesResult(p: in PipedHandle, bytes: in slice[Byte]): Result[Unit, String] {
+  try {
+    hostPipedWriteBytes(p, bytes)
     Ok(value = ())
   } catch Bug as b {
     Err(error = b.message)

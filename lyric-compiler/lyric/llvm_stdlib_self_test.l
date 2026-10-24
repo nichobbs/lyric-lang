@@ -781,6 +781,112 @@ test "Std.Process pipedReadLineWithin on native (ASan) (#7451)" {
   assertEqualInt(r.exitCode, 42, "pipedReadLineWithin on native")
 }
 
+// Byte-level piped I/O on native (lyric_process_piped_read_bytes_within /
+// lyric_process_piped_write_bytes): bytes written without a newline come
+// back exactly, a silent child times out, a line read leaves the bytes after
+// its line for the next byte read, and end of stream is reported. ASan
+// checks the byte lists handed across the seam.
+test "Std.Process byte-level piped I/O on native (ASan)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.Process\n" +
+    "func main(): Int {\n" +
+    "  val noArgs: List[String] = newList()\n" +
+    "  match spawnPiped(\"/bin/cat\", noArgs) {\n" +
+    "    case Err(_) -> {\n" +
+    "      return 1\n" +
+    "    }\n" +
+    "    case Ok(p) -> {\n" +
+    "      match pipedReadBytesWithin(p, 100) {\n" +
+    "        case Ok(PipedBytesTimedOut) -> {\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 2\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedWriteBytes(p, encodeUtf8(\"h\\u{E9}!\")) {\n" +
+    "        case Err(_) -> {\n" +
+    "          return 3\n" +
+    "        }\n" +
+    "        case Ok(_) -> {\n" +
+    "        }\n" +
+    "      }\n" +
+    "      var got: List[Byte] = newList()\n" +
+    "      var tries = 0\n" +
+    "      while got.count < 4 and tries < 10 {\n" +
+    "        match pipedReadBytesWithin(p, 5000) {\n" +
+    "          case Ok(PipedBytes(bytes)) -> {\n" +
+    "            var i = 0\n" +
+    "            while i < bytes.length {\n" +
+    "              got.add(bytes[i])\n" +
+    "              i = i + 1\n" +
+    "            }\n" +
+    "          }\n" +
+    "          case _ -> {\n" +
+    "            return 4\n" +
+    "          }\n" +
+    "        }\n" +
+    "        tries = tries + 1\n" +
+    "      }\n" +
+    "      match tryDecodeUtf8(got.toArray()) {\n" +
+    "        case Some(text) -> {\n" +
+    "          if text != \"h\\u{E9}!\" {\n" +
+    "            return 5\n" +
+    "          }\n" +
+    "        }\n" +
+    "        case None -> {\n" +
+    "          return 6\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedWriteLine(p, \"one\\ntwo\")\n" +
+    "      match pipedReadLine(p) {\n" +
+    "        case Ok(Some(line)) -> {\n" +
+    "          if line != \"one\" {\n" +
+    "            return 7\n" +
+    "          }\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 8\n" +
+    "        }\n" +
+    "      }\n" +
+    "      match pipedReadBytes(p) {\n" +
+    "        case Ok(Some(bytes)) -> {\n" +
+    "          if bytes.length < 1 or bytes[0] != 116 {\n" +
+    "            return 9\n" +
+    "          }\n" +
+    "        }\n" +
+    "        case _ -> {\n" +
+    "          return 10\n" +
+    "        }\n" +
+    "      }\n" +
+    "      pipedCloseStdin(p)\n" +
+    "      var ended = false\n" +
+    "      var reads = 0\n" +
+    "      while not ended and reads < 10 {\n" +
+    "        match pipedReadBytesWithin(p, 5000) {\n" +
+    "          case Ok(PipedBytesEnd) -> {\n" +
+    "            ended = true\n" +
+    "          }\n" +
+    "          case Ok(PipedBytes(_)) -> {\n" +
+    "          }\n" +
+    "          case _ -> {\n" +
+    "            return 11\n" +
+    "          }\n" +
+    "        }\n" +
+    "        reads = reads + 1\n" +
+    "      }\n" +
+    "      if not ended {\n" +
+    "        return 12\n" +
+    "      }\n" +
+    "      pipedWaitExit(p, 5000)\n" +
+    "      pipedClose(p)\n" +
+    "    }\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "byte-level piped I/O on native")
+}
+
 // String.replace lowers to lyric-rt's lyric_string_replace (#6888): ordinal,
 // left to right, non-overlapping; an empty search string leaves the input
 // unchanged on native (see the runtime's own comment for why).

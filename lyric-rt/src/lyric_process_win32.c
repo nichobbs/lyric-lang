@@ -1090,6 +1090,72 @@ int32_t lyric_process_piped_write_line(void* raw, LyricString* line) {
     return piped_write_all(&p->stdin_wr, &nl, 1) == 0 ? 0 : -1;
 }
 
+/* Byte-level read, as in lyric_process.c: bytes a line read buffered come
+ * first, then at most one completed overlapped read.  A read still in flight
+ * when the deadline passes stays in flight, so the bytes it brings are
+ * returned by the next read of either kind. */
+LyricList* lyric_process_piped_read_bytes_within(void* raw, int32_t timeout_ms, int32_t* status) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    int64_t rest = p->linebuf.len - p->line_head;
+    if (rest > 0) {
+        LyricList* out = lyric_list_from_bytes(p->linebuf.data + p->line_head, rest);
+        p->linebuf.len = 0;
+        p->line_head = 0;
+        p->line_scanned = 0;
+        *status = 1;
+        return out;
+    }
+    int64_t deadline_ns = timeout_ms < 0 ? -1 : lyric_monotonic_nanos() + (int64_t)timeout_ms * 1000000;
+    for (;;) {
+        if (!winpipe_open(&p->stdout_rd)) {
+            *status = 0;
+            return lyric_list_from_bytes(NULL, 0);
+        }
+        if (winpipe_read_start(&p->stdout_rd) == PIPE_EOF) {
+            winpipe_close(&p->stdout_rd);
+            continue;
+        }
+        DWORD wait_ms = INFINITE;
+        if (deadline_ns >= 0) {
+            int64_t left_ns = deadline_ns - lyric_monotonic_nanos();
+            wait_ms = left_ns <= 0 ? 0 : clamp_wait_ms((left_ns + 999999) / 1000000);
+        }
+        DWORD n = 0;
+        int r = winpipe_collect(&p->stdout_rd, wait_ms, &n);
+        if (r == PIPE_PENDING) {
+            if (deadline_ns >= 0 && lyric_monotonic_nanos() >= deadline_ns) {
+                *status = 2;
+                return lyric_list_from_bytes(NULL, 0);
+            }
+            continue;
+        }
+        if (r == PIPE_EOF) {
+            winpipe_close(&p->stdout_rd);
+            continue;
+        }
+        if (n > 0) {
+            *status = 1;
+            return lyric_list_from_bytes(p->stdout_rd.buf, (int64_t)n);
+        }
+    }
+}
+
+/* Writes `data` exactly as given, no newline appended. */
+int32_t lyric_process_piped_write_bytes(void* raw, LyricList* data) {
+    LyricPipedProc* p = (LyricPipedProc*)raw;
+    if (!winpipe_open(&p->stdin_wr)) return -2;
+    int64_t len = data ? data->len : 0;
+    if (len <= 0) return 0;
+    uint8_t* buf = (uint8_t*)malloc((size_t)len);
+    if (!buf) lyric_panic_msg("out of memory writing a piped child's stdin", "lyric_process_win32.c", __LINE__);
+    for (int64_t i = 0; i < len; i++) {
+        buf[i] = (uint8_t)(data->data[i] & 0xff);
+    }
+    int rc = piped_write_all(&p->stdin_wr, buf, len);
+    free(buf);
+    return rc == 0 ? 0 : -1;
+}
+
 /* After lyric_process_piped_close the process handle is released, so the
  * calls below report the child as gone. */
 int32_t lyric_process_piped_is_alive(void* raw) {
