@@ -2131,6 +2131,16 @@ pub func joinBranchResultType(a: in JvmType, b: in JvmType): JvmType {
           JRef(className = "java/lang/Object")
         }
       }
+      // A bracket literal (`java/util/ArrayList`) beside a real `Object[]` slice
+      // (#7541): the representations are not subtypes of each other, and a
+      // local framed as the first arm's class fails verification on the other
+      // path.  Widen to `Object`; the consuming position's erased-to-slice
+      // coercion (`emitErasedToSliceJvm`) converts either representation.
+      case JArray(_) -> if ac == "java/lang/Object" { a } else { JRef(className = "java/lang/Object") }
+      case _ -> a
+    }
+    case JArray(_) -> match b {
+      case JRef(bc) -> if bc == "java/lang/Object" { a } else { JRef(className = "java/lang/Object") }
       case _ -> a
     }
     case _ -> a
