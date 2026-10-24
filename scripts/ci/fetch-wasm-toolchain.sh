@@ -10,6 +10,8 @@
 #   - wasm-tools        -> $LYRIC_WASM_TOOLS_BIN
 #   - the preview1 reactor adapter (from wasmtime's release)
 #                       -> $LYRIC_WASI_ADAPTER_FILE
+#   - the wasmtime CLI  -> $LYRIC_WASMTIME_CLI (`lyric plugin pack` reads a
+#                          wasm or component payload's manifest with it)
 # and sets $LYRIC_WASM_TOOLCACHE to the cache directory.  These are the tools
 # a `--triple wasm32-wasi` build needs, and the component shape's
 # componentization (docs/35).  scripts/ci/wasm32-wasi-rt-tests.sh and
@@ -53,4 +55,13 @@ LYRIC_WASI_ADAPTER_FILE="$LYRIC_WASM_TOOLCACHE/wasi_snapshot_preview1.reactor.wa
 lyric_wasm_fetch "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASI_ADAPTER_WASMTIME_VERSION}/wasi_snapshot_preview1.reactor.wasm" \
   "$WASI_ADAPTER_SHA256" "$LYRIC_WASI_ADAPTER_FILE"
 
-export LYRIC_WASM_TOOLCACHE LYRIC_WASI_SDK_DIR LYRIC_WASM_TOOLS_BIN LYRIC_WASI_ADAPTER_FILE
+WASMTIME_CLI_SHA256="4001225413f208345b980525f31c4080e1873808b38d0ddc7918497340667fbb"
+lyric_wasmtime_dir="$LYRIC_WASM_TOOLCACHE/wasmtime-v${WASI_ADAPTER_WASMTIME_VERSION}-x86_64-linux"
+if [ ! -d "$lyric_wasmtime_dir" ]; then
+  lyric_wasm_fetch "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASI_ADAPTER_WASMTIME_VERSION}/wasmtime-v${WASI_ADAPTER_WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+    "$WASMTIME_CLI_SHA256" "$LYRIC_WASM_TOOLCACHE/wasmtime.tar.xz"
+  tar -xJf "$LYRIC_WASM_TOOLCACHE/wasmtime.tar.xz" -C "$LYRIC_WASM_TOOLCACHE"
+fi
+LYRIC_WASMTIME_CLI="$lyric_wasmtime_dir/wasmtime"
+
+export LYRIC_WASM_TOOLCACHE LYRIC_WASI_SDK_DIR LYRIC_WASM_TOOLS_BIN LYRIC_WASI_ADAPTER_FILE LYRIC_WASMTIME_CLI

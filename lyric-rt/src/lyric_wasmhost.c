@@ -2325,6 +2325,36 @@ static const JNode* hints_for(const Component* c, const char* section, const cha
     return hint_part(entry, part);
 }
 
+/* The hints of import `d`: keyed by its full instance name
+ * (`lyric:notes/notes-api-store@0.1.0#load`) or, as the plugin build writes
+ * them, by the bare interface name (`notes-api-store#load`), which does not
+ * depend on the WIT package's name or version. */
+static const JNode* import_hints(const Component* c, const ImportDesc* d, const char* part) {
+    const JNode* section = jget(&c->hints, "imports");
+    const JNode* entry = jget(section, d->key);
+    if (entry == NULL) {
+        const char* inst = d->instance;
+        size_t ilen = strlen(inst);
+        const char* at = memchr(inst, '@', ilen);
+        if (at != NULL) ilen = (size_t)(at - inst);
+        size_t start = 0;
+        for (size_t i = 0; i < ilen; i++) {
+            if (inst[i] == '/' || inst[i] == ':') start = i + 1;
+        }
+        size_t flen = strlen(d->func);
+        size_t blen = (ilen - start) + 1 + flen;
+        char* bare = (char*)malloc(blen + 1);
+        if (bare == NULL) return NULL;
+        memcpy(bare, inst + start, ilen - start);
+        bare[ilen - start] = '#';
+        memcpy(bare + (ilen - start) + 1, d->func, flen);
+        bare[blen] = 0;
+        entry = jget_n(section, bare, blen);
+        free(bare);
+    }
+    return hint_part(entry, part);
+}
+
 static const JNode* hint_param(const JNode* params, size_t i) {
     if (params == NULL || params->kind != J_ARR || i >= params->count) return NULL;
     const JNode* h = &params->items[i];
@@ -2489,8 +2519,8 @@ static wasmtime_error_t* import_callback(void* env, wasmtime_context_t* ctx, con
     if (in == NULL || index >= in->comp->nimports) return p_wasmtime_error_new("host import without an instance");
     const ImportDesc* d = &in->comp->imports[index];
     if (in->import_fn == NULL) return import_fail(in, "the host serves no imports (%s)", d->key);
-    const JNode* phints = hints_for(in->comp, "imports", d->key, "params");
-    const JNode* rhint = hints_for(in->comp, "imports", d->key, "result");
+    const JNode* phints = import_hints(in->comp, d, "params");
+    const JNode* rhint = import_hints(in->comp, d, "result");
     Sb sb = {0};
     Err e;
     e.msg[0] = '\0';

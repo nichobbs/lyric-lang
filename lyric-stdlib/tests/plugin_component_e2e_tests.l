@@ -1,23 +1,26 @@
 //! tests/plugin_component_e2e_tests.l — Std.Plugin's component mode end to
-//! end (docs/69 §9.3): the hand-written component
-//! `plugin_fixtures/greeter_component.l` hosted in this process by
-//! `Std.PluginWasm`'s wasmtime runtime.
+//! end (docs/69 §9.3, D232): the `@plugin` package
+//! `plugin_fixtures/greeter_component.l`, packed by `lyric plugin pack
+//! --targets component` (so its exports, imports and type hints are generated
+//! by `Lyric.PluginExpand`), hosted in this process by `Std.PluginWasm`'s
+//! wasmtime runtime.
 //!
-//! Run by `scripts/ci/plugin-component-e2e.sh <host-target>`, which builds
-//! the fixture, the embedding's library and the wasmtime C API, and points
-//! this suite at them through the environment:
+//! Run by `scripts/ci/plugin-component-e2e.sh <host-target>`, which packs
+//! the fixture, builds the embedding's library and fetches the wasmtime C
+//! API, and points this suite at them through the environment:
 //!
-//!   - `LYRIC_PLUGIN_COMPONENT_DIR`: the plugin directory;
+//!   - `LYRIC_PLUGIN_COMPONENT_DIR`: the packed artifact directory;
 //!   - `LYRIC_PLUGIN_COMPONENT_FILE`: the component, relative to it;
 //!   - `LYRIC_PLUGIN_COMPONENT_EXPECT`: `available` (the default), or
 //!     `unavailable` for the run in which libwasmtime is deliberately absent
 //!     and only the fallback is checked.
 //!
 //! It covers the runtime itself, discovery and payload selection, point calls
-//! (with a union result named by the component's type hints), capability
-//! imports (granted, narrowed by the grant, not granted, revoked), an
-//! unlisted method, a trap with restart and the restart limit, a CPU loop
-//! stopped at the call timeout, the memory limit, and shutdown.
+//! (union and Map results named by the component's type hints, a Map
+//! argument), capability imports (granted, narrowed by the grant, a `Unit`
+//! error, union and Map arguments, an optional capability not granted,
+//! revoked), an unlisted method, a trap with restart and the restart limit, a
+//! CPU loop stopped at the call timeout, the memory limit, and shutdown.
 @test_module
 package Std.Plugin.ComponentE2eTests
 
@@ -25,7 +28,6 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Environment
-import Std.File
 import Std.Path
 import Std.Time
 import Std.JsonValue
@@ -66,9 +68,8 @@ impl ComponentImports for NoImports {
   }
 }
 
-// The manifest the component describes, read through the runtime itself,
-// plus its component payload.
-func describedManifest(): PluginManifest {
+// The text of export `name`, called straight through the runtime.
+func probeExport(name: in String): String {
   val rt = inProcessWasmRuntime()
   val component = match rt.load(join(fixtureDir(), fixtureFile())) {
     case Ok(id) -> id
@@ -78,20 +79,15 @@ func describedManifest(): PluginManifest {
     case Ok(id) -> id
     case Err(f) -> panic("the runtime could not start the fixture")
   }
-  val envelope = rt.callExport(instance, "plugin-describe", "{}", 30000)
+  val envelope = rt.callExport(instance, name, "{}", 30000)
   rt.close(instance)
   rt.unload(component)
-  val described = match parseValue(envelope) { case Ok(v) -> unwrapOr(getString(v, "ok"), ""); case Err(_) -> "" }
-  match parsePluginManifest(described) {
-    case Ok(m) -> addPluginPayload(m, ComponentPayload(component = fixtureFile()))
-    case Err(issue) -> panic("the described manifest is invalid: " + pluginLoadIssueMessage(issue) + " in " + envelope)
-  }
-}
-
-func writeManifest(m: in PluginManifest): Unit {
-  match writeText(join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(m))) {
-    case Ok(_) -> ()
-    case Err(e) -> panic("could not write plugin.json: " + IOError.message(e))
+  match parseValue(envelope) {
+    case Ok(v) -> match getString(v, "ok") {
+      case Some(text) -> text
+      case None -> panic(name + " did not answer a string: " + envelope)
+    }
+    case Err(_) -> panic(name + " answered no JSON envelope: " + envelope)
   }
 }
 
@@ -117,7 +113,11 @@ impl CapabilityProvider for SecretsProvider {
 
   func serve(method: in String, params: in Option[JsonValue], grant: in Option[JsonValue]): Result[JsonValue, RpcError] {
     self.count.served = self.count.served + 1
-    if method != "read" {
+    if method == "describe" {
+      val text = match params { case Some(p) -> writeValue(p); case None -> "" }
+      return Ok(value = one("ok", JString(value = text)))
+    }
+    if method != "read" and method != "peek" {
       return Err(error = boundaryErrorToRpc(Unsupported(method = method)))
     }
     val key = match params { case Some(p) -> unwrapOr(getString(p, "key"), ""); case None -> "" }
@@ -134,7 +134,13 @@ impl CapabilityProvider for SecretsProvider {
       }
       i = i + 1
     }
-    if allowed {
+    if method == "peek" {
+      if allowed {
+        Ok(value = one("ok", JBool(value = true)))
+      } else {
+        Ok(value = one("err", JNull))
+      }
+    } else if allowed {
       Ok(value = one("ok", JString(value = "secret-of-" + key)))
     } else {
       Ok(value = one("err", JString(value = "key '" + key + "' is not granted")))
@@ -204,9 +210,8 @@ func newHost(count: in ServeCount, callTimeoutMs: in Int, maxRestarts: in Int): 
   )
 }
 
-// A host with the fixture discovered from its catalogue directory.
+// A host with the packed fixture discovered from its catalogue directory.
 func discoveredHost(count: in ServeCount, callTimeoutMs: in Int, maxRestarts: in Int): PluginHost {
-  writeManifest(describedManifest())
   val host = newHost(count, callTimeoutMs, maxRestarts)
   val issues = discoverPlugins(host, [dirname(fixtureDir())])
   var i = 0
@@ -226,6 +231,32 @@ func conn(host: in PluginHost): PluginConnection {
 
 func params(name: in String, v: in JsonValue): JsonValue {
   one(name, v)
+}
+
+func okValue(r: in Result[JsonValue, BoundaryError], label: in String): JsonValue {
+  match r {
+    case Err(b) -> {
+      assertTrue(false, label + ": " + boundaryErrorMessage(b))
+      JNull
+    }
+    case Ok(v) -> match getField(v, "ok") {
+      case Some(ok) -> ok
+      case None -> {
+        assertTrue(false, label + ": expected {\"ok\": ...}, got " + writeValue(v))
+        JNull
+      }
+    }
+  }
+}
+
+func intField(v: in JsonValue, name: in String): Int {
+  match getField(v, name) {
+    case Some(f) -> match f {
+      case JInt(n) -> n.toInt()
+      case _ -> -1
+    }
+    case None -> -1
+  }
 }
 
 func okText(r: in Result[JsonValue, BoundaryError], label: in String): String {
@@ -326,6 +357,35 @@ test "a component-only plugin needs an available runtime, and says why it cannot
 }
 
 // ── Hosting (skipped in the unavailable run) ────────────────────────────────
+test "the packed component describes itself and carries its generated type hints" {
+  if not expectAvailable() {
+    return
+  }
+  match parsePluginManifest(probeExport("plugin-describe")) {
+    case Ok(m) -> {
+      assertEqual(m.id, pluginId, "the described id")
+      assertEqualInt(m.required.count, 1, "Secrets is required")
+      assertEqualInt(m.optional.count, 1, "Net is optional")
+    }
+    case Err(issue) -> assertTrue(false, "the described manifest is invalid: " + pluginLoadIssueMessage(issue))
+  }
+  val hints = match parseValue(probeExport("plugin-type-hints")) {
+    case Ok(v) -> v
+    case Err(_) -> JNull
+  }
+  val exports = unwrapOr(getField(hints, "exports"), JNull)
+  val shape = writeValue(unwrapOr(getField(exports, "greeter-shape"), JNull))
+  assertTrue(shape.contains("\"circle\":{\"field\":\"radius\""), "the union case field is named: " + shape)
+  val tally = writeValue(unwrapOr(getField(exports, "greeter-tally"), JNull))
+  assertTrue(tally.contains("\"map\""), "a Map result is marked: " + tally)
+  val imports = unwrapOr(getField(hints, "imports"), JNull)
+  val describe = writeValue(unwrapOr(getField(imports, "fixture-api-secrets#describe"), JNull))
+  assertTrue(describe.contains("\"named\":{\"field\":\"label\""), "an import's union argument: " + describe)
+  assertTrue(describe.contains("\"not-granted\":{\"field\":\"capability\""), "the wire variant: " + describe)
+  val peek = writeValue(unwrapOr(getField(imports, "fixture-api-secrets#peek"), JNull))
+  assertFalse(peek.contains("\"app\""), "a Unit error's app case carries nothing: " + peek)
+}
+
 test "discovery selects the component payload and reads contributions without starting it" {
   if not expectAvailable() {
     return
@@ -359,6 +419,19 @@ test "point calls run the component's exports, with union results named by its t
     "{\"case\":\"Named\",\"label\":\"square\"}",
     "the other case"
   )
+  val words: List[JsonValue] = [JString(value = "a"), JString(value = "b"), JString(value = "a")]
+  val tally = okValue(callPlugin(c, "Fixture.Api.Greeter/tally", params("words", JArray(items = words))), "tally")
+  // Map key order is not carried (docs/69 §9.3): read the members by name.
+  assertEqualInt(intField(tally, "a"), 2, "a Map result is a JSON object: " + writeValue(tally))
+  assertEqualInt(intField(tally, "b"), 1, "its other member")
+  val scores: List[JsonField] = newList()
+  scores.add(JsonField(name = "x", value = JInt(value = 2i64)))
+  scores.add(JsonField(name = "y", value = JInt(value = 3i64)))
+  assertEqual(
+    okText(callPlugin(c, "Fixture.Api.Greeter/total", params("scores", JObject(fields = scores))), "total"),
+    "5",
+    "a Map argument from a JSON object"
+  )
   match callPlugin(c, greet, JObject(fields = newList())) {
     case Ok(v) -> assertTrue(false, "a missing parameter is a protocol error, got " + writeValue(v))
     case Err(b) -> match b {
@@ -384,8 +457,21 @@ test "capability imports are served from the grant: granted, narrowed, not grant
   val beta = callPlugin(c, "Fixture.Api.Greeter/secret", params("key", JString(value = "beta")))
   assertTrue(errText(beta, "secret beta").contains("not granted"), "the grant narrowed the request to alpha")
   assertEqualInt(count.served, 2, "the provider served both calls")
+  assertEqual(
+    okText(callPlugin(c, "Fixture.Api.Greeter/peek", params("key", JString(value = "alpha"))), "peek alpha"),
+    "visible",
+    "a second method of the capability, with its own error variant"
+  )
+  assertEqual(
+    errText(callPlugin(c, "Fixture.Api.Greeter/peek", params("key", JString(value = "gamma"))), "peek gamma"),
+    "app: no such key",
+    "a Unit error crosses as the bare app case"
+  )
+  val round = okText(callPlugin(c, "Fixture.Api.Greeter/describe", params("round", JBool(value = true))), "describe")
+  assertTrue(round.contains("{\"case\":\"Circle\",\"radius\":1.5}"), "a union argument, named: " + round)
+  assertTrue(round.contains("\"tags\":{\"sides\":0}"), "a Map argument as a JSON object: " + round)
   val fetch = errText(callPlugin(c, "Fixture.Api.Greeter/fetch", JObject(fields = newList())), "fetch")
-  assertTrue(fetch.contains("boundary: denied"), "Net is not granted: " + fetch)
+  assertEqual(fetch, "net is not granted", "the optional Net was not granted, so the plugin holds no client")
   // A native host cannot contain a provider panic: native has no unwinding.
   if currentPluginPlatform().runtime != "native" {
     val boom = errText(callPlugin(c, "Fixture.Api.Greeter/secret", params("key", JString(value = "boom"))), "boom")

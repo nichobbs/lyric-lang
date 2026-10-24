@@ -5,12 +5,13 @@ peer into the stdlib, Q-PLG-003) and **specced in D207** (the annotation
 surface, generated code, wire protocol, manifests and `Std.Plugin`; see its
 implementation notes for where the shipped code refines it). Implemented
 through phase P3 of §16: the annotations and `Lyric.PluginExpand`
-(`K0000`-`K0012`), `Std.Plugin` process mode on dotnet, JVM and native hosts,
+(`K0000`-`K0014`), `Std.Plugin` process mode on dotnet, JVM and native hosts,
 plugins on every target including wasm32-wasi under `wasmtime run`,
 `lyric plugin pack`/`check`/`sdk` with C#, Java and TypeScript SDKs, and source
 generators (docs/40) as the first plugin point, protocol points (P4, D228),
 the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
-(in-process) mode (P6's second half, D231, §10); P5 is open. Extends docs/01
+(in-process) mode (P6's second half, D231, §10), and WIT-typed components
+hosted in-process by wasmtime (P5, D232, §9.3). Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -545,6 +546,8 @@ generates its `PluginServer` and `main`.
 
 ### 9.3 Component mode
 
+_Shipped in D232 (phase P5)._
+
 A component payload is the plugin built with `--target native --triple
 wasm32-wasi --shape component` (docs/35's WIT component): its point methods are
 component exports, its capability calls are host imports, and a host runs it
@@ -575,6 +578,7 @@ payload, which has no command line.
 | `pub func pluginDescribe(): String` | `plugin-describe: func() -> string` | the manifest without payloads, the text `--lyric-plugin-manifest` prints |
 | `pub func pluginAttach(grants: in String): Result[Unit, String]` | `plugin-attach: func(grants: string) -> result<_, string>` | `grants` is the `plugin/hello` grant array; builds `R` with its clients; `Err` names a missing required capability or malformed grants. Called once per instance before any point method; a later call attaches again |
 | `pub func pluginMethods(): List[String]` | `plugin-methods: func() -> list<string>` | the `<Pkg>.<P>/<method>` names it implements |
+| `pub func pluginTypeHints(): String` | `plugin-type-hints: func() -> string` | the names the WIT types do not carry, for the host's JSON conversion (below) |
 | `pub func <pt><M>(params): Result[T, E]` | `<pt>-<m>: func(...) -> result<t, e>` | one per implemented method `m` of each point `Pt`, named `<Pt with its first letter lowered><M>`; calls `m` on the attached `R` (before `pluginAttach` it traps) |
 
 For each capability `C` of package `A` that `R` requests, every method `n`
@@ -671,7 +675,20 @@ process and wasm mode accept the same source.
   and the `Map[String, T]` reading of a `list<tuple<string, T>>` are not in the
   WIT, so the component's `plugin-type-hints` export names them; on input a
   union's payload is its one member besides `"case"` and an object fills a
-  `list<tuple<string, T>>`.
+  `list<tuple<string, T>>`. The hints are
+  `{"exports": {"<func>": {"params": [H...], "result": H}}, "imports":
+  {"<interface>#<func>": {...}}}`, an import keyed by its bare interface name
+  (`fixture-api-secrets#read`, which the plugin build knows without the WIT
+  package's name and version; the full instance name is accepted too), where
+  `H` is `null` when nothing below needs a name, or
+  `{"variant": {"<case>": {"field": "<lyricField>", "of": H}}}`,
+  `{"record": {"<field>": H}}`, `{"list": H}`, `{"map": H}`,
+  `{"option": H}`, `{"result": {"ok": H, "err": H}}` or
+  `{"tuple": [H...]}`. A component without the export is hosted without
+  hints (a union payload is then written as `"value"`, a map as pairs).
+  A `Map` crosses as pairs in the order the sending side's map iterates,
+  which is not insertion order on every target: key order is not part of the
+  boundary, as member order is not part of a D207 JSON object.
 - **Failures.** A trap is `Crashed` (the message is the trap and the innermost
   wasm functions), and the next call re-instantiates with process mode's
   backoff and `maxRestarts`. A call past `callTimeoutMs` is stopped by epoch
@@ -684,10 +701,14 @@ process and wasm mode accept the same source.
   compiled or linked is a final `Protocol` error.
 - **Tests.** `lyric-rt/test/lyric_wasmhost_test.c` hosts a hand-written WAT
   component (every value kind, imports, traps, timeouts, the limiter), also
-  under ASan and UBSan; `scripts/ci/plugin-component-e2e.sh` runs
-  `lyric-stdlib/tests/plugin_component_e2e_tests.l` against a component built
-  from `greeter_component.l` on dotnet, JVM and native hosts, once with
-  libwasmtime and once without.
+  under ASan and UBSan; `scripts/ci/plugin-component-e2e.sh` packs the
+  `@plugin` package `lyric-stdlib/tests/plugin_fixtures/greeter_component.l`
+  with `lyric plugin pack --targets component` and runs
+  `lyric-stdlib/tests/plugin_component_e2e_tests.l` against it on dotnet, JVM
+  and native hosts, once with libwasmtime and once without;
+  `plugin_expand_self_test.l` checks the generated items and hints,
+  `llvm_wasm32_plugin_component_self_test.l` runs a generated component under
+  jco, and `scripts/ci/plugin-component-pack-e2e.sh` checks pack and check.
 
 ## 10. Trusted mode
 
@@ -1083,8 +1104,8 @@ are not offered: those SDKs implement process mode.
 
 ## 17. Open questions
 
-**Q-PLG-001: wasmtime component-model coverage in its C API.** _Answered for
-P5 (§9.3)._ wasmtime 49's C API covers what component mode needs: compiling
+**Q-PLG-001: wasmtime component-model coverage in its C API.** _Resolved in
+D232 (§9.3)._ wasmtime 49's C API covers what component mode needs: compiling
 and linking components, the WASI p2 linker, host functions with a `void *env`,
 type reflection for generic value conversion, the store limiter and epoch
 deadlines. Plugin boundaries carry no resources and use the synchronous ABI,

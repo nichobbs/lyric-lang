@@ -4263,6 +4263,8 @@ record CompCap {
 record CompPlugin {
   points: List[CompPoint]
   caps: List[CompCap]
+  /// What `pluginTypeHints` returns (`typeHintsJson`).
+  hints: String
 }
 
 /// The WIT names one interface declares, for the collision checks: a type's
@@ -4640,6 +4642,171 @@ func checkMethodCarry(
   checkCarry(m.errTy, "the error of " + site, ws, newList(), errDepth, ctx, st, sp)
 }
 
+// ── Type hints (docs/69 §9.3) ───────────────────────────────────────────────
+// A WIT variant case carries only its payload's type, not the Lyric field
+// that D207's JSON names, and `Map[String, T]` (`list<tuple<string, t>>`)
+// looks like a `List[(String, T)]`.  `pluginTypeHints` gives the host those
+// names: for each export and import, one hint per parameter and one for the
+// result, where a hint is `null` when nothing below it needs a name.
+/// `{"<key>": <inner>}`, or `null` when `inner` is `null`.
+func hintWrap(key: in String, inner: in String): String {
+  if inner == "null" {
+    "null"
+  } else {
+    "{\"" + key + "\": " + inner + "}"
+  }
+}
+
+/// The hint of `b` (see above).  `stack` holds the named types being
+/// described, so a recursive type (already K0014) cannot loop.
+func hintOf(b: in BT, stack: in List[String], ctx: in Ctx, st: in St): String {
+  if stack.count > 8 {
+    return "null"
+  }
+  match b.kind {
+    case BOption(i) -> hintWrap("option", hintOf(i, stack, ctx, st))
+    case BResult(o, e) -> resultHint(hintOf(o, stack, ctx, st), hintOf(e, stack, ctx, st))
+    case BList(e, _) -> hintWrap("list", hintOf(e, stack, ctx, st))
+    case BMap(v) -> "{\"map\": " + hintOf(v, stack, ctx, st) + "}"
+    case BTuple(es) -> {
+      val hs: List[String] = newList()
+      var any = false
+      for e in es {
+        val h = hintOf(e, stack, ctx, st)
+        if h != "null" {
+          any = true
+        }
+        hs.add(h)
+      }
+      if any {
+        "{\"tuple\": [" + Str.joinList(", ", hs) + "]}"
+      } else {
+        "null"
+      }
+    }
+    case BNamed(n, q, kind) -> namedHint(n, q, kind, stack, ctx, st)
+    case _ -> "null"
+  }
+}
+
+func resultHint(ok: in String, err: in String): String {
+  if ok == "null" and err == "null" {
+    "null"
+  } else {
+    "{\"result\": {\"ok\": " + ok + ", \"err\": " + err + "}}"
+  }
+}
+
+func namedHint(n: in String, q: in String, kind: in String, stack: in List[String], ctx: in Ctx, st: in St): String {
+  if kind == "handle" or kind == "restored" {
+    return "null"
+  }
+  val pkg = qualifierPkg(q, ctx.pkg)
+  val key = pkg + "." + n
+  if stack.contains(key) {
+    return "null"
+  }
+  val it = match declItemIn(pkg, n, ctx, st) { case Some(x) -> x; case None -> return "null" }
+  val inner: List[String] = newList()
+  for s in stack {
+    inner.add(s)
+  }
+  inner.add(key)
+  match it.kind {
+    case IRecord(d) -> recordHint(d, pkg, inner, ctx, st)
+    case IExposedRec(d) -> recordHint(d, pkg, inner, ctx, st)
+    case IUnion(d) -> {
+      val cs: List[String] = newList()
+      for c in d.cases {
+        if c.fields.count == 1 {
+          match c.fields[0] {
+            case UFNamed(fname, fty, _) -> {
+              val of = match classifyFrom(fty, pkg, ctx, st, "field '" + fname + "' of " + key + "." + c.name) {
+                case Some(fb) -> hintOf(fb, inner, ctx, st)
+                case None -> "null"
+              }
+              cs.add("\"" + Glue.witName(c.name) + "\": {\"field\": \"" + fname + "\", \"of\": " + of + "}")
+            }
+            case UFPos(_, _) -> ()
+          }
+        }
+      }
+      if cs.count == 0 {
+        "null"
+      } else {
+        "{\"variant\": {" + Str.joinList(", ", cs) + "}}"
+      }
+    }
+    case _ -> "null"
+  }
+}
+
+func recordHint(d: in RecordDecl, pkg: in String, stack: in List[String], ctx: in Ctx, st: in St): String {
+  val fs: List[String] = newList()
+  for f in recordFields(d) {
+    match classifyFrom(f.ty, pkg, ctx, st, "field '" + f.name + "' of " + pkg + "." + d.name) {
+      case Some(fb) -> {
+        val h = hintOf(fb, stack, ctx, st)
+        if h != "null" {
+          fs.add("\"" + Glue.witName(f.name) + "\": " + h)
+        }
+      }
+      case None -> ()
+    }
+  }
+  if fs.count == 0 {
+    "null"
+  } else {
+    "{\"record\": {" + Str.joinList(", ", fs) + "}}"
+  }
+}
+
+/// `{"params": [...], "result": ...}` for a function with `m`'s parameters
+/// whose result is `result<ok, err>` with error hint `errHint`.
+func funcHint(m: in CompMethod, errHint: in String, ctx: in Ctx, st: in St): String {
+  val ps: List[String] = newList()
+  for t in m.paramTys {
+    ps.add(hintOf(t, newList(), ctx, st))
+  }
+  "{\"params\": [" + Str.joinList(", ", ps) + "], \"result\": " +
+    resultHint(hintOf(m.okTy, newList(), ctx, st), errHint) +
+    "}"
+}
+
+/// The hint of a `<C>CallErrorWire` whose `App` case carries `errTy`: the
+/// field names of `App` and of the boundary cases (those of `BoundaryError`).
+func wireHint(errTy: in BT, ctx: in Ctx, st: in St): String {
+  val cs: List[String] = newList()
+  if not isUnitBT(errTy) {
+    cs.add("\"app\": {\"field\": \"error\", \"of\": " + hintOf(errTy, newList(), ctx, st) + "}")
+  }
+  for wc in wireErrorCases() {
+    cs.add("\"" + Glue.witName(wc.name) + "\": {\"field\": \"" + wc.field + "\", \"of\": null}")
+  }
+  "{\"variant\": {" + Str.joinList(", ", cs) + "}}"
+}
+
+/// The JSON `pluginTypeHints` returns: exports keyed by their WIT function
+/// name, imports by `<interface>#<function>` (the bare interface name, which
+/// does not depend on the WIT package's name or version).
+func typeHintsJson(points: in List[CompPoint], caps: in List[CompCap], ctx: in Ctx, st: in St): String {
+  val ex: List[String] = newList()
+  for p in points {
+    for m in p.methods {
+      val h = funcHint(m, hintOf(m.errTy, newList(), ctx, st), ctx, st)
+      ex.add("\"" + Glue.witName(exportName(p.declName, m.name)) + "\": " + h)
+    }
+  }
+  val im: List[String] = newList()
+  for c in caps {
+    for m in c.methods {
+      val h = funcHint(m, wireHint(m.errTy, ctx, st), ctx, st)
+      im.add("\"" + Glue.witName(c.id) + "#" + Glue.witName(m.name) + "\": " + h)
+    }
+  }
+  "{\"exports\": {" + Str.joinList(", ", ex) + "}, \"imports\": {" + Str.joinList(", ", im) + "}}"
+}
+
 /// The method models of interface `it` (declared in `declPkg`) named in
 /// `only`, or all of them when `all`, spelled for the plugin package.
 func compMethods(
@@ -4774,6 +4941,7 @@ func componentPlugin(pm: in PluginModel, ctx: in Ctx, st: in St): Option[CompPlu
   addWitFunc(ex, Glue.witName("pluginDescribe"), "pluginDescribe", st, sp)
   addWitFunc(ex, Glue.witName("pluginAttach"), "pluginAttach", st, sp)
   addWitFunc(ex, Glue.witName("pluginMethods"), "pluginMethods", st, sp)
+  addWitFunc(ex, Glue.witName("pluginTypeHints"), "pluginTypeHints", st, sp)
   for p in points {
     checkWitName(p.declName, "the point " + p.id, st, sp)
     for m in p.methods {
@@ -4805,7 +4973,7 @@ func componentPlugin(pm: in PluginModel, ctx: in Ctx, st: in St): Option[CompPlu
   if hasErrorDiag(st.diags) {
     return None
   }
-  Some(value = CompPlugin(points = points, caps = caps))
+  Some(value = CompPlugin(points = points, caps = caps, hints = typeHintsJson(points, caps, ctx, st)))
 }
 
 func paramsText(m: in MethodModel): String {
@@ -5082,6 +5250,12 @@ func componentPluginText(pm: in PluginModel, cp: in CompPlugin, g: in Gen): Stri
     }
   }
   l.add("  acc")
+  l.add("}")
+  l.add("")
+  l.add("/// The field and map names the component's WIT types do not carry, for the")
+  l.add("/// host's JSON conversion (docs/69 §9.3).")
+  l.add("pub func pluginTypeHints(): String {")
+  l.add("  " + lit(cp.hints))
   l.add("}")
   l.add("")
   for p in cp.points {

@@ -121,8 +121,8 @@ LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-protocol-e2e.sh "
 # lyric-ui plugin widgets with wasm payloads (D230).
 LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet wasm
 # The in-process wasmtime embedding (docs/69 §9.3): its C unit tests against a
-# hand-written component, then a component plugin hosted by dotnet and native
+# hand-written component, then a packed @plugin component hosted by dotnet and native
 # hosts (the JVM host runs in the JVM job, which has JDK 22).
 make -C lyric-rt test-wasmhost WASMTIME_CAPI="$(bash scripts/ci/fetch-wasmtime-capi.sh)" WASM_TOOLS="$wt_dir/wasm-tools"
-WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" \
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" LYRIC_WASMTIME="$wasmtime_dir/wasmtime" \
   LYRIC_BIN="$lyric_bin" bash scripts/ci/plugin-component-e2e.sh dotnet native

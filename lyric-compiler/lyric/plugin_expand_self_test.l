@@ -982,6 +982,67 @@ test "component: capability imports and their error variants" {
   assertTrue(calls.contains("load") and calls.contains("touch"), "the plugin implements __StoreCalls over the imports")
 }
 
+// The string a generated function returns as its whole body.
+func returnedString(r: in PluginExpandResult, name: in String): String {
+  val fn = match funcNamed(r, name) { case Some(f) -> f; case None -> panic("no generated function " + name) }
+  val e = match fn.body {
+    case Some(FunctionBody.FBExpr(x)) -> x
+    case Some(FunctionBody.FBBlock(b)) -> match b.statements[b.statements.count - 1].kind {
+      case SExpr(x) -> x
+      case _ -> panic(name + " does not end in an expression")
+    }
+    case None -> panic(name + " has no body")
+  }
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LString(text) -> text
+      case _ -> panic(name + " does not return a string literal")
+    }
+    case _ -> panic(name + " does not return a string literal")
+  }
+}
+
+test "component: the type hints name what the WIT does not carry" {
+  val r = expandComponentSecond(compApiSource(), compPluginSource())
+  expectFunc(r, "pluginTypeHints", "pluginTypeHints(): String")
+  match funcNamed(r, "pluginTypeHints") {
+    case Some(fn) -> assertTrue(isPubFn(fn), "pluginTypeHints is pub, so it becomes an export")
+    case None -> panic("no pluginTypeHints")
+  }
+  val h = returnedString(r, "pluginTypeHints")
+  val item = "{\"record\": {\"tags\": {\"map\": null}}}"
+  assertTrue(
+    h.contains("\"item-tool-summarize\": {\"params\": [" + item + "], \"result\": null}"),
+    "an export's Map field inside a record, nothing named in its result: " + h
+  )
+  assertTrue(
+    h.contains(
+      "\"item-tool-fetch\": {\"params\": [null], \"result\": {\"result\": {\"ok\": {\"variant\": {\"added\": {\"field\": \"item\", \"of\": " +
+        item +
+        "}, \"removed\": {\"field\": \"doc\", \"of\": null}}}, \"err\": null}}}"
+    ),
+    "a union result names each case's field; a handle and a nullary case need nothing: " + h
+  )
+  assertTrue(h.contains("\"imports\": {\"acme-tools-store#load\": {\"params\": [null], \"result\": {\"result\": {\"ok\": " + item), "an import keyed by its bare interface: " + h)
+  assertTrue(
+    h.contains("\"app\": {\"field\": \"error\", \"of\": null}, \"denied\": {\"field\": \"reason\", \"of\": null}"),
+    "the wire variant's cases carry BoundaryError's field names: " + h
+  )
+  assertTrue(h.contains("\"timeout\": {\"field\": \"timeoutMs\", \"of\": null}"), "timeout: " + h)
+  assertTrue(h.contains("\"acme-tools-log#write\": {\"params\": [null, null]"), "the optional capability's import: " + h)
+}
+
+test "component: an import with another error type has its own hint" {
+  val r = expandComponentSecond(compApiSource(), compPluginSource())
+  val h = returnedString(r, "pluginTypeHints")
+  val at = match Str.indexOf(h, "\"acme-tools-store#touch\"") { case Some(i) -> i; case None -> panic("no touch hint: " + h) }
+  val touch = Str.substring(h, at)
+  assertTrue(
+    Str.startsWith(touch, "\"acme-tools-store#touch\": {\"params\": [null], \"result\": {\"result\": {\"ok\": null, \"err\": {\"variant\": {\"app\": {\"field\": \"error\", \"of\": null}, \"denied\""),
+    "touch's error is Level (an enum), so app carries it with no names below: " + touch
+  )
+}
+
 test "component: process mode is unchanged by the component path" {
   val r = expandSecond(compApiSource(), compPluginSource())
   expectClean(r, "process plugin")
