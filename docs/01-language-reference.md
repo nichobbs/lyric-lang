@@ -4090,7 +4090,10 @@ params object by parameter name. Its capability imports are served exactly as
 a process plugin's `cap/...` requests: the plugin's grants, revocations and
 `requires:` guards apply, and the answer is the import's
 `result<T, call-error-wire>`. Values cross in the JSON encoding of §15.5,
-converted to and from component values by the runtime. A trap is `Crashed`
+converted to and from component values by the runtime; the generated
+`plugin-type-hints` export supplies what the WIT types do not carry (a union
+case's field name, and which `list<tuple<string, T>>` is a `Map`). Map key
+order does not cross the boundary. A trap is `Crashed`
 and the next call re-instantiates the plugin, with process mode's backoff and
 `maxRestarts`; a call that runs past `callTimeoutMs` is stopped where it is by
 epoch interruption and returns `Timeout`, and the next call re-instantiates
