@@ -197,6 +197,7 @@ for t in \
   lyric-compiler/lyric/buffer_self_test.l \
   lyric-compiler/lyric/buffer_panic_self_test.l \
   lyric-compiler/lyric/buffer_spawn_self_test.l \
+  lyric-compiler/lyric/buffer_nested_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/task_shadow_self_test.l \

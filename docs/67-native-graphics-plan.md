@@ -6,8 +6,8 @@ resolved and `docs/00` / `docs/04` carry the §4.9 revisions. G1 is done
 record arithmetic). G2 is implemented: the `Plain` marker, `buffer[T]` on
 dotnet, the JVM (D185) and native (D186), `Std.Buffer`, and `withPointer` /
 `withMutPointer` (D187); the verifier's sequence model (#8394) and the
-copy-before-loop diagnostic (#8395) are tracked separately, as are the lazy
-managed form (#8389) and the JVM `spawn` argument copy (#8391). G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
+copy-before-loop diagnostic (#8395) are tracked separately. The lazy
+managed form (D226, #8389) and the JVM `spawn` argument copy (#8391) are implemented. G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
 `lyric bindgen`, `[native.libs]`, prebuilt restore, callback members). G5 is
 implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
 triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
@@ -299,7 +299,10 @@ shared:
   and a write to a shared buffer copies and clears the mark. The mark is
   never cleared otherwise, so this is conservative: always correct, but
   sometimes copies where native would not. Native is the performance
-  target; the managed targets get correct semantics.
+  target; the managed targets get correct semantics. Implemented in D226
+  (#8389): a managed buffer is a handle over its storage, a copy is O(1),
+  and `b[i] = v` evaluates `v`, then makes the storage private if its
+  handle is marked.
 
 **Alternatives considered**
 
@@ -588,7 +591,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

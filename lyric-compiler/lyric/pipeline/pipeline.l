@@ -1076,7 +1076,7 @@ pub func pipeCheckFront(
   // `for` over an array, copies on store and zero-filled declarations become
   // forms every backend lowers.  Before the overflow pass, which still finds
   // a compound assignment's statement and its operators by their own spans.
-  val arraysLowered = lowerArraySites(recordLowered, tcRes.symbols, opts.primitiveArrays)
+  val arraysLowered = lowerArraySites(recordLowered, tcRes.symbols, opts.primitiveArrays, opts.arraysAsLists)
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.
@@ -1115,7 +1115,9 @@ pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile 
 
 /// `array[N, T]` (D167) and `buffer[T]` pointer-closure sites recorded in
 /// `sym`, lowered to forms every backend handles.
-pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArrays: in Bool): SourceFile {
+pub func lowerArraySites(
+  file: in SourceFile, sym: in SymbolTable, primitiveArrays: in Bool, bufferHandles: in Bool
+): SourceFile {
   lowerArrays(
     file,
     ArraySites(
@@ -1127,7 +1129,8 @@ pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArra
       zero = sym.arrayZeroSites,
       ctorZero = sym.arrayCtorZeroArgs,
       literal = if primitiveArrays { sym.arrayLiteralSites } else { newMap() },
-      pointerClosures = sym.bufferPointerSites
+      pointerClosures = sym.bufferPointerSites,
+      bufferHandles = bufferHandles
     )
   )
 }
@@ -2309,7 +2312,9 @@ func lowerSpecArrays(
             items = one,
             span = file.span
           )
-          val arraySites = if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
+          val arraySites = (if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }).copy(
+            bufferHandles = not unionPerLength
+          )
           val lowered = lowerArrays(
             lowerRecordEq(
               markValueUnionCtors(
@@ -3275,7 +3280,9 @@ func lowerValueRecordSpecs(
     }
     match mapGet(specArrays, name) {
       case Some(sa) -> {
-        val arraySites = if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
+        val arraySites = (if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }).copy(
+          bufferHandles = opts.arraysAsLists
+        )
         val lowered = lowerArrays(
           lowerRecordEq(withArrayLens(oneItemFile(file, it), sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
           arraySites

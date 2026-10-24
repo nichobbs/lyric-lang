@@ -814,7 +814,7 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
     }
   }
   if errors.count == 0 {
-    return Some(value = lowerArraySites(lowerRecordSites(file, tcRes.symbols), tcRes.symbols, false))
+    return Some(value = lowerArraySites(lowerRecordSites(file, tcRes.symbols), tcRes.symbols, false, false))
   }
   DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), errors)
   None
