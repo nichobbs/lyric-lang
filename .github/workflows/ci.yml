@@ -962,19 +962,6 @@ jobs:
       # The `scripts/ci/compiler-self-tests-batch.sh` corpus runs in
       # its own sharded `compiler-self-tests-core` job (it was ~59 of this
       # job's ~88 min, run sequentially behind the batch-1 barrier).
-      # JaCoCo -> Cobertura converter self-test (docs/03-decision-log.md D135,
-      # #5294) — exercises `Lyric.JacocoCobertura` (the pure-Lyric XML
-      # translator backing `lyric test --target jvm --coverage`) via native
-      # `lyric test`.  Its compiler-package
-      # import is resolved by linking the stage-1 bundle DLLs (no
-      # `LYRIC_LOAD_COMPILER=1`).  9 cases against a byte-for-byte real
-      # JaCoCo 0.8.12 report captured from an actual instrumented run.
-      - name: JaCoCo/Cobertura converter self-test (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/jacoco_cobertura_self_test.l
-
       # Bitwise self-test — first executable regression test for a
       # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
       # integer methods, #1610).  Run via native `lyric test`, which
@@ -3866,41 +3853,6 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/bitwise_self_test.l
-
-      # #6926 (review finding on #6874): `cmdTest` derives its output path
-      # from the source stem alone (`cli_test.l`), independent of
-      # `--coverage` — so the coverage smoke test below and the background
-      # "Bitwise self-test on JVM" step above compile the SAME source file
-      # to the SAME `.jar` path. Without this barrier the two `lyric test`
-      # invocations race to write that path via a non-atomic `writeBytes`
-      # (`jvm/driver.l`), risking a torn/corrupt JAR read by whichever
-      # `java -jar` loses the race — exactly the flakiness this whole
-      # #6659/#5294/D135 saga is otherwise working to eliminate. This barrier
-      # only drains the one background step above (nothing else has started
-      # a background step yet in this job), so it doesn't disturb the
-      # job's later `Wait for parallel tests (JVM batch N)` batching.
-      - name: Wait for bitwise self-test before coverage smoke test (#6926)
-        wait-all: true
-
-      # Coverage smoke test (docs/03-decision-log.md D135, #5294, #6659).
-      # `lyric test --target jvm --coverage` previously hung for 2+ hours on
-      # real GitHub Actions runners. Root cause (#6659): `cmdTest`'s argv
-      # parser (`cli_test.l`) had a `--coverage` branch that never advanced
-      # its loop index, so ANY invocation with `--coverage` in argv spun
-      # forever re-processing the same argv slot — a busy-loop well
-      # upstream of the java/JaCoCo codegen the original investigation
-      # suspected, which is why neither of that codegen's own 600s/120s
-      # internal timeouts ever fired. Fixed by the missing `i += 1`.
-      # `coverage-smoke-test.sh` also runs the command in the background
-      # and polls it instead of a plain blocking `timeout --signal=KILL`,
-      # capturing a `jcmd`/`jstack` thread dump before killing it on any
-      # future timeout — defense in depth, not the fix itself. The barrier
-      # above (#6926) keeps this from racing the bitwise self-test's own
-      # compile of the identical source file to the identical output path.
-      - name: Coverage smoke test on JVM (lyric test --target jvm --coverage, #6659)
-        if: ${{ !cancelled() }}
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/coverage-smoke-test.sh lyric-compiler/lyric/bitwise_self_test.l
 
       # Aliased-import routing pin, JVM leg (#6496 resolution): both import
       # forms route the method spelling to the Option free functions on both

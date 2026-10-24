@@ -1184,12 +1184,12 @@ lyric test <file.l>                    # a loose test file next to a lyric.toml 
                                        # that manifest's dependencies (D123/#5341), exactly like
                                        # `lyric build`/`lyric run` — an unbuilt dependency fails
                                        # the run rather than silently compiling without it
-lyric test <file.l> --target jvm \
-  --coverage                           # instrument with JaCoCo, write
-                                       # <dir>/.lyric-test/coverage/<stem>-cobertura.xml
-                                       # (+ <stem>-jacoco.xml); single-file JVM-target only
-                                       # for now (D135). Needs jacocoagent.jar/jacococli.jar
-                                       # via LYRIC_JACOCO_AGENT/LYRIC_JACOCO_CLI or `make jacoco`.
+lyric test <file.l> --coverage         # (#5294) count the statement lines of the code under test
+                                       # (dotnet or jvm), write <dir>/.lyric-test/coverage.info
+                                       # (lcov) and coverage.xml (Cobertura), print a summary
+lyric test --coverage                  # project mode: every [project.packages] source is
+                                       # counted, over all [project.tests] runs
+lyric test --coverage --min-coverage 80 # fail when under 80% of lines are covered
 lyric test <file.l> --update-snapshots # (#678) rewrite every Std.Testing.Snapshot baseline this
                                        # test file touches to match its actual output instead of
                                        # failing on mismatch; commit the rewritten snapshot files.

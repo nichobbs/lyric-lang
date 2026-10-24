@@ -23,7 +23,7 @@ import Lyric.Release as Release
 import Lyric.PackageMerge as PM
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
-import Lyric.JacocoCobertura as Jc
+import Lyric.Coverage as Cov
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
@@ -216,131 +216,84 @@ pub func resolveTestAutoDiscovery(startDir: in String): TestBareDispatchOutcome 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §11c-cov. `lyric test --target jvm --coverage` — JaCoCo instrumentation.
+// §11c-cov. `lyric test --coverage` — statement-line coverage (#5294, D246).
 // ─────────────────────────────────────────────────────────────────────────────
-// JaCoCo (jacocoagent.jar / jacococli.jar) is off-the-shelf, third-party JVM
-// tooling shelled out to via `java`, the same category as the bundled Maven
-// resolver JAR under `resolver/` (docs/03-decision-log.md) — no new F#/host
-// shim, no new Lyric coverage-collector code path. Search order mirrors
-// `findMavenResolverJar` (cli_restore.l):
-//   1. an exact-path env var
-//   2. <appBaseDir>/<fileName>            (installed beside the lyric binary)
-//   3. <appBaseDir>/../<fileName>         (one level up — common dev layout)
-//   4. $HOME/.lyric/tools/<fileName>      (user-local install)
-func findJacocoTool(envVar: in String, fileName: in String): Option[String] {
-  match Environment.getVar(envVar) {
-    case Ok(p) -> {
-      if File.fileExists(p) {
-        return Some(value = p)
-      } else {
-        printErr("test: warning: " + envVar + "=" + p + " does not exist; falling back to default search locations")
-      }
-    }
-    case Err(_) -> ()
+// The code under test is rewritten by `Lyric.Coverage` so that each statement
+// counts itself in `Std.Coverage`; the test binary writes the counts to the
+// file named by `LYRIC_COVERAGE_OUT` as its `main` ends, and the runs'
+// counts are turned into `coverage.info` (lcov) and `coverage.xml`
+// (Cobertura) beside the test outputs.  The same rewrite feeds the .NET and
+// the JVM backend.
+// Points the next test run at `dumpPath` and clears a stale file there.
+func beginCoverageRun(dumpPath: in String): Unit {
+  if File.fileExists(dumpPath) {
+    val _ = File.deleteFile(dumpPath)
   }
-  val base = Environment.appBaseDirectory()
-  val c1 = Path.join(base, fileName)
-  if File.fileExists(c1) {
-    return Some(value = c1)
-  }
-  val c2 = Path.join(Path.dirname(base), fileName)
-  if File.fileExists(c2) {
-    return Some(value = c2)
-  }
-  val home = Environment.getVarOrDefault("HOME", "")
-  if home.length > 0 {
-    val c3 = Path.join(Path.join(Path.join(home, ".lyric"), "tools"), fileName)
-    if File.fileExists(c3) {
-      return Some(value = c3)
-    }
-  }
-  None
+  Environment.setVar("LYRIC_COVERAGE_OUT", dumpPath)
 }
 
-func findJacocoAgentJar(): Option[String] {
-  findJacocoTool("LYRIC_JACOCO_AGENT", "jacocoagent.jar")
-}
-
-func findJacocoCliJar(): Option[String] {
-  findJacocoTool("LYRIC_JACOCO_CLI", "jacococli.jar")
-}
-
-func jacocoToolMissingMessage(fileName: in String, envVar: in String): String {
-  "test: --coverage: " + fileName + " not found; run `make jacoco` to download it, or set " + envVar + "=/path/to/" +
-    fileName
-}
-
-// Runs `jacococli.jar report` against the exec data JaCoCo's agent wrote
-// during the test run, then converts the resulting JaCoCo XML report into
-// Cobertura XML (`Lyric.JacocoCobertura`, a pure-Lyric translator — see that
-// module's header for the schema-mapping fidelity notes). Returns false (and
-// prints a diagnostic) on any failure in the pipeline; coverage was
-// explicitly requested via `--coverage`, so a failure here is a hard error,
-// not a silent skip.
-func generateJvmCoverageReport(
-  jacocoCliJar: in String,
-  execPath: in String,
-  classfilesPath: in String,
-  jacocoXmlPath: in String,
-  coberturaXmlPath: in String,
-): Bool {
-  if not File.fileExists(execPath) {
+// The report of a finished coverage run, written to `reportDir`: sums the
+// counts the runs wrote (`dumpPaths`), writes `coverage.info` and
+// `coverage.xml`, prints the per-file summary, and fails when the total is
+// under `minPercent` (0 = no minimum).  Coverage was asked for, so a run that
+// measured nothing is an error, not a silent pass.  Returns the exit code of
+// the whole `lyric test` run: `rc` unless the report made it fail.
+func finishCoverageRun(
+  session: in Cov.CoverSession,
+  dumpPaths: in List[String],
+  reportDir: in String,
+  minPercent: in Int,
+  rc: in Int,
+): Int {
+  if session.files.count == 0 {
     printErr(
-      "test: --coverage: no exec data written to " + execPath + " (the JaCoCo agent did not run or produced no data)"
+      "test: --coverage: no code under test was instrumented (test items, packages of the standard library and @pure / @proof_required packages are not counted)"
     )
-    return false
+    return 1
   }
-  val reportArgs: List[String] = newList()
-  reportArgs.add("-jar")
-  reportArgs.add(jacocoCliJar)
-  reportArgs.add("report")
-  reportArgs.add(execPath)
-  reportArgs.add("--classfiles")
-  reportArgs.add(classfilesPath)
-  reportArgs.add("--xml")
-  reportArgs.add(jacocoXmlPath)
-  val res = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", reportArgs, "", 120000)
-  if res.stdout.length > 0 {
-    Console.print(res.stdout)
-  }
-  if res.stderr.length > 0 {
-    Console.error(res.stderr)
-  }
-  if res.exitCode == -1 {
-    printErr("test: --coverage: failed to start java for jacococli.jar report")
-    return false
-  }
-  if res.timedOut {
-    printErr("test: --coverage: jacococli.jar report timed out (120 s limit reached)")
-    return false
-  }
-  if res.exitCode != 0 or not File.fileExists(jacocoXmlPath) {
-    printErr("test: --coverage: jacococli.jar report failed (exit " + toString(res.exitCode) + ")")
-    return false
-  }
-  val jacocoXml = match File.readText(jacocoXmlPath) {
-    case Ok(t) -> t
-    case Err(e) -> {
-      printErr("test: --coverage: cannot read " + jacocoXmlPath + ": " + IOError.message(e))
-      return false
+  val hits = Cov.emptyHits(session)
+  for dp in dumpPaths {
+    match File.readText(dp) {
+      case Ok(text) -> Cov.addHits(hits, text)
+      case Err(_) -> printErr("test: --coverage: warning: the test run wrote no coverage data to " + dp)
     }
   }
-  val coberturaXml = match Jc.jacocoXmlToCobertura(jacocoXml) {
-    case Ok(x) -> x
-    case Err(e) -> {
-      printErr("test: --coverage: " + e.message())
-      return false
-    }
-  }
-  match File.writeText(coberturaXmlPath, coberturaXml) {
+  match File.createDir(reportDir) {
     case Ok(_) -> ()
     case Err(e) -> {
-      printErr("test: --coverage: cannot write " + coberturaXmlPath + ": " + IOError.message(e))
-      return false
+      printErr("test: --coverage: cannot create " + reportDir + ": " + IOError.message(e))
+      return 1
     }
   }
-  Console.println("test: coverage report written to " + coberturaXmlPath + " (JaCoCo XML: " + jacocoXmlPath + ")")
-  true
+  val lcovPath = Path.join(reportDir, "coverage.info")
+  val xmlPath = Path.join(reportDir, "coverage.xml")
+  match File.writeText(lcovPath, Cov.lcovReport(session, hits)) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("test: --coverage: cannot write " + lcovPath + ": " + IOError.message(e))
+      return 1
+    }
+  }
+  match File.writeText(xmlPath, Cov.coberturaReport(session, hits)) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("test: --coverage: cannot write " + xmlPath + ": " + IOError.message(e))
+      return 1
+    }
+  }
+  Console.print(Cov.summaryText(session, hits))
+  Console.println("test: coverage reports written to " + lcovPath + " and " + xmlPath)
+  val totals = Cov.sessionTotals(session, hits)
+  if minPercent > 0 and not Cov.meetsMinimum(totals, minPercent) {
+    printErr(
+      "test: --min-coverage: " + Cov.percentText(totals.covered, totals.total) +
+        "% of lines are covered, under the required " +
+        toString(minPercent) +
+        "%"
+    )
+    return if rc != 0 { rc } else { 1 }
+  }
+  rc
 }
 
 func cmdTest(argv: in slice[String]): Int {
@@ -355,6 +308,7 @@ func cmdTest(argv: in slice[String]): Int {
   var propSeedArg: Option[Int] = None
   var coverage = false
   var doctests = false
+  var minCoverage = 0
   var updateSnapshots = false
   var noDefaultFeatures = false
   var allFeatures = false
@@ -475,6 +429,26 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--doctests" {
       doctests = true
       i += 1
+    } else if arg == "--min-coverage" {
+      if i + 1 < argv.length {
+        match parseOptInt(argv[i + 1]) {
+          case Some(n) -> {
+            if n < 1 or n > 100 {
+              printErr("test: --min-coverage must be between 1 and 100")
+              return 1
+            }
+            minCoverage = n
+            i += 2
+          }
+          case None -> {
+            printErr("test: --min-coverage requires an integer percentage")
+            return 1
+          }
+        }
+      } else {
+        printErr("test: --min-coverage requires a percentage")
+        return 1
+      }
     } else if arg == "--update-snapshots" {
       updateSnapshots = true
       i += 1
@@ -496,34 +470,24 @@ func cmdTest(argv: in slice[String]): Int {
   }
   val propCfg = TestSynth.propertyRunConfigFromOverrides(propTrialsArg, propSeedArg)
 
-  // `--coverage` (JVM-target JaCoCo instrumentation, docs/03-decision-log.md)
-  // is scoped to a single explicit test file for its first slice — manifest
-  // (multi-package) suites and non-JVM targets are explicit, loud errors
-  // rather than a silent no-op (the exact anti-pattern that motivated this
-  // feature: the old F#-era `coverage` CI job kept reporting green while
-  // collecting nothing).
-  if coverage and not targetJvm {
+  // `--coverage` (#5294, D246) counts statement lines on the .NET and JVM
+  // targets.  Native is a loud error, not a silent no-op (the F#-era
+  // `coverage` CI job kept reporting green while collecting nothing): its
+  // coverage maps through the debug-information bands of docs/63 (B2 and
+  // later), tracked in #8553.
+  if coverage and targetNative {
     printErr(
-      "test: --coverage requires --target jvm (JaCoCo-based; MSIL/native coverage is a tracked follow-up — see docs/03-decision-log.md)"
+      "test: --coverage is not supported with --target native yet (it needs the debug-information bands of docs/63; tracked in #8553)"
     )
     return 1
   }
-  if coverage {
-    match manifestArg {
-      case Some(_) -> {
-        printErr(
-          "test: --coverage does not yet support --manifest (multi-package) test suites; run the test file directly: lyric test <file.l> --target jvm --coverage"
-        )
-        return 1
-      }
-      case None -> ()
-    }
-    if positional.count == 0 {
-      printErr(
-        "test: --coverage requires an explicit source file (auto-discovered manifests are not yet supported): lyric test <file.l> --target jvm --coverage"
-      )
-      return 1
-    }
+  if coverage and failFast {
+    printErr("test: --coverage cannot be combined with --fail-fast (a run that stops early has no meaningful report)")
+    return 1
+  }
+  if minCoverage > 0 and not coverage {
+    printErr("test: --min-coverage requires --coverage")
+    return 1
   }
 
   // `--update-snapshots` (#678): `Std.Testing.Snapshot.snapshotIn` checks
@@ -587,7 +551,9 @@ func cmdTest(argv: in slice[String]): Int {
       cliFeatures,
       noDefaultFeatures,
       allFeatures,
-      doctests
+      doctests,
+      coverage,
+      minCoverage
     )
     case None -> ()
   }
@@ -609,7 +575,9 @@ func cmdTest(argv: in slice[String]): Int {
         cliFeatures,
         noDefaultFeatures,
         allFeatures,
-        doctests
+        doctests,
+        coverage,
+        minCoverage
       )
       case TestReported(outcome) -> return outcome.exitCode
     }
@@ -636,6 +604,10 @@ func cmdTest(argv: in slice[String]): Int {
       return 1
     }
   }
+  // `--coverage`: the file's own functions count (a test module's `test`
+  // items are not functions yet, so only its helpers do).
+  val covSession = Cov.newSession()
+  val coveredText = if coverage { Cov.instrumentTestModule(covSession, fileText, sourcePath, true) } else { fileText }
 
   val stem = stemOf(Path.basename(sourcePath), 2)
   // Native binaries have no extension, or `.exe` on a Windows host
@@ -682,7 +654,7 @@ func cmdTest(argv: in slice[String]): Int {
   // `--doctests` (#678, D245): the file's ` ```lyric ` doc-comment blocks run
   // as tests of the file's own package, so they are merged into it as one
   // more file of the package.
-  var source = fileText
+  var source = coveredText
   if doctests {
     val dm = TestSynth.buildDoctestModule(fileText, sourcePath)
     if dm.count == 0 {
@@ -692,7 +664,7 @@ func cmdTest(argv: in slice[String]): Int {
       }
     } else {
       val pkgFiles: List[String] = newList()
-      pkgFiles.add(TestSynth.withTestModuleAnnotation(fileText))
+      pkgFiles.add(TestSynth.withTestModuleAnnotation(coveredText))
       pkgFiles.add(dm.source)
       val pkgPaths: List[String] = newList()
       pkgPaths.add(sourcePath)
@@ -792,8 +764,9 @@ func cmdTest(argv: in slice[String]): Int {
       Console.println("0 test(s), module gated by inactive @cfg")
       return 0
     }
-    case Synthesised(rewritten, testCnt, skipCnt) -> {
+    case Synthesised(synthesised, testCnt, skipCnt) -> {
       Console.println(toString(testCnt) + " test(s), " + toString(skipCnt) + " skipped")
+      val rewritten = if coverage { TestSynth.withCoverageDump(synthesised) } else { synthesised }
 
       match File.createDir(Path.dirname(outPath)) {
         case Ok(_) -> ()
@@ -865,31 +838,11 @@ func cmdTest(argv: in slice[String]): Int {
       // bundles the user package plus its transitive stdlib import closure),
       // so it runs directly via `java -jar` with no DLL staging or runtimeconfig.
       if targetJvm {
-        var jacocoAgentJar = ""
-        var coverageExecPath = ""
+        val dumpPath = outPath + ".cov"
         if coverage {
-          val agentJar = match findJacocoAgentJar() {
-            case Some(j) -> j
-            case None -> {
-              printErr(jacocoToolMissingMessage("jacocoagent.jar", "LYRIC_JACOCO_AGENT"))
-              return 1
-            }
-          }
-          jacocoAgentJar = agentJar
-          val coverageDir = Path.join(Path.dirname(outPath), "coverage")
-          match File.createDir(coverageDir) {
-            case Ok(_) -> ()
-            case Err(e) -> {
-              printErr("test: --coverage: cannot create " + coverageDir + ": " + IOError.message(e))
-              return 1
-            }
-          }
-          coverageExecPath = Path.join(coverageDir, stem + ".exec")
+          beginCoverageRun(dumpPath)
         }
         val jvmArgs: List[String] = newList()
-        if coverage {
-          jvmArgs.add("-javaagent:" + jacocoAgentJar + "=destfile=" + coverageExecPath + ",append=false,dumponexit=true")
-        }
         jvmArgs.add("-jar")
         jvmArgs.add(outPath)
         val jvmRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", jvmArgs, "", 600000)
@@ -910,20 +863,9 @@ func cmdTest(argv: in slice[String]): Int {
           return 1
         }
         if coverage {
-          val cliJar = match findJacocoCliJar() {
-            case Some(j) -> j
-            case None -> {
-              printErr(jacocoToolMissingMessage("jacococli.jar", "LYRIC_JACOCO_CLI"))
-              return 1
-            }
-          }
-          val coverageDir2 = Path.join(Path.dirname(outPath), "coverage")
-          val jacocoXmlPath = Path.join(coverageDir2, stem + "-jacoco.xml")
-          val coberturaXmlPath = Path.join(coverageDir2, stem + "-cobertura.xml")
-          val reportOk = generateJvmCoverageReport(cliJar, coverageExecPath, outPath, jacocoXmlPath, coberturaXmlPath)
-          if not reportOk {
-            return 1
-          }
+          val dumps: List[String] = newList()
+          dumps.add(dumpPath)
+          return finishCoverageRun(covSession, dumps, Path.dirname(outPath), minCoverage, jvmRes.exitCode)
         }
         return jvmRes.exitCode
       }
@@ -1019,12 +961,16 @@ func cmdTest(argv: in slice[String]): Int {
       val execArgs: List[String] = newList()
       execArgs.add("exec")
       execArgs.add(outPath)
+      val dotnetDump = outPath + ".cov"
+      if coverage {
+        beginCoverageRun(dotnetDump)
+      }
       val dotnetRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", execArgs, "", 600000)
       Console.print(dotnetRes.stdout)
       if dotnetRes.stderr.length > 0 {
         Console.error(dotnetRes.stderr)
       }
-      if dotnetRes.exitCode == -1 {
+      val dotnetRc = if dotnetRes.exitCode == -1 {
         printErr("test: failed to start dotnet")
         1
       } else if dotnetRes.timedOut {
@@ -1035,6 +981,13 @@ func cmdTest(argv: in slice[String]): Int {
         1
       } else {
         dotnetRes.exitCode
+      }
+      if coverage {
+        val dumps: List[String] = newList()
+        dumps.add(dotnetDump)
+        finishCoverageRun(covSession, dumps, Path.dirname(outPath), minCoverage, dotnetRc)
+      } else {
+        dotnetRc
       }
     }
   }
@@ -1166,6 +1119,8 @@ func cmdTestManifest(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
   doctests: in Bool,
+  coverage: in Bool,
+  minCoverage: in Int,
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -1201,6 +1156,13 @@ func cmdTestManifest(
   // Set when the `@test_module` fallback below ran files and some failed, in a
   // `--doctests` run that goes on to the packages' doctests.
   var fallbackFailed = false
+  if proj.tests.count == 0 and coverage {
+    printErr(
+      "test: --coverage in project mode needs [project.tests] entries in " + mfPath +
+        " (the @test_module fallback runs each file on its own, with a report of its own)"
+    )
+    return 1
+  }
   if proj.tests.count == 0 {
     // Fallback: scan [project.packages] source paths for @test_module files and
     // run each as a single-file test.  Avoids requiring an explicit [project.tests]
@@ -1460,6 +1422,22 @@ func cmdTestManifest(
 
   if hadFatal {
     return 1
+  }
+
+  // `--coverage` (D246): the project's own packages are the code under test.
+  // Every test run is a process of its own, so the runs' counts are summed
+  // from the files they write (`covDumps`).
+  val covSession = Cov.newSession()
+  val covDumps: List[String] = newList()
+  if coverage {
+    for lp in libPkgs {
+      var ci = 0
+      while ci < lp.sources.count {
+        val covPath = if ci < lp.paths.count { lp.paths[ci] } else { lp.name }
+        lp.sources[ci] = Cov.instrumentInto(covSession, lp.sources[ci], covPath)
+        ci += 1
+      }
+    }
   }
 
   // Build workspace dependencies first, so their DLLs are available when building
@@ -1973,6 +1951,7 @@ func cmdTestManifest(
       }
     }
 
+    val testSourceRun = if coverage { Cov.instrumentTestModule(covSession, testSource, abs, false) } else { testSource }
     var synthFailed = false
     var rewritten = ""
     // #6868: pass the already-resolved manifest `activeFeatures`/`mfDeclared`
@@ -1982,13 +1961,13 @@ func cmdTestManifest(
     // not an empty set that could disagree with a manifest that activates
     // the gating feature.
     val testSynthResult = if runProperties {
-      TestSynth.synthesizeFor(testSource, filterArg, false, true, propCfg, cfgActiveWithTarget, mfDeclared)
+      TestSynth.synthesizeFor(testSourceRun, filterArg, false, true, propCfg, cfgActiveWithTarget, mfDeclared)
     } else {
-      TestSynth.synthesizeFor(testSource, filterArg, false, false, propCfg, cfgActiveWithTarget, mfDeclared)
+      TestSynth.synthesizeFor(testSourceRun, filterArg, false, false, propCfg, cfgActiveWithTarget, mfDeclared)
     }
     match testSynthResult {
       case Synthesised(rw, _, _) -> {
-        rewritten = rw
+        rewritten = if coverage { TestSynth.withCoverageDump(rw) } else { rw }
       }
       case NoTestModule(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": not a @test_module — add @test_module annotation")
@@ -2086,6 +2065,11 @@ func cmdTestManifest(
       totalFailed += 1
       ti += 1
       continue
+    }
+    if coverage {
+      val covDump = outPath + ".cov"
+      beginCoverageRun(covDump)
+      covDumps.add(covDump)
     }
     // The self-hosted codegen references the stdlib under its split
     // per-package assembly names (`Lyric.Stdlib.Core`, `Lyric.Stdlib.Testing`,
@@ -2189,9 +2173,9 @@ func cmdTestManifest(
 
   Console.println("")
   Console.println("== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed")
-  if totalFailed > 0 or fallbackFailed {
-    1
-  } else {
-    0
+  val suiteRc = if totalFailed > 0 or fallbackFailed { 1 } else { 0 }
+  if coverage {
+    return finishCoverageRun(covSession, covDumps, Path.join(mfDir, ".lyric-test"), minCoverage, suiteRc)
   }
+  suiteRc
 }
