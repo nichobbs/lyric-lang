@@ -663,7 +663,7 @@ func cmdPluginPack(argv: in slice[String]): Int {
       case None -> ()
     }
   }
-  val wasmtime = if listContains(targets, "wasm") { findWasmtime() } else { "" }
+  val wasmtime = if listContains(targets, "wasm") or listContains(targets, "component") { findWasmtime() } else { "" }
   for t in targets {
     val missing = missingToolchain(t, wasmtime)
     if missing.length > 0 {

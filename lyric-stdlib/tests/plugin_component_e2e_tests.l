@@ -251,10 +251,7 @@ func okValue(r: in Result[JsonValue, BoundaryError], label: in String): JsonValu
 
 func intField(v: in JsonValue, name: in String): Int {
   match getField(v, name) {
-    case Some(f) -> match f {
-      case JInt(n) -> n.toInt()
-      case _ -> -1
-    }
+    case Some(f) -> match f { case JInt(n) -> n.toInt(); case _ -> -1 }
     case None -> -1
   }
 }
@@ -369,10 +366,7 @@ test "the packed component describes itself and carries its generated type hints
     }
     case Err(issue) -> assertTrue(false, "the described manifest is invalid: " + pluginLoadIssueMessage(issue))
   }
-  val hints = match parseValue(probeExport("plugin-type-hints")) {
-    case Ok(v) -> v
-    case Err(_) -> JNull
-  }
+  val hints = match parseValue(probeExport("plugin-type-hints")) { case Ok(v) -> v; case Err(_) -> JNull }
   val exports = unwrapOr(getField(hints, "exports"), JNull)
   val shape = writeValue(unwrapOr(getField(exports, "greeter-shape"), JNull))
   assertTrue(shape.contains("\"circle\":{\"field\":\"radius\""), "the union case field is named: " + shape)

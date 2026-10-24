@@ -890,7 +890,11 @@ test "trusted payload selection: the host's own runtime, never chosen by selectP
     "process selection"
   )
   val trustedOnly: List[PluginPayload] = [TrustedManagedPayload(runtime = "dotnet", library = "lib/G.dll")]
-  assertEqual(describePayload(selectPluginPayload(trustedOnly, linuxDotnet(), true, true, true)), "none", "never trusted")
+  assertEqual(
+    describePayload(selectPluginPayload(trustedOnly, linuxDotnet(), true, true, true)),
+    "none",
+    "never trusted"
+  )
   match pluginLaunchCommand(trustedOnly[0], "/plugins/p", None, 1024i64) {
     case Ok(_) -> assertTrue(false, "a trusted payload has no launch command")
     case Err(e) -> assertTrue(e.contains("not launched"), e)

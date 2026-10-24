@@ -1011,9 +1011,7 @@ func plParsePayload(v: in JsonValue, index: in Int): Result[PluginPayload, Strin
     return Ok(value = ComponentPayload(component = file))
   }
   if mode != "process" {
-    return Err(
-      error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\", \"trusted\" or \"component\""
-    )
+    return Err(error = ctx + ": mode '" + mode + "' is not \"process\", \"wasm\", \"trusted\" or \"component\"")
   }
   val command = match plMemberStringList(v, "command", ctx) { case Ok(c) -> c; case Err(e) -> return Err(error = e) }
   if command.count == 0 {

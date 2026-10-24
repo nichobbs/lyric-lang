@@ -1023,22 +1023,36 @@ test "component: the type hints name what the WIT does not carry" {
     ),
     "a union result names each case's field; a handle and a nullary case need nothing: " + h
   )
-  assertTrue(h.contains("\"imports\": {\"acme-tools-store#load\": {\"params\": [null], \"result\": {\"result\": {\"ok\": " + item), "an import keyed by its bare interface: " + h)
+  assertTrue(
+    h.contains(
+      "\"imports\": {\"acme-tools-store#load\": {\"params\": [null], \"result\": {\"result\": {\"ok\": " + item
+    ),
+    "an import keyed by its bare interface: " + h
+  )
   assertTrue(
     h.contains("\"app\": {\"field\": \"error\", \"of\": null}, \"denied\": {\"field\": \"reason\", \"of\": null}"),
     "the wire variant's cases carry BoundaryError's field names: " + h
   )
   assertTrue(h.contains("\"timeout\": {\"field\": \"timeoutMs\", \"of\": null}"), "timeout: " + h)
-  assertTrue(h.contains("\"acme-tools-log#write\": {\"params\": [null, null]"), "the optional capability's import: " + h)
+  assertTrue(
+    h.contains("\"acme-tools-log#write\": {\"params\": [null, null]"),
+    "the optional capability's import: " + h
+  )
 }
 
 test "component: an import with another error type has its own hint" {
   val r = expandComponentSecond(compApiSource(), compPluginSource())
   val h = returnedString(r, "pluginTypeHints")
-  val at = match Str.indexOf(h, "\"acme-tools-store#touch\"") { case Some(i) -> i; case None -> panic("no touch hint: " + h) }
+  val at = match Str.indexOf(h, "\"acme-tools-store#touch\"") {
+    case Some(i) -> i
+    case None -> panic("no touch hint: " + h)
+  }
   val touch = Str.substring(h, at)
   assertTrue(
-    Str.startsWith(touch, "\"acme-tools-store#touch\": {\"params\": [null], \"result\": {\"result\": {\"ok\": null, \"err\": {\"variant\": {\"app\": {\"field\": \"error\", \"of\": null}, \"denied\""),
+    Str.startsWith(
+      touch,
+      "\"acme-tools-store#touch\": {\"params\": [null], \"result\": {\"result\": {\"ok\": null, \"err\": {\"variant\": {\"app\": {\"field\": \"error\", \"of\": null}, \"denied\""
+    ),
     "touch's error is Level (an enum), so app carries it with no names below: " + touch
   )
 }
