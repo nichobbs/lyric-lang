@@ -124,9 +124,10 @@ func decodeEvent(s: String): Result[InputEvent, String] {
   bad
 }
 
-/// Reads text written by `encode`.  `Err` names the line that could not be read.
+/// Reads text written by `encode`, with LF or CRLF line ends (a Windows checkout converts a
+/// checked-in recording to CRLF).  `Err` names the line that could not be read.
 pub func decode(text: in String): Result[Recording, String] {
-  val lines = split(text, "\n")
+  val lines = split(replace(text, "\r\n", "\n"), "\n")
   if lines.length < 2 or lines[0] != "lyric-replay 1" {
     return Err(error = "not a lyric-replay 1 recording")
   }
