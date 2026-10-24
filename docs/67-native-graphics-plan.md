@@ -17,7 +17,7 @@ G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
 in CI; macOS is not yet in CI). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`Vec3`/`Vec4`,
 `Quat`, `Mat3`, `Mat4`, `Rgba8`, on all three targets), `lyric-text` (D199: FreeType and HarfBuzz
 shaping, rasterising, glyph atlas, fallback and line layout, with a golden Latin/Arabic/CJK scene;
-bidirectional reordering and UAX #14 are tracked in #8410) and `lyric-draw` (D200: instanced
+bidirectional reordering and UAX #14 for text areas are in D216, for `layoutText` itself #8496) and `lyric-draw` (D200: instanced
 signed-distance quads, shadows, images, clips and text, with a golden scene and a text-heavy
 frame budget on lavapipe; no run on real hardware yet). G7 is implemented on Linux (D201: `lyric-game`
 deterministic core with PNG and WAV decoding, a native frame loop with input recording and replay,
@@ -30,7 +30,7 @@ on workers, ThreadSanitizer and AddressSanitizer clean; work stealing and a comp
 are follow-ups). G10 is implemented except accessibility (D203, D204: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
-the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional carets, #8410, and
+the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional text in single-line inputs, #8497, and
 pruning the libraries of unused dependency kernels from the link, #8429). D204 also fixed two native
 backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
 enum-case patterns over two enums sharing a case name (#8421).
@@ -591,7 +591,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

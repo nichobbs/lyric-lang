@@ -205,3 +205,188 @@ test "Home and End go to the edges of the visual line" {
   assertEqualInt(Interact.moveToLineEdge(value, lines, inFirst, true, false).caret, 7, "End of a cut line stays on it")
   assertEqualInt(Interact.moveToLineEdge(value, lines, inFirst, false, true).anchor, 2, "Shift keeps the anchor")
 }
+
+// Hebrew letters, by code point, so this file has no right to left text in it.
+val alef: String = "א"
+
+val bet: String = "ב"
+
+val gimel: String = "ג"
+
+func tenW(): (String) -> Float {
+  { s: String -> tenWide(s) }
+}
+
+func pieceTexts(value: String, lines: List[Wrap.VisualLine], row: Int): String {
+  var r = ""
+  var first = true
+  for p in Wrap.linePieces(value, lines, row, tenW()) {
+    r = r + (if first { "" } else { "|" }) + p.text
+    first = false
+  }
+  r
+}
+
+test "text breaks after a hyphen and before an ideograph, never before closing punctuation" {
+  assertEqual(joined(lineTexts("well-known fact", 60.0f32)), "well-|known |fact", "after the hyphen")
+  assertEqual(joined(lineTexts("漢字仮名漢字", 40.0f32)), "漢字仮名|漢字", "ideographs break anywhere")
+  assertEqual(
+    joined(lineTexts("漢字仮名、漢", 40.0f32)),
+    "漢字仮|名、漢",
+    "an ideographic comma is not left at the start of a line"
+  )
+}
+
+test "a word cut for lack of room keeps a combining mark with its letter" {
+  assertEqual(joined(lineTexts("abcd́ef", 40.0f32)), "abcd́|ef", "the mark stays on the first line")
+}
+
+test "a right to left paragraph is one piece, aligned to the right of the box" {
+  val value = alef + bet + gimel + alef
+  val lines = Wrap.wrapLines(value, 100.0f32, tenW())
+  assertEqualInt(lines.count, 1, "one line")
+  assertTrue(lines[0].rtl, "the paragraph is right to left")
+  val pieces = Wrap.linePieces(value, lines, 0, tenW())
+  assertEqualInt(pieces.count, 1, "one piece")
+  assertEqualInt(pieces[0].level, 1, "an odd level")
+  assertTrue(pieces[0].x == 60.0f32, "it ends at the right edge")
+  assertTrue(pieces[0].width == 40.0f32, "its width")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 0, tenW()) == 100.0f32, "the start of the text is at the right edge")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 2, tenW()) == 80.0f32, "two letters in")
+  assertTrue(Wrap.caretOffset(value, lines, 4, tenW()) == 60.0f32, "the end of the text is at the left of it")
+  assertEqualInt(Wrap.positionAt(value, lines, 0, 72.0f32, tenW()), 3, "a click near the left end")
+  assertEqualInt(Wrap.positionAt(value, lines, 0, 99.0f32, tenW()), 0, "a click at the right edge")
+}
+
+test "a Hebrew word in a Latin line is a piece of its own, in its place on screen" {
+  val value = "ab " + alef + bet + gimel + " cd"
+  val lines = Wrap.wrapLines(value, 200.0f32, tenW())
+  assertFalse(lines[0].rtl, "the paragraph is left to right")
+  assertEqual(
+    pieceTexts(value, lines, 0),
+    "ab|" + alef + bet + gimel + "|cd",
+    "three pieces, without the spaces at their ends"
+  )
+  val pieces = Wrap.linePieces(value, lines, 0, tenW())
+  assertTrue(pieces[1].x == 30.0f32 and pieces[1].width == 30.0f32, "the Hebrew word follows ab and a space")
+  assertTrue(
+    pieces[2].x == 60.0f32 and pieces[2].textX == 70.0f32,
+    "a piece's text starts after the space that begins it"
+  )
+  assertTrue(pieces[0].x == 0.0f32 and pieces[0].textX == 0.0f32, "and a space that ends it is only room")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 3, tenW()) == 30.0f32, "before the word")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 4, tenW()) == 50.0f32, "after its first letter, which is at its right")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 6, tenW()) == 30.0f32, "after the word, at its left end")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 9, tenW()) == 90.0f32, "the end of the line")
+  assertEqualInt(Wrap.positionAt(value, lines, 0, 52.0f32, tenW()), 4, "a click between its first two letters")
+  assertEqualInt(Wrap.positionAt(value, lines, 0, 31.0f32, tenW()), 3, "a click at the left end of the word")
+}
+
+test "a selection across a reversed word is one band for each piece it touches" {
+  val value = "ab " + alef + bet + gimel + " cd"
+  val lines = Wrap.wrapLines(value, 200.0f32, tenW())
+  val bands = Wrap.selectionBands(value, lines, 4, 8, tenW())
+  assertEqualInt(bands.count, 2, "two bands")
+  assertTrue(bands[0].x0 == 30.0f32 and bands[0].x1 == 50.0f32, "the second and third letters, left of the first")
+  assertTrue(bands[1].x0 == 60.0f32 and bands[1].x1 == 80.0f32, "the space and the c")
+  val all = Wrap.selectionBands(value, lines, 0, 9, tenW())
+  assertEqualInt(all.count, 1, "touching pieces are joined")
+  assertTrue(all[0].x0 == 0.0f32 and all[0].x1 == 90.0f32, "the whole line")
+}
+
+test "a piece's text is in reading order, for a shaper that is told its direction" {
+  val value = alef + "(" + bet + ")"
+  val lines = Wrap.wrapLines(value, 100.0f32, tenW())
+  assertEqual(pieceTexts(value, lines, 0), value, "the Hebrew and its brackets as typed")
+  val neutral = alef + bet + " ab)"
+  val nl = Wrap.wrapLines(neutral, 100.0f32, tenW())
+  assertEqual(
+    pieceTexts(neutral, nl, 0),
+    ")|ab|" + alef + bet,
+    "a bracket alone is a right to left piece, at the left end"
+  )
+  val pieces = Wrap.linePieces(neutral, nl, 0, tenW())
+  assertEqualInt(pieces[0].level, 1, "the bracket is drawn right to left")
+  assertEqualInt(pieces[1].level, 2, "the Latin word is left to right")
+  assertEqualInt(pieces[2].level, 1, "the Hebrew word is right to left")
+}
+
+test "right to left lines wrap, with the spaces hanging at their left" {
+  val word = alef + bet + gimel
+  val value = word + " " + word + " " + word
+  val lines = Wrap.wrapLines(value, 80.0f32, tenW())
+  assertEqualInt(lines.count, 2, "two lines")
+  assertTrue(lines[0].rtl and lines[1].rtl, "both right to left")
+  assertEqualInt(lines[0].to, 8, "the first line holds two words and a space")
+  assertEqualInt(lines[0].visibleTo, 7, "the space hangs")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 0, tenW()) == 80.0f32, "the line starts at the right edge")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 7, tenW()) == 10.0f32, "the end of the words")
+  assertTrue(
+    Wrap.offsetInRow(value, lines, 0, 8, tenW()) == 0.0f32,
+    "the space is the width of a letter, at the left edge"
+  )
+  val pieces = Wrap.linePieces(value, lines, 1, tenW())
+  assertTrue(pieces[0].x == 50.0f32, "the last word is flush right")
+  val firstLine = Wrap.linePieces(value, lines, 0, tenW())
+  assertTrue(firstLine[0].x == 10.0f32 and firstLine[0].width == 70.0f32, "a line of two words and the space between")
+}
+
+test "Left and Right move across a reversed word one letter at a time" {
+  val value = "ab " + alef + bet + gimel + " cd"
+  val lines = Wrap.wrapLines(value, 200.0f32, tenW())
+  assertEqualInt(Wrap.stepVisual(value, lines, 2, 1, tenW()), 3, "right of b: into the space")
+  assertEqualInt(
+    Wrap.stepVisual(value, lines, 3, 1, tenW()),
+    5,
+    "right of the space: a letter into the word, from its left end"
+  )
+  assertEqualInt(Wrap.stepVisual(value, lines, 5, 1, tenW()), 4, "and another")
+  assertEqualInt(Wrap.stepVisual(value, lines, 4, -1, tenW()), 5, "Left goes back")
+  assertEqualInt(Wrap.stepVisual(value, lines, 5, -1, tenW()), 6, "to the left end of the word, after its last letter")
+  assertEqualInt(Wrap.stepVisual(value, lines, 6, -1, tenW()), 2, "and on, out of the word to the left of it")
+  assertEqualInt(Wrap.stepVisual(value, lines, 0, -1, tenW()), 0, "Left at the start of the only line")
+  assertFalse(Wrap.isMixedAt(Wrap.wrapLines("abc", 200.0f32, tenW()), 1), "plain text is stepped in the text")
+  assertTrue(Wrap.isMixedAt(lines, 3), "this line has Hebrew in it")
+}
+
+test "Interact steps by screen position in right to left text and by the text elsewhere" {
+  val value = alef + bet + gimel
+  val lines = Wrap.wrapLines(value, 100.0f32, tenW())
+  val start = Interact.moveCaret(value, Interact.emptyEdit(), 0, false)
+  assertEqualInt(
+    Interact.stepVisualCaret(value, lines, start, 1, false, tenW()).caret,
+    0,
+    "Right at the right edge stays in the line"
+  )
+  val inside = Interact.moveCaret(value, Interact.emptyEdit(), 1, false)
+  assertEqualInt(
+    Interact.stepVisualCaret(value, lines, inside, -1, false, tenW()).caret,
+    2,
+    "Left moves on through the text"
+  )
+  assertEqualInt(Interact.stepVisualCaret(value, lines, inside, 1, false, tenW()).caret, 0, "Right moves back")
+  val plainLines = Wrap.wrapLines("abc", 100.0f32, tenW())
+  val plainStart = Interact.moveCaret("abc", Interact.emptyEdit(), 1, false)
+  assertEqualInt(
+    Interact.stepVisualCaret("abc", plainLines, plainStart, 1, false, tenW()).caret,
+    2,
+    "left to right text"
+  )
+  val selected = Interact.moveCaret(value, Interact.moveCaret(value, Interact.emptyEdit(), 1, false), 3, true)
+  assertEqualInt(
+    Interact.stepVisualCaret(value, lines, selected, -1, false, tenW()).caret,
+    3,
+    "Left leaves a selection at its logical end in right to left text"
+  )
+}
+
+test "the spaces that begin a plain line are room, and its text starts after them" {
+  val value = "  abc"
+  val lines = Wrap.wrapLines(value, 200.0f32, tenW())
+  val pieces = Wrap.linePieces(value, lines, 0, tenW())
+  assertEqualInt(pieces.count, 1, "one piece")
+  assertEqual(pieces[0].text, "abc", "the text")
+  assertTrue(pieces[0].textX == 20.0f32, "after the two spaces")
+  assertTrue(Wrap.offsetInRow(value, lines, 0, 2, tenW()) == 20.0f32, "the caret after the spaces")
+  assertEqualInt(Wrap.positionAt(value, lines, 0, 24.0f32, tenW()), 2, "a click after them")
+}

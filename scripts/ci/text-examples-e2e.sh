@@ -4,7 +4,8 @@
 # FreeType and HarfBuzz (docs/67 G6).
 #   - the example shapes Latin, Arabic and CJK text, checks kerning, joining and
 #     visual order, rasterises and atlas-packs glyphs, falls back from a Latin to a
-#     CJK font, wraps lines and right-aligns an Arabic paragraph;
+#     CJK font, wraps lines and right-aligns an Arabic paragraph, and lays out runs of
+#     one direction (layoutRun) with their brackets swapped and their words ordered;
 #   - it renders a mixed Latin/Arabic/CJK scene and compares it with the checked-in
 #     golden image within a differing-pixel tolerance (another FreeType version
 #     rasterises edges a little differently).
@@ -51,5 +52,5 @@ echo "=== lyric-text shape ==="
 out="$(LYRIC_TEXT_FONT_LATIN="$latin" LYRIC_TEXT_FONT_CJK="$cjk" \
   LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm "$work/shape")"
 echo "$out"
-echo "$out" | grep -q "fallback + wrap ok"
+echo "$out" | grep -q "fallback + wrap ok, runs ok"
 echo "$out" | grep -q "^golden: "

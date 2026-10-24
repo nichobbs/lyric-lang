@@ -16,6 +16,10 @@ import Std.File as File
 import Window
 import Ui.Native.Run as Native
 import Ui.Native.Layout.{Box}
+import Ui.Native.Interact as Interact
+import Ui.Native.Bidi
+import Ui.Native.LineBreak
+import Ui.Native.UnicodeData
 import Customers.Store
 import Customers.App.{route}
 
@@ -191,6 +195,126 @@ func notesScenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit,
   compare("notes", dir, update, selectedFrame)
 }
 
+// Hebrew and Arabic, by code point.
+val hebrewA: String = "אבג"
+
+val hebrewB: String = "דהו"
+
+val shalom: String = "שלום"
+
+val marhaba: String = "مرحبا"
+
+// The text algorithms on the native backend, where their tables (strings in lists, searched by
+// bisection) and their buffers are native code: the same answers as in the `lyric test` suites.
+func algorithmChecks(): Result[Unit, String] {
+  val mixed = codePoints("abc " + hebrewA + " def")
+  val levels = Bidi.resolveLevels(mixed, 0, mixed.length, Bidi.paragraphLevelOf(mixed, 0, mixed.length))
+  var shown = ""
+  for l in levels {
+    shown = shown + l.toString()
+  }
+  match verify(shown == "00001110000", "UAX #9 levels of a Hebrew word in an English sentence (" + shown + ")") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val runs = Bidi.lineRuns(mixed, 0, levels, 0, mixed.length, 0)
+  match verify(runs.count == 3 and runs[1].level == 1 and runs[1].from == 4 and runs[1].to == 7, "UAX #9 runs of that line") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val text = codePoints("well-known fact, 10% of $5.00")
+  val breaks = LineBreak.breaksIn(text, 0, text.length)
+  match verify(breaks[5] == LineBreak.breakAllowed and breaks[3] == LineBreak.noBreak and breaks[11] == LineBreak.breakAllowed and breaks[16] == LineBreak.noBreak and breaks[26] == LineBreak.noBreak, "UAX #14 breaks after a hyphen and a space, not inside a number or before a percent sign") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  verify(UnicodeData.mirrorOf(40) == 41 and UnicodeData.bidiClassOf(1488) == 1, "Unicode properties")
+}
+
+// Replaces the notes with text in both directions: a Hebrew word in an English line, a Hebrew line
+// with English, a number and brackets in it, an Arabic line, and a long Hebrew paragraph that wraps.
+// A right to left paragraph is aligned to the right of the area, a word in the other direction keeps
+// its own order inside it, and Left and Right move by screen position.
+func bidiScenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
+  match algorithmChecks() {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val area0 = match Native.firstOfKind(hl, "textArea") {
+    case Some(b) -> b
+    case None -> return Err(error = "no notes area")
+  }
+  click(hl, area0)
+  key(hl, 97, 0x40)
+  val first = "Hello " + shalom + " world 123"
+  typed(hl, first)
+  key(hl, 13, 0)
+  typed(hl, hebrewA + " abc 123 (" + hebrewB + ") " + hebrewA)
+  key(hl, 13, 0)
+  typed(hl, marhaba + " 2026 " + marhaba + " (test)")
+  key(hl, 13, 0)
+  var long = ""
+  var i = 0
+  while i < 16 {
+    long = long + hebrewA + " " + hebrewB + " " + shalom + " "
+    i = i + 1
+  }
+  typed(hl, long)
+  val area = match Native.firstOfKind(hl, "textArea") {
+    case Some(b) -> b
+    case None -> return Err(error = "no notes area after typing")
+  }
+  val rows = Native.areaRows(hl, area)
+  match verify(rows >= 5, "the long Hebrew paragraph wraps (" + rows.toString() + " lines)") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  // A click at the right edge of the Hebrew line puts the caret at the start of its text.
+  val lh = Native.areaLineHeight(hl)
+  val events: List[Window.Event] = newList()
+  val x = area.x + area.w - 14.0f32
+  val y = area.y + 7.0f32 + lh * 1.5f32
+  events.add(Window.MouseMotion(window = 0, x = x, y = y, dx = 0.0f32, dy = 0.0f32))
+  events.add(Window.MouseButtonDown(window = 0, button = 1, x = x, y = y, clicks = 1))
+  events.add(Window.MouseButtonUp(window = 0, button = 1, x = x, y = y, clicks = 1))
+  Native.script(hl, events)
+  val start = Interact.cpCount(first) + 1
+  match verify(Native.caretRow(hl) == 1 and Native.caretOf(hl) == start, "a click at the right edge of a Hebrew line is at its start") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + " (caret " + Native.caretOf(hl).toString() + ", wanted " + start.toString() + ")")
+  }
+  match Native.caretArea(hl.host) {
+    case Some(c) -> {
+      match verify(c.x > area.x + area.w / 2.0f32, "and the caret is drawn at the right of the area") {
+        case Ok(_) -> ()
+        case Err(m) -> return Err(error = m)
+      }
+    }
+    case None -> return Err(error = "no caret")
+  }
+  key(hl, 1073741904, 0)
+  match verify(Native.caretOf(hl) == start + 1, "Left moves to the next letter of a right to left line") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741903, 0)
+  key(hl, 1073741903, 0)
+  match verify(Native.caretOf(hl) == start - 1, "Right at the right edge goes on to the line before") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  // Select across the English words and the number of the Hebrew line, from its start.
+  key(hl, 1073741905, 0)
+  key(hl, 1073741898, 0)
+  var n = 0
+  while n < 9 {
+    key(hl, 1073741904, 1)
+    n = n + 1
+  }
+  val frame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  compare("bidi", dir, update, frame)
+}
+
 func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
   Native.settle(hl, 150, 5000)
   val listFrame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
@@ -265,6 +389,10 @@ func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, Stri
   }
 
   match notesScenario(hl, dir, update) {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match bidiScenario(hl, dir, update) {
     case Ok(_) -> ()
     case Err(m) -> return Err(error = m)
   }
