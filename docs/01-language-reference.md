@@ -2235,6 +2235,61 @@ against external add / remove / reorder (`W0023`); replacement of an
 position). Contributions are singleton-scope only (`scoped[X]`
 contributions are out of scope, as is `scoped` generally — #2972).
 
+**Blocks: `contributes[T] each`** (docs/69 §14). An entry written
+`contributes[T] each name = expr` takes an `expr` of type `List[T]` and
+contributes its elements as one block, in list order:
+
+```
+wire EditorApp {
+  contributes[Command] builtins = Commands.builtin()
+  contributes[Command] each extensions = loadExtensionCommands()
+    inside: builtins
+  contributes[Command] help = Commands.help()
+    inside: extensions
+
+  singleton palette: Palette = Palette.make(Command)
+}
+```
+
+The block is one entry of the collection: `wraps:` / `inside:` on it
+position the whole block, other entries order themselves against it by
+its name (`help` above follows the last extension command), and an
+including wire's `remove` / `reorder` / replace act on the whole block (a
+replacement is again a `List[T]`). `sealed` works as on a single entry.
+Inside the graph, `name` is the `List[T]` itself. An empty list
+contributes nothing.
+
+**Keyed entries: `contributes[T] key "k"`** (docs/69 §14). An entry
+written `contributes[T] key "otlp" name = expr` contributes one value
+like a plain entry, so it keeps its place in the ordered `List[T]`, and
+is also reachable by its key: when a collection has at least one keyed
+entry, the identifier `TByKey` (the collection's name followed by
+`ByKey`, here `ExporterByKey`) resolves as a `Map[String, T]` holding the
+keyed entries, inserted in collection order. Unkeyed entries are not in
+the map. The usual use is selecting among compiled-in implementations
+from configuration:
+
+```
+wire Telemetry {
+  @provided settings: TelemetrySettings
+
+  contributes[Exporter] key "otlp"   otlp   = Otlp.exporter()
+  contributes[Exporter] key "stdout" stdout = Stdout.exporter()
+
+  singleton active: Exporter = pickExporter(ExporterByKey, settings.exporter)
+}
+```
+
+The key is a plain string literal (an interpolated string or any other
+expression is `P0348`). A key is unique per contributed type in one graph
+(after `include` expansion): a second entry with the same key for the
+same `T` is `W0028`. A plain binding named `TByKey` beside keyed entries
+of `T` is `W0020`, as for the collection itself. An aliased include
+(§10.6) isolates its keyed map together with its collection. `each` and
+`key` do not combine on one entry (`P0349`): a key names one value, and a
+block has none. Both words are contextual: `contributes[T] each = expr`
+is an entry named `each`.
+
 ### 10.6 Wire templates: `pub wire` + `include` (D121)
 
 A `pub wire` in a library package is a **template** — a parameterized
@@ -2305,6 +2360,9 @@ own packages and path-dependency sources) — the same availability rule
 as cross-package aspect templates. Full semantics, the expansion model,
 and the `W0010`–`W0027` diagnostic table are specified in D121
 (`docs/03-decision-log.md`), backing `docs/58-wire-templates-sketch.md`.
+`W0028` (a duplicate contributes key, §10.5) and the parser codes `P0348`
+(a contributes key that is not a plain string literal) and `P0349`
+(`each` combined with `key`) come with the docs/69 §14 entry forms.
 
 ## 11. FFI
 

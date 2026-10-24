@@ -17,6 +17,11 @@
 //!   3. `contributes[T] name = expr` entries become plain wire locals plus
 //!      one synthesised `val <T>: List[T] = [entries…]` member per
 //!      collection, ordered by declaration adjusted by `wraps:`/`inside:`.
+//!      An `each` entry (docs/69 §14) is a `List[T]` local spliced in as
+//!      one block, and keyed entries (`key "k"`) also fill a synthesised
+//!      `val <T>ByKey: Map[String, T]`; both are assembled by package-
+//!      private `__wire_<Wire>_<T>_list` / `_byKey` functions added beside
+//!      the wire (with `import Std.Collections` when the file lacks it).
 //!   4. `include Pkg.Module { adjustments }` splices a collected `pub wire`
 //!      template into the including wire: `@provided` inputs are
 //!      name-substituted, non-exposed members get collision-proof
@@ -35,7 +40,7 @@
 //! (`Assets.root`) is left untouched — it stays ordinary config access.
 //!
 //! Diagnostics: W0010–W0027 (see docs/03-decision-log.md D121 for the
-//! full table).
+//! full table) and W0028 (duplicate contributes key, docs/01 §10.5).
 package Lyric.WireExpand
 
 import Std.Core
@@ -776,6 +781,8 @@ record ContribEntry {
   isSealed: Bool
   originId: Int
   span: Span
+  // Single value, `each` block, or keyed value (docs/69 §14).
+  form: ContribForm
 }
 
 /// A plain (non-contributes) member of the expanded wire.
@@ -976,7 +983,7 @@ func expandInclude(
       case WMSingleton(n, _, _, _) -> entryNames.add(n)
       case WMLocal(n, _, _, _) -> entryNames.add(n)
       case WMBind(iface, _, _) -> entryNames.add(collectionNameOf(iface))
-      case WMContributes(_, n, _, _, isSealed, _) -> {
+      case WMContributes(_, n, _, _, isSealed, _, _) -> {
         entryNames.add(n)
         contribNames.add(n)
         if isSealed {
@@ -1232,11 +1239,12 @@ func expandInclude(
     var cli = 0
     while cli < tmpl.decl.members.count {
       match tmpl.decl.members[cli] {
-        case WMContributes(iface, _, _, _, _, _) -> {
+        case WMContributes(iface, _, _, _, _, _, _) -> {
           val coll = collectionNameOf(iface)
           if not seenColls.containsKey(coll) {
             seenColls.add(coll, true)
             renameTo(renames, coll, prefix + coll, span)
+            renameTo(renames, keyedMapNameOf(coll), keyedMapNameOf(prefix + coll), span)
           }
         }
         case _ -> {
@@ -1312,7 +1320,7 @@ func expandInclude(
           mspan
         )
       }
-      case WMContributes(iface, n, init, ordering, isSealed, mspan) -> {
+      case WMContributes(iface, n, init, ordering, isSealed, form, mspan) -> {
         if not removeSet.containsKey(n) {
           val effInit = match mapGet(replaceMap, n) {
             case Some(replacement) -> replacement
@@ -1374,7 +1382,8 @@ func expandInclude(
               ordering = ord2,
               isSealed = isSealed,
               originId = originId,
-              span = mspan
+              span = mspan,
+              form = form
             )
           )
         }
@@ -1664,11 +1673,238 @@ func orderContribEntries(diags: in List[Diagnostic], entries: in List[ContribEnt
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §7b. Collection assembly for `each` blocks and keyed entries (docs/69 §14).
+// ─────────────────────────────────────────────────────────────────────────────
+/// The wire-graph name of the `Map[String, T]` that keyed entries of
+/// collection `coll` are reachable through.
+func keyedMapNameOf(coll: in String): String {
+  coll + "ByKey"
+}
+
+/// `__wire_<Wire>_<coll>_<suffix>`: the module-level helper that assembles
+/// one collection of one wire.  Wire names are unique per package and
+/// collection names are unique per wire, so the name cannot collide.
+func collectionHelperName(wireName: in String, coll: in String, suffix: in String): String {
+  "__wire_" + wireName + "_" + coll + "_" + suffix
+}
+
+func namedGenericTypeWE(head: in String, args: in List[TypeExpr], span: in Span): TypeExpr {
+  val tyArgs: List[TypeArg] = newList()
+  var i = 0
+  while i < args.count {
+    tyArgs.add(TAType(ty = args[i]))
+    i = i + 1
+  }
+  val segs: List[String] = newList()
+  segs.add(head)
+  TypeExpr(kind = TGenericApp(head = ModulePath(segments = segs, span = span), args = tyArgs), span = span)
+}
+
+func listTypeOf(elem: in TypeExpr, span: in Span): TypeExpr {
+  val args: List[TypeExpr] = newList()
+  args.add(elem)
+  namedGenericTypeWE("List", args, span)
+}
+
+func stringMapTypeOf(elem: in TypeExpr, span: in Span): TypeExpr {
+  val strSegs: List[String] = newList()
+  strSegs.add("String")
+  val args: List[TypeExpr] = newList()
+  args.add(TypeExpr(kind = TRef(path = ModulePath(segments = strSegs, span = span)), span = span))
+  args.add(elem)
+  namedGenericTypeWE("Map", args, span)
+}
+
+func entryNameExprs(entries: in List[ContribEntry]): List[Expr] {
+  val xs: List[Expr] = newList()
+  var i = 0
+  while i < entries.count {
+    xs.add(bareNameExpr(entries[i].name, entries[i].span))
+    i = i + 1
+  }
+  xs
+}
+
+/// `fnName(e0, e1, …)` over the entries' wire locals, in collection order.
+func helperCallExpr(fnName: in String, entries: in List[ContribEntry], span: in Span): Expr {
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < entries.count {
+    args.add(CAPositional(expr = bareNameExpr(entries[i].name, entries[i].span)))
+    i = i + 1
+  }
+  Expr(kind = ECall(fn = bareNameExpr(fnName, span), args = args), span = span)
+}
+
+func stmtWE(kind: in StatementKind, span: in Span): Statement {
+  Statement(kind = kind, span = span)
+}
+
+func intLitWE(v: in Long, span: in Span): Expr {
+  Expr(kind = ELiteral(lit = LInt(value = v, suffix = NoIntSuffix, raw = "")), span = span)
+}
+
+/// `recv.method(args…)` as a statement.
+func methodCallStmtWE(recv: in String, method: in String, args: in List[Expr], span: in Span): Statement {
+  val callArgs: List[CallArg] = newList()
+  var i = 0
+  while i < args.count {
+    callArgs.add(CAPositional(expr = args[i]))
+    i = i + 1
+  }
+  val callee = Expr(kind = EMember(receiver = bareNameExpr(recv, span), memberName = method), span = span)
+  stmtWE(SExpr(expr = Expr(kind = ECall(fn = callee, args = callArgs), span = span)), span)
+}
+
+/// `val acc: <ty> = <ctor>()`.
+func accumulatorDeclWE(ty: in TypeExpr, ctor: in String, span: in Span): Statement {
+  val noArgs: List[CallArg] = newList()
+  val init = Expr(kind = ECall(fn = bareNameExpr(ctor, span), args = noArgs), span = span)
+  val pat = Pattern(kind = PBinding(name = "acc", inner = None), span = span)
+  stmtWE(SLocal(binding = LBVal(pat = pat, ty = Some(value = ty), init = init)), span)
+}
+
+func helperFuncItem(
+  fnName: in String,
+  params: in List[Param],
+  ret: in TypeExpr,
+  stmts: in List[Statement],
+  span: in Span,
+): Item {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val decl = FunctionDecl(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    isAsync = false,
+    name = fnName,
+    generics = None,
+    params = params,
+    ret = Some(value = ret),
+    whereClause = None,
+    contracts = noContracts,
+    body = Some(value = FBBlock(block = Block(statements = stmts, span = span))),
+    span = span
+  )
+  val noDocs2: List[DocComment] = newList()
+  val noAnns2: List[Annotation] = newList()
+  Item(docComments = noDocs2, annotations = noAnns2, visibility = None, kind = IFunc(decl = decl), span = span)
+}
+
+func helperParam(name: in String, ty: in TypeExpr, span: in Span): Param {
+  val noAnns: List[Annotation] = newList()
+  Param(mode = PMIn, modeExplicit = true, name = name, ty = ty, dflt = None, annotations = noAnns, span = span)
+}
+
+/// The list assembler of a collection with `each` blocks: one parameter
+/// per entry in collection order (`T` for a single or keyed value,
+/// `List[T]` for a block); a block's elements are appended in list order.
+func listHelperItem(fnName: in String, elem: in TypeExpr, entries: in List[ContribEntry], span: in Span): Item {
+  val listTy = listTypeOf(elem, span)
+  val params: List[Param] = newList()
+  val stmts: List[Statement] = newList()
+  stmts.add(accumulatorDeclWE(listTy, "newList", span))
+  var i = 0
+  while i < entries.count {
+    val pn = "p" + toString(i)
+    match entries[i].form {
+      case CFEach -> {
+        params.add(helperParam(pn, listTy, span))
+        val idx = "i" + toString(i)
+        stmts.add(stmtWE(SLocal(binding = LBVar(name = idx, ty = None, init = Some(value = intLitWE(0i64, span)))), span))
+        val countExpr = Expr(kind = EMember(receiver = bareNameExpr(pn, span), memberName = "count"), span = span)
+        val cond = Expr(kind = EBinop(op = BLt, lhs = bareNameExpr(idx, span), rhs = countExpr), span = span)
+        val indices: List[Expr] = newList()
+        indices.add(bareNameExpr(idx, span))
+        val elemAt = Expr(kind = EIndex(receiver = bareNameExpr(pn, span), indices = indices), span = span)
+        val addArgs: List[Expr] = newList()
+        addArgs.add(elemAt)
+        val bump = Expr(kind = EBinop(op = BAdd, lhs = bareNameExpr(idx, span), rhs = intLitWE(1i64, span)), span = span)
+        val body: List[Statement] = newList()
+        body.add(methodCallStmtWE("acc", "add", addArgs, span))
+        body.add(stmtWE(SAssign(target = bareNameExpr(idx, span), op = AssEq, value = bump), span))
+        stmts.add(stmtWE(SWhile(label = None, cond = cond, body = Block(statements = body, span = span)), span))
+      }
+      case _ -> {
+        params.add(helperParam(pn, elem, span))
+        val addArgs: List[Expr] = newList()
+        addArgs.add(bareNameExpr(pn, span))
+        stmts.add(methodCallStmtWE("acc", "add", addArgs, span))
+      }
+    }
+    i = i + 1
+  }
+  stmts.add(stmtWE(SReturn(value = Some(value = bareNameExpr("acc", span))), span))
+  helperFuncItem(fnName, params, listTy, stmts, span)
+}
+
+/// The `Map[String, T]` assembler of a collection's keyed entries,
+/// inserting them in collection order.
+func mapHelperItem(fnName: in String, elem: in TypeExpr, keyed: in List[ContribEntry], span: in Span): Item {
+  val mapTy = stringMapTypeOf(elem, span)
+  val params: List[Param] = newList()
+  val stmts: List[Statement] = newList()
+  stmts.add(accumulatorDeclWE(mapTy, "newMap", span))
+  var i = 0
+  while i < keyed.count {
+    val pn = "p" + toString(i)
+    params.add(helperParam(pn, elem, span))
+    val key = match keyed[i].form { case CFKeyed(k, _) -> k; case _ -> keyed[i].name }
+    val addArgs: List[Expr] = newList()
+    addArgs.add(Expr(kind = ELiteral(lit = LString(text = key)), span = span))
+    addArgs.add(bareNameExpr(pn, span))
+    stmts.add(methodCallStmtWE("acc", "add", addArgs, span))
+    i = i + 1
+  }
+  stmts.add(stmtWE(SReturn(value = Some(value = bareNameExpr("acc", span))), span))
+  helperFuncItem(fnName, params, mapTy, stmts, span)
+}
+
+/// `imports` plus `import Std.Collections` when no plain import of it is
+/// present: the assembler helpers call `newList` / `newMap`.
+func withCollectionsImport(imports: in List[ImportDecl], span: in Span): List[ImportDecl] {
+  val result: List[ImportDecl] = newList()
+  var present = false
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    val isPlain = match imp.selector { case Some(_) -> false; case None -> true }
+    val unaliased = match imp.asAlias { case Some(_) -> false; case None -> true }
+    if isPlain and unaliased and dottedPathWE(imp.path) == "Std.Collections" {
+      present = true
+    }
+    result.add(imp)
+    i = i + 1
+  }
+  if not present {
+    val segs: List[String] = newList()
+    segs.add("Std")
+    segs.add("Collections")
+    result.add(
+      ImportDecl(
+        path = ModulePath(segments = segs, span = span),
+        selector = None,
+        asAlias = None,
+        isPubUse = false,
+        isExtern = false,
+        span = span
+      )
+    )
+  }
+  result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §8. Per-wire expansion driver.
 // ─────────────────────────────────────────────────────────────────────────────
 record ExpandedWire {
   decl: WireDecl
   hoistedConfigs: List[Item]
+  // Module-level functions that assemble collections with `each` blocks
+  // and keyed maps (docs/69 §14).
+  helperItems: List[Item]
   diags: List[Diagnostic]
 }
 
@@ -1680,6 +1916,7 @@ func expandWireDecl(
   moduleConfigInstances: in List[ConfigInstance],
 ): ExpandedWire {
   val diags: List[Diagnostic] = newList()
+  val helperItems: List[Item] = newList()
   val sc = WireScope(
     plainMembers = newList(),
     contribs = newList(),
@@ -1724,7 +1961,7 @@ func expandWireDecl(
           noParentTargets
         )
       }
-      case WMContributes(iface, n, init, ordering, isSealed, mspan) -> {
+      case WMContributes(iface, n, init, ordering, isSealed, form, mspan) -> {
         scopeAddName(sc, n, mspan)
         sc.contribs.add(
           ContribEntry(
@@ -1735,7 +1972,8 @@ func expandWireDecl(
             ordering = ordering,
             isSealed = isSealed,
             originId = 0,
-            span = mspan
+            span = mspan,
+            form = form
           )
         )
       }
@@ -1814,6 +2052,54 @@ func expandWireDecl(
         )
       }
       pmi = pmi + 1
+    }
+    // Keyed entries (docs/69 §14): keys are unique per collection (W0028),
+    // and the synthesised `<T>ByKey` map must not shadow a plain binding.
+    val keysSeen: Map[String, String] = newMap()
+    var anyKeyed = false
+    var ki = 0
+    while ki < sc.contribs.count {
+      val ke = sc.contribs[ki]
+      if ke.collection == coll {
+        match ke.form {
+          case CFKeyed(k, kspan) -> {
+            anyKeyed = true
+            match mapGet(keysSeen, k) {
+              case Some(firstName) -> {
+                diags.add(
+                  errorDiagnostic(
+                    "W0028",
+                    "key \"" + k + "\" is contributed to collection '" + coll + "' by both '" + firstName + "' and '" + ke.name +
+                      "'; keys must be unique per contributed type",
+                    kspan
+                  )
+                )
+              }
+              case None -> keysSeen.add(k, ke.name)
+            }
+          }
+          case _ -> {
+          }
+        }
+      }
+      ki = ki + 1
+    }
+    if anyKeyed {
+      val mapName = keyedMapNameOf(coll)
+      var pmk = 0
+      while pmk < sc.plainMembers.count {
+        if sc.plainMembers[pmk].name == mapName {
+          diags.add(
+            errorDiagnostic(
+              "W0020",
+              "'" + mapName + "' is both the keyed map of collection '" + coll +
+                "' and a plain binding; a name cannot resolve as both",
+              decl.span
+            )
+          )
+        }
+        pmk = pmk + 1
+      }
     }
     cni = cni + 1
   }
@@ -1910,8 +2196,10 @@ func expandWireDecl(
     // producing a null Option — which downstream codegen then encoded as a
     // malformed 0x00 LocalVarSig entry (BadImageFormatException at run time).
     val entryIface = e.iface
+    // An `each` entry's value is the whole block: a `List[T]`.
+    val entryTy = match e.form { case CFEach -> listTypeOf(entryIface, e.span); case _ -> entryIface }
     outMembers.add(
-      WMLocal(name = e.name, ty = Some(value = entryIface), init = substExpr(finalSubst, e.init), span = e.span)
+      WMLocal(name = e.name, ty = Some(value = entryTy), init = substExpr(finalSubst, e.init), span = e.span)
     )
     cei = cei + 1
   }
@@ -1928,32 +2216,51 @@ func expandWireDecl(
       gi = gi + 1
     }
     val order = orderContribEntries(diags, group)
-    val elems: List[Expr] = newList()
+    val ordered: List[ContribEntry] = newList()
+    val keyed: List[ContribEntry] = newList()
+    var anyEach = false
     var oi2 = 0
     while oi2 < order.count {
       val ce = group[order[oi2]]
-      val segs: List[String] = newList()
-      segs.add(ce.name)
-      elems.add(Expr(kind = EPath(path = ModulePath(segments = segs, span = ce.span)), span = ce.span))
+      ordered.add(ce)
+      match ce.form {
+        case CFEach -> {
+          anyEach = true
+        }
+        case CFKeyed(_, _) -> keyed.add(ce)
+        case CFSingle -> {
+        }
+      }
       oi2 = oi2 + 1
     }
     val ifaceTy = group[0].iface
-    val listArgs: List[TypeArg] = newList()
-    listArgs.add(TAType(ty = ifaceTy))
-    val listSegs: List[String] = newList()
-    listSegs.add("List")
-    val listTy = TypeExpr(
-      kind = TGenericApp(head = ModulePath(segments = listSegs, span = group[0].span), args = listArgs),
-      span = group[0].span
-    )
+    val collSpan = group[0].span
+    // A collection of single values stays a list literal.  One with an
+    // `each` block is assembled by a synthesised helper that splices each
+    // block's elements in place, so the block keeps its position.
+    var listInit = Expr(kind = EList(exprs = entryNameExprs(ordered)), span = collSpan)
+    if anyEach {
+      val listFn = collectionHelperName(decl.name, coll, "list")
+      helperItems.add(listHelperItem(listFn, ifaceTy, ordered, collSpan))
+      listInit = helperCallExpr(listFn, ordered, collSpan)
+    }
     outMembers.add(
-      WMLocal(
-        name = coll,
-        ty = Some(value = listTy),
-        init = Expr(kind = EList(exprs = elems), span = group[0].span),
-        span = group[0].span
-      )
+      WMLocal(name = coll, ty = Some(value = listTypeOf(ifaceTy, collSpan)), init = listInit, span = collSpan)
     )
+    // Keyed entries are also reachable by key, as `<T>ByKey: Map[String, T]`,
+    // inserted in collection order.
+    if keyed.count > 0 {
+      val mapFn = collectionHelperName(decl.name, coll, "byKey")
+      helperItems.add(mapHelperItem(mapFn, ifaceTy, keyed, collSpan))
+      outMembers.add(
+        WMLocal(
+          name = keyedMapNameOf(coll),
+          ty = Some(value = stringMapTypeOf(ifaceTy, collSpan)),
+          init = helperCallExpr(mapFn, keyed, collSpan),
+          span = collSpan
+        )
+      )
+    }
     cli = cli + 1
   }
   // W0027: every `expose` must name a real binding of the finished wire
@@ -2028,6 +2335,7 @@ func expandWireDecl(
   ExpandedWire(
     decl = WireDecl(name = decl.name, params = decl.params, members = outMembers, span = decl.span),
     hoistedConfigs = sc.hoistedConfigs,
+    helperItems = helperItems,
     diags = diags
   )
 }
@@ -2159,6 +2467,7 @@ pub func expandFile(
 
   // Pass 2 — wires: drop pub templates, expand plain wires.
   val finalItems: List[Item] = newList()
+  var needsCollections = false
   var j = 0
   while j < outItems.count {
     val it = outItems[j]
@@ -2189,6 +2498,12 @@ pub func expandFile(
             finalItems.add(expanded.hoistedConfigs[hi])
             hi = hi + 1
           }
+          var hfi = 0
+          while hfi < expanded.helperItems.count {
+            finalItems.add(expanded.helperItems[hfi])
+            needsCollections = true
+            hfi = hfi + 1
+          }
         }
       }
       case _ -> finalItems.add(it)
@@ -2201,7 +2516,7 @@ pub func expandFile(
       moduleDoc = file.moduleDoc,
       fileAnnotations = file.fileAnnotations,
       packageDecl = file.packageDecl,
-      imports = file.imports,
+      imports = if needsCollections { withCollectionsImport(file.imports, file.span) } else { file.imports },
       items = finalItems,
       span = file.span
     ),

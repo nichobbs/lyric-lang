@@ -2024,12 +2024,13 @@ func rewriteWireMember(aliases: in List[String], m: in WireMember): WireMember {
       init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       span = span
     )
-    case WMContributes(iface, name, init, ordering, isSealed, span) -> return WMContributes(
+    case WMContributes(iface, name, init, ordering, isSealed, form, span) -> return WMContributes(
       iface = rewriteTypeExpr(aliases, iface),
       name = name,
       init = rewriteExpr(filterAliasesForExpr(aliases, init), init),
       ordering = ordering,
       isSealed = isSealed,
+      form = form,
       span = span
     )
     // Like `AspectDecl.from`, the include path is resolved by the wire
@@ -2115,7 +2116,7 @@ func rewriteWireDecl(aliases: in List[String], d: in WireDecl): WireDecl {
       case WMSingleton(name, _, _, _) -> locals.add(name)
       case WMScoped(_, name, _, _, _) -> locals.add(name)
       case WMLocal(name, _, _, _) -> locals.add(name)
-      case WMContributes(_, name, _, _, _, _) -> locals.add(name)
+      case WMContributes(_, name, _, _, _, _, _) -> locals.add(name)
       // `WMInclude`/`WMConfigInst` also introduce named bindings (a spliced
       // template's alias, a nested config instance's name). On the
       // dotnet/jvm paths `Lyric.WireExpand` always consumes `WMInclude`

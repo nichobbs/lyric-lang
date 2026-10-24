@@ -396,6 +396,17 @@ wire ProductionApp {
 // `Name { field = value }` (config-instance override), `remove name`,
 // `reorder name wraps:/inside: other`.  `sealed contributes[T]` closes a
 // collection against external add/remove/reorder.
+
+// Blocks and keyed entries (docs/69 §14)
+wire EditorApp {
+  contributes[Command] builtins = Commands.builtin()
+  contributes[Command] each extensions = loadExtensionCommands()   // List[Command], one block
+    inside: builtins
+  contributes[Exporter] key "otlp"   otlp   = Otlp.exporter()      // also ExporterByKey["otlp"]
+  contributes[Exporter] key "stdout" stdout = Stdout.exporter()
+  singleton exporter: Exporter = pick(ExporterByKey, "otlp")       // Map[String, Exporter]
+}
+// Keys are plain string literals, unique per T (W0028); `each` and `key` don't combine.
 ```
 
 ---

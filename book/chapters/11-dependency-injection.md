@@ -262,6 +262,45 @@ composition — say, auth middleware ordering — declares the entry
 `sealed contributes[Middleware] auth = …`, which blocks external
 add/remove/reorder for that collection.
 
+Two more entry forms cover collections whose entries are not all known one
+at a time. `contributes[T] each name = expr` takes a whole `List[T]` and
+contributes its elements as one block, in list order. The block is still a
+single named entry, so ordering clauses, `remove` and `reorder` move it as a
+unit and other entries can order themselves against it:
+
+```lyric
+wire EditorApp {
+  contributes[Command] builtins = Commands.builtin()
+  contributes[Command] each extensions = loadExtensionCommands()
+    inside: builtins                    // every extension command after the builtins
+  contributes[Command] help = Commands.help()
+    inside: extensions                  // … and help after all of them
+
+  singleton palette: Palette = Palette.make(Command)
+}
+```
+
+A **keyed** entry, `contributes[T] key "otlp" name = expr`, joins the
+ordered list like any other entry and is also reachable by its key: the graph
+gains `TByKey`, a `Map[String, T]` of the keyed entries. It is the tool for
+choosing among implementations that all ship with the application:
+
+```lyric
+wire Telemetry {
+  @provided settings: TelemetrySettings
+
+  contributes[Exporter] key "otlp"   otlp   = Otlp.exporter()
+  contributes[Exporter] key "stdout" stdout = Stdout.exporter()
+
+  singleton active: Exporter = pickExporter(ExporterByKey, settings.exporter)
+}
+```
+
+Keys are plain string literals and must be unique for each contributed type
+(`W0028`); `each` and `key` do not combine on one entry. A plugin host
+(chapter 33) uses `each` to put the entries its plugins provide into the same
+collection as the compiled-in ones.
+
 Templates may also declare `config Local from Pkg.Template { … }` members
 — config-template instantiations usable as values in the graph; chapter 21
 covers config templates.

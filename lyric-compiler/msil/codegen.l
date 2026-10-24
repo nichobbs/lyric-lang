@@ -39252,7 +39252,7 @@ func wireMemberNameMsil(m: in WireMember): String {
     case WMBind(iface, _, _) -> match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
     case WMProvided(name, _, _) -> name
     case WMExpose(name, _) -> name
-    case WMContributes(_, name, _, _, _, _) -> name
+    case WMContributes(_, name, _, _, _, _, _) -> name
     case _ -> ""
   }
 }
