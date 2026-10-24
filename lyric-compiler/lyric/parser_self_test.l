@@ -2717,3 +2717,22 @@ test "foreign record parses as a record with the foreign flag" {
   val ident = parse("package P\nfunc f(): Int {\n  val foreign = 1\n  foreign\n}\n")
   assertEqualInt(diagCount(ident), 0, "foreign stays an ordinary identifier elsewhere")
 }
+
+test "ref record parses as a record with the ref flag (D222)" {
+  val pr = parse("package P\npub ref record Counter {\n  var n: Int\n}\n")
+  assertEqualInt(diagCount(pr), 0, "no diagnostics")
+  match pr.file.items[0].kind {
+    case IRecord(decl) -> {
+      assertTrue(decl.isRef, "isRef")
+      assertEqual(decl.name, "Counter", "name")
+    }
+    case _ -> assertTrue(false, "an IRecord item")
+  }
+  val plain = parse("package P\nrecord Counter {\n  var n: Int\n}\n")
+  match plain.file.items[0].kind {
+    case IRecord(decl) -> assertTrue(not decl.isRef, "an ordinary record is not ref")
+    case _ -> assertTrue(false, "an IRecord item")
+  }
+  val ident = parse("package P\nfunc f(): Int {\n  val ref = 1\n  ref\n}\n")
+  assertEqualInt(diagCount(ident), 0, "ref stays an ordinary identifier elsewhere")
+}

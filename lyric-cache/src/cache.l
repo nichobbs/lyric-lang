@@ -95,7 +95,7 @@ impl Clock for SystemClock {
 /// plain field write — no real wall-clock wait) to simulate the passage of
 /// time.
 @stable(since = "0.1")
-pub record ManualClock {
+pub ref record ManualClock {
   var millis: Long
 }
 
@@ -169,7 +169,7 @@ pub interface CacheStore {
 // mutation (#7222 tracks that), so every mutating operation below
 // (`set`/`evictKey`/`clear`) re-verifies it explicitly via `checkInvariant`.
 @stable(since = "0.1")
-pub record InProcessCacheStore {
+pub ref record InProcessCacheStore {
   var valueMap: Map[String, String]  // key → cached value
   maxEntries: Int
   var insertionOrder: List[String]         // keys in FIFO insertion order; oldest first

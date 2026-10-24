@@ -1512,7 +1512,8 @@ func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
     whereClause = decl.whereClause,
     members = newMembers,
     span = decl.span,
-    isForeign = decl.isForeign
+    isForeign = decl.isForeign,
+    isRef = decl.isRef
   )
 }
 

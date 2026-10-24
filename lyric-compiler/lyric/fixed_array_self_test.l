@@ -37,19 +37,19 @@ record Mat {
   cells: array[4, Float]
 }
 
-record Counter {
+ref record Counter {
   var hits: array[3, Int]
   var name: String
 }
 
-record Particle {
+ref record Particle {
   var pos: array[3, Float]
   var alive: Bool
 }
 
 val SIZE: Int = 3
 
-record Reading {
+ref record Reading {
   var values: array[SIZE, Float]
 }
 
@@ -294,19 +294,19 @@ test "an array length can name a constant" {
 
 type LongSlot = Long range 0 ..= 3
 
-record Tally {
+ref record Tally {
   var hits: array[4, Int]
 }
 
-record Rows {
+ref record Rows {
   var row: array[3, Int]
 }
 
-record Holder {
+ref record Holder {
   var items: array[4, Int]
 }
 
-record Box[T] {
+ref record Box[T] {
   var data: array[2, T]
 }
 
@@ -406,7 +406,7 @@ test "an index may be any integer type or a range subtype of one" {
   assertEqualInt(w[2], 9, "a Long index on a write")
 }
 
-record Cell[T] {
+ref record Cell[T] {
   var v: T
 }
 
@@ -421,11 +421,11 @@ record Holding {
   o: Option[array[2, Int]]
 }
 
-record Pool {
+ref record Pool {
   var items: array[3, Bucket]
 }
 
-record Bucket {
+ref record Bucket {
   var hits: array[2, Int]
 }
 
@@ -628,7 +628,7 @@ test "a value-generic length is bound by the argument's array" {
   assertEqualInt(totalOf(filledWith[2](1)), 3, "its result passed on")
 }
 
-record Tagged[T] {
+ref record Tagged[T] {
   var data: array[2, T]
   tag: Int
 }

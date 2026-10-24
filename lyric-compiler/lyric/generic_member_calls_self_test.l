@@ -84,7 +84,7 @@ test "two generic records calling the same generic do not collide" {
   assertEqual(b.echo(), "x", "Other")
 }
 
-record GBox[T] {
+ref record GBox[T] {
   var v: T
 }
 

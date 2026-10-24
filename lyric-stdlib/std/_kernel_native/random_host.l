@@ -22,7 +22,7 @@ import Std.Core
 extern func rtUuidV4(): String = "lyric_uuid_v4"
 
 /// A generator. `state` is never zero (xorshift's one absorbing state).
-pub record Random {
+pub ref record Random {
   var state: Long
 }
 
@@ -111,7 +111,7 @@ pub func hostNextIntBelow(rng: in Random, max: in Int): Int {
 pub func hostNextIntRange(rng: in Random, min: in Int, max: in Int): Int {
   if min >= max {
     panic("Std.Random: min must be below max")
-  }
+  };
   (min.toLong() + bounded(rng, max.toLong() - min.toLong())).toInt()
 }
 

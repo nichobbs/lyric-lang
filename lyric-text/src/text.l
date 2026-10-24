@@ -404,7 +404,7 @@ pub record AtlasRegion {
 /// A CPU-side glyph atlas: an R8 image that rows of glyph bitmaps are packed into, one pixel
 /// apart so a linearly filtered sample never reads a neighbour.  Upload `pixels` as an R8
 /// texture whenever `version` has changed since the last upload.
-pub record Atlas {
+pub ref record Atlas {
   width: Int
   height: Int
   var pixels: buffer[Byte]

@@ -437,6 +437,15 @@ func parseForeignRecordBody(st: inout ParseState): RecordDecl {
   rd.copy(span = joinSpans(startSpan, rd.span), isForeign = true)
 }
 
+/// `ref record Name { ... }` (D222): the marker for a record with identity.
+func parseRefRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams]): RecordDecl {
+  val startSpan = peekSpan(st)
+  val _ = advance(st)
+  // 'ref'
+  val rd = parseRecordBody(st, genericsPrefix, false)
+  rd.copy(span = joinSpans(startSpan, rd.span), isRef = true)
+}
+
 func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams], isExposed: Bool): RecordDecl {
   val startSpan = peekSpan(st)
   if isExposed {
@@ -4132,6 +4141,10 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
         IConfig(decl = parseConfigBody(st))
       } else if identName == "aspect" and nextIsIdent {
         IAspect(decl = parseAspectBody(st))
+      } else if identName == "ref" and nextIsRecordKeyword(st) {
+        // D222: `ref` is a contextual keyword, recognised only directly before
+        // `record`, so it stays usable as a name everywhere else.
+        IRecord(decl = parseRefRecordBody(st, genericsPrefix))
       } else if identName == "foreign" and nextIsRecordKeyword(st) {
         // D188: `foreign` is a contextual keyword, recognised only directly
         // before `record`, so it stays usable as a name everywhere else.

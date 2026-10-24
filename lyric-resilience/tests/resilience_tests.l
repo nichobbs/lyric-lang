@@ -211,7 +211,7 @@ test "backoffDelay: an invalid configuration is a precondition violation" {
   assertPanics("negative attempt", { -> val _ = Resilience.backoffDelay(100, 2, -1, 30000, 0.0f32) })
 }
 
-record Calls {
+ref record Calls {
   var n: Int
 }
 

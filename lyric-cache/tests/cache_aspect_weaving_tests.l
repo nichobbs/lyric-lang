@@ -17,7 +17,7 @@ import Cache.Aspects
 // Module-level state must be a `var`-field record bound via `val` (Lyric has
 // no module-level `var` primitive) — mirrors Cache.Aspects' own
 // `val functionCacheStore: CacheStore = Cache.inProcess()` pattern.
-record CallCounter {
+ref record CallCounter {
   var count: Int
 }
 
@@ -191,7 +191,11 @@ test "ItemCache aspect: enabled=false runs the handler on every call, even for a
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   match second {
-    case Ok(v) -> assertEqual(v, "delta-2", "second call re-runs the handler when disabled, even with the same cacheKey")
+    case Ok(v) -> assertEqual(
+      v,
+      "delta-2",
+      "second call re-runs the handler when disabled, even with the same cacheKey"
+    )
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   assertEqualInt(itemUncachedCalls.count, 2, "a disabled cache must not suppress any call")
@@ -217,7 +221,11 @@ test "ItemCache aspect: two handlers matched by the same wildcard don't collide 
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   match fromOtherHandler {
-    case Ok(v) -> assertEqual(v, "other:shared-key-2", "itemCachedOtherHandler must run its own body, not reuse itemCachedHandler's cached value")
+    case Ok(v) -> assertEqual(
+      v,
+      "other:shared-key-2",
+      "itemCachedOtherHandler must run its own body, not reuse itemCachedHandler's cached value"
+    )
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   assertEqualInt(itemCacheCalls.count, 2, "both handlers must have actually run despite the shared cacheKey")
@@ -229,7 +237,11 @@ test "ItemCache aspect: two handlers matched by the same wildcard don't collide 
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   match fromOtherAgain {
-    case Ok(v) -> assertEqual(v, "other:shared-key-2", "itemCachedOtherHandler's repeat call reuses its own cached value")
+    case Ok(v) -> assertEqual(
+      v,
+      "other:shared-key-2",
+      "itemCachedOtherHandler's repeat call reuses its own cached value"
+    )
     case Err(_) -> assertTrue(false, "handler must return Ok")
   }
   assertEqualInt(itemCacheCalls.count, 2, "neither handler ran again on the repeat calls")

@@ -110,7 +110,7 @@ test "nested: comparison inside an inner call's argument list (#6346)" {
 // original repro's `java.lang.StringBuilder` extern type broke that
 // portability by not existing as a .NET reference-assembly type, failing
 // `--target dotnet` with T0120 auto-FFI resolution.
-record TextBox {
+ref record TextBox {
   var text: String
 }
 

@@ -94,7 +94,7 @@ record Counter[T] {
   }
 }
 
-record Box[T] {
+ref record Box[T] {
   var value: T
   func get(self: in Box[T]): T {
     var r = self.value
@@ -145,7 +145,7 @@ protected type Cell[T] {
 // function.  The closure's type is annotated: the checker types a field read
 // through a type parameter as unknown, so an unannotated closure's result has
 // no type to unbox to on dotnet (#7671 stays open for that form).
-record MyBox[T] {
+ref record MyBox[T] {
   var value: T
 }
 

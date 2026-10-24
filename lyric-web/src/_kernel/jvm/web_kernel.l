@@ -488,7 +488,7 @@ func newLock(): JLock = ()
 @externTarget("java.lang.System.currentTimeMillis")
 func currentTimeMillis(): Long = ()
 
-record WebRateEntry {
+ref record WebRateEntry {
   var scaledTokens: Long = 0i64
   var lastRefillMs: Long = 0i64
 }

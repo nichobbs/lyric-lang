@@ -21,7 +21,7 @@ import Flags.Registry as FlagsRegistry
 // Module-level state must be a `var`-field record bound via `val` (Lyric has
 // no module-level `var` primitive) — mirrors Flags.Registry's own
 // `val globalRegistry: FlagRegistryStore = ...` pattern.
-record CallCounter {
+ref record CallCounter {
   var count: Int
 }
 

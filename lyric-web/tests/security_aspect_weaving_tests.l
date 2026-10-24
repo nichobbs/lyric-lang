@@ -364,7 +364,7 @@ test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failure
 // A breaker configuration that cannot work is reported before the handler
 // runs, not after its side effects when the first failure is recorded
 // (#7331).
-record BreakerCounter {
+ref record BreakerCounter {
   var count: Int = 0
 }
 

@@ -276,7 +276,7 @@ test "scanFrame: a Content-Length too large for Int is a bad header" {
 
 // A scripted byte source for `lspReadFrameVia`: hands out `chunks` in
 // order, then end of input.
-record ChunkSource {
+ref record ChunkSource {
   chunks: List[slice[Byte]]
   var next: Int
 }

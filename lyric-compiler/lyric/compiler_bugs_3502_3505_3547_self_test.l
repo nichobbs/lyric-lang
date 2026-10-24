@@ -44,7 +44,7 @@ import Std.Testing
 // ─── Bug #3547 — inout/out argument as field access ──────────────────────────
 // The field is `var`: an `out`/`inout` argument must be a writable place
 // (D183, T0085).
-record Counter {
+ref record Counter {
   var count: Int
 }
 

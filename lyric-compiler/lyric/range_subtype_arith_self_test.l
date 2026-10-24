@@ -12,7 +12,7 @@ import Std.Testing
 
 type Cents = Long range 0 ..= 1000 derives Add, Sub, Mul, Compare
 
-record Wallet {
+ref record Wallet {
   var balance: Cents
 }
 

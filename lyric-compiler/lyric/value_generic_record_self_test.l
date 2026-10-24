@@ -10,7 +10,7 @@ package Lyric.ValueGenericRecordSelfTest
 
 import Std.Testing
 
-record Ints[N: Nat] {
+ref record Ints[N: Nat] {
   var data: array[N, Int]
 
   func sum(self: in Ints[N]): Int {
@@ -26,12 +26,12 @@ record Ints[N: Nat] {
   func lastIndex(self: in Ints[N]): Int = N - 1
 }
 
-record FixedVec[T, N: Nat] {
+ref record FixedVec[T, N: Nat] {
   var data: array[N, T]
   tag: String = "v"
 }
 
-record Grid[W: Nat, H: Nat] {
+ref record Grid[W: Nat, H: Nat] {
   var cells: array[H, array[W, Int]]
 }
 
@@ -39,14 +39,14 @@ record Frozen[N: Nat] {
   items: array[N, Int]
 }
 
-record Pair[N: Nat] {
+ref record Pair[N: Nat] {
   var left: Ints[N]
   var right: Ints[N]
 
   func total(self: in Pair[N]): Int = self.left.sum() + self.right.sum() + N
 }
 
-record Shaded[N: Nat] {
+ref record Shaded[N: Nat] {
   var data: array[N, Int]
   size: Int = 7
 

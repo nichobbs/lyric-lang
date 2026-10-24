@@ -2439,7 +2439,8 @@ func hzRewriteRecord(cfg: in HoistConfig, decl: in RecordDecl, st: in HoistState
     whereClause = decl.whereClause,
     members = newMembers,
     span = decl.span,
-    isForeign = decl.isForeign
+    isForeign = decl.isForeign,
+    isRef = decl.isRef
   )
 }
 

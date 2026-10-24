@@ -1159,7 +1159,14 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks
     }
     mi = mi + 1
   }
-  val exposedPrefix = if isExposed { "exposed " } else { "" }
+  var hasVarField = false
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> if fd.isMutable { hasVarField = true }
+      case _ -> ()
+    }
+  }
+  val exposedPrefix = if isExposed { "exposed " } else if decl.isRef or hasVarField { "ref " } else { "" }
   val head = "pub " + exposedPrefix + "record " + decl.name + renderGenerics(decl.generics) + " { " + fields
   if methods == "" {
     head + " }"

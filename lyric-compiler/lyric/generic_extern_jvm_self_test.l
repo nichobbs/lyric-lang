@@ -63,7 +63,7 @@ func cdPut[K, V](dict: in JvmDict[K, V], key: in K, value: in V): Unit {
   val _ = dict.put(key, value)
 }
 
-record Counter {
+ref record Counter {
   var n: Int = 0
 }
 

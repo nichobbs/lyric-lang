@@ -68,7 +68,7 @@ val unknownServerInfo: McpImplementation = McpImplementation(name = "", version 
 
 // ── Client ───────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
-pub record McpClient {
+pub ref record McpClient {
   var peer: RpcPeer
   var serverInfo: McpImplementation
 }

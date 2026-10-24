@@ -231,7 +231,7 @@ pub val globalSpanBuffer: SpanBuffer = newSpanBuffer()
 /// A monotonic counter's current cumulative total.  OTLP reports counters
 /// with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so the exporter re-sends the
 /// running total on every flush rather than a delta since the last flush.
-pub record CounterPoint {
+pub ref record CounterPoint {
   name: String
   unit: String
   var total: Long
@@ -243,7 +243,7 @@ pub record CounterPoint {
 /// `HistogramDataPoint` (`explicit_bounds` empty, one `bucket_counts`
 /// entry) but does not support percentile queries in the collector —
 /// only `count`/`sum`/`avg`.
-pub record HistogramPoint {
+pub ref record HistogramPoint {
   name: String
   unit: String
   var count: Long

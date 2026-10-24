@@ -2571,7 +2571,7 @@ test "a reference-type out/inout argument must be a place (D183)" {
   assertTrue(not hasDiagCode(parseCheck(varRec), "T0085"), "a var record: no T0085")
   val gen = "package P\nfunc g[T](x: inout T, v: in T): Unit { x = v }\nfunc f(): Unit {\n  val s = \"a\"\n  g(s, \"b\")\n}\n"
   assertTrue(hasDiagCode(parseCheck(gen), "T0085"), "a val passed to a generic inout: T0085")
-  val inParam = "package P\nrecord B {\n  var n: Int\n}\nfunc g(x: inout B): Unit { x.n = 1 }\nfunc f(b: in B): Unit { g(b) }\n"
+  val inParam = "package P\nref record B {\n  var n: Int\n}\nfunc g(x: inout B): Unit { x.n = 1 }\nfunc f(b: in B): Unit { g(b) }\n"
   val inDiags = parseCheck(inParam)
   assertTrue(hasDiagCode(inDiags, "T0085"), "an in parameter: T0085")
   assertTrue(diagMessagesContain(inDiags, "D183"), "the message names the rule")
@@ -2585,9 +2585,9 @@ test "an out/inout field argument must be a var field (D183)" {
   val immDiags = parseCheck(immField)
   assertTrue(hasDiagCode(immDiags, "T0085"), "a non-var field: T0085, got " + diagCodesOf(immDiags))
   assertTrue(diagMessagesContain(immDiags, "is not `var`"), "the message names the field")
-  val varField = "package P\nrecord Pt {\n  var x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
+  val varField = "package P\nref record Pt {\n  var x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
   assertTrue(not hasDiagCode(parseCheck(varField), "T0085"), "a var field of a val record: no T0085")
-  val nested = "package P\nrecord In {\n  n: Int\n}\nrecord Out {\n  var i: In\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val o = Out(i = In(n = 0))\n  bump(o.i.n)\n}\n"
+  val nested = "package P\nrecord In {\n  n: Int\n}\nref record Out {\n  var i: In\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val o = Out(i = In(n = 0))\n  bump(o.i.n)\n}\n"
   assertTrue(hasDiagCode(parseCheck(nested), "T0085"), "a non-var field at the end of a path: T0085")
   val prot = "package P\nfunc bump(x: inout Int): Unit { x = x + 1 }\nprotected type C {\n  var total: Int = 0\n  let cap: Int = 3\n  entry ok(): Unit { bump(total) }\n  entry bad(): Unit { bump(cap) }\n}\n"
   assertEqualInt(
@@ -2872,7 +2872,7 @@ test "imported package signature prefers its declared import" {
 // that the consumer's scope re-resolved differently.
 test "cross package impl satisfies interface at argument position" {
   val pkgAcme = parse(
-    "package Acme\npub interface Store { func get(key: in String): Int }\npub record MemStore { var data: Int = 0 }\nimpl Store for MemStore { func get(key: in String): Int { 0 } }\npub func mkStore(): MemStore { MemStore(data = 0) }\npub func lookup(store: in Store, key: in String): Int { store.get(key) }\n"
+    "package Acme\npub interface Store { func get(key: in String): Int }\npub ref record MemStore { var data: Int = 0 }\nimpl Store for MemStore { func get(key: in String): Int { 0 } }\npub func mkStore(): MemStore { MemStore(data = 0) }\npub func lookup(store: in Store, key: in String): Int { store.get(key) }\n"
   )
   val imports: List[ImportedPackage] = newList()
   imports.add(
@@ -3447,7 +3447,7 @@ test "record arithmetic derives outside the homogeneous numeric shape are T0152"
 }
 
 test "compound arithmetic on a record needs a variable or field target" {
-  val src = "package P\n@derive(Add)\nrecord V { x: Int }\nrecord W { var v: V }\nfunc g(): W { W(v = V(x = 0)) }\nfunc f(v: in V) { g().v += v }\n"
+  val src = "package P\n@derive(Add)\nrecord V { x: Int }\nref record W { var v: V }\nfunc g(): W { W(v = V(x = 0)) }\nfunc f(v: in V) { g().v += v }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0134"), "a field of a call result")
 }
 
@@ -3465,7 +3465,7 @@ test "== on a record with a function field is T0153" {
   assertTrue(hasDiagCode(parseCheck(bad), "T0153"), "a function field")
   val nested = "package P\nrecord Box[T] { value: T }\nrecord H { f: (Int) -> Int }\nfunc g(a: in Box[Box[H]], b: in Box[Box[H]]): Bool { a == b }\n"
   assertTrue(hasDiagCode(parseCheck(nested), "T0153"), "a function field under a generic record nested in itself")
-  val mutable = "package P\nrecord H { var f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
+  val mutable = "package P\nref record H { var f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
   assertTrue(not hasDiagCode(parseCheck(mutable), "T0153"), "a mutable record keeps identity")
 }
 
@@ -3485,7 +3485,7 @@ test "Plain accepts scalars, enums, value records, distinct types and arrays of 
 }
 
 test "Plain rejects references, range subtypes, invariants, var fields and opaque types" {
-  val decls = "type Age = Int range 0 ..= 150\nrecord Pos { n: Int\n invariant: n >= 0 }\nrecord Cell { var n: Int }\nrecord Named { name: String }\nopaque type Secret { token: Int }\nunion Shape {\n  case Dot\n}\n"
+  val decls = "type Age = Int range 0 ..= 150\nrecord Pos { n: Int\n invariant: n >= 0 }\nref record Cell { var n: Int }\nrecord Named { name: String }\nopaque type Secret { token: Int }\nunion Shape {\n  case Dot\n}\n"
   for arg in ["String", "Age", "Pos", "Cell", "Named", "Secret", "Shape", "array[2, String]", "slice[Int]"] {
     val cr = parseCheck(plainSrc(decls, arg))
     assertTrue(hasDiagCode(cr, "T0108"), arg + " is not Plain: " + diagCodesOf(cr))
@@ -11115,7 +11115,7 @@ test "a declaration without an initializer needs an element type with a zero (T0
 }
 
 test "an element is written through a var local, an out or inout parameter or a var field (T0157)" {
-  val ok = "package P\nrecord R { var a: array[2, Int] }\nfunc f(p: inout array[2, Int], q: out array[2, Int], r: in R) {\n  var l: array[2, Int] = [1, 2]\n  l[0] = 1\n  p[0] = 2\n  q = [0, 0]\n  q[1] = 3\n  r.a[0] = 4\n  l[1] += 1\n}\n"
+  val ok = "package P\nref record R { var a: array[2, Int] }\nfunc f(p: inout array[2, Int], q: out array[2, Int], r: in R) {\n  var l: array[2, Int] = [1, 2]\n  l[0] = 1\n  p[0] = 2\n  q = [0, 0]\n  q[1] = 3\n  r.a[0] = 4\n  l[1] += 1\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "writable places: clean (" + diagCodesOf(parseCheck(ok)) + ")")
   val valLocal = "package P\nfunc f() {\n  val l: array[2, Int] = [1, 2]\n  l[0] = 1\n}\n"
   assertEqualInt(countDiagCode(parseCheck(valLocal), "T0157"), 1, "a val local")
@@ -11167,7 +11167,7 @@ test "a collection element is not a writable array place (T0157)" {
   assertEqualInt(countDiagCode(parseCheck(inElem), "T0157"), 1, "an element of an `in` array")
   val sliceElem = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(xs: in slice[array[2, Int]]) {\n  g(xs[0])\n}\n"
   assertEqualInt(countDiagCode(parseCheck(sliceElem), "T0157"), 1, "an element of a slice of arrays")
-  val okInout = "package P\nrecord R { var a: array[2, Int] }\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(r: in R, q: inout array[2, Int]) {\n  g(r.a)\n  g(q)\n}\n"
+  val okInout = "package P\nref record R { var a: array[2, Int] }\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(r: in R, q: inout array[2, Int]) {\n  g(r.a)\n  g(q)\n}\n"
   assertEqualInt(
     diagCount(parseCheck(okInout)),
     0,
@@ -11319,7 +11319,7 @@ test "a value-generic length no argument gives is T0110" {
 }
 
 test "a record's value generic parameter sizes its array fields" {
-  val src = "package P\nrecord FixedVec[T, N: Nat] {\n  var items: array[N, T]\n  func last(self: in FixedVec[T, N]): T = self.items[N - 1]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val v = FixedVec(items = a)\n  val z: FixedVec[String, 2] = FixedVec(items = [\"a\", \"b\"])\n  v.items.length + v.last()\n}\n"
+  val src = "package P\nref record FixedVec[T, N: Nat] {\n  var items: array[N, T]\n  func last(self: in FixedVec[T, N]): T = self.items[N - 1]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val v = FixedVec(items = a)\n  val z: FixedVec[String, 2] = FixedVec(items = [\"a\", \"b\"])\n  v.items.length + v.last()\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "a record with a length parameter (" + diagCodesOf(cr) + ")")
   assertEqualInt(
@@ -11335,11 +11335,11 @@ test "a record's value generic parameter sizes its array fields" {
 }
 
 test "an instance's length comes from a field, the expected type or a constant" {
-  val src = "package P\nval Width = 4\nrecord Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: Grid[Width] = Grid()\n  val b: Grid[2] = Grid()\n  a.cells.length + b.cells.length\n}\n"
+  val src = "package P\nval Width = 4\nref record Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: Grid[Width] = Grid()\n  val b: Grid[2] = Grid()\n  a.cells.length + b.cells.length\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "zero filled at the expected length (" + diagCodesOf(cr) + ")")
   assertEqualInt(cr.symbols.valueTypeArgSites.count, 1, "a constant length argument is recorded with its value")
-  val mismatch = "package P\nrecord Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val b: Grid[4] = Grid(cells = a)\n  0\n}\n"
+  val mismatch = "package P\nref record Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val b: Grid[4] = Grid(cells = a)\n  0\n}\n"
   assertTrue(diagCount(parseCheck(mismatch)) > 0, "two instances of different lengths are different types")
 }
 
@@ -11410,7 +11410,7 @@ test "a protected type's array field follows the zero-fill rule" {
 }
 
 test "a generic record's array field is zero filled per construction (#8042)" {
-  val decl = "package P\nrecord Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n"
+  val decl = "package P\nref record Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n"
   val ok = decl + "func mk(): Int {\n  val b: Box[Int] = Box(tag = 1)\n  b.data[0]\n}\n"
   val okCr = parseCheck(ok)
   assertEqualInt(diagCount(okCr), 0, "an Int element has a zero (" + diagCodesOf(okCr) + ")")
@@ -11653,7 +11653,7 @@ func inoutRecvSrc(body: in String): String {
 test "a well-formed `inout` receiver checks clean (#8179)" {
   val cr = preparedCheck(
     inoutRecvSrc(
-      "record H {\n  var r: R\n}\nfunc f(q: inout R): Int {\n  var p = R(x = 1)\n  p.reset()\n  R.reset(p)\n" +
+      "ref record H {\n  var r: R\n}\nfunc f(q: inout R): Int {\n  var p = R(x = 1)\n  p.reset()\n  R.reset(p)\n" +
         "  var h = H(r = p)\n  h.r.reset()\n  q.reset()\n  p.get() + h.r.get()\n}\n"
     )
   )
@@ -11711,7 +11711,7 @@ test "the receiver of an `inout` method must be a writable place: T0166 (#8179)"
 test "an array element passed by reference checks clean (#8180)" {
   val cr = preparedCheck(
     inoutRecvSrc(
-      "record H {\n  var a: array[2, Int]\n}\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n" +
+      "ref record H {\n  var a: array[2, Int]\n}\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n" +
         "func put(x: out Int): Unit {\n  x = 1\n}\nfunc row(r: inout array[2, Int]): Unit {\n  r[0] = 5\n}\n" +
         "func f(q: inout array[2, Int]): Unit {\n  var xs: array[2, R] = [R(x = 1), R(x = 2)]\n  xs[1].reset()\n" +
         "  R.reset(xs[0])\n  var a: array[3, Int] = [1, 2, 3]\n  zap(a[1])\n  put(a[2])\n  zap(q[0])\n" +
@@ -11762,13 +11762,13 @@ test "a module-level binding or a call result is not a writable receiver: T0166 
   assertEqualInt(countDiagCode(modUfcs, "T0166"), 1, "a module-level val through the type: " + diagCodesOf(modUfcs))
   val callRoot = preparedCheck(
     inoutRecvSrc(
-      "record H {\n  var r: R\n}\nfunc mk(): H = H(r = R(x = 1))\nfunc f(): Unit {\n  mk().r.reset()\n}\n"
+      "ref record H {\n  var r: R\n}\nfunc mk(): H = H(r = R(x = 1))\nfunc f(): Unit {\n  mk().r.reset()\n}\n"
     )
   )
   assertEqualInt(countDiagCode(callRoot, "T0166"), 1, "a field of a call result: " + diagCodesOf(callRoot))
   val valRoot = preparedCheck(
     inoutRecvSrc(
-      "record H {\n  var r: R\n}\nfunc f(): Int {\n  val h = H(r = R(x = 1))\n  h.r.reset()\n  h.r.get()\n}\n"
+      "ref record H {\n  var r: R\n}\nfunc f(): Int {\n  val h = H(r = R(x = 1))\n  h.r.reset()\n  h.r.get()\n}\n"
     )
   )
   assertEqualInt(
@@ -11820,7 +11820,7 @@ test "a record method with an `inout` receiver is not woven, like any record met
 }
 
 test "a field of a module-level binding is a receiver place, as it is an argument (#8179)" {
-  val decls = "record H {\n  var r: R\n}\nval gh = H(r = R(x = 5))\nfunc zap(q: inout R): Unit {\n  q = R(x = 0)\n}\n"
+  val decls = "ref record H {\n  var r: R\n}\nval gh = H(r = R(x = 5))\nfunc zap(q: inout R): Unit {\n  q = R(x = 0)\n}\n"
   val cr = preparedCheck(inoutRecvSrc(decls + "func f(): Unit {\n  zap(gh.r)\n  gh.r.reset()\n  R.reset(gh.r)\n}\n"))
   assertEqualInt(cr.diagnostics.count, 0, "argument, method and type-qualified forms: " + diagCodesOf(cr))
 }
@@ -12366,4 +12366,16 @@ test "a qualified enum case is a value of its enum (#8254)" {
   assertTrue(hasDiagCode(parseCheck(asString), "T0060"), "a case is not a String")
   val ok = head + "func f(): Int {\n  val c = Color.Red\n  c.num()\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "the call type-checks")
+}
+
+// D222 (#7955): a record with a `var` field that is not `ref` is warned.
+test "W0031: a var field in a plain record" {
+  val plain = "package P\nrecord C {\n  var n: Int\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(plain), "W0031"), 1, diagCodesOf(parseCheck(plain)))
+  val marked = "package P\nref record C {\n  var n: Int\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(marked), "W0031"), 0, "ref record is silent")
+  val value = "package P\nrecord C {\n  n: Int\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(value), "W0031"), 0, "no var field")
+  val markedValue = "package P\nref record C {\n  n: Int\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(markedValue), "W0031"), 0, "ref without var is accepted")
 }

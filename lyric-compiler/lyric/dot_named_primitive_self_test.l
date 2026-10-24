@@ -103,7 +103,7 @@ type Age = Int
 
 func Age.older(self: in Age): Age = Age.from(self.value + 1)
 
-record Counter {
+ref record Counter {
   var n: Int
 }
 

@@ -31,7 +31,7 @@ package Lyric.ClosureCapturedVarByrefSelfTest
 import Std.Core
 import Std.Testing
 
-record Box {
+ref record Box {
   var n: Int
 }
 

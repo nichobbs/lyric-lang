@@ -221,7 +221,7 @@ test "a lambda given to a record constructor takes the field's function type" {
 }
 
 // ─── #7460 ──────────────────────────────────────────────────────────────────
-record Cell {
+ref record Cell {
   var n: Int
 }
 

@@ -21,7 +21,7 @@ import Std.Collections
 /// to resolve a zero-arg instance method.  A `List[Byte]` accumulator is fully
 /// portable (no `.NET`-only boundary) and records are reference types, so writes
 /// through the `in` borrow persist.
-pub record ProtoBuffer {
+pub ref record ProtoBuffer {
   var bytes: List[Byte]
 }
 

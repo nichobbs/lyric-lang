@@ -154,7 +154,7 @@ func monitorExit[T](obj: in T): Unit = ()
 // confirmed by bisection (removing the `Map` alone fixed it).
 val channelRegistry: NetGrpcChannelDict = newChannelDict()
 
-record ChannelHandleCounter {
+ref record ChannelHandleCounter {
   var next: Int = 0
 }
 

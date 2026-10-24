@@ -107,7 +107,7 @@ record Toasting {
 }
 
 /// The state of one window (or headless session).
-pub record Host {
+pub ref record Host {
   cfg: NativeConfig
   route: (String) -> Option[Instance]
   theme: Theme

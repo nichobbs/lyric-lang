@@ -144,7 +144,7 @@ pub interface MailSender {
 /// `pub` so the test module can construct it, but carries no `@stable`
 /// annotation, so it is excluded from the stable public-API surface that
 /// `lyric public-api-diff` tracks.
-pub record MailSenderStub {
+pub ref record MailSenderStub {
   var callCount: Int
 }
 

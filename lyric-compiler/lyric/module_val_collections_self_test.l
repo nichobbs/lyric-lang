@@ -17,7 +17,7 @@ val flags: Map[String, Bool] = newMap()
 
 val names: List[String] = newList()
 
-record Registry {
+ref record Registry {
   var entries: Map[String, Int] = newMap()
 }
 

@@ -40,7 +40,7 @@ func taskRun(work: in () -> Unit): Task = ()
 func threadSleep(ms: in Int): Unit = ()
 
 // ─── Server side ────────────────────────────────────────────────────────────
-record RegistryHolder {
+ref record RegistryHolder {
   var registry: Option[NativeRegistry] = None
   var lastPath: String = ""
 }

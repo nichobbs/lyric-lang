@@ -16,7 +16,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 
-record Holder {
+ref record Holder {
   var v: ULong
 }
 

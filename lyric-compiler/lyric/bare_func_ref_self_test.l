@@ -428,7 +428,7 @@ record TwinA6426 {
   base: Int
 }
 
-record TwinB6426 {
+ref record TwinB6426 {
   var base: Int
 }
 

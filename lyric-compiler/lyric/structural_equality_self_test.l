@@ -27,12 +27,12 @@ record W {
   label: String
 }
 
-record Cell {
+ref record Cell {
   var n: Int
 }
 
 @derive(Equals)
-record Counter {
+ref record Counter {
   var n: Int
 }
 

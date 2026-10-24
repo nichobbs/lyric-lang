@@ -368,7 +368,7 @@ test "first argument of a free call ?: unchanged shape still works" {
 // order, then binds the value out (phBindAssignTarget). JVM was never
 // broken here (its assignment lowering already spills, #5936) but runs the
 // same cases for parity.
-record Cell {
+ref record Cell {
   var value: Int
 }
 

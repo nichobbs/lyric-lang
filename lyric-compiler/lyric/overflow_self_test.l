@@ -29,7 +29,7 @@ func maxLong(): Long = 9223372036854775807i64
 
 func minLong(): Long = -9223372036854775807i64 - 1i64
 
-record Counter {
+ref record Counter {
   var calls: Int
 }
 

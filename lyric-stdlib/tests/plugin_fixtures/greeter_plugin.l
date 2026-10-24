@@ -87,7 +87,7 @@ func relay(r: in Result[JsonValue, BoundaryError]): Result[JsonValue, RpcError] 
   }
 }
 
-pub record GreeterServer {
+pub ref record GreeterServer {
   var conn: Option[PluginConnection]
   var calls: Int
 }

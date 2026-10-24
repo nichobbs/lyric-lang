@@ -17,11 +17,11 @@ package LongStoreWidenSelfTest
 import Std.Core
 import Std.Testing
 
-record LongCell {
+ref record LongCell {
   var v: Long
 }
 
-record Box[T] {
+ref record Box[T] {
   var value: T
 }
 

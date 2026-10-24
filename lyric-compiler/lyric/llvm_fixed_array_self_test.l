@@ -217,7 +217,7 @@ test "an access nothing has settled is bounds checked by the backend" {
 }
 
 test "the whole pipeline: a compound assignment through an impure index writes the array itself" {
-  val src = "package T\n" + "record Tally {\n  var hits: array[4, Int]\n}\n" +
+  val src = "package T\n" + "ref record Tally {\n  var hits: array[4, Int]\n}\n" +
     "func nextIdx(n: inout Int): Int {\n  n = n + 1\n  1\n}\n" +
     "func main(): Int {\n" +
     "  var a: array[4, Int] = [1, 2, 3, 4]\n" +
@@ -267,7 +267,8 @@ test "an array of by-value records is inline" {
 }
 
 test "an array var field of a heap record is written in place" {
-  val src = "package T\n" + "record Counter {\n  var hits: array[3, Int]\n  var name: Int\n}\n" + "func main(): Int {\n" +
+  val src = "package T\n" + "ref record Counter {\n  var hits: array[3, Int]\n  var name: Int\n}\n" +
+    "func main(): Int {\n" +
     "  val c = Counter(hits = [0, 0, 0], name = 1)\n" +
     "  c.hits[__lyric_unchecked(1)] = 5\n" +
     "  c.hits[__lyric_unchecked(1)] += 2\n" +
@@ -306,7 +307,8 @@ test "an array of Strings is a heap array, copied on store, and ASan finds no le
 }
 
 test "a zero-filled array of mutable records holds distinct instances" {
-  val src = "package T\n" + "record Cell {\n  var n: Int\n}\n" + "func main(): Int {\n" + "  var cs: array[3, Cell]\n" +
+  val src = "package T\n" + "ref record Cell {\n  var n: Int\n}\n" + "func main(): Int {\n" +
+    "  var cs: array[3, Cell]\n" +
     "  cs[0].n = 5\n" +
     "  cs[1].n = cs[1].n + 1\n" +
     "  cs[0].n * 10 + cs[1].n + cs[2].n\n" +

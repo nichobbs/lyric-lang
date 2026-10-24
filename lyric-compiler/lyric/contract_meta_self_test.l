@@ -753,11 +753,11 @@ func testBuildArrayTypeArg(): Unit {
 // A `var` field stays `var` in the repr: a restored consumer can write
 // through it, and the record keeps its identity (D157, #8042).
 func testBuildVarFieldKept(): Unit {
-  val src = "package P\n\npub record Grid {\n  var cells: array[3, Int]\n  n: Int\n}\n"
+  val src = "package P\n\npub ref record Grid {\n  var cells: array[3, Int]\n  n: Int\n}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
   val d = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "Grid"), "buildContractFromFile: record Grid missing")
-  assertEqual(d.repr, "pub record Grid { var cells: array[3, Int], n: Int }", "a var field keeps var")
+  assertEqual(d.repr, "pub ref record Grid { var cells: array[3, Int], n: Int }", "a var field keeps var")
 }
 
 // `buildContractFromFile` carries the supplied version.

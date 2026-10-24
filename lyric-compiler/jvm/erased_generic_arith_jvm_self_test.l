@@ -355,7 +355,7 @@ test "user-defined generic union slice[Byte] payload indexes (#5570)" {
 //    boxing coercion with the receiver / cell spilled around the loop.
 //    Before the fix: VerifyError "Bad type on operand stack" at the putfield.
 // ─────────────────────────────────────────────────────────────────────────────
-record ByteHolder {
+ref record ByteHolder {
   var data: slice[Byte]
 
   func refreshFromMatch(): Unit {

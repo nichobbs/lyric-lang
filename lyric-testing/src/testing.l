@@ -121,7 +121,7 @@ pub func now(clock: in TestClock): Long {
 ///
 /// Thread safety: not thread-safe in v1.
 @stable(since = "0.1")
-pub record MockMailSender {
+pub ref record MockMailSender {
   var sentEmails: List[SentEmail]
   var count: Int
 }
@@ -180,7 +180,7 @@ pub func clearSent(sender: in MockMailSender): Unit {
 /// Otherwise every operation succeeds.  Use `callCount` to verify that
 /// specific methods were invoked.
 @stable(since = "0.1")
-pub record MockStorageBucket {
+pub ref record MockStorageBucket {
   var objects: Map[String, StoredObject]
   var orderedKeys: List[String]
   bucketName: String
@@ -317,7 +317,7 @@ func mockInvalidKey(key: in String): Storage.StorageError {
 // ─── MockMessageQueue ─────────────────────────────────────────────────────────
 /// Mock message queue that captures published messages in memory for assertion.
 @stable(since = "0.1")
-pub record MockMessageQueue {
+pub ref record MockMessageQueue {
   var published: List[PublishedMessage]
   queueName: String
   var msgCount: Int
@@ -379,7 +379,7 @@ pub func publishedCount(queue: in MockMessageQueue): Int {
 /// falls back to Object, causing E5/E7 on any field read).
 /// save() and touch() are no-ops; mock state is managed through set/delete/clear.
 @stable(since = "0.1")
-pub record MockSessionStore {
+pub ref record MockSessionStore {
   var entries: Map[String, Map[String, String]]
   var sessionSeq: Int
 }
@@ -502,7 +502,7 @@ impl Session.SessionStore for MockSessionStore {
 /// returns FlagBool entries only; for other value types, use `Flags.fromEntries`
 /// with a pre-built InProcessFlagStore.
 @stable(since = "0.1")
-pub record MockFlagStore {
+pub ref record MockFlagStore {
   var flags: Map[String, Bool]
 }
 
@@ -552,7 +552,7 @@ pub func disable(store: in MockFlagStore, name: in String): Unit
 /// All cache operations succeed by default.  TTL values are accepted but not
 /// enforced; the mock store never expires entries.
 @stable(since = "0.1")
-pub record MockCacheStore {
+pub ref record MockCacheStore {
   var entries: Map[String, String]
 }
 
@@ -590,7 +590,7 @@ pub func cacheSize(store: in MockCacheStore): Int {
 /// further interface method dispatched on the unwrapped value — the shape
 /// #5133's "narrow" bug (fixed) originally broke.
 @stable(since = "0.1")
-pub record MockDbTransaction {
+pub ref record MockDbTransaction {
   var committed: Bool
   var rolledBack: Bool
   var queryCount: Int
@@ -627,7 +627,7 @@ impl Db.DbTransaction for MockDbTransaction {
 /// `transaction()`.  `query`/`execute` succeed with empty/zero results by
 /// default; use `queryCount`/`executeCount`/`txCount` to verify call counts.
 @stable(since = "0.1")
-pub record MockDbConnection {
+pub ref record MockDbConnection {
   var queryCount: Int
   var executeCount: Int
   var txCount: Int

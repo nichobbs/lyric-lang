@@ -1264,7 +1264,8 @@ func resolveRecordDecl(aliasTargets: in Map[String, TypeExpr], d: in RecordDecl)
     whereClause = d.whereClause,
     members = ms,
     span = d.span,
-    isForeign = d.isForeign
+    isForeign = d.isForeign,
+    isRef = d.isRef
   )
 }
 

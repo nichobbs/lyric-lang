@@ -635,7 +635,7 @@ impl JobScheduler for NativeJobScheduler {
 ///
 /// Not thread-safe; use in single-threaded test scenarios only.
 @stable(since = "0.1")
-pub record InProcessJobScheduler {
+pub ref record InProcessJobScheduler {
   var jobs: Map[String, JobResult]
   var queue: List[JobSpec]
   var counter: Int    // monotonic counter for ID generation

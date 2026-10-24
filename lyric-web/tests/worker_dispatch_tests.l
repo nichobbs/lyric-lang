@@ -27,7 +27,7 @@ import Std.Testing
 // a bare `Int` field are good enough for this test's purpose (proving the
 // tick fired repeatedly over a bounded polling window) without a lock —
 // this is not exercising the counter's precision, only its liveness.
-record TickCounter {
+ref record TickCounter {
   var n: Int
 }
 
@@ -63,7 +63,7 @@ func workerRouter(): Web.Router {
 // uncaught `Bug` from `tick()` silently and permanently stopped this
 // worker's loop (the loop's `Task` is fire-and-forget and never observed),
 // so `flakyCounter.n` would stay at 0 forever after the first tick.
-record FlakyCounter {
+ref record FlakyCounter {
   var n: Int
   var crashed: Bool
 }

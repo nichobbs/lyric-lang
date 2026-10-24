@@ -15,7 +15,7 @@ import Std.Collections
 import Std.Testing
 import Std.Buffer
 
-record Holder {
+ref record Holder {
   var cells: buffer[Int]
 }
 

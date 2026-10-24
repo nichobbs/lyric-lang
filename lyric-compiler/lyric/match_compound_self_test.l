@@ -83,7 +83,7 @@ test "Numeric compound operators on a local honour the operator" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 2 — Compound assignment to a record field.
 // ─────────────────────────────────────────────────────────────────────────────
-record Acc {
+ref record Acc {
   var total: Int
   var note: String
 }

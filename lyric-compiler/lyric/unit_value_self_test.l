@@ -48,7 +48,7 @@ test "a Unit argument expression is still evaluated for its effects" {
 }
 
 // -- a Unit parameter on a record method ------------------------------------
-record Meter {
+ref record Meter {
   var n: Int
 }
 

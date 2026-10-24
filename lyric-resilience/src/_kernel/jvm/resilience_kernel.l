@@ -36,7 +36,7 @@ extern type JReentrantLock = "java.util.concurrent.locks.ReentrantLock"
 
 extern type JThread = "java.lang.Thread"
 
-record CircuitEntry {
+ref record CircuitEntry {
   var consecutiveFailures: Int = 0
   var isOpen: Bool = false
   var openedAtMs: Long = 0i64

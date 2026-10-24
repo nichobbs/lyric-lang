@@ -22,7 +22,7 @@ import Std.Time
 import Mq
 import Mq.Aspects
 
-record CallCounter {
+ref record CallCounter {
   var count: Int
 }
 
@@ -132,7 +132,7 @@ test "Idempotent: a panicking handler releases its claim" {
 // dead-letter path (which nacks the broker) is observable. Like `NativeQueue`,
 // it answers an empty id with `Err(EMPTY_MESSAGE_ID)` rather than a
 // precondition violation, since message ids come from the broker (#7239).
-record ConsumerCalls {
+ref record ConsumerCalls {
   var nacks: Int
 }
 

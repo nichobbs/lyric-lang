@@ -15,7 +15,7 @@ package Lyric.RecordMethodOptionParamSelfTest
 import Std.Core
 import Std.Testing
 
-record Acc {
+ref record Acc {
   var total: Int
 
   func addInt(self: in Acc, o: in Option[Int]): Int {

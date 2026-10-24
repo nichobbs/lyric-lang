@@ -143,7 +143,7 @@ val noOpCommand: String = "true"
 // ahead of a trailing reference field, were both observed to miscompile the
 // record constructor on this backend (see `newJobRecord` below and the file
 // header note on JVM backend record-constructor bugs); not fixed here.
-record JobRecord {
+ref record JobRecord {
   name: String
   payload: String
   maxAttempts: Int

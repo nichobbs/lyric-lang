@@ -128,7 +128,7 @@ func probedManifest(): PluginManifest {
 }
 
 // ── Host-side implementations of the capabilities ─────────────────────────
-pub record NoteStore {
+pub ref record NoteStore {
   var loads: Int
 }
 
@@ -147,7 +147,7 @@ impl Store for NoteStore {
   }
 }
 
-pub record LineLog {
+pub ref record LineLog {
   var lines: List[String]
 }
 

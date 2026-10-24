@@ -300,7 +300,7 @@ func renderItem(item: in Item): String {
           "### func `" + fn.name + "`\n\n" + "```lyric\n" + functionSignature(fn) + "\n```\n\n" + renderDocComments(docs)
         }
         case IRecord(rd) -> {
-          val kw = if rd.isForeign { "foreign record" } else { "record" }
+          val kw = if rd.isForeign { "foreign record" } else if rd.isRef { "ref record" } else { "record" }
           "### " + kw + " `" + rd.name + "`\n\n" + "```lyric\n" + recordSignature(kw, rd) + "\n```\n\n" +
             renderDocComments(docs)
         }

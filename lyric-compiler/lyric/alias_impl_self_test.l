@@ -24,7 +24,7 @@ interface Store {
   func make(): String
 }
 
-record M {
+ref record M {
   var n: Int
 }
 

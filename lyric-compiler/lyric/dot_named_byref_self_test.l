@@ -109,11 +109,11 @@ func viaParam(q: inout Int, a: in Acc): Unit {
   Acc.into(a, q, q)
 }
 
-record Cell {
+ref record Cell {
   var f: Int
 }
 
-record Nest {
+ref record Nest {
   var c: Cell
 }
 
@@ -142,7 +142,7 @@ func Ctr.give(self: inout Ctr, x: out Int, d: in Int): Unit {
   self = Ctr(n = self.n + d)
 }
 
-record Hold {
+ref record Hold {
   var c: Ctr
   var k: Int
 }

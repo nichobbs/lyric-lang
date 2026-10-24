@@ -8,7 +8,7 @@ package Game.Clock
 
 import Std.Core
 
-pub record Clock {
+pub ref record Clock {
   stepNanos: Long
   maxSteps: Int
   var accumulator: Long

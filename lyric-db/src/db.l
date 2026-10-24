@@ -216,7 +216,7 @@ impl DbConnection for NativeConnection {
   }
 }
 
-record NativeTransaction {
+ref record NativeTransaction {
   conn: DbKernel.DbConn
   tx: DbKernel.DbTxT
   var finished: Bool
