@@ -130,7 +130,7 @@ func cmdCheck(argv: in slice[String]): Int {
     // (`--manifest`, else the nearest one above it), with that manifest's
     // dependencies and default features (D123, D182).
     val noCliFeatures: List[String] = newList()
-    val result = emitSingleFileOrProject(req, sourcePath, manifestArg, noCliFeatures, false, false).emitResult
+    val result = emitSingleFileOrProject(req, sourcePath, manifestArg, noCliFeatures, false, false, false).emitResult
     var hadError = false
     for d in result.diagnostics.toArray() {
       match d.severity {

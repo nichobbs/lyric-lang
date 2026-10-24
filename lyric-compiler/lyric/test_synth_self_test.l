@@ -631,3 +631,75 @@ test "rewrite preserves line numbers across earlier tests (#7540)" {
 test "listEntriesFor honours @cfg (#7540)" {
   testListEntriesHonoursCfg()
 }
+
+// #678 (D230): doctests and the merge of a test module into its package.
+func doctestFileSource(): String {
+  "package Shape\n\n/// Doubles.\n///\n/// ```lyric\n/// import Std.Testing\n/// import Shape.{double}\n/// assertEqualInt(double(2), 4, \"d\")\n/// ```\npub func double(x: in Int): Int { x * 2 }\n\n/// ```lyric\n/// // no_test\n/// bogus\n/// ```\n///\n/// ```lyric,no_test\n/// bogus\n/// ```\n///\n/// ```text\n/// bogus\n/// ```\nfunc other(): Int { 1 }\n\n/// ```lyric\n/// assertTrue(true, \"second\")\n/// ```\nfunc third(): Int { 3 }\n"
+}
+
+func testExtractDoctestsFindsRunnableBlocksOnly(): Unit {
+  val found = extractDoctests(doctestFileSource())
+  assertEqualInt(found.count, 2, "one runnable block per doc comment that has one")
+  assertEqualInt(found[0].line, 6, "the first code line of the first block")
+  assertTrue(Str.startsWith(found[0].code, "import Std.Testing"), "block text has the doc-comment markers removed")
+  assertTrue(Str.contains(found[0].code, "assertEqualInt(double(2), 4"), "block keeps its statements")
+}
+
+func testDoctestModuleHoistsImportsAndTitlesByLocation(): Unit {
+  val dm = buildDoctestModule(doctestFileSource(), "shape.l")
+  assertEqualInt(dm.count, 2, "two doctests")
+  assertTrue(Str.startsWith(dm.source, "@test_module\npackage Shape\n"), "a test module of the file's own package")
+  assertTrue(Str.contains(dm.source, "test \"doctest shape.l:6\" {"), "titled by file and line")
+  assertTrue(not Str.contains(dm.source, "import Shape"), "an import of the package under test is dropped")
+  val body = Str.indexOf(dm.source, "test \"doctest shape.l:6\"")
+  match body {
+    case Some(at) -> assertTrue(
+      Str.indexOf(Str.substring(dm.source, at, dm.source.length - at), "import Std.Testing") == None,
+      "imports are hoisted out of the test body"
+    )
+    case None -> panic("doctest title missing")
+  }
+  match synthesizeFor(dm.source, None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
+    case Synthesised(_, n, sk) -> {
+      assertEqualInt(n, 2, "both doctests become tests")
+      assertEqualInt(sk, 0, "none skipped")
+    }
+    case _ -> panic("expected the doctest module to synthesise")
+  }
+}
+
+func testFileWithoutDoctestsHasEmptyModule(): Unit {
+  val dm = buildDoctestModule(noModuleSource(), "p.l")
+  assertEqualInt(dm.count, 0, "no doctests")
+  assertEqualInt(dm.source.length, 0, "no module source")
+}
+
+func testTestModuleAnnotationRoundTrip(): Unit {
+  val plain = "package P\n\npub func f(): Int { 1 }\n"
+  val marked = withTestModuleAnnotation(plain)
+  assertTrue(isTestModule(marked), "annotation added")
+  assertTrue(not isTestModule(plain), "plain file is no test module")
+  assertEqual(withTestModuleAnnotation(marked), marked, "adding twice is a no-op")
+  val stripped = withoutTestModuleAnnotation(marked)
+  assertTrue(not isTestModule(stripped), "annotation removed")
+  val withMod = passingSource()
+  val without = withoutTestModuleAnnotation(withMod)
+  assertEqualInt(without.length, withMod.length, "blanking keeps every offset")
+  assertEqualInt(Str.split(without, "\n").length, Str.split(withMod, "\n").length, "blanking keeps every line")
+}
+
+test "extractDoctests finds the runnable blocks only (#678)" {
+  testExtractDoctestsFindsRunnableBlocksOnly()
+}
+
+test "doctest module hoists imports and titles by location (#678)" {
+  testDoctestModuleHoistsImportsAndTitlesByLocation()
+}
+
+test "a file without doctests has an empty module (#678)" {
+  testFileWithoutDoctestsHasEmptyModule()
+}
+
+test "@test_module annotation add/remove keeps positions (#678)" {
+  testTestModuleAnnotationRoundTrip()
+}

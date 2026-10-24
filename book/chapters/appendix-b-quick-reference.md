@@ -1203,7 +1203,11 @@ lyric test --properties \
 lyric test --update-snapshots          # project mode: rewrite snapshot baselines across every
                                        # [project.tests] entry
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
-                                       # (v2: doctests, cross-package non-pub access)
+lyric test --doctests                  # project mode: also run the ```lyric blocks of /// doc
+                                       # comments as tests of their package (#678)
+lyric test <file.l> --doctests         # the doctests of one source file
+                                       # a @test_module that declares a [project.packages]
+                                       # package is merged into it, so it reaches non-pub items
 lyric test --features a,b              # project mode: activate manifest [features]
                                        # (same grammar/precedence as lyric build)
 lyric test --no-default-features       # suppress the manifest's default feature set

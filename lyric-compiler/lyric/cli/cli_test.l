@@ -20,6 +20,7 @@ import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.Parser as Parser
 import Lyric.Release as Release
+import Lyric.PackageMerge as PM
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.JacocoCobertura as Jc
@@ -80,7 +81,7 @@ func emitTestPlainOrProject(
     contractsEnabled = true
   )
   val noManifestOverride: Option[String] = None
-  emitSingleFileOrProject(req, sourcePath, noManifestOverride, cliFeatures, noDefaultFeatures, allFeatures)
+  emitSingleFileOrProject(req, sourcePath, noManifestOverride, cliFeatures, noDefaultFeatures, allFeatures, true)
 }
 
 // Emit a single-file `@test_module` as a self-contained native (LLVM)
@@ -353,6 +354,7 @@ func cmdTest(argv: in slice[String]): Int {
   var propTrialsArg: Option[Int] = None
   var propSeedArg: Option[Int] = None
   var coverage = false
+  var doctests = false
   var updateSnapshots = false
   var noDefaultFeatures = false
   var allFeatures = false
@@ -470,6 +472,9 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--coverage" {
       coverage = true
       i += 1
+    } else if arg == "--doctests" {
+      doctests = true
+      i += 1
     } else if arg == "--update-snapshots" {
       updateSnapshots = true
       i += 1
@@ -581,7 +586,8 @@ func cmdTest(argv: in slice[String]): Int {
       propCfg,
       cliFeatures,
       noDefaultFeatures,
-      allFeatures
+      allFeatures,
+      doctests
     )
     case None -> ()
   }
@@ -602,7 +608,8 @@ func cmdTest(argv: in slice[String]): Int {
         propCfg,
         cliFeatures,
         noDefaultFeatures,
-        allFeatures
+        allFeatures,
+        doctests
       )
       case TestReported(outcome) -> return outcome.exitCode
     }
@@ -622,7 +629,7 @@ func cmdTest(argv: in slice[String]): Int {
     }
     case None -> ()
   }
-  val source = match File.readText(sourcePath) {
+  val fileText = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e) -> {
       printErr("test: " + IOError.message(e))
@@ -672,6 +679,42 @@ func cmdTest(argv: in slice[String]): Int {
   // (this was reachable: `lyric-mcp/tests/mcp_stdio_process_tests.l` uses
   // exactly this pattern and is run in CI via `lyric test --manifest`).
   val cfgActiveWithTarget = Cfg.withTargetFeature(cfgActive, targetFeatureName(cfgTestTarget))
+  // `--doctests` (#678, D230): the file's ` ```lyric ` doc-comment blocks run
+  // as tests of the file's own package, so they are merged into it as one
+  // more file of the package.
+  var source = fileText
+  if doctests {
+    val dm = TestSynth.buildDoctestModule(fileText, sourcePath)
+    if dm.count == 0 {
+      if not TestSynth.isTestModule(fileText) {
+        Console.println("0 doctest(s) in " + sourcePath)
+        return 0
+      }
+    } else {
+      val pkgFiles: List[String] = newList()
+      pkgFiles.add(TestSynth.withTestModuleAnnotation(fileText))
+      pkgFiles.add(dm.source)
+      val pkgPaths: List[String] = newList()
+      pkgPaths.add(sourcePath)
+      pkgPaths.add(sourcePath)
+      val merge = PM.mergePackageFiles(
+        Release.packageNameOf(fileText),
+        pkgFiles,
+        pkgPaths,
+        cfgActiveWithTarget,
+        cfgDeclared,
+        targetFeatureName(cfgTestTarget),
+        true
+      )
+      if PM.mergeHasErrors(merge) {
+        for d in merge.diagnostics.toArray() {
+          printErr(PM.mergeDiagnosticText(sourcePath, d))
+        }
+        return 1
+      }
+      source = merge.source
+    }
+  }
   // #2364 Stage 5: a @test_module that imports `Lyric.*` compiler packages
   // links the already-compiled compiler DLLs as restored deps (via
   // `emitProject`) rather than recompiling them from source (the retired
@@ -1062,6 +1105,56 @@ func addPackageFiles(
   }
 }
 
+// Whether `[project.packages]` declares a package named `name`.
+func projectDeclaresPackage(proj: in Mf.ProjectSection, name: in String): Bool {
+  for e in proj.packages {
+    if e.name == name {
+      return true
+    }
+  }
+  false
+}
+
+// Index of the package named `name` in `pkgs`, or -1 (also for an empty name).
+func indexOfPackageNamed(pkgs: in List[Emitter.ProjectPackage], name: in String): Int {
+  if name.length == 0 {
+    return -1
+  }
+  var i = 0
+  while i < pkgs.count {
+    if pkgs[i].name == name {
+      return i
+    }
+    i += 1
+  }
+  -1
+}
+
+// The package `lib` with the synthesised test module `testRewritten` (read
+// from `testPath`) added as a last file, so the tests are compiled as part of
+// the package and reach its non-`pub` items (#678, D230).  The module's
+// `@test_module` is dropped from the merged file (the package under test is
+// not a test module, B0014), and a file of `lib` that is `testPath` itself
+// (a test that lives in its package's directory) is not added twice.
+func mergeTestModuleIntoPackage(
+  lib: in Emitter.ProjectPackage, testRewritten: in String, testPath: in String
+): Emitter.ProjectPackage {
+  val srcs: List[String] = newList()
+  val paths: List[String] = newList()
+  var i = 0
+  while i < lib.sources.count {
+    val p = if i < lib.paths.count { lib.paths[i] } else { "" }
+    if p.length == 0 or p != testPath {
+      srcs.add(lib.sources[i])
+      paths.add(p)
+    }
+    i += 1
+  }
+  srcs.add(TestSynth.withoutTestModuleAnnotation(testRewritten))
+  paths.add(testPath)
+  Emitter.ProjectPackage(name = lib.name, sources = srcs, paths = paths, nameFromManifest = true)
+}
+
 func cmdTestManifest(
   mfPath: in String,
   filterArg: in Option[String],
@@ -1072,6 +1165,7 @@ func cmdTestManifest(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  doctests: in Bool,
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -1104,6 +1198,9 @@ func cmdTestManifest(
 
   val mfDir = Path.dirname(mfPath)
 
+  // Set when the `@test_module` fallback below ran files and some failed, in a
+  // `--doctests` run that goes on to the packages' doctests.
+  var fallbackFailed = false
   if proj.tests.count == 0 {
     // Fallback: scan [project.packages] source paths for @test_module files and
     // run each as a single-file test.  Avoids requiring an explicit [project.tests]
@@ -1157,7 +1254,7 @@ func cmdTestManifest(
         }
       }
     }
-    if testFiles.count == 0 {
+    if testFiles.count == 0 and not doctests {
       printErr("test: " + mfPath + " has no [project.tests] entries and no @test_module files found in [project.packages]")
       return 1
     }
@@ -1197,10 +1294,13 @@ func cmdTestManifest(
         return 1
       }
     }
-    if anyFailed {
-      return 1
+    if not doctests {
+      if anyFailed {
+        return 1
+      }
+      return 0
     }
-    return 0
+    fallbackFailed = anyFailed
   }
 
   val testExt = if targetJvm { ".jar" } else { ".dll" }
@@ -1806,26 +1906,67 @@ func cmdTestManifest(
     restoreMavenClasspath(savedFfiJarsOpt)
   }
 
-  var ti = 0
-  while ti < proj.tests.count {
-    val testEntry = proj.tests[ti]
-    val abs = if Path.isAbsolute(testEntry.path) { testEntry.path } else { Path.join(mfDir, testEntry.path) }
-    Console.println("== " + testEntry.name + " (" + testEntry.path + ")")
+  // The runs of the suite: each `[project.tests]` entry, then (`--doctests`)
+  // one per source file of a `[project.packages]` entry that has doctests.
+  // A doctest run carries its synthesised module in `jobSources`
+  // ("" for a test file that is read from `jobAbs`).
+  val jobNames: List[String] = newList()
+  val jobPaths: List[String] = newList()
+  val jobAbs: List[String] = newList()
+  val jobSources: List[String] = newList()
+  var ji = 0
+  while ji < proj.tests.count {
+    val te = proj.tests[ji]
+    jobNames.add(te.name)
+    jobPaths.add(te.path)
+    jobAbs.add(if Path.isAbsolute(te.path) { te.path } else { Path.join(mfDir, te.path) })
+    jobSources.add("")
+    ji += 1
+  }
+  if doctests {
+    for lp in libPkgs {
+      if projectDeclaresPackage(proj, lp.name) {
+        var di2 = 0
+        while di2 < lp.sources.count {
+          val dpath = if di2 < lp.paths.count { lp.paths[di2] } else { "" }
+          val dm = TestSynth.buildDoctestModule(lp.sources[di2], dpath)
+          if dm.count > 0 {
+            jobNames.add("doctests " + lp.name + " " + Path.basename(dpath))
+            jobPaths.add(dpath)
+            jobAbs.add(dpath + "#doctests")
+            jobSources.add(dm.source)
+          }
+          di2 += 1
+        }
+      }
+    }
+  }
 
-    val testSource = match File.readText(abs) {
-      case Ok(raw) -> match runSourceGenerators(raw, abs, genMf, gens) {
-        case Some(t) -> t
-        case None -> {
+  var ti = 0
+  while ti < jobNames.count {
+    val jobName = jobNames[ti]
+    val jobPath = jobPaths[ti]
+    val abs = jobAbs[ti]
+    Console.println("== " + jobName + " (" + jobPath + ")")
+
+    val testSource = if jobSources[ti].length > 0 {
+      jobSources[ti]
+    } else {
+      match File.readText(abs) {
+        case Ok(raw) -> match runSourceGenerators(raw, abs, genMf, gens) {
+          case Some(t) -> t
+          case None -> {
+            totalFailed += 1
+            ti += 1
+            continue
+          }
+        }
+        case Err(e) -> {
+          printErr("test: " + IOError.message(e))
           totalFailed += 1
           ti += 1
           continue
         }
-      }
-      case Err(e) -> {
-        printErr("test: " + IOError.message(e))
-        totalFailed += 1
-        ti += 1
-        continue
       }
     }
 
@@ -1880,23 +2021,34 @@ func cmdTestManifest(
     // Add the test package FIRST so its synthesized main() is recorded as the
     // entry point by the first-wins semantics in addPackageTokens (#2885).
     val allPkgs: List[Emitter.ProjectPackage] = newList()
-    val testSrcs: List[String] = newList()
-    testSrcs.add(rewritten)
-    val testPaths: List[String] = newList()
-    // #6609: use the already-resolved absolute path (`abs`, computed above)
-    // for diagnostic attribution, not the raw `testEntry.path` — which is
-    // manifest-relative whenever the manifest names the test with a
-    // relative path.
-    testPaths.add(abs)
-    allPkgs.add(
-      Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths, nameFromManifest = true)
-    )
+    // A `@test_module` that declares the package of a `[project.packages]`
+    // entry is merged into that package (#678, D230): its tests reach the
+    // package's non-`pub` items.
+    val mergeIdx = indexOfPackageNamed(libPkgs, Release.packageNameOf(rewritten))
+    var mainClass = jobName
+    if mergeIdx >= 0 {
+      val merged = mergeTestModuleIntoPackage(libPkgs[mergeIdx], rewritten, abs)
+      mainClass = merged.name
+      allPkgs.add(merged)
+    } else {
+      val testSrcs: List[String] = newList()
+      testSrcs.add(rewritten)
+      val testPaths: List[String] = newList()
+      // #6609: use the already-resolved absolute path (`abs`, computed above)
+      // for diagnostic attribution, not the raw `jobPath` — which is
+      // manifest-relative whenever the manifest names the test with a
+      // relative path.
+      testPaths.add(abs)
+      allPkgs.add(Emitter.ProjectPackage(name = jobName, sources = testSrcs, paths = testPaths, nameFromManifest = true))
+    }
     var si = 0
     while si < libPkgs.count {
-      allPkgs.add(libPkgs[si])
+      if si != mergeIdx {
+        allPkgs.add(libPkgs[si])
+      }
       si += 1
     }
-    val asmStem = stemOf(Path.basename(testEntry.path), 2)
+    val asmStem = stemOf(Path.basename(jobPath), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
 
     val testContractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
@@ -1948,7 +2100,7 @@ func cmdTestManifest(
       // only at compile time (LYRIC_FFI_JARS) — they are not copied into the
       // JAR — so a manifest with Maven deps must run with an explicit `-cp`
       // (which requires the Main-Class name, since `-cp` and `-jar` are
-      // mutually exclusive on the `java` command line; `testEntry.name` is
+      // mutually exclusive on the `java` command line; `mainClass` is
       // exactly that name — see `Jvm.Bridge`'s Main-Class derivation from the
       // dotted package declaration, which for a synthesised test module is
       // the manifest's `[project.tests]` key).
@@ -1958,7 +2110,7 @@ func cmdTestManifest(
         jvmArgs.add("--enable-native-access=ALL-UNNAMED")
         jvmArgs.add("-cp")
         jvmArgs.add(mavenJarColonSep + ":" + outPath)
-        jvmArgs.add(testEntry.name)
+        jvmArgs.add(mainClass)
       } else {
         jvmArgs.add("-jar")
         jvmArgs.add(outPath)
@@ -2034,7 +2186,7 @@ func cmdTestManifest(
 
   Console.println("")
   Console.println("== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed")
-  if totalFailed > 0 {
+  if totalFailed > 0 or fallbackFailed {
     1
   } else {
     0

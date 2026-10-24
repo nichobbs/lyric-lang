@@ -5,7 +5,7 @@ Testing in Lyric is a language feature, not a framework. The `test`, `property`,
 This chapter covers the three test styles (unit tests, property tests, and snapshots), doctests extracted from doc comments, and the command-line flags that control what runs. The next chapter covers stubs and test wires, which are how you isolate code that depends on interfaces.
 
 ::: note
-**Test runner status.** `lyric test <file.l>` runs `test` blocks and supports `--filter` and `--list`. `Std.Testing.Snapshot` is fully shipped and `@stable` — snapshot assertions write on first run and compare on subsequent runs, with diff output and a configurable snapshot directory (`snapshotIn(dir, label, actual)`). `lyric test --properties` (#677) now actually runs `property` declarations instead of unconditionally skipping them, but only for the v1.x slice described in §15.5's status note below — auto-derived generators for `Int`/`Bool`/`Double` `forall` binders, with real shrinking on failure. `--manifest`-driven multi-file discovery and `lyric test --update-snapshots` (#678) have also shipped. Doctests and cross-package non-`pub` access are still v2. See `docs/24-test-runner-plan.md`.
+**Test runner status.** `lyric test <file.l>` runs `test` blocks and supports `--filter` and `--list`. `Std.Testing.Snapshot` is fully shipped and `@stable` — snapshot assertions write on first run and compare on subsequent runs, with diff output and a configurable snapshot directory (`snapshotIn(dir, label, actual)`). `lyric test --properties` (#677) now actually runs `property` declarations instead of unconditionally skipping them, but only for the v1.x slice described in §15.5's status note below — auto-derived generators for `Int`/`Bool`/`Double` `forall` binders, with real shrinking on failure. `--manifest`-driven multi-file discovery, `lyric test --update-snapshots`, doctests (`--doctests`) and test-module access to non-`pub` items (§15.1) have all shipped (#678). See `docs/24-test-runner-plan.md`.
 :::
 
 ## §15.1 `@test_module`
@@ -27,6 +27,8 @@ test "debit reduces balance" {
 ```
 
 The package declaration (`package Account`) names which package this module tests. You can test package-private helpers directly without making them `pub`. That is the point: `@test_module` is the only mechanism for crossing the visibility boundary, and it is per-package. A test module for `Account` does not gain visibility into `Money.Cents` internals; it only gains visibility into its declared target.
+
+The mechanism is a merge. When the package you declare is one of the project's `[project.packages]`, `lyric test` compiles your test module as one more file of that package, next to the package's own files (all of them, if it has several). Your tests are then simply inside the package, which is why they see its private functions, types and `val`s. Because they are inside it, an import of the package itself is accepted but not needed. A test module that declares a different package name (say `Account.Tests`) is a separate package and sees only what `Account` makes `pub`; use that form when a test should only use the public API.
 
 ::: note
 **Note:** Test modules cannot be imported by non-test packages. The compiler enforces this. Circular test-module dependencies (two test packages that import each other) are also rejected.
@@ -314,7 +316,16 @@ To opt a block out of doctest execution — for pseudocode, incomplete examples,
 /// ```
 ```
 
-Doctest extraction is planned for test-runner v2 (`docs/24-test-runner-plan.md`); `lyric test` does not run doc comment code blocks yet and rejects a `--doctests` flag as an unknown option.
+Doctests run only when you ask for them:
+
+```sh
+lyric test --doctests                  # every source file of every [project.packages] entry
+lyric test src/shape.l --doctests      # one file
+```
+
+In a project, each source file that has doctests is one more run after the `[project.tests]` entries; a failing block shows up as `not ok N - doctest src/shape.l:12`, named by the line of the block's first code line. A block is a list of statements, so it cannot declare functions or types. Its leading `import` lines are lifted out of the test body; an import of the package the comment belongs to is not needed (and is ignored), because the doctest runs inside that package, where even its non-`pub` helpers are visible.
+
+A fence opts out with ` ```lyric,no_test ` (or `ignore`), or with `// no_test` as the first line. Fences in another language, or with no language, are never run.
 
 ## §15.7 Running tests
 

@@ -182,7 +182,7 @@ left is verification and release work, tracked in `docs/36`:
    lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.
 4. **Tooling.**  LSP: stdlib not loaded by the type check, hover/go-to on
    dot-named calls (#8304, #8338); formatter/parser losslessness (#2280);
-   test runner v2 (#678); native coverage (#5294); `lyric doc` roll-up index.
+   native coverage (#5294); `lyric doc` roll-up index.
 5. **wasm/npm.**  Q-JS-002/007/009, NPM shims beyond plain functions,
    transitive NPM deps, stackful lift and error-context gating (#8117, #8118).
 6. **Contracts.**  `Std.Core.Proof` structural induction (gated on verifier
