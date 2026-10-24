@@ -1989,8 +1989,7 @@ func isLowerHex64(s: in String): Bool {
 /// Whether a prebuilt `url` names a gzip-compressed tar archive (`.tar.gz` or `.tgz`, ignoring a query string).
 pub func prebuiltIsTarGz(url: in String): Bool {
   val noQuery = if Str.contains(url, "?") { Str.substring(url, 0, Str.indexOfRaw(url, "?")) } else { url }
-  val lower = Str.toLower(noQuery)
-  Str.endsWith(lower, ".tar.gz") or Str.endsWith(lower, ".tgz")
+  Str.endsWith(noQuery, ".tar.gz") or Str.endsWith(noQuery, ".tgz")
 }
 
 /// The archive path of a prebuilt `members` entry: the text before ` -> `,

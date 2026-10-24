@@ -6,7 +6,7 @@ archive formats
 ## Decision
 
 1. **Same table, one more format.** `[native.libs.<name>.prebuilt.<triple>]` accepts a URL ending `.tar.gz` or `.tgz`
-   (a query string is ignored). Like a `.zip` it needs `members`, the files to extract, with the same
+   (a query string is ignored; the suffix is matched in lower case). Like a `.zip` it needs `members`, the files to extract, with the same
    `"<path> -> <file name>"` rename form; a manifest without them is rejected. The SHA-256 pin, the restore marker and
    the offline `lyric build` are unchanged (D192).
 2. **Pure Lyric, no `tar` or `gzip` process.** `lyric-compiler/lyric/cli/cli_targz.l` reads the gzip container

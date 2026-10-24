@@ -3,7 +3,6 @@ package Lyric.Cli
 import Std.Core
 import Std.Collections
 import Std.String as Str
-import Std.Char
 import Std.Parse as Parse
 import Jvm.Deflate as Deflate
 
@@ -76,13 +75,15 @@ pub record TarEntry {
   size: Int
 }
 
+val printableAscii: String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
 func cString(buf: in List[Int], off: in Int, maxLen: in Int): String {
   var s = ""
   var i = 0
   while i < maxLen and off + i < buf.count and buf[off + i] != 0 {
     val b = buf[off + i]
     // Archive paths are ASCII in practice; any other byte becomes '?'.
-    s = s + (if b < 128 { "" + Std.Char.fromInt(b) } else { "?" })
+    s = s + (if b >= 32 and b < 127 { Str.substring(printableAscii, b - 32, 1) } else { "?" })
     i += 1
   }
   s
