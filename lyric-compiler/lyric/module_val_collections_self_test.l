@@ -33,7 +33,7 @@ protected type Ledger {
     true
   }
   entry release(key: in String): Unit {
-    inFlight.remove(key)
+    val _ = inFlight.remove(key)
   }
 }
 
