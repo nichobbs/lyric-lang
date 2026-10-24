@@ -836,6 +836,79 @@ func testBuildCarriesPrivateGenericHelpers(): Unit {
   )
 }
 
+// A private non-generic helper a `pub` generic reaches is carried too (#8427, D231), under a
+// package-unique name, with its body; a helper that touches module state, names a private type,
+// has a contract clause, or is shadowed by a parameter is left where it is.
+func testBuildCarriesPrivatePlainHelpers(): Unit {
+  val src = "package Plain.Lib\n\n" + "val cache: Int = 7\n" + "type Secret = Int\n" +
+    "func scale(n: in Int): Int { n * 10 }\n" +
+    "func bump(n: in Int): Int { scale(n) + 1 }\n" +
+    "func readsState(n: in Int): Int { n + cache }\n" +
+    "func namesType(n: in Int): Int { val s: Secret = n; s }\n" +
+    "func checked(n: in Int): Int\n  requires: n > 0\n{ n }\n" +
+    "func unused(n: in Int): Int { n }\n" +
+    "func withDefault(n: in Int, k: in Int = 2): Int { n * k }\n" +
+    "@deprecated\nfunc annotated(n: in Int): Int { n }\n" +
+    "pub func viaDefault[S](x: in S, f: in (S) -> Int): Int { withDefault(f(x)) }\n" +
+    "pub func viaAnnotated[S](x: in S, f: in (S) -> Int): Int { annotated(f(x)) }\n" +
+    "func twin(n: in Int): Int { n }\n" +
+    "func twin(n: in Int, m: in Int): Int { n + m }\n" +
+    "pub func viaScale[S](x: in S, f: in (S) -> Int): Int { bump(f(x)) }\n" +
+    "pub func viaState[S](x: in S, f: in (S) -> Int): Int { readsState(f(x)) }\n" +
+    "pub func viaType[S](x: in S, f: in (S) -> Int): Int { namesType(f(x)) }\n" +
+    "pub func viaChecked[S](x: in S, f: in (S) -> Int): Int { checked(f(x)) }\n" +
+    "pub func viaTwin[S](x: in S, f: in (S) -> Int): Int { twin(f(x)) }\n" +
+    "pub func shadow[S](scale: in (S) -> Int, x: in S): Int { scale(x) }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val via = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "viaScale"), "plain: pub viaScale missing")
+  match via.body {
+    case None -> panic("plain: viaScale has no body")
+    case Some(b) -> assertTrue(
+      Str.contains(b, "__priv_Plain_Lib_bump"),
+      "plain: viaScale calls the carried bump (got " + b + ")"
+    )
+  }
+  val bump = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "__priv_Plain_Lib_bump"), "plain: bump copy missing")
+  assertEqual(bump.visibility, "internal", "plain: the copy is not public API")
+  match bump.body {
+    case None -> panic("plain: bump copy has no body")
+    case Some(b) -> {
+      assertTrue(Str.contains(b, "__priv_Plain_Lib_scale"), "plain: bump calls the carried scale (got " + b + ")")
+      val rt = parse("package P\n\n" + bump.repr + " " + b + "\n")
+      assertEqualInt(rt.diagnostics.count, 0, "plain: repr + body re-parses (got " + b + ")")
+    }
+  }
+  assertTrue(
+    match findDeclByKind(c.decls, "func", "__priv_Plain_Lib_scale") { case Some(_) -> true; case None -> false },
+    "plain: the helper reached through another helper is carried"
+  )
+  for gone in ["readsState", "namesType", "checked", "unused", "twin", "withDefault", "annotated"] {
+    assertTrue(
+      match findDeclByKind(c.decls, "func", "__priv_Plain_Lib_" + gone) { case Some(_) -> false; case None -> true },
+      "plain: " + gone + " is not carried"
+    )
+  }
+  for kept in ["viaState", "viaType", "viaChecked", "viaTwin", "viaDefault", "viaAnnotated"] {
+    val d = unwrapDeclOrFail(findDeclByKind(c.decls, "func", kept), "plain: pub " + kept + " missing")
+    match d.body {
+      case None -> panic("plain: " + kept + " has no body")
+      case Some(b) -> assertTrue(
+        not Str.contains(b, "__priv_"),
+        "plain: " + kept + " still names the original helper (got " + b + ")"
+      )
+    }
+  }
+  val sh = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "shadow"), "plain: pub shadow missing")
+  match sh.body {
+    case None -> panic("plain: shadow has no body")
+    case Some(b) -> assertTrue(
+      not Str.contains(b, "__priv_"),
+      "plain: a parameter named like a helper is not a call to it (got " + b + ")"
+    )
+  }
+}
+
 // An expression-bodied generic function (`= expr`) carries its body in
 // the `= expr` form, not the block form.
 func testBuildGenericFuncExprBodyCarriesBody(): Unit {
@@ -1244,6 +1317,10 @@ test "buildContractFromFile generic func carries body" {
 test "buildContractFromFile generic func expr body carries body" {
   testBuildGenericFuncExprBodyCarriesBody()
   testBuildCarriesPrivateGenericHelpers()
+}
+
+test "buildContractFromFile carries the private non-generic helpers a pub generic reaches (#8427)" {
+  testBuildCarriesPrivatePlainHelpers()
 }
 
 test "buildContractFromFile non-generic func has no body" {

@@ -1347,10 +1347,12 @@ func carriedPubFunc(carried: in CarriedGenerics, f: in FunctionDecl): FunctionDe
 // specialise from — both cases call (or intrinsically inline) the real
 // implementation directly, and neither needs its implementation
 // reconstructed from source.
-func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility], dt: in DefaultThunks): ContractDecl {
+func funcDecl(
+  fn: in FunctionDecl, vis: in Option[Visibility], dt: in DefaultThunks, carriedCopy: in Bool = false
+): ContractDecl {
   val isGeneric = match fn.generics { case Some(_) -> true; case None -> false }
   val isExternWrapper = hasExternTargetAnnotation(fn.annotations)
-  val bodyText = if isGeneric and not isExternWrapper { funcBodyText(fn) } else { None }
+  val bodyText = if (isGeneric or carriedCopy) and not isExternWrapper { funcBodyText(fn) } else { None }
   ContractDecl(
     kind = "func",
     name = fn.name,
@@ -2071,7 +2073,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
   // The private generics a `pub` generic reaches, under package-unique names, so a consumer's
   // monomorphiser can specialise the carried body (#8427).
   for pc in carried.privateCopies {
-    decls.add(funcDecl(pc, Some(value = VisInternal(span = pc.span)), thunks))
+    decls.add(funcDecl(pc, Some(value = VisInternal(span = pc.span)), thunks, true))
   }
   Contract(
     packageName = joinDots(file.packageDecl.path.segments),

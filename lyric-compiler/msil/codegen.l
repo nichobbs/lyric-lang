@@ -21917,7 +21917,8 @@ func lowerBuiltinOrStaticCallMsil(
                     fctx.originPkg +
                     "' imports; make '" +
                     funcName +
-                    "' `pub`."
+                    "' `pub`. A private helper is copied into the calling package only when it is self-contained: " +
+                    "no module-level value or constant, no private type, no contract clause or default argument."
                 )
               }
               panic(
