@@ -12379,3 +12379,97 @@ test "W0031: a var field in a plain record" {
   val markedValue = "package P\nref record C {\n  n: Int\n}\n"
   assertEqualInt(countDiagCode(parseCheck(markedValue), "W0031"), 0, "ref without var is accepted")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Calls to a member of an `extern package { ... }` block (#7934) are checked
+// against its declared signature, whether addressed by the block's own path
+// or through the enclosing package.
+// ─────────────────────────────────────────────────────────────────────────────
+func externBlockSrc(body: in String): String {
+  "package T\n" + "@axiom(\"test axiom\")\n" + "extern package lyric.demo.Host {\n" + "  pub func twice(x: Int): Int\n" +
+    "  pub func label(s: String, n: Int): String\n" +
+    "}\n" +
+    "func f(): Int {\n" +
+    body +
+    "}\n"
+}
+
+test "a correct call into an extern package block is clean and its result flows on (#7934)" {
+  val cr = parseCheck(
+    externBlockSrc(
+      "  val y = lyric.demo.Host.twice(3)\n  val s: String = lyric.demo.Host.label(\"a\", y)\n  y\n"
+    )
+  )
+  assertEqualInt(diagCount(cr), 0, "correct block calls: clean (" + diagCodesOf(cr) + ")")
+  val typed = parseCheck(externBlockSrc("  val b: Bool = lyric.demo.Host.twice(3)\n  0\n"))
+  assertTrue(
+    Str.contains(diagMessageFor(typed, "T0060"), "initialiser has type Int"),
+    "twice(3) types as the declared Int (" + diagMessageFor(typed, "T0060") + ")"
+  )
+  val later = parseCheck(externBlockSrc("  val y = lyric.demo.Host.twice(3)\n  val s: String = y\n  0\n"))
+  assertEqualInt(countDiagCode(later, "T0060"), 1, "inferred Int bound as String: T0060 (" + diagCodesOf(later) + ")")
+}
+
+test "an extern package block argument of the wrong type is T0043 (#7934)" {
+  val cr = parseCheck(externBlockSrc("  lyric.demo.Host.twice(\"hi\")\n"))
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "String passed for Int: T0043 (" + diagCodesOf(cr) + ")")
+  val second = parseCheck(externBlockSrc("  lyric.demo.Host.label(\"a\", \"b\")\n  0\n"))
+  assertEqualInt(
+    countDiagCode(second, "T0043"),
+    1,
+    "String passed for the Int parameter: T0043 (" + diagCodesOf(second) + ")"
+  )
+}
+
+test "an extern package block call with the wrong number of arguments is T0042 (#7934)" {
+  val cr = parseCheck(externBlockSrc("  lyric.demo.Host.twice(1, 2)\n"))
+  assertEqualInt(countDiagCode(cr, "T0042"), 1, "two arguments for one parameter: T0042 (" + diagCodesOf(cr) + ")")
+  val none = parseCheck(externBlockSrc("  lyric.demo.Host.twice()\n"))
+  assertEqualInt(countDiagCode(none, "T0042"), 1, "no arguments for one parameter: T0042 (" + diagCodesOf(none) + ")")
+}
+
+func externKernelBlockPackages(): List[ImportedPackage] {
+  val kernel = parse(
+    "package Lib.Kernel\n" + "@axiom(\"test axiom\")\n" + "extern package Foo.Bar {\n" +
+      "  pub func doThing(x: Int): Int\n" +
+      "}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib.Kernel",
+      items = kernel.file.items,
+      imports = collectImportNames(kernel.file.imports),
+      wholeImports = collectWholeImportNames(kernel.file.imports)
+    )
+  )
+  packages
+}
+
+test "a call through the enclosing package into an extern package block is checked (#7934)" {
+  val good = "package App\nimport Lib.Kernel\nfunc f(): Int {\n  val y = Lib.Kernel.doThing(1)\n  y\n}\n"
+  val goodCr = checkWithImportedPackages(rewriteFile(parse(good).file), externKernelBlockPackages())
+  assertEqualInt(diagCount(goodCr), 0, "enclosing-package call: clean (" + diagCodesOf(goodCr) + ")")
+  val bad = "package App\nimport Lib.Kernel\nfunc f(): Int {\n  Lib.Kernel.doThing(\"s\")\n}\n"
+  val badCr = checkWithImportedPackages(rewriteFile(parse(bad).file), externKernelBlockPackages())
+  assertEqualInt(countDiagCode(badCr, "T0043"), 1, "String for Int: T0043 (" + diagCodesOf(badCr) + ")")
+  val arity = "package App\nimport Lib.Kernel\nfunc f(): Int {\n  Lib.Kernel.doThing(1, 2)\n}\n"
+  val arityCr = checkWithImportedPackages(rewriteFile(parse(arity).file), externKernelBlockPackages())
+  assertEqualInt(countDiagCode(arityCr, "T0042"), 1, "wrong arity: T0042 (" + diagCodesOf(arityCr) + ")")
+}
+
+test "a wrapper named like an extern package block member keeps its own signature (#7934)" {
+  val src = "package T\n" + "@axiom(\"test axiom\")\n" + "extern package lyric.demo.Host {\n" +
+    "  pub func query(id: Int): String\n" +
+    "}\n" +
+    "pub func query(id: in Int): String {\n" +
+    "  lyric.demo.Host.query(id)\n" +
+    "}\n" +
+    "func f(): String {\n" +
+    "  query(1)\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "wrapper over a same-named member: clean (" + diagCodesOf(cr) + ")")
+  val bad = parseCheck(src + "func g(): String {\n  lyric.demo.Host.query(\"x\")\n}\n")
+  assertEqualInt(countDiagCode(bad, "T0043"), 1, "the member call is checked: T0043 (" + diagCodesOf(bad) + ")")
+}

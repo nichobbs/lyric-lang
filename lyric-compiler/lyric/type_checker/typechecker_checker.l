@@ -386,6 +386,30 @@ func registerItem(
         symTableAddExternBlockMember(tbl, originPkg, externMemberDeclName(decl.members[mi].kind))
         mi = mi + 1
       }
+      // A function member is a symbol of the block's own path (#7934), the
+      // spelling its callers use (`lyric.db.Postgres.connect(...)`).
+      val blockPath = modulePathJoin(decl.path.segments)
+      symTableAddExternPathPackage(tbl, blockPath)
+      var fi = 0
+      while fi < decl.members.count {
+        match externMemberAsFunctionDecl(decl.members[fi]) {
+          case Some(fd) -> {
+            symTableAddExternBlockMember(tbl, blockPath, fd.name)
+            val sym = Symbol(
+              name = fd.name,
+              kind = DKFunc(decl = fd),
+              declSpan = fd.span,
+              visibility = fd.visibility,
+              isImported = true,
+              originPackage = blockPath,
+              derives = newList()
+            )
+            symTableAdd(tbl, sym)
+          }
+          case None -> ()
+        }
+        fi = fi + 1
+      }
     }
     case IImpl(_) -> {
     }
@@ -1267,6 +1291,49 @@ pub func externFuncAsFunctionDecl(decl: in ExternFuncDecl): FunctionDecl {
   )
 }
 
+// The function a body-less `extern package { ... }` member declares, as the
+// body-less function the checker already types calls against (#7934); `None`
+// for a type member.
+func externMemberAsFunctionDecl(m: in ExternMemberDecl): Option[FunctionDecl] {
+  match m.kind {
+    case EMSig(sig) -> Some(
+      value = FunctionDecl(
+        docComments = m.docComments,
+        annotations = m.annotations,
+        visibility = m.visibility,
+        isAsync = sig.isAsync,
+        name = sig.name,
+        generics = sig.generics,
+        params = sig.params,
+        ret = sig.ret,
+        whereClause = sig.whereClause,
+        contracts = sig.contracts,
+        body = None,
+        span = sig.span
+      )
+    )
+    case _ -> None
+  }
+}
+
+func withOriginPackage(sg: in ResolvedSignature, originPkg: in String): ResolvedSignature {
+  ResolvedSignature(
+    generics = sg.generics,
+    bounds = sg.bounds,
+    params = sg.params,
+    returnTy = sg.returnTy,
+    isAsync = sg.isAsync,
+    isHot = sg.isHot,
+    isGenerator = sg.isGenerator,
+    originPackage = originPkg,
+    span = sg.span,
+    isPure = sg.isPure,
+    isIo = sg.isIo,
+    isEntry = sg.isEntry,
+    isExternFunc = sg.isExternFunc
+  )
+}
+
 func asExternFuncSig(sg: in ResolvedSignature): ResolvedSignature {
   ResolvedSignature(
     generics = sg.generics,
@@ -1285,6 +1352,17 @@ func asExternFuncSig(sg: in ResolvedSignature): ResolvedSignature {
   )
 }
 
+func itemsDeclareFunc(items: in List[Item], name: in String, arity: in Int): Bool {
+  for it in items {
+    match it.kind {
+      case IFunc(d) -> if d.name == name and d.params.count == arity { return true }
+      case IExternFunc(d) -> if d.name == name and d.params.count == arity { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
 func addSigsFromItems(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -1298,6 +1376,26 @@ func addSigsFromItems(
     match items[i].kind {
       case IFunc(decl) -> addFuncSig(tbl, diag, sigs, decl, false, isImported, pkgName)
       case IExternFunc(decl) -> addFuncSig(tbl, diag, sigs, externFuncAsFunctionDecl(decl), true, isImported, pkgName)
+      case IExtern(decl) -> {
+        // Resolved in the enclosing package's scope (its imports name the
+        // types), registered under the block's own path (#7934).
+        val blockPath = modulePathJoin(decl.path.segments)
+        var mi = 0
+        while mi < decl.members.count {
+          match externMemberAsFunctionDecl(decl.members[mi]) {
+            case Some(fd) -> {
+              addFuncSigOrigin(tbl, diag, sigs, fd, false, true, pkgName, blockPath)
+              // Also addressable through the enclosing package, unless that
+              // package declares a function of the name and arity itself.
+              if blockPath != pkgName and not itemsDeclareFunc(items, fd.name, fd.params.count) {
+                addFuncSigOrigin(tbl, diag, sigs, fd, false, true, pkgName, pkgName)
+              }
+            }
+            case None -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -1314,6 +1412,21 @@ func addFuncSig(
   isImported: in Bool,
   pkgName: in String,
 ): Unit {
+  addFuncSigOrigin(tbl, diag, sigs, decl, isExternFunc, isImported, pkgName, pkgName)
+}
+
+// `addFuncSig` for a function whose types resolve in `pkgName`'s scope but
+// which is addressed under `originPkg`: an `extern package` member (#7934).
+func addFuncSigOrigin(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sigs: in Map[String, ResolvedSignature],
+  decl: in FunctionDecl,
+  isExternFunc: in Bool,
+  isImported: in Bool,
+  pkgName: in String,
+  originPkg: in String,
+): Unit {
   // Imported stdlib functions don't get to shadow the codegen builtins.
   // `println`, `toString`, `panic`, `assert`, `expect`, `default`,
   // `format1`-`format4` are wired in `codegenBuiltinType` with
@@ -1328,7 +1441,8 @@ func addFuncSig(
   if isImported and isCodegenBuiltinName(decl.name) {
     return
   }
-  val sg0 = resolveFunctionSig(tbl, diag, pkgName, decl)
+  val sg00 = resolveFunctionSig(tbl, diag, pkgName, decl)
+  val sg0 = if originPkg == pkgName { sg00 } else { withOriginPackage(sg00, originPkg) }
   val sg = if isExternFunc { asExternFuncSig(sg0) } else { sg0 }
   val name = canonicalDotNamedName(tbl, diag, decl, isImported, pkgName)
   val arityKey = name + "/" + toString(decl.params.count)

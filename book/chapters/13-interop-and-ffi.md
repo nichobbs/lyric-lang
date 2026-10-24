@@ -41,6 +41,8 @@ extern package System.IO {
 }
 ```
 
+The compiler checks a call to a member of an `extern package` block against the signature the block declares, as it checks a call to any Lyric function: a wrong argument type is `T0043`, a wrong argument count is `T0042`, and the declared return type flows into the surrounding code. Call a member by the block's path (`System.IO.exists(p)`); the path is a host binding, so it needs no `import`.
+
 The `@axiom` string is not a comment — it is part of the contract metadata emitted into the package's `.lyric-contract` artifact. Every package that imports yours can inspect it. `lyric doc` renders it in the generated documentation. `lyric public-api-diff` includes it in change reports.
 
 The `requires:` and `ensures:` clauses inside an extern declaration are axioms in the proof-theoretic sense: the prover treats them as facts, does not try to prove them, and uses them when verifying callers. If a caller in a `@proof_required` module calls `readAllBytes`, the prover knows `result.length >= 0` after the call because the axiom says so. If that axiom is wrong — if there is some code path that returns a negative length — the proof is wrong, and no tool will catch it. This is why the axiom string should be precise and the contracts should be conservative.
