@@ -7311,7 +7311,8 @@ jobs:
           fi
           for suite in \
             core_tests iter_tests encoding_tests regex_safe_tests rest_tests parse_tests \
-            process_capture_tests process_tests format_tests json_tests \
+            process_capture_tests process_tests process_piped_bytes_tests \
+            format_tests json_tests \
             json_generate_tests \
             collections_tests char_tests math_tests hash_tests random_tests \
             errors_tests environment_tests string_tests string_methods_tests \
@@ -7392,6 +7393,7 @@ jobs:
             exit 1
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/process_tests.l
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/process_piped_bytes_tests.l
           bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target jvm
           bash scripts/ci/console-stdout-bytes-test.sh "$lyric_bin" --target jvm
           # Non-ASCII console I/O under a C/POSIX locale (#7513): before
