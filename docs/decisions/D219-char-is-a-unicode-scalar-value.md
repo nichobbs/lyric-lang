@@ -47,8 +47,8 @@ a 32-bit code point on native. That is three different things. A supplementary-p
 | Slice | Content | Status |
 | --- | --- | --- |
 | 1 | This decision; docs/01 and book text; the FFI boundary check (item 6) on .NET and the JVM, with tests | shipped |
-| 2 | Front end: lexer and parser accept supplementary literals (L0022 retired), `Char` constant folding, `.toChar()` and `Std.Char.fromInt` ranges, verifier model; `Std.String.scalarAt`/`scalars` | planned, #8225 |
-| 3 | Representation: `int32` `Char` on the MSIL and JVM backends (locals, fields, signatures, boxing, arrays, `switch`/match, string concatenation and interpolation, `StringBuilder`, auto-FFI conversion), scalar-based `Std.CharHost` kernels on all three trees, native agreement and tests on all three targets | planned, #8225 |
+| 2 | Front end: lexer and parser accept supplementary literals (L0022 retired), `Char` constant folding, `.toChar()` and `Std.Char.fromInt` ranges, verifier model; `Std.String.scalarAt`/`scalars` | planned, #8508 (literals), #8512 (verifier, native) |
+| 3 | Representation: `int32` `Char` on the MSIL and JVM backends (locals, fields, signatures, boxing, arrays, `switch`/match, string concatenation and interpolation, `StringBuilder`, auto-FFI conversion), scalar-based `Std.CharHost` kernels on all three trees, native agreement and tests on all three targets | planned, #8509 (MSIL), #8510 (JVM), #8511 (library and kernels), #8512 (native) |
 
 Slices 2 and 3 cannot land separately from the user's point of view: a literal above U+FFFF needs the 32-bit
 representation to exist on every target, so they ship together or behind one feature gate. Nothing in slice 1 changes

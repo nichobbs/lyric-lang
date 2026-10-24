@@ -10,3 +10,4 @@ records the semantics and the staging; this entry covers slice 1.
 - docs/01 §2.1 and the book state the target definition and mark it not yet implemented. Supplementary literals,
   the 32-bit `Char` representation on .NET and the JVM, the scalar-based `Std.Char`/`Std.String` surface and the
   verifier range follow in #8225 (slices 2 and 3 of D219).
+- Follow-up issues: #8508 (literals), #8509 (MSIL representation), #8510 (JVM representation), #8511 (Std.Char/Std.String and kernels), #8512 (verifier range, native).
