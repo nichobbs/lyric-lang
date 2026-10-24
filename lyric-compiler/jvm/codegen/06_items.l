@@ -3701,6 +3701,429 @@ pub func makeCBindingDowncall(
   LFunc(flags = 0x0009, name = decl.name, params = params, ret = ret, insns = insns, maxStack = 0, maxLocals = 0)
 }
 
+// ── C callbacks (D229) ──────────────────────────────────────────────────────
+// A Lyric closure reaches C as a pair: an upcall stub's address for the
+// callback parameter and a handle for the userdata (`Lyric.Pipeline.
+// pipeCBindingsToFuncs` rewrites each call site into the `__lyric_cb_*`
+// intrinsics `lowerCallbackIntrinsicJvm` lowers).  Each callback parameter
+// has one static trampoline method; its upcall stub is made on first use by
+// `Linker.upcallStub` over a `MethodHandle` to the trampoline and bound to
+// `Arena.global()`, so the stub lives as long as the process, one per
+// callback parameter, like a native trampoline function.  Pointer parameters
+// cross the stub as `JAVA_LONG`, which every 64-bit C ABI passes as it passes
+// a pointer, so the trampoline sees the `long` a `NativePtr` is in Lyric.  The
+// userdata is a key in the handle table of the shared `Lyric/Lyric$Callbacks`
+// class, which keeps the closure reachable until the key is released.
+// The static field caching a trampoline's upcall stub address (0 until made).
+func cbStubField(decl: in FunctionDecl): String = "__cbstub$" + decl.name
+
+func emitLoadTyped(insns: in List[LInsn], slot: in Int, t: in JvmType): Unit {
+  match t {
+    case JLong -> insns.add(LLload(slot = slot))
+    case JDouble -> insns.add(LDload(slot = slot))
+    case JFloat -> insns.add(LFload(slot = slot))
+    case JRef(_) -> insns.add(LAload(slot = slot))
+    case _ -> insns.add(LIload(slot = slot))
+  }
+}
+
+// The trampoline C calls for one callback parameter: it looks the closure up
+// by the userdata key and invokes it through the uniform `Lyric$Lambda` ABI,
+// boxing each other argument and unboxing the result.  An exception escaping
+// the closure terminates the JVM, as the FFM API does for every upcall: a
+// panic in a C callback ends the process on every target.
+pub func makeCBTrampolineJvm(
+  decl: in FunctionDecl,
+  slot: in Int,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+): LFunc {
+  val objTy = JRef(className = "java/lang/Object")
+  val params: List[JvmType] = newList()
+  for p in decl.params {
+    params.add(typeExprToJvmExtern(p.ty, pkgName, externTypes))
+  }
+  val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  val slots: List[Int] = newList()
+  var next = 0
+  for pt in params {
+    slots.add(next)
+    next = next + fieldSlotSize(pt)
+  }
+  val insns: List[LInsn] = newList()
+  insns.add(LLload(slot = slots[slot]))
+  val keyPs: List[JvmType] = newList()
+  keyPs.add(JLong)
+  insns.add(LInvokestatic(owner = callbacksClassJvm(), name = "target", params = keyPs, ret = objTy))
+  insns.add(LCheckcast(className = lambdaIfaceName()))
+  insns.add(LIconst(v = params.count - 1))
+  insns.add(LAnewarray(className = "java/lang/Object"))
+  var k = 0
+  var i = 0
+  while i < params.count {
+    if i != slot {
+      insns.add(LDup)
+      insns.add(LIconst(v = k))
+      emitLoadTyped(insns, slots[i], params[i])
+      boxIfNeeded(insns, params[i])
+      insns.add(LAastore)
+      k = k + 1
+    }
+    i = i + 1
+  }
+  val invPs: List[JvmType] = newList()
+  invPs.add(JArray(elem = objTy))
+  insns.add(
+    LInvokeinterface(owner = lambdaIfaceName(), name = lambdaIfaceMethod(), params = invPs, ret = objTy, argCount = 2)
+  )
+  match ret {
+    case JVoid -> {
+      insns.add(LPop)
+      insns.add(LReturn)
+    }
+    case _ -> {
+      val _ = emitUnboxObjectTo(insns, ret)
+      match ret {
+        case JLong -> insns.add(LLreturn)
+        case JDouble -> insns.add(LDreturn)
+        case JFloat -> insns.add(LFreturn)
+        case JByte -> {
+          insns.add(LI2b)
+          insns.add(LIreturn)
+        }
+        case _ -> insns.add(LIreturn)
+      }
+    }
+  }
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = decl.name,
+    params = params,
+    ret = ret,
+    insns = insns,
+    maxStack = 0,
+    maxLocals = 0
+  )
+}
+
+// The address of a trampoline's upcall stub, made on first use and cached in
+// `cbStubField`.  Two threads racing the first use may each make a stub; both
+// stay valid (the global arena never frees one), and the cache keeps one.
+pub func makeCBStubGetterJvm(
+  decl: in FunctionDecl,
+  funcsClass: in String,
+  pkgName: in String,
+  externTypes: in Map[String, String],
+): LFunc {
+  val params: List[JvmType] = newList()
+  for p in decl.params {
+    params.add(typeExprToJvmExtern(p.ty, pkgName, externTypes))
+  }
+  val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+  val field = cbStubField(decl)
+  val none: List[JvmType] = newList()
+  val lookupTy = JRef(className = "java/lang/invoke/MethodHandles$Lookup")
+  val classTy = JRef(className = "java/lang/Class")
+  val strTy = JRef(className = "java/lang/String")
+  val mtTy = JRef(className = "java/lang/invoke/MethodType")
+  val mhTy = JRef(className = "java/lang/invoke/MethodHandle")
+  val linkerTy = JRef(className = "java/lang/foreign/Linker")
+  val layoutTy = JRef(className = "java/lang/foreign/MemoryLayout")
+  val fdTy = JRef(className = "java/lang/foreign/FunctionDescriptor")
+  val arenaTy = JRef(className = "java/lang/foreign/Arena")
+  val segTy = JRef(className = "java/lang/foreign/MemorySegment")
+  val insns: List[LInsn] = newList()
+  insns.add(LGetstatic(owner = funcsClass, name = field, t = JLong))
+  insns.add(LLconst(v = 0i64))
+  insns.add(LLcmp)
+  insns.add(LIfne(label = "cb_stub_made"))
+  insns.add(
+    LInvokestaticIface(owner = "java/lang/foreign/Linker", name = "nativeLinker", params = none, ret = linkerTy)
+  )
+  // MethodHandles.lookup().findStatic(lookupClass(), name, type)
+  insns.add(LInvokestatic(owner = "java/lang/invoke/MethodHandles", name = "lookup", params = none, ret = lookupTy))
+  insns.add(LDup)
+  insns.add(
+    LInvokevirtual(owner = "java/lang/invoke/MethodHandles$Lookup", name = "lookupClass", params = none, ret = classTy)
+  )
+  insns.add(LPushString(s = decl.name))
+  insns.add(LPushString(s = buildDescriptor(params, ret)))
+  insns.add(LAconstNull)
+  val mtPs: List[JvmType] = newList()
+  mtPs.add(strTy)
+  mtPs.add(JRef(className = "java/lang/ClassLoader"))
+  insns.add(
+    LInvokestatic(owner = "java/lang/invoke/MethodType", name = "fromMethodDescriptorString", params = mtPs, ret = mtTy)
+  )
+  val fsPs: List[JvmType] = newList()
+  fsPs.add(classTy)
+  fsPs.add(strTy)
+  fsPs.add(mtTy)
+  insns.add(
+    LInvokevirtual(owner = "java/lang/invoke/MethodHandles$Lookup", name = "findStatic", params = fsPs, ret = mhTy)
+  )
+  // The FunctionDescriptor: every pointer as JAVA_LONG (see the section note).
+  match ret {
+    case JVoid -> ()
+    case _ -> pushCBindingLayout(insns, ret, false)
+  }
+  insns.add(LIconst(v = params.count))
+  insns.add(LAnewarray(className = "java/lang/foreign/MemoryLayout"))
+  var i = 0
+  while i < params.count {
+    insns.add(LDup)
+    insns.add(LIconst(v = i))
+    pushCBindingLayout(insns, params[i], false)
+    insns.add(LAastore)
+    i = i + 1
+  }
+  val layoutArr = JArray(elem = layoutTy)
+  val fdPs: List[JvmType] = newList()
+  match ret {
+    case JVoid -> {
+      fdPs.add(layoutArr)
+      insns.add(
+        LInvokestaticIface(owner = "java/lang/foreign/FunctionDescriptor", name = "ofVoid", params = fdPs, ret = fdTy)
+      )
+    }
+    case _ -> {
+      fdPs.add(layoutTy)
+      fdPs.add(layoutArr)
+      insns.add(LInvokestaticIface(owner = "java/lang/foreign/FunctionDescriptor", name = "of", params = fdPs, ret = fdTy))
+    }
+  }
+  insns.add(LInvokestaticIface(owner = "java/lang/foreign/Arena", name = "global", params = none, ret = arenaTy))
+  insns.add(LIconst(v = 0))
+  insns.add(LAnewarray(className = "java/lang/foreign/Linker$Option"))
+  val upPs: List[JvmType] = newList()
+  upPs.add(mhTy)
+  upPs.add(fdTy)
+  upPs.add(arenaTy)
+  upPs.add(JArray(elem = JRef(className = "java/lang/foreign/Linker$Option")))
+  insns.add(
+    LInvokeinterface(owner = "java/lang/foreign/Linker", name = "upcallStub", params = upPs, ret = segTy, argCount = 5)
+  )
+  insns.add(
+    LInvokeinterface(
+      owner = "java/lang/foreign/MemorySegment",
+      name = "address",
+      params = none,
+      ret = JLong,
+      argCount = 1
+    )
+  )
+  insns.add(LPutstatic(owner = funcsClass, name = field, t = JLong))
+  insns.add(LLabel(name = "cb_stub_made"))
+  insns.add(LGetstatic(owner = funcsClass, name = field, t = JLong))
+  insns.add(LLreturn)
+  LFunc(
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = cbStubGetterName(decl.name),
+    params = none,
+    ret = JLong,
+    insns = insns,
+    maxStack = 0,
+    maxLocals = 0
+  )
+}
+
+// `throw new IllegalStateException(msg)`.
+func emitThrowIllegalState(insns: in List[LInsn], msg: in String): Unit {
+  insns.add(LNew(className = "java/lang/IllegalStateException"))
+  insns.add(LDup)
+  insns.add(LPushString(s = msg))
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/String"))
+  insns.add(LInvokespecial(owner = "java/lang/IllegalStateException", name = "<init>", params = ps, ret = JVoid))
+  insns.add(LAthrow)
+}
+
+// The shared handle table behind C callback userdata: `keep(o)` stores a
+// closure under a fresh nonzero key, `target(key)` reads it back for a
+// trampoline and `release(key)` removes it.  A key that is not live (released
+// twice, or never kept) is an IllegalStateException.  One class per bundle,
+// shared by every package like `Lyric$Lambda`, so a key kept in one package
+// resolves in another.
+func callbacksRuntimeItems(used: in List[String], items: in List[LPackageItem]): Unit {
+  if not runtimeHelperUsed(used, callbacksClassJvm()) {
+    return
+  }
+  val cls = callbacksClassJvm()
+  val objTy = JRef(className = "java/lang/Object")
+  val longObjTy = JRef(className = "java/lang/Long")
+  val chm = "java/util/concurrent/ConcurrentHashMap"
+  val chmTy = JRef(className = chm)
+  val atomic = "java/util/concurrent/atomic/AtomicLong"
+  val atomicTy = JRef(className = atomic)
+  val none: List[JvmType] = newList()
+  val longPs: List[JvmType] = newList()
+  longPs.add(JLong)
+  val objPs: List[JvmType] = newList()
+  objPs.add(objTy)
+  val putPs: List[JvmType] = newList()
+  putPs.add(objTy)
+  putPs.add(objTy)
+
+  val tableInit: List[LInsn] = newList()
+  tableInit.add(LNew(className = chm))
+  tableInit.add(LDup)
+  tableInit.add(LInvokespecial(owner = chm, name = "<init>", params = none, ret = JVoid))
+  val nextInit: List[LInsn] = newList()
+  nextInit.add(LNew(className = atomic))
+  nextInit.add(LDup)
+  nextInit.add(LInvokespecial(owner = atomic, name = "<init>", params = none, ret = JVoid))
+  val statics: List[LStaticVal] = newList()
+  statics.add(LStaticVal(name = "table", valType = chmTy, initInsns = tableInit, cache = false))
+  statics.add(LStaticVal(name = "next", valType = atomicTy, initInsns = nextInit, cache = false))
+
+  val keep: List[LInsn] = newList()
+  keep.add(LGetstatic(owner = cls, name = "next", t = atomicTy))
+  keep.add(LInvokevirtual(owner = atomic, name = "incrementAndGet", params = none, ret = JLong))
+  keep.add(LLstore(slot = 1))
+  keep.add(LGetstatic(owner = cls, name = "table", t = chmTy))
+  keep.add(LLload(slot = 1))
+  keep.add(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = longPs, ret = longObjTy))
+  keep.add(LAload(slot = 0))
+  keep.add(LInvokevirtual(owner = chm, name = "put", params = putPs, ret = objTy))
+  keep.add(LPop)
+  keep.add(LLload(slot = 1))
+  keep.add(LLreturn)
+
+  val target: List[LInsn] = newList()
+  target.add(LGetstatic(owner = cls, name = "table", t = chmTy))
+  target.add(LLload(slot = 0))
+  target.add(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = longPs, ret = longObjTy))
+  target.add(LInvokevirtual(owner = chm, name = "get", params = objPs, ret = objTy))
+  target.add(LAstore(slot = 2))
+  target.add(LAload(slot = 2))
+  target.add(LIfnonnull(label = "cb_live"))
+  emitThrowIllegalState(target, "C callback userdata is not a live callback: its call returned, or it was released")
+  target.add(LLabel(name = "cb_live"))
+  target.add(LAload(slot = 2))
+  target.add(LAreturn)
+
+  val release: List[LInsn] = newList()
+  release.add(LGetstatic(owner = cls, name = "table", t = chmTy))
+  release.add(LLload(slot = 0))
+  release.add(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = longPs, ret = longObjTy))
+  release.add(LInvokevirtual(owner = chm, name = "remove", params = objPs, ret = objTy))
+  release.add(LIfnonnull(label = "cb_released"))
+  emitThrowIllegalState(
+    release,
+    "nativeReleaseCallback: the pointer is not a kept callback (released twice, or never kept)"
+  )
+  release.add(LLabel(name = "cb_released"))
+  release.add(LReturn)
+
+  // keepIfClosure(o): keep(o) for a closure, 0 for anything else (a boxed
+  // pointer in an erased slot).
+  val keepIf: List[LInsn] = newList()
+  keepIf.add(LAload(slot = 0))
+  keepIf.add(LInstanceof(className = lambdaIfaceName()))
+  keepIf.add(LIfne(label = "cb_closure"))
+  keepIf.add(LLconst(v = 0i64))
+  keepIf.add(LLreturn)
+  keepIf.add(LLabel(name = "cb_closure"))
+  keepIf.add(LAload(slot = 0))
+  keepIf.add(LInvokestatic(owner = cls, name = "keep", params = objPs, ret = JLong))
+  keepIf.add(LLreturn)
+  // userdata(o, key): the key when one was kept, else the pointer `o` boxes.
+  val userdata: List[LInsn] = newList()
+  userdata.add(LLload(slot = 1))
+  userdata.add(LLconst(v = 0i64))
+  userdata.add(LLcmp)
+  userdata.add(LIfeq(label = "cb_pointer"))
+  userdata.add(LLload(slot = 1))
+  userdata.add(LLreturn)
+  userdata.add(LLabel(name = "cb_pointer"))
+  userdata.add(LAload(slot = 0))
+  userdata.add(LCheckcast(className = "java/lang/Long"))
+  userdata.add(LInvokevirtual(owner = "java/lang/Long", name = "longValue", params = none, ret = JLong))
+  userdata.add(LLreturn)
+  val udPs: List[JvmType] = newList()
+  udPs.add(objTy)
+  udPs.add(JLong)
+  // releaseIfKept(key): release(key) unless the key is 0.
+  val releaseIf: List[LInsn] = newList()
+  releaseIf.add(LLload(slot = 0))
+  releaseIf.add(LLconst(v = 0i64))
+  releaseIf.add(LLcmp)
+  releaseIf.add(LIfeq(label = "cb_none"))
+  releaseIf.add(LLload(slot = 0))
+  releaseIf.add(LInvokestatic(owner = cls, name = "release", params = longPs, ret = JVoid))
+  releaseIf.add(LLabel(name = "cb_none"))
+  releaseIf.add(LReturn)
+
+  val fns: List[LFunc] = newList()
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "keepIfClosure",
+      params = objPs,
+      ret = JLong,
+      insns = keepIf,
+      maxStack = 0,
+      maxLocals = 1
+    )
+  )
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "userdata",
+      params = udPs,
+      ret = JLong,
+      insns = userdata,
+      maxStack = 0,
+      maxLocals = 3
+    )
+  )
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "releaseIfKept",
+      params = longPs,
+      ret = JVoid,
+      insns = releaseIf,
+      maxStack = 0,
+      maxLocals = 2
+    )
+  )
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "keep",
+      params = objPs,
+      ret = JLong,
+      insns = keep,
+      maxStack = 0,
+      maxLocals = 3
+    )
+  )
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "target",
+      params = longPs,
+      ret = objTy,
+      insns = target,
+      maxStack = 0,
+      maxLocals = 3
+    )
+  )
+  fns.add(
+    LFunc(
+      flags = ACC_PUBLIC + ACC_STATIC,
+      name = "release",
+      params = longPs,
+      ret = JVoid,
+      insns = release,
+      maxStack = 0,
+      maxLocals = 2
+    )
+  )
+  items.add(LPFuncs(funcsClass = cls, fns = fns, staticVals = statics))
+}
+
 func makeGeneratorFactory(
   decl: in FunctionDecl,
   genClass: in String,
@@ -8965,6 +9388,16 @@ pub func codegenPackageWithSigsSeeded(
               cache = true
             )
           )
+        } else if (match cBindingTrampolineSlot(decl) { case Some(_) -> true; case None -> false }) {
+          // A C callback trampoline (D229) and the getter of its upcall stub.
+          val slot = match cBindingTrampolineSlot(decl) { case Some(s) -> s; case None -> 0 }
+          fns.add(makeCBTrampolineJvm(decl, slot, pkgName, externTypes))
+          fns.add(makeCBStubGetterJvm(decl, funcsClass, pkgName, externTypes))
+          val noInit: List[LInsn] = newList()
+          staticVals.add(LStaticVal(name = cbStubField(decl), valType = JLong, initInsns = noInit, cache = true))
+          if not runtimeHelperUsed(usedRuntimeHelpers, callbacksClassJvm()) {
+            usedRuntimeHelpers.add(callbacksClassJvm())
+          }
         } else if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass = pkgName + "$" + decl.name + "$Gen"
@@ -9771,7 +10204,7 @@ pub func codegenPackageWithSigsSeeded(
   // `fileNeedsLambdaIface`) — add the one shared functional interface
   // `<pkg>/Lyric$Lambda` they all implement
   // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
-  if closureAcc.count > 0 or fileNeedsLambdaIface(file) {
+  if closureAcc.count > 0 or fileNeedsLambdaIface(file) or runtimeHelperUsed(usedRuntimeHelpers, callbacksClassJvm()) {
     val ifaceName = lambdaIfaceName()
     val ifaceParams: List[JvmType] = newList()
     ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))
@@ -9794,6 +10227,8 @@ pub func codegenPackageWithSigsSeeded(
   // The `out`/`inout` place-reference interfaces this package's code uses
   // (`markRefIface`, D183), shared across the bundle like `Lyric$Lambda`.
   refIfaceItems(usedRuntimeHelpers, items)
+  // The C callback handle table (D229), shared across the bundle likewise.
+  callbacksRuntimeItems(usedRuntimeHelpers, items)
 
   LPackage(packageName = pkgName, items = items)
 }

@@ -151,6 +151,8 @@ for t in \
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
+# D229: C callbacks into closures through `@library` bindings.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/extern-callback-e2e.sh native
 # #7858: the text `println(<Byte>)` writes on native.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh native
 # D163: a debug build panics on integer overflow, a release build wraps.
