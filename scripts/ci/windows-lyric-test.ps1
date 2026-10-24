@@ -4,9 +4,11 @@
 #   windows-lyric-test.ps1 -Lyric <dir containing lyric.exe and lib\>
 #
 # 1. Installed layout: the stdlib bundle sits in lib\ beside lyric.exe.
-# 2. No compiled stdlib beside the binary: `lyric test` recovers the stdlib
-#    DLLs the in-process bridge wrote to the temp directory, which it finds
-#    through TMPDIR, then TEMP, then TMP (cli_test.l).
+# 2. A bare lyric.exe with no compiled stdlib beside it. If `lyric test` finds
+#    none, it recovers the stdlib DLLs the in-process bridge wrote to the temp
+#    directory, which it locates through TMPDIR, then TEMP, then TMP
+#    (cli_test.l). This checks that the run works there; it does not assert
+#    that the recovery branch was taken.
 param([Parameter(Mandatory = $true)][string]$Lyric)
 
 $ErrorActionPreference = "Stop"

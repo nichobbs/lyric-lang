@@ -19,8 +19,11 @@ shell script and a running `lyric.exe` cannot be overwritten). Supersedes the
   install, upgrade while `lyric.exe` is running, reinstall, a bad archive
   leaving the install usable, the dry-run plan) and
   `scripts/ci/windows-lyric-test.ps1` (`lyric test` on a CRLF checkout with
-  `TMPDIR` unset, including the temp-directory recovery path) against the
-  freshly built archive.
+  `TMPDIR` unset, in the installed layout and with a bare `lyric.exe` that has
+  no compiled stdlib beside it) against the freshly built archive. The bare
+  case passes, but the log does not show that it reached the `TEMP`/`TMP`
+  recovery branch in `cli_test.l`, so that branch is exercised only if
+  `findCompiledLibDir` comes back empty there.
 - Verified on a `windows-latest` runner: a real download install with the
   checksum check, and an in-place upgrade over a running `lyric.exe`.
 - Found while testing: released binaries up to v0.7.10 fail `lyric test` on a
