@@ -54,6 +54,10 @@ on:
       - 'lyric-compiler/lyric/cli/**'
       - 'lyric-stdlib/std/_kernel_native/**'
       - 'scripts/ci/windows-native-*.sh'
+      - 'scripts/ci/windows-installer-test.ps1'
+      - 'scripts/ci/windows-lyric-test.ps1'
+      - 'scripts/ci/windows-smoke/**'
+      - 'scripts/install.ps1'
 
 permissions:
   contents: write
@@ -89,6 +93,16 @@ jobs:
       - name: Build Maven resolver jar
         shell: bash
         run: make maven-resolver
+
+      # `lyric upgrade` verifies install.ps1 against this digest; a script
+      # edit that forgets to refresh it would break every Windows upgrade.
+      - name: Check install.ps1 matches install.ps1.sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < scripts/install.ps1.sha256)"
+          actual="$(sha256sum scripts/install.ps1 | awk '{print $1}')"
+          test "$expected" = "$actual" || { echo "::error::scripts/install.ps1.sha256 is stale (expected $actual)"; exit 1; }
 
       # upload-artifact skips hidden directories, so stage the DLLs (under
       # .bootstrap/) into a plain directory first.
@@ -186,6 +200,14 @@ jobs:
           $archive = "lyric-$env:VERSION-win-x64.zip"
           Compress-Archive -Path "bootstrap/publish/win-x64/*" -DestinationPath $archive
           "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Installer and upgrade tests (install.ps1)
+        shell: pwsh
+        run: ./scripts/ci/windows-installer-test.ps1 -Zip "$PWD/$env:ARCHIVE"
+
+      - name: lyric test on Windows (TMPDIR unset)
+        shell: pwsh
+        run: ./scripts/ci/windows-lyric-test.ps1 -Lyric "$PWD/bootstrap/publish/win-x64"
 
       - name: Upload archive as workflow artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
