@@ -206,11 +206,11 @@ test "lyric test <file.l>: a loose file with no nearby manifest still works unch
 // re-processing the same index instead of advancing — a busy-loop that
 // never reached the java/coverage codegen the original #6659 investigation
 // suspected, explaining why the internal 600s/120s timeouts inside that
-// codegen never fired. Places `--coverage` before `--target dotnet` (not
+// codegen never fired. Places `--coverage` before `--target native` (not
 // the last argv token) so a still-buggy parser would spin here forever
 // instead of ever reaching --target's own validation; a fixed parser
-// reaches the (fast, deterministic, no JaCoCo jars needed) "--coverage
-// requires --target jvm" rejection.
+// reaches the (fast, deterministic, compiles nothing) "--coverage is not
+// supported with --target native" rejection (#8553).
 test "lyric test --coverage: argv parser advances past --coverage to a later flag (regression, #6659)" {
   val root = freshTempDir("coverage-argv-order")
   defer {
@@ -227,12 +227,12 @@ test "lyric test --coverage: argv parser advances past --coverage to a later fla
   args.add(testFile)
   args.add("--coverage")
   args.add("--target")
-  args.add("dotnet")
+  args.add("native")
   val rc = mainWithArgs(args)
   assertEqualInt(
     rc,
     1,
-    "--coverage before --target dotnet reaches the --target-jvm-required rejection, proving the parser advanced past --coverage"
+    "--coverage before --target native reaches the native rejection, proving the parser advanced past --coverage"
   )
 }
 

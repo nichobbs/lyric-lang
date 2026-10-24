@@ -116,6 +116,7 @@ for t in \
   lyric-compiler/lyric/restored_packages_self_test.l \
   lyric-compiler/lyric/restored_stdlib_async_self_test.l \
   lyric-compiler/lyric/test_synth_self_test.l \
+  lyric-compiler/lyric/coverage_self_test.l \
   lyric-compiler/lyric/manifest_self_test.l \
   lyric-compiler/lyric/layers_self_test.l \
   lyric-compiler/lyric/cli_restore_self_test.l \
@@ -272,6 +273,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/test-package-merge-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/test-package-merge-e2e.sh
   ran="$ran test-package-merge-e2e"
+fi
+# #5294: `lyric test --coverage` reports exact lines on both targets, enforces
+# `--min-coverage`, and refuses native (this job has Java 21, same precedent as
+# the e2e scripts above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/coverage-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/coverage-e2e.sh
+  ran="$ran coverage-e2e"
 fi
 # #7548: package-qualified distinct-factory call (`Pkg.Type.tryFrom(x)`),
 # both targets (this job already has Java 21, same as cfg-gated-test-items-e2e.sh).

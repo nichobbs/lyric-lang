@@ -95,7 +95,7 @@ nunit-*.xml
 # `make lyric` symlink to the AOT entry-point binary
 /bin/
 
-# `make jacoco` download cache (lyric test --target jvm --coverage)
+# local tool downloads
 /.tools/
 lyric.lock
 *-restore.csproj

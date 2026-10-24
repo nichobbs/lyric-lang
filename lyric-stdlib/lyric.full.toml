@@ -186,3 +186,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # for the same reason as Tier 8; it imports only `Std.Core`.
 "Std.ConfigOverrideHost" = "std/_kernel/config_override_host.l"
 "Std.ConfigOverride"     = "std/config_override.l"
+
+# Tier 15 — the hit counters behind `lyric test --coverage` (#5294, D246).
+# Appended last for the same reason as Tier 8.  The compiler does not import
+# it (the instrumented package under test does), so it is built by the
+# compiler stage 1 produces.
+"Std.Coverage" = "std/coverage.l"  # seed: current

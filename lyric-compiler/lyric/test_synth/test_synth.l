@@ -1158,6 +1158,26 @@ func stringInList(xs: in List[String], x: in String): Bool {
   false
 }
 
+// The line of the synthesised `main` that sets its exit status from the failure
+// count; `withCoverageDump` puts the coverage dump before it.
+func mainExitMarker(): String {
+  "  if __lyric_failed > 0 {\n"
+}
+
+/// The rewrite `synthesizeFor` returned with a call to `Std.Coverage.dumpFromEnv`
+/// before its `main` returns (`lyric test --coverage`, D246): the counts of
+/// the run go to the file named by `LYRIC_COVERAGE_OUT`.  The module needs
+/// `import Std.Coverage as __lyric_cov` (`Lyric.Coverage.instrumentTestModule`
+/// adds it).
+pub func withCoverageDump(rewritten: in String): String {
+  val marker = mainExitMarker()
+  match Str.indexOf(rewritten, marker) {
+    case Some(at) -> Str.substring(rewritten, 0, at) + "  __lyric_cov.dumpFromEnv()\n" +
+      Str.substring(rewritten, at, rewritten.length - at)
+    case None -> rewritten
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. `listEntries` — used by `lyric test --list`.
 // ─────────────────────────────────────────────────────────────────────────────

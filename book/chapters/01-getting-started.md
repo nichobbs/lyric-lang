@@ -474,7 +474,8 @@ Core commands you will use constantly:
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
 | `lyric test <file.l> --fail-fast` | Stop after the first file with failing tests; print an early summary |
-| `lyric test <file.l> --target jvm --coverage` | Run on the JVM target under JaCoCo, writing a Cobertura XML coverage report |
+| `lyric test <file.l> --coverage` | Count the statement lines of the code under test (dotnet or jvm); write `coverage.info` (lcov) and `coverage.xml` (Cobertura) beside the test output |
+| `lyric test --coverage --min-coverage <percent>` | Fail when the covered share of lines is under the percentage |
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric bindgen` | Generate native FFI bindings (`extern func`, `foreign record`, constants) from a C header with clang |
