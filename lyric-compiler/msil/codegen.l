@@ -26930,6 +26930,10 @@ func insnStackDelta(insn: in MInsn): Int {
     case MConvU1 -> 0
     case MConvU2 -> 0
     case MConvU8 -> 0
+    case MConvOvfI1 -> 0
+    case MConvOvfI2 -> 0
+    case MConvOvfU2 -> 0
+    case MConvOvfU4 -> 0
     case MConvI -> 0
     case MNewobj(_) -> 1
     case MLdfld(_) -> 0
@@ -43614,6 +43618,24 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
       Some(value = acc)  // exact: no coercion
     } else if paramByte == 0x1C {
       boxIfNeededMsil(cctx, acc, argTy)  // object param: box value types
+      Some(value = acc)
+    } else if Mdr.isNarrowIntPrimByte(paramByte) and (argByte == 0x08 or argByte == 0x0A) {
+      // A CLR integer Lyric has no type for (#8482): an `Int` or `Long`
+      // narrows with a range check, so a value outside the parameter's range
+      // throws `OverflowException` instead of wrapping.  UInt64 is the bit
+      // pattern of a `Long` (no unsigned 64-bit Lyric type), so a `Long`
+      // passes unchanged and an `Int` sign-extends.
+      if paramByte == 0x04 {
+        acc.add(MConvOvfI1)
+      } else if paramByte == 0x06 {
+        acc.add(MConvOvfI2)
+      } else if paramByte == 0x07 {
+        acc.add(MConvOvfU2)
+      } else if paramByte == 0x09 {
+        acc.add(MConvOvfU4)
+      } else if argByte == 0x08 {
+        acc.add(MConvI8)
+      }
       Some(value = acc)
     } else {
       val ra = elemNumericRank(argByte)

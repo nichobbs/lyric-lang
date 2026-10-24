@@ -195,6 +195,14 @@ for t in \
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
 done
+# Stdlib suites written as programs (`func main`) rather than `@test_module`s:
+# Std.Encoding's `Option[slice[Byte]]` specialisation (a VerifyError until
+# #8441) and Std.Xml (once thought not to compile on the JVM), #7511.
+for t in lyric-stdlib/tests/encoding_tests.l lyric-stdlib/tests/xml_tests.l ; do
+  echo "=== $t (run) ==="
+  "$lyric_bin" run --target jvm "$t"
+  ran="$ran $t"
+done
 # A numeric `array[N, T]` is a typed Java array that boxes nothing (#8041).
 bash scripts/ci/jvm-typed-arrays-nobox.sh "$lyric_bin"
 # A bundled stdlib package is type-checked, and a type error stops the build (#7976).

@@ -612,6 +612,61 @@ test "a generic body's omitted default binds the checker's overload when special
   )
 }
 
+// #7658: the JVM memoises a file's extern-type seed by its import list.  The
+// weave of `call.elapsed` injects `import Std.Time` into the package that
+// declares the aspect, so that package is looked up with two import lists, before
+// and after the weave; the extern calls it makes must resolve both times, and a
+// sibling package with the original import list must keep resolving its own.
+func weaveInjectedImportLib(): String {
+  "package Rd.Lib\n\nextern type JMath = \"java.lang.Math\"\n\n" + "aspect Timing {\n  matches: name like \"timedAbs\"\n" +
+    "  around(args) -> ret {\n    val r = proceed(args)\n    val e = call.elapsed\n    r\n  }\n}\n\n" +
+    "pub func timedAbs(x: in Int): Int {\n  JMath.abs(x)\n}\n\n" + "pub func plainMax(a: in Int, b: in Int): Int {\n  JMath.max(a, b)\n}\n"
+}
+
+func weaveInjectedImportApp(): String {
+  "package Rd.App\n\nimport Rd.Lib\n\nextern type JMath2 = \"java.lang.Math\"\n\nfunc main(): Unit {\n" +
+    "  println(toString(timedAbs(-7)))\n" + "  println(toString(plainMax(3, 9)))\n" + "  println(toString(JMath2.min(4, 2)))\n}\n"
+}
+
+test "extern calls resolve before and after the weave injects an import on the JVM (#7658)" {
+  val e: List[String] = newList()
+  e.add("7")
+  e.add("9")
+  e.add("2")
+  assertLines("jvm weave import", runBundle("weave-import", true, weaveInjectedImportLib(), weaveInjectedImportApp()), e)
+}
+
+// #7175: a restored `exposed record`, plain and generic, constructs and reads
+// its fields on both targets (the metadata half is shared; the JVM resolves
+// restored classes by name rather than through MSIL's token registry).
+func exposedLib(): String {
+  "package Rd.Lib\n\npub exposed record Point {\n  x: Int\n  y: Int\n}\n\npub exposed record Box[T] {\n  value: T\n}\n"
+}
+
+func exposedApp(): String {
+  "package Rd.App\n\nimport Rd.Lib\n\nfunc main(): Unit {\n" + "  val p = Point(x = 3, y = 4)\n" +
+    "  println(toString(p.x))\n  println(toString(p.y))\n" +
+    "  val b = Box(value = 7)\n  println(toString(b.value))\n" +
+    "  val s = Box(value = \"s\")\n  println(s.value)\n}\n"
+}
+
+func exposedLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("3")
+  e.add("4")
+  e.add("7")
+  e.add("s")
+  e
+}
+
+test "a restored exposed record, plain and generic, constructs and reads fields on dotnet (#6533)" {
+  assertLines("dotnet exposed", runRestored("exposed", false, exposedLib(), exposedApp()), exposedLines())
+}
+
+test "a restored exposed record, plain and generic, constructs and reads fields on the JVM (#7175)" {
+  assertLines("jvm exposed", runRestored("exposed", true, exposedLib(), exposedApp()), exposedLines())
+}
+
 // #7868: a member read on an `Option[M]`-typed parameter or local of another
 // package's generic, specialised here, resolves on the JVM (which erases the
 // receiver) through the receiver classes recorded where the generic was written.

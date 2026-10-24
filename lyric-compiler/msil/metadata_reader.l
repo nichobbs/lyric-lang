@@ -2592,6 +2592,12 @@ pub record ResolvedMethod {
   paramDefaults: List[ExternParamDefault]
 }
 
+// The CLR integers Lyric has no type for, by ECMA element-type byte: SByte
+// (0x04), Int16 (0x06), UInt16 (0x07), UInt32 (0x09), UInt64 (0x0B).
+pub func isNarrowIntPrimByte(pb: in Int): Bool {
+  pb == 0x04 or pb == 0x06 or pb == 0x07 or pb == 0x09 or pb == 0x0B
+}
+
 // Widening rank for the numeric primitive element types (-1 for non-numeric).
 // A narrower type implicitly converts to a wider one: I1<U1<I2<U2<Char<I4<U4
 // <I8<U8<R4<R8 (unsigned ranked alongside their signed width).
@@ -2679,6 +2685,12 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
           3
         } else if pb == 0x1C {
           2
+        } else if isNarrowIntPrimByte(pb) and (ab == 0x08 or ab == 0x0A) {
+          // SByte/Int16/UInt16/UInt32/UInt64 have no Lyric type: an `Int` or
+          // `Long` argument narrows to one with a range check (#8482), below
+          // every widening match so an overload that takes the Lyric type
+          // itself always wins.
+          1
         } else {
           // object accepts anything
           val ra = numericRank(ab)

@@ -437,3 +437,31 @@ test "auto-FFI passes scalar Char constants through the boundary check (#8225)" 
   assertEqualInt(NetCharT.MaxValue.toInt(), 65535, "Char.MaxValue")
   assertEqualInt(NetCharT.MinValue.toInt(), 0, "Char.MinValue")
 }
+
+extern type UInt64T = "System.UInt64"
+
+// #8482: a CLR integer Lyric has no type for is also accepted as a parameter.
+// An `Int` or `Long` narrows with a range check (`conv.ovf.*`) to SByte, Int16,
+// UInt16 and UInt32, and a `Long` is the bit pattern of a UInt64.
+test "auto-FFI accepts narrow and unsigned integer parameters (#8482)" {
+  assertTrue(SByteT.IsNegative(-1), "SByte.IsNegative(Int)")
+  assertTrue(not SByteT.IsNegative(127), "SByte.IsNegative(127)")
+  assertTrue(Int16T.IsNegative(-5), "Int16.IsNegative(Int)")
+  assertTrue(UInt16T.IsEvenInteger(4), "UInt16.IsEvenInteger(Int)")
+  assertTrue(not UInt16T.IsEvenInteger(65535), "UInt16.IsEvenInteger(65535)")
+  assertTrue(UInt32T.IsPow2(8), "UInt32.IsPow2(Int)")
+  assertTrue(UInt32T.IsPow2(2147483648i64), "UInt32.IsPow2(Long above Int.MaxValue)")
+  assertTrue(not UInt32T.IsPow2(5), "UInt32.IsPow2(5)")
+  assertTrue(UInt64T.IsPow2(1024i64), "UInt64.IsPow2(Long bit pattern)")
+}
+
+test "auto-FFI range-checks a narrowed integer argument (#8482)" {
+  val tooBig = 40000
+  val negative = -1
+  val tooLong = 4294967296i64
+  assertPanics("Int16.IsNegative(40000)", { -> val _ = Int16T.IsNegative(tooBig) })
+  assertPanics("SByte.IsNegative(200)", { -> val _ = SByteT.IsNegative(200) })
+  assertPanics("UInt16.IsEvenInteger(-1)", { -> val _ = UInt16T.IsEvenInteger(negative) })
+  assertPanics("UInt32.IsPow2(-1)", { -> val _ = UInt32T.IsPow2(negative) })
+  assertPanics("UInt32.IsPow2(2^32)", { -> val _ = UInt32T.IsPow2(tooLong) })
+}

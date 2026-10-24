@@ -23,12 +23,10 @@
 //! under the bare short-name key first — regardless of bundle processing
 //! order.
 //!
-//! `Std.Xml` itself cannot currently be compiled with `--target jvm` at all
-//! (an unrelated, pre-existing bug: `Jvm.Codegen` fails to lower the
-//! fully-qualified call `Std.Char.fromInt(...)` in `xml.l`, `error[J002]:
-//! reference 'Std' resolves to no local, parameter, ...` — reproduced
-//! independently of this issue and of `Std.Yaml`), so this test reproduces
-//! the SAME class of collision without depending on `Std.Xml`: a
+//! `Std.Xml` compiles with `--target jvm` now (`xml_tests.l` runs in the JVM
+//! generics batch, #7511), but when this test was written it did not (`Jvm.Codegen`
+//! failed to lower the fully-qualified call `Std.Char.fromInt(...)`).  This
+//! test reproduces the SAME class of collision without depending on it: a
 //! locally-declared union case named `InvalidDocument` (colliding with
 //! `Std.Yaml.YamlError`'s own case of the same name) alongside a real call
 //! into `Std.Yaml.parseYaml`, which internally constructs its OWN
