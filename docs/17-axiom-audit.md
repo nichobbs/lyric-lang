@@ -1100,7 +1100,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.PluginHost` | `plugin_host.l` | System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
 | `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
-| `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
+| `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout, System.IO.Stream/MemoryStream, System.Text.Encoding.UTF8 and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
