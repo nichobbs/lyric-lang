@@ -541,3 +541,28 @@ test "an unknown-typed closure result reaches every sink" {
   assertEqual(ws.fieldStore(), "s", "String field store")
   assertEqual(genSinks(MyBox(value = "g"), MyBox(value = "h")), "g", "String generic function")
 }
+
+// `==` and `!=` on a value of the enclosing generic record's type parameter:
+// the left operand sits under the right one, and both must be boxed for
+// `Object.Equals` whatever `T` is instantiated at (#8018).
+@cfg(not(target = "native"))
+record EqBox[T] {
+  inner: MyBox[T]
+  func same(self: in EqBox[T], x: in T): Bool = x == inner.value
+  func differs(self: in EqBox[T], x: in T): Bool = x != inner.value
+  func sameField(self: in EqBox[T], other: in EqBox[T]): Bool = inner.value == other.inner.value
+}
+
+@cfg(not(target = "native"))
+test "equality of type-parameter values in a generic record method (#8018)" {
+  val b: EqBox[Int] = EqBox(inner = MyBox(value = 5))
+  assertTrue(b.same(5), "Int equal")
+  assertFalse(b.same(6), "Int unequal")
+  assertTrue(b.differs(6), "Int differs")
+  assertFalse(b.differs(5), "Int does not differ")
+  val c: EqBox[Int] = EqBox(inner = MyBox(value = 5))
+  assertTrue(b.sameField(c), "two fields")
+  val s: EqBox[String] = EqBox(inner = MyBox(value = "a"))
+  assertTrue(s.same("a"), "String equal")
+  assertTrue(s.differs("b"), "String differs")
+}

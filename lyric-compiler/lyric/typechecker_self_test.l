@@ -5391,12 +5391,14 @@ test "generic record field from annotated param" {
   assertTrue(hasDiagCode(parseCheck(badBind), "T0060"), "box-param: Int binding of a String field is T0060")
 }
 
-// A non-generic record's fields are unaffected, and a generic receiver whose
-// instantiation could not be inferred (no targs) stays lenient — the erased
-// wildcard.
-test "generic record field degrades without targs" {
-  val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
-  assertEqualInt(diagCount(parseCheck(ok)), 0, "box-generic-ctx: uninstantiated T stays lenient")
+// A non-generic record's fields are unaffected, and a field declared as the
+// record's own type parameter, read through an instance at the enclosing
+// generic's type parameter, is that type parameter (#8018).
+test "generic record field is the enclosing type parameter (#8018)" {
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0060"), 1, "a T field is not an Int")
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): T {\n  val n: T = b.value\n  n\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "a T field is a T")
   val plain = "package P\nrecord Point { x: Int }\nfunc g(p: in Point): Int {\n  p.x + 1\n}\n"
   assertEqualInt(diagCount(parseCheck(plain)), 0, "plain record field access unchanged")
 }
@@ -12645,4 +12647,83 @@ test "compound assignment on a type parameter needs its bound (#8017)" {
 test "the docs sum example type-checks (#8017)" {
   val src = "package P\nfunc sum[T](xs: in slice[T]): T\n  where T: Add + Default\n{\n  var total = T.default()\n  for x in xs { total = total + x }\n  return total\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "sum[T] where T: Add + Default")
+}
+
+test "a bare type parameter is not Bool where a clause, condition or operand needs one (#8332)" {
+  val quant = "package P\ngeneric[T] record H {\n  v: T\n  invariant: forall (k: Byte) { v }\n}\n"
+  val quantCr = parseCheck(quant)
+  assertEqualInt(countDiagCode(quantCr, "T0132"), 1, "forall body of type T (" + diagCodesOf(quantCr) + ")")
+  val exists = "package P\ngeneric[T] record H {\n  v: T\n  invariant: exists (k: Byte) { v }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(exists), "T0132"), 1, "exists body of type T")
+  val clause = "package P\nfunc f[T](x: in T): Int\n  requires: x\n{\n  1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(clause), "T0132"), 1, "requires clause of type T")
+  val whileSrc = "package P\nfunc f[T](x: in T): Int {\n  while x { return 1 }\n  0\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(whileSrc), "T0066"), 1, "while condition of type T")
+  val andSrc = "package P\nfunc f[T](x: in T, b: in Bool): Bool {\n  b and x\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(andSrc), "T0034"), 1, "right operand of and has type T")
+  val ok = "package P\ngeneric[T] record H {\n  v: T\n  invariant: forall (k: Byte) { k == k }\n}\nfunc f[T](x: in T, b: in Bool): Bool {\n  b and (b or not b)\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "Bool bodies and operands stay clean")
+}
+
+test "a field of the record that holds the enclosing T is T, not an unknown type (#8018, #8449)" {
+  val head = "package P\nref record Box[T] { var v: T }\nfunc bump(n: inout Int): Unit { n = n + 1 }\n"
+  val byRef = parseCheck(head + "func g[T](b: in Box[T]): Unit {\n  bump(b.v)\n}\n")
+  assertEqualInt(countDiagCode(byRef, "T0043"), 1, "b.v passed to inout Int (" + diagCodesOf(byRef) + ")")
+  val bnd = parseCheck(head + "func g[T](b: in Box[T]): Int {\n  val n: Int = b.v\n  n\n}\n")
+  assertEqualInt(countDiagCode(bnd, "T0060"), 1, "b.v bound as Int (" + diagCodesOf(bnd) + ")")
+  val member = parseCheck(head + "func g[T](b: in Box[T]): Int {\n  b.v.zork\n}\n")
+  assertEqualInt(countDiagCode(member, "T0197"), 1, "b.v.zork (" + diagCodesOf(member) + ")")
+  val ok = parseCheck(
+    head + "func id[T](x: in T): T { x }\nfunc g[T](b: in Box[T]): T {\n  val q: T = b.v\n  id(q)\n}\n"
+  )
+  assertEqualInt(diagCount(ok), 0, "T to T is clean (" + diagCodesOf(ok) + ")")
+  val concrete = parseCheck(head + "func g(b: in Box[Int]): Unit {\n  bump(b.v)\n}\n")
+  assertEqualInt(diagCount(concrete), 0, "a concrete instantiation still passes")
+}
+
+test "a generic record constructor does not take explicit type arguments (#7786)" {
+  val bad = "package P\ngeneric[T] record Box { value: T }\nfunc f(): Long {\n  val b = Box[Long](value = 5)\n  b.value\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0208"), 1, "Box[Long](...) (" + diagCodesOf(badCr) + ")")
+  val ok = "package P\ngeneric[T] record Box { value: T }\nfunc f(): Long {\n  val b: Box[Long] = Box(value = 5)\n  b.value\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "the annotated binding is the supported form")
+}
+
+test "remove on a List, Map or Set is a Bool (#7978)" {
+  val head = "package P\nimport Std.CollectionsHost\n"
+  val list = head + "func f(xs: in List[Int]): String {\n  val s: String = xs.remove(1)\n  s\n}\n"
+  val listCr = checkWithImportedPackages(parse(list).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(listCr, "T0060"), 1, "List.remove (" + diagCodesOf(listCr) + ")")
+  val map = head + "func f(m: in Map[String, Int]): String {\n  val s: String = m.remove(\"a\")\n  s\n}\n"
+  val mapCr = checkWithImportedPackages(parse(map).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(mapCr, "T0060"), 1, "Map.remove (" + diagCodesOf(mapCr) + ")")
+  val ok = head + "func f(xs: in List[Int]): Bool {\n  xs.remove(1)\n}\n"
+  val okCr = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(okCr), 0, "the Bool result is usable (" + diagCodesOf(okCr) + ")")
+}
+
+test "a member of a where-bounded type parameter read off a record field resolves through the bound (#8018)" {
+  val src = "package P\ninterface Named {\n  func name(self: in Self): String\n}\nref record Box[T] { var v: T }\nfunc g[T](b: in Box[T]): String where T: Named {\n  b.v.name()\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "b.v.name() under T: Named (" + diagCodesOf(cr) + ")")
+}
+
+test "a call through a function-typed field of an open hoisted receiver is T0154 until annotated (#8047)" {
+  val decls = "package P\nref record H[T] { var handler: (Int) -> T }\nfunc openH[T](n: in Int): H[T] {\n  val h: H[T] = openH(n)\n  h\n}\nasync func five(): Int { 5 }\n"
+  val bad = decls + "async func f(): Int {\n  openH(1).handler(await five())\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0154"), 1, "nothing fixes T: one T0154 (" + diagCodesOf(badCr) + ")")
+  val ok = decls + "async func f(): Int {\n  val h: H[Int] = openH(1)\n  h.handler(await five())\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(countDiagCode(okCr, "T0154"), 0, "the annotated receiver is clean (" + diagCodesOf(okCr) + ")")
+}
+
+test "a protected type's members cannot be overloaded (#8104)" {
+  val bad = "package P\nprotected type Ctr {\n  var c: Int = 0\n  entry bump(): Unit { c = c + 1 }\n  entry bump(by: in Int): Unit { c = c + by }\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0209"), 1, "two entries named bump (" + diagCodesOf(badCr) + ")")
+  val mixed = "package P\nprotected type Ctr {\n  var c: Int = 0\n  entry bump(): Unit { c = c + 1 }\n  func bump(by: in Int): Int { c + by }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(mixed), "T0209"), 1, "an entry and a function of one name")
+  val ok = "package P\nprotected type Ctr {\n  var c: Int = 0\n  entry bump(): Unit { c = c + 1 }\n  entry bumpBy(by: in Int): Unit { c = c + by }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "distinct names are clean")
 }

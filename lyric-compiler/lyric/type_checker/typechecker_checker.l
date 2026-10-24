@@ -4652,6 +4652,52 @@ func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: i
   }
 }
 
+// T0209: a protected type's entries and functions are told apart by name
+// alone, so two members of one name are rejected whatever their parameter
+// counts.  A record's methods may be overloaded by parameter count (T0162
+// covers same-count clashes); the protected-object lowering has no such key
+// on the .NET target, where a call to the second declaration would bind to
+// the first (#8104).
+func checkProtectedMemberOverloads(diag: in List[Diagnostic], decl: in ProtectedTypeDecl): Unit {
+  val seen: List[String] = newList()
+  for m in decl.members {
+    val head: Option[MethodHead] = match m {
+      case PMEntry(e) -> Some(
+        value = MethodHead(
+          name = e.name,
+          arity = e.params.count,
+          span = e.span
+        )
+      )
+      case PMFunc(fn) -> Some(
+        value = MethodHead(
+          name = fn.name,
+          arity = fn.params.count,
+          span = fn.span
+        )
+      )
+      case _ -> None
+    }
+    match head {
+      case Some(h) -> {
+        if seen.contains(h.name) {
+          diag.add(
+            errorDiagnostic(
+              "T0209",
+              "member '" + h.name + "' of protected type '" + decl.name +
+                "' is declared more than once; a protected type's members are told apart by name, so they cannot be overloaded (give each its own name)",
+              h.span
+            )
+          )
+        } else {
+          seen.add(h.name)
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
 func recordMethodHeads(members: in List[RecordMember]): List[MethodHead] {
   val acc: List[MethodHead] = newList()
   for m in members {
@@ -4756,6 +4802,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
       }
       case IProtected(decl) -> {
         checkProtectedDeclTypes(tbl, diag, decl)
+        checkProtectedMemberOverloads(diag, decl)
         checkProtectedValueGenericVisibility(diag, decl, items[i].visibility)
       }
       case ITypeAlias(decl) -> {
