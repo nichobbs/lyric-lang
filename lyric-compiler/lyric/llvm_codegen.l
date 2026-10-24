@@ -15945,16 +15945,23 @@ func lowerBufferElemAssign(
 ): Bool {
   val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
   val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+  // The index and the value are evaluated before the buffer is made unique and
+  // its address taken: the value may copy the buffer (marking it shared after
+  // a check made earlier) or write it through an `inout` argument (replacing
+  // the block the address named).
+  val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
+  val rhs = match op {
+    case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+    case _ -> lowerExpr(ctx, insns, value)
+  }
   lowerBufferEnsureUnique(ctx, insns, receiver, line)
   val buf = lowerExpr(ctx, insns, receiver)
-  val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
   val ptr = bufferElemPtr(ctx, insns, buf, elem, idx.value)
   val newVal = match op {
-    case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+    case AssEq -> rhs
     case _ -> {
       // The right-hand side is evaluated before the element is read, as for a
       // list element (`combineIndexedAssignValue`).
-      val rhs = lowerExpr(ctx, insns, value)
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = elem, ptr = ptr.value))
       combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line)

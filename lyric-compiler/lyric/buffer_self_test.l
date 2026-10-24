@@ -15,6 +15,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Buffer
+import Std.Bench
 
 record Vec3 {
   x: Float
@@ -162,4 +163,206 @@ test "a buffer of records" {
   vs[2] = vs[2].copy(z = 4.0)
   assertTrue(vs[2].z == 4.0f32, "copy then store")
   assertTrue(vs[0].z == 0.0f32, "others untouched")
+}
+
+// ── Sharing and write-after-share (docs/67 §4.4, D226) ──────────────────────
+// A copy of a buffer does not copy its storage: the storage is shared until a
+// write meets it.  A write through any of the bindings must still never be
+// seen through another, and a copy must not cost O(n) at the copy.
+record Frame {
+  var pixels: buffer[Int]
+  var tag: Int
+}
+
+func readFirst(b: in buffer[Int]): Int {
+  b[0]
+}
+
+func rebuild(b: in buffer[Int]): buffer[Int] {
+  var c = b
+  c
+}
+
+func setAll(b: inout buffer[Int], v: in Int) {
+  var i = 0
+  while i < b.length {
+    b[i] = v
+    i = i + 1
+  }
+}
+
+func stash(b: in buffer[Int], into: inout Frame): Int {
+  into.pixels = b
+  0
+}
+
+func setFirst[T](b: inout buffer[T], v: in T)
+  where T: Plain
+{
+  b[0] = v
+}
+
+func firstOf[T](b: in buffer[T]): T
+  where T: Plain
+{
+  b[0]
+}
+
+func copyAndSetFirst[T](b: in buffer[T], v: in T): buffer[T]
+  where T: Plain
+{
+  var c = b
+  c[0] = v
+  c
+}
+
+test "a chain of copies keeps every binding's own value" {
+  var a = filled(4, 1)
+  var b = a
+  var c = b
+  c[0] = 3
+  b[1] = 2
+  a[2] = 9
+  assertEqualInt(a[0] + a[1] + a[2] + a[3], 1 + 1 + 9 + 1, "a")
+  assertEqualInt(b[0] + b[1] + b[2] + b[3], 1 + 2 + 1 + 1, "b")
+  assertEqualInt(c[0] + c[1] + c[2] + c[3], 3 + 1 + 1 + 1, "c")
+}
+
+test "writes in both directions after a copy" {
+  var a = filled(3, 0)
+  var b = a
+  a[0] = 1
+  b[1] = 2
+  a[2] = 3
+  b[2] = 4
+  assertEqualInt(a[0] * 100 + a[1] * 10 + a[2], 103, "a")
+  assertEqualInt(b[0] * 100 + b[1] * 10 + b[2], 24, "b")
+}
+
+test "a compound write after a copy leaves the copy alone" {
+  var a = filled(2, 10)
+  val snapshot = a
+  a[0] += 5
+  a[1] -= 3
+  assertEqualInt(snapshot[0], 10, "snapshot first")
+  assertEqualInt(snapshot[1], 10, "snapshot second")
+  assertEqualInt(a[0], 15, "a first")
+  assertEqualInt(a[1], 7, "a second")
+}
+
+test "an inout write after a copy leaves the copy alone" {
+  var a = filled(3, 1)
+  val snapshot = a
+  setAll(a, 9)
+  assertEqualInt(snapshot[0] + snapshot[1] + snapshot[2], 3, "snapshot")
+  assertEqualInt(a[0] + a[1] + a[2], 27, "a")
+}
+
+test "a value that copies the buffer is evaluated before the write checks for sharing" {
+  var a = filled(3, 1)
+  var f = Frame(pixels = filled(1, 0), tag = 0)
+  a[0] = stash(a, f)
+  assertEqualInt(a[0], 0, "the write landed")
+  assertEqualInt(f.pixels[0], 1, "the copy the call kept did not see it")
+  assertEqualInt(f.pixels[2], 1, "and holds the rest")
+}
+
+test "a copy held by a record field is not changed by a later write" {
+  var a = filled(3, 4)
+  var f = Frame(pixels = a, tag = 1)
+  a[1] = 40
+  f.pixels[2] = 41
+  assertEqualInt(f.pixels[1], 4, "the record's copy")
+  assertEqualInt(a[2], 4, "the variable")
+  assertEqualInt(f.pixels[2], 41, "the record's own write")
+}
+
+test "copying a record copies the buffer it holds" {
+  var h1 = Frame(pixels = filled(3, 1), tag = 0)
+  var h2 = h1.copy(tag = 1)
+  h2.pixels[0] = 5
+  assertEqualInt(h1.pixels[0], 1, "the original")
+  assertEqualInt(h2.pixels[0], 5, "the copy")
+}
+
+test "generic functions over a buffer read and write it" {
+  var a = filled(3, 2)
+  val snapshot = a
+  setFirst(a, 8)
+  assertEqualInt(firstOf(a), 8, "written")
+  assertEqualInt(firstOf(snapshot), 2, "snapshot")
+  var f = filled(2, 1.5f32)
+  val g = copyAndSetFirst(f, 2.5f32)
+  assertTrue(firstOf(f) == 1.5f32, "the argument")
+  assertTrue(firstOf(g) == 2.5f32, "the result")
+}
+
+test "passing a large buffer to an in parameter does not copy it" {
+  var b = filled(50000, 3)
+  val before = allocatedBytes()
+  var total = 0
+  var i = 0
+  while i < 20 {
+    total = total + readFirst(b)
+    i = i + 1
+  }
+  val used = allocatedBytes() - before
+  assertEqualInt(total, 60, "the reads")
+  assertTrue(used < 50000i64, "20 in-passes allocated " + used.toString() + " bytes")
+}
+
+test "returning a copy of a large buffer does not copy it" {
+  var b = filled(50000, 3)
+  val before = allocatedBytes()
+  var r = rebuild(b)
+  val used = allocatedBytes() - before
+  assertTrue(used < 50000i64, "rebuilding allocated " + used.toString() + " bytes")
+  assertEqualInt(r[49999], 3, "the result")
+  r[0] = 4
+  assertEqualInt(b[0], 3, "the argument")
+  assertEqualInt(r[0], 4, "the result after a write")
+}
+
+test "toSlice called as a method reads the buffer, including a call's result" {
+  val bytes = fromSlice([1u8, 2u8, 3u8])
+  val s = bytes.toSlice()
+  assertEqualInt(s.length, 3, "length")
+  assertTrue(s[2] == 3u8, "last byte")
+  assertEqualInt(fromSlice([4, 5]).toSlice()[1], 5, "a call's result")
+  var w = filled(2, 7)
+  val t = w.toSlice()
+  w[0] = 1
+  assertEqualInt(t[0], 7, "the slice is a copy")
+}
+
+test "only the first write to a shared buffer copies it" {
+  var a = filled(50000, 5)
+  var b = a
+  val before = allocatedBytes()
+  var i = 0
+  while i < 1000 {
+    b[i] = 1
+    i = i + 1
+  }
+  val used = allocatedBytes() - before
+  assertTrue(used > 100000i64, "the first write copied the storage")
+  assertTrue(used < 1000000i64, "1000 writes allocated " + used.toString() + " bytes: one copy, not a copy per write")
+  assertEqualInt(a[999], 5, "a")
+  assertEqualInt(b[999], 1, "b")
+}
+
+test "a copy shares storage until the first write, which copies once" {
+  var a = filled(50000, 5)
+  val before = allocatedBytes()
+  var b = a
+  val afterCopy = allocatedBytes()
+  assertTrue(afterCopy - before < 10000i64, "the copy allocated " + (afterCopy - before).toString() + " bytes")
+  b[0] = 1
+  val afterWrite = allocatedBytes()
+  assertTrue(afterWrite - afterCopy > 100000i64, "the first write copied the storage")
+  b[1] = 2
+  b[2] = 3
+  assertTrue(allocatedBytes() - afterWrite < 10000i64, "later writes are in place")
+  assertEqualInt(a[0], 5, "a")
+  assertEqualInt(b[0] + b[1] + b[2], 6, "b")
 }

@@ -5705,32 +5705,41 @@ func hoistOperandTypedMono(state: in MonoState, site: in HoistOperandTypeSite, e
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
 
-// A field of array type that `.copy(...)` carries over unchanged is stored in a
-// new record, so it is copied (D167): the record has identity when it has a
-// `var` field, and the two must not share the array.
+// A field of array or buffer type that `.copy(...)` carries over unchanged is
+// stored in a new record, so it is copied (D167): the record has identity when
+// it has a `var` field, and the two must not share the storage.
 func copyArrayFieldRead(read: in Expr, fieldTy: in Option[TypeExpr], sp: in Span): Expr {
   match fieldTy {
     case Some(te) -> match te.kind {
       case TArray(_, _) -> {
-        val targs: List[TypeArg] = newList()
-        targs.add(TAType(ty = te))
-        val segs: List[String] = newList()
-        segs.add(arrayCopyIntrinsic())
-        val callee = Expr(
-          kind = ETypeApp(
-            fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp),
-            args = targs
-          ),
-          span = sp
-        )
-        val cargs: List[CallArg] = newList()
-        cargs.add(CAPositional(expr = read))
-        Expr(kind = ECall(fn = callee, args = cargs), span = sp)
+        copyIntrinsicCallMono(te, read, sp)
+      }
+      case TGenericApp(head, _) -> if head.segments.count == 1 and head.segments[0] == "buffer" {
+        copyIntrinsicCallMono(te, read, sp)
+      } else {
+        read
       }
       case _ -> read
     }
     case None -> read
   }
+}
+
+func copyIntrinsicCallMono(te: in TypeExpr, read: in Expr, sp: in Span): Expr {
+  val targs: List[TypeArg] = newList()
+  targs.add(TAType(ty = te))
+  val segs: List[String] = newList()
+  segs.add(arrayCopyIntrinsic())
+  val callee = Expr(
+    kind = ETypeApp(
+      fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp),
+      args = targs
+    ),
+    span = sp
+  )
+  val cargs: List[CallArg] = newList()
+  cargs.add(CAPositional(expr = read))
+  Expr(kind = ECall(fn = callee, args = cargs), span = sp)
 }
 
 // The type of field `name` recorded on a copy site, when it has one.

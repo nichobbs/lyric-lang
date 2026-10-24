@@ -8,6 +8,9 @@
 //! writes follow; `benchBufferCopyOnFirstWrite` allocates one copy of the buffer
 //! per iteration, the write that meets a shared block.
 //!
+//! `benchBufferPassIn` shows an `in` pass of a large buffer copying nothing, on
+//! every target.
+//!
 //! Run with: lyric bench benchmarks/bench_buffer.l --target native
 @bench_module
 package Bench.Buffer
@@ -47,5 +50,28 @@ pub func benchBufferCopyOnFirstWrite(): Unit {
   }
   if a[1] < 0 {
     println(toString(a[1]))
+  }
+}
+
+// ─── Passing a large buffer to an `in` parameter ──────────────────────────────
+// A pass is a logical copy, so it marks the storage shared and copies nothing:
+// the allocation per run is the one `filled` call plus a small handle per pass
+// on every target, where an eager copy allocated a whole buffer per pass on
+// dotnet and the JVM (docs/67 §4.4).
+func firstElement(b: in buffer[Int]): Int {
+  b[0]
+}
+
+@bench
+pub func benchBufferPassIn(): Unit {
+  var b = filled(100000, 1)
+  var total = 0
+  var r = 0
+  while r < 1000 {
+    total = total + firstElement(b)
+    r = r + 1
+  }
+  if total < 0 {
+    println(toString(total))
   }
 }

@@ -47,6 +47,10 @@ pub record ArraySites {
   /// The result type of each `b.withPointer(f)` / `b.withMutPointer(f)` call
   /// (D187), keyed by the call's span.
   pointerClosures: Map[String, TypeExpr] = newMap()
+  /// A backend whose `buffer[T]` is a copy-on-write handle over a `List[T]`
+  /// (dotnet and the JVM, docs/67 §4.4): reads go through the handle's
+  /// storage and a write first makes the storage unique.
+  bufferHandles: Bool = false
 }
 
 func arrayLiteralOfPrimitive(te: in TypeExpr): Bool {
@@ -244,11 +248,23 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
   match e.kind {
     case EIndex(recv, idxs) -> match mapGet(sites.index, key) {
       case Some(site) -> {
+        // An index site is only recorded for a single index; a buffer or array
+        // has exactly one, so a multi-index `EIndex` is left as written.
         if idxs.count == 1 {
-          r = mkExpr(EIndex(receiver = recv, indices = oneExpr(checkedIndex(recv, idxs[0], site, e.span))), e.span)
+          val handles = sites.bufferHandles and site.len < 0
+          val storage = if handles { storageOf(recv, e.span) } else { recv }
+          r = mkExpr(EIndex(receiver = storage, indices = oneExpr(checkedIndex(storage, idxs[0], site, e.span))), e.span)
         }
       }
       case None -> ()
+    }
+    case EAssign(target, op, value) -> if sites.bufferHandles {
+      match findBufferWrite(target, sites, 0, true) {
+        case Some(w) -> {
+          r = blockOf(bufferWriteStmts(target, op, value, w, e.span), syntheticSpan(e.span))
+        }
+        case None -> ()
+      }
     }
     case EList(elems) -> match mapGet(sites.literal, key) {
       case Some(arrTe) -> if arrayLiteralOfPrimitive(arrTe) {
@@ -265,7 +281,7 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
     }
     case EMember(recv, _) -> match mapGet(sites.len, key) {
       case Some(n) -> {
-        r = lengthOf(recv, n, e.span)
+        r = lengthOf(if sites.bufferHandles and n < 0 { storageOf(recv, e.span) } else { recv }, n, e.span)
       }
       case None -> ()
     }
@@ -286,7 +302,7 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
         case EMember(recv, name) -> if name == "toSlice" and args.count == 0 {
           match mapGet(sites.slice, recordCopySiteKey(fn.span)) {
             case Some(site) -> {
-              r = toSliceOf(recv, site, e.span)
+              r = toSliceOf(recv, site, e.span, sites.bufferHandles)
             }
             case None -> ()
           }
@@ -337,6 +353,24 @@ func oneExpr(e: in Expr): List[Expr] {
   xs.add(e)
   xs
 }
+
+// ── The buffer handle (dotnet and the JVM, docs/67 §4.4) ────────────────────
+// A `buffer[T]` is a `List[List[T]]`: slot 0 is the storage, a `List[T]`, and
+// a second slot, present when the storage may be shared with another handle,
+// is a copy of the first.  A copy of a buffer is a fresh handle over the same
+// storage with both handles marked, which is O(1); a write meets a marked
+// handle by replacing its storage with a private copy and clearing its mark.
+// The mark is never cleared on the handle a copy was taken from, so the last
+// holder of shared storage copies once more than it needs to.  The handle is
+// only ever mutated through the one place that owns it (D167), so a write
+// through an `inout` parameter reaches the caller's handle.
+/// The storage of the buffer handle `h`.
+func storageOf(h: in Expr, sp: in Span): Expr {
+  mkExpr(EIndex(receiver = h, indices = oneExpr(intLit(0, syntheticSpan(sp)))), syntheticSpan(sp))
+}
+
+/// `List[List[T]]`, the type of a buffer handle whose element is `elem`.
+func handleTypeOf(elem: in TypeExpr, sp: in Span): TypeExpr = listTypeOf(listTypeOf(elem, sp), sp)
 
 func intLit(n: in Int, sp: in Span): Expr {
   mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
@@ -545,7 +579,7 @@ func listTypeOf(elem: in TypeExpr, sp: in Span): TypeExpr {
 //     val out: List[T] = newList()
 //     for i in 0 ..< N { out.add(a'[i]) }
 //     out.toArray() }
-func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
+func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span, handles: in Bool): Expr {
   val wsp = syntheticSpan(sp)
   val base = "__lyric_ts_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
   val aName = base + "_a"
@@ -553,8 +587,15 @@ func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
   val iName = base + "_i"
   val stmts: List[Statement] = newList()
   stmts.add(typedLocal(aName, site.arrayType, recv, wsp))
+  // A buffer's length is its storage's count, read at run time.
+  val storage = if handles and site.len < 0 { storageOf(localRef(aName, wsp), wsp) } else { localRef(aName, wsp) }
+  val countE = if site.len < 0 {
+    mkExpr(EMember(receiver = storage, memberName = "count"), wsp)
+  } else {
+    intLit(site.len, wsp)
+  }
   val listTy = match site.elemType { case Some(et) -> Some(value = listTypeOf(et, wsp)); case None -> None }
-  stmts.add(typedLocal(oName, listTy, callOf("newListWithCapacity", oneExpr(intLit(site.len, wsp)), wsp), wsp))
+  stmts.add(typedLocal(oName, listTy, callOf("newListWithCapacity", oneExpr(countE), wsp), wsp))
   val body: List[Statement] = newList()
   body.add(
     mkStmt(
@@ -562,14 +603,14 @@ func toSliceOf(recv: in Expr, site: in ArraySite, sp: in Span): Expr {
         expr = method1(
           localRef(oName, wsp),
           "add",
-          copyArrayElement(uncheckedIndex(localRef(aName, wsp), localRef(iName, wsp), wsp), site.elemType, wsp),
+          copyArrayElement(uncheckedIndex(storage, localRef(iName, wsp), wsp), site.elemType, wsp),
           wsp
         )
       ),
       wsp
     )
   )
-  stmts.add(rangeFor(None, iName, site.len, body, wsp))
+  stmts.add(rangeForTo(None, iName, countE, body, wsp))
   stmts.add(mkStmt(SExpr(expr = method0(localRef(oName, wsp), "toArray", wsp)), wsp))
   blockOf(stmts, wsp)
 }
@@ -605,9 +646,195 @@ func rangeForTo(
   mkStmt(SFor(label = label, pat = pat, iter = range, body = Block(statements = body, span = sp)), sp)
 }
 
+// ── Writes through a buffer handle ──────────────────────────────────────────
+// `b[i] = v` (and `op=`, and a write to an element of an element array,
+// `b[i][j] = v`) first makes the handle's storage private:
+//   { if b.count > 1 { b[0] = <copy of b[0]>; b.removeAt(1) }
+//     b[0][i] = v }
+// `b` is evaluated more than once, which a buffer receiver's rule (T0174)
+// allows.  A value that can run code (a call, a copy of another place) is bound
+// first, with the indexes ahead of it, so it is evaluated before the check:
+// it may itself copy `b`, which marks the storage shared after a check made
+// earlier, or write through `b` by an `inout` argument, which replaces the
+// storage the target already named.
+record BufferWrite {
+  base: Expr
+  elem: Option[TypeExpr]
+  outer: Int
+  typed: Bool
+}
+
+func findBufferWrite(t: in Expr, sites: in ArraySites, outer: in Int, typed: in Bool): Option[BufferWrite] {
+  match t.kind {
+    case EParen(inner) -> findBufferWrite(inner, sites, outer, typed)
+    case EIndex(recv, _) -> match mapGet(sites.index, recordCopySiteKey(t.span)) {
+      case Some(site) -> if site.len < 0 {
+        match recv.kind {
+          case EIndex(base, _) -> Some(value = BufferWrite(base = base, elem = site.elem, outer = outer, typed = typed))
+          case _ -> None
+        }
+      } else {
+        findBufferWrite(recv, sites, outer + 1, typed)
+      }
+      case None -> findBufferWrite(recv, sites, outer, false)
+    }
+    case EMember(recv, _) -> findBufferWrite(recv, sites, outer, false)
+    case _ -> None
+  }
+}
+
+// A value that cannot run code or copy a place.
+func isPlainValue(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EPath(_) -> true
+    case ESelf -> true
+    case EParen(inner) -> isPlainValue(inner)
+    case EMember(recv, _) -> isPlainValue(recv)
+    case EPrefix(_, inner) -> isPlainValue(inner)
+    case EBinop(_, l, r) -> isPlainValue(l) and isPlainValue(r)
+    case EIndex(recv, idxs) -> idxs.count == 1 and isPlainValue(recv) and isPlainValue(idxs[0])
+    case _ -> false
+  }
+}
+
+// The type of the element a write stores: the buffer's element, indexed again
+// for each array level outside it.
+func writeValueType(w: in BufferWrite): Option[TypeExpr] {
+  if not w.typed {
+    return None
+  }
+  var t = w.elem
+  var i = 0
+  while i < w.outer {
+    t = match t {
+      case Some(x) -> match arrayShapeOf(x) { case Some(sh) -> Some(value = sh.elem); case None -> None }
+      case None -> None
+    }
+    i = i + 1
+  }
+  t
+}
+
+func ensureUniqueStmt(w: in BufferWrite, sp: in Span): Statement {
+  val handle = w.base
+  val cond = bin(BGt, mkExpr(EMember(receiver = handle, memberName = "count"), sp), intLit(1, sp), sp)
+  val copied = match w.elem {
+    case Some(el) -> {
+      val targs: List[TypeArg] = newList()
+      targs.add(TAType(ty = bufferTypeOf(el, sp)))
+      mkExpr(
+        ECall(
+          fn = mkExpr(ETypeApp(fn = localRef(bufferItemsCopyIntrinsic(), sp), args = targs), sp),
+          args = singleArg(storageOf(handle, sp))
+        ),
+        sp
+      )
+    }
+    case None -> method0(method0(storageOf(handle, sp), "toArray", sp), "toList", sp)
+  }
+  val body: List[Statement] = newList()
+  body.add(mkStmt(SAssign(target = storageOf(handle, sp), op = AssEq, value = copied), sp))
+  body.add(mkStmt(SExpr(expr = method1(handle, "removeAt", intLit(1, sp), sp)), sp))
+  ifThen(cond, body, sp)
+}
+
+func singleArg(e: in Expr): List[CallArg] {
+  val cargs: List[CallArg] = newList()
+  cargs.add(CAPositional(expr = e))
+  cargs
+}
+
+func bufferTypeOf(elem: in TypeExpr, sp: in Span): TypeExpr {
+  val segs: List[String] = newList()
+  segs.add("buffer")
+  val targs: List[TypeArg] = newList()
+  targs.add(TAType(ty = elem))
+  TypeExpr(kind = TGenericApp(head = ModulePath(segments = segs, span = sp), args = targs), span = sp)
+}
+
+// The target with each index that is not a literal bound to an `Int` local
+// ahead of the write, root first, as the evaluation order of the unlowered
+// write is.
+func hoistTargetIndexes(target: in Expr, base: in String, stmts: in List[Statement], wsp: in Span): Expr {
+  val levels: List[Expr] = newList()
+  var root = target
+  var going = true
+  while going {
+    match root.kind {
+      case EIndex(inner, _) -> {
+        levels.add(root)
+        root = inner
+      }
+      case EParen(inner) -> {
+        root = inner
+      }
+      case _ -> {
+        going = false
+      }
+    }
+  }
+  var cur: Expr = root
+  var k = levels.count - 1
+  var n = 0
+  while k >= 0 {
+    val level = levels[k]
+    match level.kind {
+      case EIndex(_, idxs) -> {
+        val idx = idxs[0]
+        val newIdx = match uncheckedArg(idx) {
+          case Some(inner) -> {
+            val isLit = match inner.kind { case ELiteral(_) -> true; case _ -> false }
+            if isLit {
+              idx
+            } else {
+              val iname = base + "_i" + toString(n)
+              n = n + 1
+              stmts.add(typedLocal(iname, Some(value = intTypeExpr(wsp)), inner, wsp))
+              callOf(arrayUncheckedIntrinsic(), oneExpr(localRef(iname, wsp)), wsp)
+            }
+          }
+          case None -> idx
+        }
+        cur = mkExpr(EIndex(receiver = cur, indices = oneExpr(newIdx)), level.span)
+      }
+      case _ -> ()
+    }
+    k = k - 1
+  }
+  cur
+}
+
+/// The statements of a write `target op= value` through a buffer handle, the
+/// last being the write itself at `sp`.
+func bufferWriteStmts(target: in Expr, op: in AssignOp, value: in Expr, w: in BufferWrite, sp: in Span): List[Statement] {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_bw_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val stmts: List[Statement] = newList()
+  var tgt = target
+  var v = value
+  if not isPlainValue(value) {
+    tgt = hoistTargetIndexes(target, base, stmts, wsp)
+    stmts.add(typedLocal(base + "_v", writeValueType(w), value, wsp))
+    v = localRef(base + "_v", wsp)
+  }
+  stmts.add(ensureUniqueStmt(w, wsp))
+  stmts.add(mkStmt(SAssign(target = tgt, op = op, value = v), sp))
+  stmts
+}
+
 // ── Statements ──────────────────────────────────────────────────────────────
 func rewriteArrayStmt(s: in Statement, sites: in ArraySites): Statement {
   match s.kind {
+    case SAssign(target, op, value) -> {
+      if sites.bufferHandles {
+        match findBufferWrite(target, sites, 0, true) {
+          case Some(w) -> return mkStmt(SExpr(expr = blockOf(bufferWriteStmts(target, op, value, w, s.span), syntheticSpan(s.span))), s.span)
+          case None -> ()
+        }
+      }
+      s
+    }
     case SLocal(binding) -> match binding {
       case LBVar(name, ty, init) -> match init {
         case None -> match mapGet(sites.zero, recordCopySiteKey(s.span)) {
@@ -630,7 +857,15 @@ func rewriteArrayStmt(s: in Statement, sites: in ArraySites): Statement {
       case _ -> s
     }
     case SFor(label, pat, iter, body) -> match mapGet(sites.forIter, recordCopySiteKey(iter.span)) {
-      case Some(site) -> forOverArray(s, label, pat, iter, body, site)
+      case Some(site) -> forOverArray(
+        s,
+        label,
+        pat,
+        iter,
+        body,
+        site,
+        sites.bufferHandles
+      )
       case None -> s
     }
     case _ -> s
@@ -647,6 +882,7 @@ func forOverArray(
   iter: in Expr,
   body: in Block,
   site: in ArraySite,
+  handles: in Bool,
 ): Statement {
   val wsp = syntheticSpan(s.span)
   val base = "__lyric_fa_" + toString(s.span.startPos.offset) + "_" + toString(s.span.endPos.offset)
@@ -655,13 +891,14 @@ func forOverArray(
   val stmts: List[Statement] = newList()
   stmts.add(typedLocal(aName, site.arrayType, iter, wsp))
   val inner: List[Statement] = newList()
-  val elemRead = uncheckedIndex(localRef(aName, wsp), localRef(iName, wsp), wsp)
+  val storage = if handles and site.len < 0 { storageOf(localRef(aName, wsp), wsp) } else { localRef(aName, wsp) }
+  val elemRead = uncheckedIndex(storage, localRef(iName, wsp), wsp)
   inner.add(mkStmt(SLocal(binding = LBVal(pat = pat, ty = None, init = elemRead)), wsp))
   for st in body.statements {
     inner.add(st)
   }
   val loop = if site.len < 0 {
-    rangeForTo(label, iName, mkExpr(EMember(receiver = localRef(aName, wsp), memberName = "count"), wsp), inner, wsp)
+    rangeForTo(label, iName, mkExpr(EMember(receiver = storage, memberName = "count"), wsp), inner, wsp)
   } else {
     rangeFor(label, iName, site.len, inner, wsp)
   }
@@ -678,7 +915,54 @@ func forOverArray(
 /// those of an array whose element is a primitive (`primitiveArrayElement`)
 /// stay for a backend with typed primitive arrays (#8041).
 pub func lowerArrayIntrinsicsToLists(file: in SourceFile, keepPrimitive: in Bool): SourceFile {
-  mapFileAndContracts(file, { e: Expr -> rewriteArrayIntrinsic(e, keepPrimitive) }, { s: Statement -> s })
+  mapFileAndContracts(
+    file,
+    { e: Expr -> rewriteArrayIntrinsic(e, keepPrimitive) },
+    { s: Statement -> rewriteHandleLocal(s) }
+  )
+}
+
+// `val made: buffer[T] = list.__lyric_buffer_from_list()` (`Std.Buffer`, the
+// one place a buffer is made from a list) on a handle backend:
+//   val made: buffer[T] = { val h: List[List[T]] = newListWithCapacity(1); h.add(list); h }
+// The binding's annotation is where the element type comes from.
+func rewriteHandleLocal(s: in Statement): Statement {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, ty, init) -> {
+        val elem = match ty { case Some(te) -> bufferElementOf(te); case None -> None }
+        match elem {
+          case Some(el) -> match init.kind {
+            case ECall(fn, args) -> match fn.kind {
+              case EMember(list, member) -> if args.count == 0 and member == bufferFromListMember() {
+                val wsp = syntheticSpan(s.span)
+                val name = "__lyric_bl_" + toString(s.span.startPos.offset) + "_" + toString(s.span.endPos.offset)
+                val stmts: List[Statement] = newList()
+                stmts.add(
+                  typedLocal(
+                    name,
+                    Some(value = handleTypeOf(el, wsp)),
+                    callOf("newListWithCapacity", oneExpr(intLit(1, wsp)), wsp),
+                    wsp
+                  )
+                )
+                stmts.add(mkStmt(SExpr(expr = method1(localRef(name, wsp), "add", list, wsp)), wsp))
+                stmts.add(mkStmt(SExpr(expr = localRef(name, wsp)), wsp))
+                mkStmt(SLocal(binding = LBVal(pat = pat, ty = ty, init = blockOf(stmts, wsp))), s.span)
+              } else {
+                s
+              }
+              case _ -> s
+            }
+            case _ -> s
+          }
+          case None -> s
+        }
+      }
+      case _ -> s
+    }
+    case _ -> s
+  }
 }
 
 func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
@@ -686,8 +970,10 @@ func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
     case ECall(fn, args) -> {
       // `Std.Buffer`'s bridge to the list that represents a buffer (D185).
       match fn.kind {
-        case EMember(recv, member) -> if args.count == 0 and (member == bufferAsListMember() or member == bufferFromListMember()) {
-          return recv
+        case EMember(recv, member) -> {
+          if args.count == 0 and member == bufferAsListMember() {
+            return storageOf(recv, e.span)
+          }
         }
         case _ -> ()
       }
@@ -713,6 +999,15 @@ func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
             case None -> e
           }
           case _ -> e
+        }
+      }
+      if name == bufferItemsCopyIntrinsic() and args.count == 1 {
+        return match fn.kind {
+          case ETypeApp(_, targs) -> match arrayTypeArg(targs) {
+            case Some(arr) -> copyItems(arr, callArgValue(args[0]), keepPrimitive, e.span)
+            case None -> callArgValue(args[0])
+          }
+          case _ -> callArgValue(args[0])
         }
       }
       if name == arrayCopyIntrinsic() and args.count == 1 {
@@ -849,11 +1144,68 @@ func whileLess(iName: in String, n: in Int, body: in List[Statement], sp: in Spa
   mkStmt(SWhile(label = None, cond = cond, body = Block(statements = body, span = sp)), sp)
 }
 
-// `copy[array[N, T]](a)`:
+// `copy[array[N, T]](a)`: a fresh list holding a copy of each element (see
+// `copyItems`); `copy[buffer[T]](a)`: a fresh handle over the same storage
+// (see `shareHandle`).
+func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Span): Expr {
+  if arr.len < 0 {
+    return shareHandle(arr, a, sp)
+  }
+  copyItems(arr, a, keepPrimitive, sp)
+}
+
+// `copy[buffer[T]](h)`, which marks both handles instead of copying:
+//   { val s: List[List[T]] = h
+//     if s.count == 1 { s.add(s[0]) }
+//     val d: List[List[T]] = newListWithCapacity(2)
+//     d.add(s[0]); d.add(s[0]); d }
+// The first binding keeps the `__lyric_ac_` prefix of the copy it replaces,
+// which the JVM's `spawn` lowering finds to snapshot an argument.  The source
+// handle stays marked after the share, so its next write copies even if the
+// other handle has been dropped: one copy more than native, never a wrong one.
+func shareHandle(arr: in ArrayShape, h: in Expr, sp: in Span): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_ac_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset) + "_" +
+    toString(arrayDepth(arr.elem))
+  val sName = base + "_s"
+  val dName = base + "_d"
+  val handleTy = Some(value = handleTypeOf(arr.elem, wsp))
+  val stmts: List[Statement] = newList()
+  stmts.add(typedLocal(sName, handleTy, h, wsp))
+  val src = localRef(sName, wsp)
+  val countIsOne = bin(BEq, mkExpr(EMember(receiver = src, memberName = "count"), wsp), intLit(1, wsp), wsp)
+  val mark: List[Statement] = newList()
+  mark.add(mkStmt(SExpr(expr = method1(localRef(sName, wsp), "add", storageOf(localRef(sName, wsp), wsp), wsp)), wsp))
+  stmts.add(ifThen(countIsOne, mark, wsp))
+  stmts.add(typedLocal(dName, handleTy, callOf("newListWithCapacity", oneExpr(intLit(2, wsp)), wsp), wsp))
+  stmts.add(mkStmt(SExpr(expr = method1(localRef(dName, wsp), "add", storageOf(localRef(sName, wsp), wsp), wsp)), wsp))
+  stmts.add(mkStmt(SExpr(expr = method1(localRef(dName, wsp), "add", storageOf(localRef(sName, wsp), wsp), wsp)), wsp))
+  stmts.add(mkStmt(SExpr(expr = localRef(dName, wsp)), wsp))
+  blockOf(stmts, wsp)
+}
+
+func ifThen(cond: in Expr, thenStmts: in List[Statement], sp: in Span): Statement {
+  mkStmt(
+    SExpr(
+      expr = mkExpr(
+        EIf(
+          cond = cond,
+          thenBranch = EOBBlock(block = Block(statements = thenStmts, span = sp)),
+          elseBranch = None,
+          thenForm = false
+        ),
+        sp
+      )
+    ),
+    sp
+  )
+}
+
+// A copy of the elements of `a`:
 //   { val s: List[T] = a; val d: List[T] = newList()
 //     for x in s { d.add(x) }; d }
 // with each element of a nested array copied in turn.
-func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Span): Expr {
+func copyItems(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
   val base = "__lyric_ac_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset) + "_" +
     toString(arrayDepth(arr.elem))
@@ -870,7 +1222,7 @@ func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Spa
   val elemCopy = match arrayShapeOf(arr.elem) {
     // An element array the backend keeps native (#8041) is copied by the
     // intrinsic, not as a list.
-    case Some(inner) -> if keepPrimitive and primitiveArrayElement(inner.elem) {
+    case Some(inner) -> if keepPrimitive and inner.len >= 0 and primitiveArrayElement(inner.elem) {
       val targs: List[TypeArg] = newList()
       targs.add(TAType(ty = arr.elem))
       val cargs: List[CallArg] = newList()
