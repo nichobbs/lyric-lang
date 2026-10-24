@@ -6570,6 +6570,37 @@ func buildQualifiedGenNames(
   acc
 }
 
+// Whether qualified call path `path` names, by its qualifier (every segment
+// but the last), a package the root file imports that is not `origin`, the
+// declaring package of the generic its last segment matches.  The import
+// rewriter has already expanded an `as` name to the full package path, so
+// the qualifier is compared as spelled.  An unknown origin is never another
+// package.
+func qualifierNamesOtherImportedPkgMono(state: in MonoState, path: in ModulePath, origin: in String): Bool {
+  if origin.length == 0 or path.segments.count < 2 {
+    return false
+  }
+  val quals: List[String] = newList()
+  var i = 0
+  while i < path.segments.count - 1 {
+    quals.add(path.segments[i])
+    i = i + 1
+  }
+  val qualifier = Str.joinList(".", quals)
+  if qualifier == origin {
+    return false
+  }
+  if state.rootImports.containsKey(qualifier) {
+    return true
+  }
+  for k in mapKeys(state.rootImports) {
+    if Str.startsWith(k, qualifier + "#") {
+      return true
+    }
+  }
+  false
+}
+
 // The bare generic name a qualified call path targets, or "" when `path` is
 // not a qualified call to an imported generic.
 func qualifiedGenTargetMono(state: in MonoState, path: in ModulePath): String {
@@ -8087,6 +8118,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
             val qfname = path.segments[path.segments.count - 1]
             match mapGet(state.genDecls, qfname) {
               case Some(qBaseDecl) -> {
+                // The qualifier names a package the file imports, and the
+                // generic is declared in another one: the call is to that
+                // package's own (non-generic) `qfname`, never to this
+                // generic.  `Ui.Plugins.Build.button(l, m)` must not become
+                // a specialisation of `Ui.Widgets.button[Msg]`.
+                if qualifierNamesOtherImportedPkgMono(state, path, originPkgOf(qBaseDecl.annotations)) {
+                  return Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+                }
                 val qTypeParams = extractTypeParamNames(qBaseDecl.generics)
                 val qValueParams = extractValueParamNames(qBaseDecl.generics)
                 // Guard against a bare-name collision: `genDecls` is keyed by
