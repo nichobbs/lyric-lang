@@ -115,6 +115,17 @@ pub func hostReadLineOpt(): Option[String] {
   }
 }
 
+// Result seam for Std.Console.readLine: the host throws on a failed read, and
+// the catch lives here because `--target native` has no unwinding (D-N-003)
+// and its twin reports the failure as a return code instead.
+pub func hostReadLineResult(): Result[Option[String], String] {
+  try {
+    Ok(value = hostReadLineOpt())
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
 pub func hostConsoleErrorWriteLine(text: in String): Unit {
   val e = JSystem.err
   e.println(text)

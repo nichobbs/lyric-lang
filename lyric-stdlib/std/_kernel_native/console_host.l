@@ -14,8 +14,8 @@
 //! read polls for readiness first, so a read that times out consumes
 //! nothing and the bytes that arrive later go to the next read, as the
 //! managed twins' outstanding background read delivers them.
-//! `Std.Console.readLine` itself still does not lower here: its body
-//! catches a host `Bug`, and this target has no unwinding (D-N-003).
+//! `Std.Console.readLine` reads through `hostReadLineResult`, which reports a
+//! failed read as an `Err` because this target has no unwinding (D-N-003).
 @axiom("POSIX read(2), write(2) and poll(2) via lyric-rt conform to their documented contracts")
 @io
 package Std.ConsoleHost
@@ -70,6 +70,21 @@ pub func hostReadLineOpt(): Option[String] {
     None
   } else {
     panic("Std.Console.readLine: stdin could not be read")
+  }
+}
+
+// Result seam for Std.Console.readLine: a failed read is an `Err`, since
+// this target cannot catch a panic (D-N-003).
+@unsafe_ffi
+pub func hostReadLineResult(): Result[Option[String], String] {
+  var line: String = ""
+  val rc = rtStdinReadLine(nativeAddrOf(line))
+  if rc == 1 {
+    Ok(value = Some(value = line))
+  } else if rc == 0 {
+    Ok(value = None)
+  } else {
+    Err(error = "stdin could not be read")
   }
 }
 
