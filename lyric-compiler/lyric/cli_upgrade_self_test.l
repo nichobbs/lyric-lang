@@ -21,6 +21,7 @@ package Lyric.CliUpgradeSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
 import Lyric.Cli as Cli
 
 test "cli_upgrade: conflicting nuget and github options → error" {
@@ -137,4 +138,35 @@ test "extractTagNameFromReleaseJson: 'tag_name' occurring as a string VALUE (not
     case Some(tag) -> assertEqual(tag, "v2.0.0", "the genuine tag_name key is matched, not the value occurrence")
     case None -> assertTrue(false, "expected Some(\"v2.0.0\"), got None")
   }
+}
+
+test "installerScriptName: install.ps1 on Windows, install.sh elsewhere" {
+  assertEqual(Cli.installerScriptName(true), "install.ps1", "windows")
+  assertEqual(Cli.installerScriptName(false), "install.sh", "posix")
+}
+
+test "installerInterpreter: Windows PowerShell on Windows, sh elsewhere" {
+  assertEqual(Cli.installerInterpreter(true), "powershell", "windows")
+  assertEqual(Cli.installerInterpreter(false), "sh", "posix")
+}
+
+test "installerArgs: POSIX command line is unchanged" {
+  val args = Cli.installerArgs(false, "/tmp/i.sh", "/opt/lyric", Some(value = "0.7.10"))
+  assertEqual(Str.join(" ", args.toArray()), "/tmp/i.sh --dir /opt/lyric --no-path --version 0.7.10", "posix args")
+}
+
+test "installerArgs: Windows runs the script bypassing the execution policy" {
+  val args = Cli.installerArgs(true, "C:\\t\\i.ps1", "C:\\lyric", Some(value = "0.7.10"))
+  assertEqual(
+    Str.join(" ", args.toArray()),
+    "-NoProfile -ExecutionPolicy Bypass -File C:\\t\\i.ps1 -Dir C:\\lyric -NoPath -Version 0.7.10",
+    "windows args"
+  )
+}
+
+test "installerArgs: no version omits the version flag on both hosts" {
+  val posix = Cli.installerArgs(false, "i.sh", "d", None)
+  val win = Cli.installerArgs(true, "i.ps1", "d", None)
+  assertEqualInt(posix.count, 4, "posix arg count")
+  assertEqualInt(win.count, 8, "windows arg count")
 }

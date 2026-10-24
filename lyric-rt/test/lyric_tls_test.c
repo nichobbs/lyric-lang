@@ -1142,6 +1142,30 @@ static void test_sock_shutdown_wakes_blocked_read(void) {
     lyric_sock_close(listen_fd);
 }
 
+/* The shutdown can also land before the reader has issued its recv (a
+ * handler thread that has answered a request and not yet looped back to read
+ * the next one): the read must still end, not block for good.  No sleep is
+ * involved, so the order is fixed.  This is the window #8501's flaky
+ * llvm_http_server_self_test item E fell into on Windows, where CancelIoEx
+ * cancels only I/O already pending. */
+static void test_sock_shutdown_before_read(void) {
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    CHECK(lyric_sock_shutdown(server_fd, 2) == 0);
+    blocked_read_arg arg;
+    arg.fd = server_fd;
+    arg.result = 99;
+    int64_t th = 0;
+    lyric_thread_create(&th, blocked_reader, &arg);
+    int64_t start = mono_ms();
+    lyric_thread_join(th, NULL);
+    CHECK(mono_ms() - start < 3000);
+    CHECK(arg.result <= 0);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+}
+
 /* A client that connects and never sends a ClientHello: the server
  * handshake fails at the timeout rather than blocking its thread forever. */
 static void test_tls_handshake_timeout(void) {
@@ -1234,6 +1258,7 @@ int main(void) {
     test_accept_interruptible_double_signal();
     test_sock_read_timeout();
     test_sock_shutdown_wakes_blocked_read();
+    test_sock_shutdown_before_read();
 
     if (!lyric_tls_available()) {
         char err[256];

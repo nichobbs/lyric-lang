@@ -51,6 +51,11 @@ void lyric_net_set_err(const char* fmt, ...);
  * (lyric_sock_set_timeouts). */
 int lyric_win32_sock_timed_out(int wsa_error);
 
+/* recv() on socket `s` (a SOCKET) that lyric_sock_shutdown on the same socket
+ * always ends: 0 means end of stream or shut down, -1 an error, with
+ * WSAETIMEDOUT when SO_RCVTIMEO elapses.  Defined in lyric_sock_win32.c. */
+int lyric_win32_sock_recv(uintptr_t s, char* buf, int len);
+
 /* Nanoseconds since the Unix epoch of a FILETIME (100 ns ticks since
  * 1601-01-01). */
 int64_t lyric_win32_filetime_to_unix_nanos(FILETIME ft);

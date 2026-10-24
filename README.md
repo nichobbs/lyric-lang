@@ -42,6 +42,13 @@ Then start a new shell and run:
 lyric --version
 ```
 
+On Windows, use the PowerShell installer instead (Windows PowerShell 5.1 or PowerShell 7):
+```powershell
+irm https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.ps1 -OutFile install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+It verifies the download against the release's `SHASUMS256.txt`, installs to `%USERPROFILE%\.lyric\bin`, and adds that directory to your user `PATH`. Pass `-Version 0.7.10`, `-Dir C:\Tools\lyric` or `-NoPath` to change the defaults.
+
 **Options:**
 ```sh
 # Install a specific version

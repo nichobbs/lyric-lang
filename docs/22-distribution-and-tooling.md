@@ -213,7 +213,7 @@ The `lyric upgrade` command allows the Lyric CLI to update itself directly from 
 
 By default, the upgrade command auto-detects the active installation environment:
 - **.NET Global Tool (NuGet)**: If the compiler binary directory path (`appBaseDirectory()`) contains `.dotnet`, `dotnet-tools`, or `.store`, the upgrade runs `dotnet tool update -g lyric`.
-- **GitHub Release Installer**: Otherwise, it defaults to the GitHub channel. It downloads the canonical `install.sh` installation script and runs it.
+- **GitHub Release Installer**: Otherwise, it defaults to the GitHub channel. It downloads the canonical installation script for the host and runs it: `install.sh` under `sh` on Linux and macOS, `install.ps1` under Windows PowerShell (`powershell -NoProfile -ExecutionPolicy Bypass -File`) on Windows.
 
 ### 5.1.2. Explicit Channel & Options
 
@@ -227,10 +227,12 @@ Users can force a specific channel or configure behavior using explicit command-
 ### 5.1.3. Integrity and Security Controls
 
 The GitHub upgrade path implements strict security and reliability controls:
-1. **Dynamic Checksum Verification**: It fetches both the installation script (`install.sh`) and its corresponding SHA-256 checksum file (`install.sh.sha256`) dynamically from the target tag/ref.
+1. **Dynamic Checksum Verification**: It fetches both the installation script (`install.sh` or `install.ps1`) and its corresponding SHA-256 checksum file (`install.sh.sha256` / `install.ps1.sha256`) dynamically from the target tag/ref. `.github/workflows/windows-build.yml` fails when `install.ps1.sha256` is stale.
 2. **Case-Insensitive Integrity Check**: The downloaded script's SHA-256 digest is computed using `Hash.sha256OfBytes` and normalized to uppercase, matching the uppercase-normalized checksum from the `.sha256` file.
 3. **Download Exit-Code Validation**: The exit codes of `curl` and `wget` are verified (`exitCode == 0`) before continuing, ensuring error payload pages are never written to disk or executed.
 4. **Symlink/TOCTOU Prevention**: The downloaded script is written to a unique, temporary path containing a randomly-generated UUID (e.g., `lyric-install-<uuid>.sh`) in the system temp directory, preventing predictable path exploits. The file is cleanly removed in both success and failure paths.
+
+`install.ps1` replaces an installation whose `lyric.exe` is running (as it always is during `lyric upgrade`): Windows refuses to overwrite or delete a running image but allows renaming it, so each file being replaced is renamed to `<name>.old` first, everything is rolled back if any step fails, and leftovers are removed on the next run. `scripts/ci/windows-installer-test.ps1` exercises this on a Windows runner against the freshly built archive.
 
 `install.sh` itself applies the same fail-closed pattern to the archive it downloads (#6242): after fetching the platform archive, it downloads that release's `SHASUMS256.txt` (§5.2), locates the archive's manifest line, and compares the archive's own SHA-256 digest (via `sha256sum` or `shasum -a 256`, case-insensitively) before extracting — a missing manifest entry or a digest mismatch aborts the install rather than extracting unverified bytes. A consequence: `install.sh --version <v>` only works for releases that publish a `SHASUMS256.txt`; older releases that predate checksum publishing are refused with an explicit error rather than installed unverified.
 

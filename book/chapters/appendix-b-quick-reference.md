@@ -1346,7 +1346,7 @@ lyric update                           # re-resolve all deps to latest compatibl
                                        # and rewrite lyric.lock (deletes the old lock first)
 lyric upgrade                           # self-upgrade the lyric CLI tool (auto-detects channel)
 lyric upgrade --nuget                   # force self-upgrade via NuGet global tool update
-lyric upgrade --github                  # force self-upgrade via raw GitHub Releases installer script
+lyric upgrade --github                  # force self-upgrade via the GitHub Releases installer script (install.sh; install.ps1 on Windows)
 lyric upgrade --version 0.4.6           # upgrade to a specific semver version
 lyric upgrade --dir ./bin               # specify target installation directory (GitHub Releases only)
 lyric upgrade --dry-run                 # dry-run and print planned execution commands
