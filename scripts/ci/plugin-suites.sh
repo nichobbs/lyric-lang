@@ -10,7 +10,10 @@
 #      JVM host and a dotnet or JVM plugin (scripts/ci/plugin-e2e.sh).
 #   4. A plugin written with the D207 annotations against the generated host
 #      side, the same pairs (scripts/ci/plugin-generated-e2e.sh).
-#   5. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
+#   5. Protocol points: a supervised session with a protocol plugin and
+#      requests routed through its grants, the same pairs
+#      (scripts/ci/plugin-protocol-e2e.sh).
+#   6. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
 #      plugins (scripts/ci/plugin-sdk-e2e.sh).
 #
 # Native hosts and plugins run in scripts/ci/native-backend-self-tests.sh and
@@ -46,6 +49,8 @@ for host in dotnet jvm; do
     bash scripts/ci/plugin-e2e.sh "$lyric_bin" "$host" "$plugin"
     echo "== plugin-generated-e2e: $host host, $plugin plugin"
     bash scripts/ci/plugin-generated-e2e.sh "$lyric_bin" "$host" "$plugin"
+    echo "== plugin-protocol-e2e: $host host, $plugin plugin"
+    bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" "$host" "$plugin"
   done
 done
 

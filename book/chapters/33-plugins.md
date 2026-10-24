@@ -380,6 +380,67 @@ speaks the same protocol on its stdin and stdout, so the host code above does
 not change, but the plugin's only way to reach anything outside itself is a
 capability call, which the host's grants and guards control.
 
+## Protocol plugins: hosting a language server
+
+Some plugins already speak a protocol of their own. A language server speaks
+LSP, and there is no reason to re-describe its messages as Lyric methods. A
+*protocol point* declares the protocol and the capabilities, and nothing
+else:
+
+```lyric
+pub exposed record LanguageContributions {
+  languageIds: List[String]
+  fileGlobs: List[String]
+}
+
+@capability(grant = WorkspaceEditGrant)
+pub interface WorkspaceEdit {
+  func applyEdit(edit: in DocumentEdit): Result[Bool, String]
+    requires: uriWithin(edit.uri, grant.roots)
+}
+
+@protocol_point(protocol = "lsp/3.17", version = "1.0", contributions = LanguageContributions, allows(WorkspaceEdit))
+pub interface LanguageServer {}
+```
+
+A protocol plugin is an ordinary program in any language, with a
+hand-written `plugin.json` that `lyric plugin check` validates. It implements
+that one point, because its stdin and stdout carry its own protocol.
+
+The host opens a supervised session and speaks the protocol over the
+session's process:
+
+```lyric
+val session = match openLanguageServerSession(host, pluginId) {
+  case Ok(s) -> s
+  case Err(b) -> return fail(boundaryErrorMessage(b))
+}
+val proc = match protocolProcess(session) { case Ok(p) -> p; case Err(_) -> return 1 }
+var peer = newPeer(newContentLengthTransportOverProcess(proc), client)
+```
+
+If the server exits, the next `protocolProcess` restarts it with the same
+backoff and limit as any other plugin and increments `session.generation`; a
+client that sees the generation change sends `initialize` again.
+`closeProtocolSession` stops it without counting a crash.
+
+The capabilities still mean something. When the server sends
+`workspace/applyEdit`, the client calls the capability *as the plugin*:
+
+```lyric
+val workspace = WorkspaceEditAs(host = client.host, pluginId = client.pluginId)
+match workspace.applyEdit(DocumentEdit(uri = uri, edits = edits)) {
+  case Ok(done) -> applied(done, "")
+  case Err(e) -> applied(false, describe(e))
+}
+```
+
+`WorkspaceEditAs` is generated for every capability. It applies the plugin's
+grant, any revocation and the `requires:` guard before the host's
+implementation runs, so a server granted `file:///workspace/` cannot edit a
+document anywhere else. `examples/plugins/lsp` holds the whole thing: the API,
+a small TODO language server and an editor that hosts it.
+
 ## Plugins in other languages
 
 `lyric plugin sdk` generates an SDK for an API package in C#, Java or

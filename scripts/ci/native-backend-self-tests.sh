@@ -184,9 +184,13 @@ for t in \
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
-# D207: a native Std.Plugin host driving a native and a dotnet plugin process.
+# D207: a native Std.Plugin host driving a native and a dotnet plugin process,
+# and protocol sessions with native hosts and plugins (docs/69 §4.3).
 bash scripts/ci/plugin-e2e.sh "$lyric_bin" native native
 bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
+bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native native
+bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" native dotnet
+bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet native
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).

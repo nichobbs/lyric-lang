@@ -3586,8 +3586,11 @@ guard answers the plugin with `Denied` (`-32040`). A `requires:` clause that
 does not name `grant` stays an ordinary contract.
 
 **Protocol points.** A `@protocol_point` has no Lyric methods (`K0011`): the
-plugin speaks an existing protocol such as LSP over its stdin and stdout, and
-the host gets the raw process from `openProtocolPlugin` (§15.6).
+plugin speaks an existing protocol such as LSP over its stdin and stdout. The
+host runs it in a supervised `ProtocolSession` (§15.6) and routes the
+protocol's own requests through capabilities with `<C>As`. A protocol plugin
+implements its protocol point only; a manifest that pairs it with another
+point does not load (`ManifestInvalid`).
 
 ### 15.2 Plugins
 
@@ -3689,6 +3692,7 @@ lower-cased):
 | `pub record <C>Server { target: C }` with `impl CapabilityProvider` (decodes the grant, checks the guards, calls `target`) | host |
 | `pub func <c>Provider(target: in C): CapabilityProvider` | host |
 | `pub func <c>CapabilityInfo(): CapabilityInfo` | both |
+| `pub record <C>As { host: PluginHost, pluginId: String }`, one method per `C` method returning `Result[T, CallError[E]]`: the capability called on behalf of plugin `pluginId`, with its grant, revocations and guards (through `callCapabilityAs`) | host |
 
 For each `@plugin_point P` (and `@protocol_point P` for the info and
 contributions items):
@@ -3699,6 +3703,7 @@ contributions items):
 | `pub func <p>Remotes(host: in PluginHost): List[<P>Remote]`: one per catalogued plugin implementing `P`, started on its first call | host |
 | `pub record <P>Contribution { pluginId: String, value: K }`, `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` and `pub func <p>ContributionIssues(host: in PluginHost): List[PluginLoadIssue]` (K0101; when `P` declares contributions) | host |
 | `pub func <p>PointInfo(): PluginPointInfo` | host |
+| `pub func open<P>Session(host: in PluginHost, pluginId: in String): Result[ProtocolSession, BoundaryError]` (protocol points only) | host |
 | `pub func pluginDispatch<P>(target: in P, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]` | plugin |
 
 In a package with a `@plugin` record `R`: a `record <R>Server` with
@@ -3788,10 +3793,24 @@ the first call: the host then spawns the chosen payload and sends
 `plugin/hello`. A crashed plugin is restarted on the next call after an
 exponential backoff, up to `maxRestarts` times; after that every call is
 `Crashed`. `stopPlugin`, `stopAllPlugins` and `revokeCapability` control
-running plugins. `openProtocolPlugin(host, pointId, pluginId)` starts a
-protocol-point plugin and returns its `PipedProcess`; the caller speaks the
-protocol and owns the process (there is no handshake or capability serving on
-that channel).
+running plugins.
+
+A protocol plugin runs in a `ProtocolSession`, opened with
+`openProtocolSession(host, pointId, pluginId)` (or the generated
+`open<P>Session`). `protocolProcess(session)` returns the running
+`PipedProcess`; when the process has exited it counts a crash and starts a new
+one after the same backoff, up to `maxRestarts`, and increments
+`session.generation`, so a client that sees the generation change repeats its
+protocol's handshake. `closeProtocolSession` stops the process (close stdin,
+wait `shutdownGraceMs`, kill) without counting a crash, as `stopPlugin` does.
+There is no `plugin/hello` on a protocol channel; the grants decided at
+registration apply to requests the host routes with
+`callCapabilityAs(host, pluginId, "<Pkg>.<C>/<method>", params)` or the typed
+`<C>As`, with the same grant, revocation and guard checks as a plugin's own
+`cap/...` call. A second session on a running plugin, or `callPlugin` on a
+protocol point, is `Protocol`. `openProtocolPlugin` remains as the
+unsupervised form: it returns a process the caller owns, which nothing
+restarts.
 
 The lower-level API (`connectionsFor`, `contributionsFor`, `callPlugin`,
 `registerPlugin`, `parsePluginManifest`, `readPluginManifest`,

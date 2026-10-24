@@ -192,13 +192,20 @@ pub exposed record LanguageContributions {
 pub interface LanguageServer {}
 ```
 
-`Std.Plugin` launches the process, restarts it on failure and stops it, and
-hands the application the connected process (`openProtocolPlugin`); the
-application's own protocol client (for LSP, the `Lyric.Lsp` code) does the
-rest. Capabilities on a protocol point are enforced only to the extent the
-host routes the protocol's own requests through them (for example the LSP
-`workspace/applyEdit` request through `WorkspaceEdit`). A protocol plugin's
-`plugin.json` is written by its author and checked with `lyric plugin check`.
+`Std.Plugin` launches the process in a supervised `ProtocolSession`
+(`openProtocolSession`, or the generated `open<P>Session`), restarts it after
+it exits with process mode's backoff and restart limit, and stops it;
+`protocolProcess` hands the application the running process, and the
+session's `generation` changes with each start so the client knows to repeat
+its handshake. The application's own protocol client does the rest.
+Capabilities on a protocol point are enforced to the extent the host routes
+the protocol's own requests through them: the generated `<C>As` record (or
+`callCapabilityAs`) calls a capability on the plugin's behalf with its grant,
+revocations and guards, so the LSP `workspace/applyEdit` request goes through
+`WorkspaceEdit`. A protocol plugin implements that one point, since its
+stdin and stdout carry its own protocol. Its `plugin.json` is written by its
+author and checked with `lyric plugin check`. `examples/plugins/lsp` is a
+complete editor and language server.
 
 ### 4.4 Plugins
 
@@ -428,14 +435,19 @@ stopAllPlugins(host)
   `<p>Remotes(host)` (a `<P>Remote` per loaded plugin of point `P`, each
   method returning `Result[T, CallError[E]]`), `<p>Contributions(host)`,
   `<c>CapabilityInfo()` and `<c>Provider(target)`, which wraps the host's
-  implementation of capability `C` in a server that checks the grant clauses.
+  implementation of capability `C` in a server that checks the grant clauses;
+  `<C>As(host, pluginId)`, the capability called on a plugin's behalf; and
+  `open<P>Session(host, pluginId)` for a protocol point.
 - **Runtime:** `newPluginHost(config)`, `discoverPlugins(host, dirs)` (each
   subdirectory holding a `plugin.json` is one plugin, in name order),
   `registerPlugin(host, manifest, dir)` (for a manifest built in memory),
   `pluginManifests`, `connectionsFor`, `contributionsFor`,
   `callPlugin(conn, method, params)` (the untyped call the generated remotes
-  use), `stopPlugin`, `stopAllPlugins`, `revokeCapability(host, id, capability)`
-  and `openProtocolPlugin(host, pointId, pluginId)`. Manifest helpers:
+  use), `stopPlugin`, `stopAllPlugins`, `revokeCapability(host, id, capability)`,
+  `openProtocolSession(host, pointId, pluginId)`, `protocolProcess(session)`
+  and `closeProtocolSession(session)` (§4.3), `callCapabilityAs(host, id,
+  method, params)`, and `openProtocolPlugin(host, pointId, pluginId)`, the
+  unsupervised form. Manifest helpers:
   `parsePluginManifest`, `readPluginManifest`, `pluginManifestToJson`,
   `addPluginPayload`, `selectPluginPayload`, `pluginLaunchCommand` and
   `findWasmtime`.
