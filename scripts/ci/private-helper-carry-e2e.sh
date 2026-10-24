@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # private-helper-carry-e2e.sh — a `pub` generic of a built library calls the
-# private helpers of its own package from another package (#8427, D215, D230).
+# private helpers of its own package from another package (#8427, D215, D231).
 # Run on both targets.
 #
 # A generic function's body is compiled into each package that calls it, where
 # a private function of the declaring package cannot be bound.  The helpers a
 # `pub` generic reaches travel with it under package-unique names:
 #   - private generic helpers (D215), directly and through another helper;
-#   - self-contained private non-generic helpers (D230).
+#   - self-contained private non-generic helpers (D231).
 # A private non-generic helper that reads module-level state is not copied (a
 # copy would hold its own instance of the state) and stays T0123, which the
 # negative leg pins.

@@ -11,7 +11,7 @@
 //! copies are renamed.
 //!
 //! The private non-generic helpers a `pub` generic reaches are copied the same way when a copy is
-//! the same function (D230): `plainCopyable` leaves out a helper that mentions module-level state,
+//! the same function (D231): `plainCopyable` leaves out a helper that mentions module-level state,
 //! a private type, a contract clause or a default argument, and one whose name is overloaded.  Those
 //! stay unresolved in the consuming package (T0123).
 package Lyric.ContractElaborator

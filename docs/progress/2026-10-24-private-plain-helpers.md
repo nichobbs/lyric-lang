@@ -1,4 +1,4 @@
-# Private non-generic helpers of a pub generic are copied with it (#8427, D230)
+# Private non-generic helpers of a pub generic are copied with it (#8427, D231)
 
 - `Lyric.ContractElaborator.carryPrivateGenerics` now also copies the private non-generic helpers a `pub` generic
   reaches (directly, through other helpers, from a lambda), under `__priv_<Pkg>_<name>`, when a copy is the same
@@ -11,7 +11,7 @@
   take the private helpers as written before the middle end (`Lyric.Pipeline.pipePrivatePlainFuncItems`). The JVM
   source-dependency collector (`collectStdlibGenericFuncsJvm`) copies them for every package but `Std.*`.
 - Helpers that fail the test stay T0123 (message extended on both backends); making those work while keeping one
-  instance of module state needs the export design D230 rejected for now, tracked in #8546.
+  instance of module state needs the export design D231 rejected for now, tracked in #8546.
 - Tests: two `msil_project_bridge_self_test.l` cases (two libraries with a private `scale` each, a helper chain and a
   lambda; a parameter that shadows a helper), `contract_meta_self_test.l` (`testBuildCarriesPrivatePlainHelpers`:
   carried, left out, shadowed), and `scripts/ci/private-helper-carry-e2e.sh` (library built as a dependency, app

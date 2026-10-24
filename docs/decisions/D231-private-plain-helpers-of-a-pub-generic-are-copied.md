@@ -1,4 +1,4 @@
-# D230 - The private non-generic helpers of a pub generic are copied with it, when a copy is the same function
+# D231 - The private non-generic helpers of a pub generic are copied with it, when a copy is the same function
 
 **Status:** shipped (#8427, non-generic helpers); extends D215, which carried the private generic helpers; the helpers a copy would change the meaning of stay T0123, tracked in #8546
 
