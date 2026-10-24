@@ -197,9 +197,15 @@ func canonFileGetCanonicalPath(f: in JCanonFile): String = ()
 
 // `File.getCanonicalPath` collapses `.`/`..` and resolves symlinks — at
 // least as strict as `Path.GetFullPath` for the traversal guard's purpose.
+// It throws `IOException` on a symlink loop; that yields "", which is within
+// no root, so the request is a 404 rather than a crash.
 @cfg(feature = "jvm")
 func pathGetFullPath(path: in String): String {
-  return canonFileGetCanonicalPath(canonFileNew(path))
+  return try {
+    canonFileGetCanonicalPath(canonFileNew(path))
+  } catch Bug as _ {
+    ""
+  }
 }
 
 func webJsonStr(s: in String): String {
