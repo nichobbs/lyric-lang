@@ -359,6 +359,128 @@ test "a prebuilt archive is restored, verified and linked by an application" {
   assertEqualInt(again.count, 0, "a second restore is a no-op")
 }
 
+func runTool(tool: in String, args: in List[String]): Unit {
+  match Process.runCapture(tool, args, 120000) {
+    case Ok(res) -> if res.exitCode != 0 { panic(tool + " failed: " + res.stdout + res.stderr) }
+    case Err(e) -> panic(tool + " could not be started: " + e)
+  }
+}
+
+// `pkg/lib/libcdep<ext>` is a symbolic link to `libcdep.real<ext>`, as upstream tarballs
+// ship `libfoo.so -> libfoo.so.1`; `pkg/include/cdep.h` rides along.
+func tarGzLibrary(binding: in String, root: in String, archiveName: in String): String {
+  val nativeDir = Path.join(binding, "native")
+  val stage = Path.join(root, "tarstage")
+  val lib = Path.join(Path.join(stage, "pkg"), "lib")
+  mkdirOrPanic(stage)
+  mkdirOrPanic(Path.join(stage, "pkg"))
+  mkdirOrPanic(lib)
+  mkdirOrPanic(Path.join(Path.join(stage, "pkg"), "include"))
+  val cp: List[String] = newList()
+  cp.add(Path.join(nativeDir, "libcdep" + sharedExt()))
+  cp.add(Path.join(lib, "libcdep.real" + sharedExt()))
+  runTool("cp", cp)
+  val cph: List[String] = newList()
+  cph.add(Path.join(nativeDir, "cdep.h"))
+  cph.add(Path.join(Path.join(Path.join(stage, "pkg"), "include"), "cdep.h"))
+  runTool("cp", cph)
+  val ln: List[String] = newList()
+  ln.add("-s")
+  ln.add("libcdep.real" + sharedExt())
+  ln.add(Path.join(lib, "libcdep" + sharedExt()))
+  runTool("ln", ln)
+  val archive = Path.join(root, archiveName)
+  val tarArgs: List[String] = newList()
+  tarArgs.add("-czf")
+  tarArgs.add(archive)
+  tarArgs.add("-C")
+  tarArgs.add(stage)
+  tarArgs.add("pkg")
+  runTool("tar", tarArgs)
+  cleanup(stage)
+  cleanup(nativeDir)
+  archive
+}
+
+func tarGzSection(archive: in String, sha: in String): String {
+  "[native.libs.cdep.prebuilt." + hostTriple() + "]\nurl = \"file://" + archive + "\"\nsha256 = \"" + sha +
+    "\"\nmembers = [\"pkg/lib/libcdep" +
+    sharedExt() +
+    "\"]\n"
+}
+
+test "a .tar.gz prebuilt archive is restored, following a symbolic link member, and linked" {
+  val root = freshTempDir("targz")
+  defer {
+    cleanup(root)
+  }
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val archive = tarGzLibrary(scratch, root, "cdep-prebuilt.tar.gz")
+  val sha = zipSha(archive)
+  val mfPath = Path.join(scratch, "lyric.toml")
+  val original = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  writeFileOrPanic(
+    mfPath,
+    Str.replace(original, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n", tarGzSection(archive, sha))
+  )
+  val triples: List[String] = newList()
+  triples.add(hostTriple())
+  val errs = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs.count, 0, "the restore succeeds: " + Str.joinList("; ", errs))
+  val restored = Path.join(Path.join(Path.join(Path.join(scratch, ".lyric"), "native"), "cdep"), hostTriple())
+  assertTrue(
+    File.fileExists(Path.join(restored, "libcdep" + sharedExt())),
+    "the linked member is extracted by its link's name"
+  )
+  val appDir = writeApp(root)
+  val outDir = Path.join(appDir, "out")
+  mkdirOrPanic(outDir)
+  val outPath = Path.join(outDir, "app-native")
+  assertEqualInt(buildNative(Path.join(appDir, "lyric.toml"), outPath), 0, "the native build succeeds")
+  val run = runBinary(outPath)
+  assertEqualInt(run.exitCode, 0, "the program runs (stderr=" + run.stderr + ")")
+  assertEqual(Str.trim(run.stdout), "5,10", "calls cross the library from the tarball")
+}
+
+test "a .tar.gz member that the archive lacks, or a stream that is not gzip, fails the restore" {
+  val root = freshTempDir("targzbad")
+  defer {
+    cleanup(root)
+  }
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val archive = tarGzLibrary(scratch, root, "cdep-prebuilt.tar.gz")
+  val sha = zipSha(archive)
+  val mfPath = Path.join(scratch, "lyric.toml")
+  val original = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  val header = "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n"
+  writeFileOrPanic(
+    mfPath,
+    Str.replace(original, header, Str.replace(tarGzSection(archive, sha), "pkg/lib/libcdep", "pkg/lib/nothere"))
+  )
+  val triples: List[String] = newList()
+  triples.add(hostTriple())
+  val errs = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs.count, 1, "one error")
+  assertTrue(Str.contains(errs[0], "no member 'pkg/lib/nothere"), "names the member: " + errs[0])
+  // A plain-text file under a .tar.gz name.
+  val fake = Path.join(root, "fake.tar.gz")
+  writeFileOrPanic(fake, "this is not a gzip stream, it is just text that is long enough to pass a length check")
+  writeFileOrPanic(mfPath, Str.replace(original, header, tarGzSection(fake, zipSha(fake))))
+  val errs2 = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs2.count, 1, "one error for the fake archive")
+  assertTrue(Str.contains(errs2[0], "not a gzip stream"), "says why: " + errs2[0])
+}
+
+test "a .tar.gz prebuilt url needs members" {
+  val base = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val bare = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.x86_64-unknown-linux-gnu]\nurl = \"https://e/x.tar.gz\"\nsha256 = \"" +
+      "0000000000000000000000000000000000000000000000000000000000000000\"\n",
+    "lyric.toml"
+  )
+  assertTrue(match bare { case Err(_) -> true; case Ok(_) -> false }, "no members for a tarball")
+}
+
 test "a prebuilt archive with the wrong checksum is refused and nothing is unpacked" {
   val root = freshTempDir("badsum")
   defer {
