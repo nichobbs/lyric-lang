@@ -276,6 +276,15 @@ test "AArch64 declarations match clang's AAPCS64 lowering" {
   assertTrue(Str.contains(ll, "@mixed_bump([2 x i64])"), "a padded 12-byte record")
 }
 
+// The lowered callback type carries an `[3 x float]` HFA array on AArch64; that is the C
+// form of a record, not an inline `array[N, T]`, so it must not trip N0010.
+test "AArch64 lowers a callback that takes and returns an HFA record" {
+  val decl = "extern func apply_vec(f: (Vec3, Float, NativePtr[Byte]) -> Vec3, ud: NativePtr[Byte]): Vec3 = \"apply_vec\"\n"
+  val ll = lowerFor(lyricDecls() + decl + mainStub(), "aarch64-unknown-linux-gnu")
+  assertTrue(Str.contains(ll, "@apply_vec("), "the extern is declared")
+  assertTrue(Str.contains(ll, "[3 x float]"), "the callback type carries the HFA in FP registers")
+}
+
 test "wasm32 declarations match clang's basic C ABI lowering" {
   val ll = lowerFor(lyricDecls() + mainStub(), "wasm32-unknown-wasi")
   assertTrue(

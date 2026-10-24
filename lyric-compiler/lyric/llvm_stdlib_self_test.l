@@ -532,7 +532,10 @@ test "Std.Process.run: exit code on inherited stdio, Err for a missing executabl
     "    case Err(_) -> {\n" +
     "    }\n" +
     "  }\n" +
-    "  if runChecked(\"/bin/true\", noArgs) != 0 {\n" +
+    "  val okArgs: List[String] = newList()\n" +
+    "  okArgs.add(\"-c\")\n" +
+    "  okArgs.add(\"exit 0\")\n" +
+    "  if runChecked(\"/bin/sh\", okArgs) != 0 {\n" +
     "    return 4\n" +
     "  }\n" +
     "  42\n" +

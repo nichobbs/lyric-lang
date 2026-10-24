@@ -226,6 +226,17 @@ pub record NativeLibSpec {
   prebuilt: List[NativePrebuilt] = newList()
 }
 
+/// `[native.app]` (docs/67 §6, D233): a Darwin native build of this project is a
+/// macOS `.app` bundle.  Every field is optional; "" takes the default noted.
+pub record NativeApp {
+  /// `CFBundleIdentifier`: a reverse-DNS name ("" = `lyric.<executable>`).
+  identifier: String
+  /// `CFBundleName` and `CFBundleDisplayName` ("" = the executable's name).
+  name: String
+  /// `CFBundleShortVersionString` and `CFBundleVersion` (the `[package]` version when unset, else "" = `0.1.0`).
+  version: String
+}
+
 pub record NativeConfig {
   triple: String
   optLevel: String
@@ -240,6 +251,8 @@ pub record NativeConfig {
   /// `[wasm] stack`: the shadow-stack size in bytes of a wasm32 module or
   /// component (0 = the 1 MiB default).
   wasmStack: Int = 0
+  /// `[native.app]`: build a macOS `.app` bundle when the target is Darwin.
+  app: Option[NativeApp] = None
 }
 
 /// `[layers]` section (docs/65 §5, D149): assigns project packages to
@@ -2151,9 +2164,22 @@ func assembleNativeWithLibs(
   val wasmVersion = match wasm { case Some(w) -> w.version; case None -> "" }
   val wasmWorld = match wasm { case Some(w) -> w.world; case None -> "" }
   val wasmStack = match wasm { case Some(w) -> w.stack; case None -> 0 }
+  val app: Option[NativeApp] = if hasSection(entries, "native.app") {
+    val fallbackVersion = unwrapOr(findString(entries, "package", "version"), "")
+    Some(
+      value = NativeApp(
+        identifier = unwrapOr(findString(entries, "native.app", "identifier"), ""),
+        name = unwrapOr(findString(entries, "native.app", "name"), ""),
+        version = unwrapOr(findString(entries, "native.app", "version"), fallbackVersion)
+      )
+    )
+  } else {
+    None
+  }
   if not hasSection(entries, "native") {
     val wasmDeclared = match wasm { case Some(_) -> true; case None -> false }
-    if not wasmDeclared and nativeLibs.count == 0 {
+    val appDeclared = match app { case Some(_) -> true; case None -> false }
+    if not wasmDeclared and not appDeclared and nativeLibs.count == 0 {
       return Ok(value = None)
     }
     return Ok(
@@ -2165,7 +2191,8 @@ func assembleNativeWithLibs(
           libs = nativeLibs,
           wasmVersion = wasmVersion,
           wasmWorld = wasmWorld,
-          wasmStack = wasmStack
+          wasmStack = wasmStack,
+          app = app
         )
       )
     )
@@ -2206,7 +2233,8 @@ func assembleNativeWithLibs(
         libs = nativeLibs,
         wasmVersion = wasmVersion,
         wasmWorld = wasmWorld,
-        wasmStack = wasmStack
+        wasmStack = wasmStack,
+        app = app
       )
     )
   )

@@ -840,8 +840,13 @@ dependencies, join the application's, so an application that depends on a
 binding library links what the library needs without repeating it. A library
 named twice is resolved once, from the project nearest the application. A
 `dir` library's shared files (`lib<link>.so`, `.so.N`, `.dylib`) are copied next
-to the executable and the link adds a run path of `$ORIGIN` (`@loader_path`
-on macOS), so the program runs from that directory without the original one.
+to the executable and the link adds a run path of `$ORIGIN` (on macOS
+`@loader_path` and `@executable_path/../Frameworks`), so the program runs from
+that directory without the original one. On macOS a dylib whose install name is
+not `@rpath/...` (a bare `clang -shared` names its build path) is first copied
+to `.lyric/native/_dylibs/<name>/`, renamed `@rpath/<file>` with
+`install_name_tool -id` and signed ad hoc again, and the build links and bundles
+that copy (D233).
 On Windows (D205) a `dir` library is `<link>.lib`, a static library or the import
 library of `<link>.dll`, which must be present; the DLL is copied next to the
 `.exe`, where the Windows loader looks first, and there is no run path. A
@@ -854,6 +859,22 @@ directory or an unknown pkg-config package fails the build naming the library,
 and `[native.libs]` is an error with a `wasm32` triple. `@library("name")` on
 an `extern func` (what `lyric bindgen --library` emits) names the library that
 declaration needs; `[native.libs]` says where to find it.
+
+#### macOS applications — `[native.app]`
+
+```toml
+[native.app]
+identifier = "au.id.example.viewer"   # CFBundleIdentifier; default lyric.<executable>
+name       = "Viewer"                 # CFBundleName / CFBundleDisplayName; default the executable
+version    = "1.4.0"                  # CFBundleShortVersionString / CFBundleVersion; default [package] version
+```
+
+A native build of a project with this table, for a Darwin target (the host when no
+triple is given), also writes `<output>.app` beside the executable
+(`Contents/MacOS/<exe>`, `Contents/Frameworks/<bundled dylibs>`,
+`Contents/Info.plist`); the loose executable is still produced. The table is
+ignored for other targets, and it needs at least one key to be seen. Code
+signing, hardened runtime and notarisation are not done (D233).
 
 A library with no system package and no source checkout is a prebuilt
 archive per target triple:

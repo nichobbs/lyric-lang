@@ -123,11 +123,118 @@ func resolveDirLib(
     errors.add("native library '" + spec.name + "': " + dir + " holds no lib" + link + ext + " or " + linkName)
     return
   }
+  if os == "darwin" and shared.count > 0 {
+    // A dylib records its own install name, and the executable records that name
+    // when it links: one built with a bare `clang -shared` names its build path,
+    // which the bundled copy would not satisfy (D233).
+    val stageDir = Path.join(Path.join(Path.join(Path.join(decl.baseDir, ".lyric"), "native"), "_dylibs"), spec.name)
+    val staged: List[String] = newList()
+    var anyStaged = false
+    for f in shared {
+      match stageDarwinDylib(f, stageDir) {
+        case Ok(p) -> {
+          staged.add(p)
+          if p != f {
+            anyStaged = true
+          }
+        }
+        case Err(msg) -> {
+          errors.add("native library '" + spec.name + "': " + msg)
+          return
+        }
+      }
+    }
+    if anyStaged {
+      args.add("-L" + stageDir)
+    }
+    args.add("-L" + dir)
+    args.add("-l" + link)
+    for f in staged {
+      bundle.add(f)
+    }
+    return
+  }
   args.add("-L" + dir)
   args.add("-l" + link)
   for f in shared {
     bundle.add(f)
   }
+}
+
+/// The install name (`LC_ID_DYLIB`) of a Mach-O dynamic library, "" when it cannot be read.
+func darwinInstallName(path: in String): String {
+  val args: List[String] = newList()
+  args.add("-D")
+  args.add(path)
+  match Process.runCapture("otool", args, 60000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        return ""
+      }
+      val lines = Str.split(Str.trim(res.stdout), "\n")
+      if lines.length < 2 {
+        return ""
+      }
+      Str.trim(lines[lines.length - 1])
+    }
+    case Err(_) -> ""
+  }
+}
+
+func runToolOrError(tool: in String, args: in List[String]): Option[String] {
+  match Process.runCapture(tool, args, 120000) {
+    case Ok(res) -> if res.exitCode == 0 {
+      None
+    } else {
+      Some(value = tool + " failed: " + Str.trim(res.stderr + res.stdout))
+    }
+    case Err(e) -> Some(value = tool + " could not be started: " + e)
+  }
+}
+
+/// A copy of the dylib `path` whose install name is `@rpath/<file name>`, in
+/// `stageDir`, so that a program linking it finds the copy bundled with the
+/// executable by run path.  A dylib that already names itself with `@rpath/`
+/// (SDL3, wgpu-native) is used as it is.  The copy is signed ad hoc again, since
+/// rewriting the install name invalidates the signature arm64 macOS demands.
+func stageDarwinDylib(path: in String, stageDir: in String): Result[String, String] {
+  val id = darwinInstallName(path)
+  if id.length == 0 {
+    return Err(error = "cannot read the install name of " + path + " (otool -D)")
+  }
+  if Str.startsWith(id, "@rpath/") {
+    return Ok(value = path)
+  }
+  match Dir.createRecursive(stageDir) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot create " + stageDir)
+  }
+  val dest = Path.join(stageDir, fileNameOf(path))
+  match File.readBytes(path) {
+    case Err(_) -> return Err(error = "cannot read " + path)
+    case Ok(bytes) -> match File.writeBytes(dest, bytes) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot write " + dest)
+    }
+  }
+  val idArgs: List[String] = newList()
+  idArgs.add("-id")
+  idArgs.add("@rpath/" + fileNameOf(path))
+  idArgs.add(dest)
+  match runToolOrError("install_name_tool", idArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  val signArgs: List[String] = newList()
+  signArgs.add("--force")
+  signArgs.add("-s")
+  signArgs.add("-")
+  signArgs.add(dest)
+  match runToolOrError("codesign", signArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  Ok(value = dest)
 }
 
 /// Where the prebuilt archive for `triple` is restored: beside the manifest
@@ -520,7 +627,13 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
     }
   }
   if bundle.count > 0 and os != "windows" {
-    args.add("-Wl,-rpath," + (if os == "darwin" { "@loader_path" } else { "$ORIGIN" }))
+    if os == "darwin" {
+      // Beside the executable, and where an `.app` bundle keeps its libraries (D233).
+      args.add("-Wl,-rpath,@loader_path")
+      args.add("-Wl,-rpath,@executable_path/../Frameworks")
+    } else {
+      args.add("-Wl,-rpath,$ORIGIN")
+    }
   }
   NativeLinkPlan(args = args, bundle = bundle, errors = errors)
 }
@@ -555,4 +668,140 @@ pub func nativeLibDeclsOf(manifest: in Mf.Manifest, manifestDir: in String): Lis
     case None -> ()
   }
   decls
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `[native.app]`: a macOS `.app` bundle (docs/67 §6, D233).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Whether `triple` ("" is the host) names a macOS target.
+pub func isDarwinTarget(triple: in String): Bool {
+  val eff = if triple.length > 0 { triple } else { hostTripleOrEmpty() }
+  isDarwinTriple(eff)
+}
+
+func xmlEscape(s: in String): String {
+  val amp = Str.replace(s, "&", "&amp;")
+  val lt = Str.replace(amp, "<", "&lt;")
+  val gt = Str.replace(lt, ">", "&gt;")
+  val quot = Str.replace(gt, "\"", "&quot;")
+  Str.replace(quot, "'", "&apos;")
+}
+
+/// A `CFBundleIdentifier` is reverse-DNS: letters, digits, hyphens and periods.
+func bundleIdentifierPart(s: in String): String {
+  val allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
+  var cleaned = ""
+  var i = 0
+  while i < s.length {
+    val ch = Str.substring(s, i, 1)
+    cleaned = cleaned + (if Str.contains(allowed, ch) { ch } else { "-" })
+    i += 1
+  }
+  cleaned
+}
+
+/// The `Info.plist` of the bundle for `exeName`, with `app`'s fields and the defaults
+/// documented on `Mf.NativeApp`.
+pub func infoPlistText(app: in Mf.NativeApp, exeName: in String): String {
+  val identifier = if app.identifier.length > 0 { app.identifier } else { "lyric." + bundleIdentifierPart(exeName) }
+  val name = if app.name.length > 0 { app.name } else { exeName }
+  val version = if app.version.length > 0 { app.version } else { "0.1.0" }
+  val keys: List[String] = newList()
+  val values: List[String] = newList()
+  keys.add("CFBundleExecutable")
+  values.add(exeName)
+  keys.add("CFBundleIdentifier")
+  values.add(identifier)
+  keys.add("CFBundleName")
+  values.add(name)
+  keys.add("CFBundleDisplayName")
+  values.add(name)
+  keys.add("CFBundlePackageType")
+  values.add("APPL")
+  keys.add("CFBundleInfoDictionaryVersion")
+  values.add("6.0")
+  keys.add("CFBundleShortVersionString")
+  values.add(version)
+  keys.add("CFBundleVersion")
+  values.add(version)
+  keys.add("LSMinimumSystemVersion")
+  values.add("11.0")
+  keys.add("NSPrincipalClass")
+  values.add("NSApplication")
+  var body = ""
+  var i = 0
+  while i < keys.count {
+    body = body + "  <key>" + keys[i] + "</key>\n  <string>" + xmlEscape(values[i]) + "</string>\n"
+    i += 1
+  }
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+    "<plist version=\"1.0\">\n<dict>\n" +
+    body +
+    "  <key>NSHighResolutionCapable</key>\n  <true/>\n</dict>\n</plist>\n"
+}
+
+/// Assembles `<exe>.app` beside the finished executable `exePath`: the executable in
+/// `Contents/MacOS`, the plan's shared libraries in `Contents/Frameworks` (the
+/// `@executable_path/../Frameworks` run path the link added finds them) and an
+/// `Info.plist`.  The loose executable stays where it is, so `lyric run` is unaffected.
+/// Signing and notarisation are not done: the executable and the libraries carry the
+/// ad-hoc signature the linker and `stageDarwinDylib` gave them.  Returns the bundle's
+/// path, or the reason it could not be written.
+pub func assembleMacApp(app: in Mf.NativeApp, plan: in NativeLinkPlan, exePath: in String): Result[String, String] {
+  val exeName = fileNameOf(exePath)
+  val bundle = Path.join(Path.dirname(exePath), exeName + ".app")
+  val contents = Path.join(bundle, "Contents")
+  val macosDir = Path.join(contents, "MacOS")
+  val frameworks = Path.join(contents, "Frameworks")
+  if File.dirExists(bundle) {
+    match File.deleteDirRecursive(bundle) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot replace the existing " + bundle)
+    }
+  }
+  match Dir.createRecursive(macosDir) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot create " + macosDir)
+  }
+  val cpArgs: List[String] = newList()
+  cpArgs.add(exePath)
+  cpArgs.add(Path.join(macosDir, exeName))
+  match runToolOrError("cp", cpArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  if plan.bundle.count > 0 {
+    match Dir.createRecursive(frameworks) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot create " + frameworks)
+    }
+    for f in plan.bundle {
+      match File.readBytes(f) {
+        case Err(_) -> return Err(error = "cannot read the shared library " + f)
+        case Ok(bytes) -> match File.writeBytes(Path.join(frameworks, fileNameOf(f)), bytes) {
+          case Ok(_) -> ()
+          case Err(_) -> return Err(error = "cannot write into " + frameworks)
+        }
+      }
+    }
+  }
+  match File.writeText(Path.join(contents, "Info.plist"), infoPlistText(app, exeName)) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot write the Info.plist")
+  }
+  Ok(value = bundle)
+}
+
+/// `[native.app]` as an `assembleMacApp` input, for a build whose target is `triple`:
+/// None unless the manifest asks for a bundle and the target is macOS (the table is
+/// ignored for other targets so one manifest serves every platform).
+pub func macAppFor(nc: in Option[Mf.NativeConfig], triple: in String): Option[Mf.NativeApp] {
+  match nc {
+    case Some(c) -> match c.app {
+      case Some(a) -> if isDarwinTarget(triple) { Some(value = a) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
 }

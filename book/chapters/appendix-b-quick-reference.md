@@ -722,6 +722,11 @@ extra_libs = ["ssl", "crypto"]            # extra clang -l<name> link flags (man
 pkg_config = "sdl3"                       # system library via pkg-config, or:
 # dir = "native"                          # a directory holding libsdl3.so (copied beside the executable)
 
+[native.app]                              # macOS only: also write <output>.app (D233); ignored elsewhere
+identifier = "au.id.example.viewer"       # CFBundleIdentifier (default lyric.<executable>)
+name       = "Viewer"                     # CFBundleName (default the executable's name)
+version    = "1.4.0"                      # CFBundleVersion (default the [package] version)
+
 # Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
 [project]
 name           = "myapp"

@@ -38,7 +38,12 @@ extern func cLdexp(x: Double, e: Int): Double = "ldexp"
 extern func cLdexpf(x: Float, e: Int): Float = "ldexpf"
 
 // A file name is passed to the loader as written: glibc's unversioned
-// libm.so is a linker script, not a loadable library (CI runs on glibc).
+// libm.so is a linker script, not a loadable library; macOS names it libm.dylib.
+@cfg(target_os = "macos")
+@library("libm.dylib")
+extern func mFloor(x: Double): Double = "floor"
+
+@cfg(not(target_os = "macos"))
 @library("libm.so.6")
 extern func mFloor(x: Double): Double = "floor"
 
