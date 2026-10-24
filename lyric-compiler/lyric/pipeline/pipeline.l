@@ -4739,6 +4739,9 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
 /// monomorphized copy would rename the call, bypass the intrinsic, and
 /// copy a body that calls the un-lowerable generic kernel extern
 /// `tryGetValue`.  `pkgName` is only consulted for that exclusion.
+/// `carryPlainHelpers` — with `requirePub` false, also copy the private
+/// non-generic helpers the generics reach (a source dependency of a JVM
+/// build); with `requirePub` true they are always copied.
 ///
 /// The intrinsic contributes NOTHING to `dest` here — see
 /// `pipeAddInferenceOnlyIntrinsicFuncs` for its separate, appended-last
@@ -4760,9 +4763,29 @@ pub func pipeAddGenericFuncs(
   requirePub: in Bool,
   excludeIntrinsics: in Bool,
   dest: in List[FunctionDecl],
+  carryPlainHelpers: in Bool = false,
 ): Unit {
+  if not requirePub and carryPlainHelpers {
+    // Every generic is collected as it is; the private non-generic helpers they reach are copied
+    // under package-unique names, since a specialised body cannot bind them in the package that
+    // declares them (#8427).
+    val carried = carryPlainHelpersOfGenerics(items, pkgName)
+    for decl in carried.pubFuncs {
+      val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
+      if not isIntrinsic and not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    for decl in carried.privateCopies {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    return
+  }
   if requirePub {
-    // The private generics a `pub` generic reaches travel with it under package-unique names (#8427).
+    // The private generics, and the private non-generic helpers, a `pub` generic reaches travel with
+    // it under package-unique names (#8427).
     val carried = carryPrivateGenerics(items, pkgName)
     for decl in carried.pubFuncs {
       if not pipeAnnsBlockSpecialization(decl.annotations) {
@@ -4894,6 +4917,48 @@ pub func pipeAddNonGenericFuncs(items: in List[Item], pkgName: in String, dest: 
     }
     i = i + 1
   }
+}
+
+/// True for a non-`pub`, non-generic function with a body: the private helper
+/// a `pub` generic may reach (`Lyric.ContractElaborator.carryPrivateGenerics`).
+pub func pipeIsPrivatePlainFunc(it: in Item): Bool {
+  match it.kind {
+    case IFunc(decl) -> {
+      val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+      val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+      val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+      not isPub and not isGeneric and hasBody
+    }
+    case _ -> false
+  }
+}
+
+/// The private non-generic functions of `items` as written, keyed `f:<name>/<arity>`.
+/// The contract builders take them from the file as it stood before the middle end, since
+/// a copy is specialised from its source in the package that calls the generic.
+pub func pipePrivatePlainFuncItems(items: in List[Item]): Map[String, Item] {
+  val byKey: Map[String, Item] = newMap()
+  val repeated: Map[String, Bool] = newMap()
+  for it in items {
+    if pipeIsPrivatePlainFunc(it) {
+      match it.kind {
+        case IFunc(decl) -> {
+          val key = "f:" + decl.name + "/" + toString(decl.params.count)
+          if byKey.containsKey(key) {
+            repeated[key] = true
+          } else {
+            byKey.add(key, it)
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  // Two functions of one name and arity cannot be told apart by that key.
+  for k in mapKeys(repeated) {
+    byKey.remove(k)
+  }
+  byKey
 }
 
 /// Append every `IInterface` decl in `items` to `dest`.  Fed to the

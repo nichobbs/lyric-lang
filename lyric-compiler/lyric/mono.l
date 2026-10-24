@@ -568,6 +568,17 @@ func synSpan(): Span {
   Span(startPos = synPos(), endPos = synPos())
 }
 
+/// True for the copy of a private non-generic helper that
+/// `Lyric.ContractElaborator.carryPrivateGenerics` hands over under its
+/// package-unique `__priv_` name: a function with a body, no type parameters
+/// and an origin package, which this pass specialises (once) wherever a
+/// carried body calls it.
+pub func isCarriedPlainMono(decl: in FunctionDecl): Bool {
+  val noGenerics = match decl.generics { case Some(_) -> false; case None -> true }
+  val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+  noGenerics and hasBody and Str.startsWith(decl.name, "__priv_") and originPkgOf(decl.annotations).length > 0
+}
+
 /// `decl` tagged with its origin package (`originAnnotationName()`).  An empty
 /// `pkgName`, or a decl already tagged, is returned unchanged.
 pub func withOriginPkgMono(decl: in FunctionDecl, pkgName: in String): FunctionDecl {
@@ -1864,6 +1875,11 @@ func specFuncName(
   subst: in Map[String, TypeExpr],
   valueSubst: in Map[String, Expr],
 ): String {
+  // The copy of a private non-generic helper has no type argument to name it by, and must not share
+  // its name with the restored signature of the same helper.
+  if allParams.count == 0 {
+    return base + "__copy"
+  }
   var acc = base
   var i = 0
   while i < allParams.count {
@@ -7910,7 +7926,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                   inferValueArgsMono(state, env, baseDecl, valueParams, args, checkedValues)
                 }
                 val valuesBound = valueParams.count == 0 or checkedValues.count == valueParams.count
-                if (typeParams.count > 0 or valueParams.count > 0) and valuesBound and args.count <= baseDecl.params.count {
+                if (typeParams.count > 0 or valueParams.count > 0 or isCarriedPlainMono(baseDecl)) and valuesBound and args.count <= baseDecl.params.count {
                   if genDeclResolvesForCallSite(state, env, fname, args, baseDecl) {
                     // Type parameters are inferred below; value parameters
                     // come from `checkedValues`.
@@ -9737,6 +9753,14 @@ pub func monoFileWithLambdaTypes(
           }
         }
         case None -> ()
+      }
+    }
+    // A private non-generic helper a `pub` generic reaches (`Lyric.ContractElaborator.carryPrivateGenerics`)
+    // is specialised, once per package, like a generic with no type parameters.
+    if isCarriedPlainMono(idecl) and not genDecls.containsKey(idecl.name) {
+      genDecls.add(idecl.name, idecl)
+      if not funcDecls.containsKey(idecl.name) {
+        funcDecls.add(idecl.name, idecl)
       }
     }
     ig = ig + 1

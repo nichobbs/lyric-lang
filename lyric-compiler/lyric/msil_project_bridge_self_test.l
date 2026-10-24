@@ -3210,3 +3210,70 @@ test "a parameter that shadows a private generic helper is left alone" {
   assertEqualInt(result.exitCode, 0, "shadowing: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "5\n9", "the parameter was called, the helper was carried for the other")
 }
+
+// ─── #8427: private non-generic helpers of a pub generic are copied with it ──
+// A helper that is self-contained (no module-level value, private type or contract clause) is
+// copied into each package that specialises the generic, under a package-unique name, so two
+// libraries' private `scale` neither collide nor need to be `pub`.  The helper is reached directly,
+// through another helper, and from a lambda.
+test "a pub generic reaches the private non-generic helpers of its own package from another package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PrivPlain.LibA",
+      "package PrivPlain.LibA\n" + "\n" + "func scale(n: Int): Int { n * 10 }\n" +
+        "func bump(n: Int): Int { scale(n) + 1 }\n" +
+        "pub func runA[S](x: S, f: (S) -> Int): Int { bump(f(x)) }\n" +
+        "pub func viaLambdaA[S](x: S, f: (S) -> Int): Int {\n" +
+        "  val body: (Int) -> Int = { n: Int -> bump(n) }\n" +
+        "  body(f(x))\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PrivPlain.LibB",
+      "package PrivPlain.LibB\n" + "\n" + "func scale(n: Int): Int { n * 1000 }\n" +
+        "pub func runB[S](x: S, f: (S) -> Int): Int { scale(f(x)) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PrivPlain.App",
+      "package PrivPlain.App\n" + "\n" + "import PrivPlain.LibA\n" + "import PrivPlain.LibB\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  println(runA(5, { v: Int -> v * 2 }))\n" +
+        "  println(viaLambdaA(7, { v: Int -> v + 1 }))\n" +
+        "  println(runB(3, { v: Int -> v + 1 }))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("privplain", packages, "PrivPlain")
+  assertEqualInt(result.exitCode, 0, "private plain helpers: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "101\n81\n4000", "each pub generic ran its own package's helpers")
+}
+
+// A parameter named like a private helper is not a call to it: the carried body keeps the parameter.
+test "a parameter that shadows a private non-generic helper is left alone" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PlainShadow.Lib",
+      "package PlainShadow.Lib\n" + "\n" + "func helper(n: Int): Int { n + 100 }\n" +
+        "pub func applyIt[S](helper: (S) -> S, x: S): S { helper(x) }\n" +
+        "pub func plain[S](x: S, f: (S) -> Int): Int { helper(f(x)) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PlainShadow.App",
+      "package PlainShadow.App\n" + "\n" + "import PlainShadow.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(applyIt({ n: Int -> n + 1 }, 4))\n" +
+        "  println(plain(9, { v: Int -> v }))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("plainshadow", packages, "PlainShadow")
+  assertEqualInt(result.exitCode, 0, "plain shadowing: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n109", "the parameter was called, the helper was carried for the other")
+}

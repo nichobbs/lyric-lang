@@ -143,6 +143,7 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
   // A value-generic record is emitted with its value parameters erased
   // (D173); its contract keeps them, so another package can name `Ints[3]`.
   val postMono = withValueRecordsAsWritten(preMono, postMono0)
+  val privatePlain = pipePrivatePlainFuncItems(preMono.items)
   var pi = 0
   while pi < postMono.items.count {
     val it = postMono.items[pi]
@@ -154,7 +155,14 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
       }
       case _ -> ()
     }
-    items.add(it)
+    // A private non-generic helper a `pub` generic reaches is copied into the contract (#8427): as
+    // written, since the copy is specialised from its source in the consumer's package.
+    val key = match it.kind { case IFunc(decl) -> "f:" + decl.name + "/" + toString(decl.params.count); case _ -> "" }
+    if key.length > 0 and pipeIsPrivatePlainFunc(it) {
+      items.add(match mapGet(privatePlain, key) { case Some(pre) -> pre; case None -> it })
+    } else {
+      items.add(it)
+    }
     pi = pi + 1
   }
   var gi = 0
@@ -665,7 +673,12 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
   var fi = 0
   while fi < files.count {
     val f = files[fi]
-    pipeAddGenericFuncs(f.items, dottedPath(f.packageDecl.path), false, true, genFuncs)
+    val pkgName = dottedPath(f.packageDecl.path)
+    // A source dependency's generics are specialised into the packages that call them, where a private
+    // non-generic helper of the declaring package cannot be bound, so the ones they reach are copied
+    // (#8427).  The stdlib is left as it was.
+    val isStdlibPkg = pkgName == "Std" or Str.startsWith(pkgName, "Std.")
+    pipeAddGenericFuncs(f.items, pkgName, false, true, genFuncs, not isStdlibPkg)
     fi = fi + 1
   }
   genFuncs
