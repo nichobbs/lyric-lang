@@ -2002,6 +2002,27 @@ pub func sigNamedGenericInstParts(t: in SigType): Option[NamedGenericInstParts] 
   }
 }
 
+// Whether `t` mentions a method-level generic parameter (`!!n`) anywhere:
+// bare, as an array element, by reference, or inside a generic instantiation.
+pub func sigMentionsMVar(t: in SigType): Bool {
+  match t {
+    case STMVar(_) -> true
+    case STSzArray(e) -> sigMentionsMVar(e)
+    case STByRef(inner) -> sigMentionsMVar(inner)
+    case STNamedGenericInst(_, _, args) -> {
+      var i = 0
+      while i < args.count {
+        if sigMentionsMVar(args[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
 // Substitute every `STVar(i)` occurrence in `s` with `typeArgs[i]`.  Used by
 // D105 §A's F0022/F0023 validation pass to compare an iface method's
 // signature (which carries `STVar` for each iface generic param) against
@@ -2221,7 +2242,17 @@ func probeRefPackRoot(root: in String): RefPackProbe {
 
 // Locate the reference-assembly directory
 // (`<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`).
+//
+// `LYRIC_REF_PACK_DIR` overrides the search: when set, it names the reference
+// directory itself (a folder of `*.dll` reference assemblies), and a value
+// that is not a directory means no reference pack at all, with no fallback to
+// the candidate roots.  Used to run the compiler as if on a machine without
+// the SDK (#7387).
 pub func refPackDir(): Option[String] {
+  val forced = Environment.getVarOrDefault("LYRIC_REF_PACK_DIR", "")
+  if forced.length > 0 {
+    return if File.dirExists(forced) { Some(value = forced) } else { None }
+  }
   val roots = candidateDotnetRoots()
   var i = 0
   while i < roots.count {
@@ -2246,6 +2277,10 @@ pub func refPackDir(): Option[String] {
 // into an unreproducible-looking macOS-only TypeLoadException in
 // Std.ConsoleHost).
 pub func refPackDirDebugInfo(): String {
+  val forced = Environment.getVarOrDefault("LYRIC_REF_PACK_DIR", "")
+  if forced.length > 0 {
+    return "LYRIC_REF_PACK_DIR=" + forced + (if File.dirExists(forced) { " (a directory)" } else { " (not a directory)" })
+  }
   val roots = candidateDotnetRoots()
   if roots.count == 0 {
     return "no candidate roots (DOTNET_ROOT and HOME both unset)"
@@ -2586,10 +2621,19 @@ pub record ResolvedMethod {
   isAbstract: Bool
   returnType: SigType
   paramTypes: List[SigType]
+  // The method's own generic parameter count (`!!0 .. !!n-1` in the
+  // signature); 0 for a non-generic method.
+  genericArity: Int
   // Aligned with `paramTypes`: EPDNone for every caller-supplied position;
   // trailing positions the caller did not supply carry the decoded default
   // the emitter must synthesize (#5605).  Same count as `paramTypes`.
   paramDefaults: List[ExternParamDefault]
+}
+
+// The CLR integers Lyric has no type for, by ECMA element-type byte: SByte
+// (0x04), Int16 (0x06), UInt16 (0x07), UInt32 (0x09), UInt64 (0x0B).
+pub func isNarrowIntPrimByte(pb: in Int): Bool {
+  pb == 0x04 or pb == 0x06 or pb == 0x07 or pb == 0x09 or pb == 0x0B
 }
 
 // Widening rank for the numeric primitive element types (-1 for non-numeric).
@@ -2679,6 +2723,12 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
           3
         } else if pb == 0x1C {
           2
+        } else if isNarrowIntPrimByte(pb) and (ab == 0x08 or ab == 0x0A) {
+          // SByte/Int16/UInt16/UInt32/UInt64 have no Lyric type: an `Int` or
+          // `Long` argument narrows to one with a range check (#8482), below
+          // every widening match so an overload that takes the Lyric type
+          // itself always wins.
+          1
         } else {
           // object accepts anything
           val ra = numericRank(ab)
@@ -3290,6 +3340,7 @@ pub func resolveOverloadInBases(
                 isAbstract = methodIsAbstract(md.flags),
                 returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
                 paramTypes = normParams,
+                genericArity = sig.genParamCount,
                 paramDefaults = defaults
               )
             )
@@ -3927,6 +3978,7 @@ pub func allMethodSigsOn(
             isAbstract = methodIsAbstract(md.flags),
             returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
             paramTypes = normParams,
+            genericArity = sig.genParamCount,
             paramDefaults = epdNoneList(normParams.count)
           )
         )

@@ -255,10 +255,7 @@ test "a restored callee's omitted defaults are filled on the JVM (#7827)" {
 
 // A public generic function's defaults whose type names no type parameter
 // are exported too: the thunks are synthesised before mono drops the
-// generic from the package (#8085).  dotnet only: a restored generic
-// function is not callable on the JVM at all yet, with or without a
-// default (NoSuchMethodError on `Rd.Lib.idOr(ArrayList, int)`), a separate
-// gap.
+// generic from the package (#8085).
 test "a restored generic function's non-generic default is filled on dotnet (#8085)" {
   val lib = "package Rd.Lib\n\nimport Std.Collections\n\n" +
     "pub func idOr[T](v: in List[T], n: in Int = 7): Int {\n  n + v.count\n}\n"
@@ -268,6 +265,56 @@ test "a restored generic function's non-generic default is filled on dotnet (#80
   e.add("7")
   e.add("2")
   assertLines("dotnet generic", runRestored("generic", false, lib, app), e)
+}
+
+test "a restored generic function's non-generic default is filled on the JVM (#8085, #8089)" {
+  val lib = "package Rd.Lib\n\nimport Std.Collections\n\n" +
+    "pub func idOr[T](v: in List[T], n: in Int = 7): Int {\n  n + v.count\n}\n"
+  val app = "package Rd.App\n\nimport Std.Collections\nimport Rd.Lib\n\nfunc main(): Unit {\n" +
+    "  val xs: List[String] = newList()\n  println(toString(idOr(xs)))\n  println(toString(idOr(xs, 2)))\n}\n"
+  val e: List[String] = newList()
+  e.add("7")
+  e.add("2")
+  assertLines("jvm generic", runRestored("generic", true, lib, app), e)
+}
+
+// #8089: a restored generic free function is callable with a bare `T`, a
+// `List[T]` and an `Option[T]` parameter: the consumer builds the call
+// descriptor the way the library erased it.
+func genericLib(): String {
+  "package Rd.Lib\n\nimport Std.Core\nimport Std.Collections\n\n" + "pub func ident[T](x: in T): T {\n  x\n}\n\n" +
+    "pub func firstOr[T](xs: in List[T], d: in T): T {\n  if xs.count == 0 {\n    d\n  } else {\n    xs[0]\n  }\n}\n\n" +
+    "pub func optOr[T](o: in Option[T], d: in T): T {\n  match o {\n    case Some(v) -> v\n    case None -> d\n  }\n}\n"
+}
+
+func genericApp(): String {
+  "package Rd.App\n\nimport Std.Core\nimport Std.Collections\nimport Rd.Lib\n\nfunc main(): Unit {\n" +
+    "  println(toString(ident(41) + 1))\n" +
+    "  println(ident(\"s\"))\n" +
+    "  val xs: List[Int] = newList()\n  xs.add(9)\n" +
+    "  println(toString(firstOr(xs, 1)))\n" +
+    "  val none: List[String] = newList()\n  println(firstOr(none, \"dflt\"))\n" +
+    "  println(toString(optOr(Some(5), 0)))\n" +
+    "  val n: Option[Int] = None\n  println(toString(optOr(n, 3)))\n}\n"
+}
+
+func genericLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("42")
+  e.add("s")
+  e.add("9")
+  e.add("dflt")
+  e.add("5")
+  e.add("3")
+  e
+}
+
+test "a restored generic function is callable on dotnet (#8089)" {
+  assertLines("dotnet", runRestored("genfn", false, genericLib(), genericApp()), genericLines())
+}
+
+test "a restored generic function is callable on the JVM (#8089)" {
+  assertLines("jvm", runRestored("genfn", true, genericLib(), genericApp()), genericLines())
 }
 
 // #8097: a record method and a dot-named function of the same type, name
@@ -563,6 +610,100 @@ test "a generic body's omitted default binds the checker's overload when special
     runBundle("generic-overload", true, overloadInGenericLib(), overloadInGenericApp()),
     overloadInGenericLines()
   )
+}
+
+// #7658: the JVM memoises a file's extern-type seed by its import list.  The
+// weave of `call.elapsed` injects `import Std.Time` into the package that
+// declares the aspect, so that package is looked up with two import lists, before
+// and after the weave; the extern calls it makes must resolve both times, and a
+// sibling package with the original import list must keep resolving its own.
+func weaveInjectedImportLib(): String {
+  "package Rd.Lib\n\nextern type JMath = \"java.lang.Math\"\n\n" + "aspect Timing {\n  matches: name like \"timedAbs\"\n" +
+    "  around(args) -> ret {\n    val r = proceed(args)\n    val e = call.elapsed\n    r\n  }\n}\n\n" +
+    "pub func timedAbs(x: in Int): Int {\n  JMath.abs(x)\n}\n\n" + "pub func plainMax(a: in Int, b: in Int): Int {\n  JMath.max(a, b)\n}\n"
+}
+
+func weaveInjectedImportApp(): String {
+  "package Rd.App\n\nimport Rd.Lib\n\nextern type JMath2 = \"java.lang.Math\"\n\nfunc main(): Unit {\n" +
+    "  println(toString(timedAbs(-7)))\n" + "  println(toString(plainMax(3, 9)))\n" + "  println(toString(JMath2.min(4, 2)))\n}\n"
+}
+
+test "extern calls resolve before and after the weave injects an import on the JVM (#7658)" {
+  val e: List[String] = newList()
+  e.add("7")
+  e.add("9")
+  e.add("2")
+  assertLines("jvm weave import", runBundle("weave-import", true, weaveInjectedImportLib(), weaveInjectedImportApp()), e)
+}
+
+// #7175: a restored `exposed record`, plain and generic, constructs and reads
+// its fields on both targets (the metadata half is shared; the JVM resolves
+// restored classes by name rather than through MSIL's token registry).
+func exposedLib(): String {
+  "package Rd.Lib\n\npub exposed record Point {\n  x: Int\n  y: Int\n}\n\npub exposed record Box[T] {\n  value: T\n}\n"
+}
+
+func exposedApp(): String {
+  "package Rd.App\n\nimport Rd.Lib\n\nfunc main(): Unit {\n" + "  val p = Point(x = 3, y = 4)\n" +
+    "  println(toString(p.x))\n  println(toString(p.y))\n" +
+    "  val b = Box(value = 7)\n  println(toString(b.value))\n" +
+    "  val s = Box(value = \"s\")\n  println(s.value)\n}\n"
+}
+
+func exposedLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("3")
+  e.add("4")
+  e.add("7")
+  e.add("s")
+  e
+}
+
+test "a restored exposed record, plain and generic, constructs and reads fields on dotnet (#6533)" {
+  assertLines("dotnet exposed", runRestored("exposed", false, exposedLib(), exposedApp()), exposedLines())
+}
+
+test "a restored exposed record, plain and generic, constructs and reads fields on the JVM (#7175)" {
+  assertLines("jvm exposed", runRestored("exposed", true, exposedLib(), exposedApp()), exposedLines())
+}
+
+// #7868: a member read on an `Option[M]`-typed parameter or local of another
+// package's generic, specialised here, resolves on the JVM (which erases the
+// receiver) through the receiver classes recorded where the generic was written.
+func monadReceiverLib(): String {
+  "package Rd.Lib\n\nimport Std.Core\n\n" +
+    "pub func tryRun[E, M](run: in (E) -> Option[M], e: in E): Bool {\n  var reply: Option[M] = None\n  reply = run(e)\n  reply.isSome\n}\n\n" +
+    "pub func present[M](o: in Option[M]): Bool {\n  o.isSome\n}\n\n" +
+    "pub func failed[V, E](r: in Result[V, E]): Bool {\n  r.isErr\n}\n"
+}
+
+func monadReceiverApp(): String {
+  "package Rd.App\n\nimport Std.Core\nimport Rd.Lib\n\nfunc main(): Unit {\n" +
+    "  println(toString(tryRun({ n: Int -> Some(value = n + 1) }, 1)))\n" +
+    "  println(toString(present(Some(value = 1))))\n" +
+    "  val none: Option[String] = None\n  println(toString(present(none)))\n" +
+    "  val bad: Result[Int, String] = Err(error = \"x\")\n  println(toString(failed(bad)))\n}\n"
+}
+
+func monadReceiverLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("true")
+  e.add("true")
+  e.add("false")
+  e.add("true")
+  e
+}
+
+test "a member read on an Option or Result receiver in another package's generic resolves on dotnet (#7868)" {
+  assertLines(
+    "dotnet bundle",
+    runBundle("monad-recv", false, monadReceiverLib(), monadReceiverApp()),
+    monadReceiverLines()
+  )
+}
+
+test "a member read on an Option or Result receiver in another package's generic resolves on the JVM (#7868)" {
+  assertLines("jvm bundle", runBundle("monad-recv", true, monadReceiverLib(), monadReceiverApp()), monadReceiverLines())
 }
 
 test "a restored generic body's omitted default binds the checker's overload on dotnet" {

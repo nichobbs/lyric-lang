@@ -11,7 +11,7 @@ plugins on every target including wasm32-wasi under `wasmtime run`,
 generators (docs/40) as the first plugin point, protocol points (P4, D228),
 the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
 (in-process) mode (P6's second half, D231, §10), and WIT-typed components
-hosted in-process by wasmtime (P5, D232, §9.3). Extends docs/01
+hosted in-process by wasmtime (P5, D233, §9.3). Extends docs/01
 §10 (`wire`, `contributes[T]`), docs/35 (the wasm32-wasi command output) and
 docs/62 (the JSON-RPC peer, now `Std.JsonRpc`). Open questions are listed in
 §17._
@@ -546,7 +546,7 @@ generates its `PluginServer` and `main`.
 
 ### 9.3 Component mode
 
-_Shipped in D232 (phase P5)._
+_Shipped in D233 (phase P5)._
 
 A component payload is the plugin built with `--target native --triple
 wasm32-wasi --shape component` (docs/35's WIT component): its point methods are
@@ -1094,7 +1094,7 @@ plugin and a screen that uses it.
 | P2 | `lyric plugin pack`, `check` and `sdk` (C#, Java, TypeScript, JSON Schema), with a plugin per language in CI | Done |
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
-| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D232) | Done; Windows hosts #8542 |
+| P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D233) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
 
@@ -1106,7 +1106,7 @@ are not offered: those SDKs implement process mode.
 ## 17. Open questions
 
 **Q-PLG-001: wasmtime component-model coverage in its C API.** _Resolved in
-D232 (§9.3)._ wasmtime 49's C API covers what component mode needs: compiling
+D233 (§9.3)._ wasmtime 49's C API covers what component mode needs: compiling
 and linking components, the WASI p2 linker, host functions with a `void *env`,
 type reflection for generic value conversion, the store limiter and epoch
 deadlines. Plugin boundaries carry no resources and use the synchronous ABI,

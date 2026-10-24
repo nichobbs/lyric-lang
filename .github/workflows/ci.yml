@@ -8112,6 +8112,10 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/crosspackage-restored-generic-values.sh
+      - name: Private helpers of a pub generic cross the package boundary (#8427)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/private-helper-carry-e2e.sh
       # Cross-package union construct+match (#2897).  A PRODUCER package exports a
       # union with a `List[Int]` payload case; the CONSUMER constructs a case and
       # matches it across an assembly boundary.  Verifies that union-case construction

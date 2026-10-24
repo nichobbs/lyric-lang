@@ -406,7 +406,7 @@ deferred to Phase 3 by design.
   D-progress-775).
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): six AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts, L007 a `pub`/`internal` signature naming a same-file package-private type (#7549; single-file, see #7607). L006 is retired and not reused. `--error-on-warning` flag. Runs on non-compiling code.
-- Plugins (docs/69, D204, D207, D228, D231, D232) — **shipped** on every target: the plugin
+- Plugins (docs/69, D204, D207, D228, D231, D233) — **shipped** on every target: the plugin
   annotations and `Lyric.PluginExpand` (K0000-K0014), `Std.Plugin` hosts on
   dotnet, the JVM and native, process-mode payloads for dotnet, the JVM and
   native, wasm-mode plugins under `wasmtime run`, `lyric plugin
@@ -420,7 +420,7 @@ deferred to Phase 3 by design.
   Trusted in-process mode (D231) loads a plugin the grant policy marks trusted
   into a dotnet, JVM or native (Linux, macOS) host of its own runtime, with
   `Std.Plugin.Trusted`, `trusted` payloads, `--shape plugin` native libraries
-  and `lyric plugin pack --trusted`. Component mode (D232) builds a
+  and `lyric plugin pack --trusted`. Component mode (D233) builds a
   `@plugin` package as a WIT-typed component (`--shape component`,
   `lyric plugin pack --targets component`) that dotnet, JVM and native hosts
   run in process through `Std.PluginWasm.inProcessWasmRuntime()` (the
@@ -1225,8 +1225,9 @@ the synthesised source (D-progress-474).
 
 `--filter <substring>` and `--list` ship; the richer surface
 (`--manifest` discovery, `--properties`, `--doctests`,
-`--update-snapshots`, cross-package non-`pub` access) is staged
-in `docs/24-test-runner-plan.md` §5.  CLI integration tests live
+`--update-snapshots`, a test module merged into the package it declares
+for non-`pub` access) has since shipped (#677, #678, D245; see
+`docs/24-test-runner-plan.md` §5).  CLI integration tests live
 at `bootstrap/tests/Lyric.Cli.Tests/TestRunnerTests.fs` (8 cases
 covering pass / fail / no-`@test_module` / user-main / fixture /
 `--list` / `--filter` / property-skip).

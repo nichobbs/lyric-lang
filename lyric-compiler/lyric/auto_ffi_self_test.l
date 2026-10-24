@@ -437,3 +437,63 @@ test "auto-FFI passes scalar Char constants through the boundary check (#8225)" 
   assertEqualInt(NetCharT.MaxValue.toInt(), 65535, "Char.MaxValue")
   assertEqualInt(NetCharT.MinValue.toInt(), 0, "Char.MinValue")
 }
+
+extern type UInt64T = "System.UInt64"
+
+extern type ArrayT = "System.Array"
+
+extern type ValueTupleT = "System.ValueTuple"
+
+// #7807, #7890: a generic static BCL method resolves through auto-FFI, its type
+// arguments taken from the argument types (`Array.IndexOf<int>(int[], int)`),
+// and a generic result is the closed type (`ValueTuple<int, int>`).
+test "auto-FFI resolves generic static BCL methods from the argument types (#7807)" {
+  val a = [10, 20, 30]
+  assertEqualInt(ArrayT.IndexOf(a, 20), 1, "Array.IndexOf<int>")
+  val words = ["x", "y", "z"]
+  assertEqualInt(ArrayT.IndexOf(words, "z"), 2, "Array.IndexOf<string>")
+  val b = [1, 2, 3]
+  ArrayT.Reverse(b)
+  assertEqualInt(b[0], 3, "Array.Reverse<int> reversed in place")
+  assertEqualInt(b[2], 1, "Array.Reverse<int> reversed in place, last")
+}
+
+test "auto-FFI resolves ValueTuple.Create and types the closed result (#7890)" {
+  val t = ValueTupleT.Create(1, 2)
+  assertEqual(toString(t), "(1, 2)", "ValueTuple.Create<int, int>(1, 2)")
+  val u = ValueTupleT.Create("a", 7, true)
+  assertEqual(toString(u), "(a, 7, True)", "ValueTuple.Create<string, int, bool>")
+}
+
+// #8482: a CLR integer Lyric has no type for is also accepted as a parameter.
+// An `Int` or `Long` narrows with a range check (`conv.ovf.*`) to SByte, Int16,
+// UInt16 and UInt32, and a `Long` is the bit pattern of a UInt64.
+test "auto-FFI accepts narrow and unsigned integer parameters (#8482)" {
+  assertTrue(SByteT.IsNegative(-1), "SByte.IsNegative(Int)")
+  assertTrue(not SByteT.IsNegative(127), "SByte.IsNegative(127)")
+  assertTrue(Int16T.IsNegative(-5), "Int16.IsNegative(Int)")
+  assertTrue(UInt16T.IsEvenInteger(4), "UInt16.IsEvenInteger(Int)")
+  assertTrue(not UInt16T.IsEvenInteger(65535), "UInt16.IsEvenInteger(65535)")
+  assertTrue(UInt32T.IsPow2(8), "UInt32.IsPow2(Int)")
+  assertTrue(UInt32T.IsPow2(2147483648i64), "UInt32.IsPow2(Long above Int.MaxValue)")
+  assertTrue(not UInt32T.IsPow2(5), "UInt32.IsPow2(5)")
+  assertTrue(UInt64T.IsPow2(1024i64), "UInt64.IsPow2(Long bit pattern)")
+}
+
+test "auto-FFI passes a negative Long to a UInt64 parameter as its bit pattern (#8482)" {
+  val minLong = -9223372036854775807i64 - 1i64
+  assertTrue(not UInt64T.IsPow2(-1i64), "UInt64.IsPow2(0xFFFF_FFFF_FFFF_FFFF) is false, with no overflow")
+  assertTrue(UInt64T.IsPow2(minLong), "Long.MinValue is the bit pattern 2^63")
+  assertTrue(not UInt64T.IsPow2(-1), "a negative Int sign-extends, with no overflow")
+}
+
+test "auto-FFI range-checks a narrowed integer argument (#8482)" {
+  val tooBig = 40000
+  val negative = -1
+  val tooLong = 4294967296i64
+  assertPanics("Int16.IsNegative(40000)", { -> val _ = Int16T.IsNegative(tooBig) })
+  assertPanics("SByte.IsNegative(200)", { -> val _ = SByteT.IsNegative(200) })
+  assertPanics("UInt16.IsEvenInteger(-1)", { -> val _ = UInt16T.IsEvenInteger(negative) })
+  assertPanics("UInt32.IsPow2(-1)", { -> val _ = UInt32T.IsPow2(negative) })
+  assertPanics("UInt32.IsPow2(2^32)", { -> val _ = UInt32T.IsPow2(tooLong) })
+}

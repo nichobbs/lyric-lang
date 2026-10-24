@@ -2409,6 +2409,7 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
       }
     }
   }
+  val privatePlain = pipePrivatePlainFuncItems(preMono.items)
   var pi = 0
   while pi < postMono.items.count {
     val it = postMono.items[pi]
@@ -2420,7 +2421,20 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
       }
       case _ -> ()
     }
-    val asWritten = match mapGet(arrayItems, contractItemKeyMsil(it)) { case Some(pre) -> pre; case None -> it }
+    val key = contractItemKeyMsil(it)
+    val asWritten = match mapGet(arrayItems, key) {
+      case Some(pre) -> pre
+      // A private non-generic helper a `pub` generic reaches is copied into the contract (#8427): as written,
+      // since the copy is specialised from its source in the consumer's package.
+      case None -> if pipeIsPrivatePlainFunc(it) {
+        match mapGet(privatePlain, key) {
+          case Some(pre) -> pre
+          case None -> it
+        }
+      } else {
+        it
+      }
+    }
     items.add(asWritten)
     pi = pi + 1
   }

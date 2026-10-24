@@ -1243,6 +1243,13 @@ func simInsertAt(st: in List[VerifierType], idx: in Int, v: in VerifierType): Un
   st[idx] = v
 }
 
+func isVTop(t: in VerifierType): Bool {
+  match t {
+    case VTop -> true
+    case _ -> false
+  }
+}
+
 func vtIsCat2(t: in VerifierType): Bool {
   match t {
     case VLong -> true
@@ -2453,9 +2460,17 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
         }
       }
       case None -> {
+        // A slot that was allocated but never stored (lowering that was
+        // abandoned after reserving its temporaries) is a gap, not an absent
+        // entry: the frame is positional, so skipping it would shift every
+        // later local onto the wrong slot (#8528).
+        frameLocals.add(VTop)
         slotIdx = slotIdx + 1
       }
     }
+  }
+  while frameLocals.count > initialLocals.count and isVTop(frameLocals[frameLocals.count - 1]) {
+    frameLocals.removeAt(frameLocals.count - 1)
   }
 
   // #6346: simulate the operand stack over the LInsn stream so each

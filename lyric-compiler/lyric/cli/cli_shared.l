@@ -338,8 +338,10 @@ func usageText(): String {
     "                [--no-default-features] [--all-features] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--target dotnet|jvm]\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--doctests] [--update-snapshots] [--target dotnet|jvm]\n" +
     "                (no source: runs all [project.tests]; falls back to scanning [project.packages] for @test_module;\n" +
+    "                 a @test_module that declares the package of a [project.packages] entry is merged into it, so its tests reach non-pub items;\n" +
+    "                 --doctests also runs the ```lyric blocks of /// doc comments as tests of their package;\n" +
     "                 --fail-fast stops after the first file with failing tests;\n" +
     "                 --properties runs `property` declarations too (Int/Bool/Double foralls only; not on --target native);\n" +
     "                 --property-trials N sets the sample count per property (default 100; requires --properties);\n" +

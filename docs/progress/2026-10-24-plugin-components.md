@@ -1,4 +1,4 @@
-# Plugins P5: WIT-typed components hosted in-process by wasmtime (D232)
+# Plugins P5: WIT-typed components hosted in-process by wasmtime (D233)
 
 - **Compiler** (`Lyric.PluginExpand`, `Lyric.ComponentGlue`, the native
   bridge):
@@ -41,4 +41,4 @@
   pinned wasmtime CLI for pack.
 - **Docs**: docs/69 §9.3 and §16 (P5 done), docs/01 §15.7-15.8 and §15.10,
   book chapter 33, appendix B, the chapter 1 toolchain table, docs/17 for the
-  new kernels, the decision entry D232.
+  new kernels, the decision entry D233.

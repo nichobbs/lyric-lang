@@ -1,7 +1,9 @@
 ## Native test runner — `lyric test`
 
 Status: shipped (v1 — D-progress-138); property execution partially
-shipped as v1.x (#677, D-progress-784, §5 Stage 3).
+shipped as v1.x (#677, D-progress-784, §5 Stage 3); `--manifest`
+discovery, `--update-snapshots`, merging a test module into the package it
+declares, and `--doctests` shipped (#678, D245).
 
 This document describes the native `lyric test` command and the
 `@test_module` / `test "…" { … }` surface it consumes.  v1 scope:
@@ -9,7 +11,7 @@ discover and execute every `@test_module` file under a manifest's
 test root and surface pass/fail per test, with the assertion API
 the language reference §3.2 / §13.2 specifies.  Property-based
 testing, fixtures, snapshot infrastructure beyond
-`Std.Testing.snapshot`, parallelism, JUnit XML output, doctests,
+`Std.Testing.snapshot`, parallelism, JUnit XML output,
 and contract-based property auto-derivation are explicitly out of
 v1 scope and tracked for follow-up milestones.  (`lyric test
 --properties` for Int/Bool/Double `forall` binders and `lyric test
@@ -91,6 +93,8 @@ v2 work. v1 tests use the existing two-argument
 lyric test <source.l> [--filter <substring>] [--list]
                       [-o <output.dll>] [-v|--verbose]
 lyric test --manifest <lyric.toml> [--filter <substring>] [--list]
+lyric test [<source.l> | --manifest <lyric.toml>] --doctests
+lyric test ... --update-snapshots
 ```
 
 #### 2.1 Behaviour
@@ -211,18 +215,32 @@ keeps the emitter self-contained.
 ### 4. Test-module visibility
 
 §3.2 of the language reference grants `@test_module` packages access
-to non-`pub` declarations of the package they test. v1 does **not**
-implement the cross-package access rule — for now, `@test_module`
-behaves like an ordinary single package whose test items get
-compiled. Files in `lyric-stdlib/tests/` already work this way (each is
-its own package), and the worked-example bank tests put the
-`@test_module` package in the *same* package as the code under test,
-which v1 supports natively (one file = one package = test items
-visible to all of it).
+to non-`pub` declarations of the package they test.  The rule (#678,
+D245) is a merge, not a visibility exception: **a `@test_module` that
+declares the same package name as a `[project.packages]` entry is
+compiled as one more file of that package.**  Its tests then reach the
+package's non-`pub` functions, types and `val`s, in every file of a
+multi-file package, because they are in the package.
 
-The cross-package case (separate test package referencing a
-production package's privates) lands in v2 along with the manifest-
-driven discovery story.
+* Project mode (`--manifest`, or a discovered manifest): when the
+  synthesised test module declares a package that the manifest lists, the
+  runner builds that package from its files plus the test module (with its
+  `@test_module` annotation dropped, since the files of a package agree on
+  that annotation, B0014, and the files under test do not carry it) instead
+  of as a separate test package.  A test file that already sits among the
+  package's own files is not added twice.
+* Single-file mode (`lyric test tests/account_tests.l`): the same, when the
+  nearest manifest lists the package; the package's other files join the
+  build and the dependencies they import are resolved as for any package
+  of the project.
+* A `@test_module` of any other package (`package Account.Tests`) is an
+  ordinary separate package and sees only `pub` items, so a test that
+  must stay black-box keeps working unchanged.
+* The merged package is the entry package of the test binary: the
+  synthesised `main` lives in it.
+
+The older layout, where the `@test_module` file is itself the whole package
+under test (one file, one package), needs no merge and still works.
 
 ### 5. Implementation sequencing
 
@@ -233,8 +251,8 @@ driven discovery story.
   `expect` so we exercise the new path.
 * **Stage 2** _(shipped — D-progress-297, #465)_ — `--manifest` discovery,
   multi-file test runs via `Emitter.emitProject`, feature-default resolution,
-  local-path dep resolution.  Cross-package non-pub access (§3.2) and retiring
-  the F# Expecto bridge for the stdlib test suite are follow-up items.
+  local-path dep resolution.  Cross-package non-pub access (§3.2) shipped
+  later (#678, D245; see §4); the F# Expecto bridge is gone.
 * **Stage 3** — property execution. **Partially shipped (#677,
   D-progress-784; v2 slice 1 in D-progress-942):** `lyric test
   --properties` synthesises a real sampling-and-shrinking harness
@@ -257,8 +275,28 @@ driven discovery story.
   elaborator first; both are tracked as separate follow-up issues. A
   property with any other binder type still reports `# skip` (naming
   the unsupported type) under `--properties`, exactly as it does
-  without the flag. Doctest harness for ` ```lyric ` blocks is
-  unstarted (tracked under #678).
+  without the flag.
+* **`--doctests`** _(shipped, #678, D245)_ — `lyric test --doctests` also
+  runs the ` ```lyric ` blocks of `///` (and `//!`) doc comments as tests
+  of the package that holds them.  `Lyric.TestSynth.extractDoctests` finds
+  the blocks from the lexer's doc-comment tokens (a run of consecutive
+  doc-comment lines is one comment, so a fence is found wherever the comment
+  sits: on an item, a record member, an `impl` method); a block is runnable
+  when its fence says `lyric` (` ```lyric `, ` ```lyric,no_test `,
+  ` ```lyric,ignore ` opt out, as does a first line `// no_test`; other
+  languages and bare fences are not code).  `buildDoctestModule` makes a
+  `@test_module` of the file's own package from them: the block's leading
+  `import` lines are hoisted to the module (an import of the package
+  itself is dropped, its names are in scope), and the rest is the body of a
+  `test "doctest <path>:<line>"` item.  Because the module is a test module
+  of the package it documents, it takes the merge rule of §4, so a doctest
+  also reaches non-`pub` items.  In project mode every source file of a
+  `[project.packages]` entry that has doctests is one more run, after the
+  `[project.tests]` entries; in single-file mode the file's package is built
+  with the doctest module merged in (and a file that is itself a
+  `@test_module` runs its own tests and its doctests together).  A block is
+  a statement list: it cannot declare items.  A file with no doctests prints
+  `0 doctest(s)`.
 * **`--update-snapshots`** _(shipped, #678)_ — `lyric test --update-snapshots`
   sets the `LYRIC_UPDATE_SNAPSHOTS=1` env var (a real OS-level var, inherited
   by whichever process the compiled test binary runs as on any target) before
@@ -358,10 +396,9 @@ T-codes 0900–0999 are reserved for the test runner.
   level, or always fall back to the source-text label? v1 uses the
   source-text label exclusively; v2 may special-case `==`/`!=`.
 * **Q-test-4** — Doctest discovery: how do we extract ` ```lyric `
-  blocks from doc comments without a CST? The lexer currently drops
-  non-doc comments, but doc comments survive — so the data is
-  preserved. What's missing is a markdown-fenced-block extractor.
-  Stage 3.
+  blocks from doc comments without a CST? _Resolved (#678, D245):_ the
+  lexer keeps doc comments as tokens, so the extractor works on those
+  (§5 Stage 3, `--doctests`).
 
 ### 8. Why not defer everything to Phase 5?
 

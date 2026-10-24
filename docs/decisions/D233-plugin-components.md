@@ -1,4 +1,4 @@
-# D232 - Plugin components (docs/69 §9.3, P5): `--shape component` plugins, the WIT mapping, and in-process wasmtime hosting
+# D233 - Plugin components (docs/69 §9.3, P5): `--shape component` plugins, the WIT mapping, and in-process wasmtime hosting
 
 **Status:** shipped. Extends D207, D228 and D231; implements docs/69 §9.3 and
 resolves Q-PLG-001. Builds on the component shape (docs/35, D-progress-1028

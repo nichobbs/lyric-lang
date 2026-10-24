@@ -469,6 +469,8 @@ sha256  = "<64 hex digits>"
 members = ["lib/libwindow.so"]
 ```
 
+An archive can be a `.zip` or a gzip-compressed tar (`.tar.gz`, `.tgz`); both need `members`, and a tar member that is a symbolic link such as `libfoo.so -> libfoo.so.1` is followed. The compiler reads both formats itself, so `lyric restore` needs only `curl`.
+
 The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone. On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
 
 A library can be a system package on one platform and an archive on another. Put the prebuilt tables beside `pkg_config`, and a triple with an archive uses it while every other triple asks pkg-config; this is how `lyric-window` gets SDL3 from the distribution on Linux and from SDL's official archive on Windows. A member written `"lib/x.dll.lib -> window.lib"` is extracted under the name after the arrow, which matters on Windows: the import library must be called `<link>.lib`, but it records the DLL it loads, so the DLL keeps its own name and is copied beside the program with every other DLL the archive extracts.

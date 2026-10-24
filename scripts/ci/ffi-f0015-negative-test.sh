@@ -123,3 +123,36 @@ if grep -q "F0027" "$work/f0027_neg.out"; then
   echo "::error::explicit @externStatic did not silence F0027"; exit 1
 fi
 echo "F0027 hint-less-extern enforcement test passed"
+
+# F0027 on an SDK-less build (#7387): with no reference pack
+# (LYRIC_REF_PACK_DIR naming a missing directory) nothing can be verified, so
+# a hint-less extern that takes its declaring type first is refused, while a
+# hint-less extern that does not (a plain static) still builds.
+cat > "$work/f0027_sdkless_pos.l" <<'LYR'
+package F0027SdkLessPos
+extern type Sb = "System.Text.StringBuilder"
+@externTarget("System.Text.StringBuilder.Append")
+func sbAppend(sb: in Sb, s: in String): Sb = ()
+func main(): Int { 0 }
+LYR
+rc=0
+( cd "$work" && LYRIC_REF_PACK_DIR="$work/no-such-ref-pack" "$bin_abs" build f0027_sdkless_pos.l ) > "$work/f0027_sdkless_pos.out" 2>&1 || rc=$?
+echo "--- F0027 SDK-less positive fixture (rc=$rc) ---"; cat "$work/f0027_sdkless_pos.out"
+if [ "$rc" -eq 0 ]; then
+  echo "::error::a hint-less instance-shaped extern built clean without a reference pack"; exit 1
+fi
+grep -q "F0027" "$work/f0027_sdkless_pos.out" || {
+  echo "::error::SDK-less hint-less instance-shaped extern did not report F0027"; exit 1; }
+cat > "$work/f0027_sdkless_neg.l" <<'LYR'
+package F0027SdkLessNeg
+@externTarget("System.Math.Max")
+func hintlessMax(a: in Int, b: in Int): Int = ()
+func main(): Int { 0 }
+LYR
+rc=0
+( cd "$work" && LYRIC_REF_PACK_DIR="$work/no-such-ref-pack" "$bin_abs" build f0027_sdkless_neg.l ) > "$work/f0027_sdkless_neg.out" 2>&1 || rc=$?
+echo "--- F0027 SDK-less negative fixture (rc=$rc) ---"; cat "$work/f0027_sdkless_neg.out"
+if grep -q "F0027" "$work/f0027_sdkless_neg.out"; then
+  echo "::error::a hint-less static extern was refused without a reference pack"; exit 1
+fi
+echo "F0027 SDK-less enforcement test passed"

@@ -196,6 +196,14 @@ pub record MiddleEndOptions {
   /// intrinsics, for a backend that has typed primitive arrays (the JVM,
   /// #8041).
   primitiveArrays: Bool = false
+  /// Also record, in `memberRecvClassesOut` under `<origin>|<siteKey>`, the
+  /// receiver classes of the bodies of other packages' generics specialised
+  /// into this one, resolved by checking those bodies in the declaring
+  /// package's scope (`foreignMemberRecvClasses`).  For a backend that
+  /// erases generics and narrows an erased receiver with them (the JVM): a
+  /// specialised copy carries the declaring package's spans, which this
+  /// package's own check never saw (#7868).
+  foreignRecvClasses: Bool = false
   /// Leave the type checker's warnings unreported: a dependency compiled
   /// from source into a consumer's build was already reported when the
   /// dependency itself was built.
@@ -1740,6 +1748,16 @@ pub func pipeCheckAndMono(
     opts.methodCallAritiesOut,
     foreignDotCalls
   )
+  if opts.foreignRecvClasses {
+    foreignMemberRecvClasses(
+      monoRes0.foreignSpecs,
+      file0,
+      importedPkgs,
+      monoGenFuncs,
+      opts.nativeIntrinsics,
+      opts.memberRecvClassesOut
+    )
+  }
   val foreignUnitSites = foreignUnitLambdaSites(
     monoRes0.foreignSpecs,
     file0,
@@ -2053,6 +2071,79 @@ pub func foreignMethodCallArities(
       case None -> ()
     }
   }
+}
+
+// The receiver classes (`SymbolTable.memberRecvClasses`) of the bodies of
+// `specs`, specialisations of other packages' generics, resolved in the scope
+// of the package declaring each generic and recorded in `acc` under
+// `<origin>|<siteKey>`.  A receiver's class is that of its nominal type, which
+// no specialisation of the generic changes (a type parameter has none), so one
+// specialisation of each generic stands for all.
+pub func foreignMemberRecvClasses(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, String],
+): Unit {
+  if specs.count == 0 {
+    return
+  }
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    if sp.originPkg.length == 0 {
+      continue
+    }
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) and specHasMemberAccess(sp.specDecl) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+        case Some(res) -> {
+          for k in mapKeys(res.symbols.memberRecvClasses) {
+            if not acc.containsKey(origin + "|" + k) {
+              match mapGet(res.symbols.memberRecvClasses, k) {
+                case Some(cls) -> acc.add(origin + "|" + k, cls)
+                case None -> ()
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+}
+
+func specHasMemberAccess(decl: in FunctionDecl): Bool {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val f = SourceFile(
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  anyExprInFile(f, { e: Expr -> match e.kind { case EMember(_, _) -> true; case _ -> false } })
 }
 
 func foreignOriginArities(
@@ -4757,6 +4848,9 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
 /// monomorphized copy would rename the call, bypass the intrinsic, and
 /// copy a body that calls the un-lowerable generic kernel extern
 /// `tryGetValue`.  `pkgName` is only consulted for that exclusion.
+/// `carryPlainHelpers` — with `requirePub` false, also copy the private
+/// non-generic helpers the generics reach (a source dependency of a JVM
+/// build); with `requirePub` true they are always copied.
 ///
 /// The intrinsic contributes NOTHING to `dest` here — see
 /// `pipeAddInferenceOnlyIntrinsicFuncs` for its separate, appended-last
@@ -4778,9 +4872,29 @@ pub func pipeAddGenericFuncs(
   requirePub: in Bool,
   excludeIntrinsics: in Bool,
   dest: in List[FunctionDecl],
+  carryPlainHelpers: in Bool = false,
 ): Unit {
+  if not requirePub and carryPlainHelpers {
+    // Every generic is collected as it is; the private non-generic helpers they reach are copied
+    // under package-unique names, since a specialised body cannot bind them in the package that
+    // declares them (#8427).
+    val carried = carryPlainHelpersOfGenerics(items, pkgName)
+    for decl in carried.pubFuncs {
+      val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
+      if not isIntrinsic and not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    for decl in carried.privateCopies {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    return
+  }
   if requirePub {
-    // The private generics a `pub` generic reaches travel with it under package-unique names (#8427).
+    // The private generics, and the private non-generic helpers, a `pub` generic reaches travel with
+    // it under package-unique names (#8427).
     val carried = carryPrivateGenerics(items, pkgName)
     for decl in carried.pubFuncs {
       if not pipeAnnsBlockSpecialization(decl.annotations) {
@@ -4912,6 +5026,50 @@ pub func pipeAddNonGenericFuncs(items: in List[Item], pkgName: in String, dest: 
     }
     i = i + 1
   }
+}
+
+/// True for a non-`pub`, non-generic function with a body: the private helper
+/// a `pub` generic may reach (`Lyric.ContractElaborator.carryPrivateGenerics`).
+pub func pipeIsPrivatePlainFunc(it: in Item): Bool {
+  match it.kind {
+    case IFunc(decl) -> {
+      val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+      val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+      val hasBody = match decl.body { case Some(_) -> true; case None -> false }
+      not isPub and not isGeneric and hasBody
+    }
+    case _ -> false
+  }
+}
+
+/// The private non-generic functions of `items` as written, keyed `f:<name>/<arity>`.
+/// The contract builders take them from the file as it stood before the middle end, since
+/// a copy is specialised from its source in the package that calls the generic.
+/// `Lyric.ContractElaborator.carryPrivateGenerics` copies no helper whose name is overloaded,
+/// and this map leaves out a key two functions share, so the two agree on which helpers exist.
+pub func pipePrivatePlainFuncItems(items: in List[Item]): Map[String, Item] {
+  val byKey: Map[String, Item] = newMap()
+  val repeated: Map[String, Bool] = newMap()
+  for it in items {
+    if pipeIsPrivatePlainFunc(it) {
+      match it.kind {
+        case IFunc(decl) -> {
+          val key = "f:" + decl.name + "/" + toString(decl.params.count)
+          if byKey.containsKey(key) {
+            repeated[key] = true
+          } else {
+            byKey.add(key, it)
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  // Two functions of one name and arity cannot be told apart by that key.
+  for k in mapKeys(repeated) {
+    byKey.remove(k)
+  }
+  byKey
 }
 
 /// Append every `IInterface` decl in `items` to `dest`.  Fed to the
