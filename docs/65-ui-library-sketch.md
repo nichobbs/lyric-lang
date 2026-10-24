@@ -5,7 +5,7 @@ U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
 implemented, as is U6 (prerendered first paint, D152; `Lazy` subtrees,
 D153; the data grid, D154) and U5 on MSIL and JVM (the desktop webview
-host, D162); see
+host, D162), as are widgets from plugins (§6.5, D230); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -202,9 +202,9 @@ logic = { may_import = ["domain", "logic", "pure"], async = false }
 |---|---|---|
 | `domain` | `domain`, `pure` | everything else |
 | `ports` | `domain`, `pure` | `Ui.*`, `effects`, `view` |
-| `logic` | `domain`, `logic`, `pure`, `Ui.Core`, `Ui.Routing`, `Ui.Grid` | `Ui` widgets, `ports`, `effects`, `io`; no `async func` |
-| `effects` | `domain`, `logic`, `ports`, `pure`, `io`, `Ui.Core`, `Ui.Routing`, `Ui.Grid` | `Ui` widgets, `view` |
-| `view` | `domain`, `logic`, `view`, `pure`, `Ui.Core`, `Ui.Widgets`, `Ui.Forms`, `Ui.Routing`, `Ui.Grid` | `ports`, `effects`, `io`; no `async func` |
+| `logic` | `domain`, `logic`, `pure`, `Ui.Core`, `Ui.Routing`, `Ui.Grid`, `Ui.PluginWidgets` | `Ui` widgets, `ports`, `effects`, `io`; no `async func` |
+| `effects` | `domain`, `logic`, `ports`, `pure`, `io`, `Ui.Core`, `Ui.Routing`, `Ui.Grid`, `Ui.PluginWidgets`, `Ui.PluginWidgets.Host` | `Ui` widgets, `view` |
+| `view` | `domain`, `logic`, `view`, `pure`, `Ui.Core`, `Ui.Widgets`, `Ui.Forms`, `Ui.Routing`, `Ui.Grid`, `Ui.PluginWidgets` | `ports`, `effects`, `io`; no `async func` |
 | unlayered (`app`) | anything | nothing |
 
 `Ui.Core` holds only data types (`View`, `Step`, `UiEffect`, `Event`); it is
@@ -372,6 +372,46 @@ change in session storage and shows them again once the next page loads.
   `Publish(CustomerChanged(id))`; the list screen subscribes with
   `subscriptions(m) = [on(CustomerChanged, Refresh)]`. The same `Sub`
   mechanism covers timers and server push.
+
+### 6.5 Widgets from plugins
+
+D230 (docs/69 §15.1). A widget the closed set lacks can come from a plugin
+of point `Ui.Plugins.WidgetPlugin`, running out of process (any payload,
+wasm included). Such a widget is a model-view-update component in miniature,
+and it plugs into the screen the way §6.2's embedded components do, with
+every plugin call an effect:
+
+```lyric
+// logic: one placement per widget, in the model
+val c = PluginWidgets.placeWidget("rating", WidgetRef(plugin = "example.ui-widgets", widget = "rating"), cfg)
+// c.widget goes in the model; c.requests become CallWidget effects
+case FromWidget(s) -> apply(m, PluginWidgets.signalWidget(m.rating, s))
+case Replied(r)    -> apply(m, PluginWidgets.replyWidget(m.rating, r))   // + c.outcomes
+// effects
+case CallWidget(r) -> Some(value = Replied(reply = runWidgetRequest(runner, r)))
+// view
+widgetView(m.rating, { s -> FromWidget(signal = s) })
+```
+
+- **State.** The plugin returns its state with every view, and the screen
+  keeps it in the `PluginWidget`. A restarted plugin carries on from it, and
+  the screen stays replayable (§4.5).
+- **View.** The plugin's view is a `WidgetTree`: a `View` without closures,
+  whose handlers name a message string. `widgetView` shows it with the host's
+  own widgets, under a node keyed by the placement's name, so it looks like
+  the rest of the application on every host and event paths reach it by key
+  (§7.2). A tree beyond the size limits is refused; unknown properties and
+  unsafe links are dropped.
+- **Outcomes.** What a widget wants from its screen arrives as
+  `WidgetOutcome`s (name and JSON payload), never as navigation, dialogs or
+  I/O. The screen decides what each means, and changes a widget's
+  configuration with `reconfigureWidget`.
+- **Failure.** A failed call shows an error banner with a Retry button over
+  the last good view: the plugin's error, a timeout, a crash, a missing plugin
+  or widget, or a refused view. The rest of the screen is unaffected.
+- **Layers.** `Ui.PluginWidgets` is pure, and the `ui` preset lets logic,
+  effects and views import it. `Ui.PluginWidgets.Host`, which makes the calls,
+  is for effects only.
 
 ---
 
@@ -928,6 +968,7 @@ custom properties (design tokens) with light and dark sets.
 | U5 | Desktop webview host | Implemented on MSIL and JVM (D162, over D158/D161): a webview window on the loopback web host, tested in a real window under Xvfb on both targets; also implemented on native over `libwebview` (`-lwebview`), tested the same way (#7990, #8155) |
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
+| U8 | Widgets from plugins (§6.5) | Implemented (D230): `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`; real plugin processes (dotnet, JVM, native and wasm payloads) with dotnet, JVM and native hosts in `scripts/ci/ui-widget-plugins-e2e.sh` |
 
 ---
 

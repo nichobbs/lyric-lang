@@ -48647,6 +48647,25 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     }
     ai = ai + 1
   }
+  // Pass 1b: every artifact's enums, before any member signature is encoded.
+  // An enum is an I4 in a signature only once `enumTypeNames` knows it, so a
+  // function of one artifact naming another artifact's enum
+  // (`Ui.PluginWidgets.hostKind(Ui.Plugins.NodeKind)`) was encoded with a
+  // class reference when its artifact came first, and the call faulted with
+  // `Method not found`.  Pass 2 registers them again, which is a no-op.
+  var ae = 0
+  while ae < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[ae]
+    if not startsWith(art.packageName, "Std.") {
+      for it in art.source.items {
+        match it.kind {
+          case IEnum(decl) -> registerEnumDeclMsil(cctx, art.packageName, decl)
+          case _ -> ()
+        }
+      }
+    }
+    ae = ae + 1
+  }
   // Pass 2: member MemberRef rows (record ctors / fields, free funcs,
   // union cases, impl methods) now that every type's TypeRef exists.
   // Walks the parsed source instead of the contract decls so we get

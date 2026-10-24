@@ -509,6 +509,72 @@ reads its manifest, starts it once per build and calls `generate` for each
 requests and refuses any path outside the granted roots, an absolute path, or
 one with `..` in it.
 
+## A widget for lyric-ui
+
+`lyric-ui` (chapter 31) has its own plugin point, `Ui.Plugins.WidgetPlugin`. A
+widget plugin depends on two small libraries, the point (`Ui.Plugins`) and
+the builders for its view (`Ui.Plugins.Build`). Both need only the standard
+library, so a widget plugin builds for every target:
+
+```toml
+[dependencies]
+"Ui.Plugins"       = { path = "../lyric-ui/plugins" }
+"Ui.Plugins.Build" = { path = "../lyric-ui/plugins/build" }
+```
+
+The host calls the plugin three ways:
+
+- `init` for a new placement, with its configuration;
+- `update` with the state and the message an interaction produced;
+- `configure` to show the state again under a new configuration, or when the
+  user presses Retry.
+
+Each call returns a `WidgetStep`: the next state, as JSON the host keeps and
+sends back next time, the view, and outcomes for the screen. The view is a
+`WidgetTree`, built with `Ui.Plugins.Build`, which has the same builders as
+`Ui.Widgets`. Where a `Ui.Widgets` builder takes a message, these take a
+message string, and the text of an input arrives as the message's `data`:
+
+```lyric
+package Acme.Stars
+
+import Ui.Plugins
+import Ui.Plugins.Build as B
+
+@plugin(id = "acme.stars", version = "1.0.0", publisher = "acme", implements(WidgetPlugin))
+pub record Stars {}
+
+func starsView(value: in Int): WidgetTree {
+  val row: List[WidgetTree] = newList()
+  for i in [1, 2, 3, 4, 5] {
+    row.add(B.keyed("star-" + i.toString(), B.button(if i <= value then "*" else "-", "set:" + i.toString())))
+  }
+  B.row(row)
+}
+
+impl WidgetPlugin for Stars {
+  func init(req: in WidgetInit): Result[WidgetStep, WidgetError] =
+    Ok(value = WidgetStep(state = JInt(value = 0i64), view = starsView(0), outcomes = newList()))
+  func update(req: in WidgetUpdate): Result[WidgetStep, WidgetError] { ... }     // "set:4" -> state 4, outcome "rated"
+  func configure(req: in WidgetConfigure): Result[WidgetStep, WidgetError] { ... }
+}
+
+@plugin_contributions(WidgetPlugin)
+func contributions(): WidgetContributions { ... }   // WidgetDecl(name = "stars", title, description, configSchema, defaultConfig)
+```
+
+A widget plugin keeps no state of its own and has no capabilities: it
+computes from what the host sends. Anything else it wants, it asks the screen
+for through an outcome.
+
+The host shows only the properties the built-in widgets use. It keeps a
+link's `href` only for an application path or an `http`/`https` URL, and it
+refuses a view of more than 2000 nodes.
+
+`examples/plugins/ui-widgets/widgets` is a complete widget plugin with a
+rating and a tag list, and `scripts/ci/ui-widget-plugins-e2e.sh` runs it with
+real plugin processes.
+
 ## Diagnostics
 
 The compiler reports plugin declarations it cannot accept as `K0000`-`K0012`;
@@ -526,6 +592,7 @@ appendix B has the table. The ones you will meet first:
 ## What is not supported yet
 
 - A trusted in-process mode, plugin signing and a plugin registry (D207).
+- A widget plugin's point (`WidgetPlugin` 1.0) allows no capabilities.
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.
 - The language server does not run the plugin pass, so the generated names
