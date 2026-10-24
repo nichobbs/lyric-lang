@@ -566,7 +566,7 @@ impl Cache.CacheStore for MockCacheStore {
     self.entries[key] = value
   }
   func delete(key: in String): Unit {
-    self.entries.remove(key)
+    val _ = self.entries.remove(key)
   }
   func clear(): Unit {
     self.entries = newMap()
