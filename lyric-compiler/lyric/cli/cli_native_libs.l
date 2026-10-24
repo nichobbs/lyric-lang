@@ -642,3 +642,139 @@ pub func nativeLibDeclsOf(manifest: in Mf.Manifest, manifestDir: in String): Lis
   }
   decls
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `[native.app]`: a macOS `.app` bundle (docs/67 §6, D230).
+// ─────────────────────────────────────────────────────────────────────────────
+/// Whether `triple` ("" is the host) names a macOS target.
+pub func isDarwinTarget(triple: in String): Bool {
+  val eff = if triple.length > 0 { triple } else { hostTripleOrEmpty() }
+  isDarwinTriple(eff)
+}
+
+func xmlEscape(s: in String): String {
+  val amp = Str.replace(s, "&", "&amp;")
+  val lt = Str.replace(amp, "<", "&lt;")
+  val gt = Str.replace(lt, ">", "&gt;")
+  val quot = Str.replace(gt, "\"", "&quot;")
+  Str.replace(quot, "'", "&apos;")
+}
+
+/// A `CFBundleIdentifier` is reverse-DNS: letters, digits, hyphens and periods.
+func bundleIdentifierPart(s: in String): String {
+  val allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-."
+  var cleaned = ""
+  var i = 0
+  while i < s.length {
+    val ch = Str.substring(s, i, 1)
+    cleaned = cleaned + (if Str.contains(allowed, ch) { ch } else { "-" })
+    i += 1
+  }
+  cleaned
+}
+
+/// The `Info.plist` of the bundle for `exeName`, with `app`'s fields and the defaults
+/// documented on `Mf.NativeApp`.
+pub func infoPlistText(app: in Mf.NativeApp, exeName: in String): String {
+  val identifier = if app.identifier.length > 0 { app.identifier } else { "lyric." + bundleIdentifierPart(exeName) }
+  val name = if app.name.length > 0 { app.name } else { exeName }
+  val version = if app.version.length > 0 { app.version } else { "0.1.0" }
+  val keys: List[String] = newList()
+  val values: List[String] = newList()
+  keys.add("CFBundleExecutable")
+  values.add(exeName)
+  keys.add("CFBundleIdentifier")
+  values.add(identifier)
+  keys.add("CFBundleName")
+  values.add(name)
+  keys.add("CFBundleDisplayName")
+  values.add(name)
+  keys.add("CFBundlePackageType")
+  values.add("APPL")
+  keys.add("CFBundleInfoDictionaryVersion")
+  values.add("6.0")
+  keys.add("CFBundleShortVersionString")
+  values.add(version)
+  keys.add("CFBundleVersion")
+  values.add(version)
+  keys.add("LSMinimumSystemVersion")
+  values.add("11.0")
+  keys.add("NSPrincipalClass")
+  values.add("NSApplication")
+  var body = ""
+  var i = 0
+  while i < keys.count {
+    body = body + "  <key>" + keys[i] + "</key>\n  <string>" + xmlEscape(values[i]) + "</string>\n"
+    i += 1
+  }
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" +
+    "<plist version=\"1.0\">\n<dict>\n" +
+    body +
+    "  <key>NSHighResolutionCapable</key>\n  <true/>\n</dict>\n</plist>\n"
+}
+
+/// Assembles `<exe>.app` beside the finished executable `exePath`: the executable in
+/// `Contents/MacOS`, the plan's shared libraries in `Contents/Frameworks` (the
+/// `@executable_path/../Frameworks` run path the link added finds them) and an
+/// `Info.plist`.  The loose executable stays where it is, so `lyric run` is unaffected.
+/// Signing and notarisation are not done: the executable and the libraries carry the
+/// ad-hoc signature the linker and `stageDarwinDylib` gave them.  Returns the bundle's
+/// path, or the reason it could not be written.
+pub func assembleMacApp(app: in Mf.NativeApp, plan: in NativeLinkPlan, exePath: in String): Result[String, String] {
+  val exeName = fileNameOf(exePath)
+  val bundle = Path.join(Path.dirname(exePath), exeName + ".app")
+  val contents = Path.join(bundle, "Contents")
+  val macosDir = Path.join(contents, "MacOS")
+  val frameworks = Path.join(contents, "Frameworks")
+  if File.dirExists(bundle) {
+    match File.deleteDirRecursive(bundle) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot replace the existing " + bundle)
+    }
+  }
+  match Dir.createRecursive(macosDir) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot create " + macosDir)
+  }
+  val cpArgs: List[String] = newList()
+  cpArgs.add(exePath)
+  cpArgs.add(Path.join(macosDir, exeName))
+  match runToolOrError("cp", cpArgs) {
+    case Some(msg) -> return Err(error = msg)
+    case None -> ()
+  }
+  if plan.bundle.count > 0 {
+    match Dir.createRecursive(frameworks) {
+      case Ok(_) -> ()
+      case Err(_) -> return Err(error = "cannot create " + frameworks)
+    }
+    for f in plan.bundle {
+      match File.readBytes(f) {
+        case Err(_) -> return Err(error = "cannot read the shared library " + f)
+        case Ok(bytes) -> match File.writeBytes(Path.join(frameworks, fileNameOf(f)), bytes) {
+          case Ok(_) -> ()
+          case Err(_) -> return Err(error = "cannot write into " + frameworks)
+        }
+      }
+    }
+  }
+  match File.writeText(Path.join(contents, "Info.plist"), infoPlistText(app, exeName)) {
+    case Ok(_) -> ()
+    case Err(_) -> return Err(error = "cannot write the Info.plist")
+  }
+  Ok(value = bundle)
+}
+
+/// `[native.app]` as an `assembleMacApp` input, for a build whose target is `triple`:
+/// None unless the manifest asks for a bundle and the target is macOS (the table is
+/// ignored for other targets so one manifest serves every platform).
+pub func macAppFor(nc: in Option[Mf.NativeConfig], triple: in String): Option[Mf.NativeApp] {
+  match nc {
+    case Some(c) -> match c.app {
+      case Some(a) -> if isDarwinTarget(triple) { Some(value = a) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
+}

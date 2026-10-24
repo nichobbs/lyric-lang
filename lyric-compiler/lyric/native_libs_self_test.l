@@ -235,6 +235,125 @@ test "an application consumes a C library bound through generated bindings" {
   assertEqual(Str.trim(second.stdout), "5,10", "same output from the bundle alone")
 }
 
+func hostIsDarwin(): Bool = sharedExt() == ".dylib"
+
+func appendToFile(path: in String, extra: in String): Unit {
+  val original = match File.readText(path) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + path) }
+  writeFileOrPanic(path, original + extra)
+}
+
+func toolOutput(tool: in String, args: in List[String]): String {
+  match Process.runCapture(tool, args, 60000) {
+    case Ok(res) -> res.stdout + res.stderr
+    case Err(e) -> panic(tool + " could not be started: " + e)
+  }
+}
+
+test "[native.app] is read, with the package version as the default" {
+  val base = "[package]\nname = \"P\"\nversion = \"2.3.4\"\n"
+  val full = Mf.parseManifest(
+    base + "\n[native.app]\nidentifier = \"id.example.p\"\nname = \"P App\"\nversion = \"9.0\"\n",
+    "lyric.toml"
+  )
+  match full {
+    case Ok(m) -> match m.native {
+      case Some(nc) -> match nc.app {
+        case Some(a) -> {
+          assertEqual(a.identifier, "id.example.p", "identifier")
+          assertEqual(a.name, "P App", "name")
+          assertEqual(a.version, "9.0", "version")
+        }
+        case None -> assertTrue(false, "the app table is present")
+      }
+      case None -> assertTrue(false, "a [native.app] table alone makes a native config")
+    }
+    case Err(e) -> assertTrue(false, "parses: " + Mf.ManifestError.message(e))
+  }
+  val bare = Mf.parseManifest(base + "\n[native.app]\nidentifier = \"id.example.p\"\n", "lyric.toml")
+  match bare {
+    case Ok(m) -> match m.native {
+      case Some(nc) -> match nc.app {
+        case Some(a) -> assertEqual(
+          a.version,
+          "2.3.4",
+          "the package version is the default"
+        )
+        case None -> assertTrue(false, "the app table is present")
+      }
+      case None -> assertTrue(false, "a native config")
+    }
+    case Err(e) -> assertTrue(false, "parses: " + Mf.ManifestError.message(e))
+  }
+  val none = Mf.parseManifest(base, "lyric.toml")
+  match none {
+    case Ok(m) -> assertTrue(match m.native { case Some(_) -> false; case None -> true }, "no table, no native config")
+    case Err(e) -> assertTrue(false, "parses: " + Mf.ManifestError.message(e))
+  }
+}
+
+test "the Info.plist names the executable, escapes its values and defaults the rest" {
+  val given = Mf.NativeApp(identifier = "id.example.tool", name = "R&D <Tool>", version = "1.2.3")
+  val text = Cli.infoPlistText(given, "tool")
+  assertTrue(Str.contains(text, "<key>CFBundleExecutable</key>\n  <string>tool</string>"), "executable: " + text)
+  assertTrue(Str.contains(text, "<string>id.example.tool</string>"), "identifier")
+  assertTrue(Str.contains(text, "<string>R&amp;D &lt;Tool&gt;</string>"), "name is escaped")
+  assertTrue(Str.contains(text, "<key>CFBundleShortVersionString</key>\n  <string>1.2.3</string>"), "version")
+  assertTrue(Str.contains(text, "<key>NSHighResolutionCapable</key>\n  <true/>"), "retina")
+  val defaults = Cli.infoPlistText(Mf.NativeApp(identifier = "", name = "", version = ""), "my tool")
+  assertTrue(Str.contains(defaults, "<string>lyric.my-tool</string>"), "identifier from the executable: " + defaults)
+  assertTrue(Str.contains(defaults, "<key>CFBundleName</key>\n  <string>my tool</string>"), "name from the executable")
+  assertTrue(Str.contains(defaults, "<key>CFBundleVersion</key>\n  <string>0.1.0</string>"), "version default")
+}
+
+test "a native build of a [native.app] project on macOS is a runnable .app bundle" {
+  if not hostIsDarwin() {
+    // The bundle is a Darwin artifact: Linux and Windows builds ignore the table.
+    return
+  }
+  val root = freshTempDir("appbundle")
+  defer {
+    cleanup(root)
+  }
+  val binding = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val appDir = writeApp(root)
+  appendToFile(
+    Path.join(appDir, "lyric.toml"),
+    "\n[native.app]\nidentifier = \"id.example.cdep\"\nname = \"Cdep App\"\n"
+  )
+  val outDir = Path.join(appDir, "out")
+  mkdirOrPanic(outDir)
+  val outPath = Path.join(outDir, "cdepapp")
+  assertEqualInt(buildNative(Path.join(appDir, "lyric.toml"), outPath), 0, "the native build succeeds")
+  val bundle = Path.join(outDir, "cdepapp.app")
+  val contents = Path.join(bundle, "Contents")
+  val bundled = Path.join(Path.join(contents, "MacOS"), "cdepapp")
+  assertTrue(File.fileExists(bundled), "the executable is in Contents/MacOS")
+  assertTrue(
+    File.fileExists(Path.join(Path.join(contents, "Frameworks"), "libcdep.dylib")),
+    "the library is in Contents/Frameworks"
+  )
+  assertTrue(File.fileExists(Path.join(contents, "Info.plist")), "there is an Info.plist")
+  val lintArgs: List[String] = newList()
+  lintArgs.add("-lint")
+  lintArgs.add(Path.join(contents, "Info.plist"))
+  assertTrue(Str.contains(toolOutput("plutil", lintArgs), "OK"), "plutil accepts the Info.plist")
+  val idArgs: List[String] = newList()
+  idArgs.add("-D")
+  idArgs.add(Path.join(Path.join(contents, "Frameworks"), "libcdep.dylib"))
+  assertTrue(
+    Str.contains(toolOutput("otool", idArgs), "@rpath/libcdep.dylib"),
+    "the bundled library is named by run path"
+  )
+  // Only the bundle remains: the library's directory and the loose build output are gone.
+  cleanup(Path.join(binding, "native"))
+  cleanup(Path.join(binding, ".lyric"))
+  val _ = File.deleteFile(outPath)
+  val _2 = File.deleteFile(Path.join(outDir, "libcdep.dylib"))
+  val run = runBinary(bundled)
+  assertEqualInt(run.exitCode, 0, "the bundled executable runs (stderr=" + run.stderr + ")")
+  assertEqual(Str.trim(run.stdout), "5,10", "it finds its library through @executable_path/../Frameworks")
+}
+
 test "a library whose directory is missing fails the build with the library's name" {
   val root = freshTempDir("missing")
   defer {
