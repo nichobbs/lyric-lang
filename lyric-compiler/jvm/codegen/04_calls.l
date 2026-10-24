@@ -2232,10 +2232,53 @@ func emitFfiCoerce(ctx: in FuncCtx, insns: in List[LInsn], fromDesc: in String, 
           emitUnboxObjectArray(ctx, insns, elemTy)
           return ()
         }
+        match elemTy {
+          case JRef(cls) -> if cls != "java/lang/Object" { emitNarrowObjectArray(ctx, insns, cls); return () }
+          case _ -> ()
+        }
       }
       case _ -> ()
     }
   }
+}
+
+// Replace the Lyric slice (`[Ljava/lang/Object;`) on the operand stack with a
+// copy typed `cls[]`, for a JDK parameter of that array type (`URL[]` of
+// `new URLClassLoader(URL[], ClassLoader)`).  `ffiScoreDescFor` scores such a
+// call only when the slice's declared element type is `cls` itself, so each
+// element `checkcast` holds by construction.
+func emitNarrowObjectArray(ctx: in FuncCtx, insns: in List[LInsn], cls: in String): Unit {
+  val srcSlot = allocSlot(ctx, "__ffi_arr_src_" + freshLabel(ctx), JArray(elem = JRef(className = "java/lang/Object")))
+  val dstSlot = allocSlot(ctx, "__ffi_arr_dst_" + freshLabel(ctx), JArray(elem = JRef(className = cls)))
+  val idxSlot = allocSlot(ctx, "__ffi_arr_idx_" + freshLabel(ctx), JInt)
+  val lenSlot = allocSlot(ctx, "__ffi_arr_len_" + freshLabel(ctx), JInt)
+  val loopL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+  insns.add(LAstoreAs(slot = srcSlot, className = "[Ljava/lang/Object;"))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LAnewarray(className = cls))
+  insns.add(LAstoreAs(slot = dstSlot, className = "[L" + cls + ";"))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LArraylength)
+  insns.add(LIstore(slot = lenSlot))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = idxSlot))
+  insns.add(LLabel(name = loopL))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LIload(slot = lenSlot))
+  insns.add(LIfIcmpge(label = endL))
+  insns.add(LAload(slot = dstSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAload(slot = srcSlot))
+  insns.add(LIload(slot = idxSlot))
+  insns.add(LAaload)
+  insns.add(LCheckcast(className = cls))
+  insns.add(LAastore)
+  insns.add(LIinc(slot = idxSlot, delta = 1))
+  insns.add(LGoto(label = loopL))
+  insns.add(LLabel(name = endL))
+  insns.add(LAload(slot = dstSlot))
 }
 
 // Lower a static auto-FFI call where `javaFqn` is the dotted Java class name
@@ -2275,8 +2318,30 @@ func ffiScoreDescFor(ctx: in FuncCtx, arg: in Expr, erasedDesc: in String): Stri
     if isJvmPrimitiveElemType(elemTy) {
       return "[" + typeDescriptor(elemTy)
     }
+    // A slice of one extern class scores as that class's array, so it binds
+    // a JDK `URL[]`-typed parameter; `emitNarrowObjectArray` copies it.
+    match elemTy {
+      case JRef(cls) -> if cls != "java/lang/Object" and cls != "java/lang/String" and isExternClassElem(ctx, cls) {
+        return "[L" + cls + ";"
+      }
+      case _ -> ()
+    }
   }
   erasedDesc
+}
+
+// True when `cls` (a JVM binary name) is the class of an `extern type` in
+// scope, as opposed to a Lyric record or union class: only an extern class's
+// array is a JDK parameter type a slice can be narrowed to.
+func isExternClassElem(ctx: in FuncCtx, cls: in String): Bool {
+  val dotted = cls.replace("/", ".")
+  for name in mapKeys(ctx.externTypes) {
+    match mapGet(ctx.externTypes, name) {
+      case Some(fqn) -> if fqn == dotted { return true }
+      case None -> ()
+    }
+  }
+  false
 }
 
 func lowerAutoFfiStaticCall(

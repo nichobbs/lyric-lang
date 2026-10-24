@@ -42989,6 +42989,10 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     if fqn.length > 0 {
       if fqn == "System.Single" {
         Some(value = Mdr.mkPrimSig(0x0C))
+      } else if fqn == "System.Object" {
+        // An extern alias of the root type is `object` (ELEMENT_TYPE_OBJECT)
+        // to overload scoring, as the signature encoder writes it.
+        Some(value = Mdr.mkPrimSig(0x1C))
       } else if narrowPrimElemByte(fqn) >= 0 {
         Some(value = Mdr.mkPrimSig(narrowPrimElemByte(fqn)))
       } else {
