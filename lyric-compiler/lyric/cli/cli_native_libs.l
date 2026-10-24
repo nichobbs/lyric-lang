@@ -317,6 +317,33 @@ pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[
         return errors
       }
     }
+  } else if Mf.prebuiltIsTarGz(p.url) {
+    val tarBytes = match gunzip(bytes) {
+      case Ok(b) -> b
+      case Err(msg) -> {
+        errors.add(label + ": " + p.url + ": " + msg)
+        return errors
+      }
+    }
+    val tarEntries = match readTarEntries(tarBytes) {
+      case Ok(es) -> es
+      case Err(msg) -> {
+        errors.add(label + ": " + p.url + ": " + msg)
+        return errors
+      }
+    }
+    for spec in p.members {
+      match extractTarMember(tarBytes, tarEntries, Mf.prebuiltMemberPath(spec)) {
+        case Err(msg) -> {
+          errors.add(label + ": " + msg)
+          return errors
+        }
+        case Ok(ints) -> if not writeIntBytes(Path.join(dir, Mf.prebuiltMemberFileName(spec)), ints) {
+          errors.add(label + ": cannot write " + Mf.prebuiltMemberFileName(spec))
+          return errors
+        }
+      }
+    }
   } else {
     val entries = Zip.readZipEntries(bytes)
     for spec in p.members {

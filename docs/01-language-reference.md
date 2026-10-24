@@ -862,8 +862,15 @@ archive per target triple:
 [native.libs.wgpu_native.prebuilt.x86_64-unknown-linux-gnu]
 url     = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.1/wgpu-linux-x86_64-release.zip"
 sha256  = "<64 hex digits>"
-members = ["lib/libwgpu_native.so"]     # zip members to extract; omit for a bare .so/.dylib URL
+members = ["lib/libwgpu_native.so"]     # zip or .tar.gz members to extract; omit for a bare .so/.dylib URL
 ```
+
+An archive is a `.zip`, or a gzip-compressed tar (`.tar.gz` or `.tgz`, D232); both
+need `members`. A tar member that is a symbolic or hard link (`libfoo.so ->
+libfoo.so.1`) is followed and extracted under its own name. Both formats are read
+by the compiler itself (`Jvm.Deflate`), so `lyric restore` needs only `curl`;
+output past 64 MiB is refused, and `.tar.xz`, `.tar.bz2` and `.tar.zst` are not
+read.
 
 A `members` entry written `"<path> -> <file name>"` extracts that member under
 another (bare) file name. A Windows import library may be given any name, since

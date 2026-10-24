@@ -196,7 +196,7 @@ pub record NativePrebuilt {
   url: String
   /// Lower-case hex SHA-256 of the downloaded file; the restore refuses anything else.
   sha256: String
-  /// Members of a `.zip` archive to extract (their file names land in the cache
+  /// Members of a `.zip` or `.tar.gz` archive to extract (their file names land in the cache
   /// directory; `"<member> -> <file name>"` extracts under another name, as a
   /// Windows import library `x.dll.lib` must be `x.lib`); empty means the URL
   /// is the library file itself.
@@ -1986,6 +1986,12 @@ func isLowerHex64(s: in String): Bool {
   true
 }
 
+/// Whether a prebuilt `url` names a gzip-compressed tar archive (`.tar.gz` or `.tgz`, ignoring a query string).
+pub func prebuiltIsTarGz(url: in String): Bool {
+  val noQuery = if Str.contains(url, "?") { Str.substring(url, 0, Str.indexOfRaw(url, "?")) } else { url }
+  Str.endsWith(noQuery, ".tar.gz") or Str.endsWith(noQuery, ".tgz")
+}
+
 /// The archive path of a prebuilt `members` entry: the text before ` -> `,
 /// or the whole entry.
 pub func prebuiltMemberPath(member: in String): String {
@@ -2073,6 +2079,15 @@ func assemblePrebuilt(
         section = section,
         field = "members",
         message = "a .zip archive needs `members`, the files to extract"
+      )
+    )
+  }
+  if members.count == 0 and prebuiltIsTarGz(url) {
+    return Err(
+      error = InvalidField(
+        section = section,
+        field = "members",
+        message = "a .tar.gz archive needs `members`, the files to extract"
       )
     )
   }
