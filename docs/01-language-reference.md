@@ -2322,6 +2322,8 @@ extern package System.Net.Http {
 
 `extern` declares types and functions implemented by the host runtime. The `@axiom` annotation is required and signals that contracts on these declarations are trusted, not verified.
 
+A function member of an `extern package` block is a function of the type checker like any other body-less function, with the signature it declares (D223, #7934). A call to one is checked for arity (**T0042**), argument types (**T0043**) and named arguments, and its declared return type flows on, on every target. A member is addressed by the block's own path (`System.Net.Http.get(c, url)`) and, when the enclosing package declares no function of that name and arity itself, through the enclosing package (`Grpc.Kernel.Jvm.netOpenChannel(a)` for a member of a block in package `Grpc.Kernel.Jvm`); a package's own function of the same name and arity is what the enclosing package's name means, and the member stays reachable by the block's path. The block's path is a host binding, not a Lyric package: naming it needs no `import`. The types in a member's signature resolve in the enclosing package's scope.
+
 ### 11.2 Cross-boundary marshalling
 
 Lyric → .NET: opaque types pass as opaque handles (a sealed wrapper type with no public surface). Exposed records pass as their generated .NET counterpart. Primitives map directly.

@@ -1333,7 +1333,7 @@ func checkQualifiedPackageRef(
     return
   }
   val pkg = modulePathJoin(pkgSegs)
-  if pkg == curPkg or pkg == "Std.Core" {
+  if pkg == curPkg or pkg == "Std.Core" or symTableIsExternPathPackage(tbl, pkg) {
     return
   }
   if not (symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)) {
@@ -6014,6 +6014,22 @@ pub func funcValueSites(tbl: in SymbolTable): Map[String, FuncRefSite] {
     i = i + 1
   }
   valueSites
+}
+
+func calleeSegmentList(e: in Expr): List[String] {
+  val segs: List[String] = newList()
+  val _ = calleeSegments(e, segs)
+  segs
+}
+
+// Whether `recv` is the dotted path of an `extern package` block that
+// declares a member `member` (`lyric.db.Postgres` for `connect`, #7934).
+func isExternBlockQualifier(sc: in Scope, tbl: in SymbolTable, recv: in Expr, member: in String): Bool {
+  val segs: List[String] = newList()
+  if calleeSegments(recv, segs) and segs.count >= 1 and not scopeHasName(sc, segs[0]) {
+    return symTableHasExternBlockMember(tbl, modulePathJoin(segs), member)
+  }
+  false
 }
 
 // The signature of package `pkg`'s function `name` with `arity` parameters.
@@ -15871,6 +15887,9 @@ func inferExprCore(
               recordMemberRecvClass(tbl, recvE2.span, rt0)
             }
             case None -> {
+              // `lyric.db.Postgres` in `lyric.db.Postgres.connect(...)` names a
+              // host binding, not a value (#7934).
+              val recvDiag: List[Diagnostic] = if isExternBlockQualifier(sc, tbl, recvE2, mname2) { newList() } else { diag }
               val rt1 = match recvE2.kind {
                 case EPath(p2) -> if p2.segments.count == 1 and startsUppercase(p2.segments[0]) {
                   checkUnimportedTypeReceiver(tbl, sc, p2.segments[0], recvE2.span, diag)
@@ -15883,9 +15902,9 @@ func inferExprCore(
                   val scratch3: List[Diagnostic] = newList()
                   inferExpr(sc, tbl, sigs, scratch3, recvE2)
                 } else {
-                  inferExpr(sc, tbl, sigs, diag, recvE2)
+                  inferExpr(sc, tbl, sigs, recvDiag, recvE2)
                 }
-                case _ -> inferExpr(sc, tbl, sigs, diag, recvE2)
+                case _ -> inferExpr(sc, tbl, sigs, recvDiag, recvE2)
               }
               memberRecvTy = Some(value = rt1)
               recordMemberRecvClass(tbl, recvE2.span, rt1)
@@ -20619,6 +20638,28 @@ func findDirectSigPick(
     // `Box.get(b)`: a dot-named function called through its type name
     // (#8173).  The receiver names a type, not a value in scope.
     case EMember(recv, member) -> {
+      // `lyric.db.Postgres.connect(...)` or `Grpc.Kernel.Jvm.netOpenChannel(...)`:
+      // a member of an `extern package` block, addressed by the block's own
+      // path or by the enclosing package's (#7934).
+      if isExternBlockQualifier(sc, tbl, recv, member) {
+        val externPkg = modulePathJoin(calleeSegmentList(recv))
+        val externCands: List[ResolvedSignature] = newList()
+        for qc in qualifiedCallCandidates(sigs, member, args) {
+          if qc.originPackage == externPkg {
+            externCands.add(qc)
+          }
+        }
+        if externCands.count > 0 {
+          return pickByShape(tbl, externCands, args, argTypes, None, ambiguous)
+        }
+        // No member takes this many arguments: report against the declared
+        // one (T0042) rather than falling through to an unchecked call.
+        for dc in gatherOverloadCandidates(sigs, byNameSigKey(member)) {
+          if dc.originPackage == externPkg {
+            return Some(value = dc)
+          }
+        }
+      }
       // `Pkg.Box.get(b)`, the type named through its package (#8179), the
       // receiver a path or a chain of members (`Main.Bag` in `Main`).
       val qsegs: List[String] = newList()

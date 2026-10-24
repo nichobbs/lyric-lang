@@ -289,6 +289,12 @@ pub record SymbolTable {
   /// silently falling through (the exact #6361 bug, reopened for this one
   /// package shape).
   externBlockPackages: Map[String, Bool]
+  /// `<path>` present ⇒ `path` is the declared path of an `extern package
+  /// <path> { ... }` block (`lyric.db.Postgres`).  Such a path is a host
+  /// binding named by its own spelling, never an importable Lyric package,
+  /// so a qualified call through it is not subject to the import-reachability
+  /// check (#7934).
+  externPathPackages: Map[String, Bool]
   // One `impl Iface for Target` conformance, by resolved `TypeId`.
   /// `<originPackage>` -> the dotted import names that package's own file
   /// declared (#6689).  Populated once, per package, during signature
@@ -743,6 +749,7 @@ pub func newSymbolTable(): SymbolTable {
     memberCompleteTypes = newMap(),
     externBlockMembers = newMap(),
     externBlockPackages = newMap(),
+    externPathPackages = newMap(),
     symbolPackages = newMap(),
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
@@ -904,6 +911,18 @@ pub func symTableAddExternBlockMember(tbl: in SymbolTable, pkg: in String, name:
   if not tbl.externBlockPackages.containsKey(pkg) {
     tbl.externBlockPackages.add(pkg, true)
   }
+}
+
+// Record `path` as the declared path of an `extern package` block (#7934).
+pub func symTableAddExternPathPackage(tbl: in SymbolTable, path: in String): Unit {
+  if not tbl.externPathPackages.containsKey(path) {
+    tbl.externPathPackages.add(path, true)
+  }
+}
+
+// True when `pkg` is the declared path of an `extern package` block.
+pub func symTableIsExternPathPackage(tbl: in SymbolTable, pkg: in String): Bool {
+  tbl.externPathPackages.containsKey(pkg)
 }
 
 // True when `name` was registered as an extern-package-block member of `pkg`.
