@@ -150,7 +150,7 @@ val semis = sb.toString()                  // "a;b;c" for csv = "a,b,c"
 
 `join` and `joinList` are built on the same builder, so they are linear in the total length.
 
-A `Char` is one BMP scalar value: U+0000 to U+FFFF, excluding the surrogate range U+D800 to U+DFFF. `Std.Char.fromInt(n)` requires such a value and panics with a precondition violation otherwise; `tryFromInt(n)` returns `None` instead. A character outside the BMP, such as an emoji, has no `Char` yet: the language has decided that `Char` becomes a full Unicode scalar value (U+0000 to U+10FFFF) on every target (D219, #8225), and until that lands the BMP rule applies. A `char` returned by a .NET or JDK call is checked too: a surrogate half panics rather than becoming a `Char`. Build its text with `Std.Encoding.codepointToString(cp)`, which accepts any scalar value up to U+10FFFF:
+A `Char` is one BMP scalar value: U+0000 to U+FFFF, excluding the surrogate range U+D800 to U+DFFF. `Std.Char.fromInt(n)` requires such a value and panics with a precondition violation otherwise; `tryFromInt(n)` returns `None` instead. A character outside the BMP, such as an emoji, has no `Char` yet: the language has decided that `Char` becomes a full Unicode scalar value (U+0000 to U+10FFFF) on every target (D221, #8225), and until that lands the BMP rule applies. A `char` returned by a .NET or JDK call is checked too: a surrogate half panics rather than becoming a `Char`. Build its text with `Std.Encoding.codepointToString(cp)`, which accepts any scalar value up to U+10FFFF:
 
 ```lyric
 import Std.Char

@@ -701,7 +701,7 @@ need direction and have nothing else productive to do**.  Specifically:
   dotnet and JVM; formerly `lyric-jsonrpc`, D204),
   `Std.AnnotationMeta` (runtime reader for `config { }` field annotations
   embedded by the compiler: `fieldsWithAnnotation`, `allAnnotatedFields`;
-  dotnet and JVM, native reports `Unsupported` until #8524; #7180, D223),
+  dotnet and JVM, native reports `Unsupported` until #8524; #7180, D225),
   `Std.BuildInfo` (the `BuildInfo` build-metadata record; the compiler
   synthesizes the per-build `buildInfo()` accessor into any file that imports
   it — docs/60 §9.2).
