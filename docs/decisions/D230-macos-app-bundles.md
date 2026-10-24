@@ -28,11 +28,11 @@ code signing and notarisation are a later slice
    `CFBundleVersion` (default the `[package]` version, else `0.1.0`), `LSMinimumSystemVersion` 11.0 (the first macOS on
    Apple silicon), `NSPrincipalClass` `NSApplication` and `NSHighResolutionCapable`. Values are XML-escaped.
 6. **Not here.** Developer ID signing, hardened runtime, entitlements, notarisation and `.dmg` packaging: they need
-   credentials CI does not have. Tracked in #8545 with a concrete plan.
+   credentials CI does not have. Tracked in #8555 with a concrete plan.
 
 ## Verification
 
 `native_libs_self_test.l` has a manifest test and an `Info.plist` test that run everywhere, and a macOS-only test that
 builds the fixture application with `[native.app]`, checks the layout, runs `plutil -lint` on the plist, reads the
 bundled dylib's install name with `otool -D`, deletes the library's original directory and the loose output, and runs
-the executable from `Contents/MacOS`. The `macos-native.yml` workflow runs it on `macos-latest`.
+the executable from `Contents/MacOS`. The `native-platforms.yml` workflow runs it on `macos-latest`.

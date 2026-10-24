@@ -14,8 +14,8 @@ resolves to the bundled file (before this, a `dir` library built with a bare
   `cli_build.l`.
 - Tests: `native_libs_self_test.l` (manifest and `Info.plist` tests everywhere;
   a macOS-only build/run test of the bundle). Run on `macos-latest` by
-  `macos-native.yml`.
+  `native-platforms.yml`.
 - Docs: D230, language reference section 3.6, book chapter 13 and appendix B,
   docs/67 section 6.
-- Not done: signing and notarisation (#8545), `.tar.gz` prebuilt archives
-  (#8401 item 2, #8546).
+- Not done: signing and notarisation (#8555), `.tar.gz` prebuilt archives
+  (#8401 item 2, D231).
