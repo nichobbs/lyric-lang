@@ -117,7 +117,7 @@ val clockCheckInterval: Int = 1024
 // calling thread, so the counters need no synchronisation. Disarmed once the
 // operation returns, so a `Matcher` handed back by `hostMatchOne` can still be
 // inspected afterwards.
-record DeadlineChars {
+ref record DeadlineChars {
   text: String
   op: String
   timeoutMs: Long

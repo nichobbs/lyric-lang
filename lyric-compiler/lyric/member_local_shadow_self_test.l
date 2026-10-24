@@ -238,7 +238,7 @@ record Tally {
 // A record method's lambda reads a field by its bare name when it runs (#8202:
 // dotnet refused the bare name inside the lifted lambda with T0115, and the
 // JVM read the field's value from when the lambda was made).
-record Live {
+ref record Live {
   var n: Int
 
   func readLater(self: in Live): Int {

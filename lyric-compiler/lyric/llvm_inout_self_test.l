@@ -30,7 +30,7 @@
 //!     codegen lowers `out` and `inout` identically — see the doc
 //!     comment on `lowerFunctionEnv`);
 //!   - two independent `inout` parameters mutated in one call;
-//!   - the exact `record St { var n: Int }` / `func bump(s: inout St)`
+//!   - the exact `ref record St { var n: Int }` / `func bump(s: inout St)`
 //!     repro from #6808's own writeup, called twice;
 //!   - `inout` mutating a STRING field (ARC-managed: retain-new/
 //!     release-old on every reassignment) across a churn loop;
@@ -127,7 +127,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -362,8 +362,8 @@ test "a record field passed to a mismatched-type inout parameter is a loud diagn
 // place of the same call (#8183).
 // ─────────────────────────────────────────────────────────────────────────────
 test "out/inout String and record parameters through an interface, heap and by-value implementers (ASan)" {
-  val src = "package T\n" + "record Tag {\n  var s: String\n}\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
-    "record Heap {\n  var n: Int\n  name: String\n}\n" +
+  val src = "package T\n" + "ref record Tag {\n  var s: String\n}\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "ref record Heap {\n  var n: Int\n  name: String\n}\n" +
     "interface Sink {\n" +
     "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int\n" +
     "}\n" +
@@ -482,7 +482,7 @@ test "an out/inout Self parameter through an interface value is N0023 at the arg
     "}\n"
   assertEqualInt(compileAndRunAsan(direct).exitCode, 3, "the same call on the implementing type")
   val outNamed = "package T\n" + "interface Sw {\n  func mk(self: in Self, j: in Int, other: out Self): Unit\n}\n" +
-    "record H {\n  var n: Int\n}\n" +
+    "ref record H {\n  var n: Int\n}\n" +
     "impl Sw for H {\n" +
     "  func mk(self: in Self, j: in Int, other: out Self): Unit {\n" +
     "    other = H(n = self.n + j)\n" +
@@ -515,7 +515,7 @@ test "a captured variable passed by reference inside a closure is N0024 at the a
     "  0\n" +
     "}\n"
   assertPanicsWith("captured record", "error[N0024] 10:34:", { -> codegenOnly(rec) })
-  val fine = "package T\n" + "record H {\n  var n: Int\n}\n" + "func incr(x: inout Int): Unit {\n" + "  x = x + 1\n" +
+  val fine = "package T\n" + "ref record H {\n  var n: Int\n}\n" + "func incr(x: inout Int): Unit {\n" + "  x = x + 1\n" +
     "}\n" +
     "func main(): Int {\n" +
     "  val h = H(n = 1)\n" +
@@ -536,7 +536,7 @@ test "a captured variable passed by reference inside a closure is N0024 at the a
 // and the impl left empty (#7457).  `protected_byref_self_test.l` runs the
 // written-out form on every target.
 test "out/inout heap arguments to protected entries, funcs and interface impls (ASan)" {
-  val src = "package T\n" + "record Tag {\n  var s: String\n}\n" + "interface Sink {\n" +
+  val src = "package T\n" + "ref record Tag {\n  var s: String\n}\n" + "interface Sink {\n" +
     "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int\n" +
     "}\n" +
     "protected type Box {\n" +

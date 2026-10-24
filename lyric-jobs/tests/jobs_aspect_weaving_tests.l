@@ -10,7 +10,7 @@ import Std.Testing
 import Jobs
 import Jobs.Aspects
 
-record Counter {
+ref record Counter {
   var count: Int = 0
 }
 

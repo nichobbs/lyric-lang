@@ -1,7 +1,7 @@
 //! generator/generator.l — Lyric.Generator
 //!
 //! Source-text pre-processor for custom `@generate(Pkg.Name)` annotations
-//! (docs/40, D075, D150).
+//! (docs/40, D075, D150, D207).
 //!
 //! `Lyric.Cli` reads each source file of a project and calls `preprocess`
 //! before parsing.  For each `@generate(X.Y)` annotation (dotted names only;
@@ -10,8 +10,11 @@
 //!   1. Checks the generator is declared in the consumer's `[dependencies]`
 //!      and is a built `kind = "source-generator"` package (the CLI builds
 //!      each one for dotnet and passes its DLL in a `GeneratorSet`).
-//!   2. Runs it as `dotnet exec <dll>` with the GeneratorRequest JSON on
-//!      stdin and decodes the GeneratorResponse on stdout.
+//!   2. Hosts it as a `Lyric.GeneratorSdk.SourceGenerator` plugin
+//!      (Std.Plugin, process mode, a dotnet payload probed with
+//!      `--lyric-plugin-manifest`), calls `generate` with the
+//!      GeneratorRequest and decodes the GeneratorResponse it returns,
+//!      serving `ProjectRead` for the project's files.
 //!   3. Checks the generated code parses, then appends it, and places its
 //!      `additionalImports` after the `package` line.
 //!
@@ -22,9 +25,12 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.File as File
+import Std.Errors
 import Std.Path as Path
 import Std.ProcessCapture as ProcessCapture
 import Std.JsonValue as Jv
+import Std.JsonRpc as Rpc
+import Std.Plugin as Plugin
 import Lyric.Manifest as Manifest
 import Lyric.Lexer
 import Lyric.Parser
@@ -292,7 +298,12 @@ func fieldTypeJson(src: in String, ty: in TypeExpr): String {
 func annotationJson(src: in String, ann: in Annotation): String {
   val args: List[String] = newList()
   for arg in ann.args {
-    val sp = match arg { case AAName(_, _, s) -> s; case ABare(_, s) -> s; case ALiteral(_, s) -> s; case AACall(_, _, s) -> s }
+    val sp = match arg {
+      case AAName(_, _, s) -> s
+      case ABare(_, s) -> s
+      case ALiteral(_, s) -> s
+      case AACall(_, _, s) -> s
+    }
     args.add(jsonStr(spanText(src, sp)))
   }
   "{\"name\":" + jsonStr(modulePathJoin(ann.name.segments)) + ",\"args\":" + jsonArray(args) + "}"
@@ -307,7 +318,7 @@ func annotationsJson(src: in String, anns: in List[Annotation]): String {
 }
 
 func fieldJson(src: in String, f: in FieldDecl, isPublic: in Bool): String {
-  val dflt = match f.dflt { case Some(e) -> ",\"default\":" + jsonStr(spanText(src, e.span)); case None -> "" }
+  val dflt = match f.dflt { case Some(e) -> ",\"defaultSource\":" + jsonStr(spanText(src, e.span)); case None -> "" }
   "{\"name\":" + jsonStr(f.name) + ",\"fieldType\":" + fieldTypeJson(src, f.ty) + ",\"isPublic\":" +
     (if isPublic { "true" } else { "false" }) +
     ",\"annotations\":" +
@@ -516,7 +527,7 @@ func declarationJson(src: in String, item: in Item): Option[String] {
         )
       }
       Some(
-        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Enum\",\"underlying\":null,\"range\":null,\"cases\":" +
+        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"DeclaredEnum\",\"underlying\":null,\"range\":null,\"cases\":" +
           jsonArray(cases) +
           "}"
       )
@@ -524,7 +535,7 @@ func declarationJson(src: in String, item: in Item): Option[String] {
     case IDistinctType(d) -> {
       val range = match d.rangeClause { case Some(rb) -> rangeJson(src, rb); case None -> "null" }
       Some(
-        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Distinct\",\"underlying\":" +
+        value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"DeclaredDistinct\",\"underlying\":" +
           jsonStr(spanText(src, d.underlying.span)) +
           ",\"range\":" +
           range +
@@ -532,7 +543,7 @@ func declarationJson(src: in String, item: in Item): Option[String] {
       )
     }
     case ITypeAlias(d) -> Some(
-      value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"Alias\",\"underlying\":" +
+      value = "{\"name\":" + jsonStr(d.name) + ",\"kind\":\"DeclaredAlias\",\"underlying\":" +
         jsonStr(spanText(src, d.rhs.span)) +
         ",\"range\":null,\"cases\":[]}"
     )
@@ -569,11 +580,10 @@ func declarationsFor(src: in String, file: in SourceFile, annotated: in Item): S
   jsonArray(acc)
 }
 
-// The generator request (schema 2) for `dir`.
+// The generator request for `dir`, as the `SourceGenerator` point's
+// generated decoder reads a `GeneratorRequest` (D207 Decision 4).
 func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String {
-  "{\"schemaVersion\":\"2\",\"generatorArg\":" + jsonStr(dir.generatorArg) + ",\"packageName\":" +
-    jsonStr(dir.packageName) +
-    ",\"sourceFile\":" +
+  "{\"generatorArg\":" + jsonStr(dir.generatorArg) + ",\"packageName\":" + jsonStr(dir.packageName) + ",\"sourceFile\":" +
     jsonStr(sourceFile) +
     ",\"typeDescriptor\":" +
     dir.descriptorJson +
@@ -654,27 +664,31 @@ pub record GeneratorResult {
   diagnostics: List[ReportedDiagnostic]
 }
 
-/// Decodes a generator's stdout as a `GeneratorResponse`.  `stderr`,
-/// `exitCode` and `timedOut` come from the capture and explain an empty or
-/// malformed response.  An `additionalImports` entry that is not a single
-/// import statement fails the response.  The Err text describes why the
-/// generator could not be used; the caller reports it as X0009.
-pub func parseResponseJson(
-  json: in String, stderr: in String, exitCode: in Int, timedOut: in Bool
-): Result[GeneratorResult, String] {
-  if timedOut {
-    return Err(error = "it did not finish within " + Str.fromInt(generatorTimeoutMs / 1000) + " s and was stopped")
+/// Decodes a `GeneratorResponse` the generator returned as JSON text: the
+/// value inside `{"ok": ...}`.  An `additionalImports` entry that is not a
+/// single import statement fails the response.  The Err text describes why
+/// the generator could not be used; the caller reports it as X0009.
+pub func parseResponseJson(json: in String): Result[GeneratorResult, String] {
+  match Jv.parseValue(Str.trim(json)) {
+    case Ok(v) -> parseResponseValue(v)
+    case Err(e) -> Err(error = "its response is not valid JSON (" + e.message() + ")")
   }
-  val trimmed = Str.trim(json)
-  if trimmed == "" {
-    val exitText = if exitCode != 0 { "it exited with code " + Str.fromInt(exitCode) } else { "it wrote no response" }
-    val stderrText = if Str.trim(stderr) != "" { ": " + Str.trim(stderr) } else { "" }
-    return Err(error = exitText + stderrText)
+}
+
+/// Decodes a generator's reply to a `generate` call: `{"ok": <response>}`,
+/// or `{"err": <failure>}` when the generator refused the request.
+pub func parseGenerateReply(reply: in Jv.JsonValue): Result[GeneratorResult, String] {
+  match Jv.getField(reply, "ok") {
+    case Some(v) -> parseResponseValue(v)
+    case None -> match Jv.getField(reply, "err") {
+      case Some(e) -> Err(error = "it failed: " + unwrapOr(Jv.getString(e, "message"), Jv.writeValue(e)))
+      case None -> Err(error = "its reply is neither {\"ok\": ...} nor {\"err\": ...}")
+    }
   }
-  val root = match Jv.parseValue(trimmed) {
-    case Ok(v) -> v
-    case Err(e) -> return Err(error = "its response is not valid JSON (" + e.message() + ")")
-  }
+}
+
+/// Decodes a `GeneratorResponse` value.
+pub func parseResponseValue(root: in Jv.JsonValue): Result[GeneratorResult, String] {
   val lyricSource = match Jv.getString(root, "lyricSource") {
     case Some(src) -> src
     case None -> return Err(error = "its response has no \"lyricSource\" string")
@@ -729,10 +743,302 @@ pub record GeneratorSet {
   dlls: Map[String, String]
   libraries: Map[String, String]
   failures: Map[String, GeneratorFailure]
+  runtime: GeneratorRuntime
 }
 
 pub func emptyGeneratorSet(): GeneratorSet {
-  GeneratorSet(dlls = newMap(), libraries = newMap(), failures = newMap())
+  GeneratorSet(dlls = newMap(), libraries = newMap(), failures = newMap(), runtime = newGeneratorRuntime())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5b. Generator plugins (docs/69 §15, D207)
+// ─────────────────────────────────────────────────────────────────────────────
+// A generator is a plugin implementing `Lyric.GeneratorSdk.SourceGenerator`.
+// The compiler is its host.  The compiler is built by a stage-0 seed that
+// predates `Lyric.PluginExpand`, so this host side uses `Std.Plugin`'s
+// dynamic API, not generated `SourceGeneratorRemote` code (D207).
+val sourceGeneratorPoint: String = "Lyric.GeneratorSdk.SourceGenerator"
+
+val projectReadCapability: String = "Lyric.GeneratorSdk.ProjectRead"
+
+/// The plugin host a build's generators run in.  It starts at the first
+/// `@generate`, and each generator's process then serves every annotated
+/// type of the build until `stopGenerators`.
+pub record GeneratorRuntime {
+  var host: Option[Plugin.PluginHost]
+  var projectRoot: String
+  registered: Map[String, String]
+}
+
+pub func newGeneratorRuntime(): GeneratorRuntime {
+  GeneratorRuntime(host = None, projectRoot = "", registered = newMap())
+}
+
+/// Stops every generator process the build started.
+pub func stopGenerators(gens: in GeneratorSet): Unit {
+  match gens.runtime.host {
+    case Some(h) -> Plugin.stopAllPlugins(h)
+    case None -> ()
+  }
+}
+
+// `ProjectRead`: a generator reads project files below the roots it was
+// granted, given relative to the consuming project's directory.  The
+// interface's `requires: projectPathWithin(path, grant.roots)` is enforced
+// here, because the compiler serves the capability by hand.
+record ProjectReadProvider {
+  root: String
+}
+
+impl Plugin.CapabilityProvider for ProjectReadProvider {
+  func info(): Plugin.CapabilityInfo {
+    Plugin.CapabilityInfo(id = projectReadCapability, hasGrant = true)
+  }
+
+  func serve(
+    method: in String, params: in Option[Jv.JsonValue], grant: in Option[Jv.JsonValue]
+  ): Result[Jv.JsonValue, Rpc.RpcError] {
+    serveProjectRead(self.root, method, params, grant)
+  }
+}
+
+func serveProjectRead(
+  root: in String,
+  method: in String,
+  params: in Option[Jv.JsonValue],
+  grant: in Option[Jv.JsonValue],
+): Result[Jv.JsonValue, Rpc.RpcError] {
+  if method != "readText" {
+    return Err(error = Rpc.RpcError(code = 0 - 32601, message = "method not found: " + method, data = None))
+  }
+  val path = match params {
+    case Some(p) -> match Jv.getString(p, "path") {
+      case Some(v) -> v
+      case None -> return Err(error = Rpc.RpcError(code = 0 - 32046, message = "readText needs a \"path\" string", data = None))
+    }
+    case None -> return Err(error = Rpc.RpcError(code = 0 - 32046, message = "readText needs a \"path\" string", data = None))
+  }
+  val roots: List[String] = newList()
+  match grant {
+    case Some(g) -> match Jv.getArray(g, "roots") {
+      case Some(items) -> {
+        for item in items {
+          match Jv.asString(item) {
+            case Some(rt) -> roots.add(rt)
+            case None -> ()
+          }
+        }
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  if not projectPathWithin(path, roots) {
+    return Err(
+      error = Rpc.RpcError(
+        code = 0 - 32040,
+        message = "'" + path + "' is outside the granted project roots",
+        data = None
+      )
+    )
+  }
+  val fields: List[Jv.JsonField] = newList()
+  match File.readText(Path.join(root, path)) {
+    case Ok(text) -> fields.add(Jv.JsonField(name = "ok", value = Jv.JString(value = text)))
+    case Err(e) -> fields.add(Jv.JsonField(name = "err", value = Jv.JString(value = projectReadError(path, e))))
+  }
+  Ok(value = Jv.JObject(fields = fields))
+}
+
+/// The `ProjectRead.readText` error for a failed read of the project path
+/// `path`: what kind of failure it was, naming only the project-relative
+/// path, never the host path the project lives at.
+pub func projectReadError(path: in String, e: in IOError): String {
+  match e {
+    case FileNotFound(_) -> "'" + path + "' does not exist"
+    case DirectoryNotFound(_) -> "'" + path + "' does not exist"
+    case PermissionDenied(_) -> "'" + path + "' cannot be read (permission denied)"
+    case InvalidPath(_, _) -> "'" + path + "' is not a valid path on this host"
+    case _ -> "'" + path + "' cannot be read"
+  }
+}
+
+/// True when `path` is a relative project path with no `.` or `..`
+/// segment, lying under one of `roots` (each relative, `.` for the whole
+/// project).  The same rule as `Lyric.GeneratorSdk.projectPathWithin`.
+pub func projectPathWithin(path: in String, roots: in List[String]): Bool {
+  val segs = projectSegments(path)
+  if segs.count == 0 {
+    return false
+  }
+  for rt in roots {
+    if rt == "." {
+      return true
+    }
+    val rootSegs = projectSegments(rt)
+    if rootSegs.count > 0 and rootSegs.count <= segs.count {
+      var same = true
+      var i = 0
+      while i < rootSegs.count {
+        if rootSegs[i] != segs[i] {
+          same = false
+        }
+        i += 1
+      }
+      if same {
+        return true
+      }
+    }
+  }
+  false
+}
+
+// The `/`-separated segments of a relative path, or none when it is
+// absolute, empty or holds a `.`, `..`, empty or backslashed segment.
+func projectSegments(path: in String): List[String] {
+  val segs: List[String] = newList()
+  if path.length == 0 or Str.startsWith(path, "/") or Str.contains(path, "\\") or Str.contains(path, ":") {
+    return segs
+  }
+  val parts = Str.split(path, "/")
+  var i = 0
+  while i < parts.length {
+    val part = parts[i]
+    if part == "" or part == "." or part == ".." {
+      return newList()
+    }
+    segs.add(part)
+    i += 1
+  }
+  segs
+}
+
+// A generator gets exactly the capabilities it requests: the compiler runs
+// only generators the consumer's manifest declares (X0008), and
+// `ProjectRead` cannot reach outside the project.  Declared here rather than
+// using `Std.Plugin.GrantAllRequested` because the stage-0 seed that builds
+// the compiler does not see a stdlib package's `impl` blocks.
+record GeneratorGrantPolicy {
+}
+
+impl Plugin.GrantPolicy for GeneratorGrantPolicy {
+  func decide(manifest: in Plugin.PluginManifest): Plugin.GrantDecision {
+    Plugin.grantAllRequested(manifest)
+  }
+}
+
+func generatorHost(gens: in GeneratorSet, projectRoot: in String): Plugin.PluginHost {
+  match gens.runtime.host {
+    case Some(h) -> h
+    case None -> {
+      val points: List[Plugin.PluginPointInfo] = newList()
+      points.add(
+        Plugin.PluginPointInfo(
+          id = sourceGeneratorPoint,
+          version = "3.0",
+          allows = [projectReadCapability],
+          hasContributions = false,
+          protocol = None
+        )
+      )
+      val providers: List[Plugin.CapabilityProvider] = newList()
+      providers.add(ProjectReadProvider(root = projectRoot))
+      val h = Plugin.newPluginHost(
+        Plugin.PluginHostConfig(
+          points = points,
+          providers = providers,
+          policy = GeneratorGrantPolicy(),
+          callTimeoutMs = generatorTimeoutMs,
+          maxRestarts = 0,
+          preferWasm = false
+        )
+      )
+      gens.runtime.host = Some(value = h)
+      gens.runtime.projectRoot = projectRoot
+      h
+    }
+  }
+}
+
+// The connection to `generatorArg`'s plugin process, registering the
+// generator on first use: its built DLL is probed for its manifest, which
+// must declare `SourceGenerator`, and given a `dotnet exec` payload.
+func generatorConnection(
+  gens: in GeneratorSet, generatorArg: in String, dllPath: in String, projectRoot: in String
+): Result[Plugin.PluginConnection, String] {
+  val h = generatorHost(gens, projectRoot)
+  val pluginId = match mapGet(gens.runtime.registered, generatorArg) {
+    case Some(id) -> id
+    case None -> {
+      val probeArgs: List[String] = newList()
+      probeArgs.add("exec")
+      probeArgs.add(dllPath)
+      probeArgs.add("--lyric-plugin-manifest")
+      val probe = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", probeArgs, "", generatorTimeoutMs)
+      if probe.timedOut or probe.exitCode != 0 {
+        val why = if probe.timedOut { "it did not answer" } else { "it exited with code " + Str.fromInt(probe.exitCode) }
+        val stderrText = if Str.trim(probe.stderr) != "" { ": " + Str.trim(probe.stderr) } else { "" }
+        return Err(error = "its manifest probe failed (" + why + stderrText + ")")
+      }
+      val m = match Plugin.parsePluginManifest(probe.stdout) {
+        case Ok(pm) -> pm
+        case Err(issue) -> return Err(error = "its manifest is invalid: " + Plugin.pluginLoadIssueMessage(issue))
+      }
+      var implementsPoint = false
+      for pt in m.points {
+        if pt.point == sourceGeneratorPoint {
+          implementsPoint = true
+        }
+      }
+      if not implementsPoint {
+        return Err(
+          error = "it is not a source generator plugin: its manifest does not implement " + sourceGeneratorPoint +
+            " (declare a @plugin record implementing SourceGenerator; docs/40)"
+        )
+      }
+      val command: List[String] = newList()
+      command.add("dotnet")
+      command.add("exec")
+      command.add(Path.basename(dllPath))
+      val withPayload = Plugin.addPluginPayload(m, Plugin.ManagedPayload(runtime = "dotnet", command = command))
+      match Plugin.registerPlugin(h, withPayload, Path.dirname(dllPath)) {
+        case Some(issue) -> return Err(error = Plugin.pluginLoadIssueMessage(issue))
+        case None -> ()
+      }
+      gens.runtime.registered.add(generatorArg, m.id)
+      m.id
+    }
+  }
+  for conn in Plugin.connectionsFor(h, sourceGeneratorPoint) {
+    if conn.pluginId == pluginId {
+      return Ok(value = conn)
+    }
+  }
+  Err(error = "its plugin '" + pluginId + "' is not loaded")
+}
+
+// Runs one `generate` call on `generatorArg`'s plugin.
+func runGenerator(
+  gens: in GeneratorSet,
+  generatorArg: in String,
+  dllPath: in String,
+  projectRoot: in String,
+  requestJson: in String,
+): Result[GeneratorResult, String] {
+  val conn = match generatorConnection(gens, generatorArg, dllPath, projectRoot) {
+    case Ok(c) -> c
+    case Err(e) -> return Err(error = e)
+  }
+  val req = match Jv.parseValue(requestJson) {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = "the compiler built an invalid request (" + e.message() + ")")
+  }
+  val fields: List[Jv.JsonField] = newList()
+  fields.add(Jv.JsonField(name = "req", value = req))
+  match Plugin.callPlugin(conn, sourceGeneratorPoint + "/generate", Jv.JObject(fields = fields)) {
+    case Ok(reply) -> parseGenerateReply(reply)
+    case Err(b) -> Err(error = Plugin.boundaryErrorMessage(b))
+  }
 }
 
 /// The X0008 check: `generatorArg` must name a package declared in
@@ -763,14 +1069,6 @@ pub func notAGeneratorMessage(generatorArg: in String, kind: in String, depMfPat
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
-// `["exec", dllPath]` as a typed `List[String]` (#867).
-func buildCaptureArgs(dllPath: in String): List[String] {
-  val args: List[String] = newList()
-  args.add("exec")
-  args.add(dllPath)
-  args
-}
-
 /// A source file after its custom generators have run: the augmented text,
 /// and the warnings to print (generator-reported warnings and notes).
 pub record PreprocessOutput {
@@ -957,13 +1255,8 @@ pub func preprocess(
       }
     }
 
-    val captured = ProcessCapture.runCaptureWithDiagnosticsTimeout(
-      "dotnet",
-      buildCaptureArgs(dllPath),
-      buildRequestJson(dir, sourceFilePath),
-      generatorTimeoutMs
-    )
-    val result = match parseResponseJson(captured.stdout, captured.stderr, captured.exitCode, captured.timedOut) {
+    val projectRoot = Path.dirname(mf.filePath)
+    val result = match runGenerator(gens, dir.generatorArg, dllPath, projectRoot, buildRequestJson(dir, sourceFilePath)) {
       case Ok(r) -> r
       case Err(why) -> {
         errors.add(

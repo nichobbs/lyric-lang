@@ -41,6 +41,8 @@ extern package System.IO {
 }
 ```
 
+The compiler checks a call to a member of an `extern package` block against the signature the block declares, as it checks a call to any Lyric function: a wrong argument type is `T0043`, a wrong argument count is `T0042`, and the declared return type flows into the surrounding code. Call a member by the block's path (`System.IO.exists(p)`); the path is a host binding, so it needs no `import`.
+
 The `@axiom` string is not a comment — it is part of the contract metadata emitted into the package's `.lyric-contract` artifact. Every package that imports yours can inspect it. `lyric doc` renders it in the generated documentation. `lyric public-api-diff` includes it in change reports.
 
 The `requires:` and `ensures:` clauses inside an extern declaration are axioms in the proof-theoretic sense: the prover treats them as facts, does not try to prove them, and uses them when verifying callers. If a caller in a `@proof_required` module calls `readAllBytes`, the prover knows `result.length >= 0` after the call because the axiom says so. If that axiom is wrong — if there is some code path that returns a negative length — the proof is wrong, and no tool will catch it. This is why the axiom string should be precise and the contracts should be conservative.
@@ -320,7 +322,7 @@ extern func labs(x: Long): Long = "labs"
 extern func webviewCreate(debug: Int, window: NativePtr[Byte]): NativePtr[Byte] = "webview_create"
 ```
 
-The string after `=` is the C symbol. The `@library` argument is the library's base name: write `"webview"`, and each runtime looks for `libwebview.so`, `libwebview.dylib` or `webview.dll` on its own library path. `"c"` is the C library itself. For a system library whose unversioned name exists only in development packages, give the versioned file name instead (`@library("libm.so.6")`); a name containing `.` or `/` is passed to the loader as written.
+The string after `=` is the C symbol. The `@library` argument is the library's base name: write `"webview"`, and each runtime looks for `libwebview.so`, `libwebview.dylib` or `webview.dll` on its own library path. `"c"` is the C library itself. For a system library whose unversioned name exists only in development packages, give the versioned file name instead (`@library("libm.so.6")`); a name containing `.` or `/` is passed to the loader as written. On `--target native` a library is linked only if reachable code calls one of its externs: an extern in one of your dependencies that nothing you call reaches adds no `-l` flag, so depending on a binding library does not make the library a build requirement unless you use it.
 
 Each target calls the symbol its own way. On .NET the declaration becomes a P/Invoke method. On the JVM it becomes a call through the Foreign Function & Memory API, which needs **JDK 22 or later** to run; the handle is looked up on the first call, so a missing library fails at that call rather than when your program starts. On `--target native` the symbol is called directly and the library is linked in.
 
@@ -430,7 +432,20 @@ sha256  = "<64 hex digits>"
 members = ["lib/libwindow.so"]
 ```
 
-The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
+The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone. On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
+
+A library can be a system package on one platform and an archive on another. Put the prebuilt tables beside `pkg_config`, and a triple with an archive uses it while every other triple asks pkg-config; this is how `lyric-window` gets SDL3 from the distribution on Linux and from SDL's official archive on Windows. A member written `"lib/x.dll.lib -> window.lib"` is extracted under the name after the arrow, which matters on Windows: the import library must be called `<link>.lib`, but it records the DLL it loads, so the DLL keeps its own name and is copied beside the program with every other DLL the archive extracts.
+
+C's `long` is 64 bits on Linux and macOS and 32 on Windows, so a binding that uses it differs between them. Generate it once per data model, with `--triple` to parse the header as the target sees it and `--cfg` to gate each file, and list both files for the package:
+
+```sh
+lyric bindgen ft.h --package Text.Kernel.Freetype --allow ft.allow -o src/_kernel/freetype.l \
+  --cfg 'not(target_os = "windows")'
+lyric bindgen ft.h --package Text.Kernel.Freetype --allow ft.allow -o src/_kernel/freetype_windows.l \
+  --cfg 'target_os = "windows"' --triple x86_64-pc-windows-msvc
+```
+
+`@cfg(target_os = "windows")` is true only in a native build for Windows, so each build compiles one of the two. Both files define `toCLong` and `fromCLong`, and code that passes a `long` writes `Ft.toCLong(n)` rather than a `Long`, so the same source compiles against either file.
 
 ### A worked binding: `lyric-gpu`
 
@@ -448,7 +463,7 @@ Gpu.withDevice(body)
 
 `withDevice` owns the device for the call, because wgpu keeps its error callback for the device's whole life and a native closure is freed when its scope ends. The rest of a compute pass is `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
 
-A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X11 or Wayland handles and `Gpu.createXlibSurface` or `Gpu.createWaylandSurface` makes a surface from them, so neither library depends on the other. `acquireFrame` hands back the surface's next texture as a `RenderTarget`, `render` draws into it, and `presentFrame` shows it; a surface's format is the window system's choice, so `createRenderPipeline` takes the target format. CI runs this on an Xvfb display, takes a screenshot, and counts the pixels.
+A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X11, Wayland or Win32 handles and `Gpu.createXlibSurface`, `Gpu.createWaylandSurface` or `Gpu.createWindowsSurface` makes a surface from them, so neither library depends on the other. `acquireFrame` hands back the surface's next texture as a `RenderTarget`, `render` draws into it, and `presentFrame` shows it; a surface's format is the window system's choice, so `createRenderPipeline` takes the target format. CI runs this on an Xvfb display, takes a screenshot, and counts the pixels.
 
 `lyric-window` does the same for SDL3 (windows, input, clipboard, timing and audio), with SDL3 found through pkg-config, because SDL publishes no prebuilt Linux library to pin. Its event type is a union in C; `Window` decodes SDL's event buffer into a Lyric `union Event`, and a C file of `_Static_assert`s compiles every offset the decoder uses against SDL's headers, so a header that moves a field breaks the build instead of the decoder:
 

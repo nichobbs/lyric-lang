@@ -480,7 +480,16 @@ pub func noteArrayIndex(
   }
   tbl.arrayIndexSites.add(
     key,
-    ArrayIndexSite(len = n, elide = ik.elide, unwrap = ik.kind == "distinct", wide = ik.wide)
+    ArrayIndexSite(
+      len = n,
+      elide = ik.elide,
+      unwrap = ik.kind == "distinct",
+      wide = ik.wide,
+      elem = match bufferElementType(recvTy) {
+        case Some(el) -> typeExprForRefWithVars(tbl, el, span)
+        case None -> None
+      }
+    )
   )
 }
 

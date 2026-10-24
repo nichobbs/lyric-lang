@@ -56,17 +56,17 @@ record Tagged {
   shape: Shape
 }
 
-record Cell {
+ref record Cell {
   var n: Int
 }
 
 @derive(Equals)
-record Account {
+ref record Account {
   var balance: Long
   owner: String
 }
 
-record Counter {
+ref record Counter {
   var calls: Int
 }
 

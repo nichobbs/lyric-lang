@@ -24,8 +24,8 @@ LYRIC_BIN="$(cd "$(dirname "$LYRIC_BIN")" && pwd)/$(basename "$LYRIC_BIN")"
 latin=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 cjk=/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
 if ! pkg-config --exists freetype2 harfbuzz || [ ! -f "$latin" ] || [ ! -f "$cjk" ]; then
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
 fi
 [ -f "$latin" ] && [ -f "$cjk" ] || { echo "::error::the DejaVu Sans and WenQuanYi Zen Hei fonts are not installed"; exit 1; }
 
@@ -35,9 +35,11 @@ cc -fsyntax-only $(pkg-config --cflags freetype2 harfbuzz) lyric-text/native/tex
 # The kernel bindings are generated; they must match the headers and allow-lists.
 includes=$(pkg-config --cflags-only-I freetype2 harfbuzz | sed 's/-I/-I /g')
 (cd lyric-text && "$LYRIC_BIN" bindgen native/freetype_bindings.h --package Text.Kernel.Freetype \
-  --allow native/freetype.allow --library freetype -o src/_kernel/freetype.l --check $includes)
+  --allow native/freetype.allow --library freetype -o src/_kernel/freetype.l \
+  --cfg 'not(target_os = "windows")' --check $includes)
 (cd lyric-text && "$LYRIC_BIN" bindgen native/harfbuzz_bindings.h --package Text.Kernel.Harfbuzz \
-  --allow native/harfbuzz.allow --library harfbuzz -o src/_kernel/harfbuzz.l --check $includes)
+  --allow native/harfbuzz.allow --library harfbuzz -o src/_kernel/harfbuzz.l \
+  --cfg 'not(target_os = "windows")' --check $includes)
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

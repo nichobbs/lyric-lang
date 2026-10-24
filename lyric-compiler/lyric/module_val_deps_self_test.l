@@ -161,11 +161,11 @@ record MutRecvBox {
   tag: Int
 }
 
-record Holder {
+ref record Holder {
   var box: MutRecvBox
 }
 
-record Cache {
+ref record Cache {
   var box: MutRecvBox
 }
 

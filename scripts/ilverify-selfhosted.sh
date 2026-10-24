@@ -242,6 +242,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l
   lyric-compiler/lyric/inout_array_element_try_self_test.l
   lyric-compiler/lyric/dot_named_byref_self_test.l
+  lyric-compiler/lyric/dot_named_receivers_self_test.l
   lyric-compiler/lyric/protected_byref_self_test.l
   lyric-compiler/lyric/inout_aliasing_self_test.l
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l
@@ -257,6 +258,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/list_insert_self_test.l
   lyric-compiler/lyric/list_literal_join_self_test.l
   lyric-compiler/lyric/tuple_expected_type_self_test.l
+  lyric-compiler/lyric/expected_type_inference_self_test.l
   lyric-compiler/lyric/await_hoist_typed_self_test.l
   lyric-compiler/lyric/expected_type_propagation_self_test.l
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l

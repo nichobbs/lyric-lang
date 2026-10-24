@@ -3078,3 +3078,59 @@ test "M0007 when the declaring package is not available (#7842)" {
   )
   assertEqualInt(sites.count, 0, "no sites")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7996, #8017: operators on a type parameter bounded by `Add`, `Compare`, ...
+// ─────────────────────────────────────────────────────────────────────────────
+val opSrc: String = "package P\n" + "type Score = Int derives Add, Compare\n" + "@derive(Add)\nrecord V2 { x: Int\n y: Int }\n" + "func sum2[T](a: in T, b: in T): T where T: Add { a + b }\n" + "func big[T](a: in T, b: in T): Bool where T: Compare { a > b }\n" + "func onScore(a: in Score, b: in Score): Score { sum2(a, b) }\n" + "func onV2(a: in V2, b: in V2): V2 { sum2(a, b) }\n" + "func onScoreCmp(a: in Score, b: in Score): Bool { big(a, b) }\n" + "func onInt(a: in Int, b: in Int): Int { sum2(a, b) }\n" + "func onIntCmp(a: in Int, b: in Int): Bool { big(a, b) }\n"
+
+func opBoundSpecs(mr: in MonoResult): List[UnsignedSpecRequest] {
+  val flagged: List[UnsignedSpecRequest] = newList()
+  for ss in mr.structSpecs {
+    if ss.opBound {
+      flagged.add(ss)
+    }
+  }
+  flagged
+}
+
+test "a specialisation binding an operator-bounded parameter to a named type is flagged (#7996)" {
+  val mr = runMono(opSrc)
+  val flagged = opBoundSpecs(mr)
+  assertEqualInt(flagged.count, 3, "sum2 at Score, sum2 at V2, big at Score")
+  for ss in mr.structSpecs {
+    assertTrue(not Str.contains(ss.specName, "__Int"), "a scalar primitive is not flagged: " + ss.specName)
+  }
+}
+
+test "an operator-bounded generic at a scalar primitive needs no re-check (#7996)" {
+  val src = "package P\nfunc sum2[T](a: in T, b: in T): T where T: Add { a + b }\nfunc f(a: in Int, b: in Int): Int { sum2(a, b) }\n"
+  val mr = runMono(src)
+  assertEqualInt(mr.structSpecs.count, 0, "no struct specialisation")
+  assertEqualInt(mr.unsignedSpecs.count, 0, "no unsigned specialisation")
+}
+
+test "re-checking an operator-bounded specialisation records the operators it holds (#7996)" {
+  val mr = runMono(opSrc)
+  val flagged = opBoundSpecs(mr)
+  val diags: List[Diagnostic] = newList()
+  val noPkgs: List[ImportedPackage] = newList()
+  val noGen: List[FunctionDecl] = newList()
+  val acc: Map[String, SpecArraySites] = newMap()
+  val checked = recheckSpecs(flagged, parse(opSrc).file, noPkgs, noGen, false, diags, None, acc)
+  assertEqualInt(diags.count, 0, "every specialisation re-checks cleanly")
+  assertEqualInt(checked.count, 3, "three specialisations re-checked")
+  var distinct = 0
+  var records = 0
+  for k in mapKeys(acc) {
+    match mapGet(acc, k) {
+      case Some(sa) -> {
+        distinct = distinct + sa.distinctOps.count
+        records = records + sa.recordArith.count
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(distinct, 2, "Score's + and > are distinct-type operator sites")
+  assertEqualInt(records, 1, "V2's + is a record arithmetic site")
+}

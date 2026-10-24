@@ -107,7 +107,7 @@ increment(scores[i])          // scores is now [10, 21, 31]
 An `out` or `inout` parameter does not hold a copy of the caller's variable: it *is* the variable, or the field, for as long as the call runs. A write through the parameter is visible through every other way of reaching the place at once, and a write through another way is visible through the parameter:
 
 ```lyric
-record Cell {
+ref record Cell {
   var f: Int
 }
 

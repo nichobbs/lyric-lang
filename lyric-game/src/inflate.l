@@ -8,7 +8,7 @@ import Std.Core
 import Std.Collections
 import Std.Buffer as Buf
 
-record Inflater {
+ref record Inflater {
   data: slice[Byte]
   stop: Int
   limit: Int

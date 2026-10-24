@@ -27,16 +27,16 @@ record Point {
   y: Int
 }
 
-record Counter {
+ref record Counter {
   var n: Int
   label: String
 }
 
-record Cell {
+ref record Cell {
   var v: Int
 }
 
-record Holder {
+ref record Holder {
   var cell: Cell
   tag: String
 }

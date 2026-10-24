@@ -17,7 +17,7 @@ import Std.Collections
 import Std.Sort
 import Std.Testing
 
-record Holder {
+ref record Holder {
   var v: ULong
   var u: UInt
 

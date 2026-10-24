@@ -84,7 +84,7 @@ test "Map.remove actually removes the key (mapGet None afterwards)" {
 // The exact lyric-session shape: a record field holding the Map, read inside an
 // impl method, with `mapGet` wrapped in `Ok(...)` (so the context hint for `V`
 // arrives through the `Result`/`Ok` payload), plus a `.remove`-based delete.
-record Store {
+ref record Store {
   var entries: Map[String, String]
 }
 

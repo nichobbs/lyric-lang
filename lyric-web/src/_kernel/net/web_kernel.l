@@ -42,7 +42,7 @@ import Ws.Kernel.Net as WsNet
 // One `Resilience.TokenBucket` per key: up to `requestsPerMinute + burstSize`
 // calls at once, refilling at `requestsPerMinute` a minute.  It replaced a
 // tumbling window whose burst budget never refilled (#7249).
-record WebRateEntry {
+ref record WebRateEntry {
   var scaledTokens: Long = 0i64
   var lastRefillMs: Long = 0i64
 }
@@ -88,7 +88,6 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
 }
 
 // ─── Background worker dispatch (#5359) ────────────────────────────────────
-
 /// Start `worker.tick()` running forever on a background thread-pool task,
 /// once every `intervalMs`. Fire-and-forget: the returned `Task` is
 /// deliberately discarded — `Web.serve`'s accept loop runs for the life of
@@ -110,14 +109,7 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
 /// already hardened against (#5261). A failing tick is logged and the
 /// loop keeps going on its next interval.
 pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
-  WsNet.runBackground(
-    { ->
-      while true {
-        sleepMillis(intervalMs)
-        tickGuarded(worker)
-      }
-    }
-  )
+  WsNet.runBackground({ -> while true { sleepMillis(intervalMs); tickGuarded(worker) } })
 }
 
 // ─── Per-request dispatch (#7997) ────────────────────────────────────────────

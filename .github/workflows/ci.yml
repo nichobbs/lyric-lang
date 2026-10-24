@@ -4599,6 +4599,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --summary "${t}_tests.l ran (--target jvm)" --target jvm lyric-stdlib/tests/${t}_tests.l || exit 1; done
 
+      - name: Std.AnnotationMeta test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/annotation_meta_tests.l
+
       - name: Std.Linalg test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
@@ -6476,13 +6482,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ui-jvm-suites.sh
 
-      # A custom source generator built from source and run while compiling
-      # its consumer, on dotnet and JVM (#7834, D150).
-      - name: Source generator end to end (#7834)
+      # Plugins on dotnet and JVM (docs/69, D207): the source generator
+      # example, Std.Plugin, generated plugins and `lyric plugin`.
+      - name: Plugins and source generators end to end
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/source-generator-e2e.sh
+        run: bash scripts/ci/plugin-suites.sh
 
       # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
       # cross-origin handshake, 101 for same-origin / no Origin / a listed
@@ -6674,6 +6680,8 @@ jobs:
             deps: "generator-sdk forms auth resilience web ws"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
+          - id: game
+            deps: ""
     # NOTE (#6165 follow-up): the original per-library gate
     #   fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
     # fails to LOAD on this runner's workflow engine (object-indexing a
@@ -6890,6 +6898,8 @@ jobs:
           sqlite_native="$( { find "$HOME/.nuget/packages/sqlitepclraw.lib.e_sqlite3" -path '*linux-x64/native*' -name '*.so' 2>/dev/null || true; } | head -1 | { xargs -r dirname || true; } )"
           LD_LIBRARY_PATH="${sqlite_native}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             "$LYRIC_CLI_PATH" test --manifest lyric-db/lyric.toml
+          # SqlText negative test (#7241): a raw String must not type-check as SQL text.
+          bash scripts/ci/db-sqltext-negative-test.sh
 
       # Meilisearch backend is a mutually-exclusive alternative feature, so
       # it gets zero coverage from the default (elasticsearch) run (#5598).
@@ -6969,6 +6979,16 @@ jobs:
         if: matrix.id == 'testing'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+
+      - name: Set up Java 22 (game)
+        if: matrix.id == 'game'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+      - name: Run tests (game, dotnet and jvm)
+        if: matrix.id == 'game'
+        run: bash scripts/ci/game-managed-tests.sh
 
   # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
   # was the longest step, ~3 min, run after everything else) so it runs on
@@ -7106,6 +7126,13 @@ jobs:
       - name: Std.JsonValue and Std.JsonRpc test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/${t}_tests.l || exit 1; done
+
+      # Std.AnnotationMeta (#7180): reads the Lyric.AnnotationMeta resource the
+      # compiler embeds in the test's own assembly.  Its JVM half runs in the
+      # JVM batch job; native embeds no metadata yet (#8524).
+      - name: Std.AnnotationMeta test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/annotation_meta_tests.l
 
       - name: Std.Linalg test coverage (native lyric test)
         working-directory: ${{ github.workspace }}

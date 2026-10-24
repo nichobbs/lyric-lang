@@ -16,8 +16,10 @@
 //!   Db.connect(connStr)      — open a connection from an explicit DSN
 //!   Db.connectPostgres(...)  — open a Postgres connection directly
 //!   Db.connectSqlite(...)    — open a SQLite connection directly
-//!   Db.query(conn, sql, p)   — call conn.query; top-level wrapper
-//!   Db.execute(conn, sql, p) — call conn.execute; top-level wrapper
+//!   Db.sql(text)             — build a `SqlText` from a SQL literal
+//!   Db.unsafeRawSql(text)    — build a `SqlText` from a dynamic string (audited escape hatch)
+//!   Db.dbQuery(conn, sql, p) — call conn.query; top-level wrapper
+//!   Db.dbExecute(conn, sql, p) — call conn.execute; top-level wrapper
 //!   Db.getString/getInt/getLong/getBool — typed column extractors
 //!
 //! Usage:
@@ -25,7 +27,7 @@
 //!   import Db
 //!
 //!   val conn = Db.connect("postgres://...")?
-//!   match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
+//!   match conn.query(Db.sql("SELECT id, name FROM users WHERE id = @p0"), ["42"]) {
 //!     case Ok(rows) ->
 //!       for row in rows {
 //!         match Db.col(row, "name") {
@@ -58,6 +60,169 @@ import extern System.{Convert}
 pub record DbError {
   message: String
   code: String    // driver-specific error code (e.g. "23505" for PG unique violation)
+}
+
+// ─── SQL text ─────────────────────────────────────────────────────────────────
+/// SQL text that is allowed to reach a driver.  Every `query` / `execute` in
+/// this package takes a `SqlText`, never a bare `String`, so a statement
+/// assembled by string concatenation or interpolation cannot be passed to the
+/// driver by accident: it does not type-check.
+///
+/// Values belong in the `params` list and are bound as `@p0`, `@p1`, ...;
+/// SQL text itself should be a literal.  There are two ways to build one:
+///
+///   Db.sql("SELECT id FROM users WHERE name = @p0")   // audited path
+///   Db.unsafeRawSql(dynamicString)                      // greppable escape hatch
+///
+/// `sql` additionally rejects text that is not a single statement with
+/// well-formed placeholders (see `sqlIsWellFormed`).  `unsafeRawSql` performs
+/// no structural check: the caller vouches for the text (for example a table
+/// name taken from a fixed allow-list), and a reviewer finds every such call
+/// with `grep unsafeRawSql`.
+@stable(since = "0.2")
+pub opaque type SqlText {
+  text: String
+  invariant: hasSqlContent(text)
+}
+
+@pure
+func isSqlSpace(c: in Char): Bool {
+  c == ' ' or c == '\t' or c == '\n' or c == '\r'
+}
+
+@pure
+func hasSqlContent(text: in String): Bool {
+  var i = 0
+  while i < text.length {
+    if not isSqlSpace(Str.charAtOrReplacement(text, i)) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}
+
+@pure
+func isSqlIdentChar(c: in Char): Bool {
+  (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_'
+}
+
+@pure
+func isSqlDigit(c: in Char): Bool {
+  c >= '0' and c <= '9'
+}
+
+/// True when `text` is acceptable to `sql`: non-blank, a single statement (an
+/// optional trailing `;` is allowed), no `--` or `/* */` comments outside a
+/// string literal, every string literal terminated, and every `@` outside a
+/// literal a positional placeholder of the form `@p<digits>`.
+///
+/// The scan is dialect-agnostic and conservative: it knows only `'...'` literals
+/// with `''` as the quote escape. It does not understand backslash escapes
+/// (`E'it\'s'`), dollar quoting (`$$...$$`), double-quoted identifiers, or `@`
+/// operators such as Postgres `@>`; text using those is rejected (or, for a
+/// backslash escape, mis-scanned) and should go through `unsafeRawSql`.
+///
+/// This is defence in depth against text that was spliced together at run
+/// time (an interpolated `'; DROP TABLE users; --` fails three of these
+/// rules); it cannot prove arbitrary text safe.  Use `params` for values.
+@pure
+@stable(since = "0.2")
+pub func sqlIsWellFormed(text: in String): Bool {
+  if not hasSqlContent(text) {
+    return false
+  }
+  val n = text.length
+  var i = 0
+  var inLiteral = false
+  var ok = true
+  while i < n and ok {
+    val c = Str.charAtOrReplacement(text, i)
+    if inLiteral {
+      if c == '\'' {
+        if i + 1 < n and Str.charAtOrReplacement(text, i + 1) == '\'' {
+          i = i + 1
+        } else {
+          inLiteral = false
+        }
+      }
+    } else if c == '\'' {
+      inLiteral = true
+    } else if c == '-' and i + 1 < n and Str.charAtOrReplacement(text, i + 1) == '-' {
+      ok = false
+    } else if c == '/' and i + 1 < n and Str.charAtOrReplacement(text, i + 1) == '*' {
+      ok = false
+    } else if c == ';' {
+      var j = i + 1
+      while j < n {
+        if not isSqlSpace(Str.charAtOrReplacement(text, j)) {
+          ok = false
+        }
+        j = j + 1
+      }
+    } else if c == '@' {
+      if i + 2 < n and Str.charAtOrReplacement(text, i + 1) == 'p' and isSqlDigit(Str.charAtOrReplacement(text, i + 2)) {
+        var j = i + 2
+        while j < n and isSqlDigit(Str.charAtOrReplacement(text, j)) {
+          j = j + 1
+        }
+        if j < n and isSqlIdentChar(Str.charAtOrReplacement(text, j)) {
+          ok = false
+        }
+        i = j - 1
+      } else {
+        ok = false
+      }
+    }
+    i = i + 1
+  }
+  ok and not inLiteral
+}
+
+/// Build a `SqlText` from SQL source.  Intended for string literals: values
+/// go in the `params` list as `@p0`, `@p1`, ....  Panics (contract failure)
+/// when `text` is not `sqlIsWellFormed`; use `trySql` to handle that as an
+/// `Err`, or `unsafeRawSql` when the text really is assembled at run time.
+@stable(since = "0.2")
+pub func sql(text: in String): SqlText
+  requires: sqlIsWellFormed(text)
+{
+  SqlText(text = text)
+}
+
+/// Like `sql`, but a text that is not `sqlIsWellFormed` is an `Err` with code
+/// `SQL_REJECTED` instead of a contract failure.
+@stable(since = "0.2")
+pub func trySql(text: in String): Result[SqlText, DbError] {
+  if sqlIsWellFormed(text) {
+    return Ok(SqlText(text = text))
+  }
+  Err(
+    DbError(
+      message = "SQL text rejected: it must be one statement with no comments, terminated string literals and only @p<N> placeholders",
+      code = "SQL_REJECTED"
+    )
+  )
+}
+
+/// Build a `SqlText` from a string assembled at run time, with NO structural
+/// check.  The caller vouches that `text` contains no untrusted input: values
+/// still go through `params`, and only fixed fragments (a column list, a table
+/// name from an allow-list) may be spliced in.  Every call site is greppable
+/// by name and is expected to carry a comment saying why the text is safe.
+/// Panics only when `text` is blank.
+@stable(since = "0.2")
+pub func unsafeRawSql(text: in String): SqlText
+  requires: hasSqlContent(text)
+{
+  SqlText(text = text)
+}
+
+/// The SQL source held by a `SqlText`.  For `DbConnection` implementations
+/// (drivers, test doubles) that need the text to hand to a backend.
+@stable(since = "0.2")
+pub func sqlToString(stmt: in SqlText): String {
+  stmt.text
 }
 
 // ─── Row value type ───────────────────────────────────────────────────────────
@@ -112,15 +277,13 @@ pub func col(row: in DbRow, colName: in String): DbValue
 /// Intended for PostgreSQL `SELECT … FOR UPDATE SKIP LOCKED` job-claim patterns:
 ///
 ///   match Db.queryOne(conn,
-///     "SELECT id, payload FROM jobs WHERE status = @p0
-///      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED",
+///     Db.sql("SELECT id, payload FROM jobs WHERE status = @p0
+///      ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"),
 ///     ["pending"]) { ... }
 ///
 /// Callers are responsible for including the `LIMIT 1` clause to bound the scan.
 @stable(since = "0.1")
-pub func queryOne(conn: in DbConnection, sql: in String, params: in slice[String]): Result[Option[DbRow], DbError]
-  requires: sql.length > 0
-{
+pub func queryOne(conn: in DbConnection, sql: in SqlText, params: in slice[String]): Result[Option[DbRow], DbError] {
   match conn.query(sql, params) {
     case Err(e) -> Err(e)
     case Ok(rows) -> {
@@ -139,12 +302,10 @@ pub func queryOne(conn: in DbConnection, sql: in String, params: in slice[String
 @stable(since = "0.1")
 pub interface DbTransaction {
   /// Execute a parameterised query and return the result rows.
-  func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError]
-    requires: sql.length > 0
+  func query(sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError]
 
   /// Execute a parameterised DML statement and return the affected-row count.
-  func execute(sql: in String, params: in slice[String]): Result[Int, DbError]
-    requires: sql.length > 0
+  func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError]
 
   /// True until the transaction has been committed or rolled back.  A
   /// finished transaction answers `query`, `execute` and `commit` with an
@@ -167,13 +328,11 @@ pub interface DbTransaction {
 @stable(since = "0.1")
 pub interface DbConnection {
   /// Execute a parameterised SELECT and return the result rows.
-  func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError]
-    requires: sql.length > 0
+  func query(sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError]
 
   /// Execute a parameterised INSERT / UPDATE / DELETE and return the
   /// number of affected rows.
-  func execute(sql: in String, params: in slice[String]): Result[Int, DbError]
-    requires: sql.length > 0
+  func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError]
 
   /// Begin an explicit transaction.
   func transaction(): Result[DbTransaction, DbError]
@@ -190,15 +349,15 @@ record NativeConnection {
 }
 
 impl DbConnection for NativeConnection {
-  func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError] {
-    match DbKernel.query(self.conn, sql, params) {
+  func query(sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError] {
+    match DbKernel.query(self.conn, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "QUERY_ERROR"))
     }
   }
 
-  func execute(sql: in String, params: in slice[String]): Result[Int, DbError] {
-    match DbKernel.execute(self.conn, sql, params) {
+  func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError] {
+    match DbKernel.execute(self.conn, sql.text, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "EXECUTE_ERROR"))
     }
@@ -216,7 +375,7 @@ impl DbConnection for NativeConnection {
   }
 }
 
-record NativeTransaction {
+ref record NativeTransaction {
   conn: DbKernel.DbConn
   tx: DbKernel.DbTxT
   var finished: Bool
@@ -227,21 +386,21 @@ func txFinishedError(): DbError {
 }
 
 impl DbTransaction for NativeTransaction {
-  func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError] {
+  func query(sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError] {
     if self.finished {
       return Err(txFinishedError())
     }
-    match DbKernel.txQuery(self.conn, self.tx, sql, params) {
+    match DbKernel.txQuery(self.conn, self.tx, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
     }
   }
 
-  func execute(sql: in String, params: in slice[String]): Result[Int, DbError] {
+  func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError] {
     if self.finished {
       return Err(txFinishedError())
     }
-    match DbKernel.txExecute(self.conn, self.tx, sql, params) {
+    match DbKernel.txExecute(self.conn, self.tx, sql.text, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_EXECUTE_ERROR"))
     }
@@ -494,17 +653,13 @@ func parseDbValue(raw: in String): DbValue {
 /// Top-level wrapper for conn.query — avoids UFCS syntax in callers that
 /// hold a DbConnection value (not a concrete NativeConnection).
 @stable(since = "0.1")
-pub func dbQuery(conn: in DbConnection, sql: in String, params: in slice[String]): Result[slice[DbRow], DbError]
-  requires: sql.length > 0
-{
+pub func dbQuery(conn: in DbConnection, sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError] {
   return conn.query(sql, params)
 }
 
 /// Top-level wrapper for conn.execute.
 @stable(since = "0.1")
-pub func dbExecute(conn: in DbConnection, sql: in String, params: in slice[String]): Result[Int, DbError]
-  requires: sql.length > 0
-{
+pub func dbExecute(conn: in DbConnection, sql: in SqlText, params: in slice[String]): Result[Int, DbError] {
   return conn.execute(sql, params)
 }
 

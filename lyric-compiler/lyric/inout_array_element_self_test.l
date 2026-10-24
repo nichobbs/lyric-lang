@@ -114,11 +114,11 @@ func Pt.scaled(self: inout Pt, k: in Int): Unit {
 }
 
 // A record with identity, whose fields are written in place.
-record Cell {
+ref record Cell {
   var v: Int
 }
 
-record Counter {
+ref record Counter {
   var n: Int
 
   func next(self: inout Counter): Int {
@@ -128,7 +128,7 @@ record Counter {
   }
 }
 
-record Grid {
+ref record Grid {
   var rows: array[2, array[3, Int]]
   var cells: array[2, Cell]
   var nums: array[3, Int]

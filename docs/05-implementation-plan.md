@@ -351,7 +351,7 @@ should be tracked there until cleared.
 
 ## Phase 6 and beyond: ecosystem
 
-**Status (2026-10-23).** Beyond the JVM emitter and library cohort below, Phase 6 has delivered: the native (LLVM) backend (`native/plan/`, phases N0-N9, D-N-001 onward); the wasm32 module and component targets with `[wasm]`/`[npm]` (`docs/35`, W0-W5); the native graphics stack (`docs/67`: `lyric-window`, `lyric-gpu`, `lyric-text`, `lyric-draw`, `Std.Linalg`, `lyric-game`, the `Std.Parallel` worker pool and the native `lyric-ui` host, G1-G8 and G10 on Linux; the Windows target G9 not started); `lyric-ui` (`docs/65`, U1-U5); and the 26-library ecosystem. Open work is tracked in `docs/12-todo-plan.md`.
+**Status (2026-10-23).** Beyond the JVM emitter and library cohort below, Phase 6 has delivered: the native (LLVM) backend (`native/plan/`, phases N0-N9, D-N-001 onward); the wasm32 module and component targets with `[wasm]`/`[npm]` (`docs/35`, W0-W5); the native graphics stack (`docs/67`: `lyric-window`, `lyric-gpu`, `lyric-text`, `lyric-draw`, `Std.Linalg`, `lyric-game`, the `Std.Parallel` worker pool, the opt-in multi-threaded async scheduler (D217) and the native `lyric-ui` host, G1-G8 and G10 on Linux; the Windows target G9 not started); `lyric-ui` (`docs/65`, U1-U5); and the 26-library ecosystem. Open work is tracked in `docs/12-todo-plan.md`.
 
 Open-ended. Successful languages spend most of their lifetime here.
 

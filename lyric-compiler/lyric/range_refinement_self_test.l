@@ -145,7 +145,7 @@ record Slot {
   i: Int range 0 ..= 3
 }
 
-record Dial {
+ref record Dial {
   var level: Int range 0 ..= 3
 }
 

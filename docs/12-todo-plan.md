@@ -125,7 +125,7 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   aspect weaving (#8272, #8368), inout `Ref` megamorphism (3-5x slowdown,
   #8371), array/buffer passed to `spawn` copied inside the task (#8391).
   Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers,
-  lyric-mail providers, lyric-search (docs/57 §3).  `F8`: `@externTarget`
+  lyric-mail SMTP, lyric-search (docs/57 §3).  `F8`: `@externTarget`
   catches only `java/lang/Exception`, not `Error` (accepted limitation, see
   docs/18 Q-J009).  `F1`: `self_test_b128.l` hardcodes `/tmp/lyric-jvm-b128`.
 - **Native (`native-backend` 11).**  `N0007` family: impl method for a generic
@@ -138,11 +138,11 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
   Missing: arm64 and macOS native CI legs (#8419); Windows (docs/67 G9) runs the
   core suite (D205), child processes (D208), sockets and TLS over Winsock and
-  Schannel (D209), and the compiler-hosted self-tests with AddressSanitizer (D213);
-  the graphics examples on Windows remain (#8435).
-- **Private helpers of a generic.**  A `pub` generic may call a private helper of
-  its package on native (and a private generic one on the JVM), not on dotnet
-  (T0123); docs/01 §3.3, D204, plan in #8427.
+  Schannel (D209), the compiler-hosted self-tests with AddressSanitizer (D213), and
+  the graphics libraries and their examples (D219).
+- **Private helpers of a generic.**  A `pub` generic carries the private generics it
+  reaches on every target (D215); a private non-generic helper is still T0123 on
+  dotnet and the JVM (docs/01 §3.3, #8427).
 - **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
   tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
   JVM `Std.Set` unusable (#7312), JVM `format1..4` drop args (#7367).
@@ -166,7 +166,7 @@ left is verification and release work, tracked in `docs/36`:
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
    pool (D202) and the native `lyric-ui` host (D203, D204) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
-   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, remaining #8435), accessibility through AccessKit (G10, #8430) and pruning
+   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
    surfaces and the macOS `.app` bundles (#8401, #8419); `layoutText` reordering
    mixed-direction paragraphs itself (#8496, D216 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
@@ -176,7 +176,7 @@ left is verification and release work, tracked in `docs/36`:
    diagnostic code **V0037**; V0035 is taken by the verifier), MSIL scope-exit
    join, native `Task[T]`; open Q-TASK-002/004/005/006/008.
 3. **Ecosystem backends (docs/57).**  lyric-storage S3/Azure, lyric-mq brokers,
-   lyric-mail SES/SendGrid (#7462), lyric-search wiring (#5067), Hangfire/
+   lyric-mail JVM SMTP (#7462), lyric-search wiring (#5067), Hangfire/
    Quartz.NET on dotnet; missing `Lyric.Testing` mocks (Jobs, Search, Queue
    consumer, i18n, Ws); `.new()` migration of remaining `..ctor` wrappers in
    lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.

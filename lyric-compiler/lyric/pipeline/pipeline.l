@@ -6,7 +6,8 @@
 //! its own copy, and every pass-ordering fix had to land three times (band
 //! J2 / #2665, D-progress-642).  This package is the single authority for:
 //!
-//!   * the pass ORDER — parse → cfg erasure → wire-expand → alias rewrite →
+//!   * the pass ORDER — parse → cfg erasure → wire-expand → plugin-expand
+//!     (D207) → alias rewrite →
 //!     @stubbable synthesis → interface-default-method inheritance (#6433) →
 //!     typecheck → modecheck → contract elaboration → `?`-propagation →
 //!     derive → mono → weave → await-hoist — with the
@@ -67,6 +68,7 @@ import Lyric.Stubbable as Stubbable
 import Lyric.TypeAliasResolve as TypeAliasResolve
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Weaver as Weaver
@@ -418,13 +420,14 @@ pub func pipeExpandAndRewrite(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
-  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, runWireExpand, runStubbable, injectWeave)
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, runWireExpand, runStubbable, injectWeave)
   if gate(label, origins, r.diagnostics) {
     return None
   }
@@ -438,6 +441,7 @@ pub func pipeExpandAndRewriteCollect(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
   runWireExpand: in Bool,
   runStubbable: in Bool,
   injectWeave: in Bool,
@@ -452,6 +456,14 @@ pub func pipeExpandAndRewriteCollect(
     }
     f = weRes.file
   }
+  // D207 plugin desugaring, on every target: `plugins` holds the build's
+  // source packages (`PluginExpand.collectPluginPackage`).
+  val peRes = PluginExpand.expandFile(f, plugins)
+  appendDiagnostics(diags, peRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = f, diagnostics = diags)
+  }
+  f = peRes.file
   val prep = pipePrepareForCheck(f, runStubbable)
   appendDiagnostics(diags, prep.diagnostics)
   if hasErrorDiagnostic(diags) {
@@ -1064,7 +1076,7 @@ pub func pipeCheckFront(
   // `for` over an array, copies on store and zero-filled declarations become
   // forms every backend lowers.  Before the overflow pass, which still finds
   // a compound assignment's statement and its operators by their own spans.
-  val arraysLowered = lowerArraySites(recordLowered, tcRes.symbols, opts.primitiveArrays)
+  val arraysLowered = lowerArraySites(recordLowered, tcRes.symbols, opts.primitiveArrays, opts.arraysAsLists)
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.
@@ -1103,7 +1115,9 @@ pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile 
 
 /// `array[N, T]` (D167) and `buffer[T]` pointer-closure sites recorded in
 /// `sym`, lowered to forms every backend handles.
-pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArrays: in Bool): SourceFile {
+pub func lowerArraySites(
+  file: in SourceFile, sym: in SymbolTable, primitiveArrays: in Bool, bufferHandles: in Bool
+): SourceFile {
   lowerArrays(
     file,
     ArraySites(
@@ -1115,7 +1129,8 @@ pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArra
       zero = sym.arrayZeroSites,
       ctorZero = sym.arrayCtorZeroArgs,
       literal = if primitiveArrays { sym.arrayLiteralSites } else { newMap() },
-      pointerClosures = sym.bufferPointerSites
+      pointerClosures = sym.bufferPointerSites,
+      bufferHandles = bufferHandles
     )
   )
 }
@@ -1360,9 +1375,31 @@ pub func pipeCheckAndMono(
   // where a type this package binds it to is not visible; its `==` reaches
   // the bound type's own structural equality (D172 item 3) instead.
   for ss in monoRes0.structSpecs {
-    if ss.originPkg == "" and specUsesEquality(ss.specDecl) {
+    if ss.originPkg == "" and (specUsesEquality(ss.specDecl) or ss.opBound) {
       toRecheck.add(ss)
     }
+  }
+  // An operator on a type parameter bounded by `Add`, `Compare` and the like
+  // is lowered for the type it is bound to, which only a check in the scope
+  // that sees that type can do; another package's generic body is checked in
+  // its own package's scope, where the type is not visible (#7996, #8017).
+  val opDiags: List[Diagnostic] = newList()
+  for ss in monoRes0.structSpecs {
+    if ss.originPkg != "" and ss.opBound {
+      opDiags.add(
+        errorDiagnostic(
+          "M0008",
+          "cannot specialise '" + ss.specName + "': the generic is declared in package '" + ss.originPkg +
+            "' and applies an operator to a type parameter that is bound here to a distinct or record type, which only the declaring package's own types can be lowered for; call it from a function declared in '" +
+            ss.originPkg +
+            "' or use a scalar type argument",
+          ss.callSpan
+        )
+      )
+    }
+  }
+  if gate(opts.pkgLabel, opts.lineOrigins, opDiags) {
+    return None
   }
   if toRecheck.count == 0 {
     return match finishValueRecords(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), file0, importedPkgs, tcRes, opts) {
@@ -1475,6 +1512,13 @@ pub record SpecArraySites {
   /// Each construction of a case of a union with value generic parameters,
   /// for a target with one union per length (#8149).
   valueUnionCtors: Map[String, ValueUnionCtorSite]
+  /// The operators on distinct types (#7361), compound assignments to them,
+  /// and the derived component-wise operators on records (D155) the
+  /// specialised body holds, which its generic body, checked over a type
+  /// parameter, could not record (#7996, #8017).
+  distinctOps: Map[String, String]
+  distinctCompound: Map[String, String]
+  recordArith: Map[String, RecordArithSite]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -2169,7 +2213,10 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.wrapEq.count > 0 or
     sa.lens.count > 0 or
     sa.valueCtors.count > 0 or
-    sa.valueUnionCtors.count > 0
+    sa.valueUnionCtors.count > 0 or
+    sa.distinctOps.count > 0 or
+    sa.distinctCompound.count > 0 or
+    sa.recordArith.count > 0
 }
 
 func specArraySitesOf(
@@ -2200,7 +2247,10 @@ func specArraySitesOf(
     wrapEq = siteSlice(syms.wrapEqSites, p.wrapEqSites, usePrior, lo, hi),
     lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi),
     valueCtors = siteSlice(syms.valueRecordCtorSites, p.valueRecordCtorSites, usePrior, lo, hi),
-    valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi)
+    valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi),
+    distinctOps = siteSlice(syms.distinctOpSites, p.distinctOpSites, usePrior, lo, hi),
+    distinctCompound = siteSlice(syms.distinctCompoundSites, p.distinctCompoundSites, usePrior, lo, hi),
+    recordArith = siteSlice(syms.recordArithSites, p.recordArithSites, usePrior, lo, hi)
   )
 }
 
@@ -2297,11 +2347,17 @@ func lowerSpecArrays(
             items = one,
             span = file.span
           )
-          val arraySites = if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
+          val arraySites = (if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }).copy(
+            bufferHandles = not unionPerLength
+          )
+          val operatorsLowered = lowerRecordArith(
+            lowerDistinctOps(oneFile, sa.distinctOps, sa.distinctCompound),
+            sa.recordArith
+          )
           val lowered = lowerArrays(
             lowerRecordEq(
               markValueUnionCtors(
-                markValueRecordCtors(withArrayLens(oneFile, sa.lens), sa.valueCtors),
+                markValueRecordCtors(withArrayLens(operatorsLowered, sa.lens), sa.valueCtors),
                 if unionPerLength { sa.valueUnionCtors } else { noUnionCtorSites() }
               ),
               sa.recordEq,
@@ -2857,7 +2913,14 @@ func protectedAsRecord(pd: in ProtectedTypeDecl): RecordDecl {
       case PMFunc(fn) -> members.add(RMFunc(fn = fn))
     }
   }
-  RecordDecl(name = pd.name, generics = pd.generics, whereClause = pd.whereClause, members = members, span = pd.span)
+  RecordDecl(
+    name = pd.name,
+    generics = pd.generics,
+    whereClause = pd.whereClause,
+    members = members,
+    span = pd.span,
+    isRef = true
+  )
 }
 
 func annotationsWithout(anns: in List[Annotation], name: in String): List[Annotation] {
@@ -3256,7 +3319,9 @@ func lowerValueRecordSpecs(
     }
     match mapGet(specArrays, name) {
       case Some(sa) -> {
-        val arraySites = if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
+        val arraySites = (if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }).copy(
+          bufferHandles = opts.arraysAsLists
+        )
         val lowered = lowerArrays(
           lowerRecordEq(withArrayLens(oneItemFile(file, it), sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
           arraySites
@@ -4300,18 +4365,29 @@ pub func pipeAddGenericFuncs(
   excludeIntrinsics: in Bool,
   dest: in List[FunctionDecl],
 ): Unit {
+  if requirePub {
+    // The private generics a `pub` generic reaches travel with it under package-unique names (#8427).
+    val carried = carryPrivateGenerics(items, pkgName)
+    for decl in carried.pubFuncs {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    for decl in carried.privateCopies {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    return
+  }
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IFunc(decl) -> {
-        var pubOk = true
-        if requirePub {
-          pubOk = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-        }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
-        if not isIntrinsic and pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
+        if not isIntrinsic and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(withOriginPkgMono(decl, pkgName))
         }
       }

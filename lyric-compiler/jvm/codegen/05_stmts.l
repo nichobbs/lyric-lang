@@ -1375,10 +1375,88 @@ func listLiteralElems(e: in Expr): Option[List[Expr]] {
   }
 }
 
+// Whether every value `e` can produce is a list literal: the literal itself, or
+// an `if`/`match`/block whose every result is one (`val xs = if c { [0, 4] }
+// else { [0] }`, #8516).  Such a binding is a `slice[T]` like the bare
+// literal.
 func isListLiteralExpr(e: in Expr): Bool {
+  match yieldedListLiterals(e) {
+    case Some(lits) -> lits.count > 0
+    case None -> false
+  }
+}
+
+// The elements of every list literal `e` yields, or None when some value it
+// can produce is not a list literal.  An arm that diverges (`return`, `throw`)
+// yields nothing.  `scrutineeGenericArgs` infers the element type across all
+// of them, so `xs[i]` on an `if`-chosen literal reads the real element type.
+func yieldedListLiteralElems(e: in Expr): Option[List[Expr]] {
+  match yieldedListLiterals(e) {
+    case Some(lits) -> {
+      val elems: List[Expr] = newList()
+      for lit in lits {
+        for x in lit {
+          elems.add(x)
+        }
+      }
+      Some(value = elems)
+    }
+    case None -> None
+  }
+}
+
+func yieldedListLiterals(e: in Expr): Option[List[List[Expr]]] {
+  val acc: List[List[Expr]] = newList()
+  if collectYieldedListLiterals(e, acc) {
+    Some(value = acc)
+  } else {
+    None
+  }
+}
+
+func collectYieldedListLiterals(e: in Expr, acc: in List[List[Expr]]): Bool {
   match e.kind {
-    case EList(_) -> true
-    case EParen(inner) -> isListLiteralExpr(inner)
+    case EList(exprs) -> {
+      acc.add(exprs)
+      true
+    }
+    case EParen(inner) -> collectYieldedListLiterals(inner, acc)
+    case EBlock(block) -> collectBlockListLiterals(block, acc)
+    case EIf(_, thenBranch, elseBranch, _) -> match elseBranch {
+      case Some(eb) -> collectArmListLiterals(thenBranch, acc) and
+        collectArmListLiterals(eb, acc)
+      case None -> false
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      for arm in arms {
+        if not collectArmListLiterals(arm.body, acc) {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
+func collectArmListLiterals(eob: in ExprOrBlock, acc: in List[List[Expr]]): Bool {
+  match eob {
+    case EOBExpr(x) -> collectYieldedListLiterals(x, acc)
+    case EOBBlock(b) -> collectBlockListLiterals(b, acc)
+  }
+}
+
+func collectBlockListLiterals(b: in Block, acc: in List[List[Expr]]): Bool {
+  if b.statements.count == 0 {
+    return false
+  }
+  match b.statements[b.statements.count - 1].kind {
+    case SExpr(x) -> collectYieldedListLiterals(x, acc)
+    case SReturn(_) -> true
+    case SThrow(_) -> true
     case _ -> false
   }
 }

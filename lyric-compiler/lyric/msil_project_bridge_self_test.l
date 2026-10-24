@@ -728,6 +728,36 @@ test "cross-package union construct and match" {
   )
 }
 
+// A generic function specialised into its caller is compiled into the
+// caller's package, but a bare case name in its body (here inside a lambda)
+// belongs to the declaring package's scope.  `ScopedCase.Clash` declares a
+// same-named `App` case and is registered first, so resolving against the
+// caller's scope picked it and the specialised copy built the wrong type
+// (InvalidCastException; first seen with Std.Plugin's CallError.App).
+test "a specialised generic resolves a bare case name in its declaring package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("ScopedCase.Clash", "package ScopedCase.Clash\n\npub union Clash {\n  case App(code: Int)\n}\n"))
+  packages.add(
+    mkPkg(
+      "ScopedCase.Lib",
+      "package ScopedCase.Lib\n\npub union Wrap[M] {\n  case App(msg: M)\n  case Other\n}\n\n" +
+        "pub func viaLambda[M](x: in M): Wrap[M] {\n  val f: (M) -> Wrap[M] = { m -> App(msg = m) }\n  f(x)\n}\n\n" +
+        "pub func direct[M](x: in M): Wrap[M] {\n  App(msg = x)\n}\n\n" +
+        "pub func describe[M](w: in Wrap[M]): String {\n  match w {\n    case App(_) -> \"app\"\n    case Other -> \"other\"\n  }\n}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ScopedCase.App",
+      "package ScopedCase.App\nimport ScopedCase.Lib\n\nfunc main(): Unit {\n" +
+        "  println(describe(viaLambda(1)))\n  println(describe(direct(2)))\n}\n"
+    )
+  )
+  val result = compileAndRun("scoped-case", packages, "ScopedCase")
+  assertEqualInt(result.exitCode, 0, "scoped_case: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "app\napp", "scoped_case: both specialised copies build Wrap.App")
+}
+
 // Parenless nullary case syntax (`case Active` without `()`) must resolve
 // to the known nullary union case and produce a correct match (#1223), and
 // bare nullary *construction* (`val a = On`, no `()`) must resolve to the
@@ -3113,4 +3143,70 @@ test "a stdlib constant and a stdlib impl are usable from a consumer package" {
   val result = compileAndRunWithStdlib("stdimpl", packages, "StdImpl")
   assertEqualInt(result.exitCode, 0, "stdlib_const_impl: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "-32601\n-32603\ntransport", "stdlib_const_impl: values")
+}
+
+// ─── #8427: private generic helpers of a pub generic travel with it ──────────
+// A `pub` generic is specialised into the package that calls it, so the private generics its
+// body reaches (directly, through another helper, or from a lambda) are carried under package-unique
+// names.  Two libraries each have a private `step`, which must not collide.
+test "a pub generic reaches the private generics of its own package from another package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PrivGen.LibA",
+      "package PrivGen.LibA\n" + "\n" + "func step[S](x: S, f: (S) -> Int): Int { f(x) + 1 }\n" +
+        "func twice[S](x: S, f: (S) -> Int): Int { step(x, f) + step(x, f) }\n" +
+        "pub func runA[S](x: S, f: (S) -> Int): Int { twice(x, f) }\n" +
+        "pub func viaLambdaA[S](x: S, f: (S) -> Int): Int {\n" +
+        "  val body: (Int) -> Int = { n: Int -> twice(x, f) + n }\n" +
+        "  body(1)\n" +
+        "}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PrivGen.LibB",
+      "package PrivGen.LibB\n" + "\n" + "func step[S](x: S, f: (S) -> Int): Int { f(x) * 100 }\n" +
+        "pub func runB[S](x: S, f: (S) -> Int): Int { step(x, f) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PrivGen.App",
+      "package PrivGen.App\n" + "\n" + "import PrivGen.LibA\n" + "import PrivGen.LibB\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  println(runA(5, { v: Int -> v * 2 }))\n" +
+        "  println(viaLambdaA(7, { v: Int -> v + 1 }))\n" +
+        "  println(runB(3, { v: Int -> v + 1 }))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("privgen", packages, "PrivGen")
+  assertEqualInt(result.exitCode, 0, "private generics: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "22\n19\n400", "each pub generic ran its own package's helpers")
+}
+
+// A parameter named like a private generic is not a call to it: the carried body keeps the parameter.
+test "a parameter that shadows a private generic helper is left alone" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "PrivShadow.Lib",
+      "package PrivShadow.Lib\n" + "\n" + "func helper[S](x: S): S { x }\n" +
+        "pub func applyIt[S](helper: (S) -> S, x: S): S { helper(x) }\n" +
+        "pub func plain[S](x: S): S { helper(x) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "PrivShadow.App",
+      "package PrivShadow.App\n" + "\n" + "import PrivShadow.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(applyIt({ n: Int -> n + 1 }, 4))\n" +
+        "  println(plain(9))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("privshadow", packages, "PrivShadow")
+  assertEqualInt(result.exitCode, 0, "shadowing: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "5\n9", "the parameter was called, the helper was carried for the other")
 }

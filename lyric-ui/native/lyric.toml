@@ -11,6 +11,7 @@
 #   Ui.Native.Wrap      soft-wrapped text areas: lines, pieces in visual order, caret and selection
 #   Ui.Native.Layout    flex-style layout of the widget tree into boxes with absolute rectangles
 #   Ui.Native.Interact  focus order, hit testing, text editing, grid scrolling, click actions
+#   Ui.Native.Access    the accessibility tree: roles, names, states, actions, diffs, requests from AT
 #
 # Nothing here touches a window or a GPU, so it builds and tests on every target; the painter and
 # the frame loop are the sibling `host/` project, for `--target native`.
@@ -35,6 +36,7 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 "Ui.Native.Wrap"     = "src/wrap.l"
 "Ui.Native.Layout"   = "src/layout.l"
 "Ui.Native.Interact" = "src/interact.l"
+"Ui.Native.Access"   = "src/access.l"
 
 [project.tests]
 "Ui.Native.ClientTests"   = "tests/client_tests.l"
@@ -43,6 +45,7 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 "Ui.Native.WrapTests"     = "tests/wrap_tests.l"
 "Ui.Native.BidiTests"    = "tests/bidi_tests.l"
 "Ui.Native.LineBreakTests" = "tests/linebreak_tests.l"
+"Ui.Native.AccessTests"   = "tests/access_tests.l"
 
 [dependencies]
 "Lyric.Ui" = { path = ".." }

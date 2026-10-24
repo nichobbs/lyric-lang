@@ -9,3 +9,7 @@
 # can share a `D-progress-N` number after an auto-merge — that is cosmetic
 # (numbers are not load-bearing); reconcile opportunistically or via a lint.
 docs/03-decision-log.md merge=union
+
+# Replay recordings are LF text by format (Game.Replay.encode), and CI byte-compares a checked-in
+# recording with a fresh one, so a Windows checkout must not convert them to CRLF.
+*.replay text eol=lf

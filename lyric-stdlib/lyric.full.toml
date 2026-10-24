@@ -160,6 +160,23 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 11 — JSON-RPC 2.0 peer and stdio framings (D204), formerly the
 # lyric-jsonrpc library's JsonRpc / JsonRpc.Stdio.  Appended last for the
-# same reason as Tier 8.
+# same reason as Tier 8.  Std.PanicGuardHost (the handler-panic guard, with
+# a native twin) is imported by Std.JsonRpc, so it precedes it.
+"Std.PanicGuardHost" = "std/_kernel/panic_guard_host.l"
 "Std.JsonRpc"       = "std/json_rpc.l"
 "Std.JsonRpc.Stdio" = "std/json_rpc_stdio.l"
+
+# Tier 12 — plugin runtime (docs/69, D207): the platform probe kernel and
+# `Std.Plugin` (manifests, the host catalogue and process lifecycle, the
+# plugin-side server loop).  Appended last for the same reason as Tier 8.
+# The self-hosted compiler imports `Std.Plugin` to run generator plugins, so
+# neither line may be `seed: current`.
+"Std.PluginHost" = "std/_kernel/plugin_host.l"
+"Std.Plugin"     = "std/plugin.l"
+
+# Tier 13 — runtime access to `config { }` field annotations (#6866,
+# #7180): the per-target resource-reading kernel and `Std.AnnotationMeta`.
+# Appended last for the same reason as Tier 8; it imports `Std.JsonValue`
+# (Tier 9), which precedes it.
+"Std.AnnotationMetaHost" = "std/_kernel/annotation_meta_host.l"
+"Std.AnnotationMeta"     = "std/annotation_meta.l"

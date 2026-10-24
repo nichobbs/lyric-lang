@@ -90,6 +90,7 @@ book/
     ├── 30-source-generators.md
     ├── 31-user-interfaces.md
     ├── 32-webassembly.md
+    ├── 33-plugins.md
     ├── appendix-a-vscode.md
     └── appendix-b-quick-reference.md
 ```

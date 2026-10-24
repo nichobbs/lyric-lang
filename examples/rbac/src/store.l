@@ -66,18 +66,26 @@ pub func errorMessage(e: in StoreError): String {
 
 // ─── Users ────────────────────────────────────────────────────────────────────
 pub func getUserById(conn: in DbConnection, userId: in Long): Result[Option[User], StoreError] {
-  val sql = "SELECT id, username, created_at FROM users WHERE id = @p0"
+  val sql = Db.sql("SELECT id, username, created_at FROM users WHERE id = @p0")
   match Db.queryOne(conn, sql, [userId.toString()]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(None) -> Ok(None)
-    case Ok(Some(row)) -> Ok(Some(value = User(id = colLong(row, "id"), username = colText(row, "username"), createdAt = colText(row, "created_at"))))
+    case Ok(Some(row)) -> Ok(
+      Some(
+        value = User(
+          id = colLong(row, "id"),
+          username = colText(row, "username"),
+          createdAt = colText(row, "created_at")
+        )
+      )
+    )
   }
 }
 
 pub func createUser(conn: in DbConnection, username: in String): Result[User, StoreError]
   requires: username.length > 0
 {
-  val sql = "INSERT INTO users (username) VALUES (@p0) RETURNING id, username, created_at"
+  val sql = Db.sql("INSERT INTO users (username) VALUES (@p0) RETURNING id, username, created_at")
   match conn.query(sql, [username]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(rows) -> {
@@ -92,9 +100,11 @@ pub func createUser(conn: in DbConnection, username: in String): Result[User, St
 // ─── Role assignments ─────────────────────────────────────────────────────────
 /// Return all roles held by `userId`.
 pub func getRolesForUser(conn: in DbConnection, userId: in Long): Result[List[RoleAssignment], StoreError] {
-  val sql = "SELECT ur.user_id, ur.role_id, r.name AS role_name, ur.granted_by, ur.granted_at " +
-    "FROM user_roles ur JOIN roles r ON r.id = ur.role_id " +
-    "WHERE ur.user_id = @p0 ORDER BY ur.granted_at"
+  val sql = Db.sql(
+    "SELECT ur.user_id, ur.role_id, r.name AS role_name, ur.granted_by, ur.granted_at " +
+      "FROM user_roles ur JOIN roles r ON r.id = ur.role_id " +
+      "WHERE ur.user_id = @p0 ORDER BY ur.granted_at"
+  )
   match conn.query(sql, [userId.toString()]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(rows) -> {
@@ -120,14 +130,16 @@ pub func getRolesForUser(conn: in DbConnection, userId: in Long): Result[List[Ro
 pub func grantRole(
   conn: in DbConnection, targetUserId: in Long, roleName: in String, grantedBy: in Long
 ): Result[Unit, StoreError] {
-  val roleSql = "SELECT id FROM roles WHERE name = @p0"
+  val roleSql = Db.sql("SELECT id FROM roles WHERE name = @p0")
   match Db.queryOne(conn, roleSql, [roleName]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(None) -> Err(StoreError.RoleNotFound(name = roleName))
     case Ok(Some(row)) -> {
       val roleId = colLong(row, "id")
-      val insertSql = "INSERT INTO user_roles (user_id, role_id, granted_by) " +
-        "VALUES (@p0, @p1, @p2) ON CONFLICT DO NOTHING"
+      val insertSql = Db.sql(
+        "INSERT INTO user_roles (user_id, role_id, granted_by) " +
+          "VALUES (@p0, @p1, @p2) ON CONFLICT DO NOTHING"
+      )
       match conn.execute(insertSql, [targetUserId.toString(), roleId.toString(), grantedBy.toString()]) {
         case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
         case Ok(_) -> Ok(())
@@ -138,7 +150,9 @@ pub func grantRole(
 
 /// Revoke `roleName` from `targetUserId`.
 pub func revokeRole(conn: in DbConnection, targetUserId: in Long, roleName: in String): Result[Unit, StoreError] {
-  val sql = "DELETE FROM user_roles WHERE user_id = @p0 AND " + "role_id = (SELECT id FROM roles WHERE name = @p1)"
+  val sql = Db.sql(
+    "DELETE FROM user_roles WHERE user_id = @p0 AND " + "role_id = (SELECT id FROM roles WHERE name = @p1)"
+  )
   match conn.execute(sql, [targetUserId.toString(), roleName]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(_) -> Ok(())

@@ -524,7 +524,7 @@ func addBoth(x: inout Int, a: in Int, b: in Int): Unit {
   x = x + a * 10 + b
 }
 
-record Cell {
+ref record Cell {
   var v: Int
 }
 

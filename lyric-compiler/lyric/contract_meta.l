@@ -46,6 +46,7 @@ import Msil.MetadataReader as Mdr
 import Jvm.ZipReader as JvmZip
 import Lyric.CliShell as CliShell
 import Lyric.Fmt as Fmt
+import Lyric.ContractElaborator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
@@ -1158,7 +1159,14 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks
     }
     mi = mi + 1
   }
-  val exposedPrefix = if isExposed { "exposed " } else { "" }
+  var hasVarField = false
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> if fd.isMutable { hasVarField = true }
+      case _ -> ()
+    }
+  }
+  val exposedPrefix = if isExposed { "exposed " } else if decl.isRef or hasVarField { "ref " } else { "" }
   val head = "pub " + exposedPrefix + "record " + decl.name + renderGenerics(decl.generics) + " { " + fields
   if methods == "" {
     head + " }"
@@ -1195,7 +1203,48 @@ func reprForFunc(fn: in FunctionDecl, dt: in DefaultThunks): String {
   // `@io` rides in the repr so a restored consumer's signature carries it
   // and the layer rules see the call (D149).
   val ioPrefix = if hasAnnotationNamed(fn.annotations, "io") { "@io " } else { "" }
-  ioPrefix + "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  ioPrefix + "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr +
+    renderMarkerWhere(fn.whereClause)
+}
+
+// The `where` bounds of a generic function that name a built-in marker
+// (`Add`, `Compare`, `Plain`, ...), as ` where T: Add + Sub`.  A consumer
+// specialising the restored generic needs them: an operator on a bounded
+// type parameter is lowered per specialisation (D224).  A bound naming an
+// interface is left out, because the consumer's scope need not resolve the
+// interface's bare name.
+func renderMarkerWhere(wc: in Option[WhereClause]): String {
+  match wc {
+    case None -> ""
+    case Some(w) -> {
+      val kept: List[WhereBound] = newList()
+      for b in w.bounds {
+        val cs: List[ConstraintRef] = newList()
+        for c in b.constraints {
+          if c.head.segments.count == 1 and c.args.count == 0 and isBuiltinMarkerName(c.head.segments[0]) {
+            cs.add(c)
+          }
+        }
+        if cs.count > 0 {
+          kept.add(WhereBound(name = b.name, constraints = cs, span = b.span))
+        }
+      }
+      if kept.count == 0 {
+        ""
+      } else {
+        " " + Fmt.whereClauseStr(Some(value = WhereClause(bounds = kept, span = w.span)))
+      }
+    }
+  }
+}
+
+// Keep in sync with `isOperatorMarker` (mono.l), plus the non-operator markers.
+func isBuiltinMarkerName(name: in String): Bool {
+  name == "Add" or name == "Sub" or name == "Mul" or name == "Div" or name == "Mod" or name == "Compare" or
+    name == "Equals" or
+    name == "Hash" or
+    name == "Default" or
+    name == "Plain"
 }
 
 func hasAnnotationNamed(anns: in List[Annotation], name: in String): Bool {
@@ -1273,6 +1322,17 @@ func hasPureAnnotation(anns: in List[Annotation]): Bool {
     i = i + 1
   }
   false
+}
+
+// A `pub` generic with its calls to private generic helpers redirected to the carried copies
+// (`Lyric.ContractElaborator.carryPrivateGenerics`); any other function as it is.
+func carriedPubFunc(carried: in CarriedGenerics, f: in FunctionDecl): FunctionDecl {
+  for c in carried.pubFuncs {
+    if c.name == f.name {
+      return c
+    }
+  }
+  f
 }
 
 // Build the `ContractDecl` for a `func` item.  A GENERIC function also
@@ -1918,6 +1978,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     pi = pi + 1
   }
 
+  val carried = carryPrivateGenerics(file.items, joinDots(file.packageDecl.path.segments))
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
@@ -1929,7 +1990,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         case IExposedRec(r) -> decls.add(
           basicDecl("record", r.name, reprForRecord(r, isExposed = true, dt = thunks), it.visibility)
         )
-        case IFunc(f) -> decls.add(funcDecl(f, it.visibility, thunks))
+        case IFunc(f) -> decls.add(funcDecl(carriedPubFunc(carried, f), it.visibility, thunks))
         case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
         case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
         case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix, thunks), it.visibility))
@@ -2006,6 +2067,11 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       case _ -> ()
     }
     i = i + 1
+  }
+  // The private generics a `pub` generic reaches, under package-unique names, so a consumer's
+  // monomorphiser can specialise the carried body (#8427).
+  for pc in carried.privateCopies {
+    decls.add(funcDecl(pc, Some(value = VisInternal(span = pc.span)), thunks))
   }
   Contract(
     packageName = joinDots(file.packageDecl.path.segments),

@@ -658,9 +658,8 @@ test "Mail.send accepts a message whose total attachment size is within maxTotal
 }
 
 // ─── SES / SendGrid config preconditions (#7254) ─────────────────────────────
-// Neither provider is implemented on any target yet, but a missing/empty
-// required credential must be reported as such — not masked by a generic
-// "not implemented" — identically on every target.
+// A missing/empty required credential must be reported as such,
+// identically on every target.
 test "Mail.connectSes returns Err naming the missing LYRIC_CONFIG_SES_REGION" {
   match Mail.connectSes() {
     case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "missing SES region: code is INVALID_CONFIG")
@@ -672,6 +671,285 @@ test "Mail.connectSendGrid returns Err naming the missing LYRIC_CONFIG_SENDGRIDM
   match Mail.connectSendGrid() {
     case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "missing SendGrid apiKey: code is INVALID_CONFIG")
     case Ok(_) -> assertTrue(false, "SendGrid with no apiKey configured should not connect")
+  }
+}
+
+// ─── SendGrid / SES over HTTPS (#7462) ───────────────────────────────────────
+func providerMessage(): Mail.EmailMessage {
+  Mail.EmailMessage(
+    from = Mail.makeAddress("a@x.com"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+}
+
+test "Mail.buildSendGridPayload renders the v3 mail/send body" {
+  val msg = Mail.EmailMessage(
+    from = Mail.makeAddressWithName("a@x.com", "Bot"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [Mail.makeAddress("c@y.com")],
+    bcc = [Mail.makeAddress("d@y.com")],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "<p>H</p>",
+    attachments = [Mail.makeAttachment("f.txt", "text/plain", "QUJD")],
+    replyTo = Some(value = Mail.makeAddress("r@x.com"))
+  )
+  val json = Mail.buildSendGridPayload(msg)
+  assertTrue(
+    json.startsWith(
+      "{\"personalizations\":[{\"to\":[{\"email\":\"b@y.com\"}],\"cc\":[{\"email\":\"c@y.com\"}],\"bcc\":[{\"email\":\"d@y.com\"}]}],\"from\":{\"email\":\"a@x.com\",\"name\":\"Bot\"},\"subject\":\"Hi\",\"reply_to\":{\"email\":\"r@x.com\"},\"content\":[{\"type\":\"text/plain\",\"value\":\"T\"},{\"type\":\"text/html\""
+    ),
+    "personalizations, from, subject, reply_to, then text before html: " + json
+  )
+  assertTrue(
+    json.endsWith(
+      "\"attachments\":[{\"content\":\"QUJD\",\"filename\":\"f.txt\",\"type\":\"text/plain\",\"disposition\":\"attachment\"}]}"
+    ),
+    "attachments close the object: " + json
+  )
+}
+
+test "Mail.buildSendGridPayload omits optional parts that are absent" {
+  assertEqual(
+    Mail.buildSendGridPayload(providerMessage()),
+    "{\"personalizations\":[{\"to\":[{\"email\":\"b@y.com\"}]}],\"from\":{\"email\":\"a@x.com\"},\"subject\":\"Hi\",\"content\":[{\"type\":\"text/plain\",\"value\":\"T\"}]}",
+    "minimal message"
+  )
+}
+
+test "Mail.buildSesPayload uses Simple content without attachments" {
+  assertEqual(
+    Mail.buildSesPayload(providerMessage(), "B"),
+    "{\"FromEmailAddress\":\"a@x.com\",\"Destination\":{\"ToAddresses\":[\"b@y.com\"]},\"Content\":{\"Simple\":{\"Subject\":{\"Data\":\"Hi\",\"Charset\":\"UTF-8\"},\"Body\":{\"Text\":{\"Data\":\"T\",\"Charset\":\"UTF-8\"}}}}}",
+    "simple SES body"
+  )
+}
+
+test "Mail.buildSesPayload sends Raw MIME when there are attachments" {
+  val msg = Mail.EmailMessage(
+    from = Mail.makeAddress("a@x.com"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [],
+    bcc = [Mail.makeAddress("d@y.com")],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [Mail.makeAttachment("f.txt", "text/plain", "QUJD")],
+    replyTo = None
+  )
+  val json = Mail.buildSesPayload(msg, "B")
+  assertTrue(json.contains("\"Raw\":{\"Data\":"), "raw content: " + json)
+  assertTrue(json.contains("\"BccAddresses\":[\"d@y.com\"]"), "bcc travels in Destination: " + json)
+  val mime = Mail.buildMimeMessage(msg, "B")
+  assertTrue(
+    mime.startsWith("From: a@x.com\r\nTo: b@y.com\r\nSubject: Hi\r\nMIME-Version: 1.0\r\n"),
+    "headers: " + mime
+  )
+  assertFalse(mime.contains("d@y.com"), "bcc is not a MIME header")
+  assertTrue(
+    mime.contains("Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\n"),
+    "multipart/mixed opens: " + mime
+  )
+  assertTrue(
+    mime.contains(
+      "Content-Disposition: attachment; filename=\"f.txt\"\r\nContent-Transfer-Encoding: base64\r\n\r\nQUJD\r\n"
+    ),
+    "attachment part: " + mime
+  )
+  assertTrue(mime.endsWith("--B--\r\n"), "closing boundary")
+}
+
+test "Mail.buildMimeMessage wraps base64 at 76 columns and encodes non-ASCII headers" {
+  val long = repeat("QUJD", 40)
+  val msg = Mail.EmailMessage(
+    from = Mail.makeAddressWithName("a@x.com", "Zoë"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [],
+    bcc = [],
+    subject = "café",
+    textBody = "T",
+    htmlBody = "<p>H</p>",
+    attachments = [Mail.makeAttachment("f.bin", "application/octet-stream", long)],
+    replyTo = None
+  )
+  val mime = Mail.buildMimeMessage(msg, "B")
+  assertTrue(mime.contains("Subject: =?UTF-8?B?"), "non-ASCII subject is an encoded word: " + mime)
+  assertTrue(mime.contains("From: =?UTF-8?B?"), "non-ASCII display name is an encoded word")
+  assertTrue(mime.contains("multipart/alternative; boundary=\"B_alt\""), "text and html share an alternative part")
+  assertTrue(mime.contains(repeat("QUJD", 19) + "\r\n"), "76-column line")
+  assertFalse(mime.contains(repeat("QUJD", 20)), "no line longer than 76 columns")
+}
+
+test "Mail.sigV4Authorization matches the AWS get-vanilla test vector" {
+  assertEqual(
+    Mail.sigV4Authorization(
+      "GET",
+      "/",
+      "example.amazonaws.com",
+      "us-east-1",
+      "service",
+      "AKIDEXAMPLE",
+      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "",
+      "20150830T123600Z",
+      ""
+    ),
+    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31",
+    "signature from the published AWS Signature V4 test suite"
+  )
+}
+
+test "Mail.sigV4Authorization signs the session token when present" {
+  val auth = Mail.sigV4Authorization(
+    "POST",
+    "/v2/email/outbound-emails",
+    "h",
+    "us-east-1",
+    "ses",
+    "AK",
+    "SK",
+    "TOKEN",
+    "20150830T123600Z",
+    "{}"
+  )
+  assertTrue(auth.contains("SignedHeaders=host;x-amz-date;x-amz-security-token,"), "token header is signed: " + auth)
+}
+
+test "Mail provider helpers: endpoint host, status codes, regions" {
+  assertEqual(Mail.endpointHost("https://email.us-east-1.amazonaws.com"), "email.us-east-1.amazonaws.com", "https host")
+  assertEqual(Mail.endpointHost("http://127.0.0.1:8025/base"), "127.0.0.1:8025", "host and port, path dropped")
+  assertEqual(Mail.mailErrorCodeForStatus(401), "AUTH_FAILED", "401")
+  assertEqual(Mail.mailErrorCodeForStatus(403), "AUTH_FAILED", "403")
+  assertEqual(Mail.mailErrorCodeForStatus(429), "QUOTA_EXCEEDED", "429")
+  assertEqual(Mail.mailErrorCodeForStatus(503), "PROVIDER_ERROR", "503")
+  assertEqual(Mail.mailErrorCodeForStatus(400), "SEND_ERROR", "400")
+  assertTrue(Mail.isValidAwsRegion("eu-west-2"), "real region")
+  assertFalse(Mail.isValidAwsRegion(""), "empty region")
+  assertFalse(Mail.isValidAwsRegion("evil.com/x"), "a region may not change the host")
+}
+
+test "Mail provider endpoints must be https unless they are loopback" {
+  match Mail.newSendGridSender("key", "http://example.com") {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "plain http to a remote host is refused")
+    case Ok(_) -> assertTrue(false, "http://example.com would send the API key in clear text")
+  }
+  match Mail.newSesSender("us-east-1", "AK", "SK", "", "http://email.us-east-1.amazonaws.com") {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "SES over plain http is refused")
+    case Ok(_) -> assertTrue(false, "plain http SES endpoint must be rejected")
+  }
+  match Mail.newSendGridSender("key", "https://api.eu.sendgrid.com") {
+    case Ok(_) -> assertTrue(true, "https is accepted")
+    case Err(e) -> assertTrue(false, "https endpoint rejected: " + e.message)
+  }
+  assertTrue(Mail.isLoopbackAuthority("localhost:8025"), "localhost with port")
+  assertTrue(Mail.isLoopbackAuthority("127.0.0.1"), "ipv4 loopback")
+  assertTrue(Mail.isLoopbackAuthority("[::1]:8025"), "ipv6 loopback with port")
+  assertFalse(Mail.isLoopbackAuthority("localhost.evil.com"), "prefix is not loopback")
+  assertFalse(Mail.isLoopbackAuthority("example.com:80"), "remote host")
+  match Mail.newSendGridSender("key", "http://localhost:8025") {
+    case Ok(_) -> assertTrue(true, "loopback http is accepted")
+    case Err(e) -> assertTrue(false, "loopback http rejected: " + e.message)
+  }
+}
+
+test "Mail.sigV4Authorization signs the host including its port" {
+  val bare = Mail.sigV4Authorization(
+    "POST",
+    "/p",
+    "localhost",
+    "us-east-1",
+    "ses",
+    "AK",
+    "SK",
+    "",
+    "20150830T123600Z",
+    "{}"
+  )
+  val withPort = Mail.sigV4Authorization(
+    "POST",
+    "/p",
+    "localhost:8025",
+    "us-east-1",
+    "ses",
+    "AK",
+    "SK",
+    "",
+    "20150830T123600Z",
+    "{}"
+  )
+  assertTrue(bare != withPort, "a different host authority changes the signature")
+  assertEqual(Mail.endpointHost("http://localhost:8025/x"), "localhost:8025", "the port stays in the signed host")
+}
+
+test "Mail.validateNoInjection rejects CR/LF in attachment contentType and filename" {
+  val bad = Mail.EmailMessage(
+    from = Mail.makeAddress("a@x.com"),
+    to = [Mail.makeAddress("b@y.com")],
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [Mail.makeAttachment("f.txt", "text/plain\r\nBcc: evil@x.com", "QUJD")],
+    replyTo = None
+  )
+  assertTrue(Mail.validateNoInjection(bad).isSome(), "contentType with CRLF is rejected")
+  val badName = Mail.EmailMessage(
+    from = bad.from,
+    to = bad.to,
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [Mail.makeAttachment("f\r\n.txt", "text/plain", "QUJD")],
+    replyTo = None
+  )
+  assertTrue(Mail.validateNoInjection(badName).isSome(), "filename with CRLF is rejected")
+}
+
+test "Mail SendGrid and SES senders validate before dispatch and report transport failures" {
+  val sg = match Mail.newSendGridSender("key", "http://127.0.0.1:1") {
+    case Ok(s) -> s
+    case Err(e) -> return assertTrue(false, "sender construction failed: " + e.message)
+  }
+  match sg.send(providerMessage()) {
+    case Err(e) -> assertEqual(e.code, "SEND_ERROR", "closed port: transport failure")
+    case Ok(_) -> assertTrue(false, "nothing listens on port 1")
+  }
+  val noRecipients = Mail.EmailMessage(
+    from = Mail.makeAddress("a@x.com"),
+    to = [],
+    cc = [],
+    bcc = [],
+    subject = "Hi",
+    textBody = "T",
+    htmlBody = "",
+    attachments = [],
+    replyTo = None
+  )
+  match sg.send(noRecipients) {
+    case Err(e) -> assertEqual(e.code, "NO_RECIPIENTS", "validated before any request")
+    case Ok(_) -> assertTrue(false, "no recipients must be rejected")
+  }
+  val ses = match Mail.newSesSender("us-east-1", "AK", "SK", "", "http://127.0.0.1:1/") {
+    case Ok(s) -> s
+    case Err(e) -> return assertTrue(false, "sender construction failed: " + e.message)
+  }
+  match ses.send(providerMessage()) {
+    case Err(e) -> assertEqual(e.code, "SEND_ERROR", "closed port: transport failure")
+    case Ok(_) -> assertTrue(false, "nothing listens on port 1")
+  }
+  match Mail.newSesSender("us-east-1", "AK", "SK", "", "ftp://x") {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "endpoint must be http(s)")
+    case Ok(_) -> assertTrue(false, "ftp endpoint must be rejected")
   }
 }
 

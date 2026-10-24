@@ -15,12 +15,14 @@ change.
    trusts, and is what .NET's `SslStream` uses there, so `--target native` and `--target dotnet` agree on Windows.
    D128 decision 10 already designed the seam to be swapped per platform; this is that swap.
 2. **Sockets are Winsock 2.** A `SOCKET` is a kernel handle and Windows guarantees handles fit in 32 bits, so the
-   runtime's `int32_t` descriptors carry it unchanged (`INVALID_SOCKET` is -1); they are only ever passed back
-   to `lyric_sock_*` and `lyric_tls_*`. Sockets are created non-inheritable. Winsock starts once per process. A
+   runtime's `int32_t` descriptors carry it unchanged (`INVALID_SOCKET` is -1); they are only ever passed back to
+   `lyric_sock_*` and `lyric_tls_*`. Sockets are created non-inheritable. Winsock starts once per process. A
    listener binds with `SO_EXCLUSIVEADDRUSE`, because `SO_REUSEADDR` on Windows lets another socket take over the
    port. The interruptible accept's wake pipe is a connected pair of loopback sockets (checked to be each other's
-   peer), since `WSAPoll` waits only on sockets. Errors come from `WSAGetLastError` with system messages, and
-   `lyric_sock_accept_errno` reports the WSA code.
+   peer), since `WSAPoll` waits only on sockets. `lyric_sock_shutdown` also cancels the socket's pending I/O
+   (`CancelIoEx`): POSIX `shutdown` wakes another thread blocked in a read on the socket, which
+   `Std.TcpHost.hostShutdown` relies on to stop a server, and Winsock's does not. Errors come from
+   `WSAGetLastError` with system messages, and `lyric_sock_accept_errno` reports the WSA code.
 3. **Keys are imported for the LSA.** Schannel opens private keys in the LSA process, which cannot use an
    in-memory CNG key, so a context's PKCS#8 key is imported into the Microsoft Software Key Storage Provider
    under a unique per-process name and attached to the certificate through `CERT_KEY_PROV_INFO_PROP_ID`. The key

@@ -230,7 +230,7 @@ interface Counter {
   func bumpBy(n: Int): Int
 }
 
-record CounterImpl {
+ref record CounterImpl {
   var x: Int
 }
 
@@ -248,7 +248,7 @@ test "bare self-field read + write in an impl method (#6173)" {
 }
 
 // ── Bare self-field read/write in a record in-body method (#6173) ─────────────
-record Tally {
+ref record Tally {
   var total: Int
   func add(n: Int): Int {
     total = total + n
@@ -472,7 +472,7 @@ test "non-receiver Self-typed param field access, two same-package records shari
 // `inout`-mode `Self` param too — field READ and WRITE through the byref
 // slot must resolve against the impl target's own fields despite the
 // same-package `base` name collisions above.
-record Bumped6421 {
+ref record Bumped6421 {
   var base: Int
 }
 
@@ -500,7 +500,7 @@ test "non-receiver inout Self-typed param field read AND mutation (#6421/#6425 r
 // the value and receiver and stores nothing.  With the param tracked as
 // `MClass(target)` the write resolves through `cctx.fieldTokens` and
 // actually lands; records are reference types, so the caller observes it.
-record Cell6425 {
+ref record Cell6425 {
   var base: Int
 }
 

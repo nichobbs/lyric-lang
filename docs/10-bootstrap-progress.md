@@ -300,6 +300,7 @@ deferred to Phase 3 by design.
 | C bindings on every target: `@library("name") extern func` lowers to P/Invoke on MSIL, a Foreign Function & Memory downcall on the JVM (JDK 22), and a `-l` link flag on native; `NativePtr[T]`/`nativeNullPtr()` type everywhere; T0149–T0151 | **Shipped** | D158 |
 | C memory and C strings on every target: `nativeLoadByte`/`nativeStoreByte` intrinsics (MSIL `ldind`/`stind`, JVM FFM `MemorySegment`, native GEP) and `Std.Ffi` (`allocate`, `release`, `toCString`, `tryFromCString` over libc `malloc`/`free`) | **Shipped** | D161 |
 | Desktop webview host (`Ui.Host.Desktop`, docs/65 U5): the web host on a loopback port with a per-run access token, shown in a `webview` window bound through `@library`; MSIL, JVM and native (`-lwebview`), tested in a real window under Xvfb | **Shipped** | D162 |
+| Native dependency pruning: `--target native` lowers the packages of path and workspace dependencies by reachability (record methods, protected types, `impl`s, module `val`s, defaults), so an unreached `@library` extern is not linked and a native `lyric-ui` app needs no `libwebview` | **Shipped** | D218 |
 
 ### Phase 2 — type system completion (complete)
 
@@ -404,6 +405,13 @@ deferred to Phase 3 by design.
   D-progress-775).
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): six AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts, L007 a `pub`/`internal` signature naming a same-file package-private type (#7549; single-file, see #7607). L006 is retired and not reused. `--error-on-warning` flag. Runs on non-compiling code.
+- Plugins (docs/69, D204, D207) — **shipped** on every target: the plugin
+  annotations and `Lyric.PluginExpand` (K0000-K0012), `Std.Plugin` hosts on
+  dotnet, the JVM and native, process-mode payloads for dotnet, the JVM and
+  native, wasm-mode plugins under `wasmtime run`, `lyric plugin
+  pack|check|sdk` (C#, Java and TypeScript SDKs), and source generators as
+  the first plugin point (`Lyric.GeneratorSdk` 2.0, `SourceGenerator` 3.0).
+  Trusted in-process mode, signing and the registry are deferred (D207).
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`

@@ -49,9 +49,9 @@ func writeFileOrPanic(path: in String, content: in String): Unit {
 
 func mathSource(): String {
   "package Arr.Math\n\n" + "pub val SIZE: Int = 3\n\n" + "pub record Mat {\n  cells: array[4, Float]\n}\n\n" +
-    "pub record Reading {\n  var values: array[SIZE, Float]\n}\n\n" +
-    "pub record Acc {\n  var hits: array[3, Int]\n  var n: Int\n}\n\n" +
-    "pub record Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n\n" +
+    "pub ref record Reading {\n  var values: array[SIZE, Float]\n}\n\n" +
+    "pub ref record Acc {\n  var hits: array[3, Int]\n  var n: Int\n}\n\n" +
+    "pub ref record Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n\n" +
     "pub func identity(): Mat {\n  Mat(cells = [1.0, 0.0, 0.0, 1.0])\n}\n\n" +
     "pub func trace(m: in Mat): Float {\n  m.cells[0] + m.cells[3]\n}\n\n" +
     "pub func total(a: in array[3, Int]): Int {\n  var t = 0\n  for x in a {\n    t = t + x\n  }\n  t\n}\n\n" +

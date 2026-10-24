@@ -82,7 +82,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -122,7 +122,7 @@ func runLl(ll: in String): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, true, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -168,7 +168,7 @@ test "a by-value record is a header-less struct and its arithmetic never allocat
 }
 
 test "a record with a var field keeps the heap form (D157)" {
-  val src = "package T\n" + "record Counter {\n  var n: Int\n}\n" + "func make(): Counter {\n  Counter(n = 1)\n}\n" +
+  val src = "package T\n" + "ref record Counter {\n  var n: Int\n}\n" + "func make(): Counter {\n  Counter(n = 1)\n}\n" +
     "func main(): Int {\n  make().n\n}\n"
   val ll = lowerToLl(src)
   assertTrue(Str.contains(ll, "%T.Counter = type { i32, i32, i8*, i32 }"), "the heap struct keeps its ARC header")
@@ -307,7 +307,7 @@ test "a by-value record declared after its use in another record" {
 
 test "a by-value record lives in a heap record's field and is replaced through it" {
   val src = "package T\n" + "record Vec2 {\n  x: Int\n  y: Int\n}\n" +
-    "record Body {\n  var pos: Vec2\n  var label: String\n}\n" +
+    "ref record Body {\n  var pos: Vec2\n  var label: String\n}\n" +
     "func main(): Int {\n" +
     "  val b = Body(pos = Vec2(x = 1, y = 2), label = \"b\")\n" +
     "  b.pos = Vec2(x = b.pos.x + 10, y = b.pos.y + 20)\n" +
@@ -660,7 +660,7 @@ test "N0010 also covers callback types and return positions, and stops a real na
 // D157 semantics are unchanged, and the extern boundary rejects by-value records.
 // ─────────────────────────────────────────────────────────────────────────────
 test "a record with a var field still shares one instance (D157)" {
-  val src = "package T\n" + "record Counter {\n  var n: Int\n}\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+  val src = "package T\n" + "ref record Counter {\n  var n: Int\n}\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
     "func bump(c: in Counter): Unit {\n  c.n = c.n + 1\n}\n" +
     "func main(): Int {\n" +
     "  val c = Counter(n = 0)\n" +
@@ -706,7 +706,7 @@ test "an extern func passing a by-value record is rejected with N0010" {
 }
 
 test "an extern func over a record with a var field is not rejected" {
-  val src = "package T\n" + "record Box {\n  var n: Int\n}\n" + "extern func takesBox(b: Box): Int = \"take_box\"\n" +
+  val src = "package T\n" + "ref record Box {\n  var n: Int\n}\n" + "extern func takesBox(b: Box): Int = \"take_box\"\n" +
     "func main(): Int {\n  0\n}\n"
   val units: List[CodegenUnit] = newList()
   units.add(unitOfFile("T", parseOrPanic(src)))

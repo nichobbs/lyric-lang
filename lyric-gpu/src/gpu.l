@@ -17,6 +17,7 @@ import Std.Buffer as Buf
 import Std.Encoding
 import Std.Ffi as Ffi
 import Std.String as Str
+import Std.Time as Time
 import Gpu.Kernel.Wgpu
 
 /// A GPU device with its queue, ready for buffers and compute passes.
@@ -139,7 +140,7 @@ pub val usageUniform: Long = 64
 pub val usageStorage: Long = 128
 
 /// Where an asynchronous wgpu call leaves its result.
-record Slot {
+ref record Slot {
   var status: Int
   var handle: Long
   var message: String
@@ -165,7 +166,8 @@ val vertexLayoutSize: Long = 40
 
 val bindGroupEntrySize: Long = 56
 
-val waitIterations: Int = 1000000
+// How long a wait for a GPU callback may take before it is reported as timed out.
+val waitMillis: Long = 30000
 
 @library("c")
 @unsafe_ffi
@@ -282,13 +284,14 @@ func onUncapturedError(
 
 @unsafe_ffi
 func waitSlot(instance: Long, device: Long, slot: Slot): Bool {
-  var spins = 0
-  while slot.status == 0 - 1 and spins < waitIterations {
+  val deadline = Time.nowEpochMillis() + waitMillis
+  while slot.status == 0 - 1 and Time.nowEpochMillis() < deadline {
     wgpuInstanceProcessEvents(longToPtr(instance))
     if device != 0 {
+      // Non-blocking: a blocking poll would not return for a hung device, and the deadline
+      // could not end the wait.
       val _ = wgpuDevicePoll(longToPtr(device), 0, nativeNullPtr())
     }
-    spins = spins + 1
   }
   slot.status != 0 - 1
 }
@@ -1095,6 +1098,20 @@ pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[S
     chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
     display = longToPtr(display),
     surface = longToPtr(surface)
+  )
+  val head: NativePtr[Byte] = nativeAddrOf(source)
+  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+}
+
+/// A surface for a Win32 window: `instance` is the `HINSTANCE` and `hwnd` the `HWND`, as
+/// `Window.nativeWindow` returns them.
+@unsafe_ffi
+pub func createWindowsSurface(d: Device, instance: Long, hwnd: Long): Result[Surface, String] {
+  var source = WGPUSurfaceSourceWindowsHWND(
+    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
+    hinstance = longToPtr(instance),
+    hwnd = longToPtr(hwnd)
   )
   val head: NativePtr[Byte] = nativeAddrOf(source)
   var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())

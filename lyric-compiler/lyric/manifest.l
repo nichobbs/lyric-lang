@@ -197,7 +197,9 @@ pub record NativePrebuilt {
   /// Lower-case hex SHA-256 of the downloaded file; the restore refuses anything else.
   sha256: String
   /// Members of a `.zip` archive to extract (their file names land in the cache
-  /// directory); empty means the URL is the library file itself.
+  /// directory; `"<member> -> <file name>"` extracts under another name, as a
+  /// Windows import library `x.dll.lib` must be `x.lib`); empty means the URL
+  /// is the library file itself.
   members: List[String]
 }
 
@@ -1984,6 +1986,28 @@ func isLowerHex64(s: in String): Bool {
   true
 }
 
+/// The archive path of a prebuilt `members` entry: the text before ` -> `,
+/// or the whole entry.
+pub func prebuiltMemberPath(member: in String): String {
+  val arrow = Str.indexOfRaw(member, " -> ")
+  if arrow >= 0 {
+    Str.trim(Str.substring(member, 0, arrow))
+  } else {
+    member
+  }
+}
+
+/// The file name a prebuilt `members` entry is extracted as: the name after
+/// ` -> `, or the member's own file name.
+pub func prebuiltMemberFileName(member: in String): String {
+  val arrow = Str.indexOfRaw(member, " -> ")
+  if arrow >= 0 {
+    Str.trim(Str.substring(member, arrow + 4))
+  } else {
+    basenameOf(member)
+  }
+}
+
 func assemblePrebuilt(
   entries: in List[Entry], section: in String, triple: in String
 ): Result[NativePrebuilt, ManifestError] {
@@ -2012,16 +2036,29 @@ func assemblePrebuilt(
   if member.length > 0 {
     members.add(member)
   }
+  for m in members {
+    val name = prebuiltMemberFileName(m)
+    if name.length == 0 or Str.contains(name, "/") or Str.contains(name, "\\") or prebuiltMemberPath(m).length == 0 {
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = "members",
+          message = "'" + m +
+            "': a member is an archive path, optionally followed by ` -> <file name>` (a bare name)"
+        )
+      )
+    }
+  }
   var mi = 0
   while mi < members.count {
     var mj = mi + 1
     while mj < members.count {
-      if basenameOf(members[mi]) == basenameOf(members[mj]) {
+      if prebuiltMemberFileName(members[mi]) == prebuiltMemberFileName(members[mj]) {
         return Err(
           error = InvalidField(
             section = section,
             field = "members",
-            message = "two members share the file name '" + basenameOf(members[mi]) +
+            message = "two members share the file name '" + prebuiltMemberFileName(members[mi]) +
               "' and would overwrite each other"
           )
         )
@@ -2069,14 +2106,15 @@ func assembleNativeLibs(entries: in List[Entry]): Result[List[NativeLibSpec], Ma
         }
       }
     }
-    val sources = (if pkg.length > 0 { 1 } else { 0 }) + (if dir.length > 0 { 1 } else { 0 }) +
-      (if prebuilt.count > 0 { 1 } else { 0 })
+    // Prebuilt tables may sit beside `pkg_config`, which then serves the triples
+    // they do not cover (a system library on Linux, a pinned archive on Windows).
+    val sources = (if pkg.length > 0 or prebuilt.count > 0 { 1 } else { 0 }) + (if dir.length > 0 { 1 } else { 0 })
     if sources != 1 {
       return Err(
         error = InvalidField(
           section = section,
           field = "dir",
-          message = "name exactly one source for the library: `pkg_config = \"<package>\"` (a system library), `dir = \"<path>\"` (a directory holding it), or `[native.libs.<name>.prebuilt.<triple>]` tables (archives fetched by `lyric restore`)"
+          message = "name one source for the library: `pkg_config = \"<package>\"` (a system library), `dir = \"<path>\"` (a directory holding it), or `[native.libs.<name>.prebuilt.<triple>]` tables (archives fetched by `lyric restore`), optionally with `pkg_config` for the triples the tables do not cover"
         )
       )
     }

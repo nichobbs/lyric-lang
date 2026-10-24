@@ -2402,6 +2402,7 @@ func lowerAutoFfiStaticCall(
           // canonical unsigned form (see maskByteUnsigned).
           match retJvm {
             case JByte -> maskByteUnsigned(insns)
+            case JChar -> guardAutoFfiCharResultJvm(ctx, insns)
             case _ -> ()
           }
           retJvm
@@ -2545,11 +2546,22 @@ func lowerAutoFfiInstanceCall(
       // canonical unsigned form (see maskByteUnsigned).
       match retJvm {
         case JByte -> maskByteUnsigned(insns)
+        case JChar -> guardAutoFfiCharResultJvm(ctx, insns)
         case _ -> ()
       }
       retJvm
     }
   }
+}
+
+// A `Char` is a Unicode scalar value, never a surrogate half (docs/01 §2.1,
+// #8225), so a `char` a JDK call or static field yields is checked at the
+// boundary by the lazily-emitted `__lyricFfiChar` helper.
+func guardAutoFfiCharResultJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JChar)
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricFfiChar", params = ps, ret = JChar))
+  markRuntimeHelper(ctx, "__lyricFfiChar")
 }
 
 // Per-argument erased-slot types (`boxForErasedSlot`'s `slotTy`) for an
@@ -6066,6 +6078,17 @@ func lowerMethodCall(
       )
       insns.add(LPop)
       return JVoid
+    }
+  }
+
+  // `[a, b].toList()`: a bracket literal is built as an `ArrayList` here
+  // whichever type the call is expected to give, and it is fresh, so it already
+  // is the `List` the call converts a slice to (#7908).
+  if memberName == "toList" and args.count == 0 {
+    val recvIsLiteral = match stripExprParens(recv).kind { case EList(_) -> true; case _ -> false }
+    val recvIsArrayList = match recvTy { case JRef(c) -> c == "java/util/ArrayList"; case _ -> false }
+    if recvIsLiteral and recvIsArrayList {
+      return recvTy
     }
   }
 

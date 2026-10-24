@@ -89,7 +89,7 @@ alias Distance = Long
 
 // Record
 record Point { x: Double; y: Double }
-pub record Customer {
+pub ref record Customer {
   pub id:    CustomerId
   pub email: Email
   internalNotes: String    // package-private field
@@ -109,6 +109,10 @@ enum Color { case Red; case Green; case Blue }
 // Container types
 var fixed:   array[16, Byte]     // fixed-size, a value, zero filled; length is part of the type
 val dynamic: slice[Int]          // dynamic length
+val lit = [1, 2, 3]              // a slice, unless the position expects another shape:
+val xs: List[Long] = [1, 2]      //   a List[Long], elements widened
+val arr: array[2, Int] = [1, 2]  //   an array
+val copy = lit.toList()          // explicit slice -> List
 
 // Tuple
 val pair: (Int, String) = (1, "hello")
@@ -161,8 +165,10 @@ pub func openAccount(owner: in CustomerId): AccountId { ... }
 func identity[T](x: T): T = x
 func unwrapOr[T, E](r: Result[T, E], default: T): T = ...
 
-// Generic with where clause
+// Generic with where clause: a bound makes its operator valid in the body
+// (`Add` for `+`/`+=`, `Sub`, `Mul`, `Div`, `Mod`, `Compare` for `<`/`<=`/`>`/`>=`)
 func sum[T](xs: slice[T]): T where T: Add + Default { ... }
+func maxOf[T](a: in T, b: in T): T where T: Compare { if a > b { a } else { b } }
 
 // Dot-named (type-associated): `b.area()` or `Box.area(b)`; a primitive
 // type works too: `k.twice()` or `Int.twice(k)`
@@ -735,6 +741,12 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
 | `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
+| `@capability` / `@capability(grant = G)` | `pub interface` | A plugin capability (the plugin calls the host); a `requires:` naming `grant` is checked host-side (chapter 33) |
+| `@plugin_point(version = "M.m", contributions = K, allows(C, ...))` | `pub interface` | A plugin point (the host calls the plugin) |
+| `@protocol_point(protocol = "name/ver", ...)` | `pub interface` with no members | A point whose plugins speak an existing protocol (LSP and similar) |
+| `@plugin_handle` | `pub type H = Long` | `H` crosses a plugin boundary as a number |
+| `@plugin(id = "...", version = "...", publisher = "...", implements(P, ...))` | `pub record` | The plugin record; its `main` is generated |
+| `@plugin_contributions(P)` / `@plugin_request(C)` | function | Supplies a point's contributions / a capability's requested grant |
 | `@experimental` | `pub` item | May change without SemVer major bump |
 | `@io` | package | The package performs I/O (layer class, lang-ref §9.4) |
 | `@io` | function in a `@pure` package | The function performs I/O; packages that may not do I/O may not call it (Y0003) |
@@ -793,6 +805,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.JsonValue` | Strict RFC 8259 JSON value model, dotnet and JVM (native: #7856) | `JsonValue` (`JNull`, `JBool`, `JInt`, `JFloat`, `JString`, `JArray`, `JObject`), `JsonField`, `parseValue`, `parseValueWithDepthLimit`, `writeValue`, `writeValueIndented`, `getField`, `getString`, `getInt`, `asArray`, `JsonParseError` |
 | `Std.JsonRpc` | JSON-RPC 2.0 peer, dotnet and JVM (D204) | `RpcPeer`, `newPeer`, `newPeerWithTimeout`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, `RpcRequest`, `RpcResponse`, `RpcError`, `applicationError`, `isTimeoutError`, `isLocalError`, `parseError`, `invalidRequest`, `methodNotFound`, `invalidParams`, `internalError`, `requestTimedOut` |
 | `Std.JsonRpc.Stdio` | JSON-RPC stdio framings, dotnet and JVM (D204) | `newNdjsonTransport`, `newContentLengthTransport`, `NdjsonTransport`, `ContentLengthTransport`, `newNdjsonTransportOver`, `newContentLengthTransportOver` |
+| `Std.Plugin` | Plugin runtime: hosts on dotnet, the JVM and native, plugins on every target including wasm32-wasi (D207, chapter 33; `@experimental`) | `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `registerPlugin`, `pluginManifests`, `connectionsFor`, `contributionsFor`, `callPlugin`, `stopPlugin`, `stopAllPlugins`, `revokeCapability`, `openProtocolPlugin`, `GrantPolicy`, `GrantDecision`, `GrantedCapability`, `GrantAllRequested`, `CapabilityProvider`, `CapabilityInfo`, `PluginPointInfo`, `BoundaryError`, `CallError`, `boundaryErrorMessage`, `PluginManifest`, `PluginPayload`, `parsePluginManifest`, `readPluginManifest`, `PluginLoadIssue`, `pluginLoadIssueMessage`, `findWasmtime`, `PluginServer`, `runPlugin`, `callHost` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
 | `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this); on `--target dotnet` a pure-Lyric sans-IO engine over `System.Net.Sockets`/`SslStream` (the `HttpListener` server was retired, docs/61 §6). Over TLS it advertises `h2` then `http/1.1` via ALPN and serves **HTTP/2** end-to-end through `Std.HttpEngine.H2Conn` when the client offers it, falling back to HTTP/1.1 otherwise — same handlers, no code change (docs/61 §6.4). On `--target native` (N9.3, #6104) the same sans-IO engine runs thread-per-connection over real `pthread_create`d OS threads (native `spawn`/`scope` is not yet real concurrency); HTTP/1.1 only — a negotiated-`h2` TLS connection is closed rather than mis-parsed (N9.5 tracks native h2) — with no `startListener{,Tls}WithLimits`/backpressure cap yet | `startListener`, `startListenerTls` (real TLS + h2 on `--target dotnet`, real TLS on `--target jvm`, real TLS (no h2) on `--target native`; dotnet/native return `InvalidConfig` for a `requireClientCert`-without-`clientCa` mTLS misconfig, docs/61 §6.3), `startListenerWithLimits`/`startListenerTlsWithLimits` (dotnet only — raise the engine's request-size caps, e.g. the default 10 MiB body limit; the JVM server applies the same fixed 10 MiB cap, answering `413`), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders`, `takeConnection` (dotnet and native only: hand an HTTP/1.1 connection to another protocol after an `Upgrade` request, as `Web.addWebSocket` does; the JDK server exposes no raw connection, so on `--target jvm` a WebSocket upgrade goes through Undertow in `lyric-ws` instead), `beginChunkedResponse`/`streamWriteChunk`/`endChunkedResponse` (every target); dotnet/native handshake off the accept loop with `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS` timeouts (`resolveTlsHandshakeTimeoutMs`/`resolveConnectionIdleTimeoutMs`) |
@@ -1115,7 +1128,7 @@ lyric build --watch                    # project/single build: rebuild on source
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
-lyric test <file.l> --list             # print test titles only; do not compile or run
+lyric test <file.l> --list             # print test titles only (honours @cfg); do not compile or run
 lyric test <file.l> --fail-fast        # stop after the first file with failing tests;
                                        # print an early summary and exit 1
 lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar
@@ -1281,6 +1294,16 @@ lyric clean <dir>                      # clean a specific directory
 # Generate native FFI bindings from a C header (needs clang on PATH)
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow --library SDL3 -o sdl_kernel.l
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --check   # CI: fail if out of date
+lyric bindgen ft.h --package Ft.Kernel --allow ft.allow -o ft_windows.l \
+  --triple x86_64-pc-windows-msvc --cfg 'target_os = "windows"'                       # a Windows (LLP64) variant
+
+# Plugins (chapter 33, D207)
+lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/
+lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm -o <dir>
+                                       # one payload per target; every payload's manifest must agree
+lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
+lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
+                                       # generate a plugin SDK for an API package in another language
 
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
@@ -1333,6 +1356,7 @@ lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compati
 | `LYRIC_CLI_DLL` | unset | When the CLI is running as a `dotnet exec <dll>` invocation rather than an AppHost-native binary, the DLL path.  `Program.fs` populates from `Assembly.GetEntryAssembly`; the AOT trampoline does NOT (#1082).  Required (and must be exported by the caller) when invoking the AOT binary for any command that hits the subprocess fallback. |
 | `LYRIC_FORCE_SUBPROCESS` | `0` | When set to `1`, every `lyric build` runs through the subprocess shellout to `lyric --internal-build` even for `--target dotnet`.  Default is the in-process MSIL emit path that lands `Msil.Bridge.compileToMsil` directly without spawning a subprocess.  Used by the bootstrap reproducibility pipeline to compare in-process vs subprocess output during the Track A migration (`docs/41 §860`). |
 | `LYRIC_STD_PATH` | unset | Override the stdlib source root (`lyric-stdlib/std/`) used by the F# emitter's package-import resolver.  Mainly useful when running stage-1 / stage-2 bootstrap builds out of a non-standard layout. |
+| `LYRIC_ASYNC_THREADS` | unset (`1`) | Read by a **compiled `--target native` program**, not by the CLI.  `N >= 2` runs `async` tasks on `N` threads (`N - 1` workers plus every thread blocked in a synchronous `await`) and starts each `spawn`ed task on a worker; unset or `1` keeps the cooperative single-threaded scheduler.  Tasks that run in parallel may share mutable state only through `protected` types (D217).  Independent of `LYRIC_THREADS`, which sizes the `Std.Parallel` pool. |
 | `LYRIC_STDLIB_BIN` | unset | Override which **compiled** stdlib assemblies a build links against (the `Lyric.Stdlib.*.dll` runtime DLLs co-located beside the output by `lyric build`/`run`/`test`).  When set it takes precedence over all auto-discovery (app-base dir, `lib/`, walked-up `.bootstrap/stage1`).  Accepts either a **directory** containing the split per-package DLLs, or a path to a **specific `.dll`** (its containing directory is used) — so you can build several stdlib variants and link a chosen one explicitly.  Unlike auto-discovery, it does not require the bundled `Lyric.Stdlib.dll` to be present (a per-package self-build emits only the split assemblies). |
 
 ---
@@ -1383,8 +1407,8 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function), including a type or package-qualified path whose package is not reachable from the file's imports (add the `import` it names) — the same check covers a qualified path in TYPE position (`val c: Pkg.Sub.Type`, a parameter/field/return type, or a generic type argument) and a qualified PATTERN head (`case Pkg.Sub.Kind.A -> ...`) |
-| `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`) |
-| `T0031` | Arithmetic operands have mismatched types |
+| `T0030` | Arithmetic on a non-numeric type, or on a distinct type without the operator's `derives` marker (including a compound assignment such as `+=` without `Add`), or on a type parameter its `where` clause does not bound by the operator's marker |
+| `T0031` | Arithmetic operands have mismatched types (including an operator bounded by a marker whose operands are not the one type parameter) |
 | `T0032` | Equality operands have mismatched types |
 | `T0033` | Comparison operands must be matching ordered types |
 | `T0034` | Logical operator applied to non-Bool operand |
@@ -1447,7 +1471,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0120` | Generic fallback for an MSIL codegen failure that panicked without its own `error[T0NNN]:`-prefixed diagnostic — `Lyric.Emitter`'s bridge boundary catches every MSIL codegen panic (the same layer as the JVM target's `J008` catch-all; `Msil.Bridge` itself deliberately lets the panic escape as its library contract) so a build always ends in a printed diagnostic plus an `EmitResult.diagnostics` entry, never a raw uncaught exception with a .NET stack trace. The wrapped message names the underlying failure; treat it as a compiler-internal-error report (file an issue) unless the wrapped text itself points at a source-level mistake. |
 | `T0121` | A member access could not be resolved because the receiver's static type was erased to `object` before codegen, so the compiler cannot verify the member exists. Annotate the receiver with an explicit type (`val x: Pkg.Type = ...`) or check the member name for a typo. Raised at MSIL codegen time (`Msil.Codegen`), with the receiver's source position, like `T0119`. |
 | `T0122` | A qualified union- or enum-case pattern (`case Pkg.Kind.A -> ...`) names a qualifier that does not match the scrutinee's own union or enum |
-| `T0123` | A bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site; referencing it unqualified is an error naming every declaring package, rather than silently resolving to whichever package happened to register the name last. Two packages reached only transitively (through the whole imports of different imported packages) that both declare the name collide the same way. Fix by qualifying the reference (`Pkg.name`). Not flagged: a local declaration that shadows the ambiguous import, a name reachable through only one of the imports (no actual collision), a name reachable only transitively through another package's own whole imports when a direct import also declares it (the direct one wins), or a pattern match against a scrutinee of statically known type (which resolves the case against the scrutinee's own union/enum directly, without needing qualification). Also raised when a function reference used as a value, bare or qualified, names a package function that has overloads: a value reference cannot pick an overload, so wrap the call in a lambda with typed parameters. And when a method call `x.m(...)` (or `T.m(x, ...)`) finds no function of the type itself that takes its arguments, and two or more packages the file's imports reach equally declare an extension `T.m` (#8219): call the one meant through its package, `Pkg.T.m(x, ...)`. The code is also reported by the backends, as `unresolved call to 'f' inside generic function ...`, when a generic function of another package is specialised into this one and its body calls a function that is not `pub` there (a private non-generic helper on every target but native, a private generic one for a built dependency on `--target dotnet`): make `f` `pub`. |
+| `T0123` | A bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site; referencing it unqualified is an error naming every declaring package, rather than silently resolving to whichever package happened to register the name last. Two packages reached only transitively (through the whole imports of different imported packages) that both declare the name collide the same way. Fix by qualifying the reference (`Pkg.name`). Not flagged: a local declaration that shadows the ambiguous import, a name reachable through only one of the imports (no actual collision), a name reachable only transitively through another package's own whole imports when a direct import also declares it (the direct one wins), or a pattern match against a scrutinee of statically known type (which resolves the case against the scrutinee's own union/enum directly, without needing qualification). Also raised when a function reference used as a value, bare or qualified, names a package function that has overloads: a value reference cannot pick an overload, so wrap the call in a lambda with typed parameters. And when a method call `x.m(...)` (or `T.m(x, ...)`) finds no function of the type itself that takes its arguments, and two or more packages the file's imports reach equally declare an extension `T.m` (#8219): call the one meant through its package, `Pkg.T.m(x, ...)`. The code is also reported by the backends, as `unresolved call to 'f' inside generic function ...`, when a generic function of another package is specialised into this one and its body calls a function that is not `pub` there (a private non-generic helper on every target but native): make `f` `pub`. |
 | `T0124` | A receiver structurally matches `Std.Core.Result[T, E]` / `Option[T]`'s reserved shape (bare name + matching arity) but is a *different* type declared outside `Std.Core`, and one of the six reserved accessor names (`.isOk`/`.isErr`/`.value`/`.error`/`.isSome`/`.isNone`) was accessed on it with no real matching member of its own. `Result`/`Option`'s accessor sugar is resolved by type identity, not by name, so a same-named foreign union never receives it (#6630); define your own member under that name, or call it through `Std.Core.Result`/`Option` if that was the intent. |
 | `T0125` | A call's callee names a `union` or `enum` **type** itself (`DbError(message = …)` where `DbError` is a union), not one of its cases. A union/enum has no constructor of its own — a value is built through a case (`OpenFailed(message = …)`), so the message names the constructible cases. Fix by naming the intended case. Reported at type-check time rather than degrading to an unresolved-callee failure at code generation (#6838, D-progress-875). Not flagged: constructing an actual case, or a record/opaque type by its name (those have real constructors). |
 | `T0126` | A `for` loop iterates a value that is not iterable. Iterable: slices, arrays, the stdlib `List[T]`, `Map[K, V]`'s key/value collections, ranges, generator calls and `extern type`s (a single-type-parameter one iterates its type argument — the phantom-type-param idiom for a foreign collection). Everything else is rejected, whatever its arity: records, unions, enums, opaque, protected, distinct and interface types (`Option[T]`, #6720; `record Pair[A, B]`, #7781), primitives, tuples, function values, and the stdlib `Map[K, V]` itself — iterate `mapKeys(m)`/`mapValues(m)`/`mapEntries(m)`; a distinct type's `.value`. A `String` is rejected too — iterate `Std.String.codePoints(s)` or index with `s.codeUnitAt(i)` (D-progress-1006). These used to type the loop variable as an error, hiding every diagnostic about it in the body, and fail at runtime. |
@@ -1504,6 +1528,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `T0146` | A local `val`'s pattern cannot match every value of its initializer's type (or annotation). A local `val` destructures with no failure path, so a tuple pattern needs a tuple of the same arity at every level (`val (a, b) = 5` and `val (a, b) = (1, 2, 3)` are errors), a constructor pattern needs the sole case of a single-case union (`val Some(x) = opt` is an error), a record pattern must name the initializer's own record and only its fields (`val Point { x, y } = n` for an `Int` `n` is an error), and a literal, range, type-test, alternative or const pattern is never allowed; use a `match`. Such bindings used to compile and fail at runtime (#7778). |
 | `T0205` | `externAsObject(x)` with an operand that is not an extern type. The explicit upcast exists only for extern values; convert other values with ordinary Lyric conversions (D212). |
 | `T0206` | `externAsObject(x)` where no root object extern type (`extern type X = "java.lang.Object"` on the JVM, `"System.Object"` on .NET) is declared in the compilation, or on `--target native`, which has no host object type (D212). |
+| `T0207` | `.length` (or `.length()`) on a stdlib `List`. A `List` sizes with `.count`; only `String`, `slice[T]` and arrays have `.length`. The message names `.count` (D227, #7218). |
 | `N0103` | `externAsObject(x)` outside the extern boundary: use it in a file or function annotated `@unsafe_ffi` (D212). |
 | `T0147` | Unary minus on an unsigned operand (`Byte`, `UInt`, `ULong`) or a `Nat`, or a range over one, including a negated unsigned constant written in a range bound. No non-zero unsigned value has a negation of its own type, so `-(5u8)` used to wrap (#7854); convert a `Byte` first (`-(b.toInt())`), a `UInt` or `Nat` with `.toLong()` |
 | `T0200` | A call that fills defaults binds several declarations equally well: after the declarations it does not fit, and those whose parameter types its arguments do not satisfy, are set aside, none of the rest is one the call supplies in full, and two or more leave the same number of parameters to their defaults (the same-named methods of two `impl` blocks of one type, for example, which is also `T0139`). Name an argument only one of them declares, or supply the parameters of the one meant (D210). |
@@ -1517,6 +1542,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 |---|---|---|
 | `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
+| `W0031` | warning | A record has a `var` field but is not declared `ref record`. A record with a `var` field has identity (D157); the marker states it. Fix: write `ref record Name { ... }`. A later release makes this an error. |
 | `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
 | `W0041` | retired | Formerly: a `pub async func` exported from a `--shape component` build was a blocking WIT function. Since D184 it is a WIT `async func`, so the warning is no longer issued. |
 
@@ -1627,12 +1653,12 @@ annotations in a file are reported together.
 |---|---|
 | `X0001` | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
 | `X0002` | The named dependency's manifest does not declare `kind = "source-generator"`. |
-| `X0003` | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
+| `X0003` | The generator package declares no `@plugin` record implementing `Lyric.GeneratorSdk.SourceGenerator`. |
 | `X0004` | The generator returned code that does not parse; the message gives the line within the generated code. |
 | `X0005` | The generator reported a diagnostic, shown with its own code. An `Error` fails the build; a `Warning` or `Info` is printed as `warning[X0005]` or `note[X0005]`. |
 | `X0006` | A source-generator package is imported; it can only be used through `@generate`. |
 | `X0008` | The generator is not declared in `[dependencies]`. |
-| `X0009` | The generator could not be built or run: its build failed, it exited non-zero, wrote no or malformed JSON, ran longer than 60 seconds, or is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
+| `X0009` | The generator could not be built or run: its build failed, its manifest probe failed or does not implement `SourceGenerator`, the call failed at the plugin boundary (a crash, malformed reply, or longer than 60 seconds), it refused the request with a `GeneratorError`, or it is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
 
 The first-party UI generators (D151) report their own codes under `X0005`:
 
@@ -1650,6 +1676,28 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `RT004` | A field type a path segment cannot hold; name the segment's type, as in `{id:Long}`. |
 | `RT005` | Two cases with the same path shape. |
 | `RT006` | A generic union. |
+
+### Plugins (K-series)
+
+Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
+
+| Code | Meaning |
+|---|---|
+| `K0000` | Internal error: the plugin pass generated code that does not parse (please report it). |
+| `K0001` | A point, capability, grant, contributions or handle type mentions a type that cannot cross a plugin boundary, or a method has an `out`/`inout` parameter. |
+| `K0002` | `allows(...)` names an interface that is not a `@capability`. |
+| `K0003` | A plugin requests a capability that none of its points allows. |
+| `K0004` | A point or capability method does not return `Result[T, E]`, is generic, or the interface declares an associated type. |
+| `K0005` | A plugin annotation on the wrong item (`@plugin_point`/`@capability`/`@protocol_point` not on a `pub interface`, `@plugin_handle` not on `pub type H = Long`, `@plugin` not on a non-generic `pub record`). |
+| `K0006` | A malformed plugin annotation: a missing or badly formed `version` or `id`, an empty `protocol`, an unknown or misshapen argument, or a repeated annotation. |
+| `K0007` | A capability guard (`requires:` naming `grant`) uses something other than `grant`, the method's parameters and function calls, or the capability has no grant type. |
+| `K0008` | `implements(...)` names no plugin point, a listed point has no `impl`, or the record implements a point it does not list. |
+| `K0009` | A missing, duplicated or wrongly typed `@plugin_contributions` / `@plugin_request` function. |
+| `K0010` | A plugin record field without a default that is not a capability client. |
+| `K0011` | A `@protocol_point` interface with members. |
+| `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records. |
+
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

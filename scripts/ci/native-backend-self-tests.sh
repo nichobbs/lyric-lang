@@ -39,7 +39,7 @@ printf 'DPkg::Lock::Timeout "900";\n' | sudo tee /etc/apt/apt.conf.d/99lyric-ci-
 # the rest of this job relies on (#4975).
 echo 'int main(void){return 0;}' > "$TMPDIR/asan_preflight.c"
 if ! clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight" 2>/dev/null; then
-  sudo apt-get update -qq && sudo apt-get install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq && sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
   clang -fsanitize=address "$TMPDIR/asan_preflight.c" -o "$TMPDIR/asan_preflight"
 fi
 make -C lyric-rt test
@@ -68,6 +68,7 @@ for t in \
   lyric-compiler/lyric/llvm_self_test_n3.l \
   lyric-compiler/lyric/llvm_self_test_n34.l \
   lyric-compiler/lyric/llvm_self_test_async.l \
+  lyric-compiler/lyric/llvm_self_test_async_mt.l \
   lyric-compiler/lyric/llvm_self_test_defer.l \
   lyric-compiler/lyric/llvm_opaque_self_test.l \
   lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l \
@@ -104,6 +105,7 @@ for t in \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_receivers_self_test.l \
   lyric-compiler/lyric/dot_named_primitive_self_test.l \
   lyric-compiler/lyric/type_qualified_method_self_test.l \
   lyric-compiler/lyric/protected_byref_self_test.l \
@@ -133,6 +135,7 @@ for t in \
   lyric-compiler/lyric/covariant_conversion_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
+  lyric-compiler/lyric/expected_type_inference_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
   lyric-compiler/lyric/generic_opaque_self_test.l \
@@ -142,7 +145,9 @@ for t in \
   lyric-compiler/lyric/byte_native_self_test.l \
   lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
   lyric-compiler/lyric/native_enum_pattern_scrutinee_self_test.l \
-  lyric-compiler/lyric/extern_cbinding_self_test.l ; do
+  lyric-compiler/lyric/extern_cbinding_self_test.l \
+  lyric-compiler/lyric/native_stdlib_impl_upcast_self_test.l \
+  lyric-compiler/lyric/generic_arg_collection_ctor_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
@@ -170,18 +175,26 @@ for t in \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/char_native_tests.l \
+  lyric-stdlib/tests/path_tests.l \
+  lyric-stdlib/tests/plugin_manifest_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
   lyric-stdlib/tests/json_value_tests.l \
+  lyric-stdlib/tests/annotation_meta_native_tests.l \
   lyric-stdlib/tests/linalg_tests.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
+# D207: a native Std.Plugin host driving a native and a dotnet plugin process.
+bash scripts/ci/plugin-e2e.sh "$lyric_bin" native native
+bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/text-examples-e2e.sh
 # docs/67 G8: Std.Parallel and the lyric-rt worker pool (ThreadSanitizer, scaling).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/parallel-e2e.sh
+# docs/67 G8 (D217): the multi-threaded coroutine scheduler (unit tests, ThreadSanitizer, AddressSanitizer).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/async-mt-e2e.sh
 # docs/67 G6: lyric-draw on lyric-gpu and lyric-text (a golden scene and a text-heavy frame on lavapipe).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/draw-examples-e2e.sh
 # docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.
@@ -189,8 +202,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh
 # docs/67 G4 + G5: lyric-window on SDL3 and lyric-gpu's surface.  SDL3 is built once from the pinned
 # release tarball with its X11 driver (the headless offscreen/dummy/disk drivers stay available);
 # the window demo runs headless, the surface example on an Xvfb display with lavapipe.
-command -v cmake >/dev/null || sudo apt-get install -y -qq cmake
-sudo apt-get install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
+command -v cmake >/dev/null || sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq cmake
+sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
   libxrender-dev libxtst-dev xvfb x11-apps imagemagick xdotool
 sdl3_prefix="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sdl3"
 bash scripts/ci/build-sdl3.sh --x11 "$sdl3_prefix"

@@ -180,7 +180,7 @@ func sine(x: Float): Float {
 }
 
 /// One playing sound.
-pub record Voice {
+pub ref record Voice {
   id: Int
   sound: Sound
   gain: Float
@@ -189,7 +189,7 @@ pub record Voice {
 }
 
 /// The mixer: voices playing into interleaved stereo at `frequency`.
-pub record Mixer {
+pub ref record Mixer {
   frequency: Int
   var master: Float
   var voices: List[Voice]

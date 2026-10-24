@@ -5,7 +5,10 @@ and run by the compiler, X-series diagnostics) is implemented in D150; the
 diagnostics were renamed from G to X there, keeping their numbers. Request schema 2
 (annotations, cases, invariants, same-file declarations; §3.4) is implemented in D151,
 with two first-party generators built on it: `Forms.Derive` and `Ui.Routes`
-(docs/65 §11.6, §6.1).
+(docs/65 §11.6, §6.1). Since D207 a generator is a plugin: a `@plugin` record
+implementing the `SourceGenerator` plugin point (version 3.0) of `Lyric.GeneratorSdk`,
+run by the compiler as a docs/69 plugin host over the D207 wire protocol (§3.2, §4.2).
+Q-SG-001 and Q-SG-003 are resolved by D207; Q-SG-004 and Q-SG-005 stay open.
 
 This document defines the custom source generator API, the `@generate` annotation
 form that replaces `@derive`, the `Lyric.GeneratorSdk` contract, and the
@@ -97,25 +100,51 @@ version = "0.1.0"
 kind = "source-generator"
 
 [dependencies]
-"Lyric.GeneratorSdk" = ">=1.0.0"
+"Lyric.GeneratorSdk" = { path = "../lyric-generator-sdk" }
 ```
 
-`lyric publish` enforces that packages with `kind = "source-generator"` export a
-function matching the generator entry-point signature (§3.2). Packages without this
-kind declaration are rejected as generator arguments at X0002.
+A package with `kind = "source-generator"` must declare a `@plugin` record that
+implements `SourceGenerator` (§3.2); the compiler checks this before building it
+(X0003). Packages without this kind declaration are rejected as generator
+arguments at X0002.
 
-### 3.2 Entry point
+### 3.2 Entry point: a `SourceGenerator` plugin
 
-Every generator package must export exactly one function with this signature:
+`Lyric.GeneratorSdk` is the API package of the `SourceGenerator` plugin point
+(docs/69, D207). A generator package declares one `@plugin` record that
+implements it:
 
 ```lyric
 import Lyric.GeneratorSdk
 
-pub func generate(req: GeneratorRequest): GeneratorResponse { ... }
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
+
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] { ... }
+}
 ```
 
-The name `generate` is fixed; the compiler locates it by name and signature. A
-missing or mismatched entry point is diagnosed at build time (X0003).
+`Lyric.PluginExpand` generates the package's `main` (a generator package declares
+no `main` of its own, K0012), the manifest it prints for
+`--lyric-plugin-manifest`, the dispatcher for `generate`, and the codecs for every
+request and response type. A problem with the annotated type belongs in the
+response's `diagnostics`; `Err(GeneratorError)` is for a request the generator
+cannot handle at all, and the compiler reports it as X0009.
+
+A generator that reads project files adds a `ProjectReadClient` field (or an
+`Option[ProjectReadClient]` field, to make it optional) and a
+`@plugin_request(ProjectRead)` function returning the roots it wants:
+
+```lyric
+@plugin(id = "acme.schemas", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record SchemaPlugin {
+  files: ProjectReadClient
+}
+
+@plugin_request(ProjectRead)
+func schemaRoots(): ProjectReadGrant = ProjectReadGrant(roots = ["schemas"])
+```
 
 ### 3.3 `Lyric.GeneratorSdk` types
 
@@ -244,6 +273,31 @@ record GeneratorResponse {
     additionalImports: slice[String]  // e.g. ["import Std.Json"]
     diagnostics: slice[GeneratorDiagnostic]
 }
+
+// Why a generator refused a request outright.
+record GeneratorError {
+    message: String
+}
+
+// The project-relative directories a generator may read; "." is the whole project.
+exposed record ProjectReadGrant {
+    roots: List[String]
+}
+
+// The guard of ProjectRead.readText: a relative path with no empty, "." or ".."
+// segment, no backslash or colon, inside one of the roots.
+pub func projectPathWithin(path: in String, roots: in List[String]): Bool
+
+@capability(grant = ProjectReadGrant)
+interface ProjectRead {
+    func readText(path: in String): Result[String, String]
+        requires: projectPathWithin(path, grant.roots)
+}
+
+@plugin_point(version = "3.0", allows(ProjectRead))
+interface SourceGenerator {
+    func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]
+}
 ```
 
 `lyricSource` must contain only complete, parseable Lyric items (function declarations,
@@ -252,10 +306,14 @@ resulting items into the file before type checking. A parse error in `lyricSourc
 produces diagnostic X0004 at the `@generate` annotation, naming the generator and the
 line within the generated code.
 
-### 3.4 Request schema versions
+### 3.4 Request versions
 
-The request carries `schemaVersion`. Schema 2 (D151) is a superset of
-schema 1:
+Until D207 the request carried a `schemaVersion`. It is gone: the request is
+versioned with the `SourceGenerator` point (version 3.0; schemas 1 and 2 were the
+two stdin/stdout protocol versions before it). A generator built against `3.x`
+runs under a compiler offering `3.y`; a different major version is refused when
+the generator is loaded (X0009). The request includes everything schema 2 (D151)
+added to schema 1:
 
 - annotations on the type, its fields and its cases, with each argument's
   source text;
@@ -265,8 +323,7 @@ schema 1:
 - the `Opaque` and `Enum` kinds;
 - `declarations`.
 
-The compiler always sends schema 2, and the SDK's `parseRequest` accepts 1
-or 2. `declarations` lists the enum, distinct and alias declarations in the
+`declarations` lists the enum, distinct and alias declarations in the
 same file that the annotated type's source names. With it a generator can
 read an enum field's cases or a range type's bounds; the preprocessor runs
 on one file before type checking, so nothing outside the file is
@@ -287,7 +344,7 @@ hoistInlineMethods
   → Wire.synthesizeItems
   → Generate.synthesizeItems          ← replaces JsonDerive.synthesizeItems
       ├── built-in: Json, Sql, Proto, Equals (inline, no subprocess)
-      └── custom: subprocess bridge per generator package
+      └── custom: SourceGenerator plugins (one process per generator per build)
 ```
 
 `Generate.synthesizeItems` handles all `@generate(...)` annotations in one pass,
@@ -303,17 +360,28 @@ No new F# shim is needed. The steps are:
 1. Resolve the generator package: a `path = "..."` or `{ workspace = true }`
    dependency whose manifest declares `kind = "source-generator"`. Registry
    and git generators are not supported yet (X0009).
-2. Check it declares `generate` and `main` (X0003), and build it for dotnet
+2. Check it declares a `@plugin` record (X0003), and build it for dotnet
    with the normal dependency build, which skips an up-to-date build. Its own
    `path` and `workspace = true` dependencies (such as `Lyric.GeneratorSdk`)
    are built first, bottom-up, and a dependency rebuilt since the generator
    was built makes the generator stale. A
    generator always runs on the build host, so it is built for dotnet whatever
    the consumer's `--target` (D150).
-3. Invoke the built DLL as `dotnet exec <dll>`: serialise the
-   `GeneratorRequest` to JSON on stdin; read the `GeneratorResponse` JSON from
-   stdout. A non-zero exit, an empty or malformed response, or a run longer
-   than 60 s is X0009.
+3. Load it as a plugin. The compiler is a `Std.Plugin` host offering the
+   `SourceGenerator` point (3.0) and the `ProjectRead` capability. On the first
+   `@generate` naming the generator it runs `dotnet exec <dll>
+   --lyric-plugin-manifest`, checks that the manifest implements
+   `Lyric.GeneratorSdk.SourceGenerator`, and registers it with a `dotnet exec`
+   payload. The grant policy grants exactly the capabilities the generator
+   requests: the compiler only runs generators the manifest declares (X0008),
+   and `ProjectRead` cannot reach outside the consuming project's directory.
+   The process starts on the first call and serves every annotated type of the
+   build; the compiler stops it when the build ends. Each annotation is one
+   `Lyric.GeneratorSdk.SourceGenerator/generate` call with params
+   `{"req": <GeneratorRequest>}` (`lyric-generator-sdk/PROTOCOL.md`). A failed
+   manifest probe, a manifest that does not implement the point, an
+   `Err(GeneratorError)`, a malformed response, a crash or a call longer than
+   60 s is X0009; a crashed generator is not restarted.
 4. Report every diagnostic the generator returned under X0005, with its own
    code: an `Error` fails the build, a `Warning` or `Info` is printed.
 5. Check the returned `lyricSource` parses (X0004), then append it to the source
@@ -328,12 +396,8 @@ observes the `@generate(Pkg.Name)` annotation directly.
 
 One `generate` call is made **per annotated type per generator**. If three records in
 the same file carry `@generate(Proto.Derive)`, the generator is called three times
-(once per type). The generator package is loaded once per build session (step 2 above
-is cached).
-
-Batched invocation (one call per generator per file, receiving all types at once) is
-tracked as Q-SG-001 and may be introduced in a later phase without changing the
-`GeneratorRequest`/`GeneratorResponse` contract.
+(once per type), on one process: a generator is built once and started once per build.
+Batching is not offered (Q-SG-001).
 
 ### 4.4 AOT safety guarantee
 
@@ -402,27 +466,43 @@ attributed to the generator itself (X0004).
 A minimal generator that adds a `describe()` method:
 
 ```lyric
+package Acme.Describe
+
+import Std.Core
+import Std.Collections
 import Lyric.GeneratorSdk
 
-pub func generate(req: GeneratorRequest): GeneratorResponse {
-    val typeName = req.typeDescriptor.name
-    val fieldList = req.typeDescriptor.fields
-        |> map(func(f): String = "\"" + f.name + "\": " + f.fieldType.name)
-        |> String.join(", ")
-    val body = "\"" + typeName + " { " + fieldList + " }\""
-    val src = "pub func " + typeName + ".describe(self): String = " + body + "\n"
-    return GeneratorResponse {
-        lyricSource = src
-        additionalImports = []
-        diagnostics = []
+pub func generateSource(req: in GeneratorRequest): GeneratorResponse {
+  val td = req.typeDescriptor
+  var fields = ""
+  var i = 0
+  while i < td.fields.length {
+    if i > 0 {
+      fields = fields + ", "
     }
+    fields = fields + td.fields[i].name + ": " + td.fields[i].fieldType.name
+    i += 1
+  }
+  val src = "pub func " + td.name + ".describe(v: in " + td.name + "): String {\n  \"" + td.name + " { " + fields +
+    " }\"\n}\n"
+  val none: List[String] = newList()
+  val diags: List[GeneratorDiagnostic] = newList()
+  GeneratorResponse(lyricSource = src, additionalImports = none.toArray(), diagnostics = diags.toArray())
 }
 
-pub func main(): Int { runGenerator(generate) }
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
+
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
+}
 ```
 
-Published to NuGet as a package with `kind = "source-generator"` in its `lyric.toml`.
-Consumers add it as a regular dependency and annotate types with `@generate(Acme.Describe)`.
+The full example, which also warns on unions and interfaces, is
+`examples/generators/describe/`. Consumers add it as a `path` or `workspace = true`
+dependency and annotate types with `@generate(Acme.Describe)`.
 
 ---
 
@@ -440,14 +520,20 @@ What is enforced today:
   full compiler pipeline. A generator cannot inject AOT-unsafe code that would pass
   the compiler's checks, use `@externTarget` outside the kernel boundary, or produce
   ill-typed functions without triggering a build error.
+- **Declared file access.** The one capability the compiler offers, `ProjectRead`,
+  reads only files under the roots the generator requested, relative to the
+  consuming project's directory; a path that is absolute, contains `.` or `..`
+  segments, a backslash or a colon, or lies outside the roots is denied before the
+  read (`Denied`, JSON-RPC error -32040).
 
 What is **not** enforced (tracked as Q-SG-005):
 
-- **Runtime sandbox.** A generator is compiled Lyric code; it can import `Std.File`,
-  `Std.Http`, or other stdlib modules at build time. The opt-in prevents unexpected
-  execution, but does not restrict what an explicitly declared generator may do while
-  running. Generator sandboxing — restricting imports to `Lyric.GeneratorSdk` and
-  `Std.Core`, enforced at `lyric publish` time — is deferred to a future phase.
+- **Runtime sandbox.** A generator runs as a `dotnet` process (D207: generator
+  packages are built for dotnet by the compiler, and no wasm payload is built for
+  them). It is compiled Lyric code and can import `Std.File`, `Std.Http` or other
+  stdlib modules, so `ProjectRead` is the route a well-behaved generator uses, not
+  a boundary a hostile one cannot cross. Running generators as wasm payloads, where
+  `ProjectRead` would be the only I/O (docs/69 §9.2), is the planned answer.
 
 ---
 
@@ -459,13 +545,14 @@ What is **not** enforced (tracked as Q-SG-005):
 lyric-generator-sdk/
   lyric.toml         [package] name = "Lyric.GeneratorSdk"
   src/
-    generator_sdk.l  — the descriptor types, request/response JSON, runGenerator
+    generator_sdk.l  - the descriptor and response types, SourceGenerator, ProjectRead
   tests/
     generator_sdk_tests.l
-  PROTOCOL.md        — the stdin/stdout JSON protocol
+  PROTOCOL.md        - the JSON-RPC exchange and the request and response JSON
 ```
 
-The SDK is pure Lyric over `Std.*`; it has no kernel file. A generator depends on
+The SDK is pure Lyric over `Std.*`; it has no kernel file and no hand-written
+protocol code (`Lyric.PluginExpand` generates the codecs). A generator depends on
 it by path or as a workspace member. `examples/generators/` holds a working
 generator (`Acme.Describe`) and a consumer that CI builds and runs on dotnet and
 JVM (`scripts/ci/source-generator-e2e.sh`).
@@ -484,6 +571,7 @@ JVM (`scripts/ci/source-generator-e2e.sh`).
 | P2 | Diagnostics X0004–X0006 (parse error, error-severity diagnostic, import restriction) |
 | P2 | `lyric.toml` `kind = "source-generator"` enforcement in `Manifest.fs` |
 | P2 | Diagnostic X0008 (`@generate(Pkg.Name)` references a package not declared in `[dependencies]`) — supply-chain guard so a generator can't run unless the manifest opted into it. |
+| P2 | Generators as `SourceGenerator` plugins (docs/69 §15, D207): `Lyric.GeneratorSdk` is the point's API package, the compiler is a `Std.Plugin` host, the `ProjectRead` capability |
 | P3 | `@generate(Sql)` built-in |
 | P3 | `@generate(Proto)` built-in (backed by `lyric-proto`) |
 
@@ -496,7 +584,11 @@ P3 expands the built-in set.
 
 ### Q-SG-001: Per-type vs per-file invocation
 
-**Status:** Open.
+**Status:** Resolved (D207). Per-type stays. A generator is now a plugin whose one
+process serves every annotated type of a build, so a call per type is a request on an
+open connection, not a process start, and the cost batching was meant to save is gone.
+No `generateBatch` method is added; a minor version of `SourceGenerator` could add one
+later without breaking existing generators.
 
 **Question:** Should `generate` be called once per annotated type (current spec) or
 once per generator per file (batched)?
@@ -535,7 +627,12 @@ patterns emerge.
 
 ### Q-SG-003: Generator versioning and the compiler API
 
-**Status:** Open.
+**Status:** Resolved (D207). The request and response are versioned with the
+`SourceGenerator` plugin point (3.0). The plugin handshake reports the point version a
+generator was built against; a generator built against another major version is refused
+at load (X0009, the docs/69 `K0103` case), a minor version may add methods (a generator
+that does not implement one answers `Unsupported`), and the decoders ignore unknown JSON
+members. X0007 is not used. The recommendation below was the pre-D207 plan.
 
 **Question:** When the `Lyric.GeneratorSdk` types change in a future compiler release,
 how are generators that were compiled against an older SDK handled?
@@ -551,7 +648,8 @@ SDK version.
 
 ### Q-SG-004: IDE / LSP integration
 
-**Status:** Open.
+**Status:** Open. The language server does not run generators (or `Lyric.PluginExpand`)
+yet; the plugin form gives it a long-lived process to call.
 
 **Question:** Should the LSP server run generators eagerly (so autocompletion shows
 generated members) or lazily (only on explicit build)?
@@ -566,7 +664,9 @@ by the LSP plan (`docs/16-lsp-vscode-plan.md`) as a follow-up to basic symbol re
 
 ### Q-SG-005: Generator runtime sandboxing
 
-**Status:** Open.
+**Status:** Open. D207 adds the `ProjectRead` capability, but generators still run as
+`dotnet` processes with ambient I/O (§7). The direction is a wasm payload for
+generators (docs/69 §9.2), where the granted capabilities are the only I/O.
 
 **Question:** Should generator packages be restricted to a subset of the stdlib at
 `lyric publish` time, preventing them from accessing the filesystem, network, or
@@ -591,10 +691,7 @@ added to the `lyric publish` validation pass without breaking existing generator
 
 ### Related: plugin points (docs/69)
 
-`docs/69-plugins.md` proposes a general plugin architecture and uses generators
-as its first plugin point (§15 there). It would replace the fixed `generate`
-entry point and the hand-written stdin/stdout protocol with a `SourceGenerator`
-plugin point, keep one generator process alive for a whole build (which removes
-the cost behind Q-SG-001 and gives Q-SG-004 a long-lived process to call), and
-answer Q-SG-005 with a WebAssembly payload that has no I/O except the
-capabilities the compiler grants.
+Generators are the first plugin point of `docs/69-plugins.md` (§15 there, D207). The
+fixed `generate` entry point and the hand-written stdin/stdout protocol are replaced by
+the `SourceGenerator` point, one generator process lives for a whole build (Q-SG-001),
+and a wasm payload remains the planned answer to Q-SG-005.

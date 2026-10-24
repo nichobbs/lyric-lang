@@ -32,6 +32,10 @@
 #               provider feature active (`smtp,ses,sendgrid`) so the
 #               `NOT_IMPLEMENTED` provider paths are honestly asserted on
 #               `jvm` too (#7483)
+#   mq          `Mq.messageFromJson` and the Idempotent/DeadLetter aspect
+#               weaving over the in-process queue; an `[]` arm beside a
+#               slice-typed arm of a `match` once failed class verification
+#               (#7541)
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -54,7 +58,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 
@@ -70,8 +74,8 @@ run_suite() {
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared
   # behind their own `[features]` flags, off by default under
   # `--no-default-features`; activate all three so the suite exercises
-  # (and honestly asserts the `NOT_IMPLEMENTED` status of) every provider
-  # on this target, matching its `dotnet` default feature set.
+  # every provider on this target, matching its `dotnet` default feature
+  # set.
   local features="jvm"
   if [ "$lib" = "mail" ]; then
     features="jvm,smtp,ses,sendgrid"

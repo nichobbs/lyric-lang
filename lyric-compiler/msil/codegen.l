@@ -11050,6 +11050,46 @@ func emitErasedCollRecvCastMsil(cctx: in CodegenCtx, insns: in List[MInsn], recv
   }
 }
 
+// `recv.add(a, b)` on a receiver already on the stack as `object`: `List`.Insert
+// when it is the erased `List<object>` (`a` the index), else the erased
+// `Dictionary<object, object>` entry.  Both arguments are evaluated once, in
+// order, and boxed, as both erased forms store them.
+func lowerErasedTwoArgAddMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], args: in List[CallArg]
+): MsilType {
+  val n = toString(fctx.slotTicker.count)
+  val recvSlot = allocSlotMsil(fctx, "__eadd_r_" + n, MObject)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  val firstTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+  boxIfNeededMsil(cctx, insns, firstTy)
+  val firstSlot = allocSlotMsil(fctx, "__eadd_a_" + n, MObject)
+  emitStoreSlot(insns, firstSlot, fctx.paramCount)
+  val secondTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
+  boxIfNeededMsil(cctx, insns, secondTy)
+  val secondSlot = allocSlotMsil(fctx, "__eadd_b_" + n, MObject)
+  emitStoreSlot(insns, secondSlot, fctx.paramCount)
+  val dictL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MIsinst(typeToken = cctx.tokListObjTypeSpec))
+  insns.add(MBrFalse(label = dictL))
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  emitLoadSlot(insns, firstSlot, fctx.paramCount)
+  insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
+  emitLoadSlot(insns, secondSlot, fctx.paramCount)
+  insns.add(MListOp(op = LoInsert, elemTy = MObject))
+  insns.add(MBr(label = doneL))
+  insns.add(MLabel(id = dictL))
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+  emitLoadSlot(insns, firstSlot, fctx.paramCount)
+  emitLoadSlot(insns, secondSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
+  insns.add(MLabel(id = doneL))
+  MVoid
+}
+
 func emitListAdd(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoAdd, elemTy = e))
@@ -12262,7 +12302,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 if not fctx.slots.containsKey(extQual) and not fctx.hoistedCellSlot.containsKey(extQual) and not fctx.captureNameToIndex.containsKey(extQual) and not hasLyricTypeCandidateInScope(cctx, fctx.pkgName, extQual) {
                   match mapGet(cctx.externTypeNames, extQual) {
                     case Some(extFqn) -> {
-                      match tryExternStaticMemberReadMsil(cctx, insns, extFqn, memberName) {
+                      match tryExternStaticMemberReadMsil(cctx, fctx, insns, extFqn, memberName) {
                         case Some(extTy) -> return extTy
                         // #6449: a user-reachable resolution failure (typo, or a real
                         // method/overload the auto-FFI static-property/const/field probes
@@ -13256,7 +13296,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> MObject
           }
         }
-        case None -> {
+        case None -> if fctx.slots.containsKey("self") {
+          // A dot-named function's `self` is an ordinary parameter, read like
+          // one: in an async state machine it lives in a field, and slot 0 is
+          // the machine itself (#8253).
+          val selfSegs: List[String] = newList()
+          selfSegs.add("self")
+          lowerExprMsil(
+            cctx,
+            fctx,
+            insns,
+            Expr(kind = EPath(path = ModulePath(segments = selfSegs, span = expr.span)), span = expr.span)
+          )
+        } else {
           insns.add(MLdarg(slot = 0))
           // In a UFCS method (`func Outer.rd(self: in Outer)`) `self` is slot 0
           // and its type is registered in fctx.types["self"] by lowerFuncMsil's
@@ -13386,7 +13438,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // #6119: `self` is never in `fctx.types` (see `ESelf`'s own
               // fallback) — its captured field type is the receiver's
               // concrete class instead.
-              if cn == "self" {
+              if cn == "self" and not fctx.slots.containsKey("self") {
                 // A generic receiver (`Box[T]`'s `self`) is its open
                 // instantiation, which a hosted lambda's closure class names
                 // with its own parameters (#8284).
@@ -13644,7 +13696,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                     }
-                  } else if capName == "self" {
+                  } else if capName == "self" and not fctx.slots.containsKey("self") {
                     // #6119: `self` has no `fctx.slots` entry (it's the
                     // implicit `this`) — load it exactly as `ESelf`'s own
                     // non-captured fallback does, since we are still lowering
@@ -16697,11 +16749,15 @@ func unboxObjectArmsMsil(
 //   2. A candidate in one of the packages imported by the current package
 //      (first import wins, matching the type-checker's shadowing rule).
 //   3. First candidate (original first-wins fallback for unresolvable cases).
+//
+// "The current package" is the one the code was written in: for a generic
+// function specialised into a consumer it is `fctx.originPkg`, so a bare case
+// name resolves against the declaring package's scope, not the consumer's.
 func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String]): String {
   if candidates.count == 1 {
     return candidates[0]
   }
-  val currentPkg = fctx.pkgName
+  val currentPkg = if fctx.originPkg.length > 0 { fctx.originPkg } else { fctx.pkgName }
   val prefix1 = currentPkg + "."
   var i = 0
   while i < candidates.count {
@@ -16910,9 +16966,10 @@ func pickCaseFqnByQualifier(
     // A bare union name (`Shape.Square`) names the union the file sees bare:
     // its own package's, then its imports' in the checker's order.
     val unionName = lastDottedSegmentMsil(qualifier)
+    val scopePkg = if fctx.originPkg.length > 0 { fctx.originPkg } else { fctx.pkgName }
     val scopeOrder: List[String] = newList()
-    scopeOrder.add(fctx.pkgName)
-    for imp in bareImportListForNameMsil(cctx, fctx.pkgName, unionName) {
+    scopeOrder.add(scopePkg)
+    for imp in bareImportListForNameMsil(cctx, scopePkg, unionName) {
       scopeOrder.add(imp)
     }
     var tier = 0
@@ -18994,6 +19051,48 @@ func lowerValueExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MI
     }
     case _ -> t
   }
+}
+
+// Lower one call argument for a parameter whose MSIL type is `pTy`, with the
+// parameter's type arguments as the construction context, so a bare `None`,
+// `Ok(..)` or `newMap()` argument is built at the parameter's instantiation
+// rather than erased to `object`.  The enclosing hint is replaced for the
+// argument and restored after it, so a context for a different type never
+// leaks in.  A non-generic parameter lowers the argument as written.
+func lowerCallArgForParamMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  arg: in CallArg,
+  pTy: in MsilType,
+): MsilType {
+  val pArgs: List[MsilType] = match pTy {
+    case MGenericInst(_, _, a) -> a
+    case MGenericInstByName(_, a) -> a
+    case MConcreteMap(k, v) -> [k, v]
+    case _ -> newList()
+  }
+  if pArgs.count == 0 {
+    pushCollExpect(fctx, pTy)
+    val plainTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+    popCollExpect(fctx)
+    return plainTy
+  }
+  val saved: List[MsilType] = newList()
+  for h in fctx.contextHintTyArgs {
+    saved.add(h)
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  for a in pArgs {
+    fctx.contextHintTyArgs.add(a)
+  }
+  pushCollExpect(fctx, pTy)
+  val argTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+  popCollExpect(fctx)
+  restoreHintTyArgs(fctx, saved)
+  argTy
 }
 
 // The underlying expression of a call argument (positional or named).  Used by
@@ -22718,7 +22817,17 @@ func lowerMethodCallMsil(
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, recCtorPath, args)
     }
   }
+  // A bracket literal receiver is a slice whatever the call's own result is
+  // expected to be: `count([s].toList())` converts the slice, it does not
+  // build the `List` the parameter wants (#7908).
+  val recvIsListLiteral = match stripExprParens(recv).kind { case EList(_) -> true; case _ -> false }
+  if recvIsListLiteral {
+    pushCollExpect(fctx, MObject)
+  }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+  if recvIsListLiteral {
+    popCollExpect(fctx)
+  }
   // `o.isNone()` is `isNone(o)`, a generic Std.Core function that is never
   // emitted as a method: lower it to the same case test as the field form
   // `o.isNone`.
@@ -22946,7 +23055,11 @@ func lowerMethodCallMsil(
               while i < dargs.count {
                 // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
                 val paramIsValue = if (i + 1) < funcParamList.count { isValueType(funcParamList[i + 1]) } else { false }
-                val aTy = lowerCallArgMsil(cctx, fctx, insns, dargs[i])
+                val aTy = if (i + 1) < funcParamList.count {
+                  lowerCallArgForParamMsil(cctx, fctx, insns, dargs[i], funcParamList[i + 1])
+                } else {
+                  lowerCallArgMsil(cctx, fctx, insns, dargs[i])
+                }
                 if (i + 1) < funcParamList.count {
                   coerceObjectToSlotMsil(cctx, insns, aTy, funcParamList[i + 1])
                 }
@@ -23017,9 +23130,7 @@ func lowerMethodCallMsil(
               byrefPendingG
             )
           } else {
-            pushCollExpect(fctx, openParamTy)
-            val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
-            popCollExpect(fctx)
+            val aTyG = lowerCallArgForParamMsil(cctx, fctx, insns, gargs[gi], substituteTypeVarsMsil(openParamTy, typeArgs))
             // An `object` argument (a closure result whose type the checker
             // left unknown, #7671) is converted to this instantiation's
             // parameter type.
@@ -23083,6 +23194,12 @@ func lowerMethodCallMsil(
     // two-argument form is told apart by the receiver, never by the arity:
     // only a receiver not known to be a list is a map.
     val isListInsert = args.count == 2 and isListRecvMsil(recvTy)
+    // A receiver known only as `object` (a `List` of tuples, whose element
+    // type is erased) is a list or a map, which the two-argument form cannot
+    // tell apart statically: test it at run time (#8092).
+    if args.count == 2 and (match recvTy { case MObject -> true; case _ -> false }) {
+      return lowerErasedTwoArgAddMsil(cctx, fctx, insns, args)
+    }
     //
     // Propagate the receiver's element generic-type args as a construction
     // hint so a bare `xs.add(None)` on a `List[Option[String]]` builds
@@ -23239,7 +23356,19 @@ func lowerMethodCallMsil(
         i = i + 1
         continue
       }
-      val elemAddTy = if i == elemArgIdx { addElemTy } else { None }
+      // The value of `Map[K, V].add(key, value)` is built at `V`, so a nested
+      // `newMap()` / `newList()` is the concrete collection the entry holds
+      // (#8274).
+      val elemAddTy = if i == elemArgIdx and not (args.count == 2 and not isListInsert) {
+        addElemTy
+      } else if args.count == 2 and not isListInsert and i == 1 {
+        match recvTy {
+          case MConcreteMap(_, v) -> Some(value = v)
+          case _ -> None
+        }
+      } else {
+        None
+      }
       match elemAddTy {
         case Some(e) -> pushCollExpect(fctx, e)
         case None -> ()
@@ -31310,7 +31439,14 @@ func inferCallReturnTypePB(
     case EBlock(blkE) -> pbBlockTailTypePB(cctx, pkgName, blkE, spawnNms, spawnTys, localNms, localTys)
     case ECall(callee, args) -> {
       match callee.kind {
-        case EPath(path) -> resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
+        case EPath(path) -> {
+          val freeTy = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
+          if freeTy == MObject and path.segments.count == 1 {
+            pbRecordCtorTypePB(cctx, pkgName, path.segments[0])
+          } else {
+            freeTy
+          }
+        }
         // `TypeName.method(recv, args)` parses as
         // ECall(EMember(EPath(["TypeName"]), "method"), args) — the parser
         // builds left-to-right postfix so the `.method` becomes an EMember
@@ -31334,6 +31470,10 @@ func inferCallReturnTypePB(
               val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
               val candidates: List[String] = newList()
               candidates.add(joinedPath)
+              // A dot-named function of this package called through its type
+              // (`Acc.aGet(a, 3)`) is registered under the package-qualified
+              // name, which emission resolves too (#8253).
+              candidates.add(pkgName + "." + joinedPath)
               // Alias resolution: `Alias.method(args)` where `import Pkg as Alias`.
               // Phase B uses pkgImportAliases to resolve the alias; Phase A must do
               // the same or await counts diverge and resumeLabels index faults.
@@ -31423,6 +31563,19 @@ func inferCallReturnTypePB(
       }
     }
     case _ -> MObject
+  }
+}
+
+// The class a non-generic record construction `Acc(n = 1)` produces, so
+// `await a.aGet(3)` on `val a = Acc(n = 1)` types its receiver (#8253).  Any
+// other callee (a function, a union case, a generic record) stays untyped.
+func pbRecordCtorTypePB(cctx: in CodegenCtx, pkgName: in String, name: in String): MsilType {
+  val localKey = pkgName + "." + name
+  val key = if cctx.recordCtorTokens.containsKey(localKey) { localKey } else { resolveTypeFqn(cctx, pkgName, name) }
+  if cctx.recordCtorTokens.containsKey(key) and not cctx.genericTypeArity.containsKey(key) and not cctx.caseParentUnion.containsKey(key) {
+    MClass(className = key)
+  } else {
+    MObject
   }
 }
 
@@ -42501,6 +42654,30 @@ func widenNarrowPrimResult(insns: in List[MInsn], t: in MsilType): MsilType {
   }
 }
 
+// A `Char` is a Unicode scalar value, never a surrogate half (docs/01 §2.1,
+// #8225).  A CLR `char` an auto-FFI call returns can be a lone surrogate
+// (`Convert.ToChar(55296)`), so a `MChar` result is checked here, at the
+// boundary, and throws `OverflowException` (the checked-narrowing failure
+// `.toChar()` raises) rather than becoming a Lyric `Char`.
+func guardAutoFfiCharResultMsil(
+  cctx: in CodegenCtx, fctxOpt: in Option[FuncCtx], insns: in List[MInsn], t: in MsilType
+): MsilType {
+  match t {
+    case MChar -> match fctxOpt {
+      case Some(fctx) -> emitSurrogateGuardMsil(
+        cctx,
+        fctx,
+        insns,
+        systemExcCtorTokenMsil(cctx, "OverflowException"),
+        autoFfiSurrogateCharMessage()
+      )
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  t
+}
+
 // Inverse of `narrowPrimFqn`: the element-type byte, or -1.
 func narrowPrimElemByte(fqn: in String): Int {
   if fqn == "System.SByte" {
@@ -43410,7 +43587,7 @@ func emitResolvedAutoFfi(
       } else {
         insns.add(MCall(methodToken = tok))
       }
-      Some(value = widenNarrowPrimResult(insns, retMsil))
+      Some(value = guardAutoFfiCharResultMsil(cctx, fctxOpt, insns, widenNarrowPrimResult(insns, retMsil)))
     }
   }
 }
@@ -43478,7 +43655,7 @@ func emitResolvedInstanceAutoFfi(
       } else {
         insns.add(MCallvirt(methodToken = tok))
       }
-      Some(value = widenNarrowPrimResult(insns, retMsil))
+      Some(value = guardAutoFfiCharResultMsil(cctx, fctxOpt, insns, widenNarrowPrimResult(insns, retMsil)))
     }
   }
 }
@@ -43552,7 +43729,11 @@ func emitExternConstMsil(
 // auto-FFI call-site path (docs/59 §6).  Returns None when the member matches
 // none of the three; the caller decides how loud to fail.
 func tryExternStaticMemberReadMsil(
-  cctx: in CodegenCtx, insns: in List[MInsn], clrFqn: in String, memberName: in String
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  clrFqn: in String,
+  memberName: in String,
 ): Option[MsilType] {
   ensureMetadataIndex(cctx)
   val noArgs: List[Mdr.SigType] = newList()
@@ -43563,7 +43744,7 @@ func tryExternStaticMemberReadMsil(
         val emptyTys: List[MsilType] = newList()
         val noFctx: Option[FuncCtx] = None
         match emitResolvedAutoFfi(cctx, noFctx, insns, gp.assemblyName, gp.declaringFqn, "get_" + memberName, "get_" + memberName, emptyBufs, emptyTys, gp.sig) {
-          case Some(rt) -> return Some(value = rt)
+          case Some(rt) -> return Some(value = guardAutoFfiCharResultMsil(cctx, Some(value = fctx), insns, rt))
           case None -> ()
         }
       }
@@ -43599,7 +43780,14 @@ func tryExternStaticMemberReadMsil(
         }
         case _ -> ()
       }
-      return Some(value = emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv))
+      return Some(
+        value = guardAutoFfiCharResultMsil(
+          cctx,
+          Some(value = fctx),
+          insns,
+          emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv)
+        )
+      )
     }
     case None -> ()
   }
@@ -43617,7 +43805,7 @@ func tryExternStaticMemberReadMsil(
             val fldSig = buildFieldSigWithCtx(fty, cctx.lctx)
             val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, memberName, "autoffi_fld_" + clrFqn + "." + memberName, fldSig)
             insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
-            return Some(value = widenNarrowPrimResult(insns, fty))
+            return Some(value = guardAutoFfiCharResultMsil(cctx, Some(value = fctx), insns, widenNarrowPrimResult(insns, fty)))
           }
           case None -> ()
         }

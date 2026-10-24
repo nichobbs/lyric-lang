@@ -25,6 +25,7 @@ import Lyric.BareFuncRef as BFR
 import Lyric.TypeAliasResolve as TAR
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
@@ -161,9 +162,11 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
     val it = preMono.items[gi]
     match it.kind {
       case IFunc(decl) -> {
-        val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-        if isPub and isGeneric and not postFuncNames.containsKey(decl.name) {
+        // A private generic comes back too: `Lyric.ContractMeta.carryPrivateGenerics` copies the ones a
+        // `pub` generic reaches into the contract under package-unique names (#8427); it emits none
+        // of the others.
+        if isGeneric and not postFuncNames.containsKey(decl.name) {
           items.add(it)
         }
       }
@@ -332,8 +335,10 @@ pub func compileToJar(
   val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   WireExpand.collectWireTemplates(cfgFile.items, dottedPath(cfgFile.packageDecl.path), weWires, weConfigs)
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(cfgFile, plugins)
   val file0 = resolveTypeAliases(
-    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, true, "", noLegacyOrigins) {
+    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, plugins, true, true, true, "", noLegacyOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2608,8 +2613,11 @@ pub func compileProjectToJarBundledWithRestored(
   // below stay the un-rewritten originals.
   val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // D207: every source package, for cross-package plugin references.
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   var wti = 0
   while wti < userFiles.count {
+    PluginExpand.collectPluginPackage(userFiles[wti], plugins)
     WireExpand.collectWireTemplates(
       Aliases.rewriteFile(userFiles[wti]).items,
       dottedPath(userFiles[wti].packageDecl.path),
@@ -2624,6 +2632,7 @@ pub func compileProjectToJarBundledWithRestored(
   var wtd = 0
   while wtd < depTemplateSrcs.count {
     val wdtPr = parse(depTemplateSrcs[wtd])
+    PluginExpand.collectPluginPackage(wdtPr.file, plugins)
     val depName = dottedPath(wdtPr.file.packageDecl.path)
     if not depPkgNames.containsKey(depName) {
       depPkgNames.add(depName, true)
@@ -2656,7 +2665,7 @@ pub func compileProjectToJarBundledWithRestored(
       case Some(o) -> o
       case None -> newList()
     }
-    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, true, true, true, weiPkgLabel, weiPkgOrigins) {
+    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, plugins, true, true, true, weiPkgLabel, weiPkgOrigins) {
       case Some(f) -> f
       case None -> return false
     }

@@ -61,7 +61,7 @@ import Ws.Frame
 import Ws.Handshake
 
 // ─── Connection registry ──────────────────────────────────────────────────────
-record RegistryMeta {
+ref record RegistryMeta {
   var maxMessageSizeBytes: Int = 1024
   var pingIntervalMs: Int = 0
   var openCount: Int = 0
@@ -85,7 +85,7 @@ record RegistryMeta {
 /// this lock for the encode+write, so concurrent writers (the ping-keepalive
 /// task and an application `send`/`close` call) never interleave bytes on
 /// the wire.
-record ConnState {
+ref record ConnState {
   var isOpen: Bool = false
   var closing: Bool = false
   conn: Option[Conn] = None
@@ -93,7 +93,7 @@ record ConnState {
 }
 
 // Locked to allocate sequential registry handles atomically.
-record HandleCounter {
+ref record HandleCounter {
   var next: Int = 0
 }
 
@@ -311,7 +311,8 @@ func reportHandlerFailure(handle: in Int, connId: in String, stage: in String, m
     case Some(cb) -> {
       match guardOnError(cb, connId, text) {
         case Some(second) -> Console.error(
-          "lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + second
+          "lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " +
+            second
         )
         case None -> ()
       }
@@ -704,9 +705,7 @@ func wsAcceptLoop(
     match hostAccept(transport) {
       case Ok(conn) -> {
         runBackground(
-          { ->
-            handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
-          }
+          { -> handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts) }
         )
       }
       case Err(e) -> {
@@ -764,9 +763,7 @@ pub func startServer(
         return Err(error = "registry handle collision (unreachable)")
       }
       runBackground(
-        { ->
-          wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
-        }
+        { -> wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts) }
       )
       Ok(value = handle)
     }
@@ -829,9 +826,7 @@ pub func adoptConnection(
   allowedOrigins: in slice[String],
   sameHostPorts: in slice[Int],
 ): Unit {
-  runBackground(
-    { -> adoptUpgrade(registryHandle, conn, target, headers, expectedPath, allowedOrigins, sameHostPorts) }
-  );
+  runBackground({ -> adoptUpgrade(registryHandle, conn, target, headers, expectedPath, allowedOrigins, sameHostPorts) });
   ()
 }
 
@@ -950,7 +945,7 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
 // messages at once, refilling at `messagesPerMinute` a minute.  It replaced a
 // tumbling window whose burst budget never refilled and which allowed twice
 // the rate across a window boundary (#7249, #1178).
-record RateEntry {
+ref record RateEntry {
   var scaledTokens: Long = 0i64
   var lastRefillMs: Long = 0i64
 }

@@ -498,9 +498,17 @@ func resolveTypeExprAt(
       // `buffer[T]` on a backend whose buffer is a `List[T]` (D185).
       val isBuffer = head2.segments.count == 1 and head2.segments[0] == "buffer" and args2.count == 1
       if isBuffer and aliasTargets.containsKey(arraysAsListsKey()) {
+        // A handle over its storage (`Lyric.ContractElaborator`'s buffer
+        // handle): the storage is `List[T]`, the handle a `List` of it.
         val lsegs: List[String] = newList()
         lsegs.add("List")
-        TGenericApp(head = ModulePath(segments = lsegs, span = head2.span), args = args2)
+        val storage = TypeExpr(
+          kind = TGenericApp(head = ModulePath(segments = lsegs, span = head2.span), args = args2),
+          span = te.span
+        )
+        val hargs: List[TypeArg] = newList()
+        hargs.add(TAType(ty = storage))
+        TGenericApp(head = ModulePath(segments = lsegs, span = head2.span), args = hargs)
       } else {
         match valueRecordRef(aliasTargets, head2, args2, args) {
           case Some(k) -> k
@@ -1264,7 +1272,8 @@ func resolveRecordDecl(aliasTargets: in Map[String, TypeExpr], d: in RecordDecl)
     whereClause = d.whereClause,
     members = ms,
     span = d.span,
-    isForeign = d.isForeign
+    isForeign = d.isForeign,
+    isRef = d.isRef
   )
 }
 

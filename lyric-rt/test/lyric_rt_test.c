@@ -2286,6 +2286,21 @@ static void test_environment(void) {
     lyric_release(cwd2);
 
     unsetenv(name);
+
+#if defined(__linux__)
+    CHECK(lyric_env_os_kind() == 1);
+#elif defined(__APPLE__)
+    CHECK(lyric_env_os_kind() == 2);
+#elif defined(__wasi__)
+    CHECK(lyric_env_os_kind() == 0);
+#endif
+#if defined(__x86_64__)
+    CHECK(lyric_env_arch_kind() == 1);
+#elif defined(__aarch64__)
+    CHECK(lyric_env_arch_kind() == 2);
+#elif defined(__wasm32__)
+    CHECK(lyric_env_arch_kind() == 0);
+#endif
 }
 
 #if LYRIC_TEST_POSIX

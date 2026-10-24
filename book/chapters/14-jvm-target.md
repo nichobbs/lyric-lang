@@ -80,7 +80,7 @@ Every `pub` type and `pub func` in a Lyric package is visible from Java. The nam
 
 ### §14.2.2 `Char` is a BMP scalar
 
-Lyric `Char` is a BMP Unicode scalar value: one UTF-16 code unit that is not a surrogate half. It is a Java `char` on the JVM, and every way of producing one keeps that invariant — `s[i]` throws `StringIndexOutOfBoundsException` on a surrogate unit and `.toChar()` throws `ArithmeticException` on a surrogate or out-of-range value (both through small static helpers the compiler emits into the package class). A supplementary-plane character is reached as a code point: `Std.String.codePointAt` / `codePoints` return `Int` scalar values, and `s.codeUnitAt(i)` is the raw `String.charAt` unit as an `Int`.
+Lyric `Char` is a BMP Unicode scalar value: one UTF-16 code unit that is not a surrogate half. It is a Java `char` on the JVM, and every way of producing one keeps that invariant — `s[i]` throws `StringIndexOutOfBoundsException` on a surrogate unit and `.toChar()` throws `ArithmeticException` on a surrogate or out-of-range value (both through small static helpers the compiler emits into the package class), and so does a `char` returned by an auto-FFI call or a static JDK field (`ArithmeticException` on a surrogate, via `__lyricFfiChar`). `Char` will widen to a full scalar value on every target (D221, #8225); this section describes the BMP rule in force until then. A supplementary-plane character is reached as a code point: `Std.String.codePointAt` / `codePoints` return `Int` scalar values, and `s.codeUnitAt(i)` is the raw `String.charAt` unit as an `Int`.
 
 ### §14.2.3 Records and opaque types
 

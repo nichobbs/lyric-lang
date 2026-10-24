@@ -10,7 +10,9 @@
 //! These functions are written against the buffer's own operations, plus the
 //! two members that move between a buffer and the `List` that represents it
 //! on a target that represents a buffer as a list; the compiler lowers those
-//! members, and they are usable only in this package.
+//! members, and they are usable only in this package.  `list.__lyric_buffer_from_list()`
+//! initialises a binding annotated with its `buffer[T]` type, which is where the
+//! dotnet and JVM lowering reads the element type from.
 @runtime_checked
 @pure
 package Std.Buffer
@@ -30,7 +32,8 @@ pub func filled[T](count: in Int, value: in T): buffer[T]
     items.add(value)
     i = i + 1
   }
-  items.__lyric_buffer_from_list()
+  val made: buffer[T] = items.__lyric_buffer_from_list()
+  made
 }
 
 /// A buffer holding a copy of the elements of `items`.
@@ -45,7 +48,8 @@ pub func fromSlice[T](items: in slice[T]): buffer[T]
     dst.add(items[i])
     i = i + 1
   }
-  dst.__lyric_buffer_from_list()
+  val made: buffer[T] = dst.__lyric_buffer_from_list()
+  made
 }
 
 /// The elements `lo ..< hi` of `b`, copied into a slice.  A later write
@@ -91,7 +95,8 @@ pub func grow[T](b: in buffer[T], length: in Int, fill: in T): buffer[T]
     dst.add(fill)
     i = i + 1
   }
-  dst.__lyric_buffer_from_list()
+  val made: buffer[T] = dst.__lyric_buffer_from_list()
+  made
 }
 
 /// The first `length` elements of `b`.
@@ -107,5 +112,6 @@ pub func truncate[T](b: in buffer[T], length: in Int): buffer[T]
     dst.add(b[i])
     i = i + 1
   }
-  dst.__lyric_buffer_from_list()
+  val made: buffer[T] = dst.__lyric_buffer_from_list()
+  made
 }

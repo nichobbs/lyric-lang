@@ -277,6 +277,8 @@ static void test_open_flags(const char* dir) {
 
 static void test_environment(void) {
     CHECK(lyric_env_is_windows() == 1);
+    CHECK(lyric_env_os_kind() == 3);
+    CHECK(lyric_env_arch_kind() == 1 || lyric_env_arch_kind() == 2);
     CHECK(lyric_env_set("LYRIC_WIN32_TEST_VAR", "\xce\xb1\xce\xb2\xce\xb3") == 0);
     LyricString* v = lyric_env_get("LYRIC_WIN32_TEST_VAR");
     CHECK(string_is(v, "\xce\xb1\xce\xb2\xce\xb3"));

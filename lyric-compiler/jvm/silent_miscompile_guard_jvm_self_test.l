@@ -67,7 +67,7 @@ import Std.Collections
 // ─────────────────────────────────────────────────────────────────────────────
 // A record with two differently-typed fields, used to exercise complex field
 // assignment and named-argument reorder.
-record Mixed {
+ref record Mixed {
   var count: Int
   var label: String
 }

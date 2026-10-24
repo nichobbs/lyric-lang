@@ -44,13 +44,19 @@ func tempDir(): String {
   nativeScratchDir("lyric-bindgen-selftest")
 }
 
-func astOf(src: in String): String {
+func astOf(src: in String): String = astFor(src, "")
+
+// `triple` non-empty parses the header as that target sees it.
+func astFor(src: in String, triple: in String): String {
   val path = Path.join(tempDir(), "h_" + Uuid.uuidToString(Uuid.newUuid()) + ".h")
   match File.writeText(path, src) {
     case Ok(_) -> ()
     case Err(_) -> panic("cannot write " + path)
   }
   val args: List[String] = newList()
+  if triple.length > 0 {
+    args.add("--target=" + triple)
+  }
   args.add("-Xclang")
   args.add("-ast-dump=json")
   args.add("-fsyntax-only")
@@ -269,4 +275,47 @@ test "the generated bindings drive a C library under ASan" {
     "int win_set_filter(Window* w, EventFilter f, void* ud) { Desc d = { 0 }; return f(ud, &d); }\n" +
     "double win_scale(Desc d) { return d.w * d.h * d.scale; }\n"
   assertEqualInt(runWithC(program, c), 0, "every value crosses the generated bindings intact")
+}
+
+// docs/67 G9 (#8435): bindings for Windows x64, where `long` is 32 bits and
+// pointers 64, and headers mark functions with a calling convention.
+test "Windows x64 bindings: LLP64 long, cdecl functions and per-target variants" {
+  val src = "typedef struct Box { long n; void *p; unsigned long m; } Box;\n" +
+    "typedef void (__cdecl *box_cb)(void *user, long v);\n" +
+    "long __cdecl box_get(const Box *b);\n" +
+    "void __cdecl box_each(Box *b, box_cb cb, void *user);\n"
+  val ast = astFor(src, "x86_64-pc-windows-msvc")
+  val cfg = BindgenConfig(
+    packageName = "Win.Kernel",
+    library = "box",
+    allow = allowOf(["box_get", "box_each", "Box"]),
+    userdata = newMap(),
+    longBits = 32,
+    pointerBits = 64,
+    fileCfg = "target_os = \"windows\""
+  )
+  val r = generateBindings(ast, cfg)
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  val gen = r.source
+  assertTrue(
+    Str.contains(gen, "pub foreign record Box {\n  n: Int\n  p: NativePtr[Byte]\n  m: Int\n}"),
+    "LLP64 layout: " + gen
+  )
+  assertTrue(Str.contains(gen, "pub extern func box_get(b: NativePtr[Box]): Int"), "a cdecl function is bound")
+  assertTrue(Str.contains(gen, "cb: (NativeUserdata, Int) -> Unit"), "a cdecl callback type is bound")
+  assertTrue(Str.contains(gen, "@cfg(target_os = \"windows\")\npackage Win.Kernel"), "the file-level predicate")
+  assertTrue(Str.contains(gen, "pub func toCLong(x: in Long): Int = x.toInt()"), "toCLong narrows on LLP64")
+  assertTrue(Str.contains(gen, "pub func fromCLong(x: in Int): Long = x.toLong()"), "fromCLong widens")
+  val lp64 = BindgenConfig(
+    packageName = "Win.Kernel",
+    library = "box",
+    allow = allowOf(["box_get"]),
+    userdata = newMap(),
+    longBits = 64,
+    fileCfg = "not(target_os = \"windows\")"
+  )
+  val other = generateBindings(astFor("long box_get(const void *b);\n", ""), lp64).source
+  assertTrue(Str.contains(other, "pub func toCLong(x: in Long): Long = x"), "toCLong is the identity on LP64")
+  val plain = generateBindings(astFor("long box_get(const void *b);\n", ""), configWith(allowOf(["box_get"]), "box"))
+  assertTrue(not Str.contains(plain.source, "toCLong"), "a single-target binding has no conversions")
 }

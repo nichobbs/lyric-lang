@@ -17,11 +17,11 @@ package InoutSelfParamSelfTest
 import Std.Core
 import Std.Testing
 
-record Acc {
+ref record Acc {
   var n: Int
 }
 
-record Pair {
+ref record Pair {
   var a: Acc
 }
 

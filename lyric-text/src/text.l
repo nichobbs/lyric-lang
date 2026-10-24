@@ -144,29 +144,79 @@ func loadInt64(p: NativePtr[Byte], offset: Long): Long {
   loadInt32(p, offset + 4).toLong() * 4294967296 + loadUInt32(p, offset)
 }
 
+// A FreeType `FT_Pos` / `FT_Long` field: a C `long`, 64 bits on LP64 and 32 on Windows.
+@cfg(not(target_os = "windows"))
+@unsafe_ffi
+func loadCLong(p: NativePtr[Byte], offset: Long): Long {
+  loadInt64(p, offset)
+}
+
+@cfg(target_os = "windows")
+@unsafe_ffi
+func loadCLong(p: NativePtr[Byte], offset: Long): Long {
+  loadInt32(p, offset).toLong()
+}
+
 @unsafe_ffi
 func loadPointer(p: NativePtr[Byte], offset: Long): NativePtr[Byte] {
   longToPtr(loadInt64(p, offset))
 }
 
-// Offsets into FreeType's public structs on 64-bit targets, checked by native/text_layout_check.c.
+// Offsets into FreeType's public structs, checked by native/text_layout_check.c: LP64 (Linux,
+// macOS) and LLP64 (Windows, where FreeType's `long` fields are 32 bits wide).
+@cfg(not(target_os = "windows"))
 val faceGlyphOffset: Long = 152
 
+@cfg(target_os = "windows")
+val faceGlyphOffset: Long = 120
+
+@cfg(not(target_os = "windows"))
 val faceSizeOffset: Long = 160
 
+@cfg(target_os = "windows")
+val faceSizeOffset: Long = 128
+
+@cfg(not(target_os = "windows"))
 val sizeMetricsAscender: Long = 48
 
+@cfg(target_os = "windows")
+val sizeMetricsAscender: Long = 36
+
+@cfg(not(target_os = "windows"))
 val sizeMetricsDescender: Long = 56
 
+@cfg(target_os = "windows")
+val sizeMetricsDescender: Long = 40
+
+@cfg(not(target_os = "windows"))
 val sizeMetricsHeight: Long = 64
 
+@cfg(target_os = "windows")
+val sizeMetricsHeight: Long = 44
+
+@cfg(not(target_os = "windows"))
 val slotAdvanceOffset: Long = 128
 
+@cfg(target_os = "windows")
+val slotAdvanceOffset: Long = 88
+
+@cfg(not(target_os = "windows"))
 val slotBitmapOffset: Long = 152
 
+@cfg(target_os = "windows")
+val slotBitmapOffset: Long = 104
+
+@cfg(not(target_os = "windows"))
 val slotBitmapLeftOffset: Long = 192
 
+@cfg(target_os = "windows")
+val slotBitmapLeftOffset: Long = 144
+
+@cfg(not(target_os = "windows"))
 val slotBitmapTopOffset: Long = 196
+
+@cfg(target_os = "windows")
+val slotBitmapTopOffset: Long = 148
 
 /// Starts FreeType.
 @unsafe_ffi
@@ -199,7 +249,13 @@ pub func openFont(lib: TextLib, id: Int, bytes: slice[Byte], faceIndex: Int, pix
     i = i + 1
   }
   var face: NativePtr[Ft.FT_FaceRec] = nativeNullPtr()
-  val rc = Ft.FT_New_Memory_Face(longToPtr(lib.raw), data, n.toLong(), faceIndex.toLong(), nativeAddrOf(face))
+  val rc = Ft.FT_New_Memory_Face(
+    longToPtr(lib.raw),
+    data,
+    Ft.toCLong(n.toLong()),
+    Ft.toCLong(faceIndex.toLong()),
+    nativeAddrOf(face)
+  )
   if rc != 0 {
     Ffi.release(data)
     return Err(error = "FreeType: cannot read the font (error " + rc.toString() + ")")
@@ -214,9 +270,9 @@ pub func openFont(lib: TextLib, id: Int, bytes: slice[Byte], faceIndex: Int, pix
   val hbFont = Hb.hb_ft_font_create_referenced(longToPtr(faceRaw))
   Hb.hb_ft_font_set_load_flags(hbFont, loadNoHinting)
   val metrics = loadPointer(longToPtr(faceRaw), faceSizeOffset)
-  val ascender = loadInt64(metrics, sizeMetricsAscender)
-  val descender = loadInt64(metrics, sizeMetricsDescender)
-  val height = loadInt64(metrics, sizeMetricsHeight)
+  val ascender = loadCLong(metrics, sizeMetricsAscender)
+  val descender = loadCLong(metrics, sizeMetricsDescender)
+  val height = loadCLong(metrics, sizeMetricsHeight)
   Ok(
     value = Font(
       id = id,
@@ -242,7 +298,7 @@ pub func closeFont(f: Font): Unit {
 /// Whether the font has a glyph for the Unicode scalar value `codepoint`.
 @unsafe_ffi
 pub func hasGlyph(f: Font, codepoint: Int): Bool {
-  Ft.FT_Get_Char_Index(longToPtr(f.face), codepoint.toLong()) != 0
+  Ft.FT_Get_Char_Index(longToPtr(f.face), Ft.toCLong(codepoint.toLong())) != 0
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +473,7 @@ pub record AtlasRegion {
 /// A CPU-side glyph atlas: an R8 image that rows of glyph bitmaps are packed into, one pixel
 /// apart so a linearly filtered sample never reads a neighbour.  Upload `pixels` as an R8
 /// texture whenever `version` has changed since the last upload.
-pub record Atlas {
+pub ref record Atlas {
   width: Int
   height: Int
   var pixels: buffer[Byte]

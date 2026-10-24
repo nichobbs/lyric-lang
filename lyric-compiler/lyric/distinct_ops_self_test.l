@@ -30,7 +30,7 @@ type Tag = Byte
 
 type Email = String
 
-record Account {
+ref record Account {
   id: UserId
   var balance: Cents
 }

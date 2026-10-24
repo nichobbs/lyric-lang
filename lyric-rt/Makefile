@@ -45,7 +45,16 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows
+# The release/acquire fence in lyric_release is invisible to gcc's ThreadSanitizer, which then
+# reports the free of an object another thread dropped its last reference to as a race;
+# clang's models fences, so the scheduler sanitizer runs always use clang.
+SAN_CC ?= clang
+
+# What the scheduler test needs when it is compiled from source under a sanitizer.
+ASYNC_SANITIZED_SRCS := src/lyric_async.c src/lyric_rt.c src/lyric_weak.c src/lyric_posix.c \
+                        src/lyric_string.c src/lyric_collections.c
+
+.PHONY: all test test-asan test-asan-async test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows
 
 all: $(BUILD)/lyric_rt.a
 
@@ -71,6 +80,8 @@ test: $(BUILD)/lyric_rt.a
 	$(BUILD)/lyric_parallel_test
 	LYRIC_THREADS=1 $(BUILD)/lyric_parallel_test --serial
 	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test
+	$(CC) $(CFLAGS) -Iinclude test/lyric_async_mt_test.c $(BUILD)/lyric_rt.a $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test
+	$(BUILD)/lyric_async_mt_test
 
 # ThreadSanitizer run of the worker pool (docs/67 G8): the pool and its test are compiled from source
 # with -fsanitize=thread, so a missing happens-before edge between a worker's writes and the caller's
@@ -80,6 +91,15 @@ test-tsan: | $(BUILD)
 	$(CC) $(CFLAGS) -fsanitize=thread -Iinclude test/lyric_parallel_test.c src/lyric_parallel.c $(TEST_LIBS) -o $(BUILD)/lyric_parallel_test_tsan
 	$(BUILD)/lyric_parallel_test_tsan
 	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test_tsan
+	$(SAN_CC) $(CFLAGS) -fsanitize=thread -Iinclude test/lyric_async_mt_test.c $(ASYNC_SANITIZED_SRCS) $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test_tsan
+	TSAN_OPTIONS="halt_on_error=1 exitcode=66" $(BUILD)/lyric_async_mt_test_tsan
+
+# AddressSanitizer run of the multi-threaded coroutine scheduler (docs/67 G8, D217): a frame
+# destroyed while running, a task freed while still queued, or a leaked task fails the run.
+# `make test-asan-async`
+test-asan-async: | $(BUILD)
+	$(SAN_CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_async_mt_test.c $(ASYNC_SANITIZED_SRCS) $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test_asan
+	$(BUILD)/lyric_async_mt_test_asan
 
 # ASan variant of the TLS seam test, kept OUT of the default `test` target
 # because it needs the compiler's AddressSanitizer runtime, which is not

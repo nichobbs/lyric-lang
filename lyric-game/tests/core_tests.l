@@ -88,6 +88,18 @@ test "replay text round-trips and rebuilds the same frames" {
   }
 }
 
+test "replay reads CRLF line ends" {
+  match decode("lyric-replay 1\r\nseed 7\r\nK+97\r\n\r\nK-97\r\n") {
+    case Ok(r) -> {
+      eqL(r.seed, 7i64)
+      eqI(r.steps.count, 3)
+      eqI(r.steps[0].count, 1)
+      eqI(r.steps[1].count, 0)
+    }
+    case Err(e) -> assertTrue(false, e)
+  }
+}
+
 test "replay rejects damage" {
   match decode("lyric-replay 1\nseed 1\nK+x\n") {
     case Ok(_) -> assertTrue(false, "should not read")

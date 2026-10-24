@@ -70,7 +70,7 @@ func codes(r: in GeneratorResponse): List[String] {
 }
 
 test "parseRoute and routeUrl for literal and field segments" {
-  val r = generate(
+  val r = generateSource(
     request(
       [
         routeCase("CustomerList", "/customers", []),
@@ -115,7 +115,7 @@ test "the root path and an enum segment" {
       CaseDescriptor(name = "ByLimit", annotations = [], fields = [])
     ]
   )
-  val r = generate(
+  val r = generateSource(
     request([routeCase("Home", "/", []), routeCase("Sorted", "/list/{by}", [named("by", "Sort")])], [sort])
   )
   assertEqualInt(r.diagnostics.length, 0, "no diagnostics")
@@ -129,26 +129,29 @@ test "the root path and an enum segment" {
 
 test "path problems are reported" {
   assertTrue(
-    codes(generate(request([CaseDescriptor(name = "A", annotations = [], fields = [])], []))).contains("RT002"),
+    codes(generateSource(request([CaseDescriptor(name = "A", annotations = [], fields = [])], []))).contains("RT002"),
     "no @path"
   )
-  assertTrue(codes(generate(request([routeCase("A", "customers", [])], []))).contains("RT002"), "no leading slash")
-  assertTrue(codes(generate(request([routeCase("A", "/a b", [])], []))).contains("RT002"), "a space in a literal")
-  assertTrue(codes(generate(request([routeCase("A", "/a/{x}", [])], []))).contains("RT003"), "an unknown field")
   assertTrue(
-    codes(generate(request([routeCase("A", "/a", [named("x", "String")])], []))).contains("RT003"),
+    codes(generateSource(request([routeCase("A", "customers", [])], []))).contains("RT002"),
+    "no leading slash"
+  )
+  assertTrue(codes(generateSource(request([routeCase("A", "/a b", [])], []))).contains("RT002"), "a space in a literal")
+  assertTrue(codes(generateSource(request([routeCase("A", "/a/{x}", [])], []))).contains("RT003"), "an unknown field")
+  assertTrue(
+    codes(generateSource(request([routeCase("A", "/a", [named("x", "String")])], []))).contains("RT003"),
     "a field not in the path"
   )
   assertTrue(
-    codes(generate(request([routeCase("A", "/a/{x}/{x}", [named("x", "String")])], []))).contains("RT003"),
+    codes(generateSource(request([routeCase("A", "/a/{x}/{x}", [named("x", "String")])], []))).contains("RT003"),
     "a field twice"
   )
   assertTrue(
-    codes(generate(request([routeCase("A", "/a/{x}", [named("x", "Money")])], []))).contains("RT004"),
+    codes(generateSource(request([routeCase("A", "/a/{x}", [named("x", "Money")])], []))).contains("RT004"),
     "an unsupported type"
   )
   assertTrue(
-    codes(generate(request([routeCase("A", "/a/{x}", [named("x", "String")]), routeCase("B", "/a/{y}", [named("y", "Int")])], []))).contains(
+    codes(generateSource(request([routeCase("A", "/a/{x}", [named("x", "String")]), routeCase("B", "/a/{y}", [named("y", "Int")])], []))).contains(
       "RT005"
     ),
     "two cases with one shape"
@@ -157,7 +160,7 @@ test "path problems are reported" {
 
 test "a record is not a route union" {
   val td = TypeDescriptor(kind = Record, name = "R", packageName = "P", typeParams = [], fields = [], annotations = [])
-  val r = generate(
+  val r = generateSource(
     GeneratorRequest(generatorArg = "Ui.Routes", typeDescriptor = td, packageName = "P", sourceFile = "p.l")
   )
   assertTrue(codes(r).contains("RT001"), "RT001")
@@ -165,7 +168,7 @@ test "a record is not a route union" {
 }
 
 test "a segment type names how to read a field declared elsewhere" {
-  val r = generate(request([routeCase("EditCustomer", "/customers/{id:Long}", [named("id", "CustomerId")])], []))
+  val r = generateSource(request([routeCase("EditCustomer", "/customers/{id:Long}", [named("id", "CustomerId")])], []))
   assertEqualInt(r.diagnostics.length, 0, "no diagnostics")
   assertTrue(
     r.lyricSource.contains("match GenRouting.longSegment(text) {\n    case Some(n) -> match CustomerId.tryFrom(n) {"),
@@ -173,9 +176,9 @@ test "a segment type names how to read a field declared elsewhere" {
   )
   assertTrue(r.lyricSource.contains("GenRouting.encodeSegment(id.toString())"), "written as its text")
   assertTrue(
-    codes(generate(request([routeCase("A", "/a/{x:Money}", [named("x", "Money")])], []))).contains("RT002"),
+    codes(generateSource(request([routeCase("A", "/a/{x:Money}", [named("x", "Money")])], []))).contains("RT002"),
     "an unknown segment type"
   )
-  val unknown = generate(request([routeCase("A", "/a/{x}", [named("x", "Money")])], []))
+  val unknown = generateSource(request([routeCase("A", "/a/{x}", [named("x", "Money")])], []))
   assertTrue(unknown.diagnostics[0].message.contains("{x:Long}"), "the RT004 message suggests a segment type")
 }

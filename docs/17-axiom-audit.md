@@ -293,6 +293,53 @@ access), but the output contains host-platform separators.
 
 ---
 
+### `Std.AnnotationMetaHost` — `lyric-stdlib/std/_kernel/annotation_meta_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.AppDomain.GetAssemblies and System.Reflection.Assembly manifest-resource enumeration conform to their documented .NET contracts")
+@axiom("java.util.zip.ZipInputStream and java.lang.System.getProperty conform to their documented JVM contracts")
+```
+
+**BCL surface**: `AppDomain.CurrentDomain.GetAssemblies`,
+`Assembly.IsDynamic`, `Assembly.GetManifestResourceNames` and
+`Assembly.GetManifestResourceStream` read through a `StreamReader` (.NET);
+`System.getProperty("java.class.path")` and a `ZipInputStream` walk of each
+`.jar` entry (JVM). Backs `Std.AnnotationMeta` (#7180), which decodes the
+`Lyric.AnnotationMeta` resources the compiler embeds. Only resource names and
+bytes are read; no type, member or attribute is inspected. The native twin
+declares no externs: it reports "unsupported" because the native backend
+embeds no annotation metadata (#8524).
+
+**Gap**: The prover does not model which assemblies or jars are loaded.
+
+**Caller obligation**: None. Both functions are total; a class-path entry
+that is not an existing `.jar` file is skipped, an unreadable or corrupt jar
+fails loudly.
+
+---
+
+### `Std.PluginHost` — `lyric-stdlib/std/_kernel/plugin_host.l` (+ `_kernel_jvm/`, `_kernel_native/`)
+
+```
+@axiom("System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts")
+@axiom("java.lang.System.getProperty conforms to its documented JVM contract")
+```
+
+**BCL surface**: `System.OperatingSystem.IsWindows/IsMacOS/IsLinux` and
+`RuntimeInformation.RuntimeIdentifier` (.NET); `System.getProperty("os.name")`
+and `System.getProperty("os.arch")` (JVM), backing `Std.Plugin`'s payload
+selection (D207 Decision 5). The native twin binds `lyric-rt`'s
+`lyric_env_os_kind`/`lyric_env_arch_kind`.
+
+**Gap**: The prover does not model which host the program runs on.
+
+**Caller obligation**: None. Both functions are total and return `"other"`
+for a host outside the manifest vocabulary.
+
+**Review**: Stable.
+
+---
+
 ## 7. Time
 
 ### `Std.TimeHost` — `lyric-stdlib/std/_kernel/time_host.l`
@@ -906,6 +953,7 @@ All are provisional pending weaver integration.
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.FileHost`           | `file_host.l`                | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
+| `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
 | `Std.EnvironmentHost`    | `environment_host.l`         | 3      | 0           |
@@ -927,7 +975,8 @@ All are provisional pending weaver integration.
 | `Std.Task`               | `task.l`                     | 1      | 0           |
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
-| **Total**                |                              | **31** | **2**       |
+| `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
+| **Total**                |                              | **33** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -951,6 +1000,7 @@ recorded in the §19 baseline.
 | `Std.MathHost`           | `math_host.l`                | 1      | 0           |
 | `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
+| `Std.PluginHost`         | `plugin_host.l`              | 1      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
 | `Std.ProcessPipedHost`   | `process_piped_host.l`       | 1      | 0           |
@@ -963,12 +1013,13 @@ recorded in the §19 baseline.
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
-| **Total**                |                              | **25** | **0**       |
+| `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
+| **Total**                |                              | **27** | **0**       |
 
 ### Combined total
 
-.NET (31 stable + 2 provisional = 33) + JVM (25 stable + 0 provisional =
-25) = **58** `@axiom` annotations covering the entire extern boundary
+.NET (33 stable + 2 provisional = 35) + JVM (27 stable + 0 provisional =
+27) = **62** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.FfiHost` (D161) binds the C library's `malloc`
 and `free` through `@library("c")`; it has no `_kernel_jvm/` or
 `_kernel_native/` twin because the one file lowers on every target (D158),
@@ -1025,6 +1076,7 @@ spaces; consult the kernel file itself for the unfolded source.
 
 | Platform | Package | File | Axiom |
 |---|---|---|---|
+| `dotnet` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | System.AppDomain.GetAssemblies and System.Reflection.Assembly manifest-resource enumeration conform to their documented .NET contracts |
 | `dotnet` | `Std.BenchHost` | `bench_host.l` | System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
@@ -1045,6 +1097,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.MathHost` | `math_host.l` | System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts |
 | `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
+| `dotnet` | `Std.PluginHost` | `plugin_host.l` | System.Runtime.InteropServices.RuntimeInformation and System.OperatingSystem conform to their documented .NET contracts |
 | `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
 | `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
 | `dotnet` | `Std.ProcessPipedHost` | `process_piped_host.l` | System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
@@ -1058,6 +1111,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
+| `jvm` | `Std.AnnotationMetaHost` | `annotation_meta_host.l` | java.util.zip.ZipInputStream and java.lang.System.getProperty conform to their documented JVM contracts |
 | `jvm` | `Std.BenchHost` | `bench_host.l` | com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
@@ -1071,7 +1125,8 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
-| `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts |
+| `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |
+| `jvm` | `Std.PluginHost` | `plugin_host.l` | java.lang.System.getProperty conforms to its documented JVM contract |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
 | `jvm` | `Std.ProcessPipedHost` | `process_piped_host.l` | java.lang.ProcessBuilder + java.lang.Process piped stdin/stdout conform to their documented JVM contracts |

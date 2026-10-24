@@ -63,11 +63,11 @@ seen.containsKey(Point(x = 1.0, y = 2.0))   // true
 
 A record with a `var` field keeps identity, as a key too, unless it derives `Equals`. Native `Map` keys must still be a `String` or a scalar (#8167).
 
-A record with a `var` field has identity (see "Values and mutable records" in the reference): `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead:
+A record with a `var` field has identity, and you say so by declaring it `ref record` (see "Values and mutable records" in the reference). A `var` field in a plain `record` is the warning W0031, and the fix is to add `ref`; `ref` on a record with no `var` field is accepted and changes nothing. With the marker, `==` asks whether two bindings refer to the same instance: `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead:
 
 ```lyric
 @derive(Equals)
-record Account {
+ref record Account {
   var balance: Long
   owner: String
 }
@@ -362,7 +362,7 @@ total(doubled(big))   // N = 4; doubled returns an array[4, Int]
 Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N`, or an argument that disagrees with an explicit `total[3](a)`, are a compile-time error (T0043). When no argument has the length (`func make[N: Nat](): array[N, Int]`), give it explicitly: `make[4]()`; a bare `make()` is T0110. A record can take a length parameter too, which sizes its array fields:
 
 ```lyric
-record Ints[N: Nat] {
+ref record Ints[N: Nat] {
   var data: array[N, Int]
 
   func sum(self: in Ints[N]): Int {
@@ -439,6 +439,24 @@ func widths(rows: in List[slice[Int]]): Int { rows[1].length }
 val w = widths([[1], [5, 6]])    // 2
 ```
 
+Note which member sizes which container. A `List` has `.count`; `String`, `slice[T]` and arrays have `.length`. The line above reads `.length` of a slice (`rows[1]`), and `rows.count` would be the number of rows. Writing `rows.length` on the `List` itself is the compile error T0207, which names `.count`: the JVM never had a `length` on `List`, and the check keeps a program that builds on one target from failing on the other.
+
+The position decides the literal's shape wherever the expected type is known, not only for a `List`. An integer literal passed to a `slice[Long]` or `List[Long]` parameter is widened element by element, as it would be under a `val` annotation, and a tuple argument gives its components the same treatment:
+
+```lyric
+func total(xs: in slice[Long]): Long { xs[0] + xs[1] }
+func first(p: in (array[2, Int], Int)): Int {
+  match p { case (a, n) -> a[0] + n }
+}
+
+val t = total([7, 8])            // 15: the literal is a slice[Long]
+val f = first(([7, 8], 9))       // 16: the first component is an array[2, Int]
+```
+
+The result a generic call is expected to give can bind its type parameter too, so `val r: List[Long] = identity([1, 2])` with `identity[T](xs: List[T]): List[T]` builds a `List[Long]`. A lambda whose expected type is `() -> List[Long]` may end in a literal, `{ -> [1, 2] }`. A value is never converted by being passed: a `slice[T]` variable is not a `List[T]`, and `xs.toList()` makes the copy explicitly. `[s].toList()` on a literal is that copy as well, wherever the call's result is used.
+
+A construction that fixes only part of its type takes the rest from where it sits. `None` or `Ok(1)` in a branch of an `if` or `match` is built at the type the branches join to, in a tuple that a `List` holds (`ys.add((None, 1))` for `ys: List[(Option[Int], Int)]`), or as an operand of `==` (`r == Ok(2)` compares two `Result[Long, Int]`s). The same goes for an argument of a call through a function value, which takes its type from the function's parameter, and for `newList()`, `newMap()` and their explicit forms `newList[Int]()` passed or stored as nested collections.
+
 **Bounds checking and range subtypes.** Array and slice indexing is bounds-checked at runtime; an index outside `0 ..< N` panics with `index <i> out of range for array[<N>]`. But if the index is a literal in range, or its type is a named range subtype whose range statically proves the access is in bounds, the compiler elides the check entirely, in every build and on every target (an inline `Int range 0 ..= 3` annotation is not a proof, since it is not enforced on every path):
 
 ```lyric
@@ -477,7 +495,7 @@ other[0] = Vertex(x = 9.0, y = 9.0)
 
 The element type must be `Plain`, meaning its bit pattern is its whole meaning: the numeric types, `Bool`, `Char`, enums, records of those with no `var` field and no `invariant:`, and arrays of those. A `String`, a `List`, a range subtype or a record with an invariant is T0173 as an element, with a message naming the part that is not `Plain`; convert such a value at the boundary instead. The length is fixed when the buffer is made; `Std.Buffer` has `filled`, `fromSlice`, `view`, `toSlice`, `grow` and `truncate`. An index goes through a variable or a field path (T0174), and is bounds-checked against the buffer's own length.
 
-The cost of the value semantics depends on the target. On `--target native` a buffer is a packed, reference-counted block: copying one shares the block, and the first write after a copy takes a private copy, so writing to a buffer nothing else holds is an in-place store. On the dotnet and JVM targets a buffer is a list that is copied at each logical copy, which is O(n); prefer native for large buffers that are passed around. On native, `withPointer` and `withMutPointer` lend the packed elements to C inside `@unsafe_ffi` code (§13).
+The cost of the value semantics depends on the target. On `--target native` a buffer is a packed, reference-counted block: copying one shares the block, and the first write after a copy takes a private copy, so writing to a buffer nothing else holds is an in-place store. On the dotnet and JVM targets a buffer is a handle over a list: a copy marks the storage as shared and the first write after it copies the list, so passing and returning a buffer is cheap there too. The mark is never cleared on the buffer a copy was taken from, so a program that alternates passing a buffer and writing it can copy more often than it would on native. On native, `withPointer` and `withMutPointer` lend the packed elements to C inside `@unsafe_ffi` code (§13).
 
 ## §3.6 Choosing the right structure
 

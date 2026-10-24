@@ -28,8 +28,8 @@ done
 latin=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
 cjk=/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
 if [ -z "$icd" ] || ! pkg-config --exists freetype2 harfbuzz || [ ! -f "$latin" ] || [ ! -f "$cjk" ]; then
-  sudo apt-get update -qq
-  sudo apt-get install -y -qq mesa-vulkan-drivers libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq mesa-vulkan-drivers libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei
   for candidate in /usr/share/vulkan/icd.d/lvp_icd.json /usr/share/vulkan/icd.d/lvp_icd.*.json; do
     if [ -f "$candidate" ]; then icd="$candidate"; break; fi
   done

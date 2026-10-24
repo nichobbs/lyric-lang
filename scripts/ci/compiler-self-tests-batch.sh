@@ -52,6 +52,7 @@ for t in \
   lyric-compiler/lyric/lexer_self_test.l \
   lyric-compiler/lyric/parser_self_test.l \
   lyric-compiler/lyric/typechecker_self_test.l \
+  lyric-compiler/lyric/bounded_generic_ops_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
   lyric-compiler/lyric/generic_member_calls_std_self_test.l \
   lyric-compiler/lyric/generic_protected_calls_self_test.l \
@@ -141,6 +142,7 @@ for t in \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_receivers_self_test.l \
   lyric-compiler/lyric/dot_named_primitive_self_test.l \
   lyric-compiler/lyric/type_qualified_method_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
@@ -175,6 +177,7 @@ for t in \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
+  lyric-compiler/lyric/expected_type_inference_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
@@ -195,6 +198,7 @@ for t in \
   lyric-compiler/lyric/buffer_self_test.l \
   lyric-compiler/lyric/buffer_panic_self_test.l \
   lyric-compiler/lyric/buffer_spawn_self_test.l \
+  lyric-compiler/lyric/buffer_nested_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/task_shadow_self_test.l \
@@ -225,10 +229,15 @@ for t in \
   lyric-compiler/lyric/deflate_zip_self_test.l \
   lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l \
   lyric-compiler/lyric/generator/generator_self_test.l \
+  lyric-compiler/lyric/plugin_expand_self_test.l \
+  lyric-compiler/lyric/plugin_codec_self_test.l \
+  lyric-compiler/lyric/plugin_manifest_self_test.l \
+  lyric-compiler/lyric/plugin_sdk_self_test.l \
   lyric-compiler/lyric/jvm_trycatch_bridge_self_test.l \
   lyric-compiler/lyric/jvm_impl_extern_class_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
   lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
+  lyric-compiler/jvm/match_return_defer_jvm_self_test.l \
   lyric-compiler/lyric/lsp_self_test.l \
   lyric-compiler/lyric/doc_self_test.l \
   lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l \

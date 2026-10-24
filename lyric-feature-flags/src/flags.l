@@ -92,7 +92,7 @@ pub interface FlagStore {
 /// Not thread-safe in v1.  For concurrent access, wrap in a `protected type`
 /// once the protected-type weaver ships, or use a remote-backed implementation.
 @stable(since = "0.1")
-pub record InProcessFlagStore {
+pub ref record InProcessFlagStore {
   var valueMap: Map[String, FlagValue]
   var names: List[String]
   var descMap: Map[String, String]

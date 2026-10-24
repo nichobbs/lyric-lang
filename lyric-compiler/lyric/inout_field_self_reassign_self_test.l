@@ -39,7 +39,7 @@ package Lyric.InoutFieldSelfReassignSelfTest
 import Std.Core
 import Std.Testing
 
-record Holder {
+ref record Holder {
   var buf: slice[Byte]
   var count: Int
 }

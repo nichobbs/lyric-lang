@@ -20,7 +20,8 @@
 # the structural_equality self-tests, D172; slice_func_tolist_self_test.l,
 # slice_to_list_self_test.l and int_to_nat_self_test.l, #7661, #7662, #8323;
 # jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298;
-# extern_upcast_jvm_self_test.l and jvm-stdlib-type-check-gate.sh, D212),
+# extern_upcast_jvm_self_test.l and jvm-stdlib-type-check-gate.sh, D212;
+# match_return_defer_jvm_self_test.l, #7541),
 # through one
 # `lyric test`
 # invocation per file.
@@ -54,6 +55,8 @@ fi
 ran=""
 for t in \
   lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l \
+  lyric-compiler/lyric/bounded_generic_ops_self_test.l \
+  lyric-compiler/jvm/match_return_defer_jvm_self_test.l \
   lyric-compiler/jvm/generic_element_field_read_jvm_self_test.l \
   lyric-compiler/jvm/generic_free_func_return_jvm_self_test.l \
   lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
@@ -75,6 +78,7 @@ for t in \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_receivers_self_test.l \
   lyric-compiler/lyric/dot_named_primitive_self_test.l \
   lyric-compiler/lyric/type_qualified_method_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
@@ -136,6 +140,7 @@ for t in \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
+  lyric-compiler/lyric/expected_type_inference_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
@@ -155,6 +160,7 @@ for t in \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/buffer_self_test.l \
   lyric-compiler/lyric/buffer_spawn_self_test.l \
+  lyric-compiler/lyric/buffer_nested_self_test.l \
   lyric-compiler/lyric/buffer_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \

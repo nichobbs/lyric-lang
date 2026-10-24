@@ -42,7 +42,7 @@ impl Web.Handler for PostHandler {
   }
 }
 
-record RegistryHolder {
+ref record RegistryHolder {
   var registry: Option[NativeRegistry] = None
 }
 

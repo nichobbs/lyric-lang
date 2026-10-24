@@ -73,7 +73,7 @@ func monitorEnter[T](obj: in T): Unit = ()
 func monitorExit[T](obj: in T): Unit = ()
 
 // ─── Scheduler state ──────────────────────────────────────────────────────────
-record JobRecord {
+ref record JobRecord {
   name: String
   payload: String
   maxAttempts: Int
@@ -90,7 +90,7 @@ record SchedulerMeta {
   workerCount: Int
 }
 
-record JobHandleCounter {
+ref record JobHandleCounter {
   var next: Int = 0
 }
 

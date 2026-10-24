@@ -107,7 +107,7 @@ record Toasting {
 }
 
 /// The state of one window (or headless session).
-pub record Host {
+pub ref record Host {
   cfg: NativeConfig
   route: (String) -> Option[Instance]
   theme: Theme
@@ -1204,6 +1204,7 @@ func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
   match Window.nativeWindow(w) {
     case X11(display, window) -> Gpu.createXlibSurface(d, display, window)
     case Wayland(display, surface) -> Gpu.createWaylandSurface(d, display, surface)
+    case Win32(hwnd, instance) -> Gpu.createWindowsSurface(d, instance, hwnd)
     case _ -> Err(error = "this window system has no GPU surface support yet")
   }
 }

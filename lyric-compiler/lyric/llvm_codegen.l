@@ -144,6 +144,12 @@ pub record CodegenUnit {
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
+  // Names of the `protecteds` whose members the bridge did not lower because
+  // nothing reachable uses them (a pruned dependency package, #8429): the
+  // type itself registers, since a signature or field may still name it, but
+  // its lock/unlock wrappers would call member bodies that are not in the
+  // bundle.
+  deadProtecteds: List[String] = newList()
 }
 
 /// A module-level `val`/`const` binding. A literal initializer is inlined at
@@ -9183,7 +9189,17 @@ func emitAsyncCall(
   wantTask: in Bool,
 ): NVal {
   val dest = freshTmp(ctx)
+  if wantTask {
+    // `spawn`: let a multi-threaded scheduler start the callee on a worker
+    // (the callee's prologue consumes the hint; see lyric_task_defer_start).
+    val hintArgs: List[NArg] = newList()
+    insns.add(NCallVoid(fn = NGlobal(name = "lyric_spawn_hint"), args = hintArgs))
+  }
   insns.add(NCall(dest = dest, retTy = NPtr(pointee = NI8), fn = NGlobal(name = irName), args = callArgs))
+  // The ramp has returned, so a registration it recorded can be published to
+  // a multi-threaded scheduler (a no-op otherwise).
+  val rampDoneArgs: List[NArg] = newList()
+  insns.add(NCallVoid(fn = NGlobal(name = "lyric_ramp_done"), args = rampDoneArgs))
   val tty = taskNType(ctx, elem)
   val cast = freshTmp(ctx)
   insns.add(NBitcast(dest = cast, fromTy = NPtr(pointee = NI8), value = NLocal(name = dest), toTy = tty))
@@ -11776,6 +11792,27 @@ func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
   }
 }
 
+/// A `newList()` / `newListWithCapacity(n)` / `newMap()` call without
+/// explicit type arguments: natively its element types come only from the
+/// type the position expects.
+func isUntypedCollectionCtorExpr(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(path) -> path.segments.count == 1 and
+        (
+          path.segments[0] == "newList" or
+            path.segments[0] == "newListWithCapacity" or
+            path.segments[0] == "newMap"
+        ) and
+        not ctx.varTypes.containsKey(path.segments[0]) and
+        not hasFuncOverrideNative(ctx, path.segments[0], args.count)
+      case _ -> false
+    }
+    case EParen(inner) -> isUntypedCollectionCtorExpr(ctx, inner)
+    case _ -> false
+  }
+}
+
 func copyStrings(xs: in List[String]): List[String] {
   val copy: List[String] = newList()
   for x in xs {
@@ -11936,6 +11973,44 @@ func lambdaParamWantAt(
   typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
 }
 
+/// Bind every type parameter in `paramNames` that the lowered arguments and the
+/// seeds leave unbound to `Unit`, by appending to `seedNames` / `seedTys`.
+func seedUnboundWithUnit(
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
+  sp: in Span,
+): Unit {
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
+  var j = 0
+  while j < rawVals.count {
+    match rawVals[j].ty {
+      case NVoid -> ()
+      case _ -> unifyTyArg(ctx, fd.params[j].ty, rawVals[j].ty, paramNames, boundNames, boundTys)
+    }
+    j = j + 1
+  }
+  val noNames: List[String] = newList()
+  val noTys: List[NType] = newList()
+  match typeToNEnvOpt(ctx, TypeExpr(kind = TUnit, span = sp), noNames, noTys) {
+    case Some(unitTy) -> {
+      var i = 0
+      while i < paramNames.count {
+        if envIndexOf(boundNames, paramNames[i]) < 0 {
+          seedNames.add(paramNames[i])
+          seedTys.add(unitTy)
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
 /// Whether `te` names a type parameter from `paramNames` absent from `bound`.
 func teMentionsUnbound(te: in TypeExpr, paramNames: in List[String], bound: in List[String]): Bool {
   match te.kind {
@@ -12071,11 +12146,13 @@ func lowerGenericFnCallWith(
         }
       }
       val ax = argExpr[found]
-      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) {
+      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) or isUntypedCollectionCtorExpr(ctx, ax) {
         // A lambda needs its function type before it can be lowered. Take
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
         // later argument is needed is the lambda deferred past it (#7282).
+        // A `newList()` / `newMap()` without type arguments is the same:
+        // its element types come from the parameter (`unwrapOr(o, newList())`).
         match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames, seedNames, seedTys) {
           case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
           case None -> {
@@ -12140,14 +12217,49 @@ func lowerGenericFnCallWith(
       sk = sk + 1
     }
   }
+  // A case construction whose type parameter nothing else fixes
+  // (`isNone(None)`) is instantiated at `Unit`, as the other targets erase
+  // it: no value of that type exists to be read (#8352).
+  if pending.count > 0 {
+    var onlyCtors = true
+    var oc = 0
+    while oc < pending.count {
+      if isLambdaExpr(deferredLambdaExprs[pending[oc]]) {
+        onlyCtors = false
+      }
+      oc = oc + 1
+    }
+    if onlyCtors {
+      seedUnboundWithUnit(ctx, fd, rawVals, fnTyParamNames, seedNames, seedTys, deferredLambdaExprs[pending[0]].span)
+      val unresolved: List[Int] = newList()
+      var uk = 0
+      while uk < pending.count {
+        val ui = pending[uk]
+        val upi = deferredLambdas[ui]
+        match lambdaParamWantAt(ctx, fd, upi, rawVals, fnTyParamNames, seedNames, seedTys) {
+          case Some(w) -> {
+            rawVals[upi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[ui], w)
+          }
+          case None -> unresolved.add(ui)
+        }
+        uk = uk + 1
+      }
+      pending.clear()
+      var rk = 0
+      while rk < unresolved.count {
+        pending.add(unresolved[rk])
+        rk = rk + 1
+      }
+    }
+  }
   if pending.count > 0 {
     val dpi = deferredLambdas[pending[0]]
     panic(
-      "Lyric.LlvmCodegen: cannot infer the type of the lambda or case construction passed as parameter '" +
+      "Lyric.LlvmCodegen: cannot infer the type of the lambda, case construction or collection construction passed as parameter '" +
         fd.params[dpi].name +
         "' of generic function '" +
         fd.name +
-        "'; annotate the lambda's parameters or bind it to a typed val"
+        "'; annotate the lambda's parameters, pass explicit type arguments, or bind it to a typed val"
     )
   }
   // Infer type args.
@@ -15833,16 +15945,23 @@ func lowerBufferElemAssign(
 ): Bool {
   val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
   val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+  // The index and the value are evaluated before the buffer is made unique and
+  // its address taken: the value may copy the buffer (marking it shared after
+  // a check made earlier) or write it through an `inout` argument (replacing
+  // the block the address named).
+  val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
+  val rhs = match op {
+    case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+    case _ -> lowerExpr(ctx, insns, value)
+  }
   lowerBufferEnsureUnique(ctx, insns, receiver, line)
   val buf = lowerExpr(ctx, insns, receiver)
-  val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
   val ptr = bufferElemPtr(ctx, insns, buf, elem, idx.value)
   val newVal = match op {
-    case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+    case AssEq -> rhs
     case _ -> {
       // The right-hand side is evaluated before the element is read, as for a
       // list element (`combineIndexedAssignValue`).
-      val rhs = lowerExpr(ctx, insns, value)
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = elem, ptr = ptr.value))
       combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line)
@@ -16574,6 +16693,40 @@ func lowerFunctionEnv(
       )
     )
     ctx.curAsyncTask.add("coro.task")
+    // Deferred start (docs/67 G8, multi-threaded scheduler): a `spawn` call
+    // site raised the spawn hint just before this ramp, and when the
+    // scheduler runs on several threads `lyric_task_defer_start` consumes it
+    // and queues the task, so the first suspend point here hands the whole
+    // body to a worker.  With the default single-threaded scheduler it
+    // always returns 0 and the task stays hot.
+    body.add(
+      NCall(
+        dest = "coro.defer",
+        retTy = NI32,
+        fn = NGlobal(name = "lyric_task_defer_start"),
+        args = arg1(p8, NLocal(name = "coro.task"))
+      )
+    )
+    body.add(
+      NICmp(
+        dest = "coro.defer.b",
+        pred = INe,
+        ty = NI32,
+        a = NLocal(name = "coro.defer"),
+        b = NLitInt(v = 0i64, ty = NI32)
+      )
+    )
+    body.add(NCondBr(cond = NLocal(name = "coro.defer.b"), thenLabel = "coro.defer.susp", elseLabel = "coro.defer.cont"))
+    body.add(NLabel(name = "coro.defer.susp"))
+    val dsArgs: List[NArg] = newList()
+    dsArgs.add(NArg(ty = NToken, value = NLitTokenNone))
+    dsArgs.add(NArg(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+    body.add(NCall(dest = "coro.ds", retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = dsArgs))
+    val dsCases: List[NSwitchCase] = newList()
+    dsCases.add(NSwitchCase(matchVal = 0i64, label = "coro.defer.cont"))
+    dsCases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
+    body.add(NSwitch(ty = NI8, scrutinee = NLocal(name = "coro.ds"), defaultLabel = "coro.exit", cases = dsCases))
+    body.add(NLabel(name = "coro.defer.cont"))
   }
   // Parameters land in allocas so `var`-style reads/writes and address
   // uniformity hold; mem2reg cleans this up at -O1+.  `in` params are
@@ -16919,6 +17072,9 @@ func asyncRuntimeDecls(): List[NFunc] {
   decls.add(mkDecl1("llvm.coro.resume", NVoid, p8))
   decls.add(mkDecl1("llvm.coro.destroy", NVoid, p8))
   decls.add(mkDecl1("lyric_task_new", p8, p8))
+  decls.add(mkDecl1("lyric_task_defer_start", NI32, p8))
+  decls.add(mkDeclN("lyric_spawn_hint", NVoid, noTys))
+  decls.add(mkDeclN("lyric_ramp_done", NVoid, noTys))
   decls.add(mkDecl3("lyric_task_complete", NVoid, p8, NI64, NI32))
   decls.add(mkDecl1("lyric_task_result", NI64, p8))
   decls.add(mkDecl1("lyric_task_is_complete", NI32, p8))
@@ -19570,6 +19726,15 @@ func lowerProtectedConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
   outV
 }
 
+func isDeadProtected(u: in CodegenUnit, name: in String): Bool {
+  for dead in u.deadProtecteds {
+    if dead == name {
+      return true
+    }
+  }
+  false
+}
+
 // ── Protected-method wrapper: lock, call inner, unlock ──────────────────────
 /// For every non-generic protected type's entries/funcs, register the
 /// lock/unlock wrapper's `NFuncSig` directly into `ctx.sigs` (so UFCS call
@@ -19587,7 +19752,11 @@ func registerProtectedMethods(ctx: in Ctx, units: in List[CodegenUnit], fns: in 
       match pd.generics {
         case Some(_) -> {
         }
-        case None -> registerProtectedMethodsFor(ctx, u.pkgName, pd, fns)
+        case None -> {
+          if not isDeadProtected(u, pd.name) {
+            registerProtectedMethodsFor(ctx, u.pkgName, pd, fns)
+          }
+        }
       }
       pi = pi + 1
     }

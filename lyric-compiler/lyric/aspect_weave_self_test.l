@@ -445,7 +445,7 @@ test "aspect's own ensures: clause is woven and enforced at runtime" {
 // the wrapper agree on how the parameter is passed, so the callee's write
 // reaches the caller through the aspect.
 // ─────────────────────────────────────────────────────────────────────────────
-record ByRefBox {
+ref record ByRefBox {
   var total: Int
 }
 

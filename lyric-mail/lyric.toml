@@ -25,11 +25,5 @@ default  = ["dotnet", "smtp", "ses", "sendgrid"]
 dotnet   = []
 jvm      = []
 smtp     = []   # SMTP via System.Net.Mail (BCL, no extra NuGet dependency) on .NET; not yet implemented on jvm
-ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET); not yet implemented on either target
-sendgrid = []   # SendGrid (SendGrid .NET library); not yet implemented on either target
-
-[nuget]
-# feature = "ses" — AWS SDK SES module for .NET
-"AWSSDK.SimpleEmail"   = "3.7.300"
-# feature = "sendgrid" — SendGrid .NET client
-"SendGrid"             = "9.29.3"
+ses      = []   # Amazon SES v2 over Std.Http (SigV4), both targets
+sendgrid = []   # SendGrid v3 over Std.Http, both targets

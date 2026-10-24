@@ -64,7 +64,7 @@ version = "0.1.0"
 "Csv.Derive" = { path = "../csv-derive" }
 ```
 
-Nothing else is needed. When you build, the compiler sees that `Csv.Derive`'s own manifest says `kind = "source-generator"`, builds it (skipping that when it is up to date), and runs it over every type you annotate. It is built for .NET and run with `dotnet exec` whatever `--target` you build for, so the same generator serves a JVM or native build. A generator registered in a package registry or fetched from git cannot be used yet (diagnostic X0009). Annotate types as needed:
+Nothing else is needed. When you build, the compiler sees that `Csv.Derive`'s own manifest says `kind = "source-generator"`, builds it (skipping that when it is up to date), and runs it over every type you annotate. It is built for .NET and run with `dotnet exec`, as a plugin of the compiler (Chapter 33), whatever `--target` you build for, so the same generator serves a JVM or native build. A generator registered in a package registry or fetched from git cannot be used yet (diagnostic X0009). Annotate types as needed:
 
 ```lyric
 package Sales.Reports
@@ -119,19 +119,37 @@ kind    = "source-generator"
 "Lyric.GeneratorSdk" = "^1.0"
 ```
 
-`kind = "source-generator"` is what tells the compiler to treat this package as a generator rather than an importable library. When a consumer's build prepares the generator, the compiler checks that it declares `generate` and a `main` that runs it (diagnostic X0003 if either is missing).
+`kind = "source-generator"` is what tells the compiler to treat this package as a generator rather than an importable library. When a consumer's build prepares the generator, the compiler checks that it declares a `@plugin` record implementing `SourceGenerator` (diagnostic X0003 otherwise).
 
 ### §30.3.2 The entry point
 
-Every generator exports exactly one function:
+A generator is a plugin (Chapter 33). `Lyric.GeneratorSdk` declares the plugin point:
+
+```lyric
+@plugin_point(version = "3.0", allows(ProjectRead))
+pub interface SourceGenerator {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]
+}
+```
+
+and the generator package declares one `@plugin` record that implements it:
 
 ```lyric
 import Lyric.GeneratorSdk
 
-pub func generate(req: GeneratorRequest): GeneratorResponse { ... }
+@plugin(id = "you.csv-derive", version = "1.0.0", publisher = "you", implements(SourceGenerator))
+pub record CsvDerivePlugin {}
+
+impl SourceGenerator for CsvDerivePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
+}
 ```
 
-The name `generate` is fixed. The compiler locates it by name and signature after loading the package.
+The package declares no `main`: the compiler generates the plugin's entry point. Keeping the work in an ordinary function (`generateSource` here) lets tests call it without the protocol. Return `Err(error = GeneratorError(message = ...))` only for a request the generator cannot handle at all; problems with the annotated type belong in the response's `diagnostics`.
+
+The compiler starts the generator once per build and calls `generate` for every annotation that names it. A generator that needs to read a project file declares a `ProjectReadClient` field and a `@plugin_request(ProjectRead)` function returning `ProjectReadGrant(roots = ...)`, the project-relative directories it reads; `readText(path)` then returns the file's text, and a path outside the roots, an absolute path or one containing `..` is refused.
 
 ### §30.3.3 `GeneratorRequest`
 
@@ -206,7 +224,7 @@ import Std.Core
 import Std.String
 import Std.Collections
 
-pub func generate(req: GeneratorRequest): GeneratorResponse {
+pub func generateSource(req: GeneratorRequest): GeneratorResponse {
   val td = req.typeDescriptor
   val typeName = td.name
 
@@ -296,7 +314,7 @@ func parseExpr(f: FieldDescriptor, idx: Int): String =
   }
 ```
 
-This is a bootstrap-quality implementation — it handles the happy path but is not production-hardened (no CSV quoting, limited numeric types). A real generator would be more thorough, but this illustrates all the key patterns.
+With the plugin record from §30.3.2 beside it, that is the whole generator. This is a deliberately small implementation — it handles the happy path but is not production-hardened (no CSV quoting, limited numeric types). A real generator would be more thorough, but this illustrates all the key patterns.
 
 ---
 
@@ -316,12 +334,12 @@ The full set:
 |---|---|
 | X0001 | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
 | X0002 | The named dependency's manifest does not declare `kind = "source-generator"`. |
-| X0003 | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
+| X0003 | The generator package declares no `@plugin` record implementing `Lyric.GeneratorSdk.SourceGenerator`. |
 | X0004 | The generator returned code that does not parse; the message gives the line within the generated code. |
 | X0005 | The generator reported a diagnostic. |
 | X0006 | A source-generator package is imported. |
 | X0008 | The generator is not declared in `[dependencies]`. |
-| X0009 | The generator could not be built or run: its build failed, it exited non-zero, wrote no or malformed JSON, ran longer than 60 seconds, or is a registry or git dependency. |
+| X0009 | The generator could not be built or run: its build failed, its manifest probe failed, the call failed at the plugin boundary (a crash, a malformed reply, or longer than 60 seconds), it returned a `GeneratorError`, or it is a registry or git dependency. |
 
 If a file has several failing annotations, all of them are reported.
 
@@ -329,7 +347,7 @@ If a file has several failing annotations, all of them are reported.
 
 ## §30.6 Testing a generator
 
-A generator is a regular Lyric package and can be tested with `lyric test`. The simplest approach is to call `generate` directly with a hand-constructed `GeneratorRequest` and assert on the response:
+A generator is a regular Lyric package and can be tested with `lyric test`. The simplest approach is to call `generateSource` directly with a hand-constructed `GeneratorRequest` and assert on the response:
 
 ```lyric
 @test_module
@@ -367,7 +385,7 @@ func test_generates_toCsv_for_simple_record(): Unit {
       ]
     }
   }
-  val resp = generate(req)
+  val resp = generateSource(req)
   assertEq(resp.diagnostics, [])
   assertTrue(String.contains(resp.lyricSource, "func Row.toCsv"))
   assertTrue(String.contains(resp.lyricSource, "func Row.fromCsv"))
@@ -386,7 +404,7 @@ Publishing is identical to any other Lyric package:
 lyric publish
 ```
 
-`lyric publish` checks that the entry point exists and has the correct signature before allowing publication. The package appears on NuGet with `kind = source-generator` recorded in its metadata, so `lyric search` and the LSP can identify generator packages distinctly from library packages.
+The package appears on NuGet with `kind = source-generator` recorded in its metadata, so `lyric search` and the LSP can identify generator packages distinctly from library packages.
 
 Consuming a published generator from the registry is not supported yet: the compiler needs a generator's source to build it, so today a consumer depends on it by path or as a workspace member (X0009 otherwise).
 

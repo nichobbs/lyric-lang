@@ -1108,6 +1108,40 @@ static void test_sock_read_timeout(void) {
     lyric_sock_close(listen_fd);
 }
 
+typedef struct {
+    int fd;
+    volatile int64_t result;
+} blocked_read_arg;
+
+static void* blocked_reader(void* p) {
+    blocked_read_arg* a = (blocked_read_arg*)p;
+    uint8_t buf[16];
+    a->result = lyric_sock_read(a->fd, buf, sizeof(buf));
+    return NULL;
+}
+
+/* lyric_sock_shutdown wakes a read another thread is blocked in, with no
+ * timeout set, on every target: Std.TcpHost.hostShutdown relies on it to stop
+ * a server whose handler waits on an idle keep-alive connection. */
+static void test_sock_shutdown_wakes_blocked_read(void) {
+    int listen_fd, client_fd, server_fd;
+    loopback_pair(&listen_fd, &client_fd, &server_fd);
+    blocked_read_arg arg;
+    arg.fd = server_fd;
+    arg.result = 99;
+    int64_t th = 0;
+    lyric_thread_create(&th, blocked_reader, &arg);
+    lyric_sleep_nanos(100 * 1000 * 1000); /* let the reader block */
+    int64_t start = mono_ms();
+    CHECK(lyric_sock_shutdown(server_fd, 2) == 0);
+    lyric_thread_join(th, NULL);
+    CHECK(mono_ms() - start < 3000);
+    CHECK(arg.result <= 0);
+    lyric_sock_close(server_fd);
+    lyric_sock_close(client_fd);
+    lyric_sock_close(listen_fd);
+}
+
 /* A client that connects and never sends a ClientHello: the server
  * handshake fails at the timeout rather than blocking its thread forever. */
 static void test_tls_handshake_timeout(void) {
@@ -1199,6 +1233,7 @@ int main(void) {
     test_accept_interruptible_presignaled();
     test_accept_interruptible_double_signal();
     test_sock_read_timeout();
+    test_sock_shutdown_wakes_blocked_read();
 
     if (!lyric_tls_available()) {
         char err[256];

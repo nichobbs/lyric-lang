@@ -36,7 +36,7 @@ func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V)
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
 func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
 
-record CircuitEntry {
+ref record CircuitEntry {
   var consecutiveFailures: Int = 0
   var isOpen: Bool = false
   var openedAtMs: Long = 0i64

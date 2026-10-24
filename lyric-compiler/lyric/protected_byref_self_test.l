@@ -54,11 +54,11 @@ record Pt {
   y: Int
 }
 
-record Cell {
+ref record Cell {
   var f: Int
 }
 
-record Nest {
+ref record Nest {
   var c: Cell
 }
 
@@ -109,7 +109,7 @@ protected type Counter {
   func current(): Int = total
 }
 
-record Holder {
+ref record Holder {
   c: Counter
   var k: Int
 }
@@ -431,7 +431,7 @@ test "an interface implemented by a protected type, called through the interface
 // A field reached through a generic record's generic-typed field (#8272): the
 // JVM erases the inner receiver to `Object`, so the field place has to be
 // built over the receiver's instantiated class.
-record GBox[T] {
+ref record GBox[T] {
   var v: T
   var k: Int
 }

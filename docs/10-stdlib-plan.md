@@ -442,6 +442,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Math` (`math.l`) | `@stable` | All math helpers: `pi`, `e`, trig, `abs`, `min`/`max`, `gcd`, `lcm`, `pow`, `sqrt`, etc. |
 | `Std.Stream` (`stream.l`) | `@stable` | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` interfaces. |
 | `Std.Log` (`log.l`) | `@stable` | `LogLevel`, `LogField`, `Logger`, `log`/`debug`/`info`/`warn`/`error`. |
+| `Std.AnnotationMeta` (`annotation_meta.l`) | `@stable(since = "0.1")` | Runtime reader for `config { }` field annotations the compiler embeds (#6866, #7180, D225): `fieldsWithAnnotation`, `allAnnotatedFields`, `parseAnnotationMeta`, `namedArg`, `positionalArg`, `AnnotatedField`, `AnnotationArg`, `AnnotationMetaError`. dotnet and JVM; native returns `Unsupported` (#8524). Kernel: `Std.AnnotationMetaHost`. |
 | `Std.Path` (`path.l`) | `@stable` | `join`, `joinWithin` (confining join for untrusted components), `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative`. |
 | `Std.Environment` (`environment.l`) | `@stable` | `getVar`, `getVarOrDefault`, `setVar`, `args`, `exitCode`. `setVar` is real on all three targets (#7546): dotnet/native mutate the real process environment block, JVM backs it with a process-wide overlay that `getVar` and a spawned `Std.Process` child both observe. |
 | `Std.App` (`app.l`) | `@stable` | `Config`, `run`, `withConfig`, `Config.path`, `Config.rawText`. |

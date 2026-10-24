@@ -53,7 +53,7 @@ func threadSleep(ms: in Int): Unit = ()
 // read-back inside `onMessage`, breaks the cycle (both are the same shared
 // reference; by the time any client message can possibly arrive, the test
 // has already populated the holder).
-record RegistryHolder {
+ref record RegistryHolder {
   var registry: Option[NativeRegistry] = None
   var lastConnId: Option[String] = None
   var lastOrigin: String = ""
@@ -259,7 +259,7 @@ func maskKeyBytes(k0: in Int, k1: in Int, k2: in Int, k3: in Int): slice[Byte] {
 // Mutable per-connection read buffer shared across `clientReadFrame` calls
 // (a real client's TCP stream doesn't align frame boundaries with `Read`
 // calls, so leftover bytes from one read must carry over to the next).
-record ClientReader {
+ref record ClientReader {
   var buf: List[Byte] = newList()
 }
 
@@ -532,7 +532,7 @@ test "loopback: an empty peer close is answered with an empty close, never code 
 // A handler that throws must not end the connection unobserved: the kernel
 // reports it through `onError` and keeps reading (docs/65 §15, F-17, where
 // a failing UI dispatch left the page waiting with nothing logged).
-record FailureLog {
+ref record FailureLog {
   var registry: Option[NativeRegistry] = None
   var errors: List[String] = newList()
 }

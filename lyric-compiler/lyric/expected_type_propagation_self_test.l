@@ -91,7 +91,7 @@ func listPairValue(p: in (List[Int], Int)): Int {
   sumList(xs) + n
 }
 
-record OptCell {
+ref record OptCell {
   var o: Option[Int]
 
   func setFrom(self: in OptCell, c: in Bool): Unit {
@@ -99,11 +99,11 @@ record OptCell {
   }
 }
 
-record ResCell {
+ref record ResCell {
   var r: Result[Int, String]
 }
 
-record ListCell {
+ref record ListCell {
   var xs: List[Int]
 }
 
@@ -111,11 +111,11 @@ record Outer {
   cell: OptCell
 }
 
-record Holder[T] {
+ref record Holder[T] {
   var value: Option[T]
 }
 
-record LongCell {
+ref record LongCell {
   var n: Long
 }
 

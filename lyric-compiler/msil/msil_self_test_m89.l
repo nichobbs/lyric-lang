@@ -49,7 +49,7 @@ record Tok {
   span: Pos
 }
 
-record St {
+ref record St {
   var pos: Int
 }
 

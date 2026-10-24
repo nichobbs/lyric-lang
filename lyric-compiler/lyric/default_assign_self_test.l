@@ -52,7 +52,7 @@ func outString(value: out String): Bool {
   false
 }
 
-record Counter {
+ref record Counter {
   var n: Int
 }
 

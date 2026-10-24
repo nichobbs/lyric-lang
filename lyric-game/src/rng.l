@@ -7,7 +7,7 @@ package Game.Rng
 
 import Std.Core
 
-pub record Rng {
+pub ref record Rng {
   var state: Long
 }
 

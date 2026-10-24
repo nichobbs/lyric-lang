@@ -54,7 +54,7 @@ pub record Image {
   pixelArt: Bool
 }
 
-record Batch {
+ref record Batch {
   texture: G.Texture
   crisp: Bool
   first: Int
@@ -63,7 +63,7 @@ record Batch {
 }
 
 /// The renderer: its pipeline, textures and buffers, and the frame being collected.
-pub record Painter {
+pub ref record Painter {
   device: G.Device
   pipeline: G.RenderPipeline
   sampler: G.Sampler

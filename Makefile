@@ -278,6 +278,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/auto_ffi_self_test.l \
 	lyric-compiler/lyric/bitwise_self_test.l \
 	lyric-compiler/lyric/block_shadow_self_test.l \
+	lyric-compiler/lyric/bounded_generic_ops_self_test.l \
 	lyric-compiler/lyric/byte_arithmetic_self_test.l \
 	lyric-compiler/lyric/cfg_self_test.l \
 	lyric-compiler/lyric/cfg_single_file_self_test.l \
@@ -375,6 +376,10 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/parser_self_test.l \
 	lyric-compiler/lyric/pattern_lowering_self_test.l \
 	lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
+	lyric-compiler/lyric/plugin_codec_self_test.l \
+	lyric-compiler/lyric/plugin_expand_self_test.l \
+	lyric-compiler/lyric/plugin_manifest_self_test.l \
+	lyric-compiler/lyric/plugin_sdk_self_test.l \
 	lyric-compiler/lyric/propagate_self_test.l \
 	lyric-compiler/lyric/qualified_union_case_self_test.l \
 	lyric-compiler/lyric/quantifier_ident_self_test.l \

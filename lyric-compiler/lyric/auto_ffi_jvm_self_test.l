@@ -879,3 +879,21 @@ test "F0015-J emits the resolved descriptor for a reference-widened @externTarge
     "Objects.toString(String) resolves against the real Object-typed overload"
   )
 }
+
+// #8225: a `Char` is a Unicode scalar value (docs/01 §2.1), never a lone
+// surrogate, so a `char` an auto-FFI call returns is checked at the boundary.
+test "auto-FFI rejects a surrogate Char result (#8225)" {
+  val supp = 128512
+  assertPanicsWith("Character.highSurrogate(U+1F600)", "surrogate", { -> val _ = JCharacter.highSurrogate(supp) })
+  assertPanicsWith("Character.lowSurrogate(U+1F600)", "surrogate", { -> val _ = JCharacter.lowSurrogate(supp) })
+}
+
+test "auto-FFI passes a scalar Char result through (#8225)" {
+  assertEqualInt(JCharacter.forDigit(7, 10).toInt(), 55, "Character.forDigit(7, 10) is '7'")
+  assertEqualInt(JCharacter.toUpperCase(97.toChar()).toInt(), 65, "Character.toUpperCase('a')")
+}
+
+test "auto-FFI passes a scalar static char field through the boundary check (#8225)" {
+  assertEqualInt(JCharacter.MAX_VALUE.toInt(), 65535, "Character.MAX_VALUE")
+  assertEqualInt(JCharacter.MIN_VALUE.toInt(), 0, "Character.MIN_VALUE")
+}

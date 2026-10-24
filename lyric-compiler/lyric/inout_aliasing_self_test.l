@@ -28,15 +28,15 @@ import Std.Collections
 import Std.Task
 import Std.Testing
 
-record R {
+ref record R {
   var f: Int
 }
 
-record Nest {
+ref record Nest {
   var c: R
 }
 
-record Deep {
+ref record Deep {
   var n: Nest
 }
 
@@ -45,22 +45,22 @@ record Pt {
   y: Int
 }
 
-record PtHolder {
+ref record PtHolder {
   var p: Pt
 }
 
-record Words {
+ref record Words {
   var s: String
 }
 
-record Kinds {
+ref record Kinds {
   var l: Long
   var d: Double
   var b: Bool
   var y: Byte
 }
 
-record Acc {
+ref record Acc {
   var k: Int
 
   // `x` names `self.k` when the call passes `a.k` on `a`.
@@ -91,7 +91,7 @@ record Num {
   n: Int
 }
 
-record NumHolder {
+ref record NumHolder {
   var v: Num
 }
 
@@ -137,7 +137,7 @@ func nxt(x: inout Int): Int {
 
 val initialised: Int = if true { var t = 40; bumpOne(t); t } else { 0 }
 
-record Defaulted {
+ref record Defaulted {
   var f: Int = if true { var u = 7; bumpOne(u); u } else { 0 }
 }
 

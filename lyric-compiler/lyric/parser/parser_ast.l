@@ -634,6 +634,9 @@ pub record RecordDecl {
   span: Span
   /// `foreign record` (D188, docs/67 §4.7): a C-layout struct of a kernel file.
   isForeign: Bool = false
+  /// `ref record` (D222): a record with `var` fields that declares its identity
+  /// semantics. Without it, a record with a `var` field draws W0031.
+  isRef: Bool = false
 }
 
 pub union UnionField {
@@ -1442,6 +1445,10 @@ pub record ArrayIndexSite {
   elide: Bool
   unwrap: Bool
   wide: Bool
+  /// The element type of a `buffer[T]` receiver, spelled for the lowering that
+  /// binds a value to be stored before the write (docs/67 §4.4); `None` for an
+  /// array and where the type cannot be spelled.
+  elem: Option[TypeExpr] = None
 }
 
 /// The intrinsics `Lyric.TypeChecker` and `Lyric.ContractElaborator.lowerArrays`
@@ -1462,6 +1469,11 @@ pub func arrayCopyIntrinsic(): String = "__lyric_array_copy"
 pub func bufferAsListMember(): String = "__lyric_buffer_as_list"
 
 pub func bufferFromListMember(): String = "__lyric_buffer_from_list"
+
+/// `__lyric_buffer_items_copy[buffer[T]](items)` is a deep copy of a buffer
+/// handle's storage, spelled by the write lowering and expanded to loops once
+/// the backend's array representation is known.
+pub func bufferItemsCopyIntrinsic(): String = "__lyric_buffer_items_copy"
 
 /// `__lyric_buffer_unique(b)`: the buffer a write to the place `b` may modify
 /// (the native backend's copy-on-write step, docs/67 §4.4).

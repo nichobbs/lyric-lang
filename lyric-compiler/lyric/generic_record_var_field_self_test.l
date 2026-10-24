@@ -53,7 +53,7 @@ package Lyric.GenericRecordVarFieldSelfTest
 import Std.Core
 import Std.Testing
 
-record MyBox[T] {
+ref record MyBox[T] {
   var value: T
 }
 

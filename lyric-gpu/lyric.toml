@@ -44,3 +44,10 @@ members = ["wgpu/resources/libwgpu_native-release.dylib"]
 url     = "https://files.pythonhosted.org/packages/1b/4b/173e7685a22edf2d33ed330a038c8859d2c62bff900eb637a702661333ff/wgpu-0.32.0-py3-none-macosx_10_9_x86_64.whl"
 sha256  = "cfd3967616a3c42e2b7a234407df38668c697f5aa505d56e0814d647b6746302"
 members = ["wgpu/resources/libwgpu_native-release.dylib"]
+
+# Windows: wgpu-native's own release archive.  The import library is extracted under the
+# library's link name; it still loads wgpu_native.dll, which ships beside the program.
+[native.libs.wgpu_native-release.prebuilt.x86_64-pc-windows-msvc]
+url     = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-msvc-release.zip"
+sha256  = "7e67d7445c42aeb85e30f88930fd8d7d83ee769e3390aeb1ada75ebf3cf78132"
+members = ["lib/wgpu_native.dll", "lib/wgpu_native.dll.lib -> wgpu_native-release.lib"]

@@ -6,8 +6,8 @@ resolved and `docs/00` / `docs/04` carry the §4.9 revisions. G1 is done
 record arithmetic). G2 is implemented: the `Plain` marker, `buffer[T]` on
 dotnet, the JVM (D185) and native (D186), `Std.Buffer`, and `withPointer` /
 `withMutPointer` (D187); the verifier's sequence model (#8394) and the
-copy-before-loop diagnostic (#8395) are tracked separately, as are the lazy
-managed form (#8389) and the JVM `spawn` argument copy (#8391). G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
+copy-before-loop diagnostic (#8395) are tracked separately. The lazy
+managed form (D226, #8389) and the JVM `spawn` argument copy (#8391) are implemented. G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
 `lyric bindgen`, `[native.libs]`, prebuilt restore, callback members). G5 is
 implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
 triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
@@ -24,11 +24,13 @@ deterministic core with PNG and WAV decoding, a native frame loop with input rec
 and a Breakout sample whose recorded session is replayed headless, in a window under Xvfb, and in
 `lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
-clean, which also fixed a race in the protected-type monitor); the coroutine scheduler for `async`
-tasks is still single-threaded (#7947). G10 is implemented except accessibility (D203, D204: the native
+clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
+tasks has an opt-in multi-threaded mode (D217: `LYRIC_ASYNC_THREADS=N`, a shared run queue, `spawn` started
+on workers, ThreadSanitizer and AddressSanitizer clean; work stealing and a compile-time sendability check
+are follow-ups). G10 is implemented except accessibility (D203, D204: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
-AccessKit and the macOS screen-reader smoke test remain, #8430, as do bidirectional text in single-line inputs, #8497, and
+the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional text in single-line inputs, #8497, and
 pruning the libraries of unused dependency kernels from the link, #8429). D204 also fixed two native
 backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
 enum-case patterns over two enums sharing a case name (#8421).
@@ -36,8 +38,8 @@ G9 is implemented for the core target (D205: `x86_64-pc-windows-msvc` with the M
 Microsoft x64 C ABI, lyric-rt's platform layer ported to Win32 with UTF-16 at the boundary, a Windows CI job
 running the native suite) and for child processes (D208: `CreateProcessW` over overlapped pipes, a Job Object
 per child), for sockets and TLS (D209: Winsock, Schannel) and for the compiler-hosted native self-tests,
-AddressSanitizer and long paths (D213); the graphics prebuilts and the G4 to G7 examples on Windows (#8435)
-remain.
+AddressSanitizer and long paths (D213), and for the graphics libraries, whose G4 to G7 examples run on Windows
+(D219: `@cfg(target_os = ...)`, per-data-model bindings, Windows prebuilt archives and the Win32 surface).
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
@@ -297,7 +299,10 @@ shared:
   and a write to a shared buffer copies and clears the mark. The mark is
   never cleared otherwise, so this is conservative: always correct, but
   sometimes copies where native would not. Native is the performance
-  target; the managed targets get correct semantics.
+  target; the managed targets get correct semantics. Implemented in D226
+  (#8389): a managed buffer is a handle over its storage, a copy is O(1),
+  and `b[i] = v` evaluates `v`, then makes the storage private if its
+  handle is marked.
 
 **Alternatives considered**
 
@@ -586,7 +591,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) and the compiler-hosted self-tests with AddressSanitizer (D213), and its exit criterion of running the G4 to G7 examples on Windows waits on #8435. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

@@ -162,7 +162,7 @@ val MAX_BUFFERED_SPANS: Int = 2048
 pub protected type SpanBuffer {
   var spans: List[Span]
   entry push(span: in Span): Unit {
-    if spans.length < MAX_BUFFERED_SPANS {
+    if spans.count < MAX_BUFFERED_SPANS {
       spans.add(span)
     }
   }
@@ -192,12 +192,12 @@ pub protected type SpanBuffer {
   entry removeExported(n: in Int): Unit {
     if n <= 0 {
       // no-op: nothing exported, nothing to remove.
-    } else if n >= spans.length {
+    } else if n >= spans.count {
       spans = newList()
     } else {
       val remaining: List[Span] = newList()
       var i = n
-      while i < spans.length {
+      while i < spans.count {
         remaining.add(spans[i])
         i = i + 1
       }
@@ -205,7 +205,7 @@ pub protected type SpanBuffer {
     }
   }
   func count(): Int {
-    return spans.length
+    return spans.count
   }
 }
 
@@ -231,7 +231,7 @@ pub val globalSpanBuffer: SpanBuffer = newSpanBuffer()
 /// A monotonic counter's current cumulative total.  OTLP reports counters
 /// with `AGGREGATION_TEMPORALITY_CUMULATIVE`, so the exporter re-sends the
 /// running total on every flush rather than a delta since the last flush.
-pub record CounterPoint {
+pub ref record CounterPoint {
   name: String
   unit: String
   var total: Long
@@ -243,7 +243,7 @@ pub record CounterPoint {
 /// `HistogramDataPoint` (`explicit_bounds` empty, one `bucket_counts`
 /// entry) but does not support percentile queries in the collector —
 /// only `count`/`sum`/`avg`.
-pub record HistogramPoint {
+pub ref record HistogramPoint {
   name: String
   unit: String
   var count: Long
@@ -260,7 +260,7 @@ pub protected type MetricsBuffer {
   entry incrementCounter(name: in String, delta: in Long, unit: in String): Unit {
     var i = 0
     var found = false
-    while i < counters.length {
+    while i < counters.count {
       if counters[i].name == name {
         counters[i].total = counters[i].total + delta
         found = true
@@ -274,7 +274,7 @@ pub protected type MetricsBuffer {
   entry recordHistogram(name: in String, value: in Double, unit: in String): Unit {
     var i = 0
     var found = false
-    while i < histograms.length {
+    while i < histograms.count {
       if histograms[i].name == name {
         histograms[i].count = histograms[i].count + 1i64
         histograms[i].sum = histograms[i].sum + value
@@ -291,7 +291,7 @@ pub protected type MetricsBuffer {
   func snapshotCounters(): List[CounterPoint] {
     val acc: List[CounterPoint] = newList()
     var i = 0
-    while i < counters.length {
+    while i < counters.count {
       acc.add(counters[i])
       i = i + 1
     }
@@ -300,7 +300,7 @@ pub protected type MetricsBuffer {
   func snapshotHistograms(): List[HistogramPoint] {
     val acc: List[HistogramPoint] = newList()
     var i = 0
-    while i < histograms.length {
+    while i < histograms.count {
       acc.add(histograms[i])
       i = i + 1
     }

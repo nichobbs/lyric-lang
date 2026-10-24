@@ -1400,7 +1400,7 @@ func itemSummary(item: in Item): String {
   val v = visibilityPrefixStr(item.visibility)
   match item.kind {
     case IFunc(fd) -> v + "func " + fd.name + "(...)"
-    case IRecord(rd) -> v + "record " + rd.name
+    case IRecord(rd) -> v + (if rd.isRef { "ref record " } else { "record " }) + rd.name
     case IExposedRec(rd) -> v + "exposed record " + rd.name
     case IUnion(ud) -> v + "union " + ud.name
     case IEnum(ed) -> v + "enum " + ed.name
@@ -1453,7 +1453,7 @@ func symDetail(sym: in Symbol): String {
   val v = visibilityPrefixStr(sym.visibility)
   match sym.kind {
     case DKFunc(_) -> v + "func " + sym.name + "(...)"
-    case DKRecord(_, _) -> v + "record " + sym.name
+    case DKRecord(_, rd) -> v + (if rd.isRef { "ref record " } else { "record " }) + sym.name
     case DKExposedRec(_, _) -> v + "exposed record " + sym.name
     case DKUnion(_, _) -> v + "union " + sym.name
     case DKEnum(_, _) -> v + "enum " + sym.name

@@ -149,7 +149,7 @@ extern type JJavaSet = "java.util.Set"
 // `onOpen`/`onMessage`/`onClose`/`onError` are `None` for a bookkeeping-only
 // registry allocated via `createRegistry` (no live server, kept for parity
 // with `Ws.Kernel.Net` and error-path tests); `startServer` fills them in.
-record RegistryState {
+ref record RegistryState {
   handle: Int
   maxMessageSizeBytes: Int
   var openCount: Int
@@ -869,7 +869,7 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
 // `messagesPerMinute + burstSize` messages at once, refilling at
 // `messagesPerMinute` a minute.  It replaced a tumbling window whose burst
 // budget never refilled (#7249, #1178).
-record RateEntry {
+ref record RateEntry {
   var scaledTokens: Long
   var lastRefillMs: Long
   lock: JReentrantLock

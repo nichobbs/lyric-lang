@@ -27,6 +27,7 @@ import Std.Encoding
 import Std.Environment
 import Std.File
 import Std.Json
+import Std.Process
 import Std.Testing
 import Web
 import Web.OpenApi as OpenApi
@@ -468,6 +469,115 @@ test "dispatch: static file middleware rejects path traversal outside root" {
   val legit = Web.dispatch(router, getRequest("/ok.txt"))
   assertEqualInt(legit.status, 200, "a legitimate file inside root is still served")
   assertEqual(decodeUtf8(legit.bodyBytes), "fine to serve", "the in-root file content is correct")
+}
+
+test "dispatch: static file middleware does not follow a symlink out of root" {
+  val dir = scratchDir("static_symlink")
+  val _ = Process.run("rm", ["-rf", dir])
+  val _ = createDir(dir + "/public")
+  val _ = writeText(dir + "/secret.txt", "top secret")
+  val _ = writeText(dir + "/public/ok.txt", "fine to serve")
+  val _ = createDir(dir + "/outside")
+  val _ = writeText(dir + "/outside/inner.txt", "outside inner")
+  val _ = Process.run("ln", ["-s", dir + "/secret.txt", dir + "/public/link.txt"])
+  val _ = Process.run("ln", ["-s", dir + "/outside", dir + "/public/linkdir"])
+
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = dir + "/public",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
+
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/link.txt")).status,
+    404,
+    "a file symlink to outside root is not served"
+  )
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/linkdir/inner.txt")).status,
+    404,
+    "a path through a directory symlink to outside root is not served"
+  )
+  assertEqualInt(Web.dispatch(router, getRequest("/ok.txt")).status, 200, "a real in-root file is still served")
+}
+
+func linkChain(dir: in String, prefix: in String, count: in Int, finalTarget: in String): Unit {
+  var i = 0
+  while i < count {
+    val target = if i == count - 1 { finalTarget } else { prefix + (i + 1).toString() }
+    val _ = Process.run("ln", ["-s", target, dir + "/" + prefix + i.toString()])
+    i = i + 1
+  }
+}
+
+test "dispatch: static symlinks are resolved through relative chains, loops and the hop limit" {
+  val dir = scratchDir("static_symlink_chains")
+  val _ = Process.run("rm", ["-rf", dir])
+  val _ = createDir(dir + "/public")
+  val _ = writeText(dir + "/secret.txt", "top secret")
+  val _ = writeText(dir + "/public/ok.txt", "fine to serve")
+  // A relative chain whose last link climbs out of root.
+  val _ = Process.run("ln", ["-s", "../secret.txt", dir + "/public/hop2"])
+  val _ = Process.run("ln", ["-s", "hop2", dir + "/public/hop1"])
+  // A relative chain that stays inside root.
+  val _ = Process.run("ln", ["-s", "ok.txt", dir + "/public/inner2"])
+  val _ = Process.run("ln", ["-s", "inner2", dir + "/public/inner1"])
+  // A loop, and chains of 30 (within every limit) and 45 (over the 40-link cap).
+  val _ = Process.run("ln", ["-s", "loopb", dir + "/public/loopa"])
+  val _ = Process.run("ln", ["-s", "loopa", dir + "/public/loopb"])
+  linkChain(dir + "/public", "short", 30, "ok.txt")
+  linkChain(dir + "/public", "long", 45, "ok.txt")
+
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = dir + "/public",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
+
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/hop1")).status,
+    404,
+    "a relative chain that escapes root is not served"
+  )
+  assertEqualInt(Web.dispatch(router, getRequest("/inner1")).status, 200, "a relative chain inside root is served")
+  assertEqualInt(Web.dispatch(router, getRequest("/loopa")).status, 404, "a symlink loop is not served")
+  assertEqualInt(Web.dispatch(router, getRequest("/short0")).status, 200, "a 30-link chain inside root is served")
+  assertEqualInt(Web.dispatch(router, getRequest("/long0")).status, 404, "a 45-link chain exceeds the link limit")
+}
+
+test "dispatch: a static root that is itself a symlink still serves its files" {
+  val dir = scratchDir("static_symlink_root")
+  val _ = Process.run("rm", ["-rf", dir])
+  val _ = createDir(dir + "/real")
+  val _ = writeText(dir + "/real/ok.txt", "fine to serve")
+  val _ = writeText(dir + "/secret.txt", "top secret")
+  val _ = Process.run("ln", ["-s", dir + "/real", dir + "/rootlink"])
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = dir + "/rootlink",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
+  assertEqualInt(Web.dispatch(router, getRequest("/ok.txt")).status, 200, "file under a symlinked root is served")
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/../secret.txt")).status,
+    404,
+    "traversal from a symlinked root is refused"
+  )
 }
 
 test "dispatch: fallbackToIndex serves index.html for an unmatched static path" {

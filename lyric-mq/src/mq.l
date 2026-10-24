@@ -167,7 +167,7 @@ pub interface DeadLetterStore {
 /// Entries are held in insertion order.  When `maxEntries` is reached the
 /// oldest entry is discarded to make room, preserving the configured capacity.
 @stable(since = "0.1")
-pub record InProcessDeadLetterStore {
+pub ref record InProcessDeadLetterStore {
   var entries: slice[DeadLetterEntry]
   maxEntries: Int
   invariant: maxEntries >= 1

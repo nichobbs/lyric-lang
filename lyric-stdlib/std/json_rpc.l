@@ -32,6 +32,7 @@ import Std.Core
 import Std.Collections
 import Std.Time
 import Std.JsonValue
+import Std.PanicGuardHost
 
 // ── Envelope types ─────────────────────────────────────────────────────────
 @stable(since = "0.1")
@@ -382,24 +383,53 @@ func decodeErrorFromJson(v: in JsonValue): RpcError {
 }
 
 // ── Dispatch (inbound message → outbound response, or none) ────────────────
-func dispatchNotification(handler: in RpcHandler, method: in String, params: in Option[JsonValue]): Unit {
-  try {
-    handler.onNotification(method, params)
-  } catch Bug as b {
-    // Per the interface doc: a handler panic here is discarded, never
-    // surfaced (no response is possible for a notification, and there is
-    // no safe side-channel to report on generically for every RpcTransport).
+// A handler panic is caught at the dispatch boundary by
+// `Std.PanicGuardHost.runCatchingBug`, which on `--target native` (no
+// unwinding, D-N-003) just runs the handler: a panic there ends the process.
+record NotificationCall {
+  handler: RpcHandler
+  method: String
+  params: Option[JsonValue]
+}
+
+impl BugGuarded for NotificationCall {
+  func invoke(): Unit {
+    self.handler.onNotification(self.method, self.params)
   }
 }
 
-func dispatchRequest(handler: in RpcHandler, id: in RpcId, method: in String, params: in Option[JsonValue]): RpcResponse {
-  val outcome: Result[JsonValue, RpcError] = try {
-    handler.onRequest(method, params)
-  } catch Bug as b {
-    // The panic message can carry internal state (paths, values, stack
-    // context); it is never sent to the peer.
-    Err(error = RpcError(code = internalError, message = "Internal error", data = None))
+record RequestCall {
+  handler: RpcHandler
+  method: String
+  params: Option[JsonValue]
+  var outcome: Result[JsonValue, RpcError]
+}
+
+impl BugGuarded for RequestCall {
+  func invoke(): Unit {
+    self.outcome = self.handler.onRequest(self.method, self.params)
   }
+}
+
+func dispatchNotification(handler: in RpcHandler, method: in String, params: in Option[JsonValue]): Unit {
+  // Per the interface doc: a handler panic here is discarded, never surfaced
+  // (no response is possible for a notification, and there is no safe
+  // side-channel to report on generically for every RpcTransport).
+  val _ = runCatchingBug(NotificationCall(handler = handler, method = method, params = params))
+}
+
+func dispatchRequest(handler: in RpcHandler, id: in RpcId, method: in String, params: in Option[JsonValue]): RpcResponse {
+  // The panic message can carry internal state (paths, values, stack
+  // context); it is never sent to the peer.
+  val panicked: Result[JsonValue, RpcError] = Err(
+    error = RpcError(
+      code = internalError,
+      message = "Internal error",
+      data = None
+    )
+  )
+  val call = RequestCall(handler = handler, method = method, params = params, outcome = panicked)
+  val outcome: Result[JsonValue, RpcError] = if runCatchingBug(call) { call.outcome } else { panicked }
   match outcome {
     case Ok(v) -> RpcSuccess(id = id, value = v)
     case Err(e) -> RpcFailure(id = id, error = e)

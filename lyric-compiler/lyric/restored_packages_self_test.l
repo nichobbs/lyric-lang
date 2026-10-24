@@ -483,6 +483,28 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   }
 }
 
+// A plugin API package's generated items (D207 Decision 2) name the
+// `Std.Plugin` / `Std.JsonRpc` types bare in public signatures, through
+// imports `Lyric.PluginExpand` injects; a consumer of the built package
+// must still restore it (the Lyric.GeneratorSdk case).
+func testSynthesiseArtifactPluginStdlibTypesFiltered(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(
+    mkDecl(
+      "func",
+      "sourceGeneratorRemotes",
+      "pub func sourceGeneratorRemotes(host: PluginHost): List[PluginConnection]"
+    )
+  )
+  decls.add(mkDecl("func", "projectReadCapabilityInfo", "pub func projectReadCapabilityInfo(): CapabilityInfo"))
+  decls.add(mkDecl("func", "callFailed", "pub func callFailed(e: RpcError): CallError[String]"))
+  val art = mkArtifact("MyApp.PluginApi", decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("synth_artifact_plugin_types: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> assertEqual(sa.packageName, "MyApp.PluginApi", "synth_artifact_plugin_types: round-tripped")
+  }
+}
+
 // A signature that references a stdlib type by its FULL `Std.Module.Type`
 // path — the shape any non-`Std.Core` stdlib type (e.g. lyric-web's
 // `serveTls(tls: Std.Tls.TlsServerConfig)`) carries in its repr — produces a
@@ -572,6 +594,81 @@ func testSynthesiseArtifactNonStdQualifiedStillErrors(): Unit {
       case _ -> panic("synth_artifact_non_std_qualified: wrong error variant")
     }
   }
+}
+
+// #7668: `Search` exposes `pub` helpers taking `Std.Json.JsonElement`, which
+// the restored contract names bare through the package's own `import Std.Json`.
+// The contract records that import, so a bare name must be accepted when the
+// contract imports a `Std.*` package whole, or selectively names it.
+func mkContractWithDecls(
+  name: in String,
+  decls: in List[Meta.ContractDecl],
+  whole: in List[String],
+  selected: in List[String],
+): Meta.Contract {
+  val c = mkContract(name, decls)
+  Meta.Contract(
+    packageName = c.packageName,
+    version = c.version,
+    level = c.level,
+    purity = c.purity,
+    formatVersion = c.formatVersion,
+    decls = c.decls,
+    dependencies = c.dependencies,
+    imports = whole,
+    wholeImports = whole,
+    selectedImports = selected,
+    contractHash = c.contractHash
+  )
+}
+
+func artifactWithImports(whole: in List[String], selected: in List[String]): RestoredArtifact {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "esParseIndexResult", "pub func esParseIndexResult(elem: in JsonElement): Int"))
+  RestoredArtifact(
+    packageName = "MyApp.Search",
+    version = "1.0.0",
+    dllPath = "/tmp/MyApp.Search.dll",
+    contract = mkContractWithDecls("MyApp.Search", decls, whole, selected)
+  )
+}
+
+func testSynthesiseArtifactBareNameViaWholeStdImport(): Unit {
+  val whole: List[String] = newList()
+  whole.add("Std.Json")
+  val none: List[String] = newList()
+  match synthesiseArtifact(artifactWithImports(whole, none), emptyDecls()) {
+    case Err(e) -> panic("bare_std_whole: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> assertEqual(sa.packageName, "MyApp.Search", "bare_std_whole: round-tripped")
+  }
+}
+
+func testSynthesiseArtifactBareNameViaSelectedStdImport(): Unit {
+  val none: List[String] = newList()
+  val sel: List[String] = newList()
+  sel.add("Std.Json::JsonElement")
+  match synthesiseArtifact(artifactWithImports(none, sel), emptyDecls()) {
+    case Err(e) -> panic("bare_std_selected: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> assertEqual(sa.packageName, "MyApp.Search", "bare_std_selected: round-tripped")
+  }
+}
+
+func expectSynthesisError(art: in RestoredArtifact, label: in String): Unit {
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Ok(_) -> panic(label + ": expected a real unknown-type error")
+    case Err(_) -> ()
+  }
+}
+
+func testSynthesiseArtifactBareNameWithoutStdImportErrors(): Unit {
+  val none: List[String] = newList()
+  expectSynthesisError(artifactWithImports(none, none), "bare_std_no_import")
+  val nonStd: List[String] = newList()
+  nonStd.add("Other.Pkg")
+  expectSynthesisError(artifactWithImports(nonStd, none), "bare_non_std_import")
+  val otherSel: List[String] = newList()
+  otherSel.add("Std.Json::JsonKind")
+  expectSynthesisError(artifactWithImports(none, otherSel), "bare_std_selected_other_name")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -760,6 +857,7 @@ test "synthesise trailing newline" {
 
 test "synthesise artifact happy path" {
   testSynthesiseArtifactHappyPath()
+  testSynthesiseArtifactPluginStdlibTypesFiltered()
 }
 
 test "synthesise artifact malformed repr" {
@@ -780,6 +878,18 @@ test "synthesise artifact whitelisted aliased Std-qualified T0014 filtered (#584
 
 test "synthesise artifact non-Std qualified still errors" {
   testSynthesiseArtifactNonStdQualifiedStillErrors()
+}
+
+test "synthesise artifact accepts a bare name through a whole Std import (#7668)" {
+  testSynthesiseArtifactBareNameViaWholeStdImport()
+}
+
+test "synthesise artifact accepts a bare name through a selected Std import (#7668)" {
+  testSynthesiseArtifactBareNameViaSelectedStdImport()
+}
+
+test "synthesise artifact still rejects a bare name no Std import covers (#7668)" {
+  testSynthesiseArtifactBareNameWithoutStdImportErrors()
 }
 
 test "build contract from file: async func repr carries 'async' keyword (#6372)" {

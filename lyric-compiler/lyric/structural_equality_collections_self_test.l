@@ -40,12 +40,12 @@ record Box[T] {
   v: T
 }
 
-record Cell {
+ref record Cell {
   var n: Int
 }
 
 @derive(Equals, Hash)
-record Counter {
+ref record Counter {
   var n: Int
   label: String
 }

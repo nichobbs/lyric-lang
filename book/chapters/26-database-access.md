@@ -38,7 +38,7 @@ conn.close()
 ## Queries
 
 ```lyric
-match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
+match conn.query(Db.sql("SELECT id, name FROM users WHERE id = @p0"), ["42"]) {
   case Ok(rows) ->
     for row in rows {
       val name = Db.col(row, "name")
@@ -52,10 +52,28 @@ match conn.query("SELECT id, name FROM users WHERE id = @p0", ["42"]) {
 }
 ```
 
+## SQL text
+
+`query` and `execute` take a `SqlText`, not a `String`. Write the SQL as a
+literal inside `Db.sql(...)` and pass values through the parameter list:
+
+```lyric
+val name = untrustedInput()
+// does not compile: a String is not a SqlText
+// conn.query("SELECT id FROM users WHERE name = '" + name + "'", [])
+conn.query(Db.sql("SELECT id FROM users WHERE name = @p0"), [name])
+```
+
+`Db.sql` also rejects text with comments, a second statement, an unterminated
+string literal, or a placeholder that is not `@p<N>`. When a fragment really is
+built at run time, say so with `Db.unsafeRawSql(text)`; it skips the check, so
+only use it for fixed fragments such as a table name from an allow-list, and
+expect reviewers to grep for it.
+
 ## DML (INSERT / UPDATE / DELETE)
 
 ```lyric
-match conn.execute("INSERT INTO events (name) VALUES (@p0)", ["login"]) {
+match conn.execute(Db.sql("INSERT INTO events (name) VALUES (@p0)"), ["login"]) {
   case Ok(n)  -> println("inserted " + n.toString() + " rows")
   case Err(e) -> eprintln("insert failed: " + e.message)
 }
@@ -68,9 +86,9 @@ match conn.execute("INSERT INTO events (name) VALUES (@p0)", ["login"]) {
 ```lyric
 val tx = conn.transaction()?
 
-match tx.execute("INSERT INTO orders (user_id) VALUES (@p0)", [userId]) {
+match tx.execute(Db.sql("INSERT INTO orders (user_id) VALUES (@p0)"), [userId]) {
   case Ok(_) ->
-    match tx.execute("UPDATE users SET order_count = order_count + 1 WHERE id = @p0", [userId]) {
+    match tx.execute(Db.sql("UPDATE users SET order_count = order_count + 1 WHERE id = @p0"), [userId]) {
       case Ok(_)  -> tx.commit()?
       case Err(e) -> { tx.rollback(); return Err(e) }
     }
@@ -152,10 +170,10 @@ Implement them to add a new driver or to build a test double:
 record MockConnection {}
 
 impl Db.DbConnection for MockConnection {
-  func query(sql: in String, params: in [String]): Result[[Db.DbRow], Db.DbError] {
+  func query(sql: in Db.SqlText, params: in [String]): Result[[Db.DbRow], Db.DbError] {
     Ok([])
   }
-  func execute(sql: in String, params: in [String]): Result[Int, Db.DbError] {
+  func execute(sql: in Db.SqlText, params: in [String]): Result[Int, Db.DbError] {
     Ok(0)
   }
   func transaction(): Result[Db.DbTransaction, Db.DbError] {

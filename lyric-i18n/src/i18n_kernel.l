@@ -67,7 +67,7 @@ import Std.Json
 import Std.File as File
 import Std.Errors
 
-record I18nKernelState {
+ref record I18nKernelState {
   var translationsByHandle: Map[Int, Map[String, Map[String, String]]]
   var fallbackLocaleByHandle: Map[Int, String]
   var nextHandle: Int

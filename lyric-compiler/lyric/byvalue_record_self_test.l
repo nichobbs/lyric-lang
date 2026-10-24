@@ -29,7 +29,7 @@ record Sphere {
   radius: Float
 }
 
-record Tagged {
+ref record Tagged {
   var count: Int
   at: Vec3
 }

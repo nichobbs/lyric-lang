@@ -79,7 +79,7 @@ The compiler enforces one direction: a non-experimental `pub` function may not c
 100u32      // type suffix: u8, u16, u32, u64, i8, i16, i32, i64
 ```
 
-An unsuffixed integer literal is an `Int` when its value fits `Int` (`-2147483648 ..= 2147483647`) and a `Long` otherwise; it is never a wrapped `Int` (#7346).  `-2147483648` is an `Int`.  Next to an operand of another integer type the literal takes that type when its value fits it (`b == 200` with `b: Byte`).  Where a `Byte`, `UInt` or `ULong` is required, the literal is of that type when its value fits it: the initialiser of a binding, the value of an assignment or of a compound assignment (`x %= 7` with `x: UInt`), an argument, a field, a return value, a list or slice element, and a literal pattern or range-pattern bound against such a scrutinee (#7841, #7842).  An unsuffixed literal outside the range of the plain integer type a binding declares or an assignment targets is `T0015` (`val x: Int = 3000000000`, `x += -1` with `x: UInt`), and so is a literal pattern or range bound a `Byte`/`UInt`/`ULong` scrutinee cannot hold (`case -1` on a `UInt`); as a call argument it is an ordinary type mismatch.
+An unsuffixed integer literal is an `Int` when its value fits `Int` (`-2147483648 ..= 2147483647`) and a `Long` otherwise; it is never a wrapped `Int` (#7346).  `-2147483648` is an `Int`.  Next to an operand of another integer type the literal takes that type when its value fits it (`b == 200` with `b: Byte`).  Where a `Byte`, `UInt` or `ULong` is required, the literal is of that type when its value fits it: the initialiser of a binding, the value of an assignment or of a compound assignment (`x %= 7` with `x: UInt`), an argument, a field, a return value, a list or slice element, and a literal pattern or range-pattern bound against such a scrutinee, and the value a lambda returns where its function type expects one (`{ -> 5 }` as a `() -> Byte`) (#7841, #7842, #7865). An unsuffixed integer literal never becomes a `Double` or `Float`: `val d: Double = 2` is `T0060`, since a literal adopts the type of its position only among the integer types; write `2.0` (or `2.0f32`), or convert a value with `.toDouble()` (#7881).  An unsuffixed literal outside the range of the plain integer type a binding declares or an assignment targets is `T0015` (`val x: Int = 3000000000`, `x += -1` with `x: UInt`), and so is a literal pattern or range bound a `Byte`/`UInt`/`ULong` scrutinee cannot hold (`case -1` on a `UInt`); as a call argument it is an ordinary type mismatch.
 
 A literal's magnitude must fit its suffix's type, or the lexer reports `L0010`.  A `u64` literal takes the whole unsigned 64-bit range in every base (`18446744073709551615u64`, `0xFFFF_FFFF_FFFF_FFFFu64`), and `u8`/`u16`/`u32` literals are bounded by `255`/`65535`/`4294967295` (`4294967296u32` is `L0010`) (#7839).  A signed suffix bounds its literal by the signed range of its width: `i8` by `127`, `i16` by `32767`, `i32` by `2147483647` and `i64` by `9223372036854775807`; an unsuffixed literal is bounded like `i64` (`3000000000i32` and `300i8` are `L0010`, and the message names the range).  A literal's digits are always a magnitude, never a bit pattern, in every base: `0xFFi8` is 255 and so `L0010`, while `0x7Fi8` is 127.  A signed type's minimum is written as a unary minus applied to the magnitude one past its maximum — `-128i8`, `-32768i16`, `-2147483648i32`, `-9223372036854775808i64`, `-9223372036854775808` — in any base (`-0x80i8`, `-0x8000_0000i32`).  That magnitude is accepted only as the direct operand of the minus: bare (`128i8`), parenthesised (`-(128i8)`) or on the right of a binary minus (`0 - 2147483648i32`) it is `L0010` (#7847).
 
@@ -189,7 +189,11 @@ A `Char` value is a BMP scalar value, never a lone surrogate, and every way of o
 - `s[i]` fails when the code unit at `i` is a surrogate half, the same class of failure as an out-of-range index (§12.1). `s.codeUnitAt(i)` reads the raw unit as an `Int`, and `Std.String.codePointAt`/`codePoints` decode whole scalar values.
 - A `String` is not iterable (`for c in s` is **T0126**); iterate `Std.String.codePoints(s)` instead.
 
-A supplementary-plane code point has no `Char`; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms).
+- A `char` that an auto-FFI call, a static property or field read, or a constant returns is checked at the boundary: a UTF-16 surrogate half panics (`OverflowException` on .NET, `ArithmeticException` on the JVM) instead of becoming a `Char` (D221, #8225). `@externTarget` kernel declarations are audited and not checked.
+
+A supplementary-plane code point has no `Char` today; `Std.Encoding.codepointToString(cp)` builds its `String` (a surrogate pair in UTF-16 terms).
+
+**Decided, not yet implemented (D221, #8225):** `Char` becomes a Unicode scalar value, U+0000..U+10FFFF excluding U+D800..U+DFFF, identical on every target and carried as a 32-bit value (native already is). `'😀'` and `'\u{1F600}'` become valid literals (L0022 is retired, L0023 stays); `Std.Char` classification and case mapping, `toInt`, `fromInt`/`tryFromInt` and `.toChar()` work on the whole range; a `Char` above U+FFFF passed to a .NET/JDK `char` parameter panics rather than truncating. Strings stay code-unit indexed (`s.length`, `s[i]`, `s.codeUnitAt(i)`), with `Std.String.scalarAt` and `scalars` decoding whole pairs. Until the staged change lands, the BMP rules above and in §4.1 and §12.1 are what every target enforces.
 
 ### 2.2 Range subtypes
 
@@ -305,7 +309,7 @@ record Customer {
 
 **Collection equality (D206, #8169).** `==` and `!=` on two tuples or two `List` values compare their elements in order, and on two `Map` or two `Set` values compare their contents without regard to order: equal sizes, and every key of one in the other with an equal value. A `List`, `Map` or `Set` is not compared by identity even though it is mutable (D157's identity rule is for records with `var` fields): the host collections already compared this way on the JVM, and a record holding a `List` field compares equal to another with an equal list under D172's host `Equals`, so `==` agrees with it. Elements and values are compared by the structural relation above. `--target dotnet` lowers `==` on these types inline (it used to call `Object.Equals`, which compares a `List<T>`, a `Dictionary` or a `HashSet` by reference, so two equal tuples or lists were unequal); the JVM uses `equals`. One difference remains on the JVM: a `Double` element of a `List` compares with `Double.equals`, under which `0.0` and `-0.0` differ (#8439).
 
-**Values and mutable records (D157).** A record with no `var` field is a value: it cannot be mutated, so whether a backend copies or shares it is unobservable, and a changed value is derived with `.copy(...)`. A record with a `var` field (a *mutable record*) has identity: assigning it, passing it (including as an `in` argument, which prevents rebinding but does not freeze the record, §4.4), returning it, and storing it in a field, collection or closure all share one instance, so a write to a `var` field is seen through every binding that refers to it. `.copy()` on a mutable record makes a new, independent instance. Every backend behaves this way (pinned by `record_semantics_self_test.l`). A future declaration form will mark mutable records explicitly (D157, #7955).
+**Values and mutable records (D157).** A record with no `var` field is a value: it cannot be mutated, so whether a backend copies or shares it is unobservable, and a changed value is derived with `.copy(...)`. A record with a `var` field (a *mutable record*) has identity: assigning it, passing it (including as an `in` argument, which prevents rebinding but does not freeze the record, §4.4), returning it, and storing it in a field, collection or closure all share one instance, so a write to a `var` field is seen through every binding that refers to it. `.copy()` on a mutable record makes a new, independent instance. Every backend behaves this way (pinned by `record_semantics_self_test.l`). A mutable record is declared with the `ref` marker, `ref record Counter { var count: Int }` (D222, #7955): `ref` is a contextual keyword recognised only directly before `record`, after any visibility (`pub ref record`). A `var` field in a record not marked `ref` is the warning **W0031**, with the fix of adding the marker; it will become an error in a later release. `ref` on a record with no `var` field is accepted and changes nothing (the record stays a value). `exposed record` may not have `var` fields, so it takes no marker; `Plain`, `.copy()` and `@derive(Equals)` behave the same on marked and unmarked records. Synthesised records (a protected type's lowering) carry the marker themselves.
 
 Construction:
 
@@ -326,10 +330,10 @@ Every type reference in a declaration position is validated when the package is 
 
 Every **declared initialiser** is checked against its declared type exactly like an annotated local binding's initialiser: an annotated module-level `val`'s initialiser, a record, exposed-record or opaque field's default, a protected type's field initialiser, and a parameter's default (on a function, a record or protected member, an interface member, or an `impl` method). A mismatch is **T0060** and an out-of-range integer literal is **T0015**, each reported once, at the declaration, in the declaring package. An unannotated module-level `val`'s initialiser is likewise checked once at its declaration, whether or not the value is used; reading a module value, in its own package or an importing one, never re-reports its initialiser's errors, and an importer reads the value at the declaring package's type even when the initialiser calls a function the importer cannot see (#7777). The initialiser sees the package's module-level names but no locals, so a parameter default cannot refer to another parameter. A lossless widening there (§4.1) behaves as at a binding: a `UInt` default for a `ULong` parameter or field, or a `ULong` module value initialised from a `UInt`, zero-extends (#7811). A `config { }` field default is restricted further, to a literal of the field's type (**G0010**).
 
-**Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
+**Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code. A record with a `var` field has identity and is declared `ref record` (D157, D222):
 
 ```
-record Counter {
+ref record Counter {
   var count: Int
   label: String
 }
@@ -426,9 +430,15 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 `slice[T]` and `List[T]` have distinct runtime representations on every target (a real array vs. `List<T>`/`ArrayList`), so the conversion between them is always the explicit `.toList()` / `.toArray()` pair above — never implicit. A `slice[T]`-typed value (a variable, a call result, …) is rejected (**T0043**/**T0060**–**T0063**/**T0065**/**T0070**/**T0104**, depending on the position) wherever a `List[T]` is expected, and vice versa. The one exception is a bracket literal (`[...]`) used directly where a `List[T]` is expected — as a binding's initialiser, a constructor field argument, an ordinary call argument, or a **return position** (an explicit `return [...]`, a block's trailing/implicit value, an expression-bodied function's `= [...]` body, or an `if`/`match` arm whose value becomes one of those) — which types (and is built) as `List[T]` there, with no `.toList()` needed, since a literal's runtime shape is decided by the surrounding expected type, not fixed in advance like a value's is (D-progress-1025, extended to return position by D-progress-1026). This direct-typing rule resolves `List[T]` by its `Std.Collections`/`Std.CollectionsHost` identity, not by the bare name "`List`" — a package's own unrelated type named `List` never intercepts a bracket literal this way (D-progress-1026). The same holds for an ordinary call argument of a method, and for a constructor argument of a record or union case field. A generic callee's parameter, or a generic record's or union case's field, is instantiated from the other arguments before the literal is typed against it, the literals one at a time in parameter order, each seeing the ones before it; a type parameter left open takes the literal's element type: `size([1, 2, 3])` with `size[T](xs: List[T])` binds `T` to `Int`, `GBox(items = [1, 2])` for `record GBox[T] { items: List[T] }` is a `GBox[Int]`, and a literal passed to a bare `T` that another argument binds to a `List[E]` is that `List` (`pick(base, [1, 2])` with `base: List[Int]`); a literal at a bare `T` that no other argument binds stays a `slice` (#8191, #8193). A literal whose elements do not fit the instantiated parameter is **T0043** (**T0104** for a field), naming the type the other arguments give it: `k([1], ["s"])` with `k[T](xs: List[T], ys: List[T])`, `f(["a"], 1)` with `f[T](xs: List[T], y: T)`. Independently of literals, two arguments that bind one type parameter of a generic function to types neither of which satisfies the other (and neither widens to the other) are **T0043**: `k(a, c)` with `a: List[Int]` and `c: List[String]`. A bracket literal that is an element of a literal built as a `List`, `slice` or `array` whose element type is a `slice[E]` is built as that `slice[E]`, so `[[1], [5, 6]]` passed (or bound, stored in a field, or returned) as a `List[slice[Int]]` or a `slice[slice[Int]]` holds two slices (#8192).
 
+A bracket literal takes its shape from every position that expects one, not only from a `List`: an argument for a `slice[Long]` parameter is a `slice[Long]` with its integer elements widened, as under a `val` annotation, and so is one for a `slice[List[Int]]` (each element a `List[Int]`); a tuple argument is checked against a tuple parameter component by component, so `([7, 8], 9)` is a `(array[2, Int], Int)` where that is expected (#8277, #8293). The type a generic call's result is expected to have binds a type parameter that no argument binds, so `val r: List[Long] = g([1, 2])` with `g[T](xs: List[T]): List[T]` builds a `List[Long]`, and a nested parameter `List[List[T]]` shapes `[[1], [2, 3]]` to a `List` of `List`s. A lambda whose expected return type is a `List[T]` may end in a bracket literal, and the literal is built as that `List` (`val f: () -> List[Long] = { -> [1, 2] }`, #7878). The receiver of a method call is never in such a position: `[s].toList()` converts the slice the literal is, whatever the call's own result is expected to be (#7908). A literal in an `Option[List[Int]]` payload, `Some(value = [1, 2])`, is built at the payload's `List[Int]`. Where an unsuffixed integer or float literal would have to become a different type to fit (`val d: Double = 2`), it does not: §1.4 lists the types a literal adopts.
+
+A construction that leaves a type argument open (`None`, `Ok(1)`, `Nothing` of a generic union) is built at the type its position gives it: the type the other branches of an `if`/`match` join to, the other operand of `==`/`!=` (`r == Ok(2i64)` for `r: Result[Long, Int]` compares two values of one type), a component of a tuple held by a `List` (`ys.add((None, 1))`), the parameter type of a call through a function value, and a generic method's parameter instantiated from its receiver (`ss.matchy(None)` with `ss: Src[String]`). `newList[T]()` and `newMap[K, V]()` build the collection at the written type arguments, in a module-level `val` too (#7293, #7516, #8092, #8136, #8144, #8274, #8303, #8346). A type parameter that nothing binds, such as the `T` of `isNone(None)`, is instantiated at `Unit` on `--target native`, as the other targets erase it (#8352). The type expected of a function's returned value (an explicit `return`, the trailing value, an `if`/`match` arm that becomes one) drives the same rules, and with them generic-record-constructor inference and the disambiguation of a union case name that more than one imported package declares (#7707).
+
 The same identity rule holds for every other place the checker treats a type as a stdlib collection or monad (#7737): iterating (`for x in xs`), indexing (`xs[i]`, `m[k]`), the built-in `List` members `.count`/`.toArray()`, the `.toList()`/`.toArray()` conversion hints, and the `Result` a range or distinct type's `tryFrom` returns / the `Option` `Std.String`'s method-spelling `.indexOf` returns. A package's own `record List[T]` (or `Map`, `Result`, `Option`, …) is never treated as the stdlib type because it shares its name: iterating it is **T0126**, `.count`/`.toArray()` on it is **T0113** unless it declares them, and a mismatch diagnostic involving it says it only shares the stdlib type's name. Indexing any Lyric-native record, union or enum — the stdlib `List`/`Map`, slices, arrays and `String` are the indexable types, plus extern types, whose indexing the backend resolves — is **T0143**. A mismatch diagnostic describes an empty bracket literal `[]` as "an empty list literal" rather than by its element-less inferred type, and suggests `.toList()`/`.toArray()` only when the conversion would actually produce the expected type.
 
 `List[T]` is mutated in place. `xs.add(item)` appends `item`; `xs.add(index, item)` inserts it before position `index`, moving the element at `index` and every later one up by one place, so `xs.add(0, item)` prepends and `xs.add(xs.count, item)` appends. An `index` outside `0 ..= xs.count` raises at run time (`ArgumentOutOfRangeException` on `--target dotnet`, `IndexOutOfBoundsException` on `--target jvm`) and leaves the list unchanged. The inserted element is widened to `T` like any other numeric argument (`List[Long].add(0, 5)`). Which form a two-argument `add` is follows the receiver, never the arity: on a `Map[K, V]`, `m.add(key, value)` adds an entry (#7797). If `key` is already in the map, `add` replaces its value, the same as `m[key] = value`; it never raises. This holds on every target (#7301): `--target dotnet` lowers `add` to `Dictionary.set_Item`, not `Dictionary.Add`, which throws on a duplicate key. `--target native` lowers it to `lyric_list_insert`, which panics on an out-of-range index and leaves the list unchanged (#7800).
+
+A `List[T]` sizes with `.count`; `.length` is the size member of `String`, `slice[T]` and arrays only. `xs.length` (or `xs.length()`) on the stdlib `List` is **T0207**, whose message names `.count` (#7218). It is a front-end error rather than a per-backend one: `--target dotnet` used to lower the bare name to `Count` while `--target jvm` rejected it (J009), so a program written against one target broke on the other. A package's own `record List[T]` is not the stdlib type, so `.length` on it follows the ordinary field rules.
 
 The members of the stdlib collections that take an element, key, value or index check their arguments like the arguments of an ordinary call (#7969): on `List[T]`, the element of `add(item)`, `add(index, item)`, `contains`, `indexOf`, `lastIndexOf` and `remove` must be a `T` and the index of `add(index, item)` and `removeAt` an `Int`; on `Map[K, V]`, `add(key, value)` takes a `K` and a `V`, and `containsKey` and `remove` a `K`; on `Set[T]`, `add`, `contains` and `remove` take a `T`. An argument widens along the lossless chains, a value of a type that implements an interface `T` satisfies `T`, and a bracket literal is accepted where the element is a `List`. Any other argument is **T0043**, naming the expected element, key, value or index type. An integer literal is an `Int`, so a `List[Byte]` takes `0u8` or `n.toByte()`, not `0`. `List[T]`'s `add(item)`, `add(index, item)` and `removeAt(index)`, and `Map[K, V]`'s `add(key, value)`, only change the collection: their result is `Unit`, so a lambda ending in one, `{ x: Int -> seen.add(x) }`, is a `(Int) -> Unit` (#8299).
 
@@ -458,7 +468,7 @@ func tint(vs: inout buffer[Vertex], c: in Rgba8) {
 - **Value semantics, by copy-on-write.** Assigning a buffer, passing it as `in`, storing it in a field, or capturing it in a closure or `spawn` produces a logical copy: a write through one binding is never visible through another. Storage is copied only when a write meets storage that is shared, so writing in place through the only reference costs no copy.
 - **Copy hint (W0030).** A `var` initialised by copying another buffer place, directly followed by a `for`, `while` or `loop` whose body writes `name[i] = v` (or `op=`, also inside an `if` or nested block), is a warning: the first write copies the whole buffer. Write through the original binding, or construct the buffer directly (`filled`, `fromSlice`). Only the statement right after the `var` is examined.
 - **Writes.** `b[i] = v` needs a writable place, as for arrays. An `in buffer[T]` parameter is read-only to the callee.
-- **Indexing** is bounds-checked against the runtime length (`index 3 out of range for buffer of length 3`). Range-subtype elision, which needs a constant length, does not apply. The receiver is a variable, a field path or an element of one selected by a literal or variable (T0174). `b.length` is the length; `for x in b` iterates the value the loop started with; any other member is T0113. A buffer element must be `Plain` (T0173). `Std.Buffer` provides `filled`, `fromSlice`, `view`, `toSlice`, `grow` and `truncate`. Passing a buffer to a function or storing it copies it on dotnet and the JVM (O(n)); on native it shares the block until a write meets it, so prefer native for large buffers that are passed around.
+- **Indexing** is bounds-checked against the runtime length (`index 3 out of range for buffer of length 3`). Range-subtype elision, which needs a constant length, does not apply. The receiver is a variable, a field path or an element of one selected by a literal or variable (T0174). `b.length` is the length; `for x in b` iterates the value the loop started with; any other member is T0113. A buffer element must be `Plain` (T0173). `Std.Buffer` provides `filled`, `fromSlice`, `view`, `toSlice`, `grow` and `truncate`. Passing a buffer to a function, returning it or storing it is O(1) on every target: the storage is shared until a write meets it, and that write copies it once (D226). Native shares by reference count and copies only while another reference exists. On dotnet and the JVM a buffer is a handle over its storage; a copy marks both handles, and the mark is never cleared on the handle the copy was taken from, so the last holder of shared storage can copy once more than native would. A record's `.copy(...)` copies a buffer field it carries over.
 - **Interop.** Buffer memory reaches C only through `withPointer` and `withMutPointer` (§11.6), in kernel files and `@unsafe_ffi` functions.
 
 **Not yet implemented** on any target (docs/67 phase G2); the operation surface (`Std.Buffer`) is specified with the implementation.
@@ -524,7 +534,7 @@ exposed record TransferRequest @generate(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150. The request a generator receives (schema 2, D151) describes the annotated type's fields, cases, annotations (with each argument's source text), invariants (as source text, with their `@message`) and the same-file enum, distinct and alias declarations it names. A generator's own imports are appended to the `package` line, so the file's own line numbers are unchanged.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. A generator is a plugin implementing the `Lyric.GeneratorSdk.SourceGenerator` point, with the compiler as its host (§15.9, D207). Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150. The request a generator receives (D151) describes the annotated type's fields, cases, annotations (with each argument's source text), invariants (as source text, with their `@message`) and the same-file enum, distinct and alias declarations it names. A generator's own imports are appended to the `package` line, so the file's own line numbers are unchanged.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
@@ -555,6 +565,8 @@ func sum[T](xs: slice[T]): T
   return total
 }
 ```
+
+Inside the body, an operator on a type parameter is valid when the `where` clause bounds the parameter by the operator's marker: `+` by `Add`, `-` by `Sub`, `*` by `Mul`, `/` by `Div`, `%` by `Mod`, and `<`, `<=`, `>`, `>=` by `Compare`, along with the compound assignments `+=`, `-=`, `*=`, `/=`, `%=`. Both operands are the one type parameter (`a + 1` over `T` is **T0031**, or **T0033** for a comparison), the result of an arithmetic operator is that parameter and the result of a comparison is `Bool`. An operator without the bound is **T0030** (**T0033** for a comparison), as before. The operator means what it means at the type the call binds: the primitive's own operator for a scalar primitive (`Int`, `Long`, `UInt`, `Double`, ..., and `String` for `+`), and for a type that derives the marker (`type Cents = Long derives Add`, `@derive(Add) record Vec3 { ... }`, D155) the derived operator, including a range subtype's bounds check on the result. Each specialisation at such a type is type-checked again as the non-generic function it is, so the operator is lowered exactly as if it had been written at that type. A generic declared in another package whose operator would have to be lowered for a distinct or record type declared in the caller cannot be, because the declaring package's scope does not see the caller's type: that specialisation is **M0008**; call it from a function declared in the generic's own package, or bind it to a scalar primitive. `T.default()` under `where T: Default` is the zero value of the type argument when that is a scalar primitive (`0`, `0.0`, `false`, `""`, ...); it is not yet supported for a distinct type or a record.
 
 Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034, narrowed by D-progress-807: D034 also speced a structural `Copyable` marker asserting a type lowers to a CLR value type, but it was never implemented in the self-hosted checker or monomorphizer — a genuine implementation needs the MSIL backend's own per-type struct-vs-class lowering decision, which is not information the front end has, so `Copyable` is dropped from the practically-usable marker vocabulary until that information is exposed to it). All nine are also valid in `derives` clauses. A tenth marker, `Plain` (D155), is computed by the compiler from a type's structure and is valid only in `where` clauses, never in `derives`: see §2.7. `Plain` is implemented in the type checker: a `where T: Plain` bound is checked at each call, and a violation (T0108) names the part of the type that defeats it; `@derive(Plain)` is T0172. The `buffer[T]` type that consumes it is not yet implemented (docs/67 phase G2). A primitive type satisfies every marker its value supports structurally (e.g. `Int` satisfies `Add`/`Compare`/`Equals`/`Hash`/`Default`; `String` satisfies `Add` via concatenation plus `Compare`/`Equals`/`Hash`/`Default`) without an explicit `derives` clause — primitives have no `derives` list to opt into. Inside a generic body a type parameter is rigid: a value of type `T` is only a `T` (it is not accepted where an `Int`, a `String` or a `List[Int]` is expected, `T0043`/`T0060`/`T0065`), and reading a member of it (`x.zork`) is **T0197**, because a type parameter has no fields; only the methods its bounds promise can be called on it. This is not yet checked for a plain read of a field declared as the record's own type parameter (`val n: Int = b.value` over a `Box[T]` is accepted; only a member read of it, `b.value.zork`, is T0197, #8018).
 
@@ -725,7 +737,7 @@ Downstream packages depend on the contract metadata for incremental compilation.
 
 Binary distribution publishes both artifacts together. The contract metadata is what consumers compile against; the assembly is what they link to and run.
 
-**What a specialised generic may call.** A generic function's body is compiled into each package that calls it, so every function the body calls must be reachable from the calling package: `pub` in the package that declares the generic, or in a package that one imports. Private helpers of the declaring package are the exception in two cases. A private *generic* helper travels with the generic on `--target native` and `--target jvm` (#8417); on `--target dotnet` it does not, for a package consumed as a built dependency, because its contract metadata carries the bodies of `pub` generics only, and the call is rejected with **T0123** naming the helper. A private *non-generic* helper resolves on `--target native` only (the whole program is one module there); the JVM and .NET backends reject the call with the same **T0123** message. Code that must build on every target makes each function a `pub` generic calls `pub`.
+**What a specialised generic may call.** A generic function's body is compiled into each package that calls it, so every function the body calls must be reachable from the calling package: `pub` in the package that declares the generic, or in a package that one imports. The private *generic* helpers a `pub` generic reaches (directly or through other helpers) are the exception: they travel with it on every target, under package-unique names, including through the contract metadata of a built dependency (D215, #8427). A private *non-generic* helper resolves on `--target native` only (the whole program is one module there); the JVM and .NET backends reject the call with **T0123** naming the helper. Code that must build on every target makes each non-generic function a `pub` generic calls `pub`.
 
 A generic function's contract entry also carries its body, so a consumer can specialise it. The body is recorded after the compiler's own desugaring, as Lyric text, and a consumer reads a package's metadata back as synthesised Lyric source. That source carries the file-level annotation `@contract_source`, under which an arrow-less brace expression `{ s1; s2 }` is a block expression rather than the zero-parameter lambda it is in hand-written source (a desugared body may contain block expressions, and synthesised lambdas are always written with their arrow). `@contract_source` is reserved for this synthesised source; it is not meant for hand-written files (#7755).
 
@@ -815,9 +827,11 @@ dir        = "native"         # a directory, relative to this manifest, holding 
 link       = "cdep"           # optional: the -l name, default the table key
 ```
 
-A table names exactly one source, `pkg_config`, `dir`, or one or more
+A table names one source, `pkg_config`, `dir`, or one or more
 `[native.libs.<name>.prebuilt.<triple>]` tables (below), else the manifest is
-rejected. The build links each library (`-L<dir>` `-l<link>`, or the flags
+rejected; prebuilt tables may also sit beside `pkg_config`, which then serves
+the triples they do not cover (SDL3 is a system package on Linux and a pinned
+archive on Windows, D219). The build links each library (`-L<dir>` `-l<link>`, or the flags
 `pkg-config --libs` prints) and takes the declarations of its dependencies as
 well: a path or workspace dependency's `[native.libs]`, and those of its own
 dependencies, join the application's, so an application that depends on a
@@ -829,7 +843,11 @@ on macOS), so the program runs from that directory without the original one.
 On Windows (D205) a `dir` library is `<link>.lib`, a static library or the import
 library of `<link>.dll`, which must be present; the DLL is copied next to the
 `.exe`, where the Windows loader looks first, and there is no run path. A
-`pkg_config` library is a system library and is not copied. A missing
+`pkg_config` library is a system library and is not copied, except on Windows,
+which has no system library directory the loader searches: there the DLL of
+each `-l<name>` that pkg-config prints is copied when it sits beside an `-L`
+directory's import library or in the `bin` directory next to it (the vcpkg and
+CMake install layouts, D219). A missing
 directory or an unknown pkg-config package fails the build naming the library,
 and `[native.libs]` is an error with a `wasm32` triple. `@library("name")` on
 an `extern func` (what `lyric bindgen --library` emits) names the library that
@@ -844,6 +862,12 @@ url     = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.1/wgp
 sha256  = "<64 hex digits>"
 members = ["lib/libwgpu_native.so"]     # zip members to extract; omit for a bare .so/.dylib URL
 ```
+
+A `members` entry written `"<path> -> <file name>"` extracts that member under
+another (bare) file name. A Windows import library may be given any name, since
+it records the DLL it loads, so an archive's `x.dll.lib` can be extracted as
+the library's `<link>.lib`; every `.dll` a Windows archive extracts is copied
+beside the executable, so the library keeps its upstream DLL name (D219).
 
 `lyric restore` downloads the file for the host triple and for `[native].triple`
 (using `curl`, which also reads `file://` URLs), refuses it unless its SHA-256
@@ -1898,6 +1922,17 @@ flowing un-awaited into a value position); sibling cancellation and
 failure aggregation are not applicable on native — a failing task
 aborts the process (panics abort, D-N-003).
 
+**Multi-threaded scheduler (D217).** A native program started with
+`LYRIC_ASYNC_THREADS=N` (`N >= 2`) runs coroutines on `N` threads: a
+`spawn` queues its task for a worker instead of running its body on the
+spawner, an awaited call still runs hot on the caller, and a suspended
+coroutine resumes on whichever thread completes what it waits for.
+`scope`, `await` and the completion-before-exit rule are unchanged.
+Tasks running at the same time may share mutable state only through
+`protected` types; collections and record `var` fields are
+unsynchronised. Unset or `1` keeps the cooperative single-threaded
+scheduler, which is the default.
+
 ### 7.5 Protected types
 
 ```
@@ -2291,6 +2326,8 @@ extern package System.Net.Http {
 
 `extern` declares types and functions implemented by the host runtime. The `@axiom` annotation is required and signals that contracts on these declarations are trusted, not verified.
 
+A function member of an `extern package` block is a function of the type checker like any other body-less function, with the signature it declares (D223, #7934). A call to one is checked for arity (**T0042**), argument types (**T0043**) and named arguments, and its declared return type flows on, on every target. A member is addressed by the block's own path (`System.Net.Http.get(c, url)`) and, when the enclosing package declares no function of that name and arity itself, through the enclosing package (`Grpc.Kernel.Jvm.netOpenChannel(a)` for a member of a block in package `Grpc.Kernel.Jvm`); a package's own function of the same name and arity is what the enclosing package's name means, and the member stays reachable by the block's path. The block's path is a host binding, not a Lyric package: naming it needs no `import`. The types in a member's signature resolve in the enclosing package's scope.
+
 ### 11.2 Cross-boundary marshalling
 
 Lyric → .NET: opaque types pass as opaque handles (a sealed wrapper type with no public surface). Exposed records pass as their generated .NET counterpart. Primitives map directly.
@@ -2656,7 +2693,14 @@ loader prefers it by basename, so the public `Std.*` surface is
 identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
 additionally gates individual items per target; the predicate resolves
 against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
-is exempt from the `F0013` declared-features check.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
+is exempt from the `F0013` declared-features check.  `@cfg(target_os = "linux" | "macos" | "windows" | "wasi")`
+gates an item by the operating system of a native build, taken from its target triple (the host's when no
+`--triple` is given) as the `target_os.<os>` pseudo-feature (D219); it applies to the program's packages, its
+dependencies, each file of a multi-file package and the bundled stdlib.  No operating system is known when
+compiling for dotnet or the JVM, so there only the `not(...)` side of a `target_os` predicate holds; the same is
+true of a native triple whose operating system is none of the four.  Two items of
+one name with exclusive predicates (`@cfg(target_os = "windows")` and `@cfg(not(target_os = "windows"))`) select
+one of them per build.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
 
 Where the managed kernels rely on host exceptions, the shared pure
 layer instead delegates to exception-free **Result/Option seams** that
@@ -2972,6 +3016,8 @@ the remainder with `.substring` after each match is not.
 **A single file's features (D182).** The features a single source file is compiled with are chosen once, by `Lyric.Discovery.singleFileSourceBuild`, for every command that compiles, checks or proves it alone — `lyric build`, `lyric run`, `lyric test`, `lyric check`, `lyric prove` and the language server — on every target, `--target native` included. The file's manifest is the explicit `--manifest`, otherwise the nearest `lyric.toml` with a `[package]` section above the file (the discovery above, walking up from the file's own directory with the path made absolute and its `.` and `..` segments resolved, so `../tools/gen.l` finds what `/abs/tools/gen.l` finds, never a manifest above the working directory); its `[features]` are resolved for the target as a project build resolves them (`default` unless `--no-default-features`, every declared feature under `--all-features`, plus `--features`, then normalized to the target), **whether or not the manifest's `[project.packages]`/`[project.tests]` entries list the file**. So a script next to a project — `tools/gen.l` beside a manifest that lists only `src/` — is compiled, type-checked, tested and proved with the same items by `lyric build`, `lyric run`, `lyric check`, `lyric test` and `lyric prove`. With no manifest the file has no features. An explicit `--manifest` that cannot be read or does not parse is a hard error from every one of these commands (`prove: cannot read manifest <path>: ...`, or the parse error), never a build with no manifest. Features are declared in a manifest's `[features]` table, so with no manifest there is nothing for `--features` to select, and `--features` on such a file is error **`F0049`** from every command that takes it (`build`, `run`, `test`, `prove`), with nothing compiled or run, rejected up front under `--watch` and `--aot` too: `error[F0049]: --features a selects features a manifest's [features] table declares, but dup.l has no manifest (no lyric.toml with a [package] section in its directory or any parent); declare the features in one, or pass --manifest <lyric.toml>`. When the nearest `lyric.toml` is broken, the message names it and its parse error instead. `--no-default-features` and `--all-features` select nothing without a manifest and are accepted. A `--features` name the manifest does not declare is not reported yet.
 
 `lyric build <source.l> --target native [-o <out>] [--triple <llvm-triple>] [--opt 0|1|2|3|s]` — compiles through the **LLVM native backend** (D-N-001..014) to a self-contained executable: the self-hosted front/middle end lowers the user package plus the reachable slice of its stdlib import closure to LLVM textual IR, then drives `clang` to optimise and link against the `lyric_rt` runtime (ARC intrinsics, strings, collections, platform helpers), `libm`, and `libpthread` (on Windows, the UCRT and the system libraries `bcrypt`, `shell32`, `advapi32`, `ws2_32`, `secur32`, `crypt32` and `ncrypt`). The default output is the source stem with **no extension**, or with `.exe` for a Windows target (`--triple x86_64-pc-windows-msvc`, or no `--triple` on a Windows host); an `-o` path without `.exe` gets one for a Windows target, since Windows starts a program only by its extension. `--triple` cross-compiles (defaults to the host triple per `clang -print-effective-triple`); `--opt` sets the clang optimisation level. Both default from the manifest's `[native]` table (§3.6) when present — `triple` / `opt_level` — with the CLI flags overriding. When neither `--opt` nor `[native] opt_level` supply a value, the level now defaults from the **build profile axis** (docs/63 §3.1, #6263) instead of an unconditional `2`: `-O2` under `--release`/`profile = "release"`, `-O0` under the default `--debug` profile — resolved once, at the CLI layer (`Lyric.Cli.resolveNativeOptDefault`), for `--target native` only. `[native].extra_libs` adds `-l<name>` link flags with no CLI equivalent. Every error diagnostic from the front and middle end — parse, `@cfg` erasure, the type check, the mode check, contract elaboration, `?`-propagation, monomorphization, and weaving — fails the build before codegen, exactly as on `--target dotnet`/`--target jvm`: the command exits non-zero, writes no binary, and `lyric run`/`lyric test` run nothing; warnings (e.g. `W0002`) are printed and do not stop the build (#7910). The `Std.*` packages a native build compiles from source — each package in the program's import closure, its `_kernel_native/` kernels included — are type-checked the same way, each against the packages its own imports reach and with the native intrinsics in scope: an error in one stops the build, reported against the stdlib file's path (`<path>: error[T....] line:col: ...`), and the stdlib's warnings are not printed (#7933). When `clang` is not installed the diagnostic (`N0001`) names the missing tool and leaves the emitted `.ll` next to the requested output so it can be compiled manually; `lyric_rt.a` resolves from `$LYRIC_RT_PATH`, the installed `lib/` layout, or the dev tree's `lyric-rt/build/` (`N0003` when absent). A codegen-time value/type mismatch `Lyric.LlvmCodegen` cannot coerce (`coerceTo`, e.g. a call argument against an extern generic collection method — `List[T].add`/`Map[K, V].add`, … — the type checker admits with no argument validation at all) is contained as `N0007` rather than an unhandled host exception (#7452); a wider `Int`/`Long` argument narrowing to a declared-narrower `Byte`/`Int` slot (matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) is not an error at all. Supported surface (Phases N1–N4, D-progress-540 and D-progress-545..552, D-progress-562, D-progress-568, D-progress-713): Linux x86-64/AArch64, macOS AArch64, and Windows x86-64 (`x86_64-pc-windows-msvc`, D205; see the Windows paragraph below); scalars and Strings; records (methods, defaults, mutable fields; a record's methods are named by their record, so two records in a package may share a method name, and a bare call inside a method to a method of the receiver's type is `self.m(...)`, ahead of a same-named free function, as on dotnet and the JVM; a record with no `var` field whose fields are scalars, enums, distinct types or other such records is an LLVM struct value with no heap allocation or ARC (docs/67 §4.2), boxed only inside `List`/`Map`/`Task` slots, and a union whose every payload field is by-value, nullary cases included (`Option[Int]`, `Option[Vec3]`, a user union of scalars), is an inline tagged struct `{ i32 disc, i32 pad, [W x i64] payload }` with the same properties, while records and unions with a reference payload, recursive unions, records with a `var` field and opaque types keep the shared heap form; a by-value record that implements an interface stays a value, and an upcast to the interface copies it into a refcounted box the interface value owns (#8010), an `extern func` taking or returning a by-value record, directly or in a callback type, passes it as C passes the struct on x86-64 (System V), Windows x64 (the Microsoft x64 convention: a record of 1, 2, 4 or 8 bytes in one integer register, any other size by a pointer to a caller-made copy and returned through a hidden result pointer, D205), AArch64 (AAPCS64) and wasm32 (the basic C ABI): coerced into registers, `byval` memory, or an `sret` result, as clang lowers the matching C prototype (#8009), while an inline array or union in an `extern func` signature, or a by-value record on another target, is rejected as **N0010**; an `array[N, T]` of by-value elements is the inline LLVM array `[N x T]`, one of any other element type a reference-counted heap array, and an array type with no native layout is **N0020**, §2.7), **opaque types** (an `OpaqueTypeDecl` reshapes into the equivalent record at codegen time, so construction, field access, and ARC release lower identically to a record on both the single-file and bundled-stdlib compilation paths — opacity is a front-end visibility rule, not a codegen difference; `@projectable` is refused with `N0101` since native has no `<Name>View` projection-type codegen yet), unions, enums, distinct types (range-checked), tuples, and pattern matching; non-generic **interfaces** — `impl I for Record` synthesises a per-interface vtable and a heap-boxed fat pointer (D-N-016), with implicit upcast at argument/return/binding positions, vtable dispatch on interface-typed receivers (an `out`/`inout` parameter of an interface method passes the argument's place through the vtable as a direct call does, #8183; a reference passed `in`, or the receiver, of a call that also passes a place by reference is retained for the call, so `swap(k, k)` cannot free what the callee still reads), and — since #7600 — a call on the CONCRETE record receiver (`sq.area()` where `sq: Square`, not interface-typed) resolves directly to the impl method (`registerImplDirectMethods` indexes each non-generic impl method under `<pkg>.<record>.<method>/<arity>`, package-qualified so same-named records in different packages of one native bundle never alias each other's methods, #7627); a record's own-body method sharing a name with one of its impl methods, or two impls of the same record sharing a method name, is rejected at compile time as **T0139** on every target, so there is no cross-target tie-break to reproduce; generic records/unions/functions via call-site monomorphization, a generic record's methods included; a call that leaves out defaulted arguments, named or not, takes each omitted one from the declaration the call resolves through (the free function, the record or `impl` method, the protected `entry`, or the interface member for a call on an interface-typed value), as on dotnet and the JVM (#7985), and an interface or `impl` method may write its receiver as an explicit `self` parameter; closures with by-value ARC captures; `NativeWeak[T]` with `upgrade(): Option[T]`; **protected types**, generic ones included (one layout per instantiation, D176) — `entry`/`func` members both lock a runtime-sized monitor buffer (a reentrant mutex plus the condition `when:` barriers wait on, D175) via a codegen-synthesised lock/unlock wrapper around a desugared inner body (D-N-017), field-args and no-arg (all-defaults) construction; a member's `out`/`inout` parameters are pointers the wrapper forwards to the inner body, an entry called through an interface included (#8184). Memory is ARC-managed per `native/plan/04-arc-design.md` and the emitted protocol is leak-checked under AddressSanitizer in CI. The raw FFI surface is mode-checker-gated (`N0100`): `NativePtr[T]` type expressions, `nativeAddrOf(x)` (address of a `var` local; the pointer must not be returned or stored in a heap type), and `nativeNullPtr()` are admitted only inside functions annotated `@unsafe_ffi` and in `_kernel_native/` package files, with `extern func` parameter/return positions exempt as the audited boundary. An `extern func` parameter may be declared with a function type whose last parameter is `NativePtr[Byte]` (the userdata slot); a Lyric closure passed there is wrapped in a compiler-synthesised C-ABI trampoline, and the same closure value passed in a `NativePtr[Byte]` argument position lowers to the closure pointer itself, so callback-driven C APIs (`pthread_create`-style) work end-to-end. `List[T]`/`Map[K, V]` lower to the lyric-rt kernels (Map keys must be String or a scalar type), with `for` loops over lists, indexing, and the `Std.Collections` accessors (`newList`/`newMap` need their element types from a binding annotation or explicit type arguments; `mapGet` is the Option-returning map read). `slice[T]` shares the RC'd `List[T]` representation (D-N-015), supporting `for`/indexing/`.length`/`toArray()`/`.slice(start, stop)`/`.concat(other)`/`.append(x)` (the latter three added in D-progress-809 as never-mutating combinators — each returns a fresh list, source untouched, with the same half-open `[start, stop)` bounds and panic contract as the MSIL/JVM twins), and unlocks bytes-mode file I/O, directory enumeration, and `Std.Environment.args()`. A non-generator `async func` (D-N-022, §7.1) compiles to a real LLVM coroutine driven by the runtime's cooperative single-threaded scheduler: tasks run hot until their first genuine suspension, direct calls await in place, `spawn` (§7.4) holds the un-awaited task for a later `await`, spawned tasks genuinely interleave, with two async leaves inside async bodies — `Std.Time.sleepMillis` parks only the calling task, and `Std.Process.runCapture` (D-N-023) captures its subprocess through a nonblocking op with `timeoutMs` honored; `scope { }` is a real lexical scope (its ARC releases and `defer` blocks run at scope exit). `defer` (D-N-020, §4.3) is supported for normal-exit paths (fall-off, `return`, `break`, `continue`) via a per-scope deferred-block stack mirroring the ARC scope-exit mechanism; a `defer` registered before a `panic` does not run, since native has no unwinding to trigger it. Not yet lowered (reachable code using them fails the build with a construct-naming diagnostic): generic interface methods, `Self` nested inside a generic argument of an interface method signature (`N0006`, #7603; a bare `Self` parameter or return is supported since #7585), an `out`/`inout` `Self` parameter of an interface method in a call through an interface value (`N0023` at the argument, #8252; the same call on the implementing type works), a variable a closure captures passed to an `out`/`inout` parameter from inside the closure (`N0024` at the argument, #7891: native closures capture a variable's value, so the write could not reach the variable; a field of a captured record can be passed) (an interface's default method takes a vtable slot like an abstract one: the `Lyric.ImplDefaults` pre-typecheck synthesis, D-progress-760, copies its body into every impl that omits it, so each impl's vtable points the slot at the impl's own method, #7985), protected-type invariant re-checking, a `config { }` block (`N0025` at the block, #7435: the build stops before codegen), `@projectable opaque type` (`N0101` — the `<Name>View` projection type and `toView()`/`tryInto()` codegen exist on `--target dotnet`/`--target jvm` only; the opaque type itself lowers fine without `@projectable`), `Set[T]`, async generators (`yield` inside `async func`, `N0099`), and the implicit `cancellation` parameter. `lyric build --manifest ... --target native` (N9.7, D-progress-854, #6809) now resolves and compiles a project's own `[project.packages]` multi-file structure — the same table `lyric-web/lyric.toml` uses — reordering the assembled units so the `main`-declaring package always drives C-`main` synthesis regardless of its position in the manifest; `--triple`/`--opt` CLI flags (non-empty) thread into a project build the same way they do for single-file builds, overriding the manifest's own `[native]` table (#6815 item 2). A manifest's `path = "..."` and `{ workspace = true }` `[dependencies]` compile from source into the same native build (#7833), like `--target jvm`: native has no restored-binary concept, and a Lyric dependency's source is always local, so the dependency's own DLL is never built. The dependencies of those dependencies are included too, each package compiled once, and each dependency package is `@cfg`-erased with its own manifest's `[features]` (its defaults, plus the target pseudo-feature) rather than the consumer's. A registry or git dependency, direct or reached through a path or workspace dependency, has no local source and fails the build with `build: dependency '<name>' is a registry dependency; --target native compiles Lyric dependencies from source and supports only path = "..." and workspace = true dependencies` (or `... is a git dependency ...`). A `[nuget]` or `[maven]` table names .NET or JVM libraries, which a native build does not link; it is reported as a warning, since a manifest that targets several platforms may declare one. A single-file `--target native` build (no `--manifest`) still compiles only its own file, with the features of its manifest (D182: the `@cfg` items a `--target dotnet` or `--target jvm` build of the file erases with the same flags, normalized to `native`). `lyric run --manifest ... --target native` builds and directly executes the produced binary (#6815 item 3a); `lyric test --manifest ... --target native` (multi-package test suites) is still rejected with a diagnostic (#6815 item 3b remains open). `--triple wasm32-wasi` (docs/35 W2, D-progress-1028) targets WebAssembly: the build links with the wasi-sdk's clang (`$WASI_SDK_PATH`; `N0009` when unset or without a `bin/clang`) against the wasm32 runtime archive (`$LYRIC_RT_WASM32_PATH`, the installed `lib/lyric_rt-wasm32-wasi.a`, or the dev tree's `lyric-rt/build-wasm32-wasi/lyric_rt.a`; `N0003` when absent; `$LYRIC_RT_PATH` is the host archive's override and never applies), emits the wasi-libc `__main_argc_argv` entry point, treats any wasm-ld signature-mismatch warning as a link error, and produces a core `.wasm` that runs under a WASI runtime such as wasmtime. The process, TCP, TLS and HTTP-server capabilities WASI lacks resolve to runtime stubs that report the failure a real spawn or connect failure reports (`Std.Process.run` returns `Err`); a program that reaches the TCP, TLS, piped-process or HTTP-server kernels links and fails at runtime with the same typed errors (`Std.HttpServer.startListener` panics on its failed bind, since WASI has no sockets or threads), and `scripts/audit-native-extern-abi.sh` keeps every kernel extern's signature equal to the runtime's wasm32 ABI. (List literals and module-level `val` references now lower — #5977 — so `@build_const` / `Std.BuildInfo` / `--define` work on native single-file AND project builds; see §13.1.) `--triple x86_64-pc-windows-msvc` (docs/67 G9, D205) targets Windows x86-64 with the MSVC C runtime and ABI; it is the one Windows triple, and any other (`x86_64-w64-windows-gnu`, `aarch64-pc-windows-msvc`, ...) is **N0025**. The build links with `lld-link` (`-fuse-ld=lld`) on every host: on Windows clang finds the Visual Studio C runtime and Windows SDK itself, and a Linux host cross-compiles when the `INCLUDE` and `LIB` environment variables name an MSVC CRT and Windows SDK (a sysroot unpacked by `xwin`, say). The runtime archive resolves from `$LYRIC_RT_WINDOWS_PATH`, then on a Windows host `$LYRIC_RT_PATH`, the installed `lib/lyric_rt-x86_64-pc-windows-msvc.lib`, or the dev tree's `lyric-rt/build-x86_64-pc-windows-msvc/lyric_rt.lib` (`make -C lyric-rt windows`; `N0003` when absent). On Windows, paths, environment variables and command-line arguments cross the Win32 boundary as UTF-16 and reach Lyric as UTF-8; standard streams are binary (a `\n` stays `\n`), and output that reaches a console is written as UTF-16 so non-ASCII text shows whatever the console code page; a panic exits with status 3 and no error dialog; `@library("c")` and `@library("m")` name the UCRT every program links and add no link argument. Child processes (`Std.Process`, `Std.ProcessCapture`) behave as on POSIX (D208): a bare program name is looked up on `PATH` only (never in the current directory), with `.exe` appended first unless the name already ends in `.exe` or `.com` (so `python3.12` runs `python3.12.exe`); arguments are quoted so the child's `CommandLineToArgvW` returns them unchanged; a batch file (`.bat`, `.cmd`) is refused as a spawn failure (`ENOEXEC`), since Windows would run it through `cmd.exe` and re-parse its arguments, so run `cmd.exe /c` explicitly to opt in to that; a timeout or kill ends the child's whole process tree (a Job Object) and the child reports status 137 (128 + SIGKILL, as on POSIX); a crash reports its NTSTATUS as a negative exit code. Sockets are Winsock and TLS is Schannel (D209): `Std.Tcp`, `Std.Tls`, `Std.Http` and `Std.HttpServer` behave as on Linux, with these differences. Certificates are verified against the Windows certificate store (system trust), the pinned anchors only (exclusive trust), or either (additive trust), with revocation not checked. A server identity's private key is stored in the user's CNG key store for the life of its context, because Schannel cannot use an in-memory key. Its intermediate certificates are added to the user's Intermediate Certification Authorities store, from which Schannel builds the chain it sends. TLS 1.3 needs Windows 11 or Server 2022, so a TLS 1.3-only context fails on older releases. A listening socket is bound with `SO_EXCLUSIVEADDRUSE`. A TLS server refuses a client whose ALPN offer shares no protocol with its own (RFC 7301's `no_application_protocol`), where Linux and macOS complete the handshake with no protocol. A path of 248 characters or more reaches Win32 in its extended-length `\\?\` form (`\\?\UNC\` for a share), so file and directory operations are not limited to `MAX_PATH` (D213). A native build whose clang flags include `-fsanitize=address` (the AddressSanitizer self-tests use this through `Lyric.LlvmBridge`) links the runtime built against the DLL C runtime (`$LYRIC_RT_WINDOWS_MD_PATH`, the installed `lib/lyric_rt_md-x86_64-pc-windows-msvc.lib`, or the dev tree's `lyric_rt_md.lib`), since AddressSanitizer on Windows works only with that runtime, and copies clang's `clang_rt.asan_dynamic-x86_64.dll` beside the executable; **N0026** when clang has no such DLL or it cannot be copied.
+
+**Dependency packages on `--target native` (D218, #8429).** A project's own packages are compiled in full. The packages of its path and workspace dependencies are compiled by reachability, like the bundled standard library: only the code the project's own packages can reach is lowered, so an `extern func` of a dependency that nothing reachable calls does not name its `@library`, the link does not need that library, and the dead code adds nothing to the binary. A record's methods, a protected type and the `impl` of a record are lowered once reachable code calls a method of that name, constructs the type, or (for an `impl`) constructs the record; a module `val` initializer, a field default and an invariant run only when the `val` is read or the record is constructed. A `--shape module` or `--shape component` build exports every `pub` function of every package it links and so lowers dependencies in full. On `--target dotnet` and `--target jvm` a dependency is a compiled library and is unaffected.
 `lyric build <source.l> --target native --triple wasm32-wasi --shape module` (docs/35 W3, D-progress-1029) builds the **browser / JS-host module**: the same wasi-sdk link as the plain wasm32 build, as a reactor module (`-mexec-model=reactor`: no `_start`, an `_initialize` the glue calls, a 1 MiB stack) that exports every `pub func` of the program's own packages whose parameters and result are `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit` (not generic, overloaded or `out`/`inout`; an `async func` over those types is exported too and becomes a Promise-returning JS function), plus `__main_argc_argv` when a `main` exists. The build writes `<name>.wasm` (the default output), `<name>.js` and `<name>.d.ts`: an ES module whose `instantiate(source?, { stdout, stderr, stdin, args, env, imports })` satisfies the module's few `wasi_snapshot_preview1` imports (stdio, clock, random, args, environment; every other call answers `ENOSYS`), returns an object with one typed wrapper per export (`Long` is a `bigint`, a `String` argument is copied into linear memory and released after the call, a returned `String` is copied out and released), `run(args)` for a `main`, and `flush()`. An async export is not blocked on: the glue starts the task, then drives the runtime's cooperative scheduler (`lyric_wasm_poll`) from `setTimeout` until the task completes and resolves the Promise with its decoded result, so `Std.Time.sleepMillis` and concurrent async calls interleave on the host event loop; a synchronous `run()` whose program sleeps blocks through `poll_oneoff` instead (`Atomics.wait` where the host allows it, a spin elsewhere). A `pub func` the glue cannot carry (a record, list or option in its signature, one of the exclusions above, or a name the glue object itself uses: `run`, `memory`, `flush`, `raw`, `then`) is left out with a `W0040` note on stderr; nothing is dropped silently. A panic traps (`WebAssembly.RuntimeError`) with its message already delivered to the `stderr` hook, and the instance must not be reused. A program calls JavaScript through **host imports**: an `extern func` marked `@wasmImport("module")` (the string after `=` is the import name, so `@wasmImport("ui") extern func applyPatch(json: String): Unit = "apply"` imports `ui.apply`) compiles to a wasm import from `module`, with `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` and `Unit` parameters and results (`N0014` otherwise, and for a malformed annotation: no argument, a non-string argument, an empty module name, or a name containing a quote or backslash). The glue wraps the function the host passes as `instantiate(source, { imports: { ui: { apply(json) { ... } } } })`: a String argument arrives as a JS string, a `Long` as a `bigint`, a String result is copied into a fresh Lyric String, and instantiation fails with a `missing host imports` error naming each import the host did not supply; the generated `.d.ts` types the `imports` option (`LyricHostImports`), so a TypeScript host cannot omit one. The imported function's LLVM name is namespaced, so an import named `log` never collides with libm's. `@wasmImport` is accepted only with `--shape module` (`N0015`). A synchronous import is the route for a host call that returns at once (rendering a patch, a clock, logging); an operation that completes later (`fetch`) is a **promise import**, `@wasmImport("module", promise)` (D-progress-1048): the extern is declared with the plain result type, the JS function may return a Promise (or the value), and a call from an `async func` suspends the calling task until it settles, like any async call (`spawn` inside a `scope` runs several at once); a rejected promise panics the waiting code with `host import failed: <message>`, and a call from a synchronous function aborts with a message naming the fix, since the host cannot finish the operation until the call returns. `Std.Http` compiles against a `fetch`-backed kernel twin in the module shape (D-progress-1049): requests go through a built-in `std.http.fetch` promise import (replaceable through `imports['std.http']`), and TLS options and Unix sockets fail every request with `ConnectionFailed` instead of being ignored (`tlsConfigSupported()` is `false`). In `--shape component` a promise import is a WIT `async func` import (D184 item 5): the generated wrapper is an `async func` that stores the arguments into a memory image, makes the async-lowered core call (flat arguments up to 4, else the image's address, and a return area for the result), and awaits a host task that the subtask's `RETURNED` event finishes, then reads the result from the return area; the image and area stay allocated until then, so the host may read the arguments and write the result late. Any parameter and result type a component host import allows works. A host-side rejection is not delivered to the Lyric code, since the Component Model carries a failure only as a `result` in the signature: under jco the pending export call rejects with the host's error instead. A subtask the host cancels fails the awaiting code with `host import was cancelled before it returned`. `--shape module` is valid only with `--target native` (`F0043` otherwise) and needs a wasm32 triple (`N0011`); `--shape component` (docs/35 W4, D-progress-1032) builds a **WebAssembly component** instead: the same reactor link, with a WIT document generated from the exports (one interface per exporting Lyric package, one world `<package>-world`, package `lyric:<package>@<version>`; names kebab-cased, `Int`/`Byte`/`Bool` -> `s32`/`u8`/`bool`, `Long` -> `s64`, `Float`/`Double` -> `f32`/`f64`, `String` -> `string`, `Unit` -> no result; also `Option[T]`/`T?` -> `option<T>`, `Result[T, E]` -> `result<T, E>`, a tuple `(A, B)` (two or more elements, none `Unit`) -> `tuple<a, b>`, `List[T]` -> `list<T>`, and the program's own non-generic records, single-payload-field unions and enums -> `record`/`variant`/`enum`, to any nesting, including `pub` types another package of the project declares, reached through any import form and declared again in the exporting package's interface under their simple names, D-progress-1047) and canonical-ABI lift/lower code compiled in: the compiler appends generated Lyric shims to each exporting package (`__cabi_*`, never written by hand) that read the flat core arguments or linear memory, call the function, and write the result (flattened, or through a return area with a `cabi_post_*` that frees what it allocated), over a small generated C file (`<name>.cabi.c`) of memory and slot primitives; a caller-allocated buffer is released after it is read. The core module is then componentized by `wasm-tools component embed` and `component new --adapt wasi_snapshot_preview1=<adapter>`; the build needs `wasm-tools` (`$WASM_TOOLS` or PATH) and the preview1 reactor adapter (`$LYRIC_WASI_ADAPTER`), and fails with `N0016` when either is missing or a tool step fails. The output is `<name>.wasm` (the component) and `<name>.wit`. An `async func` export is a WIT `async func` (D184): the generated wrappers lift it with the Component Model's callback ABI (`[async-lift]` plus a callback the host re-enters per event), run the cooperative scheduler on each turn, and return the result through `task.return`, so the host is never blocked (jco presents it as a Promise-returning function, wasmtime as a concurrent call). A task asleep in `Std.Time.sleepMillis` parks the call on an async-lowered `wasi:clocks/monotonic-clock@0.3.0` `wait-for`, so a component with an async export imports that WASI 0.3 interface (its WIT is written into the generated `.wit`), and a host needs WASIp3 clocks: wasmtime 49 or later, or jco's output on node 24 or later with `@bytecodealliance/preview3-shim`. Calls into one instance may overlap (D184 slice A3): each call keeps its own record, found from its callbacks through `context.get`, its result is kept for it when the scheduler turn that completes its task belongs to another call (or to a synchronous export), and such a call is woken through a private unit `future` it waits on; outstanding subtasks live in one live call's waitable set and move to another's when it ends. A `TASK_CANCELLED` event is acknowledged and the call runs to completion. `W0041` is no longer issued. An export the component ABI cannot carry (a generic, `out`/`inout` or type-alias-typed signature; a type from another package, a generic or multi-field-case type, a `Unit` parameter or element; or a function whose WIT name collides with a type's, since both share one WIT namespace) is left out with a `W0040` note naming the reason. A host import works in the component shape too: an `extern func` marked `@wasmImport("module")` becomes a function of a WIT interface named for the module (`lyric:<package>/<module>@<version>`, imported by the world), with `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double` and `String` parameters and results (a `Bool` is the WIT `bool`, a `Byte` the `u8`; any other type is an error), and the compiler generates the C function the Lyric extern calls, which lowers the arguments to the canonical form and lifts the result. A host import the shim generator cannot lower (an unsupported type, a module or import name that is not a WIT identifier - a letter first, then letters, digits, `.`, `-` and `_` - or more than 16 flat core parameters) is `N0018`, and two externs for one host function with different signatures, or whose module or function names fold to the same WIT name (`ui.log` and `ui-log`), or a module named like an exported package, is `N0019`. Under `jco transpile` the host supplies each interface with `--map lyric:<package>/<module>@<version>=<file>`. `--wit-out <path>` writes the generated WIT there instead of beside the component, and `--js-bindings` also runs `jco transpile` (`$JCO`, else `jco` on `PATH`) into `<stem>-js/`, with a `--map` for every host import: an `npm:<package>` import is mapped to the package, any other module `m` to `../m.js` (a file the caller writes beside the component); both flags apply to `--shape component` only (`N0021`, also for a `;` in the path) and a missing or failing `jco` is `N0022`. The component runs in any component host (`wasmtime`, `jco transpile` for node and browsers); `[build] shape = "module"` selects it from a manifest, and a `[wasm]` table tunes the build: `version` (the component's WIT package version as `major.minor.patch`; default the project's `[package]` version, else `0.1.0`), `world` (the WIT world name; default `<package>-world`) and `stack` (the shadow-stack size in bytes, a multiple of 16 from 65536 to 67108864; default 1 MiB, for both wasm32 shapes), `--watch` is refused with it, and `N0012`/`N0013` report an unknown shape name and an unwritable glue file.
 
 `--shape aot` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** and **JVM** targets. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references.
@@ -3053,7 +3099,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 **`[project.tests]` fallback.** When the manifest has a `[project]` section but no `[project.tests]` entries, `lyric test` scans all source files listed in `[project.packages]` for the `@test_module` annotation and runs each found file as a standalone single-file test. This allows projects that co-locate test modules with their source packages to run tests without explicit `[project.tests]` entries in `lyric.toml`.
 
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). The type checker checks a `test` body itself, as the body of a parameterless `Unit` function in the module's scope (its imports, its declarations, and its fixtures read as the module-level `val`s they become), and a fixture's initialiser as that `val`'s, so `lyric build`, `lyric prove` and the language server report a test body's type errors at their source positions (#8308). `lyric test` reports them too, after its rewrite, but the line it names can be off (#7540). v2 adds cross-package non-`pub` access (§3.2) and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling, and leaves out `test`/`property`/`fixture` items whose `@cfg` is inactive for the chosen features and target, exactly as the runner does (#7540). `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). The type checker checks a `test` body itself, as the body of a parameterless `Unit` function in the module's scope (its imports, its declarations, and its fixtures read as the module-level `val`s they become), and a fixture's initialiser as that `val`'s, so `lyric build`, `lyric prove` and the language server report a test body's type errors at their source positions (#8308). `lyric test` reports them too, after its rewrite, at the same line as the source: the rewrite of a `test` item preserves line numbers (#7540; a `property` item's synthesised driver still adds lines). v2 adds cross-package non-`pub` access (§3.2) and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 **Single-file dependency resolution.** `lyric test <source.l>` (no `--manifest`) resolves dependencies from a nearby `lyric.toml` exactly as `lyric build <source.l>`/`lyric run <source.l>` do (§13.1's "Single-file dependency resolution"): the nearest manifest is discovered by walking up from the source file's own directory, and when it declares workspace/path dependencies, `[nuget]`/`[maven]` assets, or `[features]`, the test file's (already test-synthesised) source compiles against them via the same one-package `EmitProjectRequest` synthesis — including `--features`/`--no-default-features`/`--all-features` selection and colocating resolved dependency DLLs beside the compiled test binary on `--target dotnet`. An unbuilt/undeclared local dependency fails the test run loudly, matching `lyric build`'s fail-loud contract; there is no implicit restore. This does not apply to `--target native`, which compiles the test file alone, though with its manifest's features (D182), or to a `@test_module` compiled by linking the self-hosted compiler's own DLLs (`Lyric.*` imports, #2364 Stage 5), which resolves its dependencies through that separate mechanism instead (D-progress-784, #5341). That separate mechanism fails the test run loudly too: before compiling, it verifies every `Lyric.*` package the test's transitive import closure needs is actually present in whichever compiler-DLL set gets linked (the staged self-hosted `Lyric.Compiler.dll` bundle, the self-hosted per-package set, or the F#-emitted per-package set, tried in that order) and exits with an error naming the missing package(s) and pointing at `make selfhosted-compiler` rather than silently linking an incomplete closure — a bundle staged before a package was added to a test's imports previously produced wrong runtime results instead of a build failure (#6628).
 
@@ -3270,15 +3316,19 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 
 ### 13.11a Bindgen
 
-`lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--long-bits 32|64] [--check]` generates a `--target native` kernel binding file from a C header (docs/67 §5.3, D190). It runs `clang -Xclang -ast-dump=json -fsyntax-only` over the header (`clang` must be on `PATH`) and writes `-o <out.l>`, or standard output without `-o`.
+`lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--triple <llvm-triple>] [--long-bits 32|64] [--cfg <predicate>] [--check]` generates a `--target native` kernel binding file from a C header (docs/67 §5.3, D190). It runs `clang -Xclang -ast-dump=json -fsyntax-only` over the header (`clang` must be on `PATH`) and writes `-o <out.l>`, or standard output without `-o`.
 
 The allow-list file selects what is bound: one name or `prefix*` pattern per line (`#` starts a comment), matched against function, record, typedef and enum-constant names, and `userdata <callback> <index>` lines naming a callback typedef's user-pointer parameter. The output has `pub extern func` declarations (each with `@library("<name>")` when `--library` is given, which is what links the library into a native build), `pub foreign record` declarations for the structs those functions use (transitively), and `pub val` constants for the selected enum constants. A callback parameter becomes a function type whose user-pointer parameter is `NativeUserdata`; the pointer is the callback's only `void *` parameter unless a `userdata` line says otherwise.
 
-Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`, 8-bit integers and `bool` to `Byte`, `float` to `Float`, `double` to `Double`, a pointer to `NativePtr[T]` (`NativePtr[Byte]` for `void *`, `char *` and incomplete or unsupported struct types), an array field to `array[N, T]`. `long` follows `--long-bits` (default 64). Signedness is not tracked: an unsigned value is the signed type of the same width. A symbol that cannot be passed faithfully (a 16-bit integer, a bit-field, a union, a variadic function, a function-pointer field, an ambiguous callback) is skipped with a note on standard error; naming a skipped or undeclared symbol exactly, rather than by pattern, is an error.
+Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`, 8-bit integers and `bool` to `Byte`, `float` to `Float`, `double` to `Double`, a pointer to `NativePtr[T]` (`NativePtr[Byte]` for `void *`, `char *` and incomplete or unsupported struct types), an array field to `array[N, T]`. `long` follows the data model: `--triple` parses the header as that target sees it (clang `--target`, so its `_WIN32` branches and `<stdint.h>` are the target's) and sets 32-bit `long` with 64-bit pointers for a Windows triple (LLP64), 32-bit both for `wasm32`/`i686` (ILP32), and 64-bit both otherwise (LP64); `--long-bits` overrides the `long` width (default 64). clang's `__attribute__((...))` parts of a type, such as a Windows header's calling convention (`SDLCALL` is `__cdecl`), are dropped: x86-64 has one convention. A binding whose output differs between data models is generated once per model, each file given `--cfg <predicate>` (written as its file-level `@cfg`, e.g. `--cfg 'target_os = "windows"'` and `--cfg 'not(target_os = "windows")'`), and the files form one package (`[project.packages]` lists both); every such variant also defines `toCLong(x: in Long)` and `fromCLong(x)`, returning and taking `Int` on LLP64 and `Long` otherwise, so code above the binding converts a C `long` the same way against each (D219). Signedness is not tracked: an unsigned value is the signed type of the same width. A symbol that cannot be passed faithfully (a 16-bit integer, a bit-field, a union, a variadic function, a function-pointer field, an ambiguous callback) is skipped with a note on standard error; naming a skipped or undeclared symbol exactly, rather than by pattern, is an error.
 
 `--check` regenerates in memory and fails when `-o` differs, so CI can keep generated files in sync with their headers.
 
 **Exit codes:** 0 = generated (or up to date); 1 = bad arguments, clang failure, or an error in the allow-list or selection.
+
+### 13.11b Plugins
+
+`lyric plugin pack`, `lyric plugin check` and `lyric plugin sdk` build, validate and generate SDKs for plugins; see §15.8.
 
 ### 13.12 Package manager
 
@@ -3462,6 +3512,417 @@ range of `Int`, `Long`, `Float` or `Double` (`port: Int range 1 ..= 65535 =
 range. A module-scope block's env value outside the range, including `NaN`,
 stops startup with exit code 78 (`G0004`) on dotnet and the JVM
 (`docs/25-config-blocks.md` §3, D-progress-995, #7229).
+
+---
+
+## 15. Plugins
+
+A plugin is separately built code that an application loads at run time
+without reflection (docs/69, D204, D207). The application declares typed
+**plugin points** (the host calls the plugin) and **capabilities** (the plugin
+calls the host); a plugin is a record that implements points and holds clients
+for the capabilities it needs. The compiler pass `Lyric.PluginExpand` turns
+the declarations into ordinary Lyric (codecs, clients, servers, the plugin's
+`main`) before type checking, on every target, so no backend knows about
+plugins. A plugin runs in its own process and talks to the host over JSON-RPC
+on its stdin and stdout; the runtime on both sides is `Std.Plugin`.
+
+There are no plugin keywords: every declaration is an existing item with an
+annotation.
+
+### 15.1 Declarations
+
+An **API package** declares the points, capabilities and the boundary types
+they carry. Host and plugin both depend on it.
+
+```lyric
+pub exposed record StoreGrant {
+  prefixes: List[String]
+}
+
+@capability(grant = StoreGrant)
+pub interface Store {
+  func load(title: in String): Result[Note, String]
+    requires: grantAllows(grant.prefixes, title)
+}
+
+@capability
+pub interface Log {
+  func log(level: in Level, line: in String): Result[Unit, String]
+}
+
+pub record NotesContributions {
+  commands: List[String]
+}
+
+@plugin_point(version = "1.0", contributions = NotesContributions, allows(Store, Log))
+pub interface NoteTool {
+  func summarize(note: in Note): Result[String, Level]
+  func fetch(title: in String): Result[Change, String]
+}
+```
+
+| Annotation | On | Arguments |
+|---|---|---|
+| `@capability` | `pub interface C` | `grant = G` (optional): the record the host grants, describing how much of the capability the plugin may use |
+| `@plugin_point` | `pub interface P` | `version = "major.minor"` (required), `contributions = K` (optional): static data each plugin declares for the point, `allows(C, ...)`: the capabilities a plugin of this point may request |
+| `@protocol_point` | `pub interface L {}` (no members) | `protocol = "<name>/<version>"` (required), `version = "major.minor"` (default `"1.0"`), `contributions`, `allows` |
+| `@plugin_handle` | `pub type H = Long` | none: `H` crosses the boundary as a number, an opaque reference into the host |
+| `@plugin` | `pub record R` | `id = "<publisher>.<name>"`, `version = "major.minor.patch"` with an optional `-` or `+` suffix, `publisher = "..."`, `implements(P, ...)` |
+| `@plugin_contributions(P)` | a function with no parameters | returns `P`'s contributions type |
+| `@plugin_request(C)` | a function with no parameters | returns `C`'s grant type: the grant the plugin asks for |
+
+`contributions =` and `grant =` take a bare type name.
+
+**Methods.** Every point and capability method returns `Result[T, E]`, takes
+only `in` parameters and is not generic (`K0004`). It may be `async` or not;
+the wire is asynchronous either way.
+
+**Grant guards.** A capability method's `requires:` clause that names `grant`
+is a guard. It may use `grant`, the method's parameters and function calls
+(`K0007`). The pass removes it from the interface and checks it in the
+generated host-side server before the host's implementation runs; a failed
+guard answers the plugin with `Denied` (`-32040`). A `requires:` clause that
+does not name `grant` stays an ordinary contract.
+
+**Protocol points.** A `@protocol_point` has no Lyric methods (`K0011`): the
+plugin speaks an existing protocol such as LSP over its stdin and stdout, and
+the host gets the raw process from `openProtocolPlugin` (§15.6).
+
+### 15.2 Plugins
+
+A plugin is a `pub record` with `@plugin` and an `impl` for each point it
+lists in `implements(...)`:
+
+```lyric
+@plugin(id = "lyric.test.notes", version = "1.2.0", publisher = "lyric", implements(NoteTool))
+pub record NotesPlugin {
+  store: StoreClient            // requests Store
+  log: Option[LogClient]        // requests Log optionally
+  var calls: Int = 0            // plugin state: needs a default
+}
+
+impl NoteTool for NotesPlugin {
+  func summarize(note: in Note): Result[String, Level] { ... }
+  func fetch(title: in String): Result[Change, String] {
+    match store.load(title) {
+      case Ok(n) -> Ok(value = Change.Added(note = n))
+      case Err(CallError.App(e)) -> Err(error = "app: " + e)
+      case Err(CallError.Boundary(b)) -> Err(error = "boundary: " + boundaryErrorMessage(b))
+    }
+  }
+}
+
+@plugin_contributions(NoteTool)
+func notesContributions(): NotesContributions { ... }
+
+@plugin_request(Store)
+func storeRequest(): StoreGrant { ... }
+```
+
+- A field of type `<C>Client` requests capability `C`; a field of type
+  `Option[<C>Client]` requests it optionally (`None` when the host does not
+  grant it). Every other field needs a default (`K0010`).
+- Each requested capability must be allowed by one of the plugin's points
+  (`K0003`).
+- A point that declares contributions needs exactly one
+  `@plugin_contributions(P)` function, and a requested capability with a
+  grant type needs exactly one `@plugin_request(C)` function (`K0009`).
+- The package must not declare `main`, and declares at most one `@plugin`
+  record (`K0012`): the plugin's entry point is generated.
+- Placeholders such as `"${workspace}"` in a requested grant are not
+  interpreted by the compiler; the host's grant policy gives them meaning.
+
+### 15.3 Boundary types
+
+A value crosses the boundary as JSON (D207 Decision 4):
+
+| Lyric | JSON |
+|---|---|
+| `Bool` | `true` / `false` |
+| `Byte`, `Int`, `Long`, `UInt`, `ULong` | number |
+| `Float`, `Double` | number |
+| `Char` | one-character string |
+| `String` | string |
+| `Unit` | `null` |
+| `Option[T]` | `null` or the `T` encoding |
+| `Result[T, E]` | `{"ok": T}` or `{"err": E}` |
+| `List[T]`, `slice[T]` (`T` not `Byte`) | array |
+| `List[Byte]`, `slice[Byte]` | base64 string |
+| `Map[String, T]` | object |
+| tuple | array |
+| record, exposed record | object keyed by field name |
+| union | `{"case": "<Case>", "<field>": ...}` |
+| enum | the case name |
+| `@plugin_handle` type | number |
+| `Std.JsonValue.JsonValue` | itself |
+
+Decoders reject a missing required member (an absent `Option` member decodes
+as `None`), an unknown union case or enum name, and a wrong JSON kind; they
+ignore unknown members, so a minor version may add optional fields.
+
+Anything else is `K0001`: `Option[Option[T]]`, `Option[Unit]` and
+`Option[JsonValue]` (`None` and `Some` would be indistinguishable), a `Map`
+with non-`String` keys, other generic types, generic records, unions and
+aliases, a union case with positional fields, a distinct type without
+`@plugin_handle`, range types, fixed-size arrays, functions, interfaces,
+opaque and protected types, `out`/`inout` parameters, and `Std` types other
+than `JsonValue`. A boundary type must be declared in a package compiled
+through this pass: the generated encoder for a type from another package calls
+that package's `pluginEncode<T>`, so the type must be used at a boundary in
+its own package.
+
+### 15.4 Generated items
+
+In an API package, for each record, exposed record, union, enum and handle a
+boundary declaration reaches:
+
+- `pub func pluginEncode<T>(v: in T): JsonValue` and
+  `pub func pluginDecode<T>(j: in JsonValue): Result[T, String]`.
+
+For each `@capability C` (`<c>` is the name with its first letter
+lower-cased):
+
+| Item | Side |
+|---|---|
+| `pub record <C>Client { conn: PluginConnection }`, one method per `C` method returning `Result[T, CallError[E]]` | plugin |
+| `pub record <C>Server { target: C }` with `impl CapabilityProvider` (decodes the grant, checks the guards, calls `target`) | host |
+| `pub func <c>Provider(target: in C): CapabilityProvider` | host |
+| `pub func <c>CapabilityInfo(): CapabilityInfo` | both |
+
+For each `@plugin_point P` (and `@protocol_point P` for the info and
+contributions items):
+
+| Item | Side |
+|---|---|
+| `pub record <P>Remote { conn: PluginConnection }`, one method per `P` method returning `Result[T, CallError[E]]` | host |
+| `pub func <p>Remotes(host: in PluginHost): List[<P>Remote]`: one per catalogued plugin implementing `P`, started on its first call | host |
+| `pub record <P>Contribution { pluginId: String, value: K }`, `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` and `pub func <p>ContributionIssues(host: in PluginHost): List[PluginLoadIssue]` (K0101; when `P` declares contributions) | host |
+| `pub func <p>PointInfo(): PluginPointInfo` | host |
+| `pub func pluginDispatch<P>(target: in P, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]` | plugin |
+
+In a package with a `@plugin` record `R`: a `record <R>Server` with
+`impl PluginServer` (builds the manifest, constructs `R` with a client per
+granted capability, routes calls to `pluginDispatch<P>`) and
+`func main(): Int = runPlugin(<R>Server())`.
+
+The pass adds `import Std.Core`, `Std.Collections`, `Std.JsonValue`,
+`Std.JsonRpc` and `Std.Plugin` (deduplicated) to a file it generates code
+for. A plugin method that matches on `CallError` or calls
+`boundaryErrorMessage` must import `Std.Plugin` itself.
+
+`CallError[E]` is `App(error: E)`, the method's own error, or
+`Boundary(error: BoundaryError)`, a failure of the boundary itself:
+`Denied(reason)`, `NotGranted(capability)`, `Stale`, `Unsupported(method)`,
+`Revoked(capability)`, `ContractViolated(detail)`, `Timeout(timeoutMs)`,
+`Crashed(detail)` or `Protocol(detail)`.
+
+### 15.5 Wire protocol
+
+Version 1, JSON-RPC 2.0 with one message per line on the plugin's stdin and
+stdout; stderr is the plugin's log.
+
+- **Manifest probe.** Run with the single argument `--lyric-plugin-manifest`,
+  a plugin prints its manifest as one JSON document and exits 0.
+  `lyric plugin pack` uses this; a host reads `plugin.json` instead.
+- **Handshake.** The host's first request is `plugin/hello` with
+  `{"protocol": 1, "points": {"<Pkg>.<P>": "<major>.<minor>"}, "grants":
+  [{"capability": "<Pkg>.<C>", "grant": <grant or null>}]}`. The plugin
+  answers with its id and, per point, its version and the methods it
+  implements; a call to a method it does not list is `Unsupported`. A plugin
+  missing a required grant answers `NotGranted`.
+- **Calls.** Point calls are `<Pkg>.<P>/<method>` (host to plugin);
+  capability calls are `cap/<Pkg>.<C>/<method>` (plugin to host, served while
+  the host waits for the point call). Params are an object keyed by parameter
+  name; the result is `{"ok": ...}` or `{"err": ...}`.
+- **Boundary errors** are JSON-RPC errors:
+
+| Code | `BoundaryError` |
+|---|---|
+| `-32001` | `Timeout` (the call timeout passed) |
+| `-32040` | `Denied` (a guard failed, or the capability is not granted) |
+| `-32041` | `NotGranted` |
+| `-32042` | `Stale` (a stale handle) |
+| `-32043` | `Unsupported` (the method is not implemented) |
+| `-32044` | `Revoked` |
+| `-32045` | `ContractViolated` |
+| `-32046` | `Protocol` (malformed params or result) |
+
+- **Cancellation** is `$/cancelRequest` with `{"id": <request id>}`;
+  **shutdown** is the notification `plugin/shutdown`, after which the host
+  closes stdin and kills the process once the grace period passes.
+
+### 15.6 Hosting: `Std.Plugin`
+
+A host builds a `PluginHost` from the points it offers, a `CapabilityProvider`
+for each capability it serves and a `GrantPolicy`, then loads plugin
+directories:
+
+```lyric
+val host = newPluginHost(
+  PluginHostConfig(
+    points = [noteToolPointInfo()],
+    providers = providers,          // storeProvider(store), logProvider(log)
+    policy = NotesPolicy()          // or GrantAllRequested()
+  )
+)
+val issues = discoverPlugins(host, ["plugins"])
+for r in noteToolRemotes(host) {
+  match r.summarize(note) { ... }
+}
+stopAllPlugins(host)
+```
+
+`PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
+(10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`
+(10000), `shutdownGraceMs` (2000), `preferWasm` (true) and
+`wasmMaxMemoryBytes` (256 MiB).
+
+Loading reads each `<dir>/<id>-<version>/plugin.json`, matches the plugin's
+points (a different major version is `K0103`), asks the policy for grants,
+and checks each grant against the request: a list-valued grant field must be a
+subset of the requested list and any other field must equal the request (a
+wider grant is `K0102`). A plugin that cannot be loaded is a
+`PluginLoadIssue`; `pluginLoadIssueMessage` renders it. Nothing starts until
+the first call: the host then spawns the chosen payload and sends
+`plugin/hello`. A crashed plugin is restarted on the next call after an
+exponential backoff, up to `maxRestarts` times; after that every call is
+`Crashed`. `stopPlugin`, `stopAllPlugins` and `revokeCapability` control
+running plugins. `openProtocolPlugin(host, pointId, pluginId)` starts a
+protocol-point plugin and returns its `PipedProcess`; the caller speaks the
+protocol and owns the process (there is no handshake or capability serving on
+that channel).
+
+The lower-level API (`connectionsFor`, `contributionsFor`, `callPlugin`,
+`registerPlugin`, `parsePluginManifest`, `readPluginManifest`,
+`pluginManifestToJson`, `addPluginPayload`, `selectPluginPayload`,
+`pluginLaunchCommand`, `findWasmtime`) is what the generated code and the
+compiler's own generator host use. A `PluginHost` is synchronous and not safe
+to use from several threads at once. On the plugin side, `runPlugin` and
+`callHost` are what the generated `main` and clients call. `Std.Plugin` is
+`@experimental`.
+
+### 15.7 Hosting modes and artifacts
+
+A plugin artifact is a directory, `<id>-<version>/`, holding `plugin.json`
+(`"schema": 1`, `id`, `version`, `publisher`, `points`, `capabilities`,
+`payloads`) and the payload files. A payload is one of:
+
+| Payload | Runs as |
+|---|---|
+| `{"mode": "process", "runtime": "dotnet", ...}` | `dotnet exec <dll>` |
+| `{"mode": "process", "runtime": "jvm", ...}` | `java -jar <jar>` (`$JAVA_HOME/bin/java` when set) |
+| `{"mode": "process", "os": ..., "arch": ..., ...}` | the native executable, on a matching host |
+| `{"mode": "wasm", "module": "<file>.wasm"}` | `wasmtime run -W max-memory-size=<bytes> <module>` |
+
+**Process mode** runs every target's payload, and a host on any target runs a
+plugin built for any other. **Wasm mode** runs a plugin built with
+`--target native --triple wasm32-wasi` under `wasmtime` (found at
+`$LYRIC_WASMTIME`, else on `PATH`) with no directories, environment or
+network, so its only way to reach anything is a capability call; it speaks the
+same protocol. A host with `preferWasm` chooses a wasm payload whenever the
+plugin has one and `wasmtime` is available. Process mode applies no operating
+system restrictions: a process payload is arbitrary code running with the
+host's user and privileges, and the grant policy and guards limit only what it
+does through capability calls, not what it does directly. Wasm mode is the
+isolation for untrusted code; it caps memory, and a call's CPU time is bounded
+only by the call timeout (a plugin that ignores the cancellation keeps running
+until the host stops it, #8465). A trusted in-process mode, signing and a plugin
+registry are not part of v1 (D207).
+
+### 15.8 `lyric plugin`
+
+```
+lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]
+lyric plugin check <dir>
+lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
+```
+
+- **`pack`** builds the plugin project (the nearest `lyric.toml`, or
+  `--manifest`) for each target in `--targets` (default `dotnet`), runs every
+  payload with `--lyric-plugin-manifest`, requires the manifests to agree, and
+  writes `<dir>/<id>-<version>/` with `plugin.json` and the payloads. `<dir>`
+  defaults to `bin/plugin` beside the manifest. Each target needs its
+  toolchain: the .NET SDK, a JDK 21 or later, `clang` for native, and the
+  wasi-sdk (`WASI_SDK_PATH`) plus `wasmtime` for wasm. A project with `[maven]`
+  dependencies cannot be packed for `jvm`, since a `java -jar` payload cannot
+  load them.
+- **`check`** validates an artifact directory (schema, required fields,
+  version spellings, payload forms, payload files present) and prints each
+  problem as `<path>: <location>: <message>`.
+- **`sdk`** generates a plugin SDK in C#, Java or TypeScript from an API
+  package: the boundary types and codecs, a process-mode server, capability
+  clients, a manifest builder and a JSON Schema of the boundary. The
+  TypeScript runtime parses integers exactly.
+
+**Exit codes:** 0 = success (or a valid artifact); 1 = bad arguments, a failed
+build or probe, or a problem found.
+
+### 15.9 Source generators
+
+Source generators (§2, `@generate(Pkg.Name)`; docs/40) are the first plugin
+point. `Lyric.GeneratorSdk` is its API package: the point
+`SourceGenerator` (version 3.0) with one method,
+`generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]`,
+and the capability `ProjectRead` (`readText(path)`), granted as
+`ProjectReadGrant { roots }` and guarded by `projectPathWithin`. A generator is
+a `kind = "source-generator"` package with a `@plugin` record implementing
+`SourceGenerator`:
+
+```lyric
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
+
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
+}
+```
+
+The compiler is the host: it builds the generator for dotnet, probes its
+manifest, runs it as a dotnet process payload and grants exactly the
+capabilities it requests. One generator process serves every annotated type of
+a build. `GeneratorError` refuses a request outright; problems with the
+annotated type are diagnostics in the response (X0005).
+
+### 15.10 Diagnostics
+
+Compile-time, reported by `Lyric.PluginExpand`:
+
+| Code | Meaning |
+|---|---|
+| `K0000` | Internal error: the pass generated code that does not parse (please report it) |
+| `K0001` | A point, capability, grant, contributions or handle type mentions a type that cannot cross a boundary (§15.3), or a method has an `out`/`inout` parameter |
+| `K0002` | `allows(...)` names an interface that is not a `@capability` |
+| `K0003` | A plugin requests a capability that none of its points allows |
+| `K0004` | A point or capability method does not return `Result[T, E]`, is generic, or the interface declares an associated type |
+| `K0005` | A plugin annotation on the wrong item: `@plugin_point`/`@capability`/`@protocol_point` not on a `pub interface` (or more than one of them), `@plugin_handle` not on a `pub type H = Long` without a range, `@plugin` not on a non-generic `pub record` |
+| `K0006` | A malformed annotation: a missing or badly formed `version` or `id`, an empty `protocol`, an unknown argument, an argument of the wrong form, or an annotation repeated on one item |
+| `K0007` | A capability guard names something other than `grant`, the method's parameters and function calls, or names `grant` on a capability without a grant type |
+| `K0008` | `implements(...)` names something that is not a plugin point, the record has no `impl` for a listed point, or it implements a point it does not list |
+| `K0009` | A missing, duplicated or wrongly typed `@plugin_contributions` / `@plugin_request` function, or one in a package with no `@plugin` record |
+| `K0010` | A plugin record field without a default that is not a capability client |
+| `K0011` | A `@protocol_point` interface with members |
+| `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records |
+
+Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request)
+and `K0103` (a point major-version mismatch); the generated
+`<p>ContributionIssues(host)` returns one carrying `K0101` for each loaded
+plugin whose contributions do not decode as the point's contributions type.
+
+### 15.11 Limits
+
+- A `ULong` above 2^63 crosses the boundary as a JSON floating-point number,
+  so values that a `Double` cannot represent exactly lose precision.
+- The LSP does not run `Lyric.PluginExpand`, so the generated items (clients,
+  `<P>Remote`, `pluginEncode<T>`) are unknown names in the editor although the
+  build accepts them.
+- The SDK runtimes (C#, Java, TypeScript) accept `$/cancelRequest` but do not
+  interrupt a call already running.
+- `--target native` has no unwinding: a panic in a native plugin's method ends
+  the plugin process (the host sees `Crashed` and may restart it), and a panic
+  in a native host's capability provider ends the host.
 
 ---
 

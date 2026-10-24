@@ -20,6 +20,10 @@
 //!    regular expression, so `"Std.Json".split(".")` yielded no parts and
 //!    trailing empty parts were dropped (found through lyric-generator-sdk,
 //!    #7511).
+//! 7. A binding of an `if` or `match` whose every result is a list literal is
+//!    a `slice[T]` too, with the literals' element type, so `.length` and
+//!    `xs[i]` arithmetic resolve (#8516, found through lyric-game's PNG
+//!    decoder).
 //!
 //!   lyric test --target dotnet lyric-compiler/jvm/static_type_recovery_jvm_self_test.l
 //!   lyric test --target jvm    lyric-compiler/jvm/static_type_recovery_jvm_self_test.l
@@ -48,7 +52,7 @@ pub interface Transaction {
   func commit(): Result[Unit, String]
 }
 
-pub record TxImpl {
+pub ref record TxImpl {
   var committed: Bool
 }
 
@@ -63,7 +67,7 @@ pub interface ConnectionIface {
   func transaction(): Result[Transaction, String]
 }
 
-pub record Connection {
+pub ref record Connection {
   var txCount: Int
 }
 
@@ -138,6 +142,30 @@ test "slice operations on an un-annotated list literal (#7524)" {
     total = total + x
   }
   assertEqualInt(total, 6, "iterating the literal binding")
+}
+
+func passSteps(interlaced: Bool): Int {
+  val steps = if interlaced { [8, 8, 4, 4, 2, 2, 1] } else { [1] }
+  var total = 0
+  var i = 0
+  while i < steps.length {
+    total = total + steps[i] * 2
+    i = i + 1
+  }
+  total
+}
+
+func pickWords(n: Int): Int {
+  val words = match n { case 0 -> ["zero"]; case 1 -> ["one", "uno"]; case _ -> return -1 }
+  words.length + words[0].length
+}
+
+test "an if or match choosing list literals binds a slice (#8516)" {
+  assertEqualInt(passSteps(true), 58, "interlaced steps")
+  assertEqualInt(passSteps(false), 2, "single step")
+  assertEqualInt(pickWords(0), 5, "first arm")
+  assertEqualInt(pickWords(1), 5, "second arm")
+  assertEqualInt(pickWords(7), -1, "diverging arm")
 }
 
 test "an un-annotated List.toArray() binding keeps its element type (#7362)" {

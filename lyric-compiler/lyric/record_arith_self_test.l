@@ -36,11 +36,11 @@ record Bytes2 {
 }
 
 @derive(Add)
-record Tally {
+ref record Tally {
   var n: Long
 }
 
-record Counter {
+ref record Counter {
   var calls: Int
 }
 

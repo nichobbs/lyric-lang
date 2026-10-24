@@ -55,7 +55,7 @@ func methodNotFoundCode(): Int {
 
 // ── Builder ──────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
-pub record McpServer {
+pub ref record McpServer {
   info: McpImplementation
   var tools: List[McpToolDef]
   var resumableTools: List[McpResumableToolDef]

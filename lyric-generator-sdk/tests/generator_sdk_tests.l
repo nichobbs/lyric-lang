@@ -1,14 +1,34 @@
 //! generator_sdk_tests.l — @test_module for Lyric.GeneratorSdk
 //!
-//! Test suite for the public API of the generator SDK: request serialization,
-//! response parsing, and the types that comprise the contract between the
-//! compiler and generator implementations.
+//! Test suite for the generator SDK: the descriptor and response types, the
+//! codecs `Lyric.PluginExpand` generates for them (the JSON the compiler and
+//! a generator exchange), and `projectPathWithin`.
 @test_module
 package Lyric.GeneratorSdk.Tests
 
 import Std.Core
 import Std.Testing
+import Std.Collections
+import Std.JsonValue as Jv
 import Lyric.GeneratorSdk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers: the request as the JSON text the compiler sends.
+// ─────────────────────────────────────────────────────────────────────────────
+func encodeText(req: in GeneratorRequest): String {
+  Jv.writeValue(pluginEncodeGeneratorRequest(req))
+}
+
+func decodeText(json: in String): Result[GeneratorRequest, String] {
+  match Jv.parseValue(json) {
+    case Ok(v) -> pluginDecodeGeneratorRequest(v)
+    case Err(e) -> Err(error = e.message())
+  }
+}
+
+func roundTrip(req: in GeneratorRequest): Result[GeneratorRequest, String] {
+  decodeText(encodeText(req))
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. AnnotationDescriptor — annotation values
@@ -284,9 +304,9 @@ test "GeneratorRequest: basic fields" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8. serializeRequest — round-trip via JSON
+// §8. The generated request codec
 // ─────────────────────────────────────────────────────────────────────────────
-test "serializeRequest: minimal request" {
+test "encode: minimal request" {
   val td = TypeDescriptor(
     kind = Record,
     name = "Type",
@@ -296,15 +316,14 @@ test "serializeRequest: minimal request" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
-  assertTrue(json.contains("\"schemaVersion\":\"2\""), "schema version")
+  val json = encodeText(req)
   assertTrue(json.contains("\"generatorArg\":\"Gen\""), "generator arg")
   assertTrue(json.contains("\"name\":\"Type\""), "type name")
   assertTrue(json.contains("\"packageName\":\"Pkg\""), "package name")
   assertTrue(json.contains("\"sourceFile\":\"f.l\""), "source file")
 }
 
-test "serializeRequest: request with special characters" {
+test "encode: request with special characters" {
   val td = TypeDescriptor(
     kind = Record,
     name = "Type\"Quote",
@@ -319,12 +338,12 @@ test "serializeRequest: request with special characters" {
     packageName = "App",
     sourceFile = "path\\file.l"
   )
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("\\\""), "quote escaped")
   assertTrue(json.contains("\\\\"), "backslash escaped")
 }
 
-test "serializeRequest: request with type parameters" {
+test "encode: request with type parameters" {
   val td = TypeDescriptor(
     kind = Record,
     name = "Container",
@@ -334,11 +353,11 @@ test "serializeRequest: request with type parameters" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Std", sourceFile = "c.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("[\"T\",\"E\"]"), "type params serialized")
 }
 
-test "serializeRequest: request with fields" {
+test "encode: request with fields" {
   val fields = [
     FieldDescriptor(
       name = "id",
@@ -356,16 +375,14 @@ test "serializeRequest: request with fields" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Proto", typeDescriptor = td, packageName = "Models", sourceFile = "user.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("\"name\":\"id\""), "field name")
   assertTrue(json.contains("\"Primitive\""), "field type kind")
 }
 
-// parseRequest is the inverse of serializeRequest, and is what runGenerator
-// uses to decode stdin. Type parameters and fields (including field type
-// arguments) round-trip; before #7422 the decoder called a List method no
-// backend implements, so any request with fields or type parameters threw.
-test "parseRequest: round-trips type parameters and fields" {
+// The generated decoder is the inverse of the generated encoder: type
+// parameters, fields and field type arguments round-trip.
+test "codec: round-trips type parameters and fields" {
   val fields = [
     FieldDescriptor(
       name = "id",
@@ -394,8 +411,8 @@ test "parseRequest: round-trips type parameters and fields" {
     packageName = "Models",
     sourceFile = "m.l"
   )
-  match parseRequest(serializeRequest(req)) {
-    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+  match roundTrip(req) {
+    case Err(msg) -> assertTrue(false, "round trip failed: " + msg)
     case Ok(back) -> {
       assertEqual(back.generatorArg, "Proto.Derive", "generatorArg")
       assertEqual(back.packageName, "Models", "packageName")
@@ -412,24 +429,7 @@ test "parseRequest: round-trips type parameters and fields" {
   }
 }
 
-test "parseRequest: rejects an unsupported schema version and a missing type name" {
-  assertTrue(
-    match parseRequest("{\"schemaVersion\":\"3\"}") {
-      case Err(msg) -> msg.contains("unsupported schemaVersion 3")
-      case Ok(_) -> false
-    },
-    "schema version 3 rejected"
-  )
-  assertTrue(
-    match parseRequest("{\"schemaVersion\":\"1\",\"typeDescriptor\":{\"kind\":\"Record\"}}") {
-      case Err(msg) -> msg.contains("missing or empty typeDescriptor.name")
-      case Ok(_) -> false
-    },
-    "missing type name rejected"
-  )
-}
-
-test "serializeRequest: ExposedRecord variant" {
+test "encode: ExposedRecord variant" {
   val td = TypeDescriptor(
     kind = ExposedRecord,
     name = "Type",
@@ -439,11 +439,11 @@ test "serializeRequest: ExposedRecord variant" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("ExposedRecord"), "ItemKind ExposedRecord serialized")
 }
 
-test "serializeRequest: Union variant" {
+test "encode: Union variant" {
   val td = TypeDescriptor(
     kind = Union,
     name = "Type",
@@ -453,11 +453,11 @@ test "serializeRequest: Union variant" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("Union"), "ItemKind Union serialized")
 }
 
-test "serializeRequest: Interface variant" {
+test "encode: Interface variant" {
   val td = TypeDescriptor(
     kind = Interface,
     name = "Type",
@@ -467,11 +467,11 @@ test "serializeRequest: Interface variant" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("Interface"), "ItemKind Interface serialized")
 }
 
-test "serializeRequest: Slice field type" {
+test "encode: Slice field type" {
   val ft = FieldType(kind = Slice, name = "T", typeArgs = [])
   val fd = FieldDescriptor(name = "f", fieldType = ft, isPublic = true, annotations = [])
   val td = TypeDescriptor(
@@ -483,11 +483,11 @@ test "serializeRequest: Slice field type" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("Slice"), "FieldTypeKind Slice in JSON")
 }
 
-test "serializeRequest: Generic field type" {
+test "encode: Generic field type" {
   val ft = FieldType(kind = Generic, name = "T", typeArgs = [])
   val fd = FieldDescriptor(name = "f", fieldType = ft, isPublic = true, annotations = [])
   val td = TypeDescriptor(
@@ -499,11 +499,11 @@ test "serializeRequest: Generic field type" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("Generic"), "FieldTypeKind Generic in JSON")
 }
 
-test "serializeRequest: field with annotations" {
+test "encode: field with annotations" {
   val ann = AnnotationDescriptor(name = "required", args = [])
   val ft = FieldType(kind = Primitive, name = "String", typeArgs = [])
   val fd = FieldDescriptor(name = "email", fieldType = ft, isPublic = true, annotations = [ann])
@@ -516,11 +516,11 @@ test "serializeRequest: field with annotations" {
     annotations = []
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("\"name\":\"required\""), "annotation name in JSON")
 }
 
-test "serializeRequest: annotation with arguments" {
+test "encode: annotation with arguments" {
   val ann = AnnotationDescriptor(name = "since", args = ["\"1.0\""])
   val td = TypeDescriptor(
     kind = Record,
@@ -531,7 +531,7 @@ test "serializeRequest: annotation with arguments" {
     annotations = [ann]
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("\"args\":[\"\\\"1.0\\\"\"]"), "annotation args serialized")
 }
 
@@ -643,273 +643,11 @@ test "Round-trip: request with complex types" {
     packageName = "MyApp",
     sourceFile = "complex.l"
   )
-  val json = serializeRequest(req)
+  val json = encodeText(req)
   assertTrue(json.contains("ComplexType"), "type name present")
   assertTrue(json.contains("Slice"), "field kind present")
   assertTrue(json.contains("ResultType"), "result type present")
   assertTrue(json.contains("\"required\""), "annotation present")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §14. parseResponse — full response deserialization (now works with toArray fix)
-// ─────────────────────────────────────────────────────────────────────────────
-test "parseResponse: minimal response" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "valid response parses")
-  match result {
-    case Ok(resp) -> {
-      assertTrue(resp.lyricSource == "", "empty source")
-      assertTrue(resp.additionalImports.toArray().count == 0, "no imports")
-      assertTrue(resp.diagnostics.toArray().count == 0, "no diagnostics")
-    }
-    case Err(_) -> assertTrue(false, "should not error")
-  }
-}
-
-test "parseResponse: response with source code" {
-  val json = "{\"lyricSource\":\"pub func generated(): Unit {}\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "response with source code parses")
-}
-
-test "parseResponse: response with additional imports" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\",\"import Std.Collections\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "response with imports parses")
-}
-
-test "parseResponse: response with escaped source" {
-  val json = "{\"lyricSource\":\"pub func escaped(): Unit {}\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "response with source parses")
-}
-
-test "parseResponse: response with multiple imports" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import A\",\"import B\",\"import C\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "response with multiple imports parses")
-}
-
-test "parseResponse: always returns Ok (lenient parsing)" {
-  val malformed = "{incomplete json"
-  val result = parseResponse(malformed)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "parseResponse is lenient and always returns Ok")
-}
-
-// `lyricSource` after decoding a JSON string body `escapedBody`.
-func decodedLyricSource(escapedBody: in String): String {
-  val json = "{\"lyricSource\":\"" + escapedBody + "\",\"additionalImports\":[],\"diagnostics\":[]}"
-  match parseResponse(json) {
-    case Ok(resp) -> resp.lyricSource
-    case Err(e) -> "parseResponse failed: " + e
-  }
-}
-
-// #7252: a `\uXXXX` escape decodes to one Unicode scalar value.  A
-// surrogate-pair escape combines into one astral code point; a lone or
-// reversed surrogate escape decodes to U+FFFD, never an unpaired surrogate.
-test "parseResponse: a BMP unicode escape decodes to its character" {
-  assertEqual(decodedLyricSource("caf\\u00e9"), "café", "BMP escape decodes to é")
-}
-
-test "parseResponse: a surrogate-pair escape decodes to one astral character" {
-  assertEqual(decodedLyricSource("a\\ud83d\\ude00b"), "a😀b", "surrogate pair decodes to U+1F600")
-}
-
-test "parseResponse: a lone high surrogate escape decodes to U+FFFD" {
-  assertEqual(decodedLyricSource("a\\ud83db"), "a�b", "lone high surrogate becomes U+FFFD")
-  assertEqual(decodedLyricSource("a\\ud83d\\u0041"), "a�A", "high surrogate before a non-low escape")
-}
-
-test "parseResponse: a lone low surrogate escape decodes to U+FFFD" {
-  assertEqual(decodedLyricSource("a\\ude00b"), "a�b", "lone low surrogate becomes U+FFFD")
-}
-
-test "parseResponse: a reversed surrogate pair decodes to two U+FFFD" {
-  assertEqual(decodedLyricSource("a\\ude00\\ud83db"), "a��b", "reversed pair becomes two U+FFFD")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §15. Full integration — request/response round-trip with realistic generator
-// ─────────────────────────────────────────────────────────────────────────────
-test "Full integration: request and response round-trip" {
-  val td = TypeDescriptor(
-    kind = Record,
-    name = "Order",
-    packageName = "MyApp.Models",
-    typeParams = [],
-    fields = [
-      FieldDescriptor(
-        name = "id",
-        fieldType = FieldType(kind = Primitive, name = "Int", typeArgs = []),
-        isPublic = true,
-        annotations = [AnnotationDescriptor(name = "required", args = [])]
-      ),
-      FieldDescriptor(
-        name = "items",
-        fieldType = FieldType(kind = Slice, name = "slice[String]", typeArgs = ["String"]),
-        isPublic = true,
-        annotations = []
-      )
-    ],
-    annotations = [AnnotationDescriptor(name = "derive", args = ["Eq"])]
-  )
-  val req = GeneratorRequest(
-    generatorArg = "Proto.Derive",
-    typeDescriptor = td,
-    packageName = "MyApp",
-    sourceFile = "order.l"
-  )
-  val reqJson = serializeRequest(req)
-  assertTrue(reqJson.contains("Order"), "request serialized with type name")
-  assertTrue(reqJson.contains("Proto.Derive"), "generator arg in request")
-  assertTrue(reqJson.contains("\"id\""), "request field serialized")
-  val respJson = "{\"lyricSource\":\"pub func protoSerialize(o: Order): slice[Byte] {}\",\"additionalImports\":[\"import Std.Json\"],\"diagnostics\":[]}"
-  val respResult = parseResponse(respJson)
-  val isValid = match respResult { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "response parses successfully")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §16. parseResponse — additionalImports validation (#7255)
-// ─────────────────────────────────────────────────────────────────────────────
-test "parseResponse: accepts a well-formed 'import extern' entry" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import extern System.DateTime\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "'import extern <QualifiedName>' is accepted")
-}
-
-test "parseResponse: accepts an entry with an 'as' alias" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json as J\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertTrue(isValid, "'import <QualifiedName> as <Identifier>' is accepted")
-}
-
-test "parseResponse: rejects an additionalImports entry that is not an import statement at all" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"package Evil\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertFalse(isValid, "an entry without an 'import ' prefix is rejected")
-}
-
-test "parseResponse: rejects an additionalImports entry smuggling a second statement" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\\npub func backdoor(): Unit {}\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertFalse(isValid, "an entry with an embedded newline (a second statement) is rejected")
-}
-
-test "parseResponse: rejects an additionalImports entry with a malformed qualified name" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std..Json\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertFalse(isValid, "a doubled '.' in the qualified name is rejected")
-}
-
-test "parseResponse: rejects an additionalImports entry with a semicolon-separated second statement" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json; import Evil\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertFalse(isValid, "a ';'-separated second statement is rejected")
-}
-
-test "parseResponse: one malformed entry fails the whole additionalImports list" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\",\"not an import\"],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  val isValid = match result { case Ok(_) -> true; case Err(_) -> false }
-  assertFalse(isValid, "a well-formed entry does not rescue a malformed sibling")
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §17. parseResponse — diagnostics deserialization (#7255)
-// ─────────────────────────────────────────────────────────────────────────────
-test "parseResponse: deserializes a single Error diagnostic (previously always dropped)" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[{\"severity\":\"Error\",\"message\":\"boom\",\"code\":\"PD001\"}]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> {
-      val diags = resp.diagnostics.toArray()
-      assertTrue(diags.count == 1, "one diagnostic present")
-      val d = diags[0]
-      match d.severity {
-        case Error -> assertTrue(true, "severity is Error")
-        case _ -> assertTrue(false, "severity must be Error")
-      }
-      assertEqual(d.message, "boom", "message decoded")
-      match d.code {
-        case Some(c) -> assertEqual(c, "PD001", "code decoded")
-        case None -> assertTrue(false, "code must be Some")
-      }
-    }
-  }
-}
-
-test "parseResponse: deserializes multiple diagnostics with a null code" {
-  val json = "{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[" +
-    "{\"severity\":\"Warning\",\"message\":\"careful\",\"code\":null}," +
-    "{\"severity\":\"Info\",\"message\":\"fyi\",\"code\":null}" +
-    "]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> {
-      val diags = resp.diagnostics.toArray()
-      assertTrue(diags.count == 2, "two diagnostics present")
-      match diags[0].code {
-        case None -> assertTrue(true, "null code decodes to None")
-        case Some(_) -> assertTrue(false, "null code must decode to None")
-      }
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §18. parseJsonString — RFC 8259 §7 escapes (#7255)
-// ─────────────────────────────────────────────────────────────────────────────
-test "parseResponse: decodes \\/ \\b \\f escapes in lyricSource" {
-  val json = "{\"lyricSource\":\"a\\/b\\bc\\fd\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> assertEqual(resp.lyricSource, "a/b\u{0008}c\u{000c}d", "\\/, \\b, \\f decoded")
-  }
-}
-
-test "parseResponse: decodes a \\uXXXX escape (BMP character) in lyricSource" {
-  val json = "{\"lyricSource\":\"caf\\u00e9\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> assertEqual(resp.lyricSource, "café", "\\u00e9 decodes to é")
-  }
-}
-
-test "parseResponse: decodes a \\uXXXX surrogate pair (astral character) in lyricSource" {
-  val json = "{\"lyricSource\":\"go \\ud83d\\ude00 now\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> assertEqual(resp.lyricSource, "go 😀 now", "surrogate pair decodes to one astral character")
-  }
-}
-
-test "parseResponse: an unparseable \\uXXXX escape falls back to a literal backslash-u" {
-  val json = "{\"lyricSource\":\"bad\\uZZZZend\",\"additionalImports\":[],\"diagnostics\":[]}"
-  val result = parseResponse(json)
-  match result {
-    case Err(e) -> assertTrue(false, "response must parse: " + e)
-    case Ok(resp) -> assertTrue(resp.lyricSource.contains("\\u"), "malformed \\u escape left as a literal backslash-u")
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -933,7 +671,7 @@ test "TypeDescriptor: invariant panics on an empty name" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema 2: cases, invariants, field defaults, opaque types and enums
 // ─────────────────────────────────────────────────────────────────────────────
-test "parseRequest: a schema 2 union round-trips its cases and their annotations" {
+test "codec: a schema 2 union round-trips its cases and their annotations" {
   val idField = FieldDescriptor(
     name = "id",
     fieldType = FieldType(kind = Named, name = "CustomerId", typeArgs = []),
@@ -961,8 +699,8 @@ test "parseRequest: a schema 2 union round-trips its cases and their annotations
     ]
   )
   val req = GeneratorRequest(generatorArg = "Ui.Routes", typeDescriptor = td, packageName = "App", sourceFile = "r.l")
-  match parseRequest(serializeRequest(req)) {
-    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+  match roundTrip(req) {
+    case Err(msg) -> assertTrue(false, "round trip failed: " + msg)
     case Ok(back) -> {
       val cases = back.typeDescriptor.cases
       assertEqualInt(cases.length, 2, "two cases")
@@ -974,7 +712,7 @@ test "parseRequest: a schema 2 union round-trips its cases and their annotations
   }
 }
 
-test "parseRequest: a schema 2 opaque type round-trips invariants and defaults" {
+test "codec: a schema 2 opaque type round-trips invariants and defaults" {
   val notes = FieldDescriptor(
     name = "notes",
     fieldType = FieldType(kind = OptionType, name = "String?", typeArgs = ["String"]),
@@ -1004,8 +742,8 @@ test "parseRequest: a schema 2 opaque type round-trips invariants and defaults" 
     packageName = "Domain",
     sourceFile = "c.l"
   )
-  match parseRequest(serializeRequest(req)) {
-    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+  match roundTrip(req) {
+    case Err(msg) -> assertTrue(false, "round trip failed: " + msg)
     case Ok(back) -> {
       val t = back.typeDescriptor
       assertTrue(match t.kind { case Opaque -> true; case _ -> false }, "opaque kind")
@@ -1018,33 +756,7 @@ test "parseRequest: a schema 2 opaque type round-trips invariants and defaults" 
   }
 }
 
-test "parseRequest: a schema 1 request still decodes, with no cases or invariants" {
-  val json = "{\"schemaVersion\":\"1\",\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," +
-    "\"typeDescriptor\":{\"kind\":\"Record\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
-    "\"fields\":[{\"name\":\"x\",\"fieldType\":{\"kind\":\"Primitive\",\"name\":\"Int\",\"typeArgs\":[]},\"isPublic\":true,\"annotations\":[]}]," +
-    "\"annotations\":[]}}"
-  match parseRequest(json) {
-    case Err(msg) -> assertTrue(false, "a schema 1 request decodes: " + msg)
-    case Ok(back) -> {
-      assertEqualInt(back.typeDescriptor.fields.length, 1, "one field")
-      assertEqualInt(back.typeDescriptor.cases.length, 0, "no cases")
-      assertEqualInt(back.typeDescriptor.invariants.length, 0, "no invariants")
-    }
-  }
-}
-
-test "parseRequest: an unknown kind is an error, not a silent record" {
-  val json = "{\"schemaVersion\":\"2\",\"typeDescriptor\":{\"kind\":\"Widget\",\"name\":\"W\"}}"
-  assertTrue(
-    match parseRequest(json) {
-      case Err(msg) -> msg.contains("unknown typeDescriptor.kind Widget")
-      case Ok(_) -> false
-    },
-    "unknown kind rejected"
-  )
-}
-
-test "parseRequest: same-file declarations round-trip, and declarationNamed finds one" {
+test "codec: same-file declarations round-trip, and declarationNamed finds one" {
   val td = TypeDescriptor(
     kind = Record,
     name = "Customer",
@@ -1087,8 +799,8 @@ test "parseRequest: same-file declarations round-trip, and declarationNamed find
     sourceFile = "c.l",
     declarations = [tier, limit]
   )
-  match parseRequest(serializeRequest(req)) {
-    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+  match roundTrip(req) {
+    case Err(msg) -> assertTrue(false, "round trip failed: " + msg)
     case Ok(back) -> {
       assertEqualInt(back.declarations.length, 2, "two declarations")
       match declarationNamed(back, "Tier") {
@@ -1114,14 +826,106 @@ test "parseRequest: same-file declarations round-trip, and declarationNamed find
   }
 }
 
-test "parseRequest: a declaration of an unknown kind is skipped" {
-  val json = "{\"schemaVersion\":\"2\",\"typeDescriptor\":{\"kind\":\"Record\",\"name\":\"R\"}," +
-    "\"declarations\":[{\"name\":\"X\",\"kind\":\"Gizmo\"},{\"name\":\"A\",\"kind\":\"Alias\",\"underlying\":\"Int\",\"range\":null,\"cases\":[]}]}"
-  match parseRequest(json) {
+// ─────────────────────────────────────────────────────────────────────────────
+// §20. Decoding the compiler's JSON
+// ─────────────────────────────────────────────────────────────────────────────
+// The compiler's request for a record with one defaulted field, written as
+// `Lyric.Generator` writes it (members in its order, `defaultSource` only
+// when the field has a default).
+func compilerRequestJson(kind: in String, declKind: in String): String {
+  "{\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," + "\"typeDescriptor\":{\"kind\":\"" + kind +
+    "\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
+    "\"fields\":[{\"name\":\"x\",\"fieldType\":{\"kind\":\"Primitive\",\"name\":\"Int\",\"typeArgs\":[]}," +
+    "\"isPublic\":true,\"annotations\":[],\"defaultSource\":\"0\"}]," +
+    "\"annotations\":[],\"cases\":[],\"invariants\":[]}," +
+    "\"declarations\":[{\"name\":\"A\",\"kind\":\"" +
+    declKind +
+    "\",\"underlying\":\"Int\",\"range\":null,\"cases\":[]}]}"
+}
+
+test "decode: the compiler's request shape decodes" {
+  match decodeText(compilerRequestJson("Record", "DeclaredAlias")) {
     case Err(msg) -> assertTrue(false, "decodes: " + msg)
     case Ok(back) -> {
-      assertEqualInt(back.declarations.length, 1, "the unknown kind is skipped")
-      assertEqual(back.declarations[0].name, "A", "the alias is kept")
+      assertEqualInt(back.typeDescriptor.fields.length, 1, "one field")
+      assertTrue(
+        match back.typeDescriptor.fields[0].defaultSource { case Some(d) -> d == "0"; case None -> false },
+        "the default's source"
+      )
+      assertEqualInt(back.declarations.length, 1, "one declaration")
+      assertTrue(match back.declarations[0].kind { case DeclaredAlias -> true; case _ -> false }, "an alias")
     }
   }
+}
+
+test "decode: a field without a default decodes with no defaultSource" {
+  val json = "{\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," +
+    "\"typeDescriptor\":{\"kind\":\"Record\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
+    "\"fields\":[{\"name\":\"x\",\"fieldType\":{\"kind\":\"Primitive\",\"name\":\"Int\",\"typeArgs\":[]}," +
+    "\"isPublic\":true,\"annotations\":[]}],\"annotations\":[],\"cases\":[],\"invariants\":[]},\"declarations\":[]}"
+  match decodeText(json) {
+    case Err(msg) -> assertTrue(false, "decodes: " + msg)
+    case Ok(back) -> assertTrue(
+      match back.typeDescriptor.fields[0].defaultSource { case Some(_) -> false; case None -> true },
+      "no default"
+    )
+  }
+}
+
+test "decode: an unknown kind is an error, not a silent record" {
+  assertTrue(
+    match decodeText(compilerRequestJson("Widget", "DeclaredAlias")) {
+      case Err(msg) -> msg.contains("Widget")
+      case Ok(_) -> false
+    },
+    "unknown item kind rejected"
+  )
+  assertTrue(
+    match decodeText(compilerRequestJson("Record", "Gizmo")) {
+      case Err(msg) -> msg.contains("Gizmo")
+      case Ok(_) -> false
+    },
+    "unknown declaration kind rejected"
+  )
+}
+
+test "decode: a missing member is an error naming it" {
+  assertTrue(
+    match decodeText("{\"generatorArg\":\"G.X\"}") { case Err(msg) -> msg.contains("GeneratorRequest.typeDescriptor"); case Ok(_) -> false },
+    "missing member rejected"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §21. projectPathWithin — the ProjectRead guard
+// ─────────────────────────────────────────────────────────────────────────────
+func rootsOf(xs: in slice[String]): List[String] {
+  val l: List[String] = newList()
+  var i = 0
+  while i < xs.length {
+    l.add(xs[i])
+    i += 1
+  }
+  l
+}
+
+test "projectPathWithin: a path under a granted root" {
+  assertTrue(projectPathWithin("schemas/order.json", rootsOf(["schemas"])), "under the root")
+  assertTrue(projectPathWithin("schemas", rootsOf(["schemas"])), "the root itself")
+  assertTrue(projectPathWithin("a/b/c.txt", rootsOf(["."])), "the whole project")
+  assertFalse(projectPathWithin("schemasx/order.json", rootsOf(["schemas"])), "a sibling with a shared prefix")
+  assertFalse(projectPathWithin("src/a.l", rootsOf(["schemas"])), "another directory")
+  assertFalse(projectPathWithin("src/a.l", rootsOf([])), "no roots")
+}
+
+test "projectPathWithin: escapes and absolute paths are refused" {
+  val all = rootsOf(["."])
+  assertFalse(projectPathWithin("../secret", all), "parent segment")
+  assertFalse(projectPathWithin("a/../../secret", all), "inner parent segment")
+  assertFalse(projectPathWithin("/etc/passwd", all), "absolute")
+  assertFalse(projectPathWithin("C:/x", all), "drive")
+  assertFalse(projectPathWithin("a\\b", all), "backslash")
+  assertFalse(projectPathWithin("a//b", all), "empty segment")
+  assertFalse(projectPathWithin("./a", all), "dot segment")
+  assertFalse(projectPathWithin("", all), "empty")
 }

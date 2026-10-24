@@ -21,7 +21,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 
-record Box {
+ref record Box {
   var n: Int
   var label: String
 }

@@ -78,7 +78,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -118,7 +118,7 @@ func runLl(ll: in String): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, true, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -265,7 +265,7 @@ test "inline unions nest in unions, in records, and hold records (ASan)" {
 }
 
 test "a heap record and a heap union hold inline unions as plain fields (ASan)" {
-  val src = "package T\n" + optDecl + "record Cell {\n  var v: Opt[Int]\n  var name: String\n}\n" +
+  val src = "package T\n" + optDecl + "ref record Cell {\n  var v: Opt[Int]\n  var name: String\n}\n" +
     "union Wrap {\n  case Box(o: Opt[Int], s: String)\n  case Empty\n}\n" +
     "func main(): Int {\n" +
     "  val c = Cell(v = Has(v = 3), name = \"c\")\n" +

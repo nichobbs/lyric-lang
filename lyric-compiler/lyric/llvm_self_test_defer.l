@@ -65,7 +65,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }

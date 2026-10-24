@@ -204,7 +204,7 @@ test "mixed-mode (in, out, inout) all positions index correctly" {
 // `obj.field` as an out/inout argument copies the field into the holder
 // before the call and putfields the updated value back after it.
 // ─────────────────────────────────────────────────────────────────────────────
-pub record Counter {
+pub ref record Counter {
   var hits: Int
   var label: String
 }

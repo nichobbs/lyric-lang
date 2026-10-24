@@ -137,7 +137,8 @@ test "a native project build compiles path, transitive and workspace dependencie
   val appDir = writeWorkspace(root)
   val outPath = Path.join(appDir, "app-native")
   assertEqualInt(buildNative(Path.join(appDir, "lyric.toml"), outPath), 0, "the native build succeeds")
-  assertTrue(File.fileExists(outPath), "the native build produced a binary")
+  // The build adds `.exe` on Windows.
+  assertTrue(File.fileExists(Emitter.nativeExecutableOutputPath(outPath, "")), "the native build produced a binary")
   val noArgs: List[String] = newList()
   val run = Capture.runCaptureWithDiagnostics(outPath, noArgs, "")
   assertEqualInt(run.exitCode, 0, "the binary exits 0 (stderr=" + run.stderr + ")")
@@ -233,4 +234,185 @@ func unwrapText(path: in String): String {
     case Ok(t) -> t
     case Err(e) -> panic("cannot read " + path + ": " + IOError.message(e))
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dependency packages are lowered by reachability (#8429).
+//
+// A dependency package declares `missingNative`, an extern in a library that
+// does not exist.  Naming that library at the link step fails the build, so
+// a build that succeeds proves nothing reachable named it, and the control
+// test of each pair, whose program does reach it, proves the extern really
+// does name the library (the build fails).
+// ─────────────────────────────────────────────────────────────────────────────
+val missingExtern: String = "@library(\"lyric_no_such_lib_8429\")\nextern func missingNative(x: Int): Int = \"lyric_no_such_symbol\"\n"
+
+record DepBuild {
+  exitCode: Int
+  stdout: String
+}
+
+// Builds `App` (source `appSrc`) against the dependency package
+// `Fixture.PDep` (source `depSrc`) for native and runs it.  `exitCode` is the
+// build's when it failed, else the program's.
+func buildAndRunDep(root: in String, depSrc: in String, appSrc: in String): DepBuild {
+  val _ = mkProject(root, "Dep", "Fixture.PDep", "", depSrc)
+  val appDir = mkProject(
+    root,
+    "App",
+    "Fixture.PApp",
+    "\n[dependencies]\n\"Fixture.PDep\" = { path = \"../Dep\" }\n",
+    appSrc
+  )
+  val outPath = Path.join(appDir, "app-native")
+  val built = buildNative(Path.join(appDir, "lyric.toml"), outPath)
+  if built != 0 {
+    return DepBuild(exitCode = built, stdout = "")
+  }
+  val noArgs: List[String] = newList()
+  val run = Capture.runCaptureWithDiagnostics(outPath, noArgs, "")
+  DepBuild(exitCode = run.exitCode, stdout = Str.trim(run.stdout))
+}
+
+func appSource(body: in String): String {
+  "package Fixture.PApp\n\nimport Std.Console as Console\nimport Fixture.PDep\n\nfunc main(): Int {\n" + body +
+    "  0\n}\n"
+}
+
+test "an extern of a dependency that nothing reachable calls links no library" {
+  val root = freshTempDir("prune-func")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub func used(x: in Int): Int {\n  x + 1\n}\n\npub func neverCalled(x: in Int): Int {\n  missingNative(x)\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  Console.println(used(41).toString())\n"))
+  assertEqualInt(r.exitCode, 0, "the build links without the missing library")
+  assertEqual(r.stdout, "42", "the reachable function runs")
+}
+
+test "an extern of a dependency that reachable code calls links its library" {
+  val root = freshTempDir("prune-func-control")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub func neverCalled(x: in Int): Int {\n  missingNative(x)\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  Console.println(neverCalled(1).toString())\n"))
+  assertTrue(r.exitCode != 0, "the build fails: the reached extern names the missing library")
+}
+
+test "a dependency record's methods follow reachability, including through a field chain" {
+  val root = freshTempDir("prune-record")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub record Meter {\n  n: Int\n\n  func reading(self: in Meter): Int {\n    self.n + 1\n  }\n}\n" +
+    "\npub record Unused {\n  n: Int\n\n  func boom(self: in Unused): Int {\n    missingNative(self.n)\n  }\n}\n" +
+    "\npub func makeMeter(n: in Int): Meter {\n  Meter(n = n)\n}\n"
+  val app = "package Fixture.PApp\n\nimport Std.Console as Console\nimport Fixture.PDep\n\n" +
+    "record Holder {\n  m: Meter\n}\n\n" +
+    "func main(): Int {\n  val h = Holder(m = makeMeter(40))\n  Console.println(h.m.reading().toString())\n  0\n}\n"
+  val r = buildAndRunDep(root, dep, app)
+  assertEqualInt(r.exitCode, 0, "the unused record's method is not lowered")
+  assertEqual(r.stdout, "41", "the method called through a field chain ran")
+}
+
+test "a dependency record's method that reachable code calls links its library" {
+  val root = freshTempDir("prune-record-control")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub record Unused {\n  n: Int\n\n  func boom(self: in Unused): Int {\n    missingNative(self.n)\n  }\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  Console.println(Unused(n = 1).boom().toString())\n"))
+  assertTrue(r.exitCode != 0, "the build fails: the called method names the missing library")
+}
+
+test "a dependency protected type is lowered only when reachable code uses it" {
+  val root = freshTempDir("prune-protected")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub protected type Tally {\n  var n: Int = 0\n\n  entry bump(): Unit {\n    n = n + 1\n  }\n\n  func read(): Int {\n    n\n  }\n}\n" +
+    "\npub protected type DeadTally {\n  var n: Int = 0\n\n  entry boom(): Unit {\n    n = missingNative(n)\n  }\n}\n"
+  val r = buildAndRunDep(
+    root,
+    dep,
+    appSource("  val t = Tally()\n  t.bump()\n  t.bump()\n  Console.println(t.read().toString())\n")
+  )
+  assertEqualInt(r.exitCode, 0, "the unused protected type's entry is not lowered")
+  assertEqual(r.stdout, "2", "the used protected type works")
+}
+
+test "a dependency protected type that reachable code constructs links its library" {
+  val root = freshTempDir("prune-protected-control")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub protected type DeadTally {\n  var n: Int = 0\n\n  entry boom(): Unit {\n    n = missingNative(n)\n  }\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  val t = DeadTally()\n  Console.println(\"made\")\n"))
+  assertTrue(r.exitCode != 0, "the build fails: constructing the type lowers its entries")
+}
+
+test "a dependency impl is lowered only when its record is constructed by reachable code" {
+  val root = freshTempDir("prune-impl")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern + "\npub interface Shape {\n  func area(): Int\n}\n" +
+    "\npub record Sq {\n  side: Int\n}\n\nimpl Shape for Sq {\n  func area(): Int {\n    self.side * self.side\n  }\n}\n" +
+    "\npub record Dead {\n  n: Int\n}\n\nimpl Shape for Dead {\n  func area(): Int {\n    missingNative(self.n)\n  }\n}\n" +
+    "\npub func makeShape(s: in Int): Shape {\n  Sq(side = s)\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  Console.println(makeShape(6).area().toString())\n"))
+  assertEqualInt(r.exitCode, 0, "the impl of the record nothing constructs is not lowered")
+  assertEqual(r.stdout, "36", "the impl of the constructed record dispatches")
+}
+
+test "a dependency module val's initializer runs only when the val is read" {
+  val root = freshTempDir("prune-modval")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub protected type Gate {\n  var on: Int = 0\n\n  entry open(): Unit {\n    on = missingNative(1)\n  }\n}\n" +
+    "\nval gate: Gate = Gate()\n\npub func openGate(): Unit {\n  gate.open()\n}\n\npub func plain(): Int {\n  7\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  Console.println(plain().toString())\n"))
+  assertEqualInt(r.exitCode, 0, "the val nothing reads pulls in nothing")
+  assertEqual(r.stdout, "7", "the plain function runs")
+}
+
+test "a dependency module val that reachable code reads links its library" {
+  val root = freshTempDir("prune-modval-control")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\npub protected type Gate {\n  var on: Int = 0\n\n  entry open(): Unit {\n    on = missingNative(1)\n  }\n}\n" +
+    "\nval gate: Gate = Gate()\n\npub func openGate(): Unit {\n  gate.open()\n}\n"
+  val r = buildAndRunDep(root, dep, appSource("  openGate()\n  Console.println(\"opened\")\n"))
+  assertTrue(r.exitCode != 0, "the build fails: reading the val builds the gate and its entries")
+}
+
+test "what a dependency's generic record method and default argument call is reachable" {
+  val root = freshTempDir("prune-generic")
+  defer {
+    cleanup(root)
+  }
+  val dep = "package Fixture.PDep\n\n" + missingExtern +
+    "\nfunc offset(): Int {\n  10\n}\n\nfunc scale(): Int {\n  3\n}\n" +
+    "\npub record Cell[T] {\n  v: T\n\n  func shifted(self: in Cell[T]): Int {\n    offset() + 1\n  }\n}\n" +
+    "\npub func scaled(x: in Int = scale()): Int {\n  x * 2\n}\n"
+  val r = buildAndRunDep(
+    root,
+    dep,
+    appSource(
+      "  val c = Cell(v = 5)\n  Console.println(c.shifted().toString() + \",\" + scaled().toString())\n"
+    )
+  )
+  assertEqualInt(r.exitCode, 0, "the build succeeds (stdout=" + r.stdout + ")")
+  assertEqual(r.stdout, "11,6", "the generic method and the default argument reached their callees")
 }
