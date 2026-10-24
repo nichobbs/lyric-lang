@@ -3,24 +3,26 @@
 AWS Secrets Manager and Parameter Store integration for [Lyric](https://github.com/nichobbs/lyric-lang). Fetches secrets at application startup and injects them into config blocks, with TTL-based caching and local development support.
 
 > **Status**: `local`, `jvm`, and `aws` are all production-ready for
-> `getSecret`/`getSecretField`/`getParameter`/`getParameterRaw`.
-> `initFromAnnotations()` (the config-block annotation scanning path) is
-> **NOT_IMPLEMENTED** on every feature except `local` — see below.
+> `getSecret`/`getSecretField`/`getParameter`/`getParameterRaw` and for
+> `init()`'s config-block annotation path (`local`'s `init()` is a no-op).
+> `--target native` has no `config { }` lowering yet (#7435), so `init()` is
+> `NotImplemented` there.
 
 ## Platform parity
 
 | Feature flag | Backend | Status |
 |---|---|---|
-| `aws` | AWS SDK for .NET v3 | Available — real `AmazonSecretsManagerClient`/`AmazonSimpleSystemsManagementClient` calls (`initFromAnnotations` config-block path is NOT_IMPLEMENTED, see below) |
+| `aws` | AWS SDK for .NET v3 | Available — real `AmazonSecretsManagerClient`/`AmazonSimpleSystemsManagementClient` calls, including the `@secretsManager`/`@parameterStore` config-block path of `init()` |
 | `local` | Local stub (no-op) | Available — no AWS SDK calls; env var overrides only |
-| `jvm` | AWS SDK for Java v2 | Available — real `SecretsManagerClient`/`SsmClient` calls (`initFromAnnotations` config-block path is also NOT_IMPLEMENTED, see below) |
+| `jvm` | AWS SDK for Java v2 | Available — real `SecretsManagerClient`/`SsmClient` calls, including the `@secretsManager`/`@parameterStore` config-block path of `init()` |
 
-`initFromAnnotations()` (the `@secretsManager`/`@parameterStore` config-block
-scanning `AwsSecrets.init()` calls) is **NOT_IMPLEMENTED on every feature
-except `local`**: the compiler has no capability to read custom annotations
-off a compiled config-block field at runtime (tracked in issue #6866).
-`getSecret`/`getSecretField`/`getParameter`/`getParameterRaw`
-are unaffected by this and work normally on both `jvm` and `aws`.
+`init()` reads the annotations the compiler embeds (`Std.AnnotationMeta`),
+fetches each annotated field and registers the value with
+`Std.ConfigOverride`, which the `config { }` block's initialiser reads before
+the environment (D230).  This works on `aws` and `jvm`; on `local` it is a
+no-op.  It requires a target that lowers `config { }` blocks: on
+`--target native` (no config blocks yet, #7435) `init()` returns
+`NotImplemented`.
 
 The `aws` (.NET) feature's `GetSecretValueAsync`/`GetParameterAsync` calls
 return `Task<T>`, but binding them did not require making `AwsSecrets`'s
@@ -58,13 +60,13 @@ config Database {
   port: Int    = 5432
   
   @sensitive
-  @secretsManager("my-service/prod", key: "dbPassword")
+  @secretsManager("my-service/prod", key = "dbPassword")
   password: String
 }
 
 config Auth {
   @sensitive
-  @secretsManager("my-service/prod", key: "jwtSecret")
+  @secretsManager("my-service/prod", key = "jwtSecret")
   jwtSecret: String
 
   @sensitive
@@ -75,7 +77,9 @@ config Auth {
 
 ### Startup initialization
 
-Call `AwsSecrets.init()` once at process startup, before accessing config:
+Call `AwsSecrets.init()` once at process startup, **before the first read of any
+annotated config block**: a config block is initialised once, on its first
+access, and a value registered afterwards is not seen by it.
 
 ```lyric
 import AwsSecrets
@@ -112,12 +116,12 @@ apiKey: String
 
 Fetches the secret named `"my-service/api-key"` and stores it in `apiKey`.
 
-### `@secretsManager(name, key: "field")`
+### `@secretsManager(name, key = "field")`
 
 Extract a JSON field from a structured secret:
 
 ```lyric
-@secretsManager("my-service/prod", key: "dbPassword")
+@secretsManager("my-service/prod", key = "dbPassword")
 password: String
 ```
 
@@ -164,7 +168,10 @@ This ensures stale values are refreshed well before the rotation window closes.
 
 ## Environment variable override
 
-If the corresponding `LYRIC_CONFIG_<PACKAGE>_<FIELD>` env var is set, `init()` skips the AWS fetch and uses the env var value instead.
+If the corresponding `LYRIC_CONFIG_<PACKAGE>_<BLOCK>_<FIELD>` env var is set, `init()` skips the AWS fetch and uses the env var value instead.
+
+A fetched value is held in `Std.ConfigOverride`, not in the process environment,
+so child processes do not inherit it.
 
 This enables **local development without AWS credentials**:
 
@@ -246,8 +253,8 @@ union SecretsError {
 | `DecryptionError` | KMS decryption of a SecureString/secret failed | Verify KMS permissions |
 | `ParseError` | Secret is JSON but the requested key is absent or the value is not valid JSON | Check the secret's JSON shape and key name |
 | `NetworkError` | A transient network/service error, or (on `jvm`/`aws`) any AWS error the best-effort message classifier didn't recognise | Retry, or read `errorMessage` for detail |
-| `NotImplemented` | (`jvm`/`aws`) `init()`'s config-block annotation scan, which has no compiler support yet (#6866). Retrying never helps | Use the explicit `getSecret`/`getParameter` API or env var overrides |
-| `InvalidConfig` | `SecretCache.ttlSeconds` (from `LYRIC_CONFIG_AWSSECRETS_SECRETCACHE_TTLSECONDS`) is outside 0..86400. Returned by `init()` and every get call without fetching | Fix the env var |
+| `NotImplemented` | `init()` on a target with no config-override store (`--target native`, #7435). Retrying never helps | Use the explicit `getSecret`/`getParameter` API or env var overrides |
+| `InvalidConfig` | `SecretCache.ttlSeconds` (from `LYRIC_CONFIG_AWSSECRETS_SECRETCACHE_TTLSECONDS`) is outside 0..86400, returned by `init()` and every get call without fetching; or, from `init()`, an annotation with no secret name/path, a field with both annotations, or an unregisterable value | Fix the env var or the annotation |
 | `BinaryValueUnsupported` | (`jvm`/`aws`) The secret is stored as raw binary (Secrets Manager's `SecretBinary`) rather than a string (`SecretString`) — this API only supports string-valued secrets | Store the value as a `SecretString` instead, or base64-encode it as one |
 
 On both the `jvm` and `aws` features, classification into `NotFound`/
@@ -336,13 +343,13 @@ config Database {
   host: String = "localhost"
   port: Int    = 5432
   @sensitive
-  @secretsManager("myapp/db", key: "password")
+  @secretsManager("myapp/db", key = "password")
   password: String
 }
 
 config Auth {
   @sensitive
-  @secretsManager("myapp/auth", key: "jwtSecret")
+  @secretsManager("myapp/auth", key = "jwtSecret")
   jwtSecret: String
 
   @sensitive

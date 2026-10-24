@@ -7624,6 +7624,11 @@ func emitConfigParseFailJvm(insns: in List[LInsn], f: in LConfigField): Unit {
 //                                   ; returns
 //   done_i:
 //
+// Before either, the config-override seam (D230) reads the JVM system
+// property named like the env var (`System.getProperty`), so a value set
+// through `Std.ConfigOverride` wins over the overlay and the environment; an
+// empty property counts as none, which is how a registration is cleared.
+//
 // The overlay check (issue #7594) mirrors `Std.EnvironmentHost.hostGetVarOpt`
 // exactly — inlined as raw bytecode rather than calling it, since its
 // `Option[String]` return is awkward to unwrap at this low-level codegen
@@ -7666,6 +7671,24 @@ pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[L
     val doneLabel = "cfg_done_" + fi
     val overlayMissLabel = "cfg_overlay_miss_" + fi
     val overlayDoneLabel = "cfg_overlay_done_" + fi
+    val overrideMissLabel = "cfg_override_miss_" + fi
+
+    // The config-override seam (D230) is consulted before anything else: a
+    // JVM system property named exactly like the env var, which is what
+    // `Std.ConfigOverride` sets.  A property is invisible to child processes,
+    // unlike the setVar overlay below.
+    val getPropertyPs: List[JvmType] = newList()
+    getPropertyPs.add(strTy)
+    clinitInsns.add(LPushString(s = f.envVarName))
+    clinitInsns.add(LInvokestatic(owner = "java/lang/System", name = "getProperty", params = getPropertyPs, ret = strTy))
+    clinitInsns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/String"))
+    clinitInsns.add(LAload(slot = tmpSlot))
+    clinitInsns.add(LIfnull(label = overrideMissLabel))
+    val propEmptyPs: List[JvmType] = newList()
+    clinitInsns.add(LAload(slot = tmpSlot))
+    clinitInsns.add(LInvokevirtual(owner = "java/lang/String", name = "isEmpty", params = propEmptyPs, ret = JBoolean))
+    clinitInsns.add(LIfeq(label = overlayDoneLabel))
+    clinitInsns.add(LLabel(name = overrideMissLabel))
 
     // Check Std.Environment's setVar overlay first (#7594); fall back to the
     // real process environment when the key was never overlaid.

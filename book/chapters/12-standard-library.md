@@ -48,6 +48,7 @@ Here is the full module inventory:
 | `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `setServeDuringCall`, `RpcHandler`, `RpcTransport`, the standard error codes |
 | `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses); the same framings to a child process: `newNdjsonTransportOverProcess`, `newContentLengthTransportOverProcess` |
 | `Std.AnnotationMeta` | Read the annotations written on `config { }` fields back at runtime, on dotnet and the JVM: `fieldsWithAnnotation`, `allAnnotatedFields`, `AnnotatedField`, `namedArg`, `positionalArg` |
+| `Std.ConfigOverride` | Give a `config { }` field its value from code, before the block is first read, without writing it to the process environment (dotnet and JVM): `setConfigOverride`, `clearConfigOverride`, `getConfigOverride`. See Chapter 21 |
 | `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |

@@ -10,6 +10,7 @@ package Lyric.AnnotationMetaEmit.SelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String
 import Std.Json
 import Lyric.Lexer
 import Lyric.Parser
@@ -45,9 +46,11 @@ test "named-arg annotation collected with its argument" {
   val fields = collectAnnotatedFields(sf)
   assertEqualInt(fields.count, 1, "one annotated field")
   val f = fields[0]
+  assertEqual(f.packageName, "P", "package name recorded")
   assertEqual(f.configName, "Db", "config name recorded")
   assertEqual(f.fieldName, "password", "field name recorded")
   assertEqual(f.annotationName, "secretsManager", "annotation name recorded")
+  assertEqual(f.envVar, "LYRIC_CONFIG_P_DB_PASSWORD", "override/env key recorded")
   assertEqualInt(f.args.count, 1, "one arg")
   assertEqual(f.args[0].argName, "key", "named arg name recorded")
   assertEqual(f.args[0].argKind, "string", "string-valued arg kind recorded")
@@ -129,4 +132,20 @@ test "emitAnnotationMetaJson round-trips through Std.Json.tryParseJson" {
     }
     case Err(e) -> assertTrue(false, "emitted JSON failed to parse: " + e)
   }
+}
+
+test "dotted package name becomes underscores in the recorded env var" {
+  val src = "package Acme.Billing\n" + "config Db {\n" + "  @secretsManager(key = \"k\")\n" + "  dbPassword: String\n" +
+    "}\n"
+  val fields = collectAnnotatedFields(parseOk(src))
+  assertEqualInt(fields.count, 1, "one annotated field")
+  assertEqual(fields[0].packageName, "Acme.Billing", "dotted package kept in packageName")
+  assertEqual(fields[0].envVar, "LYRIC_CONFIG_ACME_BILLING_DB_DBPASSWORD", "dots to underscores, upper-cased")
+}
+
+test "emitted JSON carries package and envVar" {
+  val src = "package P\n" + "config Db {\n" + "  @secretsManager(key = \"k\")\n" + "  password: String\n" + "}\n"
+  val json = emitAnnotationMetaJson(collectAnnotatedFields(parseOk(src)))
+  assertTrue(json.contains("\"package\":\"P\""), "package member emitted")
+  assertTrue(json.contains("\"envVar\":\"LYRIC_CONFIG_P_DB_PASSWORD\""), "envVar member emitted")
 }
