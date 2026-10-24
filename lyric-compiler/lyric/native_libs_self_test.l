@@ -515,3 +515,130 @@ test "a dir library on Windows links <link>.lib and bundles <link>.dll without a
   )
   cleanup(root)
 }
+
+// docs/67 G9 (#8435): prebuilt tables beside `pkg_config` cover their own
+// triples, and `pkg_config` the rest.
+test "prebuilt tables may sit beside pkg_config" {
+  val base = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val sha = "0000000000000000000000000000000000000000000000000000000000000000"
+  val parsed = Mf.parseManifest(
+    base +
+      "\n[native.libs.zlib]\npkg_config = \"zlib\"\n\n[native.libs.zlib.prebuilt.x86_64-pc-windows-msvc]\n" +
+      "url = \"https://e/z.zip\"\nsha256 = \"" +
+      sha +
+      "\"\nmembers = [\"bin/zlib1.dll\", \"lib/zlib.lib\"]\n",
+    "lyric.toml"
+  )
+  val spec = match parsed {
+    case Ok(m) -> match m.native {
+      case Some(nc) -> nc.libs[0]
+      case None -> panic("the native table is present")
+    }
+    case Err(e) -> panic("pkg_config with prebuilt tables parses: " + Mf.ManifestError.message(e))
+  }
+  assertEqual(spec.pkgConfig, "zlib", "the pkg-config package is kept")
+  assertEqualInt(spec.prebuilt.count, 1, "the Windows archive is kept")
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(Cli.NativeLibDecl(spec = spec, baseDir = "/nonexistent"))
+  val windows = Cli.resolveNativeLibs(decls, "x86_64-pc-windows-msvc")
+  assertTrue(
+    windows.errors.count == 1 and Str.contains(windows.errors[0], "not restored"),
+    "Windows uses its archive: " + Str.joinList("; ", windows.errors)
+  )
+  val linux = Cli.resolveNativeLibs(decls, "")
+  assertEqualInt(linux.errors.count, 0, "the host falls back to pkg-config: " + Str.joinList("; ", linux.errors))
+  assertTrue(listHas(linux.args, "-lz"), "pkg-config's flags reach the link line")
+}
+
+test "a prebuilt member may be extracted under another name, and a Windows archive ships its DLLs" {
+  val root = freshTempDir("rename")
+  defer {
+    cleanup(root)
+  }
+  val stage = Path.join(root, "stage")
+  mkdirOrPanic(stage)
+  writeFileOrPanic(Path.join(stage, "upstream.dll"), "MZ")
+  writeFileOrPanic(Path.join(stage, "upstream.dll.lib"), "!<arch>\n")
+  val zipPath = Path.join(root, "demo.zip")
+  val zargs: List[String] = newList()
+  zargs.add("-j")
+  zargs.add(zipPath)
+  zargs.add(Path.join(stage, "upstream.dll"))
+  zargs.add(Path.join(stage, "upstream.dll.lib"))
+  match Process.runCapture("zip", zargs, 60000) {
+    case Ok(res) -> if res.exitCode != 0 { panic("zip failed: " + res.stdout + res.stderr) }
+    case Err(e) -> panic("zip could not be started: " + e)
+  }
+  val members: List[String] = newList()
+  members.add("upstream.dll")
+  members.add("upstream.dll.lib -> demo.lib")
+  val p = Mf.NativePrebuilt(
+    triple = "x86_64-pc-windows-msvc",
+    url = "file://" + zipPath,
+    sha256 = zipSha(zipPath),
+    members = members
+  )
+  val prebuilt: List[Mf.NativePrebuilt] = newList()
+  prebuilt.add(p)
+  val spec = Mf.NativeLibSpec(name = "demo", link = "", version = "", pkgConfig = "", dir = "", prebuilt = prebuilt)
+  val decl = Cli.NativeLibDecl(spec = spec, baseDir = root)
+  val errs = Cli.restorePrebuilt(decl, p)
+  assertEqualInt(errs.count, 0, "restores: " + Str.joinList("; ", errs))
+  val dir = Cli.nativePrebuiltDir(decl, "x86_64-pc-windows-msvc")
+  assertTrue(File.fileExists(Path.join(dir, "demo.lib")), "the import library is extracted as demo.lib")
+  assertFalse(File.fileExists(Path.join(dir, "upstream.dll.lib")), "and not under its archive name")
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(decl)
+  val plan = Cli.resolveNativeLibs(decls, "x86_64-pc-windows-msvc")
+  assertEqualInt(plan.errors.count, 0, "resolves: " + Str.joinList("; ", plan.errors))
+  assertTrue(listHas(plan.args, "-ldemo"), "linked as demo.lib")
+  assertEqualInt(plan.bundle.count, 1, "the DLL is bundled under its own name")
+  assertTrue(Str.endsWith(plan.bundle[0], "upstream.dll"), "upstream.dll: " + Str.joinList(", ", plan.bundle))
+  val base = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val sha = "0000000000000000000000000000000000000000000000000000000000000000"
+  val badRename = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.zip\"\nsha256 = \"" + sha +
+      "\"\nmembers = [\"a/x.dll.lib -> lib/x.lib\"]\n",
+    "lyric.toml"
+  )
+  assertTrue(match badRename { case Err(_) -> true; case Ok(_) -> false }, "a rename names a bare file")
+}
+
+test "a pkg_config library on Windows bundles the DLLs beside or above its import libraries" {
+  val root = freshTempDir("pc-dll")
+  defer {
+    cleanup(root)
+  }
+  val prefix = Path.join(root, "prefix")
+  mkdirOrPanic(prefix)
+  val lib = Path.join(prefix, "lib")
+  val bin = Path.join(prefix, "bin")
+  mkdirOrPanic(lib)
+  mkdirOrPanic(bin)
+  val pcDir = Path.join(lib, "pkgconfig")
+  mkdirOrPanic(pcDir)
+  writeFileOrPanic(Path.join(lib, "shapes.lib"), "!<arch>\n")
+  writeFileOrPanic(Path.join(bin, "shapes.dll"), "MZ")
+  writeFileOrPanic(Path.join(lib, "glyphs.lib"), "!<arch>\n")
+  writeFileOrPanic(Path.join(lib, "glyphs.dll"), "MZ")
+  writeFileOrPanic(
+    Path.join(pcDir, "lyric-shapes-test.pc"),
+    "prefix=" + prefix +
+      "\nName: shapes\nDescription: test\nVersion: 1.0\nLibs: -L${prefix}/lib -lshapes -lglyphs -luser32\n"
+  )
+  val previous = Environment.getVarOrDefault("PKG_CONFIG_PATH", "")
+  Environment.setVar("PKG_CONFIG_PATH", pcDir)
+  defer {
+    Environment.setVar("PKG_CONFIG_PATH", previous)
+  }
+  val spec = Mf.NativeLibSpec(name = "shapes", link = "", version = "", pkgConfig = "lyric-shapes-test", dir = "")
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(Cli.NativeLibDecl(spec = spec, baseDir = root))
+  val plan = Cli.resolveNativeLibs(decls, "x86_64-pc-windows-msvc")
+  assertEqualInt(plan.errors.count, 0, "resolves: " + Str.joinList("; ", plan.errors))
+  assertEqualInt(plan.bundle.count, 2, "two DLLs, and nothing for user32: " + Str.joinList(", ", plan.bundle))
+  assertTrue(Str.endsWith(plan.bundle[0], "shapes.dll") and Str.contains(plan.bundle[0], "bin"), "from bin/")
+  assertTrue(Str.endsWith(plan.bundle[1], "glyphs.dll"), "from beside the import library")
+  val elf = Cli.resolveNativeLibs(decls, "x86_64-unknown-linux-gnu")
+  assertEqualInt(elf.bundle.count, 0, "a system library is not bundled on Linux")
+}

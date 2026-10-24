@@ -255,3 +255,45 @@ jobs:
       - name: Native suite (x86_64-pc-windows-msvc)
         shell: bash
         run: bash scripts/ci/windows-native-tests.sh
+
+  # docs/67 G9: the G4-G7 graphics examples on Windows (SDL3 and wgpu-native
+  # from their pinned Windows archives, FreeType and HarfBuzz built from
+  # pinned sources, Direct3D 12 on WARP).
+  graphics:
+    needs: [windows]
+    if: inputs.release_tag == ''
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Download the win-x64 archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: lyric-win-x64
+          path: lyric-win-x64
+
+      - name: Unpack lyric.exe
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem lyric-win-x64/*.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath "$env:RUNNER_TEMP/lyric"
+          "LYRIC_BIN=$env:RUNNER_TEMP/lyric/lyric.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install pkg-config
+        shell: pwsh
+        run: choco install pkgconfiglite --no-progress -y
+
+      - name: Build lyric-rt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S lyric-rt -B "$RUNNER_TEMP/lyric-rt" -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/lyric-rt"
+          echo "LYRIC_RT_WINDOWS_PATH=$(cygpath -m "$RUNNER_TEMP/lyric-rt/lyric_rt.lib")" >> "$GITHUB_ENV"
+
+      - name: Graphics examples (x86_64-pc-windows-msvc)
+        shell: bash
+        run: bash scripts/ci/windows-graphics-e2e.sh

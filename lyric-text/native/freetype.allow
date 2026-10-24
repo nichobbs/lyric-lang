@@ -1,7 +1,11 @@
-# What lyric bindgen binds from FreeType: font faces, glyph loading and rendering.  Regenerate with
-# (from lyric-text/, FreeType's headers reachable through pkg-config or -I):
+# What lyric bindgen binds from FreeType: font faces, glyph loading and rendering.  Regenerate both
+# variants with (from lyric-text/, FreeType's headers reachable through pkg-config or -I):
 #   lyric bindgen native/freetype_bindings.h --package Text.Kernel.Freetype --allow native/freetype.allow \
-#     --library freetype -o src/_kernel/freetype.l -I <freetype2 include dir>
+#     --library freetype -o src/_kernel/freetype.l --cfg 'not(target_os = "windows")' -I <freetype2 include dir>
+#   lyric bindgen native/freetype_bindings.h --package Text.Kernel.Freetype --allow native/freetype.allow \
+#     --library freetype -o src/_kernel/freetype_windows.l --cfg 'target_os = "windows"' \
+#     --triple x86_64-pc-windows-msvc -I <freetype2 include dir>
+# (the Windows one needs the MSVC and Windows SDK headers: a Windows host, or INCLUDE naming them).
 FT_Init_FreeType
 FT_Done_FreeType
 FT_New_Memory_Face

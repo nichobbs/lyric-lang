@@ -30,6 +30,13 @@ pub record BindgenConfig {
   allow: List[String]
   userdata: Map[String, Int]
   longBits: Int
+  /// The width of a C pointer in bits; 0 means `longBits` (LP64 and ILP32).
+  /// Windows x64 (LLP64) has 32-bit `long` and 64-bit pointers.
+  pointerBits: Int = 0
+  /// A file-level `@cfg` predicate written above the package line ("" for
+  /// none), so bindings for several targets can share one package
+  /// (`target_os = "windows"` / `not(target_os = "windows")`).
+  fileCfg: String = ""
 }
 
 pub record BindgenResult {
@@ -189,9 +196,43 @@ func jstr(v: in J.JsonValue, key: in String): String {
 
 func jtype(v: in J.JsonValue): String {
   match J.getField(v, "type") {
-    case Some(t) -> jstr(t, "qualType")
+    case Some(t) -> withoutAttributes(jstr(t, "qualType"))
     case None -> ""
   }
+}
+
+/// `t` without its `__attribute__((...))` parts.  Windows headers mark
+/// functions and callback types with a calling convention (`SDLCALL` is
+/// `__cdecl`, which clang prints as `__attribute__((cdecl))`); x86-64 has one
+/// convention, so none of them changes the binding.
+func withoutAttributes(t: in String): String {
+  val marker = " __attribute__"
+  var s = t
+  var at = Str.indexOfRaw(s, marker + "((")
+  while at >= 0 {
+    // The attribute ends where its parentheses balance.
+    var i = at + marker.length
+    var depth = 0
+    var attrEnd = -1
+    while i < s.length and attrEnd < 0 {
+      val c = Str.substring(s, i, 1)
+      if c == "(" {
+        depth = depth + 1
+      } else if c == ")" {
+        depth = depth - 1
+        if depth == 0 {
+          attrEnd = i + 1
+        }
+      }
+      i = i + 1
+    }
+    if attrEnd < 0 {
+      return s
+    }
+    s = Str.substring(s, 0, at) + Str.substring(s, attrEnd)
+    at = Str.indexOfRaw(s, marker + "((")
+  }
+  s
 }
 
 func jinner(v: in J.JsonValue): List[J.JsonValue] {
@@ -699,13 +740,13 @@ func alignUp(n: in Int, a: in Int): Int {
   ((n + a - 1) / a) * a
 }
 
-/// The C size and alignment of a type, when it can be computed (pointers are `longBits / 8`
-/// bytes: LP64 or ILP32).
+/// The C size and alignment of a type, when it can be computed (pointers are
+/// `pointerBits / 8` bytes, or `longBits / 8` when that is unset: LP64 or ILP32).
 func cLayout(ix: in Index, cfg: in BindgenConfig, ct: in CType, depth: in Int): Option[Layout] {
   if depth > 8 {
     return None
   }
-  val ptrBytes = cfg.longBits / 8
+  val ptrBytes = (if cfg.pointerBits > 0 { cfg.pointerBits } else { cfg.longBits }) / 8
   match ct {
     case CInt(bits) -> Some(value = Layout(size = bits / 8, align = bits / 8))
     case CBool -> Some(value = Layout(size = 1, align = 1))
@@ -1183,7 +1224,25 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
   chunks.add("@axiom(\"" + cfg.packageName + " bindings conform to the C header they were generated from\")\n")
   chunks.add("@io\n")
   chunks.add("@unsafe_ffi\n")
+  if cfg.fileCfg.length > 0 {
+    chunks.add("@cfg(" + cfg.fileCfg + ")\n")
+  }
   chunks.add("package " + cfg.packageName + "\n\n")
+  // One of several per-target variants of a package: C `long` is `Int` in
+  // some and `Long` in others, so every variant converts it the same way and
+  // the code above the binding compiles against each.
+  if cfg.fileCfg.length > 0 {
+    chunks.add("/// A value for a C `long` or `unsigned long` parameter or field of this target.\n")
+    if cfg.longBits == 32 {
+      chunks.add("pub func toCLong(x: in Long): Int = x.toInt()\n\n")
+      chunks.add("/// A C `long` or `unsigned long` of this target as a `Long`.\n")
+      chunks.add("pub func fromCLong(x: in Int): Long = x.toLong()\n\n")
+    } else {
+      chunks.add("pub func toCLong(x: in Long): Long = x\n\n")
+      chunks.add("/// A C `long` or `unsigned long` of this target as a `Long`.\n")
+      chunks.add("pub func fromCLong(x: in Long): Long = x\n\n")
+    }
+  }
   for t in constText {
     chunks.add(t)
   }

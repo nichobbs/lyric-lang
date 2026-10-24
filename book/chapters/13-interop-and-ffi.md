@@ -430,7 +430,20 @@ sha256  = "<64 hex digits>"
 members = ["lib/libwindow.so"]
 ```
 
-The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
+The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone. On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
+
+A library can be a system package on one platform and an archive on another. Put the prebuilt tables beside `pkg_config`, and a triple with an archive uses it while every other triple asks pkg-config; this is how `lyric-window` gets SDL3 from the distribution on Linux and from SDL's official archive on Windows. A member written `"lib/x.dll.lib -> window.lib"` is extracted under the name after the arrow, which matters on Windows: the import library must be called `<link>.lib`, but it records the DLL it loads, so the DLL keeps its own name and is copied beside the program with every other DLL the archive extracts.
+
+C's `long` is 64 bits on Linux and macOS and 32 on Windows, so a binding that uses it differs between them. Generate it once per data model, with `--triple` to parse the header as the target sees it and `--cfg` to gate each file, and list both files for the package:
+
+```sh
+lyric bindgen ft.h --package Text.Kernel.Freetype --allow ft.allow -o src/_kernel/freetype.l \
+  --cfg 'not(target_os = "windows")'
+lyric bindgen ft.h --package Text.Kernel.Freetype --allow ft.allow -o src/_kernel/freetype_windows.l \
+  --cfg 'target_os = "windows"' --triple x86_64-pc-windows-msvc
+```
+
+`@cfg(target_os = "windows")` is true only in a native build for Windows, so each build compiles one of the two. Both files define `toCLong` and `fromCLong`, and code that passes a `long` writes `Ft.toCLong(n)` rather than a `Long`, so the same source compiles against either file.
 
 ### A worked binding: `lyric-gpu`
 
@@ -448,7 +461,7 @@ Gpu.withDevice(body)
 
 `withDevice` owns the device for the call, because wgpu keeps its error callback for the device's whole life and a native closure is freed when its scope ends. The rest of a compute pass is `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
 
-A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X11 or Wayland handles and `Gpu.createXlibSurface` or `Gpu.createWaylandSurface` makes a surface from them, so neither library depends on the other. `acquireFrame` hands back the surface's next texture as a `RenderTarget`, `render` draws into it, and `presentFrame` shows it; a surface's format is the window system's choice, so `createRenderPipeline` takes the target format. CI runs this on an Xvfb display, takes a screenshot, and counts the pixels.
+A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X11, Wayland or Win32 handles and `Gpu.createXlibSurface`, `Gpu.createWaylandSurface` or `Gpu.createWindowsSurface` makes a surface from them, so neither library depends on the other. `acquireFrame` hands back the surface's next texture as a `RenderTarget`, `render` draws into it, and `presentFrame` shows it; a surface's format is the window system's choice, so `createRenderPipeline` takes the target format. CI runs this on an Xvfb display, takes a screenshot, and counts the pixels.
 
 `lyric-window` does the same for SDL3 (windows, input, clipboard, timing and audio), with SDL3 found through pkg-config, because SDL publishes no prebuilt Linux library to pin. Its event type is a union in C; `Window` decodes SDL's event buffer into a Lyric `union Event`, and a C file of `_Static_assert`s compiles every offset the decoder uses against SDL's headers, so a header that moves a field breaks the build instead of the decoder:
 
