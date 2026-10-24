@@ -26,7 +26,7 @@
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
 //!   bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--runs N] [--warmup N] [--filter <prefix>]
 //!   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
-//!   plugin  pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]
+//!   plugin  pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [-o <dir>]
 //!   plugin  check <dir>
 //!   plugin  sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
 //!   --version / -v
@@ -368,7 +368,7 @@ func usageText(): String {
     "  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]\n" +
     "\n" +
     "Plugins:\n" +
-    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]\n" +
+    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [-o <dir>]\n" +
     "                     (build each payload and write <dir>/<id>-<version>/plugin.json, D207)\n" +
     "  lyric plugin check <dir>\n" +
     "                     (validate a plugin artifact directory)\n" +

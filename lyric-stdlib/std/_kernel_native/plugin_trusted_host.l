@@ -84,7 +84,8 @@ func symbol(handle: in NativePtr[Byte], name: in String): NativePtr[Byte] {
 
 /// Open the plugin library at `path` (absolute), check its fingerprint
 /// against the host's and find its entry point.  Runs none of the plugin's
-/// Lyric code.
+/// Lyric code, but `dlopen` runs the library's own C initialisers before the
+/// fingerprint is checked, so only a trusted library may be opened.
 pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   val c = toC(path)
   val handle = rtPluginOpen(c)

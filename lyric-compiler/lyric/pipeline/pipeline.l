@@ -484,6 +484,24 @@ pub func pipeExpandAndRewriteCollect(
   CheckReadyFile(file = f, diagnostics = diags)
 }
 
+/// D207 plugin desugaring for a `--shape component` build (docs/69 §9.3),
+/// run by the native bridge before the component shims so they see the
+/// plugin's exports and host imports.  The later `pipeExpandAndRewrite` finds
+/// no plugin annotation left and passes the file through.  K-diagnostics gate
+/// like `pipeExpandAndRewrite`'s.
+pub func pipePluginExpandForComponent(
+  file: in SourceFile,
+  plugins: in Map[String, PluginExpand.PluginPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  val r = PluginExpand.expandFileForComponent(file, plugins)
+  if gate(label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
 /// A file after the rewrites that run between parse and type check, and
 /// the diagnostics they reported.  `file` is meaningful only when
 /// `diagnostics` holds no error.

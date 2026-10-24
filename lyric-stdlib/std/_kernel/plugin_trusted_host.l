@@ -80,7 +80,8 @@ func isSharedAssemblyFile(file: in String): Bool {
 }
 
 /// Load the plugin assembly at `path` (absolute) into a new context and find
-/// its entry point.  Runs none of the plugin's code.
+/// its entry point.  Runs none of the plugin's Lyric code; the plugin can
+/// still take the host down from its first call (docs/69 §10.6).
 pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
   try {
     val context = NetAssemblyLoadContext.new("lyric-plugin:" + path, false)
@@ -118,6 +119,8 @@ val trustedEntryMethodName: String = "lyricPluginEntryV1"
 // §10).  The host loads the plugin so that the plugin's stdlib is the
 // host's own; `trustedHostNewServer` runs the plugin's `lyricPluginEntryV1`,
 // which writes its server here, and takes it while it holds the load lock.
+// The slot is process-global, so `offerTrustedPluginServer` must only ever
+// be called from inside `trustedHostNewServer`, under `trustedLoadGate`.
 record TrustedOfferSlot {
   var offered: Option[PluginServer]
 }
@@ -144,6 +147,9 @@ func takeOfferedPluginServer(): Option[PluginServer] {
 pub func trustedHostNewServer(library: in TrustedHostLibrary): Result[PluginServer, String] {
   val noArgs: slice[NetObject] = []
   NetMonitor.Enter(trustedLoadGate)
+  defer {
+    NetMonitor.Exit(trustedLoadGate)
+  }
   var outcome: Result[PluginServer, String] = Err(
     error = "the entry point of " + library.path +
       " offered no server to this host; a plugin built against another Lyric.Stdlib than the host's cannot " +
@@ -161,6 +167,5 @@ pub func trustedHostNewServer(library: in TrustedHostLibrary): Result[PluginServ
   } catch Bug as b {
     outcome = Err(error = "the entry point of " + library.path + " failed: " + b.message)
   }
-  NetMonitor.Exit(trustedLoadGate)
   outcome
 }
