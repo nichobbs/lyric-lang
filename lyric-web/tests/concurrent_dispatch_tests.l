@@ -16,7 +16,7 @@ import Std.Time as Time
 import Web
 import Std.Testing
 
-record Gate {
+ref record Gate {
   var released: Bool
   var slowEntered: Bool
   var slowDone: Bool

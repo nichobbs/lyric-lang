@@ -18,7 +18,7 @@ import Std.Testing
 
 type Slot = Int range 0 ..= 2
 
-record Holder {
+ref record Holder {
   var cells: array[3, Int]
 }
 

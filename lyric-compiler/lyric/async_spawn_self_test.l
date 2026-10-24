@@ -324,7 +324,7 @@ async func indexAssignTargetAwait(x: in Int): Int {
   return xs[1]
 }
 
-record MutBox {
+ref record MutBox {
   var n: Int
 }
 

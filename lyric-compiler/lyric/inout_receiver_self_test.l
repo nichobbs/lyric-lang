@@ -53,7 +53,7 @@ func Pt.scaled(self: inout Pt, k: in Int): Unit {
 }
 
 // A mutable record: its fields are written through the receiver.
-record Counter {
+ref record Counter {
   var n: Int
 
   // Returns the old count and advances the counter.
@@ -79,12 +79,12 @@ record Counter {
   }
 }
 
-record Holder {
+ref record Holder {
   var p: Pt
   var c: Counter
 }
 
-record Outer {
+ref record Outer {
   var h: Holder
 }
 

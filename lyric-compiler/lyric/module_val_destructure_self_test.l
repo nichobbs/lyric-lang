@@ -20,7 +20,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 
-pub record Counter {
+pub ref record Counter {
   var n: Int
 }
 

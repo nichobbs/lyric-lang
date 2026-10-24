@@ -162,7 +162,7 @@ test "a generic protected type keeps its invariant" {
   assertEqualInt(c.replace("v2"), 2, "second replace")
 }
 
-record Holder {
+ref record Holder {
   var item: Option[Int] = None
 }
 

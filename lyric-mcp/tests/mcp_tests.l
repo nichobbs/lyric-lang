@@ -95,7 +95,7 @@ func decodedOutcome(v: in JsonValue): McpToolCallOutcome {
 }
 
 // ── In-memory transport pair (non-recursive — see module doc) ──────────────
-record Mailbox {
+ref record Mailbox {
   var toServer: List[String]
   var toClient: List[String]
 }

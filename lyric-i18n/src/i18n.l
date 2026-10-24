@@ -120,7 +120,7 @@ pub interface TranslationStore {
 /// This avoids nested generic maps, which the bootstrap emitter cannot index
 /// reliably in impl blocks.
 @stable(since = "0.1")
-pub record InProcessTranslationStore {
+pub ref record InProcessTranslationStore {
   var translations: Map[String, String]
   var localeKeys: List[String]
 }

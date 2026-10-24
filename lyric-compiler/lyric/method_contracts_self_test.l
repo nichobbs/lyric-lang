@@ -129,7 +129,7 @@ test "violation message: inherited postcondition names the implementing method" 
 // An interface default method carrying a contract, inherited un-overridden:
 // `Lyric.ImplDefaults` copies it into the impl clauses and all, and the
 // elaborator must not assert the same clause a second time (#7291).
-record Tally {
+ref record Tally {
   var n: Int
 }
 

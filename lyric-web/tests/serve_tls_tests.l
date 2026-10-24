@@ -469,7 +469,7 @@ test "tlsServerConfigFromWebTls reports a missing cert file as CertFileNotFound"
 // over TLS must not stall other requests. `/slow` holds until released (or
 // 10s); `/fast` must complete while `/slow` is still in flight. dotnet-only:
 // the jvm Undertow listener already dispatches on worker threads.
-record TlsGate {
+ref record TlsGate {
   var released: Bool
   var slowEntered: Bool
   var slowDone: Bool

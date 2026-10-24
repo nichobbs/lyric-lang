@@ -139,7 +139,8 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
             | 'from'                              (* aspect instantiation clause *)
             | 'defer'                             (* defer-statement keyword *)
             | 'config'                            (* config-block keyword *)
-            | 'foreign'  ;                        (* before 'record' only; D155 *)
+            | 'foreign'                           (* before 'record' only; D155 *)
+            | 'ref'      ;                        (* before 'record' only; D222 *)
 
 (* §1.6.1 Reserved-but-unused keywords
  *
@@ -494,7 +495,13 @@ DeriveItem    = IDENT ;                     (* Add | Sub | Mul | Div | Mod
  * ============================================================================ *)
 
 RecordDecl =
-    'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;
+    [ 'ref' ] 'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;
+
+(* 'ref' is contextual (D222): an IDENT spelled "ref" directly before
+   'record' at item position, so 'ref' stays usable as an identifier
+   elsewhere. It marks a record with identity. A record with a 'var' field
+   that is not marked draws warning W0031 (to become an error); 'ref' on a
+   record with no 'var' field is accepted. *)
 
 ExposedRecordDecl =
     'exposed' 'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;

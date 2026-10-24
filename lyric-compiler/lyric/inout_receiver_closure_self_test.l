@@ -36,7 +36,7 @@ record Pt {
   func sum(self: in Pt): Int = self.x + self.y
 }
 
-record Counter {
+ref record Counter {
   var n: Int
 
   func bump(self: inout Counter, d: in Int): Unit {

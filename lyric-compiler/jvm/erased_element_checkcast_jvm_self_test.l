@@ -295,7 +295,7 @@ test "slice[Record] record field: self.f[0] inside a record method calls the ele
 //    `m[k]`, and does not resolve against an unrelated Map instantiation of
 //    a different value type sharing the same JVM compilation unit.
 // ─────────────────────────────────────────────────────────────────────────────
-record MultiValueStore {
+ref record MultiValueStore {
   var counts: Map[String, Long]
   var points: Map[String, Pt]
 }

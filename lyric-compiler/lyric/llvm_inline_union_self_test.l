@@ -265,7 +265,7 @@ test "inline unions nest in unions, in records, and hold records (ASan)" {
 }
 
 test "a heap record and a heap union hold inline unions as plain fields (ASan)" {
-  val src = "package T\n" + optDecl + "record Cell {\n  var v: Opt[Int]\n  var name: String\n}\n" +
+  val src = "package T\n" + optDecl + "ref record Cell {\n  var v: Opt[Int]\n  var name: String\n}\n" +
     "union Wrap {\n  case Box(o: Opt[Int], s: String)\n  case Empty\n}\n" +
     "func main(): Int {\n" +
     "  val c = Cell(v = Has(v = 3), name = \"c\")\n" +

@@ -248,7 +248,7 @@ test "the last reference writes in place again after a copy was released" {
 
 test "passing, returning, record fields and inout keep reference counts balanced" {
   runClean(
-    "record Mesh {\n  var verts: buffer[Int]\n  var tag: Int\n}\n" +
+    "ref record Mesh {\n  var verts: buffer[Int]\n  var tag: Int\n}\n" +
       "func sum(b: in buffer[Int]): Int {\n  var t = 0\n  for x in b {\n    t = t + x\n  }\n  t\n}\n" +
       "func bump(b: inout buffer[Int], i: in Int) {\n  b[i] = b[i] + 10\n}\n" +
       "func makeIt(n: in Int): buffer[Int] {\n  var b = filled(n, 2)\n  b[0] = 5\n  b\n}\n" +

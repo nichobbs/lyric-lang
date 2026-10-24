@@ -74,7 +74,7 @@ interface Transport {
   func receive(): Result[Option[String], String]
 }
 
-record FakeTransport {
+ref record FakeTransport {
   var idx: Int
   msgs: List[String]
 }

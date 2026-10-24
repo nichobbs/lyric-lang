@@ -455,7 +455,7 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 // Concurrency primitives: mutex-guarded FIFO queue + per-request one-shot
 // semaphore (module header).
 // =====================================================================
-record ServerQueue {
+ref record ServerQueue {
   mutex: Long
   available: Long
   items: List[HttpContext]
@@ -666,7 +666,7 @@ func freeOneShotSem(s: in Long): Unit {
 /// `stopListener`), and the pull queue every spawned connection thread
 /// shares. Opaque to consumers: observe it only through `nextContext` /
 /// `stopListener`.
-pub record HttpListener {
+pub ref record HttpListener {
   transport: Listener
   acceptTid: Long
   queue: ServerQueue
@@ -693,7 +693,7 @@ pub record HttpListener {
 /// `done` so the connection thread may read the next request or close).
 /// Treat the fields as private -- observe a context only through the
 /// `request*` accessors and construct a response only through `respond*`.
-pub record HttpContext {
+pub ref record HttpContext {
   conn: Conn
   method: String
   target: String
@@ -1905,10 +1905,7 @@ pub record HttpChunkedStream {
 /// chunked-transfer-encoding mode, and return the open stream handle to write
 /// chunks to. No `Content-Length` is set.
 pub func beginChunkedResponse(
-  c: in HttpContext,
-  status: in Int,
-  contentType: in String,
-  headers: in Map[String, String],
+  c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
 ): HttpChunkedStream {
   if c.responded {
     panic("Std.HttpServer: beginChunkedResponse called on a HttpContext that already responded (invariant violation)")
@@ -1931,10 +1928,7 @@ pub func beginChunkedResponse(
 /// A zero-length write is a no-op (the terminating zero-length chunk is
 /// written only by `endChunkedResponse`). `Err` surfaces a broken connection.
 pub func streamWriteChunk(
-  s: in HttpChunkedStream,
-  bytes: in slice[Byte],
-  offset: in Int,
-  count: in Int,
+  s: in HttpChunkedStream, bytes: in slice[Byte], offset: in Int, count: in Int
 ): Result[Unit, String] {
   if count <= 0 {
     return Ok(value = ())

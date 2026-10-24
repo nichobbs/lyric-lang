@@ -15,7 +15,7 @@ import Std.Core
 import Std.Collections
 import Ws
 
-record RegistryHolder {
+ref record RegistryHolder {
   var registry: Option[NativeRegistry] = None
 }
 

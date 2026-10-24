@@ -48,7 +48,7 @@ pub interface Transaction {
   func commit(): Result[Unit, String]
 }
 
-pub record TxImpl {
+pub ref record TxImpl {
   var committed: Bool
 }
 
@@ -63,7 +63,7 @@ pub interface ConnectionIface {
   func transaction(): Result[Transaction, String]
 }
 
-pub record Connection {
+pub ref record Connection {
   var txCount: Int
 }
 

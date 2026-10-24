@@ -695,13 +695,13 @@ test "n0100 lambda-local var admits nativeaddrof inside its own lambda" {
 
 // ── V0015: write to a non-`var` record field (#1815 part 1) ────────────────────
 test "var field reassigned through a var local compiles" {
-  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
+  val src = "package P\nref record Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "var-field-write: no V0015")
 }
 
 test "non-var field reassigned through a var local is V0015" {
-  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): String {\n  var c = Counter(count = 0, label = \"x\")\n  c.label = \"y\"\n  c.label\n}\n"
+  val src = "package P\nref record Counter {\n  var count: Int\n  label: String\n}\nfunc f(): String {\n  var c = Counter(count = 0, label = \"x\")\n  c.label = \"y\"\n  c.label\n}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0015"), "nonvar-field-write: V0015 emitted")
 }
@@ -736,7 +736,7 @@ test "var field write through an inout param is not V0015 (#1815 part 2 / #6155)
   // tracked: `pos` is `var`, so the same write through the same `inout` alias
   // is allowed. Mirrors Std.Xml.XmlState/Std.Yaml.YamlState/
   // Std.HttpEngine.Connection's real shape after the D-progress-706 follow-up.
-  val src = "package P\nrecord Cursor {\n  var pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val src = "package P\nref record Cursor {\n  var pos: Int\n}\nfunc advance(c: inout Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "inout-param-var-write: no V0015")
 }
@@ -750,7 +750,7 @@ test "non-var field write through an inout param is V0015 through a compound ass
 test "an `in`-mode param's field write is not tracked (only `inout` is, #6155)" {
   // `in` params are never write-capable bindings, regardless of the target
   // field's mutability — only `var` locals and `inout` params are tracked.
-  val src = "package P\nrecord Cursor {\n  var pos: Int\n}\nfunc peek(c: in Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
+  val src = "package P\nref record Cursor {\n  var pos: Int\n}\nfunc peek(c: in Cursor): Unit {\n  c.pos = c.pos + 1\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "in-param-write: not tracked, no V0015")
 }
@@ -777,13 +777,13 @@ test "same-named var record locals in sibling scopes do not crash the pass (#615
   // bindings reach `fieldWriteTrackLocal` with the same key; the unguarded
   // `Map.add` threw on the duplicate, crashing the mode checker on ordinary
   // valid source.  `n` is `var`, so no V0015 should fire either.
-  val src = "package P\nrecord Box {\n  var n: Int\n}\nfunc f(cond: Bool): Int {\n  if cond {\n    var b = Box(n = 1)\n    b.n = 2\n    b.n\n  } else {\n    var b = Box(n = 3)\n    b.n = 4\n    b.n\n  }\n}\n"
+  val src = "package P\nref record Box {\n  var n: Int\n}\nfunc f(cond: Bool): Int {\n  if cond {\n    var b = Box(n = 1)\n    b.n = 2\n    b.n\n  } else {\n    var b = Box(n = 3)\n    b.n = 4\n    b.n\n  }\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "sibling-same-name var locals: no crash, no V0015")
 }
 
 test "same-named var record locals in sequential blocks do not crash (#6157)" {
-  val src = "package P\nrecord Box {\n  var n: Int\n}\nfunc f(): Int {\n  var acc = 0\n  {\n    var b = Box(n = 1)\n    b.n = 2\n    acc = acc + b.n\n  }\n  {\n    var b = Box(n = 3)\n    b.n = 4\n    acc = acc + b.n\n  }\n  acc\n}\n"
+  val src = "package P\nref record Box {\n  var n: Int\n}\nfunc f(): Int {\n  var acc = 0\n  {\n    var b = Box(n = 1)\n    b.n = 2\n    acc = acc + b.n\n  }\n  {\n    var b = Box(n = 3)\n    b.n = 4\n    acc = acc + b.n\n  }\n  acc\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "sequential same-name var locals: no crash, no V0015")
 }
@@ -794,7 +794,7 @@ test "shadowed var local of a different record type does not leak its type past 
   // local, whose `n` IS `var` — so no V0015.  Before the scope-undo fix the
   // inner `Other` binding leaked, and the write was checked against
   // `Other.n` (non-var) → a false-positive V0015 on valid code.
-  val src = "package P\nrecord Mut {\n  var n: Int\n}\nrecord Other {\n  n: Int\n}\nfunc f(cond: Bool): Int {\n  var box = Mut(n = 1)\n  if cond {\n    var box = Other(n = 9)\n    box.n\n  } else {\n    0\n  }\n  box.n = 2\n  box.n\n}\n"
+  val src = "package P\nref record Mut {\n  var n: Int\n}\nrecord Other {\n  n: Int\n}\nfunc f(cond: Bool): Int {\n  var box = Mut(n = 1)\n  if cond {\n    var box = Other(n = 9)\n    box.n\n  } else {\n    0\n  }\n  box.n = 2\n  box.n\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "outer Mut.n (var) write after shadow: no V0015")
 }
@@ -805,7 +805,7 @@ test "shadowed var local of a different record type still catches the outer viol
   // `b.label = \"d\"` writes the outer `Immut` local's non-var field and MUST
   // fire V0015.  Before the fix the leaked `MutBox` binding hid it (false
   // negative).
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc g(cond: Bool): String {\n  var b = Immut(label = \"a\")\n  if cond {\n    var b = MutBox(label = \"b\")\n    b.label = \"c\"\n    b.label\n  } else {\n    \"z\"\n  }\n  b.label = \"d\"\n  b.label\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nfunc g(cond: Bool): String {\n  var b = Immut(label = \"a\")\n  if cond {\n    var b = MutBox(label = \"b\")\n    b.label = \"c\"\n    b.label\n  } else {\n    \"z\"\n  }\n  b.label = \"d\"\n  b.label\n}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label (non-var) write after shadow: V0015 fires")
 }
@@ -818,7 +818,7 @@ test "same-block re-declaration to a non-in-file-record type evicts the stale ma
   // fix, the stale `b -> Frozen` (n non-var) mapping stayed and the write was
   // rejected as a false positive.  #6166's block snapshot/restore does not
   // cover this — the re-declaration is inside a single flat block.
-  val src = "package P\nrecord Frozen {\n  n: Int\n}\nrecord Mut {\n  var n: Int\n}\nfunc mkMut(): Mut {\n  Mut(n = 0)\n}\nfunc f(): Int {\n  var b = Frozen(n = 1)\n  var b = mkMut()\n  b.n = 3\n  b.n\n}\n"
+  val src = "package P\nrecord Frozen {\n  n: Int\n}\nref record Mut {\n  var n: Int\n}\nfunc mkMut(): Mut {\n  Mut(n = 0)\n}\nfunc f(): Int {\n  var b = Frozen(n = 1)\n  var b = mkMut()\n  b.n = 3\n  b.n\n}\n"
   val result = parseCheck(src)
   assertTrue(
     not (hasDiagCode(result, "V0015")),
@@ -832,7 +832,7 @@ test "val binding shadowing a var-record local evicts the stale mapping (#6185)"
   // val binding, which we don't track — so no V0015.  Before the #6185 fix the
   // `val` arm never evicted, so `b.label` was checked against the outer
   // `Immut.label` (non-var) → a false positive.
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc f(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nfunc f(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "val-shadow write: no false-positive V0015")
 }
@@ -841,7 +841,7 @@ test "match-arm pattern bind shadowing a var-record local evicts the stale mappi
   // The arm pattern `W(b)` binds `b` to `MutBox` inside the arm; a write to
   // `b.label` (var) there must not be checked against the outer `Immut` local
   // of the same name.  Before #6185 the arm never evicted the pattern binder.
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nunion Wrap {\n  case W(inner: MutBox)\n}\nfunc g(w: in Wrap): String {\n  var b = Immut(label = \"a\")\n  match w {\n    case W(b) -> {\n      b.label = \"y\"\n      b.label\n    }\n  }\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nunion Wrap {\n  case W(inner: MutBox)\n}\nfunc g(w: in Wrap): String {\n  var b = Immut(label = \"a\")\n  match w {\n    case W(b) -> {\n      b.label = \"y\"\n      b.label\n    }\n  }\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "match-arm-shadow write: no false-positive V0015")
 }
@@ -850,7 +850,7 @@ test "lambda parameter shadowing a var-record local evicts the stale mapping (#6
   // The lambda param `b: MutBox` shadows the outer `Immut` local inside the
   // lambda body; the `b.label` (var) write there must not be checked against
   // `Immut.label`.  Before #6185 lambda params never evicted.
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc h(): String {\n  var b = Immut(label = \"a\")\n  val g = { b: MutBox -> b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nfunc h(): String {\n  var b = Immut(label = \"a\")\n  val g = { b: MutBox -> b.label = \"y\"\n    b.label\n  }\n  b.label\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "lambda-param-shadow write: no false-positive V0015")
 }
@@ -859,7 +859,7 @@ test "for-loop variable shadowing a var-record local evicts the stale mapping (#
   // The loop variable `b` shadows the outer `Immut` local inside the body; the
   // `b.label` (var) write must not be checked against `Immut.label`.  Before
   // #6185 the for-loop variable never evicted.
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc k(items: in List[MutBox]): Int {\n  var b = Immut(label = \"a\")\n  for b in items {\n    b.label = \"y\"\n  }\n  0\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nfunc k(items: in List[MutBox]): Int {\n  var b = Immut(label = \"a\")\n  for b in items {\n    b.label = \"y\"\n  }\n  0\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "for-var-shadow write: no false-positive V0015")
 }
@@ -869,7 +869,7 @@ test "restore after a non-var-binder shadow still catches the outer violation (#
   // the outer `Immut` binding is restored, so the outer `b.label = \"z\"` write
   // to the non-var field MUST still fire V0015.  Guards against the eviction
   // leaking past its scope (the false-negative dual of the four cases above).
-  val src = "package P\nrecord Immut {\n  label: String\n}\nrecord MutBox {\n  var label: String\n}\nfunc fn(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"ok\"\n  }\n  b.label = \"z\"\n  b.label\n}\n"
+  val src = "package P\nrecord Immut {\n  label: String\n}\nref record MutBox {\n  var label: String\n}\nfunc fn(): String {\n  var b = Immut(label = \"a\")\n  {\n    val b = MutBox(label = \"x\")\n    b.label = \"ok\"\n  }\n  b.label = \"z\"\n  b.label\n}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0015"), "outer Immut.label write after val-shadow: V0015 still fires")
 }
@@ -917,7 +917,7 @@ test "impl-method self-field write to a non-var field is V0015 (#6181)" {
 }
 
 test "impl-method self-field write to a var field is not V0015" {
-  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
+  val src = "package P\nref record Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "impl-method self.total (var) write: no V0015")
 }
@@ -932,7 +932,7 @@ test "record inherent-method self-field write to a non-var field is V0015 (#6181
 // implicit-self bare form: this exercises the (still-supported) local-EPath
 // branch of `checkFieldWriteTarget`, unaffected by the new `ESelf` arm.
 test "local variable shadowing a field name is not affected by the ESelf write check" {
-  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    var total = 9\n    total = total + 1\n  }\n}\n"
+  val src = "package P\nref record Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    var total = 9\n    total = total + 1\n  }\n}\n"
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0015")), "shadowing local `total` reassignment: no V0015")
 }
@@ -977,14 +977,14 @@ test "a field never written anywhere is safe to lock" {
 }
 
 test "a field written only through a checked var-local shape is safe to lock" {
-  val src = "package P\nrecord Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
+  val src = "package P\nref record Counter {\n  var count: Int\n  label: String\n}\nfunc f(): Int {\n  var c = Counter(count = 0, label = \"x\")\n  c.count = c.count + 1\n  c.count\n}\n"
   val unsafeSet = lockSafety(src)
   assertTrue(not (unsafeSet.containsKey("count")), "checked var-local write: safe to lock")
   assertTrue(not (unsafeSet.containsKey("label")), "never-written label: safe to lock")
 }
 
 test "a field written only through a checked self write is safe to lock" {
-  val src = "package P\nrecord Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
+  val src = "package P\nref record Counter2 {\n  var total: Int\n}\ninterface Nudge {\n  func poke(): Unit\n}\nimpl Nudge for Counter2 {\n  func poke(): Unit {\n    self.total = 0\n  }\n}\n"
   val unsafeSet = lockSafety(src)
   assertTrue(not (unsafeSet.containsKey("total")), "checked self write: safe to lock")
 }

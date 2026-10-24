@@ -139,7 +139,7 @@ pub val usageUniform: Long = 64
 pub val usageStorage: Long = 128
 
 /// Where an asynchronous wgpu call leaves its result.
-record Slot {
+ref record Slot {
   var status: Int
   var handle: Long
   var message: String

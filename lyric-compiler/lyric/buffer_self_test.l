@@ -22,7 +22,7 @@ record Vec3 {
   z: Float
 }
 
-record Mesh {
+ref record Mesh {
   var verts: buffer[Vec3]
   var label: String
 }

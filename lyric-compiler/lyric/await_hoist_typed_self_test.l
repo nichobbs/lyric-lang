@@ -128,7 +128,7 @@ record OptPair {
   }
 }
 
-record OptCell {
+ref record OptCell {
   var o: Option[Int]
 }
 

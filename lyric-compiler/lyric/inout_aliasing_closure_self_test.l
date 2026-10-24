@@ -21,7 +21,7 @@ package Lyric.InoutAliasingClosureSelfTest
 import Std.Core
 import Std.Testing
 
-record R {
+ref record R {
   var f: Int
 }
 

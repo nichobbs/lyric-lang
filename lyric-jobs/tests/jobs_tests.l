@@ -16,7 +16,7 @@ import Jobs
 // `handler.handle` is called through `handler: in JobHandler`, so a handler
 // record's own fields cannot be mutated from inside `handle` — the same
 // idiom `jobs_aspect_weaving_tests.l` already uses for its target functions.
-record Counter {
+ref record Counter {
   var count: Int = 0
 }
 

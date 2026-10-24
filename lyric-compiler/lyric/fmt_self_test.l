@@ -2775,3 +2775,11 @@ test "foreign record keeps its keyword through a format round trip" {
   assertTrue(Str.contains(acc, "foreign record Desc {"), "format: foreign keyword kept")
   assertTrue(isFormatted(acc, pr), "format: foreign record idempotent")
 }
+
+test "ref record keeps its keyword through a format round trip" {
+  val src = "package P\npub ref record Counter {\n  var n: Int\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "pub ref record Counter {"), "format: ref keyword kept")
+  assertTrue(isFormatted(acc, pr), "format: ref record idempotent")
+}

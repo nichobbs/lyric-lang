@@ -134,7 +134,7 @@ func rtPipedClose(p: Long): Unit {
 /// handle (issue #6975) the same way `Std.HttpServer`'s
 /// `HttpListener.stopped` guards `stopListener` — package-private so no
 /// consumer outside this file can read or mutate it directly.
-pub record PipedHandle {
+pub ref record PipedHandle {
   raw: Long
   var closed: Bool
 }

@@ -164,7 +164,7 @@ test "assignment-target hoisting: target index logs before the value (#5628)" {
 // `InvalidProgramException` before this round's fix: the receiver is
 // stacked (`lowerAssignExprMsil` pushes it with no spill) before the value
 // resumes across the suspension. Mirrors `Lyric.Propagate`'s #6456 fix.
-record Box {
+ref record Box {
   var value: Int
 }
 
@@ -422,7 +422,7 @@ test "#6555: a mutable receiver declared inside a ?-propagated block keeps its p
 // `EPath` assignment targets — a member-target write is unchecked there
 // too). Records support `var` fields on both targets, so this reproduces
 // identically on `--target dotnet` and `--target jvm`.
-record Holder {
+ref record Holder {
   var box: MutRecvBox
 }
 
@@ -459,7 +459,7 @@ func swapCacheBox(c: in Cache): Int {
   5
 }
 
-record Cache {
+ref record Cache {
   var box: MutRecvBox
 
   async func run(self: in Cache): Int {
@@ -508,7 +508,7 @@ interface CacheRunner6684 {
   async func run(self: in Self): Int
 }
 
-record ImplCache6684 {
+ref record ImplCache6684 {
   var box: MutRecvBox
 }
 

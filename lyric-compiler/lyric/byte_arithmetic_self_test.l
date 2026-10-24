@@ -47,7 +47,7 @@ test "Byte compound assignments on list elements" {
   assertEqualInt(d1.toInt(), 2, "arr[0] %= 3 gives 2")
 }
 
-record ByteRecord {
+ref record ByteRecord {
   var value: Byte
 
   // #6525 review: exercises the SELF-FIELD compound-write codegen arm

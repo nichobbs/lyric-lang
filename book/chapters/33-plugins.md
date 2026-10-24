@@ -130,7 +130,7 @@ import Std.Plugin
 import Notes.Api
 
 @plugin(id = "acme.notes-summary", version = "1.2.0", publisher = "acme", implements(NoteTool))
-pub record SummaryPlugin {
+pub ref record SummaryPlugin {
   store: StoreClient
   log: Option[LogClient]
   var calls: Int = 0
@@ -222,7 +222,7 @@ import Std.JsonValue
 import Std.Plugin
 import Notes.Api
 
-pub record NoteStore {
+pub ref record NoteStore {
   var loads: Int
 }
 
@@ -235,7 +235,7 @@ impl Store for NoteStore {
   }
 }
 
-pub record LineLog {
+pub ref record LineLog {
   var lines: List[String]
 }
 

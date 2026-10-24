@@ -3559,7 +3559,7 @@ func pluginText(pm: in PluginModel, g: in Gen): String {
   rpcHelpers(g)
   val srv = pm.name + "Server"
   val l: List[String] = newList()
-  l.add("record " + srv + " {")
+  l.add("ref record " + srv + " {")
   l.add("  var held: Option[" + pm.name + "] = None")
   l.add("}")
   l.add("")

@@ -26,7 +26,7 @@ import Std.JsonRpc
 // `receiveWithin` sleeps out the budget it was given and times out, the way
 // a real transport waiting on a peer that never answers does. Otherwise an
 // empty inbox is end of stream.
-pub record InMemoryTransport {
+pub ref record InMemoryTransport {
   var inbox: List[String]
   var outbox: List[String]
   var closed: Bool
@@ -83,7 +83,7 @@ func feed(t: in InMemoryTransport, msg: in String): Unit {
 // `unknown-method` returns methodNotFound; `bad-params` returns
 // invalidParams. Every request/notification is also recorded for
 // assertions (count, last method/params seen).
-pub record RecordingHandler {
+pub ref record RecordingHandler {
   var requestCount: Int
   var notificationCount: Int
   var lastMethod: String

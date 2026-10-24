@@ -5048,7 +5048,8 @@ func desugarCopiesInRecord(state: in MonoState, decl: in RecordDecl): RecordDecl
     whereClause = decl.whereClause,
     members = members,
     span = decl.span,
-    isForeign = decl.isForeign
+    isForeign = decl.isForeign,
+    isRef = decl.isRef
   )
 }
 
@@ -9813,7 +9814,8 @@ pub func monoFileWithLambdaTypes(
                 whereClause = decl.whereClause,
                 members = newMembers,
                 span = decl.span,
-                isForeign = decl.isForeign
+                isForeign = decl.isForeign,
+                isRef = decl.isRef
               )
             )
           )

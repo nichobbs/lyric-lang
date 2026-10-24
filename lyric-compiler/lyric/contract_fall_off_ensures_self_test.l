@@ -25,7 +25,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 
-pub record Cell {
+pub ref record Cell {
   var n: Int
 }
 
@@ -558,7 +558,7 @@ test "empty body checks ensures (#7747)" {
 }
 
 // ─── Methods ─────────────────────────────────────────────────────────────────
-pub record Counter {
+pub ref record Counter {
   var hits: Int
 
   func setHits(self: in Counter, v: in Int): Unit
@@ -573,7 +573,7 @@ pub interface Resettable {
     ensures: v == 100
 }
 
-pub record Gauge {
+pub ref record Gauge {
   var level: Int
 }
 

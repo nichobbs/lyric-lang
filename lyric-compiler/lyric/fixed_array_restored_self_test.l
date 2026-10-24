@@ -58,8 +58,8 @@ func mkDirOrPanic(path: in String): Unit {
 }
 
 func depSource(): String {
-  "package Arr.Dep\n\n" + "pub record Grid {\n  var cells: array[3, Int]\n  var n: Int\n}\n\n" +
-    "pub record Pair[T] {\n  var items: array[2, T]\n}\n\n" +
+  "package Arr.Dep\n\n" + "pub ref record Grid {\n  var cells: array[3, Int]\n  var n: Int\n}\n\n" +
+    "pub ref record Pair[T] {\n  var items: array[2, T]\n}\n\n" +
     "pub func total(a: in array[3, Int]): Int {\n  var t = 0\n  for x in a {\n    t = t + x\n  }\n  t\n}\n\n" +
     "pub func counting(): array[3, Int] {\n  [1, 2, 3]\n}\n\n" +
     "pub func gridTotal(g: in Grid): Int {\n  total(g.cells) + g.n\n}\n"

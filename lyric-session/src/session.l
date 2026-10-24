@@ -425,7 +425,7 @@ impl SessionStore for NativeSessionStore {
 /// lost on process restart.  Not thread-safe; wrap in a protected type for
 /// concurrent access once the protected-type weaver ships.
 @stable(since = "0.1")
-pub record InProcessSessionStore {
+pub ref record InProcessSessionStore {
   var sessions: Map[String, SessionData]
   ttlSeconds: Long
   invariant: ttlSeconds >= 1i64 and ttlSeconds <= 31536000i64

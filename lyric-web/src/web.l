@@ -1370,7 +1370,7 @@ pub interface StreamingHandler {
 /// first write, and mutating them after that point is a contract
 /// violation, not silent.
 @cfg(any(feature = "dotnet", feature = "native"))
-pub record ResponseWriter {
+pub ref record ResponseWriter {
   ctx: HttpContext
   var status: Int
   var headers: Map[String, String]

@@ -634,6 +634,9 @@ pub record RecordDecl {
   span: Span
   /// `foreign record` (D188, docs/67 §4.7): a C-layout struct of a kernel file.
   isForeign: Bool = false
+  /// `ref record` (D222): a record with `var` fields that declares its identity
+  /// semantics. Without it, a record with a `var` field draws W0031.
+  isRef: Bool = false
 }
 
 pub union UnionField {

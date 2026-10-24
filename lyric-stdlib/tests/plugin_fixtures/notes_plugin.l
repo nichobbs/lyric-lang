@@ -69,7 +69,7 @@ pub interface NoteTool {
 
 // ── The plugin ──────────────────────────────────────────────────────────────
 @plugin(id = "lyric.test.notes", version = "1.2.0", publisher = "lyric", implements(NoteTool))
-pub record NotesPlugin {
+pub ref record NotesPlugin {
   store: StoreClient
   log: Option[LogClient]
   var calls: Int = 0

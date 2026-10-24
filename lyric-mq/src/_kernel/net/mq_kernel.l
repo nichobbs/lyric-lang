@@ -73,7 +73,7 @@ func monitorEnter[T](obj: in T): Unit = ()
 func monitorExit[T](obj: in T): Unit = ()
 
 // ─── Message and queue state ──────────────────────────────────────────────────
-record Message {
+ref record Message {
   id: String
   body: String
   headersJson: String
@@ -86,7 +86,7 @@ record InMemoryQueue {
   inFlight: ConcurrentDict[String, Message]
 }
 
-record MqHandleCounter {
+ref record MqHandleCounter {
   var next: Int = 0
 }
 

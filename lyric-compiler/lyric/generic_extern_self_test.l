@@ -55,7 +55,7 @@ func newUnquotedTup[A, B](a: in A, b: in B): UnquotedTup[A, B] = ()
 @externTarget("System.Tuple`2.ToString")
 func unquotedTupToString[A, B](t: in UnquotedTup[A, B]): String = ()
 
-record Counter {
+ref record Counter {
   var n: Int = 0
 }
 
@@ -123,7 +123,7 @@ test "Unquoted generic Tuple constructs and round-trips correctly" {
 // falls back to `object` — the call site must box the raw int32 heading into
 // it.  Before the fix the int32 was passed unboxed (InvalidProgramException
 // at JIT time in any function calling the wrapper).
-record Handles {
+ref record Handles {
   var next: Int = 0
 }
 

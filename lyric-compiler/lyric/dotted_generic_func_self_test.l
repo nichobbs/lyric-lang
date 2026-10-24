@@ -12,7 +12,7 @@ record Box[T] {
   v: T
 }
 
-record Ints[N: Nat] {
+ref record Ints[N: Nat] {
   var data: array[N, Int]
 }
 

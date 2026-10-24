@@ -30,7 +30,7 @@ package Flags.Registry
 import Std.Core
 import Std.Collections
 
-record FlagRegistryStore {
+ref record FlagRegistryStore {
   var boolMap: Map[String, Bool]
   var stringMap: Map[String, String]
 }

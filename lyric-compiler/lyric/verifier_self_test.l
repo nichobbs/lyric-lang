@@ -1710,7 +1710,11 @@ test "a return or a field write in a loop body fails closed (#8102)" {
     "V0026",
     "return-in-body"
   )
-  assertFailsClosed("record P {\n  var x: Int\n}\nfunc f(p: in P): Int\n{\n  p.x = 1\n  0\n}\n", "V0026", "field-write")
+  assertFailsClosed(
+    "ref record P {\n  var x: Int\n}\nfunc f(p: in P): Int\n{\n  p.x = 1\n  0\n}\n",
+    "V0026",
+    "field-write"
+  )
 }
 
 test "a branch's facts stay on that branch (#8102)" {
@@ -2732,7 +2736,7 @@ test "a @pure call over a closure, a collection or a protected object is its own
   // `read`'s two-statement body is not unfolded, so only congruence could
   // make the two calls equal.
   assertRefuted(
-    "record Cell {\n  var v: Int\n}\n@pure\nfunc read(c: in Cell): Int {\n  val w = c.v\n  w\n}\n" +
+    "ref record Cell {\n  var v: Int\n}\n@pure\nfunc read(c: in Cell): Int {\n  val w = c.v\n  w\n}\n" +
       "func f(c: in Cell): Bool\n  ensures: result\n{\n  read(c) == read(c)\n}\n",
     "mutable-record-argument"
   )
@@ -3162,7 +3166,7 @@ test "a source type named like a built-in sort is never the built-in (#8109)" {
     "record-named-tuple-with-a-list"
   )
   assertRefuted(
-    "record Tuple {\n  var n: Int\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val k = t.n\n  k\n}\n" +
+    "ref record Tuple {\n  var n: Int\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val k = t.n\n  k\n}\n" +
       "func f(t: in Tuple): Bool\n  ensures: result\n{\n  size(t) == size(t)\n}\n",
     "record-named-tuple"
   )
@@ -3216,7 +3220,7 @@ test "values that may hold a function are never compared (#8109)" {
 }
 
 test "an equality that compares by identity or over a type parameter fails closed (#8109)" {
-  val cell = "record Cell {\n  var v: Int\n}\n"
+  val cell = "ref record Cell {\n  var v: Int\n}\n"
   assertUntranslatable(
     cell + "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
     "mutable-record"
@@ -3254,7 +3258,7 @@ test "an equality that compares by identity or over a type parameter fails close
     "interface-value"
   )
   assertDischarged(
-    "@derive(Equals)\nrecord Cell {\n  var v: Int\n}\n" +
+    "@derive(Equals)\nref record Cell {\n  var v: Int\n}\n" +
       "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
     "mutable-record-deriving-equals"
   )

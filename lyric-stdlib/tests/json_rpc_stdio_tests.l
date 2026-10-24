@@ -23,7 +23,7 @@ import Std.JsonRpc
 import Std.JsonRpc.Stdio
 
 // ── In-memory stand-ins ──────────────────────────────────────────────────────
-pub record CharSource {
+pub ref record CharSource {
   var text: String
   var pos: Int
 }
@@ -42,7 +42,7 @@ impl CharReader for CharSource {
   }
 }
 
-pub record LineSource {
+pub ref record LineSource {
   var lines: List[String]
   var pos: Int
 }
@@ -59,7 +59,7 @@ impl LineReader for LineSource {
   }
 }
 
-pub record Sink {
+pub ref record Sink {
   var written: String
 }
 
@@ -69,7 +69,7 @@ impl StringWriter for Sink {
   }
 }
 
-pub record LineSink {
+pub ref record LineSink {
   var lines: List[String]
 }
 
@@ -336,7 +336,7 @@ test "NDJSON: a line above the 16 MiB limit is rejected" {
 // Hands out `chunks` one per read. Once they run out: end of stream when
 // `ended`, otherwise the peer is silent — `readWithin` sleeps out its budget
 // and times out, and `read` (which would block forever) fails the test.
-pub record ChunkSource {
+pub ref record ChunkSource {
   var chunks: List[String]
   var ended: Bool
   var budgets: List[Int]
@@ -597,7 +597,7 @@ impl RpcHandler for NoopHandler {
 // layer a surrogate pair, or a malformed lone or reversed surrogate.  A pair
 // decodes to one supplementary-plane code point; an unpaired surrogate
 // becomes U+FFFD (3 UTF-8 bytes) instead of an invalid UTF-16 string.
-pub record CodeUnitSource {
+pub ref record CodeUnitSource {
   var units: List[Int]
   var pos: Int
 }

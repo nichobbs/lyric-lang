@@ -1621,7 +1621,8 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
     whereClause = rewriteWhereClauseOpt(aliases, rd.whereClause),
     members = ms,
     span = rd.span,
-    isForeign = rd.isForeign
+    isForeign = rd.isForeign,
+    isRef = rd.isRef
   )
 }
 

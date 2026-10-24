@@ -2869,7 +2869,14 @@ func protectedAsRecord(pd: in ProtectedTypeDecl): RecordDecl {
       case PMFunc(fn) -> members.add(RMFunc(fn = fn))
     }
   }
-  RecordDecl(name = pd.name, generics = pd.generics, whereClause = pd.whereClause, members = members, span = pd.span)
+  RecordDecl(
+    name = pd.name,
+    generics = pd.generics,
+    whereClause = pd.whereClause,
+    members = members,
+    span = pd.span,
+    isRef = true
+  )
 }
 
 func annotationsWithout(anns: in List[Annotation], name: in String): List[Annotation] {

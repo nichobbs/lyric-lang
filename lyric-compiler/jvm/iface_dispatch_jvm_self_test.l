@@ -268,7 +268,7 @@ test "impl ExternInterface for Record with a slice[Byte] (primitive-element) ret
 // method (`update(byte[] b, int off, int len)`).
 extern type JChecksum = "java.util.zip.Checksum"
 
-record SliceIfacePrimitiveChecksum {
+ref record SliceIfacePrimitiveChecksum {
   var sum: Int
 }
 

@@ -27,7 +27,7 @@ package Lyric.SelfFieldReassignJvmSelfTest
 import Std.Core
 import Std.Testing
 
-record Acc {
+ref record Acc {
   var total: Int
   var seen: Int
 }

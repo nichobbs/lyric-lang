@@ -3440,7 +3440,8 @@ func elaborateRecordDecl(
     whereClause = decl.whereClause,
     members = members,
     span = decl.span,
-    isForeign = decl.isForeign
+    isForeign = decl.isForeign,
+    isRef = decl.isRef
   )
 }
 

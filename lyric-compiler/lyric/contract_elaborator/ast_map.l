@@ -229,7 +229,8 @@ func mapRecordDecl(decl: in RecordDecl, m: in AstMapper): RecordDecl {
     whereClause = decl.whereClause,
     members = members,
     span = decl.span,
-    isForeign = decl.isForeign
+    isForeign = decl.isForeign,
+    isRef = decl.isRef
   )
 }
 

@@ -100,7 +100,7 @@ func one(name: in String, v: in JsonValue): JsonValue {
   JObject(fields = fields)
 }
 
-pub record SecretsProvider {
+pub ref record SecretsProvider {
   var served: Int
 }
 

@@ -19,7 +19,7 @@ import Game.Run
 import Breakout
 
 /// Loaded art, filled in on the first frame.
-pub record Art {
+pub ref record Art {
   assetDir: String
   fontPath: String
   var loaded: Bool

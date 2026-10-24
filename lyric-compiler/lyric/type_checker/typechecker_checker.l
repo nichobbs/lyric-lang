@@ -4582,6 +4582,18 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
         if decl.isForeign {
           checkForeignRecordDecl(tbl, diag, decl)
         }
+        if not decl.isRef and not decl.isForeign and recordDeclHasVarField(decl) {
+          diag.add(
+            warningDiagnostic(
+              "W0031",
+              "record '" + decl.name +
+                "' has `var` fields, so it has identity and is shared on assignment; declare it `ref record " +
+                decl.name +
+                "` (D222)",
+              decl.span
+            )
+          )
+        }
         checkRecordDeclTypes(tbl, diag, decl)
         checkRecordArithDerives(diag, items[i].annotations, decl)
         checkArrayFieldDerives(
