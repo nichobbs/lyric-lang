@@ -1098,9 +1098,14 @@ func wireDoc(visStr: in String, wd: in WireDecl, ctx: inout FmtCtx): List[String
         val tyStr = match ty { case Some(t) -> ": " + typeStr(t); case None -> "" }
         mLines.add("val " + n + tyStr + " = " + exprInline(0, init))
       }
-      case WMContributes(iface, n, init, ordering, isSealed, _) -> {
+      case WMContributes(iface, n, init, ordering, isSealed, form, _) -> {
         val sealedStr = if isSealed { "sealed " } else { "" }
-        mLines.add(sealedStr + "contributes[" + typeStr(iface) + "] " + n + " = " + exprInline(0, init))
+        val formStr = match form {
+          case CFSingle -> ""
+          case CFEach -> "each "
+          case CFKeyed(k, _) -> "key \"" + escapeStr(k) + "\" "
+        }
+        mLines.add(sealedStr + "contributes[" + typeStr(iface) + "] " + formStr + n + " = " + exprInline(0, init))
         var oi = 0
         while oi < ordering.count {
           mLines.add("  " + wireOrderingStr(ordering[oi]))

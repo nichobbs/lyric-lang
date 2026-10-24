@@ -1915,6 +1915,7 @@ func parseContributesMember(st: inout ParseState, startSpan: in Span, isSealed: 
       emitErr(st, "P0334", "expected ']' to close 'contributes[…]'", peekSpan(st))
     }
   }
+  val form = parseContribForm(st)
   val ns = readIdent(st, "contributes entry")
   match tryEatPunct(st, Eq) {
     case Some(_) -> {
@@ -1931,8 +1932,66 @@ func parseContributesMember(st: inout ParseState, startSpan: in Span, isSealed: 
     init = init,
     ordering = ordering,
     isSealed = isSealed,
+    form = form,
     span = joinSpans(startSpan, lastSpan(st))
   )
+}
+
+// The optional `each` / `key "k"` marker between `contributes[T]` and the
+// entry name (docs/69 §14).  Both words are contextual: followed by `=` they
+// are the entry's own name (`contributes[T] each = …`), not a marker.  The
+// two forms do not combine (P0349): a keyed entry is one value under one
+// key, while an `each` block has no single value to key.
+func parseContribForm(st: inout ParseState): ContribForm {
+  var form: ContribForm = CFSingle
+  var seen = false
+  var scanning = true
+  while scanning {
+    val w = identStr(peekToken(st))
+    val isMarker = (w == "each" or w == "key") and not isPunct(peekAt(st, 1).token, Eq)
+    if not isMarker {
+      scanning = false
+    } else {
+      val markTok = advance(st)
+      var next: ContribForm = CFEach
+      var ok = true
+      if w == "key" {
+        val litTok = peek(st)
+        match litTok.token {
+          case TString(k) -> {
+            val _ = advance(st)
+            next = CFKeyed(key = k, keySpan = litTok.span)
+          }
+          case TStringStart -> {
+            val bad = parseExpr(st)
+            emitErr(st, "P0348", "a contributes key must be a plain string literal, without interpolation", bad.span)
+            ok = false
+          }
+          case _ -> {
+            emitErr(
+              st,
+              "P0348",
+              "expected a string literal after 'key' in a contributes entry (`contributes[T] key \"name\" entry = …`)",
+              litTok.span
+            )
+            ok = false
+          }
+        }
+      }
+      if seen {
+        emitErr(
+          st,
+          "P0349",
+          "a contributes entry cannot combine 'each' and 'key'; contribute keyed values one entry at a time",
+          joinSpans(markTok.span, lastSpan(st))
+        )
+      } else if ok {
+        form = next
+      }
+      seen = true
+    }
+  }
+  form
 }
 
 // `Name { field = value, ... }` config-override adjustment body.  The '{'

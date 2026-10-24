@@ -1502,7 +1502,7 @@ func resolveWireMember(aliasTargets: in Map[String, TypeExpr], m: in WireMember)
       init = resolveExpr(aliasTargets, noGenerics, init),
       span = span
     )
-    case WMContributes(iface, name, init, ordering, isSealed, span) -> WMContributes(
+    case WMContributes(iface, name, init, ordering, isSealed, form, span) -> WMContributes(
       iface = resolveTypeExpr(
         aliasTargets,
         noGenerics,
@@ -1516,6 +1516,7 @@ func resolveWireMember(aliasTargets: in Map[String, TypeExpr], m: in WireMember)
       ),
       ordering = ordering,
       isSealed = isSealed,
+      form = form,
       span = span
     )
     case WMInclude(path, aliasName, adjustments, hasBody, span) -> WMInclude(
