@@ -790,7 +790,7 @@ static int recv_more(TlsConn* t, const char* what) {
         return -1;
     }
     for (;;) {
-        int n = recv(t->s, (char*)t->in + t->in_len, (int)(t->in_cap - t->in_len), 0);
+        int n = lyric_win32_sock_recv(t->s, (char*)t->in + t->in_len, (int)(t->in_cap - t->in_len));
         if (n > 0) {
             t->in_len += (size_t)n;
             return 1;
