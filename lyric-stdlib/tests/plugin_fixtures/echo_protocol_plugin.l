@@ -34,10 +34,7 @@ func crashNow(): Unit {
 
 func main(): Int {
   while true {
-    val line = match readLine() {
-      case Ok(l) -> l
-      case Err(_) -> return 0
-    }
+    val line = match readLine() { case Ok(l) -> l; case Err(_) -> return 0 }
     if line == "exit" {
       return 0
     } else if line == "crash" {

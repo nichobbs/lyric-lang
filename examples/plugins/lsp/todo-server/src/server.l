@@ -99,10 +99,7 @@ func doneEdit(uri: in String, text: in String): JsonValue {
 
 func textDocumentUri(params: in Option[JsonValue]): Option[String] {
   match params {
-    case Some(p) -> match getField(p, "textDocument") {
-      case Some(td) -> getString(td, "uri")
-      case None -> None
-    }
+    case Some(p) -> match getField(p, "textDocument") { case Some(td) -> getString(td, "uri"); case None -> None }
     case None -> None
   }
 }
@@ -136,7 +133,10 @@ impl RpcHandler for Server {
       )
       return Ok(
         value = obj(
-          [field("capabilities", caps), field("serverInfo", obj([field("name", str("todo-lsp")), field("version", str("1.0.0"))]))]
+          [
+            field("capabilities", caps),
+            field("serverInfo", obj([field("name", str("todo-lsp")), field("version", str("1.0.0"))]))
+          ]
         )
       )
     }
@@ -151,7 +151,10 @@ impl RpcHandler for Server {
       }
       val uri = match getArray(p, "arguments") {
         case Some(args) -> if args.count == 1 {
-          match args[0] { case JString(s) -> s; case _ -> return Err(error = badParams("the argument is a URI")) }
+          match args[0] {
+            case JString(s) -> s
+            case _ -> return Err(error = badParams("the argument is a URI"))
+          }
         } else {
           return Err(error = badParams("todo.markDone takes one URI"))
         }
@@ -163,7 +166,11 @@ impl RpcHandler for Server {
       }
       var peer = match self.peer { case Some(pr) -> pr; case None -> return Err(error = badParams("not connected")) }
       return match call(peer, "workspace/applyEdit", Some(value = doneEdit(uri, text))) {
-        case Ok(answer) -> Ok(value = obj([field("applied", JBool(value = unwrapOr(getBool(answer, "applied"), false)))]))
+        case Ok(answer) -> Ok(
+          value = obj(
+            [field("applied", JBool(value = unwrapOr(getBool(answer, "applied"), false)))]
+          )
+        )
         case Err(e) -> Err(error = e)
       }
     }

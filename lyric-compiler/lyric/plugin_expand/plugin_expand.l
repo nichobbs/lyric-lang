@@ -3453,7 +3453,9 @@ func capabilityText(c: in IfaceModel, pkg: in String, g: in Gen): String {
   l.add("}")
   l.add("")
   for m in c.methods {
-    l.add(stubMethodText(c.name + "As", m, "callCapabilityAs(__stub.host, __stub.pluginId, ", "cap/" + id + "/" + m.name, g))
+    l.add(
+      stubMethodText(c.name + "As", m, "callCapabilityAs(__stub.host, __stub.pluginId, ", "cap/" + id + "/" + m.name, g)
+    )
   }
   joinLines(l)
 }
@@ -3530,7 +3532,10 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
   }
   if p.kind == "protocol" {
     l.add("/// Open a supervised session with protocol plugin `pluginId` for " + p.name + ".")
-    l.add("pub func open" + p.name + "Session(host: in PluginHost, pluginId: in String): Result[ProtocolSession, BoundaryError] {")
+    l.add(
+      "pub func open" + p.name +
+        "Session(host: in PluginHost, pluginId: in String): Result[ProtocolSession, BoundaryError] {"
+    )
     l.add("  openProtocolSession(host, " + lit(id) + ", pluginId)")
     l.add("}")
     l.add("")

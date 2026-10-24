@@ -56,4 +56,5 @@ pub exposed record LanguageContributions {
 }
 
 @protocol_point(protocol = "lsp/3.17", version = "1.0", contributions = LanguageContributions, allows(WorkspaceEdit))
-pub interface LanguageServer {}
+pub interface LanguageServer {
+}

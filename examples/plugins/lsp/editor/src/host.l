@@ -145,7 +145,10 @@ func applied(ok: in Bool, reason: in String): JsonValue {
 func routeApplyEdit(client: in Client, params: in Option[JsonValue]): JsonValue {
   val changes = match params {
     case Some(p) -> match getField(p, "edit") {
-      case Some(edit) -> match getField(edit, "changes") { case Some(c) -> c; case None -> return applied(false, "no changes") }
+      case Some(edit) -> match getField(edit, "changes") {
+        case Some(c) -> c
+        case None -> return applied(false, "no changes")
+      }
       case None -> return applied(false, "no edit")
     }
     case None -> return applied(false, "no params")
@@ -166,14 +169,9 @@ func routeApplyEdit(client: in Client, params: in Option[JsonValue]): JsonValue 
       case _ -> return applied(false, "the edits of " + d.name + " are not an array")
     }
     match workspace.applyEdit(DocumentEdit(uri = d.name, edits = edits)) {
-      case Ok(done) -> if not done {
-        return applied(false, "the editor declined the edit to " + d.name)
-      }
+      case Ok(done) -> if not done { return applied(false, "the editor declined the edit to " + d.name) }
       case Err(e) -> {
-        val reason = match e {
-          case App(msg) -> msg
-          case Boundary(b) -> boundaryErrorMessage(b)
-        }
+        val reason = match e { case App(msg) -> msg; case Boundary(b) -> boundaryErrorMessage(b) }
         client.lastFailure = reason
         return applied(false, reason)
       }
@@ -218,7 +216,14 @@ func check(report: in Report, ok: in Bool, label: in String): Unit {
 }
 
 func didOpen(peer: inout RpcPeer, uri: in String, text: in String): Unit {
-  val doc = obj([field("uri", str(uri)), field("languageId", str("plaintext")), field("version", JInt(value = 1i64)), field("text", str(text))])
+  val doc = obj(
+    [
+      field("uri", str(uri)),
+      field("languageId", str("plaintext")),
+      field("version", JInt(value = 1i64)),
+      field("text", str(text))
+    ]
+  )
   val _ = notify(peer, "textDocument/didOpen", Some(value = obj([field("textDocument", doc)])))
 }
 
@@ -285,7 +290,9 @@ func run(pluginsDir: in String): Int {
   // workspace/applyEdit request, so the client serves requests while it waits.
   setServeDuringCall(peer, true)
 
-  val init = obj([field("processId", JNull), field("rootUri", str("file:///workspace/")), field("capabilities", obj([]))])
+  val init = obj(
+    [field("processId", JNull), field("rootUri", str("file:///workspace/")), field("capabilities", obj([]))]
+  )
   match call(peer, "initialize", Some(value = init)) {
     case Ok(v) -> {
       val commands = match getField(v, "capabilities") {
@@ -297,7 +304,10 @@ func run(pluginsDir: in String): Int {
       }
       var found = false
       for c in commands {
-        match c { case JString(s) -> if s == "todo.markDone" { found = true }; case _ -> () }
+        match c {
+          case JString(s) -> if s == "todo.markDone" { found = true }
+          case _ -> ()
+        }
       }
       check(report, found, "initialize: the server offers todo.markDone")
     }
@@ -317,7 +327,11 @@ func run(pluginsDir: in String): Int {
   didOpen(peer, outsideDoc, unwrapOr(mapGet(workspace.documents, outsideDoc), ""))
   check(report, answered(markDone(peer, outsideDoc), false), "an edit outside the grant is refused")
   check(report, Str.contains(client.lastFailure, "denied"), "by the capability's requires: guard")
-  check(report, unwrapOr(mapGet(workspace.documents, outsideDoc), "") == "TODO: not yours\n", "the document is unchanged")
+  check(
+    report,
+    unwrapOr(mapGet(workspace.documents, outsideDoc), "") == "TODO: not yours\n",
+    "the document is unchanged"
+  )
 
   revokeCapability(host, session.pluginId, "Editor.Lang.WorkspaceEdit")
   workspace.documents.add(workspaceDoc, "TODO again\n")

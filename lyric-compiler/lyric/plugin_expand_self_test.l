@@ -695,7 +695,11 @@ test "a protocol point without members is clean" {
   val r = expandOne(head() + "@protocol_point(protocol = \"lsp/3.17\")\npub interface L {\n}\n")
   expectClean(r, "protocol point")
   expectFunc(r, "lPointInfo", "lPointInfo(): PluginPointInfo")
-  expectFunc(r, "openLSession", "openLSession(host: PluginHost, pluginId: String): Result[ProtocolSession, BoundaryError]")
+  expectFunc(
+    r,
+    "openLSession",
+    "openLSession(host: PluginHost, pluginId: String): Result[ProtocolSession, BoundaryError]"
+  )
 }
 
 test "K0012: a plugin package that declares main" {

@@ -222,10 +222,7 @@ func crash(session: in ProtocolSession): Unit {
 
 func isProtocolError(r: in Result[JsonValue, BoundaryError]): Bool {
   match r {
-    case Err(b) -> match b {
-      case Protocol(_) -> true
-      case _ -> false
-    }
+    case Err(b) -> match b { case Protocol(_) -> true; case _ -> false }
     case Ok(_) -> false
   }
 }

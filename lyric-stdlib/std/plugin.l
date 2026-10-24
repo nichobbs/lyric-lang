@@ -2414,7 +2414,9 @@ func plHostCall(st: inout PluginProcessState, method: in String, params: in Json
     case None -> return Err(error = Unsupported(method = method))
     case Some(info) -> if isSome(info.protocol) {
       return Err(
-        error = Protocol(detail = "'" + pointId + "' is a protocol point; open it with openProtocolSession, not callPlugin")
+        error = Protocol(
+          detail = "'" + pointId + "' is a protocol point; open it with openProtocolSession, not callPlugin"
+        )
       )
     }
   }
@@ -2542,7 +2544,9 @@ pub func revokeCapability(host: in PluginHost, id: in String, capability: in Str
 }
 
 // The state of protocol plugin `pluginId` for protocol point `pointId`.
-func plProtocolState(host: in PluginHost, pointId: in String, pluginId: in String): Result[PluginProcessState, BoundaryError] {
+func plProtocolState(
+  host: in PluginHost, pointId: in String, pluginId: in String
+): Result[PluginProcessState, BoundaryError] {
   val conn = match plFindConnection(host, pluginId) {
     case Some(c) -> c
     case None -> return Err(error = Unsupported(method = pointId))

@@ -681,11 +681,7 @@ func handleDuringCall(peer: inout RpcPeer, v: in JsonValue, waitId: in RpcId): O
           case CallMatch(r) -> {
             found = Some(value = r)
           }
-          case CallQueue -> if peer.serveDuringCall {
-            inbound.add(items[i])
-          } else {
-            peer.pendingQueue.add(items[i])
-          }
+          case CallQueue -> if peer.serveDuringCall { inbound.add(items[i]) } else { peer.pendingQueue.add(items[i]) }
           case CallIgnore -> ()
         }
         i = i + 1
