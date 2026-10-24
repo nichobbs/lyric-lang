@@ -115,4 +115,4 @@ LYRIC_WASMTIME="$wasmtime_dir/wasmtime" bash scripts/ci/plugin-protocol-e2e.sh "
 # hosts (the JVM host runs in the JVM job, which has JDK 22).
 make -C lyric-rt test-wasmhost WASMTIME_CAPI="$(bash scripts/ci/fetch-wasmtime-capi.sh)" WASM_TOOLS="$wt_dir/wasm-tools"
 WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" \
-  bash scripts/ci/plugin-component-e2e.sh "$lyric_bin" dotnet native
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/plugin-component-e2e.sh dotnet native

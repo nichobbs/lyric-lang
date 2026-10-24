@@ -3,9 +3,12 @@
 # plugin-component-e2e.sh — run lyric-stdlib/tests/plugin_component_e2e_tests.l:
 # a component plugin hosted in-process by Std.PluginWasm (docs/69 §9.3).
 #
-# Usage: plugin-component-e2e.sh <lyric-binary> <host-target>...
+# Usage: plugin-component-e2e.sh <host-target>...
 #
 #   host-target  dotnet | jvm | native  (one or more)
+#
+# The lyric binary is $LYRIC_BIN, else the AOT build
+# (bootstrap/src/Lyric.Cli.Aot/bin/$BUILD_CONFIG/net10.0/lyric).
 #
 # Builds lyric-stdlib/tests/plugin_fixtures/greeter_component.l as a wasm32
 # component into a fresh plugin directory, the in-process embedding
@@ -24,9 +27,7 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-usage="usage: plugin-component-e2e.sh <lyric-binary> <dotnet|jvm|native>..."
-LYRIC_BIN="${1:?$usage}"
-shift
+usage="usage: plugin-component-e2e.sh <dotnet|jvm|native>..."
 [ "$#" -gt 0 ] || { echo "$usage" >&2; exit 2; }
 for target in "$@"; do
   case "$target" in
@@ -37,10 +38,15 @@ done
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
+LYRIC_BIN="${LYRIC_BIN:-bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG:-Debug}/net10.0/lyric}"
 case "$LYRIC_BIN" in
   /*) ;;
   *) LYRIC_BIN="$REPO_ROOT/$LYRIC_BIN" ;;
 esac
+if [ ! -x "$LYRIC_BIN" ]; then
+  echo "::error::lyric binary not found at $LYRIC_BIN; cannot run the component plugin e2e" >&2
+  exit 1
+fi
 
 if [ -z "${WASI_SDK_PATH:-}" ] || [ -z "${WASM_TOOLS:-}" ] || [ -z "${LYRIC_WASI_ADAPTER:-}" ]; then
   # shellcheck source=scripts/ci/fetch-wasm-toolchain.sh

@@ -380,6 +380,52 @@ speaks the same protocol on its stdin and stdout, so the host code above does
 not change, but the plugin's only way to reach anything outside itself is a
 capability call, which the host's grants and guards control.
 
+### Running a component in the host's process
+
+A wasm module under `wasmtime run` is still a process per plugin, and a call
+that never returns keeps that process busy after the host gives up on it. A
+**component** payload runs inside the host instead: the plugin is built as a
+WIT-typed WebAssembly component (`--shape component`, Chapter 32), its point
+methods are the component's exports and its capabilities are the component's
+imports. A host opts in by giving its configuration the in-process runtime
+from `Std.PluginWasm`:
+
+```lyric
+import Std.Plugin
+import Std.PluginWasm
+
+val host = newPluginHost(
+  PluginHostConfig(
+    points = [noteToolPointInfo()],
+    providers = [storeProvider(store), logProvider(log)],
+    policy = NotesPolicy(),
+    componentRuntime = Some(value = inProcessWasmRuntime())
+  )
+)
+```
+
+Nothing else in the host changes: the generated remotes, the grant policy and
+the capability providers work as before, and a plugin that ships a component
+runs as one whenever `hasInProcessWasm()` is true. Each plugin gets its own
+store with no directories, environment or network (stderr is inherited, for
+its log), its memory is capped at `wasmMaxMemoryBytes`, and every call is
+bounded by `callTimeoutMs`. That bound is real: wasmtime's epoch interruption
+stops a component in the middle of a loop that never yields, the call returns
+`Timeout`, and the next call starts the plugin afresh. A trap (a panic, an
+out-of-memory) is `Crashed`, with the same restart backoff and `maxRestarts` as
+a process plugin.
+
+The runtime is a small C library, `lyric-rt/src/lyric_wasmhost.c`, over the
+wasmtime C API. It loads libwasmtime 49 when it is first used, from
+`$LYRIC_WASMTIME_LIB`, next to itself, or the loader path
+(`scripts/ci/fetch-wasmtime-capi.sh` downloads the pinned release). A native
+host links the runtime from `lyric_rt.a`; a dotnet or JVM host loads
+`liblyric_wasmhost.so` (built by `make -C lyric-rt wasmhost`) from
+`$LYRIC_WASMHOST_LIB`, from beside the program (on .NET), or from the loader
+path. When either library is missing, `hasInProcessWasm()` is false,
+`inProcessWasmUnavailableReason()` says which, and the host simply chooses
+another payload.
+
 ## Protocol plugins: hosting a language server
 
 Some plugins already speak a protocol of their own. A language server speaks
@@ -526,6 +572,10 @@ appendix B has the table. The ones you will meet first:
 ## What is not supported yet
 
 - A trusted in-process mode, plugin signing and a plugin registry (D207).
+- A process or wasm-module plugin that ignores the cancellation of a timed-out
+  call keeps its CPU until the host stops it (#8465); only a component plugin
+  is stopped at the timeout.
+- The in-process component runtime is not available on Windows hosts yet.
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.
 - The language server does not run the plugin pass, so the generated names
