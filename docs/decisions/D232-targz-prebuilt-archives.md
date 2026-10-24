@@ -1,4 +1,4 @@
-# D231 - `.tar.gz` prebuilt native library archives
+# D232 - `.tar.gz` prebuilt native library archives
 
 **Status:** accepted, implemented for `--target native` (docs/67 phase G3 follow-up, #8401 item 2); completes D192's
 archive formats

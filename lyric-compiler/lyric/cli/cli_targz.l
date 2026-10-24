@@ -7,7 +7,7 @@ import Std.Parse as Parse
 import Jvm.Deflate as Deflate
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `.tar.gz` prebuilt archives (docs/67 §6, D231): a gzip stream (RFC 1952) over
+// `.tar.gz` prebuilt archives (docs/67 §6, D232): a gzip stream (RFC 1952) over
 // a POSIX tar (ustar, pax and GNU long names), read in pure Lyric on top of
 // `Jvm.Deflate`.  Arithmetic stands in for bit operations so the seed compiler
 // builds this file.
