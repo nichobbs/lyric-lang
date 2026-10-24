@@ -288,9 +288,9 @@ func waitSlot(instance: Long, device: Long, slot: Slot): Bool {
   while slot.status == 0 - 1 and Time.nowEpochMillis() < deadline {
     wgpuInstanceProcessEvents(longToPtr(instance))
     if device != 0 {
-      // Blocks until the submitted work is done, so a slow device (a software
-      // rasteriser) is waited for rather than spun past.
-      val _ = wgpuDevicePoll(longToPtr(device), 1, nativeNullPtr())
+      // Non-blocking: a blocking poll would not return for a hung device, and the deadline
+      // could not end the wait.
+      val _ = wgpuDevicePoll(longToPtr(device), 0, nativeNullPtr())
     }
   }
   slot.status != 0 - 1
