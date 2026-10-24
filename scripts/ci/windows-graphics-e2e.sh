@@ -144,7 +144,9 @@ echo "$out" | grep -q "^golden: "
 echo "=== lyric-draw scene (G6) ==="
 build lyric-draw/examples/scene/lyric.toml "$work/scene"
 "$work/scene" lyric-draw/examples/scene/golden/scene-256x192.rgba
-"$work/scene" --stress
+# WARP, the runner's D3D12 software rasteriser, draws this frame several times slower than
+# lavapipe (about 140 ms against 22 ms), so the lavapipe ceiling does not apply here.
+LYRIC_DRAW_STRESS_BUDGET_MS=500 "$work/scene" --stress
 
 echo "=== lyric-game Breakout (G7) ==="
 example=lyric-game/examples/breakout

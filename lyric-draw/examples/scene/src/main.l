@@ -4,6 +4,8 @@
 //!   scene --update <golden.rgba>   write the rendered pixels as the new golden
 //!   scene --stress                 time a text-heavy 1280x720 frame (about 3000 glyphs)
 //! Fonts: LYRIC_TEXT_FONT_LATIN (DejaVu Sans) and LYRIC_TEXT_FONT_CJK (WenQuanYi Zen Hei).
+//! LYRIC_DRAW_STRESS_BUDGET_MS overrides the stress ceiling (100 ms, sized for lavapipe) on a
+//! slower rasteriser such as WARP.
 //! A software and a hardware rasteriser, and different FreeType versions, place edge pixels
 //! a little differently, so a pixel counts as differing past a per-channel tolerance and the
 //! run fails past a differing-pixel budget.
@@ -15,6 +17,7 @@ import Std.Console as Console
 import Std.Buffer as Buf
 import Std.Environment as Environment
 import Std.File as File
+import Std.Parse as Parse
 import Std.Time as Time
 import Std.Errors
 import Gpu
@@ -180,7 +183,7 @@ val stressHeight: Int = 720
 
 val stressFrames: Int = 10
 
-val stressBudgetMillis: Long = 100
+val defaultStressBudgetMillis: Long = 100
 
 // A text-heavy frame: a page of mixed Latin, Arabic and CJK text drawn ten times over, timed.
 func stress(d: Gpu.Device, lib: Text.TextLib, latin: String, cjk: String): Int {
@@ -218,6 +221,11 @@ func stress(d: Gpu.Device, lib: Text.TextLib, latin: String, cjk: String): Int {
   }
   val pixels = match Gpu.readPixels(d, target) { case Ok(b) -> b; case Err(e) -> return fail(e) }
   val perFrame = (Time.nowEpochMillis() - started) / stressFrames.toLong()
+  val budgetText = Environment.getVarOrDefault("LYRIC_DRAW_STRESS_BUDGET_MS", defaultStressBudgetMillis.toString())
+  val stressBudgetMillis = match Parse.parseOptLong(budgetText) {
+    case Some(ms) -> ms
+    case None -> return fail("LYRIC_DRAW_STRESS_BUDGET_MS is not a number of milliseconds: " + budgetText)
+  }
   Draw.releasePainter(painter)
   Gpu.releaseRenderTarget(target)
   for f in fonts {

@@ -43,7 +43,9 @@
    bridge) from pinned sources, the releases the Linux job's goldens come from, and runs the G4 to G7 examples:
    lyric-window's demo, lyric-gpu's compute, triangle, quad and window examples, lyric-text's shape, lyric-draw's
    scene and Breakout's headless replay and live run. wgpu renders through Direct3D 12 on WARP, and the offscreen
-   frames are compared with the Linux goldens at the same tolerances.
+   frames are compared with the Linux goldens at the same tolerances. D200's 100 ms stress-frame ceiling is a
+   lavapipe ceiling; WARP draws that frame in about 140 ms, so the Windows job sets
+   `LYRIC_DRAW_STRESS_BUDGET_MS=500` (the scene example's override, default 100).
 
 ## Not in this slice
 
