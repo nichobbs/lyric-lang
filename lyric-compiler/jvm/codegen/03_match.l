@@ -741,6 +741,17 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
   result
 }
 
+func listLiteralChoiceGenericArgs(ctx: in FuncCtx, e: in Expr): List[TypeExpr] {
+  match yieldedListLiteralElems(e) {
+    case Some(elems) -> if elems.count > 0 {
+      scrutineeGenericArgs(ctx, Expr(kind = EList(exprs = elems), span = e.span))
+    } else {
+      newList()
+    }
+    case None -> newList()
+  }
+}
+
 func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
   match scrutinee.kind {
     case EParen(inner) -> scrutineeGenericArgs(ctx, inner)
@@ -777,6 +788,10 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
         case None -> newList()
       }
     }
+    // An `if`/`match` choosing between list literals (#8516): the element
+    // type is inferred across every literal's elements, as for one.
+    case EIf(_, _, _, _) -> listLiteralChoiceGenericArgs(ctx, scrutinee)
+    case EMatch(_, _) -> listLiteralChoiceGenericArgs(ctx, scrutinee)
     case ECall(fn, callArgs) -> {
       match fn.kind {
         // Qualified-first resolution (#5976 follow-up): a bare-name-only

@@ -77,6 +77,7 @@ declare -A ECO_DEPS=(
   [forms]="generator-sdk"
   [ui]="generator-sdk forms auth resilience web ws"
   [testing]="cache mail storage feature-flags mq session"
+  [game]=""
 )
 
 # $1: "true" forces every entry to true (conservative fallback /

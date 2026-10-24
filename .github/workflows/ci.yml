@@ -6680,6 +6680,8 @@ jobs:
             deps: "generator-sdk forms auth resilience web ws"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
+          - id: game
+            deps: ""
     # NOTE (#6165 follow-up): the original per-library gate
     #   fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
     # fails to LOAD on this runner's workflow engine (object-indexing a
@@ -6977,6 +6979,16 @@ jobs:
         if: matrix.id == 'testing'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
+
+      - name: Set up Java 22 (game)
+        if: matrix.id == 'game'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+      - name: Run tests (game, dotnet and jvm)
+        if: matrix.id == 'game'
+        run: bash scripts/ci/game-managed-tests.sh
 
   # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
   # was the longest step, ~3 min, run after everything else) so it runs on
