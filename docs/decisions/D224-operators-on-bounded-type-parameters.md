@@ -56,9 +56,32 @@ generic body is checked once, over `T`, so it records none, and a specialisation
    substituted in the specialised body. Other bindings (a distinct type, a record) keep
    the call, which does not resolve; they are not supported yet (#8531).
 
-## Not changed
+## Overflow checking (resolved, #8532)
 
 Overflow checking (D163) of `+`, `-` and `*` is recorded from the checked result type,
-which is the type parameter in a generic body, so a generic `a + b` specialised at `Int`
-wraps where the same expression written at `Int` panics in a debug build. This is the
-behaviour of every erased operator in a generic body today; it is not widened here (#8532).
+which is the type parameter in a generic body, so at first a generic `a + b` specialised
+at `Int` wrapped where the same expression written at `Int` panics in a debug build.
+The owner decided that an operator-bounded generic must behave exactly as the same code
+written at the concrete type, per specialisation, so item 3 now also applies to a
+parameter bound by `Add`, `Sub` or `Mul` that a specialisation binds to `Int`, `Long`,
+`UInt`, `ULong` or `Byte`: that specialisation is type-checked again, the overflow sites
+(and compound-assignment temporaries) the check records on the specialised body are
+lowered on that function alone by `Lyric.ContractElaborator.lowerOverflowChecks`, and the
+build profile decides panic or wrap as for hand-written code. The semantics of D163 are
+unchanged, so this needs no new decision. A generic declared in the standard library is
+left alone (the standard library always wraps, D163 item 3); a generic restored from
+another package is checked in its declaring package's scope and follows the consumer's
+profile. This is backend independent: the rewrite runs in `Lyric.Pipeline` before any
+backend sees the file, and `scripts/ci/overflow-profile-e2e.sh` pins the debug panic and
+the release wrap of a generic `Add` on dotnet, the JVM and native.
+
+## Notes
+
+- A bound naming an interface is dropped from the restored (contract metadata) repr of a
+  generic function, as item 5 says; only built-in markers survive the round trip. A
+  consumer of a restored package therefore does not see an interface bound on the
+  generic, and T0108 is not raised for it at the call.
+- The operator-marker list is written three times because the packages cannot share a
+  helper (`operatorMarker` in the type checker, `isOperatorMarker` in `Lyric.Mono`,
+  `isBuiltinMarkerName` in `Lyric.ContractMeta`); `contract_meta_self_test.l` asserts that
+  they agree.

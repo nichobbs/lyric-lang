@@ -192,6 +192,81 @@ test "the docs sum example, specialised at several types" {
   assertEqual(toString(sum([3000000000u32, 1000000000u32])), "4000000000", "UInt")
 }
 
+func maxInt(): Int = 2147483647
+
+func minInt(): Int = -2147483648
+
+func maxLong(): Long = 9223372036854775807i64
+
+func minLong(): Long = -9223372036854775807i64 - 1i64
+
+func maxUInt(): UInt = 4294967295u32
+
+func maxULong(): ULong = 18446744073709551615u64
+
+func byteOf(v: in Byte): Byte = v
+
+// D163 (#8532): a specialisation at an integer type panics on overflow in a
+// debug build, as the same expression written at that type does.
+test "Add, Sub and Mul at Int and Long panic on overflow" {
+  assertPanicsWith("Int add", "arithmetic overflow: Int addition", { -> val _ = sum2(maxInt(), 1) })
+  assertPanicsWith("Int sub", "arithmetic overflow: Int subtraction", { -> val _ = diff2(minInt(), 1) })
+  assertPanicsWith("Int mul", "arithmetic overflow: Int multiplication", { -> val _ = scale2(65536, maxInt()) })
+  assertPanicsWith("Long add", "arithmetic overflow: Long addition", { -> val _ = sum2(maxLong(), 1i64) })
+  assertPanicsWith("Long sub", "arithmetic overflow: Long subtraction", { -> val _ = diff2(minLong(), 1i64) })
+  assertPanicsWith("Long mul", "arithmetic overflow: Long multiplication", { -> val _ = scale2(maxLong(), 2i64) })
+}
+
+test "Add, Sub and Mul at UInt, ULong and Byte panic on overflow" {
+  assertPanicsWith("UInt add", "arithmetic overflow: UInt addition", { -> val _ = sum2(maxUInt(), 1u32) })
+  assertPanicsWith("UInt sub", "arithmetic overflow: UInt subtraction", { -> val _ = diff2(0u32, maxUInt()) })
+  assertPanicsWith("UInt mul", "arithmetic overflow: UInt multiplication", { -> val _ = scale2(maxUInt(), 2u32) })
+  assertPanicsWith("ULong add", "arithmetic overflow: ULong addition", { -> val _ = sum2(maxULong(), 1u64) })
+  assertPanicsWith("ULong sub", "arithmetic overflow: ULong subtraction", { -> val _ = diff2(1u64, 2u64) })
+  assertPanicsWith("ULong mul", "arithmetic overflow: ULong multiplication", { -> val _ = scale2(maxULong(), 2u64) })
+  assertPanicsWith("Byte add", "arithmetic overflow: Byte addition", { -> val _ = sum2(byteOf(200u8), 100u8) })
+  assertPanicsWith("Byte mul", "arithmetic overflow: Byte multiplication", { -> val _ = scale2(byteOf(16u8), 16u8) })
+}
+
+test "compound assignment and a body with other integer arithmetic panic on overflow" {
+  assertPanicsWith("Int +=", "arithmetic overflow: Int addition", { -> val _ = accumulate([maxInt()], 1) })
+  assertPanicsWith("Long +=", "arithmetic overflow: Long addition", { -> val _ = accumulate([maxLong()], 1i64) })
+  assertPanicsWith("UInt +=", "arithmetic overflow: UInt addition", { -> val _ = accumulate([maxUInt()], 1u32) })
+  assertPanicsWith("sum over Int", "arithmetic overflow: Int addition", { -> val _ = sum([maxInt(), 1]) })
+  assertPanicsWith(
+    "Int sub inside lerp",
+    "arithmetic overflow: Int subtraction",
+    { -> val _ = lerp(minInt(), maxInt()) }
+  )
+}
+
+test "operand order and a result at the limit are unchanged by the overflow check" {
+  assertEqualInt(sum2(maxInt() - 1, 1), maxInt(), "Int at the limit")
+  assertEqualInt(diff2(minInt() + 1, 1), minInt(), "Int at the lower limit")
+  assertEqual(toString(sum2(maxUInt() - 1u32, 1u32)), "4294967295", "UInt at the limit")
+  assertEqual(toString(scale2(byteOf(15u8), 17u8)), "255", "Byte at the limit")
+  assertEqualInt(sum2(-5, 3), -2, "negative operands")
+}
+
+alias Count = Int
+
+alias Wide = Long
+
+func addCounts(a: in Count, b: in Count): Count = sum2(a, b)
+
+func mulWide(a: in Wide, b: in Wide): Wide = scale2(a, b)
+
+test "a specialisation at an alias of an integer type panics on overflow" {
+  assertPanicsWith("alias of Int", "arithmetic overflow: Int addition", { -> val _ = addCounts(maxInt(), 1) })
+  assertPanicsWith("alias of Long", "arithmetic overflow: Long multiplication", { -> val _ = mulWide(maxLong(), 2i64) })
+}
+
+test "a distinct type over Int and a record keep their own operators" {
+  assertEqual(toString(sum2(Score.from(20), Score.from(22))), "42", "distinct")
+  val d = diff2(Pair2(a = 10, b = 20), Pair2(a = 1, b = 2))
+  assertEqualInt(d.a, 9, "record a")
+}
+
 test "compound assignment on a bounded type parameter" {
   assertEqual(toString(accumulate([4, 5], 1)), "10", "Int")
   assertEqual(toString(accumulate([Score.from(4), Score.from(5)], Score.from(1))), "10", "distinct")

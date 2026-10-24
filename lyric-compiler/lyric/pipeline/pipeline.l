@@ -1805,7 +1805,10 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  match finishValueRecords(lowerSpecArrays(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
+  // A specialisation is lowered in the consuming file, so whether its
+  // overflow checks apply follows the consumer's profile and package (the
+  // marker on `file0`), not the file the generic was declared in.
+  match finishValueRecords(lowerSpecArrays(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), specArrays, opts.primitiveArrays, not opts.arraysAsLists, not hasWrappingArith(file0)), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None
   }
@@ -1884,6 +1887,13 @@ pub record SpecArraySites {
   distinctOps: Map[String, String]
   distinctCompound: Map[String, String]
   recordArith: Map[String, RecordArithSite]
+  /// The `+`, `-`, `*` and unary `-` on `Int`, `Long`, `UInt`, `ULong` and
+  /// `Byte` the specialised body holds, which its generic body, checked over
+  /// a type parameter, could not record, so a specialisation at `Int` panics
+  /// on overflow in a debug build as the same code written at `Int` does
+  /// (D163, #8532).  Empty for the standard library, which always wraps.
+  overflow: Map[String, String]
+  overflowTemps: Map[String, CompoundTemps]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -2558,7 +2568,15 @@ func recheckSpecRound(
       // Only the generic's own file is lowered before monomorphisation, so
       // only there is a site the generic's check recorded already handled.
       val prior = if origin == "" { known } else { None }
-      val sa = specArraySitesOf(res.symbols, prior, lo, hi, cd.span.startPos.offset, cd.span.endPos.offset)
+      val sa = specArraySitesOf(
+        res.symbols,
+        prior,
+        lo,
+        hi,
+        cd.span.startPos.offset,
+        cd.span.endPos.offset,
+        not isStdOrigin(origin)
+      )
       if specArraySitesNonEmpty(sa) {
         arrAcc.add(sp.specName, sa)
       }
@@ -2566,6 +2584,9 @@ func recheckSpecRound(
     ri = ri + 1
   }
 }
+
+// The standard library's arithmetic always wraps (D163).
+func isStdOrigin(origin: in String): Bool = origin == "Std" or Str.startsWith(origin, "Std.")
 
 func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
   sa.arrays.index.count > 0 or sa.arrays.len.count > 0 or sa.arrays.slice.count > 0 or sa.arrays.forIter.count > 0 or
@@ -2581,7 +2602,8 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.valueUnionCtors.count > 0 or
     sa.distinctOps.count > 0 or
     sa.distinctCompound.count > 0 or
-    sa.recordArith.count > 0
+    sa.recordArith.count > 0 or
+    sa.overflow.count > 0
 }
 
 func specArraySitesOf(
@@ -2591,6 +2613,7 @@ func specArraySitesOf(
   hi: in Int,
   fnLo: in Int,
   fnHi: in Int,
+  withOverflow: in Bool,
 ): SpecArraySites {
   val none = newSymbolTable()
   val p = match prior { case Some(t) -> t; case None -> none }
@@ -2615,7 +2638,13 @@ func specArraySitesOf(
     valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi),
     distinctOps = siteSlice(syms.distinctOpSites, p.distinctOpSites, usePrior, lo, hi),
     distinctCompound = siteSlice(syms.distinctCompoundSites, p.distinctCompoundSites, usePrior, lo, hi),
-    recordArith = siteSlice(syms.recordArithSites, p.recordArithSites, usePrior, lo, hi)
+    recordArith = siteSlice(syms.recordArithSites, p.recordArithSites, usePrior, lo, hi),
+    overflow = if withOverflow { siteSlice(syms.overflowSites, p.overflowSites, usePrior, lo, hi) } else { newMap() },
+    overflowTemps = if withOverflow {
+      siteSlice(syms.overflowCompoundTemps, p.overflowCompoundTemps, usePrior, lo, hi)
+    } else {
+      newMap()
+    }
   )
 }
 
@@ -2693,6 +2722,7 @@ func lowerSpecArrays(
   specArrays: in Map[String, SpecArraySites],
   primitiveArrays: in Bool,
   unionPerLength: in Bool,
+  checkedArith: in Bool,
 ): SourceFile {
   if specArrays.count == 0 {
     return file
@@ -2719,7 +2749,7 @@ func lowerSpecArrays(
             lowerDistinctOps(oneFile, sa.distinctOps, sa.distinctCompound),
             sa.recordArith
           )
-          val lowered = lowerArrays(
+          val arraysDone = lowerArrays(
             lowerRecordEq(
               markValueUnionCtors(
                 markValueRecordCtors(withArrayLens(operatorsLowered, sa.lens), sa.valueCtors),
@@ -2731,6 +2761,7 @@ func lowerSpecArrays(
             ),
             arraySites
           )
+          val lowered = lowerOverflowChecks(arraysDone, sa.overflow, sa.overflowTemps, checkedArith)
           for li in lowered.items {
             items.add(li)
           }
@@ -3661,7 +3692,7 @@ func lowerValueRecordSpecs(
               )
             )
           } else {
-            val sa = specArraySitesOf(res.symbols, Some(value = known), lo, hi, lo, hi)
+            val sa = specArraySitesOf(res.symbols, Some(value = known), lo, hi, lo, hi, false)
             if specArraySitesNonEmpty(sa) {
               specArrays.add(vs.spec, sa)
             }
