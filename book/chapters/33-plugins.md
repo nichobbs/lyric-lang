@@ -286,7 +286,12 @@ func main(): Int {
   providers.add(storeProvider(NoteStore(loads = 0)))
   providers.add(logProvider(LineLog(lines = newList())))
   val host = newPluginHost(
-    PluginHostConfig(points = [noteToolPointInfo()], providers = providers, policy = NotesPolicy())
+    PluginHostConfig(
+      points = [noteToolPointInfo()],
+      providers = providers,
+      policy = NotesPolicy(),
+      trust = Some(value = trustKeys(publisherKeys()))
+    )
   )
   for issue in discoverPlugins(host, ["plugins"]) {
     println("not loaded: " + pluginLoadIssueMessage(issue))
@@ -318,7 +323,29 @@ point, `noteToolContributions` decodes each plugin's contributions, and
 mirror `NoteTool` with `CallError` errors.
 
 `discoverPlugins` reads every `<id>-<version>/plugin.json` under the given
-directories. A plugin that implements none of the host's points, was built
+directories. Each directory must be signed by a publisher the host trusts
+(see "Signing a plugin" below): `publisherKeys()` returns `TrustedKey`s from
+`Std.PluginSign`, each a publisher name and that publisher's public key,
+which the application ships the way it ships any other configuration:
+
+```lyric
+func publisherKeys(): List[TrustedKey] {
+  val keys: List[TrustedKey] = newList()
+  match parsePublicKey("lyric-ed25519:hcEkg2A6Xnfv9mQVZmFxq2BPNyq0TfUzkWSeGp5JlaI=") {
+    case Ok(k) -> keys.add(TrustedKey(publisher = "acme", publicKey = k))
+    case Err(e) -> panic(e)
+  }
+  keys
+}
+```
+
+An unsigned plugin is `K0105`; a key the host does not trust `K0106`; a
+plugin whose files changed after signing `K0108`; one whose manifest names
+another publisher than its key is trusted for `K0109`. A host without `trust`
+loads nothing it discovers. While developing, `trustKeysAllowingUnsigned`
+also loads directories with no `plugin.sig`, but never into the host's own
+process. A verified plugin's `PluginManifest.signer` tells the grant policy
+who signed it. A plugin that implements none of the host's points, was built
 against another major version of a point (`K0103`), or is refused by the
 policy is reported as a `PluginLoadIssue` and not loaded. Nothing starts until
 the first call: the host then launches the plugin, sends it the grants, and
@@ -381,7 +408,8 @@ built with a generated SDK; in CI, put the secret key's text in
 `LYRIC_PLUGIN_SIGNING_KEY` and leave out `--key`. File names in a signed
 artifact are printable ASCII, and links are not allowed. `lyric plugin verify`
 checks a signature the way a host will: a changed or added file is `K0108`,
-an unknown key `K0106`, a manifest naming another publisher `K0109`.
+an unknown key `K0106`, a manifest naming another publisher `K0109`. Hosts run
+the same check in `discoverPlugins`.
 
 ## Running a plugin as WebAssembly
 
@@ -768,9 +796,8 @@ appendix B has the table. The ones you will meet first:
 
 ## What is not supported yet
 
-- Hosts do not check signatures yet: `lyric plugin sign` and `verify` exist,
-  and load-time verification and per-application catalogues follow (D248).
-  Unloading a trusted plugin is not supported (D231).
+- Per-application plugin catalogues, from which a host installs signed
+  plugins, follow (D248). Unloading a trusted plugin is not supported (D231).
 - A widget plugin's point (`WidgetPlugin` 1.0) allows no capabilities.
 - A process or wasm-module plugin that ignores the cancellation of a timed-out
   call keeps its CPU until the host stops it (#8465); only a component plugin

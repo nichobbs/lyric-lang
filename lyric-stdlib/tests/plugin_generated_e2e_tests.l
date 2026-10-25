@@ -24,6 +24,9 @@ import Std.Path
 import Std.Process
 import Std.JsonValue
 import Std.Plugin
+import Std.PluginSign
+import Std.Ed25519
+import Std.Encoding
 
 pub record Note {
   title: String
@@ -178,11 +181,37 @@ impl GrantPolicy for NotesPolicy {
   }
 }
 
+// The example publisher key (examples/plugins/keys/example-publisher.key),
+// published in the repository for tests and examples only.
+func fixtureSeed(): slice[Byte] {
+  match tryDecodeHex("64273C35A61E9CDEDCD70ABF98B2086BA17A35A11E8B2B36E29787E0BB75DB7B") {
+    case Some(b) -> b
+    case None -> panic("bad fixture seed")
+  }
+}
+
+func fixtureTrust(): TrustPolicy {
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric", publicKey = ed25519PublicKey(fixtureSeed())))
+  trustKeys(keys)
+}
+
+func signDir(dir: in String): Unit {
+  match signArtifact(dir, fixtureSeed()) {
+    case Ok(sig) -> match writePluginSignature(dir, sig) {
+      case Ok(_) -> ()
+      case Err(msg) -> panic("could not write plugin.sig: " + msg)
+    }
+    case Err(problems) -> panic("could not sign " + dir + ": " + problems[0])
+  }
+}
+
 func discoveredHost(store: in NoteStore, log: in LineLog): PluginHost {
   match writeText(Std.Path.join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(probedManifest()))) {
     case Ok(_) -> ()
     case Err(e) -> panic("could not write plugin.json: " + IOError.message(e))
   }
+  signDir(fixtureDir())
   val providers: List[CapabilityProvider] = newList()
   providers.add(storeProvider(store))
   providers.add(logProvider(log))
@@ -191,6 +220,7 @@ func discoveredHost(store: in NoteStore, log: in LineLog): PluginHost {
       points = [noteToolPointInfo()],
       providers = providers,
       policy = NotesPolicy(),
+      trust = Some(value = fixtureTrust()),
       callTimeoutMs = 60000,
       startTimeoutMs = 60000
     )

@@ -717,20 +717,24 @@ pub func verifyArtifact(
     return Err(error = RevokedKey(keyId = sig.keyId))
   }
   val message = signedMessage(sig.sigType, sig.id, sig.version, sig.keyId, sig.files)
+  // One key may be trusted for several publisher names, so every entry for
+  // the key that verifies is kept and the manifest's publisher picks one.
   var named = false
-  var signer: Option[TrustedKey] = None
+  val verified: List[TrustedKey] = newList()
   for k in keys {
     if publicKeyId(k.publicKey) == sig.keyId {
       named = true
-      if signer.isNone() and ed25519Verify(k.publicKey, message, sig.signature) {
-        signer = Some(value = k)
+      if ed25519Verify(k.publicKey, message, sig.signature) {
+        verified.add(k)
       }
     }
   }
   if not named {
     return Err(error = UntrustedKey(keyId = sig.keyId))
   }
-  val key = match signer { case Some(k) -> k; case None -> return Err(error = BadSignature(keyId = sig.keyId)) }
+  if verified.count == 0 {
+    return Err(error = BadSignature(keyId = sig.keyId))
+  }
   val actual = match artifactListing(dir) {
     case Ok(fs) -> fs
     case Err(problems) -> return Err(error = ListingMismatch(details = problems))
@@ -759,17 +763,18 @@ pub func verifyArtifact(
       )
     )
   }
-  if identity.publisher != key.publisher {
-    return Err(
-      error = IdentityMismatch(
-        reason = "plugin.json's publisher '" + identity.publisher + "' is not '" + key.publisher +
-          "', the publisher key " +
-          sig.keyId +
-          " is trusted for"
-      )
-    )
+  for k in verified {
+    if k.publisher == identity.publisher {
+      return Ok(value = PluginSigner(publisher = k.publisher, keyId = sig.keyId))
+    }
   }
-  Ok(value = PluginSigner(publisher = key.publisher, keyId = sig.keyId))
+  var trustedFor = ""
+  for k in verified {
+    val sep = if trustedFor.length == 0 { "" } else { ", " }
+    trustedFor = trustedFor + sep + "'" + k.publisher + "'"
+  }
+  val reason = "plugin.json's publisher '" + identity.publisher + "' is not " + trustedFor
+  Err(error = IdentityMismatch(reason = reason + ", the publisher the key " + sig.keyId + " is trusted for"))
 }
 
 /// Checks `plugin.sig`'s structure and the listing without a key, for

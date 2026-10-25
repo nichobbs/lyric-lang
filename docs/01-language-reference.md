@@ -3971,15 +3971,16 @@ stdout; stderr is the plugin's log.
 ### 15.6 Hosting: `Std.Plugin`
 
 A host builds a `PluginHost` from the points it offers, a `CapabilityProvider`
-for each capability it serves and a `GrantPolicy`, then loads plugin
-directories:
+for each capability it serves, a `GrantPolicy` and the publisher keys it
+trusts, then loads plugin directories:
 
 ```lyric
 val host = newPluginHost(
   PluginHostConfig(
     points = [noteToolPointInfo()],
     providers = providers,          // storeProvider(store), logProvider(log)
-    policy = NotesPolicy()          // or GrantAllRequested()
+    policy = NotesPolicy(),         // or GrantAllRequested()
+    trust = Some(value = trustKeys(keys))   // TrustedKey(publisher, publicKey) list, Std.PluginSign
   )
 )
 val issues = discoverPlugins(host, ["plugins"])
@@ -3988,6 +3989,24 @@ for r in noteToolRemotes(host) {
 }
 stopAllPlugins(host)
 ```
+
+`discoverPlugins` verifies each directory's `plugin.sig` before reading its
+manifest (D248, §15.8 `sign`): the key it names must be one of
+`TrustPolicy.keys` and not in `revokedKeyIds`, the signature must verify,
+the files must match the signed listing, and `plugin.json`'s id, version and
+publisher must match the signature and the publisher the key is trusted for
+(one key may be listed for several publishers). A failure is a
+`PluginLoadIssue` with load code `K0105` (unsigned, or `plugin.sig`
+unreadable), `K0106` (untrusted key), `K0107` (bad signature), `K0108`
+(changed, added or removed files), `K0109` (id, version or publisher) or
+`K0110` (revoked key). A host without `trust` trusts no keys and so loads no
+discovered plugin. `trustKeysAllowingUnsigned(keys)` (or `allowUnsigned =
+true`) also loads a directory with no `plugin.sig` at all, for development:
+such a plugin has no signer and never runs in the host's process, and a
+damaged signature is still refused. A verified plugin's
+`PluginManifest.signer` holds its publisher and key id for the
+`GrantPolicy`; it is never read from `plugin.json`. `registerPlugin` does not
+look for a signature: its caller vouches for the plugin.
 
 `PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
 (10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`

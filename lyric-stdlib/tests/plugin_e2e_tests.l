@@ -31,6 +31,9 @@ import Std.Time
 import Std.JsonValue
 import Std.JsonRpc
 import Std.Plugin
+import Std.PluginSign
+import Std.Ed25519
+import Std.Encoding
 
 val greet: String = "Fixture.Api.Greeter/greet"
 
@@ -86,11 +89,38 @@ func probedManifest(): PluginManifest {
   }
 }
 
+// The example publisher key (examples/plugins/keys/example-publisher.key),
+// published in the repository for tests and examples only.
+func fixtureSeed(): slice[Byte] {
+  match tryDecodeHex("64273C35A61E9CDEDCD70ABF98B2086BA17A35A11E8B2B36E29787E0BB75DB7B") {
+    case Some(b) -> b
+    case None -> panic("bad fixture seed")
+  }
+}
+
+func fixtureKeys(): List[TrustedKey] {
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric", publicKey = ed25519PublicKey(fixtureSeed())))
+  keys
+}
+
+func signDir(dir: in String): Unit {
+  match signArtifact(dir, fixtureSeed()) {
+    case Ok(sig) -> match writePluginSignature(dir, sig) {
+      case Ok(_) -> ()
+      case Err(msg) -> panic("could not write plugin.sig: " + msg)
+    }
+    case Err(problems) -> panic("could not sign " + dir + ": " + problems[0])
+  }
+}
+
+// Writes the fixture's plugin.json and signs the fixture directory.
 func writeManifest(): Unit {
   match writeText(join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(probedManifest()))) {
     case Ok(_) -> ()
     case Err(e) -> panic("could not write plugin.json: " + IOError.message(e))
   }
+  signDir(fixtureDir())
 }
 
 // ── Host-side capabilities and policy ──────────────────────────────────────
@@ -183,11 +213,18 @@ func providers(secrets: in SecretsProvider): List[CapabilityProvider] {
 }
 
 func newHost(secrets: in SecretsProvider, callTimeoutMs: in Int, maxRestarts: in Int): PluginHost {
+  newHostTrusting(secrets, callTimeoutMs, maxRestarts, trustKeys(fixtureKeys()))
+}
+
+func newHostTrusting(
+  secrets: in SecretsProvider, callTimeoutMs: in Int, maxRestarts: in Int, trust: in TrustPolicy
+): PluginHost {
   newPluginHost(
     PluginHostConfig(
       points = [greeterPoint()],
       providers = providers(secrets),
       policy = AlphaOnlyPolicy(),
+      trust = Some(value = trust),
       callTimeoutMs = callTimeoutMs,
       startTimeoutMs = 60000,
       maxRestarts = maxRestarts,
@@ -284,7 +321,9 @@ test "discovery reports a broken manifest, skips a directory without one, and lo
     case Ok(_) -> ()
     case Err(e) -> panic("writeText: " + IOError.message(e))
   }
-  val host = newHost(SecretsProvider(served = 0), 30000, 3)
+  // The broken manifest is unsigned, so the host allows unsigned plugins to
+  // reach the manifest check.
+  val host = newHostTrusting(SecretsProvider(served = 0), 30000, 3, trustKeysAllowingUnsigned(fixtureKeys()))
   val issues = discoverPlugins(host, [root])
   val _ = deleteDirRecursive(broken)
   val _ = deleteDirRecursive(empty)
@@ -297,6 +336,80 @@ test "discovery reports a broken manifest, skips a directory without one, and lo
   assertEqual(issues[0].pluginId, "x.broken", "the issue names the plugin id it read")
   assertEqualInt(pluginManifests(host).count, 1, "the greeter still loads")
   stopAllPlugins(host)
+}
+
+// The single issue of discovering the fixture's catalogue directory.
+func onlyIssue(host: in PluginHost, label: in String): PluginLoadIssue {
+  val issues = discoverPlugins(host, [dirname(fixtureDir())])
+  assertEqualInt(issues.count, 1, label + ": one issue")
+  issues[0]
+}
+
+test "an unsigned plugin is refused (K0105) unless the host allows unsigned plugins" {
+  writeManifest()
+  val _ = deleteFile(join(fixtureDir(), "plugin.sig"))
+  val refusing = newHost(SecretsProvider(served = 0), 30000, 3)
+  val issue = onlyIssue(refusing, "unsigned")
+  assertEqual(pluginIssueCode(issue.kind), "K0105", "K0105: " + pluginLoadIssueMessage(issue))
+  assertEqual(issue.pluginId, "lyric.test.greeter", "the issue names the plugin")
+  assertEqualInt(pluginManifests(refusing).count, 0, "nothing is loaded")
+  val allowing = newHostTrusting(SecretsProvider(served = 0), 30000, 3, trustKeysAllowingUnsigned(fixtureKeys()))
+  val issues = discoverPlugins(allowing, [dirname(fixtureDir())])
+  assertEqualInt(issues.count, 0, "an allowing host loads it")
+  val ms = pluginManifests(allowing)
+  assertEqualInt(ms.count, 1, "one plugin")
+  assertTrue(isNone(ms[0].signer), "an unsigned plugin has no signer")
+  assertEqual(
+    okText(callPlugin(conn(allowing), greet, params("name", JString(value = "Ada"))), "unsigned greet"),
+    "hello, Ada",
+    "the unsigned plugin runs"
+  )
+  stopAllPlugins(allowing)
+  writeManifest()
+}
+
+test "a signed plugin carries its signer, and a changed or untrusted one is refused" {
+  val host = discoveredHost(SecretsProvider(served = 0), 30000, 3)
+  match pluginManifests(host)[0].signer {
+    case Some(s) -> {
+      assertEqual(s.publisher, "lyric", "the signer's publisher")
+      assertEqual(s.keyId, publicKeyId(ed25519PublicKey(fixtureSeed())), "the signer's key")
+    }
+    case None -> assertTrue(false, "a verified plugin has a signer")
+  }
+  stopAllPlugins(host)
+
+  // Another key: K0106.
+  val other: List[TrustedKey] = newList()
+  other.add(
+    TrustedKey(publisher = "lyric", publicKey = ed25519PublicKey(encodeUtf8("0123456789abcdef0123456789abcdef")))
+  )
+  val untrusting = newHostTrusting(SecretsProvider(served = 0), 30000, 3, trustKeys(other))
+  assertEqual(pluginIssueCode(onlyIssue(untrusting, "untrusted").kind), "K0106", "an untrusted key")
+
+  // A revoked key: K0110.
+  val revoked: List[String] = newList()
+  revoked.add(publicKeyId(ed25519PublicKey(fixtureSeed())))
+  val revoking = newHostTrusting(
+    SecretsProvider(served = 0),
+    30000,
+    3,
+    TrustPolicy(keys = fixtureKeys(), revokedKeyIds = revoked)
+  )
+  assertEqual(pluginIssueCode(onlyIssue(revoking, "revoked").kind), "K0110", "a revoked key")
+
+  // A file added after signing: K0108.
+  match writeText(join(fixtureDir(), "planted.txt"), "planted") {
+    case Ok(_) -> ()
+    case Err(e) -> panic(IOError.message(e))
+  }
+  val strict = newHost(SecretsProvider(served = 0), 30000, 3)
+  val changed = onlyIssue(strict, "changed")
+  assertEqual(pluginIssueCode(changed.kind), "K0108", "a planted file: " + pluginLoadIssueMessage(changed))
+  // An unsigned-allowing host still refuses a damaged signature.
+  val allowing = newHostTrusting(SecretsProvider(served = 0), 30000, 3, trustKeysAllowingUnsigned(fixtureKeys()))
+  assertEqual(pluginIssueCode(onlyIssue(allowing, "changed, allowing").kind), "K0108", "allowUnsigned is not a bypass")
+  val _ = deleteFile(join(fixtureDir(), "planted.txt"))
 }
 
 test "handshake and a point call" {

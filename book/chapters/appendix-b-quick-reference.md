@@ -1351,7 +1351,8 @@ lyric plugin pack --sign-key acme.key  # pack and sign in one step
 lyric plugin verify <dir> --key acme.pub [--publisher acme]   # K0105-K0109 on failure
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
                                        # generate a plugin SDK for an API package in another language
-lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
+lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet \
+  --sign-key examples/plugins/keys/example-publisher.key -o plugins
                                        # a lyric-ui widget plugin (Ui.Plugins.WidgetPlugin, D230, chapters 31 and 33);
                                        # a screen places it with Ui.PluginWidgets.placeWidget / widgetView and
                                        # runs its calls as effects with Ui.PluginWidgets.Host.runWidgetRequest
@@ -1756,7 +1757,7 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0013` | Component builds: a name crossing the component boundary does not survive the WIT round trip (`customer_id`, `getURL`), or two names become one WIT name. |
 | `K0014` | Component builds: a boundary type or plugin a component cannot carry (`UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a multi-field union case, a recursive type, a protocol point). |
 
-At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request), `K0103` (a point major-version mismatch), or a signature code from `discoverPlugins` (D248): `K0105` (unsigned or unreadable `plugin.sig`), `K0106` (untrusted key), `K0107` (bad signature), `K0108` (files changed since signing), `K0109` (id, version or publisher mismatch), `K0110` (revoked key), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

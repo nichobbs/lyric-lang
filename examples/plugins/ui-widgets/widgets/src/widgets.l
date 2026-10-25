@@ -13,7 +13,8 @@
 //! state it returns is JSON the host stores for it.  `Lyric.PluginExpand`
 //! generates its `main`, its manifest and the codecs.
 //!
-//!   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet,jvm -o <dir>
+//!   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet,jvm \
+//!     --sign-key examples/plugins/keys/example-publisher.key -o <dir>
 package Example.UiWidgets
 
 import Std.Core

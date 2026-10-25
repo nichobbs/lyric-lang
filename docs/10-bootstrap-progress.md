@@ -430,8 +430,8 @@ deferred to Phase 3 by design.
   catalogues are specced in D248 (phases P7 and P8). Shipped so far:
   `Std.Ed25519` (pure-Lyric Ed25519 on dotnet, the JVM and native),
   `Std.PluginSign` and `lyric plugin keygen`/`sign`/`verify`/`pack
-  --sign-key` (D263 narrows listing paths to printable ASCII). Hosts do not
-  verify signatures at load yet.
+  --sign-key` (D263 narrows listing paths to printable ASCII), and load-time
+  verification in `discoverPlugins` with `PluginHostConfig.trust` (D264).
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`

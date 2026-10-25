@@ -70,6 +70,7 @@ import Std.JsonRpc
 import Std.JsonRpc.Stdio
 import Std.PluginHost
 import Std.PanicGuardHost
+import Std.PluginSign
 import Std.String as Str
 import Std.Char as Ch
 import Std.Path as Path
@@ -446,6 +447,11 @@ pub union PluginPayload {
 
 /// A parsed `plugin.json` (schema 1). `required` and `optional` are the
 /// manifest's `capabilities.required` and `capabilities.optional` lists.
+/// `signer` is who signed the artifact, set by `discoverPlugins` once it has
+/// verified `plugin.sig` (D248); it is never read from `plugin.json`, and it
+/// is `None` for an unsigned plugin a host allowed and for a manifest given to
+/// `registerPlugin`. A `GrantPolicy` reads `signer`, not `publisher`, when the
+/// publisher matters to its decision.
 @experimental
 pub record PluginManifest {
   id: String
@@ -455,6 +461,7 @@ pub record PluginManifest {
   required: List[CapabilityRequest]
   optional: List[CapabilityRequest]
   payloads: List[PluginPayload]
+  signer: Option[PluginSigner] = None
 }
 
 /// Why a plugin was not loaded, or what is wrong with a loaded one. `K0101`,
@@ -492,6 +499,21 @@ pub union PluginIssueKind {
   // The policy marked the plugin trusted and the host chose its trusted
   // payload, but the library could not be loaded into the host's process.
   case TrustedLoadFailed
+  // K0105: the artifact has no `plugin.sig` and the host refuses unsigned
+  // plugins, its `plugin.sig` cannot be read or parsed, or an unsigned plugin
+  // ships only a trusted payload (D248).
+  case SignatureMissing
+  // K0106: the signing key is not one the host trusts.
+  case SigningKeyUntrusted
+  // K0107: the signature does not verify under the key it names.
+  case SignatureInvalid
+  // K0108: the files on disk do not match the signed listing.
+  case ArtifactFilesChanged
+  // K0109: `plugin.json`'s id, version or publisher does not match the
+  // signature or the key.
+  case ArtifactIdentityMismatch
+  // K0110: the signing key is revoked.
+  case SigningKeyRevoked
 }
 
 /// A plugin that was not loaded: what went wrong, where (the plugin
@@ -513,6 +535,12 @@ pub func pluginIssueCode(kind: in PluginIssueKind): String {
     case BadContributions -> "K0101"
     case GrantWider -> "K0102"
     case MajorVersionMismatch -> "K0103"
+    case SignatureMissing -> "K0105"
+    case SigningKeyUntrusted -> "K0106"
+    case SignatureInvalid -> "K0107"
+    case ArtifactFilesChanged -> "K0108"
+    case ArtifactIdentityMismatch -> "K0109"
+    case SigningKeyRevoked -> "K0110"
     case _ -> ""
   }
 }
@@ -1412,7 +1440,8 @@ pub func addPluginPayload(m: in PluginManifest, payload: in PluginPayload): Plug
     points = m.points,
     required = m.required,
     optional = m.optional,
-    payloads = payloads
+    payloads = payloads,
+    signer = m.signer
   )
 }
 
@@ -1734,6 +1763,7 @@ pub record PluginHostConfig {
   points: List[PluginPointInfo]
   providers: List[CapabilityProvider]
   policy: GrantPolicy
+  trust: Option[TrustPolicy] = None
   callTimeoutMs: Int = 60000
   startTimeoutMs: Int = 10000
   maxRestarts: Int = 3
@@ -1744,6 +1774,41 @@ pub record PluginHostConfig {
   wasmMaxMemoryBytes: Long = 268435456i64
   trustedLoader: Option[TrustedLoader] = None
   componentRuntime: Option[ComponentRuntime] = None
+}
+
+/// What a host requires of a discovered artifact's signature (D248 Decision
+/// 6). `keys` are the publisher keys it trusts, each for one publisher name;
+/// a key whose id is in `revokedKeyIds` is refused (K0110). With
+/// `allowUnsigned`, an artifact that has no `plugin.sig` at all loads with no
+/// signer, but only through a process, wasm or component payload; a damaged
+/// or untrusted signature is refused either way. `allowUnsigned` is for
+/// development: a host that ships to users leaves it off.
+@experimental
+pub record TrustPolicy {
+  keys: List[TrustedKey]
+  revokedKeyIds: List[String]
+  allowUnsigned: Bool = false
+}
+
+/// A policy with no trusted keys that refuses unsigned plugins: every
+/// discovered plugin is refused. What a host with no
+/// `PluginHostConfig.trust` applies.
+@experimental
+pub func trustNoKeys(): TrustPolicy {
+  TrustPolicy(keys = newList(), revokedKeyIds = newList(), allowUnsigned = false)
+}
+
+/// A policy trusting `keys`, refusing unsigned plugins.
+@experimental
+pub func trustKeys(keys: in List[TrustedKey]): TrustPolicy {
+  TrustPolicy(keys = keys, revokedKeyIds = newList(), allowUnsigned = false)
+}
+
+/// A development policy trusting `keys` that also loads plugins without a
+/// `plugin.sig`, never in the host's process.
+@experimental
+pub func trustKeysAllowingUnsigned(keys: in List[TrustedKey]): TrustPolicy {
+  TrustPolicy(keys = keys, revokedKeyIds = newList(), allowUnsigned = true)
 }
 
 /// Capabilities revoked from one plugin; shared by its process state and the
@@ -1866,9 +1931,18 @@ pub func discoverPlugins(host: in PluginHost, dirs: in List[String]): List[Plugi
           while i < sorted.count {
             val dir = sorted[i]
             if File.fileExists(Path.join(dir, "plugin.json")) {
-              match readPluginManifest(dir) {
+              match plVerifyArtifact(plTrustOf(host.config), dir) {
                 case Err(issue) -> issues.add(issue)
-                case Ok(m) -> match registerPlugin(host, m, dir) { case Some(issue) -> issues.add(issue); case None -> () }
+                case Ok(signer) -> match readPluginManifest(dir) {
+                  case Err(issue) -> issues.add(issue)
+                  case Ok(m) -> {
+                    val signed = plWithSigner(m, signer)
+                    match plRegister(host, signed, dir, isSome(signer)) {
+                      case Some(issue) -> issues.add(issue)
+                      case None -> ()
+                    }
+                  }
+                }
               }
             }
             i = i + 1
@@ -1879,6 +1953,75 @@ pub func discoverPlugins(host: in PluginHost, dirs: in List[String]): List[Plugi
     d = d + 1
   }
   issues
+}
+
+// The host's trust policy; with none it trusts no keys and refuses unsigned
+// plugins.
+func plTrustOf(config: in PluginHostConfig): TrustPolicy {
+  match config.trust {
+    case Some(t) -> t
+    case None -> trustNoKeys()
+  }
+}
+
+// The issue kind of a signature problem's load code.
+func plSignatureIssueKind(code: in String): PluginIssueKind {
+  if code == "K0106" {
+    SigningKeyUntrusted
+  } else if code == "K0107" {
+    SignatureInvalid
+  } else if code == "K0108" {
+    ArtifactFilesChanged
+  } else if code == "K0109" {
+    ArtifactIdentityMismatch
+  } else if code == "K0110" {
+    SigningKeyRevoked
+  } else {
+    SignatureMissing
+  }
+}
+
+// D248 Decision 6 steps 1-5 for one discovered directory: the signer, `None`
+// for an unsigned artifact the policy allows, or the issue that refuses it.
+func plVerifyArtifact(trust: in TrustPolicy, dir: in String): Result[Option[PluginSigner], PluginLoadIssue] {
+  match verifyArtifact(dir, trust.keys, trust.revokedKeyIds) {
+    case Ok(signer) -> Ok(value = Some(value = signer))
+    case Err(problem) -> {
+      val unsigned = match problem { case MissingSignature -> true; case _ -> false }
+      if unsigned and trust.allowUnsigned {
+        return Ok(value = None)
+      }
+      val id = plManifestIdOf(dir)
+      val message = if unsigned {
+        "the plugin is not signed, and this host loads only signed plugins"
+      } else {
+        signatureProblemMessage(problem)
+      }
+      Err(error = plIssue(plSignatureIssueKind(signatureProblemCode(problem)), dir, id, message))
+    }
+  }
+}
+
+// The `id` string of a directory's `plugin.json`, for naming a plugin in an
+// issue before its manifest has been validated; `""` when there is none.
+func plManifestIdOf(dir: in String): String {
+  match File.readText(Path.join(dir, "plugin.json")) {
+    case Ok(text) -> match parseValue(text) { case Ok(v) -> unwrapOr(getString(v, "id"), ""); case Err(_) -> "" }
+    case Err(_) -> ""
+  }
+}
+
+func plWithSigner(m: in PluginManifest, signer: in Option[PluginSigner]): PluginManifest {
+  PluginManifest(
+    id = m.id,
+    version = m.version,
+    publisher = m.publisher,
+    points = m.points,
+    required = m.required,
+    optional = m.optional,
+    payloads = m.payloads,
+    signer = signer
+  )
 }
 
 func plFindPoint(points: in List[PluginPointInfo], id: in String): Option[PluginPointInfo] {
@@ -2050,8 +2193,20 @@ impl BugGuarded for ServeCall {
 /// `K0102`), requires every required capability to be granted and every
 /// granted one to have a provider, and chooses the payload. The plugin
 /// itself is started on the first call.
+///
+/// `registerPlugin` does not look for `plugin.sig`: the caller vouches for
+/// the plugin it registers, such as one it has just built. Plugins found in
+/// directories go through `discoverPlugins`, which verifies them first.
 @experimental
 pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: in String): Option[PluginLoadIssue] {
+  plRegister(host, manifest, dir, true)
+}
+
+// `registerPlugin`, with `allowTrusted` false for an unsigned discovered
+// plugin, which never runs in the host's process (D248 Decision 6).
+func plRegister(
+  host: in PluginHost, manifest: in PluginManifest, dir: in String, allowTrusted: in Bool
+): Option[PluginLoadIssue] {
   val id = manifest.id
   var i = 0
   while i < host.plugins.count {
@@ -2154,7 +2309,18 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
     isSome(wasmtime),
     inProcess
   )
-  val trustedPayload = plTrustedCandidate(host.config, manifest, offered, platform)
+  val trustedCandidate = plTrustedCandidate(host.config, manifest, offered, platform)
+  if not allowTrusted and isNone(processPayload) and isSome(trustedCandidate) {
+    return Some(
+      value = plIssue(
+        SignatureMissing,
+        dir,
+        id,
+        "the plugin ships only a trusted payload for this host, and a plugin loaded into the host's process must be signed"
+      )
+    )
+  }
+  val trustedPayload = if allowTrusted { trustedCandidate } else { None }
   if isNone(processPayload) and isNone(trustedPayload) {
     return Some(value = plIssue(NoUsablePayload, dir, id, plNoPayloadMessage(host.config, manifest)))
   }

@@ -296,6 +296,19 @@ test "K0109: an identity that does not match" {
   val _ = deleteDirRecursive(dir)
 }
 
+test "a key trusted for several publishers verifies for any of them" {
+  val dir = artifact("multi")
+  signWith(dir, seedA())
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "other", publicKey = ed25519PublicKey(seedA())))
+  keys.add(TrustedKey(publisher = "acme", publicKey = ed25519PublicKey(seedA())))
+  match verifyArtifact(dir, keys, noRevocations()) {
+    case Ok(signer) -> assertEqual(signer.publisher, "acme", "the manifest's publisher is chosen")
+    case Err(p) -> panic(signatureProblemMessage(p))
+  }
+  val _ = deleteDirRecursive(dir)
+}
+
 test "parsePluginSignature refuses bad fields" {
   val good = "{\"schema\": 1, \"type\": \"ed25519\", \"keyId\": \"00112233445566778899aabbccddeeff\", " +
     "\"id\": \"a.b\", \"version\": \"1.0.0\", \"files\": [], \"signature\": \"" +

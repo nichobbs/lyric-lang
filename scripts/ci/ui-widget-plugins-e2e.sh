@@ -56,7 +56,8 @@ for manifest in lyric-ui/plugins/lyric.toml lyric-ui/plugins/build/lyric.toml ly
 done
 
 for manifest in examples/plugins/ui-widgets/widgets/lyric.toml lyric-ui/plugins/e2e/flaky/lyric.toml; do
-  "$LYRIC_BIN" plugin pack --manifest "$manifest" --targets "$PLUGIN_TARGET" -o "$plugins"
+  "$LYRIC_BIN" plugin pack --manifest "$manifest" --targets "$PLUGIN_TARGET" \
+    --sign-key examples/plugins/keys/example-publisher.key -o "$plugins"
 done
 rm -rf "$plugins/.lyric-pack-staging"
 for artifact in "$plugins"/*/; do

@@ -34,6 +34,9 @@ import Std.Time
 import Std.JsonValue
 import Std.Plugin
 import Std.Plugin.Trusted
+import Std.PluginSign
+import Std.Ed25519
+import Std.Encoding
 
 pub record Note {
   title: String
@@ -205,10 +208,44 @@ impl GrantPolicy for NotesPolicy {
   }
 }
 
-func newHost(store: in NoteStore, log: in LineLog, trusted: in Bool): PluginHost {
+// The example publisher key (examples/plugins/keys/example-publisher.key),
+// published in the repository for tests and examples only.
+func fixtureSeed(): slice[Byte] {
+  match tryDecodeHex("64273C35A61E9CDEDCD70ABF98B2086BA17A35A11E8B2B36E29787E0BB75DB7B") {
+    case Some(b) -> b
+    case None -> panic("bad fixture seed")
+  }
+}
+
+func fixtureTrust(): TrustPolicy {
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric", publicKey = ed25519PublicKey(fixtureSeed())))
+  trustKeys(keys)
+}
+
+func signDir(dir: in String): Unit {
+  match signArtifact(dir, fixtureSeed()) {
+    case Ok(sig) -> match writePluginSignature(dir, sig) {
+      case Ok(_) -> ()
+      case Err(msg) -> panic("could not write plugin.sig: " + msg)
+    }
+    case Err(problems) -> panic("could not sign " + dir + ": " + problems[0])
+  }
+}
+
+// A host with the fixture discovered. With `unsigned`, the fixture has no
+// plugin.sig and the host allows unsigned plugins (D248).
+func newHost(store: in NoteStore, log: in LineLog, trusted: in Bool, unsigned: in Bool = false): PluginHost {
   match writeText(Std.Path.join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(probedManifest()))) {
     case Ok(_) -> ()
     case Err(e) -> panic("could not write plugin.json: " + IOError.message(e))
+  }
+  signDir(fixtureDir())
+  val trust = if unsigned {
+    val _ = deleteFile(Std.Path.join(fixtureDir(), "plugin.sig"))
+    TrustPolicy(keys = fixtureTrust().keys, revokedKeyIds = newList(), allowUnsigned = true)
+  } else {
+    fixtureTrust()
   }
   val providers: List[CapabilityProvider] = newList()
   providers.add(storeProvider(store))
@@ -220,6 +257,7 @@ func newHost(store: in NoteStore, log: in LineLog, trusted: in Bool): PluginHost
       points = [noteToolPointInfo()],
       providers = providers,
       policy = NotesPolicy(trusted = trusted),
+      trust = Some(value = trust),
       callTimeoutMs = 60000,
       startTimeoutMs = 60000,
       trustedLoader = Some(value = loader)
@@ -290,6 +328,16 @@ test "a plugin the policy trusts runs in the host's own process" {
 test "a plugin the policy does not trust runs the same artifact in its own process" {
   val host = newHost(NoteStore(loads = 0), LineLog(lines = newList()), false)
   assertTrue(not isInProcess(host), "the process payload was chosen")
+  setVar("LYRIC_TRUSTED_E2E_PROBE", "before")
+  assertEqual(envOf(host, "LYRIC_TRUSTED_E2E_PROBE"), "before", "the first call starts the plugin process")
+  setVar("LYRIC_TRUSTED_E2E_PROBE", "after")
+  assertEqual(envOf(host, "LYRIC_TRUSTED_E2E_PROBE"), "before", "the plugin process kept its own environment")
+  stopAllPlugins(host)
+}
+
+test "an unsigned plugin the policy trusts still runs in its own process" {
+  val host = newHost(NoteStore(loads = 0), LineLog(lines = newList()), true, true)
+  assertTrue(not isInProcess(host), "an unsigned plugin is never loaded in process")
   setVar("LYRIC_TRUSTED_E2E_PROBE", "before")
   assertEqual(envOf(host, "LYRIC_TRUSTED_E2E_PROBE"), "before", "the first call starts the plugin process")
   setVar("LYRIC_TRUSTED_E2E_PROBE", "after")

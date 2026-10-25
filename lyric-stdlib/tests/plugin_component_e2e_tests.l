@@ -34,6 +34,9 @@ import Std.JsonValue
 import Std.JsonRpc
 import Std.Plugin
 import Std.PluginWasm
+import Std.PluginSign
+import Std.Ed25519
+import Std.Encoding
 
 val greet: String = "Fixture.Api.Greeter/greet"
 
@@ -194,12 +197,38 @@ func providers(count: in ServeCount): List[CapabilityProvider] {
   ps
 }
 
+// The example publisher key (examples/plugins/keys/example-publisher.key),
+// published in the repository for tests and examples only.
+func fixtureSeed(): slice[Byte] {
+  match tryDecodeHex("64273C35A61E9CDEDCD70ABF98B2086BA17A35A11E8B2B36E29787E0BB75DB7B") {
+    case Some(b) -> b
+    case None -> panic("bad fixture seed")
+  }
+}
+
+func fixtureTrust(): TrustPolicy {
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric", publicKey = ed25519PublicKey(fixtureSeed())))
+  trustKeys(keys)
+}
+
+func signDir(dir: in String): Unit {
+  match signArtifact(dir, fixtureSeed()) {
+    case Ok(sig) -> match writePluginSignature(dir, sig) {
+      case Ok(_) -> ()
+      case Err(msg) -> panic("could not write plugin.sig: " + msg)
+    }
+    case Err(problems) -> panic("could not sign " + dir + ": " + problems[0])
+  }
+}
+
 func newHost(count: in ServeCount, callTimeoutMs: in Int, maxRestarts: in Int): PluginHost {
   newPluginHost(
     PluginHostConfig(
       points = [greeterPoint()],
       providers = providers(count),
       policy = AlphaOnlyPolicy(),
+      trust = Some(value = fixtureTrust()),
       callTimeoutMs = callTimeoutMs,
       startTimeoutMs = 60000,
       maxRestarts = maxRestarts,
@@ -212,6 +241,7 @@ func newHost(count: in ServeCount, callTimeoutMs: in Int, maxRestarts: in Int): 
 
 // A host with the packed fixture discovered from its catalogue directory.
 func discoveredHost(count: in ServeCount, callTimeoutMs: in Int, maxRestarts: in Int): PluginHost {
+  signDir(fixtureDir())
   val host = newHost(count, callTimeoutMs, maxRestarts)
   val issues = discoverPlugins(host, [dirname(fixtureDir())])
   var i = 0
