@@ -125,6 +125,7 @@ for t in \
   lyric-compiler/lyric/version_self_test.l \
   lyric-compiler/lyric/cli_workspace_builder_self_test.l \
   lyric-compiler/lyric/cli_build_self_test.l \
+  lyric-compiler/lyric/cli_layers_self_test.l \
   lyric-compiler/lyric/native_image_self_test.l \
   lyric-compiler/lyric/cli_shared_self_test.l \
   lyric-compiler/lyric/cli_copydll_self_test.l \

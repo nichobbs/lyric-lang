@@ -50,19 +50,11 @@ func checkProjectLayers(
   // Erase `@cfg`-gated items as the build will, target pseudo-feature
   // included, so a gated-out `async func` is not reported.
   val active = Cfg.withTargetFeature(activeFeatures, targetFeatureName(target))
-  val files: List[Layers.LayerPackage] = newList()
-  for pkg in pkgs {
-    var i = 0
-    while i < pkg.sources.count {
-      val path = if i < pkg.paths.count and pkg.paths[i] != "" { pkg.paths[i] } else { pkg.name }
-      val pr = Parser.parse(pkg.sources[i])
-      // A file that does not parse is reported by the build that follows;
-      // checking its layers here would only add noise.
-      if pr.diagnostics.count == 0 {
-        val erased = Cfg.applyCfgErasure(active, declaredFeatures, pr.file)
-        files.add(Layers.LayerPackage(name = pkg.name, path = path, file = erased.file))
-      }
-      i = i + 1
+  val files = match parseLayerFiles(pkgs, active, declaredFeatures) {
+    case Ok(fs) -> fs
+    case Err(ds) -> {
+      reportLayerDiagnostics(mfPath, ds)
+      return None
     }
   }
   val classes: Map[String, String] = newMap()
@@ -105,6 +97,47 @@ func checkProjectLayers(
     )
   }
   Some(value = withReasons)
+}
+
+/// Parses and `@cfg`-erases every project file for the layer check.
+/// Returns the parse diagnostics of each file that has a parse error
+/// instead: checking layers without that file would report its package as
+/// missing (Y0009) and its importers as breaking rules (Y0002), and those
+/// errors would stop the build before the parse error was ever shown.
+/// Warnings alone do not exclude a file; the build reports them later.
+pub func parseLayerFiles(
+  pkgs: in List[Emitter.ProjectPackage],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): Result[List[Layers.LayerPackage], List[Layers.LayerDiagnostic]] {
+  val files: List[Layers.LayerPackage] = newList()
+  val parseErrors: List[Layers.LayerDiagnostic] = newList()
+  for pkg in pkgs {
+    var i = 0
+    while i < pkg.sources.count {
+      val path = if i < pkg.paths.count and pkg.paths[i] != "" { pkg.paths[i] } else { pkg.name }
+      val pr = Parser.parse(pkg.sources[i])
+      var hasError = false
+      for d in pr.diagnostics {
+        if d.severity == DiagError {
+          hasError = true
+        }
+      }
+      if hasError {
+        for d in pr.diagnostics {
+          parseErrors.add(Layers.LayerDiagnostic(path = path, diag = d))
+        }
+      } else {
+        val erased = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, pr.file)
+        files.add(Layers.LayerPackage(name = pkg.name, path = path, file = erased.file))
+      }
+      i = i + 1
+    }
+  }
+  if parseErrors.count > 0 {
+    return Err(error = parseErrors)
+  }
+  Ok(value = files)
 }
 
 func reportLayerDiagnostics(mfPath: in String, ds: in List[Layers.LayerDiagnostic]): Unit {
