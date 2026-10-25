@@ -28969,7 +28969,16 @@ func tdrCodeToTokenMsil(code: in Int): Int {
 // an `object` -> concrete-reference pair emits anything.  Delegate slots are
 // left to `castObjectToDelegateMsil`.
 func castErasedExternArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], defTy: in MsilType, bclTy: in MsilType): Unit {
-  val defIsObject = match defTy { case MObject -> true; case _ -> false }
+  // A `slice[C]` of a class with no array token is encoded as `object` in the
+  // MethodDef signature slot (`bufMsilTypeSigSlot`, #6332), so it is erased too.
+  val defIsObject = match defTy {
+    case MObject -> true
+    case MArray(e) -> match e {
+      case MClassRef(_, _) -> not msilArrayElemHasRealToken(e)
+      case _ -> false
+    }
+    case _ -> false
+  }
   if not defIsObject {
     return
   }
@@ -28984,7 +28993,16 @@ func castErasedExternArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], defTy: 
     }
     case MArray(e) -> match sliceArraySpecTokenOpt(cctx, e) {
       case Some(tok) -> insns.add(MCastclass(typeToken = tok))
-      case None -> ()
+      case None -> match e {
+        // An array of a class (`slice[Task]` into `Task.WhenAll(Task[])`): a
+        // concrete `List[Task]`'s `toArray()` is a genuine `Task[]`.
+        case MClassRef(_, fqn) -> if fqn != "System.Object" {
+          val w = bufNew()
+          bufMsilType(w, bclTy)
+          insns.add(MCastclass(typeToken = 0x1B000000 + ctxAddTypeSpec(cctx.lctx, "ts_szarray_class_" + fqn, bufToList(w))))
+        }
+        case _ -> ()
+      }
     }
     case _ -> ()
   }
