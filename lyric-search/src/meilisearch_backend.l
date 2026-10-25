@@ -66,7 +66,7 @@ val msTaskMaxPolls: Int = 20
 // ─── Connect ──────────────────────────────────────────────────────────────────
 /// Build an HttpConfig for `url` and probe reachability with
 /// `GET /health`.
-pub async func backendConnectMeilisearch(
+async func backendConnectMeilisearch(
   url: in String,
   apiKey: in String,
   connectTimeoutMs: in Int,
@@ -93,7 +93,7 @@ pub async func backendConnectMeilisearch(
 }
 
 // ─── JSON body construction ───────────────────────────────────────────────────
-pub func msDocToJsonObject(doc: in SearchDocument): String {
+func msDocToJsonObject(doc: in SearchDocument): String {
   var body = "{\"id\":" + encodeString(doc.id)
   val entries = mapEntries(doc.fields)
   for entry in entries {
@@ -111,7 +111,7 @@ pub func msDocToJsonObject(doc: in SearchDocument): String {
 // accumulator) means checking backslash before quote per character is
 // sufficient — there is no way for the two checks to interact within a
 // single pass.
-pub func msQuote(v: in String): String {
+func msQuote(v: in String): String {
   var escaped = ""
   var i = 0
   while i < v.length {
@@ -166,7 +166,7 @@ func msSafeField(field: in String): String {
   }
 }
 
-pub func msFilterExpr(f: in SearchFilter): String
+func msFilterExpr(f: in SearchFilter): String
   requires: isKnownFilterOperator(f.operator)
 {
   val field = msSafeField(f.field)
@@ -194,7 +194,7 @@ func msBuildFilter(filters: in slice[SearchFilter]): String {
   return expr
 }
 
-pub func msBuildSearchBody(query: in SearchQuery, includeRankingScore: in Bool): String {
+func msBuildSearchBody(query: in SearchQuery, includeRankingScore: in Bool): String {
   var body = "{\"q\":" + encodeString(query.query) + ",\"offset\":" + query.from.toString() + ",\"limit\":" +
     query.size.toString()
 
@@ -278,7 +278,7 @@ func msParseHit(elem: in JsonElement, index: in String): SearchHit {
   return SearchHit(id = id, index = index, score = score, highlights = highlightsAcc.toArray(), source = source)
 }
 
-pub func msParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
+func msParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
   var total: Long = 0i64
   var tookMs: Int = 0
   val hitsAcc: List[SearchHit] = newList()
@@ -370,7 +370,7 @@ async func msAwaitTask(cfg: in HttpConfig, taskUid: in Int, code: in String): Re
 }
 
 // ─── Operations ───────────────────────────────────────────────────────────────
-pub async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[IndexResult, SearchError] {
+async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[IndexResult, SearchError] {
   val path = "/indexes/" + pathEscape(doc.index) + "/documents"
   val checked = sendRequest(cfg, POST, path, Some(value = "[" + msDocToJsonObject(doc) + "]"), "INDEX_FAILED")
   match checked {
@@ -396,7 +396,7 @@ pub async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[
   }
 }
 
-pub async func backendIndexBatch(
+async func backendIndexBatch(
   cfg: in HttpConfig, docs: in slice[SearchDocument]
 ): Result[slice[IndexResult], SearchError] {
   if docs.length == 0 {
@@ -456,7 +456,7 @@ pub async func backendIndexBatch(
   }
 }
 
-pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
+async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
   match validateSearchQuery(query) {
     case Some(e) -> return Err(error = e)
     case None -> ()
@@ -480,7 +480,7 @@ pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[
   }
 }
 
-pub async func backendSuggest(
+async func backendSuggest(
   cfg: in HttpConfig, index: in String, text: in String, field: in String, size: in Int
 ): Result[SuggestResult, SearchError] {
   match validateSuggestSize(size) {
@@ -529,7 +529,7 @@ pub async func backendSuggest(
   }
 }
 
-pub async func backendDelete(cfg: in HttpConfig, index: in String, id: in String): Result[Unit, SearchError] {
+async func backendDelete(cfg: in HttpConfig, index: in String, id: in String): Result[Unit, SearchError] {
   val path = "/indexes/" + pathEscape(index) + "/documents/" + pathEscape(id)
   val checked = sendRequest(cfg, DELETE, path, None, "DELETE_FAILED")
   match checked {
@@ -552,7 +552,7 @@ pub async func backendDelete(cfg: in HttpConfig, index: in String, id: in String
   }
 }
 
-pub async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[Unit, SearchError] {
+async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[Unit, SearchError] {
   val path = "/indexes/" + pathEscape(index)
   val checked = sendRequest(cfg, DELETE, path, None, "DELETE_INDEX_FAILED")
   match checked {
@@ -575,7 +575,7 @@ pub async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[
   }
 }
 
-pub async func backendExists(cfg: in HttpConfig, index: in String, id: in String): Result[Bool, SearchError] {
+async func backendExists(cfg: in HttpConfig, index: in String, id: in String): Result[Bool, SearchError] {
   val path = "/indexes/" + pathEscape(index) + "/documents/" + pathEscape(id)
   val sent = sendRequestRaw(cfg, GET, path, "EXISTS_FAILED")
   match sent {
@@ -599,9 +599,7 @@ pub async func backendExists(cfg: in HttpConfig, index: in String, id: in String
   }
 }
 
-pub async func backendCreateIndex(
-  cfg: in HttpConfig, index: in String, mappingJson: in String
-): Result[Unit, SearchError] {
+async func backendCreateIndex(cfg: in HttpConfig, index: in String, mappingJson: in String): Result[Unit, SearchError] {
   val path = "/indexes"
   val body = "{\"uid\":" + encodeString(index) + ",\"primaryKey\":\"id\"}"
   val checked = sendRequest(cfg, POST, path, Some(value = body), "CREATE_INDEX_FAILED")

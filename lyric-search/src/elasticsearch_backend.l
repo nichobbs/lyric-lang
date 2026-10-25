@@ -59,7 +59,7 @@ func esAuthHeader(apiKey: in String, username: in String, password: in String): 
 /// Build an HttpConfig for `url` and probe cluster reachability with
 /// `GET /`.  `connectTimeoutMs` bounds the probe and `requestTimeoutMs`
 /// every request made through the returned config; both must be positive.
-pub async func backendConnectElasticsearch(
+async func backendConnectElasticsearch(
   url: in String,
   apiKey: in String,
   username: in String,
@@ -88,7 +88,7 @@ pub async func backendConnectElasticsearch(
 }
 
 // ─── JSON body construction ───────────────────────────────────────────────────
-pub func esFieldsToJsonObject(fields: in Map[String, String]): String {
+func esFieldsToJsonObject(fields: in Map[String, String]): String {
   var body = "{"
   var first = true
   val entries = mapEntries(fields)
@@ -113,14 +113,14 @@ pub func esFieldsToJsonObject(fields: in Map[String, String]): String {
 // — while still searching across every field (`"fields":["*"]`), matching
 // `query_string`'s previous "search everything" behaviour without its
 // syntax surface (#5589).
-pub func esQueryClause(q: in String): String {
+func esQueryClause(q: in String): String {
   if q.length == 0 {
     return "{\"match_all\":{}}"
   }
   return "{\"multi_match\":{\"query\":" + encodeString(q) + ",\"fields\":[\"*\"]}}"
 }
 
-pub func esFilterClause(f: in SearchFilter): String
+func esFilterClause(f: in SearchFilter): String
   requires: isKnownFilterOperator(f.operator)
 {
   match f.operator {
@@ -152,7 +152,7 @@ func esHighlightFieldsObject(fields: in slice[String]): String {
   return body + "}"
 }
 
-pub func esBuildSearchBody(query: in SearchQuery): String {
+func esBuildSearchBody(query: in SearchQuery): String {
   var filterArr = "["
   var first = true
   for f in query.filters {
@@ -192,7 +192,7 @@ pub func esBuildSearchBody(query: in SearchQuery): String {
 }
 
 // ─── Response parsing ─────────────────────────────────────────────────────────
-pub func esParseIndexResult(elem: in JsonElement): IndexResult {
+func esParseIndexResult(elem: in JsonElement): IndexResult {
   var id: String = ""
   var version: Long = 0i64
   var status: String = "created"
@@ -291,7 +291,7 @@ func esParseHit(elem: in JsonElement): SearchHit {
   return SearchHit(id = id, index = index, score = score, highlights = highlightsAcc.toArray(), source = source)
 }
 
-pub func esParseSearchResponse(root: in JsonElement): SearchResult {
+func esParseSearchResponse(root: in JsonElement): SearchResult {
   var total: Long = 0i64
   var tookMs: Int = 0
   val hitsAcc: List[SearchHit] = newList()
@@ -323,7 +323,7 @@ pub func esParseSearchResponse(root: in JsonElement): SearchResult {
   return SearchResult(total = total, hits = hitsAcc.toArray(), tookMs = tookMs, scrollId = None)
 }
 
-pub func esParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
+func esParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
   var tookMs: Int = 0
   val suggestionsAcc: List[String] = newList()
   match tryGetProperty(root, "took") {
@@ -355,7 +355,7 @@ pub func esParseSuggestResponse(root: in JsonElement, field: in String): Suggest
 }
 
 // ─── Operations ───────────────────────────────────────────────────────────────
-pub async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[IndexResult, SearchError] {
+async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[IndexResult, SearchError] {
   val path = "/" + pathEscape(doc.index) + "/_doc/" + pathEscape(doc.id)
   val checked = sendRequest(cfg, PUT, path, Some(value = esFieldsToJsonObject(doc.fields)), "INDEX_FAILED")
   match checked {
@@ -375,7 +375,7 @@ pub async func backendIndex(cfg: in HttpConfig, doc: in SearchDocument): Result[
   }
 }
 
-pub async func backendIndexBatch(
+async func backendIndexBatch(
   cfg: in HttpConfig, docs: in slice[SearchDocument]
 ): Result[slice[IndexResult], SearchError] {
   if docs.length == 0 {
@@ -405,7 +405,7 @@ pub async func backendIndexBatch(
   }
 }
 
-pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
+async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[SearchResult, SearchError] {
   match validateSearchQuery(query) {
     case Some(e) -> return Err(error = e)
     case None -> ()
@@ -429,7 +429,7 @@ pub async func backendSearch(cfg: in HttpConfig, query: in SearchQuery): Result[
   }
 }
 
-pub async func backendSuggest(
+async func backendSuggest(
   cfg: in HttpConfig, index: in String, text: in String, field: in String, size: in Int
 ): Result[SuggestResult, SearchError] {
   match validateSuggestSize(size) {
@@ -458,7 +458,7 @@ pub async func backendSuggest(
   }
 }
 
-pub async func backendDelete(cfg: in HttpConfig, index: in String, id: in String): Result[Unit, SearchError] {
+async func backendDelete(cfg: in HttpConfig, index: in String, id: in String): Result[Unit, SearchError] {
   val path = "/" + pathEscape(index) + "/_doc/" + pathEscape(id)
   val checked = sendRequest(cfg, DELETE, path, None, "DELETE_FAILED")
   match checked {
@@ -467,7 +467,7 @@ pub async func backendDelete(cfg: in HttpConfig, index: in String, id: in String
   }
 }
 
-pub async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[Unit, SearchError] {
+async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[Unit, SearchError] {
   val path = "/" + pathEscape(index)
   val checked = sendRequest(cfg, DELETE, path, None, "DELETE_INDEX_FAILED")
   match checked {
@@ -476,7 +476,7 @@ pub async func backendDeleteIndex(cfg: in HttpConfig, index: in String): Result[
   }
 }
 
-pub async func backendExists(cfg: in HttpConfig, index: in String, id: in String): Result[Bool, SearchError] {
+async func backendExists(cfg: in HttpConfig, index: in String, id: in String): Result[Bool, SearchError] {
   val path = "/" + pathEscape(index) + "/_doc/" + pathEscape(id)
   val sent = sendRequestRaw(cfg, GET, path, "EXISTS_FAILED")
   match sent {
@@ -500,9 +500,7 @@ pub async func backendExists(cfg: in HttpConfig, index: in String, id: in String
   }
 }
 
-pub async func backendCreateIndex(
-  cfg: in HttpConfig, index: in String, mappingJson: in String
-): Result[Unit, SearchError] {
+async func backendCreateIndex(cfg: in HttpConfig, index: in String, mappingJson: in String): Result[Unit, SearchError] {
   val path = "/" + pathEscape(index)
   val body = if mappingJson.length == 0 { "{}" } else { mappingJson }
   val checked = sendRequest(cfg, PUT, path, Some(value = body), "CREATE_INDEX_FAILED")

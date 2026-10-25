@@ -1683,37 +1683,8 @@ func cmdTestManifest(
                         val pkgEntry = depProj.packages[pki]
                         val srcList: List[String] = newList()
                         val srcPathList: List[String] = newList()
-                        if pkgEntry.paths.count > 0 {
-                          // Explicit file list (TOML array form).
-                          var fi = 0
-                          while fi < pkgEntry.paths.count {
-                            val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) {
-                              pkgEntry.paths[fi]
-                            } else {
-                              Path.join(depDir, pkgEntry.paths[fi])
-                            }
-                            match File.readText(srcPath) {
-                              case Ok(srcText) -> {
-                                srcList.add(srcText)
-                                srcPathList.add(srcPath)
-                              }
-                              case Err(e) -> {
-                                printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                              }
-                            }
-                            fi += 1
-                          }
-                        } else {
-                          val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
-                          match File.readText(srcPath) {
-                            case Ok(srcText) -> {
-                              srcList.add(srcText)
-                              srcPathList.add(srcPath)
-                            }
-                            case Err(e) -> {
-                              printErr("test: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                            }
-                          }
+                        for problem in readDepEntrySources(pkgEntry, depDir, depProj, srcList, srcPathList).toArray() {
+                          printErr("test: dep '" + dep.name + "': " + problem)
                         }
                         if srcList.count > 0 {
                           depTemplatePkgsList.add(
