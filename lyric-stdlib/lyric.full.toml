@@ -207,3 +207,9 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.PluginWasmLoad" = "std/_kernel/plugin_wasm_load.l"  # seed: current
 "Std.PluginWasmBind" = "std/_kernel/plugin_wasm_bind.l"  # seed: current
 "Std.PluginWasm"     = "std/plugin_wasm.l"               # seed: current
+
+# Tier 17 — Ed25519 signatures (D248): pure Lyric over Std.HashHost's
+# SHA-512.  Appended last for the same reason as Tier 8.  Plugin signing in
+# the compiler's `lyric plugin` commands imports it, so it is not
+# `seed: current`.
+"Std.Ed25519" = "std/ed25519.l"

@@ -426,8 +426,10 @@ deferred to Phase 3 by design.
   run in process through `Std.PluginWasm.inProcessWasmRuntime()` (the
   `lyric_wasmhost` shim over a dynamically loaded libwasmtime 49), with call
   timeouts enforced by epoch interruption and memory capped per store;
-  Windows hosts report it unavailable (#8542). Signing and the registry are
-  deferred (D207).
+  Windows hosts report it unavailable (#8542). Signing and per-application
+  catalogues are specced in D248 (phases P7 and P8); the first piece,
+  `Std.Ed25519` (pure-Lyric Ed25519 on dotnet, the JVM and native), has
+  shipped.
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`
