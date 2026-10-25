@@ -30,9 +30,11 @@ package OTel.OtlpTransportTests
 import Std.Core
 import Std.Testing
 import Std.Environment
+import Std.String as Str
 import OTel
 import OTel.Types
 import OTel.Otlp
+import OTel.Kernel.Net.Otlp as OtelNetOtlp
 
 test "flushOtlpAsync sends real OTLP/HTTP protobuf to a live collector (env-gated)" {
   val url = getVarOrDefault("LYRIC_OTEL_TEST_COLLECTOR_URL", "")
@@ -76,4 +78,50 @@ test "flushOtlpAsync leaves spans buffered when the export transport fails" {
     beforeCount,
     "the span is still buffered after a failed export, not silently dropped"
   )
+}
+
+// ─── Exporter configuration (#7235) ──────────────────────────────────────────
+func cfgWith(timeoutMs: in Int, headers: in slice[OtlpHeader]): OtlpExporterConfig {
+  OtlpExporterConfig(
+    endpoint = "http://127.0.0.1:1",
+    protocol = OtlpProtocol.HttpProtobuf,
+    timeoutMs = timeoutMs,
+    headers = headers
+  )
+}
+
+test "configProblem rejects a non-positive timeout and an empty header name" {
+  assertEqual(configProblem(cfgWith(5000, [])), "", "a positive timeout and no headers is fine")
+  assertTrue(configProblem(cfgWith(0, [])).length > 0, "timeoutMs 0 is rejected")
+  assertTrue(configProblem(cfgWith(-5, [])).length > 0, "a negative timeoutMs is rejected")
+  assertTrue(
+    configProblem(cfgWith(5000, [OtlpHeader(key = "", value = "v")])).length > 0,
+    "an empty header name is rejected"
+  )
+}
+
+test "configureOtlpTraces returns Err for an invalid config instead of storing it" {
+  match configureOtlpTraces(cfgWith(0, [])) {
+    case Err(e) -> assertTrue(Str.contains(e, "timeoutMs"), "the error names the field")
+    case Ok(_) -> assertTrue(false, "timeoutMs 0 must be rejected")
+  }
+  match configureOtlpMetrics(cfgWith(5000, [OtlpHeader(key = "", value = "v")])) {
+    case Err(e) -> assertTrue(Str.contains(e, "empty name"), "the error names the header problem")
+    case Ok(_) -> assertTrue(false, "an empty header name must be rejected")
+  }
+}
+
+test "effectiveTimeoutMs is the smaller of the configured and requested timeouts" {
+  assertEqualInt(effectiveTimeoutMs(2000, 5000), 2000, "the configured timeout caps a longer request")
+  assertEqualInt(effectiveTimeoutMs(10000, 3000), 3000, "the requested timeout caps a longer configuration")
+}
+
+// A header the HTTP stack refuses (`Content-Type` belongs to the content
+// headers, so `HttpRequestHeaders.TryAddWithoutValidation` returns false)
+// used to be skipped silently, dropping auth headers unnoticed.
+test "netPostProtobuf fails the export when a header is rejected" {
+  match await OtelNetOtlp.netPostProtobuf("http://127.0.0.1:1/v1/traces", [1u8, 2u8], ["Content-Type"], ["text/plain"], 1000) {
+    case Err(e) -> assertTrue(Str.contains(e, "Content-Type"), "the rejected header is named: " + e)
+    case Ok(_) -> assertTrue(false, "a rejected header must fail the export")
+  }
 }

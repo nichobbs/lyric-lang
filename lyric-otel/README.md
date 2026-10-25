@@ -182,7 +182,7 @@ failed before it ends.
 | Field        | Type       | Default              | Description                              |
 |--------------|------------|----------------------|------------------------------------------|
 | `enabled`    | `Bool`     | `true`               | Master switch; `false` skips all tracing |
-| `sampleRate` | `Float`    | `1.0`                | Fraction of calls to trace (0.0–1.0)     |
+| `sampleRate` | `Float range 0.0 ..= 1.0` | `1.0`  | Probability a call is traced; each call draws independently, an unsampled call runs untraced |
 | `spanKind`   | `SpanKind` | `SpanKind.Internal`  | OTel span kind for every span            |
 
 `SpanKind` values: `Internal`, `Server`, `Client`, `Producer`, `Consumer`.
@@ -205,7 +205,7 @@ Logs function entry and exit via `Std.Log`.
 | Field     | Type     | Default   | Description                                        |
 |-----------|----------|-----------|-----------------------------------------------------|
 | `enabled` | `Bool`   | `true`    | Master switch; `false` skips all logging           |
-| `level`   | `String` | `"debug"` | Log level: `"debug"` \| `"info"` \| `"warn"`       |
+| `level`   | `String` | `"debug"` | Log level: `"debug"` \| `"info"` \| `"warn"` (anything else logs at info) |
 
 ## Low-level API
 

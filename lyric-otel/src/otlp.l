@@ -133,12 +133,40 @@ func otlpTransportImplemented(): Bool {
   false
 }
 
+/// Why `cfg` cannot be used, or the empty string when it can: the request
+/// timeout must be positive and every header needs a non-empty name.
+pub func configProblem(cfg: in OtlpExporterConfig): String {
+  if cfg.timeoutMs <= 0 {
+    return "OtlpExporterConfig.timeoutMs must be > 0, got " + cfg.timeoutMs.toString()
+  }
+  var i = 0
+  while i < cfg.headers.length {
+    if cfg.headers[i].key.length == 0 {
+      return "OtlpExporterConfig.headers[" + i.toString() + "] has an empty name"
+    }
+    i = i + 1
+  }
+  ""
+}
+
+/// The timeout one export request runs under: the smaller of the exporter's
+/// configured `timeoutMs` and the `timeoutMs` the caller passed to
+/// `flushOtlpAsync`, so neither can be exceeded.
+pub func effectiveTimeoutMs(configured: in Int, requested: in Int): Int {
+  if configured < requested {
+    configured
+  } else {
+    requested
+  }
+}
+
 func otlpTransportNotImplementedError(): String {
   "lyric-otel's JVM OTLP/HTTP transport is not implemented (dotnet-only today); see lyric-otel/README.md and docs/44-jvm-production-readiness-plan.md"
 }
 
 // ─── Signal-specific configure functions ──────────────────────────────────────
-/// Configure OTLP/HTTP trace export.  Returns `Err` for
+/// Configure OTLP/HTTP trace export.  Returns `Err` for a non-positive
+/// `timeoutMs`, a header with an empty name,
 /// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
 /// feature (OTLP/HTTP export is dotnet-only today).
 @stable(since = "0.2")
@@ -151,13 +179,18 @@ pub func configureOtlpTraces(cfg: OtlpExporterConfig): Result[Unit, String] {
       error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
     )
     case OtlpProtocol.HttpProtobuf -> {
+      val problem = configProblem(cfg)
+      if problem.length > 0 {
+        return Err(error = problem)
+      }
       exporterState.setTraces(cfg)
       Ok(value = ())
     }
   }
 }
 
-/// Configure OTLP/HTTP metrics export.  Returns `Err` for
+/// Configure OTLP/HTTP metrics export.  Returns `Err` for a non-positive
+/// `timeoutMs`, a header with an empty name,
 /// `OtlpProtocol.Grpc` (not implemented — see module doc) and for the `jvm`
 /// feature (OTLP/HTTP export is dotnet-only today).
 @stable(since = "0.2")
@@ -170,6 +203,10 @@ pub func configureOtlpMetrics(cfg: OtlpExporterConfig): Result[Unit, String] {
       error = "OTLP/gRPC is not implemented; set protocol = OtlpProtocol.HttpProtobuf (see lyric-otel/README.md)"
     )
     case OtlpProtocol.HttpProtobuf -> {
+      val problem = configProblem(cfg)
+      if problem.length > 0 {
+        return Err(error = problem)
+      }
       exporterState.setMetrics(cfg)
       Ok(value = ())
     }
@@ -284,7 +321,7 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool
       if spans.count > 0 {
         val payload = Codec.encodeExportTraceServiceRequest(spans)
         val url = joinUrl(cfg.endpoint, "/v1/traces")
-        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), timeoutMs) {
+        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), effectiveTimeoutMs(cfg.timeoutMs, timeoutMs)) {
           case Err(_) -> {
             allOk = false
           }
@@ -316,7 +353,7 @@ pub async func flushOtlpAsync(timeoutMs: Int): Bool
         }
         val payload = Codec.encodeExportMetricsServiceRequest(metricMessages)
         val url = joinUrl(cfg.endpoint, "/v1/metrics")
-        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), timeoutMs) {
+        match await postProtobuf(url, payload, headerKeysOf(cfg.headers), headerValuesOf(cfg.headers), effectiveTimeoutMs(cfg.timeoutMs, timeoutMs)) {
           case Err(_) -> {
             allOk = false
           }

@@ -138,18 +138,49 @@ pub async func netPostProtobuf(
   headerValues: in slice[String],
   timeoutMs: in Int,
 ): Result[Int, String] {
+  val built = buildPostRequest(url, payload, headerKeys, headerValues)
+  match built {
+    case Err(message) -> return Err(error = message)
+    case Ok(req) -> return await sendBuilt(req, timeoutMs)
+  }
+}
+
+/// Build the POST request.  A header the HTTP stack refuses fails the export
+/// rather than being skipped: sending without it would drop an auth or tenant
+/// header unnoticed.
+func buildPostRequest(
+  url: in String,
+  payload: in slice[Byte],
+  headerKeys: in slice[String],
+  headerValues: in slice[String],
+): Result[NetHttpRequestMessage, String] {
+  return try {
+    val req = newRequest(newHttpMethod("POST"), url)
+    var rejected = ""
+    var i = 0
+    while i < headerKeys.length {
+      if not headersTryAdd(requestHeaders(req), headerKeys[i], headerValues[i]) and rejected.length == 0 {
+        rejected = headerKeys[i]
+      }
+      i = i + 1
+    }
+    if rejected.length > 0 {
+      Err(error = "OTLP header '" + rejected + "' was rejected by the HTTP stack")
+    } else {
+      val content = newByteArrayContent(payload)
+      val _ = contentHeadersTryAdd(contentHeadersOf(content), "Content-Type", "application/x-protobuf")
+      setRequestContent(req, content)
+      Ok(value = req)
+    }
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+async func sendBuilt(req: in NetHttpRequestMessage, timeoutMs: in Int): Result[Int, String] {
   return try {
     val client = newHttpClient()
     setClientTimeout(client, timeSpanFromMillis(timeoutMs.toDouble()))
-    val req = newRequest(newHttpMethod("POST"), url)
-    var i = 0
-    while i < headerKeys.length {
-      val _ = headersTryAdd(requestHeaders(req), headerKeys[i], headerValues[i])
-      i = i + 1
-    }
-    val content = newByteArrayContent(payload)
-    val _ = contentHeadersTryAdd(contentHeadersOf(content), "Content-Type", "application/x-protobuf")
-    setRequestContent(req, content)
     val resp = await clientSendAsync(client, req)
     defer {
       clientDispose(client)

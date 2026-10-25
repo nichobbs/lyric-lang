@@ -263,25 +263,28 @@ test "DeadLetter: an empty-id poison message is dead-lettered without crashing t
   assertEqualInt(consumerCalls.nacks, 1, "the nack is attempted and answered with Err, not a panic")
 }
 
-// A negative TTL is a configuration bug; it must surface before the handler
-// runs, never after a successful handler (which would redeliver the message
-// and process it twice, #7239).
-aspect IdemBadTtl from Mq.Aspects.Idempotent {
-  matches: name like "idemBadTtl*"
+// ttlSeconds is `Int range 0 ..= 31536000` (#7239, #7229): a negative or
+// oversized value is rejected at startup (G0004) or at compile time for a
+// `from` override (G0010), never per call.  The lower bound, 0, means the
+// processed id never expires.
+aspect IdemForever from Mq.Aspects.Idempotent {
+  matches: name like "idemForever*"
   config {
-    ttlSeconds: Int = -1
+    cacheKeyPrefix: String = "idem-forever-test:"
+    ttlSeconds: Int = 0
   }
 }
 
-val badTtlCalls: CallCounter = CallCounter(count = 0)
+val foreverCalls: CallCounter = CallCounter(count = 0)
 
-pub func idemBadTtlHandler(message: in Message): Result[Unit, String] {
-  badTtlCalls.count = badTtlCalls.count + 1
+pub func idemForeverHandler(message: in Message): Result[Unit, String] {
+  foreverCalls.count = foreverCalls.count + 1
   return Ok(())
 }
 
-test "Idempotent: a negative ttlSeconds fails before the handler runs (#7239)" {
-  badTtlCalls.count = 0
-  assertPanicsWith("negative ttl", "ttlSeconds must be >= 0", { -> val _ = idemBadTtlHandler(mkMsg("m-1")) })
-  assertEqualInt(badTtlCalls.count, 0, "the handler never ran")
+test "Idempotent: ttlSeconds 0 (range lower bound) records the id without expiry" {
+  foreverCalls.count = 0
+  val _ = idemForeverHandler(mkMsg("forever-1"))
+  val _ = idemForeverHandler(mkMsg("forever-1"))
+  assertEqualInt(foreverCalls.count, 1, "the second delivery was deduplicated")
 }

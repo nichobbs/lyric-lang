@@ -69,6 +69,7 @@ import Std.Char
 import Std.Encoding
 import Std.Environment
 import Std.Parse
+import Std.Task
 import Std.String as Str
 
 // ─── Error type ───────────────────────────────────────────────────────────────
@@ -291,6 +292,10 @@ pub async func connectElasticsearch(
 ): Result[SearchClient, SearchError]
   requires: url.length > 0
 {
+  match timeoutProblem(connectTimeoutMs, requestTimeoutMs) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
   val connected = await backendConnectElasticsearch(url, apiKey, username, password, connectTimeoutMs, requestTimeoutMs)
   match connected {
     case Err(e) -> return Err(error = e)
@@ -303,6 +308,8 @@ pub async func connectElasticsearch(
 
 /// Connect to Meilisearch.  Performs a `GET /health` probe so a connection
 /// failure surfaces immediately, rather than on the first real operation.
+/// The probe is bounded by `connectTimeoutMs`; later requests use
+/// `DEFAULT_REQUEST_TIMEOUT_MS` (see `connectMeilisearchWithTimeouts`).
 @stable(since = "0.1")
 @cfg(feature = "meilisearch")
 pub async func connectMeilisearch(
@@ -310,7 +317,28 @@ pub async func connectMeilisearch(
 ): Result[SearchClient, SearchError]
   requires: url.length > 0
 {
-  val connected = await backendConnectMeilisearch(url, apiKey, connectTimeoutMs)
+  return await connectMeilisearchWithTimeouts(url, apiKey, connectTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS)
+}
+
+/// Connect to Meilisearch with separate timeouts: `connectTimeoutMs` bounds
+/// the health probe, `requestTimeoutMs` every later request.  A hung backend
+/// surfaces as `ConnectionFailed`.  A non-positive timeout is
+/// `Err(INVALID_TIMEOUT)`.
+@stable(since = "0.1")
+@cfg(feature = "meilisearch")
+pub async func connectMeilisearchWithTimeouts(
+  url: in String,
+  apiKey: in String,
+  connectTimeoutMs: in Int,
+  requestTimeoutMs: in Int,
+): Result[SearchClient, SearchError]
+  requires: url.length > 0
+{
+  match timeoutProblem(connectTimeoutMs, requestTimeoutMs) {
+    case Some(e) -> return Err(error = e)
+    case None -> ()
+  }
+  val connected = await backendConnectMeilisearch(url, apiKey, connectTimeoutMs, requestTimeoutMs)
   match connected {
     case Err(e) -> return Err(error = e)
     case Ok(cfg) -> {
@@ -374,7 +402,7 @@ pub async func connect(provider: in String): Result[SearchClient, SearchError]
     }
     val apiKey = getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_API_KEY", "")
     val requestTimeoutMs = parseIntOrDefault(getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS", "30000"), 30000)
-    return await connectMeilisearch(url, apiKey, requestTimeoutMs)
+    return await connectMeilisearchWithTimeouts(url, apiKey, 10000, requestTimeoutMs)
   }
   return Err(
     error = SearchError(
@@ -662,7 +690,12 @@ pub opaque type HttpConfig {
   baseUrl: String
   authHeaderName: String
   authHeaderValue: String
+  requestTimeoutMs: Int
+  invariant: requestTimeoutMs > 0
 }
+
+/// Request timeout used when none is configured, in milliseconds.
+pub val DEFAULT_REQUEST_TIMEOUT_MS: Int = 30000
 
 /// Construct an `HttpConfig` directly (bypassing `connectElasticsearch`/
 /// `connectMeilisearch`'s health probe).  Exposed for tests that need to
@@ -676,8 +709,48 @@ pub func HttpConfig.new(
     client = client,
     baseUrl = baseUrl,
     authHeaderName = authHeaderName,
-    authHeaderValue = authHeaderValue
+    authHeaderValue = authHeaderValue,
+    requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS
   )
+}
+
+/// A copy of `cfg` whose requests are cancelled after `requestTimeoutMs`
+/// milliseconds, so a hung backend surfaces as `ConnectionFailed` instead of
+/// blocking the caller forever.
+@stable(since = "0.1")
+pub func HttpConfig.withRequestTimeout(cfg: in HttpConfig, requestTimeoutMs: in Int): HttpConfig
+  requires: requestTimeoutMs > 0
+{
+  return HttpConfig(
+    client = cfg.client,
+    baseUrl = cfg.baseUrl,
+    authHeaderName = cfg.authHeaderName,
+    authHeaderValue = cfg.authHeaderValue,
+    requestTimeoutMs = requestTimeoutMs
+  )
+}
+
+/// The `SearchError` for a non-positive timeout, or `None` when both are fine.
+pub func timeoutProblem(connectTimeoutMs: in Int, requestTimeoutMs: in Int): Option[SearchError] {
+  if connectTimeoutMs <= 0 {
+    return Some(
+      value = SearchError(
+        message = "connectTimeoutMs must be > 0, got " + connectTimeoutMs.toString(),
+        code = "INVALID_TIMEOUT",
+        statusCode = 0
+      )
+    )
+  }
+  if requestTimeoutMs <= 0 {
+    return Some(
+      value = SearchError(
+        message = "requestTimeoutMs must be > 0, got " + requestTimeoutMs.toString(),
+        code = "INVALID_TIMEOUT",
+        statusCode = 0
+      )
+    )
+  }
+  return None
 }
 
 /// Join `baseUrl` and `path`, collapsing the doubled `/` when both the
@@ -755,15 +828,30 @@ func buildRequest(
   }
 }
 
-/// Call `client.send(req)`, mapping any transport-level failure to a
+/// Call `client.sendWithCancel(req, ...)` under a `timeoutMs` deadline,
+/// mapping any transport-level failure, and the deadline itself, to a
 /// `ConnectionFailed`. Must be a plain (non-`async`) function: V0012
 /// rejects `await` inside `try` in an `async func`, but a synchronous
 /// caller may freely `await` an async call ("awaits in place").
-func sendCatching(client: in HttpClient, req: in HttpRequest, url: in String): Result[HttpResponse, HttpError] {
-  return try {
-    await client.send(req)
+func sendCatching(
+  client: in HttpClient, req: in HttpRequest, url: in String, timeoutMs: in Int
+): Result[HttpResponse, HttpError] {
+  val src = makeCancelSourceTimeout(timeoutMs)
+  val tok = sourceToken(src)
+  val sent = try {
+    await client.sendWithCancel(req, tok)
   } catch Bug as bug {
     Err(error = ConnectionFailed(url = url, message = bug.message))
+  }
+  val timedOut = isCancelled(tok)
+  disposeSource(src)
+  match sent {
+    case Ok(_) -> return sent
+    case Err(_) -> if timedOut {
+      return Err(error = ConnectionFailed(url = url, message = "request timed out after " + timeoutMs.toString() + " ms"))
+    } else {
+      return sent
+    }
   }
 }
 
@@ -780,7 +868,7 @@ pub func sendRequest(
     case Err(e) -> return Err(error = e)
     case Ok(req) -> {
       val url = joinUrl(cfg.baseUrl, path)
-      match sendCatching(cfg.client, req, url) {
+      match sendCatching(cfg.client, req, url, cfg.requestTimeoutMs) {
         case Err(e) -> return Err(error = toSearchError(e, code))
         case Ok(response) -> match HttpResponse.ensureSuccess(response) {
           case Err(e) -> return Err(error = toSearchError(e, code))
@@ -800,7 +888,7 @@ pub func sendRequestRaw(
     case Err(e) -> return Err(error = e)
     case Ok(req) -> {
       val url = joinUrl(cfg.baseUrl, path)
-      match sendCatching(cfg.client, req, url) {
+      match sendCatching(cfg.client, req, url, cfg.requestTimeoutMs) {
         case Err(e) -> return Err(error = toSearchError(e, code))
         case Ok(response) -> return Ok(value = response)
       }
