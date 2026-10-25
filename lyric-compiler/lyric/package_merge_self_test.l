@@ -114,6 +114,21 @@ test "every file's module docs reach the merged unit, in file order, one empty d
   assertEqual(r.origins[3].path, "", "the separator belongs to no file")
 }
 
+test "module docs keep non-ASCII text, including after it, and CRLF files" {
+  val a = "//! Résumé ✓ 😀 done\r\n//! after\r\n@runtime_checked\r\npackage P\r\n\r\npub func a(): Int { 1 }\r\n"
+  val b = "//! Zweite Datei: ñ\r\npackage P\r\npub func b(): Int { 2 }\r\n"
+  val r = merge(a, b)
+  assertEqual(diagSummary(r), "", "no diagnostics")
+  assertTrue(
+    Str.startsWith(r.source, "//! Résumé ✓ 😀 done\n//! after\n//!\n//! Zweite Datei: ñ\n@runtime_checked\npackage P\n"),
+    r.source
+  )
+  assertTrue(not Str.contains(r.source, "\r"), "newlines are normalised")
+  val parsed = Parser.parse(r.source)
+  assertEqualInt(parsed.diagnostics.count, 0, "the merged unit parses")
+  assertEqualInt(parsed.file.items.count, 2, "both functions survive")
+}
+
 test "a file with no module doc adds no separator, and a gated-out file contributes no doc" {
   val a = "package P\n\npub func a(): Int { 1 }\n"
   val b = "//! Only b.\npackage P\n\npub func b(): Int { 2 }\n"

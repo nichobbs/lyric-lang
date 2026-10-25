@@ -2927,7 +2927,12 @@ pub func compileProjectToJarBundledWithRestored(
         stdlibByPkg.add(spn, sf)
       }
       projectOwners.add(pkgJvmOwner(sf.packageDecl.path), true)
-      siblingPackageNames.add(spn)
+      // A path dependency compiled from source rides in as a sibling too; it
+      // stays reachability-driven, as before (its dotnet-only or Maven-backed
+      // packages are not this project's to build).
+      if not depPkgNames.containsKey(spn) {
+        siblingPackageNames.add(spn)
+      }
     }
     svi = svi + 1
   }

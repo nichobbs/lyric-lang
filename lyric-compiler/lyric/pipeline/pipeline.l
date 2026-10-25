@@ -523,7 +523,10 @@ pub func pipeExpandProfile(targetName: in String): ExpandProfile {
   if targetName == "native" {
     return ExpandProfile(runWireExpand = true, runStubbable = false, injectWeave = false)
   }
-  ExpandProfile(runWireExpand = true, runStubbable = true, injectWeave = false)
+  if targetName == "dotnet" {
+    return ExpandProfile(runWireExpand = true, runStubbable = true, injectWeave = false)
+  }
+  panic("Lyric.Pipeline.pipeExpandProfile: unknown target '" + targetName + "' (expected dotnet, jvm or native)")
 }
 
 /// `pipeExpandAndRewrite` with the rewrites `targetName`'s build runs.
