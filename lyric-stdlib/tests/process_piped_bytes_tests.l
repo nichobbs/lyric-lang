@@ -51,7 +51,9 @@ func readBytesExactly(p: in PipedProcess, want: in Int): slice[Byte] {
   while not done and acc.count < want {
     match pipedReadBytesWithin(p, 5000) {
       case Ok(PipedBytes(bytes)) -> {
-        appendBytes(acc, bytes)
+        for b in bytes {
+          acc.add(b)
+        }
       }
       case _ -> {
         done = true
@@ -59,17 +61,6 @@ func readBytesExactly(p: in PipedProcess, want: in Int): slice[Byte] {
     }
   }
   acc.toArray()
-}
-
-// An index loop, not `for`: on the JVM backend `for` over a slice bound by a
-// nested pattern (`case Ok(Some(bytes))`) treats it as an `Iterable` and
-// fails at run time.
-func appendBytes(acc: in List[Byte], bytes: in slice[Byte]): Unit {
-  var i = 0
-  while i < bytes.length {
-    acc.add(bytes[i])
-    i = i + 1
-  }
 }
 
 // Every byte until end of stream.
@@ -80,7 +71,9 @@ func readBytesToEnd(p: in PipedProcess): slice[Byte] {
     match pipedReadBytes(p) {
       case Ok(Some(bytes)) -> {
         assertTrue(bytes.length > 0, "pipedReadBytes never returns an empty chunk")
-        appendBytes(acc, bytes)
+        for b in bytes {
+          acc.add(b)
+        }
       }
       case Ok(None) -> {
         done = true
