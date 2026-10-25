@@ -2784,7 +2784,8 @@ jobs:
         run: bash scripts/ci/native-backend-self-tests.sh
 
       # lyric-web + lyric-ws on --target native: builds examples/native-web,
-      # runs it, and checks HTTP routes plus a WebSocket echo.
+      # runs it, and checks HTTP routes, static-file symlink escapes (#8507)
+      # and a WebSocket echo.
       - name: Native lyric-web/lyric-ws smoke
         background: true
         working-directory: ${{ github.workspace }}

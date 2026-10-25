@@ -6,6 +6,8 @@
 //!   GET  /echo/{name}   -> "echo:<name>"
 //!   POST /post          -> "post:<request body>"
 //!   WS   /live          -> each text message is answered "echo:<text>"
+//!   GET  /static/...    -> files under ./public (the working directory's), with
+//!                          the root check that keeps symlinks from escaping it
 package NativeWeb
 
 import Std.Core
@@ -91,6 +93,15 @@ func main(): Int {
   router = Web.addGet(router, "/", HelloHandler())
   router = Web.addGet(router, "/echo/{name}", EchoPathHandler())
   router = Web.addPost(router, "/post", PostHandler())
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = "./public",
+      mountPrefix = "/static",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
   Web.serve(router, "127.0.0.1", 18480)
   0
 }

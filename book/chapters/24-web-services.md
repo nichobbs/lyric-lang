@@ -143,8 +143,10 @@ router = Web.withStaticFiles(router, Web.StaticFiles(
 
 A request that doesn't map to an existing file falls through to the
 rest of the pipeline (your routes, then a 404). Path traversal is
-rejected by resolving the candidate path to its canonical absolute form
-and requiring it fall within the canonically resolved root. Mount
+rejected by resolving the candidate path to its canonical absolute form,
+symbolic links included, and requiring it fall within the canonically
+resolved root; the file served is that canonical path, so a link inside
+the root that points outside it is a 404 on every target. Mount
 several roots at different prefixes by calling `withStaticFiles` more
 than once.
 

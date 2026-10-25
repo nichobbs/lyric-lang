@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build examples/native-web with --target native, run it, and exercise
-# HTTP routes plus a WebSocket echo over a raw RFC 6455 client.
+# HTTP routes, the static-file root check against symlinks that leave the
+# root (#8507), and a WebSocket echo over a raw RFC 6455 client.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
@@ -17,9 +18,34 @@ OUT="${TMPDIR:-/tmp}/native-web-smoke"
 PORT=18480
 
 "$LYRIC" build --manifest "$ROOT/examples/native-web/lyric.toml" --target native -o "$OUT"
-"$OUT" &
+
+# The static root is ./public under the server's working directory.  Every
+# link below except the in-root chains points (or climbs) outside it.
+SITE="$(mktemp -d)"
+mkdir -p "$SITE/public" "$SITE/outside"
+printf 'fine to serve' > "$SITE/public/ok.txt"
+printf 'top secret' > "$SITE/secret.txt"
+printf 'outside inner' > "$SITE/outside/inner.txt"
+ln -s "$SITE/secret.txt" "$SITE/public/link.txt"
+ln -s "$SITE/outside" "$SITE/public/linkdir"
+ln -s ../secret.txt "$SITE/public/hop2"
+ln -s hop2 "$SITE/public/hop1"
+ln -s ok.txt "$SITE/public/inner2"
+ln -s inner2 "$SITE/public/inner1"
+ln -s loopb "$SITE/public/loopa"
+ln -s loopa "$SITE/public/loopb"
+chain() {
+  local prefix=$1 count=$2 i
+  for ((i = 0; i < count; i++)); do
+    if ((i == count - 1)); then ln -s ok.txt "$SITE/public/$prefix$i"; else ln -s "$prefix$((i + 1))" "$SITE/public/$prefix$i"; fi
+  done
+}
+chain short 30
+chain long 45
+
+(cd "$SITE" && exec "$OUT") &
 PID=$!
-trap 'kill $PID 2>/dev/null || true' EXIT
+trap 'kill $PID 2>/dev/null || true; rm -rf "$SITE"' EXIT
 ready=0
 for _ in $(seq 1 50); do
   if curl -sf "http://127.0.0.1:$PORT/" >/dev/null; then ready=1; break; fi
@@ -33,6 +59,15 @@ expect "$(curl -s http://127.0.0.1:$PORT/)" "hello native"
 expect "$(curl -s http://127.0.0.1:$PORT/echo/abc)" "echo:abc"
 expect "$(curl -s -X POST -d payload http://127.0.0.1:$PORT/post)" "post:payload"
 expect "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/nope)" "404"
+
+status() { curl -s --path-as-is -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT$1"; }
+expect "$(curl -s http://127.0.0.1:$PORT/static/ok.txt)" "fine to serve"
+expect "$(status /static/inner1)" "200"
+expect "$(status /static/short0)" "200"
+for path in /static/link.txt /static/linkdir/inner.txt /static/linkdir/../secret.txt /static/hop1 \
+  /static/loopa /static/long0 /static/../secret.txt /static/missing.txt /static/linkdir/missing.txt; do
+  expect "$(status "$path")" "404"
+done
 
 python3 - "$PORT" <<'PY'
 import base64, os, socket, struct, sys
