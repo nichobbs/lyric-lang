@@ -274,7 +274,7 @@ mapping table.
 ### Meilisearch (`meilisearch` feature)
 
 `Search.connectMeilisearch(url, apiKey, connectTimeoutMs)` connects
-directly (`connectMeilisearchWithTimeouts` also sets the per-request timeout), or use `Search.connect("meilisearch")`:
+directly (later requests use the 30000 ms default; `connectMeilisearchWithTimeouts` sets the per-request timeout), or use `Search.connect("meilisearch")`:
 
 | Env var | Default | Meaning |
 |---|---|---|

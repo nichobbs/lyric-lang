@@ -833,6 +833,10 @@ func buildRequest(
 /// `ConnectionFailed`. Must be a plain (non-`async`) function: V0012
 /// rejects `await` inside `try` in an `async func`, but a synchronous
 /// caller may freely `await` an async call ("awaits in place").
+/// The timeout label is best-effort: `isCancelled` is read after the send, so a
+/// deadline that fires just after a response arrives still returns that
+/// response, and one that fires during an unrelated transport error is reported
+/// as a timeout.
 func sendCatching(
   client: in HttpClient, req: in HttpRequest, url: in String, timeoutMs: in Int
 ): Result[HttpResponse, HttpError] {

@@ -939,8 +939,18 @@ test "timeoutProblem accepts positive timeouts and rejects non-positive ones" {
   }
 }
 
-test "connectElasticsearch with a zero timeout is Err(INVALID_TIMEOUT), not a hang or a panic" {
-  match await Search.connectElasticsearch("http://127.0.0.1:1", "", "", "", 0, 1000) {
+@cfg(feature = "elasticsearch")
+func probeZeroTimeoutConnect(): Result[SearchClient, SearchError] {
+  await Search.connectElasticsearch("http://127.0.0.1:1", "", "", "", 0, 1000)
+}
+
+@cfg(feature = "meilisearch")
+func probeZeroTimeoutConnect(): Result[SearchClient, SearchError] {
+  await Search.connectMeilisearchWithTimeouts("http://127.0.0.1:1", "", 0, 1000)
+}
+
+test "connect with a zero timeout is Err(INVALID_TIMEOUT), not a hang or a panic" {
+  match probeZeroTimeoutConnect() {
     case Err(e) -> assertEqual(e.code, "INVALID_TIMEOUT", "rejected before any request")
     case Ok(_) -> assertTrue(false, "a zero connect timeout must be rejected")
   }
