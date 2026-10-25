@@ -2,7 +2,8 @@
 //! versions, a catalogue built and followed from a local directory, installing
 //! from it, and every refusal: K0120 (signature), K0121 (expiry), K0122
 //! (rollback), K0123 (artifact mismatch), a refused artifact signature, yanked
-//! entries, key rotation, and the zip extraction rules.
+//! entries, key rotation, entry ids and versions that are not paths, and the
+//! zip extraction rules.
 @test_module
 package Std.PluginCatalogue.Tests
 
@@ -355,4 +356,58 @@ test "the extraction rules refuse a hostile zip" {
   val _ = ok(extractArtifactZip(writeZip(fine), "acme.tools-1.0.0", work + "/d"), "a well-formed zip")
   assertTrue(fileExists(work + "/d/bin/run"), "nested files are extracted")
   assertTrue(dirExists(work + "/d") and not dirExists(work + "/a"), "a refused zip writes nothing")
+}
+
+test "an entry id or version that is not a plugin id or version is refused" {
+  val work = scratch("identity")
+  val versions: List[String] = newList()
+  versions.add("1.0.0")
+  val c = buildCatalogue(work, versions)
+  val good = c.plugins[0]
+  val bad: List[CatalogueEntry] = newList()
+  bad.add(
+    CatalogueEntry(
+      id = "..",
+      version = good.version,
+      publisher = good.publisher,
+      points = good.points,
+      url = good.url,
+      sha256 = good.sha256,
+      sigSha256 = good.sigSha256,
+      yanked = false
+    )
+  )
+  bad.add(
+    CatalogueEntry(
+      id = good.id,
+      version = "1.0.0/../../outside",
+      publisher = good.publisher,
+      points = good.points,
+      url = good.url,
+      sha256 = good.sha256,
+      sigSha256 = good.sigSha256,
+      yanked = false
+    )
+  )
+  for entry in bad {
+    val one: List[CatalogueEntry] = newList()
+    one.add(entry)
+    val hostile = Catalogue(
+      name = c.name,
+      serial = 1i64,
+      expires = "2999-01-01T00:00:00Z",
+      catalogueKey = c.catalogueKey,
+      publishers = c.publishers,
+      revokedKeys = c.revokedKeys,
+      plugins = one
+    )
+    match parseCatalogue(catalogueToJson(hostile)) {
+      case Ok(_) -> panic("parseCatalogue accepted " + entry.id + " " + entry.version)
+      case Err(_) -> ()
+    }
+    // A catalogue built in code is checked again before install.
+    val followed = FollowedCatalogue(catalogue = hostile, location = work + "/cat", stale = false)
+    expectCode(installPlugin(followed, entry.id, Some(value = entry.version), work + "/plugins"), "", "install")
+  }
+  assertTrue(not dirExists(work + "/outside"), "nothing was written outside the plugins directory")
 }

@@ -38,7 +38,10 @@ dotnet, the JVM and native settled the details below.
    checks `plugin.sig`'s SHA-256 and the manifest's id, version and publisher
    against the entry (K0123), renames it to `<into>/<id>-<version>`, and then
    removes other installed versions of the same plugin, which would otherwise
-   load as duplicates.
+   load as duplicates. Because `<id>-<version>` names a directory, an entry's
+   id must be a plugin id and its version a plugin version (the manifest
+   rules, so no `/`, `\` or `..`): `parseCatalogue` refuses any other entry,
+   and `installPlugin` checks again for a catalogue built in code.
 7. **Extraction.** Entries must sit under the single top-level directory
    `<id>-<version>/`, each path must be a listing path (D263), no symbolic
    link and no two names differing only in case; the zip reader's own limits

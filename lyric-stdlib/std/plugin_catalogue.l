@@ -323,6 +323,25 @@ func isHexDigest(s: in String): Bool {
 
 /// Parses and validates the text of `catalogue.json`.
 @experimental
+func entryIdentityProblem(
+  // The id and version name the install directory `<id>-<version>`, so they
+  // must be a plugin id and a plugin version (no `/`, `\` or `..` segment).
+  id: in String,
+  version: in String,
+  publisher: in String,
+): Option[String] {
+  if not isPluginId(id) {
+    return Some(value = "'" + id + "' is not a plugin id")
+  }
+  if not isPluginVersion(version) {
+    return Some(value = "'" + version + "' is not a plugin version")
+  }
+  if publisher.length == 0 {
+    return Some(value = "the publisher is empty")
+  }
+  None
+}
+
 pub func parseCatalogue(text: in String): Result[Catalogue, String] {
   val v = match parseValue(text) {
     case Ok(value) -> value
@@ -406,6 +425,10 @@ pub func parseCatalogue(text: in String): Result[Catalogue, String] {
     val url = match needString(p, "url", at) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
     val sha = match needString(p, "sha256", at) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
     val sigSha = match needString(p, "sigSha256", at) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
+    match entryIdentityProblem(id, version, publisher) {
+      case Some(reason) -> return Err(error = at + ": " + reason)
+      case None -> ()
+    }
     if not isHexDigest(sha) or not isHexDigest(sigSha) {
       return Err(error = at + ": a digest is not 64 lowercase hex digits")
     }
@@ -984,6 +1007,10 @@ pub func installPlugin(
   }
   if entry.yanked {
     return Err(error = Invalid(reason = id + " " + entry.version + " is yanked"))
+  }
+  match entryIdentityProblem(entry.id, entry.version, entry.publisher) {
+    case Some(reason) -> return Err(error = Invalid(reason = "the catalogue entry for " + id + ": " + reason))
+    case None -> ()
   }
   val zipLocation = resolveLocation(followed.location, entry.url)
   val zipBytes = match fetchBytes(zipLocation) { case Ok(b) -> b; case Err(e) -> return Err(error = e) }
