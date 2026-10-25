@@ -7,6 +7,7 @@
 //! disposal. `Grpc.callUnary`/`Grpc.openServerStream` are not covered here —
 //! see the long comment on `netCallUnary` in
 //! `src/_kernel/net/grpc_kernel.l` for why.
+@cfg(target = "dotnet")
 @test_module
 package Grpc.ChannelLifecycleTests
 

@@ -67,7 +67,7 @@ test "two well-formed files merge to their header union and their items, line fo
   val b = "// B header comment\n@runtime_checked\npackage P\nimport Std.Core\n\npub func b(): Int { 2 }\n"
   val r = merge(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  val expected = "@runtime_checked\npackage P\nimport Std.Core\nimport Std.String as Str\n" +
+  val expected = "//! A doc\n@runtime_checked\npackage P\nimport Std.Core\nimport Std.String as Str\n" +
     "\n\n// helper\npub func a(): Int { 1 }\n" +
     "\n" +
     "// B header comment\n\npub func b(): Int { 2 }\n"
@@ -91,6 +91,54 @@ test "two well-formed files merge to their header union and their items, line fo
     }
     li = li + 1
   }
+}
+
+test "every file's module docs reach the merged unit, in file order, one empty doc line apart" {
+  val a = "//! First file.\n//!\n//! More of the first.\n@runtime_checked\npackage P\n\npub func a(): Int { 1 }\n"
+  val b = "//! Second file.\n@runtime_checked\npackage P\n\npub func b(): Int { 2 }\n"
+  val r = merge(a, b)
+  assertEqual(diagSummary(r), "", "no diagnostics")
+  assertTrue(
+    Str.startsWith(
+      r.source,
+      "//! First file.\n//!\n//! More of the first.\n//!\n//! Second file.\n@runtime_checked\npackage P\n"
+    ),
+    r.source
+  )
+  val parsed = Parser.parse(r.source)
+  assertEqualInt(parsed.diagnostics.count, 0, "the merged unit parses")
+  assertEqualInt(parsed.file.moduleDoc.count, 5, "five module doc lines")
+  assertEqualInt(r.origins.count, Str.split(r.source, "\n").length, "one origin per merged line")
+  assertEqual(r.origins[4].path, "b.l", "b's doc line file")
+  assertEqualInt(r.origins[4].originalLine, 1, "b's doc line")
+  assertEqual(r.origins[3].path, "", "the separator belongs to no file")
+}
+
+test "module docs keep non-ASCII text, including after it, and CRLF files" {
+  val a = "//! Résumé ✓ 😀 done\r\n//! after\r\n@runtime_checked\r\npackage P\r\n\r\npub func a(): Int { 1 }\r\n"
+  val b = "//! Zweite Datei: ñ\r\npackage P\r\npub func b(): Int { 2 }\r\n"
+  val r = merge(a, b)
+  assertEqual(diagSummary(r), "", "no diagnostics")
+  assertTrue(
+    Str.startsWith(r.source, "//! Résumé ✓ 😀 done\n//! after\n//!\n//! Zweite Datei: ñ\n@runtime_checked\npackage P\n"),
+    r.source
+  )
+  assertTrue(not Str.contains(r.source, "\r"), "newlines are normalised")
+  val parsed = Parser.parse(r.source)
+  assertEqualInt(parsed.diagnostics.count, 0, "the merged unit parses")
+  assertEqualInt(parsed.file.items.count, 2, "both functions survive")
+}
+
+test "a file with no module doc adds no separator, and a gated-out file contributes no doc" {
+  val a = "package P\n\npub func a(): Int { 1 }\n"
+  val b = "//! Only b.\npackage P\n\npub func b(): Int { 2 }\n"
+  val r = merge(a, b)
+  assertTrue(Str.startsWith(r.source, "//! Only b.\npackage P\n"), r.source)
+  val g = "//! Gated.\n@cfg(target = \"jvm\")\npackage P\n\npub func g(): Int { 3 }\n"
+  val r2 = mergeFor(g, b, "dotnet")
+  assertEqual(diagSummary(r2), "", "no diagnostics")
+  assertTrue(not Str.contains(r2.source, "Gated."), "a gated-out file's docs are not carried: " + r2.source)
+  assertTrue(Str.startsWith(r2.source, "//! Only b.\n"), r2.source)
 }
 
 test "a block comment that an annotation line opens and closes stays a comment" {
@@ -337,7 +385,7 @@ test "a discovered package of one file is rebuilt in the merged shape" {
   val paths: List[String] = newList()
   paths.add("x.l")
   val r = PM.mergeDiscoveredPackage("Std.X", only, paths, "dotnet")
-  assertEqual(r.source, "@io\npackage Std.X\nimport Std.Core\n\n\npub func f(): Int { 1 }\n", "rebuilt")
+  assertEqual(r.source, "//! doc\n@io\npackage Std.X\nimport Std.Core\n\n\npub func f(): Int { 1 }\n", "rebuilt")
 }
 
 test "scanHeader reads the package and imports past comments and annotation strings" {

@@ -41,6 +41,10 @@
 //!   }
 //!
 //! See docs/37-grpc-proto-sketch.md §6.2.
+//!
+//! Like `Grpc`, which it imports, this package applies to the dotnet target
+//! only until the JVM kernel exists (#8357).
+@cfg(target = "dotnet")
 @runtime_checked
 @io
 package Grpc.Aspects

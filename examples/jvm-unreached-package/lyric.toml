@@ -1,0 +1,18 @@
+[package]
+name    = "UnreachedPackage"
+version = "0.1.0"
+
+[project]
+name            = "UnreachedPackage"
+output          = "single"
+output_assembly = "UnreachedPackage.dll"
+
+# "Unreached" is listed but no other package imports it: a project build
+# type-checks and emits every listed package that applies to the target, so
+# its type error is reported on every target (#8357).  "DotnetOnly" is gated
+# to the dotnet target by a file-level @cfg, which is how a package declares
+# that it does not apply to the JVM.
+[project.packages]
+"App"        = "src/app.l"
+"Unreached"  = "src/unreached.l"
+"DotnetOnly" = "src/dotnet_only.l"

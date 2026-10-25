@@ -105,6 +105,19 @@ expect_proved "JVM-only package, --target jvm, single file" "$lyric_bin" prove -
 expect_type_error "feature-gated package, default features" T0020 "$lyric_bin" prove "$tc/featured/src/p/b_logic.l"
 expect_proved "feature-gated package, --features extra" "$lyric_bin" prove --features extra "$tc/featured/src/p/b_logic.l"
 
+# #8311: the check runs the passes the target's own build runs.  The native
+# bridge synthesises no `@stubbable` stubs (docs/59 §9.2), so `lyric build
+# --target native` rejects a program that uses one with T0020, and so does
+# `lyric prove --target native`; dotnet and the JVM synthesise it.
+expect_proved "stubbable use, dotnet" "$lyric_bin" prove "$tc/stubbable.l"
+expect_proved "stubbable use, --target jvm" "$lyric_bin" prove --target jvm "$tc/stubbable.l"
+expect_type_error "stubbable use, --target native" T0020 "$lyric_bin" prove --target native "$tc/stubbable.l"
+grep -q "unknown name 'SourceStub'" "$err" || fail "stubbable use, --target native: expected the build's own message"
+rc="$(run "$lyric_bin" build --target native "$tc/stubbable.l" -o "$proofs/stubbable-native")"
+[ "$rc" -ne 0 ] || fail "stubbable use: expected the native build to reject it too"
+grep -q "unknown name 'SourceStub'" "$err" || fail "stubbable use: expected the native build's message to be the check's"
+echo "PASS: stubbable use, the native build agrees"
+
 # A dependency that is not built stops the proof, as it stops a build.
 rc="$(run "$lyric_bin" prove "$tc/unbuiltdep/app/src/app.l")"
 [ "$rc" -ne 0 ] || fail "unbuilt dependency: expected a non-zero exit"

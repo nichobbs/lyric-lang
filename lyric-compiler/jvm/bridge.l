@@ -346,7 +346,7 @@ pub func compileToJar(
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
   val file0 = resolveTypeAliases(
-    match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, plugins, true, true, true, "", noLegacyOrigins) {
+    match pipeExpandAndRewriteFor("jvm", cfgFile, weWires, weConfigs, plugins, "", noLegacyOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2699,7 +2699,7 @@ pub func compileProjectToJarBundledWithRestored(
       case Some(o) -> o
       case None -> newList()
     }
-    val rewritten = match pipeExpandAndRewrite(userFiles[wei], weWires, weConfigs, plugins, true, true, true, weiPkgLabel, weiPkgOrigins) {
+    val rewritten = match pipeExpandAndRewriteFor("jvm", userFiles[wei], weWires, weConfigs, plugins, weiPkgLabel, weiPkgOrigins) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2895,6 +2895,9 @@ pub func compileProjectToJarBundledWithRestored(
   // and codegen failures are always fatal (never the stdlib J003 skip),
   // and their type-check advisories are echoed.
   val projectOwners: Map[String, Bool] = newMap()
+  // Every sibling project package, dotted: all of them are built, not only
+  // those the entry package's imports reach (#8357).
+  val siblingPackageNames: List[String] = newList()
   var svi = 0
   while svi < userFiles.count {
     if svi != mainIdx {
@@ -2924,6 +2927,12 @@ pub func compileProjectToJarBundledWithRestored(
         stdlibByPkg.add(spn, sf)
       }
       projectOwners.add(pkgJvmOwner(sf.packageDecl.path), true)
+      // A path dependency compiled from source rides in as a sibling too; it
+      // stays reachability-driven, as before (its dotnet-only or Maven-backed
+      // packages are not this project's to build).
+      if not depPkgNames.containsKey(spn) {
+        siblingPackageNames.add(spn)
+      }
     }
     svi = svi + 1
   }
@@ -3193,6 +3202,14 @@ pub func compileProjectToJarBundledWithRestored(
   // (D-progress-968).
   if dottedPath(userFile.packageDecl.path) != "Std.Core" {
     worklist.add("Std.Core")
+  }
+  // A manifest's packages are all part of the build, as on dotnet: one the
+  // entry package does not import is still type-checked and emitted, so its
+  // diagnostics are not lost (#8357).  A package that does not apply to this
+  // target is excluded by its own file-level `@cfg(target = ...)`, which
+  // leaves it empty here, never by an accident of reachability.
+  for sibling in siblingPackageNames {
+    worklist.add(sibling)
   }
   // `Std.EnvironmentHost` (#7594): every `config { }` block's generated JVM
   // `<clinit>` reads `Std.EnvironmentHost.envOverlay` directly (mirroring

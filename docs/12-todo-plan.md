@@ -96,9 +96,10 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
    sibling-file record fields (#8306), Float as Real (#8141), no heap model
    (#8110).  The verifier must fail closed; these are the unsound ones.
 6. **Silent build-system behaviour (`build-system-toolchain` 10).**  JVM project
-   builds skip unreachable packages so type errors are lost (#8357),
+   builds skip unreachable packages so type errors are lost (fixed, #8357),
    `--features` ignores undeclared features (#8362), CLI ignores unknown flags
-   (#8321), `prove --target jvm/native` uses the MSIL front end (#8311),
+   (#8321), `prove --target jvm/native` uses the MSIL front end (the target's
+   pre-check rewrites now match; stdlib preparation open, #8311),
    `prove` and build disagree on package files (#8245).
 7. **Security-labelled issues** (#7253, #7249, #7247, #7241, #7240, #7239,
    #7236, #7231 HPACK bomb).  Review and close or fix before any v1.0 tag.

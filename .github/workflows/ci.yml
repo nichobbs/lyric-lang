@@ -288,6 +288,13 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/buildinfo-project-version-define.sh
+      # A project build checks and emits every listed package that applies to
+      # the target, reachable from the entry package or not (#8357).
+      - name: Project builds cover every package of the manifest (#8357)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          LYRIC_BIN="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric" bash scripts/ci/project-all-packages.sh
       # Prove proof-only examples.
       - name: Prove proof-only examples (with z3)
         if: steps.changes.outputs.has_code_changes == 'true'
