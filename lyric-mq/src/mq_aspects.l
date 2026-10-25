@@ -70,14 +70,14 @@ import Mq
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled        Bool   — master switch (default: true)
 ///   cacheKeyPrefix String — prepended to every message ID (default: "mq:idem:")
-///   ttlSeconds     Int    — how long to remember processed IDs, >= 0; 0 never
-///                           expires (default: 3600)
+///   ttlSeconds     Int    — how long to remember processed IDs, 0..=31536000
+///                           (up to one year); 0 never expires (default: 3600)
 @stable(since = "0.1")
 pub aspect Idempotent {
   config {
     enabled: Bool = true
     cacheKeyPrefix: String = "mq:idem:"
-    ttlSeconds: Int = 3600
+    ttlSeconds: Int range 0 ..= 31536000 = 3600
   }
   // No `requires: args.message.id != ""`: a message id arrives from the broker
   // / external producers, so a `requires:` clause (D118 elaborates it into a
@@ -89,10 +89,6 @@ pub aspect Idempotent {
   around(call) -> ret where TArgs has { message: Message } {
     if not enabled {
       ret = call.proceed()
-    } else if ttlSeconds < 0 {
-      // A configuration bug, raised before the handler runs: failing after
-      // it had succeeded would redeliver and process the message twice.
-      panic("Mq.Aspects.Idempotent: ttlSeconds must be >= 0 (0 = never expire), got " + ttlSeconds.toString())
     } else if args.message.id == "" {
       ret = call.proceed()
     } else {
@@ -182,12 +178,13 @@ val idempotencyLedger: IdempotencyLedger = IdempotencyLedger()
 ///
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled       Bool — master switch (default: true)
-///   maxDeliveries Int  — failed deliveries before dead-lettering, >= 1 (default: 3)
+///   maxDeliveries Int  — failed deliveries before dead-lettering, 1..=1000000
+///                   (default: 3)
 @stable(since = "0.1")
 pub aspect DeadLetter {
   config {
     enabled: Bool = true
-    maxDeliveries: Int = 3
+    maxDeliveries: Int range 1 ..= 1000000 = 3
   }
   // No `requires: args.message.id != ""`: the message arrives from the broker
   // / external producers, so a `requires:` clause (D118 elaborates it into a
@@ -200,9 +197,6 @@ pub aspect DeadLetter {
   around(call) -> ret where TArgs has { message: Message, consumer: QueueConsumer } {
     if not enabled {
       ret = call.proceed()
-    } else if maxDeliveries < 1 {
-      // A configuration bug, raised before the handler runs (#7320).
-      panic("Mq.Aspects.DeadLetter: maxDeliveries must be >= 1, got " + maxDeliveries.toString())
     } else {
       ret = call.proceed()
       match ret {

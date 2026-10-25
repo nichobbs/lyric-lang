@@ -59,6 +59,23 @@ pub opaque type Span {
   var hasError: Bool
   var errorText: String
   var ended: Bool
+  invariant: kind >= 0 and kind <= 4
+  invariant: traceId.length == 16
+  invariant: spanId.length == 8
+}
+
+/// True when at least one byte of `bytes` is non-zero.  W3C Trace Context
+/// forbids an all-zero trace id or span id.
+@pure
+pub func hasNonZeroByte(bytes: in slice[Byte]): Bool {
+  var i = 0
+  while i < bytes.length {
+    if bytes[i] != 0u8 {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 /// Construct a new span record.  Only `OTel.startSpan` should call this;
@@ -70,7 +87,11 @@ pub func newSpanRecord(
   name: in String,
   kind: in Int,
   startNanos: in Long,
-): Span {
+): Span
+  requires: traceId.length == 16 and hasNonZeroByte(traceId)
+  requires: spanId.length == 8 and hasNonZeroByte(spanId)
+  requires: kind >= 0 and kind <= 4
+{
   Span(
     traceId = traceId,
     spanId = spanId,
@@ -121,10 +142,31 @@ pub func spanErrorMessage(s: in Span): Option[String] {
   }
 }
 
+/// Most attributes a span keeps (the OpenTelemetry default
+/// `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`); later ones are dropped.
+pub val MAX_SPAN_ATTRIBUTES: Int = 128
+
+/// Longest attribute key or value kept, in characters; longer text is
+/// truncated so one span cannot grow the export request without bound.
+pub val MAX_ATTRIBUTE_TEXT_LENGTH: Int = 4096
+
+func clampText(text: in String): String {
+  if text.length > MAX_ATTRIBUTE_TEXT_LENGTH {
+    text.substring(0, MAX_ATTRIBUTE_TEXT_LENGTH)
+  } else {
+    text
+  }
+}
+
 /// Attach a string attribute.  Mutation is visible through every other
-/// reference to the same `Span` (records are reference types).
+/// reference to the same `Span` (records are reference types).  An empty key
+/// is invalid in OTLP and is dropped, as is any attribute beyond
+/// `MAX_SPAN_ATTRIBUTES`; keys and values are cut to
+/// `MAX_ATTRIBUTE_TEXT_LENGTH` characters.
 pub func spanAddAttribute(s: in Span, key: in String, value: in String): Unit {
-  s.attributes.add(SpanAttribute(key = key, value = value))
+  if key.length > 0 and s.attributes.count < MAX_SPAN_ATTRIBUTES {
+    s.attributes.add(SpanAttribute(key = clampText(key), value = clampText(value)))
+  }
 }
 
 /// Record an error message on the span (does not end it).
@@ -135,8 +177,12 @@ pub func spanSetError(s: in Span, message: in String): Unit {
 
 /// Stamp the end timestamp.  Calling it twice just overwrites `endNanos`
 /// with the later value; `spanMarkEnded` is what makes export happen once.
-pub func spanFinish(s: in Span, endNanos: in Long): Unit {
-  s.endNanos = endNanos
+/// The wall clock can step backwards, so an `endNanos` before the start is
+/// raised to the start: a span never ends before it began.
+pub func spanFinish(s: in Span, endNanos: in Long): Unit
+  ensures: s.endNanos >= s.startNanos
+{
+  s.endNanos = if endNanos < s.startNanos { s.startNanos } else { endNanos }
 }
 
 /// Record that the span has been handed to the exporter and report whether

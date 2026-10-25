@@ -10,6 +10,8 @@ import Std.Core
 import Std.Testing
 import OTel
 import OTel.Types
+import Std.Collections
+import Std.Log
 
 // ─── Span identity ────────────────────────────────────────────────────────────
 test "startSpan generates a 16-byte trace id and an 8-byte span id" {
@@ -242,4 +244,101 @@ test "nowUnixNanos returns a positive, plausible unix-nanos value" {
   // Sanity bound: any time after 2020-01-01 in unix nanos is > 1.577e18.
   val n = nowUnixNanos()
   assertTrue(n > 1577836800000000000i64, "nowUnixNanos looks like a real post-2020 timestamp")
+}
+
+// ─── Span invariants (#7235) ─────────────────────────────────────────────────
+func fixedBytes(n: in Int, fill: in Byte): slice[Byte] {
+  var acc: List[Byte] = newList()
+  var i = 0
+  while i < n {
+    acc.add(fill)
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+test "newSpanRecord rejects a trace id that is not 16 bytes" {
+  assertPanics("short trace id", { -> val _ = newSpanRecord(fixedBytes(15, 1u8), fixedBytes(8, 1u8), "x", 0, 1i64) })
+}
+
+test "newSpanRecord rejects a span id that is not 8 bytes" {
+  assertPanics("long span id", { -> val _ = newSpanRecord(fixedBytes(16, 1u8), fixedBytes(9, 1u8), "x", 0, 1i64) })
+}
+
+test "newSpanRecord rejects an all-zero trace id or span id" {
+  assertPanics("zero trace id", { -> val _ = newSpanRecord(fixedBytes(16, 0u8), fixedBytes(8, 1u8), "x", 0, 1i64) })
+  assertPanics("zero span id", { -> val _ = newSpanRecord(fixedBytes(16, 1u8), fixedBytes(8, 0u8), "x", 0, 1i64) })
+}
+
+test "newSpanRecord rejects a kind outside 0..=4" {
+  assertPanics("kind 5", { -> val _ = newSpanRecord(fixedBytes(16, 1u8), fixedBytes(8, 1u8), "x", 5, 1i64) })
+  assertPanics("kind -1", { -> val _ = newSpanRecord(fixedBytes(16, 1u8), fixedBytes(8, 1u8), "x", -1, 1i64) })
+}
+
+test "startSpan generates ids that are never all zero" {
+  var i = 0
+  while i < 20 {
+    val span = startSpan("nonzero.op", 0)
+    assertTrue(hasNonZeroByte(spanTraceId(span)), "trace id has a non-zero byte")
+    assertTrue(hasNonZeroByte(spanSpanId(span)), "span id has a non-zero byte")
+    i = i + 1
+  }
+}
+
+test "spanFinish never leaves endNanos before startNanos" {
+  val span = newSpanRecord(fixedBytes(16, 1u8), fixedBytes(8, 1u8), "clock.step", 0, 5000i64)
+  spanFinish(span, 1000i64)
+  assertEqualLong(spanEndNanos(span), 5000i64, "an end before the start is raised to the start")
+  spanFinish(span, 9000i64)
+  assertEqualLong(spanEndNanos(span), 9000i64, "a later end is kept")
+}
+
+// ─── Attribute bounds (#7235) ────────────────────────────────────────────────
+test "setSpanAttribute keeps at most MAX_SPAN_ATTRIBUTES attributes" {
+  val span = startSpan("many.attrs", 0)
+  var i = 0
+  while i < MAX_SPAN_ATTRIBUTES + 10 {
+    setSpanAttribute(span, "k" + i.toString(), "v")
+    i = i + 1
+  }
+  assertEqualInt(spanAttributes(span).count, MAX_SPAN_ATTRIBUTES, "attributes beyond the cap are dropped")
+  assertEqual(spanAttributes(span)[0].key, "k0", "the earliest attributes are the ones kept")
+}
+
+test "setSpanAttribute drops an empty key and truncates oversized text" {
+  val span = startSpan("clamp.attrs", 0)
+  setSpanAttribute(span, "", "no key")
+  assertEqualInt(spanAttributes(span).count, 0, "an empty key is dropped")
+  var big = ""
+  var i = 0
+  while i < MAX_ATTRIBUTE_TEXT_LENGTH + 100 {
+    big = big + "x"
+    i = i + 1
+  }
+  setSpanAttribute(span, "big", big)
+  assertEqualInt(spanAttributes(span)[0].value.length, MAX_ATTRIBUTE_TEXT_LENGTH, "the value is cut to the limit")
+}
+
+// ─── Sampling and log levels (#7235) ─────────────────────────────────────────
+test "shouldSample honours the rate at its bounds and in between" {
+  assertTrue(shouldSample(1.0, 0.999), "rate 1.0 samples every draw")
+  assertFalse(shouldSample(0.0, 0.0), "rate 0.0 samples nothing, not even a zero draw")
+  assertTrue(shouldSample(0.5, 0.25), "a draw below the rate is sampled")
+  assertFalse(shouldSample(0.5, 0.75), "a draw above the rate is not")
+}
+
+func levelName(l: in LogLevel): String {
+  match l {
+    case LogLevel.Debug -> "debug"
+    case LogLevel.Info -> "info"
+    case LogLevel.Warn -> "warn"
+    case LogLevel.Error -> "error"
+  }
+}
+
+test "logLevelFor maps the documented level strings" {
+  assertEqual(levelName(logLevelFor("debug")), "debug", "debug")
+  assertEqual(levelName(logLevelFor("warn")), "warn", "warn")
+  assertEqual(levelName(logLevelFor("info")), "info", "info")
+  assertEqual(levelName(logLevelFor("loud")), "info", "unknown levels log at info")
 }

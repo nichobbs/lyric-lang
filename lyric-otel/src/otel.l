@@ -46,6 +46,17 @@ pub enum MetricUnit {
 }
 
 // ─── Tracing ─────────────────────────────────────────────────────────────────
+/// Random bytes with at least one non-zero byte, as W3C Trace Context requires
+/// of trace and span ids (an all-zero draw has probability 2^-64 or less, so
+/// the retry loop effectively never repeats).
+func nonZeroRandomBytes(count: in Int): slice[Byte] {
+  var bytes = secureGetBytes(count)
+  while not hasNonZeroByte(bytes) {
+    bytes = secureGetBytes(count)
+  }
+  bytes
+}
+
 /// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
 ///
 /// Always succeeds: unlike the earlier `System.Diagnostics.ActivitySource`
@@ -55,8 +66,8 @@ pub enum MetricUnit {
 pub func startSpan(operationName: String, kind: Int): Span
   requires: kind >= 0 and kind <= 4
 {
-  val traceId = secureGetBytes(16)
-  val spanId = secureGetBytes(8)
+  val traceId = nonZeroRandomBytes(16)
+  val spanId = nonZeroRandomBytes(8)
   newSpanRecord(traceId, spanId, operationName, kind, nowUnixNanos())
 }
 
@@ -104,6 +115,32 @@ pub func recordHistogram(name: String, value: Double, unit: String): Unit {
   }
 }
 
+// ─── Sampling and log levels ────────────────────────────────────────────────
+/// Head-based sampling decision: a draw `unit` in `[0, 1)` is sampled when it
+/// is below `rate`, so `rate` 1.0 samples everything and 0.0 nothing.
+@stable(since = "0.2")
+pub func shouldSample(rate: Float, unit: Float): Bool {
+  unit < rate
+}
+
+/// A uniform draw in `[0, 1)` from the secure random source (24 bits).
+func randomUnit(): Float {
+  val b = secureGetBytes(3)
+  val n = b[0].toInt() * 65536 + b[1].toInt() * 256 + b[2].toInt()
+  n.toFloat() / 16777216.0
+}
+
+/// Map a `RequestLogging.level` string onto a log level.  `"debug"`, `"info"`
+/// and `"warn"` are the documented values; anything else logs at `Info`.
+@stable(since = "0.2")
+pub func logLevelFor(level: String): StdLog.LogLevel {
+  match level {
+    case "debug" -> StdLog.LogLevel.Debug
+    case "warn" -> StdLog.LogLevel.Warn
+    case _ -> StdLog.LogLevel.Info
+  }
+}
+
 // ─── Aspect templates ────────────────────────────────────────────────────────
 /// Map `SpanKind` to its ordinal (also its OTel-wire-mappable value —
 /// see `OTel.Otlp.Codec.kindToOtlpWire`).
@@ -120,21 +157,19 @@ func spanKindToInt(k: SpanKind): Int {
 /// Wrap every matched call in an OTel trace span.
 /// Config fields:
 ///   enabled    — gate the whole aspect at startup; default true.
-///   sampleRate — fraction of calls to trace (0.0–1.0); default 1.0.
+///   sampleRate — probability that a call is traced, 0.0..=1.0; default 1.0.
 ///   spanKind   — OTel SpanKind for every span; default Internal.
 pub aspect Tracing {
   config {
     enabled: Bool = true
-    sampleRate: Float = 1.0
+    sampleRate: Float range 0.0 ..= 1.0 = 1.0
     spanKind: SpanKind = SpanKind.Internal
   }
-  // sampleRate controls what fraction of calls are traced (0.0–1.0).
-  // Values below 1.0 are applied via a simple hash gate on the call
-  // name; use OTel SDK env vars (OTEL_TRACES_SAMPLER,
-  // OTEL_TRACES_SAMPLER_ARG) for head-based sampling at the exporter
-  // level when more sophisticated strategies are needed.
+  // sampleRate is the probability that a call is traced: each call draws
+  // independently, so 0.5 traces about half of them and 0.0 none.  An
+  // unsampled call runs untraced.
   around(call) -> ret {
-    if not enabled {
+    if not enabled or (sampleRate < 1.0 and not shouldSample(sampleRate, randomUnit())) {
       ret = call.proceed()
     } else {
       val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
@@ -164,7 +199,8 @@ pub aspect Metrics {
 /// Log entry / exit for every matched call at a configurable level.
 /// Config fields:
 ///   enabled — gate the whole aspect; default true.
-///   level   — log level string ("debug" | "info" | "warn"); default "debug".
+///   level   — log level string ("debug" | "info" | "warn"; anything else logs
+///             at info); default "debug".
 pub aspect RequestLogging {
   config {
     enabled: Bool = true
@@ -174,9 +210,10 @@ pub aspect RequestLogging {
     if not enabled {
       ret = call.proceed()
     } else {
-      StdLog.info("enter: " + call.qualifiedName)
+      val lvl = logLevelFor(level)
+      StdLog.log(lvl, "enter: " + call.qualifiedName, [])
       ret = call.proceed()
-      StdLog.info("exit: " + call.qualifiedName)
+      StdLog.log(lvl, "exit: " + call.qualifiedName, [])
     }
   }
 }

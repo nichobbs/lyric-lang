@@ -57,10 +57,8 @@ func esAuthHeader(apiKey: in String, username: in String, password: in String): 
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
 /// Build an HttpConfig for `url` and probe cluster reachability with
-/// `GET /`.  `connectTimeoutMs` / `requestTimeoutMs` are accepted for
-/// interface parity with the old kernel signature; per-request timeouts
-/// are not yet threaded through `Std.Http` (tracked as a `Std.Http` gap,
-/// not a `Search`-specific one).
+/// `GET /`.  `connectTimeoutMs` bounds the probe and `requestTimeoutMs`
+/// every request made through the returned config; both must be positive.
 pub async func backendConnectElasticsearch(
   url: in String,
   apiKey: in String,
@@ -70,23 +68,22 @@ pub async func backendConnectElasticsearch(
   requestTimeoutMs: in Int,
 ): Result[HttpConfig, SearchError]
   requires: url.length > 0
+  requires: connectTimeoutMs > 0
+  requires: requestTimeoutMs > 0
 {
   val authHeader = esAuthHeader(apiKey, username, password)
-  val cfg = HttpConfig(
+  val headerName = if authHeader.length > 0 { "Authorization" } else { "" }
+  val probeCfg = HttpConfig(
     client = defaultClient(),
     baseUrl = url,
-    authHeaderName = "Authorization",
-    authHeaderValue = authHeader
+    authHeaderName = headerName,
+    authHeaderValue = authHeader,
+    requestTimeoutMs = connectTimeoutMs
   )
-  val probeCfg = if authHeader.length > 0 {
-    cfg
-  } else {
-    HttpConfig(client = cfg.client, baseUrl = cfg.baseUrl, authHeaderName = "", authHeaderValue = "")
-  }
   val checked = sendRequest(probeCfg, GET, "/", None, "CONNECT_FAILED")
   match checked {
     case Err(e) -> return Err(error = e)
-    case Ok(_) -> return Ok(value = probeCfg)
+    case Ok(_) -> return Ok(value = HttpConfig.withRequestTimeout(probeCfg, requestTimeoutMs))
   }
 }
 

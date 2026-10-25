@@ -67,26 +67,28 @@ val msTaskMaxPolls: Int = 20
 /// Build an HttpConfig for `url` and probe reachability with
 /// `GET /health`.
 pub async func backendConnectMeilisearch(
-  url: in String, apiKey: in String, connectTimeoutMs: in Int
+  url: in String,
+  apiKey: in String,
+  connectTimeoutMs: in Int,
+  requestTimeoutMs: in Int,
 ): Result[HttpConfig, SearchError]
   requires: url.length > 0
+  requires: connectTimeoutMs > 0
+  requires: requestTimeoutMs > 0
 {
   val authHeader = if apiKey.length > 0 { "Bearer " + apiKey } else { "" }
-  val cfg = HttpConfig(
+  val headerName = if authHeader.length > 0 { "Authorization" } else { "" }
+  val probeCfg = HttpConfig(
     client = defaultClient(),
     baseUrl = url,
-    authHeaderName = "Authorization",
-    authHeaderValue = authHeader
+    authHeaderName = headerName,
+    authHeaderValue = authHeader,
+    requestTimeoutMs = connectTimeoutMs
   )
-  val probeCfg = if authHeader.length > 0 {
-    cfg
-  } else {
-    HttpConfig(client = cfg.client, baseUrl = cfg.baseUrl, authHeaderName = "", authHeaderValue = "")
-  }
   val checked = sendRequest(probeCfg, GET, "/health", None, "CONNECT_FAILED")
   match checked {
     case Err(e) -> return Err(error = e)
-    case Ok(_) -> return Ok(value = probeCfg)
+    case Ok(_) -> return Ok(value = HttpConfig.withRequestTimeout(probeCfg, requestTimeoutMs))
   }
 }
 

@@ -922,3 +922,44 @@ test "integration: live round trip when a real engine is configured, otherwise s
     }
   }
 }
+
+// ─── Timeouts (#7236) ────────────────────────────────────────────────────────
+test "timeoutProblem accepts positive timeouts and rejects non-positive ones" {
+  match Search.timeoutProblem(1000, 1000) {
+    case Some(_) -> assertTrue(false, "positive timeouts are fine")
+    case None -> ()
+  }
+  match Search.timeoutProblem(0, 1000) {
+    case Some(e) -> assertEqual(e.code, "INVALID_TIMEOUT", "connect timeout 0")
+    case None -> assertTrue(false, "connectTimeoutMs 0 must be rejected")
+  }
+  match Search.timeoutProblem(1000, -1) {
+    case Some(e) -> assertEqual(e.code, "INVALID_TIMEOUT", "request timeout -1")
+    case None -> assertTrue(false, "requestTimeoutMs -1 must be rejected")
+  }
+}
+
+@cfg(feature = "elasticsearch")
+func probeZeroTimeoutConnect(): Result[SearchClient, SearchError] {
+  await Search.connectElasticsearch("http://127.0.0.1:1", "", "", "", 0, 1000)
+}
+
+@cfg(feature = "meilisearch")
+func probeZeroTimeoutConnect(): Result[SearchClient, SearchError] {
+  await Search.connectMeilisearchWithTimeouts("http://127.0.0.1:1", "", 0, 1000)
+}
+
+test "connect with a zero timeout is Err(INVALID_TIMEOUT), not a hang or a panic" {
+  match probeZeroTimeoutConnect() {
+    case Err(e) -> assertEqual(e.code, "INVALID_TIMEOUT", "rejected before any request")
+    case Ok(_) -> assertTrue(false, "a zero connect timeout must be rejected")
+  }
+}
+
+test "an unreachable backend still reports ConnectionFailed under the request deadline" {
+  val cfg = HttpConfig.withRequestTimeout(HttpConfig.new(defaultClient(), "http://127.0.0.1:1", "", ""), 2000)
+  match Search.sendRequestRaw(cfg, GET, "/", "PROBE") {
+    case Err(e) -> assertEqual(e.code, "PROBE", "the failure carries the caller's code")
+    case Ok(_) -> assertTrue(false, "nothing listens on port 1")
+  }
+}
