@@ -231,6 +231,25 @@ pub func listDirs(dir: in String): Result[List[String], IOError] {
   hostListDirsResult(dir)
 }
 
+/// List every entry directly inside `dir` (non-recursive), whatever its kind:
+/// files, directories, symbolic links (including one whose target is
+/// missing) and any other entry. Pair it with `entryKind`, which does not
+/// follow links, to walk a tree without leaving it.
+///
+/// Returns `Err(InvalidPath)` for an empty path, `Err(DirectoryNotFound)` when
+/// `dir` is not a directory, and `Err(IoError)` for any other host failure
+/// (permission, …).
+@experimental
+pub func listEntries(dir: in String): Result[List[String], IOError] {
+  if dir.length == 0 {
+    return Err(error = InvalidPath(path = dir, reason = "path must not be empty"))
+  }
+  if not hostDirectoryExists(dir) {
+    return Err(error = DirectoryNotFound(path = dir))
+  }
+  hostListEntriesResult(dir)
+}
+
 /// Get the modification time for `path` (a file or a directory).
 ///
 /// Returns `Err(InvalidPath)` for empty paths, `Err(FileNotFound)` if
@@ -267,6 +286,39 @@ pub func stat(path: in String): Result[FileStat, IOError] {
   match hostGetLastWriteTimeUtcResult(path) {
     case Ok(modifiedAt) -> Ok(value = FileStat(modifiedAt = modifiedAt))
     case Err(e) -> Err(error = e)
+  }
+}
+
+/// What a path names, looked at without following a symbolic link.
+pub enum EntryKind {
+  case Missing
+  case RegularFile
+  case Directory
+  case SymbolicLink
+  /// A FIFO, socket or device node.
+  case Other
+}
+
+/// What `path` itself is: a link is `SymbolicLink` whatever it points at,
+/// including a link whose target does not exist. On .NET, which reports an
+/// entry only as a directory, a link or a file, a FIFO, socket or device
+/// node is `RegularFile` rather than `Other` (#8578).
+@experimental
+pub func entryKind(path: in String): EntryKind {
+  if path.length == 0 {
+    return Missing
+  }
+  val code = hostPathKindNoFollow(path)
+  if code == 1 {
+    RegularFile
+  } else if code == 2 {
+    Directory
+  } else if code == 3 {
+    SymbolicLink
+  } else if code == 4 {
+    Other
+  } else {
+    Missing
   }
 }
 

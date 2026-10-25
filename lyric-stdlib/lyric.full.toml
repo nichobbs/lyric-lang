@@ -213,3 +213,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # the compiler's `lyric plugin` commands imports it, so it is not
 # `seed: current`.
 "Std.Ed25519" = "std/ed25519.l"
+
+# Tier 18 — plugin artifact signatures (D248): the canonical listing,
+# `plugin.sig`, publisher keys and verification.  Appended last for the same
+# reason as Tier 8; it imports `Std.Ed25519` (Tier 17).  `Std.Plugin` and the
+# compiler's `lyric plugin` commands import it, so it is not `seed: current`.
+"Std.PluginSign" = "std/plugin_sign.l"

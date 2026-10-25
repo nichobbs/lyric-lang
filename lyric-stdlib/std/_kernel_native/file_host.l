@@ -93,6 +93,9 @@ extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 // target (which may be outside the tree being removed).
 extern func rtIsDirNoFollow(path: NativePtr[Byte]): Int = "lyric_path_is_dir_nofollow"
 
+// lstat-based classification: LYRIC_PATH_KIND_* in lyric_rt.h.
+extern func rtPathKindNoFollow(path: NativePtr[Byte]): Int = "lyric_path_kind_nofollow"
+
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
   val c = toC(path)
@@ -326,12 +329,37 @@ pub func hostIsDirSymlink(path: in String): Bool {
   follows == 1 and direct == 0
 }
 
+/// What `path` itself is, without following a link: 0 missing, 1 regular
+/// file, 2 directory, 3 symbolic link, 4 other (a FIFO, socket or device).
+@unsafe_ffi
+pub func hostPathKindNoFollow(path: in String): Int {
+  val c = toC(path)
+  val kind = rtPathKindNoFollow(c)
+  freeC(c)
+  kind
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   listEntriesByKind(dir, "2")
 }
 
 pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
   listEntriesByKind(dir, "1")
+}
+
+/// Every entry directly inside `dir`, of any kind (files, directories, links,
+/// including a link whose target is missing), as paths under `dir`.
+pub func hostListEntriesResult(dir: in String): Result[List[String], IOError] {
+  match listEntryNamesNative(dir) {
+    case Ok(names) -> {
+      val acc: List[String] = newList()
+      for n in names {
+        acc.add(dir + "/" + n)
+      }
+      Ok(value = acc)
+    }
+    case Err(e) -> Err(error = e)
+  }
 }
 
 @unsafe_ffi

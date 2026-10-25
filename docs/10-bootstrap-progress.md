@@ -427,9 +427,11 @@ deferred to Phase 3 by design.
   `lyric_wasmhost` shim over a dynamically loaded libwasmtime 49), with call
   timeouts enforced by epoch interruption and memory capped per store;
   Windows hosts report it unavailable (#8542). Signing and per-application
-  catalogues are specced in D248 (phases P7 and P8); the first piece,
-  `Std.Ed25519` (pure-Lyric Ed25519 on dotnet, the JVM and native), has
-  shipped.
+  catalogues are specced in D248 (phases P7 and P8). Shipped so far:
+  `Std.Ed25519` (pure-Lyric Ed25519 on dotnet, the JVM and native),
+  `Std.PluginSign` and `lyric plugin keygen`/`sign`/`verify`/`pack
+  --sign-key` (D263 narrows listing paths to printable ASCII). Hosts do not
+  verify signatures at load yet.
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`

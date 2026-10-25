@@ -4,8 +4,10 @@
 #
 #   1. The custom source generator example (generators are the compiler's own
 #      plugin point): scripts/ci/source-generator-e2e.sh.
-#   2. Std.Plugin's manifest, payload and boundary-error tests on dotnet and
-#      the JVM (lyric-stdlib/tests/plugin_manifest_tests.l).
+#   2. Std.Plugin's manifest, payload and boundary-error tests and
+#      Std.PluginSign's listing and signature tests on dotnet and the JVM
+#      (lyric-stdlib/tests/plugin_manifest_tests.l, plugin_sign_tests.l), and
+#      `lyric plugin keygen`/`sign`/`verify` (scripts/ci/plugin-sign-e2e.sh).
 #   3. The runtime against a real plugin process, every pair of a dotnet or
 #      JVM host and a dotnet or JVM plugin (scripts/ci/plugin-e2e.sh).
 #   4. A plugin written with the D207 annotations against the generated host
@@ -50,7 +52,9 @@ bash scripts/ci/source-generator-e2e.sh
 
 for target in dotnet jvm; do
   "$lyric_bin" test lyric-stdlib/tests/plugin_manifest_tests.l --target "$target"
+  "$lyric_bin" test lyric-stdlib/tests/plugin_sign_tests.l --target "$target"
 done
+bash scripts/ci/plugin-sign-e2e.sh "$lyric_bin"
 
 for host in dotnet jvm; do
   for plugin in dotnet jvm; do

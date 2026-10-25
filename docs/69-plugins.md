@@ -908,17 +908,20 @@ process or wasm mode.
 
 ## 12. Distribution and trust
 
-_Specced in D248 (Q-PLG-006, Q-PLG-007); not yet implemented (P7, P8).
-Until then a host loads the artifact directories its owner put on its plugin
-path, and its `GrantPolicy` sees each manifest's `publisher` unverified._
+_Specced in D248 (Q-PLG-006, Q-PLG-007), listing paths narrowed by D263.
+Signing tools ship (`Std.PluginSign`, `lyric plugin keygen`/`sign`/`verify`,
+`pack --sign-key`); load-time verification and catalogues are still to come
+(P7, P8). Until then a host loads the artifact directories its owner put on
+its plugin path, and its `GrantPolicy` sees each manifest's `publisher`
+unverified._
 
 - **Signing.** An artifact carries `plugin.sig`: an Ed25519 signature
   (`Std.Ed25519`, pure Lyric on every target) by the publisher's key over the
   artifact's id, version and a SHA-256 of every file in the directory, in a
   canonical listing (D248 Decisions 4 and 5). `Std.Plugin` verifies it at load,
   before points are matched and before `GrantPolicy` runs, which then sees a
-  verified publisher. Listing paths may not contain control characters, and
-  the signature type is part of the signed message. `PluginHostConfig.trust` holds pinned publisher keys,
+  verified publisher. Listing paths are printable ASCII other than `\`
+  (D263), and the signature type is part of the signed message. `PluginHostConfig.trust` holds pinned publisher keys,
   followed catalogues and the unsigned policy (`Refuse` by default,
   `AllowSandboxed` for development); trusted payloads always need a signature
   (`K0105`-`K0110`).
@@ -1118,7 +1121,7 @@ plugin and a screen that uses it.
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
-| P7 | Signing (§12, D248): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | In progress: `Std.Ed25519` done |
+| P7 | Signing (§12, D248, D263): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | In progress: `Std.Ed25519`, `Std.PluginSign` and `lyric plugin keygen`/`sign`/`verify`/`pack --sign-key` done |
 | P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls

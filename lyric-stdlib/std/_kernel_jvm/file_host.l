@@ -337,12 +337,47 @@ pub func hostIsDirSymlink(path: in String): Bool {
   f.isDirectory() and isSymlinkJvm(f)
 }
 
+/// What `path` itself is, without following a link: 0 missing, 1 regular
+/// file, 2 directory, 3 symbolic link, 4 other (a FIFO, socket or device;
+/// `File.isFile` is true only for a regular file).
+pub func hostPathKindNoFollow(path: in String): Int {
+  val f = JFile.new(path)
+  if isSymlinkJvm(f) {
+    return 3
+  }
+  if f.isDirectory() {
+    return 2
+  }
+  if f.isFile() {
+    return 1
+  }
+  if f.exists() {
+    return 4
+  }
+  0
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   try {
     val raw = hostEnumerateFiles(dir)
     val acc: List[String] = newListWithCapacity(raw.length)
     for f in raw {
       acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+/// Every entry directly inside `dir`, of any kind (files, directories, links,
+/// including a link whose target is missing), as paths under `dir`.
+pub func hostListEntriesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFileSystemEntries(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for e in raw {
+      acc.add(e)
     }
     Ok(value = acc)
   } catch Bug as b {

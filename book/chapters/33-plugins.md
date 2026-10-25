@@ -362,6 +362,27 @@ Each target needs its toolchain when packing: the .NET SDK, a JDK 21 or later,
 also `wasm-tools` and the preview1 reactor adapter. A project with
 `[maven]` dependencies cannot be packed for `jvm`.
 
+### Signing a plugin
+
+A publisher signs an artifact so a host can tell who made it and that no file
+was changed or added since (D248). Make a key once, and keep the secret half
+somewhere only your build can read:
+
+```sh
+lyric plugin keygen -o acme          # acme.key (secret) and acme.pub
+lyric plugin pack --manifest notes-summary/lyric.toml --sign-key acme.key -o plugins
+lyric plugin verify plugins/acme.notes-summary-1.2.0 --key acme.pub
+```
+
+`--sign-key` writes `plugin.sig` into the artifact: a SHA-256 of every file in
+the directory and an Ed25519 signature over them, the plugin's id and version.
+`lyric plugin sign <dir>` signs an artifact that is already packed, such as one
+built with a generated SDK; in CI, put the secret key's text in
+`LYRIC_PLUGIN_SIGNING_KEY` and leave out `--key`. File names in a signed
+artifact are printable ASCII, and links are not allowed. `lyric plugin verify`
+checks a signature the way a host will: a changed or added file is `K0108`,
+an unknown key `K0106`, a manifest naming another publisher `K0109`.
+
 ## Running a plugin as WebAssembly
 
 A plugin from someone you do not trust should not run as an ordinary process.
@@ -747,8 +768,9 @@ appendix B has the table. The ones you will meet first:
 
 ## What is not supported yet
 
-- Plugin signing and a plugin registry (D207), and unloading a trusted plugin
-  (D231).
+- Hosts do not check signatures yet: `lyric plugin sign` and `verify` exist,
+  and load-time verification and per-application catalogues follow (D248).
+  Unloading a trusted plugin is not supported (D231).
 - A widget plugin's point (`WidgetPlugin` 1.0) allows no capabilities.
 - A process or wasm-module plugin that ignores the cancellation of a timed-out
   call keeps its CPU until the host stops it (#8465); only a component plugin

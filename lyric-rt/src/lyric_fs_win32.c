@@ -380,6 +380,15 @@ int32_t lyric_path_real_ok(const char* path, LyricString** out) {
     return 0;
 }
 
+int32_t lyric_path_kind_nofollow(const char* path) {
+    DWORD a = attrs_nofollow(path);
+    if (a == INVALID_FILE_ATTRIBUTES) return LYRIC_PATH_KIND_MISSING;
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT) return LYRIC_PATH_KIND_LINK;
+    if (is_dir_attrs(a)) return LYRIC_PATH_KIND_DIR;
+    if (a & FILE_ATTRIBUTE_DEVICE) return LYRIC_PATH_KIND_OTHER;
+    return LYRIC_PATH_KIND_FILE;
+}
+
 /* Calls `each(name, name_len, data, ctx)` for every entry of `path` except
  * "." and ".."; 0 when the listing completed, -1 when the directory cannot
  * be read or `each` returns non-zero. */

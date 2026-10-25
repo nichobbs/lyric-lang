@@ -698,6 +698,17 @@ int32_t lyric_path_is_dir_nofollow(const char* path);
  * other failure (a link loop, permissions, memory). */
 int32_t lyric_path_real_ok(const char* path, LyricString** out);
 
+/* What `path` itself is, WITHOUT following a symbolic link (lstat; on
+ * Windows the entry's own attributes, a reparse point counting as a link).
+ * Used by the plugin signing listing (D248), which refuses links and
+ * anything that is not a regular file or directory. */
+#define LYRIC_PATH_KIND_MISSING 0
+#define LYRIC_PATH_KIND_FILE    1 /* a regular file */
+#define LYRIC_PATH_KIND_DIR     2
+#define LYRIC_PATH_KIND_LINK    3 /* a symbolic link (or Windows reparse point) */
+#define LYRIC_PATH_KIND_OTHER   4 /* a FIFO, socket or device */
+int32_t lyric_path_kind_nofollow(const char* path);
+
 /* Lists the entries of the directory at `path` (skipping "." and
  * ".."), returning a fresh rc=1 LyricList of rc=1 LyricString* names
  * (list constructed with elems_are_refs = 1). Returns NULL if the

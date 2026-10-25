@@ -1345,6 +1345,10 @@ lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm,compo
 lyric plugin pack --targets dotnet,jvm,native --trusted   # also list trusted (in-process) payloads
                                        # one payload per target; every payload's manifest must agree
 lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
+lyric plugin keygen -o acme            # acme.key (secret, mode 0600) and acme.pub (D248)
+lyric plugin sign <dir> --key acme.key # write <dir>/plugin.sig; or set LYRIC_PLUGIN_SIGNING_KEY
+lyric plugin pack --sign-key acme.key  # pack and sign in one step
+lyric plugin verify <dir> --key acme.pub [--publisher acme]   # K0105-K0109 on failure
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
                                        # generate a plugin SDK for an API package in another language
 lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
