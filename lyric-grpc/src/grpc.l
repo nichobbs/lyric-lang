@@ -33,6 +33,12 @@
 //! declare it.  The RequiresGrpcAuth aspect (Grpc.Aspects) reads args.authToken.
 //!
 //! See docs/37-grpc-proto-sketch.md.
+//!
+//! This package applies to the dotnet target only: the JVM kernel
+//! (`Grpc.Kernel.Jvm`) is a declaration-only sketch until Phase 6, so a
+//! project build for another target leaves this package empty instead of
+//! failing to compile its `jvm`-feature bodies (#8357).
+@cfg(target = "dotnet")
 @runtime_checked
 @io
 package Grpc

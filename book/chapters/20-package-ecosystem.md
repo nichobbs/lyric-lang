@@ -58,6 +58,8 @@ Output modes:
 - **`output = "single"`** — every package in `[project.packages]` compiles into one DLL named `output_assembly` (defaulting to `<name>.dll`). The bundled DLL carries one `Lyric.Contract.<Pkg>` resource per package. Cross-package calls within the project skip the binary contract round-trip and resolve through the in-process symbol table at compile time. Pair with the `internal` visibility tier (chapter 6) to expose symbols across packages within the project without leaking them to downstream consumers.
 - **`output = "per-package"`** — every package emits to its own DLL, the legacy shape the bootstrap stdlib uses. Each DLL carries one `Lyric.Contract` resource describing its own surface.
 
+Every package in `[project.packages]` is type-checked and emitted on every target, whether or not the entry package imports it; a type error in a package nothing imports still fails the build. A package that does not apply to a target says so with a file-level `@cfg(target = "dotnet")` (or `"jvm"`, `"native"`), which leaves it empty on the other targets.
+
 Auto-discovery: when `[project.packages]` is empty, `lyric build` walks the source root for any directory containing `.l` files whose `package <X>` declaration is rooted at the project's `name`.
 
 The `[project]` section is optional; manifests without it use the legacy single-package compilation flow.

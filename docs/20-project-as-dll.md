@@ -218,6 +218,18 @@ Cross-package calls within the project skip the contract-metadata
 round-trip and resolve through the in-process symbol table directly,
 since both ends are visible to the emitter at the same time.
 
+### 4.1 Every listed package is built, on every target
+
+A project build type-checks and emits every package `[project.packages]`
+lists, on `--target dotnet` and `--target jvm` alike, whether or not the
+entry package's imports reach it (#8357).  A package that does not apply
+to a target says so itself: a file-level `@cfg(target = "dotnet")` (or
+`jvm`, `native`) erases every item of its files on the other targets
+(docs/19 §4), so the package is empty there and its kernel code is never
+type-checked or emitted.  Reachability from the entry package never
+decides whether a package is checked; it decides only which standard
+library packages are bundled.
+
 ## 5. `lyric publish`
 
 `lyric publish` for `output = "single"` ships the project as one DLL

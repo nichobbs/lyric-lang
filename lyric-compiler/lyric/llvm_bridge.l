@@ -1359,7 +1359,7 @@ pub func compileToNativeWithFeatures(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(shimFile, plugins)
-  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, plugins, true, false, false, path, noOrigins) {
+  val userFile0 = match pipeExpandAndRewriteFor("native", shimFile, noWires, noConfigs, plugins, path, noOrigins) {
     case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
     case None -> return false
   }
@@ -1870,7 +1870,7 @@ pub func compileProjectToNativeWithShape(
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, plugins, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewriteFor("native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }

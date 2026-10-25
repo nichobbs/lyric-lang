@@ -502,6 +502,66 @@ pub func pipePluginExpandForComponent(
   Some(value = r.file)
 }
 
+/// Which of `pipeExpandAndRewrite`'s optional rewrites a build for a target
+/// runs.  The one place the three bridges' differences live, so a check that
+/// asks "would a build for this target reject this program?" (`lyric prove`,
+/// #8311) runs the rewrites that build runs.
+pub record ExpandProfile {
+  runWireExpand: Bool
+  runStubbable: Bool
+  injectWeave: Bool
+}
+
+/// The rewrites a build for `targetName` (`dotnet`, `jvm`, `native`) runs
+/// before the type check: the managed targets expand wires and synthesise
+/// `@stubbable` stubs, only the JVM injects weave imports, and the native
+/// bridge synthesises no stubs.
+pub func pipeExpandProfile(targetName: in String): ExpandProfile {
+  if targetName == "jvm" {
+    return ExpandProfile(runWireExpand = true, runStubbable = true, injectWeave = true)
+  }
+  if targetName == "native" {
+    return ExpandProfile(runWireExpand = true, runStubbable = false, injectWeave = false)
+  }
+  ExpandProfile(runWireExpand = true, runStubbable = true, injectWeave = false)
+}
+
+/// `pipeExpandAndRewrite` with the rewrites `targetName`'s build runs.
+pub func pipeExpandAndRewriteFor(
+  targetName: in String,
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  val p = pipeExpandProfile(targetName)
+  pipeExpandAndRewrite(
+    file,
+    weWires,
+    weConfigs,
+    plugins,
+    p.runWireExpand,
+    p.runStubbable,
+    p.injectWeave,
+    label,
+    origins
+  )
+}
+
+/// `pipeExpandAndRewriteCollect` with the rewrites `targetName`'s build runs.
+pub func pipeExpandAndRewriteCollectFor(
+  targetName: in String,
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
+): CheckReadyFile {
+  val p = pipeExpandProfile(targetName)
+  pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, p.runWireExpand, p.runStubbable, p.injectWeave)
+}
+
 /// A file after the rewrites that run between parse and type check, and
 /// the diagnostics they reported.  `file` is meaningful only when
 /// `diagnostics` holds no error.

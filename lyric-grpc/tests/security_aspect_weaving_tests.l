@@ -8,6 +8,7 @@
 //! removed the clause and relies on the aspect body's own empty-case branch,
 //! which fails closed with 16 UNAUTHENTICATED. These tests pin that: an empty
 //! token must return a graceful status, never crash the process.
+@cfg(target = "dotnet")
 @test_module
 package Grpc.SecurityAspectWeavingTests
 

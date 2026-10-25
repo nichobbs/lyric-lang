@@ -1702,7 +1702,8 @@ test "compilerClosureDllPaths: a bundle that covers the whole closure is used, n
 }
 
 // Merging a multi-file package removes only each file's header tokens
-// (`//!`, file-level annotations, `package`, imports); item bodies are carried
+// (file-level annotations, `package`, imports; the `//!` module docs are
+// re-emitted at the head of the unit, #8246); item bodies are carried
 // over verbatim, so a body line that merely starts with `import ` (here inside
 // a multi-line string) survives, and every merged body line still maps back
 // to its file and line (#8234).
@@ -1746,7 +1747,10 @@ test "multi-file merge strips header lines only and keeps line origins" {
   }
   assertEqualInt(coreImports, 1, "duplicate header imports collapse into one")
   assertEqualInt(aliasImports, 1, "the aliased import is kept")
-  assertEqualInt(docLines, 0, "module-doc lines are dropped")
+  assertEqualInt(docLines, 1, "the module-doc line is carried (#8246)")
+  assertEqual(lines[0], "//! doc", "module docs lead the merged unit")
+  assertEqual(merged.origins[0].path, "a.l", "module-doc line origin file")
+  assertEqualInt(merged.origins[0].originalLine, 1, "module-doc line origin line")
   assertTrue(bodyImportLine >= 0, "an import-like line inside a body string is kept verbatim")
   assertTrue(funcBLine >= 0, "the second file's body is present")
   assertEqualInt(merged.origins.count, lines.length, "one origin per merged line")

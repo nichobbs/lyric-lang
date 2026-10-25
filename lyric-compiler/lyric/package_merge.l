@@ -7,6 +7,7 @@
 //! declare the package it is a file of (B0013), and contributes exactly its
 //! parsed items.  The merged unit is
 //!
+//!     <the files' `//!` module docs, in file order, blank `//!` between>
 //!     <the union of the files' file-level annotations, @cfg excepted>
 //!     package <name>
 //!     <the union of the files' imports>
@@ -207,6 +208,8 @@ func mergeFiles(
   val modeNames: List[String] = newList()
   val annotations: List[HeaderPiece] = newList()
   val imports: List[HeaderPiece] = newList()
+  val docLines: List[String] = newList()
+  val docOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var bodies = ""
   val bodyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   var i = 0
@@ -285,6 +288,7 @@ func mergeFiles(
         val aliasTarget = (if d.isExtern { "extern " } else { "" }) + modulePathJoin(d.path.segments)
         addImport(imports, pieceOf(text, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
       }
+      addModuleDocs(docLines, docOrigins, text, pr.file, path)
       val body = fileBody(text, pr.file, path, withOrigins)
       // A file whose items are empty adds no line of its own unless an earlier
       // file's items precede it: the join below is what makes the line.
@@ -311,6 +315,10 @@ func mergeFiles(
 
   val preambleLines: List[String] = newList()
   val origins: List[DiagUtil.MergedLineOrigin] = newList()
+  for l in docLines {
+    preambleLines.add(l)
+  }
+  appendOrigins(origins, docOrigins)
   addPieceLines(annotations, true, preambleLines, origins)
   preambleLines.add("package " + packageName)
   origins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
@@ -328,6 +336,30 @@ func mergeFiles(
     origins = if withOrigins { origins } else { noOrigins },
     diagnostics = diags
   )
+}
+
+// Append `file`'s `//!` module docs, each line as written, to the package's:
+// the files' docs are joined in file order with an empty `//!` line between
+// them (docs/19 §5), so the merged unit's module doc reads as one.
+func addModuleDocs(
+  lines: in List[String],
+  origins: in List[DiagUtil.MergedLineOrigin],
+  text: in String,
+  file: in SourceFile,
+  path: in String,
+): Unit {
+  if file.moduleDoc.count == 0 {
+    return
+  }
+  if lines.count > 0 {
+    lines.add("//!")
+    origins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
+  }
+  for d in file.moduleDoc {
+    val raw = text.substring(d.span.startPos.offset, d.span.endPos.offset - d.span.startPos.offset)
+    lines.add(Str.trimEnd(raw))
+    origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = d.span.startPos.line))
+  }
 }
 
 // A package a file names, and where.

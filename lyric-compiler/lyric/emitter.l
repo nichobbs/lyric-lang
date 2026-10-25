@@ -2537,6 +2537,15 @@ func checkStdlibSources(target: in CompileTarget): List[String] {
   }
 }
 
+// The `@cfg` features a check for `target` erases with: a native build also
+// erases by the operating system it builds for, here the host's.
+func checkFeatures(target: in CompileTarget, activeFeatures: in List[String]): List[String] {
+  match target {
+    case Native -> Cfg.withTargetOsFeature(activeFeatures, LlvmBridge.nativeTargetOs(""))
+    case _ -> activeFeatures
+  }
+}
+
 /// What a build of `req` for `req.target` rejects the project for, up to and
 /// including the mode check, without compiling anything: every diagnostic of
 /// those passes (the merge of each package's files, parse, `@cfg` erasure,
@@ -2545,11 +2554,13 @@ func checkStdlibSources(target: in CompileTarget): List[String] {
 /// never printed.  For a caller that must not act on a program the build
 /// rejects (`lyric prove`, #8227).  `req.outputPath` is not used.
 ///
-/// Every target is checked through the dotnet bridge's front end
-/// (`Msil.Bridge.checkProjectTypes`) with that target's `@cfg` items,
-/// standard-library kernels and middle-end options; the JVM and native
-/// bridges' own front ends are not run, so a check they would fail and the
-/// dotnet one passes goes unreported (#8311).
+/// The checks are `Msil.Bridge.checkProjectTypes`' front end, which runs the
+/// passes every bridge shares (`Lyric.Pipeline`) configured for the target:
+/// its `@cfg` items (a native build also erases by the host's `target_os`),
+/// standard-library kernels, middle-end options and pre-check rewrites
+/// (`Lyric.Pipeline.pipeExpandProfile`: the JVM's weave-import injection, the
+/// native bridge's lack of `@stubbable` synthesis), so what a target's build
+/// rejects in these passes the check rejects too (#8311).
 pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val targetName = compileTargetName(req.target)
@@ -2570,7 +2581,7 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
     val checked = MsilBridge.checkProjectTypes(
       msilPayloads(merged.packages),
       checkStdlibSources(req.target),
-      req.activeFeatures,
+      checkFeatures(req.target, req.activeFeatures),
       req.declaredFeatures,
       restoredArtifacts,
       req.packageVersion,
@@ -2613,7 +2624,7 @@ pub func typeCheckSourceForFeatures(
       req.defines,
       req.path,
       compileTargetName(req.target),
-      activeFeatures,
+      checkFeatures(req.target, activeFeatures),
       declaredFeatures
     )
   } catch Bug as b {

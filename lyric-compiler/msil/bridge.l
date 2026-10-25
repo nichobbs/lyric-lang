@@ -236,7 +236,7 @@ pub func compileToMsilWithVersion(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
-  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, plugins, true, true, false, path, noOrigins) {
+  val file0pre = match pipeExpandAndRewriteFor("dotnet", cfgFile, weWires, weConfigs, plugins, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1352,7 +1352,7 @@ pub func checkSourceTypesForFeatures(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
-  val rewritten = match frontEndExpand(true, cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
+  val rewritten = match frontEndExpand(true, targetName, cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }
@@ -1576,7 +1576,7 @@ func projectFrontEnd(
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten0 = match frontEndExpand(collect, wep.file, weWires, weConfigs, plugins, wep.label, wep.origins, located) {
+    val rewritten0 = match frontEndExpand(collect, targetName, wep.file, weWires, weConfigs, plugins, wep.label, wep.origins, located) {
       case Some(f) -> f
       case None -> return None
     }
@@ -1661,11 +1661,11 @@ func frontEndParse(
   Some(value = r.file)
 }
 
-// `pipeExpandAndRewrite` with wire expansion and `@stubbable` synthesis (the
-// MSIL paths inject no weave imports), or with `collect` its diagnostics
-// attributed into `located` instead of printed.
+// `pipeExpandAndRewrite` with the rewrites `targetName`'s build runs, or with
+// `collect` its diagnostics attributed into `located` instead of printed.
 func frontEndExpand(
   collect: in Bool,
+  targetName: in String,
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
@@ -1675,9 +1675,9 @@ func frontEndExpand(
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
   if not collect {
-    return pipeExpandAndRewrite(file, weWires, weConfigs, plugins, true, true, false, label, origins)
+    return pipeExpandAndRewriteFor(targetName, file, weWires, weConfigs, plugins, label, origins)
   }
-  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, true, true, false)
+  val r = pipeExpandAndRewriteCollectFor(targetName, file, weWires, weConfigs, plugins)
   if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
     return None
   }

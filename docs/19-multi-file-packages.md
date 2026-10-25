@@ -117,13 +117,15 @@ type names from their own parses, so it needs no merged unit.
 
 ## 5. Doc-comment merging
 
-**Not implemented.** The plan: module-level doc comments (`//!`) from
-every file in the package are concatenated in deterministic file-name
-order with a blank line between, into the package's contract-metadata
-`ModuleDoc` field. Today the merge drops every file's `//!` comments
-from the merged unit (a `//!` is only valid before `package`), so a
-package of several files has no module doc in its metadata; a package of
-one file keeps its own. Tracked in #8246.
+The module-level doc comments (`//!`) of every file in the package are
+concatenated, in the package's file order, with an empty `//!` line
+between files, into the merged unit's module doc (`SourceFile.moduleDoc`
+of the unit every backend compiles), so a package of several files has the
+module doc a package of one file has. Each line keeps its file and line in
+the merge's origins. `lyric doc` documents each file on its own and is
+unchanged. A file turned off by its
+file-level `@cfg` contributes no docs (as it contributes no items or
+imports). A package of one file keeps its own docs as written (#8246).
 
 ## 6. Format / lint
 

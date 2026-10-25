@@ -4,6 +4,7 @@
 //! Each test uses its own unique method name so the per-method limiter
 //! registry in Grpc.Kernel.Net never leaks state across tests (limiters are
 //! created once per method name and never reset).
+@cfg(target = "dotnet")
 @test_module
 package Grpc.RateLimitTests
 

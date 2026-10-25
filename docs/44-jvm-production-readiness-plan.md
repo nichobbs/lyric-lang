@@ -49,7 +49,8 @@ stackmap frames (#8372), inout through generic fields and aspect weaving
 (#8272, #8368), `Ref` megamorphism making hot inout loops 3-5x slower (#8371),
 arrays and buffers passed to `spawn` copied inside the task (#8391), and the
 JVM project build silently skipping packages unreachable from the entry
-package (#8357). Ecosystem backends that remain `NOT_IMPLEMENTED` on the JVM
+package (fixed in D262: every listed package is built, and a package that does
+not apply declares its target with a file-level `@cfg(target = ...)`; #8357). Ecosystem backends that remain `NOT_IMPLEMENTED` on the JVM
 are listed in `docs/57` section 3.
 
 ---
