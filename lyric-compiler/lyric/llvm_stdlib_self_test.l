@@ -940,6 +940,21 @@ test "format1-format4 on native (ASan) (#7840)" {
   assertEqual(r.stdout, "a=42\nbab\n1-true-x\n4321\n{7} {0} }{\nused\ncafé ok\n", "formatted output")
 }
 
+test "Std.Math IEEE 754 bit casts on native, NaN payloads kept (ASan)" {
+  val src = "package T\n" + "import Std.Math\n" + "func main(): Int {\n" + "  var bad = 0\n" +
+    "  if floatToBits(1.0f32) != 1065353216 { bad = bad + 1 }\n" +
+    "  if floatToBits(-2.5f32) != -1071644672 { bad = bad + 2 }\n" +
+    "  if doubleToBits(1.0) != 4607182418800017408i64 { bad = bad + 4 }\n" +
+    "  if floatToBits(floatFromBits(2143289635)) != 2143289635 { bad = bad + 8 }\n" +
+    "  if doubleToBits(doubleFromBits(9221120237041090851i64)) != 9221120237041090851i64 { bad = bad + 16 }\n" +
+    "  if not (doubleFromBits(4614256656552045848i64) == 3.141592653589793) { bad = bad + 32 }\n" +
+    "  if not (floatFromBits(1078530011) == 3.1415927f32) { bad = bad + 64 }\n" +
+    "  bad\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "every bit-cast check holds (the exit code names the failing ones)")
+}
+
 test "print takes a String or a scalar and println() writes an empty line on native (#7893, #7912)" {
   val src = "package T\n" + "func main(): Int {\n" + "  print(\"a\")\n" + "  print(42)\n" + "  print(true)\n" +
     "  print(1.5)\n" +

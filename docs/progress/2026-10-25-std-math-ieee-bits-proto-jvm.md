@@ -6,9 +6,10 @@ NaN payloads included, through the audited kernel boundary: `BitConverter`
 on dotnet, `Float.floatToRawIntBits` / `intBitsToFloat` and
 `Double.doubleToRawLongBits` / `longBitsToDouble` on the JVM, and new
 `lyric_float_to_bits` & co. in `lyric-rt/src/lyric_rt.c` (`memcpy`) on native.
-`lyric-stdlib/tests/math_tests.l` covers them on dotnet and the JVM, and a
-native run of the same values passes. `test_float_bits` in
-`lyric-rt/test/lyric_rt_test.c` covers the C side.
+`lyric-stdlib/tests/math_tests.l` covers them on dotnet and the JVM, a case in
+`lyric-compiler/lyric/llvm_stdlib_self_test.l` covers them on native under
+AddressSanitizer, and `test_float_bits` in `lyric-rt/test/lyric_rt_test.c`
+covers the C side.
 
 lyric-proto declared four `@externTarget`s outside a kernel
 (`System.Convert.ToInt64`/`ToInt32`, `System.BitConverter.SingleToInt32Bits`/
