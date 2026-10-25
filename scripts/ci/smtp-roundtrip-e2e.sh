@@ -68,11 +68,11 @@ for target in "${targets[@]}"; do
     echo "FAIL: unreachable-server test --target $target"; tail -30 "$work/$target-unreachable.log"; fail=1; }
 
   # Rejected credentials come back as an error and deliver nothing.
-  before=$(ls "$out"/*.eml | wc -l)
+  before=$(find "$out" -name "*.eml" | wc -l)
   LYRIC_CONFIG_SMTP_PASSWORD=wrong LYRIC_MAIL_TEST_ROUNDTRIP=1 \
     "$lyric_bin" test --target "$target" --manifest lyric-mail/lyric.toml >"$work/$target-badauth.log" 2>&1 && {
     echo "FAIL: --target $target accepted wrong credentials"; fail=1; }
-  after=$(ls "$out"/*.eml | wc -l)
+  after=$(find "$out" -name "*.eml" | wc -l)
   if [ "$before" -ne "$after" ]; then echo "FAIL: --target $target delivered mail with wrong credentials"; fail=1; fi
 
   kill "$server_pid" 2>/dev/null; server_pid=""

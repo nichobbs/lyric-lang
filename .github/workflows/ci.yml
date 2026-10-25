@@ -6738,6 +6738,12 @@ jobs:
       # SMTP delivery against a local capture server on both targets (#7462):
       # System.Net.Mail on dotnet, Jakarta Mail (restored through [maven]) on
       # jvm.  Also runs the whole mail suite on the JVM.
+      - name: Set up Java 22 (mail)
+        if: matrix.id == 'mail'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
       - name: SMTP round trip (mail, dotnet and jvm)
         if: matrix.id == 'mail'
         run: |
