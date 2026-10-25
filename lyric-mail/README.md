@@ -19,7 +19,10 @@ unconditionally; that kernel-boundary violation is fixed (#7254). SMTP is
 bound per target (`System.Net.Mail` / Jakarta Mail); SES and SendGrid are plain
 HTTPS APIs implemented once in Lyric, so they run on both targets with no
 provider SDK.  SMTP delivery is exercised against a local capture server on
-both targets by `scripts/ci/smtp-roundtrip-e2e.sh` (STARTTLS is not covered).  SES and SendGrid have not been driven against the live provider in CI; their request
+both targets by `scripts/ci/smtp-roundtrip-e2e.sh`, in plain text and over
+STARTTLS (`useTls = true`) with a certificate made for the run; the same script
+checks that, with TLS required, a server offering no STARTTLS and a certificate
+the client does not trust are both refused and nothing is sent (#8573).  SES and SendGrid have not been driven against the live provider in CI; their request
 bodies and the SigV4 signature are pinned by unit tests (the signature against
 the published AWS test vector).
 

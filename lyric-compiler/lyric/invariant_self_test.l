@@ -59,6 +59,32 @@ func moneyCents(m: in Money): Long {
   m.cents
 }
 
+// #8570: one `and` clause over two slice fields of an opaque type.
+opaque type SpanIds {
+  traceId: slice[Byte]
+  spanId: slice[Byte]
+  kind: Int
+  invariant: traceId.length == 16 and spanId.length == 8
+}
+
+func zeroBytes(n: in Int): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < n {
+    acc.add(0u8)
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+func spanIds(traceLen: in Int, spanLen: in Int): SpanIds {
+  SpanIds(traceId = zeroBytes(traceLen), spanId = zeroBytes(spanLen), kind = 1)
+}
+
+func spanIdsTotal(ids: in SpanIds): Int {
+  ids.traceId.length + ids.spanId.length + ids.kind
+}
+
 func span(r: in Range): Int {
   r.hi - r.lo
 }
@@ -96,6 +122,16 @@ test "a generic record's invariant is checked" {
 test "an opaque type's invariant is checked at its constructor" {
   assertEqualLong(moneyCents(money(250i64)), 250i64, "valid money")
   assertPanicsWith("negative money", "InvariantViolated: Lyric.InvariantSelfTest.Money", { -> val _ = money(-1i64) })
+}
+
+test "an opaque type's combined invariant over two slice fields is checked (#8570)" {
+  assertEqualInt(spanIdsTotal(spanIds(16, 8)), 25, "valid ids")
+  assertPanicsWith(
+    "short trace id",
+    "invariant traceId.length == 16 and spanId.length == 8",
+    { -> val _ = spanIds(15, 8) }
+  )
+  assertPanics("short span id", { -> val _ = spanIds(16, 7) })
 }
 
 test "a construction nested in an expression is checked" {

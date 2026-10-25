@@ -322,6 +322,16 @@ int32_t lyric_path_is_dir_nofollow(const char* path) {
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
+int32_t lyric_path_real_ok(const char* path, LyricString** out) {
+    char* resolved = realpath(path, NULL);
+    if (!resolved) return errno == ENOENT || errno == ENOTDIR ? -1 : -2;
+    LyricString* s = lyric_string_from_literal((const uint8_t*)resolved, (int64_t)strlen(resolved));
+    free(resolved);
+    if (!s) return -2;
+    *out = s;
+    return 0;
+}
+
 LyricList* lyric_dir_list(const char* path) {
     DIR* d = opendir(path);
     if (!d) return NULL;

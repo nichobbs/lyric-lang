@@ -313,6 +313,73 @@ int32_t lyric_path_is_dir_nofollow(const char* path) {
     return is_dir_attrs(a) && !(a & FILE_ATTRIBUTE_REPARSE_POINT) ? 1 : 0;
 }
 
+/* realpath(3) for Windows: open what `path` names (CreateFileW follows
+ * symbolic links and junctions) and ask for the final path of the handle.
+ * The \\?\ (or \\?\UNC\) prefix GetFinalPathNameByHandleW adds is dropped
+ * so the result reads as an ordinary drive or UNC path. */
+int32_t lyric_path_real_ok(const char* path, LyricString** out) {
+    wchar_t* w = lyric_win32_path(path);
+    if (!w) return -2;
+    HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        return err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND ? -1 : -2;
+    }
+    DWORD cap = MAX_PATH;
+    wchar_t* buf = NULL;
+    DWORD n;
+    for (;;) {
+        wchar_t* nb = (wchar_t*)realloc(buf, (size_t)cap * sizeof(wchar_t));
+        if (!nb) {
+            free(buf);
+            CloseHandle(h);
+            return -2;
+        }
+        buf = nb;
+        n = GetFinalPathNameByHandleW(h, buf, cap, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (n == 0) {
+            free(buf);
+            CloseHandle(h);
+            return -2;
+        }
+        if (n < cap) break;
+        cap = n + 1;
+    }
+    CloseHandle(h);
+    const wchar_t* start = buf;
+    int64_t len = (int64_t)n;
+    wchar_t* unc = NULL;
+    if (len >= 8 && wcsncmp(buf, L"\\\\?\\UNC\\", 8) == 0) {
+        /* \\?\UNC\server\share -> \\server\share */
+        unc = (wchar_t*)malloc((size_t)(len - 6 + 1) * sizeof(wchar_t));
+        if (!unc) {
+            free(buf);
+            return -2;
+        }
+        unc[0] = L'\\';
+        unc[1] = L'\\';
+        memcpy(unc + 2, buf + 8, (size_t)(len - 8) * sizeof(wchar_t));
+        len -= 6;
+        unc[len] = 0;
+        start = unc;
+    } else if (len >= 4 && wcsncmp(buf, L"\\\\?\\", 4) == 0) {
+        start = buf + 4;
+        len -= 4;
+    }
+    int64_t utf8_len = 0;
+    char* utf8 = lyric_win32_utf8(start, len, &utf8_len);
+    free(unc);
+    free(buf);
+    if (!utf8) return -2;
+    LyricString* s = lyric_string_from_literal((const uint8_t*)utf8, utf8_len);
+    free(utf8);
+    if (!s) return -2;
+    *out = s;
+    return 0;
+}
+
 /* Calls `each(name, name_len, data, ctx)` for every entry of `path` except
  * "." and ".."; 0 when the listing completed, -1 when the directory cannot
  * be read or `each` returns non-zero. */

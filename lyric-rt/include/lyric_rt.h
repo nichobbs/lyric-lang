@@ -683,6 +683,14 @@ int32_t lyric_dir_exists(const char* path);
  * to unlink symlinks instead of descending into their targets. */
 int32_t lyric_path_is_dir_nofollow(const char* path);
 
+/* The canonical absolute form of `path`, with every symbolic link (and, on
+ * Windows, junction) resolved and no `.`/`..` segments: POSIX realpath(3),
+ * GetFinalPathNameByHandleW on Windows.  0 and *out set to a fresh rc=1
+ * LyricString on success.  On failure *out is untouched and the result says
+ * why: -1 when the path (or a link along it) names nothing, -2 for every
+ * other failure (a link loop, permissions, memory). */
+int32_t lyric_path_real_ok(const char* path, LyricString** out);
+
 /* Lists the entries of the directory at `path` (skipping "." and
  * ".."), returning a fresh rc=1 LyricList of rc=1 LyricString* names
  * (list constructed with elems_are_refs = 1). Returns NULL if the

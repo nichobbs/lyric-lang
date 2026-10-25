@@ -896,10 +896,10 @@ pub record ResolvedManifestDeps {
   /// usable DLL for any reason: its DLL was not found on disk (not yet
   /// built), the dependency directory has no `lyric.toml` at all, its
   /// `lyric.toml` could not be read, or its `lyric.toml` failed to parse.
-  /// `buildProject` has historically treated this as a non-fatal warning
-  /// (the downstream typecheck surfaces the real error); `buildOneNative`'s
-  /// single-file synthetic project request treats it as fatal per D123's
-  /// "fail loud instead of silently degrading" conservative default.
+  /// Fatal for every caller (`buildProject`, `buildOneNative`'s single-file
+  /// synthetic project request, `lyric prove`) per D123's "fail loud instead
+  /// of silently degrading" default: the resolver has already printed the
+  /// actionable message, so the caller stops without compiling (#8574).
   hadUnbuiltLocalDep: Bool
   /// True when the target cannot use a declared dependency at all: a
   /// registry or git dependency on `--target native` (#7833).  Fatal.
@@ -1256,15 +1256,8 @@ pub func resolveManifestDependenciesAs(
                   // matching the project's own "sibling packages are FATAL" policy
                   // (the issue's suggested diagnostic severity), this now sets
                   // `hadUnbuiltLocalDep = true` on Jvm too (`if not dllMatters`, below).
-                  // "Fatal" cashes out differently per caller, same as the DLL-missing
-                  // case above: `emitSingleFileOrProject` reads the flag directly and
-                  // returns early with a clear message (cli_build.l:hadUnbuiltLocalDep
-                  // check); `buildProjectFromManifest` (the `--manifest` path) never
-                  // reads this flag at all (by design — see
-                  // `ResolvedManifestDeps.hadUnbuiltLocalDep`'s doc comment) and instead
-                  // fails downstream, when the consumer package that imports the
-                  // now-symbol-less dependency hits an unresolved-reference type error.
-                  // Both are exercised by
+                  // Every caller stops on the flag before compiling (#8574); both the
+                  // single-file and `--manifest` paths are exercised by
                   // `jvm_path_dependency_self_test.l`'s "unreadable source" tests.
                   collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, depPackageFeatures)
                   match depMf.project {

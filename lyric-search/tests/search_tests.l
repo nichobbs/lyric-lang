@@ -955,6 +955,42 @@ test "connect with a zero timeout is Err(INVALID_TIMEOUT), not a hang or a panic
   }
 }
 
+@cfg(feature = "elasticsearch")
+func probeEnvConnectTimeout(connectTimeout: in String): Result[SearchClient, SearchError] {
+  setVar("LYRIC_SEARCH_ELASTICSEARCH_URL", "http://127.0.0.1:1")
+  setVar("LYRIC_SEARCH_ELASTICSEARCH_CONNECT_TIMEOUT_MS", connectTimeout)
+  val result = await Search.connect("elasticsearch")
+  setVar("LYRIC_SEARCH_ELASTICSEARCH_URL", "")
+  setVar("LYRIC_SEARCH_ELASTICSEARCH_CONNECT_TIMEOUT_MS", "")
+  result
+}
+
+@cfg(feature = "meilisearch")
+func probeEnvConnectTimeout(connectTimeout: in String): Result[SearchClient, SearchError] {
+  setVar("LYRIC_SEARCH_MEILISEARCH_URL", "http://127.0.0.1:1")
+  setVar("LYRIC_SEARCH_MEILISEARCH_CONNECT_TIMEOUT_MS", connectTimeout)
+  val result = await Search.connect("meilisearch")
+  setVar("LYRIC_SEARCH_MEILISEARCH_URL", "")
+  setVar("LYRIC_SEARCH_MEILISEARCH_CONNECT_TIMEOUT_MS", "")
+  result
+}
+
+test "Search.connect reads the connect timeout from the environment (#8571)" {
+  assertEqualInt(Search.DEFAULT_CONNECT_TIMEOUT_MS, 10000, "the documented connect-timeout default")
+  match probeEnvConnectTimeout("0") {
+    case Err(e) -> assertEqual(e.code, "INVALID_TIMEOUT", "a zero connect timeout from the environment is rejected")
+    case Ok(_) -> assertTrue(false, "a zero connect timeout must be rejected")
+  }
+  match probeEnvConnectTimeout("not a number") {
+    case Err(e) -> assertEqual(
+      e.code,
+      "CONNECT_FAILED",
+      "an unparsable value falls back to the default and the probe runs"
+    )
+    case Ok(_) -> assertTrue(false, "nothing listens on port 1")
+  }
+}
+
 test "an unreachable backend still reports ConnectionFailed under the request deadline" {
   val cfg = HttpConfig.withRequestTimeout(HttpConfig.new(defaultClient(), "http://127.0.0.1:1", "", ""), 2000)
   match Search.sendRequestRaw(cfg, GET, "/", "PROBE") {

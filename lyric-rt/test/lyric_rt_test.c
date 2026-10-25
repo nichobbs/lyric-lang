@@ -1541,6 +1541,50 @@ static void test_dir_list_typed(void) {
 }
 #endif /* !__wasi__ */
 
+#if !defined(__wasi__)
+/* lyric_path_real_ok without links, so it also runs on Windows (where making
+ * a symlink needs a privilege): `.`/`..` collapse to the same canonical path,
+ * and a missing path is -1 with *out untouched. */
+static void test_path_real_basic(void) {
+    char tmpl[] = "/tmp/lyric_rt_realbase_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    char sub[512];
+    snprintf(sub, sizeof sub, "%s/sub", tmpl);
+    CHECK(lyric_dir_create_all(sub) == 0);
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/sub/f.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+
+    LyricString* direct = NULL;
+    CHECK(lyric_path_real_ok(filep, &direct) == 0);
+    char dotted[512];
+    snprintf(dotted, sizeof dotted, "%s/sub/./../sub/f.txt", tmpl);
+    LyricString* viaDots = NULL;
+    CHECK(lyric_path_real_ok(dotted, &viaDots) == 0);
+    CHECK(direct != NULL && viaDots != NULL);
+    CHECK(lyric_string_len(direct) == lyric_string_len(viaDots));
+    CHECK(memcmp(LYRIC_STRING_DATA(direct), LYRIC_STRING_DATA(viaDots), (size_t)lyric_string_len(direct)) == 0);
+    /* Canonical means absolute: longer than the relative tail. */
+    CHECK(lyric_string_len(direct) > (int64_t)strlen("sub/f.txt"));
+    lyric_release(viaDots);
+    lyric_release(direct);
+
+    char missing[512];
+    snprintf(missing, sizeof missing, "%s/sub/missing.txt", tmpl);
+    LyricString* untouched = NULL;
+    CHECK(lyric_path_real_ok(missing, &untouched) == -1);
+    snprintf(missing, sizeof missing, "%s/nodir/f.txt", tmpl);
+    CHECK(lyric_path_real_ok(missing, &untouched) == -1);
+    CHECK(untouched == NULL);
+
+    CHECK(lyric_file_delete(filep) == 0);
+    CHECK(lyric_dir_remove(sub) == 0);
+    CHECK(lyric_dir_remove(tmpl) == 0);
+}
+#endif
+
 #if LYRIC_TEST_POSIX
 static void test_is_dir_nofollow(void) {
     /* A real directory is a directory; a file is not. */
@@ -1570,6 +1614,75 @@ static void test_is_dir_nofollow(void) {
 
     unlink(linkp);
     unlink(filep);
+    rmdir(tmpl);
+}
+
+static void test_path_real(void) {
+    char tmpl[] = "/tmp/lyric_rt_realpath_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    /* The temp root may itself sit behind a link (macOS /tmp), so every
+     * expectation is built from its own canonical form. */
+    LyricString* root = NULL;
+    CHECK(lyric_path_real_ok(tmpl, &root) == 0);
+    char canon[512];
+    snprintf(canon, sizeof canon, "%.*s", (int)lyric_string_len(root), (const char*)LYRIC_STRING_DATA(root));
+    lyric_release(root);
+
+    char sub[512];
+    snprintf(sub, sizeof sub, "%s/sub", tmpl);
+    CHECK(mkdir(sub, 0755) == 0);
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/sub/f.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+
+    /* `.` and `..` collapse. */
+    char dotted[512];
+    snprintf(dotted, sizeof dotted, "%s/sub/./../sub/f.txt", tmpl);
+    char want[600];
+    snprintf(want, sizeof want, "%s/sub/f.txt", canon);
+    LyricString* got = NULL;
+    CHECK(lyric_path_real_ok(dotted, &got) == 0);
+    CHECK(string_is(got, want));
+    lyric_release(got);
+
+    /* A link to the directory resolves to the directory itself. */
+    char linkp[512];
+    snprintf(linkp, sizeof linkp, "%s/link", tmpl);
+    CHECK(symlink(sub, linkp) == 0);
+    char viaLink[512];
+    snprintf(viaLink, sizeof viaLink, "%s/link/f.txt", tmpl);
+    got = NULL;
+    CHECK(lyric_path_real_ok(viaLink, &got) == 0);
+    CHECK(string_is(got, want));
+    lyric_release(got);
+
+    /* A loop (-2) and a missing path (-1) fail, leaving *out untouched. */
+    char loopA[512];
+    char loopB[512];
+    snprintf(loopA, sizeof loopA, "%s/loopA", tmpl);
+    snprintf(loopB, sizeof loopB, "%s/loopB", tmpl);
+    CHECK(symlink(loopB, loopA) == 0);
+    CHECK(symlink(loopA, loopB) == 0);
+    LyricString* untouched = NULL;
+    CHECK(lyric_path_real_ok(loopA, &untouched) == -2);
+    CHECK(untouched == NULL);
+    CHECK(lyric_path_real_ok("/definitely/missing/lyric-rt-realpath", &untouched) == -1);
+    CHECK(untouched == NULL);
+    /* A dangling link names nothing. */
+    char dangling[512];
+    snprintf(dangling, sizeof dangling, "%s/dangling", tmpl);
+    CHECK(symlink("/definitely/missing/lyric-rt-realpath", dangling) == 0);
+    CHECK(lyric_path_real_ok(dangling, &untouched) == -1);
+    CHECK(untouched == NULL);
+    unlink(dangling);
+
+    unlink(loopB);
+    unlink(loopA);
+    unlink(linkp);
+    unlink(filep);
+    rmdir(sub);
     rmdir(tmpl);
 }
 #endif /* !__wasi__ */
@@ -4049,8 +4162,12 @@ int main(void) {
 #if LYRIC_TEST_POSIX
     test_dir_list_typed();
 #endif
+#if !defined(__wasi__)
+    test_path_real_basic();
+#endif
 #if LYRIC_TEST_POSIX
     test_is_dir_nofollow();
+    test_path_real();
 #endif
     test_args();
     test_map_keys_values();

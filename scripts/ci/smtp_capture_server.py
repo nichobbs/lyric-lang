@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """Minimal SMTP server that records what it receives, for lyric-mail CI.
 
-    smtp_capture_server.py OUT_DIR [--user U --password P]
+    smtp_capture_server.py OUT_DIR [--user U --password P] [--tls CERT KEY]
 
 Listens on 127.0.0.1 on a free port, writes the port to OUT_DIR/port once it
 accepts connections, and for every delivered message writes OUT_DIR/N.eml (the
-DATA section, dot-unstuffed) and OUT_DIR/N.envelope (the SMTP envelope and the
-authenticated user, one `key=value` per line).  With --user/--password it
-requires AUTH PLAIN or AUTH LOGIN with those credentials.  No TLS: the
-STARTTLS path is exercised by the JDK/.NET providers' own suites.
+DATA section, dot-unstuffed) and OUT_DIR/N.envelope (the SMTP envelope, the
+authenticated user and whether the session was upgraded with STARTTLS, one
+`key=value` per line).  With --user/--password it requires AUTH PLAIN or AUTH
+LOGIN with those credentials.  With --tls it advertises STARTTLS, upgrades the
+connection with the PEM certificate and key it is given, and refuses AUTH and
+MAIL until the client has done so (RFC 3207 section 4).  Without --tls it never
+offers STARTTLS, so a client that requires TLS must refuse it.
 """
 import argparse
 import base64
 import itertools
 import os
 import socketserver
+import ssl
 import sys
 import threading
 
@@ -40,26 +44,51 @@ class Handler(socketserver.StreamRequestHandler):
         o = self.server.opts
         return o.user is None or (user == o.user and password == o.password)
 
+    def start_tls(self):
+        """Upgrade the connection in place; the SMTP state starts over."""
+        self.wfile.flush()
+        self.connection = self.server.tls_context.wrap_socket(self.connection, server_side=True)
+        self.rfile = self.connection.makefile("rb")
+        self.wfile = self.connection.makefile("wb")
+
     def handle(self):
         o = self.server.opts
         user = None
         mail_from = None
         rcpts = []
+        tls = False
         self.reply("220 lyric-ci ESMTP")
         while True:
             line = self.readline()
             if line is None:
                 return
             cmd = line.upper()
+            needs_tls = o.tls is not None and not tls
             if cmd.startswith("EHLO") or cmd.startswith("HELO"):
                 if cmd.startswith("EHLO"):
                     self.wfile.write(b"250-lyric-ci\r\n250-8BITMIME\r\n")
+                    if needs_tls:
+                        self.wfile.write(b"250-STARTTLS\r\n")
                     if o.user is not None:
                         self.wfile.write(b"250-AUTH PLAIN LOGIN\r\n")
                     self.wfile.write(b"250 SIZE 52428800\r\n")
                     self.wfile.flush()
                 else:
                     self.reply("250 lyric-ci")
+            elif cmd == "STARTTLS":
+                if not needs_tls:
+                    self.reply("502 5.5.1 STARTTLS not available")
+                    continue
+                self.reply("220 2.0.0 Ready to start TLS")
+                try:
+                    self.start_tls()
+                except (ssl.SSLError, OSError) as e:
+                    print("smtp_capture_server: TLS handshake refused by the client or failed:", e, file=sys.stderr, flush=True)
+                    return
+                tls = True
+                user, mail_from, rcpts = None, None, []
+            elif needs_tls and (cmd.startswith("AUTH") or cmd.startswith("MAIL FROM:")):
+                self.reply("530 5.7.0 Must issue a STARTTLS command first")
             elif cmd.startswith("AUTH PLAIN"):
                 token = line[len("AUTH PLAIN"):].strip()
                 if not token:
@@ -113,7 +142,7 @@ class Handler(socketserver.StreamRequestHandler):
                 with open(os.path.join(o.out_dir, f"{n}.eml"), "w", encoding="utf-8", newline="") as f:
                     f.write("\r\n".join(body) + "\r\n")
                 with open(os.path.join(o.out_dir, f"{n}.envelope"), "w", encoding="utf-8") as f:
-                    f.write(f"auth={user or ''}\nmail-from={mail_from}\n")
+                    f.write(f"auth={user or ''}\ntls={'yes' if tls else 'no'}\nmail-from={mail_from}\n")
                     for r in rcpts:
                         f.write(f"rcpt={r}\n")
                 self.reply(f"250 2.0.0 OK queued as {n}")
@@ -140,11 +169,17 @@ def main():
     ap.add_argument("out_dir")
     ap.add_argument("--user")
     ap.add_argument("--password")
+    ap.add_argument("--tls", nargs=2, metavar=("CERT", "KEY"), help="offer and require STARTTLS with this PEM pair")
     ap.add_argument("--verbose", action="store_true", help="log client lines to stderr")
     opts = ap.parse_args()
     os.makedirs(opts.out_dir, exist_ok=True)
     server = Server(("127.0.0.1", 0), Handler)
     server.opts = opts
+    if opts.tls is not None:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(opts.tls[0], opts.tls[1])
+        server.tls_context = ctx
     port_file = os.path.join(opts.out_dir, "port")
     with open(port_file + ".tmp", "w") as f:
         f.write(str(server.server_address[1]))

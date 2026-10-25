@@ -145,41 +145,76 @@ func pathGetFullPath(path: in String): String {
   }
 }
 
-// `--target native`: lexical normalisation, the same contract as
-// `Path.GetFullPath` (no symlink resolution) — a relative path is taken from
-// the working directory, `.` segments and doubled separators vanish, and `..`
-// pops a segment (stopping at the root).
+// `--target native`: `realpath(3)` on the longest prefix of the path that
+// exists, so every symlink resolves the way the C library's `open` resolves it
+// (#7249, #8507): a link inside the static root that points outside it lands
+// outside it, and `..` after a link climbs from the link's target, not from
+// the link.  A relative path is taken from the working directory.  The part
+// that does not exist yet is appended lexically (`..` pops a segment), so a
+// missing file is still a 404 rather than an error; a `..` after a missing
+// segment can differ from `open`, which fails on the missing segment, but
+// such a path names no file either way.  A link loop (or any other
+// resolution failure) yields "", which is never within any root.
 @cfg(feature = "native")
 func pathGetFullPath(path: in String): String {
   var absolute = path
   if not path.startsWith("/") {
     absolute = Env.currentDirectory() + "/" + path
   }
-  val kept: List[String] = newList()
-  var segStart = 0
-  var i = 0
-  while i <= absolute.length {
-    if i == absolute.length or absolute.substring(i, 1) == "/" {
-      val seg = absolute.substring(segStart, i - segStart)
-      if seg == ".." {
-        if kept.count > 0 {
-          kept.removeAt(kept.count - 1)
-        }
-      } else if seg.length > 0 and seg != "." {
-        kept.add(seg)
+  val segs: List[String] = newList()
+  for seg in absolute.split("/") {
+    if seg.length > 0 and seg != "." {
+      segs.add(seg)
+    }
+  }
+  var existing = segs.count
+  while existing >= 0 {
+    var prefix = ""
+    var pi = 0
+    while pi < existing {
+      prefix = prefix + "/" + segs[pi]
+      pi = pi + 1
+    }
+    match HttpKernel.realPath(if prefix.length == 0 { "/" } else { prefix }) {
+      case Resolved(real) -> return appendLexically(real, segs, existing)
+      case Missing -> {
+        existing = existing - 1
       }
-      segStart = i + 1
+      case Unresolvable -> return ""
+    }
+  }
+  ""
+}
+
+// `base` (absolute, canonical) with `segs[from..]` applied lexically.
+@cfg(feature = "native")
+func appendLexically(base: in String, segs: in List[String], from: in Int): String {
+  val kept: List[String] = newList()
+  for seg in base.split("/") {
+    if seg.length > 0 {
+      kept.add(seg)
+    }
+  }
+  var i = from
+  while i < segs.count {
+    val seg = segs[i]
+    if seg == ".." {
+      if kept.count > 0 {
+        kept.removeAt(kept.count - 1)
+      }
+    } else {
+      kept.add(seg)
     }
     i = i + 1
   }
-  var normalized = ""
+  var joined = ""
   for seg in kept {
-    normalized = normalized + "/" + seg
+    joined = joined + "/" + seg
   }
-  if normalized.length == 0 {
+  if joined.length == 0 {
     "/"
   } else {
-    normalized
+    joined
   }
 }
 
@@ -893,32 +928,43 @@ pub config StaticFiles {
 //   1. Reject a null byte outright (a classic string-truncation attack
 //      against the underlying file APIs).
 //   2. The authoritative check: resolve `candidate` to its canonical
-//      absolute path via `Path.GetFullPath` (which collapses `..` and
-//      `.` segments) and require it to fall *within* the canonically
-//      resolved `root` — not a substring match on the raw request path,
-//      which could be fooled by an encoding this layer doesn't happen to
-//      normalise. This defeats any `..`/backslash/encoding variant,
-//      because it inspects the resolved filesystem path, not the
-//      original string.
-func withinRoot(root: in String, candidate: in String): Bool {
-  val fullRoot = pathGetFullPath(root)
-  val fullCandidate = pathGetFullPath(candidate)
-  return fullCandidate == fullRoot or fullCandidate.startsWith(fullRoot + "/")
+//      absolute path (`pathGetFullPath`: `..` and `.` collapsed, symlinks
+//      resolved) and require it to fall *within* the canonically resolved
+//      `root` — not a substring match on the raw request path, which could
+//      be fooled by an encoding this layer doesn't happen to normalise.
+//      The file served is that canonical path, never the raw candidate, so
+//      the read cannot resolve differently from the check.  A root that
+//      does not resolve ("") contains nothing.
+func withinFullRoot(fullRoot: in String, fullCandidate: in String): Bool {
+  fullRoot.length > 0 and (fullCandidate == fullRoot or fullCandidate.startsWith(fullRoot + "/"))
 }
 
-func resolveStaticFile(cfg: in StaticFiles, relative: in String): Option[String] {
+// A static file to serve: `path` is the canonical path the root check
+// accepted, so the read can never resolve differently from the check;
+// `name` is the requested path, whose extension picks the content type.
+record StaticHit {
+  path: String
+  name: String
+}
+
+func resolveStaticFile(cfg: in StaticFiles, relative: in String): Option[StaticHit] {
   if relative.contains("\u{0000}") {
     return None
   }
   val cleaned = if relative.startsWith("/") { relative.substring(1) } else { relative }
   val candidate = if cleaned.length == 0 { cfg.root + "/index.html" } else { cfg.root + "/" + cleaned }
-  if withinRoot(cfg.root, candidate) and fileExists(candidate) {
-    return Some(candidate)
+  val fullRoot = pathGetFullPath(cfg.root)
+  val fullCandidate = pathGetFullPath(candidate)
+  if withinFullRoot(fullRoot, fullCandidate) and fileExists(fullCandidate) {
+    return Some(StaticHit(path = fullCandidate, name = candidate))
   }
   if cfg.fallbackToIndex {
+    // The fallback is held to the same check: an `index.html` that is a link
+    // out of the root is not served.
     val indexPath = cfg.root + "/index.html"
-    if fileExists(indexPath) {
-      return Some(indexPath)
+    val fullIndex = pathGetFullPath(indexPath)
+    if withinFullRoot(fullRoot, fullIndex) and fileExists(fullIndex) {
+      return Some(StaticHit(path = fullIndex, name = indexPath))
     }
   }
   return None
@@ -980,11 +1026,10 @@ impl Middleware for StaticFileMiddleware {
     }
     val relative = if mount.length > 0 { req.path.substring(mount.length) } else { req.path }
     match resolveStaticFile(self.cfg, relative) {
-      case Some(resolvedMatch) -> {
-        val resolved: String = resolvedMatch
-        match readBytes(resolved) {
+      case Some(hit) -> {
+        match readBytes(hit.path) {
           case Ok(fileBytes) -> {
-            val resp = bytesResponse(200, contentTypeForPath(resolved), fileBytes)
+            val resp = bytesResponse(200, contentTypeForPath(hit.name), fileBytes)
             return withResponseHeader(resp, "Cache-Control", "public, max-age=" + self.cfg.cacheControlSeconds.toString())
           }
           case Err(_) -> return h.handle(req)

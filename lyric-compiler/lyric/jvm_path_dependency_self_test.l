@@ -15,8 +15,8 @@
 //! still treated an unbuilt `.dll` as FATAL (`hadUnbuiltLocalDep`)
 //! regardless of target — a Dotnet-only concern (the JVM bundler never
 //! reads `restoredDllPaths`) — which blocked
-//! `emitSingleFileOrProject`'s single-file build path (the ONLY caller that
-//! actually gates on `hadUnbuiltLocalDep`) for a `--target jvm` build of a
+//! `emitSingleFileOrProject`'s single-file build path (every caller now
+//! gates on `hadUnbuiltLocalDep`, #8574) for a `--target jvm` build of a
 //! FRESH checkout whose path dependency had never been built for
 //! `--target dotnet` first. Both fixtures below never build the
 //! dependency's own DLL, confirming the fresh-checkout scenario the issue's
@@ -497,14 +497,13 @@ test "resolveManifestDependencies: a path dependency's unreadable source is fata
 }
 
 // End-to-end companion to the resolver-level test above: `buildProject`
-// (`buildProjectFromManifest`) never reads `hadUnbuiltLocalDep` at all — it
-// is a non-fatal warning for that path by design (see
-// `ResolvedManifestDeps.hadUnbuiltLocalDep`'s doc comment). A dependency
-// whose source can't be read still surfaces as a build failure there, but
-// via a DOWNSTREAM missing-symbol type-check error on the consumer package
-// that imports it, not an early return. This pins that claim empirically
-// rather than leaving it asserted only in a comment.
-test "buildProject: a path dependency's unreadable source still fails the --target jvm manifest build, via downstream type-check (#6264)" {
+// (`buildProjectFromManifest`) stops on `hadUnbuiltLocalDep` before
+// compiling (#8574). The consumer deliberately never references the broken
+// dependency, so the only thing that can fail this build is that early stop;
+// before #8574 the build compiled on and succeeded here, and a consumer that
+// did import the dependency buried the resolver's message under a downstream
+// unresolved-call error.
+test "buildProject: a path dependency's unreadable source stops the --target jvm manifest build before compiling (#6264, #8574)" {
   val root = freshTempDir("srcfail-e2e")
   defer {
     cleanup(root)
@@ -539,7 +538,7 @@ test "buildProject: a path dependency's unreadable source still fails the --targ
   }
   writeFileOrPanic(
     Path.join(appDir, "src/app.l"),
-    "package Fixture.PathAppBroken2\n\nimport Std.Console as Console\nimport Fixture.PathDepBroken2\n\nfunc main(): Int {\n  Console.println(pathDepGreeting())\n  0\n}\n"
+    "package Fixture.PathAppBroken2\n\nimport Std.Console as Console\n\nfunc main(): Int {\n  Console.println(\"no dependency use\")\n  0\n}\n"
   )
 
   val noFeatures: List[String] = newList()
@@ -559,9 +558,80 @@ test "buildProject: a path dependency's unreadable source still fails the --targ
   )
   assertTrue(
     rc != 0,
-    "buildProject: an unreadable path-dependency source still fails the --manifest --target jvm build overall — " +
-      "buildProjectFromManifest itself never checks hadUnbuiltLocalDep, so the failure comes from the consumer " +
-      "package's downstream reference to the now-absent 'pathDepGreeting' symbol, not an early return"
+    "buildProject: an unreadable path-dependency source fails the --manifest --target jvm build even when no " +
+      "consumer code references the dependency, because buildProjectFromManifest stops on hadUnbuiltLocalDep"
+  )
+}
+
+// #8574, dotnet: a path dependency whose `bin/<name>.dll` was never built
+// stops the `--manifest` build after `localDepNotBuiltMessage`, instead of
+// compiling on into an unrelated unresolved-call error. As above, the
+// consumer never references the dependency, so only the early stop fails it.
+test "buildProject: an unbuilt path dependency stops the --target dotnet manifest build before compiling (#8574)" {
+  val root = freshTempDir("unbuilt-dotnet")
+  defer {
+    cleanup(root)
+  }
+  val depDir = mkPackageDir(
+    root,
+    "DepUnbuilt",
+    "[package]\n" + "name = \"Fixture.PathDepUnbuilt\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathDepUnbuilt\"\n" +
+      "output_assembly = \"PathDepUnbuilt.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathDepUnbuilt\" = \"src/dep.l\"\n"
+  )
+  match File.createDir(Path.join(depDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create depUnbuilt src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(depDir, "src/dep.l"),
+    "package Fixture.PathDepUnbuilt\n\npub func unbuiltGreeting(): String {\n  \"hi\"\n}\n"
+  )
+
+  val appDir = mkPackageDir(
+    root,
+    "AppUnbuilt",
+    "[package]\n" + "name = \"Fixture.PathAppUnbuilt\"\n" + "version = \"0.1.0\"\n" + "\n" + "[project]\n" +
+      "name = \"Fixture.PathAppUnbuilt\"\n" +
+      "output_assembly = \"PathAppUnbuilt.dll\"\n" +
+      "\n" +
+      "[project.packages]\n" +
+      "\"Fixture.PathAppUnbuilt\" = \"src/app.l\"\n" +
+      "\n" +
+      "[dependencies]\n" +
+      "\"Fixture.PathDepUnbuilt\" = { path = \"../DepUnbuilt\" }\n"
+  )
+  match File.createDir(Path.join(appDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create appUnbuilt src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(appDir, "src/app.l"),
+    "package Fixture.PathAppUnbuilt\n\nimport Std.Console as Console\n\nfunc main(): Int {\n  Console.println(\"no dependency use\")\n  0\n}\n"
+  )
+
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val rc = Cli.buildProject(
+    Path.join(appDir, "lyric.toml"),
+    None,
+    Emitter.Dotnet,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertTrue(rc != 0, "buildProject: an unbuilt path dependency fails the --manifest --target dotnet build")
+  assertTrue(
+    not File.fileExists(Path.join(appDir, "bin/PathAppUnbuilt.dll")),
+    "buildProject: the build stops before emitting the consumer's DLL"
   )
 }
 

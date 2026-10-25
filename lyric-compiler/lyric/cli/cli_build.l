@@ -2604,7 +2604,7 @@ func buildReleaseProject(
   // (#5786).  Passed into `buildProject` via `preResolvedDeps` instead of
   // letting it re-resolve internally.
   val resolved = resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
-  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep {
+  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep or resolved.hadUnbuiltLocalDep {
     return 1
   }
 
@@ -3101,17 +3101,17 @@ pub func buildProjectFromManifest(
   // DLL paths and collect their source packages for cross-package aspect
   // template resolution (#3498).  `resolveManifestDependencies`
   // (cli/workspace_builder.l, D123) is shared with `buildOneNative`'s
-  // single-file synthetic project request — see its doc comment for the
-  // workspace-error-vs-unbuilt-local-dep distinction this function preserves
-  // verbatim (a workspace failure has always been an immediate `return 1`
-  // here; an unbuilt local `path` dep has always been a non-fatal warning).
+  // single-file synthetic project request.  Every failure it reports is
+  // fatal here: an unbuilt or unreadable local `path` dep has already printed
+  // its actionable message, and compiling on only buried it under a
+  // downstream unresolved-call error (#8574).
   // `preResolvedDeps` (#5786) skips this resolution — and the workspace
   // rebuild it triggers — when the caller already ran it.
   val resolved = match preResolvedDeps {
     case Some(r) -> r
     case None -> resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   }
-  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep {
+  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep or resolved.hadUnbuiltLocalDep {
     return 1
   }
   val restoredDlls = resolved.restoredDlls
