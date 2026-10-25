@@ -284,6 +284,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/cfg_single_file_self_test.l \
 	lyric-compiler/lyric/class_encoding_self_test.l \
 	lyric-compiler/lyric/cli_build_self_test.l \
+	lyric-compiler/lyric/cli_layers_self_test.l \
 	lyric-compiler/lyric/cli_restore_self_test.l \
 	lyric-compiler/lyric/cli_npm_shims_self_test.l \
 	lyric-compiler/lyric/cli_shared_self_test.l \
