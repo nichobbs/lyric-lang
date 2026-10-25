@@ -484,7 +484,9 @@ Core commands you will use constantly:
 | `lyric plugin check <dir>` | Validate a plugin artifact directory, and its `plugin.sig` when it has one |
 | `lyric plugin keygen -o <base>` | Generate an Ed25519 publisher key: `<base>.key` (secret, owner-only) and `<base>.pub` |
 | `lyric plugin sign <dir> [--key <file>]` | Write the artifact's `plugin.sig` (the key can come from `LYRIC_PLUGIN_SIGNING_KEY` instead); `pack --sign-key <file>` signs while packing |
-| `lyric plugin verify <dir> --key <pub>... [--publisher <name>]` | Verify an artifact's signature as a host does at load |
+| `lyric plugin verify <dir\|zip> --key <pub>... [--publisher <name>]` | Verify an artifact's signature as a host does at load (or against a catalogue with `--catalogue <dir\|url> --catalogue-key <pub>`) |
+| `lyric plugin catalogue init\|publisher\|remove-key\|revoke-key\|add\|yank\|sign <dir> ...` | Maintain a signed plugin catalogue (Chapter 33) |
+| `lyric plugin install <id>[@<version>] --catalogue <dir\|url> --catalogue-key <pub> --into <dir>` | Install a signed plugin from a catalogue |
 | `lyric plugin sdk --api <dir\|file.l\|lyric.toml> --lang csharp\|java\|typescript -o <dir>` | Generate a plugin SDK in another language from a plugin API package |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |
 | `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |

@@ -913,9 +913,9 @@ process or wasm mode.
 
 ## 12. Distribution and trust
 
-_Specced in D248 (Q-PLG-006, Q-PLG-007); listing paths narrowed by D263 and
-the host surface refined by D264. Signing and load-time verification ship
-(P7); catalogues are still to come (P8)._
+_Specced in D248 (Q-PLG-006, Q-PLG-007); listing paths narrowed by D263, the
+host surface refined by D264 and the catalogue surface by D265. Signing,
+load-time verification (P7) and catalogues with zip transfer (P8) ship._
 
 - **Signing.** An artifact carries `plugin.sig`: an Ed25519 signature
   (`Std.Ed25519`, pure Lyric on every target) by the publisher's key over the
@@ -1126,7 +1126,7 @@ plugin and a screen that uses it.
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
 | P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`; examples and CI scripts signed with a test key | Done; signed generator lock entries wait for restored generators (#8580) |
-| P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
+| P8 | Catalogues (§12, D248, D265): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, `pack --zip`, `Std.PluginCatalogue`, `K0120`-`K0123` | Done; the compiler's private zip readers move to `Std.Zip` in #8582 |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode
@@ -1239,8 +1239,8 @@ docs/69 codes (`pluginIssueCode`):
 A trusted payload that the policy chose but that cannot be loaded into the host's
 process is the load issue `TrustedLoadFailed` (no code).
 
-Reported since P7 (`K0105`-`K0110`, D248) and specced for P8
-(`K0120`-`K0123`):
+Reported since P7 (`K0105`-`K0110`, D248) and P8 (`K0120`-`K0123`,
+`Std.PluginCatalogue.CatalogueError`):
 
 | Code | Meaning |
 |---|---|

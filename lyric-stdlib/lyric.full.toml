@@ -224,3 +224,11 @@ output_assembly = "Lyric.Stdlib.dll"
 # travel as zips.  Appended last for the same reason as Tier 8.  The
 # compiler's `lyric plugin` commands import it, so it is not `seed: current`.
 "Std.Zip" = "std/zip.l"
+
+# Tier 20 — per-application plugin catalogues (D248 Decisions 8-10): signed
+# catalogue.json/catalogue.sig, following with rollback and expiry checks,
+# and installing signed artifacts from zips.  Appended last for the same
+# reason as Tier 8; it imports Std.Http, Std.Zip, Std.Plugin and
+# Std.PluginSign, which precede it.  The compiler's `lyric plugin catalogue`
+# and `install` commands import it, so it is not `seed: current`.
+"Std.PluginCatalogue" = "std/plugin_catalogue.l"

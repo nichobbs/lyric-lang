@@ -12,6 +12,7 @@ import Std.SecureRandom as SecureRandom
 import Std.String as Str
 import Std.Ed25519 as Ed
 import Std.PluginSign as Sign
+import Std.PluginCatalogue as Cat
 import Lyric.PluginManifest as Pm
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,62 +197,109 @@ func readPublicKeyFile(path: in String): Result[slice[Byte], String] {
 }
 
 func cmdPluginVerify(argv: in slice[String]): Int {
-  val usage = "usage: lyric plugin verify <dir> --key <public-key-file>... [--publisher <name>]"
-  var dir = ""
+  val usage = "usage: lyric plugin verify <dir|zip> (--key <public-key-file>... [--publisher <name>] | " +
+    "--catalogue <dir|url> --catalogue-key <public-key-file>)"
+  var target = ""
   var publisher = ""
+  var catalogue = ""
+  var catalogueKey = ""
   val keyFiles: List[String] = newList()
   var i = 2
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--key" or arg == "--publisher" {
+    if arg == "--key" or arg == "--publisher" or arg == "--catalogue" or arg == "--catalogue-key" {
       if i + 1 >= argv.length {
         printErr("plugin verify: " + arg + " requires a value")
         return 1
       }
       if arg == "--key" {
         keyFiles.add(argv[i + 1])
-      } else {
+      } else if arg == "--publisher" {
         publisher = argv[i + 1]
+      } else if arg == "--catalogue" {
+        catalogue = argv[i + 1]
+      } else {
+        catalogueKey = argv[i + 1]
       }
       i += 2
-    } else if Str.startsWith(arg, "-") or dir.length > 0 {
+    } else if Str.startsWith(arg, "-") or target.length > 0 {
       printErr(usage)
       return 1
     } else {
-      dir = arg
+      target = arg
       i += 1
     }
   }
-  if dir.length == 0 or keyFiles.count == 0 {
+  val byCatalogue = catalogue.length > 0 or catalogueKey.length > 0
+  if target.length == 0 or (byCatalogue and (catalogue.length == 0 or catalogueKey.length == 0)) or (not byCatalogue and keyFiles.count == 0) or (byCatalogue and (keyFiles.count > 0 or publisher.length > 0)) {
     printErr(usage)
     return 1
   }
-  // Without --publisher, the keys are trusted for the publisher the manifest
-  // names, so verify checks the signature and the files; with it, the
-  // manifest must also name that publisher.
-  val trustedFor = if publisher.length > 0 {
-    publisher
-  } else {
-    match Sign.readManifestIdentity(dir) {
-      case Ok(m) -> m.publisher
-      case Err(msg) -> {
-        printErr("plugin verify: " + dir + ": " + msg)
-        return 1
-      }
+  val (dir, scratch) = match artifactDirFor("plugin verify", target) {
+    case Ok(pair) -> pair
+    case Err(msg) -> {
+      printErr(msg)
+      return 1
     }
   }
+  val rc = verifyDir(dir, target, keyFiles, publisher, catalogue, catalogueKey)
+  if scratch.length > 0 {
+    val _ = File.deleteDirRecursive(scratch)
+  }
+  rc
+}
+
+func verifyDir(
+  dir: in String,
+  label: in String,
+  keyFiles: in List[String],
+  publisher: in String,
+  catalogue: in String,
+  catalogueKey: in String,
+): Int {
   val keys: List[Sign.TrustedKey] = newList()
-  for f in keyFiles {
-    match readPublicKeyFile(f) {
-      case Ok(k) -> keys.add(Sign.TrustedKey(publisher = trustedFor, publicKey = k))
+  val revoked: List[String] = newList()
+  if catalogue.length > 0 {
+    // The catalogue's publishers, each with its keys, and its revocations.
+    val followed = match catalogueTrustFor("plugin verify", catalogue, catalogueKey) {
+      case Ok(f) -> f
       case Err(msg) -> {
-        printErr("plugin verify: " + msg)
+        printErr(msg)
         return 1
       }
     }
+    for k in Cat.catalogueKeys(followed.catalogue) {
+      keys.add(k)
+    }
+    for r in followed.catalogue.revokedKeys {
+      revoked.add(r)
+    }
+  } else {
+    // Without --publisher, the keys are trusted for the publisher the manifest
+    // names, so verify checks the signature and the files; with it, the
+    // manifest must also name that publisher.
+    val trustedFor = if publisher.length > 0 {
+      publisher
+    } else {
+      match Sign.readManifestIdentity(dir) {
+        case Ok(m) -> m.publisher
+        case Err(msg) -> {
+          printErr("plugin verify: " + label + ": " + msg)
+          return 1
+        }
+      }
+    }
+    for f in keyFiles {
+      match readPublicKeyFile(f) {
+        case Ok(k) -> keys.add(Sign.TrustedKey(publisher = trustedFor, publicKey = k))
+        case Err(msg) -> {
+          printErr("plugin verify: " + msg)
+          return 1
+        }
+      }
+    }
   }
-  val noRevocations: List[String] = newList()
-  match Sign.verifyArtifact(dir, keys, noRevocations) {
+  match Sign.verifyArtifact(dir, keys, revoked) {
     case Ok(signer) -> {
       match Sign.readManifestIdentity(dir) {
         case Ok(m) -> Console.println(
@@ -259,12 +307,12 @@ func cmdPluginVerify(argv: in slice[String]): Int {
             signer.keyId +
             ")"
         )
-        case Err(_) -> Console.println("plugin verify: " + dir + " is signed by " + signer.publisher)
+        case Err(_) -> Console.println("plugin verify: " + label + " is signed by " + signer.publisher)
       }
       0
     }
     case Err(p) -> {
-      printErr("plugin verify: " + dir + ": " + Sign.signatureProblemCode(p) + ": " + Sign.signatureProblemMessage(p))
+      printErr("plugin verify: " + label + ": " + Sign.signatureProblemCode(p) + ": " + Sign.signatureProblemMessage(p))
       1
     }
   }

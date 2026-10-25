@@ -4008,6 +4008,14 @@ damaged signature is still refused. A verified plugin's
 `GrantPolicy`; it is never read from `plugin.json`. `registerPlugin` does not
 look for a signature: its caller vouches for the plugin.
 
+`Std.PluginCatalogue` follows per-application catalogues (D248, D265):
+`updateCatalogue(CatalogueSource(location, pinnedKey), stateDir)` fetches and
+verifies one (`K0120`-`K0122`, `CatalogueError`), `loadFollowedCatalogue`
+returns the last verified copy offline with `stale` set once it has expired,
+`catalogueTrust(pinned, followed, allowUnsigned)` builds the `TrustPolicy`,
+and `installPlugin(followed, id, version, dir)` downloads, checks (`K0123`),
+extracts and verifies a plugin. `Std.Zip` is the zip and DEFLATE layer it uses.
+
 `PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
 (10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`
 (10000), `shutdownGraceMs` (2000), `preferWasm` (true),
@@ -4176,12 +4184,15 @@ where it is missing. The runtime is not available on Windows hosts yet (#8542).
 
 ```
 lyric plugin pack   [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted]
-                    [--sign-key <secret-key-file>] [-o <dir>]
+                    [--sign-key <secret-key-file>] [--zip] [-o <dir>]
 lyric plugin check  <dir>
 lyric plugin sdk    --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
 lyric plugin keygen -o <base>
 lyric plugin sign   <dir> [--key <secret-key-file>]
-lyric plugin verify <dir> --key <public-key-file>... [--publisher <name>]
+lyric plugin verify <dir|zip> --key <public-key-file>... [--publisher <name>]
+lyric plugin verify <dir|zip> --catalogue <dir|url> --catalogue-key <public-key-file>
+lyric plugin catalogue init|publisher|remove-key|revoke-key|add|yank|sign <dir> ...
+lyric plugin install <id>[@<version>] --catalogue <dir|url> --catalogue-key <public-key-file> --into <dir> [--state <dir>]
 ```
 
 - **`pack`** builds the plugin project (the nearest `lyric.toml`, or
@@ -4203,7 +4214,10 @@ lyric plugin verify <dir> --key <public-key-file>... [--publisher <name>]
   jvm payloads themselves, and for `native` a `--shape plugin` library built
   as `native/lib<name>.so` (`.dylib` on macOS; Linux and macOS only).
   `--sign-key` signs the written artifact as `sign` does; the key is read
-  before anything is built.
+  before anything is built. `--zip` also writes `<dir>/<id>-<version>.zip`,
+  the transfer form catalogues serve (D248 Decision 9): every listed file
+  and `plugin.sig` under `<id>-<version>/`, the native payload marked
+  executable, written deterministically.
 - **`check`** validates an artifact directory (schema, required fields,
   version spellings, payload forms including the trusted ones and their file
   suffixes, payload files present) and, when the directory has a
@@ -4231,7 +4245,33 @@ lyric plugin verify <dir> --key <public-key-file>... [--publisher <name>]
   `--publisher` only for that publisher, which the manifest must then name.
   A failure is printed with its load code: `K0105` (no or malformed
   `plugin.sig`), `K0106` (untrusted key), `K0107` (bad signature), `K0108`
-  (files differ from the listing), `K0109` (id, version or publisher differs).
+  (files differ from the listing), `K0109` (id, version or publisher
+  differs), `K0110` (revoked key). A `.zip` is extracted under the install
+  rules first. With `--catalogue` and `--catalogue-key` the trusted keys are
+  the catalogue's publishers, after the catalogue itself verifies, and its
+  revocations apply.
+- **`catalogue`** maintains a signed catalogue in a directory (D248, D265):
+  `init <dir> --name <n> --key <secret>` creates and signs an empty one whose
+  catalogue key is `--key`'s; `publisher <dir> <name> --key <public>` trusts a
+  key for a publisher; `remove-key <dir> <key-id>` drops one; `revoke-key
+  <dir> <key-id>` revokes one, so hosts refuse what it signed; `add <dir> <zip>
+  [--url <url>]` verifies an artifact zip against the catalogue's publishers
+  and lists it (copying it to `<dir>/artifacts/` unless `--url` is given);
+  `yank <dir> <id> <version>` stops that version being installed; `sign <dir>
+  --key <secret> [--rotate-to <secret>] [--expires-in <days>]` increments the
+  serial, sets the expiry (default 90 days) and writes `catalogue.sig`, with
+  `--rotate-to` making that key the catalogue key, signed by both. The editing
+  commands remove `catalogue.sig` until `sign` runs.
+- **`install`** follows the catalogue at `--catalogue` (a directory or an
+  `http(s)` URL) with `--catalogue-key` pinned, keeping its state in
+  `--state` (default `<into>/.lyric-catalogues`), then installs the plugin: the
+  given version or the newest that is not yanked. Refusals carry their code:
+  `K0120` (no signature by the current catalogue key, or a rotation not signed
+  by the new key), `K0121` (expired), `K0122` (an older serial, or the same
+  serial with other contents), `K0123` (the zip, its `plugin.sig` or its
+  identity differs from the entry), or `K0105`-`K0110` for the artifact's own
+  signature. The plugin lands in `<into>/<id>-<version>`, replacing other
+  installed versions of it.
 - **`sdk`** generates a plugin SDK in C#, Java or TypeScript from an API
   package: the boundary types and codecs, a process-mode server, capability
   clients, a manifest builder and a JSON Schema of the boundary. The

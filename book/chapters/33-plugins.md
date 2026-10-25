@@ -411,6 +411,41 @@ checks a signature the way a host will: a changed or added file is `K0108`,
 an unknown key `K0106`, a manifest naming another publisher `K0109`. Hosts run
 the same check in `discoverPlugins`.
 
+### Publishing through a catalogue
+
+An application's plugins are published in a catalogue: two static files any
+web server or directory can serve (D248). The catalogue's owner keeps a
+catalogue key, lists the publishers they trust, and adds signed artifact zips:
+
+```sh
+lyric plugin keygen -o catalogue
+lyric plugin catalogue init site --name acme-editor --key catalogue.key
+lyric plugin catalogue publisher site acme --key acme.pub
+lyric plugin pack --manifest notes-summary/lyric.toml --sign-key acme.key --zip -o plugins
+lyric plugin catalogue add site plugins/acme.notes-summary-1.2.0.zip
+lyric plugin catalogue sign site --key catalogue.key       # bumps the serial, expires in 90 days
+```
+
+`site/` now holds `catalogue.json`, `catalogue.sig` and `artifacts/`. Upload it
+anywhere. A user, or the application itself, installs from it with the
+catalogue's public key, which the application ships:
+
+```sh
+lyric plugin install acme.notes-summary --catalogue https://plugins.example.com/acme-editor \
+  --catalogue-key catalogue.pub --into plugins
+```
+
+`install` checks the catalogue's signature, that it is not older than the last
+one seen and has not expired, then downloads the zip, checks it against the
+catalogue, extracts it safely and verifies the artifact's own signature before
+the plugin directory appears. Inside an application, `Std.PluginCatalogue`
+does the same: `updateCatalogue` and `installPlugin`, and `catalogueTrust`
+turns the followed catalogues into the host's `TrustPolicy`, revocations
+included. `lyric plugin catalogue yank` stops a version being installed and
+`revoke-key` stops a compromised publisher key being trusted;
+`sign --rotate-to` moves the catalogue to a new key without breaking the hosts
+that follow it.
+
 ## Running a plugin as WebAssembly
 
 A plugin from someone you do not trust should not run as an ordinary process.
@@ -796,8 +831,7 @@ appendix B has the table. The ones you will meet first:
 
 ## What is not supported yet
 
-- Per-application plugin catalogues, from which a host installs signed
-  plugins, follow (D248). Unloading a trusted plugin is not supported (D231).
+- Unloading a trusted plugin is not supported (D231).
 - A widget plugin's point (`WidgetPlugin` 1.0) allows no capabilities.
 - A process or wasm-module plugin that ignores the cancellation of a timed-out
   call keeps its CPU until the host stops it (#8465); only a component plugin

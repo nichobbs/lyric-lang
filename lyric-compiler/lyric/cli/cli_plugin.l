@@ -24,13 +24,14 @@ import Std.PluginSign as Sign
 func pluginUsageText(): String {
   "Usage: lyric plugin <command> [args]\n" + "\n" +
     "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted]\n" +
-    "                     [--sign-key <secret-key-file>] [-o <dir>]\n" +
+    "                     [--sign-key <secret-key-file>] [--zip] [-o <dir>]\n" +
     "                     (build the plugin project for each target (default: dotnet), read its manifest\n" +
     "                      with --lyric-plugin-manifest, and write <dir>/<id>-<version>/plugin.json and\n" +
     "                      the payloads; <dir> defaults to bin/plugin beside the manifest; --trusted also\n" +
     "                      lists trusted payloads a host may load into its own process: the dotnet and\n" +
     "                      jvm payloads themselves, and a native --shape plugin library; --sign-key signs\n" +
-    "                      the artifact as `lyric plugin sign` does)\n" +
+    "                      the artifact as `lyric plugin sign` does; --zip also writes <id>-<version>.zip, the\n" +
+    "                      form catalogues serve)\n" +
     "  lyric plugin check <dir>\n" +
     "                     (validate a plugin artifact directory, and its plugin.sig when it has one;\n" +
     "                      prints each problem and exits 1)\n" +
@@ -40,9 +41,17 @@ func pluginUsageText(): String {
     "  lyric plugin sign  <dir> [--key <secret-key-file>]\n" +
     "                     (check the artifact directory and write its plugin.sig; without --key the\n" +
     "                      secret key's text is read from LYRIC_PLUGIN_SIGNING_KEY)\n" +
-    "  lyric plugin verify <dir> --key <public-key-file>... [--publisher <name>]\n" +
-    "                     (verify plugin.sig against the given keys, as a host does at load; with\n" +
-    "                      --publisher the manifest must name that publisher)\n" +
+    "  lyric plugin verify <dir|zip> --key <public-key-file>... [--publisher <name>]\n" +
+    "  lyric plugin verify <dir|zip> --catalogue <dir|url> --catalogue-key <public-key-file>\n" +
+    "                     (verify plugin.sig against the given keys, or the catalogue's publishers and\n" +
+    "                      revocations, as a host does at load; with --publisher the manifest must name\n" +
+    "                      that publisher)\n" +
+    "  lyric plugin catalogue init|publisher|remove-key|revoke-key|add|yank|sign <dir> ...\n" +
+    "                     (maintain a signed plugin catalogue; `lyric plugin catalogue --help`)\n" +
+    "  lyric plugin install <id>[@<version>] --catalogue <dir|url> --catalogue-key <public-key-file>\n" +
+    "                     --into <dir> [--state <dir>]\n" +
+    "                     (fetch and verify the catalogue, then download, check, extract and verify the\n" +
+    "                      plugin into <dir>/<id>-<version>)\n" +
     "  lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>\n" +
     "                     (generate a plugin SDK for the API package's points and capabilities:\n" +
     "                      boundary types, codecs, a process-mode server, capability clients, a\n" +
@@ -76,6 +85,12 @@ func cmdPlugin(argv: in slice[String]): Int {
   }
   if sub == "verify" {
     return cmdPluginVerify(argv)
+  }
+  if sub == "catalogue" {
+    return cmdPluginCatalogue(argv)
+  }
+  if sub == "install" {
+    return cmdPluginInstall(argv)
   }
   printErr("plugin: unknown command '" + sub + "'")
   printErr(pluginUsageText())
@@ -610,11 +625,15 @@ func cmdPluginPack(argv: in slice[String]): Int {
   var outArg = ""
   var trusted = false
   var signKey = ""
+  var zip = false
   var i = 2
   while i < argv.length {
     val arg = argv[i]
     if arg == "--trusted" {
       trusted = true
+      i += 1
+    } else if arg == "--zip" {
+      zip = true
       i += 1
     } else if arg == "--sign-key" {
       if i + 1 >= argv.length {
@@ -640,7 +659,7 @@ func cmdPluginPack(argv: in slice[String]): Int {
     } else {
       printErr("plugin pack: unexpected argument " + arg)
       printErr(
-        "usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [--sign-key <file>] [-o <dir>]"
+        "usage: lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [--sign-key <file>] [--zip] [-o <dir>]"
       )
       return 1
     }
@@ -751,7 +770,19 @@ func cmdPluginPack(argv: in slice[String]): Int {
       return 1
     }
   }
-  val rc = packStaged(mfPath, proj.name, targets, outDir, staging, wasmtime, nativeOs, nativeArch, trusted, signSeed)
+  val rc = packStaged(
+    mfPath,
+    proj.name,
+    targets,
+    outDir,
+    staging,
+    wasmtime,
+    nativeOs,
+    nativeArch,
+    trusted,
+    signSeed,
+    zip
+  )
   removeDirIfPresent(staging)
   rc
 }
@@ -767,6 +798,7 @@ func packStaged(
   nativeArch: in String,
   trusted: in Bool,
   signSeed: in Option[slice[Byte]],
+  zip: in Bool,
 ): Int {
   for t in targets {
     Console.println("plugin pack: building the " + t + " payload")
@@ -887,8 +919,13 @@ func packStaged(
   Console.println(
     "plugin pack: wrote " + artifact + " (" + id + " " + version + "; payloads: " + Str.joinList(", ", targets) + ")"
   )
-  match signSeed {
-    case Some(seed) -> signArtifactDir("plugin pack", artifact, seed)
-    case None -> 0
+  val signed = match signSeed { case Some(seed) -> signArtifactDir("plugin pack", artifact, seed); case None -> 0 }
+  if signed != 0 or not zip {
+    return signed
   }
+  val executables: List[String] = newList()
+  if listContains(targets, "native") {
+    executables.add(packPayloadFile("native", stem))
+  }
+  writeArtifactZip("plugin pack", artifact, executables)
 }

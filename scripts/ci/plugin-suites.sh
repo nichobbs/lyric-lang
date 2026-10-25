@@ -6,8 +6,10 @@
 #      plugin point): scripts/ci/source-generator-e2e.sh.
 #   2. Std.Plugin's manifest, payload and boundary-error tests and
 #      Std.PluginSign's listing and signature tests on dotnet and the JVM
-#      (lyric-stdlib/tests/plugin_manifest_tests.l, plugin_sign_tests.l), and
-#      `lyric plugin keygen`/`sign`/`verify` (scripts/ci/plugin-sign-e2e.sh).
+#      (lyric-stdlib/tests/plugin_manifest_tests.l, plugin_sign_tests.l),
+#      Std.PluginCatalogue (plugin_catalogue_tests.l), `lyric plugin
+#      keygen`/`sign`/`verify` (scripts/ci/plugin-sign-e2e.sh) and `lyric plugin
+#      catalogue`/`install`/`pack --zip` (scripts/ci/plugin-catalogue-e2e.sh).
 #   3. The runtime against a real plugin process, every pair of a dotnet or
 #      JVM host and a dotnet or JVM plugin (scripts/ci/plugin-e2e.sh).
 #   4. A plugin written with the D207 annotations against the generated host
@@ -53,8 +55,10 @@ bash scripts/ci/source-generator-e2e.sh
 for target in dotnet jvm; do
   "$lyric_bin" test lyric-stdlib/tests/plugin_manifest_tests.l --target "$target"
   "$lyric_bin" test lyric-stdlib/tests/plugin_sign_tests.l --target "$target"
+  "$lyric_bin" test lyric-stdlib/tests/plugin_catalogue_tests.l --target "$target"
 done
 bash scripts/ci/plugin-sign-e2e.sh "$lyric_bin"
+bash scripts/ci/plugin-catalogue-e2e.sh "$lyric_bin"
 
 for host in dotnet jvm; do
   for plugin in dotnet jvm; do
