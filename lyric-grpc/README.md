@@ -409,9 +409,9 @@ config block (wire it up via the usual `config { }` mechanism):
 ```lyric
 config GrpcServer {
   host: String = "0.0.0.0"
-  port: Int = 50051
+  port: Int range 1 ..= 65535 = 50051
   reflectionEnabled: Bool = false
-  maxConnectionIdleMs: Int = 300000
+  maxConnectionIdleMs: Int range 1 ..= 2147483647 = 300000
 }
 ```
 

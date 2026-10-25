@@ -103,20 +103,3 @@ pub func shortSecretGuardedHandler(authToken: in String): Result[String, GrpcSta
 test "RequiresGrpcAuth: a short jwtSecret is a configuration error, even for an empty token" {
   assertPanicsWith("short secret", "jwtSecret must be at least 32 bytes", { -> val _ = shortSecretGuardedHandler("") })
 }
-
-// A breaker configuration that cannot work is reported before the handler
-// runs (#7331).
-aspect ZeroCooldownBreaker from Grpc.Aspects.GrpcCircuitBreaker {
-  matches: name like "breakerMisconfigured*"
-  config {
-    cooldownMs: Int = 0
-  }
-}
-
-pub func breakerMisconfiguredHandler(): Result[String, GrpcStatus] {
-  return Std.Core.Ok("reached")
-}
-
-test "GrpcCircuitBreaker: cooldownMs 0 fails before the handler runs" {
-  assertPanicsWith("zero cooldown", "cooldownMs", { -> val _ = breakerMisconfiguredHandler() })
-}

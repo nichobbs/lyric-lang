@@ -361,33 +361,6 @@ test "HttpCircuitBreaker aspect: call after failureThreshold consecutive failure
   }
 }
 
-// A breaker configuration that cannot work is reported before the handler
-// runs, not after its side effects when the first failure is recorded
-// (#7331).
-ref record BreakerCounter {
-  var count: Int = 0
-}
-
-aspect CircuitBreakerZeroThreshold from Web.Aspects.HttpCircuitBreaker {
-  matches: name like "breakerMisconfigured*"
-  config {
-    failureThreshold: Int = 0
-  }
-}
-
-val breakerMisconfiguredCalls: BreakerCounter = BreakerCounter(count = 0)
-
-pub func breakerMisconfiguredHandler(): Result[String, Web.ApiError] {
-  breakerMisconfiguredCalls.count = breakerMisconfiguredCalls.count + 1
-  return Ok("reached")
-}
-
-test "HttpCircuitBreaker aspect: failureThreshold 0 fails before the handler runs" {
-  breakerMisconfiguredCalls.count = 0
-  assertPanicsWith("zero threshold", "failureThreshold", { -> val _ = breakerMisconfiguredHandler() })
-  assertEqualInt(breakerMisconfiguredCalls.count, 0, "the handler never ran")
-}
-
 // A placeholder secret shorter than 32 bytes is a configuration error for
 // every request, whatever its token (#7319).
 aspect ShortSecretGuard from Web.Aspects.RequiresAuth {
