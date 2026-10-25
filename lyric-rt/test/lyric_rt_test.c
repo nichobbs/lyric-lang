@@ -1541,6 +1541,50 @@ static void test_dir_list_typed(void) {
 }
 #endif /* !__wasi__ */
 
+#if !defined(__wasi__)
+/* lyric_path_real_ok without links, so it also runs on Windows (where making
+ * a symlink needs a privilege): `.`/`..` collapse to the same canonical path,
+ * and a missing path is -1 with *out untouched. */
+static void test_path_real_basic(void) {
+    char tmpl[] = "/tmp/lyric_rt_realbase_XXXXXX";
+    CHECK(mkdtemp(tmpl) != NULL);
+    char sub[512];
+    snprintf(sub, sizeof sub, "%s/sub", tmpl);
+    CHECK(lyric_dir_create_all(sub) == 0);
+    char filep[512];
+    snprintf(filep, sizeof filep, "%s/sub/f.txt", tmpl);
+    FILE* f = fopen(filep, "w");
+    CHECK(f != NULL);
+    fclose(f);
+
+    LyricString* direct = NULL;
+    CHECK(lyric_path_real_ok(filep, &direct) == 0);
+    char dotted[512];
+    snprintf(dotted, sizeof dotted, "%s/sub/./../sub/f.txt", tmpl);
+    LyricString* viaDots = NULL;
+    CHECK(lyric_path_real_ok(dotted, &viaDots) == 0);
+    CHECK(direct != NULL && viaDots != NULL);
+    CHECK(lyric_string_len(direct) == lyric_string_len(viaDots));
+    CHECK(memcmp(LYRIC_STRING_DATA(direct), LYRIC_STRING_DATA(viaDots), (size_t)lyric_string_len(direct)) == 0);
+    /* Canonical means absolute: longer than the relative tail. */
+    CHECK(lyric_string_len(direct) > (int64_t)strlen("sub/f.txt"));
+    lyric_release(viaDots);
+    lyric_release(direct);
+
+    char missing[512];
+    snprintf(missing, sizeof missing, "%s/sub/missing.txt", tmpl);
+    LyricString* untouched = NULL;
+    CHECK(lyric_path_real_ok(missing, &untouched) == -1);
+    snprintf(missing, sizeof missing, "%s/nodir/f.txt", tmpl);
+    CHECK(lyric_path_real_ok(missing, &untouched) == -1);
+    CHECK(untouched == NULL);
+
+    CHECK(lyric_file_delete(filep) == 0);
+    CHECK(lyric_dir_remove(sub) == 0);
+    CHECK(lyric_dir_remove(tmpl) == 0);
+}
+#endif
+
 #if LYRIC_TEST_POSIX
 static void test_is_dir_nofollow(void) {
     /* A real directory is a directory; a file is not. */
@@ -4117,6 +4161,9 @@ int main(void) {
     test_dir_list2();
 #if LYRIC_TEST_POSIX
     test_dir_list_typed();
+#endif
+#if !defined(__wasi__)
+    test_path_real_basic();
 #endif
 #if LYRIC_TEST_POSIX
     test_is_dir_nofollow();
