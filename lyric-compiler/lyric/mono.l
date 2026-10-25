@@ -586,8 +586,6 @@ pub func isCarriedPlainMono(decl: in FunctionDecl): Bool {
   noGenerics and hasBody and Str.startsWith(decl.name, "__priv_") and originPkgOf(decl.annotations).length > 0
 }
 
-/// `decl` tagged with its origin package (`originAnnotationName()`).  An empty
-/// `pkgName`, or a decl already tagged, is returned unchanged.
 /// `decl` annotated with the imports of the package it was declared in
 /// (`originImportsAnnotationName()`): `P` for a whole import, `P::f` for a
 /// name imported selectively.  Left as it is when `imports` is empty or the
@@ -610,6 +608,8 @@ pub func withOriginImportsMono(decl: in FunctionDecl, imports: in List[String]):
   decl.copy(annotations = anns)
 }
 
+/// `decl` tagged with its origin package (`originAnnotationName()`).  An empty
+/// `pkgName`, or a decl already tagged, is returned unchanged.
 pub func withOriginPkgMono(decl: in FunctionDecl, pkgName: in String): FunctionDecl {
   if pkgName.length == 0 or originPkgOf(decl.annotations).length > 0 {
     return decl
