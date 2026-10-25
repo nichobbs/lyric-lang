@@ -380,6 +380,10 @@ int32_t lyric_path_real_ok(const char* path, LyricString** out) {
     return 0;
 }
 
+int32_t lyric_file_set_executable(const char* path) {
+    return attrs_nofollow(path) == INVALID_FILE_ATTRIBUTES ? -1 : 0;
+}
+
 int32_t lyric_path_kind_nofollow(const char* path) {
     DWORD a = attrs_nofollow(path);
     if (a == INVALID_FILE_ATTRIBUTES) return LYRIC_PATH_KIND_MISSING;

@@ -337,6 +337,31 @@ pub func hostIsDirSymlink(path: in String): Bool {
   f.isDirectory() and isSymlinkJvm(f)
 }
 
+/// Renames (moves) a file or directory within one file system.
+pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  if JFile.new(fromPath).renameTo(JFile.new(toPath)) {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = fromPath, message = "cannot rename to " + toPath))
+  }
+}
+
+/// Gives `path` mode 0755: readable and executable by everyone, writable by
+/// its owner only.
+pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
+  val f = JFile.new(path)
+  if not f.isFile() {
+    return Err(error = FileNotFound(path = path))
+  }
+  val ok = f.setReadable(true, false) and f.setWritable(false, false) and f.setWritable(true, true) and
+    f.setExecutable(true, false)
+  if ok {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "cannot make the file executable"))
+  }
+}
+
 /// What `path` itself is, without following a link: 0 missing, 1 regular
 /// file, 2 directory, 3 symbolic link, 4 other (a FIFO, socket or device;
 /// `File.isFile` is true only for a regular file).

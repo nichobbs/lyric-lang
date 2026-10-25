@@ -322,6 +322,37 @@ pub func entryKind(path: in String): EntryKind {
   }
 }
 
+/// Rename (move) the file or directory `fromPath` to `toPath`, on the same
+/// file system. `toPath` must not exist.
+///
+/// Returns `Err(InvalidPath)` for an empty path, `Err(FileNotFound)` when
+/// `fromPath` names nothing, `Err(AlreadyExists)` when `toPath` exists, and
+/// `Err(IoError)` for any other host failure.
+@experimental
+pub func rename(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  if fromPath.length == 0 or toPath.length == 0 {
+    return Err(error = InvalidPath(path = fromPath, reason = "path must not be empty"))
+  }
+  if entryKind(fromPath) == Missing {
+    return Err(error = FileNotFound(path = fromPath))
+  }
+  if entryKind(toPath) != Missing {
+    return Err(error = AlreadyExists(path = toPath))
+  }
+  hostRenameResult(fromPath, toPath)
+}
+
+/// Give the regular file `path` mode 0755: readable and executable by
+/// everyone, writable by its owner. On Windows, which has no execute bit, it
+/// only checks that the file exists.
+@experimental
+pub func setExecutable(path: in String): Result[Unit, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  hostSetExecutableResult(path)
+}
+
 // Helper: collect all files recursively starting from `dir` into `acc`.
 // Errors stop the traversal and propagate up.
 // Directory nesting deeper than this is refused rather than recursed into:

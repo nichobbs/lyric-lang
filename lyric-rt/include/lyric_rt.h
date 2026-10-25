@@ -709,6 +709,12 @@ int32_t lyric_path_real_ok(const char* path, LyricString** out);
 #define LYRIC_PATH_KIND_OTHER   4 /* a FIFO, socket or device */
 int32_t lyric_path_kind_nofollow(const char* path);
 
+/* Gives `path` mode 0755 (owner read/write/execute, everyone else read and
+ * execute), for a plugin installer marking a native payload executable.
+ * 0 on success, -1 when the file is missing or the mode cannot be set.  On
+ * Windows, which has no execute bit, it only checks the file exists. */
+int32_t lyric_file_set_executable(const char* path);
+
 /* Lists the entries of the directory at `path` (skipping "." and
  * ".."), returning a fresh rc=1 LyricList of rc=1 LyricString* names
  * (list constructed with elems_are_refs = 1). Returns NULL if the

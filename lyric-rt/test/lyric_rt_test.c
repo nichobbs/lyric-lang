@@ -1629,6 +1629,14 @@ static void test_is_dir_nofollow(void) {
     unlink(fifop);
     unlink(linkf);
 
+    /* lyric_file_set_executable gives a file mode 0755. */
+    CHECK(chmod(filep, 0600) == 0);
+    CHECK(lyric_file_set_executable(filep) == 0);
+    struct stat est;
+    CHECK(stat(filep, &est) == 0);
+    CHECK((est.st_mode & 07777) == 0755);
+    CHECK(lyric_file_set_executable("/definitely/missing/lyric-rt-nf") == -1);
+
     unlink(linkp);
     unlink(filep);
     rmdir(tmpl);

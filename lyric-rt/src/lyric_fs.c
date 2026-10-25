@@ -332,6 +332,10 @@ int32_t lyric_path_real_ok(const char* path, LyricString** out) {
     return 0;
 }
 
+int32_t lyric_file_set_executable(const char* path) {
+    return chmod(path, 0755) == 0 ? 0 : -1;
+}
+
 int32_t lyric_path_kind_nofollow(const char* path) {
     struct stat st;
     if (lstat(path, &st) != 0) return LYRIC_PATH_KIND_MISSING;

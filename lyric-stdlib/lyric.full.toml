@@ -219,3 +219,8 @@ output_assembly = "Lyric.Stdlib.dll"
 # reason as Tier 8; it imports `Std.Ed25519` (Tier 17).  `Std.Plugin` and the
 # compiler's `lyric plugin` commands import it, so it is not `seed: current`.
 "Std.PluginSign" = "std/plugin_sign.l"
+
+# Tier 19 — zip archives and raw DEFLATE (D248 Decision 9): plugin artifacts
+# travel as zips.  Appended last for the same reason as Tier 8.  The
+# compiler's `lyric plugin` commands import it, so it is not `seed: current`.
+"Std.Zip" = "std/zip.l"

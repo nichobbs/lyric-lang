@@ -19,6 +19,7 @@ package Std.FileHost
 import Std.Core
 import Std.Collections
 import Std.Errors
+import Std.ProcessHost
 
 extern type NetFile = "System.IO.File"
 
@@ -215,6 +216,45 @@ pub func hostIsDirSymlink(path: in String): Bool {
 }
 
 extern type FileInfo = "System.IO.FileInfo"
+
+extern type NetOs = "System.OperatingSystem"
+
+/// Renames (moves) a file or directory within one file system.
+pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  try {
+    if hostDirectoryExists(fromPath) {
+      NetDirectory.Move(fromPath, toPath)
+    } else {
+      NetFile.Move(fromPath, toPath)
+    }
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = fromPath, message = b.message))
+  }
+}
+
+/// Gives `path` mode 0755 (a no-op on Windows beyond checking it exists).
+/// `File.SetUnixFileMode` takes a `[Flags] UnixFileMode`, and no single
+/// named member is 0755, so this runs the POSIX `chmod 755` utility instead.
+pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
+  if not hostFileExists(path) {
+    return Err(error = FileNotFound(path = path))
+  }
+  if NetOs.IsWindows() {
+    return Ok(value = ())
+  }
+  val args: List[String] = newList()
+  args.add("755")
+  args.add(path)
+  match hostRunInheritedResult("chmod", args) {
+    case Ok(code) -> if code == 0 {
+      Ok(value = ())
+    } else {
+      Err(error = IoError(path = path, message = "chmod 755 exited " + code.toString()))
+    }
+    case Err(e) -> Err(error = e)
+  }
+}
 
 /// What `path` itself is, without following a link: 0 missing, 1 regular
 /// file, 2 directory, 3 symbolic link, 4 other (the codes of
