@@ -1983,7 +1983,11 @@ pub func compileProjectToNativeWithShape(
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
-    val siblingValueGenerics = siblingValueGenericFuncs(importedPkgs, dottedPath(ownFiles0[mei].packageDecl.path), originImportsByPkg)
+    val siblingValueGenerics = siblingValueGenericFuncs(
+      importedPkgs,
+      dottedPath(ownFiles0[mei].packageDecl.path),
+      originImportsByPkg
+    )
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingValueGenerics, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false

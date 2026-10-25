@@ -799,7 +799,9 @@ func strList2(a: in String, b: in String): List[String] {
 }
 
 test "a tie in a specialised body resolves to the package its declaring package imports selectively" {
-  val callerPr = parse("package Caller\n" + "import Mid\n" + "import LibA\n" + "func caller(): Unit { val n = viaGet(1) }\n")
+  val callerPr = parse(
+    "package Caller\n" + "import Mid\n" + "import LibA\n" + "func caller(): Unit { val n = viaGet(1) }\n"
+  )
   val res = monoFileWithImports(callerPr.file, midFeed(strList2("Lib", "LibB::get")))
   assertTrue(hasFunc(res.file, "viaGet__Int"), "the generic is specialised")
   assertTrue(hasFunc(res.file, "idOf__Char"), "Mid imports LibB.get, so T = Char")
@@ -814,7 +816,9 @@ test "a tie in a specialised body resolves to the package its declaring package 
 }
 
 test "a tie in a specialised body whose package imports neither candidate is not guessed" {
-  val callerPr = parse("package Caller\n" + "import Mid\n" + "import LibB\n" + "func caller(): Unit { val n = viaGet(1) }\n")
+  val callerPr = parse(
+    "package Caller\n" + "import Mid\n" + "import LibB\n" + "func caller(): Unit { val n = viaGet(1) }\n"
+  )
   val noImports: List[String] = newList()
   val res = monoFileWithImports(callerPr.file, midFeed(noImports))
   assertFalse(hasFunc(res.file, "idOf__Char"), "no guess for LibB, though the root file imports it")

@@ -5004,10 +5004,7 @@ pub func pipeOriginImportsOf(imports: in List[ImportDecl]): List[String] {
     if not imp.isExtern {
       val pkg = Str.joinList(".", imp.path.segments)
       match imp.selector {
-        case None -> match imp.asAlias {
-          case None -> acc.add(pkg)
-          case Some(_) -> ()
-        }
+        case None -> match imp.asAlias { case None -> acc.add(pkg); case Some(_) -> () }
         case Some(sel) -> match sel {
           case ISSingle(item) -> match item.asAlias {
             case None -> acc.add(pkg + "::" + item.name)
