@@ -51,3 +51,8 @@ surface below.
    for the examples and CI only. The example hosts pin its public key in
    source, as an application pins its publishers' keys, and the e2e suites
    sign their fixtures with it.
+10. **Generators.** The compiler takes source generators only from path and
+    workspace dependencies and builds them from source (docs/40 §4.2), which
+    D248 Decision 7 exempts from signing. Signed `lyric.lock` entries apply
+    once a generator can be restored as a packed artifact from the registry
+    or git; that work is tracked in #8580.

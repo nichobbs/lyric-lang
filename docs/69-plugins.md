@@ -928,9 +928,10 @@ the host surface refined by D264. Signing and load-time verification ship
   key ids and `allowUnsigned` (off by default; for development); trusted
   payloads always need a signature (`K0105`-`K0110`). `registerPlugin` takes
   the caller's word for a plugin and checks no signature (D264).
-- **Build-time plugins** (generators) are pinned by `lyric.lock` with a
-  checksum, as docs/40 §7 already does; a restored generator's lock entry also
-  records its signing key id, and a change of key needs an explicit update.
+- **Build-time plugins** (generators) are built from the project's own path
+  and workspace dependencies, which need no signature. A generator restored as
+  a packed artifact will have its signing key id recorded in `lyric.lock`
+  (D248 Decision 7), once such generators can be restored (#8580).
 - **Catalogues.** There is no global registry: plugins exist for one
   application's points. An application follows one or more catalogues, a
   signed static `catalogue.json` listing publishers and their keys, revoked
@@ -1124,7 +1125,7 @@ plugin and a screen that uses it.
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
-| P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | In progress: everything but the signed generator lock entries |
+| P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`; examples and CI scripts signed with a test key | Done; signed generator lock entries wait for restored generators (#8580) |
 | P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
