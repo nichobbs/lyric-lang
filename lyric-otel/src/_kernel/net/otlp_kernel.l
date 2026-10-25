@@ -18,8 +18,7 @@
 //! byte >= 0x80 on the way through — fatal for protobuf, whose trace/span
 //! IDs and varints are arbitrary bytes.  This is therefore its own
 //! audited `_kernel/net/` extern boundary (docs/14-native-stdlib-plan.md
-//! Decision F's per-library kernel pattern — the same shape `lyric-proto`
-//! uses for `BitConverter`), not a "hand-routed BCL extern to plug a
+//! Decision F's per-library kernel pattern), not a "hand-routed BCL extern to plug a
 //! stdlib gap": raw byte-body HTTP POST is a real capability `Std.Http`
 //! does not expose today.  If `Std.Http` grows a byte-body POST, this
 //! kernel should shrink to reuse it.
