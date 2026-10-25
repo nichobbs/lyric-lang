@@ -151,7 +151,9 @@ func pathGetFullPath(path: in String): String {
 // outside it, and `..` after a link climbs from the link's target, not from
 // the link.  A relative path is taken from the working directory.  The part
 // that does not exist yet is appended lexically (`..` pops a segment), so a
-// missing file is still a 404 rather than an error.  A link loop (or any other
+// missing file is still a 404 rather than an error; a `..` after a missing
+// segment can differ from `open`, which fails on the missing segment, but
+// such a path names no file either way.  A link loop (or any other
 // resolution failure) yields "", which is never within any root.
 @cfg(feature = "native")
 func pathGetFullPath(path: in String): String {
@@ -951,14 +953,18 @@ func resolveStaticFile(cfg: in StaticFiles, relative: in String): Option[StaticH
   }
   val cleaned = if relative.startsWith("/") { relative.substring(1) } else { relative }
   val candidate = if cleaned.length == 0 { cfg.root + "/index.html" } else { cfg.root + "/" + cleaned }
+  val fullRoot = pathGetFullPath(cfg.root)
   val fullCandidate = pathGetFullPath(candidate)
-  if withinFullRoot(pathGetFullPath(cfg.root), fullCandidate) and fileExists(fullCandidate) {
+  if withinFullRoot(fullRoot, fullCandidate) and fileExists(fullCandidate) {
     return Some(StaticHit(path = fullCandidate, name = candidate))
   }
   if cfg.fallbackToIndex {
+    // The fallback is held to the same check: an `index.html` that is a link
+    // out of the root is not served.
     val indexPath = cfg.root + "/index.html"
-    if fileExists(indexPath) {
-      return Some(StaticHit(path = indexPath, name = indexPath))
+    val fullIndex = pathGetFullPath(indexPath)
+    if withinFullRoot(fullRoot, fullIndex) and fileExists(fullIndex) {
+      return Some(StaticHit(path = fullIndex, name = indexPath))
     }
   }
   return None

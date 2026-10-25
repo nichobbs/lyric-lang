@@ -596,6 +596,26 @@ test "dispatch: fallbackToIndex serves index.html for an unmatched static path" 
   assertEqual(decodeUtf8(resp.bodyBytes), "<h1>home</h1>", "index.html content served")
 }
 
+test "dispatch: fallbackToIndex does not serve an index.html that links out of root" {
+  val dir = scratchDir("static_fallback_index_link")
+  val _ = Process.run("rm", ["-rf", dir])
+  val _ = createDir(dir + "/public")
+  val _ = writeText(dir + "/secret.txt", "top secret")
+  val _ = Process.run("ln", ["-s", dir + "/secret.txt", dir + "/public/index.html"])
+
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(root = dir + "/public", mountPrefix = "", cacheControlSeconds = 60, fallbackToIndex = true)
+  )
+
+  assertEqualInt(
+    Web.dispatch(router, getRequest("/some/spa/route")).status,
+    404,
+    "an index.html symlink to outside root is not served as the fallback"
+  )
+}
+
 // ─── Response helper constructors ─────────────────────────────────────────────
 test "json/text/html/noContent/errorResponse construct the expected status and content type" {
   // Valid JSON is sent unmodified, byte-for-byte — no parse.
