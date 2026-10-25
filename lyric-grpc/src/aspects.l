@@ -204,8 +204,8 @@ pub aspect RequiresGrpcRole {
 pub aspect GrpcRateLimit {
   config {
     enabled: Bool = true
-    requestsPerMinute: Int = 600
-    burstSize: Int = 50
+    requestsPerMinute: Int range 1 ..= 100000000 = 600
+    burstSize: Int range 1 ..= 1000000 = 50
   }
   around(call) -> ret {
     if not enabled {
@@ -239,8 +239,8 @@ pub aspect GrpcCircuitBreaker {
   config {
     enabled: Bool = true
     name: String = ""
-    failureThreshold: Int = 5
-    cooldownMs: Int = 30000
+    failureThreshold: Int range 1 ..= 1000000 = 5
+    cooldownMs: Int range 1 ..= 86400000 = 30000
   }
   around(call) -> ret {
     if not enabled {

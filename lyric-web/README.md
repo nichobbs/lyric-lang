@@ -440,10 +440,10 @@ aspect Throttle from Web.Aspects.RateLimit {
 | Config field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `Bool` | `true` | Master switch |
-| `requestsPerMinute` | `Int` | `60` | Sustained calls allowed per minute |
-| `burstSize` | `Int` | `10` | Extra calls an idle endpoint (or client) may make at once |
+| `requestsPerMinute` | `Int range 1 ..= 100000000` | `60` | Sustained calls allowed per minute |
+| `burstSize` | `Int range 1 ..= 1000000` | `10` | Extra calls an idle endpoint (or client) may make at once |
 
-`Web.Aspects.RequiresRole`, `Web.Aspects.ApiKey`, and `Web.Aspects.HttpCircuitBreaker` follow the same template shape — see `lyric-web/src/aspects.l` and `lyric-web/tests/security_aspect_weaving_tests.l`.
+`Web.Aspects.RequiresRole`, `Web.Aspects.ApiKey`, and `Web.Aspects.HttpCircuitBreaker` follow the same template shape (the breaker's `failureThreshold` is `Int range 1 ..= 1000000` and `cooldownMs` is `Int range 1 ..= 86400000`; an out-of-range instance override is a G0010 build error) — see `lyric-web/src/aspects.l` and `lyric-web/tests/security_aspect_weaving_tests.l`.
 
 ---
 

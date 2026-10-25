@@ -409,9 +409,9 @@ pub func addMethod(
 // ─── Server: entry point ──────────────────────────────────────────────────────
 config GrpcServer {
   host: String = "0.0.0.0"
-  port: Int = 50051
+  port: Int range 1 ..= 65535 = 50051
   reflectionEnabled: Bool = false
-  maxConnectionIdleMs: Int = 300000
+  maxConnectionIdleMs: Int range 1 ..= 2147483647 = 300000
 }
 
 /// The reason `GrpcServer` cannot be used, or "" when it can.  The values come

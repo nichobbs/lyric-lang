@@ -2174,6 +2174,42 @@ test "from-instance config override is checked against the template field's rang
   assertTrue(not diagsHaveCode(ok.diagnostics, "G0010"), "override inside the template's range is accepted")
 }
 
+// #7247 / #7249: the lyric-grpc and lyric-web rate-limit and circuit-breaker
+// aspects declare ranged config, so a zero or negative instance override is a
+// build error (G0010) instead of a per-call panic or a silent no-limit.
+test "rate-limit and circuit-breaker config shapes reject out-of-range instance overrides" {
+  val tplSrc = "package Lib.Guard\n" + "pub aspect Limit {\n" + "  config {\n" + "    enabled: Bool = true\n" +
+    "    requestsPerMinute: Int range 1 ..= 100000000 = 600\n" +
+    "    burstSize: Int range 1 ..= 1000000 = 50\n" +
+    "    failureThreshold: Int range 1 ..= 1000000 = 5\n" +
+    "    cooldownMs: Int range 1 ..= 86400000 = 30000\n" +
+    "  }\n" +
+    "  matches: name like \"*\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val __cap = requestsPerMinute\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n"
+  val templates = makeTemplates(tplSrc, "Lib.Guard")
+  val fields = ["requestsPerMinute", "burstSize", "failureThreshold", "cooldownMs"]
+  for f in fields {
+    val badSrc = "package App\n" + "aspect MyLimit from Lib.Guard.Limit {\n" + "  matches: name like \"doWork\"\n" +
+      "  config { " +
+      f +
+      ": Int = 0 }\n" +
+      "}\n" +
+      "func doWork(x: in Int): Int { x }\n"
+    val bad = weaveWithTemplates(badSrc, templates)
+    assertTrue(diagsHaveCode(bad.diagnostics, "G0010"), f + " = 0 is rejected as G0010")
+  }
+  val okSrc = "package App\n" + "aspect MyLimit from Lib.Guard.Limit {\n" + "  matches: name like \"doWork\"\n" +
+    "  config { requestsPerMinute: Int = 30 }\n" +
+    "}\n" +
+    "func doWork(x: in Int): Int { x }\n"
+  val ok = weaveWithTemplates(okSrc, templates)
+  assertTrue(not diagsHaveCode(ok.diagnostics, "G0010"), "an in-range override is accepted")
+}
+
 test "from-instance config field that declares its own range is A0048" {
   val tplSrc = "package Lib.Rate\n" + "pub aspect Limit {\n" + "  config {\n" +
     "    perMinute: Int range 1 ..= 1000 = 60\n" +

@@ -247,8 +247,8 @@ pub aspect ApiKey {
 pub aspect RateLimit {
   config {
     enabled: Bool = true
-    requestsPerMinute: Int = 60
-    burstSize: Int = 10
+    requestsPerMinute: Int range 1 ..= 100000000 = 60
+    burstSize: Int range 1 ..= 1000000 = 10
   }
   around(call) -> ret {
     if not enabled {
@@ -280,8 +280,8 @@ pub aspect RateLimit {
 pub aspect RateLimitByClient {
   config {
     enabled: Bool = true
-    requestsPerMinute: Int = 60
-    burstSize: Int = 10
+    requestsPerMinute: Int range 1 ..= 100000000 = 60
+    burstSize: Int range 1 ..= 1000000 = 10
   }
   around(call) -> ret where TArgs has { clientId: String } {
     if not enabled {
@@ -321,8 +321,8 @@ pub aspect HttpCircuitBreaker {
   config {
     enabled: Bool = true
     name: String = ""
-    failureThreshold: Int = 5
-    cooldownMs: Int = 30000
+    failureThreshold: Int range 1 ..= 1000000 = 5
+    cooldownMs: Int range 1 ..= 86400000 = 30000
   }
   around(call) -> ret {
     if not enabled {
