@@ -34,9 +34,8 @@ output          = "single"
 output_assembly = "Lyric.Proto.dll"
 
 [project.packages]
-# Merged package: types + encoding + decoding + public API + .NET kernel boundary.
-# JVM target is not yet implemented (tracked as Phase 6, see README "Platform
-# parity"); there is no JVM kernel package to register here until that lands.
+# Merged package: types, encoding, decoding and the public API.  No externs:
+# the IEEE 754 bit casts come from Std.Math, so dotnet and the JVM build this same file.
 "Proto"            = "src/proto_main.l"
 
 [project.tests]

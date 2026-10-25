@@ -66,6 +66,13 @@ _Static_assert(offsetof(LyricObjectHeader, dtor) == 2 * sizeof(int32_t),
 /* malloc + abort-on-OOM.  All Lyric heap allocation goes through here. */
 void* lyric_alloc(uint64_t size);
 
+/* The IEEE 754 bit pattern of a binary32 / binary64 value and back, every
+ * bit kept (NaN payloads included).  Std.Math.floatToBits and co. */
+int32_t lyric_float_to_bits(float x);
+float lyric_float_from_bits(int32_t bits);
+int64_t lyric_double_to_bits(double x);
+double lyric_double_from_bits(int64_t bits);
+
 /* Bytes this thread has allocated through lyric_alloc (Std.Bench). */
 int64_t lyric_rt_allocated_bytes(void);
 

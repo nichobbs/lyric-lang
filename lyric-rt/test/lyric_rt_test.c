@@ -1687,6 +1687,19 @@ static void test_path_real(void) {
 }
 #endif /* !__wasi__ */
 
+static void test_float_bits(void) {
+    CHECK(lyric_float_to_bits(1.0f) == 0x3F800000);
+    CHECK(lyric_float_to_bits(-2.5f) == (int32_t)0xC0200000u);
+    CHECK(lyric_float_to_bits(-0.0f) == INT32_MIN);
+    CHECK(lyric_double_to_bits(1.0) == 0x3FF0000000000000LL);
+    CHECK(lyric_double_to_bits(-0.0) == INT64_MIN);
+    /* A quiet NaN with a payload survives both ways, bit for bit. */
+    CHECK(lyric_float_to_bits(lyric_float_from_bits(0x7FC00123)) == 0x7FC00123);
+    CHECK(lyric_double_to_bits(lyric_double_from_bits(0x7FF8000000000123LL)) == 0x7FF8000000000123LL);
+    CHECK(lyric_float_from_bits(0x40490FDB) == 3.14159274f);
+    CHECK(lyric_double_from_bits(0x400921FB54442D18LL) == 3.141592653589793);
+}
+
 static void test_args(void) {
     /* Unset: empty list rather than a crash. */
     LyricList* empty = lyric_args_get();
@@ -4169,6 +4182,7 @@ int main(void) {
     test_is_dir_nofollow();
     test_path_real();
 #endif
+    test_float_bits();
     test_args();
     test_map_keys_values();
     test_posix();

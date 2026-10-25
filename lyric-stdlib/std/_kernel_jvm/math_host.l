@@ -172,3 +172,19 @@ pub func hostIsInfinity(x: in Double): Bool = ()
 
 @externTarget("java.lang.Double.isFinite")
 pub func hostIsFinite(x: in Double): Bool = ()
+
+// =====================================================================
+// IEEE 754 bit patterns.  The raw forms keep NaN payloads, as the .NET
+// twin's BitConverter does (floatToIntBits would canonicalise them).
+// =====================================================================
+@externTarget("java.lang.Float.floatToRawIntBits")
+pub func hostFloatToBits(x: in Float): Int = ()
+
+@externTarget("java.lang.Float.intBitsToFloat")
+pub func hostFloatFromBits(bits: in Int): Float = ()
+
+@externTarget("java.lang.Double.doubleToRawLongBits")
+pub func hostDoubleToBits(x: in Double): Long = ()
+
+@externTarget("java.lang.Double.longBitsToDouble")
+pub func hostDoubleFromBits(bits: in Long): Double = ()

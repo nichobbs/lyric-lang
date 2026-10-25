@@ -193,20 +193,3 @@ async func sendBuilt(req: in NetHttpRequestMessage, timeoutMs: in Int): Result[I
     Err(error = b.message)
   }
 }
-
-// =====================================================================
-// IEEE-754 double bit pattern (for the OTLP `HistogramDataPoint.sum`
-// field — a `fixed64` wire value).  `lyric-proto` has its own
-// `doubleToInt64Bits`, but calling most `lyric-proto` functions (this
-// one included) from a *different compiled assembly* currently crashes
-// the .NET JIT with `InvalidProgramException` — a restored-dependency
-// cross-assembly call bug (only `Proto.encodeMessage` and the raw
-// `ProtoField` union-case constructors were found to survive the
-// assembly boundary; every other `lyric-proto` function tested,
-// including plain non-generic ones like `zigzag32`, reproduces the
-// crash). `OTel.Otlp.Codec` avoids every other `lyric-proto` helper for
-// exactly this reason (see its module doc). This extern, by contrast,
-// is intra-assembly (`lyric-otel`'s own `_kernel/net/`, not a separate
-// DLL), so it is unaffected.
-@externTarget("System.BitConverter.DoubleToInt64Bits")
-pub func netDoubleToInt64Bits(v: in Double): Long = ()

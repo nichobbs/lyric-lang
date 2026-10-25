@@ -43,8 +43,7 @@ import Std.Collections
 import Std.Encoding
 import Proto
 import OTel.Types
-import OTel.Kernel.Net.Otlp as NetOtlp
-import OTel.Kernel.Jvm.Otlp as JvmOtlp
+import Std.Math as Math
 
 // ─── Resource / instrumentation-scope identity ─────────────────────────────
 // lyric-otel does not yet expose per-application resource-attribute
@@ -218,14 +217,8 @@ pub func encodeSumMetric(name: in String, unit: in String, total: in Long, timeN
 // `len(bucket_counts) == len(explicit_bounds) + 1` invariant.  This
 // yields a single implicit bucket spanning the whole real line: valid,
 // but no percentile histogram — see README "Known limitations".
-@cfg(feature = "dotnet")
 func doubleBits(v: in Double): Long {
-  NetOtlp.netDoubleToInt64Bits(v)
-}
-
-@cfg(feature = "jvm")
-func doubleBits(v: in Double): Long {
-  JvmOtlp.jvmDoubleToInt64Bits(v)
+  Math.doubleToBits(v)
 }
 
 /// Encode a `HistogramDataPoint { time_unix_nano, count, sum, bucket_counts=[count] }`.

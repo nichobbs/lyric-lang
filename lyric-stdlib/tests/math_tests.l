@@ -116,6 +116,23 @@ func testDoubleOps(): Unit {
   assertTrue(ro > 1.9 and ro < 3.1, "round(2.5) is 2 or 3")
 }
 
+func testFloatBits(): Unit {
+  assertEqualInt(floatToBits(1.0f32), 1065353216, "floatToBits(1.0f) is 0x3F800000")
+  assertEqualInt(floatToBits(-2.5f32), -1071644672, "floatToBits(-2.5f) is 0xC0200000")
+  assertEqualInt(floatToBits(-0.0f32), -2147483648, "the sign bit of -0.0f")
+  assertEqualLong(doubleToBits(1.0), 4607182418800017408i64, "doubleToBits(1.0) is 0x3FF0000000000000")
+  assertEqualLong(doubleToBits(-0.0), -9223372036854775807i64 - 1i64, "the sign bit of -0.0")
+  assertTrue(floatFromBits(1078530011) == 3.1415927f32, "floatFromBits(0x40490FDB) is pi")
+  assertTrue(doubleFromBits(4614256656552045848i64) == 3.141592653589793, "doubleFromBits(0x400921FB54442D18) is pi")
+  // A quiet NaN with a payload survives the round trip bit for bit.
+  assertEqualInt(floatToBits(floatFromBits(2143289635)), 2143289635, "float NaN payload 0x7FC00123 kept")
+  assertEqualLong(
+    doubleToBits(doubleFromBits(9221120237041090851i64)),
+    9221120237041090851i64,
+    "double NaN payload 0x7FF8000000000123 kept"
+  )
+}
+
 func main(): Unit {
   testAbsInt()
   testMinMaxInt()
@@ -126,5 +143,6 @@ func main(): Unit {
   testLongToIntBounds()
   testAbsRejectsMinValue()
   testDoubleOps()
+  testFloatBits()
   println("math: ok")
 }

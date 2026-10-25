@@ -18,6 +18,8 @@ extern type NetDouble = "System.Double"
 
 extern type NetConvert = "System.Convert"
 
+extern type NetBitConverter = "System.BitConverter"
+
 // =====================================================================
 // Constants. (IEEE 754 doubles routed through BCL; literal R8 consts
 // are inlined from metadata at compile time.)
@@ -170,4 +172,24 @@ pub func hostIntToLong(n: in Int): Long {
 
 pub func hostLongToInt(n: in Long): Int {
   NetConvert.ToInt32(n)
+}
+
+// =====================================================================
+// IEEE 754 bit patterns.  BitConverter keeps every bit, NaN payloads
+// included.
+// =====================================================================
+pub func hostFloatToBits(x: in Float): Int {
+  NetBitConverter.SingleToInt32Bits(x)
+}
+
+pub func hostFloatFromBits(bits: in Int): Float {
+  NetBitConverter.Int32BitsToSingle(bits)
+}
+
+pub func hostDoubleToBits(x: in Double): Long {
+  NetBitConverter.DoubleToInt64Bits(x)
+}
+
+pub func hostDoubleFromBits(bits: in Long): Double {
+  NetBitConverter.Int64BitsToDouble(bits)
 }
