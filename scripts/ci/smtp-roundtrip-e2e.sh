@@ -8,9 +8,18 @@
 # (envelope, headers, subject, MIME structure, attachment); this script also
 # checks that an unreachable server and bad credentials are errors.
 #
+# STARTTLS (#8573): the same messages go through a capture server started with
+# --tls and a certificate made for this run, with LYRIC_CONFIG_SMTP_USETLS=true,
+# and must arrive over the upgraded session; a server that offers no STARTTLS,
+# or whose certificate the client does not trust, must be refused when TLS is
+# required.  Only the test process trusts the
+# certificate (SSL_CERT_FILE for .NET's OpenSSL store, a PKCS12 trust store in
+# JAVA_TOOL_OPTIONS for the JVM); lyric-mail's own trust settings are unchanged.
+#
 #   bash scripts/ci/smtp-roundtrip-e2e.sh [dotnet] [jvm]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
 # On jvm, LYRIC_MAVEN_RESOLVER must name lyric-resolver.jar (make maven-resolver).
+# Needs openssl, and keytool for jvm.
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -37,6 +46,29 @@ fail=0
 if printf '%s' "${targets[*]}" | grep -q jvm; then
   "$lyric_bin" restore --manifest lyric-mail/lyric.toml || { echo "FAIL: lyric-mail restore"; exit 1; }
 fi
+
+# A throwaway server certificate for 127.0.0.1, the host the tests connect to.
+tls="$work/tls"
+mkdir -p "$tls"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=127.0.0.1" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" \
+  -keyout "$tls/key.pem" -out "$tls/cert.pem" 2>/dev/null || { echo "FAIL: openssl could not make the test certificate"; exit 1; }
+if printf '%s' "${targets[*]}" | grep -q jvm; then
+  keytool -importcert -noprompt -alias lyric-ci -file "$tls/cert.pem" \
+    -keystore "$tls/trust.p12" -storetype PKCS12 -storepass changeit >/dev/null 2>&1 ||
+    { echo "FAIL: keytool could not make the test trust store"; exit 1; }
+fi
+
+# Runs "$@" with the test certificate trusted by the target's TLS stack.
+with_test_trust() {
+  local target=$1
+  shift
+  if [ "$target" = jvm ]; then
+    JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} -Djavax.net.ssl.trustStore=$tls/trust.p12 -Djavax.net.ssl.trustStorePassword=changeit -Djavax.net.ssl.trustStoreType=PKCS12" "$@"
+  else
+    SSL_CERT_FILE="$tls/cert.pem" "$@"
+  fi
+}
 
 for target in "${targets[@]}"; do
   out="$work/$target"
@@ -75,8 +107,44 @@ for target in "${targets[@]}"; do
   after=$(find "$out" -name "*.eml" | wc -l)
   if [ "$before" -ne "$after" ]; then echo "FAIL: --target $target delivered mail with wrong credentials"; fail=1; fi
 
+  # TLS required and this server offers no STARTTLS: refused, nothing delivered.
+  before=$(find "$out" -name "*.eml" | wc -l)
+  LYRIC_CONFIG_SMTP_USETLS=true LYRIC_MAIL_TEST_ROUNDTRIP=1 with_test_trust "$target" \
+    "$lyric_bin" test --target "$target" --manifest lyric-mail/lyric.toml >"$work/$target-notls.log" 2>&1 && {
+    echo "FAIL: --target $target sent with TLS required to a server without STARTTLS"; fail=1; }
+  after=$(find "$out" -name "*.eml" | wc -l)
+  if [ "$before" -ne "$after" ]; then echo "FAIL: --target $target delivered mail without TLS"; fail=1; fi
+
+  kill "$server_pid" 2>/dev/null; server_pid=""
+
+  # The same round trip over STARTTLS.
+  tout="$work/$target-tls"
+  mkdir -p "$tout"
+  python3 scripts/ci/smtp_capture_server.py "$tout" --user ci-user --password ci-secret \
+    --tls "$tls/cert.pem" "$tls/key.pem" &
+  server_pid=$!
+  for _ in $(seq 1 50); do [ -s "$tout/port" ] && break; sleep 0.1; done
+  if [ ! -s "$tout/port" ]; then echo "FAIL: TLS capture server did not start"; exit 1; fi
+  # A certificate the client does not trust is refused, and nothing is sent.
+  LYRIC_CONFIG_SMTP_PORT="$(cat "$tout/port")" LYRIC_CONFIG_SMTP_USETLS=true LYRIC_MAIL_TEST_ROUNDTRIP=1 \
+    "$lyric_bin" test --target "$target" --manifest lyric-mail/lyric.toml >"$work/$target-untrusted.log" 2>&1 && {
+    echo "FAIL: --target $target accepted an untrusted server certificate"; fail=1; }
+  if compgen -G "$tout/*.eml" >/dev/null; then echo "FAIL: --target $target delivered mail to an untrusted server"; fail=1; fi
+  echo "=== SMTP round trip over STARTTLS, --target $target (server on port $(cat "$tout/port")) ==="
+  if ! LYRIC_CONFIG_SMTP_PORT="$(cat "$tout/port")" LYRIC_CONFIG_SMTP_USETLS=true LYRIC_MAIL_TEST_ROUNDTRIP=1 \
+    with_test_trust "$target" "$lyric_bin" test --target "$target" --manifest lyric-mail/lyric.toml >"$work/$target-tls.log" 2>&1; then
+    echo "FAIL: lyric test --target $target over STARTTLS"; tail -40 "$work/$target-tls.log"; fail=1
+  fi
+  if ! python3 scripts/ci/smtp_verify.py "$tout"; then
+    echo "--- STARTTLS round trip for --target $target:"; tail -30 "$work/$target-tls.log"; fail=1
+  fi
+  for env_file in "$tout"/*.envelope; do
+    [ -e "$env_file" ] || continue
+    grep -qx "tls=yes" "$env_file" || { echo "FAIL: --target $target delivered $(basename "$env_file") without STARTTLS"; fail=1; }
+  done
+
   kill "$server_pid" 2>/dev/null; server_pid=""
 done
 
-[ "$fail" -eq 0 ] && echo "lyric-mail SMTP round trip (${targets[*]}): ok"
+[ "$fail" -eq 0 ] && echo "lyric-mail SMTP round trip, plain and STARTTLS (${targets[*]}): ok"
 exit "$fail"
