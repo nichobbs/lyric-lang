@@ -13,7 +13,6 @@ import Std.JsonValue as Jv
 import Std.JsonValue.{JsonValue, JsonField, JNull, JInt, JString, JObject}
 import Ui.Plugins
 import Ui.Plugins.Build as B
-import Ui.Plugins.Build.{Choice}
 
 func propValue(t: in WidgetTree, name: in String): String {
   match t {
@@ -121,9 +120,9 @@ test "checkbox and select answer change events" {
   val c = B.checkbox("Done", true, "done")
   assertEqual(propValue(c, "checked"), "true", "checked")
   assertTrue(firstHandler(c).event == NodeEvent.Change, "checkbox change")
-  val choices: List[Choice] = newList()
-  choices.add(Choice(value = "a", label = "Apple"))
-  choices.add(Choice(value = "b", label = "Banana"))
+  val choices: List[B.Choice] = newList()
+  choices.add(B.Choice(value = "a", label = "Apple"))
+  choices.add(B.Choice(value = "b", label = "Banana"))
   val s = B.select("b", choices, "fruit")
   assertEqual(propValue(s, "value"), "b", "selected value")
   assertEqualInt(childCount(s), 2, "two options")
