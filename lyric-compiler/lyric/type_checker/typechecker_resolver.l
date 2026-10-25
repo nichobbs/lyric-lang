@@ -970,14 +970,21 @@ func resolveTypePath(
     case Some(pref) -> symbolIsType(pref) and pref.originPackage == ownerPkg
     case None -> false
   }
+  // Newest-first, like `symTableTryFindInPackage` and `symTableTryFindOne`:
+  // when the owner's type is registered more than once (a package reached
+  // both as a restored dependency and from source), the qualified
+  // constructor `Pkg.Type(...)` and the package's own signatures resolve to
+  // the newest entry, so the qualified type `Pkg.Type` must too, or
+  // `val c: B.Choice = B.Choice(...)` is a mismatch between two types named
+  // `Choice`.
   if not defaultPickMatchesOwner {
     val qualifiedCands = symTableTryFindAll(tbl, last)
-    var qi = 0
-    while qi < qualifiedCands.count {
+    var qi = qualifiedCands.count - 1
+    while qi >= 0 {
       if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
         return symbolToType(tbl, ctx, diag, qualifiedCands[qi], args, span)
       }
-      qi = qi + 1
+      qi = qi - 1
     }
   }
   match defaultPick {

@@ -5765,6 +5765,40 @@ test "correctly-spelled qualified name on a known package has no T0020 (#6361 re
   assertTrue(not hasDiagCode(cr, "T0020"), "correctly-spelled qualified call: no T0020")
 }
 
+// `Lib.Build` registered twice in one check, as a package reached both as a
+// restored dependency and from source is: each `Choice` registration is the
+// same declaration but carries its own TypeId.
+func twiceRegisteredLibBuild(): List[ImportedPackage] {
+  val libSrc = "package Lib.Build\npub record Choice { value: String }\npub func label(c: in Choice): String { c.value }\n"
+  val packages: List[ImportedPackage] = newList()
+  var i = 0
+  while i < 2 {
+    val items: List[Item] = newList()
+    pipeAddCrossPackageItems(parse(libSrc).file, items)
+    packages.add(ImportedPackage(name = "Lib.Build", items = items, imports = newList(), wholeImports = newList()))
+    i = i + 1
+  }
+  packages
+}
+
+test "an alias-qualified type and constructor name the same type when its package is registered twice" {
+  // `import Lib.Build as B` alone leaves `Choice` invisible bare, so the type
+  // `B.Choice` resolves by its owner. It took the oldest registration while
+  // the constructor `B.Choice(...)` and `label`'s parameter took the newest.
+  val typed = "package App\nimport Lib.Build as B\nfunc f(): String {\n  val c: B.Choice = B.Choice(value = \"a\")\n  B.label(c)\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(typed).file), twiceRegisteredLibBuild())
+  assertEqualInt(
+    countDiagCode(cr, "T0060"),
+    0,
+    "the constructor's value fits the annotation: " + diagMessageFor(cr, "T0060")
+  )
+  assertEqualInt(
+    countDiagCode(cr, "T0043"),
+    0,
+    "the annotated value fits the parameter: " + diagMessageFor(cr, "T0043")
+  )
+}
+
 // A qualified call into an `extern package { ... }` block member, addressed
 // through the ENCLOSING file's own package path (the real-world shape:
 // `lyric-grpc`'s `grpc.l` calls `Grpc.Kernel.Net.netOpenChannel(...)`, a
