@@ -825,6 +825,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
 | `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | Cryptographic hashing and MACs | `sha256OfBytes`, `sha256Digest`, `sha512OfBytes`, `sha512OfFile`, `hmacSha256`, `constantTimeEquals` |
+| `Std.Ed25519` | Ed25519 signatures (RFC 8032) | `ed25519PublicKey`, `ed25519Sign`, `ed25519Verify` |
 | `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `toInt`, `fromInt` (BMP scalar values only), `tryFromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |

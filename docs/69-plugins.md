@@ -1118,7 +1118,7 @@ plugin and a screen that uses it.
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
-| P7 | Signing (§12, D248): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | Open |
+| P7 | Signing (§12, D248): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | In progress: `Std.Ed25519` done |
 | P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
