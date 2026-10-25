@@ -775,6 +775,74 @@ test "a tie between same-named imports neither of which the caller imports is no
   assertFalse(hasFunc(res.file, "idOf__Int"), "no guess for LibA")
 }
 
+// The same tie inside a generic body specialised from another package: `Mid`'s
+// `viaGet` was type-checked in `Mid`'s scope, so its `get` is the one `Mid`
+// imports, whatever the root file imports (`Ui.Forms.formFieldAt` calling
+// `Ui.Widgets.field` beside a dependency's same-named `field`).
+func midFeed(midImports: in List[String]): List[FunctionDecl] {
+  val feed = tiedGetFeed()
+  val midPr = parse("package Mid\n" + "pub func viaGet[T](x: in T): T { val r = idOf(get(\"k\")); x }\n")
+  for item in midPr.file.items {
+    match item.kind {
+      case IFunc(decl) -> feed.add(withOriginImportsMono(withOriginPkgMono(decl, "Mid"), midImports))
+      case _ -> ()
+    }
+  }
+  feed
+}
+
+func strList2(a: in String, b: in String): List[String] {
+  val xs: List[String] = newList()
+  xs.add(a)
+  xs.add(b)
+  xs
+}
+
+test "a tie in a specialised body resolves to the package its declaring package imports selectively" {
+  val callerPr = parse(
+    "package Caller\n" + "import Mid\n" + "import LibA\n" + "func caller(): Unit { val n = viaGet(1) }\n"
+  )
+  val res = monoFileWithImports(callerPr.file, midFeed(strList2("Lib", "LibB::get")))
+  assertTrue(hasFunc(res.file, "viaGet__Int"), "the generic is specialised")
+  assertTrue(hasFunc(res.file, "idOf__Char"), "Mid imports LibB.get, so T = Char")
+  assertFalse(hasFunc(res.file, "idOf__Int"), "the root file's LibA import does not reach Mid's body")
+}
+
+test "a tie in a specialised body resolves to the package its declaring package imports whole" {
+  val callerPr = parse("package Caller\n" + "import Mid\n" + "func caller(): Unit { val n = viaGet(1) }\n")
+  val res = monoFileWithImports(callerPr.file, midFeed(strList2("Lib", "LibA")))
+  assertTrue(hasFunc(res.file, "idOf__Int"), "Mid imports LibA whole, so T = Int")
+  assertFalse(hasFunc(res.file, "idOf__Char"), "LibB is not imported by Mid")
+}
+
+test "a tie in a specialised body whose package imports neither candidate is not guessed" {
+  val callerPr = parse(
+    "package Caller\n" + "import Mid\n" + "import LibB\n" + "func caller(): Unit { val n = viaGet(1) }\n"
+  )
+  val noImports: List[String] = newList()
+  val res = monoFileWithImports(callerPr.file, midFeed(noImports))
+  assertFalse(hasFunc(res.file, "idOf__Char"), "no guess for LibB, though the root file imports it")
+  assertFalse(hasFunc(res.file, "idOf__Int"), "no guess for LibA")
+}
+
+// The import keys `pipeAddGenericFuncs` records: whole imports and selected
+// names, never an aliased import, an aliased item or an `import extern`.
+test "pipeOriginImportsOf keeps the imports that expose bare names" {
+  val pr = parse(
+    "package P\n" + "import Std.Core\n" + "import Std.String as Str\n" + "import LibA.{get, put as store}\n" +
+      "import LibB.{find}\n" +
+      "import extern System.Net.Http.{ HttpClient }\n" +
+      "func f(): Unit { }\n"
+  )
+  val keys = pipeOriginImportsOf(pr.file.imports)
+  assertEqualInt(keys.count, 3, "Std.Core, LibA::get and LibB::find only")
+  assertTrue(keys.contains("Std.Core"), "a whole import is kept")
+  assertTrue(keys.contains("LibA::get"), "a selected name in a group is kept")
+  assertTrue(keys.contains("LibB::find"), "a single selected name is kept")
+  assertFalse(keys.contains("Std.String"), "an aliased import exposes no bare name")
+  assertFalse(keys.contains("LibA::put"), "an aliased item exposes no bare name under its own")
+}
+
 // Regression pin for the real-world shape that motivated superseding blunt
 // eviction with call-site overload resolution: `lyric-storage`'s
 // `isOk(delete(bucket, key))` crashed at runtime because `delete` was

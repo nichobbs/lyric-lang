@@ -4914,6 +4914,11 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
 /// `carryPlainHelpers` — with `requirePub` false, also copy the private
 /// non-generic helpers the generics reach (a source dependency of a JVM
 /// build); with `requirePub` true they are always copied.
+/// `pkgImports` — the declaring package's imports (`pipeOriginImportsOf` /
+/// `pipeOriginImportsFrom`), recorded on each collected decl
+/// (`Lyric.Mono.withOriginImportsMono`) so Mono resolves a tie between
+/// same-named candidates in a specialised body the way the type checker
+/// resolved it in that package's scope.
 ///
 /// The intrinsic contributes NOTHING to `dest` here — see
 /// `pipeAddInferenceOnlyIntrinsicFuncs` for its separate, appended-last
@@ -4932,6 +4937,7 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
 pub func pipeAddGenericFuncs(
   items: in List[Item],
   pkgName: in String,
+  pkgImports: in List[String],
   requirePub: in Bool,
   excludeIntrinsics: in Bool,
   dest: in List[FunctionDecl],
@@ -4945,12 +4951,12 @@ pub func pipeAddGenericFuncs(
     for decl in carried.pubFuncs {
       val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
       if not isIntrinsic and not pipeAnnsBlockSpecialization(decl.annotations) {
-        dest.add(withOriginPkgMono(decl, pkgName))
+        dest.add(withOriginImportsMono(withOriginPkgMono(decl, pkgName), pkgImports))
       }
     }
     for decl in carried.privateCopies {
       if not pipeAnnsBlockSpecialization(decl.annotations) {
-        dest.add(withOriginPkgMono(decl, pkgName))
+        dest.add(withOriginImportsMono(withOriginPkgMono(decl, pkgName), pkgImports))
       }
     }
     return
@@ -4961,12 +4967,12 @@ pub func pipeAddGenericFuncs(
     val carried = carryPrivateGenerics(items, pkgName)
     for decl in carried.pubFuncs {
       if not pipeAnnsBlockSpecialization(decl.annotations) {
-        dest.add(withOriginPkgMono(decl, pkgName))
+        dest.add(withOriginImportsMono(withOriginPkgMono(decl, pkgName), pkgImports))
       }
     }
     for decl in carried.privateCopies {
       if not pipeAnnsBlockSpecialization(decl.annotations) {
-        dest.add(withOriginPkgMono(decl, pkgName))
+        dest.add(withOriginImportsMono(withOriginPkgMono(decl, pkgName), pkgImports))
       }
     }
     return
@@ -4979,13 +4985,58 @@ pub func pipeAddGenericFuncs(
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
         if not isIntrinsic and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
-          dest.add(withOriginPkgMono(decl, pkgName))
+          dest.add(withOriginImportsMono(withOriginPkgMono(decl, pkgName), pkgImports))
         }
       }
       case _ -> ()
     }
     i = i + 1
   }
+}
+
+/// The imports of a package in the form `pipeAddGenericFuncs` records: `P` for
+/// a whole import of `P`, `P::f` for each name `f` imported selectively.  An
+/// aliased whole import, or an aliased item, exposes no bare name and is left
+/// out, as is an `import extern`.
+pub func pipeOriginImportsOf(imports: in List[ImportDecl]): List[String] {
+  val acc: List[String] = newList()
+  for imp in imports {
+    if not imp.isExtern {
+      val pkg = Str.joinList(".", imp.path.segments)
+      match imp.selector {
+        case None -> match imp.asAlias { case None -> acc.add(pkg); case Some(_) -> () }
+        case Some(sel) -> match sel {
+          case ISSingle(item) -> match item.asAlias {
+            case None -> acc.add(pkg + "::" + item.name)
+            case Some(_) -> ()
+          }
+          case ISGroup(group) -> {
+            for item in group {
+              match item.asAlias {
+                case None -> acc.add(pkg + "::" + item.name)
+                case Some(_) -> ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  acc
+}
+
+/// `pipeOriginImportsOf` for a package known only by its recorded import
+/// lists (a stdlib package, a restored artifact's contract): `whole` holds
+/// whole imports, `selected` holds `P::f` entries.
+pub func pipeOriginImportsFrom(whole: in List[String], selected: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  for w in whole {
+    acc.add(w)
+  }
+  for sel in selected {
+    acc.add(sel)
+  }
+  acc
 }
 
 /// Companion of `pipeAddGenericFuncs`: collects ONLY the codegen-intrinsic

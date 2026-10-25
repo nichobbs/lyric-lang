@@ -260,6 +260,12 @@ record MonoState {
   /// dependency); the type checker resolves the call to the imported one
   /// (docs/01 §9.2), so Mono prefers it too.
   rootImports: Map[String, Bool]
+  /// The imports of each package whose generic bodies Mono specialises, from
+  /// their `originImportsAnnotationName()` annotations, keyed like
+  /// `rootImports` behind the declaring package and a `|`: `P|Q` for a whole
+  /// import of `Q` by `P`, `P|Q#f` for a selective one.  Breaks the same tie
+  /// as `rootImports` inside a body specialised from `P`.
+  originImports: Map[String, Bool]
   /// Every union-case (and generic-record) inference-only constructor synth
   /// visible to the file, keyed by bare case name, WITHOUT the first-wins
   /// collapse `funcDecls` applies (#6669). `funcDecls`/`genDecls` only ever
@@ -432,6 +438,7 @@ func newMonoState(
     droppedLocalGenerics = droppedLocalGenerics,
     ambiguousFuncOverloads = ambiguousFuncOverloads,
     rootImports = newMap(),
+    originImports = newMap(),
     ctorCandidates = ctorCandidates,
     qualifiedGenNames = qualifiedGenNames,
     expectedAt = newMap(),
@@ -577,6 +584,28 @@ pub func isCarriedPlainMono(decl: in FunctionDecl): Bool {
   val noGenerics = match decl.generics { case Some(_) -> false; case None -> true }
   val hasBody = match decl.body { case Some(_) -> true; case None -> false }
   noGenerics and hasBody and Str.startsWith(decl.name, "__priv_") and originPkgOf(decl.annotations).length > 0
+}
+
+/// `decl` annotated with the imports of the package it was declared in
+/// (`originImportsAnnotationName()`): `P` for a whole import, `P::f` for a
+/// name imported selectively.  Left as it is when `imports` is empty or the
+/// annotation is already present.
+pub func withOriginImportsMono(decl: in FunctionDecl, imports: in List[String]): FunctionDecl {
+  if imports.count == 0 or hasMarkerAnnotation(decl.annotations, originImportsAnnotationName()) {
+    return decl
+  }
+  val anns: List[Annotation] = newList()
+  for a in decl.annotations {
+    anns.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(originImportsAnnotationName())
+  val args: List[AnnotationArg] = newList()
+  for imp in imports {
+    args.add(ALiteral(value = AVString(value = imp, span = decl.span), span = decl.span))
+  }
+  anns.add(Annotation(name = ModulePath(segments = segs, span = decl.span), args = args, span = decl.span))
+  decl.copy(annotations = anns)
 }
 
 /// `decl` tagged with its origin package (`originAnnotationName()`).  An empty
@@ -3183,25 +3212,31 @@ func resolveAmbiguousOverload(
         }
         if compatible.count == 1 {
           Some(value = compatible[0])
-        } else if bodyOrigin.length == 0 {
-          uniqueRootImported(state, if compatible.count == 0 { arityMatched } else { compatible })
         } else {
-          None
+          uniqueImportedBy(state, bodyOrigin, if compatible.count == 0 { arityMatched } else { compatible })
         }
       }
     }
   }
 }
 
-// The single candidate whose package the root file imports (whole, or
-// selectively by this name), if exactly one qualifies.
-func uniqueRootImported(state: in MonoState, cands: in List[FunctionDecl]): Option[FunctionDecl] {
+// The single candidate whose package the body's scope imports (whole, or
+// selectively by this name), if exactly one qualifies: the root file's
+// imports when `origin` is "", else the imports of package `origin`, whose
+// generic body is being specialised.
+func uniqueImportedBy(state: in MonoState, origin: in String, cands: in List[FunctionDecl]): Option[FunctionDecl] {
   var found: Option[FunctionDecl] = None
   var hits = 0
   var i = 0
   while i < cands.count {
     val pkg = originPkgOf(cands[i].annotations)
-    if pkg.length > 0 and (state.rootImports.containsKey(pkg) or state.rootImports.containsKey(pkg + "#" + cands[i].name)) {
+    val imported = if origin.length == 0 {
+      state.rootImports.containsKey(pkg) or state.rootImports.containsKey(pkg + "#" + cands[i].name)
+    } else {
+      state.originImports.containsKey(origin + "|" + pkg) or
+        state.originImports.containsKey(origin + "|" + pkg + "#" + cands[i].name)
+    }
+    if pkg.length > 0 and imported {
       found = Some(value = cands[i])
       hits = hits + 1
     }
@@ -3240,6 +3275,33 @@ func seedRootImports(state: in MonoState, file: in SourceFile): Unit {
       }
     }
     i = i + 1
+  }
+}
+
+// Record the imports each imported decl's package declared
+// (`withOriginImportsMono`) into `state.originImports`.
+func seedOriginImports(state: in MonoState, decls: in List[FunctionDecl]): Unit {
+  for d in decls {
+    val origin = originPkgOf(d.annotations)
+    if origin.length > 0 {
+      for a in d.annotations {
+        if a.name.segments.count == 1 and a.name.segments[0] == originImportsAnnotationName() {
+          for arg in a.args {
+            match arg {
+              case ALiteral(v, _) -> match v {
+                case AVString(imp, _) -> {
+                  val sep = Str.indexOfRaw(imp, "::")
+                  val key = if sep >= 0 { imp.substring(0, sep) + "#" + imp.substring(sep + 2) } else { imp }
+                  state.originImports[origin + "|" + key] = true
+                }
+                case _ -> ()
+              }
+              case _ -> ()
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -9814,6 +9876,7 @@ pub func monoFileWithLambdaTypes(
     newMap()
   )
   seedRootImports(state, file)
+  seedOriginImports(state, importedGenDecls)
   for pit in file.items {
     match pit.kind {
       case IProtected(pd) -> if not state.protectedDecls.containsKey(pd.name) { state.protectedDecls.add(pd.name, pd) }

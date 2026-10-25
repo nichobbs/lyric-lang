@@ -2090,11 +2090,12 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
   var pi = 0
   while pi < pkgs.count {
     val pkg: StdlibPkg = pkgs[pi]
-    pipeAddGenericFuncs(pkg.items, pkg.name, false, true, genFuncs)
+    val pkgImports = pipeOriginImportsFrom(pkg.wholeImports, pkg.selectedImports)
+    pipeAddGenericFuncs(pkg.items, pkg.name, pkgImports, false, true, genFuncs)
     // Private same-package generic helpers (e.g. Std.Sort.sliceCopy[T])
     // travel alongside any pub generic that calls them (#5712) — see
     // `StdlibPkg.privateGenericItems`.
-    pipeAddGenericFuncs(pkg.privateGenericItems, pkg.name, false, true, genFuncs)
+    pipeAddGenericFuncs(pkg.privateGenericItems, pkg.name, pkgImports, false, true, genFuncs)
     pi = pi + 1
   }
   genFuncs
@@ -2131,7 +2132,7 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
   var pi = 0
   while pi < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[pi]
-    pipeAddGenericFuncs(pp.file.items, pp.name, true, false, genFuncs)
+    pipeAddGenericFuncs(pp.file.items, pp.name, pipeOriginImportsOf(pp.file.imports), true, false, genFuncs)
     pi = pi + 1
   }
   genFuncs
@@ -2320,6 +2321,7 @@ func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[
     pipeAddGenericFuncs(
       pipeRestoredItemsWithImports(artifacts[ai].source, artifacts[ai].contract.imports),
       segmentsToString(artifacts[ai].source.packageDecl.path.segments),
+      pipeOriginImportsFrom(artifacts[ai].contract.wholeImports, artifacts[ai].contract.selectedImports),
       true,
       false,
       genFuncs
