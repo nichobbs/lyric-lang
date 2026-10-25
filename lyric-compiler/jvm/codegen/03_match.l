@@ -2830,9 +2830,21 @@ func bindCaseField(
     case PLiteral(_) -> ()
     case _ -> {
       // Nested destructuring (tuple / record / constructor) in field position:
-      // read the field into a temp local and recurse.  Nested payloads keep the
-      // erased type (scrutinee-arg info does not thread through) — a residual of
-      // the #4877 fix, not a regression.
+      // read the field into a temp local and recurse with the field's own
+      // instantiation args, so `case Ok(Some(bytes))` against a
+      // `Result[Option[slice[Byte]], String]` binds `bytes` as `slice[Byte]`
+      // exactly as a single-level `case Some(bytes)` does.  Without them the
+      // inner payload stayed erased `Object` and a `for` over it took the
+      // `Iterable` path against a raw array.
+      val nestedArgs: List[TypeExpr] = match concreteTypeExprOpt {
+        case Some(te) -> {
+          match te.kind {
+            case TGenericApp(_, targs) -> typeArgsToTypeExprs(targs)
+            case _ -> newList()
+          }
+        }
+        case None -> declaredArgs
+      }
       emitLoad(insns, castSlot, JRef(className = caseClass))
       insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
       match fty {
@@ -2841,7 +2853,7 @@ func bindCaseField(
       }
       val tSlot = allocSlot(ctx, "__fld_" + realName + "_" + toString(ctx.slotTicker.count), fty)
       emitStore(insns, tSlot, fty)
-      lowerPatternBind(ctx, insns, subPat, tSlot, fty, newList())
+      lowerPatternBind(ctx, insns, subPat, tSlot, fty, nestedArgs)
     }
   }
 }

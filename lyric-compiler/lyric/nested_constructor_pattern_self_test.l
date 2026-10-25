@@ -32,6 +32,7 @@
 package Lyric.NestedConstructorPatternSelfTest
 
 import Std.Core
+import Std.Encoding
 import Std.Testing
 
 union Shape {
@@ -88,4 +89,46 @@ test "#3908: two-level nesting distinguishes sibling union cases" {
     case Err(_) -> -3
   }
   assertEqualInt(got, 400, "must distinguish Circle vs Square at the nested level, not just test the outer Some")
+}
+
+func wrapBytes(b: in slice[Byte]): Result[Option[slice[Byte]], String] {
+  Ok(value = Some(value = b))
+}
+
+func wrapInts(xs: in slice[Int]): Result[Option[slice[Int]], String] {
+  Ok(value = Some(value = xs))
+}
+
+// JVM: a slice bound through a nested pattern (`Ok(Some(bytes))`) stayed an
+// erased `Object`, so `for b in bytes` took the `Iterable` path against a raw
+// `Byte[]` and threw `IncompatibleClassChangeError`.
+test "for over a slice[Byte] bound by Ok(Some(bytes))" {
+  var n = 0
+  var sum = 0
+  match wrapBytes(encodeUtf8("abc")) {
+    case Ok(Some(bytes)) -> {
+      for b in bytes {
+        n = n + 1
+        sum = sum + b.toInt()
+      }
+    }
+    case _ -> ()
+  }
+  assertEqualInt(n, 3, "the loop must visit every byte")
+  assertEqualInt(sum, 294, "each byte must keep its value (a + b + c)")
+}
+
+test "for over a slice[Int] bound by Ok(Some(xs))" {
+  val src: slice[Int] = [4, 5, 6]
+  var sum = 0
+  match wrapInts(src) {
+    case Ok(Some(xs)) -> {
+      for x in xs {
+        sum = sum + x
+      }
+      assertEqualInt(xs.length, 3, "the nested binding must keep its slice length")
+    }
+    case _ -> ()
+  }
+  assertEqualInt(sum, 15, "the nested binding must iterate as a slice of Int")
 }
