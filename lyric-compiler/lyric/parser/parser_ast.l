@@ -1268,6 +1268,16 @@ pub func originAnnotationName(): String {
   "__lyric_origin"
 }
 
+/// The reserved annotation listing the imports of the package a generic
+/// function was declared in, beside `originAnnotationName()`: one string per
+/// import, `P` for a whole import and `P::f` for each name imported
+/// selectively.  A call in a specialised copy was type-checked in the
+/// declaring package's scope, so `Lyric.Mono` breaks a tie between same-named
+/// candidates by these imports, as the type checker did.
+pub func originImportsAnnotationName(): String {
+  "__lyric_origin_imports"
+}
+
 /// The reserved annotation `Lyric.SelfFields` puts on a member body whose
 /// field references it wrote as `self.<name>` (#8264).  Every bare name left
 /// in such a body is a binding of the body or a module-level name, so codegen

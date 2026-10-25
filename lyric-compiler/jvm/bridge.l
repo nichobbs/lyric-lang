@@ -680,7 +680,7 @@ func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl
     // non-generic helper of the declaring package cannot be bound, so the ones they reach are copied
     // (#8427).  The stdlib is left as it was.
     val isStdlibPkg = pkgName == "Std" or Str.startsWith(pkgName, "Std.")
-    pipeAddGenericFuncs(f.items, pkgName, false, true, genFuncs, not isStdlibPkg)
+    pipeAddGenericFuncs(f.items, pkgName, pipeOriginImportsOf(f.imports), false, true, genFuncs, not isStdlibPkg)
     fi = fi + 1
   }
   genFuncs
@@ -693,6 +693,7 @@ func collectRestoredGenericFuncsJvm(artifacts: in List[SynthesisedArtifact]): Li
     pipeAddGenericFuncs(
       pipeRestoredItemsWithImports(artifacts[ai].source, artifacts[ai].contract.imports),
       dottedPath(artifacts[ai].source.packageDecl.path),
+      pipeOriginImportsFrom(artifacts[ai].contract.wholeImports, artifacts[ai].contract.selectedImports),
       true,
       false,
       genFuncs

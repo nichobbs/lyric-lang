@@ -919,11 +919,16 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
 /// instantiates other generics itself, but has no value-argument form, so a
 /// method of another package's value-generic record (`Vec.total[N: Nat]`)
 /// is specialised before it.
-func siblingValueGenericFuncs(importedPkgs: in List[ImportedPackage], ownPkg: in String): List[FunctionDecl] {
+func siblingValueGenericFuncs(
+  importedPkgs: in List[ImportedPackage],
+  ownPkg: in String,
+  importsByPkg: in Map[String, List[String]],
+): List[FunctionDecl] {
   val generics: List[FunctionDecl] = newList()
   for ip in importedPkgs {
     if ip.name != ownPkg {
-      pipeAddGenericFuncs(ip.items, ip.name, false, false, generics)
+      val pkgImports = match mapGet(importsByPkg, ip.name) { case Some(imps) -> imps; case None -> newList() }
+      pipeAddGenericFuncs(ip.items, ip.name, pkgImports, false, false, generics)
     }
   }
   val valueGenerics: List[FunctionDecl] = newList()
@@ -1885,6 +1890,20 @@ pub func compileProjectToNativeWithShape(
     importedPkgs.add(ip)
   }
   val stdlibByPkg = stdlib.byPkg
+  // Each package's imports, recorded on its generics so Mono resolves a call
+  // in a specialised body in the declaring package's scope.
+  val originImportsByPkg: Map[String, List[String]] = newMap()
+  for spn in mapKeys(stdlibByPkg) {
+    match mapGet(stdlibByPkg, spn) {
+      case Some(sf) -> {
+        originImportsByPkg[spn] = pipeOriginImportsOf(sf.imports)
+      }
+      case None -> ()
+    }
+  }
+  for ownFile in ownFiles0 {
+    originImportsByPkg[dottedPath(ownFile.packageDecl.path)] = pipeOriginImportsOf(ownFile.imports)
+  }
 
   // Every own package also contributes its cross-package items to the SAME
   // `importedPkgs` pool every OTHER own package (and itself) type-checks
@@ -1964,7 +1983,7 @@ pub func compileProjectToNativeWithShape(
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
-    val siblingValueGenerics = siblingValueGenericFuncs(importedPkgs, dottedPath(ownFiles0[mei].packageDecl.path))
+    val siblingValueGenerics = siblingValueGenericFuncs(importedPkgs, dottedPath(ownFiles0[mei].packageDecl.path), originImportsByPkg)
     val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingValueGenerics, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
