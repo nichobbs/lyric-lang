@@ -23,6 +23,7 @@ import Std.JsonValue
 import Std.JsonRpc
 import Std.JsonRpc.Stdio
 import Std.Plugin
+import Std.PluginSign
 import Editor.Lang
 
 val todoServer: String = "example.todo-lsp"
@@ -245,6 +246,23 @@ func answered(o: in Option[Bool], expected: in Bool): Bool {
   }
 }
 
+// The key the example plugins are signed with
+// (examples/plugins/keys/example-publisher.pub). An application ships the
+// public keys of the publishers it trusts the same way, and loads only
+// plugins they signed (D248).
+func examplePublisherKey(): slice[Byte] {
+  match parsePublicKey("lyric-ed25519:hcEkg2A6Xnfv9mQVZmFxq2BPNyq0TfUzkWSeGp5JlaI=") {
+    case Ok(k) -> k
+    case Err(e) -> panic("example publisher key: " + e)
+  }
+}
+
+func exampleTrust(): TrustPolicy {
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric-examples", publicKey = examplePublisherKey()))
+  trustKeys(keys)
+}
+
 func hostConfig(workspace: in Workspace): PluginHostConfig {
   val providers: List[CapabilityProvider] = newList()
   providers.add(workspaceEditProvider(workspace))
@@ -252,6 +270,7 @@ func hostConfig(workspace: in Workspace): PluginHostConfig {
     points = [languageServerPointInfo()],
     providers = providers,
     policy = GrantAllRequested(),
+    trust = Some(value = exampleTrust()),
     startTimeoutMs = 60000,
     callTimeoutMs = 60000
   )

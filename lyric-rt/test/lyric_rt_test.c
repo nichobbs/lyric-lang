@@ -1612,6 +1612,31 @@ static void test_is_dir_nofollow(void) {
     /* Missing path: 0, no crash. */
     CHECK(lyric_path_is_dir_nofollow("/definitely/missing/lyric-rt-nf") == 0);
 
+    /* lyric_path_kind_nofollow classifies the entry itself: a link is a
+     * link whatever it points at, and a FIFO is neither file nor directory. */
+    CHECK(lyric_path_kind_nofollow(tmpl) == LYRIC_PATH_KIND_DIR);
+    CHECK(lyric_path_kind_nofollow(filep) == LYRIC_PATH_KIND_FILE);
+    CHECK(lyric_path_kind_nofollow(linkp) == LYRIC_PATH_KIND_LINK);
+    char linkf[512];
+    snprintf(linkf, sizeof linkf, "%s/linkf", tmpl);
+    CHECK(symlink(filep, linkf) == 0);
+    CHECK(lyric_path_kind_nofollow(linkf) == LYRIC_PATH_KIND_LINK);
+    char fifop[512];
+    snprintf(fifop, sizeof fifop, "%s/fifo", tmpl);
+    CHECK(mkfifo(fifop, 0600) == 0);
+    CHECK(lyric_path_kind_nofollow(fifop) == LYRIC_PATH_KIND_OTHER);
+    CHECK(lyric_path_kind_nofollow("/definitely/missing/lyric-rt-nf") == LYRIC_PATH_KIND_MISSING);
+    unlink(fifop);
+    unlink(linkf);
+
+    /* lyric_file_set_executable gives a file mode 0755. */
+    CHECK(chmod(filep, 0600) == 0);
+    CHECK(lyric_file_set_executable(filep) == 0);
+    struct stat est;
+    CHECK(stat(filep, &est) == 0);
+    CHECK((est.st_mode & 07777) == 0755);
+    CHECK(lyric_file_set_executable("/definitely/missing/lyric-rt-nf") == -1);
+
     unlink(linkp);
     unlink(filep);
     rmdir(tmpl);

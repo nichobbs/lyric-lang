@@ -186,6 +186,9 @@ echo "Native hash_tests.l (--target native) passed"
 # Std.Ed25519 on native (D248): the RFC 8032 and Wycheproof vectors.
 "$lyric_bin" run --target native lyric-stdlib/tests/ed25519_tests.l
 echo "Native ed25519_tests.l (--target native) passed"
+# Std.Zip on native (D248 Decision 9): zlib/zipfile fixtures and round trips.
+"$lyric_bin" run --target native lyric-stdlib/tests/zip_tests.l
+echo "Native zip_tests.l (--target native) passed"
 # #7508 cross-package case (#7675): an imported package's newList/mapGet
 # overrides the builtin intrinsic of the same name.
 bash scripts/ci/builtin-name-override-test.sh "$lyric_bin" native

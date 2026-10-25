@@ -19,6 +19,7 @@ package Std.FileHost
 import Std.Core
 import Std.Collections
 import Std.Errors
+import Std.ProcessHost
 
 extern type NetFile = "System.IO.File"
 
@@ -214,12 +215,87 @@ pub func hostIsDirSymlink(path: in String): Bool {
   target.length > 0
 }
 
+extern type FileInfo = "System.IO.FileInfo"
+
+extern type NetOs = "System.OperatingSystem"
+
+/// Renames (moves) a file or directory within one file system.
+pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  try {
+    if hostDirectoryExists(fromPath) {
+      NetDirectory.Move(fromPath, toPath)
+    } else {
+      NetFile.Move(fromPath, toPath)
+    }
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = fromPath, message = b.message))
+  }
+}
+
+/// Gives `path` mode 0755 (a no-op on Windows beyond checking it exists).
+/// `File.SetUnixFileMode` takes a `[Flags] UnixFileMode`, and no single
+/// named member is 0755, so this runs the POSIX `chmod 755` utility instead.
+pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
+  if not hostFileExists(path) {
+    return Err(error = FileNotFound(path = path))
+  }
+  if NetOs.IsWindows() {
+    return Ok(value = ())
+  }
+  val args: List[String] = newList()
+  args.add("755")
+  args.add(path)
+  match hostRunInheritedResult("chmod", args) {
+    case Ok(code) -> if code == 0 {
+      Ok(value = ())
+    } else {
+      Err(error = IoError(path = path, message = "chmod 755 exited " + code.toString()))
+    }
+    case Err(e) -> Err(error = e)
+  }
+}
+
+/// What `path` itself is, without following a link: 0 missing, 1 regular
+/// file, 2 directory, 3 symbolic link, 4 other (the codes of
+/// `lyric_path_kind_nofollow`). .NET reports a file system entry only as a
+/// directory, a link or a file, so a FIFO, socket or device node is 1 here,
+/// not 4; the JVM and native twins tell them apart (#8578).
+pub func hostPathKindNoFollow(path: in String): Int {
+  val target = FileInfo.new(path).LinkTarget ?? ""
+  if target.length > 0 {
+    return 3
+  }
+  if hostDirectoryExists(path) {
+    return 2
+  }
+  if hostFileExists(path) {
+    return 1
+  }
+  0
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   try {
     val raw = hostEnumerateFiles(dir)
     val acc: List[String] = newListWithCapacity(raw.length)
     for f in raw {
       acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+/// Every entry directly inside `dir`, of any kind (files, directories, links,
+/// including a link whose target is missing), as paths under `dir`.
+pub func hostListEntriesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFileSystemEntries(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for e in raw {
+      acc.add(e)
     }
     Ok(value = acc)
   } catch Bug as b {

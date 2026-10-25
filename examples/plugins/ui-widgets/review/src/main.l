@@ -3,7 +3,8 @@
 //!
 //! Layer: app.
 //!
-//!   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
+//!   lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet \
+//!     --sign-key examples/plugins/keys/example-publisher.key -o plugins
 //!   lyric run --manifest examples/plugins/ui-widgets/review/lyric.toml -- plugins
 //!   then open http://localhost:8080/review
 @runtime_checked

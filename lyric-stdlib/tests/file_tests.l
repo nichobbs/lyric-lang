@@ -260,3 +260,90 @@ test "listFilesRecursive does not follow a symbolic link back to an ancestor" {
   rmArgs.add(dir)
   val _ = Std.Process.run("rm", rmArgs)
 }
+
+test "entryKind looks at the entry itself, and listEntries lists every kind" {
+  val dir = scratchDir("entry_kind")
+  val _ = deleteDirRecursive(dir)
+  val _ = createDir(dir)
+  val _ = writeText(dir + "/a.txt", "a")
+  val _ = createDir(dir + "/sub")
+  assertTrue(entryKind(dir + "/a.txt") == RegularFile, "a file")
+  assertTrue(entryKind(dir + "/sub") == Directory, "a directory")
+  assertTrue(entryKind(dir + "/nothing") == Missing, "a missing path")
+  assertTrue(entryKind("") == Missing, "an empty path")
+  if not Std.Environment.isWindows() {
+    val toDir: List[String] = newList()
+    toDir.add("-s")
+    toDir.add(dir + "/sub")
+    toDir.add(dir + "/link-dir")
+    val dangling: List[String] = newList()
+    dangling.add("-s")
+    dangling.add(dir + "/gone")
+    dangling.add(dir + "/link-gone")
+    match Std.Process.run("ln", toDir) {
+      case Ok(code) -> assertEqualInt(code, 0, "ln -s to a directory")
+      case Err(e) -> panic("ln failed: " + IOError.message(e))
+    }
+    match Std.Process.run("ln", dangling) {
+      case Ok(code) -> assertEqualInt(code, 0, "ln -s to a missing path")
+      case Err(e) -> panic("ln failed: " + IOError.message(e))
+    }
+    assertTrue(entryKind(dir + "/link-dir") == SymbolicLink, "a link to a directory is a link")
+    assertTrue(entryKind(dir + "/link-gone") == SymbolicLink, "a dangling link is a link")
+    match listEntries(dir) {
+      case Ok(es) -> assertEqualInt(es.count, 4, "a.txt, sub and both links")
+      case Err(e) -> panic("listEntries failed: " + IOError.message(e))
+    }
+  }
+  assertTrue(listEntries(dir + "/nothing").isErr(), "listing a missing directory fails")
+  val rmArgs: List[String] = newList()
+  rmArgs.add("-rf")
+  rmArgs.add(dir)
+  val _ = Std.Process.run("rm", rmArgs)
+}
+
+test "rename moves a file or a directory and refuses an existing target" {
+  val dir = scratchDir("rename")
+  val _ = deleteDirRecursive(dir)
+  val _ = createDir(dir)
+  val _ = writeText(dir + "/a.txt", "a")
+  match rename(dir + "/a.txt", dir + "/b.txt") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("rename failed: " + IOError.message(e))
+  }
+  assertTrue(not fileExists(dir + "/a.txt"), "the old name is gone")
+  match readText(dir + "/b.txt") {
+    case Ok(t) -> assertEqual(t, "a", "the file moved")
+    case Err(e) -> panic(IOError.message(e))
+  }
+  val _ = createDir(dir + "/sub")
+  val _ = writeText(dir + "/sub/c.txt", "c")
+  match rename(dir + "/sub", dir + "/moved") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("rename of a directory failed: " + IOError.message(e))
+  }
+  assertTrue(fileExists(dir + "/moved/c.txt"), "the directory moved with its contents")
+  assertTrue(rename(dir + "/b.txt", dir + "/moved").isErr(), "an existing target is refused")
+  assertTrue(rename(dir + "/nothing", dir + "/x").isErr(), "a missing source is refused")
+  val _ = deleteDirRecursive(dir)
+}
+
+test "setExecutable makes a file executable" {
+  val dir = scratchDir("set_executable")
+  val _ = deleteDirRecursive(dir)
+  val _ = createDir(dir)
+  val path = dir + "/run.sh"
+  val _ = writeText(path, "#!/bin/sh\necho executable\n")
+  match setExecutable(path) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("setExecutable failed: " + IOError.message(e))
+  }
+  if not Std.Environment.isWindows() {
+    match Std.Process.runCapture(path, newList(), 10000) {
+      case Ok(r) -> assertTrue(r.stdout.contains("executable"), "the script runs")
+      case Err(e) -> panic("cannot run the script: " + e)
+    }
+  }
+  assertTrue(setExecutable(dir + "/nothing").isErr(), "a missing file is refused")
+  val _ = deleteDirRecursive(dir)
+}

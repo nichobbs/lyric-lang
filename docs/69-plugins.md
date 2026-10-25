@@ -460,13 +460,18 @@ stopAllPlugins(host)
   `parsePluginManifest`, `readPluginManifest`, `pluginManifestToJson`,
   `addPluginPayload`, `selectPluginPayload`, `pluginLaunchCommand` and
   `findWasmtime`.
-- **`PluginHostConfig`**: `points`, `providers`, `policy`, `callTimeoutMs`
+- **`PluginHostConfig`**: `points`, `providers`, `policy`, `trust` (`None`,
+  which trusts no keys; a `TrustPolicy` of `keys`, `revokedKeyIds` and
+  `allowUnsigned`, built with `trustKeys` or `trustKeysAllowingUnsigned`,
+  §12), `callTimeoutMs`
   (60000), `startTimeoutMs` (10000), `maxRestarts` (3), `preferWasm` (true),
   `restartBackoffMs` (250), `maxRestartBackoffMs` (10000), `shutdownGraceMs`
   (2000), `wasmMaxMemoryBytes` (256 MiB), `componentRuntime` (`None`; the
   in-process runtime for component payloads, §9.3:
   `Std.PluginWasm.inProcessWasmRuntime()`).
-- **Loading** validates the manifest, matches its points against the host's
+- **Loading** a discovered directory first verifies its `plugin.sig` (§12,
+  `K0105`-`K0110`) and records the signer on `PluginManifest.signer`; it then
+  validates the manifest, matches its points against the host's
   (a different major version is `K0103`; no matching point, a capability no
   point allows, or a duplicate id are load issues), asks the `GrantPolicy`
   for a `GrantDecision`, checks each grant against the request (Q-PLG-004: a
@@ -908,23 +913,25 @@ process or wasm mode.
 
 ## 12. Distribution and trust
 
-_Specced in D248 (Q-PLG-006, Q-PLG-007); not yet implemented (P7, P8).
-Until then a host loads the artifact directories its owner put on its plugin
-path, and its `GrantPolicy` sees each manifest's `publisher` unverified._
+_Specced in D248 (Q-PLG-006, Q-PLG-007); listing paths narrowed by D263, the
+host surface refined by D264 and the catalogue surface by D265. Signing,
+load-time verification (P7) and catalogues with zip transfer (P8) ship._
 
 - **Signing.** An artifact carries `plugin.sig`: an Ed25519 signature
   (`Std.Ed25519`, pure Lyric on every target) by the publisher's key over the
   artifact's id, version and a SHA-256 of every file in the directory, in a
   canonical listing (D248 Decisions 4 and 5). `Std.Plugin` verifies it at load,
   before points are matched and before `GrantPolicy` runs, which then sees a
-  verified publisher. Listing paths may not contain control characters, and
-  the signature type is part of the signed message. `PluginHostConfig.trust` holds pinned publisher keys,
-  followed catalogues and the unsigned policy (`Refuse` by default,
-  `AllowSandboxed` for development); trusted payloads always need a signature
-  (`K0105`-`K0110`).
-- **Build-time plugins** (generators) are pinned by `lyric.lock` with a
-  checksum, as docs/40 §7 already does; a restored generator's lock entry also
-  records its signing key id, and a change of key needs an explicit update.
+  verified publisher on `PluginManifest.signer`. Listing paths are printable
+  ASCII other than `\` (D263), and the signature type is part of the signed
+  message. `PluginHostConfig.trust` holds the pinned publisher keys, revoked
+  key ids and `allowUnsigned` (off by default; for development); trusted
+  payloads always need a signature (`K0105`-`K0110`). `registerPlugin` takes
+  the caller's word for a plugin and checks no signature (D264).
+- **Build-time plugins** (generators) are built from the project's own path
+  and workspace dependencies, which need no signature. A generator restored as
+  a packed artifact will have its signing key id recorded in `lyric.lock`
+  (D248 Decision 7), once such generators can be restored (#8580).
 - **Catalogues.** There is no global registry: plugins exist for one
   application's points. An application follows one or more catalogues, a
   signed static `catalogue.json` listing publishers and their keys, revoked
@@ -1118,8 +1125,8 @@ plugin and a screen that uses it.
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
-| P7 | Signing (§12, D248): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`, signed generator lock entries; examples and CI scripts signed with a test key | In progress: `Std.Ed25519` done |
-| P8 | Catalogues (§12, D248): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, the `Std.Plugin` catalogue API, `K0120`-`K0123` | Open |
+| P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`; examples and CI scripts signed with a test key | Done; signed generator lock entries wait for restored generators (#8580) |
+| P8 | Catalogues (§12, D248, D265): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, `pack --zip`, `Std.PluginCatalogue`, `K0120`-`K0123` | Done; the compiler's private zip readers move to `Std.Zip` in #8582 |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode
@@ -1232,7 +1239,8 @@ docs/69 codes (`pluginIssueCode`):
 A trusted payload that the policy chose but that cannot be loaded into the host's
 process is the load issue `TrustedLoadFailed` (no code).
 
-Specced in D248 and not yet reported (P7, P8):
+Reported since P7 (`K0105`-`K0110`, D248) and P8 (`K0120`-`K0123`,
+`Std.PluginCatalogue.CatalogueError`):
 
 | Code | Meaning |
 |---|---|

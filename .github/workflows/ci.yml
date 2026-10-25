@@ -7294,7 +7294,7 @@ jobs:
             process_capture_tests process_tests process_piped_bytes_tests \
             format_tests json_tests \
             json_generate_tests \
-            collections_tests char_tests math_tests hash_tests ed25519_tests random_tests \
+            collections_tests char_tests math_tests hash_tests ed25519_tests zip_tests random_tests \
             errors_tests environment_tests string_tests string_methods_tests \
             regex_tests yaml_tests testing_tests testing_property_tests \
             mocking_tests xml_tests \
@@ -7387,7 +7387,7 @@ jobs:
       # lyric-mcp sealed requestState, so the RFC 4231 vectors run on both
       # targets. Std.Ed25519 (D248) runs its RFC 8032 and Wycheproof vectors
       # here too. Shares the Java 22 setup step above.
-      - name: Std.Hash and Std.Ed25519 suites on JVM
+      - name: Std.Hash, Std.Ed25519 and Std.Zip suites on JVM
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -7398,6 +7398,7 @@ jobs:
           fi
           "$lyric_bin" run --target jvm lyric-stdlib/tests/hash_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/ed25519_tests.l
+          "$lyric_bin" run --target jvm lyric-stdlib/tests/zip_tests.l
 
       # `@generate(Json)` nested-record decoding on JVM (#7501, #7502):
       # two records' derived `fromJson`/`fromJsonElement` on one package

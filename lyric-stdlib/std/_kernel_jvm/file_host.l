@@ -337,12 +337,72 @@ pub func hostIsDirSymlink(path: in String): Bool {
   f.isDirectory() and isSymlinkJvm(f)
 }
 
+/// Renames (moves) a file or directory within one file system.
+pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  if JFile.new(fromPath).renameTo(JFile.new(toPath)) {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = fromPath, message = "cannot rename to " + toPath))
+  }
+}
+
+/// Gives `path` mode 0755: readable and executable by everyone, writable by
+/// its owner only.
+pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
+  val f = JFile.new(path)
+  if not f.isFile() {
+    return Err(error = FileNotFound(path = path))
+  }
+  val ok = f.setReadable(true, false) and f.setWritable(false, false) and f.setWritable(true, true) and
+    f.setExecutable(true, false)
+  if ok {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "cannot make the file executable"))
+  }
+}
+
+/// What `path` itself is, without following a link: 0 missing, 1 regular
+/// file, 2 directory, 3 symbolic link, 4 other (a FIFO, socket or device;
+/// `File.isFile` is true only for a regular file).
+pub func hostPathKindNoFollow(path: in String): Int {
+  val f = JFile.new(path)
+  if isSymlinkJvm(f) {
+    return 3
+  }
+  if f.isDirectory() {
+    return 2
+  }
+  if f.isFile() {
+    return 1
+  }
+  if f.exists() {
+    return 4
+  }
+  0
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   try {
     val raw = hostEnumerateFiles(dir)
     val acc: List[String] = newListWithCapacity(raw.length)
     for f in raw {
       acc.add(f)
+    }
+    Ok(value = acc)
+  } catch Bug as b {
+    Err(error = IoError(path = dir, message = b.message))
+  }
+}
+
+/// Every entry directly inside `dir`, of any kind (files, directories, links,
+/// including a link whose target is missing), as paths under `dir`.
+pub func hostListEntriesResult(dir: in String): Result[List[String], IOError] {
+  try {
+    val raw = hostEnumerateFileSystemEntries(dir)
+    val acc: List[String] = newListWithCapacity(raw.length)
+    for e in raw {
+      acc.add(e)
     }
     Ok(value = acc)
   } catch Bug as b {

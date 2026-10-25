@@ -23,6 +23,7 @@ import Std.String as Str
 import Std.Time.{sleepMillis, nowEpochMillis}
 import Std.JsonValue.{JsonValue, JsonField, JNull, JInt, JString, JArray, JObject, writeValue}
 import Std.Plugin
+import Std.PluginSign.{TrustedKey, parsePublicKey}
 import Ui.Core.{View, Step, UiEffect, stepAll}
 import Ui.Widgets.{column, heading, paragraph, keyed}
 import Ui.Protocol.{ClientMessage, EventMsg, Event, NodeRef, At, Keyed}
@@ -271,11 +272,21 @@ func main(): Int {
   val c = Checks(failures = 0)
   val points: List[PluginPointInfo] = newList()
   points.add(widgetPluginPointInfo())
+  // Both plugins are signed with the example publisher key
+  // (examples/plugins/keys/example-publisher.pub) by the e2e script.
+  val key = match parsePublicKey("lyric-ed25519:hcEkg2A6Xnfv9mQVZmFxq2BPNyq0TfUzkWSeGp5JlaI=") {
+    case Ok(k) -> k
+    case Err(e) -> panic("example publisher key: " + e)
+  }
+  val keys: List[TrustedKey] = newList()
+  keys.add(TrustedKey(publisher = "lyric-examples", publicKey = key))
+  keys.add(TrustedKey(publisher = "lyric-tests", publicKey = key))
   val host = newPluginHost(
     PluginHostConfig(
       points = points,
       providers = newList(),
       policy = GrantAllRequested(),
+      trust = Some(value = trustKeys(keys)),
       callTimeoutMs = 3000,
       startTimeoutMs = 20000,
       preferWasm = false,

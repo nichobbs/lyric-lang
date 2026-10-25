@@ -826,6 +826,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | Cryptographic hashing and MACs | `sha256OfBytes`, `sha256Digest`, `sha512OfBytes`, `sha512OfFile`, `hmacSha256`, `constantTimeEquals` |
 | `Std.Ed25519` | Ed25519 signatures (RFC 8032) | `ed25519PublicKey`, `ed25519Sign`, `ed25519Verify` |
+| `Std.Zip` | Zip archives and raw DEFLATE | `readZipDirectory`, `readZipEntry`, `writeZip`, `inflate`, `deflate`, `crc32`, `ZipLimits` |
 | `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `toInt`, `fromInt` (BMP scalar values only), `tryFromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
@@ -1345,9 +1346,23 @@ lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm,compo
 lyric plugin pack --targets dotnet,jvm,native --trusted   # also list trusted (in-process) payloads
                                        # one payload per target; every payload's manifest must agree
 lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
+lyric plugin keygen -o acme            # acme.key (secret, mode 0600) and acme.pub (D248)
+lyric plugin sign <dir> --key acme.key # write <dir>/plugin.sig; or set LYRIC_PLUGIN_SIGNING_KEY
+lyric plugin pack --sign-key acme.key  # pack and sign in one step
+lyric plugin verify <dir> --key acme.pub [--publisher acme]   # K0105-K0110 on failure
+lyric plugin pack --sign-key acme.key --zip   # also write <id>-<version>.zip
+lyric plugin catalogue init site --name acme-editor --key catalogue.key
+lyric plugin catalogue publisher site acme --key acme.pub
+lyric plugin catalogue add site plugins/acme.tools-1.0.0.zip   # verify and list (copied to site/artifacts/)
+lyric plugin catalogue yank site acme.tools 1.0.0
+lyric plugin catalogue revoke-key site <key-id>
+lyric plugin catalogue sign site --key catalogue.key [--rotate-to new.key] [--expires-in 90]
+lyric plugin install acme.tools[@1.0.0] --catalogue <dir|url> --catalogue-key catalogue.pub --into plugins
+                                       # K0120-K0123 for the catalogue and the download
 lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
                                        # generate a plugin SDK for an API package in another language
-lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet -o plugins
+lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --targets dotnet \
+  --sign-key examples/plugins/keys/example-publisher.key -o plugins
                                        # a lyric-ui widget plugin (Ui.Plugins.WidgetPlugin, D230, chapters 31 and 33);
                                        # a screen places it with Ui.PluginWidgets.placeWidget / widgetView and
                                        # runs its calls as effects with Ui.PluginWidgets.Host.runWidgetRequest
@@ -1752,7 +1767,7 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0013` | Component builds: a name crossing the component boundary does not survive the WIT round trip (`customer_id`, `getURL`), or two names become one WIT name. |
 | `K0014` | Component builds: a boundary type or plugin a component cannot carry (`UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a multi-field union case, a recursive type, a protocol point). |
 
-At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request), `K0103` (a point major-version mismatch), or a signature code from `discoverPlugins` (D248): `K0105` (unsigned or unreadable `plugin.sig`), `K0106` (untrusted key), `K0107` (bad signature), `K0108` (files changed since signing), `K0109` (id, version or publisher mismatch), `K0110` (revoked key); `Std.PluginCatalogue` and `lyric plugin install` report `K0120` (a catalogue not signed by the current catalogue key), `K0121` (an expired catalogue), `K0122` (a catalogue older than the last one seen) and `K0123` (a download that does not match its catalogue entry), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

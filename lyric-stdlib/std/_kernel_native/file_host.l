@@ -93,6 +93,13 @@ extern func rtDirRemove(path: NativePtr[Byte]): Int = "lyric_dir_remove"
 // target (which may be outside the tree being removed).
 extern func rtIsDirNoFollow(path: NativePtr[Byte]): Int = "lyric_path_is_dir_nofollow"
 
+// lstat-based classification: LYRIC_PATH_KIND_* in lyric_rt.h.
+extern func rtPathKindNoFollow(path: NativePtr[Byte]): Int = "lyric_path_kind_nofollow"
+
+extern func rtRename(fromPath: NativePtr[Byte], toPath: NativePtr[Byte]): Int = "lyric_file_rename"
+
+extern func rtSetExecutable(path: NativePtr[Byte]): Int = "lyric_file_set_executable"
+
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
   val c = toC(path)
@@ -326,12 +333,65 @@ pub func hostIsDirSymlink(path: in String): Bool {
   follows == 1 and direct == 0
 }
 
+/// Renames (moves) a file or directory within one file system.
+@unsafe_ffi
+pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, IOError] {
+  val a = toC(fromPath)
+  val b = toC(toPath)
+  val rc = rtRename(a, b)
+  freeC(a)
+  freeC(b)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = fromPath, message = "cannot rename to " + toPath))
+  }
+}
+
+/// Gives `path` mode 0755 (a no-op on Windows beyond checking it exists).
+@unsafe_ffi
+pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
+  val c = toC(path)
+  val rc = rtSetExecutable(c)
+  freeC(c)
+  if rc == 0 {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "cannot make the file executable"))
+  }
+}
+
+/// What `path` itself is, without following a link: 0 missing, 1 regular
+/// file, 2 directory, 3 symbolic link, 4 other (a FIFO, socket or device).
+@unsafe_ffi
+pub func hostPathKindNoFollow(path: in String): Int {
+  val c = toC(path)
+  val kind = rtPathKindNoFollow(c)
+  freeC(c)
+  kind
+}
+
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
   listEntriesByKind(dir, "2")
 }
 
 pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
   listEntriesByKind(dir, "1")
+}
+
+/// Every entry directly inside `dir`, of any kind (files, directories, links,
+/// including a link whose target is missing), as paths under `dir`.
+pub func hostListEntriesResult(dir: in String): Result[List[String], IOError] {
+  match listEntryNamesNative(dir) {
+    case Ok(names) -> {
+      val acc: List[String] = newList()
+      for n in names {
+        acc.add(dir + "/" + n)
+      }
+      Ok(value = acc)
+    }
+    case Err(e) -> Err(error = e)
+  }
 }
 
 @unsafe_ffi

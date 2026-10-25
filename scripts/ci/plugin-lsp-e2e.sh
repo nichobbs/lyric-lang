@@ -43,6 +43,8 @@ mkdir -p "$artifact"
 "$LYRIC_BIN" build --manifest "$example/todo-server/lyric.toml" -o "$artifact/TodoLsp.dll"
 "$LYRIC_BIN" build --manifest "$example/todo-server/lyric.toml" --target jvm -o "$artifact/TodoLsp.jar"
 cp "$example/todo-server/plugin/plugin.json" "$artifact/plugin.json"
+# The editor loads only plugins signed with the example publisher key (D248).
+"$LYRIC_BIN" plugin sign "$artifact" --key examples/plugins/keys/example-publisher.key
 "$LYRIC_BIN" plugin check "$artifact"
 
 case "$HOST_TARGET" in

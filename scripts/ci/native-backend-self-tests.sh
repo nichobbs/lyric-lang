@@ -179,6 +179,8 @@ for t in \
   lyric-stdlib/tests/char_native_tests.l \
   lyric-stdlib/tests/path_tests.l \
   lyric-stdlib/tests/plugin_manifest_tests.l \
+  lyric-stdlib/tests/plugin_sign_tests.l \
+  lyric-stdlib/tests/plugin_catalogue_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
   lyric-stdlib/tests/json_value_tests.l \
   lyric-stdlib/tests/annotation_meta_native_tests.l \

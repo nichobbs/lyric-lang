@@ -41,6 +41,7 @@ Here is the full module inventory:
 | `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]`; raw SHA-256 `sha256Digest`; `hmacSha256(key, message) -> slice[Byte]` and `constantTimeEquals(a, b)` for comparing MAC tags |
 | `Std.Ed25519` | Ed25519 signatures (RFC 8032) in pure Lyric on every target: `ed25519PublicKey(seed)`, `ed25519Sign(seed, message)`, `ed25519Verify(publicKey, message, signature)`; the private key is a 32-byte seed from `secureGetBytes(32)`, and verification is strict (canonical encodings, no small-order keys) |
+| `Std.Zip` | Zip archives and raw DEFLATE in pure Lyric on every target: `readZipDirectory` and `readZipEntry` (hostile input checked: bounds, `ZipLimits`, CRC-32), `writeZip` (deterministic), `inflate`, `deflate`, `crc32` |
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |
@@ -50,7 +51,9 @@ Here is the full module inventory:
 | `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses); the same framings to a child process: `newNdjsonTransportOverProcess`, `newContentLengthTransportOverProcess` |
 | `Std.AnnotationMeta` | Read the annotations written on `config { }` fields back at runtime, on dotnet and the JVM: `fieldsWithAnnotation`, `allAnnotatedFields`, `AnnotatedField`, `namedArg`, `positionalArg` |
 | `Std.ConfigOverride` | Give a `config { }` field its value from code, before the block is first read, without writing it to the process environment (dotnet and JVM): `setConfigOverride`, `clearConfigOverride`, `getConfigOverride`. See Chapter 21 |
-| `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
+| `Std.PluginSign` | Plugin artifact signatures (Chapter 33, D248): `TrustedKey`, `parsePublicKey`, `formatPublicKey`, `publicKeyId`, `signArtifact`, `writePluginSignature`, `verifyArtifact`, `SignatureProblem`, `signatureProblemCode` |
+| `Std.PluginCatalogue` | Per-application plugin catalogues (Chapter 33): `CatalogueSource`, `updateCatalogue`, `loadFollowedCatalogue`, `catalogueTrust`, `installPlugin`, `CatalogueError`, `catalogueErrorCode`, and the authoring functions behind `lyric plugin catalogue` |
+| `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `TrustPolicy`, `trustKeys`, `trustKeysAllowingUnsigned`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolSession`, `protocolProcess`, `closeProtocolSession`, `callCapabilityAs`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |

@@ -332,6 +332,19 @@ int32_t lyric_path_real_ok(const char* path, LyricString** out) {
     return 0;
 }
 
+int32_t lyric_file_set_executable(const char* path) {
+    return chmod(path, 0755) == 0 ? 0 : -1;
+}
+
+int32_t lyric_path_kind_nofollow(const char* path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return LYRIC_PATH_KIND_MISSING;
+    if (S_ISLNK(st.st_mode)) return LYRIC_PATH_KIND_LINK;
+    if (S_ISDIR(st.st_mode)) return LYRIC_PATH_KIND_DIR;
+    if (S_ISREG(st.st_mode)) return LYRIC_PATH_KIND_FILE;
+    return LYRIC_PATH_KIND_OTHER;
+}
+
 LyricList* lyric_dir_list(const char* path) {
     DIR* d = opendir(path);
     if (!d) return NULL;
