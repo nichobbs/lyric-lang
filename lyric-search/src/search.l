@@ -51,9 +51,11 @@
 //!   LYRIC_SEARCH_ELASTICSEARCH_USERNAME    — HTTP basic auth username (default: "")
 //!   LYRIC_SEARCH_ELASTICSEARCH_PASSWORD    — HTTP basic auth password (default: "")
 //!   LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS  — request timeout ms (default: 30000)
+//!   LYRIC_SEARCH_ELASTICSEARCH_CONNECT_TIMEOUT_MS — health-probe timeout ms (default: 10000)
 //!   LYRIC_SEARCH_MEILISEARCH_URL           — Meilisearch base URL (required)
 //!   LYRIC_SEARCH_MEILISEARCH_API_KEY       — Meilisearch API key (default: "")
 //!   LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS    — request timeout ms (default: 30000)
+//!   LYRIC_SEARCH_MEILISEARCH_CONNECT_TIMEOUT_MS — health-probe timeout ms (default: 10000)
 //! `connectElasticsearch` / `connectMeilisearch` accept these values explicitly
 //! instead, for callers that don't want env-var-driven configuration.
 @runtime_checked
@@ -372,8 +374,9 @@ pub async func connect(provider: in String): Result[SearchClient, SearchError]
     }
     val username = getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_USERNAME", "")
     val password = getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_PASSWORD", "")
-    val requestTimeoutMs = parseIntOrDefault(getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS", "30000"), 30000)
-    return await connectElasticsearch(url, "", username, password, 10000, requestTimeoutMs)
+    val requestTimeoutMs = envTimeoutMs("LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS", DEFAULT_REQUEST_TIMEOUT_MS)
+    val connectTimeoutMs = envTimeoutMs("LYRIC_SEARCH_ELASTICSEARCH_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS)
+    return await connectElasticsearch(url, "", username, password, connectTimeoutMs, requestTimeoutMs)
   }
   return Err(
     error = SearchError(
@@ -401,8 +404,9 @@ pub async func connect(provider: in String): Result[SearchClient, SearchError]
       )
     }
     val apiKey = getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_API_KEY", "")
-    val requestTimeoutMs = parseIntOrDefault(getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS", "30000"), 30000)
-    return await connectMeilisearchWithTimeouts(url, apiKey, 10000, requestTimeoutMs)
+    val requestTimeoutMs = envTimeoutMs("LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS", DEFAULT_REQUEST_TIMEOUT_MS)
+    val connectTimeoutMs = envTimeoutMs("LYRIC_SEARCH_MEILISEARCH_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS)
+    return await connectMeilisearchWithTimeouts(url, apiKey, connectTimeoutMs, requestTimeoutMs)
   }
   return Err(
     error = SearchError(
@@ -696,6 +700,17 @@ pub opaque type HttpConfig {
 
 /// Request timeout used when none is configured, in milliseconds.
 pub val DEFAULT_REQUEST_TIMEOUT_MS: Int = 30000
+
+/// Health-probe (connect) timeout `Search.connect` uses when none is
+/// configured, in milliseconds.
+pub val DEFAULT_CONNECT_TIMEOUT_MS: Int = 10000
+
+/// The timeout in the environment variable `name`, or `fallback` when it is
+/// unset or not an integer.  A non-positive value is passed through, so the
+/// connect call reports it as `INVALID_TIMEOUT`.
+func envTimeoutMs(name: in String, fallback: in Int): Int {
+  parseIntOrDefault(getVarOrDefault(name, fallback.toString()), fallback)
+}
 
 /// Construct an `HttpConfig` directly (bypassing `connectElasticsearch`/
 /// `connectMeilisearch`'s health probe).  Exposed for tests that need to

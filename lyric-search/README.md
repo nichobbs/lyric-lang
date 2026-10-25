@@ -260,6 +260,7 @@ settings from the environment:
 | `LYRIC_SEARCH_ELASTICSEARCH_USERNAME` | `""` | HTTP basic auth username |
 | `LYRIC_SEARCH_ELASTICSEARCH_PASSWORD` | `""` | HTTP basic auth password |
 | `LYRIC_SEARCH_ELASTICSEARCH_TIMEOUT_MS` | `30000` | Request timeout in milliseconds; a request still running after it is cancelled and reported as `ConnectionFailed` |
+| `LYRIC_SEARCH_ELASTICSEARCH_CONNECT_TIMEOUT_MS` | `10000` | Timeout in milliseconds for the health probe `connect` sends first (`DEFAULT_CONNECT_TIMEOUT_MS`) |
 
 `connect` uses API-key auth (`Authorization: ApiKey <key>`) when an API key
 is supplied to `connectElasticsearch` directly; the env-var-driven `connect`
@@ -282,6 +283,7 @@ directly (later requests use the 30000 ms default; `connectMeilisearchWithTimeou
 | `LYRIC_SEARCH_MEILISEARCH_URL` | (required) | Meilisearch base URL |
 | `LYRIC_SEARCH_MEILISEARCH_API_KEY` | `""` | API key (`Authorization: Bearer <key>`) |
 | `LYRIC_SEARCH_MEILISEARCH_TIMEOUT_MS` | `30000` | Request timeout in milliseconds; a request still running after it is cancelled and reported as `ConnectionFailed` |
+| `LYRIC_SEARCH_MEILISEARCH_CONNECT_TIMEOUT_MS` | `10000` | Timeout in milliseconds for the health probe `connect` sends first (`DEFAULT_CONNECT_TIMEOUT_MS`) |
 
 Meilisearch's document/index mutation endpoints are asynchronous
 (task-queue based); `Search.index`/`indexBatch`/`delete`/`deleteIndex`/
