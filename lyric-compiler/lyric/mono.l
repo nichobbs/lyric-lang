@@ -6422,12 +6422,17 @@ func rewriteFuncBodyWithRet(
 // (literals, typed locals, non-generic calls), and an argument is marked only
 // when its parameter type is then fully concrete. That lets a context-typed
 // generic argument such as `plistEmpty()` in `plistCons(1, plistEmpty())` be
-// specialised at `Int` rather than defaulted to `Object` (#7280).
+// specialised at `Int` rather than defaulted to `Object` (#7280).  When the
+// arguments leave a type variable unbound, the type the call's own position
+// expects (`callSpan` in `expectedAt`) binds it through the declared return
+// type, as it does for the call itself: `keyed("k", paragraph("p"))` in a
+// `View[Msg]` position marks `paragraph("p")` with `View[Msg]`.
 func markArgsExpectedMono(
   state: in MonoState,
   env: in Map[String, TypeExpr],
   callee: in FunctionDecl,
   args: in List[CallArg],
+  callSpan: in Span,
 ): Unit {
   val isGeneric = match callee.generics { case Some(_) -> true; case None -> false }
   val slots = argSlotsMono(callee.params, args)
@@ -6476,16 +6481,29 @@ func markArgsExpectedMono(
     }
     j = j + 1
   }
+  if not substIsComplete(typeParams, subst) {
+    match mapGet(state.expectedAt, spanKeyMono(state, callSpan)) {
+      case Some(expTe) -> match callee.ret {
+        case Some(retTe) -> unifyTE(typeParams, retTe, expTe, subst)
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
   if subst.count == 0 {
     return
   }
+  // A parameter type is concrete once every type variable in it is bound.
+  // Checking the substituted type for type-variable names instead would
+  // refuse `View[Msg]` when the caller's own type is named like the
+  // callee's type variable.
+  val unpinned = collectUnpinnedTypeParams(typeParams, subst)
   val noValues: Map[String, Expr] = newMap()
   var k = 0
   while k < slots.count {
     if slots[k] >= 0 and isGenericCallExprMono(state, callArgExpr(args[slots[k]])) {
-      val pte = substTypeExpr(subst, noValues, callee.params[k].ty)
-      if not teMentionsTypeParam(typeParams, pte) {
-        markExpectedMono(state, callArgExpr(args[slots[k]]), pte)
+      if not teMentionsTypeParam(unpinned, callee.params[k].ty) {
+        markExpectedMono(state, callArgExpr(args[slots[k]]), substTypeExpr(subst, noValues, callee.params[k].ty))
       }
     }
     k = k + 1
@@ -7848,7 +7866,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
         case EPath(cpath) -> if cpath.segments.count == 1 and not env.containsKey(cpath.segments[0]) {
           match mapGet(state.funcDecls, cpath.segments[0]) {
             case Some(calleeDecl) -> if not state.ambiguousFuncOverloads.containsKey(cpath.segments[0]) {
-              markArgsExpectedMono(state, env, calleeDecl, args)
+              markArgsExpectedMono(state, env, calleeDecl, args, s)
             }
             case None -> ()
           }
@@ -8031,7 +8049,17 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                             if handled {
                               evidenced = true
                             } else {
-                              match argTEForParamMono(state, env, callArgExpr(args[ai]), baseDecl.params[i].ty) {
+                              // A generic call argument is read after its own
+                              // rewrite: `markArgsExpectedMono` may have given it
+                              // a type the unspecialised call cannot show
+                              // (`paragraph("p")` is `View[Object]` before,
+                              // `paragraph__Msg("p")` a `View[Msg]` after).
+                              val evidenceArg = if isGenericCallExprMono(state, callArgExpr(args[ai])) {
+                                callArgExpr(newArgs[ai])
+                              } else {
+                                callArgExpr(args[ai])
+                              }
+                              match argTEForParamMono(state, env, evidenceArg, baseDecl.params[i].ty) {
                                 case Some(argTE) -> {
                                   unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
                                   evidenced = true

@@ -2696,6 +2696,27 @@ test "a return-only type parameter is inferred from a binding annotation" {
   assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no M0002")
 }
 
+// A generic call passed to another generic's argument takes its type
+// arguments from the outer call's expected type when the outer call's other
+// arguments bind nothing: `keyed("k", paragraph("p"))` in a `View[Msg]`
+// position specialised `paragraph` at `Object`, and the `View[Object]` it
+// built failed with `ArrayTypeMismatchException` when stored in a
+// `List[View[Msg]]` on dotnet.  The type parameter shares its name with the
+// caller's union, as `Ui.Widgets`' `Msg` does.
+test "a nested generic argument is inferred from the outer call's expected type" {
+  val callerSrc = "package Caller\n" + "union Msg { case Other }\n" +
+    "func caller(): Unit { val o: View[Msg] = keyed(\"k\", paragraph(\"p\"))\n" +
+    " val kids: List[View[Msg]] = newList()\n kids.add(keyed(\"j\", keyed(\"k\", paragraph(\"q\")))) }\n"
+  val libSrc = "package Lib\n" + "pub union View[Msg] { case Text(value: String)\n case Empty }\n" +
+    "pub func paragraph[Msg](s: in String): View[Msg] { Text(value = s) }\n" +
+    "pub func keyed[Msg](key: in String, v: in View[Msg]): View[Msg] { v }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertTrue(hasFunc(res.file, "keyed__Msg"), "keyed pinned by the binding annotation")
+  assertTrue(hasFunc(res.file, "paragraph__Msg"), "paragraph pinned through keyed's expected type")
+  assertFalse(hasFunc(res.file, "paragraph__Object"), "no Object-defaulted paragraph")
+  assertFalse(hasFunc(res.file, "keyed__Object"), "no Object-defaulted keyed")
+}
+
 test "a qualified generic head unifies with the declaring package's bare spelling" {
   val callerSrc = "package Caller\n" + "import Lib\n" + "func caller(xs: in List[Lib.Node[Int]]): Int { count(xs) }\n"
   val libSrc = "package Lib\n" + "pub union Node[T] { case Leaf(v: T) }\n" +

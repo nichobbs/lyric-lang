@@ -54,6 +54,11 @@ echo "=== build examples/contracts-gating-test --target jvm ==="
 for target in dotnet jvm; do
   bash scripts/ci/builtin-name-override-test.sh "$lyric_bin" "$target"
 done
+# A generic call passed to another generic is specialised from the outer
+# call's expected type when it is imported.
+for target in dotnet jvm; do
+  bash scripts/ci/nested-generic-expected-test.sh "$lyric_bin" "$target"
+done
 # examples/agent/basics.l is the canonical-idioms reference agents copy from
 # (#7606): it must keep compiling and printing the same output on both targets.
 expected_basics=$'double 5 = 10\norder total: 1500 cents\nactive: amy, zoe\nrange: 1 to 9'

@@ -1,0 +1,14 @@
+[package]
+name        = "nested-generic-expected"
+version     = "0.1.0"
+description = "Cross-package regression fixture: a generic call passed to another generic takes its type arguments from the outer call's expected type."
+
+[project]
+name   = "nested-generic-expected"
+output = "single"
+
+[project.packages]
+"NestedLib" = "src/nested_lib.l"
+
+[project.tests]
+"NestedTests" = "tests/nested_tests.l"
