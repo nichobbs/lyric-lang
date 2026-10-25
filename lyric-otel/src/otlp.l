@@ -120,9 +120,7 @@ val exporterState: ExporterConfigState = newExporterConfigState()
 // "every `configureOtlp*` function returns `Err`" on `jvm`, but the code
 // didn't do that. Gate configuration itself on transport availability so
 // the `jvm` feature fails fast and honestly, instead of silently buffering
-// spans/metrics that can never be exported (and, for histograms, panicking
-// later in `flushOtlpAsync` when `OTel.Otlp.Codec` tries to encode one via
-// `jvmDoubleToInt64Bits` — see that function's doc comment).
+// spans/metrics that can never be exported.
 @cfg(feature = "dotnet")
 func otlpTransportImplemented(): Bool {
   true

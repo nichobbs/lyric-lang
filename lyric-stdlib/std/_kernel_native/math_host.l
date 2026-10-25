@@ -181,3 +181,30 @@ pub func hostIntToLong(n: in Int): Long {
 pub func hostLongToInt(n: in Long): Int {
   n.toInt()
 }
+
+// =====================================================================
+// IEEE 754 bit patterns (lyric-rt/src/lyric_rt.c, memcpy; every bit kept).
+// =====================================================================
+extern func cFloatToBits(x: Float): Int = "lyric_float_to_bits"
+
+extern func cFloatFromBits(bits: Int): Float = "lyric_float_from_bits"
+
+extern func cDoubleToBits(x: Double): Long = "lyric_double_to_bits"
+
+extern func cDoubleFromBits(bits: Long): Double = "lyric_double_from_bits"
+
+pub func hostFloatToBits(x: in Float): Int {
+  cFloatToBits(x)
+}
+
+pub func hostFloatFromBits(bits: in Int): Float {
+  cFloatFromBits(bits)
+}
+
+pub func hostDoubleToBits(x: in Double): Long {
+  cDoubleToBits(x)
+}
+
+pub func hostDoubleFromBits(bits: in Long): Double {
+  cDoubleFromBits(bits)
+}

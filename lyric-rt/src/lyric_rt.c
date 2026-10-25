@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Weakly-declared rather than pulled in via <sanitizer/lsan_interface.h>
  * behind a __SANITIZE_ADDRESS__/__has_feature(address_sanitizer) compile-
@@ -169,4 +170,33 @@ _Noreturn void lyric_panic_msg(const char* msg, const char* file, int32_t line) 
             file ? file : "<unknown>", line, msg ? msg : "");
     fflush(stderr);
     abort();
+}
+
+/* ── IEEE 754 bit patterns (Std.Math floatToBits & co.) ────────────── */
+
+/* memcpy, not a union or pointer cast: the only bit reinterpretation C
+ * defines.  Every bit is kept, NaN payloads included, as .NET's
+ * BitConverter and the JVM's raw-bits methods do. */
+int32_t lyric_float_to_bits(float x) {
+    int32_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+
+float lyric_float_from_bits(int32_t bits) {
+    float x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
+}
+
+int64_t lyric_double_to_bits(double x) {
+    int64_t bits;
+    memcpy(&bits, &x, sizeof bits);
+    return bits;
+}
+
+double lyric_double_from_bits(int64_t bits) {
+    double x;
+    memcpy(&x, &bits, sizeof x);
+    return x;
 }

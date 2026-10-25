@@ -1,7 +1,9 @@
 //! lyric-proto — Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder.
 //!
-//! This file merges Proto.Types, Proto.Encoding, Proto.Decoding, Proto, and the
-//! .NET kernel boundary into a single package for bootstrap compatibility.
+//! This file merges Proto.Types, Proto.Encoding, Proto.Decoding and Proto into
+//! a single package for bootstrap compatibility.  It declares no externs: the
+//! IEEE 754 bit casts come from `Std.Math` (`floatToBits`, `doubleToBits`), so
+//! the library builds for dotnet, the JVM and native from the same source.
 //! Cross-package union/enum access and TypeId alignment across intra-artifact
 //! packages are not supported by the bootstrap emitter; everything must be in
 //! one package.
@@ -10,9 +12,10 @@ package Proto
 
 import Std.Core
 import Std.Collections
+import Std.Math as Math
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── .NET kernel boundary (inlined from Proto.Kernel.Net) ────────────────────
+// ─── Byte buffer and numeric helpers ─────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 /// A mutable byte accumulator.  Backed by a pure-Lyric `List[Byte]` rather than
 /// a `System.IO.MemoryStream`: the BCL stream forced fragile instance-method FFI
@@ -51,13 +54,14 @@ pub func bufToBytes(buf: ProtoBuffer): slice[Byte] {
 
 /// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
 /// Proto3 `float` fields are 32-bit, as `Float` is (D155).
-@externTarget("System.BitConverter.SingleToInt32Bits")
-@externStatic
-pub func floatToInt32Bits(v: in Float): Int = ()
+pub func floatToInt32Bits(v: in Float): Int {
+  Math.floatToBits(v)
+}
 
 /// Reinterpret a 64-bit double as its IEEE 754 bit pattern (returned as Long).
-@externTarget("System.BitConverter.DoubleToInt64Bits")
-pub func doubleToInt64Bits(v: in Double): Long = ()
+pub func doubleToInt64Bits(v: in Double): Long {
+  Math.doubleToBits(v)
+}
 
 /// Read a single byte from `data[offset]` as an unsigned Int (0-255).
 pub func byteAt(data: in slice[Byte], offset: in Int): Int
@@ -107,12 +111,16 @@ pub func sliceCopy(data: in slice[Byte], offset: in Int, length: in Int): slice[
 }
 
 /// Widen an Int (32-bit) to a Long (64-bit).
-@externTarget("System.Convert.ToInt64")
-pub func intAsLong(n: in Int): Long = ()
+pub func intAsLong(n: in Int): Long {
+  n.toLong()
+}
 
-/// Narrow a Long (64-bit) to an Int (32-bit).
-@externTarget("System.Convert.ToInt32")
-pub func longAsInt(n: in Long): Int = ()
+/// Narrow a Long (64-bit) to an Int (32-bit).  A value outside `Int` is a
+/// precondition failure (`Std.Math.longToInt`), never a silent wrap; every
+/// caller here range-checks first.
+pub func longAsInt(n: in Long): Int {
+  Math.longToInt(n)
+}
 
 /// Bitwise AND for Long values.
 pub func bitandLong(a: in Long, b: in Long): Long {

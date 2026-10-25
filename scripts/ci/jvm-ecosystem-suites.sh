@@ -34,6 +34,8 @@
 #               weaving over the in-process queue; an `[]` arm beside a
 #               slice-typed arm of a `match` once failed class verification
 #               (#7541)
+#   proto       the protobuf wire codec; its IEEE 754 bit casts come from
+#               Std.Math, which binds java.lang.Float/Double raw-bits methods
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -56,7 +58,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 

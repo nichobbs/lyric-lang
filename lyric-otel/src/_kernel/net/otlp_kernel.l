@@ -18,8 +18,7 @@
 //! byte >= 0x80 on the way through — fatal for protobuf, whose trace/span
 //! IDs and varints are arbitrary bytes.  This is therefore its own
 //! audited `_kernel/net/` extern boundary (docs/14-native-stdlib-plan.md
-//! Decision F's per-library kernel pattern — the same shape `lyric-proto`
-//! uses for `BitConverter`), not a "hand-routed BCL extern to plug a
+//! Decision F's per-library kernel pattern), not a "hand-routed BCL extern to plug a
 //! stdlib gap": raw byte-body HTTP POST is a real capability `Std.Http`
 //! does not expose today.  If `Std.Http` grows a byte-body POST, this
 //! kernel should shrink to reuse it.
@@ -193,20 +192,3 @@ async func sendBuilt(req: in NetHttpRequestMessage, timeoutMs: in Int): Result[I
     Err(error = b.message)
   }
 }
-
-// =====================================================================
-// IEEE-754 double bit pattern (for the OTLP `HistogramDataPoint.sum`
-// field — a `fixed64` wire value).  `lyric-proto` has its own
-// `doubleToInt64Bits`, but calling most `lyric-proto` functions (this
-// one included) from a *different compiled assembly* currently crashes
-// the .NET JIT with `InvalidProgramException` — a restored-dependency
-// cross-assembly call bug (only `Proto.encodeMessage` and the raw
-// `ProtoField` union-case constructors were found to survive the
-// assembly boundary; every other `lyric-proto` function tested,
-// including plain non-generic ones like `zigzag32`, reproduces the
-// crash). `OTel.Otlp.Codec` avoids every other `lyric-proto` helper for
-// exactly this reason (see its module doc). This extern, by contrast,
-// is intra-assembly (`lyric-otel`'s own `_kernel/net/`, not a separate
-// DLL), so it is unaffected.
-@externTarget("System.BitConverter.DoubleToInt64Bits")
-pub func netDoubleToInt64Bits(v: in Double): Long = ()
