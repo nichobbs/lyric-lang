@@ -6735,6 +6735,27 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-mail/lyric.toml
 
+      # SMTP delivery against a local capture server on both targets (#7462):
+      # System.Net.Mail on dotnet, Jakarta Mail (restored through [maven]) on
+      # jvm.  Also runs the whole mail suite on the JVM.
+      - name: Set up Java 22 (mail)
+        if: matrix.id == 'mail'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+      - name: SMTP round trip (mail, dotnet and jvm)
+        if: matrix.id == 'mail'
+        run: |
+          set -euo pipefail
+          if ! command -v mvn >/dev/null 2>&1; then
+            sudo rm -f /etc/apt/sources.list.d/google-chrome.list*
+            flock /tmp/lyric-ci-apt-maven.lock -c 'sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends maven'
+          fi
+          flock /tmp/lyric-ci-maven-resolver-build.lock -c 'make maven-resolver'
+          export LYRIC_MAVEN_RESOLVER="$PWD/resolver/target/lyric-resolver.jar"
+          LYRIC_BIN="$LYRIC_CLI_PATH" bash scripts/ci/smtp-roundtrip-e2e.sh dotnet jvm
+
       - name: Run tests (aws-xray)
         if: matrix.id == 'aws-xray'
         run: |

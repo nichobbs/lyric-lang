@@ -374,6 +374,13 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/generic-opaque-restored-e2e.sh
   ran="$ran generic-opaque-restored-e2e"
 fi
+# #7668: a project depending on Lyric.Search builds, runs and tests on both targets.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/search-consumer-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/search-consumer-e2e.sh
+  ran="$ran search-consumer-e2e"
+fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).
 idx=$((idx + 1))

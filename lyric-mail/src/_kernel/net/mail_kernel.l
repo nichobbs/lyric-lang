@@ -54,6 +54,16 @@ pub extern type NetworkCredential = "System.Net.NetworkCredential"
 @externTarget("System.Net.Mail.SmtpClient.set_Credentials")
 pub func setCredentials(client: in SmtpClient, cred: in NetworkCredential): Unit = ()
 
+// `SmtpClient.Send` is overloaded (`Send(MailMessage)` and the four-string
+// form); resolved through the receiver held in a `NativeSender` field it
+// found no binding and lowered to a runtime "unsupported method" throw, so no
+// message was ever sent (#7462).  The declared signature binds the
+// `MailMessage` overload directly.
+@axiom("System.Net.Mail.SmtpClient.Send(MailMessage) — deliver one message")
+@externInstance
+@externTarget("System.Net.Mail.SmtpClient.Send")
+pub func sendMessage(client: in SmtpClient, msg: in MailMessage): Unit = ()
+
 // ─── Attachment support ───────────────────────────────────────────────────────
 @axiom("BCL System.Net.Mail.Attachment — MIME attachment backed by a MemoryStream")
 pub extern type BclAttachment = "System.Net.Mail.Attachment"

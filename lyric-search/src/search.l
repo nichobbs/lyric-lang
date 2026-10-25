@@ -612,7 +612,7 @@ func unsafePathSegment(path: in String): Option[String] {
 /// kept literal; everything else, including `/`, is escaped).  Both
 /// backends key documents by caller-supplied `index`/`id` strings that may
 /// contain characters unsafe in a URL path segment.
-pub func pathEscape(s: in String): String {
+func pathEscape(s: in String): String {
   var result = ""
   // Walks Unicode scalar values, so a supplementary-plane character is
   // percent-encoded as its whole 4-byte UTF-8 sequence rather than as two
@@ -784,7 +784,7 @@ func httpErrorStatusCode(e: in HttpError): Int {
 
 /// Convert a transport-level HttpError into a typed SearchError, tagging
 /// it with the given operation code (e.g. "INDEX_FAILED").
-pub func toSearchError(e: in HttpError, code: in String): SearchError {
+func toSearchError(e: in HttpError, code: in String): SearchError {
   return SearchError(message = HttpError.message(e), code = code, statusCode = httpErrorStatusCode(e))
 }
 
@@ -861,12 +861,8 @@ func sendCatching(
 
 /// Send a request and require a 2xx response, tagging any failure
 /// (transport or non-2xx status) with `code`.
-pub func sendRequest(
-  cfg: in HttpConfig,
-  method: in HttpMethod,
-  path: in String,
-  body: in Option[String],
-  code: in String,
+func sendRequest(
+  cfg: in HttpConfig, method: in HttpMethod, path: in String, body: in Option[String], code: in String
 ): Result[HttpResponse, SearchError] {
   match buildRequest(cfg, method, path, body) {
     case Err(e) -> return Err(error = e)
@@ -885,7 +881,7 @@ pub func sendRequest(
 
 /// Send a request without requiring 2xx — for operations (`exists`) that
 /// need to distinguish 404 from other statuses themselves.
-pub func sendRequestRaw(
+func sendRequestRaw(
   cfg: in HttpConfig, method: in HttpMethod, path: in String, code: in String
 ): Result[HttpResponse, SearchError] {
   match buildRequest(cfg, method, path, None) {
@@ -902,7 +898,7 @@ pub func sendRequestRaw(
 
 /// Read a response body and parse it as JSON, tagging any failure with
 /// `code`.  Caller MUST `disposeJson` the returned doc.
-pub async func readJsonBody(response: in HttpResponse, code: in String): Result[JsonDoc, SearchError] {
+async func readJsonBody(response: in HttpResponse, code: in String): Result[JsonDoc, SearchError] {
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = SearchError(message = IOError.message(e), code = code, statusCode = 0))
     case Ok(text) -> return Ok(value = parseJson(text))

@@ -1013,22 +1013,19 @@ test "Mail.validateSmtpConfig accepts an in-range port and positive timeoutMs" {
   }
 }
 
-// ─── connectSmtp is reachable on every target (#7254) ────────────────────────
+// ─── connectSmtp is reachable on every target (#7254, #7462) ─────────────────
 // Before #7254, `--target jvm` failed to *compile* `Mail` at all (the
-// package unconditionally imported `System.Net.Mail` externs). This asserts
-// the weaker, always-true-across-targets property that `connectSmtp()`
-// with in-range default config produces some `Result` — on `--target
-// dotnet` a real `NativeSender` (`Ok`, closed immediately below); on
-// `--target jvm` a structured `Err(code = "NOT_IMPLEMENTED")` from
-// `Mail.Kernel.Jvm` (not a compile failure, and not a silent no-op).
-test "Mail.connectSmtp is reachable and returns a well-formed Result on this target" {
+// package unconditionally imported `System.Net.Mail` externs). `connectSmtp()`
+// with in-range default config is now a real sender on both targets
+// (`System.Net.Mail` on dotnet, Jakarta Mail on jvm); connecting only records
+// settings, so it succeeds without a server.
+test "Mail.connectSmtp returns a sender on this target" {
   match Mail.connectSmtp() {
-    case Ok(sender) -> sender.close()
-    case Err(e) -> assertEqual(
-      e.code,
-      "NOT_IMPLEMENTED",
-      "the only expected failure mode is JVM's not-yet-implemented kernel"
-    )
+    case Ok(sender) -> {
+      sender.close()
+      assertTrue(true, "connectSmtp yields a sender")
+    }
+    case Err(e) -> assertTrue(false, "connectSmtp should succeed on every target, got: " + e.code + ": " + e.message)
   }
 }
 
@@ -1058,6 +1055,7 @@ test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_PORT" {
   if not envVarConfigRoundTripSupported() {
     assertTrue(true, "Std.Environment.setVar is a no-op on this target (jvm)")
   } else {
+    val savedPort = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_PORT", "587")
     Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", "not-a-port")
     match Mail.connectSmtp() {
       case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric port: code is INVALID_CONFIG")
@@ -1066,7 +1064,7 @@ test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_PORT" {
         assertTrue(false, "a non-numeric port must never be silently accepted")
       }
     }
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", "587")
+    Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", savedPort)
   }
 }
 
@@ -1074,6 +1072,7 @@ test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_TIMEOUTMS" {
   if not envVarConfigRoundTripSupported() {
     assertTrue(true, "Std.Environment.setVar is a no-op on this target (jvm)")
   } else {
+    val savedTimeout = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
     Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", "not-a-timeout")
     match Mail.connectSmtp() {
       case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric timeoutMs: code is INVALID_CONFIG")
@@ -1082,7 +1081,7 @@ test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_TIMEOUTMS" {
         assertTrue(false, "a non-numeric timeoutMs must never be silently accepted")
       }
     }
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
+    Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", savedTimeout)
   }
 }
 
@@ -1477,4 +1476,81 @@ func containsRawControlChar(s: in String): Bool {
     i = i + 1
   }
   return false
+}
+
+// ─── SMTP round trip against a local capture server (#7462) ──────────────────
+// `scripts/ci/smtp-roundtrip-e2e.sh` starts `scripts/ci/smtp_capture_server.py`,
+// points `LYRIC_CONFIG_SMTP_*` at it and sets `LYRIC_MAIL_TEST_ROUNDTRIP=1`; it
+// then checks the captured wire messages, which is where header, MIME and
+// envelope correctness is observable.  Without the variable these tests are a
+// clean skip, so a plain `lyric test` needs no server.
+test "SMTP round trip: plain, multi-recipient and attachment messages are accepted" {
+  if Std.Environment.getVarOrDefault("LYRIC_MAIL_TEST_ROUNDTRIP", "") != "1" {
+    assertTrue(true, "LYRIC_MAIL_TEST_ROUNDTRIP unset: skipped")
+  } else {
+    match Mail.connectSmtp() {
+      case Err(e) -> assertTrue(false, "connectSmtp failed: " + e.message)
+      case Ok(sender) -> {
+        val plain = EmailMessage(
+          from = Mail.makeAddressWithName("sender@example.com", "Sender Name"),
+          to = [Mail.makeAddressWithName("to1@example.com", "To One"), Mail.makeAddress("to2@example.com")],
+          cc = [Mail.makeAddress("cc@example.com")],
+          bcc = [Mail.makeAddress("hidden@example.com")],
+          subject = "Plain roundtrip café",
+          textBody = "line one\nline two",
+          htmlBody = "",
+          attachments = [],
+          replyTo = Some(Mail.makeAddress("reply@example.com"))
+        )
+        match Mail.send(sender, plain) {
+          case Ok(_) -> assertTrue(true, "plain message accepted")
+          case Err(e) -> assertTrue(false, "plain send failed: " + e.message)
+        }
+        val rich = EmailMessage(
+          from = Mail.makeAddress("sender@example.com"),
+          to = [Mail.makeAddress("to1@example.com")],
+          cc = [],
+          bcc = [],
+          subject = "Attachment roundtrip",
+          textBody = "unused when html is present",
+          htmlBody = "<p>html body</p>",
+          attachments = [Mail.makeAttachment("hello.txt", "text/plain", "SGVsbG8sIGF0dGFjaG1lbnQh")],
+          replyTo = None
+        )
+        match Mail.send(sender, rich) {
+          case Ok(_) -> assertTrue(true, "attachment message accepted")
+          case Err(e) -> assertTrue(false, "attachment send failed: " + e.message)
+        }
+        sender.close()
+      }
+    }
+  }
+}
+
+test "SMTP round trip: a server that is not listening is a SEND_ERROR" {
+  if Std.Environment.getVarOrDefault("LYRIC_MAIL_TEST_UNREACHABLE", "") != "1" {
+    assertTrue(true, "LYRIC_MAIL_TEST_UNREACHABLE unset: skipped")
+  } else {
+    match Mail.connectSmtp() {
+      case Err(e) -> assertTrue(false, "connectSmtp failed: " + e.message)
+      case Ok(sender) -> {
+        val msg = EmailMessage(
+          from = Mail.makeAddress("sender@example.com"),
+          to = [Mail.makeAddress("to1@example.com")],
+          cc = [],
+          bcc = [],
+          subject = "never delivered",
+          textBody = "x",
+          htmlBody = "",
+          attachments = [],
+          replyTo = None
+        )
+        match Mail.send(sender, msg) {
+          case Ok(_) -> assertTrue(false, "nothing is listening")
+          case Err(e) -> assertEqual(e.code, "SEND_ERROR", "transport failure is SEND_ERROR")
+        }
+        sender.close()
+      }
+    }
+  }
 }

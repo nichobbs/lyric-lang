@@ -27,11 +27,9 @@
 #               cross-package private-callee resolution gap the weaver's
 #               `around` advice splicing exposed (`checkFlagName`, #7483)
 #   mail        Mail's typed envelope, header-injection/attachment-size
-#               guards, and the real `System.Net.Mail`-backed SMTP
-#               transport's dotnet-only reachability, exercised with every
-#               provider feature active (`smtp,ses,sendgrid`) so the
-#               `NOT_IMPLEMENTED` provider paths are honestly asserted on
-#               `jvm` too (#7483)
+#               guards and the SMTP/SES/SendGrid senders, exercised with every
+#               provider feature active (`smtp,ses,sendgrid`); the Jakarta
+#               Mail JARs are Maven-restored first (#7483, #7462)
 #   mq          `Mq.messageFromJson` and the Idempotent/DeadLetter aspect
 #               weaving over the in-process queue; an `[]` arm beside a
 #               slice-typed arm of a `match` once failed class verification
@@ -64,11 +62,11 @@ trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web` needs its Maven dependency restored first; the shared helper
+  # `web` and `mail` (Jakarta Mail, #7462) need their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
-  if [ "$lib" = "web" ]; then
+  if [ "$lib" = "web" ] || [ "$lib" = "mail" ]; then
     runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
   fi
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared

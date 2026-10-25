@@ -7,7 +7,7 @@ SendGrid, behind one `MailSender` interface.
 
 | Feature | `dotnet` | `jvm` |
 |---|---|---|
-| `smtp` (SMTP) | Available — `System.Net.Mail` (BCL, no extra NuGet dependency) | **Not implemented** — `Mail.Kernel.Jvm.connectSmtp` returns `Err(code = "NOT_IMPLEMENTED")`; needs a genuine Jakarta Mail auto-FFI kernel (`extern type` bindings to `jakarta.mail.Session`/`Transport`/`MimeMessage`, the same idiom `Auth.Kernel.Jvm.hmacSha256` uses for `javax.crypto.Mac`). Tracked in #7462. |
+| `smtp` (SMTP) | Available — `System.Net.Mail` (BCL, no extra NuGet dependency) | Available — Jakarta Mail (`jakarta.mail-api` + Eclipse Angus, restored from the `[maven]` table with `lyric restore`) behind `Mail.Kernel.Jvm` (#7462, D260) |
 | `ses` (Amazon SES) | Available — SES v2 over `Std.Http` with AWS Signature V4, pure Lyric (#7462) | Same code |
 | `sendgrid` (SendGrid) | Available — v3 `mail/send` over `Std.Http`, pure Lyric (#7462) | Same code |
 
@@ -16,9 +16,10 @@ SendGrid, behind one `MailSender` interface.
 test --target jvm --manifest lyric-mail/lyric.toml`) — the JVM build used
 to fail outright because the package imported `System.Net.Mail` externs
 unconditionally; that kernel-boundary violation is fixed (#7254). SMTP is
-the only backend that is still dotnet-only; SES and SendGrid are plain HTTPS
-APIs implemented once in Lyric, so they run on both targets with no provider
-SDK. Neither has been driven against the live provider in CI; their request
+bound per target (`System.Net.Mail` / Jakarta Mail); SES and SendGrid are plain
+HTTPS APIs implemented once in Lyric, so they run on both targets with no
+provider SDK.  SMTP delivery is exercised against a local capture server on
+both targets by `scripts/ci/smtp-roundtrip-e2e.sh` (STARTTLS is not covered).  SES and SendGrid have not been driven against the live provider in CI; their request
 bodies and the SigV4 signature are pinned by unit tests (the signature against
 the published AWS test vector).
 
@@ -32,7 +33,7 @@ The `dotnet`/`jvm` platform features are resolved automatically from
 |---|---|
 | `Mail` | Core types, `MailSender` interface, and the public API — the only package application code imports |
 | `Mail.Kernel.Net` | `--target dotnet` extern boundary (`System.Net.Mail`) |
-| `Mail.Kernel.Jvm` | `--target jvm` extern boundary (not yet implemented — see "Platform parity") |
+| `Mail.Kernel.Jvm` | `--target jvm` extern boundary (Jakarta Mail) |
 
 ## Quick start
 
@@ -62,9 +63,9 @@ Feature-gate the provider(s) you need in your own `lyric.toml`:
 default = ["dotnet", "smtp"]  # add "ses" and/or "sendgrid" as needed
 ```
 
-- `smtp` — SMTP via `System.Net.Mail` (`--target dotnet` only; see "Platform parity")
-- `ses` — Amazon SES (not implemented on any target yet)
-- `sendgrid` — SendGrid (not implemented on any target yet)
+- `smtp` — SMTP: `System.Net.Mail` on dotnet, Jakarta Mail on jvm (see "Platform parity")
+- `ses` — Amazon SES v2 over `Std.Http` (both targets)
+- `sendgrid` — SendGrid v3 over `Std.Http` (both targets)
 
 ## Core types and functions
 

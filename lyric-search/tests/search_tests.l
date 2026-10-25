@@ -27,7 +27,7 @@
 //! survive `@cfg` erasure through test synthesis (observed to compile into
 //! an invalid MSIL program when gated directly).
 @test_module
-package Search.SearchTests
+package Search
 
 import Std.Core
 import Std.Testing
@@ -37,7 +37,6 @@ import Std.Json
 import Std.Http
 import Std.Errors
 import Std.Environment
-import Search
 
 // ─── SearchError ─────────────────────────────────────────────────────────────
 test "SearchError: fields are accessible" {
@@ -56,7 +55,7 @@ test "SearchError: statusCode 0 is valid (non-HTTP error)" {
 test "makeDoc: fields are accessible" {
   val fields: Map[String, String] = newMap()
   fields.add("name", "Widget")
-  val doc = Search.makeDoc("products", "p-1", fields)
+  val doc = makeDoc("products", "p-1", fields)
   assertEqual(doc.index, "products", "index field")
   assertEqual(doc.id, "p-1", "id field")
   match mapGet(doc.fields, "name") {
@@ -66,7 +65,7 @@ test "makeDoc: fields are accessible" {
 }
 
 test "makeDoc: empty fields map is valid" {
-  val doc = Search.makeDoc("logs", "log-42", newMap())
+  val doc = makeDoc("logs", "log-42", newMap())
   assertEqual(doc.index, "logs", "index field")
   assertEqual(doc.id, "log-42", "id field")
   assertTrue(doc.fields.count == 0, "empty fields map has count 0")
@@ -76,7 +75,7 @@ test "makeDoc: multiple fields are all accessible" {
   val fields: Map[String, String] = newMap()
   fields.add("title", "Hello")
   fields.add("body", "World")
-  val doc = Search.makeDoc("posts", "post-1", fields)
+  val doc = makeDoc("posts", "post-1", fields)
   match mapGet(doc.fields, "title") {
     case Some(v) -> assertEqual(v, "Hello", "title field")
     case None -> assertTrue(false, "title must be present")
@@ -89,57 +88,57 @@ test "makeDoc: multiple fields are all accessible" {
 
 // ─── makeQuery ────────────────────────────────────────────────────────────────
 test "makeQuery: index and query fields are set" {
-  val q = Search.makeQuery("products", "Widget")
+  val q = makeQuery("products", "Widget")
   assertEqual(q.index, "products", "index field")
   assertEqual(q.query, "Widget", "query field")
 }
 
 test "makeQuery: default from is 0" {
-  val q = Search.makeQuery("products", "test")
+  val q = makeQuery("products", "test")
   assertEqualInt(q.from, 0, "default from must be 0")
 }
 
 test "makeQuery: default size is 10" {
-  val q = Search.makeQuery("products", "test")
+  val q = makeQuery("products", "test")
   assertEqualInt(q.size, 10, "default size must be 10")
 }
 
 test "makeQuery: default filters list is empty" {
-  val q = Search.makeQuery("products", "test")
+  val q = makeQuery("products", "test")
   assertTrue(q.filters.length == 0, "default filters list must be empty")
 }
 
 test "makeQuery: default sort list is empty" {
-  val q = Search.makeQuery("products", "test")
+  val q = makeQuery("products", "test")
   assertTrue(q.sort.length == 0, "default sort list must be empty")
 }
 
 test "makeQuery: empty query string is accepted" {
-  val q = Search.makeQuery("products", "")
+  val q = makeQuery("products", "")
   assertEqual(q.query, "", "empty query string is valid")
 }
 
 // ─── makeFilter ───────────────────────────────────────────────────────────────
 test "makeFilter: fields are accessible" {
-  val f = Search.makeFilter("status", "active")
+  val f = makeFilter("status", "active")
   assertEqual(f.field, "status", "filter field")
   assertEqual(f.value, "active", "filter value")
 }
 
 test "makeFilter: empty value is valid" {
-  val f = Search.makeFilter("category", "")
+  val f = makeFilter("category", "")
   assertEqual(f.value, "", "empty filter value is valid")
 }
 
 // ─── makeSort ─────────────────────────────────────────────────────────────────
 test "makeSort: ascending sort has descending=false" {
-  val s = Search.makeSort("price", false)
+  val s = makeSort("price", false)
   assertEqual(s.field, "price", "sort field")
   assertTrue(not s.descending, "ascending sort has descending=false")
 }
 
 test "makeSort: descending sort has descending=true" {
-  val s = Search.makeSort("created_at", true)
+  val s = makeSort("created_at", true)
   assertEqual(s.field, "created_at", "sort field")
   assertTrue(s.descending, "descending sort has descending=true")
 }
@@ -159,11 +158,11 @@ test "SearchResult: total carries document count" {
 
 // ─── pathEscape ───────────────────────────────────────────────────────────────
 test "pathEscape: unreserved characters pass through unchanged" {
-  assertEqual(Search.pathEscape("abcXYZ019-_.~"), "abcXYZ019-_.~", "unreserved charset is untouched")
+  assertEqual(pathEscape("abcXYZ019-_.~"), "abcXYZ019-_.~", "unreserved charset is untouched")
 }
 
 test "pathEscape: space and slash are percent-encoded" {
-  val escaped = Search.pathEscape("a b/c")
+  val escaped = pathEscape("a b/c")
   assertTrue(Str.contains(escaped, "%20"), "space becomes %20")
   assertTrue(Str.contains(escaped, "%2F"), "slash becomes %2F")
   assertTrue(not Str.contains(escaped, " "), "no literal space remains")
@@ -171,19 +170,19 @@ test "pathEscape: space and slash are percent-encoded" {
 }
 
 test "pathEscape: empty string escapes to empty string" {
-  assertEqual(Search.pathEscape(""), "", "empty input stays empty")
+  assertEqual(pathEscape(""), "", "empty input stays empty")
 }
 
 test "pathEscape: multi-byte UTF-8 character is percent-encoded byte-by-byte" {
   // '€' (U+20AC) is 3 bytes in UTF-8 (E2 82 AC).
-  val escaped = Search.pathEscape("€")
+  val escaped = pathEscape("€")
   assertEqual(escaped, "%E2%82%AC", "euro sign encodes to its 3 UTF-8 bytes")
 }
 
 // ─── toSearchError (HttpError -> SearchError mapping) ────────────────────────
 test "toSearchError: BadStatus carries the real HTTP status code" {
   val e: HttpError = BadStatus(url = "http://x/y", statusCode = 404)
-  val se = Search.toSearchError(e, "DELETE_FAILED")
+  val se = toSearchError(e, "DELETE_FAILED")
   assertEqual(se.code, "DELETE_FAILED", "code is the operation tag, not the transport detail")
   assertEqualInt(se.statusCode, 404, "statusCode is carried through from BadStatus")
   assertTrue(se.message.length > 0, "message is non-empty")
@@ -191,14 +190,14 @@ test "toSearchError: BadStatus carries the real HTTP status code" {
 
 test "toSearchError: ConnectionFailed has no HTTP status, so statusCode is 0" {
   val e: HttpError = ConnectionFailed(url = "http://x/y", message = "connection refused")
-  val se = Search.toSearchError(e, "CONNECT_FAILED")
+  val se = toSearchError(e, "CONNECT_FAILED")
   assertEqualInt(se.statusCode, 0, "connection-level failures carry no HTTP status")
   assertTrue(Str.contains(se.message, "connection refused"), "underlying transport message is preserved")
 }
 
 test "toSearchError: InvalidUrl has no HTTP status, so statusCode is 0" {
   val e: HttpError = InvalidUrl(url = "not-a-url")
-  val se = Search.toSearchError(e, "SEARCH_FAILED")
+  val se = toSearchError(e, "SEARCH_FAILED")
   assertEqualInt(se.statusCode, 0, "an invalid-URL failure has no HTTP status")
   assertTrue(se.message.length > 0, "message is non-empty")
 }
@@ -206,7 +205,7 @@ test "toSearchError: InvalidUrl has no HTTP status, so statusCode is 0" {
 // ─── Elasticsearch: request-body construction (feature = "elasticsearch") ───
 @cfg(feature = "elasticsearch")
 func probeEsFilterEq(): String {
-  Search.esFilterClause(Search.makeFilter("status", "active"))
+  esFilterClause(makeFilter("status", "active"))
 }
 
 @cfg(feature = "meilisearch")
@@ -225,7 +224,7 @@ test "elasticsearch filter clause (eq): maps to a term query" {
 
 @cfg(feature = "elasticsearch")
 func probeEsFilterRange(): String {
-  Search.esFilterClause(SearchFilter(field = "price", value = "10", operator = "gte"))
+  esFilterClause(SearchFilter(field = "price", value = "10", operator = "gte"))
 }
 
 @cfg(feature = "meilisearch")
@@ -243,7 +242,7 @@ test "elasticsearch filter clause (gte): maps to a range query" {
 
 @cfg(feature = "elasticsearch")
 func probeEsQueryClauseEmpty(): String {
-  Search.esQueryClause("")
+  esQueryClause("")
 }
 
 @cfg(feature = "meilisearch")
@@ -267,7 +266,7 @@ test "elasticsearch query clause: empty query text maps to match_all" {
 // value, not get treated as syntax.
 @cfg(feature = "elasticsearch")
 func probeEsQueryClauseLuceneShaped(): String {
-  Search.esQueryClause("title:evil OR *:* AND user.password:*")
+  esQueryClause("title:evil OR *:* AND user.password:*")
 }
 
 @cfg(feature = "meilisearch")
@@ -292,8 +291,8 @@ test "elasticsearch query clause: never emits query_string (Lucene injection/DoS
 
 @cfg(feature = "elasticsearch")
 func probeEsBuildSearchBody(): String {
-  val q = Search.makeQuery("products", "widget")
-  Search.esBuildSearchBody(q)
+  val q = makeQuery("products", "widget")
+  esBuildSearchBody(q)
 }
 
 @cfg(feature = "meilisearch")
@@ -322,7 +321,7 @@ test "elasticsearch search body: carries query text, from, and size" {
 func probeEsFieldsToJsonObject(): String {
   val fields: Map[String, String] = newMap()
   fields.add("name", "Widget")
-  Search.esFieldsToJsonObject(fields)
+  esFieldsToJsonObject(fields)
 }
 
 @cfg(feature = "meilisearch")
@@ -349,7 +348,7 @@ func esIndexResultJson(): String {
   "{}"
 }
 
-// `Search.esParseIndexResult`/`esParseSearchResponse`/`esParseSuggestResponse`
+// `esParseIndexResult`/`esParseSearchResponse`/`esParseSuggestResponse`
 // are defined in `elasticsearch_backend.l`, which is entirely `@cfg`-erased
 // when the `elasticsearch` feature is inactive — calling them
 // unconditionally would reference a symbol that doesn't exist in a
@@ -357,7 +356,7 @@ func esIndexResultJson(): String {
 // helper-function dispatch trick used for the Meilisearch equivalents.
 @cfg(feature = "elasticsearch")
 func probeEsParseIndexResult(root: in JsonElement): IndexResult {
-  Search.esParseIndexResult(root)
+  esParseIndexResult(root)
 }
 
 @cfg(feature = "meilisearch")
@@ -392,7 +391,7 @@ func esSearchResponseJson(): String {
 
 @cfg(feature = "elasticsearch")
 func probeEsParseSearchResponse(root: in JsonElement): SearchResult {
-  Search.esParseSearchResponse(root)
+  esParseSearchResponse(root)
 }
 
 @cfg(feature = "meilisearch")
@@ -437,7 +436,7 @@ func esSuggestResponseJson(): String {
 
 @cfg(feature = "elasticsearch")
 func probeEsParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
-  Search.esParseSuggestResponse(root, field)
+  esParseSuggestResponse(root, field)
 }
 
 @cfg(feature = "meilisearch")
@@ -461,7 +460,7 @@ test "elasticsearch: parses a real suggest-response shape" {
 // ─── Meilisearch: request-body construction (feature = "meilisearch") ───────
 @cfg(feature = "meilisearch")
 func probeMsFilterEq(): String {
-  Search.msFilterExpr(Search.makeFilter("status", "active"))
+  msFilterExpr(makeFilter("status", "active"))
 }
 
 @cfg(feature = "elasticsearch")
@@ -478,7 +477,7 @@ test "meilisearch filter expression (eq): field = 'value'" {
 
 @cfg(feature = "meilisearch")
 func probeMsFilterContains(): String {
-  Search.msFilterExpr(SearchFilter(field = "name", value = "widg", operator = "contains"))
+  msFilterExpr(SearchFilter(field = "name", value = "widg", operator = "contains"))
 }
 
 @cfg(feature = "elasticsearch")
@@ -495,7 +494,7 @@ test "meilisearch filter expression (contains): field CONTAINS 'value'" {
 
 @cfg(feature = "meilisearch")
 func probeMsQuoteEscaping(): String {
-  Search.msQuote("O'Brien")
+  msQuote("O'Brien")
 }
 
 @cfg(feature = "elasticsearch")
@@ -516,7 +515,7 @@ test "meilisearch msQuote: escapes an embedded single quote" {
 // string ends from Meilisearch's parser's point of view.
 @cfg(feature = "meilisearch")
 func probeMsQuoteBackslash(): String {
-  Search.msQuote("C:\\evil\\path")
+  msQuote("C:\\evil\\path")
 }
 
 @cfg(feature = "elasticsearch")
@@ -537,7 +536,7 @@ func probeMsQuoteBackslashAndQuote(): String {
   // "escape" the closing quote from the parser's perspective if only `'`
   // were escaped: `it\` followed by `'` naively becomes `it\'` — which
   // reads as an escaped quote, not a closing quote.
-  Search.msQuote("it\\'s a trap")
+  msQuote("it\\'s a trap")
 }
 
 @cfg(feature = "elasticsearch")
@@ -558,7 +557,7 @@ test "meilisearch msQuote: escapes a backslash immediately followed by a quote" 
 // identifier charset must be rejected rather than passed through.
 @cfg(feature = "meilisearch")
 func probeMsFilterUnsafeField(): String {
-  Search.msFilterExpr(SearchFilter(field = "status = 'active' OR 1 = 1 OR x", value = "ignored", operator = "eq"))
+  msFilterExpr(SearchFilter(field = "status = 'active' OR 1 = 1 OR x", value = "ignored", operator = "eq"))
 }
 
 @cfg(feature = "elasticsearch")
@@ -576,7 +575,7 @@ test "meilisearch filter expression: an unsafe field name is not spliced into th
 
 @cfg(feature = "meilisearch")
 func probeMsFilterSafeFieldWithDot(): String {
-  Search.msFilterExpr(SearchFilter(field = "attributes.color", value = "red", operator = "eq"))
+  msFilterExpr(SearchFilter(field = "attributes.color", value = "red", operator = "eq"))
 }
 
 @cfg(feature = "elasticsearch")
@@ -595,7 +594,7 @@ test "meilisearch filter expression: a dotted nested-attribute field name passes
 func probeMsDocToJsonObject(): String {
   val fields: Map[String, String] = newMap()
   fields.add("name", "Widget")
-  Search.msDocToJsonObject(Search.makeDoc("products", "p-1", fields))
+  msDocToJsonObject(makeDoc("products", "p-1", fields))
 }
 
 @cfg(feature = "elasticsearch")
@@ -613,8 +612,8 @@ test "meilisearch document body: carries an explicit id field plus the document 
 
 @cfg(feature = "meilisearch")
 func probeMsBuildSearchBody(): String {
-  val q = Search.makeQuery("products", "widget")
-  Search.msBuildSearchBody(q, true)
+  val q = makeQuery("products", "widget")
+  msBuildSearchBody(q, true)
 }
 
 @cfg(feature = "elasticsearch")
@@ -645,7 +644,7 @@ func msSearchResponseJson(): String {
   "{}"
 }
 
-// `Search.msParseSearchResponse` is defined in `meilisearch_backend.l`,
+// `msParseSearchResponse` is defined in `meilisearch_backend.l`,
 // which is entirely `@cfg`-erased when the `meilisearch` feature is
 // inactive (the default build is `elasticsearch`-only) — calling it
 // unconditionally would reference a symbol that doesn't exist in this
@@ -653,7 +652,7 @@ func msSearchResponseJson(): String {
 // dispatch trick used elsewhere in this file.
 @cfg(feature = "meilisearch")
 func probeMsParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
-  Search.msParseSearchResponse(root, index)
+  msParseSearchResponse(root, index)
 }
 
 @cfg(feature = "elasticsearch")
@@ -688,11 +687,11 @@ test "meilisearch: parses a real search-response shape, including _formatted hig
 }
 
 // ─── Wired dispatch (issue #5067 / #5408) ─────────────────────────────────────
-// `Search.connect` dispatches on the provider string before touching any
+// `connect` dispatches on the provider string before touching any
 // backend; an unknown provider must still resolve without an HTTP call,
 // regardless of which backend feature this build has active.
 test "connect: unknown provider returns UNKNOWN_PROVIDER without an HTTP call" {
-  match await Search.connect("not-a-real-backend") {
+  match await connect("not-a-real-backend") {
     case Ok(_) -> assertTrue(false, "unknown provider must not connect")
     case Err(e) -> assertEqual(e.code, "UNKNOWN_PROVIDER", "unknown provider error code")
   }
@@ -700,12 +699,12 @@ test "connect: unknown provider returns UNKNOWN_PROVIDER without an HTTP call" {
 
 @cfg(feature = "elasticsearch")
 func probeConnect(): Result[SearchClient, SearchError] {
-  await Search.connectElasticsearch("http://127.0.0.1:1", "", "", "", 200, 200)
+  await connectElasticsearch("http://127.0.0.1:1", "", "", "", 200, 200)
 }
 
 @cfg(feature = "meilisearch")
 func probeConnect(): Result[SearchClient, SearchError] {
-  await Search.connectMeilisearch("http://127.0.0.1:1", "", 200)
+  await connectMeilisearch("http://127.0.0.1:1", "", 200)
 }
 
 test "connect*: a closed port produces a real transport failure, not a placeholder" {
@@ -732,8 +731,8 @@ func closedPortClient(): SearchClient {
 
 test "search: a closed port produces a real transport failure via SEARCH_FAILED" {
   val client = closedPortClient()
-  val q = Search.makeQuery("products", "widget")
-  match Search.search(client, q) {
+  val q = makeQuery("products", "widget")
+  match search(client, q) {
     case Ok(_) -> assertTrue(false, "unexpected search success with no backend listening")
     case Err(e) -> {
       assertEqual(e.code, "SEARCH_FAILED", "search failure surfaces as SEARCH_FAILED")
@@ -744,7 +743,7 @@ test "search: a closed port produces a real transport failure via SEARCH_FAILED"
 
 test "suggest: a closed port produces a real transport failure via SUGGEST_FAILED" {
   val client = closedPortClient()
-  match Search.suggest(client, "products", "wid", "name") {
+  match suggest(client, "products", "wid", "name") {
     case Ok(_) -> assertTrue(false, "unexpected suggest success with no backend listening")
     case Err(e) -> {
       assertEqual(e.code, "SUGGEST_FAILED", "suggest failure surfaces as SUGGEST_FAILED")
@@ -755,7 +754,7 @@ test "suggest: a closed port produces a real transport failure via SUGGEST_FAILE
 
 test "delete: a closed port produces a real transport failure via DELETE_FAILED" {
   val client = closedPortClient()
-  match Search.delete(client, "products", "p-1") {
+  match delete(client, "products", "p-1") {
     case Ok(_) -> assertTrue(false, "unexpected delete success with no backend listening")
     case Err(e) -> {
       assertEqual(e.code, "DELETE_FAILED", "delete failure surfaces as DELETE_FAILED")
@@ -777,11 +776,11 @@ func expectCode(r: in Result[Unit, SearchError], code: in String, label: in Stri
 
 test "delete: a dot-segment or empty id is refused, never sent" {
   val client = closedPortClient()
-  expectCode(Search.delete(client, "products", ".."), "INVALID_PATH_SEGMENT", "id '..' would address the index")
-  expectCode(Search.delete(client, "products", "."), "INVALID_PATH_SEGMENT", "id '.'")
-  expectCode(Search.delete(client, "products", ""), "INVALID_PATH_SEGMENT", "empty id")
-  expectCode(Search.delete(client, "..", "p-1"), "INVALID_PATH_SEGMENT", "index '..'")
-  expectCode(Search.delete(client, "products", "a.b"), "DELETE_FAILED", "an id containing dots is an ordinary id")
+  expectCode(delete(client, "products", ".."), "INVALID_PATH_SEGMENT", "id '..' would address the index")
+  expectCode(delete(client, "products", "."), "INVALID_PATH_SEGMENT", "id '.'")
+  expectCode(delete(client, "products", ""), "INVALID_PATH_SEGMENT", "empty id")
+  expectCode(delete(client, "..", "p-1"), "INVALID_PATH_SEGMENT", "index '..'")
+  expectCode(delete(client, "products", "a.b"), "DELETE_FAILED", "an id containing dots is an ordinary id")
 }
 
 test "exists: a dot-segment id is refused, never sent" {
@@ -793,14 +792,14 @@ test "exists: a dot-segment id is refused, never sent" {
 }
 
 func searchCode(q: in SearchQuery): String {
-  match Search.search(closedPortClient(), q) {
+  match search(closedPortClient(), q) {
     case Ok(_) -> "OK"
     case Err(e) -> e.code
   }
 }
 
 test "search: an unknown filter operator is refused, not treated as equality" {
-  val q = Search.makeQuery("products", "widget")
+  val q = makeQuery("products", "widget")
   val typo = q.copy(filters = [SearchFilter(field = "tenant", value = "a", operator = "ne")])
   assertEqual(searchCode(typo), "UNKNOWN_OPERATOR", "'ne' is not an operator")
   val upper = q.copy(filters = [SearchFilter(field = "price", value = "5", operator = "GT")])
@@ -810,7 +809,7 @@ test "search: an unknown filter operator is refused, not treated as equality" {
 }
 
 test "search: pagination outside the result window is refused" {
-  val q = Search.makeQuery("products", "widget")
+  val q = makeQuery("products", "widget")
   assertEqual(searchCode(q.copy(from = -1)), "INVALID_PAGINATION", "negative from")
   assertEqual(searchCode(q.copy(size = -1)), "INVALID_PAGINATION", "negative size")
   assertEqual(searchCode(q.copy(size = 10001)), "INVALID_PAGINATION", "size over the window")
@@ -837,7 +836,7 @@ test "suggest: a size outside 1..MAX_RESULT_WINDOW is an error, not a panic (#73
 test "a base URL with a trailing slash joins cleanly" {
   val cfg = HttpConfig.new(defaultClient(), "http://127.0.0.1:1/", "", "")
   val client: SearchClient = NativeSearchClient(cfg = cfg)
-  match Search.search(client, Search.makeQuery("products", "widget")) {
+  match search(client, makeQuery("products", "widget")) {
     case Ok(_) -> assertTrue(false, "unexpected search success with no backend listening")
     case Err(e) -> assertEqual(e.code, "SEARCH_FAILED", "reaches the transport instead of panicking in joinUrl")
   }
@@ -870,12 +869,12 @@ func integrationUrl(): String {
 
 @cfg(feature = "elasticsearch")
 func integrationConnect(url: in String): Result[SearchClient, SearchError] {
-  await Search.connectElasticsearch(url, getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_API_KEY", ""), getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_USERNAME", ""), getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_PASSWORD", ""), 5000, 30000)
+  await connectElasticsearch(url, getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_API_KEY", ""), getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_USERNAME", ""), getVarOrDefault("LYRIC_SEARCH_ELASTICSEARCH_PASSWORD", ""), 5000, 30000)
 }
 
 @cfg(feature = "meilisearch")
 func integrationConnect(url: in String): Result[SearchClient, SearchError] {
-  await Search.connectMeilisearch(url, getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_API_KEY", ""), 30000)
+  await connectMeilisearch(url, getVarOrDefault("LYRIC_SEARCH_MEILISEARCH_API_KEY", ""), 30000)
 }
 
 test "integration: live round trip when a real engine is configured, otherwise skip cleanly" {
@@ -896,12 +895,12 @@ test "integration: live round trip when a real engine is configured, otherwise s
           case Ok(_) -> {
             val fields: Map[String, String] = newMap()
             fields.add("name", "Integration Widget")
-            val doc = Search.makeDoc(testIndex, "integration-doc-1", fields)
+            val doc = makeDoc(testIndex, "integration-doc-1", fields)
             match await client.index(doc) {
               case Err(e) -> assertTrue(false, "live index failed: " + e.message)
               case Ok(indexResult) -> {
                 assertEqual(indexResult.id, "integration-doc-1", "live index result carries the document id")
-                val q = Search.makeQuery(testIndex, "Widget")
+                val q = makeQuery(testIndex, "Widget")
                 match await client.search(q) {
                   case Err(e) -> assertTrue(false, "live search failed: " + e.message)
                   case Ok(searchResult) -> assertTrue(searchResult.hits.length >= 0, "live search returns a result")

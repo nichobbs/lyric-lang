@@ -96,7 +96,8 @@ today even if one were). What CI *does* verify:
 
 * Every request-body-construction and response-parsing function
   (`esBuildSearchBody`, `esParseSearchResponse`, `esFilterClause`,
-  `msBuildSearchBody`, `msParseSearchResponse`, `msFilterExpr`, ...) against
+  `msBuildSearchBody`, `msParseSearchResponse`, `msFilterExpr`, ... — private to
+  package `Search`; the tests are a `@test_module` of that package, D245) against
   canned, hand-written JSON matching each engine's real documented response
   shape — see `tests/search_tests.l`.
 * The `HttpError` → `SearchError` mapping (`toSearchError`), including that

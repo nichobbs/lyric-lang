@@ -416,10 +416,14 @@ impl MailSender for NativeSender {
         val bytes = MailKernel.base64Decode(att.dataBase64)
         val stream = MailKernel.newMemoryStream(bytes)
         val bclAtt = MailKernel.newBclAttachment(stream, att.filename, att.contentType)
+        // The (stream, name, mediaType) constructor names only the Content-Type
+        // `name` parameter; most mail clients show the Content-Disposition
+        // `filename`, so set it too (#7462).
+        bclAtt.get_ContentDisposition().set_FileName(att.filename)
         MailKernel.attachmentCollectionAdd(attColl, bclAtt)
         ai = ai + 1
       }
-      self.client.Send(mailMsg)
+      MailKernel.sendMessage(self.client, mailMsg)
       Ok(())
     } catch Exception as e {
       Err(MailError(message = e.message, code = "SEND_ERROR"))
@@ -438,11 +442,8 @@ impl MailSender for NativeSender {
 
 // ─── Native sender wrapper (internal, --target jvm) ───────────────────────────
 // `handle` is the opaque Int connection handle `Mail.Kernel.Jvm.connectSmtp`
-// hands back. Genuinely wired into `connectSmtp` (#7254) — `send`/`close`
-// really do call into `Mail.Kernel.Jvm` — but that kernel has no real Jakarta
-// Mail binding yet (see its module header), so every `connectSmtp()` call on
-// this target currently returns `Err(code = "NOT_IMPLEMENTED")` before a
-// `NativeSenderJvm` is ever constructed.
+// hands back; `send`/`close` call into `Mail.Kernel.Jvm`, which delivers
+// through Jakarta Mail (#7462).
 //
 // Gated on both `jvm` AND `smtp` (#7476 suggestion 6): every method this
 // record's `impl` calls into (`Mail.Kernel.Jvm.connectSmtp`/`send`/`close`)
@@ -704,7 +705,7 @@ func connectSmtpNative(
 ): Result[MailSender, MailError] {
   match MailKernelJvm.connectSmtp(host, port, username, password, useTls, timeoutMs) {
     case Ok(handle) -> Ok(NativeSenderJvm(handle = handle))
-    case Err(msg) -> Err(MailError(message = msg, code = "NOT_IMPLEMENTED"))
+    case Err(msg) -> Err(MailError(message = msg, code = "INVALID_CONFIG"))
   }
 }
 
