@@ -2521,31 +2521,6 @@ func loadRestoredArtifacts(restoredDllPaths: in List[String]): Result[List[RP.Sy
   Ok(value = restoredArtifacts)
 }
 
-// The standard-library sources a build for `target` type-checks against: the
-// public modules with that target's kernels.
-func checkStdlibSources(target: in CompileTarget): List[String] {
-  match target {
-    case Dotnet -> findStdlibSources()
-    case Jvm -> findStdlibSourcesForTarget(true)
-    case Native -> {
-      val sources: List[String] = newList()
-      for f in findStdlibSourcesNative() {
-        sources.add(f.source)
-      }
-      sources
-    }
-  }
-}
-
-// The `@cfg` features a check for `target` erases with: a native build also
-// erases by the operating system it builds for, here the host's.
-func checkFeatures(target: in CompileTarget, activeFeatures: in List[String]): List[String] {
-  match target {
-    case Native -> Cfg.withTargetOsFeature(activeFeatures, LlvmBridge.nativeTargetOs(""))
-    case _ -> activeFeatures
-  }
-}
-
 /// What a build of `req` for `req.target` rejects the project for, up to and
 /// including the mode check, without compiling anything: every diagnostic of
 /// those passes (the merge of each package's files, parse, `@cfg` erasure,
@@ -2554,17 +2529,22 @@ func checkFeatures(target: in CompileTarget, activeFeatures: in List[String]): L
 /// never printed.  For a caller that must not act on a program the build
 /// rejects (`lyric prove`, #8227).  `req.outputPath` is not used.
 ///
-/// The checks are `Msil.Bridge.checkProjectTypes`' front end, which runs the
-/// passes every bridge shares (`Lyric.Pipeline`) configured for the target:
-/// its `@cfg` items (a native build also erases by the host's `target_os`),
-/// standard-library kernels, middle-end options and pre-check rewrites
-/// (`Lyric.Pipeline.pipeExpandProfile`: the JVM's weave-import injection, the
-/// native bridge's lack of `@stubbable` synthesis), so what a target's build
-/// rejects in these passes the check rejects too (#8311).
+/// Each target's check is its own bridge's front end, the one its build runs
+/// (#8311): `Msil.Bridge.checkProjectTypes`, `Jvm.Bridge.checkProjectTypesJvm`
+/// and `Lyric.LlvmBridge.checkProjectTypesNative`, given the project as the
+/// target's build gives it (`jvmProjectInputs`, `nativeProjectInputs`).  A
+/// native check is for the host and an ordinary binary.
 pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
+  match req.target {
+    case Dotnet -> typeCheckProjectMsil(req)
+    case Jvm -> typeCheckProjectJvm(req)
+    case Native -> typeCheckProjectNative(req)
+  }
+}
+
+func typeCheckProjectMsil(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  val targetName = compileTargetName(req.target)
-  val merged = mergeRequest(req, targetName, true, located)
+  val merged = mergeRequest(req, "dotnet", true, located)
   if merged.failed {
     return located
   }
@@ -2580,22 +2560,94 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
   try {
     val checked = MsilBridge.checkProjectTypes(
       msilPayloads(merged.packages),
-      checkStdlibSources(req.target),
-      checkFeatures(req.target, req.activeFeatures),
+      findStdlibSources(),
+      req.activeFeatures,
       req.declaredFeatures,
       restoredArtifacts,
       req.packageVersion,
       msilPayloads(merged.depTemplates),
       req.defines,
       unitPaths(merged.packages),
-      merged.origins,
-      targetName
+      merged.origins
     )
     for d in checked {
       located.add(d)
     }
   } catch Bug as b {
     located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = msilBridgePanicDiagnostic(b.message)))
+  }
+  located
+}
+
+func typeCheckProjectJvm(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val merged = mergeRequest(req, "jvm", true, located)
+  if merged.failed {
+    return located
+  }
+  val inputs = match jvmProjectInputs(req, merged.packages, merged.depTemplates, merged.origins) {
+    case Ok(i) -> i
+    case Err(msg) -> {
+      located.add(
+        DiagUtil.LocatedDiagnostic(path = "", diagnostic = errorDiagnostic("B0001", msg, pointSpan(initialPosition())))
+      )
+      return located
+    }
+  }
+  try {
+    val checked = JvmBridge.checkProjectTypesJvm(
+      inputs.pkgSrcs,
+      findStdlibSourcesForTarget(true),
+      req.activeFeatures,
+      req.declaredFeatures,
+      inputs.depTemplateSrcs,
+      inputs.defines,
+      inputs.restored,
+      inputs.pkgPaths,
+      inputs.pkgOrigins,
+      inputs.pkgFeatures,
+      inputs.ioForbiddenByPkg,
+      req.contractsEnabled
+    )
+    for d in checked {
+      located.add(d)
+    }
+  } catch Bug as b {
+    located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = jvmBridgePanicDiagnostic(b.message)))
+  }
+  located
+}
+
+func typeCheckProjectNative(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val inputs = nativeProjectInputs(
+    req.packages,
+    req.activeFeatures,
+    req.declaredFeatures,
+    req.packageFeatures,
+    "",
+    true,
+    located
+  )
+  if inputs.failed {
+    return located
+  }
+  try {
+    val checked = LlvmBridge.checkProjectTypesNative(
+      inputs.packages,
+      findStdlibSourcesNative(),
+      "",
+      req.defines,
+      req.activeFeatures,
+      req.declaredFeatures,
+      req.packageVersion,
+      inputs.origins
+    )
+    for d in checked {
+      located.add(d)
+    }
+  } catch Bug as b {
+    located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = nativeBridgePanicDiagnostic(b.message)))
   }
   located
 }
@@ -2618,18 +2670,61 @@ pub func typeCheckSourceForFeatures(
   declaredFeatures: in List[String],
 ): List[DiagUtil.LocatedDiagnostic] {
   try {
-    MsilBridge.checkSourceTypesForFeatures(
-      req.source,
-      checkStdlibSources(req.target),
-      req.defines,
-      req.path,
-      compileTargetName(req.target),
-      checkFeatures(req.target, activeFeatures),
-      declaredFeatures
-    )
+    match req.target {
+      case Dotnet -> MsilBridge.checkSourceTypesForFeatures(
+        req.source,
+        findStdlibSources(),
+        req.defines,
+        req.path,
+        activeFeatures,
+        declaredFeatures
+      )
+      case Jvm -> {
+        // A single file is a one-package bundle on the JVM
+        // (`compileToJarBundledWithFeatures`).
+        val one: List[String] = newList()
+        one.add(req.source)
+        val onePath: List[String] = newList()
+        onePath.add(req.path)
+        val oneOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+        oneOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
+        val noDepTemplates: List[String] = newList()
+        val noRestored: List[RP.SynthesisedArtifact] = newList()
+        val noPkgFeatures: List[Pipe.PackageFeatureSet] = newList()
+        val noIoForbidden: Map[String, String] = newMap()
+        JvmBridge.checkProjectTypesJvm(
+          one,
+          findStdlibSourcesForTarget(true),
+          activeFeatures,
+          declaredFeatures,
+          noDepTemplates,
+          req.defines,
+          noRestored,
+          onePath,
+          oneOrigins,
+          noPkgFeatures,
+          noIoForbidden,
+          req.contractsEnabled
+        )
+      }
+      case Native -> LlvmBridge.checkSourceTypesNative(
+        req.source,
+        findStdlibSourcesNative(),
+        "",
+        req.defines,
+        req.path,
+        activeFeatures,
+        declaredFeatures
+      )
+    }
   } catch Bug as b {
     val located: List[DiagUtil.LocatedDiagnostic] = newList()
-    located.add(DiagUtil.LocatedDiagnostic(path = req.path, diagnostic = msilBridgePanicDiagnostic(b.message)))
+    val panicDiag = match req.target {
+      case Dotnet -> msilBridgePanicDiagnostic(b.message)
+      case Jvm -> jvmBridgePanicDiagnostic(b.message)
+      case Native -> nativeBridgePanicDiagnostic(b.message)
+    }
+    located.add(DiagUtil.LocatedDiagnostic(path = req.path, diagnostic = panicDiag))
     located
   }
 }
@@ -2901,20 +2996,107 @@ func ioForbiddenByPackage(pkgs: in List[ProjectPackage]): Map[String, String] {
   m
 }
 
+// What a JVM build hands `Jvm.Bridge.compileProjectToJarBundledWithRestored`
+// for a request whose packages are merged: `emitProjectJvmInProcess`'s, and
+// `typeCheckProjectJvm`'s, so the check is given the project the build is.
+record JvmProjectInputs {
+  pkgSrcs: List[String]
+  pkgPaths: List[String]
+  pkgOrigins: List[DiagUtil.PackageLineOrigins]
+  pkgFeatures: List[Pipe.PackageFeatureSet]
+  ioForbiddenByPkg: Map[String, String]
+  depTemplateSrcs: List[String]
+  defines: List[String]
+  restored: List[RP.SynthesisedArtifact]
+}
+
+// `packages` and `depTemplates` are `req`'s, merged; `pkgOrigins` their
+// merged-line provenance.  Err names a restored dependency that does not load.
+func jvmProjectInputs(
+  req: in EmitProjectRequest,
+  packages: in List[ProjectPackage],
+  depTemplates: in List[ProjectPackage],
+  pkgOrigins: in List[DiagUtil.PackageLineOrigins],
+): Result[JvmProjectInputs, String] {
+  val restored = match loadRestoredArtifactsJvm(req.restoredDllPaths) {
+    case Ok(arts) -> arts
+    case Err(msg) -> return Err(error = msg)
+  }
+  val depTemplateSrcs: List[String] = newList()
+  for dtPkg in depTemplates {
+    depTemplateSrcs.add(unitSource(dtPkg))
+  }
+  val pkgSrcs: List[String] = newList()
+  val pkgPaths: List[String] = newList()
+  val pkgFeatures: List[Pipe.PackageFeatureSet] = newList()
+  for mp in packages {
+    pkgSrcs.add(unitSource(mp))
+    // A single-file package's real path survives the merge (fast path,
+    // #6282's genuinely-multi-file case has no single path — see
+    // `emitProject`'s `mergedPaths` comment).
+    pkgPaths.add(if mp.sources.count == 1 and mp.paths.count == 1 { mp.paths[0] } else { "" })
+    pkgFeatures.add(featuresForPackage(req, mp.name))
+  }
+  // A one-package project is built as a single source
+  // (`compileToJarBundledWithRestored`): with the request's features and
+  // without per-package `[layers]` reasons.
+  val single = packages.count == 1
+  // Auto-injected well-known `version` define (docs/60 §9.2) from the
+  // manifest so `BuildInfo.version` populates on a JVM project build. User
+  // `--define`s (req.defines) are merged beneath it, an explicit
+  // `--define version=…` winning (#5852 phase C).
+  Ok(
+    value = JvmProjectInputs(
+      pkgSrcs = pkgSrcs,
+      pkgPaths = pkgPaths,
+      pkgOrigins = pkgOrigins,
+      pkgFeatures = if single { newList() } else { pkgFeatures },
+      ioForbiddenByPkg = if single { newMap() } else { ioForbiddenByPackage(packages) },
+      depTemplateSrcs = depTemplateSrcs,
+      defines = BD.withWellKnownDefines(req.packageVersion, req.defines),
+      restored = restored
+    )
+  )
+}
+
+// Load + synthesise every restored-dependency JAR (#3094) — the JVM analog
+// of `loadRestoredArtifacts`.  Each entry is "<depName>\t<jarPath>"; only the
+// jarPath matters here.  A JVM restored dep is a Lyric-JVM producer JAR
+// carrying embedded `Lyric.Contract.<Pkg>` ZIP entries (written by
+// `Jvm.Bridge`'s contract-embedding step) rather than a .NET PE resource, so
+// the load step goes through `Lyric.RestoredPackages.loadRestoredPackageJvm`
+// (itself backed by `Lyric.ContractMeta.readAllContractsFromJarFile`'s shared
+// ZIP central-directory reader) instead of `Msil.MetadataReader`; everything
+// downstream (`synthesiseArtifact`, `siblingTypeDecls`) is shared with the
+// MSIL path unchanged.
+func loadRestoredArtifactsJvm(restoredJarPaths: in List[String]): Result[List[RP.SynthesisedArtifact], String] {
+  val allArtsJvm: List[RP.RestoredArtifact] = newList()
+  for jDepEntry in restoredJarPaths {
+    val jTabPos = Str.indexOfRaw(jDepEntry, "\t")
+    val jJarPath = if jTabPos >= 0 { jDepEntry.substring(jTabPos + 1, jDepEntry.length - jTabPos - 1) } else { jDepEntry }
+    match RP.loadRestoredPackageJvm(jJarPath) {
+      case Err(e) -> return Err(error = "restored JVM dep '" + jJarPath + "' failed to load: " + RP.errorMessage(e))
+      case Ok(arts) -> {
+        for a in arts {
+          allArtsJvm.add(a)
+        }
+      }
+    }
+  }
+  val restored: List[RP.SynthesisedArtifact] = newList()
+  for jArt in allArtsJvm {
+    val jPreamble = siblingTypeDecls(allArtsJvm, jArt.packageName)
+    match RP.synthesiseArtifact(jArt, jPreamble) {
+      case Err(e) -> return Err(error = "restored JVM dep '" + jArt.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
+      case Ok(syn) -> restored.add(syn)
+    }
+  }
+  Ok(value = restored)
+}
+
 func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
-  }
-
-  val stdlibSources = findStdlibSourcesForTarget(true)
-
-  val depTemplateNames: List[String] = newList()
-  var dtpi = 0
-  while dtpi < req.depTemplateSrcs.count {
-    val dtPkg = req.depTemplateSrcs[dtpi]
-    val mergedSrc = unitSource(dtPkg)
-    depTemplateNames.add(mergedSrc)
-    dtpi = dtpi + 1
   }
 
   val diags: List[Diagnostic] = newList()
@@ -2924,136 +3106,36 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
     diags.add(warningDiagnostic("W0006", msg, sp))
   }
 
-  // Load + synthesise every restored-dependency JAR (#3094) — the JVM
-  // analog of the MSIL restored-dep loop above `emitProjectInProcess`.
-  // Each `req.restoredDllPaths` entry is "<depName>\t<jarPath>"; only the
-  // jarPath matters here.  A JVM restored dep is a Lyric-JVM producer JAR
-  // carrying embedded `Lyric.Contract.<Pkg>` ZIP entries (written by
-  // `Jvm.Bridge`'s contract-embedding step) rather than a .NET PE resource,
-  // so the load step goes through `Lyric.RestoredPackages.loadRestoredPackageJvm`
-  // (itself backed by `Lyric.ContractMeta.readAllContractsFromJarFile`'s
-  // shared ZIP central-directory reader) instead of `Msil.MetadataReader`;
-  // everything downstream (`synthesiseArtifact`, `siblingTypeDecls`) is
-  // shared with the MSIL path unchanged.
-  val allArtsJvm: List[RP.RestoredArtifact] = newList()
-  var jri = 0
-  while jri < req.restoredDllPaths.count {
-    val jDepEntry = req.restoredDllPaths[jri]
-    val jTabPos = Str.indexOfRaw(jDepEntry, "\t")
-    val jJarPath = if jTabPos >= 0 { jDepEntry.substring(jTabPos + 1, jDepEntry.length - jTabPos - 1) } else { jDepEntry }
-    match RP.loadRestoredPackageJvm(jJarPath) {
-      case Err(e) -> return failResult("restored JVM dep '" + jJarPath + "' failed to load: " + RP.errorMessage(e))
-      case Ok(arts) -> {
-        var jai = 0
-        while jai < arts.count {
-          allArtsJvm.add(arts[jai])
-          jai = jai + 1
-        }
-      }
-    }
-    jri = jri + 1
+  val inputs = match jvmProjectInputs(req, req.packages, req.depTemplateSrcs, pkgOrigins) {
+    case Ok(i) -> i
+    case Err(msg) -> return failResult(msg)
   }
-  val restoredArtifactsJvm: List[RP.SynthesisedArtifact] = newList()
-  var jsi = 0
-  while jsi < allArtsJvm.count {
-    val jArt = allArtsJvm[jsi]
-    val jPreamble = siblingTypeDecls(allArtsJvm, jArt.packageName)
-    match RP.synthesiseArtifact(jArt, jPreamble) {
-      case Err(e) -> return failResult("restored JVM dep '" + jArt.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
-      case Ok(syn) -> restoredArtifactsJvm.add(syn)
-    }
-    jsi = jsi + 1
-  }
-
-  if req.packages.count > 1 {
-    // Multi-package project: every package rides the in-process bundled
-    // compile (`compileProjectToJarBundledWithFeatures`) — the entry
-    // package first, its `package.name` as the bundle's entry name.  The
-    // former subprocess fallback (`--internal-project-build` shellout)
-    // was an unbounded process-spawn loop and is deleted.
-    val pkgSrcs: List[String] = newList()
-    val pkgPaths: List[String] = newList()
-    val pkgFeatures: List[Pipe.PackageFeatureSet] = newList()
-    var mpi = 0
-    while mpi < req.packages.count {
-      val mp = req.packages[mpi]
-      val mpFeatures = featuresForPackage(req, mp.name)
-      pkgFeatures.add(mpFeatures)
-      pkgSrcs.add(unitSource(mp))
-      // A single-file package's real path survives the merge (fast path,
-      // #6282's genuinely-multi-file case has no single path — see
-      // `emitProject`'s `mergedPaths` comment).
-      pkgPaths.add(if mp.sources.count == 1 and mp.paths.count == 1 { mp.paths[0] } else { "" })
-      mpi = mpi + 1
-    }
-    // Auto-injected well-known `version` define (docs/60 §9.2) from the
-    // manifest so `BuildInfo.version` populates on a JVM project build. User
-    // `--define`s (req.defines) are merged beneath it, an explicit
-    // `--define version=…` winning (#5852 phase C).
-    val projDefinesJvm = BD.withWellKnownDefines(req.packageVersion, req.defines)
-    val okP = try {
-      JvmBridge.compileProjectToJarBundledWithRestored(
-        pkgSrcs,
-        req.outputPath,
-        req.packages[0].name,
-        stdlibSources,
-        req.activeFeatures,
-        req.declaredFeatures,
-        depTemplateNames,
-        projDefinesJvm,
-        req.packageVersion,
-        restoredArtifactsJvm,
-        pkgPaths,
-        pkgOrigins,
-        pkgFeatures,
-        ioForbiddenByPackage(req.packages),
-        req.contractsEnabled
-      )
-    } catch Bug as b {
-      diags.add(jvmBridgePanicDiagnostic(b.message))
-      false
-    }
-    if okP {
-      return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
-    }
-    return failResultWith("JVM compilation failed (see stderr)", diags)
-  }
-
-  val pkg = req.packages[0]
-  val pkgName = pkg.name
-  val source = if pkg.sources.count > 0 { pkg.sources[0] } else { "" }
-  val singlePkgPath = if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" }
-  val singlePkgOrigins: List[DiagUtil.MergedLineOrigin] = if pkgOrigins.count > 0 {
-    pkgOrigins[0].origins
-  } else {
-    newList()
-  }
-
-  // Auto-injected well-known `version` define (docs/60 §9.2) from the manifest
-  // so `BuildInfo.version` populates on a single-package JVM project build. User
-  // `--define`s (req.defines) are merged beneath it (#5852 phase C).
-  val projDefinesJvm1 = BD.withWellKnownDefines(req.packageVersion, req.defines)
+  // Every package, the entry package's name the bundle's entry name, rides
+  // the in-process bundled compile.  The former subprocess fallback
+  // (`--internal-project-build` shellout) was an unbounded process-spawn
+  // loop and is deleted.
   val ok = try {
-    JvmBridge.compileToJarBundledWithRestored(
-      source,
+    JvmBridge.compileProjectToJarBundledWithRestored(
+      inputs.pkgSrcs,
       req.outputPath,
-      pkgName,
-      stdlibSources,
+      req.packages[0].name,
+      findStdlibSourcesForTarget(true),
       req.activeFeatures,
       req.declaredFeatures,
-      depTemplateNames,
-      projDefinesJvm1,
+      inputs.depTemplateSrcs,
+      inputs.defines,
       req.packageVersion,
-      restoredArtifactsJvm,
-      singlePkgPath,
-      singlePkgOrigins,
+      inputs.restored,
+      inputs.pkgPaths,
+      inputs.pkgOrigins,
+      inputs.pkgFeatures,
+      inputs.ioForbiddenByPkg,
       req.contractsEnabled
     )
   } catch Bug as b {
     diags.add(jvmBridgePanicDiagnostic(b.message))
     false
   }
-
   if ok {
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
   } else {
@@ -3254,53 +3336,13 @@ pub func emitNativeProjectWithShape(
   if pkgs.count == 0 {
     return failResult("native project build received no packages")
   }
-  val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
-  // Per-package merged-line provenance (#6824 item 1), parallel to
-  // `nativePkgs` by index — mirroring `emitProject`'s identical
-  // `pkgOrigins`/`Lyric.PackageMerge.mergePackageFiles` construction: empty
-  // for a single-file package (its real path survives directly via
-  // `NativeSourcePackage.path`) and non-empty for a genuinely multi-file
-  // package.
-  val nativeOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  val targetOs = LlvmBridge.nativeTargetOs(triple)
-  var mergeFailed = false
-  var pi = 0
-  while pi < pkgs.count {
-    val pkg = pkgs[pi]
-    val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
-    val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
-    val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    val mergedRes = PM.mergePackageFiles(
-      pkg.name,
-      pkg.sources,
-      pkg.paths,
-      Cfg.withTargetOsFeature(pkgActive, targetOs),
-      pkgDeclared,
-      "native",
-      pkg.nameFromManifest
-    )
-    if reportMergeDiagnostics(pkg.name, mergedRes) {
-      mergeFailed = true
-    }
-    // A merged multi-file package has no single on-disk path —
-    // `mergedRes.origins` carries the real per-line attribution instead; a
-    // single-file package keeps its own path.
-    val pkgPath = if pkg.sources.count == 1 and pkg.paths.count > 0 { pkg.paths[0] } else { "" }
-    nativePkgs.add(
-      LlvmBridge.NativeSourcePackage(
-        name = pkg.name,
-        source = mergedRes.source,
-        path = pkgPath,
-        ioForbiddenReason = pkg.ioForbiddenReason,
-        features = depFeatures
-      )
-    )
-    nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
-    pi = pi + 1
-  }
-  if mergeFailed {
+  val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
+  val inputs = nativeProjectInputs(pkgs, activeFeatures, declaredFeatures, packageFeatures, triple, false, noLocated)
+  if inputs.failed {
     return failResult("native project build failed: a package's files do not merge into one package (see stderr)")
   }
+  val nativePkgs = inputs.packages
+  val nativeOrigins = inputs.origins
   val stdlibFiles = findStdlibSourcesNativeForShape(shape)
   val clangFlags: List[String] = newList()
   for lib in extraLibs {
@@ -3339,6 +3381,80 @@ pub func emitNativeProjectWithShape(
   } else {
     failResultWith("native project compilation failed (see stderr)", projDiags)
   }
+}
+
+// A native project's packages as `Lyric.LlvmBridge` takes them: each
+// package's files merged into one unit, erased by the target's `target_os` as
+// well as its features.  `emitNativeProjectWithShape`'s, and
+// `typeCheckProjectNative`'s, so the check is given the project the build is.
+record NativeProjectInputs {
+  packages: List[LlvmBridge.NativeSourcePackage]
+  /// Per-package merged-line provenance (#6824 item 1), parallel to
+  /// `packages`: empty for a single-file package (its real path survives
+  /// directly via `NativeSourcePackage.path`) and non-empty for a genuinely
+  /// multi-file one.
+  origins: List[DiagUtil.PackageLineOrigins]
+  /// A package's files do not merge into one package.
+  failed: Bool
+}
+
+// `pkgs` merged for a native build for `triple` ("" = the host); with
+// `collect` the merge's diagnostics are attributed into `located` instead of
+// printed.  A package listed in `packageFeatures` (a dependency, #7833) is
+// erased with its own features, any other with `activeFeatures` /
+// `declaredFeatures`.
+func nativeProjectInputs(
+  pkgs: in List[ProjectPackage],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageFeatures: in List[Pipe.PackageFeatureSet],
+  triple: in String,
+  collect: in Bool,
+  located: in List[DiagUtil.LocatedDiagnostic],
+): NativeProjectInputs {
+  val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
+  val nativeOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val targetOs = LlvmBridge.nativeTargetOs(triple)
+  var mergeFailed = false
+  for pkg in pkgs {
+    val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
+    val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
+    val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
+    val mergedRes = PM.mergePackageFiles(
+      pkg.name,
+      pkg.sources,
+      pkg.paths,
+      Cfg.withTargetOsFeature(pkgActive, targetOs),
+      pkgDeclared,
+      "native",
+      pkg.nameFromManifest
+    )
+    if collect {
+      for d in mergedRes.diagnostics {
+        located.add(DiagUtil.LocatedDiagnostic(path = if d.path.length > 0 { d.path } else { pkg.name }, diagnostic = d.diag))
+      }
+      if PM.mergeHasErrors(mergedRes) {
+        mergeFailed = true
+      }
+    } else if reportMergeDiagnostics(pkg.name, mergedRes) {
+      mergeFailed = true
+    }
+    // A merged multi-file package has no single on-disk path —
+    // `mergedRes.origins` carries the real per-line attribution instead; a
+    // single-file package keeps its own path.
+    val pkgPath = if pkg.sources.count == 1 and pkg.paths.count > 0 { pkg.paths[0] } else { "" }
+    nativePkgs.add(
+      LlvmBridge.NativeSourcePackage(
+        name = pkg.name,
+        source = mergedRes.source,
+        path = pkgPath,
+        ioForbiddenReason = pkg.ioForbiddenReason,
+        features = depFeatures
+      )
+    )
+    nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
+  }
+  NativeProjectInputs(packages = nativePkgs, origins = nativeOrigins, failed = mergeFailed)
 }
 
 /// The file a native build for `triple` ("" = the host) writes when asked

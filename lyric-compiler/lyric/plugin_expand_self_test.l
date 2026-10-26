@@ -456,8 +456,7 @@ test "the expanded API and plugin packages type-check" {
     noDeps,
     none,
     paths,
-    origins,
-    "dotnet"
+    origins
   )
   assertEqual(errorsOf(located), "", "type errors in the expanded packages")
 }
