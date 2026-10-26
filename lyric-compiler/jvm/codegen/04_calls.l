@@ -5993,6 +5993,10 @@ func lowerMethodCall(
           val needleTy = lowerCallArg(ctx, insns, args[0])
           coerceArgTo(insns, needleTy, ufcsSig.params[1])
           insns.add(LInvokestatic(owner = ufcsSig.owner, name = memberName, params = ufcsSig.params, ret = ufcsSig.ret))
+          if ctx.callSiteRetGenericArgs.containsKey(siteKey) {
+            ctx.callSiteRetGenericArgs.remove(siteKey)
+          }
+          ctx.callSiteRetGenericArgs.add(siteKey, ufcsSig.retGenericArgs)
           return ufcsSig.ret
         }
         case None -> ()
