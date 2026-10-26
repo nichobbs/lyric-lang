@@ -562,9 +562,41 @@ func runMiddleEnd(
   quietWarnings: in Bool = false,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
+  val opts = jvmMiddleEndOptions(
+    tcFatalUserPkg,
+    pkgLabel,
+    lineOrigins,
+    checkedOut,
+    recvClassesOut,
+    aritiesOut,
+    ioForbiddenReason,
+    contractsEnabled,
+    quietWarnings
+  )
+  // `@library` extern funcs become foreign-function downcall methods (D158).
+  match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
+    case Some(f) -> Some(value = pipeCBindingsToFuncs(f))
+    case None -> None
+  }
+}
+
+// The middle-end options a JVM project build checks and lowers a package
+// with: `runMiddleEnd`'s, and `checkProjectTypesJvm`'s for the passes up to
+// the mode check.
+func jvmMiddleEndOptions(
+  tcFatal: in Bool,
+  pkgLabel: in String,
+  lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  checkedOut: in List[SourceFile],
+  recvClassesOut: in Map[String, String],
+  aritiesOut: in Map[String, Int],
+  ioForbiddenReason: in String,
+  contractsEnabled: in Bool,
+  quietWarnings: in Bool,
+): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
-  val opts = MiddleEndOptions(
-    tcFatal = tcFatalUserPkg,
+  MiddleEndOptions(
+    tcFatal = tcFatal,
     tcReport = false,
     pkgLabel = pkgLabel,
     lineOrigins = lineOrigins,
@@ -584,11 +616,6 @@ func runMiddleEnd(
     ioForbiddenReason = ioForbiddenReason,
     quietWarnings = quietWarnings
   )
-  // `@library` extern funcs become foreign-function downcall methods (D158).
-  match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
-    case Some(f) -> Some(value = pipeCBindingsToFuncs(f))
-    case None -> None
-  }
 }
 
 // #6404: resolve `alias X = ...` references in `file` to their underlying
@@ -2503,66 +2530,58 @@ pub func compileProjectToJarBundledWithFeatures(
   )
 }
 
-/// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
-/// restored-dependency `SynthesisedArtifact`s (#3094): the consumer's `import
-/// <RestoredPkg>` resolves generic (and non-generic) records, unions, and
-/// functions declared by a pre-compiled Lyric-JVM producer JAR — the JVM
-/// counterpart of #1496 / D097's MSIL restored-generics fix.
-///
-/// Design (JVM's type-erasure model makes this substantially simpler than
-/// the MSIL side, which needs arity-suffixed TypeRefs and VAR-form generic
-/// metadata maps): each restored artifact's re-synthesised `SourceFile`
-/// (`Lyric.RestoredPackages.synthesiseArtifact`; its record/union/function
-/// declarations are reconstructed, verbatim, from the producer's embedded
-/// contract JSON) is fed through the SAME `collectFileSigsSeeded` /
-/// `collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables`
-/// registration calls a stdlib or sibling project file gets — a generic
-/// record/union's fields already erase to `Object` uniformly (JVM has no
-/// reified generics to preserve), so no separate arity-suffixed class-name
-/// bookkeeping is needed the way MSIL's `genericTypeArity` /
-/// `genericCtorParams` / `fieldSigBytes` / `fieldVarIndices` maps require.
-///
-/// Critically, a restored artifact's file is registered into `registry` /
-/// `caseReg` / `ctorReg` / `allProjFqns` but is deliberately NEVER added to
-/// `stdlibFiles` / `stdlibByPkg` / `toBundle`: its bytecode already exists in
-/// the producer JAR, so codegen must never re-emit (and thus duplicate) it —
-/// only its call-site SIGNATURES need to be known here.  The producer JAR's
-/// own path is threaded onto the consumer's manifest `Class-Path:` (the same
-/// mechanism `autoFfi.jarPaths` already uses for Maven/non-JDK JARs) so the
-/// JVM classloader can actually find those classes at runtime.
-pub func compileProjectToJarBundledWithRestored(
+/// A JVM project's packages through the passes before the type check, and
+/// the packages they are checked against: the front of
+/// `compileProjectToJarBundledWithRestored`, which `checkProjectTypesJvm`
+/// runs too, so what the build rejects before codegen the check rejects
+/// (#8311).
+record JvmProjectFrontEnd {
+  /// Every project package parsed, `@cfg`-erased, expanded, rewritten and
+  /// alias-resolved, with `array[N, T]` spelled as a list
+  /// (`arrayTypesAsLists`) for the registries.
+  userFiles: List[SourceFile]
+  /// The entry package: the first to declare `main` or a `@plugin` record.
+  userFile: SourceFile
+  userEntryPkgName: String
+  /// Package name -> its on-disk path, for a package of one known file.
+  pkgPathByName: Map[String, String]
+  /// Package name -> its merged-line provenance (#6282).
+  pkgOriginsByName: Map[String, List[DiagUtil.MergedLineOrigin]]
+  /// The packages of path dependencies compiled from source.
+  depPkgNames: Map[String, Bool]
+  /// Package name -> the package with `array[N, T]` kept an array, which the
+  /// type checker reads.
+  arrayTypedByPkg: Map[String, SourceFile]
+  /// The type checker's scope: the entry package, the standard library,
+  /// every sibling package and every restored dependency.
+  importedPkgs: List[ImportedPackage]
+  /// The standard-library files, then every sibling project package.
+  stdlibFiles: List[SourceFile]
+  /// Package name -> its file, for the import-closure walk.
+  stdlibByPkg: Map[String, SourceFile]
+  /// The JVM owners of the sibling project packages.
+  projectOwners: Map[String, Bool]
+  /// Every sibling project package that is not a path dependency's.
+  siblingPackageNames: List[String]
+}
+
+// The project front end, its diagnostics sent to `sink`.  None after an error.
+func jvmProjectFrontEnd(
   pkgSrcs: in List[String],
-  outputPath: in String,
-  packageName: in String,
   stdlibSources: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   depTemplateSrcs: in List[String],
   defines: in List[String],
-  packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
-  // On-disk source path for each entry of `pkgSrcs`, parallel by index
-  // (docs/63 §9.7); see `compileProjectToJarBundledWithFeatures`'s own
-  // `pkgPaths` doc comment.
   pkgPaths: in List[String],
-  // Per-merged-line provenance for a multi-file package, parallel to
-  // `pkgSrcs` by index (#6282): `originsByPkg[i]` translates `pkgSrcs[i]`'s
-  // merged-blob line numbers back to their real on-disk file and line.
-  // Empty (or an empty inner list) means no translation for that package.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  // The `@cfg` features each package is erased with, parallel to `pkgSrcs`
-  // by index; a package past the end uses `activeFeatures` /
-  // `declaredFeatures` (see `PackageFeatureSet`).
   pkgFeatures: in List[PackageFeatureSet],
-  // Package name -> why it may not do I/O under the manifest's `[layers]`
-  // (D149); packages absent from the map may.  See
-  // `MiddleEndOptions.ioForbiddenReason`.
-  ioForbiddenByPkg: in Map[String, String],
-  contractsEnabled: in Bool = true,
-): Bool {
+  sink: in DiagSink,
+): Option[JvmProjectFrontEnd] {
   if pkgSrcs.count == 0 {
-    Console.error("error[J001]: JVM project build received no packages")
-    return false
+    jvmFrontEndError(sink, "", None, "JVM project build received no packages", "")
+    return None
   }
   // Parse every project package (fatal diagnostics), then run the user
   // pre-passes on each: `@cfg` erasure, alias rewrite, `@stubbable`
@@ -2598,9 +2617,9 @@ pub func compileProjectToJarBundledWithRestored(
     }
     val psiActive = if psi < pkgFeatures.count { pkgFeatures[psi].active } else { activeFeatures }
     val psiDeclared = if psi < pkgFeatures.count { pkgFeatures[psi].declared } else { declaredFeatures }
-    val uf = match pipeParseAndErase(pkgSrcs[psi], "jvm", psiActive, psiDeclared, jvmProjDefines, psiPath, psiOrigins) {
+    val uf = match pipeParseAndEraseTo(sink, pkgSrcs[psi], "jvm", psiActive, psiDeclared, jvmProjDefines, psiPath, psiOrigins) {
       case Some(f) -> f
-      case None -> return false
+      case None -> return None
     }
     // A `@plugin` record's package gets its `main` from Lyric.PluginExpand,
     // which runs after this scan.
@@ -2700,9 +2719,9 @@ pub func compileProjectToJarBundledWithRestored(
       case Some(o) -> o
       case None -> newList()
     }
-    val rewritten = match pipeExpandAndRewriteFor("jvm", userFiles[wei], weWires, weConfigs, plugins, weiPkgLabel, weiPkgOrigins) {
+    val rewritten = match pipeExpandAndRewriteForTo(sink, "jvm", userFiles[wei], weWires, weConfigs, plugins, weiPkgLabel, weiPkgOrigins) {
       case Some(f) -> f
-      case None -> return false
+      case None -> return None
     }
     // #6404: resolve every project package's `alias X = ...` references
     // before ANYTHING (type-check, signature/case/ctor registration below,
@@ -2715,9 +2734,17 @@ pub func compileProjectToJarBundledWithRestored(
   val userFile = userFiles[mainIdx]
   match mainReturns2SlotType(userFile) {
     case Some(ty) -> {
-      Console.error("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
-      Console.error("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
-      return false
+      jvmFrontEndError(
+        sink,
+        match mapGet(pkgPathByName, dottedPath(userFile.packageDecl.path)) {
+          case Some(p) -> p
+          case None -> dottedPath(userFile.packageDecl.path)
+        },
+        mainDeclSpan(userFile),
+        "`func main(): " + ty + "` is not supported on the JVM target",
+        "use `func main(): Int` (exit code) or `func main(): Unit`"
+      )
+      return None
     }
     case None -> ()
   }
@@ -2798,8 +2825,9 @@ pub func compileProjectToJarBundledWithRestored(
     val reservedDiags = reservedKeywordDiags(pr.diagnostics)
     if reservedDiags.count > 0 {
       val stdPkgLabel = dottedPath(prInv.packageDecl.path)
-      val _ = DiagUtil.diagReportAndAbortInPkg(stdPkgLabel, reservedDiags)
-      return false
+      val noStdOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+      val _ = pipeGateTo(sink, stdPkgLabel, noStdOrigins, reservedDiags)
+      return None
     }
     //
     // The alias rewrite must run here — before registry collection, the
@@ -2937,6 +2965,320 @@ pub func compileProjectToJarBundledWithRestored(
     }
     svi = svi + 1
   }
+
+  // Restored dependencies (#3094) join the scope too, after every source
+  // package, so the type checker resolves `import <RestoredPkg>`.
+  for synArt in restoredArtifacts {
+    val rf = synArt.source
+    val rPkgItems: List[Item] = newList()
+    for it in rf.items {
+      if pipeIsCrossPackageItem(it) {
+        rPkgItems.add(it)
+      }
+    }
+    importedPkgs.add(
+      ImportedPackage(
+        name = synArt.packageName,
+        items = rPkgItems,
+        imports = pipeRestoredImportNames(rf, synArt.contract.imports),
+        wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports)
+      )
+    )
+  }
+  Some(
+    value = JvmProjectFrontEnd(
+      userFiles = userFiles,
+      userFile = userFile,
+      userEntryPkgName = userEntryPkgName,
+      pkgPathByName = pkgPathByName,
+      pkgOriginsByName = pkgOriginsByName,
+      depPkgNames = depPkgNames,
+      arrayTypedByPkg = arrayTypedByPkg,
+      importedPkgs = importedPkgs,
+      stdlibFiles = stdlibFiles,
+      stdlibByPkg = stdlibByPkg,
+      projectOwners = projectOwners,
+      siblingPackageNames = siblingPackageNames
+    )
+  )
+}
+
+// A JVM front-end error with no diagnostic of its own: printed as the build
+// has always printed it, or collected into `sink` at `span` (the start of the
+// file when None) under `label`.
+func jvmFrontEndError(sink: in DiagSink, label: in String, span: in Option[Span], message: in String, hint: in String): Unit {
+  if sink.collect {
+    val text = if hint.length > 0 { message + " (" + hint + ")" } else { message }
+    val at = match span { case Some(sp) -> sp; case None -> pointSpan(initialPosition()) }
+    sink.located.add(DiagUtil.LocatedDiagnostic(path = label, diagnostic = errorDiagnostic("J001", text, at)))
+  } else {
+    Console.error("error[J001]: " + message)
+    if hint.length > 0 {
+      Console.error("  hint: " + hint)
+    }
+  }
+}
+
+// The span of `file`'s `func main`, if it declares one.
+func mainDeclSpan(file: in SourceFile): Option[Span] {
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> {
+        if decl.name == "main" {
+          return Some(value = it.span)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// What a JVM build of a project rejects it for, up to and including the mode
+/// check, without compiling anything (`lyric prove --target jvm`, #8311):
+/// every diagnostic of the build's own front end (`jvmProjectFrontEnd`) and of
+/// the passes up to the mode check (`pipeCheckFront`) on each package the
+/// build type-checks as the program's (the entry package, then every project
+/// package it bundles, `jvmBundleClosure`), with the options the build checks
+/// it with, attributed to its file and never printed.  The arguments are
+/// `compileProjectToJarBundledWithRestored`'s.  The bundled standard-library
+/// packages are the compiler's, so they are not checked here.
+pub func checkProjectTypesJvm(
+  pkgSrcs: in List[String],
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact],
+  pkgPaths: in List[String],
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  pkgFeatures: in List[PackageFeatureSet],
+  ioForbiddenByPkg: in Map[String, String],
+  contractsEnabled: in Bool,
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val sink = collectDiagnostics(located)
+  val fe = match jvmProjectFrontEnd(pkgSrcs, stdlibSources, activeFeatures, declaredFeatures, depTemplateSrcs, defines, restoredArtifacts, pkgPaths, originsByPkg, pkgFeatures, sink) {
+    case Some(f) -> f
+    case None -> return located
+  }
+  val checked: List[SourceFile] = newList()
+  checked.add(fe.userFile)
+  for f in jvmBundleClosure(fe, restoredArtifacts) {
+    if fe.projectOwners.containsKey(pkgJvmOwner(f.packageDecl.path)) {
+      checked.add(f)
+    }
+  }
+  for f in checked {
+    val name = dottedPath(f.packageDecl.path)
+    val label = match mapGet(fe.pkgPathByName, name) { case Some(p) -> p; case None -> name }
+    val origins: List[DiagUtil.MergedLineOrigin] = match mapGet(fe.pkgOriginsByName, name) {
+      case Some(o) -> o
+      case None -> newList()
+    }
+    val opts = jvmMiddleEndOptions(
+      true,
+      label,
+      origins,
+      newList(),
+      newMap(),
+      newMap(),
+      unwrapOr(mapGet(ioForbiddenByPkg, name), ""),
+      contractsEnabled,
+      fe.depPkgNames.containsKey(name)
+    )
+    val _ = pipeCheckFront(arrayTypedOrSelf(fe.arrayTypedByPkg, f), fe.importedPkgs, opts, sink)
+  }
+  located
+}
+
+// The packages bundled with the project, in the order they are built: the
+// transitive import closure of the project's packages and restored
+// dependencies over the standard library and the sibling packages.
+func jvmBundleClosure(fe: in JvmProjectFrontEnd, restoredArtifacts: in List[SynthesisedArtifact]): List[SourceFile] {
+  val toBundle: List[SourceFile] = newList()
+  val seen: Map[String, Bool] = newMap()
+  val worklist: List[String] = newList()
+  var ui = 0
+  while ui < fe.userFile.imports.count {
+    worklist.add(dottedPath(fe.userFile.imports[ui].path))
+    ui = ui + 1
+  }
+  // `Std.Core` (`Option`/`Result`) is an implicit prelude: code refers to it
+  // without importing it (#6703), and compiler-synthesised code does too (a
+  // range type's `tryFrom` builds a `Result`). A restored dependency's
+  // classes ride in the JAR as well, so the packages it imports are bundled
+  // even when the user never imports them. Without both, a consumer of such
+  // a library failed at run time with NoClassDefFoundError: Std/Core/Result
+  // (D-progress-968).
+  if dottedPath(fe.userFile.packageDecl.path) != "Std.Core" {
+    worklist.add("Std.Core")
+  }
+  // A manifest's packages are all part of the build, as on dotnet: one the
+  // entry package does not import is still type-checked and emitted, so its
+  // diagnostics are not lost (#8357).  A package that does not apply to this
+  // target is excluded by its own file-level `@cfg(target = ...)`, which
+  // leaves it empty here, never by an accident of reachability.
+  for sibling in fe.siblingPackageNames {
+    worklist.add(sibling)
+  }
+  // `Std.EnvironmentHost` (#7594): every `config { }` block's generated JVM
+  // `<clinit>` reads `Std.EnvironmentHost.envOverlay` directly (mirroring
+  // `Std.Environment.setVar`'s overlay lookup), whether or not the
+  // declaring file itself imports `Std.Environment` — force it into the
+  // bundle whenever ANY project package or restored dependency declares a
+  // config block, or that `getstatic` dangles at runtime
+  // (`NoClassDefFoundError`).
+  var cbi = 0
+  var anyConfigBlock = false
+  while cbi < fe.userFiles.count {
+    if fileHasConfigBlock(fe.userFiles[cbi]) {
+      anyConfigBlock = true
+    }
+    cbi = cbi + 1
+  }
+  var cbri = 0
+  while cbri < restoredArtifacts.count {
+    if fileHasConfigBlock(restoredArtifacts[cbri].source) {
+      anyConfigBlock = true
+    }
+    cbri = cbri + 1
+  }
+  if anyConfigBlock {
+    worklist.add("Std.EnvironmentHost")
+  }
+  // `format1`-`format4` lower to `Std.String.formatArgs` (#7840), so a
+  // build calling one bundles `Std.String` whether or not anything imports
+  // it.  A bundled stdlib package that calls one is covered by the same
+  // check in the closure walk below.
+  var fmti = 0
+  var anyFormatCall = false
+  while fmti < fe.userFiles.count and not anyFormatCall {
+    anyFormatCall = pipeUsesFormatBuiltin(fe.userFiles[fmti])
+    fmti = fmti + 1
+  }
+  var fmtri = 0
+  while fmtri < restoredArtifacts.count and not anyFormatCall {
+    anyFormatCall = pipeUsesFormatBuiltin(restoredArtifacts[fmtri].source)
+    fmtri = fmtri + 1
+  }
+  if anyFormatCall {
+    worklist.add("Std.String")
+  }
+  var rwi = 0
+  while rwi < restoredArtifacts.count {
+    val raImports = restoredArtifacts[rwi].source.imports
+    var rwj = 0
+    while rwj < raImports.count {
+      worklist.add(dottedPath(raImports[rwj].path))
+      rwj = rwj + 1
+    }
+    rwi = rwi + 1
+  }
+  var wi = 0
+  while wi < worklist.count {
+    val pkg = worklist[wi]
+    wi = wi + 1
+    if not seen.containsKey(pkg) {
+      seen.add(pkg, true)
+      match mapGet(fe.stdlibByPkg, pkg) {
+        case Some(f) -> {
+          toBundle.add(f)
+          var fi = 0
+          while fi < f.imports.count {
+            worklist.add(dottedPath(f.imports[fi].path))
+            fi = fi + 1
+          }
+          if not seen.containsKey("Std.String") and not fileImportsPackage(f, "Std.String") and pipeUsesFormatBuiltin(f) {
+            worklist.add("Std.String")
+          }
+        }
+        case None -> ()
+        // Genuinely unreached / unavailable: a builtin head (`Std.*`
+        // resolved by the emitter, `Lyric.*` compiler packages) or a
+        // package with no in-bundle source.  Nothing to bundle, so no
+        // codegen runs for it and a failure can never be masked here.
+        // This `None` arm is the only "skip" path; every package that
+        // *does* have source is bundled and its codegen failure is fatal.
+      }
+    }
+  }
+  toBundle
+}
+
+
+/// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
+/// restored-dependency `SynthesisedArtifact`s (#3094): the consumer's `import
+/// <RestoredPkg>` resolves generic (and non-generic) records, unions, and
+/// functions declared by a pre-compiled Lyric-JVM producer JAR — the JVM
+/// counterpart of #1496 / D097's MSIL restored-generics fix.
+///
+/// Design (JVM's type-erasure model makes this substantially simpler than
+/// the MSIL side, which needs arity-suffixed TypeRefs and VAR-form generic
+/// metadata maps): each restored artifact's re-synthesised `SourceFile`
+/// (`Lyric.RestoredPackages.synthesiseArtifact`; its record/union/function
+/// declarations are reconstructed, verbatim, from the producer's embedded
+/// contract JSON) is fed through the SAME `collectFileSigsSeeded` /
+/// `collectFileCasesExtern` / `collectFileCtors` / `collectFileProjectables`
+/// registration calls a stdlib or sibling project file gets — a generic
+/// record/union's fields already erase to `Object` uniformly (JVM has no
+/// reified generics to preserve), so no separate arity-suffixed class-name
+/// bookkeeping is needed the way MSIL's `genericTypeArity` /
+/// `genericCtorParams` / `fieldSigBytes` / `fieldVarIndices` maps require.
+///
+/// Critically, a restored artifact's file is registered into `registry` /
+/// `caseReg` / `ctorReg` / `allProjFqns` but is deliberately NEVER added to
+/// `stdlibFiles` / `stdlibByPkg` / `toBundle`: its bytecode already exists in
+/// the producer JAR, so codegen must never re-emit (and thus duplicate) it —
+/// only its call-site SIGNATURES need to be known here.  The producer JAR's
+/// own path is threaded onto the consumer's manifest `Class-Path:` (the same
+/// mechanism `autoFfi.jarPaths` already uses for Maven/non-JDK JARs) so the
+/// JVM classloader can actually find those classes at runtime.
+pub func compileProjectToJarBundledWithRestored(
+  pkgSrcs: in List[String],
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  depTemplateSrcs: in List[String],
+  defines: in List[String],
+  packageVersion: in String,
+  restoredArtifacts: in List[SynthesisedArtifact],
+  // On-disk source path for each entry of `pkgSrcs`, parallel by index
+  // (docs/63 §9.7); see `compileProjectToJarBundledWithFeatures`'s own
+  // `pkgPaths` doc comment.
+  pkgPaths: in List[String],
+  // Per-merged-line provenance for a multi-file package, parallel to
+  // `pkgSrcs` by index (#6282): `originsByPkg[i]` translates `pkgSrcs[i]`'s
+  // merged-blob line numbers back to their real on-disk file and line.
+  // Empty (or an empty inner list) means no translation for that package.
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  // The `@cfg` features each package is erased with, parallel to `pkgSrcs`
+  // by index; a package past the end uses `activeFeatures` /
+  // `declaredFeatures` (see `PackageFeatureSet`).
+  pkgFeatures: in List[PackageFeatureSet],
+  // Package name -> why it may not do I/O under the manifest's `[layers]`
+  // (D149); packages absent from the map may.  See
+  // `MiddleEndOptions.ioForbiddenReason`.
+  ioForbiddenByPkg: in Map[String, String],
+  contractsEnabled: in Bool = true,
+): Bool {
+  val fe = match jvmProjectFrontEnd(pkgSrcs, stdlibSources, activeFeatures, declaredFeatures, depTemplateSrcs, defines, restoredArtifacts, pkgPaths, originsByPkg, pkgFeatures, printDiagnostics()) {
+    case Some(f) -> f
+    case None -> return false
+  }
+  val userFiles = fe.userFiles
+  val userFile = fe.userFile
+  val userEntryPkgName = fe.userEntryPkgName
+  val pkgPathByName = fe.pkgPathByName
+  val pkgOriginsByName = fe.pkgOriginsByName
+  val depPkgNames = fe.depPkgNames
+  val arrayTypedByPkg = fe.arrayTypedByPkg
+  val importedPkgs = fe.importedPkgs
+  val stdlibFiles = fe.stdlibFiles
+  val projectOwners = fe.projectOwners
 
   // Extern-type map per parsed package (parallel lists), so signatures and
   // descriptors written against an imported extern type resolve through
@@ -3152,22 +3494,6 @@ pub func compileProjectToJarBundledWithRestored(
       ownAwareExternTypes(rf, externSeedForFileCached(rf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache))
     )
     collectFileProjectables(rf, allProjFqns)
-    val rPkgItems: List[Item] = newList()
-    var rii = 0
-    while rii < rf.items.count {
-      if pipeIsCrossPackageItem(rf.items[rii]) {
-        rPkgItems.add(rf.items[rii])
-      }
-      rii = rii + 1
-    }
-    importedPkgs.add(
-      ImportedPackage(
-        name = synArt.packageName,
-        items = rPkgItems,
-        imports = pipeRestoredImportNames(rf, synArt.contract.imports),
-        wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports)
-      )
-    )
     if not restoredJarPathsSeen.containsKey(synArt.dllPath) {
       restoredJarPathsSeen.add(synArt.dllPath, true)
       restoredJarPaths.add(synArt.dllPath)
@@ -3186,113 +3512,7 @@ pub func compileProjectToJarBundledWithRestored(
 
   // Transitive import closure: the stdlib packages whose bytecode must be
   // bundled because the user (directly or indirectly) imports them.
-  val toBundle: List[SourceFile] = newList()
-  val seen: Map[String, Bool] = newMap()
-  val worklist: List[String] = newList()
-  var ui = 0
-  while ui < userFile.imports.count {
-    worklist.add(dottedPath(userFile.imports[ui].path))
-    ui = ui + 1
-  }
-  // `Std.Core` (`Option`/`Result`) is an implicit prelude: code refers to it
-  // without importing it (#6703), and compiler-synthesised code does too (a
-  // range type's `tryFrom` builds a `Result`). A restored dependency's
-  // classes ride in the JAR as well, so the packages it imports are bundled
-  // even when the user never imports them. Without both, a consumer of such
-  // a library failed at run time with NoClassDefFoundError: Std/Core/Result
-  // (D-progress-968).
-  if dottedPath(userFile.packageDecl.path) != "Std.Core" {
-    worklist.add("Std.Core")
-  }
-  // A manifest's packages are all part of the build, as on dotnet: one the
-  // entry package does not import is still type-checked and emitted, so its
-  // diagnostics are not lost (#8357).  A package that does not apply to this
-  // target is excluded by its own file-level `@cfg(target = ...)`, which
-  // leaves it empty here, never by an accident of reachability.
-  for sibling in siblingPackageNames {
-    worklist.add(sibling)
-  }
-  // `Std.EnvironmentHost` (#7594): every `config { }` block's generated JVM
-  // `<clinit>` reads `Std.EnvironmentHost.envOverlay` directly (mirroring
-  // `Std.Environment.setVar`'s overlay lookup), whether or not the
-  // declaring file itself imports `Std.Environment` — force it into the
-  // bundle whenever ANY project package or restored dependency declares a
-  // config block, or that `getstatic` dangles at runtime
-  // (`NoClassDefFoundError`).
-  var cbi = 0
-  var anyConfigBlock = false
-  while cbi < userFiles.count {
-    if fileHasConfigBlock(userFiles[cbi]) {
-      anyConfigBlock = true
-    }
-    cbi = cbi + 1
-  }
-  var cbri = 0
-  while cbri < restoredArtifacts.count {
-    if fileHasConfigBlock(restoredArtifacts[cbri].source) {
-      anyConfigBlock = true
-    }
-    cbri = cbri + 1
-  }
-  if anyConfigBlock {
-    worklist.add("Std.EnvironmentHost")
-  }
-  // `format1`-`format4` lower to `Std.String.formatArgs` (#7840), so a
-  // build calling one bundles `Std.String` whether or not anything imports
-  // it.  A bundled stdlib package that calls one is covered by the same
-  // check in the closure walk below.
-  var fmti = 0
-  var anyFormatCall = false
-  while fmti < userFiles.count and not anyFormatCall {
-    anyFormatCall = pipeUsesFormatBuiltin(userFiles[fmti])
-    fmti = fmti + 1
-  }
-  var fmtri = 0
-  while fmtri < restoredArtifacts.count and not anyFormatCall {
-    anyFormatCall = pipeUsesFormatBuiltin(restoredArtifacts[fmtri].source)
-    fmtri = fmtri + 1
-  }
-  if anyFormatCall {
-    worklist.add("Std.String")
-  }
-  var rwi = 0
-  while rwi < restoredArtifacts.count {
-    val raImports = restoredArtifacts[rwi].source.imports
-    var rwj = 0
-    while rwj < raImports.count {
-      worklist.add(dottedPath(raImports[rwj].path))
-      rwj = rwj + 1
-    }
-    rwi = rwi + 1
-  }
-  var wi = 0
-  while wi < worklist.count {
-    val pkg = worklist[wi]
-    wi = wi + 1
-    if not seen.containsKey(pkg) {
-      seen.add(pkg, true)
-      match mapGet(stdlibByPkg, pkg) {
-        case Some(f) -> {
-          toBundle.add(f)
-          var fi = 0
-          while fi < f.imports.count {
-            worklist.add(dottedPath(f.imports[fi].path))
-            fi = fi + 1
-          }
-          if not seen.containsKey("Std.String") and not fileImportsPackage(f, "Std.String") and pipeUsesFormatBuiltin(f) {
-            worklist.add("Std.String")
-          }
-        }
-        case None -> ()
-        // Genuinely unreached / unavailable: a builtin head (`Std.*`
-        // resolved by the emitter, `Lyric.*` compiler packages) or a
-        // package with no in-bundle source.  Nothing to bundle, so no
-        // codegen runs for it and a failure can never be masked here.
-        // This `None` arm is the only "skip" path; every package that
-        // *does* have source is bundled and its codegen failure is fatal.
-      }
-    }
-  }
+  val toBundle = jvmBundleClosure(fe, restoredArtifacts)
 
   // #7502: pre-register every bundled/sibling package's own derive-
   // synthesised dot-named signatures (`Point.fromJson`, `Point.equals`, …)

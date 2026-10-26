@@ -1308,20 +1308,21 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   writeBytesAtomic(outputPath, bytes)
 }
 
-/// The type checker's verdict on one source file, as `compileToMsilWithVersion`
-/// would reach it, without compiling anything: every diagnostic of the
-/// passes up to and including the type check, attributed to `path`, and
-/// never printed.  The passes before the type check stop at the first error
-/// (#8227).
+/// What a dotnet build of one source file rejects it for, as
+/// `compileToMsilWithVersion` would reach it, without compiling anything:
+/// every diagnostic of the passes up to and including the mode check,
+/// attributed to `path`, and never printed.  The passes before the type
+/// check stop at the first error (#8227).  The other targets' checks are
+/// their own bridges' (`Jvm.Bridge.checkProjectTypesJvm`,
+/// `Lyric.LlvmBridge.checkSourceTypesNative`, #8311).
 pub func checkSourceTypes(
   source: in String,
   stdlibSources: in List[String],
   defines: in List[String],
   path: in String,
-  targetName: in String,
 ): List[DiagUtil.LocatedDiagnostic] {
   val noFeatures: List[String] = newList()
-  checkSourceTypesForFeatures(source, stdlibSources, defines, path, targetName, noFeatures, noFeatures)
+  checkSourceTypesForFeatures(source, stdlibSources, defines, path, noFeatures, noFeatures)
 }
 
 /// `checkSourceTypes` for a build whose `@cfg` erasure has the active
@@ -1332,13 +1333,12 @@ pub func checkSourceTypesForFeatures(
   stdlibSources: in List[String],
   defines: in List[String],
   path: in String,
-  targetName: in String,
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match frontEndParse(true, targetName, source, activeFeatures, declaredFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
+  val cfgFile = match frontEndParse(true, "dotnet", source, activeFeatures, declaredFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }
@@ -1352,37 +1352,34 @@ pub func checkSourceTypesForFeatures(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
-  val rewritten = match frontEndExpand(true, targetName, cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
+  val rewritten = match frontEndExpand(true, "dotnet", cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }
   val _ = pipeCheckFront(
     resolveTypeAliasesMsil(rewritten),
     stdlibImportedPackages(collectStdlibPackages(stdlibSources)),
-    checkOptions(targetName, path, noOrigins, ""),
+    checkOptions(path, noOrigins, ""),
     collectDiagnostics(located)
   )
   located
 }
 
-// The middle-end options a build for `targetName` checks a package with, as
-// far as the passes up to the mode check read them.
+// The middle-end options a dotnet build checks a package with, as far as the
+// passes up to the mode check read them.
 func checkOptions(
-  targetName: in String,
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   ioForbiddenReason: in String,
 ): MiddleEndOptions {
-  val onJvm = targetName == "jvm"
-  val onNative = targetName == "native"
   MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = label,
     lineOrigins = origins,
-    awaitInTryIsHazard = not onJvm,
-    bindListLiteralTypes = not onJvm,
-    awaitAsyncCalls = not onJvm and not onNative,
+    awaitInTryIsHazard = true,
+    bindListLiteralTypes = true,
+    awaitAsyncCalls = true,
     contractsEnabled = true,
     checkedSourceOut = newList(),
     memberRecvClassesOut = newMap(),
@@ -1391,9 +1388,7 @@ func checkOptions(
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
     ioForbiddenReason = ioForbiddenReason,
-    nativeIntrinsics = onNative,
-    arraysAsLists = not onNative,
-    primitiveArrays = onJvm
+    arraysAsLists = true
   )
 }
 
@@ -1651,14 +1646,13 @@ func frontEndParse(
   origins: in List[DiagUtil.MergedLineOrigin],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
-  if not collect {
-    return pipeParseAndErase(source, targetName, activeFeatures, declaredFeatures, defines, label, origins)
-  }
-  val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
-  if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
-    return None
-  }
-  Some(value = r.file)
+  pipeParseAndEraseTo(frontEndSink(collect, located), source, targetName, activeFeatures, declaredFeatures, defines, label, origins)
+}
+
+// Where the front end's diagnostics go: printed, or with `collect` attributed
+// into `located`.
+func frontEndSink(collect: in Bool, located: in List[DiagUtil.LocatedDiagnostic]): DiagSink {
+  if collect { collectDiagnostics(located) } else { printDiagnostics() }
 }
 
 // `pipeExpandAndRewrite` with the rewrites `targetName`'s build runs, or with
@@ -1674,19 +1668,11 @@ func frontEndExpand(
   origins: in List[DiagUtil.MergedLineOrigin],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
-  if not collect {
-    return pipeExpandAndRewriteFor(targetName, file, weWires, weConfigs, plugins, label, origins)
-  }
-  val r = pipeExpandAndRewriteCollectFor(targetName, file, weWires, weConfigs, plugins)
-  if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
-    return None
-  }
-  Some(value = r.file)
+  pipeExpandAndRewriteForTo(frontEndSink(collect, located), targetName, file, weWires, weConfigs, plugins, label, origins)
 }
 
-/// What a build for `targetName` ("dotnet", "jvm" or "native") rejects a
-/// project for, up to and including the mode check, as
-/// `compileProjectToMsilWithRestoredAndVersionDiag` does for dotnet, without
+/// What a dotnet build rejects a project for, up to and including the mode
+/// check, as `compileProjectToMsilWithRestoredAndVersionDiag` does, without
 /// compiling anything: every diagnostic of those passes, attributed to its
 /// file, and never printed.  The passes before the type check stop at the
 /// first error; every package is checked (#8227).
@@ -1701,10 +1687,9 @@ pub func checkProjectTypes(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  targetName: in String,
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, targetName, true, located) {
+  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, "dotnet", true, located) {
     case None -> ()
     case Some(fe) -> {
       val importedPkgs = perPackageImportedPackages(fe.baseImportedPkgs, fe.inBundleItems, fe.inBundleImports, fe.baseNames)
@@ -1712,7 +1697,7 @@ pub func checkProjectTypes(
         val _ = pipeCheckFront(
           pp.file,
           importedPkgs,
-          checkOptions(targetName, pp.label, pp.origins, pp.ioForbiddenReason),
+          checkOptions(pp.label, pp.origins, pp.ioForbiddenReason),
           collectDiagnostics(located)
         )
       }

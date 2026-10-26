@@ -118,6 +118,25 @@ rc="$(run "$lyric_bin" build --target native "$tc/stubbable.l" -o "$proofs/stubb
 grep -q "unknown name 'SourceStub'" "$err" || fail "stubbable use: expected the native build's message to be the check's"
 echo "PASS: stubbable use, the native build agrees"
 
+# The check is the target bridge's own front end, not the dotnet one set up
+# like it: what only the JVM or the native build rejects before codegen,
+# prove rejects for that target too.
+expect_proved "main(): Long, dotnet" "$lyric_bin" prove "$tc/main_long.l"
+expect_type_error "main(): Long, --target jvm" J001 "$lyric_bin" prove --target jvm "$tc/main_long.l"
+grep -q "main_long.l: error\[J001\] 15:" "$err" || fail "main(): Long, --target jvm: expected the error at main"
+rc="$(run "$lyric_bin" build --target jvm "$tc/main_long.l" -o "$proofs/main-long.jar")"
+[ "$rc" -ne 0 ] || fail "main(): Long: expected the JVM build to reject it too"
+grep -q "error\[J001\]" "$err" || fail "main(): Long: expected the JVM build's J001"
+echo "PASS: main(): Long, the JVM build agrees"
+expect_proved "config block, dotnet" "$lyric_bin" prove "$tc/config_block.l"
+expect_proved "config block, --target jvm" "$lyric_bin" prove --target jvm "$tc/config_block.l"
+expect_type_error "config block, --target native" N0025 "$lyric_bin" prove --target native "$tc/config_block.l"
+grep -q "config_block.l: error\[N0025\] 8:" "$err" || fail "config block, --target native: expected the error at the block"
+rc="$(run "$lyric_bin" build --target native "$tc/config_block.l" -o "$proofs/config-native")"
+[ "$rc" -ne 0 ] || fail "config block: expected the native build to reject it too"
+grep -q "error\[N0025\]" "$err" || fail "config block: expected the native build's N0025"
+echo "PASS: config block, the native build agrees"
+
 # A dependency that is not built stops the proof, as it stops a build.
 rc="$(run "$lyric_bin" prove "$tc/unbuiltdep/app/src/app.l")"
 [ "$rc" -ne 0 ] || fail "unbuilt dependency: expected a non-zero exit"

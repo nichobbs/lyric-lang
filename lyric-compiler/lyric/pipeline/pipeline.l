@@ -1351,6 +1351,70 @@ func gateTo(
   gate(pkgLabel, origins, diags)
 }
 
+/// Report `diags` into `sink`, labelled with `pkgLabel` and resolved through
+/// `origins`: whether any of them is an error.  For a bridge's own front-end
+/// diagnostics, so a build prints them and a check (`lyric prove`, #8311)
+/// collects the same ones.
+pub func pipeGateTo(
+  sink: in DiagSink,
+  pkgLabel: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  diags: in List[Diagnostic],
+): Bool {
+  gateTo(sink, pkgLabel, origins, diags)
+}
+
+/// `pipeParseAndErase` with its diagnostics sent to `sink`.
+pub func pipeParseAndEraseTo(
+  sink: in DiagSink,
+  source: in String,
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
+  if gateTo(sink, label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipeExpandAndRewriteFor` with its diagnostics sent to `sink`.
+pub func pipeExpandAndRewriteForTo(
+  sink: in DiagSink,
+  targetName: in String,
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  val r = pipeExpandAndRewriteCollectFor(targetName, file, weWires, weConfigs, plugins)
+  if gateTo(sink, label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipePluginExpandForComponent` with its diagnostics sent to `sink`.
+pub func pipePluginExpandForComponentTo(
+  sink: in DiagSink,
+  file: in SourceFile,
+  plugins: in Map[String, PluginExpand.PluginPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  val r = PluginExpand.expandFileForComponent(file, plugins)
+  if gateTo(sink, label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
 // `diags` without its warnings when `quiet`.
 func withoutWarningsIf(quiet: in Bool, diags: in List[Diagnostic]): List[Diagnostic] {
   if not quiet {

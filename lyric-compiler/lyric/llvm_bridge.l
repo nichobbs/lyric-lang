@@ -1240,17 +1240,26 @@ func shapeStackSize(spec: in ShapeSpec): String {
 /// package's AST and record its exports in `pkgs`; any other shape passes the
 /// file through.  Reports the shims' `W0040` notes and an internal failure.
 func shimForComponent(
-  file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg], peers: in List[SourceFile]
+  file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg], peers: in List[SourceFile], sink: in DiagSink
 ): Option[SourceFile] {
   if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
   }
   val r = componentRewriteFile(file, peers)
-  for n in r.info.notes {
-    Console.error(n)
+  // The notes are warnings about what the component leaves out, which a
+  // check has no use for.
+  if not sink.collect {
+    for n in r.info.notes {
+      Console.error(n)
+    }
   }
   if r.error.length > 0 {
-    Console.error("error[N0018]: component shim generation failed for package " + r.info.pkg + ": " + r.error)
+    val msg = "component shim generation failed for package " + r.info.pkg + ": " + r.error
+    if sink.collect {
+      sink.located.add(DiagUtil.LocatedDiagnostic(path = r.info.pkg, diagnostic = errorDiagnostic("N0018", msg, file.span)))
+    } else {
+      Console.error("error[N0018]: " + msg)
+    }
     return None
   }
   pkgs.add(r.info)
@@ -1267,11 +1276,12 @@ func pluginExpandForComponent(
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
+  sink: in DiagSink,
 ): Option[SourceFile] {
   if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
   }
-  pipePluginExpandForComponent(file, plugins, label, origins)
+  pipePluginExpandForComponentTo(sink, file, plugins, label, origins)
 }
 
 /// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
@@ -1324,54 +1334,13 @@ pub func compileToNativeWithFeatures(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
 ): Bool {
-  // Parse + `@cfg` erasure with the `target.native` pseudo-feature
-  // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
-  // after parse, before anything indexes the items).
-  val nativeDefines = BD.decodeDefines(defines)
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val targetOs = nativeTargetOs(triple)
-  val osActive = Cfg.withTargetOsFeature(activeFeatures, targetOs)
-  val cfgFile = match pipeParseAndErase(source, "native", osActive, declaredFeatures, nativeDefines, path, noOrigins) {
+  val fe = match nativeSourceFrontEnd(source, stdlibFiles, triple, defines, path, shape, activeFeatures, declaredFeatures, printDiagnostics()) {
     case Some(f) -> f
     case None -> return false
   }
-  val componentPkgs: List[ComponentPkg] = newList()
-  val noPeers: List[SourceFile] = newList()
-  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
-  PluginExpand.collectPluginPackage(cfgFile, componentPlugins)
-  val pluginFile = match pluginExpandForComponent(cfgFile, shape, componentPlugins, path, noOrigins) {
-    case Some(f) -> f
-    case None -> return false
-  }
-  val shimFile = match shimForComponent(pluginFile, shape, componentPkgs, noPeers) {
-    case Some(f) -> f
-    case None -> return false
-  }
-
-  // Pre-typecheck rewrite chain: alias rewrite only.  The native bridge
-  // does not expand docs/58 wire/config templates or synthesise
-  // `@stubbable` stubs yet — the `false` flags make that gap explicit
-  // (docs/59 §9.2 divergence flag) instead of an invisible omission.
-  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
-  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  // Config-template declarations become `pub record` twins (docs/58 §3); the
-  // collection runs over an alias-rewritten copy, as on the managed targets.
-  WireExpand.collectWireTemplates(
-    Aliases.rewriteFile(shimFile).items,
-    dottedPath(shimFile.packageDecl.path),
-    noWires,
-    noConfigs
-  )
-  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
-  PluginExpand.collectPluginPackage(shimFile, plugins)
-  val userFile0 = match pipeExpandAndRewriteFor("native", shimFile, noWires, noConfigs, plugins, path, noOrigins) {
-    case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
-    case None -> return false
-  }
-
-  // Parse the stdlib once: type items for the typecheck,
-  // whole files (cfg-erased, alias-rewritten) for bundling.
-  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
+  val userFile0 = fe.file
+  val componentPkgs = fe.componentPkgs
+  val stdlib = fe.stdlib
   val importedPkgs = stdlib.importedPkgs
   val stdlibByPkg = stdlib.byPkg
 
@@ -1402,22 +1371,16 @@ pub func compileToNativeWithFeatures(
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
   val optsCallArities: Map[String, Int] = newMap()
-  val opts = MiddleEndOptions(
-    tcFatal = true,
-    tcReport = false,
-    pkgLabel = path,
-    lineOrigins = noSingleFileOrigins,
-    awaitInTryIsHazard = true,
-    bindListLiteralTypes = true,
-    awaitAsyncCalls = false,
-    contractsEnabled = contractsEnabled,
-    checkedSourceOut = optsCheckedOut,
-    memberRecvClassesOut = optsRecvOut,
-    methodCallAritiesOut = optsCallArities,
-    typeArgCalleesOut = newMap(),
-    genericItemsOut = newList(),
-    foreignValueRecordsOut = newList(),
-    nativeIntrinsics = true
+  val opts = nativeMiddleEndOptions(
+    path,
+    noSingleFileOrigins,
+    optsCheckedOut,
+    optsRecvOut,
+    optsCallArities,
+    newList(),
+    newList(),
+    "",
+    contractsEnabled
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -1765,181 +1728,16 @@ pub func compileProjectToNativeWithShape(
   contractsEnabled: in Bool,
   shape: in String,
 ): Bool {
-  if packages.count == 0 {
-    Console.error("error[N0005]: native project build received no packages")
-    return false
+  val fe = match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, shape, printDiagnostics()) {
+    case Some(f) -> f
+    case None -> return false
   }
-
-  val noFeatures: List[String] = newList()
-  // Layer the manifest's `[package].version` in as the well-known `version`
-  // define's fallback (#6821), matching
-  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
-  // `BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`
-  // call — an explicit `--define version=…` (already present in `defines`)
-  // still wins, since `withWellKnownDefines` prepends the fallback and
-  // `decodeDefines` is last-wins.
-  val nativeDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
-
-  // Parse + `@cfg` erasure for every own package (per-package repeat of the
-  // single-source path's first pipeline stage) — threading the real
-  // `activeFeatures`/`declaredFeatures` (#6818), matching
-  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
-  // call.  Own packages get the caller's real feature set; the bundled
-  // stdlib closure below still erases against `noFeatures` (a stdlib
-  // package's own `@cfg(feature = ...)` items are never user-feature-gated
-  // on any target, same as the single-source path).
-  val cfgFiles: List[SourceFile] = newList()
-  val componentPkgs: List[ComponentPkg] = newList()
-  // #6824 item 1: label each own package's parse-phase diagnostics with its
-  // real on-disk path when known, and translate a multi-file package's
-  // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
-  // project bridges (previously always the bare package name, no per-line
-  // translation at all).
-  val targetOs = nativeTargetOs(triple)
-  var ppi = 0
-  while ppi < packages.count {
-    val pkgActive = Cfg.withTargetOsFeature(
-      match packages[ppi].features { case Some(pf) -> pf.active; case None -> activeFeatures },
-      targetOs
-    )
-    val pkgDeclared = match packages[ppi].features { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    cfgFiles.add(cfgFile)
-    ppi = ppi + 1
-  }
-  // Dot-named functions declared through an imported alias carry the
-  // aliased type's name before anything indexes the packages (#8217).
-  val canonicalCfg = canonicalAliasDotNamedAll(cfgFiles)
-  var cci = 0
-  while cci < canonicalCfg.count {
-    cfgFiles[cci] = canonicalCfg[cci]
-    cci = cci + 1
-  }
-  // A component build expands its `@plugin` package into exports and host
-  // imports first, against every source package (docs/69 §9.3).
-  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
-  for pf in cfgFiles {
-    PluginExpand.collectPluginPackage(pf, componentPlugins)
-  }
-  // The component shims of one package may name another package's `pub` types, so
-  // they are generated once every own package is parsed (docs/35 W4, cross-package
-  // types).  Other shapes pass the files through.
-  val parsedPeers: List[SourceFile] = newList()
-  var cpi = 0
-  while cpi < cfgFiles.count {
-    val pf = match pluginExpandForComponent(cfgFiles[cpi], shape, componentPlugins, nativePkgLabelAt(packages, cpi), nativePkgOriginsAt(originsByPkg, cpi)) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    parsedPeers.add(pf)
-    cpi = cpi + 1
-  }
-  var shi = 0
-  while shi < parsedPeers.count {
-    val shimFile = match shimForComponent(parsedPeers[shi], shape, componentPkgs, parsedPeers) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    cfgFiles[shi] = shimFile
-    shi = shi + 1
-  }
-
-  // Pre-typecheck rewrite chain: alias rewrite and config-template expansion
-  // (a `pub config` template declares a `pub record` twin, docs/58 §3), matching
-  // the single-source path. The native bridge does not synthesise `@stubbable`
-  // stubs yet (docs/59 §9.2 divergence flag). Templates are collected from every
-  // own package, dependencies included (native compiles them from source), over
-  // alias-rewritten copies as on the managed targets.
-  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
-  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  // D207: every source package, for cross-package plugin references.
-  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
-  var wti = 0
-  while wti < cfgFiles.count {
-    PluginExpand.collectPluginPackage(cfgFiles[wti], plugins)
-    WireExpand.collectWireTemplates(
-      Aliases.rewriteFile(cfgFiles[wti]).items,
-      dottedPath(cfgFiles[wti].packageDecl.path),
-      noWires,
-      noConfigs
-    )
-    wti = wti + 1
-  }
-  val ownFiles0: List[SourceFile] = newList()
-  var owi = 0
-  while owi < cfgFiles.count {
-    // #6824 item 3: same label/origins attribution as the parse phase above
-    // for this package's wire/config-template and impl-default-inheritance
-    // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
-    // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewriteFor("native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    ownFiles0.add(hoistModuleValInits(resolveProjectTypeAliasesNative(f0, cfgFiles)))
-    owi = owi + 1
-  }
-
-  // Parse the stdlib once (identical to the single-source path).
-  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
-  val importedPkgs: List[ImportedPackage] = newList()
-  for ip in stdlib.importedPkgs {
-    importedPkgs.add(ip)
-  }
+  val ownFiles0 = fe.ownFiles
+  val importedPkgs = fe.importedPkgs
+  val stdlib = fe.stdlib
   val stdlibByPkg = stdlib.byPkg
-  // Each package's imports, recorded on its generics so Mono resolves a call
-  // in a specialised body in the declaring package's scope.
-  val originImportsByPkg: Map[String, List[String]] = newMap()
-  for spn in mapKeys(stdlibByPkg) {
-    match mapGet(stdlibByPkg, spn) {
-      case Some(sf) -> {
-        originImportsByPkg[spn] = pipeOriginImportsOf(sf.imports)
-      }
-      case None -> ()
-    }
-  }
-  for ownFile in ownFiles0 {
-    originImportsByPkg[dottedPath(ownFile.packageDecl.path)] = pipeOriginImportsOf(ownFile.imports)
-  }
-
-  // Every own package also contributes its cross-package items to the SAME
-  // `importedPkgs` pool every OTHER own package (and itself) type-checks
-  // against — mirroring `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s
-  // #6024 fix, which found that excluding a project's own entry package from
-  // its sibling-visible surface broke same-manifest import cycles (a kernel
-  // package importing back the package that imports it).  Including a
-  // package's own items in its own `importedPkgs` is harmless: the type
-  // checker resolves `Pkg.Type` references identically whether the name came
-  // from the file's own declarations or a same-named `ImportedPackage` entry.
-  var oipi = 0
-  while oipi < ownFiles0.count {
-    val f = ownFiles0[oipi]
-    val pkgItems: List[Item] = newList()
-    var ii = 0
-    while ii < f.items.count {
-      // #6580/#4900: these are the user's own project's sibling packages,
-      // so `internal` items must be visible too — matches the MSIL/JVM
-      // bridges' `pipeIsCrossPackageItemProject` for the identical
-      // own-project-sibling shape (stdlib above stays pub-only).
-      if pipeIsCrossPackageItemProject(f.items[ii]) {
-        pkgItems.add(f.items[ii])
-      }
-      ii = ii + 1
-    }
-    val pn = dottedPath(f.packageDecl.path)
-    importedPkgs.add(
-      ImportedPackage(
-        name = pn,
-        items = pkgItems,
-        imports = collectImportNames(f.imports),
-        wholeImports = collectWholeImportNames(f.imports)
-      )
-    )
-    oipi = oipi + 1
-  }
+  val componentPkgs = fe.componentPkgs
+  val originImportsByPkg = fe.originImportsByPkg
 
   // Middle-end every own file against the shared stdlib+sibling pool.
   val ownFiles: List[SourceFile] = newList()
@@ -1965,23 +1763,16 @@ pub func compileProjectToNativeWithShape(
     val optsCallArities: Map[String, Int] = newMap()
     val optsGenericItems: List[Item] = newList()
     val optsForeignRecords: List[ForeignValueRecord] = newList()
-    val opts = MiddleEndOptions(
-      tcFatal = true,
-      tcReport = false,
-      pkgLabel = nativePkgLabelAt(packages, mei),
-      lineOrigins = nativePkgOriginsAt(originsByPkg, mei),
-      awaitInTryIsHazard = true,
-      bindListLiteralTypes = true,
-      awaitAsyncCalls = false,
-      contractsEnabled = contractsEnabled,
-      checkedSourceOut = optsCheckedOut,
-      memberRecvClassesOut = optsRecvOut,
-      methodCallAritiesOut = optsCallArities,
-      typeArgCalleesOut = newMap(),
-      genericItemsOut = optsGenericItems,
-      foreignValueRecordsOut = optsForeignRecords,
-      ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
-      nativeIntrinsics = true
+    val opts = nativeMiddleEndOptions(
+      nativePkgLabelAt(packages, mei),
+      nativePkgOriginsAt(originsByPkg, mei),
+      optsCheckedOut,
+      optsRecvOut,
+      optsCallArities,
+      optsGenericItems,
+      optsForeignRecords,
+      if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
+      contractsEnabled
     )
     val siblingValueGenerics = siblingValueGenericFuncs(
       importedPkgs,
@@ -2216,6 +2007,425 @@ pub func compileProjectToNativeWithShape(
     componentPkgs,
     pluginAbiFingerprint(stdlibFiles)
   )
+}
+
+/// A single native source through the passes before the type check: the
+/// front of `compileToNativeWithFeatures`, which `checkSourceTypesNative`
+/// runs too (#8311).
+record NativeSourceFrontEnd {
+  file: SourceFile
+  stdlib: NativeStdlib
+  componentPkgs: List[ComponentPkg]
+}
+
+// The single-source front end, its diagnostics sent to `sink`.  None after
+// an error.
+func nativeSourceFrontEnd(
+  source: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  defines: in List[String],
+  path: in String,
+  shape: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  sink: in DiagSink,
+): Option[NativeSourceFrontEnd] {
+  // Parse + `@cfg` erasure with the `target.native` pseudo-feature
+  // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
+  // after parse, before anything indexes the items).
+  val nativeDefines = BD.decodeDefines(defines)
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val targetOs = nativeTargetOs(triple)
+  val osActive = Cfg.withTargetOsFeature(activeFeatures, targetOs)
+  val cfgFile = match pipeParseAndEraseTo(sink, source, "native", osActive, declaredFeatures, nativeDefines, path, noOrigins) {
+    case Some(f) -> f
+    case None -> return None
+  }
+  val componentPkgs: List[ComponentPkg] = newList()
+  val noPeers: List[SourceFile] = newList()
+  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(cfgFile, componentPlugins)
+  val pluginFile = match pluginExpandForComponent(cfgFile, shape, componentPlugins, path, noOrigins, sink) {
+    case Some(f) -> f
+    case None -> return None
+  }
+  val shimFile = match shimForComponent(pluginFile, shape, componentPkgs, noPeers, sink) {
+    case Some(f) -> f
+    case None -> return None
+  }
+
+  // Pre-typecheck rewrite chain: alias rewrite only.  The native bridge
+  // does not expand docs/58 wire/config templates or synthesise
+  // `@stubbable` stubs yet — the `false` flags make that gap explicit
+  // (docs/59 §9.2 divergence flag) instead of an invisible omission.
+  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // Config-template declarations become `pub record` twins (docs/58 §3); the
+  // collection runs over an alias-rewritten copy, as on the managed targets.
+  WireExpand.collectWireTemplates(
+    Aliases.rewriteFile(shimFile).items,
+    dottedPath(shimFile.packageDecl.path),
+    noWires,
+    noConfigs
+  )
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(shimFile, plugins)
+  val userFile0 = match pipeExpandAndRewriteForTo(sink, "native", shimFile, noWires, noConfigs, plugins, path, noOrigins) {
+    case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
+    case None -> return None
+  }
+
+  // Parse the stdlib once: type items for the typecheck,
+  // whole files (cfg-erased, alias-rewritten) for bundling.
+  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
+  Some(value = NativeSourceFrontEnd(file = userFile0, stdlib = stdlib, componentPkgs = componentPkgs))
+}
+
+/// A native project's packages through the passes before the type check, and
+/// the packages they are checked against: the front of
+/// `compileProjectToNativeWithShape`, which `checkProjectTypesNative` runs
+/// too (#8311).
+record NativeProjectFrontEnd {
+  /// Every package, parsed, erased, expanded, rewritten and alias-resolved,
+  /// parallel to the build's `packages`.
+  ownFiles: List[SourceFile]
+  /// The type checker's scope: the standard library and every package.
+  importedPkgs: List[ImportedPackage]
+  stdlib: NativeStdlib
+  componentPkgs: List[ComponentPkg]
+  /// Each package's imports, recorded on its generics for Mono.
+  originImportsByPkg: Map[String, List[String]]
+}
+
+// The project front end, its diagnostics sent to `sink`.  None after an error.
+func nativeProjectFrontEnd(
+  packages: in List[NativeSourcePackage],
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  shape: in String,
+  sink: in DiagSink,
+): Option[NativeProjectFrontEnd] {
+  if packages.count == 0 {
+    if sink.collect {
+      sink.located.add(
+        DiagUtil.LocatedDiagnostic(
+          path = "",
+          diagnostic = errorDiagnostic("N0005", "native project build received no packages", pointSpan(initialPosition()))
+        )
+      )
+    } else {
+      Console.error("error[N0005]: native project build received no packages")
+    }
+    return None
+  }
+
+  val noFeatures: List[String] = newList()
+  // Layer the manifest's `[package].version` in as the well-known `version`
+  // define's fallback (#6821), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // `BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))`
+  // call — an explicit `--define version=…` (already present in `defines`)
+  // still wins, since `withWellKnownDefines` prepends the fallback and
+  // `decodeDefines` is last-wins.
+  val nativeDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
+
+  // Parse + `@cfg` erasure for every own package (per-package repeat of the
+  // single-source path's first pipeline stage) — threading the real
+  // `activeFeatures`/`declaredFeatures` (#6818), matching
+  // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`'s identical
+  // call.  Own packages get the caller's real feature set; the bundled
+  // stdlib closure below still erases against `noFeatures` (a stdlib
+  // package's own `@cfg(feature = ...)` items are never user-feature-gated
+  // on any target, same as the single-source path).
+  val cfgFiles: List[SourceFile] = newList()
+  val componentPkgs: List[ComponentPkg] = newList()
+  // #6824 item 1: label each own package's parse-phase diagnostics with its
+  // real on-disk path when known, and translate a multi-file package's
+  // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
+  // project bridges (previously always the bare package name, no per-line
+  // translation at all).
+  val targetOs = nativeTargetOs(triple)
+  var ppi = 0
+  while ppi < packages.count {
+    val pkgActive = Cfg.withTargetOsFeature(
+      match packages[ppi].features { case Some(pf) -> pf.active; case None -> activeFeatures },
+      targetOs
+    )
+    val pkgDeclared = match packages[ppi].features { case Some(pf) -> pf.declared; case None -> declaredFeatures }
+    val cfgFile = match pipeParseAndEraseTo(sink, packages[ppi].source, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    cfgFiles.add(cfgFile)
+    ppi = ppi + 1
+  }
+  // Dot-named functions declared through an imported alias carry the
+  // aliased type's name before anything indexes the packages (#8217).
+  val canonicalCfg = canonicalAliasDotNamedAll(cfgFiles)
+  var cci = 0
+  while cci < canonicalCfg.count {
+    cfgFiles[cci] = canonicalCfg[cci]
+    cci = cci + 1
+  }
+  // A component build expands its `@plugin` package into exports and host
+  // imports first, against every source package (docs/69 §9.3).
+  val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  for pf in cfgFiles {
+    PluginExpand.collectPluginPackage(pf, componentPlugins)
+  }
+  // The component shims of one package may name another package's `pub` types, so
+  // they are generated once every own package is parsed (docs/35 W4, cross-package
+  // types).  Other shapes pass the files through.
+  val parsedPeers: List[SourceFile] = newList()
+  var cpi = 0
+  while cpi < cfgFiles.count {
+    val pf = match pluginExpandForComponent(cfgFiles[cpi], shape, componentPlugins, nativePkgLabelAt(packages, cpi), nativePkgOriginsAt(originsByPkg, cpi), sink) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    parsedPeers.add(pf)
+    cpi = cpi + 1
+  }
+  var shi = 0
+  while shi < parsedPeers.count {
+    val shimFile = match shimForComponent(parsedPeers[shi], shape, componentPkgs, parsedPeers, sink) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    cfgFiles[shi] = shimFile
+    shi = shi + 1
+  }
+
+  // Pre-typecheck rewrite chain: alias rewrite and config-template expansion
+  // (a `pub config` template declares a `pub record` twin, docs/58 §3), matching
+  // the single-source path. The native bridge does not synthesise `@stubbable`
+  // stubs yet (docs/59 §9.2 divergence flag). Templates are collected from every
+  // own package, dependencies included (native compiles them from source), over
+  // alias-rewritten copies as on the managed targets.
+  val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // D207: every source package, for cross-package plugin references.
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  var wti = 0
+  while wti < cfgFiles.count {
+    PluginExpand.collectPluginPackage(cfgFiles[wti], plugins)
+    WireExpand.collectWireTemplates(
+      Aliases.rewriteFile(cfgFiles[wti]).items,
+      dottedPath(cfgFiles[wti].packageDecl.path),
+      noWires,
+      noConfigs
+    )
+    wti = wti + 1
+  }
+  val ownFiles0: List[SourceFile] = newList()
+  var owi = 0
+  while owi < cfgFiles.count {
+    // #6824 item 3: same label/origins attribution as the parse phase above
+    // for this package's wire/config-template and impl-default-inheritance
+    // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
+    // `cfgFiles` — no filtering happens between the two loops).
+    val f0 = match pipeExpandAndRewriteForTo(sink, "native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    ownFiles0.add(hoistModuleValInits(resolveProjectTypeAliasesNative(f0, cfgFiles)))
+    owi = owi + 1
+  }
+
+  // Parse the stdlib once (identical to the single-source path).
+  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
+  val importedPkgs: List[ImportedPackage] = newList()
+  for ip in stdlib.importedPkgs {
+    importedPkgs.add(ip)
+  }
+  val stdlibByPkg = stdlib.byPkg
+  // Each package's imports, recorded on its generics so Mono resolves a call
+  // in a specialised body in the declaring package's scope.
+  val originImportsByPkg: Map[String, List[String]] = newMap()
+  for spn in mapKeys(stdlibByPkg) {
+    match mapGet(stdlibByPkg, spn) {
+      case Some(sf) -> {
+        originImportsByPkg[spn] = pipeOriginImportsOf(sf.imports)
+      }
+      case None -> ()
+    }
+  }
+  for ownFile in ownFiles0 {
+    originImportsByPkg[dottedPath(ownFile.packageDecl.path)] = pipeOriginImportsOf(ownFile.imports)
+  }
+
+  // Every own package also contributes its cross-package items to the SAME
+  // `importedPkgs` pool every OTHER own package (and itself) type-checks
+  // against — mirroring `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s
+  // #6024 fix, which found that excluding a project's own entry package from
+  // its sibling-visible surface broke same-manifest import cycles (a kernel
+  // package importing back the package that imports it).  Including a
+  // package's own items in its own `importedPkgs` is harmless: the type
+  // checker resolves `Pkg.Type` references identically whether the name came
+  // from the file's own declarations or a same-named `ImportedPackage` entry.
+  var oipi = 0
+  while oipi < ownFiles0.count {
+    val f = ownFiles0[oipi]
+    val pkgItems: List[Item] = newList()
+    var ii = 0
+    while ii < f.items.count {
+      // #6580/#4900: these are the user's own project's sibling packages,
+      // so `internal` items must be visible too — matches the MSIL/JVM
+      // bridges' `pipeIsCrossPackageItemProject` for the identical
+      // own-project-sibling shape (stdlib above stays pub-only).
+      if pipeIsCrossPackageItemProject(f.items[ii]) {
+        pkgItems.add(f.items[ii])
+      }
+      ii = ii + 1
+    }
+    val pn = dottedPath(f.packageDecl.path)
+    importedPkgs.add(
+      ImportedPackage(
+        name = pn,
+        items = pkgItems,
+        imports = collectImportNames(f.imports),
+        wholeImports = collectWholeImportNames(f.imports)
+      )
+    )
+    oipi = oipi + 1
+  }
+  Some(
+    value = NativeProjectFrontEnd(
+      ownFiles = ownFiles0,
+      importedPkgs = importedPkgs,
+      stdlib = stdlib,
+      componentPkgs = componentPkgs,
+      originImportsByPkg = originImportsByPkg
+    )
+  )
+}
+
+// The middle-end options a native build checks and lowers a package with:
+// the build's, and `checkSourceTypesNative`'s and `checkProjectTypesNative`'s
+// for the passes up to the mode check.
+func nativeMiddleEndOptions(
+  pkgLabel: in String,
+  lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  checkedOut: in List[SourceFile],
+  recvClassesOut: in Map[String, String],
+  aritiesOut: in Map[String, Int],
+  genericItemsOut: in List[Item],
+  foreignRecordsOut: in List[ForeignValueRecord],
+  ioForbiddenReason: in String,
+  contractsEnabled: in Bool,
+): MiddleEndOptions {
+  // #7198, audited in #7201: see `compileToNativeWithFeatures`.
+  MiddleEndOptions(
+    tcFatal = true,
+    tcReport = false,
+    pkgLabel = pkgLabel,
+    lineOrigins = lineOrigins,
+    awaitInTryIsHazard = true,
+    bindListLiteralTypes = true,
+    awaitAsyncCalls = false,
+    contractsEnabled = contractsEnabled,
+    checkedSourceOut = checkedOut,
+    memberRecvClassesOut = recvClassesOut,
+    methodCallAritiesOut = aritiesOut,
+    typeArgCalleesOut = newMap(),
+    genericItemsOut = genericItemsOut,
+    foreignValueRecordsOut = foreignRecordsOut,
+    ioForbiddenReason = ioForbiddenReason,
+    nativeIntrinsics = true
+  )
+}
+
+// The passes up to the mode check on `file`, as a native build runs them, and
+// the build's rejection of a `config { }` block (N0025) after them, into
+// `sink`.
+func nativeCheckFront(
+  file: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  ioForbiddenReason: in String,
+  sink: in DiagSink,
+): Unit {
+  val opts = nativeMiddleEndOptions(label, origins, newList(), newMap(), newMap(), newList(), newList(), ioForbiddenReason, true)
+  match pipeCheckFront(file, importedPkgs, opts, sink) {
+    case Some(front) -> {
+      val _ = pipeGateTo(sink, label, origins, nativeConfigBlockDiagnostics(front.checked))
+    }
+    case None -> ()
+  }
+}
+
+/// What a native build of the single source `source` (for the host when
+/// `triple` is "") rejects it for, up to and including the mode check,
+/// without compiling anything (`lyric prove --target native`, #8311): every
+/// diagnostic of the build's own front end (`nativeSourceFrontEnd`: `@cfg`
+/// erasure by `target_os` too, the native standard library prepared as the
+/// build prepares it), of the passes up to the mode check with the build's
+/// options, and the build's N0025, attributed to `path` and never printed.
+/// The arguments are `compileToNativeWithFeatures`'s, for an ordinary
+/// binary.  The bundled standard-library packages are the compiler's, so
+/// they are not checked here.
+pub func checkSourceTypesNative(
+  source: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  defines: in List[String],
+  path: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val sink = collectDiagnostics(located)
+  match nativeSourceFrontEnd(source, stdlibFiles, triple, defines, path, "", activeFeatures, declaredFeatures, sink) {
+    case Some(fe) -> {
+      val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+      nativeCheckFront(fe.file, fe.stdlib.importedPkgs, path, noOrigins, "", sink)
+    }
+    case None -> ()
+  }
+  located
+}
+
+/// `checkSourceTypesNative` for a project: what a native build of `packages`
+/// rejects them for, up to and including the mode check, every package
+/// checked.  The arguments are `compileProjectToNativeWithShape`'s, for an
+/// ordinary binary.
+pub func checkProjectTypesNative(
+  packages: in List[NativeSourcePackage],
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val sink = collectDiagnostics(located)
+  match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, "", sink) {
+    case Some(fe) -> {
+      var i = 0
+      while i < fe.ownFiles.count {
+        nativeCheckFront(
+          fe.ownFiles[i],
+          fe.importedPkgs,
+          nativePkgLabelAt(packages, i),
+          nativePkgOriginsAt(originsByPkg, i),
+          if i < packages.count { packages[i].ioForbiddenReason } else { "" },
+          sink
+        )
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  located
 }
 
 /// `N0025`: a `config { }` block (D046, docs/25) has no lowering on native
