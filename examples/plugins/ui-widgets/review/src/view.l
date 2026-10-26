@@ -21,14 +21,12 @@ pub func view(m: in Model): View[Msg] {
   val rating: View[Msg] = widgetView(m.rating, toMsg)
   kids.add(rating)
   val scaleLabel = if m.maxStars == 5 then "Use a 10-star scale" else "Use a 5-star scale"
-  val scale: View[Msg] = button(scaleLabel, ToggleScale)
-  kids.add(keyed("scale", scale))
+  kids.add(keyed("scale", button(scaleLabel, ToggleScale)))
   val tagKids: List[View[Msg]] = newList()
   val tags: View[Msg] = widgetView(m.tags, toMsg)
   tagKids.add(tags)
   val tagCard: View[Msg] = card("Tags", tagKids)
   kids.add(tagCard)
-  val line: View[Msg] = paragraph(summary(m))
-  kids.add(keyed("summary", line))
+  kids.add(keyed("summary", paragraph(summary(m))))
   column(kids)
 }

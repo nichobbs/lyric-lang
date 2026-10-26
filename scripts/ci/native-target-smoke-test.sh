@@ -192,6 +192,9 @@ echo "Native zip_tests.l (--target native) passed"
 # #7508 cross-package case (#7675): an imported package's newList/mapGet
 # overrides the builtin intrinsic of the same name.
 bash scripts/ci/builtin-name-override-test.sh "$lyric_bin" native
+# A generic call passed to another generic takes its type argument from the
+# outer call's expected type (`keyed("k", paragraph("p"))`).
+bash scripts/ci/nested-generic-expected-test.sh "$lyric_bin" native
 # Byte-level piped child I/O on native (pipedReadBytes / pipedReadBytesWithin /
 # pipedWriteBytes over lyric-rt's lyric_process_piped_read_bytes_within and
 # lyric_process_piped_write_bytes), mixed with line reads, plus JSON-RPC over

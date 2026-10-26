@@ -150,9 +150,7 @@ func view(m: in Model): View[Msg] {
   for o in m.outcomes {
     log = log + "[" + o + "]"
   }
-  val line: View[Msg] = paragraph("Outcomes: " + log)
-  val outcomes: View[Msg] = keyed("outcomes", line)
-  kids.add(outcomes)
+  kids.add(keyed("outcomes", paragraph("Outcomes: " + log)))
   column(kids)
 }
 
