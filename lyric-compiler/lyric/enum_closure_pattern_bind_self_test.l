@@ -14,6 +14,10 @@
 //!   pattern-bind fallback hardcoded the bound variable's slot type to
 //!   `MObject` regardless of the real scrutinee type, leaving an
 //!   unboxed `int32` in an object-declared local.
+//! - #8591 (JVM): the same bind against `.indexOf`/`.lastIndexOf` on a
+//!   receiver that is not a local or field (a literal, an interpolation, a
+//!   concatenation, a call result) stayed an erased `Object`, so
+//!   `s.substring(i)` failed J008 at compile time.
 //!
 //! Run via native `lyric test` (imports only `Std.*`, no
 //! `LYRIC_LOAD_COMPILER=1` needed), mirroring `bitwise_self_test.l`.
@@ -73,5 +77,55 @@ test "match-arm-bound variable from lastIndexOf used directly as a call argument
       assertEqual(ext, ".c", "bound `lastDot` used directly in substring(lastDot)")
     }
     case None -> assertTrue(false, "expected Some")
+  }
+}
+
+func echo(s: in String): String {
+  s
+}
+
+test "indexOf on an interpolated receiver binds an Int" {
+  val s = "a.b.c"
+  match "${s}".indexOf(".") {
+    case Some(i) -> assertEqual(s.substring(i), ".b.c", "bound `i` used directly in substring(i)")
+    case None -> assertTrue(false, "expected Some")
+  }
+}
+
+test "lastIndexOf on a concatenation binds an Int" {
+  val s = "a.b"
+  match (s + ".c").lastIndexOf(".") {
+    case Some(i) -> assertEqualInt(i + 1, 4, "bound `i` is a real Int")
+    case None -> assertTrue(false, "expected Some")
+  }
+}
+
+test "indexOf on a method-call receiver binds an Int" {
+  val s = "  a=b  "
+  match s.trim().indexOf("=") {
+    case Some(i) -> assertEqual(s.trim().substring(0, i), "a", "bound `i` used directly in substring(0, i)")
+    case None -> assertTrue(false, "expected Some")
+  }
+}
+
+test "indexOf on a function-call receiver binds an Int" {
+  match echo("k=v").indexOf("=") {
+    case Some(i) -> assertEqual("k=v".substring(i + 1), "v", "bound `i` used in arithmetic")
+    case None -> assertTrue(false, "expected Some")
+  }
+}
+
+test "indexOf on a literal receiver bound to a local first" {
+  val found = "x.y".indexOf(".")
+  match found {
+    case Some(i) -> assertEqual("x.y".substring(i), ".y", "a local initialised from the call keeps the Int payload")
+    case None -> assertTrue(false, "expected Some")
+  }
+}
+
+test "indexOf on a literal receiver returns None when absent" {
+  match "abc".indexOf(".") {
+    case Some(_) -> assertTrue(false, "expected None")
+    case None -> assertTrue(true, "no match")
   }
 }

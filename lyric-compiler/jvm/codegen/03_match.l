@@ -875,6 +875,15 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
             val isStrRecv = match receiverClassOf(ctx, recv) { case Some(c) -> c == "java/lang/String"; case None -> false }
             if isStrRecv and ctx.importsStdString and (memberName == "indexOf" or memberName == "lastIndexOf") {
               funcSigRetGenericArgs(mapGet(ctx.funcSigs, "Std/String/" + memberName + "@2"))
+            } else if ctx.callSiteRetGenericArgs.containsKey(methodCallSiteKey(fn)) {
+              // The same routing for a receiver `receiverClassOf` cannot
+              // type (a literal, interpolation, concatenation or call),
+              // recorded by `lowerMethodCall` when it lowered this call
+              // (#8591).
+              match mapGet(ctx.callSiteRetGenericArgs, methodCallSiteKey(fn)) {
+                case Some(rga) -> rga
+                case None -> newList()
+              }
             } else {
               match qualifiedDotNamedSigJvm(ctx, recv, memberName, callArgs.count) {
                 case Some(qsig) -> qsig.retGenericArgs

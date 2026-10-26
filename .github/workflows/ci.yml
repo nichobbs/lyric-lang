@@ -1802,10 +1802,9 @@ jobs:
       # Pins two self-hosted MSIL backend bugs: a payload-free `enum`
       # co-compiled with a closure crashing `Msil.Lowering` (#5361), and a
       # `match`-arm-bound variable used directly as a call argument crashing
-      # with `InvalidProgramException` (#5364). MSIL-only — dotnet target
-      # only; the JVM backend has an unrelated auto-FFI gap for this shape,
-      # tracked separately. Run via native `lyric test` (imports only
-      # `Std.*`), asserting every runtime value.
+      # with `InvalidProgramException` (#5364). The JVM half runs in the
+      # `compiler-self-tests-jvm` job (#8591). Run via native `lyric test`
+      # (imports only `Std.*`), asserting every runtime value.
       - name: Enum/closure/pattern-bind self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -4231,6 +4230,16 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/match_bound_pattern_type_self_test.l
+
+      # Enum/closure/pattern-bind self-test on JVM (#8591) — the JVM half of
+      # the dotnet-job step of the same name, including the `case Some(i)`
+      # bind of `.indexOf`/`.lastIndexOf` on a literal, interpolated,
+      # concatenated or call-result receiver.
+      - name: Enum/closure/pattern-bind self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/enum_closure_pattern_bind_self_test.l
 
       # Nested-slice for-loop self-test on JVM (#6541) — the load-bearing
       # target for this fix: a `for`-in-`for` loop over a nested

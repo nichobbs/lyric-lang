@@ -862,6 +862,16 @@ pub record FuncCtx {
   // rule (see `varGenericArgs` above); initialised `newMap()` at every
   // `FuncCtx` construction site.
   funcValRetTypes: Map[String, JvmType]
+  // Method-call site key (`methodCallSiteKey`) -> the generic args of the
+  // call's result, for a call whose result type is decided only while it is
+  // lowered: `.indexOf`/`.lastIndexOf` routes through `Std.String`'s
+  // `Option[Int]` function when the LOWERED receiver is a `String`, which
+  // `scrutineeGenericArgs` cannot tell for a literal, interpolation,
+  // concatenation or call receiver (#8591). Recorded by `lowerMethodCall`,
+  // read by `scrutineeGenericArgs` after the call has been lowered. No
+  // default per the JVM-codegen no-defaulted-field rule; initialised
+  // `newMap()` at every `FuncCtx` construction site.
+  callSiteRetGenericArgs: Map[String, List[TypeExpr]]
   // Wire-binding resolution (#5013): when lowering a `wire { }` block binding's
   // init expression, `wireClassName` is the wire's JVM class name (e.g.
   // "Pkg/WidgetWire") and `wireBindingTypes` maps every already-declared
