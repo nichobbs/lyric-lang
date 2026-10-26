@@ -3006,7 +3006,9 @@ func jvmProjectFrontEnd(
 // A JVM front-end error with no diagnostic of its own: printed as the build
 // has always printed it, or collected into `sink` at `span` (the start of the
 // file when None) under `label`.
-func jvmFrontEndError(sink: in DiagSink, label: in String, span: in Option[Span], message: in String, hint: in String): Unit {
+func jvmFrontEndError(
+  sink: in DiagSink, label: in String, span: in Option[Span], message: in String, hint: in String
+): Unit {
   if sink.collect {
     val text = if hint.length > 0 { message + " (" + hint + ")" } else { message }
     val at = match span { case Some(sp) -> sp; case None -> pointSpan(initialPosition()) }
@@ -3206,7 +3208,6 @@ func jvmBundleClosure(fe: in JvmProjectFrontEnd, restoredArtifacts: in List[Synt
   }
   toBundle
 }
-
 
 /// Like `compileProjectToJarBundledWithFeatures` but accepts a list of
 /// restored-dependency `SynthesisedArtifact`s (#3094): the consumer's `import

@@ -2620,7 +2620,15 @@ func typeCheckProjectJvm(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagn
 
 func typeCheckProjectNative(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  val inputs = nativeProjectInputs(req.packages, req.activeFeatures, req.declaredFeatures, req.packageFeatures, "", true, located)
+  val inputs = nativeProjectInputs(
+    req.packages,
+    req.activeFeatures,
+    req.declaredFeatures,
+    req.packageFeatures,
+    "",
+    true,
+    located
+  )
   if inputs.failed {
     return located
   }

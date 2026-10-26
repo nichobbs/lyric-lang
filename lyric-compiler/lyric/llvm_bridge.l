@@ -1240,7 +1240,11 @@ func shapeStackSize(spec: in ShapeSpec): String {
 /// package's AST and record its exports in `pkgs`; any other shape passes the
 /// file through.  Reports the shims' `W0040` notes and an internal failure.
 func shimForComponent(
-  file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg], peers: in List[SourceFile], sink: in DiagSink
+  file: in SourceFile,
+  shape: in String,
+  pkgs: in List[ComponentPkg],
+  peers: in List[SourceFile],
+  sink: in DiagSink,
 ): Option[SourceFile] {
   if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
@@ -2352,7 +2356,17 @@ func nativeCheckFront(
   ioForbiddenReason: in String,
   sink: in DiagSink,
 ): Unit {
-  val opts = nativeMiddleEndOptions(label, origins, newList(), newMap(), newMap(), newList(), newList(), ioForbiddenReason, true)
+  val opts = nativeMiddleEndOptions(
+    label,
+    origins,
+    newList(),
+    newMap(),
+    newMap(),
+    newList(),
+    newList(),
+    ioForbiddenReason,
+    true
+  )
   match pipeCheckFront(file, importedPkgs, opts, sink) {
     case Some(front) -> {
       val _ = pipeGateTo(sink, label, origins, nativeConfigBlockDiagnostics(front.checked))

@@ -1316,10 +1316,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 /// their own bridges' (`Jvm.Bridge.checkProjectTypesJvm`,
 /// `Lyric.LlvmBridge.checkSourceTypesNative`, #8311).
 pub func checkSourceTypes(
-  source: in String,
-  stdlibSources: in List[String],
-  defines: in List[String],
-  path: in String,
+  source: in String, stdlibSources: in List[String], defines: in List[String], path: in String
 ): List[DiagUtil.LocatedDiagnostic] {
   val noFeatures: List[String] = newList()
   checkSourceTypesForFeatures(source, stdlibSources, defines, path, noFeatures, noFeatures)
@@ -1368,9 +1365,7 @@ pub func checkSourceTypesForFeatures(
 // The middle-end options a dotnet build checks a package with, as far as the
 // passes up to the mode check read them.
 func checkOptions(
-  label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
-  ioForbiddenReason: in String,
+  label: in String, origins: in List[DiagUtil.MergedLineOrigin], ioForbiddenReason: in String
 ): MiddleEndOptions {
   MiddleEndOptions(
     tcFatal = true,
@@ -1646,13 +1641,26 @@ func frontEndParse(
   origins: in List[DiagUtil.MergedLineOrigin],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
-  pipeParseAndEraseTo(frontEndSink(collect, located), source, targetName, activeFeatures, declaredFeatures, defines, label, origins)
+  pipeParseAndEraseTo(
+    frontEndSink(collect, located),
+    source,
+    targetName,
+    activeFeatures,
+    declaredFeatures,
+    defines,
+    label,
+    origins
+  )
 }
 
 // Where the front end's diagnostics go: printed, or with `collect` attributed
 // into `located`.
 func frontEndSink(collect: in Bool, located: in List[DiagUtil.LocatedDiagnostic]): DiagSink {
-  if collect { collectDiagnostics(located) } else { printDiagnostics() }
+  if collect {
+    collectDiagnostics(located)
+  } else {
+    printDiagnostics()
+  }
 }
 
 // `pipeExpandAndRewrite` with the rewrites `targetName`'s build runs, or with
@@ -1668,7 +1676,16 @@ func frontEndExpand(
   origins: in List[DiagUtil.MergedLineOrigin],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
-  pipeExpandAndRewriteForTo(frontEndSink(collect, located), targetName, file, weWires, weConfigs, plugins, label, origins)
+  pipeExpandAndRewriteForTo(
+    frontEndSink(collect, located),
+    targetName,
+    file,
+    weWires,
+    weConfigs,
+    plugins,
+    label,
+    origins
+  )
 }
 
 /// What a dotnet build rejects a project for, up to and including the mode
