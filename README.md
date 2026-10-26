@@ -58,9 +58,13 @@ curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/in
 curl -fsSL https://raw.githubusercontent.com/nichobbs/lyric-lang/main/scripts/install.sh | sh -s -- --dir /usr/local/bin
 ```
 
-### Build the compiler (development)
+### Build the compiler from source (compiler developers only)
 
-To build Lyric from source for development work:
+You only need to build the compiler from source if you are **actively making changes to the compiler itself** (i.e. editing files in `lyric-compiler/`). 
+
+If you are developing standard/ecosystem libraries or building user applications, please use the binary release installer above.
+
+To build the compiler:
 
 ```sh
 # Bootstrap the self-hosted Lyric compiler. This downloads the latest
@@ -71,22 +75,22 @@ make lyric
 
 ### Compile and run a Lyric program
 
-User-facing commands flow through the AOT entry-point binary built by
-the bootstrap pipeline. After `make lyric`:
+User-facing commands flow through the `lyric` binary (either installed globally via the script or accessed locally under `./bin/lyric` after building from source).
 
 ```sh
 # Build: writes hello.dll + hello.runtimeconfig.json alongside hello.l
-./bin/lyric build hello.l
+lyric build hello.l
 
 # Build + run in one step
-./bin/lyric run hello.l
+lyric run hello.l
 
 # Pass args to the program
-./bin/lyric run hello.l -- arg1 arg2
+lyric run hello.l -- arg1 arg2
 ```
 
-`build` is incremental — re-running with the same source and stdlib files is
-a no-op.  Pass `--force` to always rebuild.
+*(Note: If you built the compiler from source, replace `lyric` with `./bin/lyric` in the commands above).*
+
+`build` is incremental — re-running with the same source and stdlib files is a no-op. Pass `--force` to always rebuild.
 
 ```lyric
 package Hello

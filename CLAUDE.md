@@ -1202,7 +1202,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   SAME package as its `_kernel/` twin and wins by basename in the
   native source loader (`Lyric.Emitter.findStdlibSourcesNative`).
 
-Build: `make lyric`.
+Build: `make lyric` (Only required if you are actively making changes to the compiler source code under `lyric-compiler/`. If you are developing standard or ecosystem libraries, or writing user programs, you do not need to rebuild the compiler; you can simply use the pre-built installed release binary via `scripts/install.sh`).
 
 Run tests:
 ```bash
