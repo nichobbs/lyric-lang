@@ -126,3 +126,4 @@ lyric-stdlib/.lyric.seed.toml
 
 # `lyric bench` build output
 .lyric-bench/
+scratch/
