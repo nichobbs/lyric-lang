@@ -8,7 +8,8 @@ name   = "nested-generic-expected"
 output = "single"
 
 [project.packages]
-"NestedLib" = "src/nested_lib.l"
+"NestedLib"  = "src/nested_lib.l"
+"NestedMain" = "src/main.l"
 
 [project.tests]
 "NestedTests" = "tests/nested_tests.l"

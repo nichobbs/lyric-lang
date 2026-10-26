@@ -11966,6 +11966,63 @@ func lambdaParamWant(
   typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
 }
 
+/// The type a call argument `ax` at parameter `pi` of generic function `fd`
+/// is expected to have, when that parameter's type mentions a type parameter:
+/// bound from the arguments lowered before it, then, for what they leave
+/// unbound, from the call's expected type `retWant` through `fd`'s declared
+/// return type.  None when `ax` is not a call or a type parameter stays
+/// unbound.
+func genericCallArgWant(
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  pi: in Int,
+  ax: in Expr,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
+  retWant: in Option[NType],
+): Option[NType] {
+  if pi >= fd.params.count or not isCallExpr(ax) {
+    return None
+  }
+  val noneBound: List[String] = newList()
+  if not teMentionsUnbound(fd.params[pi].ty, paramNames, noneBound) {
+    return None
+  }
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
+  var j = 0
+  while j < rawVals.count and j < pi {
+    match rawVals[j].ty {
+      case NVoid -> ()
+      case _ -> unifyTyArg(ctx, fd.params[j].ty, rawVals[j].ty, paramNames, boundNames, boundTys)
+    }
+    j = j + 1
+  }
+  if teMentionsUnbound(fd.params[pi].ty, paramNames, boundNames) {
+    match retWant {
+      case Some(w) -> match fd.ret {
+        case Some(rte) -> unifyTyArg(ctx, rte, w, paramNames, boundNames, boundTys)
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  if teMentionsUnbound(fd.params[pi].ty, paramNames, boundNames) {
+    return None
+  }
+  typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
+}
+
+func isCallExpr(e: in Expr): Bool {
+  match e.kind {
+    case ECall(_, _) -> true
+    case EParen(inner) -> isCallExpr(inner)
+    case _ -> false
+  }
+}
+
 /// As `lambdaParamWant`, but binding from every lowered argument (used for
 /// a lambda deferred past the arguments after it).
 func lambdaParamWantAt(
@@ -12187,7 +12244,21 @@ func lowerGenericFnCallWith(
         // non-generic function does (`lowerArgAgainst`).
         rawVals.add(lowerByRefPlace(ctx, insns, ax))
       } else {
-        rawVals.add(lowerExpr(ctx, insns, ax))
+        // A call passed where the parameter's type mentions a type parameter
+        // takes that type, bound from the earlier arguments and the call's own
+        // expected type, as the hint its own inference may need:
+        // `keyed("k", paragraph("p"))` in a `View[Msg]` position gives
+        // `paragraph` its `Msg`.  A hint never overrides what the inner call's
+        // arguments bind, and a non-generic call ignores it.
+        match genericCallArgWant(ctx, fd, pi, ax, rawVals, fnTyParamNames, seedNames, seedTys, retWant) {
+          case Some(w) -> {
+            ctx.pendingCallRetWant.clear()
+            ctx.pendingCallRetWant.add(w)
+            rawVals.add(lowerExpr(ctx, insns, ax))
+            ctx.pendingCallRetWant.clear()
+          }
+          case None -> rawVals.add(lowerExpr(ctx, insns, ax))
+        }
       }
     }
     pi = pi + 1
