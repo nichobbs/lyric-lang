@@ -20,7 +20,6 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.ProcessHost
-import Std.Ffi
 
 extern type NetFile = "System.IO.File"
 
@@ -265,24 +264,46 @@ pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
 @library("libSystem.Native")
 extern func sysLStat(path: NativePtr[Byte], output: NativePtr[Byte]): Int = "SystemNative_LStat"
 
+// The buffers go through `Marshal` rather than `Std.Ffi`, whose byte loads
+// and stores are unverifiable IL; these calls keep the kernel verifiable.
 @unsafe_ffi
 @externStatic
 @externTarget("System.Runtime.InteropServices.Marshal.ReadInt32")
 func netReadInt32(ptr: in NativePtr[Byte], ofs: in Int): Int = ()
 
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.AllocHGlobal")
+func netAllocHGlobal(size: in Int): NativePtr[Byte] = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.FreeHGlobal")
+func netFreeHGlobal(ptr: in NativePtr[Byte]): Unit = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8")
+func netStringToUtf8(s: in String): NativePtr[Byte] = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.FreeCoTaskMem")
+func netFreeCoTaskMem(ptr: in NativePtr[Byte]): Unit = ()
+
 // Room for a `FileStatus` (under 160 bytes in every release so far).
-val fileStatusSize: Long = 256
+val fileStatusSize: Int = 256
 
 /// The file type bits (`mode & 0xF000`) of `path` itself, or -1 when it
 /// cannot be examined (missing, or an inaccessible parent).
 @unsafe_ffi
 func lstatFileType(path: in String): Int {
-  val cpath = toCString(path)
-  val status = allocate(fileStatusSize)
+  val cpath = netStringToUtf8(path)
+  val status = netAllocHGlobal(fileStatusSize)
   // `Mode`, an int32 in host byte order, follows the int32 `Flags`.
   val mode = if sysLStat(cpath, status) == 0 { netReadInt32(status, 4) } else { -1 }
-  release(status)
-  release(cpath)
+  netFreeHGlobal(status)
+  netFreeCoTaskMem(cpath)
   if mode < 0 {
     -1
   } else {
