@@ -302,6 +302,30 @@ test "entryKind looks at the entry itself, and listEntries lists every kind" {
   val _ = Std.Process.run("rm", rmArgs)
 }
 
+// A FIFO and a device node are neither files nor directories on any target,
+// .NET included, whose `FileSystemInfo` reports them as files (#8578).
+test "entryKind reports a FIFO and a device node as Other" {
+  if not Std.Environment.isWindows() {
+    val dir = scratchDir("entry_kind_other")
+    val _ = deleteDirRecursive(dir)
+    val _ = createDir(dir)
+    val fifoArgs: List[String] = newList()
+    fifoArgs.add(dir + "/fifo")
+    match Std.Process.run("mkfifo", fifoArgs) {
+      case Ok(code) -> assertEqualInt(code, 0, "mkfifo")
+      case Err(e) -> panic("mkfifo failed: " + IOError.message(e))
+    }
+    assertTrue(entryKind(dir + "/fifo") == Other, "a FIFO")
+    assertTrue(entryKind("/dev/null") == Other, "a character device")
+    val _ = writeText(dir + "/plain", "x")
+    assertTrue(entryKind(dir + "/plain") == RegularFile, "a file beside them")
+    val rmArgs: List[String] = newList()
+    rmArgs.add("-rf")
+    rmArgs.add(dir)
+    val _ = Std.Process.run("rm", rmArgs)
+  }
+}
+
 test "rename moves a file or a directory and refuses an existing target" {
   val dir = scratchDir("rename")
   val _ = deleteDirRecursive(dir)
