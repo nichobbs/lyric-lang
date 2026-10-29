@@ -275,7 +275,7 @@ func asciiLower(s: in String): String {
   var i = 0
   while i < s.length {
     val c = codeUnitAt(s, i)
-    acc = acc + (if c >= 65 and c <= 90 { "abcdefghijklmnopqrstuvwxyz".substring(c - 65, 1) } else { s.substring(i, 1) })
+    acc = acc + (if c >= 65 and c <= 90 { (c + 32).toChar().toString() } else { s.substring(i, 1) })
     i = i + 1
   }
   acc

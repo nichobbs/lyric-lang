@@ -1126,7 +1126,7 @@ plugin and a screen that uses it.
 | P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
 | P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`; examples and CI scripts signed with a test key | Done; signed generator lock entries wait for restored generators (#8580) |
-| P8 | Catalogues (§12, D248, D265): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, `pack --zip`, `Std.PluginCatalogue`, `K0120`-`K0123` | Done; the compiler's private zip readers move to `Std.Zip` in #8582 |
+| P8 | Catalogues (§12, D248, D265): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, `pack --zip`, `Std.PluginCatalogue`, `K0120`-`K0123` | Done; the compiler's private zip readers moved to `Std.Zip` in #8582 |
 
 Out of scope for every phase: plugins declaring their own plugin points, calls
 from one plugin to another, and unloading or hot reload in trusted mode

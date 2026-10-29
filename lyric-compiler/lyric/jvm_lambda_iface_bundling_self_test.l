@@ -13,7 +13,7 @@
 //! (confirmed via `lyric run --target jvm lyric-stdlib/tests/core_tests.l`).
 //!
 //! Most of these tests drive `Jvm.Bridge.compileToJarBundled` in-process and
-//! inspect the produced JAR's raw ZIP central directory via `Jvm.ZipReader`
+//! inspect the produced JAR's raw ZIP central directory via `Std.Zip`
 //! — a structural (build-time) check of what the bundler wrote, matching the
 //! bug's own framing ("the bundler omits a class") rather than a full `java`
 //! run.
@@ -33,8 +33,8 @@
 //! actually works end to end now, not just that one interface entry exists.
 //!
 //! Placed in `lyric-compiler/lyric/` (not `lyric-compiler/jvm/`) so it can
-//! import `Jvm.Bridge` / `Jvm.ZipReader` from the pre-compiled stage-1 bundle
-//! DLLs, mirroring `jvm_auto_ffi_bridge_self_test.l` / `deflate_zip_self_test.l`.
+//! import `Jvm.Bridge` from the pre-compiled stage-1 bundle DLLs, mirroring
+//! `jvm_auto_ffi_bridge_self_test.l`.
 //! Run on the default (`dotnet`) target — the pipeline under test
 //! (`compileToJarBundled` / `compileProjectToJarBundledWithFeatures`) always
 //! emits JVM bytecode (and the last test's `java -jar` run genuinely executes
@@ -56,11 +56,11 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Jvm.Bridge
-import Jvm.ZipReader
+import Std.Zip as Zip
 
 // Shared functional-interface binary name (`Jvm.Codegen.lambdaIfaceName`),
 // duplicated here as a literal since the self-hosted `Jvm.Codegen` package
-// isn't imported by this file (only `Jvm.Bridge` / `Jvm.ZipReader` are).
+// isn't imported by this file (only `Jvm.Bridge` / `Std.Zip` are).
 val sharedLambdaIfaceEntry: String = "Lyric/Lyric$Lambda.class"
 
 func tempBase(): String {
@@ -90,7 +90,10 @@ func jarEntryNames(dir: in String, stem: in String, source: in String): List[Str
   val ok = compileToJarBundled(source, outPath, stem, noStdlib, "")
   assertTrue(ok, "compileToJarBundled(" + stem + "): compilation must succeed")
   val bytes = File.readBytesOrPanic(outPath)
-  val entries = readZipEntries(bytes)
+  val entries = match Zip.readZipDirectory(bytes, Zip.defaultZipLimits()) {
+    case Ok(es) -> es
+    case Err(e) -> panic("the JAR is not a readable zip: " + Zip.zipErrorMessage(e))
+  }
   val names: List[String] = newList()
   var i = 0
   while i < entries.count {

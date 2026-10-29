@@ -48,17 +48,6 @@ func oneFollowed(f: in FollowedCatalogue): List[FollowedCatalogue] {
   xs
 }
 
-// `b` with one more byte, built through a list so the slice has the same
-// representation on every backend.
-func withTrailingZero(b: in slice[Byte]): slice[Byte] {
-  val acc: List[Byte] = newList()
-  for x in b {
-    acc.add(x)
-  }
-  acc.add(0u8)
-  acc.toArray()
-}
-
 func scratch(label: in String): String {
   val base = getVarOrDefault("TMPDIR", "/tmp")
   val dir = base + "/lyric_catalogue_tests_" + label
@@ -308,7 +297,7 @@ test "K0123 and refused artifacts" {
   // A changed zip no longer matches its sha256.
   val zipPath = work + "/cat/artifacts/acme.tools-1.0.0.zip"
   val good = match readBytes(zipPath) { case Ok(b) -> b; case Err(e) -> panic(IOError.message(e)) }
-  val _ = writeBytes(zipPath, withTrailingZero(good))
+  val _ = writeBytes(zipPath, good.concat([0u8]))
   expectCode(installPlugin(followed, "acme.tools", None, work + "/plugins"), "K0123", "a changed zip")
   assertTrue(not dirExists(work + "/plugins/acme.tools-1.0.0"), "nothing was installed")
   // A zip signed by a key the catalogue does not list.

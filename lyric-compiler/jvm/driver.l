@@ -49,7 +49,7 @@ pub func writeJarFromClasses(req: in BuildRequest, classes: in List[BuiltClass])
 // name and its raw byte content. Plain parallel lists rather than a
 // `Jvm.Zip.ZipEntry` list: passing that record across the `Jvm.Bridge` →
 // `Jvm.Driver` boundary used to hit a cross-file nominal-type-identity
-// mismatch (`Jvm.Bridge` also imports `Jvm.AutoFfi`, which imports
+// mismatch (`Jvm.Bridge` also imported `Jvm.AutoFfi`, which then imported
 // `Jvm.ZipReader` — a DIFFERENT, same-named `ZipEntry` record — and a
 // qualified `Jvm.Zip.ZipEntry` reference at the `Jvm.Bridge` call site
 // resolved to the wrong one). Root-caused and fixed in #6689

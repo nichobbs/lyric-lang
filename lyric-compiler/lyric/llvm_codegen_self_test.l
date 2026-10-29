@@ -782,6 +782,33 @@ test "String + Char concatenation and Char.toString(), across literal/annotated-
   )
 }
 
+// #8579 item 3: a `.toChar()` call result is a `Char` whatever its receiver,
+// so `.toString()` on it, `String + it`, and a binding initialised from it
+// format the character, not the code point's digits.
+test "toChar() results format as characters: toString, concatenation, if-branch, and binding" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func lower(c: in Int): String {\n" +
+    "  if c >= 65 and c <= 90 { (c + 32).toChar().toString() } else { c.toChar().toString() }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val c = 82\n" +
+    "  println((c + 32).toChar().toString())\n" +
+    "  println(\"<\" + (c + 1).toChar())\n" +
+    "  val ch = c.toChar()\n" +
+    "  println(ch.toString())\n" +
+    "  println(\"a\" + lower(81) + lower(122))\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "toChar() formatting exit")
+  assertEqual(r.stdout, "r\n<S\nR\naqz\n", "toChar() results print as characters")
+}
+
 // #7010 (claude-review REQUIRED finding on #6237): `Ctx.varIsChar` is
 // populated at `val`/`let`/`var` binding sites via `markVarChar`, but the
 // for-loop element bind, `bindTuplePattern`, and `applyPatternBinds`

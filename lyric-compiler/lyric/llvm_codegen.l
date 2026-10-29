@@ -730,8 +730,17 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
     // already distinguishes (`exprIsStringTyped`).
     case EIndex(recv, _) -> exprIsStringTyped(ctx, recv) or exprIsCharCollection(ctx, recv)
     case EMember(recv, field) -> memberIsChar(ctx, recv, field)
-    // A call to a function declared to return `Char` (`charAtOrReplacement`).
-    case ECall(fn, args) -> callReturnsChar(ctx, fn, freeCallArity(ctx, fn, args.count))
+    // `x.toChar()` always yields `Char` whatever its receiver (#8579);
+    // otherwise a call to a function declared to return `Char`
+    // (`charAtOrReplacement`).
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(_, m) -> if m == "toChar" {
+        args.count == 0
+      } else {
+        callReturnsChar(ctx, fn, freeCallArity(ctx, fn, args.count))
+      }
+      case _ -> callReturnsChar(ctx, fn, freeCallArity(ctx, fn, args.count))
+    }
     case _ -> false
   }
 }
@@ -7907,6 +7916,15 @@ func registerHeapTypes(
         val bareKey = ed.cases[eci].name
         if not ctx.enumDefs.containsKey(bareKey) {
           ctx.enumDefs.add(bareKey, eci)
+        }
+        // Package-qualified case name (#8579): `File.RegularFile` under
+        // `import Std.File as File` reaches codegen as
+        // `Std.File.RegularFile`, the spelling the type checker requires
+        // for a case of an aliased import (the enum twin of #7933's
+        // union-case `pkg.Case` key).
+        val pkgCaseKey = u.pkgName + "." + bareKey
+        if not ctx.enumDefs.containsKey(pkgCaseKey) {
+          ctx.enumDefs.add(pkgCaseKey, eci)
         }
         eci = eci + 1
       }

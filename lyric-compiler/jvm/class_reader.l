@@ -1,7 +1,7 @@
 //! jvm/class_reader.l — Java class-file parser for auto-FFI method extraction.
 //!
-//! Parses the JVMS §4 class-file format from a List[Int] (bytes 0-255, as
-//! produced by Jvm.Deflate.inflate / Jvm.ZipReader.extractEntry) and returns
+//! Parses the JVMS §4 class-file format (the bytes of a `.class` entry, as
+//! `Std.Zip.readZipEntry` returns them) and returns
 //! the public-method surface of the class: names, JVM descriptors, and
 //! static/instance flags.  Skips enums and annotations; classes and
 //! interfaces are both parsed (`ClassInfo.isInterface` distinguishes them
@@ -24,16 +24,15 @@ import Std.Collections
 import Std.Encoding
 
 // ── Big-endian u2/u4 readers ──────────────────────────────────────────────────
-// Bytes in List[Int] are already 0-255 (produced by inflate/extractEntry).
-func rdU8(b: in List[Int], o: in Int): Int {
-  b[o]
+func rdU8(b: in slice[Byte], o: in Int): Int {
+  b[o].toInt()
 }
 
-func rdU16(b: in List[Int], o: in Int): Int {
+func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) * 256 + rdU8(b, o + 1)
 }
 
-func rdU32(b: in List[Int], o: in Int): Int {
+func rdU32(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) * 16777216 + rdU8(b, o + 1) * 65536 + rdU8(b, o + 2) * 256 + rdU8(b, o + 3)
 }
 
@@ -113,7 +112,7 @@ func setSStr(m: in Map[String, String], k: in String, v: in String): Unit {
 // encoded as its own 3-byte sequence (CESU-8).  Such a pair decodes to one
 // code point; an unpaired surrogate becomes U+FFFD, since a `Char` is a
 // BMP scalar value (#7252).  Malformed bytes are skipped.
-func readUtf8Entry(b: in List[Int], pos: in Int): String {
+func readUtf8Entry(b: in slice[Byte], pos: in Int): String {
   val len = rdU16(b, pos)
   var s = ""
   var i = 0
@@ -155,7 +154,7 @@ func readUtf8Entry(b: in List[Int], pos: in Int): String {
 }
 
 // The 16-bit value of the 3-byte UTF-8 sequence starting at byte `at`.
-func utf8Unit3(b: in List[Int], at: in Int): Int {
+func utf8Unit3(b: in slice[Byte], at: in Int): Int {
   (rdU8(b, at) % 16) * 4096 + (rdU8(b, at + 1) % 64) * 64 + rdU8(b, at + 2) % 64
 }
 
@@ -167,7 +166,7 @@ record PoolStep {
   isDouble: Bool   // true for Long (tag 5) and Double (tag 6): consume two pool slots
 }
 
-func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
+func poolEntryEnd(b: in slice[Byte], pos: in Int): PoolStep {
   val tag = rdU8(b, pos)
   if tag == 1 {
     // CONSTANT_Utf8: tag + 2-byte length + length bytes
@@ -197,7 +196,7 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 // ACC_ABSTRACT  = 0x0400 = 1024
 // ACC_ENUM      = 0x4000 = 16384
 // ACC_ANNOTATION= 0x2000 = 8192
-/// Parse a Java class file (bytes as List[Int]) and return its method surface.
+/// Parse a Java class file and return its method surface.
 /// Returns None if the class is an annotation, or the data is too short to be
 /// a valid class file.  Package-private and abstract classes are included:
 /// they appear in superclass chains (e.g. `AbstractStringBuilder` is
@@ -206,8 +205,8 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 /// extern types.  Enums are included so auto-FFI can resolve enum-constant
 /// static-field reads (`RoundingMode.HALF_EVEN`) and enum-typed method
 /// arguments (`BigDecimal.setScale(int, RoundingMode)`).
-pub func parseClass(b: in List[Int]): Option[ClassInfo] {
-  if b.count < 8 {
+pub func parseClass(b: in slice[Byte]): Option[ClassInfo] {
+  if b.length < 8 {
     return None
   }
 
@@ -243,7 +242,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   }
 
   // access_flags, this_class, super_class
-  if pos + 6 > b.count {
+  if pos + 6 > b.length {
     return None
   }
   val accessFlags = rdU16(b, pos)
@@ -284,7 +283,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   // index to a CONSTANT_Class_info, resolved through classMap -> utf8Map exactly
   // like super_class above.  Used by the auto-FFI resolver to verify reference
   // assignability (e.g. ArrayList IS-A java/util/List) when ranking overloads.
-  if pos + 2 > b.count {
+  if pos + 2 > b.length {
     return None
   }
   val ifaceCount = rdU16(b, pos)
@@ -292,7 +291,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val interfaces: List[String] = newList()
   var ii = 0
   while ii < ifaceCount {
-    if pos + 2 > b.count {
+    if pos + 2 > b.length {
       return None
     }
     val ifaceCpIdx = rdU16(b, pos)
@@ -309,7 +308,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   // Public fields are collected (reusing the ClassMethod shape with the FIELD
   // descriptor) so the auto-FFI can resolve static constants like `System.out`
   // and `Duration.ZERO` as `getstatic`.
-  if pos + 2 > b.count {
+  if pos + 2 > b.length {
     return None
   }
   val fieldCount = rdU16(b, pos)
@@ -317,7 +316,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val fields: List[ClassMethod] = newList()
   var fi = 0
   while fi < fieldCount {
-    if pos + 8 > b.count {
+    if pos + 8 > b.length {
       return None
     }
     val fAccess = rdU16(b, pos)
@@ -338,7 +337,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     }
     var ai = 0
     while ai < attrCount {
-      if pos + 6 > b.count {
+      if pos + 6 > b.length {
         return None
       }
       val attrLen = rdU32(b, pos + 2)
@@ -349,7 +348,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   }
 
   // Parse methods.
-  if pos + 2 > b.count {
+  if pos + 2 > b.length {
     return None
   }
   val methodCount = rdU16(b, pos)
@@ -359,7 +358,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
 
   var mi = 0
   while mi < methodCount {
-    if pos + 8 > b.count {
+    if pos + 8 > b.length {
       return None
     }
     val mAccess = rdU16(b, pos)
@@ -371,7 +370,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     // Skip attributes.
     var ai = 0
     while ai < attrCount {
-      if pos + 6 > b.count {
+      if pos + 6 > b.length {
         return Some(
           value = ClassInfo(
             binaryName = binaryName,

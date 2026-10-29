@@ -10,7 +10,7 @@ import Std.ProcessCapture as ProcessCapture
 import Std.Hash as Hash
 import Std.Directory as Dir
 import Std.Console as Console
-import Jvm.ZipReader as Zip
+import Std.Zip as Zip
 import Lyric.Manifest as Mf
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -352,15 +352,38 @@ func fileNameFromUrl(url: in String): String {
   Path.basename(noQuery)
 }
 
-func writeIntBytes(path: in String, ints: in List[Int]): Bool {
-  val bytes: List[Byte] = newList()
-  for n in ints {
-    bytes.add(n.toByte())
-  }
-  match File.writeBytes(path, bytes.toArray()) {
+/// As many entries as a zip without ZIP64 can hold (a prebuilt archive may
+/// bundle a whole SDK), each at most `prebuiltOutputCap` bytes.
+func prebuiltZipLimits(): Zip.ZipLimits {
+  Zip.ZipLimits(
+    maxEntries = 65535,
+    maxEntrySize = prebuiltOutputCap.toLong(),
+    maxTotalSize = 4294967296i64,
+    maxRatio = 1000i64
+  )
+}
+
+func writeMemberBytes(path: in String, bytes: in slice[Byte]): Bool {
+  match File.writeBytes(path, bytes) {
     case Ok(_) -> true
     case Err(_) -> false
   }
+}
+
+/// The contents of the zip member `name`, `None` when the archive has no such
+/// file, or why it could not be read.
+func zipMember(
+  bytes: in slice[Byte], entries: in List[Zip.ZipEntryInfo], name: in String
+): Result[Option[slice[Byte]], String] {
+  for e in entries {
+    if e.name == name and not e.isDirectory {
+      return match Zip.readZipEntry(bytes, e) {
+        case Ok(b) -> Ok(value = Some(value = b))
+        case Err(err) -> Err(error = Zip.zipErrorMessage(err))
+      }
+    }
+  }
+  Ok(value = None)
 }
 
 /// Fetches, verifies and unpacks one prebuilt archive into its restore directory.
@@ -445,23 +468,33 @@ pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[
           errors.add(label + ": " + msg)
           return errors
         }
-        case Ok(ints) -> if not writeIntBytes(Path.join(dir, Mf.prebuiltMemberFileName(spec)), ints) {
+        case Ok(member) -> if not writeMemberBytes(Path.join(dir, Mf.prebuiltMemberFileName(spec)), member) {
           errors.add(label + ": cannot write " + Mf.prebuiltMemberFileName(spec))
           return errors
         }
       }
     }
   } else {
-    val entries = Zip.readZipEntries(bytes)
+    val entries = match Zip.readZipDirectory(bytes, prebuiltZipLimits()) {
+      case Ok(es) -> es
+      case Err(e) -> {
+        errors.add(label + ": " + p.url + ": " + Zip.zipErrorMessage(e))
+        return errors
+      }
+    }
     for spec in p.members {
       val m = Mf.prebuiltMemberPath(spec)
       val name = Mf.prebuiltMemberFileName(spec)
-      match Zip.extractByName(bytes, entries, m) {
-        case None -> {
+      match zipMember(bytes, entries, m) {
+        case Err(msg) -> {
+          errors.add(label + ": " + p.url + ": " + msg)
+          return errors
+        }
+        case Ok(None) -> {
           errors.add(label + ": the archive has no member '" + m + "'")
           return errors
         }
-        case Some(ints) -> if not writeIntBytes(Path.join(dir, name), ints) {
+        case Ok(Some(member)) -> if not writeMemberBytes(Path.join(dir, name), member) {
           errors.add(label + ": cannot write " + name)
           return errors
         }

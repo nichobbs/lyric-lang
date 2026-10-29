@@ -81,6 +81,8 @@ pub record ZipEntryInfo {
   isSymlink: Bool
   /// The entry's Unix mode has an executable bit set.
   isExecutable: Bool
+  /// Where the entry's local header starts in the data the directory was
+  /// read from.
   localHeaderOffset: Long
 }
 
@@ -722,19 +724,26 @@ func findEndRecord(data: in slice[Byte]): Option[Int] {
   None
 }
 
-func hasName(entries: in List[ZipEntryInfo], name: in String): Bool {
-  for e in entries {
-    if e.name == name {
-      return true
-    }
-  }
-  false
-}
-
 /// The entries of an archive's central directory, checked against `limits`
 /// and against their local headers.
 @experimental
 pub func readZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[List[ZipEntryInfo], ZipError] {
+  readDirectory(data, limits, false)
+}
+
+/// `readZipDirectory` for an archive that follows a prefix, such as a JDK
+/// `.jmod` (a 4-byte header before the zip) or a self-extracting archive.
+/// The prefix's length is where the central directory ends up, less where
+/// the end record says it starts. Each entry's `localHeaderOffset` is an
+/// offset into `data`, so `readZipEntry` reads it as usual.
+@experimental
+pub func readPrefixedZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[List[ZipEntryInfo], ZipError] {
+  readDirectory(data, limits, true)
+}
+
+func readDirectory(
+  data: in slice[Byte], limits: in ZipLimits, allowPrefix: in Bool
+): Result[List[ZipEntryInfo], ZipError] {
   val eocd = match findEndRecord(data) {
     case Some(at) -> at
     case None -> return Err(error = Malformed(reason = "no end-of-central-directory record"))
@@ -761,9 +770,14 @@ pub func readZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[Li
   if cdOffset + cdSize > eocd.toLong() {
     return Err(error = Malformed(reason = "the central directory overlaps its end record"))
   }
+  // The bytes before the archive proper: the directory ends where its end
+  // record starts, so its recorded offset falls short by the prefix length
+  // (never negative, by the check above).
+  val base = if allowPrefix { eocd.toLong() - cdSize - cdOffset } else { 0i64 }
   val entries: List[ZipEntryInfo] = newList()
-  var at = cdOffset.toInt()
-  val cdEnd = (cdOffset + cdSize).toInt()
+  val seen: Map[String, Bool] = newMap()
+  var at = (base + cdOffset).toInt()
+  val cdEnd = (base + cdOffset + cdSize).toInt()
   var total = 0i64
   var i = 0
   while i < totalEntries {
@@ -803,9 +817,10 @@ pub func readZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[Li
     if name.length == 0 {
       return Err(error = Malformed(reason = "an entry has an empty name"))
     }
-    if hasName(entries, name) {
+    if seen.containsKey(name) {
       return Err(error = Malformed(reason = "the entry '" + name + "' appears twice"))
     }
+    seen.add(name, true)
     // A Unix "made by" host keeps the file mode in the high 16 bits.
     val unixMode = if madeBy.shr(8) == 3 { external.shr(16).and(65535i64) } else { 0i64 }
     val fileType = unixMode.and(0xF000i64)
@@ -836,7 +851,7 @@ pub func readZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[Li
     }
     // The local header must exist, carry the same name, and leave room for
     // the data.
-    val lo = localOffset.toInt()
+    val lo = (base + localOffset).toInt()
     if localOffset + 30i64 > cdOffset {
       return Err(error = Malformed(reason = "the entry '" + name + "' has a local header outside the data"))
     }
@@ -868,35 +883,13 @@ pub func readZipDirectory(data: in slice[Byte], limits: in ZipLimits): Result[Li
         isDirectory = isDir,
         isSymlink = isLink,
         isExecutable = isExec,
-        localHeaderOffset = localOffset
+        localHeaderOffset = base + localOffset
       )
     )
     at = at + 46 + nameLen + extraLen + commentLen
     i = i + 1
   }
   Ok(value = entries)
-}
-
-// A copy of `data[start, start + length)`, built the same way `inflate`
-// builds its output, so both kinds of entry produce the same slice
-// representation on every backend.
-func copyRange(data: in slice[Byte], start: in Int, length: in Int): slice[Byte] {
-  val acc: List[Byte] = newList()
-  var i = 0
-  while i < length {
-    acc.add(data[start + i])
-    i = i + 1
-  }
-  acc.toArray()
-}
-
-func entryPayload(
-  data: in slice[Byte], entry: in ZipEntryInfo, start: in Int, csize: in Int
-): Result[slice[Byte], ZipError] {
-  if entry.method == 0 {
-    return Ok(value = copyRange(data, start, csize))
-  }
-  inflateRange(data, start, csize, entry.size.toInt())
 }
 
 /// The contents of `entry` (from `readZipDirectory(data, ...)`), inflated if
@@ -912,7 +905,14 @@ pub func readZipEntry(data: in slice[Byte], entry: in ZipEntryInfo): Result[slic
   if start + csize > data.length {
     return Err(error = Malformed(reason = "the entry '" + entry.name + "' runs past the data"))
   }
-  val bytes = match entryPayload(data, entry, start, csize) { case Ok(b) -> b; case Err(e) -> return Err(error = e) }
+  val bytes = if entry.method == 0 {
+    data.slice(start, start + csize)
+  } else {
+    match inflateRange(data, start, csize, entry.size.toInt()) {
+      case Ok(b) -> b
+      case Err(e) -> return Err(error = e)
+    }
+  }
   if bytes.length.toLong() != entry.size {
     return Err(
       error = CorruptEntry(

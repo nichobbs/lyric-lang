@@ -123,7 +123,7 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 /// `entries` via the PE/CLI metadata reader (`Meta.readAllContractsFromFile`,
 /// MSIL-only); a JVM restored dep reads its entries from a JAR's ZIP central
 /// directory instead (`Meta.readAllContractsFromJarFile`, itself backed by
-/// `Jvm.ZipReader`) and calls this function directly (see
+/// `Std.Zip`) and calls this function directly (see
 /// `loadRestoredPackageJvm` below), so both backends share one parse-and-
 /// validate path instead of duplicating it (#3094).
 ///

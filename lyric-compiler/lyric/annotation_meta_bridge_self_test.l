@@ -13,7 +13,7 @@
 //! then read the embedded `Lyric.AnnotationMeta`[`.<Pkg>`] resource back out
 //! of the produced binary via the same pure-byte readers
 //! `Lyric.ContractMeta` uses for `Lyric.Contract` (`Msil.MetadataReader`/
-//! `Jvm.ZipReader`), mirroring `msil_project_bridge_self_test.l`'s #6390
+//! `Std.Zip`), mirroring `msil_project_bridge_self_test.l`'s #6390
 //! resource-embedding regression test.
 //!
 //! Run in CI via:
@@ -34,7 +34,7 @@ import Std.Encoding as Encoding
 import Msil.Bridge
 import Msil.MetadataReader as Mdr
 import Jvm.Bridge
-import Jvm.ZipReader as JvmZip
+import Std.Zip as Zip
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -63,16 +63,6 @@ func fixtureSource(pkgName: in String): String {
   "package " + pkgName + "\n\n" + "config Db {\n" + "  @secretsManager(key = \"prod/db/password\")\n" +
     "  password: String = \"unused\"\n" +
     "}\n"
-}
-
-func intsToByteSlice(xs: in List[Int]): slice[Byte] {
-  val bs: List[Byte] = newList()
-  var i = 0
-  while i < xs.count {
-    bs.add(xs[i].toByte())
-    i = i + 1
-  }
-  bs.toArray()
 }
 
 test "MSIL: single-package compile embeds Lyric.AnnotationMeta, readable back with the annotated field" {
@@ -124,17 +114,23 @@ test "JVM: single-package compile embeds Lyric.AnnotationMeta.<Pkg>, readable ba
   assertTrue(File.fileExists(jarPath), "compile: JAR file exists")
 
   val bytes = File.readBytesOrPanic(jarPath)
-  val entries = JvmZip.readZipEntries(bytes)
+  val entries = match Zip.readZipDirectory(bytes, Zip.defaultZipLimits()) {
+    case Ok(es) -> es
+    case Err(e) -> panic("the JAR is not a readable zip: " + Zip.zipErrorMessage(e))
+  }
   var found: Option[String] = None
   var i = 0
   while i < entries.count {
     val e = entries[i]
     if e.name == "Lyric.AnnotationMeta.AnnoMetaBridgeRepro" {
-      match Encoding.tryDecodeUtf8(intsToByteSlice(JvmZip.extractEntry(bytes, e))) {
-        case Some(json) -> {
-          found = Some(value = json)
+      match Zip.readZipEntry(bytes, e) {
+        case Ok(raw) -> match Encoding.tryDecodeUtf8(raw) {
+          case Some(json) -> {
+            found = Some(value = json)
+          }
+          case None -> ()
         }
-        case None -> ()
+        case Err(err) -> panic("the entry does not read back: " + Zip.zipErrorMessage(err))
       }
     }
     i = i + 1

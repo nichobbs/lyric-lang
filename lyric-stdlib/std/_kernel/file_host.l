@@ -256,23 +256,93 @@ pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
   }
 }
 
+// The runtime's own `lstat(2)` shim (dotnet/runtime
+// `src/native/libs/System.Native/pal_io.h`), present wherever .NET runs on
+// Unix and linked statically into a NativeAOT executable. It fills a
+// `FileStatus`, whose layout and `S_IF*` type bits are the runtime's own and
+// so the same on every Unix, rather than the platform's `struct stat`.
+@library("libSystem.Native")
+extern func sysLStat(path: NativePtr[Byte], output: NativePtr[Byte]): Int = "SystemNative_LStat"
+
+// The buffers go through `Marshal` rather than `Std.Ffi`, whose byte loads
+// and stores are unverifiable IL; these calls keep the kernel verifiable.
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.ReadInt32")
+func netReadInt32(ptr: in NativePtr[Byte], ofs: in Int): Int = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.AllocHGlobal")
+func netAllocHGlobal(size: in Int): NativePtr[Byte] = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.FreeHGlobal")
+func netFreeHGlobal(ptr: in NativePtr[Byte]): Unit = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8")
+func netStringToUtf8(s: in String): NativePtr[Byte] = ()
+
+@unsafe_ffi
+@externStatic
+@externTarget("System.Runtime.InteropServices.Marshal.FreeCoTaskMem")
+func netFreeCoTaskMem(ptr: in NativePtr[Byte]): Unit = ()
+
+// Room for a `FileStatus` (under 160 bytes in every release so far).
+val fileStatusSize: Int = 256
+
+/// The file type bits (`mode & 0xF000`) of `path` itself, or -1 when it
+/// cannot be examined (missing, or an inaccessible parent).
+@unsafe_ffi
+func lstatFileType(path: in String): Int {
+  val cpath = netStringToUtf8(path)
+  val status = netAllocHGlobal(fileStatusSize)
+  // `Mode`, an int32 in host byte order, follows the int32 `Flags`.
+  val mode = if sysLStat(cpath, status) == 0 { netReadInt32(status, 4) } else { -1 }
+  netFreeHGlobal(status)
+  netFreeCoTaskMem(cpath)
+  if mode < 0 {
+    -1
+  } else {
+    mode.and(0xF000)
+  }
+}
+
 /// What `path` itself is, without following a link: 0 missing, 1 regular
 /// file, 2 directory, 3 symbolic link, 4 other (the codes of
-/// `lyric_path_kind_nofollow`). .NET reports a file system entry only as a
-/// directory, a link or a file, so a FIFO, socket or device node is 1 here,
-/// not 4; the JVM and native twins tell them apart (#8578).
+/// `lyric_path_kind_nofollow`). On Unix this asks `lstat` (#8578), since
+/// .NET's `FileSystemInfo` reports a FIFO, socket or device node as a file.
+/// A Windows file system holds only files, directories and reparse points.
+@unsafe_ffi
 pub func hostPathKindNoFollow(path: in String): Int {
-  val target = FileInfo.new(path).LinkTarget ?? ""
-  if target.length > 0 {
-    return 3
+  if NetOs.IsWindows() {
+    val target = FileInfo.new(path).LinkTarget ?? ""
+    if target.length > 0 {
+      return 3
+    }
+    if hostDirectoryExists(path) {
+      return 2
+    }
+    if hostFileExists(path) {
+      return 1
+    }
+    return 0
   }
-  if hostDirectoryExists(path) {
-    return 2
+  val kind = lstatFileType(path)
+  if kind < 0 {
+    0
+  } else if kind == 0x8000 {
+    1
+  } else if kind == 0x4000 {
+    2
+  } else if kind == 0xA000 {
+    3
+  } else {
+    4
   }
-  if hostFileExists(path) {
-    return 1
-  }
-  0
 }
 
 pub func hostListFilesResult(dir: in String): Result[List[String], IOError] {
