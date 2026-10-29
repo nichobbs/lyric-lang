@@ -547,3 +547,35 @@ test "a package-qualified union case through an aliased import resolves in value
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 42, "package-qualified union case through an aliased import (#7933)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item K (#8579): an ENUM case qualified by its package alone, through an
+// aliased import (`File.RegularFile` under `import Std.File as File`), in
+// pattern and value position — the enum twin of item J.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a package-qualified enum case through an aliased import resolves in value and pattern position (#8579)" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.File as File\n" +
+    "func code(k: in File.EntryKind): Int {\n" +
+    "  match k {\n" +
+    "    case File.Missing -> 1\n" +
+    "    case File.RegularFile -> 2\n" +
+    "    case File.Directory -> 3\n" +
+    "    case _ -> 4\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = code(File.Missing)\n" +
+    "  val b = code(File.RegularFile)\n" +
+    "  val c = code(File.Other)\n" +
+    "  val k = File.Directory\n" +
+    "  val d = if k == File.Directory { 3 } else { 0 }\n" +
+    "  val e = if k == File.RegularFile { 0 } else { 5 }\n" +
+    "  if a == 1 and b == 2 and c == 4 and d == 3 and e == 5 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 42, "package-qualified enum case through an aliased import (#8579)")
+}
