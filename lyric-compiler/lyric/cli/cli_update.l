@@ -52,6 +52,22 @@ func cmdUpdate(argv: in slice[String]): Int {
     case None -> Path.join(mfDir, "lyric.lock")
   }
 
+  // A source generator's pinned signing key outlives the lock file: a new key
+  // is accepted only through `lyric restore --update <name>` (D266).
+  val carriedKeys: Map[String, String] = newMap()
+  val oldLockText = match File.readText(lockPath) { case Ok(t) -> t; case Err(_) -> "" }
+  match LF.parseLockFile(oldLockText) {
+    case Ok(prevLock) -> {
+      for p in prevLock.packages {
+        match p.key {
+          case Some(k) -> carriedKeys.add(p.name, k)
+          case None -> ()
+        }
+      }
+    }
+    case Err(_) -> ()
+  }
+
   // Delete the existing lock file so restore performs a full re-resolution
   // rather than updating incrementally (i.e. picking up dep removals too).
   if File.fileExists(lockPath) {
@@ -64,7 +80,17 @@ func cmdUpdate(argv: in slice[String]): Int {
     }
   }
 
-  runRestore(mfPath, false)
+  val noUpdates: List[String] = newList()
+  val rc = runRestoreWith(mfPath, false, noUpdates, carriedKeys)
+  // A failed re-resolution leaves the previous lock in place, so its pins
+  // (generator keys among them) still hold for the next restore.
+  if rc != 0 and oldLockText.length > 0 {
+    match File.writeText(lockPath, oldLockText) {
+      case Ok(_) -> printErr("update: kept the previous " + lockPath)
+      case Err(e) -> printErr("update: could not put back " + lockPath + ": " + IOError.message(e))
+    }
+  }
+  rc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

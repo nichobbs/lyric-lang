@@ -13,6 +13,7 @@ import Std.Testing
 import Std.JsonValue as Jv
 import Std.String as Str
 import Std.Errors
+import Std.PluginSign as Sign
 import Lyric.Manifest
 import Lyric.Generator
 
@@ -243,8 +244,42 @@ test "X0003 and X0009: a generator that could not be prepared is reported at eac
   val src = "package P\n@generate(Foo.Bar)\nrecord A { x: Int }\n@generate(Baz.Qux)\nrecord B { y: Int }\n"
   val e = preprocessErr(src, mf, gens)
   assertTrue(e.contains("error[X0003] 2:1:"), "the first directive: " + e)
-  assertTrue(e.contains("error[X0009] 4:1:"), "the second directive, a registry generator, is also reported")
-  assertTrue(e.contains("registry or git generator is not supported"), "explains the registry case")
+  assertTrue(
+    e.contains("error[X0009] 4:1:"),
+    "the second directive, an unrestored registry generator, is also reported"
+  )
+  assertTrue(e.contains("restored by `lyric restore`"), "explains how a registry generator is fetched: " + e)
+}
+
+test "X0002: a restored registry or git package that carries no plugin artifact (D266)" {
+  val mf = consumerWith("\"Baz.Qux\" = \"1.0.0\"\n")
+  val gens = emptyGeneratorSet()
+  gens.restoredLibraries["Baz.Qux"] = "/nuget/baz.qux/1.0.0"
+  val e = preprocessErr("package P\n@generate(Baz.Qux)\nrecord R { x: Int }\n", mf, gens)
+  assertTrue(e.contains("error[X0002] 2:1:"), "X0002 at the annotation: " + e)
+  assertTrue(e.contains("/nuget/baz.qux/1.0.0 carries no lyric-plugin/ artifact"), "names the package: " + e)
+}
+
+func zeroKey(): slice[Byte] {
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < 32 {
+    acc.add(0u8)
+    i += 1
+  }
+  acc.toArray()
+}
+
+test "X0006: a restored generator package cannot be imported (D266)" {
+  val mf = consumerWith("\"Baz.Qux\" = \"1.0.0\"\n")
+  val gens = emptyGeneratorSet()
+  gens.restored["Baz.Qux"] = RestoredGenerator(
+    pluginDir = "/nuget/baz.qux/1.0.0/lyric-plugin",
+    artifactDir = "/nuget/baz.qux/1.0.0/lyric-plugin/baz.qux-1.0.0",
+    trusted = Sign.TrustedKey(publisher = "baz", publicKey = zeroKey())
+  )
+  val e = preprocessErr("package P\n\nimport Baz.Qux\n\nfunc f(): Int { 1 }\n", mf, gens)
+  assertTrue(e.contains("error[X0006] 3:1:"), "X0006 on the import line: " + e)
 }
 
 test "X0006: a generator package cannot be imported" {

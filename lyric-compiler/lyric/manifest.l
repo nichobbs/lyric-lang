@@ -136,6 +136,10 @@ pub record DependencyEntry {
   source: DepSource
   /// Per-dependency registry override URL (overrides `[registry].dotnet`).
   registry: Option[String]
+  /// The publisher key (`lyric-ed25519:<base64>`) a registry or git source
+  /// generator must be signed with (D266). Without one, the key the package
+  /// ships is trusted on first restore and pinned in `lyric.lock`.
+  key: Option[String] = None
 }
 
 pub record NugetEntry {
@@ -1314,9 +1318,34 @@ func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], Manife
         case VTable(pairs) -> {
           match buildDepSource(e.key, pairs, "dependencies") {
             case Err(me) -> return Err(error = me)
-            case Ok(src) -> depList.add(
-              DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry"))
-            )
+            case Ok(src) -> {
+              val key = findInlineStr(pairs, "key")
+              match key {
+                case Some(k) -> {
+                  val sourced = match src { case Registry(_) -> true; case Git(_, _, _, _) -> true; case _ -> false }
+                  if not sourced {
+                    return Err(
+                      error = InvalidField(
+                        section = "dependencies",
+                        field = e.key,
+                        message = "key applies only to a registry or git dependency; a path or workspace generator is built from source and not signed"
+                      )
+                    )
+                  }
+                  if not Str.startsWith(k, "lyric-ed25519:") {
+                    return Err(
+                      error = InvalidField(
+                        section = "dependencies",
+                        field = e.key,
+                        message = "key must be a publisher public key, \"lyric-ed25519:<base64>\""
+                      )
+                    )
+                  }
+                }
+                case None -> ()
+              }
+              depList.add(DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry"), key = key))
+            }
           }
         }
         case _ -> ()

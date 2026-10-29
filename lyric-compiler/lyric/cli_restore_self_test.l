@@ -22,6 +22,7 @@ import Std.Environment as Environment
 import Std.Uuid
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
+import Lyric.Lockfile as LF
 
 // ─── jsonEscape ───────────────────────────────────────────────────────────
 test "jsonEscape: plain string is unchanged" {
@@ -487,5 +488,38 @@ func parseNoNpm(dir: in String): Mf.Manifest {
   match Mf.parseManifest("[package]\nname = \"app\"\nversion = \"0.1.0\"\n", Path.join(dir, "lyric.toml")) {
     case Ok(m) -> m
     case Err(e) -> panic("manifest: " + Mf.ManifestError.message(e))
+  }
+}
+
+// A restored source generator's signing key id round-trips through lyric.lock
+// (D266); an entry without one serializes no key line.
+test "lyric.lock keeps a generator's pinned key id" {
+  val withKey = LF.LockedPackage(
+    name = "Acme.Gen",
+    version = "1.0.0",
+    source = "nuget:https://api.nuget.org/v3/index.json",
+    sha512 = Some(value = "AB"),
+    path = None,
+    key = Some(value = "8c1c0505e17752bae6e7412739761ec4")
+  )
+  val plain = LF.LockedPackage(name = "Lib", version = "", source = "path:/x", sha512 = None, path = Some(value = "/x"))
+  val lf = LF.addOrUpdatePackage(LF.addOrUpdatePackage(LF.emptyLockFile(), withKey), plain)
+  val text = LF.serializeLockFile(lf)
+  assertTrue(Str.contains(text, "key = \"8c1c0505e17752bae6e7412739761ec4\""), "the key line is written")
+  match LF.parseLockFile(text) {
+    case Ok(back) -> {
+      match LF.findPackage(back, "Acme.Gen") {
+        case Some(p) -> match p.key {
+          case Some(k) -> assertEqual(k, "8c1c0505e17752bae6e7412739761ec4", "the key id reads back")
+          case None -> assertTrue(false, "the key id was lost")
+        }
+        case None -> assertTrue(false, "Acme.Gen was lost")
+      }
+      match LF.findPackage(back, "Lib") {
+        case Some(p) -> assertTrue(not isSome(p.key), "an entry without a key reads back without one")
+        case None -> assertTrue(false, "Lib was lost")
+      }
+    }
+    case Err(e) -> assertTrue(false, "the lock file does not parse back: " + e)
   }
 }

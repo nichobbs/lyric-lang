@@ -931,3 +931,17 @@ test "checkDllIsStale: a different --target invalidates the cache" {
     "a DLL stamped for --target dotnet must not be silently reused for --target jvm"
   )
 }
+
+// The walk up from a directory outside any workspace stops at the root: the
+// root's dirname is ".", which once made it read the working directory's
+// lyric.toml and adopt that workspace (and its lyric.lock) for an unrelated
+// project.  The suite runs from the repository root, itself a workspace.
+test "findWorkspaceRoot stops at the filesystem root instead of reading the working directory" {
+  val dir = freshTempDir("outside")
+  defer {
+    cleanup(dir)
+  }
+  if not Str.startsWith(dir, Environment.currentDirectory()) {
+    assertTrue(not isSomeWs(Ws.findWorkspaceRoot(dir)), "no workspace above " + dir)
+  }
+}

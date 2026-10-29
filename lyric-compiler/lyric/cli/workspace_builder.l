@@ -29,6 +29,7 @@ import Lyric.Emitter as Emitter
 import Lyric.Pipeline as Pipe
 import Lyric.Parser as Parser
 import Lyric.Generator as Generator
+import Lyric.Lockfile as LF
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public API
@@ -980,18 +981,78 @@ func declaresGeneratorPlugin(depDir: in String, depName: in String): Bool {
   hasPlugin and hasImpl
 }
 
+// The lock file of the manifest in `mfDir` (at the workspace root when
+// there is one), or an empty one when it is missing or unreadable.
+func lockFileOf(mfDir: in String, wsCtx: in Option[Ws.WorkspaceContext]): LF.LockFile {
+  val lockPath = match wsCtx {
+    case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
+    case None -> Path.join(mfDir, "lyric.lock")
+  }
+  match File.readText(lockPath) {
+    case Ok(text) -> match LF.parseLockFile(text) { case Ok(lf) -> lf; case Err(_) -> LF.emptyLockFile() }
+    case Err(_) -> LF.emptyLockFile()
+  }
+}
+
+// A registry or git dependency: a source generator when its restored package
+// carries a plugin artifact (D266).  It runs only under the key lyric.lock
+// pins; `Std.Plugin.discoverPlugins` verifies its signature and files under
+// that key when the generator is first run.
+func resolveRestoredGenerator(gens: in Generator.GeneratorSet, dep: in Mf.DependencyEntry, lf: in LF.LockFile): Unit {
+  val pkgDir = match restoredDepDir(dep, lf) { case Some(d) -> d; case None -> return }
+  if not isGeneratorPackage(pkgDir) {
+    gens.restoredLibraries[dep.name] = pkgDir
+    return
+  }
+  val gen = match locateGeneratorPackage(pkgDir, dep.key) {
+    case Ok(g) -> g
+    case Err(msg) -> {
+      gens.failures[dep.name] = Generator.GeneratorFailure(
+        code = "X0009",
+        message = "source generator '" + dep.name + "' cannot be run: " + msg
+      )
+      return
+    }
+  }
+  val lockedKey = match LF.findPackage(lf, dep.name) { case Some(p) -> p.key; case None -> None }
+  match lockedKey {
+    case None -> {
+      gens.failures[dep.name] = Generator.GeneratorFailure(
+        code = "X0009",
+        message = "source generator '" + dep.name +
+          "' cannot be run: lyric.lock pins no signing key for it; run `lyric restore`"
+      )
+    }
+    case Some(k) -> if k != gen.keyId {
+      gens.failures[dep.name] = Generator.GeneratorFailure(
+        code = "X0009",
+        message = generatorKeyChangedMessage(dep.name, k, gen.keyId)
+      )
+    } else {
+      gens.restored[dep.name] = Generator.RestoredGenerator(
+        pluginDir = gen.pluginDir,
+        artifactDir = gen.artifactDir,
+        trusted = gen.trusted
+      )
+    }
+  }
+}
+
 /// The source generators the manifest at `mfPath` declares: each path or
 /// workspace dependency whose manifest says `kind = "source-generator"` is
 /// built for dotnet, whatever the consumer's target, since a generator runs
-/// on the host as `dotnet exec` (docs/40 §4.2).  Other dependencies are
-/// listed as libraries, so `@generate` naming one reports X0002.
+/// on the host as `dotnet exec` (docs/40 §4.2); each registry or git
+/// dependency whose restored package carries a signed plugin artifact is run
+/// from that artifact (D266).  Other dependencies are listed as libraries,
+/// so `@generate` naming one reports X0002.
 pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generator.GeneratorSet {
   val gens = Generator.emptyGeneratorSet()
   val mfDir = Path.dirname(mfPath)
   val wsCtx = Ws.findWorkspaceRoot(mfDir)
+  val lf = lockFileOf(mfDir, wsCtx)
   for dep in manifest.deps {
     match localDepDir(dep, mfDir, wsCtx) {
-      case None -> ()
+      case None -> resolveRestoredGenerator(gens, dep, lf)
       case Some(depDir) -> {
         val kind = depManifestKind(depDir)
         if kind != "source-generator" {

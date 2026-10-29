@@ -92,28 +92,8 @@ func lockSha512OfLocalManifest(localDir: in String): Option[String] {
 /// Returns `None` when the file is missing (e.g. on a host where the
 /// NuGet cache lives elsewhere, or when `dotnet restore` was skipped).
 func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
-  if name.length == 0 or version.length == 0 {
-    return None
-  }
-  val lower = name.toLower()
-  // NUGET_PACKAGES overrides the cache root (CI uses this); empty falls through so `--locked` isn't soft-bypassed.
-  val nugetPkgVar: Option[String] = match Environment.getVar("NUGET_PACKAGES") {
-    case Ok(p) -> if p.length > 0 { Some(value = p) } else { None }
-    case Err(_) -> None
-  }
-  val cacheRoot = match nugetPkgVar {
-    case Some(p) -> p
-    case None -> {
-      val home = match Environment.getVar("HOME") {
-        case Ok(h) -> h
-        case Err(_) -> match Environment.getVar("USERPROFILE") { case Ok(h) -> h; case Err(_) -> return None }
-      }
-      Path.join(home, ".nuget/packages")
-    }
-  }
-  val cacheDir = Path.join(cacheRoot, lower)
-  val versionDir = Path.join(cacheDir, version)
-  val nupkgPath = Path.join(versionDir, lower + "." + version + ".nupkg")
+  val versionDir = match nugetPackageDir(name, version) { case Some(d) -> d; case None -> return None }
+  val nupkgPath = Path.join(versionDir, name.toLower() + "." + version.toLower() + ".nupkg")
   match Hash.sha512OfFile(nupkgPath) {
     case Ok(hex) -> Some(value = hex)
     case Err(_) -> None
@@ -698,11 +678,20 @@ func cmdRestore(argv: in slice[String]): Int {
   var lockedMode = false
   var generateShims = false
   var forceShims = false
+  val updates: List[String] = newList()
 
   var i = 1
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--manifest" {
+    if arg == "--update" {
+      if i + 1 < argv.length {
+        updates.add(argv[i + 1])
+        i += 2
+      } else {
+        printErr("restore: --update requires a dependency name")
+        return 1
+      }
+    } else if arg == "--manifest" {
       if i + 1 < argv.length {
         manifestArg = Some(value = argv[i + 1])
         i += 2
@@ -728,10 +717,15 @@ func cmdRestore(argv: in slice[String]): Int {
     printErr("restore: --force applies to --generate-npm-shims only")
     return 1
   }
+  if lockedMode and updates.count > 0 {
+    printErr("restore: --update changes lyric.lock, which --locked forbids; use one or the other")
+    return 1
+  }
 
   val mfPath = match discoverManifest(manifestArg) { case Some(p) -> p; case None -> "lyric.toml" }
 
-  val rc = runRestore(mfPath, lockedMode)
+  val noCarried: Map[String, String] = newMap()
+  val rc = runRestoreWith(mfPath, lockedMode, updates, noCarried)
   if rc != 0 or not generateShims {
     return rc
   }
@@ -1534,7 +1528,29 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
 // writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
 // cmdRestore so `lyric build` can auto-restore when the lock is missing or
 // stale.
+// A lock entry's signing key id, "none" when it has none.
+func keyText(key: in Option[String]): String {
+  match key {
+    case Some(k) -> k
+    case None -> "none"
+  }
+}
+
 func runRestore(mfPath: in String, lockedMode: in Bool): Int {
+  val noUpdates: List[String] = newList()
+  val noCarried: Map[String, String] = newMap()
+  runRestoreWith(mfPath, lockedMode, noUpdates, noCarried)
+}
+
+/// `runRestore`, accepting a new signing key for each generator in `updates`
+/// (`--update`), and treating `carriedKeys` (dependency name to key id) as
+/// pinned when `lyric.lock` has no entry, as after `lyric update` removed it.
+func runRestoreWith(
+  mfPath: in String,
+  lockedMode: in Bool,
+  updates: in List[String],
+  carriedKeys: in Map[String, String],
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -1553,6 +1569,18 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
 
   val mfDir = Path.dirname(mfPath)
   val pkgName = manifest.packageSection.name
+  for u in updates {
+    var declared = false
+    for d in manifest.deps {
+      if d.name == u {
+        declared = true
+      }
+    }
+    if not declared {
+      printErr("restore: --update " + u + ": " + mfPath + " declares no dependency named '" + u + "'")
+      return 1
+    }
+  }
 
   // Find workspace context (if any) for resolving workspace/path deps.
   val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
@@ -1810,12 +1838,78 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
         version = pkgEntry.version,
         source = pkgEntry.source,
         sha512 = nupkgSha,
-        path = pkgEntry.path
+        path = pkgEntry.path,
+        key = pkgEntry.key
       )
     )
     ui = ui + 1
   }
   lf = LF.LockFile(formatVersion = lf.formatVersion, packages = upgraded)
+
+  // Third pass: a registry or git dependency whose package carries a plugin
+  // artifact is a source generator (D266).  Its signature must verify, and
+  // its key must be the one lyric.lock pinned unless `--update` names it.
+  for dep in manifest.deps {
+    val pkgDir = match restoredDepDir(dep, lf) { case Some(d) -> d; case None -> "" }
+    if pkgDir.length == 0 or not isGeneratorPackage(pkgDir) {
+      match dep.key {
+        case Some(_) -> if pkgDir.length > 0 {
+          printErr(
+            "restore: '" + dep.name + "' pins a key, but its package is not a source generator (it has no " +
+              generatorPluginDirName +
+              "/)"
+          )
+          exitCode = 1
+        }
+        case None -> ()
+      }
+      continue
+    }
+    match verifyGeneratorPackage(pkgDir, dep.key) {
+      case Err(msg) -> {
+        printErr("restore: source generator '" + dep.name + "': " + msg)
+        exitCode = 1
+      }
+      case Ok(gen) -> {
+        val pinned: Option[String] = match LF.findPackage(existingLf, dep.name) {
+          case Some(prev) -> prev.key
+          case None -> mapGet(carriedKeys, dep.name)
+        }
+        val accepted = match pinned {
+          case Some(prevKey) -> prevKey == gen.keyId or updates.contains(dep.name) or lockedMode
+          case None -> true
+        }
+        if not accepted {
+          match pinned {
+            case Some(prevKey) -> printErr("restore: " + generatorKeyChangedMessage(dep.name, prevKey, gen.keyId))
+            case None -> ()
+          }
+          exitCode = 1
+        } else {
+          match LF.findPackage(lf, dep.name) {
+            case Some(entry) -> {
+              lf = LF.addOrUpdatePackage(
+                lf,
+                LF.LockedPackage(
+                  name = entry.name,
+                  version = entry.version,
+                  source = entry.source,
+                  sha512 = entry.sha512,
+                  path = entry.path,
+                  key = Some(value = gen.keyId)
+                )
+              )
+            }
+            case None -> ()
+          }
+          Console.println("restore: " + dep.name + " is a source generator signed by key " + gen.keyId)
+        }
+      }
+    }
+  }
+  if exitCode != 0 {
+    return exitCode
+  }
 
   // Write the lock file or verify it (--locked mode).
   if lockedMode {
@@ -1859,6 +1953,13 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
               "restore: --locked: '" + resolved.name + "' version changed: locked='" + locked.version + "' resolved='" +
                 resolved.version +
                 "'"
+            )
+            lockMismatch = true
+          } else if keyText(locked.key) != keyText(resolved.key) {
+            printErr(
+              "restore: --locked: source generator '" + resolved.name + "' signing key changed: locked=" + keyText(locked.key) +
+                " resolved=" +
+                keyText(resolved.key)
             )
             lockMismatch = true
           } else {

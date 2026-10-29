@@ -8,6 +8,8 @@ with two first-party generators built on it: `Forms.Derive` and `Ui.Routes`
 (docs/65 §11.6, §6.1). Since D207 a generator is a plugin: a `@plugin` record
 implementing the `SourceGenerator` plugin point (version 3.0) of `Lyric.GeneratorSdk`,
 run by the compiler as a docs/69 plugin host over the D207 wire protocol (§3.2, §4.2).
+Registry and git generators, restored as signed plugin artifacts with their key pinned
+in `lyric.lock`, are implemented in D266 (§4.2, §7).
 Q-SG-001 and Q-SG-003 are resolved by D207; Q-SG-004 and Q-SG-005 stay open.
 
 This document defines the custom source generator API, the `@generate` annotation
@@ -358,8 +360,14 @@ stage-0 `--internal-build` path that backs it during the bootstrap transition).
 No new F# shim is needed. The steps are:
 
 1. Resolve the generator package: a `path = "..."` or `{ workspace = true }`
-   dependency whose manifest declares `kind = "source-generator"`. Registry
-   and git generators are not supported yet (X0009).
+   dependency whose manifest declares `kind = "source-generator"`, or a
+   registry or git dependency whose restored package carries a signed plugin
+   artifact under `lyric-plugin/` (D266). A restored generator is not built
+   (steps 2 and the probe in step 3 are skipped): `lyric restore` verified its
+   signature and pinned its key id in `lyric.lock`, and it is loaded with
+   `Std.Plugin.discoverPlugins` under that key alone, which checks the
+   signature and every file again. A changed key needs `lyric restore
+   --update <name>`; see §7.
 2. Check it declares a `@plugin` record (X0003), and build it for dotnet
    with the normal dependency build, which skips an up-to-date build. Its own
    `path` and `workspace = true` dependencies (such as `Lyric.GeneratorSdk`)
@@ -504,6 +512,15 @@ The full example, which also warns on unions and interfaces, is
 `examples/generators/describe/`. Consumers add it as a `path` or `workspace = true`
 dependency and annotate types with `@generate(Acme.Describe)`.
 
+To share a generator beyond a workspace, publish it: `lyric publish --sign-key
+<secret-key-file>` (or `LYRIC_PLUGIN_SIGNING_KEY`) on a `kind =
+"source-generator"` package packs it with `lyric plugin pack`, signs the artifact
+and pushes a package holding only `lyric-plugin/<id>-<version>/` and
+`lyric-plugin/signer.pub` (D266). Consumers then depend on it by version, `"Acme.Describe"
+= "0.1.0"`, optionally pinning the publisher key with `{ version = "0.1.0", key =
+"lyric-ed25519:..." }`. A git dependency works the same way when the repository
+commits that `lyric-plugin/` layout.
+
 ---
 
 ## 7. Security and trust model
@@ -516,6 +533,13 @@ What is enforced today:
 - **Lock-file integrity.** The lock file (`lyric.lock`) pins every generator to a
   version and SHA-512 checksum. `lyric restore --locked` (the CI flag) refuses to
   update the lock file and fails on any hash mismatch.
+- **Signed restored generators (D248 Decision 7, D266).** A registry or git
+  generator is a signed plugin artifact, verified by `lyric restore` and again when
+  it is loaded. Its key is the one the dependency pins with `key = "..."`, or else
+  the one the package ships, trusted on first restore; `lyric.lock` records the key
+  id, a different key fails the restore until `lyric restore --update <name>`, and
+  `--locked` fails on it. Path and workspace generators are the project's own
+  source and are not signed.
 - **Output validation.** Generator output is type-checked and mode-checked by the
   full compiler pipeline. A generator cannot inject AOT-unsafe code that would pass
   the compiler's checks, use `@externTarget` outside the kernel boundary, or produce

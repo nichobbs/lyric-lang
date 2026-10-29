@@ -83,7 +83,10 @@ func discoverMembersRec(
     match File.readText(tomlPath) {
       case Err(_) -> ()
       // unreadable; skip silently
-      case Ok(text) -> match Mf.parseManifest(text, tomlPath) { case Err(_) -> (); case Ok(m) -> acc.add(WorkspaceMember(name = m.packageSection.name, dir = dir)) }
+      case Ok(text) -> match Mf.parseManifest(text, tomlPath) {
+        case Err(_) -> ()
+        case Ok(m) -> acc.add(WorkspaceMember(name = m.packageSection.name, dir = dir))
+      }
     }
     // unparseable; skip silently
   }
@@ -140,7 +143,16 @@ pub func findWorkspaceRoot(startDir: in String): Option[WorkspaceContext] {
       match File.readText(tomlPath) {
         case Err(_) -> ()
         // unreadable; continue walking up
-        case Ok(text) -> match Mf.parseWorkspaceRoot(text, tomlPath) { case Err(_) -> (); case Ok(None) -> (); case Ok(Some(ws)) -> { val members: List[WorkspaceMember] = newList(); discoverMembersRec(current, current, ws.workspace.exclude, members); val ctx = buildContext(current, tomlPath, ws.workspace, members); return Some(value = ctx) } }
+        case Ok(text) -> match Mf.parseWorkspaceRoot(text, tomlPath) {
+          case Err(_) -> ()
+          case Ok(None) -> ()
+          case Ok(Some(ws)) -> {
+            val members: List[WorkspaceMember] = newList()
+            discoverMembersRec(current, current, ws.workspace.exclude, members)
+            val ctx = buildContext(current, tomlPath, ws.workspace, members)
+            return Some(value = ctx)
+          }
+        }
       }
       // not a valid workspace root; keep walking
       // lyric.toml exists but has no [workspace]
@@ -149,7 +161,9 @@ pub func findWorkspaceRoot(startDir: in String): Option[WorkspaceContext] {
     // Note: we must check the current directory BEFORE comparing with parent,
     // so that relative paths like "lyric-web" properly check "." for workspace.
     val parent = Path.dirname(current)
-    if parent == current {
+    // The root's dirname is ".", not the root: past an absolute root the
+    // walk would read the working directory's lyric.toml instead.
+    if parent == current or (Path.isAbsolute(current) and not Path.isAbsolute(parent)) {
       // Reached filesystem root; stop.
       keepWalking = false
     } else {

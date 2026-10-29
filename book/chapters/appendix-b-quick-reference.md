@@ -1371,8 +1371,11 @@ lyric plugin pack --manifest examples/plugins/ui-widgets/widgets/lyric.toml --ta
 lyric restore                          # download all dependencies declared in lyric.toml
                                        # ([maven] entries of workspace/path deps included, transitively)
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
+lyric restore --update Gen             # accept a new signing key for the restored source generator Gen
+                                       # (lyric.lock pins each generator's key id; D266)
 lyric update                           # re-resolve all deps to latest compatible versions
-                                       # and rewrite lyric.lock (deletes the old lock first)
+                                       # and rewrite lyric.lock (deletes the old lock first;
+                                       # pinned generator keys still apply)
 lyric upgrade                           # self-upgrade the lyric CLI tool (auto-detects channel)
 lyric upgrade --nuget                   # force self-upgrade via NuGet global tool update
 lyric upgrade --github                  # force self-upgrade via the GitHub Releases installer script (install.sh; install.ps1 on Windows)
@@ -1393,6 +1396,8 @@ lyric publish                          # publish package to the configured regis
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)
 lyric publish --skip-duplicate         # silently succeed if this version already exists on the registry
+lyric publish --sign-key acme.key      # a kind = "source-generator" package: pack, sign and push its
+                                       # plugin artifact (or LYRIC_PLUGIN_SIGNING_KEY; required)
 lyric publish --package-version <ver>  # override the NuGet <version>, .nupkg filename, and
                                        # cross-library <dependency> versions in the nuspec; also stamps
                                        # Lyric.Contract.* metadata resources embedded in the DLL;
@@ -1720,13 +1725,13 @@ annotations in a file are reported together.
 | Code | Meaning |
 |---|---|
 | `X0001` | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
-| `X0002` | The named dependency's manifest does not declare `kind = "source-generator"`. |
+| `X0002` | The named dependency's manifest does not declare `kind = "source-generator"`, or its restored registry or git package carries no `lyric-plugin/` artifact. |
 | `X0003` | The generator package declares no `@plugin` record implementing `Lyric.GeneratorSdk.SourceGenerator`. |
 | `X0004` | The generator returned code that does not parse; the message gives the line within the generated code. |
 | `X0005` | The generator reported a diagnostic, shown with its own code. An `Error` fails the build; a `Warning` or `Info` is printed as `warning[X0005]` or `note[X0005]`. |
 | `X0006` | A source-generator package is imported; it can only be used through `@generate`. |
 | `X0008` | The generator is not declared in `[dependencies]`. |
-| `X0009` | The generator could not be built or run: its build failed, its manifest probe failed or does not implement `SourceGenerator`, the call failed at the plugin boundary (a crash, malformed reply, or longer than 60 seconds), it refused the request with a `GeneratorError`, or it is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
+| `X0009` | The generator could not be built or run: its build failed, its manifest probe failed or does not implement `SourceGenerator`, the call failed at the plugin boundary (a crash, malformed reply, or longer than 60 seconds), it refused the request with a `GeneratorError`, or it is a registry or git generator that is not restored, fails signature verification, or is signed by a key other than the one `lyric.lock` pins (D266). |
 
 The first-party UI generators (D151) report their own codes under `X0005`:
 

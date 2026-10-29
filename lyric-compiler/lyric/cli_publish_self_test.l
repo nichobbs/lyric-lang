@@ -27,6 +27,7 @@
 package Lyric.CliPublishSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
@@ -340,4 +341,18 @@ func strContains(haystack: in String, needle: in String): Bool {
 
 func noAuthors(): List[String] {
   newList()
+}
+
+// A source generator package (D266) ships its signed artifact under
+// lyric-plugin/, with no lib/ assembly for a consumer to link and no NuGet
+// dependencies, since the artifact carries them.
+test "buildGeneratorNuspec: only lyric-plugin/, no lib/ and no dependencies" {
+  val authors: List[String] = newList()
+  authors.add("Acme")
+  val nuspec = Cli.buildGeneratorNuspec("Acme.Describe", "0.1.0", authors, "", "MIT", None, "/stage/lyric-plugin")
+  assertTrue(nuspec.contains("<file src=\"/stage/lyric-plugin/**\" target=\"lyric-plugin\" />"), "the artifact")
+  assertTrue(not nuspec.contains("lib/net10.0"), "no assembly to link")
+  assertTrue(not nuspec.contains("<dependencies>"), "no NuGet dependencies")
+  assertTrue(nuspec.contains("<tags>lyric-package lyric-source-generator</tags>"), "tagged as a generator")
+  assertTrue(nuspec.contains("<authors>Acme</authors>"), "shared metadata")
 }

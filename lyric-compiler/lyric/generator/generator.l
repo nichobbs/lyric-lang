@@ -31,6 +31,7 @@ import Std.ProcessCapture as ProcessCapture
 import Std.JsonValue as Jv
 import Std.JsonRpc as Rpc
 import Std.Plugin as Plugin
+import Std.PluginSign as Sign
 import Lyric.Manifest as Manifest
 import Lyric.Lexer
 import Lyric.Parser
@@ -734,20 +735,41 @@ pub record GeneratorFailure {
   message: String
 }
 
-/// What a consumer's manifest offers `@generate(Pkg.Name)`: each generator
-/// dependency's built DLL by package name, the declared dependencies that
-/// are not generators (name to their `[package].kind`, "" when unset), and
-/// the generator dependencies that could not be built.  `Lyric.Cli` builds
-/// it from the manifest before any source is read.
+/// A source generator restored from the registry or git as a signed plugin
+/// artifact (D266): the directory holding the artifact, the artifact, and the
+/// key `lyric restore` verified it under and pinned in `lyric.lock`.
+pub record RestoredGenerator {
+  pluginDir: String
+  artifactDir: String
+  trusted: Sign.TrustedKey
+}
+
+/// What a consumer's manifest offers `@generate(Pkg.Name)`: each path or
+/// workspace generator's built DLL by package name, each restored
+/// generator's verified artifact, the declared path and workspace
+/// dependencies that are not generators (name to their `[package].kind`, ""
+/// when unset), the restored ones that are not (name to their package
+/// directory), and the generator dependencies that could not be built or
+/// verified.  `Lyric.Cli` builds it from the manifest before any source is
+/// read.
 pub record GeneratorSet {
   dlls: Map[String, String]
+  restored: Map[String, RestoredGenerator]
   libraries: Map[String, String]
+  restoredLibraries: Map[String, String]
   failures: Map[String, GeneratorFailure]
   runtime: GeneratorRuntime
 }
 
 pub func emptyGeneratorSet(): GeneratorSet {
-  GeneratorSet(dlls = newMap(), libraries = newMap(), failures = newMap(), runtime = newGeneratorRuntime())
+  GeneratorSet(
+    dlls = newMap(),
+    restored = newMap(),
+    libraries = newMap(),
+    restoredLibraries = newMap(),
+    failures = newMap(),
+    runtime = newGeneratorRuntime()
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -943,11 +965,17 @@ func generatorHost(gens: in GeneratorSet, projectRoot: in String): Plugin.Plugin
       )
       val providers: List[Plugin.CapabilityProvider] = newList()
       providers.add(ProjectReadProvider(root = projectRoot))
+      // A restored generator loads only under the key lyric.lock pins for it.
+      val keys: List[Sign.TrustedKey] = newList()
+      for rg in mapValues(gens.restored) {
+        keys.add(rg.trusted)
+      }
       val h = Plugin.newPluginHost(
         Plugin.PluginHostConfig(
           points = points,
           providers = providers,
           policy = GeneratorGrantPolicy(),
+          trust = Some(value = Plugin.trustKeys(keys)),
           callTimeoutMs = generatorTimeoutMs,
           maxRestarts = 0,
           preferWasm = false
@@ -969,44 +997,21 @@ func generatorConnection(
   val h = generatorHost(gens, projectRoot)
   val pluginId = match mapGet(gens.runtime.registered, generatorArg) {
     case Some(id) -> id
-    case None -> {
-      val probeArgs: List[String] = newList()
-      probeArgs.add("exec")
-      probeArgs.add(dllPath)
-      probeArgs.add("--lyric-plugin-manifest")
-      val probe = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", probeArgs, "", generatorTimeoutMs)
-      if probe.timedOut or probe.exitCode != 0 {
-        val why = if probe.timedOut { "it did not answer" } else { "it exited with code " + Str.fromInt(probe.exitCode) }
-        val stderrText = if Str.trim(probe.stderr) != "" { ": " + Str.trim(probe.stderr) } else { "" }
-        return Err(error = "its manifest probe failed (" + why + stderrText + ")")
-      }
-      val m = match Plugin.parsePluginManifest(probe.stdout) {
-        case Ok(pm) -> pm
-        case Err(issue) -> return Err(error = "its manifest is invalid: " + Plugin.pluginLoadIssueMessage(issue))
-      }
-      var implementsPoint = false
-      for pt in m.points {
-        if pt.point == sourceGeneratorPoint {
-          implementsPoint = true
+    case None -> match mapGet(gens.restored, generatorArg) {
+      case Some(rg) -> match loadRestoredGenerator(h, rg) {
+        case Ok(id) -> {
+          gens.runtime.registered.add(generatorArg, id)
+          id
         }
+        case Err(e) -> return Err(error = e)
       }
-      if not implementsPoint {
-        return Err(
-          error = "it is not a source generator plugin: its manifest does not implement " + sourceGeneratorPoint +
-            " (declare a @plugin record implementing SourceGenerator; docs/40)"
-        )
+      case None -> match registerBuiltGenerator(h, dllPath) {
+        case Ok(id) -> {
+          gens.runtime.registered.add(generatorArg, id)
+          id
+        }
+        case Err(e) -> return Err(error = e)
       }
-      val command: List[String] = newList()
-      command.add("dotnet")
-      command.add("exec")
-      command.add(Path.basename(dllPath))
-      val withPayload = Plugin.addPluginPayload(m, Plugin.ManagedPayload(runtime = "dotnet", command = command))
-      match Plugin.registerPlugin(h, withPayload, Path.dirname(dllPath)) {
-        case Some(issue) -> return Err(error = Plugin.pluginLoadIssueMessage(issue))
-        case None -> ()
-      }
-      gens.runtime.registered.add(generatorArg, m.id)
-      m.id
     }
   }
   for conn in Plugin.connectionsFor(h, sourceGeneratorPoint) {
@@ -1015,6 +1020,75 @@ func generatorConnection(
     }
   }
   Err(error = "its plugin '" + pluginId + "' is not loaded")
+}
+
+// Whether manifest `m` implements the SourceGenerator point, else why not.
+func checkImplementsGeneratorPoint(m: in Plugin.PluginManifest): Option[String] {
+  for pt in m.points {
+    if pt.point == sourceGeneratorPoint {
+      return None
+    }
+  }
+  Some(
+    value = "it is not a source generator plugin: its manifest does not implement " + sourceGeneratorPoint +
+      " (declare a @plugin record implementing SourceGenerator; docs/40)"
+  )
+}
+
+// Loads a restored generator's artifact through `discoverPlugins`, which
+// verifies its signature against the host's trust (the pinned key) and that
+// its files still match the signed listing.  Returns its plugin id.
+func loadRestoredGenerator(h: in Plugin.PluginHost, rg: in RestoredGenerator): Result[String, String] {
+  val m = match Plugin.readPluginManifest(rg.artifactDir) {
+    case Ok(pm) -> pm
+    case Err(issue) -> return Err(error = "its manifest is invalid: " + Plugin.pluginLoadIssueMessage(issue))
+  }
+  match checkImplementsGeneratorPoint(m) {
+    case Some(why) -> return Err(error = why)
+    case None -> ()
+  }
+  val dirs: List[String] = newList()
+  dirs.add(rg.pluginDir)
+  val issues = Plugin.discoverPlugins(h, dirs)
+  if issues.count > 0 {
+    return Err(error = Plugin.pluginLoadIssueMessage(issues[0]))
+  }
+  Ok(value = m.id)
+}
+
+// Registers a path or workspace generator built from source: its DLL is
+// probed for its manifest, which must declare `SourceGenerator`, and given a
+// `dotnet exec` payload.  Built in the workspace, it is the project's own
+// code and not signed (D248 Decision 7).  Returns its plugin id.
+func registerBuiltGenerator(h: in Plugin.PluginHost, dllPath: in String): Result[String, String] {
+  val probeArgs: List[String] = newList()
+  probeArgs.add("exec")
+  probeArgs.add(dllPath)
+  probeArgs.add("--lyric-plugin-manifest")
+  val probe = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", probeArgs, "", generatorTimeoutMs)
+  if probe.timedOut or probe.exitCode != 0 {
+    val why = if probe.timedOut { "it did not answer" } else { "it exited with code " + Str.fromInt(probe.exitCode) }
+    val stderrText = if Str.trim(probe.stderr) != "" { ": " + Str.trim(probe.stderr) } else { "" }
+    return Err(error = "its manifest probe failed (" + why + stderrText + ")")
+  }
+  val m = match Plugin.parsePluginManifest(probe.stdout) {
+    case Ok(pm) -> pm
+    case Err(issue) -> return Err(error = "its manifest is invalid: " + Plugin.pluginLoadIssueMessage(issue))
+  }
+  match checkImplementsGeneratorPoint(m) {
+    case Some(why) -> return Err(error = why)
+    case None -> ()
+  }
+  val command: List[String] = newList()
+  command.add("dotnet")
+  command.add("exec")
+  command.add(Path.basename(dllPath))
+  val withPayload = Plugin.addPluginPayload(m, Plugin.ManagedPayload(runtime = "dotnet", command = command))
+  match Plugin.registerPlugin(h, withPayload, Path.dirname(dllPath)) {
+    case Some(issue) -> return Err(error = Plugin.pluginLoadIssueMessage(issue))
+    case None -> ()
+  }
+  Ok(value = m.id)
 }
 
 // Runs one `generate` call on `generatorArg`'s plugin.
@@ -1164,7 +1238,7 @@ pub func preprocess(
 
   // X0006: a generator package is run, never imported.
   for (name, line) in importedPackages(source) {
-    if gens.dlls.containsKey(name) or gens.failures.containsKey(name) {
+    if gens.dlls.containsKey(name) or gens.restored.containsKey(name) or gens.failures.containsKey(name) {
       errors.add(
         generatorDiag(
           sourceFilePath,
@@ -1228,16 +1302,28 @@ pub func preprocess(
       }
       case Ok(_) -> ()
     }
-    val dllPath = match mapGet(gens.dlls, dir.generatorArg) {
-      case Some(p) -> p
-      case None -> {
-        match mapGet(gens.failures, dir.generatorArg) {
-          case Some(f) -> errors.add(generatorDiag(sourceFilePath, "error", f.code, dir.line, dir.column, f.message))
-          case None -> match mapGet(gens.libraries, dir.generatorArg) {
-            case Some(kind) -> {
-              val m = notAGeneratorMessage(dir.generatorArg, kind, dir.generatorArg + "'s lyric.toml")
-              errors.add(generatorDiag(sourceFilePath, "error", "X0002", dir.line, dir.column, Str.substring(m, 7, m.length - 7)))
-            }
+    if not gens.dlls.containsKey(dir.generatorArg) and not gens.restored.containsKey(dir.generatorArg) {
+      match mapGet(gens.failures, dir.generatorArg) {
+        case Some(f) -> errors.add(generatorDiag(sourceFilePath, "error", f.code, dir.line, dir.column, f.message))
+        case None -> match mapGet(gens.libraries, dir.generatorArg) {
+          case Some(kind) -> {
+            val m = notAGeneratorMessage(dir.generatorArg, kind, dir.generatorArg + "'s lyric.toml")
+            errors.add(generatorDiag(sourceFilePath, "error", "X0002", dir.line, dir.column, Str.substring(m, 7, m.length - 7)))
+          }
+          case None -> match mapGet(gens.restoredLibraries, dir.generatorArg) {
+            case Some(pkgDir) -> errors.add(
+              generatorDiag(
+                sourceFilePath,
+                "error",
+                "X0002",
+                dir.line,
+                dir.column,
+                "@generate(" + dir.generatorArg +
+                  ") names a package that is not a source generator: its restored package " +
+                  pkgDir +
+                  " carries no lyric-plugin/ artifact"
+              )
+            )
             case None -> errors.add(
               generatorDiag(
                 sourceFilePath,
@@ -1246,14 +1332,15 @@ pub func preprocess(
                 dir.line,
                 dir.column,
                 here +
-                  " cannot be run: a generator must be a path = \"...\" or workspace = true dependency, which the compiler builds; a registry or git generator is not supported"
+                  " cannot be run: its package was not found (a registry or git generator is restored by `lyric restore`)"
               )
             )
           }
         }
-        continue
       }
+      continue
     }
+    val dllPath = match mapGet(gens.dlls, dir.generatorArg) { case Some(p) -> p; case None -> "" }
 
     val projectRoot = Path.dirname(mf.filePath)
     val result = match runGenerator(gens, dir.generatorArg, dllPath, projectRoot, buildRequestJson(dir, sourceFilePath)) {
