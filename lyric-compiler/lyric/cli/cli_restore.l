@@ -1875,6 +1875,8 @@ func runRestoreWith(
           case Some(prev) -> prev.key
           case None -> mapGet(carriedKeys, dep.name)
         }
+        // Under --locked a changed key is let through here and recorded, so
+        // the lock comparison below reports it with the other lock changes.
         val accepted = match pinned {
           case Some(prevKey) -> prevKey == gen.keyId or updates.contains(dep.name) or lockedMode
           case None -> true

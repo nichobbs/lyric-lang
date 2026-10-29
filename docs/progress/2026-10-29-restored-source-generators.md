@@ -36,7 +36,10 @@ Also fixed: `Lyric.Workspace.findWorkspaceRoot` walked from the filesystem root
 to `Path.dirname("/") == "."` and so read the working directory's `lyric.toml`.
 A project outside any workspace, built from inside one (the repository root),
 adopted that workspace and wrote its `lyric.lock` there. The walk now stops at
-the root.
+the root. That exposed a second bug the leak had hidden: a bare `[workspace]`
+header with no keys under it left no manifest entry, so it was not a workspace
+at all (the #5865 shape); `Lyric.Manifest` now finds the header by a line scan
+(`textHasSectionHeader`), as it already did for `[package]`.
 
 Tests: `scripts/ci/source-generator-restore-e2e.sh` (in `plugin-suites.sh`)
 publishes `examples/generators/describe` to a local feed, builds the consumer
@@ -45,4 +48,5 @@ on dotnet and the JVM, and checks a rotated key against restore, `--update`,
 restored file (K0108), and a git generator. Unit tests: `manifest_self_test.l`
 (the `key` field), `cli_restore_self_test.l` (the lock round-trip),
 `generator_self_test.l` (X0002, X0006 and the X0009 text) and
-`cli_workspace_builder_self_test.l` (the walk stops at the root).
+`cli_workspace_builder_self_test.l` (the walk stops at the root), and a
+bare-`[workspace]` case in `manifest_self_test.l`.

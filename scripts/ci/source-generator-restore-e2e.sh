@@ -12,8 +12,9 @@
 #   3. A new version signed by another key is refused until
 #      `lyric restore --update Acme.Describe`; `lyric update` keeps the pin.
 #   4. `restore --locked` fails on a changed key id; a pinned `key` that did
-#      not sign the package fails the restore; a file changed in the restored
-#      artifact fails the build (K0108).
+#      not sign the package fails the restore, as does a `key` on a package
+#      that is not a generator; a file changed in the restored artifact fails
+#      the build (K0108).
 #   5. The same artifact restored from a git tag runs too.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -158,6 +159,29 @@ restored_dll="$NUGET_PACKAGES/acme.describe/0.1.1/lyric-plugin/acme.describe-0.1
 printf 'x' >> "$restored_dll"
 expect_failure "a changed file in the restored artifact" "K0108" \
   "$lyric_bin" build --manifest "$app/lyric.toml" --target dotnet -o "$work/out/dotnet/Acme.App.dll"
+
+# A key pinned on a registry package that is not a generator is refused.
+lib="$work/plainlib"
+mkdir -p "$lib/src"
+cat > "$lib/lyric.toml" <<'TOML'
+[package]
+name    = "Acme.Plain"
+version = "1.0.0"
+
+[project]
+name            = "Acme.Plain"
+output_assembly = "Acme.Plain.dll"
+
+[project.packages]
+"Acme.Plain" = "src/plain.l"
+TOML
+printf 'package Acme.Plain\n\npub func one(): Int {\n  1\n}\n' > "$lib/src/plain.l"
+"$lyric_bin" build --manifest "$lib/lyric.toml"
+"$lyric_bin" publish --manifest "$lib/lyric.toml" --registry "$feed" --api-key local -o "$work/nupkg"
+sed -i "s|^\"Acme.Describe\" = .*|&\n\"Acme.Plain\" = { version = \"1.0.0\", key = \"$pub2\" }|" "$app/lyric.toml"
+expect_failure "a key pinned on a package that is not a generator" "is not a source generator" \
+  "$lyric_bin" restore --manifest "$app/lyric.toml"
+sed -i '/^"Acme.Plain" = /d' "$app/lyric.toml"
 
 # ── 5. from git ─────────────────────────────────────────────────────────────
 gitc="git -c commit.gpgsign=false -c tag.gpgsign=false -c user.email=t@t -c user.name=t"
