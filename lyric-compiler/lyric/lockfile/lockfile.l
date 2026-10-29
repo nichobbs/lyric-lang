@@ -26,6 +26,9 @@ pub record LockedPackage {
   // "workspace", "path:<dir>", "nuget:<url>", "git:<url>#<rev>"
   sha512: Option[String]
   path: Option[String]
+  /// The id of the key a restored source generator is signed with (D266),
+  /// pinned on first restore.
+  key: Option[String] = None
 }
 
 pub record LockFile {
@@ -102,6 +105,12 @@ pub func serializeLockFile(lf: in LockFile): String {
       }
       case None -> ()
     }
+    match p.key {
+      case Some(k) -> {
+        buf = buf + "key = \"" + k + "\"\n"
+      }
+      case None -> ()
+    }
     i += 1
     // Separate blocks with a blank line; no trailing blank line after the last.
     if i < lf.packages.count {
@@ -141,6 +150,7 @@ func flushBlock(
   source: inout Option[String],
   sha512: inout Option[String],
   path: inout Option[String],
+  key: inout Option[String],
   pkgs: in List[LockedPackage],
 ): Result[Unit, String] {
   match name {
@@ -149,12 +159,13 @@ func flushBlock(
     case Some(n) -> {
       val v = unwrapOr(version, "")
       val s = unwrapOr(source, "")
-      pkgs.add(LockedPackage(name = n, version = v, source = s, sha512 = sha512, path = path))
+      pkgs.add(LockedPackage(name = n, version = v, source = s, sha512 = sha512, path = path, key = key))
       name = None
       version = None
       source = None
       sha512 = None
       path = None
+      key = None
       Ok(value = ())
     }
   }
@@ -176,6 +187,7 @@ pub func parseLockFile(text: in String): Result[LockFile, String] {
   var curSource: Option[String] = None
   var curSha512: Option[String] = None
   var curPath: Option[String] = None
+  var curKey: Option[String] = None
 
   var lineNum = 0
   while lineNum < lines.length {
@@ -188,14 +200,14 @@ pub func parseLockFile(text: in String): Result[LockFile, String] {
       // do nothing
     } else if line == "[[package]]" {
       // Flush previous block.
-      match flushBlock(curName, curVersion, curSource, curSha512, curPath, pkgs) {
+      match flushBlock(curName, curVersion, curSource, curSha512, curPath, curKey, pkgs) {
         case Err(e) -> return Err(error = e)
         case Ok(_) -> ()
       }
       inPackageBlock = true
     } else if line == "[workspace]" or Str.startsWith(line, "[") {
       // Section header that is not [[package]]; exit any package block.
-      match flushBlock(curName, curVersion, curSource, curSha512, curPath, pkgs) {
+      match flushBlock(curName, curVersion, curSource, curSha512, curPath, curKey, pkgs) {
         case Err(e) -> return Err(error = e)
         case Ok(_) -> ()
       }
@@ -242,6 +254,13 @@ pub func parseLockFile(text: in String): Result[LockFile, String] {
                 curPath = Some(value = s)
               }
             }
+          } else if key == "key" {
+            match unquote(value, lineNum) {
+              case Err(e) -> return Err(error = e)
+              case Ok(s) -> {
+                curKey = Some(value = s)
+              }
+            }
           }
           // Unknown keys are silently ignored for forward-compatibility.
         }
@@ -251,7 +270,7 @@ pub func parseLockFile(text: in String): Result[LockFile, String] {
   }
 
   // Flush the final block.
-  match flushBlock(curName, curVersion, curSource, curSha512, curPath, pkgs) {
+  match flushBlock(curName, curVersion, curSource, curSha512, curPath, curKey, pkgs) {
     case Err(e) -> return Err(error = e)
     case Ok(_) -> ()
   }

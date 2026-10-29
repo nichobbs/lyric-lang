@@ -17,6 +17,8 @@ import Lyric.Manifest as Mf
 import Lyric.Pack as Pack
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
+import Std.Ed25519 as Ed
+import Std.PluginSign as Sign
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Publish command
@@ -39,6 +41,73 @@ pub func buildPublishNuspec(
   absDllPath: in String,
   dllBase: in String,
 ): String {
+  var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+  nuspec = nuspec + "<package>\n"
+  nuspec = nuspec +
+    nuspecMetadata(
+      id,
+      version,
+      authors,
+      description,
+      license,
+      repository,
+      "lyric-package",
+      dependenciesMetadata
+    )
+  nuspec = nuspec + "  <files>\n"
+  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(absDllPath) + "\" target=\"lib/net10.0/" +
+    Pack.xmlEscape(dllBase) +
+    "\" />\n"
+  nuspec = nuspec + "  </files>\n"
+  nuspec = nuspec + "</package>\n"
+  nuspec
+}
+
+/// The `.nuspec` of a source generator package (D266): its signed plugin
+/// artifact and `signer.pub` under `lyric-plugin/`, and no `lib/` assembly or
+/// dependencies, since a generator is run, never linked, and its artifact
+/// carries everything it runs with.
+pub func buildGeneratorNuspec(
+  id: in String,
+  version: in String,
+  authors: in List[String],
+  description: in String,
+  license: in String,
+  repository: in Option[String],
+  absPluginDir: in String,
+): String {
+  var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+  nuspec = nuspec + "<package>\n"
+  nuspec = nuspec +
+    nuspecMetadata(
+      id,
+      version,
+      authors,
+      description,
+      license,
+      repository,
+      "lyric-package lyric-source-generator",
+      ""
+    )
+  nuspec = nuspec + "  <files>\n"
+  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(Path.join(absPluginDir, "**")) + "\" target=\"" +
+    generatorPluginDirName +
+    "\" />\n"
+  nuspec = nuspec + "  </files>\n"
+  nuspec = nuspec + "</package>\n"
+  nuspec
+}
+
+func nuspecMetadata(
+  id: in String,
+  version: in String,
+  authors: in List[String],
+  description: in String,
+  license: in String,
+  repository: in Option[String],
+  tags: in String,
+  dependenciesMetadata: in String,
+): String {
   val descText = if Str.isEmpty(description) { id } else { description }
   // NuGet <authors> is a comma-separated list.  Fall back to the package id
   // when the manifest declares no [package] authors (NuGet requires a
@@ -55,9 +124,7 @@ pub func buildPublishNuspec(
   if Str.isEmpty(authorsText) {
     authorsText = id
   }
-  var nuspec = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
-  nuspec = nuspec + "<package>\n"
-  nuspec = nuspec + "  <metadata>\n"
+  var nuspec = "  <metadata>\n"
   nuspec = nuspec + "    <id>" + Pack.xmlEscape(id) + "</id>\n"
   nuspec = nuspec + "    <version>" + Pack.xmlEscape(version) + "</version>\n"
   nuspec = nuspec + "    <authors>" + Pack.xmlEscape(authorsText) + "</authors>\n"
@@ -71,7 +138,7 @@ pub func buildPublishNuspec(
     }
     case None -> ()
   }
-  nuspec = nuspec + "    <tags>lyric-package</tags>\n"
+  nuspec = nuspec + "    <tags>" + Pack.xmlEscape(tags) + "</tags>\n"
   if not Str.isEmpty(dependenciesMetadata) {
     nuspec = nuspec + "    <dependencies>\n"
     nuspec = nuspec + "      <group targetFramework=\"net10.0\">\n"
@@ -79,14 +146,7 @@ pub func buildPublishNuspec(
     nuspec = nuspec + "      </group>\n"
     nuspec = nuspec + "    </dependencies>\n"
   }
-  nuspec = nuspec + "  </metadata>\n"
-  nuspec = nuspec + "  <files>\n"
-  nuspec = nuspec + "    <file src=\"" + Pack.xmlEscape(absDllPath) + "\" target=\"lib/net10.0/" +
-    Pack.xmlEscape(dllBase) +
-    "\" />\n"
-  nuspec = nuspec + "  </files>\n"
-  nuspec = nuspec + "</package>\n"
-  nuspec
+  nuspec + "  </metadata>\n"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,6 +483,7 @@ func cmdPublish(argv: in slice[String]): Int {
   var packageVersionArg: Option[String] = None
   var wasmMode = false
   var wasmFileArg: Option[String] = None
+  var signKeyArg = ""
 
   var i = 1
   while i < argv.length {
@@ -476,6 +537,14 @@ func cmdPublish(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("publish: --wasm-file requires an argument")
+        return 1
+      }
+    } else if arg == "--sign-key" {
+      if i + 1 < argv.length {
+        signKeyArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("publish: --sign-key requires an argument")
         return 1
       }
     } else if arg == "--skip-duplicate" {
@@ -561,6 +630,14 @@ func cmdPublish(argv: in slice[String]): Int {
       return 1
     }
     case None -> ()
+  }
+  val isGenerator = match pkg.kind { case Some(k) -> k == "source-generator"; case None -> false }
+  if isGenerator {
+    return publishGenerator(manifest, mfPath, effectiveVersion, signKeyArg, outputDir, registryUrl, apiKey, skipDuplicate)
+  }
+  if signKeyArg.length > 0 {
+    printErr("publish: --sign-key applies to a source generator package (kind = \"source-generator\") only")
+    return 1
   }
   val dllPath = match dllOverride {
     case Some(d) -> d
@@ -666,6 +743,118 @@ func cmdPublish(argv: in slice[String]): Int {
     dllBase
   )
 
+  packAndPush(manifest, mfDir, effectiveVersion, nuspec, outDir, registryUrl, apiKey, skipDuplicate)
+}
+
+// Publishes a source generator (D266): packs it as a plugin artifact for
+// dotnet with `lyric plugin pack`, signs the artifact with the publisher key
+// (`--sign-key <file>` or LYRIC_PLUGIN_SIGNING_KEY), writes the matching
+// `signer.pub` beside it, and pushes a package holding only `lyric-plugin/`.
+// A generator's dependencies are inside its artifact, so the package declares
+// none, and path dependencies are allowed.
+func publishGenerator(
+  manifest: in Mf.Manifest,
+  mfPath: in String,
+  effectiveVersion: in String,
+  signKeyArg: in String,
+  outputDir: in Option[String],
+  registryUrl: in Option[String],
+  apiKey: in Option[String],
+  skipDuplicate: in Bool,
+): Int {
+  val pkg: Mf.PackageSection = manifest.packageSection
+  val mfDir = Path.dirname(mfPath)
+  // The key is read before anything is built, so a missing key fails fast.
+  val seed = match loadSigningSeed("publish", signKeyArg, "--sign-key") {
+    case Ok(sd) -> sd
+    case Err(msg) -> {
+      printErr(msg + " (a source generator package is published signed, D266)")
+      return 1
+    }
+  }
+  val staging = Path.join(Path.join(mfDir, "bin"), "generator-publish")
+  if File.dirExists(staging) {
+    match File.deleteDirRecursive(staging) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        printErr("publish: cannot clear " + staging + ": " + IOError.message(e))
+        return 1
+      }
+    }
+  }
+  val pluginDir = Path.join(staging, generatorPluginDirName)
+  val packArgs: List[String] = newList()
+  packArgs.add("plugin")
+  packArgs.add("pack")
+  packArgs.add("--manifest")
+  packArgs.add(mfPath)
+  packArgs.add("-o")
+  packArgs.add(pluginDir)
+  val packRc = cmdPluginPack(packArgs.toArray())
+  if packRc != 0 {
+    return packRc
+  }
+  val artifacts = match File.listDirs(pluginDir) {
+    case Ok(ds) -> ds
+    case Err(e) -> {
+      printErr("publish: cannot list " + pluginDir + ": " + IOError.message(e))
+      return 1
+    }
+  }
+  if artifacts.count != 1 {
+    printErr("publish: internal error: " + pluginDir + " holds " + artifacts.count.toString() + " artifacts, not 1")
+    return 1
+  }
+  val signRc = signArtifactDir("publish", artifacts[0], seed)
+  if signRc != 0 {
+    return signRc
+  }
+  val signerPath = Path.join(pluginDir, generatorSignerKeyFile)
+  match File.writeText(signerPath, Sign.formatPublicKey(Ed.ed25519PublicKey(seed)) + "\n") {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("publish: cannot write " + signerPath + ": " + IOError.message(e))
+      return 1
+    }
+  }
+  val outDir = match outputDir { case Some(d) -> d; case None -> Path.join(Path.join(mfDir, "bin"), "nupkg") }
+  match File.createDir(outDir) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("publish: cannot create output dir: " + IOError.message(e))
+      return 1
+    }
+  }
+  val absPluginDir = if Path.isAbsolute(pluginDir) {
+    pluginDir
+  } else {
+    Path.join(Environment.currentDirectory(), pluginDir)
+  }
+  val nuspec = buildGeneratorNuspec(
+    pkg.name,
+    effectiveVersion,
+    pkg.authors,
+    pkg.description,
+    pkg.license,
+    pkg.repository,
+    absPluginDir
+  )
+  packAndPush(manifest, mfDir, effectiveVersion, nuspec, outDir, registryUrl, apiKey, skipDuplicate)
+}
+
+// Packs `nuspec` into `<outDir>/<name>.<version>.nupkg`, signs the package
+// when LYRIC_NUGET_SIGNING_CERT names a certificate, and pushes it.
+func packAndPush(
+  manifest: in Mf.Manifest,
+  mfDir: in String,
+  effectiveVersion: in String,
+  nuspec: in String,
+  outDir: in String,
+  registryUrl: in Option[String],
+  apiKey: in Option[String],
+  skipDuplicate: in Bool,
+): Int {
+  val pkg: Mf.PackageSection = manifest.packageSection
   val tmpNuspec = Path.join(mfDir, pkg.name + "-" + effectiveVersion + "-publish.nuspec")
   match File.writeText(tmpNuspec, nuspec) {
     case Err(e) -> {
@@ -685,7 +874,9 @@ func cmdPublish(argv: in slice[String]): Int {
   csproj = csproj + "    <IncludeBuildOutput>false</IncludeBuildOutput>\n"
   csproj = csproj + "    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n"
   csproj = csproj + "    <EnableDefaultItems>false</EnableDefaultItems>\n"
-  csproj = csproj + "    <NoWarn>$(NoWarn);NU5128;CS2008</NoWarn>\n"
+  // NU5100: a source generator package's artifact keeps its assemblies under
+  // lyric-plugin/ on purpose, since a generator is run, never referenced.
+  csproj = csproj + "    <NoWarn>$(NoWarn);NU5128;NU5100;CS2008</NoWarn>\n"
   csproj = csproj + "    <NuspecFile>" + Pack.xmlEscape(Path.basename(tmpNuspec)) + "</NuspecFile>\n"
   csproj = csproj + "  </PropertyGroup>\n"
   csproj = csproj + "</Project>\n"

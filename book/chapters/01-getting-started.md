@@ -514,8 +514,10 @@ Core commands you will use constantly:
 | `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
 | `lyric publish` | Pack and push the current package to the configured registry |
 | `lyric publish --registry <url> --api-key <key>` | Publish to a specific feed with an API key |
+| `lyric publish --sign-key <file>` | Publish a source generator as its signed plugin artifact |
 | `lyric restore` | Restore all dependencies declared in `lyric.toml`; writes `lyric.lock` |
 | `lyric restore --locked` | Restore strictly from `lyric.lock` (fail if lock is stale) |
+| `lyric restore --update <name>` | Accept a new signing key for a restored source generator (its key id is pinned in `lyric.lock`) |
 | `lyric update` | Re-resolve all deps to latest compatible versions; rewrites `lyric.lock` |
 | `lyric deps` | Print the resolved dependency list from `lyric.lock` |
 | `lyric remove <name>` | Remove a dependency from `[dependencies]` in `lyric.toml` and re-run restore |

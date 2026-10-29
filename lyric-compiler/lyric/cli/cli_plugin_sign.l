@@ -95,7 +95,7 @@ func cmdPluginKeygen(argv: in slice[String]): Int {
 
 // ── sign ─────────────────────────────────────────────────────────────────────
 /// The signing seed from `--key <file>`, else from `LYRIC_PLUGIN_SIGNING_KEY`.
-func loadSigningSeed(cmd: in String, keyFile: in String): Result[slice[Byte], String] {
+func loadSigningSeed(cmd: in String, keyFile: in String, keyFlag: in String = "--key"): Result[slice[Byte], String] {
   if keyFile.length > 0 {
     val text = match File.readText(keyFile) {
       case Ok(t) -> t
@@ -108,7 +108,7 @@ func loadSigningSeed(cmd: in String, keyFile: in String): Result[slice[Byte], St
   }
   val fromEnv = Environment.getVarOrDefault(signingKeyEnv, "")
   if fromEnv.length == 0 {
-    return Err(error = cmd + ": no signing key: pass --key <file> or set " + signingKeyEnv)
+    return Err(error = cmd + ": no signing key: pass " + keyFlag + " <file> or set " + signingKeyEnv)
   }
   match Sign.parseSecretKey(fromEnv) {
     case Ok(seed) -> Ok(value = seed)

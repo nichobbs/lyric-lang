@@ -560,9 +560,19 @@ func lockNeedsRestore(mfPath: in String, manifest: in Mf.Manifest): Bool {
     di += 1
     match LF.findPackage(lf, dep.name) {
       case None -> return true   // declared dependency not in the lock → stale
-      case Some(locked) -> match dep.source {
-        case Registry(v) -> if locked.version != v { return true }
-        case _ -> ()  // path / workspace / git: presence suffices for the cheap check
+      case Some(locked) -> {
+        match dep.source {
+          case Registry(v) -> if locked.version != v { return true }
+          case _ -> ()  // path / workspace / git: presence suffices for the cheap check
+        }
+        // A restored source generator whose key is not pinned yet (D266).
+        match locked.key {
+          case Some(_) -> ()
+          case None -> match restoredDepDir(dep, lf) {
+            case Some(dir) -> if isGeneratorPackage(dir) { return true }
+            case None -> ()
+          }
+        }
       }
     }
   }

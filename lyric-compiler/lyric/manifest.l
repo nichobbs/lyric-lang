@@ -136,6 +136,10 @@ pub record DependencyEntry {
   source: DepSource
   /// Per-dependency registry override URL (overrides `[registry].dotnet`).
   registry: Option[String]
+  /// The publisher key (`lyric-ed25519:<base64>`) a registry or git source
+  /// generator must be signed with (D266). Without one, the key the package
+  /// ships is trusted on first restore and pinned in `lyric.lock`.
+  key: Option[String] = None
 }
 
 pub record NugetEntry {
@@ -1314,9 +1318,34 @@ func assembleDeps(entries: in List[Entry]): Result[List[DependencyEntry], Manife
         case VTable(pairs) -> {
           match buildDepSource(e.key, pairs, "dependencies") {
             case Err(me) -> return Err(error = me)
-            case Ok(src) -> depList.add(
-              DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry"))
-            )
+            case Ok(src) -> {
+              val key = findInlineStr(pairs, "key")
+              match key {
+                case Some(k) -> {
+                  val sourced = match src { case Registry(_) -> true; case Git(_, _, _, _) -> true; case _ -> false }
+                  if not sourced {
+                    return Err(
+                      error = InvalidField(
+                        section = "dependencies",
+                        field = e.key,
+                        message = "key applies only to a registry or git dependency; a path or workspace generator is built from source and not signed"
+                      )
+                    )
+                  }
+                  if not Str.startsWith(k, "lyric-ed25519:") {
+                    return Err(
+                      error = InvalidField(
+                        section = "dependencies",
+                        field = e.key,
+                        message = "key must be a publisher public key, \"lyric-ed25519:<base64>\""
+                      )
+                    )
+                  }
+                }
+                case None -> ()
+              }
+              depList.add(DependencyEntry(name = e.key, source = src, registry = findInlineStr(pairs, "registry"), key = key))
+            }
           }
         }
         case _ -> ()
@@ -2412,8 +2441,11 @@ func assembleLayers(entries: in List[Entry]): Result[Option[LayersSection], Mani
   Ok(value = Some(value = LayersSection(preset = preset, packages = packages, rules = rules)))
 }
 
-func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
-  if not hasSection(entries, "workspace") {
+// `headerPresent`: the text has a `[workspace]` header line, which a bare
+// header with no keys under it (a workspace with no excludes) leaves no entry
+// for (the #5865 shape).
+func assembleWorkspace(entries: in List[Entry], headerPresent: in Bool): Option[WorkspaceSection] {
+  if not headerPresent and not hasSection(entries, "workspace") {
     return None
   }
   val exclude: List[String] = unwrapOr(findStringList(entries, "workspace", "exclude"), newList())
@@ -2465,10 +2497,17 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 /// has no multi-line strings, so a section header is always a whole line of
 /// its own and the scan is exact.
 pub func textHasPackageSection(text: in String): Bool {
+  textHasSectionHeader(text, "package")
+}
+
+/// True when the TOML text contains the header `[<section>]` on a line of its
+/// own (see `textHasPackageSection`).
+pub func textHasSectionHeader(text: in String, section: in String): Bool {
+  val header = "[" + section + "]"
   val lines = Str.split(text, "\n")
   var i = 0
   while i < lines.count {
-    if Str.trim(lines[i]) == "[package]" {
+    if Str.trim(lines[i]) == header {
       return true
     }
     i += 1
@@ -2490,7 +2529,7 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
       case Err(e) -> Err(error = e)
       case Ok(pkg) -> {
         val project = assembleProject(entries)
-        val ws = assembleWorkspace(entries)
+        val ws = assembleWorkspace(entries, textHasSectionHeader(text, "workspace"))
         val reg = assembleRegistry(entries)
         match assembleNpm(entries) {
           case Err(e) -> Err(error = e)
@@ -2558,7 +2597,7 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
 pub func parseWorkspaceRoot(text: in String, filePath: in String): Result[Option[WorkspaceRoot], ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assembleWorkspace(entries) {
+    case Ok(entries) -> match assembleWorkspace(entries, textHasSectionHeader(text, "workspace")) {
       case None -> Ok(value = None)
       case Some(ws) -> Ok(
         value = Some(

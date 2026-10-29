@@ -1009,6 +1009,63 @@ test "git dep subdir" {
   testGitDepSubdir()
 }
 
+// A registry or git source generator may pin the publisher key it must be
+// signed with (D266); a path or workspace one is built from source and cannot.
+// A bare `[workspace]` header with nothing under it is a workspace with no
+// excludes: the header leaves no key/value entry behind, so it is found by a
+// header scan (the #5865 shape, here for `[workspace]`).
+test "a bare [workspace] header is a workspace root" {
+  match parseWorkspaceRoot("[workspace]\n", "<test>") {
+    case Err(e) -> assertTrue(false, "bare workspace: " + manifestErrorText(e))
+    case Ok(wsOpt) -> match wsOpt {
+      case None -> assertTrue(false, "bare workspace: expected a workspace root")
+      case Some(wr) -> assertEqualInt(wr.workspace.exclude.count, 0, "bare workspace: no excludes")
+    }
+  }
+  match parseManifest("[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[workspace]\n", "<test>") {
+    case Err(e) -> assertTrue(false, "package with a bare workspace: " + manifestErrorText(e))
+    case Ok(m) -> assertTrue(isSome(m.workspace), "a package manifest's bare [workspace] header is kept")
+  }
+  match parseWorkspaceRoot("[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "<test>") {
+    case Err(e) -> assertTrue(false, "no workspace: " + manifestErrorText(e))
+    case Ok(wsOpt) -> assertTrue(not isSome(wsOpt), "no [workspace] header, no workspace root")
+  }
+}
+
+test "a dependency key pins a registry or git generator's publisher key" {
+  val key = "lyric-ed25519:3n4HgvX0n3T1wW2B5n2Lu6h0J1lB0fN7m9s8c7R5q4E="
+  val m = parseOk(
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nGen = { version = \"1.0.0\", key = \"" +
+      key +
+      "\" }\nGit = { git = \"https://example.com/g\", tag = \"v1\", key = \"" +
+      key +
+      "\" }\nPlain = \"2.0.0\"\n"
+  )
+  match m.deps[0].key {
+    case Some(k) -> assertEqual(k, key, "registry dependency key")
+    case None -> assertTrue(false, "registry dependency key is missing")
+  }
+  match m.deps[1].key {
+    case Some(k) -> assertEqual(k, key, "git dependency key")
+    case None -> assertTrue(false, "git dependency key is missing")
+  }
+  assertTrue(not isSome(m.deps[2].key), "no key unless one is given")
+  val onPath = manifestErrorText(
+    parseErr(
+      "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nGen = { path = \"../gen\", key = \"" +
+        key +
+        "\" }\n"
+    )
+  )
+  assertTrue(Str.contains(onPath, "registry or git dependency"), "a path dependency cannot pin a key: " + onPath)
+  val malformed = manifestErrorText(
+    parseErr(
+      "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nGen = { version = \"1.0.0\", key = \"abc\" }\n"
+    )
+  )
+  assertTrue(Str.contains(malformed, "lyric-ed25519:"), "a key must look like a public key: " + malformed)
+}
+
 test "workspace section" {
   testWorkspaceSection()
 }

@@ -3,7 +3,10 @@
 # plugin-suites.sh — the plugin system's managed-target suites (docs/69, D207).
 #
 #   1. The custom source generator example (generators are the compiler's own
-#      plugin point): scripts/ci/source-generator-e2e.sh.
+#      plugin point): scripts/ci/source-generator-e2e.sh, and the same
+#      generator published, restored from a registry and from git as a signed
+#      artifact with its key pinned in lyric.lock (D266):
+#      scripts/ci/source-generator-restore-e2e.sh.
 #   2. Std.Plugin's manifest, payload and boundary-error tests and
 #      Std.PluginSign's listing and signature tests on dotnet and the JVM
 #      (lyric-stdlib/tests/plugin_manifest_tests.l, plugin_sign_tests.l),
@@ -51,6 +54,7 @@ esac
 export LYRIC_CLI_PATH="$lyric_bin"
 
 bash scripts/ci/source-generator-e2e.sh
+bash scripts/ci/source-generator-restore-e2e.sh
 
 for target in dotnet jvm; do
   "$lyric_bin" test lyric-stdlib/tests/plugin_manifest_tests.l --target "$target"

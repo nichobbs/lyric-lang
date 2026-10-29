@@ -64,7 +64,7 @@ version = "0.1.0"
 "Csv.Derive" = { path = "../csv-derive" }
 ```
 
-Nothing else is needed. When you build, the compiler sees that `Csv.Derive`'s own manifest says `kind = "source-generator"`, builds it (skipping that when it is up to date), and runs it over every type you annotate. It is built for .NET and run with `dotnet exec`, as a plugin of the compiler (Chapter 33), whatever `--target` you build for, so the same generator serves a JVM or native build. A generator registered in a package registry or fetched from git cannot be used yet (diagnostic X0009). Annotate types as needed:
+Nothing else is needed. When you build, the compiler sees that `Csv.Derive`'s own manifest says `kind = "source-generator"`, builds it (skipping that when it is up to date), and runs it over every type you annotate. It is built for .NET and run with `dotnet exec`, as a plugin of the compiler (Chapter 33), whatever `--target` you build for, so the same generator serves a JVM or native build. A generator published to a package registry, or committed to git, is used the same way: depend on it by version or by git tag, and the compiler runs its signed, prebuilt artifact instead of building it (§30.7). Annotate types as needed:
 
 ```lyric
 package Sales.Reports
@@ -333,13 +333,13 @@ The full set:
 | Code | Meaning |
 |---|---|
 | X0001 | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
-| X0002 | The named dependency's manifest does not declare `kind = "source-generator"`. |
+| X0002 | The named dependency's manifest does not declare `kind = "source-generator"`, or its restored registry or git package carries no `lyric-plugin/` artifact. |
 | X0003 | The generator package declares no `@plugin` record implementing `Lyric.GeneratorSdk.SourceGenerator`. |
 | X0004 | The generator returned code that does not parse; the message gives the line within the generated code. |
 | X0005 | The generator reported a diagnostic. |
 | X0006 | A source-generator package is imported. |
 | X0008 | The generator is not declared in `[dependencies]`. |
-| X0009 | The generator could not be built or run: its build failed, its manifest probe failed, the call failed at the plugin boundary (a crash, a malformed reply, or longer than 60 seconds), it returned a `GeneratorError`, or it is a registry or git dependency. |
+| X0009 | The generator could not be built or run: its build failed, its manifest probe failed, the call failed at the plugin boundary (a crash, a malformed reply, or longer than 60 seconds), it returned a `GeneratorError`, or it is a registry or git generator that is not restored, fails signature verification, or is signed by a key other than the one `lyric.lock` pins. |
 
 If a file has several failing annotations, all of them are reported.
 
@@ -398,15 +398,39 @@ Testing at this level verifies the generator logic in isolation, without invokin
 
 ## §30.7 Publishing a generator
 
-Publishing is identical to any other Lyric package:
+A published generator is not source: it is the plugin artifact `lyric plugin pack` builds (Chapter 33), signed with your publisher key, so a consumer runs exactly what you signed and never builds your code. Make a key once with `lyric plugin keygen -o acme`, keep `acme.key` secret, and publish:
 
 ```sh
-lyric publish
+lyric publish --sign-key acme.key        # or set LYRIC_PLUGIN_SIGNING_KEY to the key's text
 ```
 
-The package appears on NuGet with `kind = source-generator` recorded in its metadata, so `lyric search` and the LSP can identify generator packages distinctly from library packages.
+For a `kind = "source-generator"` package, `lyric publish` builds the generator for .NET, signs the artifact, and pushes a package that holds only `lyric-plugin/csv.derive-0.1.0/` (the artifact and its `plugin.sig`) and `lyric-plugin/signer.pub` (your public key). The package has no assembly for consumers to link and no NuGet dependencies: everything the generator runs with is inside the artifact, so its own `path` dependencies, such as `Lyric.GeneratorSdk`, are fine.
 
-Consuming a published generator from the registry is not supported yet: the compiler needs a generator's source to build it, so today a consumer depends on it by path or as a workspace member (X0009 otherwise).
+A consumer depends on it by version:
+
+```toml
+[dependencies]
+"Csv.Derive" = "0.1.0"
+```
+
+`lyric restore` (run by `lyric build` when needed) verifies the artifact's signature and records your key's id in `lyric.lock`:
+
+```toml
+[[package]]
+name = "Csv.Derive"
+version = "0.1.0"
+source = "nuget:https://api.nuget.org/v3/index.json"
+sha512 = "..."
+key = "8c1c0505e17752bae6e7412739761ec4"
+```
+
+From then on the generator runs only if it is signed by that key. If a later version is signed by another key, restore fails and names both ids; after checking with the publisher, accept the new key with `lyric restore --update Csv.Derive`, and the change shows in the lock file's diff. `lyric restore --locked` fails on a changed key, and `lyric update` keeps the pinned keys. A consumer that wants the key fixed before the first download pins it in the manifest:
+
+```toml
+"Csv.Derive" = { version = "0.1.0", key = "lyric-ed25519:3n4HgvX0n3T1wW2B5n2Lu6h0J1lB0fN7m9s8c7R5q4E=" }
+```
+
+A git dependency works the same way when the repository commits the same layout: run `lyric plugin pack --sign-key acme.key -o lyric-plugin` and copy `acme.pub` to `lyric-plugin/signer.pub`. The generator's files are checked again each time a build loads it, so an artifact changed on disk is refused (K0108).
 
 ---
 
