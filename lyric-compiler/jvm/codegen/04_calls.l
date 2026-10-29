@@ -5207,8 +5207,12 @@ func lowerSliceConcatJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmT
   // `coerceArgTo` against a declared param type — so an inline `slice[T]`
   // literal argument (still a `java/util/ArrayList` at this point, per the
   // `EList` lowering) must be explicitly converted to a genuine array here,
-  // or `arraylength`/`arraycopy` below fault on a non-array reference.
-  coerceArgTo(insns, otherTyRaw, JArray(elem = e))
+  // or `arraylength`/`arraycopy` below fault on a non-array reference.  The
+  // argument must also take the receiver's representation: a `slice[Byte]`
+  // is a `byte[]` or a boxed `Object[]` depending on where it came from
+  // (a match-bound payload is unboxed, a parameter is not), and `arraycopy`
+  // between the two throws `ArrayStoreException` (#7806).
+  coerceValueTo(ctx, insns, otherTyRaw, JArray(elem = e))
   val otherTy = JArray(elem = e)
   val otherSlot = allocSlot(ctx, "__sliceccat_other_" + toString(ctx.slotTicker.count), otherTy)
   emitStore(insns, otherSlot, otherTy)

@@ -3357,7 +3357,7 @@ func lowerIfExpr(
             val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
             if not elseTerminated {
               if not elseVoidMixed {
-                coerceArgToCtx(ctx, insns, elseTy, joinTy)
+                coerceValueTo(ctx, insns, elseTy, joinTy)
                 emitStore(insns, rslot, joinTy)
               }
             }

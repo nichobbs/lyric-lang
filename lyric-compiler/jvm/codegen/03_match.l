@@ -1369,7 +1369,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
               // every path reaching the join.
               pushDefaultValue(insns, resultTy)
             }
-            case _ -> coerceArgToCtx(ctx, insns, armTy, resultTy)
+            case _ -> coerceValueTo(ctx, insns, armTy, resultTy)
           }
           rslotStoreIdxs.add(insns.count)
           emitStore(insns, rslot, resultTy)
