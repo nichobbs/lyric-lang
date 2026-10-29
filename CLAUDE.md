@@ -987,7 +987,7 @@ need direction and have nothing else productive to do**.  Specifically:
     `new + invokespecial <init>` (constructor via `T.new(args)`) instead of the
     legacy `([Object…])Object` guess.  Also covers Maven/non-JDK JAR resolution
     via `LYRIC_FFI_JARS`.  The resolver (`lyric-compiler/jvm/auto_ffi.l`
-    + `zip_reader.l` + `class_reader.l` + `deflate.l`) is a pure-Lyric stack
+    + `class_reader.l`, over `Std.Zip`'s `readPrefixedZipDirectory`) is a pure-Lyric stack
     that reads the `.class` entry straight out of `java.base.jmod` (a ZIP of
     DEFLATE-compressed class files behind a 4-byte JMOD magic header),
     enumerating entries via the ZIP **central directory** (JMOD entries use

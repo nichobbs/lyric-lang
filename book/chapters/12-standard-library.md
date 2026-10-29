@@ -41,7 +41,7 @@ Here is the full module inventory:
 | `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]`; raw SHA-256 `sha256Digest`; `hmacSha256(key, message) -> slice[Byte]` and `constantTimeEquals(a, b)` for comparing MAC tags |
 | `Std.Ed25519` | Ed25519 signatures (RFC 8032) in pure Lyric on every target: `ed25519PublicKey(seed)`, `ed25519Sign(seed, message)`, `ed25519Verify(publicKey, message, signature)`; the private key is a 32-byte seed from `secureGetBytes(32)`, and verification is strict (canonical encodings, no small-order keys) |
-| `Std.Zip` | Zip archives and raw DEFLATE in pure Lyric on every target: `readZipDirectory` and `readZipEntry` (hostile input checked: bounds, `ZipLimits`, CRC-32), `writeZip` (deterministic), `inflate`, `deflate`, `crc32` |
+| `Std.Zip` | Zip archives and raw DEFLATE in pure Lyric on every target: `readZipDirectory` and `readZipEntry` (hostile input checked: bounds, `ZipLimits`, CRC-32), `readPrefixedZipDirectory` for an archive behind a prefix such as a JDK `.jmod`, `writeZip` (deterministic), `inflate`, `deflate`, `crc32` |
 | `Std.Encoding` | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `encodeUtf8` |
 | `Std.Uuid` | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |

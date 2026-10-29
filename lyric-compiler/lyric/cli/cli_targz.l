@@ -4,13 +4,12 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Parse as Parse
-import Jvm.Deflate as Deflate
+import Std.Zip as Zip
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `.tar.gz` prebuilt archives (docs/67 §6, D232): a gzip stream (RFC 1952) over
 // a POSIX tar (ustar, pax and GNU long names), read in pure Lyric on top of
-// `Jvm.Deflate`.  Arithmetic stands in for bit operations so the seed compiler
-// builds this file.
+// `Std.Zip`'s DEFLATE decoder.
 // ─────────────────────────────────────────────────────────────────────────────
 func byteAt(data: in slice[Byte], i: in Int): Int = data[i].toInt()
 
@@ -24,9 +23,13 @@ func le32(data: in slice[Byte], i: in Int): Long {
 
 func flagSet(flags: in Int, bit: in Int): Bool = (flags / bit) % 2 == 1
 
-/// The bytes a gzip stream (one member) decompresses to.  The trailer's length is checked,
-/// so a truncated download that the checksum somehow let through still fails loudly.
-pub func gunzip(data: in slice[Byte]): Result[List[Int], String] {
+/// The most a prebuilt archive member, or a whole uncompressed tar, may hold.
+val prebuiltOutputCap: Int = 67108864
+
+/// The bytes a gzip stream (one member) decompresses to.  The trailer's length bounds the
+/// output and its length and CRC-32 are checked, so a truncated or corrupt download that the
+/// checksum somehow let through still fails loudly.
+pub func gunzip(data: in slice[Byte]): Result[slice[Byte], String] {
   val n = data.length
   if n < 18 or byteAt(data, 0) != 31 or byteAt(data, 1) != 139 {
     return Err(error = "not a gzip stream")
@@ -57,10 +60,20 @@ pub func gunzip(data: in slice[Byte]): Result[List[Int], String] {
   if pos >= n - 8 {
     return Err(error = "the gzip header is truncated")
   }
-  val inflated = Deflate.inflate(data, pos, n - 8 - pos)
+  val expectedCrc = le32(data, n - 8)
   val expected = le32(data, n - 4)
-  if inflated.count.toLong() % 4294967296i64 != expected {
-    return Err(error = "the gzip stream is truncated or corrupt (length " + Str.fromInt(inflated.count) + ")")
+  if expected > prebuiltOutputCap.toLong() {
+    return Err(error = "the gzip stream inflates to more than 64 MiB")
+  }
+  val inflated = match Zip.inflateRange(data, pos, n - 8 - pos, expected.toInt()) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "the gzip stream is truncated or corrupt (" + Zip.zipErrorMessage(e) + ")")
+  }
+  if inflated.length.toLong() != expected {
+    return Err(error = "the gzip stream is truncated or corrupt (length " + Str.fromInt(inflated.length) + ")")
+  }
+  if Zip.crc32(inflated) != expectedCrc {
+    return Err(error = "the gzip stream is truncated or corrupt (its CRC-32 does not match)")
   }
   Ok(value = inflated)
 }
@@ -77,11 +90,11 @@ pub record TarEntry {
 
 val printableAscii: String = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
 
-func cString(buf: in List[Int], off: in Int, maxLen: in Int): String {
+func cString(buf: in slice[Byte], off: in Int, maxLen: in Int): String {
   var s = ""
   var i = 0
-  while i < maxLen and off + i < buf.count and buf[off + i] != 0 {
-    val b = buf[off + i]
+  while i < maxLen and off + i < buf.length and buf[off + i].toInt() != 0 {
+    val b = buf[off + i].toInt()
     // Archive paths are ASCII in practice; any other byte becomes '?'.
     s = s + (if b >= 32 and b < 127 { Str.substring(printableAscii, b - 32, 1) } else { "?" })
     i += 1
@@ -93,15 +106,15 @@ func cString(buf: in List[Int], off: in Int, maxLen: in Int): String {
 // real archive reaches: the callers' bounds checks then reject it as truncated.
 val tarNumberCap: Int = 2147483647
 
-func parseTarNumber(buf: in List[Int], off: in Int, len: in Int): Int {
-  if buf[off] >= 128 {
-    var v = buf[off] - 128
+func parseTarNumber(buf: in slice[Byte], off: in Int, len: in Int): Int {
+  if buf[off].toInt() >= 128 {
+    var v = buf[off].toInt() - 128
     var i = 1
     while i < len {
       if v > 8388607 {
         return tarNumberCap
       }
-      v = v * 256 + buf[off + i]
+      v = v * 256 + buf[off + i].toInt()
       i += 1
     }
     return v
@@ -109,7 +122,7 @@ func parseTarNumber(buf: in List[Int], off: in Int, len: in Int): Int {
   var v = 0
   var i = 0
   while i < len {
-    val c = buf[off + i]
+    val c = buf[off + i].toInt()
     if c >= 48 and c <= 55 {
       if v > 268435455 {
         return tarNumberCap
@@ -121,10 +134,10 @@ func parseTarNumber(buf: in List[Int], off: in Int, len: in Int): Int {
   v
 }
 
-func isZeroBlock(buf: in List[Int], off: in Int): Bool {
+func isZeroBlock(buf: in slice[Byte], off: in Int): Bool {
   var i = 0
   while i < 512 {
-    if buf[off + i] != 0 {
+    if buf[off + i].toInt() != 0 {
       return false
     }
     i += 1
@@ -132,25 +145,25 @@ func isZeroBlock(buf: in List[Int], off: in Int): Bool {
   true
 }
 
-func headerChecksumOk(buf: in List[Int], off: in Int): Bool {
+func headerChecksumOk(buf: in slice[Byte], off: in Int): Bool {
   var sum = 0
   var i = 0
   while i < 512 {
-    sum = sum + (if i >= 148 and i < 156 { 32 } else { buf[off + i] })
+    sum = sum + (if i >= 148 and i < 156 { 32 } else { buf[off + i].toInt() })
     i += 1
   }
   sum == parseTarNumber(buf, off + 148, 8)
 }
 
 /// The value of `key` in a pax extended header (`<length> <key>=<value>\n` records), or "".
-func paxValue(buf: in List[Int], off: in Int, size: in Int, key: in String): String {
+func paxValue(buf: in slice[Byte], off: in Int, size: in Int, key: in String): String {
   var pos = off
   val limit = off + size
   while pos < limit {
     var len = 0
     var p = pos
-    while p < limit and buf[p] >= 48 and buf[p] <= 57 {
-      len = len * 10 + (buf[p] - 48)
+    while p < limit and buf[p].toInt() >= 48 and buf[p].toInt() <= 57 {
+      len = len * 10 + (buf[p].toInt() - 48)
       p += 1
     }
     if len <= 0 or pos + len > limit {
@@ -169,20 +182,20 @@ func paxValue(buf: in List[Int], off: in Int, size: in Int, key: in String): Str
 func roundUp512(n: in Int): Int = ((n + 511) / 512) * 512
 
 /// Reads the member headers of an uncompressed tar archive; a malformed header ends the list.
-pub func readTarEntries(buf: in List[Int]): Result[List[TarEntry], String] {
+pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
   val entries: List[TarEntry] = newList()
   var pos = 0
   var pendingName = ""
   var pendingLink = ""
   var pendingSize = -1
-  while pos + 512 <= buf.count and not isZeroBlock(buf, pos) {
+  while pos + 512 <= buf.length and not isZeroBlock(buf, pos) {
     if not headerChecksumOk(buf, pos) {
       return Err(error = "the tar header at offset " + Str.fromInt(pos) + " has a bad checksum")
     }
-    val kind = buf[pos + 156]
+    val kind = buf[pos + 156].toInt()
     val headerSize = parseTarNumber(buf, pos + 124, 12)
     val dataOff = pos + 512
-    if headerSize > buf.count - dataOff {
+    if headerSize > buf.length - dataOff {
       return Err(error = "the tar archive is truncated")
     }
     if kind == 120 {
@@ -220,7 +233,7 @@ pub func readTarEntries(buf: in List[Int]): Result[List[TarEntry], String] {
       val size = if pendingSize >= 0 { pendingSize } else { headerSize }
       val isData = kind == 0 or kind == 48 or kind == 55
       // A pax `size` replaces the header's, so it needs the same bounds check.
-      if isData and size > buf.count - dataOff {
+      if isData and size > buf.length - dataOff {
         return Err(error = "the tar archive is truncated")
       }
       entries.add(
@@ -281,7 +294,7 @@ func findTarEntry(entries: in List[TarEntry], name: in String): Option[TarEntry]
 
 /// The bytes of the member `name`, following symbolic and hard links (a `libfoo.dylib` that
 /// points at `libfoo.3.dylib` yields the real file's bytes).
-pub func extractTarMember(buf: in List[Int], entries: in List[TarEntry], name: in String): Result[List[Int], String] {
+pub func extractTarMember(buf: in slice[Byte], entries: in List[TarEntry], name: in String): Result[slice[Byte], String] {
   var current = name
   var hops = 0
   while hops < 16 {
@@ -298,13 +311,13 @@ pub func extractTarMember(buf: in List[Int], entries: in List[TarEntry], name: i
           // A hard link names its target by the target's path in the archive, from the root.
           current = e.linkName
         } else {
-          val bytes: List[Int] = newList()
+          val bytes: List[Byte] = newList()
           var i = 0
           while i < e.size {
             bytes.add(buf[e.dataOffset + i])
             i += 1
           }
-          return Ok(value = bytes)
+          return Ok(value = bytes.toArray())
         }
       }
     }

@@ -23,7 +23,7 @@ import Std.Collections
 import Std.Environment as Env
 import Std.File as File
 import Std.String as Str
-import Jvm.ZipReader
+import Std.Zip as Zip
 import Jvm.ClassReader
 
 // ── Auto-FFI context ──────────────────────────────────────────────────────────
@@ -217,24 +217,39 @@ func classFound(opt: in Option[ClassInfo]): Bool {
   found
 }
 
+// `Std.Zip`'s default bounds, but as many entries as a zip without ZIP64 can
+// hold: `java.base.jmod` alone has over 7,000, and a large JAR more than
+// `Std.Zip`'s default 10,000.
+func archiveZipLimits(): Zip.ZipLimits {
+  Zip.ZipLimits(maxEntries = 65535, maxEntrySize = 536870912i64, maxTotalSize = 4294967296i64, maxRatio = 1000i64)
+}
+
 // Try to load and parse a class entry from a specific JMOD or JAR archive.
 // Returns the parsed `ClassInfo` or `None` when the entry is absent or
-// the archive is unreadable.  Both JMODs (ZIP + 4-byte magic header) and
-// plain JARs (standard ZIP) are handled by `readZipEntries`.
+// the archive is unreadable or malformed.  `readPrefixedZipDirectory` reads
+// both JMODs (a zip after a 4-byte "JM" header, entries written with
+// streaming data descriptors) and plain JARs.
 func tryLoadFromArchive(archivePath: in String, entryPath: in String): Option[ClassInfo] {
   var result: Option[ClassInfo] = None
   if File.fileExists(archivePath) {
-    try {
-      val bytes = File.readBytesOrPanic(archivePath)
-      val entries = readZipEntries(bytes)
-      match extractByName(bytes, entries, entryPath) {
-        case Some(classBytes) -> {
-          result = parseClass(classBytes)
+    match File.readBytes(archivePath) {
+      case Ok(bytes) -> match Zip.readPrefixedZipDirectory(bytes, archiveZipLimits()) {
+        case Ok(entries) -> {
+          for e in entries {
+            if e.name == entryPath {
+              match Zip.readZipEntry(bytes, e) {
+                case Ok(classBytes) -> {
+                  result = parseClass(classBytes)
+                }
+                case Err(_) -> ()
+              }
+              break
+            }
+          }
         }
-        case None -> ()
+        case Err(_) -> ()
       }
-    } catch Bug as _ {
-      result = None
+      case Err(_) -> ()
     }
   }
   result

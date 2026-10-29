@@ -19,7 +19,7 @@
 //!      ZIP entry (`Jvm.Bridge`'s contract-embedding step).
 //!   2. `Lyric.RestoredPackages.loadRestoredPackageJvm` reads it back via
 //!      `Lyric.ContractMeta.readAllContractsFromJarFile`'s ZIP central
-//!      directory walk (`Jvm.ZipReader`) instead of a .NET PE resource.
+//!      directory walk (`Std.Zip`) instead of a .NET PE resource.
 //!   3. `Lyric.RestoredPackages.synthesiseArtifact` re-parses the
 //!      contract's `repr` strings into a `SourceFile` — shared, unchanged
 //!      code between the MSIL and JVM restored-dep paths.

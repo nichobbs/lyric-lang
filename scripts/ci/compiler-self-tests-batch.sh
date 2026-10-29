@@ -229,7 +229,7 @@ for t in \
   lyric-compiler/lyric/record_omitted_default_self_test.l \
   lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l \
   lyric-compiler/lyric/app_host_self_test.l \
-  lyric-compiler/lyric/deflate_zip_self_test.l \
+  lyric-compiler/lyric/class_reader_self_test.l \
   lyric-compiler/lyric/jvm_lambda_iface_bundling_self_test.l \
   lyric-compiler/lyric/generator/generator_self_test.l \
   lyric-compiler/lyric/plugin_expand_self_test.l \

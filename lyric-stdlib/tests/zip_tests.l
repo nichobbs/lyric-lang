@@ -108,6 +108,37 @@ func testInflateRejects(): Unit {
     inflate(hex("0BC94855282CCD4CCE56482ACA2FCF5348CBAF50C82ACD2D2856C82F4B2D5228014AE72456552AA4E4A7EB29848C2A1E" + "553CAA7854F1A8E251C5C34B31032313330B2B1B3B072717370F2F1FBF80A090B088A898B884A494B48CAC9CBC82A292" + "B28AAA9ABA86A696B68EAE9EBE81A191B189A999B985A595B58DAD9DBD83A393B38BAB9BBB87A797B78FAF9F7F406050" + "7048685878446454744C6C5C7C426252724A6A5A7A46"), 100000).isErr(),
     "a truncated stream"
   )
+  assertTrue(inflate(hex(""), 100).isErr(), "empty input")
+  assertTrue(inflate(hex("02"), 100).isErr(), "a fixed block cut off after its header")
+  // A literal 'X', then a length-3 match at distance 4 with one byte of output.
+  assertTrue(inflate(hex("8B0062"), 100).isErr(), "a back-reference before the start of the data")
+}
+
+// A zip after a prefix, the shape of a JDK `.jmod` ("JM", version 1.0).
+func testPrefixedArchive(): Unit {
+  val files: List[ZipFile] = newList()
+  files.add(ZipFile(name = "classes/A.class", data = encodeUtf8("first entry")))
+  files.add(ZipFile(name = "classes/B.class", data = encodeUtf8("second entry, second entry, second entry")))
+  val plain = writeZip(files)
+  val prefixed = hex("4A4D0100").concat(plain)
+  assertTrue(readZipDirectory(prefixed, defaultZipLimits()).isErr(), "the strict reader refuses a prefix")
+  match readPrefixedZipDirectory(prefixed, defaultZipLimits()) {
+    case Ok(es) -> {
+      assertEqualInt(es.count, 2, "two entries after the prefix")
+      assertEqualLong(es[0].localHeaderOffset, 4i64, "offsets count the prefix")
+      match readZipEntry(prefixed, es[1]) {
+        case Ok(b) -> assertTrue(bytesEq(b, encodeUtf8("second entry, second entry, second entry")), "contents")
+        case Err(e) -> panic(zipErrorMessage(e))
+      }
+    }
+    case Err(e) -> panic("prefixed: " + zipErrorMessage(e))
+  }
+  match readPrefixedZipDirectory(plain, defaultZipLimits()) {
+    case Ok(es) -> assertEqualLong(es[0].localHeaderOffset, 0i64, "no prefix")
+    case Err(e) -> panic("unprefixed: " + zipErrorMessage(e))
+  }
+  // A central directory claiming to start past where it can.
+  assertTrue(readPrefixedZipDirectory(plain.slice(4, plain.length), defaultZipLimits()).isErr(), "a cut-off start")
 }
 
 func testCrc32(): Unit {
@@ -644,6 +675,7 @@ func main(): Int {
   testReadPythonArchive()
   testHostileArchives()
   testWriteZipRoundTrip()
+  testPrefixedArchive()
   println("zip tests: ok")
   return 0
 }

@@ -889,8 +889,9 @@ members = ["lib/libwgpu_native.so"]     # zip or .tar.gz members to extract; omi
 An archive is a `.zip`, or a gzip-compressed tar (`.tar.gz` or `.tgz`, D232); both
 need `members`. A tar member that is a symbolic or hard link (`libfoo.so ->
 libfoo.so.1`) is followed and extracted under its own name. Both formats are read
-by the compiler itself (`Jvm.Deflate`), so `lyric restore` needs only `curl`;
-output past 64 MiB is refused, and `.tar.xz`, `.tar.bz2` and `.tar.zst` are not
+by the compiler itself (`Std.Zip`), so `lyric restore` needs only `curl`; a zip
+member or an uncompressed tar past 64 MiB is refused, as is an entry whose CRC-32
+or length does not match, and `.tar.xz`, `.tar.bz2` and `.tar.zst` are not
 read.
 
 A `members` entry written `"<path> -> <file name>"` extracts that member under
@@ -2641,7 +2642,7 @@ Supported features:
 
 Unresolved calls and narrowing coercions fall back to requiring an explicit `@externTarget` wrapper; property *assignment* on a value-type receiver (a byref-receiver shape) is not yet expressible via auto-FFI. All unresolved auto-FFI calls, member reads, and property assignments on extern receivers produce a compile-time diagnostic — never a silent mis-lowering.
 
-**JVM target.** The self-hosted JVM emitter resolves `import extern` and `extern type` method calls from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the `Jvm.AutoFfi` / `Jvm.ZipReader` / `Jvm.ClassReader` / `Jvm.Deflate` stack under `lyric-compiler/jvm/`). It reads the `.class` entry straight out of `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time, parses the constant pool and method table, scores overloads, and emits the correctly-typed bytecode:
+**JVM target.** The self-hosted JVM emitter resolves `import extern` and `extern type` method calls from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the `Jvm.AutoFfi` / `Jvm.ClassReader` stack under `lyric-compiler/jvm/`, reading archives through `Std.Zip`). It reads the `.class` entry straight out of `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time, parses the constant pool and method table, scores overloads, and emits the correctly-typed bytecode:
 
 - **`invokestatic`** for static methods (e.g. `JMath.abs(-7)` → `invokestatic`).
 - **`invokevirtual`** for instance methods on a JDK reference receiver (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
