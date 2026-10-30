@@ -11,9 +11,9 @@
 #       message must name the unresolved name AND the enclosing woven
 #       specialization (`__lyric_bmode_...`) so failures in synthesized
 #       code are locatable.
-#   (b) the pre-check fast path (`diagnoseUnresolvedQualifiedValueMsil`)
-#       for a plain qualified typo (`NoSuchPkg.nope`) — the
-#       message-quality tier.
+#   (b) a plain qualified typo (`NoSuchPkg.nope`) in user code: the type
+#       checker reports it as T0020 (docs/70 phase 1, D280), before the
+#       backend's T0115 tiers are reached.
 #   (c) positive control: an identically-shaped dep-template weave with a
 #       VALID reference builds AND runs (exit 0 proves the woven advice
 #       executed), so a regression that silently stops weaving — which
@@ -129,15 +129,15 @@ grep -q "error\[T0115\]: cannot resolve name 'Nonexistent'" "$work/bad.out" || {
 grep -q "__lyric_bmode_Badlib_Advice" "$work/bad.out" || {
   echo "expected the T0115 message to name the woven specialization function"; exit 1; }
 
-# (b) NEGATIVE: plain qualified typo hits the precise pre-check tier.
+# (b) NEGATIVE: a plain qualified typo is the type checker's T0020.
 mkdir -p "$work/typo"
 printf 'package Typo\n\nimport Std.Core\n\nfunc main(): Int {\n  val x = NoSuchPkg.nope\n  0\n}\n' > "$work/typo/main.l"
 rc=0
 ( cd "$work/typo" && timeout 180 "$bin_abs" build main.l ) > "$work/typo.out" 2>&1 || rc=$?
 echo "--- negative (pre-check) build output (rc=$rc) ---"; cat "$work/typo.out"
 test "$rc" -ne 0 || { echo "qualified typo should fail the build"; exit 1; }
-grep -q "cannot resolve qualified reference 'NoSuchPkg.nope'" "$work/typo.out" || {
-  echo "expected the pre-check qualified-reference T0115 message"; exit 1; }
+grep -q "error\[T0020\].*unknown name 'NoSuchPkg'" "$work/typo.out" || {
+  echo "expected the type checker's T0020 for the unknown receiver 'NoSuchPkg'"; exit 1; }
 
 # (c) POSITIVE control: valid dep-template weave builds and RUNS.
 write_lib "lib-good" "Goodlib" 'Goodlib.fallbackValue("guarded")'

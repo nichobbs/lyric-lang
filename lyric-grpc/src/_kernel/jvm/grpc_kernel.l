@@ -43,12 +43,12 @@ extern package io.grpc.stream {
 
 @axiom("io.grpc server host backed by Netty transport")
 extern package io.grpc.server {
-  pub func serve(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: Grpc.ServiceRegistry): Unit
+  pub func serve(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: ServiceRegistry): Unit
 }
 
 @axiom("io.grpc.Server.shutdown and awaitTermination provide drain-with-timeout shutdown")
 extern package io.grpc.server.managed {
-  pub func netStartHandle(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: Grpc.ServiceRegistry): GrpcServerHandle
+  pub func netStartHandle(host: String, port: Int, reflectionEnabled: Bool, maxConnectionIdleMs: Int, registry: ServiceRegistry): GrpcServerHandle
 
   pub func netStopHandle(handle: GrpcServerHandle, drainTimeoutMs: Int): Unit
     requires: drainTimeoutMs >= 0

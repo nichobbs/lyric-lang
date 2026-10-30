@@ -12,7 +12,7 @@ import Std.Sort
 import Customers.Domain.{Customer, CustomerId, CreditLimit, Tier, CustomerOrder, CustomerPage}
 import Customers.Ports.{CustomerRepository}
 
-protected type Table {
+pub protected type Table {
   var rows: Map[Long, Customer] = newMap()
   entry put(c: in Customer): Unit {
     val k = c.id.toLong()

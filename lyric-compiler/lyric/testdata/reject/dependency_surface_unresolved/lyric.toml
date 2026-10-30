@@ -1,0 +1,8 @@
+[package]
+name = "reject-dependency-surface"
+version = "0.1.0"
+[project]
+name = "RejectDependencySurface"
+[project.packages]
+"Lib" = "lib"
+"App" = "app"

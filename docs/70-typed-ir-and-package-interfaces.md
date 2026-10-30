@@ -1,8 +1,8 @@
 # 70. Resolved names, a typed IR and checked package interfaces
 
 _Status: **Accepted in D267** as the direction for the compiler's front and
-middle end, the library boundary and cross-package contracts. Nothing in this
-document is implemented yet; §13 is the plan. It supersedes docs/45 phases
+middle end, the library boundary and cross-package contracts. Phase 1 shipped
+in D280; §13 is the plan for the rest. It supersedes docs/45 phases
 2-5 (§9.9), the per-package import scope of docs/19 §4 step 2 and §8 (§4.1),
 and the transitive bare-name half of D141 (§4.3). Open questions are §15._
 
@@ -682,8 +682,12 @@ One PR. Cheap and independent; it stops the bleeding while the rest is built.
   errors, not a fallback to a same-named type.
 - The LSP keeps import origins (no `name = ""` packages).
 - T0212: a `pub` signature naming a less-visible type (#7214).
-- The I0001 gate (§5.3).
 - Fix the sources that each rule rejects, in the same PR.
+
+Shipped in D280. The I0001 gate moved to phase 3a: the current checker
+produces about 11.5k `TyError`s with no diagnostic on the compiler's own
+sources, mostly benign callee positions, so the gate is enforced by the TIR
+builder (I0002) rather than on the current checker.
 
 ### Phase 2: resolver and symbol identity
 
@@ -703,7 +707,7 @@ One PR. Cheap and independent; it stops the bleeding while the rest is built.
 
 ### Phase 3: TIR and the middle end
 
-- **3a** `Lyric.Tir` types, `Lyric.Tir.Verify`, `NodeId`s, the checker's
+- **3a** the I0001 gate (moved from phase 1, D280); `Lyric.Tir` types, `Lyric.Tir.Verify`, `NodeId`s, the checker's
   per-node tables and the TIR builder (§6.3); type rules of §5 (`TyParam`,
   `TyInfer`, T0210, real builtin signatures, the §5.4 rules).
 - **3b** Declaration expansion before body check: derives and the weaver

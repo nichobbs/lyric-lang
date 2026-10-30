@@ -533,12 +533,12 @@ func symbolToType(
 ): Type {
   match sym.kind {
     case DKTypeAlias(decl) -> {
-      checkImportedVisibility(sym, span, diag)
+      checkImportedVisibility(tbl, sym, span, diag)
       resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
     }
     case _ -> match symbolTypeIdOpt(sym) {
       case Some(tid) -> {
-        checkImportedVisibility(sym, span, diag)
+        checkImportedVisibility(tbl, sym, span, diag)
         TyUser(id = tid, name = sym.name, args = args)
       }
       case None -> {
@@ -592,10 +592,16 @@ func resolveAliasRhs(
 
 // The `TyUser` for `sym` when it is a concrete type symbol, else `None`.
 // Helper for `resolveAliasPath`'s scope-priority lookup (#2611).
-func concreteAliasTarget(sym: in Symbol, args: in List[Type], span: in Span, diag: in List[Diagnostic]): Option[Type] {
+func concreteAliasTarget(
+  tbl: in SymbolTable,
+  sym: in Symbol,
+  args: in List[Type],
+  span: in Span,
+  diag: in List[Diagnostic],
+): Option[Type] {
   match symbolTypeIdOpt(sym) {
     case Some(tid) -> {
-      checkImportedVisibility(sym, span, diag)
+      checkImportedVisibility(tbl, sym, span, diag)
       Some(value = TyUser(id = tid, name = sym.name, args = args))
     }
     case None -> None
@@ -642,7 +648,7 @@ func resolveAliasPath(
   // cannot loop back on the alias being expanded.
   match symTableTryFindOne(tbl, last) {
     case Some(scopedSym) -> {
-      match concreteAliasTarget(scopedSym, args, span, diag) {
+      match concreteAliasTarget(tbl, scopedSym, args, span, diag) {
         case Some(t) -> {
           return t
         }
@@ -660,7 +666,7 @@ func resolveAliasPath(
   while i < all.count {
     match symbolTypeIdOpt(all[i]) {
       case Some(tid) -> {
-        checkImportedVisibility(all[i], span, diag)
+        checkImportedVisibility(tbl, all[i], span, diag)
         return TyUser(id = tid, name = all[i].name, args = args)
       }
       case None -> {
@@ -722,7 +728,10 @@ func checkQualifiedTypePackageRef(
   diag: in List[Diagnostic],
 ): Bool {
   val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or pkgSegs.count == 0 {
+  // The import rule is the checked file's: a dependency's own signatures were
+  // checked against its imports when it was built, and a restored one carries
+  // its types fully qualified without the aliases that made them reachable.
+  if curPkg.length == 0 or pkgSegs.count == 0 or not symTableImportRuleApplies(tbl, curPkg) {
     return false
   }
   val pkg = modulePathJoin(pkgSegs)
@@ -790,7 +799,7 @@ func resolveQualifiedAliasPath(
   for owner in owners {
     match symTableTryFindInPackage(tbl, owner, last) {
       case Some(sym) -> {
-        match concreteAliasTarget(sym, args, span, diag) {
+        match concreteAliasTarget(tbl, sym, args, span, diag) {
           case Some(t) -> return t
           case None -> ()
         }
@@ -989,7 +998,7 @@ func resolveTypePath(
   }
   match defaultPick {
     case Some(sym) -> {
-      if symbolIsType(sym) {
+      if symbolIsType(sym) and qualifiedTypeOwnerAccepts(tbl, ownerPkg, sym) {
         return symbolToType(tbl, ctx, diag, sym, args, span)
       }
       // Same type-symbol preference as the single-segment arm: a non-type
@@ -997,7 +1006,7 @@ func resolveTypePath(
       val all = symTableTryFindAll(tbl, last)
       var ti = 0
       while ti < all.count {
-        if symbolIsType(all[ti]) {
+        if symbolIsType(all[ti]) and qualifiedTypeOwnerAccepts(tbl, ownerPkg, all[ti]) {
           return symbolToType(tbl, ctx, diag, all[ti], args, span)
         }
         ti = ti + 1
@@ -1023,6 +1032,46 @@ func resolveTypePath(
   }
 }
 
+// Whether a qualified type reference `Owner.Name` may resolve to `sym`: the
+// qualifier must name the type's own package, or a package that re-exports it
+// through its imports (the kernel/host idiom).  A host-namespace qualifier on
+// an extern type (`System.Text.StringBuilder`) names no Lyric package and is
+// accepted, as is an import alias in a dependency's own signatures.  Anything
+// else is the wrong type, picked only because its last segment matches, so it
+// is reported instead (docs/70 §4.3).
+func qualifiedTypeOwnerAccepts(tbl: in SymbolTable, ownerPkg: in String, sym: in Symbol): Bool {
+  if sym.originPackage.length == 0 or sym.originPackage == ownerPkg {
+    return true
+  }
+  if tbl.contractSourceFile.count > 0 and sym.originPackage == symTableScopePkg(tbl) {
+    return true
+  }
+  match mapGet(tbl.packageImports, ownerPkg) {
+    case Some(reexported) -> {
+      for r in reexported {
+        if r == sym.originPackage {
+          return true
+        }
+      }
+    }
+    case None -> ()
+  }
+  if symTablePackageHasAnySymbol(tbl, ownerPkg) {
+    return false
+  }
+  match sym.kind {
+    case DKExternType(_, _) -> true
+    case _ -> {
+      // A dependency's own signatures are resolved before its aliases are
+      // rewritten (only the file being checked goes through the alias
+      // rewriter), so there an owner that is no package is one of its import
+      // aliases; the dependency's own build checked what it names.
+      val curPkg = symTableScopePkg(tbl)
+      curPkg.length > 0 and not symTableImportRuleApplies(tbl, curPkg)
+    }
+  }
+}
+
 // #1484: enforce visibility at use sites.  A reference to an *imported*
 // (cross-package) symbol is rejected (T0097) only when the symbol is
 // package-private (no modifier) — per language reference §3.1, `pub` and
@@ -1034,7 +1083,14 @@ func resolveTypePath(
 // unaffected — a package is checked as one unit, so every sibling-file symbol
 // is in-package.  (The `V0007`/`V0008` codes suggested in #1484 are already
 // owned by the verifier; visibility uses the type-checker code T0097.)
-func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
+func checkImportedVisibility(tbl: in SymbolTable, sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
+  // A reference resolved while checking the declaring package's own items
+  // (its signatures and impls, which are registered before any body is
+  // checked) is not a cross-package reference.
+  val scopePkg = symTableScopePkg(tbl)
+  if scopePkg.length > 0 and sym.originPackage == scopePkg {
+    return
+  }
   if sym.isImported {
     // Extern types / extern packages are host-binding (FFI boundary)
     // declarations: the pub/internal/package-private tiers do not apply to

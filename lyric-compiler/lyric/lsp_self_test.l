@@ -666,6 +666,40 @@ test "hover and definition resolve a method call to an imported package's functi
   assertTrue(Str.contains(def, "ext.l"), "definition points into the imported package's file: " + def)
 }
 
+// docs/70 §4.4: a workspace package keeps its own name, so a selective
+// import makes only the listed name visible bare and a package-private
+// declaration stays private, as in `lyric build`.
+test "a selective workspace import makes only the listed names visible (docs/70)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-selective-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  val depPath = Path.join(dir, "w.l")
+  writeOrPanic(depPath, "package W\npub func wa(): Int { 1 }\npub func wb(): Int { 2 }\nfunc wc(): Int { 3 }\n")
+  val state = lspInit()
+  state.wsIndex.add("W", depPath)
+  val listed = openDocMessages(
+    state,
+    "file:///lsp_self_test_selective_ok.l",
+    "package App\nimport W.{wa}\nfunc f(): Int {\n  wa()\n}\n"
+  )
+  val hidden = openDocMessages(
+    state,
+    "file:///lsp_self_test_selective_hidden.l",
+    "package App\nimport W.{wa}\nfunc f(): Int {\n  wb()\n}\n"
+  )
+  val priv = openDocMessages(
+    state,
+    "file:///lsp_self_test_selective_private.l",
+    "package App\nimport W\nfunc f(): Int {\n  wc()\n}\n"
+  )
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(Str.contains(listed, "T0020"), "the listed name resolves: " + listed)
+  assertTrue(Str.contains(hidden, "T0020"), "a name the selective import does not list is not visible: " + hidden)
+  assertTrue(Str.contains(priv, "T0097"), "a package-private function is not callable: " + priv)
+}
+
 // #8304: the editor's type check loads the standard library, as a build
 // does, so a document using `Std` has no false unknown-name reports.
 test "a document importing the standard library has no false type errors (#8304)" {

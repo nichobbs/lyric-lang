@@ -1624,7 +1624,11 @@ func cmdTestManifest(
       case Path(dir) -> {
         val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
         val depToml = Path.join(depDir, "lyric.toml")
-        if File.fileExists(depToml) {
+        if isGeneratorDep(depDir) {
+          // A source generator is built and run by `resolveGenerators`, never
+          // linked or compiled into the consumer (D150).
+          ()
+        } else if File.fileExists(depToml) {
           match resolveDepDllPath(depToml, testExt) {
             case Ok(info) -> {
               val depBinDir = Path.dirname(info.dllPath)
@@ -1722,7 +1726,7 @@ func cmdTestManifest(
           case Some(wsCtx) -> {
             match Ws.resolveDep(dep.name, wsCtx) {
               case None -> ()
-              case Some(depDir) -> {
+              case Some(depDir) -> if not isGeneratorDep(depDir) {
                 collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
                 collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, testTarget, depPackageFeatures)
               }

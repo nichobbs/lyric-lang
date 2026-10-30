@@ -77,7 +77,7 @@ pub func defaultConfig(title: in String): NativeConfig {
 // ─── The message queue ────────────────────────────────────────────────────────
 /// The JSON an instance sent, waiting for the host's thread.  Effects run on their own threads
 /// and send through the outbox, so every member is an `entry`.
-protected type Inbox {
+pub protected type Inbox {
   var messages: List[String] = newList()
   entry push(text: in String) {
     messages.add(text)
@@ -100,7 +100,7 @@ impl Outbox for InboxOutbox {
 }
 
 // ─── Host state ───────────────────────────────────────────────────────────────
-record Toasting {
+pub record Toasting {
   message: String
   tone: String
   until: Float
@@ -143,7 +143,7 @@ pub ref record Host {
   var wraps: Map[String, WrapEntry]
 }
 
-record WrapEntry {
+pub record WrapEntry {
   value: String
   width: Float
   lines: List[Wrap.VisualLine]

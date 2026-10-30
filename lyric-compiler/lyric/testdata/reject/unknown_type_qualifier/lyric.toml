@@ -1,0 +1,8 @@
+[package]
+name = "reject-type-qualifier"
+version = "0.1.0"
+[project]
+name = "RejectTypeQualifier"
+[project.packages]
+"Bee" = "b"
+"App" = "app"

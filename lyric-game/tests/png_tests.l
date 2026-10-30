@@ -12,7 +12,7 @@ import Std.Testing
 import Game.Image
 import Game.Inflate
 
-record Fixture {
+pub record Fixture {
   name: String
   hex: String
   pixels: Int

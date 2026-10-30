@@ -191,7 +191,7 @@ func readChunk(s: in JInputStream): slice[Byte] {
 
 // One `readChunk` run on a daemon thread. The chunk (or the failure message)
 // is recorded before `done` is set.
-record StdinReadJob {
+pub record StdinReadJob {
   stream: JInputStream
   done: JAtomicBoolean
   chunks: List[slice[Byte]]

@@ -370,9 +370,9 @@ test "negated literal and widening generic argument" {
   assertTrue(diagCount(parseCheck(negN)) > 0, "int-lit: Nat == -1 is rejected")
   val posU = "package P\npub func f(x: in UInt): Bool {\n  x == 1\n}\n"
   assertEqualInt(diagCount(parseCheck(posU)), 0, "int-lit: UInt == 1 type-checks")
-  val gen = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useLong(): Long {\n  pick(big(), 0)\n}\n"
+  val gen = "package P\npub union R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useLong(): Long {\n  pick(big(), 0)\n}\n"
   assertEqualInt(diagCount(parseCheck(gen)), 0, "generic: T binds Long, the Int literal widens")
-  val wrong = "package P\nunion R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useString(): String {\n  val s: String = pick(big(), 0)\n  s\n}\n"
+  val wrong = "package P\npub union R[T] {\n  case Good(v: T)\n  case Bad\n}\npub func pick[T](r: in R[T], d: in T): T {\n  match r {\n    case Good(v) -> v\n    case Bad -> d\n  }\n}\npub func big(): R[Long] {\n  Good(v = 5000000000i64)\n}\npub func useString(): String {\n  val s: String = pick(big(), 0)\n  s\n}\n"
   assertTrue(hasDiagCode(parseCheck(wrong), "T0060"), "generic: a Long result assigned to String is T0060")
 }
 
@@ -760,12 +760,18 @@ test "else-less if with a genuinely bad nested match statement stays clean too (
   )
 }
 
-// #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
-// is treated as a module reference (e.g. a `Std.String as Str` alias that
-// survived rewriting), so it does NOT emit T0020 …
-test "uppercase module receiver lenient" {
-  val src = "package P\nfunc f(): Int { Foo.bar() }\n"
-  assertTrue(not hasDiagCode(parseCheck(src), "T0020"), "upper-receiver: unresolved `Foo.bar()` does not error T0020")
+// #2127/#2129: a bare UpperCamelCase member-call receiver may name a package
+// through an import alias that survived rewriting (`Str.substring(...)` for
+// `import Std.String as Str`), so an alias receiver is not T0020; one that
+// names no declaration, package, alias or generic parameter at all is, since
+// no backend can resolve it either (docs/70 §5.3, D280).
+test "uppercase module receiver lenient only when it names something" {
+  val unknown = "package P\nfunc f(): Int { Foo.bar() }\n"
+  assertTrue(hasDiagCode(parseCheck(unknown), "T0020"), "upper-receiver: unresolved `Foo.bar()` is T0020")
+  val aliased = "package P\nimport Std.String as Str\nfunc f(): Int { Str.bar() }\n"
+  assertTrue(not hasDiagCode(parseCheck(aliased), "T0020"), "upper-receiver: an import alias receiver is not T0020")
+  val prim = "package P\nfunc f(k: in Int): Int { Int.shl(k, 2) }\n"
+  assertTrue(not hasDiagCode(parseCheck(prim), "T0020"), "upper-receiver: a primitive type receiver is not T0020")
 }
 
 // … but a lowercase receiver is a value, so a typo still surfaces its T0020 —
@@ -13261,4 +13267,32 @@ test "a qualified call into a package no dependency provides is T0215 (#7989)" {
   assertEqualInt(countDiagCode(plain, "T0215"), 1, "plain import: " + diagCodesOf(plain))
   val known = checkRenamed("package App\nimport PkgY as Y\nfunc f(): Int { Y.fromY() }\n")
   assertEqualInt(diagCount(known), 0, "a provided package resolves: " + diagCodesOf(known))
+}
+
+// T0212 (#7214, D280): what a `pub` or `internal` declaration exposes names
+// only types at least as visible, checked against its effective visibility.
+test "T0212: exported signatures name only exported types" {
+  val ret = "package P\nrecord Secret {\n  n: Int\n}\npub func make(): Secret {\n  Secret(n = 1)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(ret), "T0212"), "a pub function returning a private type is T0212")
+  val inArg = "package P\nunion NoMsg {\n  case Never\n}\npub func f(): List[NoMsg] {\n  newList()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(inArg), "T0212"), "a private type inside a generic argument is T0212")
+  val field = "package P\nrecord Inner {\n  n: Int\n}\npub record Outer {\n  inner: Inner\n}\n"
+  assertTrue(hasDiagCode(parseCheck(field), "T0212"), "a pub record field of a private type is T0212")
+  val payload = "package P\nrecord Inner {\n  n: Int\n}\npub union U {\n  case A(i: Inner)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(payload), "T0212"), "a pub union payload of a private type is T0212")
+  val internalPub = "package P\ninternal record Mid {\n  n: Int\n}\npub func f(m: in Mid): Int {\n  m.n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(internalPub), "T0212"), "a pub function taking an internal type is T0212")
+  val internalOk = "package P\ninternal record Mid {\n  n: Int\n}\ninternal func f(m: in Mid): Int {\n  m.n\n}\n"
+  assertFalse(hasDiagCode(parseCheck(internalOk), "T0212"), "an internal function may take an internal type")
+  val dotNamed = "package P\nrecord Widget {\n  n: Int\n}\npub func Widget.create(): Widget {\n  Widget(n = 1)\n}\n"
+  assertFalse(hasDiagCode(parseCheck(dotNamed), "T0212"), "a dot-named function reaches no further than its receiver")
+  val method = "package P\nrecord Widget {\n  n: Int\n  pub func twice(self: in Widget): Widget = Widget(n = self.n * 2)\n}\n"
+  assertFalse(
+    hasDiagCode(parseCheck(method), "T0212"),
+    "a method in a private type's body reaches no further than the type"
+  )
+  val opaq = "package P\nrecord Inner {\n  n: Int\n}\npub opaque type Box {\n  inner: Inner\n}\n"
+  assertFalse(hasDiagCode(parseCheck(opaq), "T0212"), "an opaque type's representation is not exposed")
+  val generics = "package P\npub func id[T](x: in T): T = x\n"
+  assertFalse(hasDiagCode(parseCheck(generics), "T0212"), "a generic parameter is not a declared type")
 }

@@ -5,7 +5,7 @@
 @proof_required
 package PureCallee
 
-union Shape {
+pub union Shape {
   case Circle(r: Int)
   case Square(s: Int)
 }

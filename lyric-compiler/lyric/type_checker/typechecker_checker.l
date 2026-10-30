@@ -460,6 +460,67 @@ func checkTestBody(
   checkFunctionBody(tbl, sigs, diag, fn, sig, noLocals, noLocals, false, TyError)
 }
 
+// The diagnostics of `pkgDiag` that fall inside a dependency's exported
+// surface: its `pub` and `internal` declarations and its impls.  A private
+// declaration is checked when its own package is, and a consumer can neither
+// name nor call it; the private generic helpers a restored package carries for
+// its `pub` generics are the one case a consumer meets, when it specialises
+// one, and they are tracked with the rest of that path in #8546.  Items and
+// diagnostics are matched by offset, which is exact while a package's files
+// share one merged source; per-file parsing (docs/70 §4.1, #8612) must match
+// on file as well.
+func exportedSurfaceDiagnostics(items: in List[Item], pkgDiag: in List[Diagnostic]): List[Diagnostic] {
+  val kept: List[Diagnostic] = newList()
+  for d in pkgDiag {
+    val at = d.span.startPos.offset
+    var exported = false
+    for item in items {
+      if at >= item.span.startPos.offset and at <= item.span.endPos.offset {
+        exported = match item.kind {
+          case IImpl(_) -> true
+          // A carried private generic (`__priv_<Pkg>_<name>`) is written to
+          // contract metadata as `internal` so a consumer can specialise it,
+          // but it is not the package's surface (#8546).
+          case IFunc(fd) -> itemRank(item) > 0 and not fd.name.startsWith("__priv_")
+          case _ -> itemRank(item) > 0
+        }
+      }
+    }
+    if exported {
+      kept.add(d)
+    }
+  }
+  kept
+}
+
+// T0211: the first error resolving a dependency's own signatures or impls,
+// reported against the importing file's package declaration (the dependency's
+// spans belong to another file).
+func reportDependencySurfaceError(
+  diag: in List[Diagnostic], pkg: in String, pkgDiag: in List[Diagnostic], at: in Span
+): Unit {
+  var i = 0
+  while i < pkgDiag.count {
+    match pkgDiag[i].severity {
+      case DiagError -> {
+        val d = pkgDiag[i]
+        diag.add(
+          errorDiagnostic(
+            "T0211",
+            "dependency '" + pkg + "' does not resolve: " + d.code + " " + d.message + " (at its line " +
+              toString(d.span.startPos.line) +
+              ")",
+            at
+          )
+        )
+        return
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Record each `impl Iface for Target` conformance keyed by resolved `TypeId`,
 // so the argument-position interface-subtyping check (#1488) can accept a
 // `Target` value where an `Iface` parameter is expected.  Keying on `TypeId`
@@ -6571,6 +6632,11 @@ func checkWithImportedPackagesCore(
 ): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
+  for fa in file0.fileAnnotations {
+    if fa.name.segments.count == 1 and fa.name.segments[0] == contractSourceAnnotationName() {
+      tbl.contractSourceFile.add(true)
+    }
+  }
   val ctr = newTypeIdCounter()
   registerNativeIntrinsicTypes(tbl, ctr, nativeIntrinsics)
 
@@ -6632,19 +6698,14 @@ func checkWithImportedPackagesCore(
 
   // T3: resolve signatures (imported + user).
   //
-  // Imported-item signature resolution runs against a *scratch* diagnostic
-  // list so that internal stdlib type references the bridge can't satisfy
-  // (e.g. obscure kernel-internal types like `Scope`, or wire-shape gaps
-  // the self-hosted typechecker hasn't grown coverage for yet) don't pollute
-  // the user package's diagnostics and trip `reportAndAbort` on a build the
-  // user authored cleanly.  The signatures are still recorded in `sigs`
-  // (with `TyError` for any unresolved type refs); the user's typecheck
-  // can still call any stdlib function whose signature *does* resolve, and
-  // codegen tolerates residual `TyError` via the existing fallback paths.
+  // Each imported package's signatures and impls resolve under that package's
+  // own scope.  An error there means the dependency's surface does not
+  // resolve (a missing dependency, or a declaration naming a type nothing
+  // loaded declares), so it is reported once per package as T0211 instead of
+  // leaving `TyError` in the signature for codegen to meet (docs/70 §5.3).
   // Each package's sigs resolve under its own scope so a type ref binds to the
   // declaring package's type, not a same-named sibling's (the RegexError case).
   val sigs: Map[String, ResolvedSignature] = newMap()
-  val importedDiag: List[Diagnostic] = newList()
   // Interface-conformance registration resolves impl iface/target names purely
   // to key the subtyping relation, so its diagnostics are discarded (genuine
   // unresolved-type errors surface via sig resolution / checkImplConformance).
@@ -6660,9 +6721,11 @@ func checkWithImportedPackagesCore(
     // package's body-check) can temporarily re-enter this exact scope
     // instead of resolving under whichever package is calling in.
     symTableRegisterPackageImports(tbl, ip2.name, ip2.imports)
-    addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true, ip2.name)
-    registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
+    val pkgDiag: List[Diagnostic] = newList()
+    addSigsFromItems(tbl, pkgDiag, sigs, ip2.items, true, ip2.name)
+    registerImplsFromItems(tbl, newGenericContext(), pkgDiag, ip2.items)
     addMethodSigsFromItems(tbl, ip2.items, ip2.name)
+    reportDependencySurfaceError(diag, ip2.name, exportedSurfaceDiagnostics(ip2.items, pkgDiag), file.packageDecl.span)
     sp = sp + 1
   }
 
@@ -6673,6 +6736,7 @@ func checkWithImportedPackagesCore(
   installImportRule(tbl, diag, userPkg, file.imports, importedPackages, file.items)
   checkExternFuncBindings(diag, file.items, nativeIntrinsics)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
+  checkExportedSignatureVisibility(userPkg, file.items, diag)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)
 

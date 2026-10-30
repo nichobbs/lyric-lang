@@ -170,7 +170,7 @@ test "a union case payload carrying a function type still emits the package's Ly
   defer {
     cleanup(dir)
   }
-  val source = "package Fixture.UnionPayload\n" + "\n" + "union Event {\n" + "  case OnClick(cb: (Int) -> Bool)\n" +
+  val source = "package Fixture.UnionPayload\n" + "\n" + "pub union Event {\n" + "  case OnClick(cb: (Int) -> Bool)\n" +
     "}\n" +
     "\n" +
     "pub func fire(e: in Event, x: Int): Bool {\n" +
