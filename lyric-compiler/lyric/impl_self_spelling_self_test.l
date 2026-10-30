@@ -1,17 +1,17 @@
-//! impl_self_spelling_self_test.l — dotnet runtime regression test for an
-//! `impl` method that spells the target type where the interface slot says
-//! `Self` (#8313).
+//! impl_self_spelling_self_test.l — runtime regression test for an `impl`
+//! method that spells the target type where the interface slot says `Self`
+//! (#8313 on dotnet, #8426 on the JVM).
 //!
-//! The interface slot erases `Self` to `object` on dotnet, so an impl method
+//! The interface slot erases `Self` to `object` / `Object`, so an impl method
 //! declared `func takeFrom(self: in Box, other: in Box)` used to encode its own
-//! `Box` parameter and no longer matched the slot: `TypeLoadException: Method
-//! 'takeFrom' ... does not have an implementation`.  Covers an `in` parameter,
-//! an `inout` parameter and the return position, called on the concrete
-//! receiver and through an interface-typed binding.  The JVM backend has the
-//! same mismatch for the interface-typed call (the concrete call works); it is
-//! tracked separately, so this file is not run with `--target jvm`.
+//! `Box` signature and no longer matched the slot: `TypeLoadException` on
+//! dotnet, `AbstractMethodError` for an interface-typed call on the JVM, where
+//! the concrete call worked.  Covers an `in` parameter, an `inout` parameter
+//! and the return position, called on the concrete receiver and through an
+//! interface-typed binding.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/impl_self_spelling_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/impl_self_spelling_self_test.l
 @test_module
 package Lyric.ImplSelfSpellingSelfTest
 
@@ -72,5 +72,19 @@ test "inout parameter spelled as the target type" {
   var other = Box(n = 7)
   val total = Box(n = 3).absorb(other)
   assertEqualInt(total, 10, "sum before reset")
+  assertEqualInt(other.n, 0, "inout write-back")
+}
+
+test "return position through an interface-typed binding" {
+  val m: Merger = Box(n = 4)
+  val r: Merger = m.merged(Box(n = 5))
+  val again = r.merged(Box(n = 6))
+  assertEqualInt(Box(n = 1).merged(Box(n = 2)).n, 12, "concrete merge still works")
+}
+
+test "inout parameter through an interface-typed binding" {
+  val a: Absorber = Box(n = 3)
+  var other = Box(n = 7)
+  assertEqualInt(a.absorb(other), 10, "sum before reset")
   assertEqualInt(other.n, 0, "inout write-back")
 }

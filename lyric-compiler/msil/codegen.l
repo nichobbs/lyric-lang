@@ -7370,6 +7370,14 @@ pub func isByrefMode(m: in ParamMode): Bool {
 // Wrap each `out`/`inout` parameter's MsilType in `MByRef` so a method
 // signature encodes a managed pointer (`T&`).  Result is index-aligned with
 // `baseTypes`; `in` (and default) parameters pass through unchanged.  #1761.
+func paramNamesMsil(params: in List[Param]): List[String] {
+  val names: List[String] = newList()
+  for p in params {
+    names.add(p.name)
+  }
+  names
+}
+
 func byrefWrapSigTypes(params: in List[Param], baseTypes: in List[MsilType]): List[MsilType] {
   val acc: List[MsilType] = newList()
   var i = 0
@@ -12224,6 +12232,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       match op {
         case PreNeg -> {
           val ty = lowerExprMsil(cctx, fctx, insns, operand)
+          requireTypedArithOperandsMsil(cctx, "-", operand, operand, ty, ty)
           insns.add(MNeg)
           ty
         }
@@ -13976,6 +13985,36 @@ func requireTypedArithOperandsMsil(
   }
 }
 
+// An ordering comparison needs a static type on both sides.  A lone `object`
+// operand is reconciled against a value-type other side by unboxing it; two
+// erased operands, or an erased operand against a reference type, would
+// compare pointers or call `String.CompareOrdinal` on an `object` (#8344).
+func requireTypedCompareOperandsMsil(
+  cctx: in CodegenCtx,
+  op: in String,
+  lhs: in Expr,
+  rhs: in Expr,
+  lhsTy: in MsilType,
+  rhsTy: in MsilType,
+): Unit {
+  val lhsErased = isErasedObjectMsil(lhsTy) and not isModuleValReadMsil(cctx, lhs)
+  val rhsErased = isErasedObjectMsil(rhsTy) and not isModuleValReadMsil(cctx, rhs)
+  val lhsUnresolved = lhsErased and not isValueType(rhsTy)
+  val rhsUnresolved = rhsErased and not isValueType(lhsTy)
+  if lhsUnresolved or rhsUnresolved {
+    val culprit = if lhsUnresolved { lhs } else { rhs }
+    cctx.diagnostics.add(
+      errorDiagnostic(
+        "T0120",
+        "operator '" + op + "' has " + (if lhsUnresolved { "a left" } else { "a right" }) +
+          " operand of unknown static type (`object`); the type checker recorded no type for it, so the " +
+          "comparison cannot be lowered (compiler bug: please report this program)",
+        culprit.span
+      )
+    )
+  }
+}
+
 func isModuleValReadMsil(cctx: in CodegenCtx, e: in Expr): Bool {
   match e.kind {
     case EPath(path) -> path.segments.count == 1 and cctx.staticValMsilTypes.containsKey(path.segments[0])
@@ -14235,6 +14274,7 @@ func lowerBinopMsil(
         -1
       }
       val bltRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedCompareOperandsMsil(cctx, "<", lhs, rhs, bltLhsTy, bltRhsTy)
       if bltSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bltRhsTy)
@@ -14286,6 +14326,7 @@ func lowerBinopMsil(
         -1
       }
       val bgtRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedCompareOperandsMsil(cctx, ">", lhs, rhs, bgtLhsTy, bgtRhsTy)
       if bgtSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bgtRhsTy)
@@ -14337,6 +14378,7 @@ func lowerBinopMsil(
         -1
       }
       val blteRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedCompareOperandsMsil(cctx, "<=", lhs, rhs, blteLhsTy, blteRhsTy)
       if blteSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, blteRhsTy)
@@ -14393,6 +14435,7 @@ func lowerBinopMsil(
         -1
       }
       val bgteRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedCompareOperandsMsil(cctx, ">=", lhs, rhs, bgteLhsTy, bgteRhsTy)
       if bgteSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bgteRhsTy)
@@ -14493,6 +14536,7 @@ func lowerBinopMsil(
             -1
           }
           val baddLRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          requireTypedArithOperandsMsil(cctx, "+", lhs, rhs, MLong, baddLRhsTy)
           val baddLLhsUn = spellsUnsigned(lhs)
           val baddLRhsUn = spellsUnsigned(rhs)
           if baddLSpillIdx >= 0 {
@@ -14511,6 +14555,7 @@ func lowerBinopMsil(
             -1
           }
           val baddDRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          requireTypedArithOperandsMsil(cctx, "+", lhs, rhs, lhsTy, baddDRhsTy)
           val baddDWide = if baddDSpillIdx >= 0 {
             insns.add(MLdloc(slot = baddDSpillIdx))
             widenArithOperandsMsil(fctx, insns, baddDRhsTy, lhsTy, false, false)
@@ -34147,6 +34192,7 @@ func synthesizeAsyncSmPhaseBMsil(
       flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
       name = decl.name,
       params = byrefWrapSigTypes(decl.params, kfParamTypes2),
+      paramNames = paramNamesMsil(decl.params),
       ret = kfRetTy2,
       insns = kfInsns2,
       maxStack = 4,
@@ -35088,6 +35134,7 @@ func synthesizeGeneratorMsil(
       flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
       name = decl.name,
       params = byrefWrapSigTypes(decl.params, kfParamTypes),
+      paramNames = paramNamesMsil(decl.params),
       ret = kfRetTy,
       insns = kfInsns,
       maxStack = 3 + decl.params.count,
@@ -35398,6 +35445,7 @@ func pinvokeFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in Str
     flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_PINVOKE_IMPL,
     name = decl.name,
     params = ps,
+    paramNames = paramNamesMsil(decl.params),
     ret = ret,
     insns = noInsns,
     maxStack = 0,
@@ -35613,6 +35661,7 @@ func cbTrampolineFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: i
     flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
     name = decl.name,
     params = ps,
+    paramNames = paramNamesMsil(decl.params),
     ret = ret,
     insns = insns,
     maxStack = computeMaxStackMsil(insns),
@@ -36329,6 +36378,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // when hosted)
     name = decl.name,
     params = byrefWrapSigTypes(decl.params, paramTypes),
+    paramNames = paramNamesMsil(decl.params),
     ret = retTy,
     insns = insns,
     maxStack = computeMaxStackMsil(insns),
@@ -36737,6 +36787,7 @@ pub func lowerImplMethodMsil(
     flags = instanceFlags,
     name = decl.name,
     params = byrefWrapSigTypes(implRealParams, paramTypes),
+    paramNames = paramNamesMsil(implRealParams),
     ret = retTy,
     insns = insns,
     maxStack = computeMaxStackMsil(insns),
@@ -36895,6 +36946,7 @@ pub func lowerRecordMethodMsil(
     flags = instanceFlags,
     name = decl.name,
     params = byrefWrapSigTypes(realParams, paramTypes),
+    paramNames = paramNamesMsil(realParams),
     ret = retTy,
     insns = insns,
     maxStack = computeMaxStackMsil(insns),
@@ -39693,6 +39745,7 @@ func lowerProtectedMsil(
             // `lowerImplMethodMsil`: the caller passes the place's address
             // and an interface slot's signature carries the by-ref (#8184).
             params = byrefWrapSigTypes(edParams, pTypes),
+            paramNames = paramNamesMsil(edParams),
             ret = retTy,
             insns = entryInsns,
             maxStack = computeMaxStackMsil(entryInsns),
@@ -39711,6 +39764,7 @@ func lowerProtectedMsil(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
             name = mf.name,
             params = mf.params,
+            paramNames = mf.paramNames,
             ret = mf.ret,
             insns = mf.insns,
             maxStack = mf.maxStack,

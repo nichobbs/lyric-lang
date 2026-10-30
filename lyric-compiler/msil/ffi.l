@@ -176,8 +176,7 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
 // `_kernel/` externs by the `clr value-type audit` test in
 // `lyric-stdlib/tests/metadata_reader_tests.l` (#1802): any kernel extern
 // whose metadata says "value type" but is missing here (or vice versa)
-// fails that test when run manually (not currently wired into CI, see the
-// test file's own header).
+// fails that test (run in CI by the MSIL backend M2a-M2d step, #7445).
 //
 // `System.Net.Security.SslApplicationProtocol` is also a GENERICINST type
 // *argument* (`List<SslApplicationProtocol>`, `_kernel/tcp_host.l`), not
@@ -196,6 +195,7 @@ pub func clrIsValueType(typeFqn: in String): Bool {
     typeFqn == "System.Text.Json.JsonElement+ArrayEnumerator" or
     typeFqn == "System.Text.Json.JsonElement+ObjectEnumerator" or
     typeFqn == "System.Net.Security.SslApplicationProtocol" or
+    typeFqn == "System.Threading.Tasks.TaskCreationOptions" or
     typeFqn == "System.Double" or
     typeFqn == "System.Char" or
     typeFqn == "System.StringComparison" or

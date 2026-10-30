@@ -2948,6 +2948,8 @@ jobs:
             bash scripts/ci-retry-on-signal.sh "$lyric_bin" test --target dotnet "$t"
             ran="$ran $t"
           done
+          # Param-row and value-type-audit oracle (#7445): a program, not a @test_module.
+          LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh "$lyric_bin" run lyric-stdlib/tests/metadata_reader_tests.l
           echo "MSIL backend self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
 
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
@@ -7334,9 +7336,9 @@ jobs:
       # Std.Collections.Persistent list ops.  collections_persistent_map_tests
       # (#6570) joined covering the new PersistentMap[K, V] ops -- both
       # targets, since #6708's JVM generics-erasure gap was fixed.
-      # Deliberately still excluded (tracked, not silent): metadata_reader_tests
-      # (#5624 placeholder Param rows; also needs LYRIC_LOAD_COMPILER=1).  Each
-      # suite exits non-zero on any assertion failure or runtime fault.
+      # metadata_reader_tests runs in the MSIL backend M2a-M2d step (it needs
+      # LYRIC_LOAD_COMPILER=1).  Each suite exits non-zero on any assertion
+      # failure or runtime fault.
       - name: Stdlib runtime suites on dotnet (kernels + core stdlib)
         working-directory: ${{ github.workspace }}
         run: |

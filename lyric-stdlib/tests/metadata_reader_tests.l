@@ -6,11 +6,10 @@
 //! `LYRIC_LOAD_COMPILER=1 ./bin/lyric run lyric-stdlib/tests/metadata_reader_tests.l`
 //! (the `LYRIC_LOAD_COMPILER=1` recompile is needed because this file imports
 //! the compiler package `Msil.MetadataReader`, which plain `lyric run` does
-//! not resolve).  Exit 0 + "ok" in stdout means every assertion held; not
-//! currently wired into any CI step, and `testTableRows`'s Param-row
-//! sequence/name assertions currently fail — `Msil.Lowering` still emits
-//! placeholder Param rows (`sequence = 0`) rather than the real per-parameter
-//! sequence numbers this test expects, tracked in #5624.
+//! not resolve).  Exit 0 + "ok" in stdout means every assertion held.  Run in
+//! CI by the "MSIL backend self-tests M2a-M2d" step (#7445).  `testTableRows`
+//! pins the Param table `Msil.Lowering` writes: one row per declared
+//! parameter, `sequence` 1..n in order, with the parameter's name.
 //!
 //! Placement note: this test lives here, not under `lyric-compiler/`, because
 //! it must compile *and run* a program that emits a real PE (then parse that
@@ -952,6 +951,7 @@ func expectedClrValueTypes(): List[String] {
   xs.add("System.Text.Json.JsonElement+ArrayEnumerator")
   xs.add("System.Text.Json.JsonElement+ObjectEnumerator")
   xs.add("System.Net.Security.SslApplicationProtocol")
+  xs.add("System.Threading.Tasks.TaskCreationOptions")
   xs.add("System.Double")
   xs.add("System.Char")
   xs.add("System.StringComparison")
