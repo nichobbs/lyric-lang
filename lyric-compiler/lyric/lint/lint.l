@@ -621,7 +621,6 @@ func patternBindingName(p: in Pattern): Option[String] {
 // run time, which is exactly the injection shape `SqlText` exists to stop.
 // The rule is AST-only, so it matches the callee by name: `sql(x)` and
 // `<anything>.sql(x)` / `Db.sql(x)`.
-
 func isStringLiteral(lit: in Literal): Bool {
   match lit {
     case LString(_) -> true

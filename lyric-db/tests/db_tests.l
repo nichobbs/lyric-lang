@@ -204,9 +204,21 @@ test "unsafeRawSql: builds a SqlText from a run-time string without the structur
 test "sqlPlaceholderCount: highest @p index plus one, ignoring string literals" {
   assertEqualInt(Db.sqlPlaceholderCount("SELECT 1"), 0, "no placeholders")
   assertEqualInt(Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p0 AND b = @p1"), 2, "two placeholders")
-  assertEqualInt(Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p0 AND b = @p2"), 3, "a gap still needs three values")
-  assertEqualInt(Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p1 AND b = @p1"), 2, "a repeated placeholder counts once")
-  assertEqualInt(Db.sqlPlaceholderCount("SELECT '@p5' FROM t WHERE a = @p0"), 1, "a placeholder inside a literal is text")
+  assertEqualInt(
+    Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p0 AND b = @p2"),
+    3,
+    "a gap still needs three values"
+  )
+  assertEqualInt(
+    Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p1 AND b = @p1"),
+    2,
+    "a repeated placeholder counts once"
+  )
+  assertEqualInt(
+    Db.sqlPlaceholderCount("SELECT '@p5' FROM t WHERE a = @p0"),
+    1,
+    "a placeholder inside a literal is text"
+  )
   assertEqualInt(Db.sqlPlaceholderCount("SELECT * FROM t WHERE a = @p10"), 11, "multi-digit index")
 }
 
@@ -222,5 +234,8 @@ test "sqlParamsError: None only when the parameter count matches the highest pla
     case None -> assertTrue(false, "too many values must be rejected")
   }
   assertTrue(Db.sqlParamsError(Db.sql("SELECT 1"), []).isNone(), "no placeholders and no values")
-  assertTrue(Db.sqlParamsError(Db.unsafeRawSql("SELECT 1"), ["x"]).isSome(), "values for a statement with no placeholders")
+  assertTrue(
+    Db.sqlParamsError(Db.unsafeRawSql("SELECT 1"), ["x"]).isSome(),
+    "values for a statement with no placeholders"
+  )
 }

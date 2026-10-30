@@ -239,7 +239,12 @@ pub func sqlParamsError(stmt: in SqlText, params: in slice[String]): Option[DbEr
   }
   Some(
     value = DbError(
-      message = "SQL statement expects " + stmt.placeholders.toString() + " parameter(s) (highest placeholder @p" + (stmt.placeholders - 1).toString() + ") but " + params.length.toString() + " were supplied",
+      message = "SQL statement expects " + stmt.placeholders.toString() +
+        " parameter(s) (highest placeholder @p" +
+        (stmt.placeholders - 1).toString() +
+        ") but " +
+        params.length.toString() +
+        " were supplied",
       code = "PARAM_COUNT_MISMATCH"
     )
   )

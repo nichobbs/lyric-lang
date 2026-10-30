@@ -151,7 +151,6 @@ func pathGetFullPath(path: in String): String {
 // way `lyric_path_real_ok`'s Win32 twin returns it.  `windows` selects the
 // flavour: on a POSIX target `\` is an ordinary filename character, so only
 // `/` separates and only a leading `/` is absolute.
-
 @cfg(target_os = "windows")
 func isWindowsTarget(): Bool {
   true
@@ -206,7 +205,7 @@ func isDrivePrefix(prefix: in String): Bool {
 func nativePathSegments(path: in String, windows: in Bool): List[String] {
   val prefix = nativePathPrefix(path, windows)
   val rest = if isDrivePrefix(prefix) and prefix != "?" { path.substring(2) } else { path }
-  val out: List[String] = newList()
+  val segs: List[String] = newList()
   var start = 0
   var i = 0
   while i <= rest.length {
@@ -214,31 +213,31 @@ func nativePathSegments(path: in String, windows: in Bool): List[String] {
       if i > start {
         val seg = rest.substring(start, i - start)
         if seg != "." {
-          out.add(seg)
+          segs.add(seg)
         }
       }
       start = i + 1
     }
     i = i + 1
   }
-  out
+  segs
 }
 
 // `prefix` and `segs` joined with `/` (a canonical form on every target; the
 // Win32 file APIs accept it).
 func joinNativePath(prefix: in String, segs: in List[String]): String {
-  var out = if prefix == "/" or prefix == "//" { "" } else { prefix }
+  var joined = if prefix == "/" or prefix == "//" { "" } else { prefix }
   var i = 0
   while i < segs.count {
-    out = out + (if i == 0 and prefix == "//" { "//" } else { "/" }) + segs[i]
+    joined = joined + (if i == 0 and prefix == "//" { "//" } else { "/" }) + segs[i]
     i = i + 1
   }
-  if out.length == 0 {
+  if joined.length == 0 {
     "/"
   } else if segs.count == 0 and isDrivePrefix(prefix) {
-    out + "/"
+    joined + "/"
   } else {
-    out
+    joined
   }
 }
 
@@ -1015,11 +1014,11 @@ pub config StaticFiles {
 }
 
 func trimTrailingSlashes(p: in String): String {
-  var end = p.length
-  while end > 0 and codeUnitAt(p, end - 1) == 47 {
-    end = end - 1
+  var stop = p.length
+  while stop > 0 and codeUnitAt(p, stop - 1) == 47 {
+    stop = stop - 1
   }
-  p.substring(0, end)
+  p.substring(0, stop)
 }
 
 /// True when `fullCandidate` is `fullRoot` or lies beneath it.  Both are

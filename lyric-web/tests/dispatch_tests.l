@@ -930,15 +930,31 @@ test "dispatch: a static mount matches whole path segments only" {
 // ─── Static files: Windows path flavour (#8584) ──────────────────────────────
 test "static paths (Windows flavour): drive and UNC roots are absolute, both separators split" {
   val segs: List[String] = ["x", "..", "y"]
-  assertEqual(Web.staticAppendLexically("C:\\site\\public", ["a", "b"], 0, true), "C:/site/public/a/b", "backslash drive path")
-  assertEqual(Web.staticAppendLexically("C:/site/public", ["a"], 0, true), "C:/site/public/a", "forward-slash drive path")
+  assertEqual(
+    Web.staticAppendLexically("C:\\site\\public", ["a", "b"], 0, true),
+    "C:/site/public/a/b",
+    "backslash drive path"
+  )
+  assertEqual(
+    Web.staticAppendLexically("C:/site/public", ["a"], 0, true),
+    "C:/site/public/a",
+    "forward-slash drive path"
+  )
   assertEqual(Web.staticAppendLexically("C:\\site", segs, 0, true), "C:/site/y", "`..` pops one segment")
   assertEqual(Web.staticAppendLexically("C:\\", ["..", "a"], 0, true), "C:/a", "`..` cannot climb above the drive root")
   assertEqual(Web.staticAppendLexically("C:\\", [], 0, true), "C:/", "a bare drive root keeps its slash")
   assertEqual(Web.staticAppendLexically("\\\\srv\\share\\dir", ["f.txt"], 0, true), "//srv/share/dir/f.txt", "UNC path")
   assertEqual(Web.staticAppendLexically("/usr/lib", ["x"], 0, false), "/usr/lib/x", "POSIX flavour is unchanged")
-  assertEqual(Web.staticAppendLexically("/a/b", ["..", "..", "..", "c"], 0, false), "/c", "POSIX `..` stops at the root")
-  assertEqual(Web.staticAppendLexically("/a\\b", ["c"], 0, false), "/a\\b/c", "a backslash is a filename character on POSIX")
+  assertEqual(
+    Web.staticAppendLexically("/a/b", ["..", "..", "..", "c"], 0, false),
+    "/c",
+    "POSIX `..` stops at the root"
+  )
+  assertEqual(
+    Web.staticAppendLexically("/a\\b", ["c"], 0, false),
+    "/a\\b/c",
+    "a backslash is a filename character on POSIX"
+  )
 }
 
 test "static paths: a root containment check compares separators and case on Windows only" {
@@ -974,7 +990,12 @@ test "dispatch: static file middleware answers 404 for a backslash traversal" {
   var router = Web.create()
   router = Web.withStaticFiles(
     router,
-    Web.StaticFiles(root = dir + "/public", mountPrefix = "", cacheControlSeconds = 60, fallbackToIndex = false)
+    Web.StaticFiles(
+      root = dir + "/public",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
   )
   val resp = Web.dispatch(router, getRequest("/..\\secret.txt"))
   assertEqualInt(resp.status, 404, "backslash traversal is not served")
