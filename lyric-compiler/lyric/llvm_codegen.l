@@ -17684,6 +17684,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerInterfaceTypes(ctx, units, types, fns)
   registerImplVtables(ctx, units, fns)
   registerImplDirectMethods(ctx, units)
+  registerGenericImplMethods(ctx, units)
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
@@ -21087,6 +21088,88 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
       ii = ii + 1
     }
     ua = ua + 1
+  }
+}
+
+/// `impl[T] I for R[T] { func m(...) }` (#8300): the impl's methods are generic
+/// functions over the impl's type parameters (and their own), registered as
+/// `<Pkg>.<R>.<m>/<arity>` with the receiver `self: R[T]`, exactly where a
+/// generic record's own methods live, so a member call on an instance of
+/// `R[Int]` finds and specialises them (`genericRecordMethodKey`).  An impl
+/// whose target is not an application of a generic record to the impl's own
+/// type parameters (`impl I for R[Int]`) is not a generic impl and is left to
+/// the non-generic paths.
+func registerGenericImplMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+  for u in units {
+    for decl in u.impls {
+      registerGenericImpl(ctx, u.pkgName, decl)
+    }
+  }
+}
+
+func registerGenericImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
+  val implParams = match decl.generics { case Some(gp) -> gp.params; case None -> return }
+  val recName = match genericImplTargetRecord(decl.target) { case Some(n) -> n; case None -> return }
+  if not (ctx.genericRecordDefs.containsKey(pkg + "." + recName) or ctx.genericRecordDefs.containsKey(recName)) {
+    return
+  }
+  for m in decl.members {
+    match m {
+      case IMplFunc(fn) -> {
+        val allParams: List[GenericParam] = newList()
+        for gp in implParams {
+          allParams.add(gp)
+        }
+        match fn.generics {
+          case Some(fg) -> {
+            for gp in fg.params {
+              allParams.add(gp)
+            }
+          }
+          case None -> ()
+        }
+        val params: List[Param] = newList()
+        params.add(
+          Param(
+            mode = PMIn,
+            modeExplicit = false,
+            name = "self",
+            ty = decl.target,
+            dflt = None,
+            annotations = newList(),
+            span = fn.span
+          )
+        )
+        for p in withoutExplicitSelf(fn.params) {
+          params.add(p.copy(ty = substSelfWith(p.ty, decl.target)))
+        }
+        val ret = match fn.ret { case Some(r) -> Some(value = substSelfWith(r, decl.target)); case None -> None }
+        val gspan = match decl.generics { case Some(gp) -> gp.span; case None -> fn.span }
+        val gfn = fn.copy(
+          name = recName + "." + fn.name,
+          generics = Some(value = GenericParams(params = allParams, span = gspan, legacyPrefixForm = false)),
+          params = params,
+          ret = ret
+        )
+        val akey = "." + fn.name + "/" + params.count.toString()
+        for k in [pkg + "." + recName + akey, recName + akey] {
+          if not ctx.genericFnDefs.containsKey(k) {
+            ctx.genericFnDefs.add(k, gfn)
+            ctx.genericFnPkg.add(k, pkg)
+          }
+        }
+      }
+      case IMplAssoc(_) -> ()
+    }
+  }
+}
+
+/// The record `R` of an impl target `R[T, ...]` (a generic application).
+func genericImplTargetRecord(target: in TypeExpr): Option[String] {
+  match target.kind {
+    case TGenericApp(head, _) -> Some(value = lastSeg(head))
+    case TParen(inner) -> genericImplTargetRecord(inner)
+    case _ -> None
   }
 }
 
