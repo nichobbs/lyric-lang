@@ -6412,10 +6412,17 @@ func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
     match all[i].kind {
       case DKFunc(fd) -> {
         if all[i].originPackage == scopePkg {
-          localArities.add(fd.params.count)
+          // A package's own function can be registered more than once (a
+          // project build holds it as the file and as an imported package), so
+          // count each arity once.
+          if not intListHas(localArities, fd.params.count) {
+            localArities.add(fd.params.count)
+          }
           // An import under an alias is named `Alias.name`, never bare (#8155).
         } else if all[i].originPackage.length > 0 and symTableScopeAllows(tbl, all[i].originPackage) and not tbl.importAliases.containsKey(all[i].originPackage) {
-          importedArities.add(fd.params.count)
+          if not intListHas(importedArities, fd.params.count) {
+            importedArities.add(fd.params.count)
+          }
         }
       }
       case _ -> ()
@@ -6429,13 +6436,16 @@ func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
     return true
   }
   for a in importedArities {
-    var shadowed = false
-    for l in localArities {
-      if l == a {
-        shadowed = true
-      }
+    if not intListHas(localArities, a) {
+      return true
     }
-    if not shadowed {
+  }
+  false
+}
+
+func intListHas(xs: in List[Int], v: in Int): Bool {
+  for x in xs {
+    if x == v {
       return true
     }
   }
