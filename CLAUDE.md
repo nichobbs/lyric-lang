@@ -855,8 +855,14 @@ need direction and have nothing else productive to do**.  Specifically:
     resolution path.  Mirrors
     `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::loadRestoredPackage`.
   - `verifier/` — `Lyric.Verifier` package (M5.3, D-progress-234).  Self-hosted
-    port of the Phase 4 proof system: `vcir.l` (VC IR types), `vcgen.l`
-    (WP/SP calculus, loop invariant goals, Hoare call rule), `smt.l`
+    port of the Phase 4 proof system: `vcir.l` (VC IR types), the `vcgen*.l` family
+    (WP/SP calculus, loop invariant goals, Hoare call rule; split by walker in
+    #8160: `vcgen.l` environment and sorts, `vcgen_expr.l` expression
+    translation, `vcgen_calls.l`/`vcgen_callee.l` calls and contract unfolding,
+    `vcgen_match.l`, `vcgen_wp.l`, `vcgen_sequence.l` evaluation order,
+    `vcgen_loops.l`, `vcgen_effects.l`, `vcgen_arith.l` width obligations,
+    `vcgen_goals.l`/`vcgen_file.l`/`vcgen_methods.l` goal entry points,
+    `vcgen_contracts.l` cycles, `vcgen_monad.l` Result/Option), `smt.l`
     (SMT-LIB v2.6 renderer), `solver.l` (trivial syntactic discharger),
     `driver.l` (`prove(source): VerifySummary` entry point).  The
     driver invokes `Lyric.Weaver.weaveFile` before VC generation so
