@@ -27,6 +27,8 @@
 package Lyric.HashJvmSelfTest
 
 import Std.Core
+import Std.Collections
+import Std.Set
 import Std.Testing
 import Std.Hash
 
@@ -59,4 +61,25 @@ test "sha512OfBytes of \"hello\" matches the known digest" {
     "9B71D224BD62F3785D96D46AD3EA3D73319BFBC2890CAADAE2DFF72519673CA72323C3D99BA5C11D7C7ACC6E14B8C5DA0C4663475C2E5C3ADEF46F73BCDEC043",
     "SHA-512(\"hello\")"
   )
+}
+
+record Seen {
+  zs: Set[Double]
+}
+
+func seenOf(z: in Double): Seen {
+  val s: Set[Double] = newSet()
+  setAdd(s, z)
+  Seen(zs = s)
+}
+
+// The JVM `__lyricKeyHash` folds a `HashSet`'s members through the same
+// relation as `__lyricKeyEq` (#8439); the host `HashSet.hashCode` would hash
+// `0.0` and `-0.0` apart, so an equal record key was not found.
+test "a record holding a Set[Double] is found as a Map key through an equal set (#8439, JVM)" {
+  assertTrue(seenOf(0.0) == seenOf(-0.0), "equal under D172")
+  val m: Map[Seen, Int] = newMap()
+  m.add(seenOf(0.0), 7)
+  assertTrue(m.containsKey(seenOf(-0.0)), "found through the equal key")
+  assertEqualInt(m[seenOf(-0.0)], 7, "and reads the same value")
 }

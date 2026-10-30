@@ -16,6 +16,7 @@
 package Lyric.RecordEqSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 record Point {
@@ -145,4 +146,21 @@ test "unions compare structurally on every target" {
   val some1: Option[Int] = Some(value = 3)
   val some2: Option[Int] = Some(value = 3)
   assertTrue(some1 == some2, "Option[Int]")
+}
+
+record Bag {
+  xs: List[Double]
+}
+
+func bagOf(a: in Double, b: in Double): Bag {
+  val xs: List[Double] = newList()
+  xs.add(a)
+  xs.add(b)
+  Bag(xs = xs)
+}
+
+test "a record holding a List compares the list by contents (#8439)" {
+  assertTrue(bagOf(1.0, 2.0) == bagOf(1.0, 2.0), "equal lists")
+  assertTrue(bagOf(0.0, 2.0) == bagOf(-0.0, 2.0), "zero equals negative zero under D172")
+  assertTrue(bagOf(1.0, 2.0) != bagOf(1.0, 3.0), "a differing element")
 }

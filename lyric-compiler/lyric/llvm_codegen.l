@@ -13816,9 +13816,7 @@ func synthListEq(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc {
 
 /// `a == b` (or `!=`) on two lists of `elemTy`, through the synthesised
 /// element-wise equality function.
-func lowerListEq(
-  ctx: in Ctx, insns: in List[NInsn], elemTy: in NType, a: in NVal, b: in NVal, negate: in Bool
-): NVal {
+func lowerListEq(ctx: in Ctx, insns: in List[NInsn], elemTy: in NType, a: in NVal, b: in NVal, negate: in Bool): NVal {
   val fnName = ensureListEq(ctx, elemTy)
   val ra = freshTmp(ctx)
   insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = NPtr(pointee = NI8)))
@@ -21395,9 +21393,7 @@ func implTargetArgsAreParams(target: in TypeExpr, implParams: in List[GenericPar
         val pname = match implParams[i] { case GPType(n, _) -> n; case GPValue(_, _, _) -> return false }
         match args[i] {
           case TAType(ty) -> match ty.kind {
-            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname {
-              return false
-            }
+            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname { return false }
             case _ -> return false
           }
           case TAValue(_) -> return false
