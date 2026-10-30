@@ -122,6 +122,8 @@ for t in \
   lyric-compiler/lyric/literal_arg_shape_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_std_self_test.l \
+  lyric-compiler/lyric/generic_impl_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \

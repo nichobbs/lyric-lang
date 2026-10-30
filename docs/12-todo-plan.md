@@ -129,13 +129,12 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   lyric-mail SMTP, lyric-search (docs/57 §3).  `F8`: `@externTarget`
   catches only `java/lang/Exception`, not `Error` (accepted limitation, see
   docs/18 Q-J009).  `F1`: `self_test_b128.l` hardcodes `/tmp/lyric-jvm-b128`.
-- **Native (`native-backend` 11).**  `N0007` family: impl method for a generic
-  target (#8300), method call on a captured `List` in a lambda (#8330),
+- **Native (`native-backend` 11).**  `N0007` family: method call on a captured `List` in a lambda (#8330),
   one-argument `String.substring` (#8335), function-type alias and tuple `for`
   pattern (#8348), `slice[(Int) -> Unit]` literal (#8315), `isNone(None)`
   (#8352), or-patterns (#8428); closure `var` capture by value, `println` of non-scalars, `String +
   Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
-  rewritten or closed); reachability keyed by bare method name (#8413); clang
+  rewritten or closed); clang
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
   Missing: arm64 and macOS native CI legs (#8419); Windows (docs/67 G9) runs the
   core suite (D205), child processes (D208), sockets and TLS over Winsock and

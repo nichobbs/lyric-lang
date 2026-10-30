@@ -18,9 +18,8 @@
 //! Most cases run with a value-type and a reference-type instantiation.  The
 //! cases that call a lambda after writing a `var` it captured are not run on
 //! native, whose closures capture a variable's value (#7891).  Nor are the
-//! cases native rejects at compile time: a call to an `impl` method for a
-//! generic target or to a record method with its own type parameters, which
-//! native does not lower yet, and an unannotated closure whose result type the
+//! cases native rejects at compile time: a call to a record method with its
+//! own type parameters, which native does not lower yet, and an unannotated closure whose result type the
 //! type checker cannot name (a field read through a type parameter, a pattern
 //! variable of one, an interface default's `self` call), which native reports
 //! as N0007 and dotnet and the JVM type from the value.
@@ -432,7 +431,6 @@ test "a lambda writes a captured var from a T field of self (#7792)" {
   assertEqual(s.get(), "hi", "String")
 }
 
-@cfg(not(target = "native"))
 test "a lambda in an impl method for a generic target reads self" {
   val p: Pair[Int] = Pair(a = 4, b = 9)
   assertEqualInt(p.first(), 8, "Int")

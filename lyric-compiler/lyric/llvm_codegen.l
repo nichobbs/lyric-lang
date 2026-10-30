@@ -4944,6 +4944,10 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
           match mapGet(ctx.ifaceVtables, rir + "|" + info.key) {
             case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
             case None -> {
+              match genericImplVtable(ctx, rir, info) {
+                case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
+                case None -> ()
+              }
               // The type checker admitted this record→interface upcast, so
               // registerImplVtables should have emitted a vtable — a missing
               // one is a compiler-invariant violation, not a user error, so
@@ -12437,46 +12441,7 @@ func lowerGenericFnCallWith(
     ti = ti + 1
   }
   // Instantiate (cache-first: recursive generic calls hit the cache).
-  val instIr = instIrName(pkg + "." + fd.name + "." + nParams.toString(), envTys)
-  var haveInst = ctx.fnInstCache.containsKey(instIr)
-  if not haveInst {
-    val paramTys: List[NType] = newList()
-    var pt = 0
-    while pt < nParams {
-      match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
-        case Some(t) -> paramTys.add(
-          if pt >= preVals.count and isByRefMode(fd.params[pt].mode) { NPtr(pointee = t) } else { t }
-        )
-        case None -> panic(
-          "Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name +
-            "' for --target native"
-        )
-      }
-      pt = pt + 1
-    }
-    var instRet = NVoid
-    match fd.ret {
-      case Some(rte) -> {
-        match typeToNEnvOpt(ctx, rte, paramNames, envTys) {
-          case Some(t) -> {
-            instRet = t
-          }
-          case None -> panic(
-            "Lyric.LlvmCodegen: cannot lower return type of generic function '" + fd.name +
-              "' for --target native"
-          )
-        }
-      }
-      case None -> {
-      }
-    }
-    ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet, isAsync = fd.isAsync))
-    ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
-  }
-  val inst = match mapGet(ctx.fnInstCache, instIr) {
-    case Some(fi) -> fi
-    case None -> panic("Lyric.LlvmCodegen: internal — missing fn instantiation '" + instIr + "'")
-  }
+  val inst = ensureFnInst(ctx, pkg, fd, paramNames, envTys, preVals.count)
   val callArgs: List[NArg] = newList()
   var anyByRef = false
   var bri = preVals.count
@@ -12525,6 +12490,58 @@ func lowerGenericFnCallWith(
       registerTemp(ctx, outV)
       outV
     }
+  }
+}
+
+/// The instantiation of generic function `fd` (declared in `pkg`) at `envTys`,
+/// lowering its body on first use; `preCount` leading parameters are values
+/// the caller already holds (a method's receiver), never passed by reference.
+func ensureFnInst(
+  ctx: in Ctx,
+  pkg: in String,
+  fd: in FunctionDecl,
+  paramNames: in List[String],
+  envTys: in List[NType],
+  preCount: in Int,
+): NFnInst {
+  val nParams = fd.params.count
+  val instIr = instIrName(pkg + "." + fd.name + "." + nParams.toString(), envTys)
+  var haveInst = ctx.fnInstCache.containsKey(instIr)
+  if not haveInst {
+    val paramTys: List[NType] = newList()
+    var pt = 0
+    while pt < nParams {
+      match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
+        case Some(t) -> paramTys.add(if pt >= preCount and isByRefMode(fd.params[pt].mode) { NPtr(pointee = t) } else { t })
+        case None -> panic(
+          "Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name +
+            "' for --target native"
+        )
+      }
+      pt = pt + 1
+    }
+    var instRet = NVoid
+    match fd.ret {
+      case Some(rte) -> {
+        match typeToNEnvOpt(ctx, rte, paramNames, envTys) {
+          case Some(t) -> {
+            instRet = t
+          }
+          case None -> panic(
+            "Lyric.LlvmCodegen: cannot lower return type of generic function '" + fd.name +
+              "' for --target native"
+          )
+        }
+      }
+      case None -> {
+      }
+    }
+    ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet, isAsync = fd.isAsync))
+    ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
+  }
+  match mapGet(ctx.fnInstCache, instIr) {
+    case Some(fi) -> fi
+    case None -> panic("Lyric.LlvmCodegen: internal — missing fn instantiation '" + instIr + "'")
   }
 }
 
@@ -17684,6 +17701,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerInterfaceTypes(ctx, units, types, fns)
   registerImplVtables(ctx, units, fns)
   registerImplDirectMethods(ctx, units)
+  registerGenericImplMethods(ctx, units)
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
@@ -20800,13 +20818,7 @@ func ifaceVtableInitStr(
 /// `Self` parameter, calls the impl method with the values, and boxes a
 /// `Self` result, which the caller owns.
 func byValueVtableInitStr(
-  ctx: in Ctx,
-  pkg: in String,
-  recordName: in String,
-  ri: in NRecInfo,
-  ifaceName: in String,
-  ii: in NIfaceInfo,
-  fns: in List[NFunc],
+  ctx: in Ctx, implIrs: in List[String], ri: in NRecInfo, ii: in NIfaceInfo, fns: in List[NFunc]
 ): String {
   val recTy = recPtrType(ri)
   val boxTy = byValueBoxType(ctx, recTy)
@@ -20818,7 +20830,7 @@ func byValueVtableInitStr(
     if i > 0 {
       acc = acc + ", "
     }
-    val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    val implIr = implIrs[i]
     val thunkName = implIr + ".vthunk"
     val body: List[NInsn] = newList()
     body.add(NLabel(name = "entry"))
@@ -20952,6 +20964,88 @@ func loadFromByValueBox(
   NLocal(name = v)
 }
 
+func nonGenericImplIrs(pkg: in String, recordName: in String, ifaceName: in String, ii: in NIfaceInfo): List[String] {
+  val names: List[String] = newList()
+  for m in ii.methodNames {
+    names.add(pkg + "." + implMethodName(recordName, ifaceName, m))
+  }
+  names
+}
+
+/// The vtable of `impl[T] I for R[T]` at the instantiation `rir` (#8300),
+/// emitted on first upcast: each slot is the impl method specialised at the
+/// instance's type arguments (a thunk over the box for a by-value record).
+/// None when `rir` is not an instance of a generic record with such an impl.
+func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option[String] {
+  val im = match mapGet(ctx.instMeta, rir) { case Some(x) -> x; case None -> return None }
+  val ri = match mapGet(ctx.recordDefs, rir) { case Some(x) -> x; case None -> return None }
+  val ifDot = lastDotIndex(info.key)
+  val ifaceBare = if ifDot > 0 { Str.substring(info.key, ifDot + 1, info.key.length - ifDot - 1) } else { info.key }
+  val recDot = lastDotIndex(im.gkey)
+  val recBare = if recDot > 0 { Str.substring(im.gkey, recDot + 1, im.gkey.length - recDot - 1) } else { im.gkey }
+  val selfTy = recPtrType(ri)
+  val implIrs: List[String] = newList()
+  var i = 0
+  while i < info.methodNames.count {
+    val arity = (info.methodParamTys[i].count + 1).toString()
+    val tail = "." + ifaceBare + "." + info.methodNames[i] + "/" + arity
+    val gk = if ctx.genericFnDefs.containsKey(im.gkey + tail) { im.gkey + tail } else { recBare + tail }
+    val fd = match mapGet(ctx.genericFnDefs, gk) { case Some(f) -> f; case None -> return None }
+    val pkg = match mapGet(ctx.genericFnPkg, gk) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
+    val paramNames = genericParamNamesOf(fd.generics)
+    val boundNames: List[String] = newList()
+    val boundTys: List[NType] = newList()
+    unifyTyArg(ctx, fd.params[0].ty, selfTy, paramNames, boundNames, boundTys)
+    val envTys: List[NType] = newList()
+    for pn in paramNames {
+      val bi = envIndexOf(boundNames, pn)
+      if bi < 0 {
+        panic(
+          "Lyric.LlvmCodegen: cannot infer type argument '" + pn + "' of the impl of '" + info.key + "' for '" + rir + "'"
+        )
+      }
+      envTys.add(boundTys[bi])
+    }
+    implIrs.add(ensureFnInst(ctx, pkg, fd, paramNames, envTys, 1).irName)
+    i = i + 1
+  }
+  val vtName = ifaceVtableGlobalName(rir, info)
+  if not ctx.ifaceVtables.containsKey(rir + "|" + info.key) {
+    val initStr = if ri.byValue {
+      byValueVtableInitStr(ctx, implIrs, ri, info, ctx.moduleFns)
+    } else {
+      var acc = "{ "
+      var k = 0
+      while k < info.methodNames.count {
+        if k > 0 {
+          acc = acc + ", "
+        }
+        val fnParams: List[NType] = newList()
+        fnParams.add(selfTy)
+        for pty in info.methodParamTys[k] {
+          fnParams.add(pty)
+        }
+        acc = acc + "i8* bitcast (" + nTypeToIrString(NFnPtr(params = fnParams, ret = info.methodRetTys[k])) + " @" +
+          quoteIrIdent(implIrs[k]) +
+          " to i8*)"
+        k = k + 1
+      }
+      acc + " }"
+    }
+    ctx.globals.add(
+      NGlobalDef(
+        name = vtName,
+        linkage = "internal constant",
+        tyStr = nTypeToIrString(ifaceVtStructType(info)),
+        initStr = initStr,
+        align = 8
+      )
+    )
+    ctx.ifaceVtables.add(rir + "|" + info.key, vtName)
+  }
+  Some(value = vtName)
+}
+
 /// Emit a vtable constant global for every `impl I for R` and record the
 /// `<recordIr>|<ifaceKey>` -> global-name mapping consulted at upcast sites.
 func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[NFunc]): Unit {
@@ -20988,7 +21082,7 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[
                       val gname = ifaceVtableGlobalName(ri.irName, info)
                       if not ctx.ifaceVtables.containsKey(ri.irName + "|" + info.key) {
                         val initStr = if ri.byValue {
-                          byValueVtableInitStr(ctx, u.pkgName, recordName, ri, ifaceName, info, fns)
+                          byValueVtableInitStr(ctx, nonGenericImplIrs(u.pkgName, recordName, ifaceName, info), ri, info, fns)
                         } else {
                           ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info)
                         }
@@ -21087,6 +21181,125 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
       ii = ii + 1
     }
     ua = ua + 1
+  }
+}
+
+/// `impl[T] I for R[T] { func m(...) }` (#8300): the impl's methods are generic
+/// functions over the impl's type parameters (and their own), registered as
+/// `<Pkg>.<R>.<m>/<arity>` with the receiver `self: R[T]`, exactly where a
+/// generic record's own methods live, so a member call on an instance of
+/// `R[Int]` finds and specialises them (`genericRecordMethodKey`).  An impl
+/// whose target is not an application of a generic record to the impl's own
+/// type parameters (`impl I for R[Int]`) is not a generic impl and is left to
+/// the non-generic paths.
+func registerGenericImplMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+  for u in units {
+    for decl in u.impls {
+      registerGenericImpl(ctx, u.pkgName, decl)
+    }
+  }
+}
+
+func registerGenericImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
+  val implParams = match decl.generics { case Some(gp) -> gp.params; case None -> return }
+  val recName = match genericImplTargetRecord(decl.target) { case Some(n) -> n; case None -> return }
+  // Only `impl[T, ...] I for R[T, ...]`, whose target arguments are exactly the
+  // impl's own type parameters in order: a narrower target
+  // (`impl[T] I for R[Option[T]]`) names one instantiation family, which two
+  // impls of an interface could split between them.
+  if not implTargetArgsAreParams(decl.target, implParams) {
+    return
+  }
+  if not (ctx.genericRecordDefs.containsKey(pkg + "." + recName) or ctx.genericRecordDefs.containsKey(recName)) {
+    return
+  }
+  for m in decl.members {
+    match m {
+      case IMplFunc(fn) -> {
+        val allParams: List[GenericParam] = newList()
+        for gp in implParams {
+          allParams.add(gp)
+        }
+        match fn.generics {
+          case Some(fg) -> {
+            for gp in fg.params {
+              allParams.add(gp)
+            }
+          }
+          case None -> ()
+        }
+        val params: List[Param] = newList()
+        params.add(
+          Param(
+            mode = PMIn,
+            modeExplicit = false,
+            name = "self",
+            ty = decl.target,
+            dflt = None,
+            annotations = newList(),
+            span = fn.span
+          )
+        )
+        for p in withoutExplicitSelf(fn.params) {
+          params.add(p.copy(ty = substSelfWith(p.ty, decl.target)))
+        }
+        val ret = match fn.ret { case Some(r) -> Some(value = substSelfWith(r, decl.target)); case None -> None }
+        val gspan = match decl.generics { case Some(gp) -> gp.span; case None -> fn.span }
+        val gfn = fn.copy(
+          name = recName + "." + fn.name,
+          generics = Some(value = GenericParams(params = allParams, span = gspan, legacyPrefixForm = false)),
+          params = params,
+          ret = ret
+        )
+        val akey = "." + fn.name + "/" + params.count.toString()
+        val ikey = "." + implIfaceName(decl.iface) + akey
+        for k in [pkg + "." + recName + akey, recName + akey, pkg + "." + recName + ikey, recName + ikey] {
+          if not ctx.genericFnDefs.containsKey(k) {
+            ctx.genericFnDefs.add(k, gfn)
+            ctx.genericFnPkg.add(k, pkg)
+          }
+        }
+      }
+      case IMplAssoc(_) -> ()
+    }
+  }
+}
+
+/// Whether `target` is `R[P1, ..., Pn]` with `Pi` the impl's own type
+/// parameters, in declaration order.
+func implTargetArgsAreParams(target: in TypeExpr, implParams: in List[GenericParam]): Bool {
+  match target.kind {
+    case TParen(inner) -> implTargetArgsAreParams(inner, implParams)
+    case TGenericApp(_, args) -> {
+      if args.count != implParams.count {
+        return false
+      }
+      var i = 0
+      while i < args.count {
+        val pname = match implParams[i] { case GPType(n, _) -> n; case GPValue(_, _, _) -> return false }
+        match args[i] {
+          case TAType(ty) -> match ty.kind {
+            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname {
+              return false
+            }
+            case _ -> return false
+          }
+          case TAValue(_) -> return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
+/// The record `R` of an impl target `R[T, ...]` (a generic application).
+func genericImplTargetRecord(target: in TypeExpr): Option[String] {
+  match target.kind {
+    case TGenericApp(head, _) -> Some(value = lastSeg(head))
+    case TParen(inner) -> genericImplTargetRecord(inner)
+    case _ -> None
   }
 }
 

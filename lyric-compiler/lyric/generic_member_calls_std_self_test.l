@@ -1,7 +1,6 @@
 //! generic_member_calls_std_self_test.l -- a generic standard-library function
 //! called from a generic record's method with a lambda typed by the record's
-//! own type parameter (#8301).  Runs on dotnet and the JVM; the same program
-//! on `--target native` is tracked in #8448.
+//! own type parameter (#8301).  Runs on dotnet, the JVM and native (#8448).
 @test_module
 package Lyric.GenericMemberCallsStdSelfTest
 
