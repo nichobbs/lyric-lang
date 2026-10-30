@@ -246,6 +246,74 @@ test "L007: protected type func member with no visibility modifier is not flagge
   assertEqualInt(countCode(diags, "L007"), 0, "a package-private helper func is never externally reachable")
 }
 
+test "L007: alias to a generic application of a private type is private (#7623)" {
+  val src = "package P\n" + "record Box[T] { v: T }\n" + "pub alias Handle = Box[Int]\n" +
+    "pub func make(h: in Handle): Handle { h }\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L007"), 2, "parameter and return type flagged through the generic alias")
+  assertTrue(anyMessageContains(diags, "L007", "'Handle'"), "message names the alias")
+}
+
+test "L007: alias with a private type argument is private (#7623)" {
+  val src = "package P\n" + "record Widget { x: Int }\n" + "pub alias Widgets = List[Widget]\n" +
+    "pub func all(): Widgets { newList() }\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L007"), 1, "return type flagged through the alias argument")
+  assertTrue(anyMessageContains(diags, "L007", "'Widgets'"), "message names the alias")
+}
+
+test "L007: alias to a public generic application is not flagged (#7623)" {
+  val src = "package P\n" + "pub record Box[T] { v: T }\n" + "pub alias Handle = Box[Int]\n" +
+    "pub func make(): Handle { Box(v = 1) }\n"
+  assertEqualInt(countCode(lint(src), "L007"), 0, "nothing private behind the alias")
+}
+
+test "L007: alias generic parameter is not a private type (#7623)" {
+  val src = "package P\n" + "record T { x: Int }\n" + "pub alias Pair[T] = List[T]\n" +
+    "pub func make(): Pair[Int] { newList() }\n"
+  assertEqualInt(countCode(lint(src), "L007"), 0, "the alias's own T shadows the private record T")
+}
+
+test "L007: internal field of a pub record names a private type (#7623)" {
+  val src = "package P\n" + "record Inner { n: Int }\n" + "pub record Outer {\n" + "  internal inner: Inner\n" + "}\n"
+  assertEqualInt(countCode(lint(src), "L007"), 1, "internal field is cross-package visible, so flagged")
+}
+
+test "L007: internal function signature names a private type (#7623)" {
+  val src = "package P\n" + "record Widget { x: Int }\n" + "internal func make(): Widget { Widget(x = 1) }\n"
+  assertEqualInt(countCode(lint(src), "L007"), 1, "internal function is cross-package visible, so flagged")
+}
+
+test "L007: lintPackage sees a private type declared in a sibling file (#7607)" {
+  val a = "package P\n" + "pub func make(): Widget { Widget(x = 1) }\n"
+  val b = "package P\n" + "record Widget { x: Int }\n"
+  val sources: List[String] = newList()
+  sources.add(a)
+  sources.add(b)
+  val all = lintPackage(sources)
+  assertEqualInt(countCode(all[0], "L007"), 1, "pub func in a.l flagged for the type in b.l")
+  assertEqualInt(countCode(all[1], "L007"), 0, "b.l has nothing to flag")
+  assertEqualInt(countCode(lint(a), "L007"), 0, "single-file lint keeps its file-local view")
+}
+
+test "L007: lintPackage does not mix types across packages (#7607)" {
+  val a = "package P\n" + "pub func make(): Widget { Widget(x = 1) }\n"
+  val b = "package Q\n" + "record Widget { x: Int }\n"
+  val sources: List[String] = newList()
+  sources.add(a)
+  sources.add(b)
+  assertEqualInt(countCode(lintPackage(sources)[0], "L007"), 0, "Q.Widget is not P's type")
+}
+
+test "L007: lintPackage follows an alias into a sibling file's private type (#7607)" {
+  val a = "package P\n" + "pub alias Handle = Widget\n" + "pub func make(): Handle { Handle(x = 1) }\n"
+  val b = "package P\n" + "record Widget { x: Int }\n"
+  val sources: List[String] = newList()
+  sources.add(a)
+  sources.add(b)
+  assertEqualInt(countCode(lintPackage(sources)[0], "L007"), 1, "alias chased across files")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §N. L008 — non-literal argument to sql(...) (#8520)
 // ─────────────────────────────────────────────────────────────────────────────

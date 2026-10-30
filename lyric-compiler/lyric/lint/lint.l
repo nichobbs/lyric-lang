@@ -188,11 +188,13 @@ func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
 // package compiles fine at the declaration but every use of that item from
 // another package fails.  This rule flags the declaration instead.
 //
-// Scope: lint is AST-only, single-file (docs/01 §13.8), so this rule only
-// sees type declarations in the SAME file as the item it is checking — a
-// package-private type declared in a sibling file of a split multi-file
-// package (docs/19) is not visible to this pass and will not be flagged
-// (package-wide registry for manifest lints: #7607).
+// Scope: lint is AST-only (docs/01 §13.8).  `lint(source)` sees only the type
+// declarations of the single file it is given; `lintPackage` (used by
+// `lyric lint --manifest`) builds one registry from every file that declares
+// the same package, so a package-private type declared in a sibling file of a
+// split multi-file package (docs/19) is seen too (#7607).  The registry needs
+// only each declaration's name, visibility and alias right-hand side, so no
+// type checker is involved.
 // Cross-package private types are out of scope entirely: those already fail
 // T0097 at every use site regardless of this rule.
 //
@@ -200,9 +202,10 @@ func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
 // modifier (Visibility == None) — the exact same tier T0097 rejects (docs/01
 // §3.1: `pub` and `internal` are both visible cross-package within a
 // project; only the unmarked tier is package-private). A `pub`/`internal`
-// type alias whose right-hand side names a private type is private too (the
-// alias is transparent, so naming the alias does not make the underlying
-// type constructible from outside). Extern types (`extern type` / `extern
+// type alias whose right-hand side mentions a private type anywhere (as the
+// head or an argument of a generic application, inside a tuple, ...) is
+// private too (the alias is transparent, so naming the alias does not make
+// the underlying type constructible from outside). Extern types (`extern type` / `extern
 // package` members) are never registered as local type declarations, so a
 // reference to one is never flagged — they are FFI host bindings, exempt
 // from these visibility tiers per docs/01 §3.1.
@@ -212,28 +215,84 @@ record LintTypeDecl {
   // Set only for a type-alias declaration: its right-hand-side type, so a
   // reference to the alias can be chased through to its underlying type.
   aliasRhs: Option[TypeExpr]
+  // The alias's own generic parameter names, so `alias Pair[T] = Box[T]`
+  // does not mistake `T` for a type declared in the package.
+  aliasGenerics: List[String]
 }
 
-func buildTypeRegistry(file: in SourceFile): List[LintTypeDecl] {
-  val regs: List[LintTypeDecl] = newList()
+func noNames(): List[String] {
+  val names: List[String] = newList()
+  names
+}
+
+// Appends every type declaration of `file` to `regs`.
+func addTypeDecls(regs: in List[LintTypeDecl], file: in SourceFile) {
   var i = 0
   while i < file.items.count {
     val item = file.items[i]
     val isPriv = match item.visibility { case None -> true; case Some(_) -> false }
     match item.kind {
-      case IRecord(rd) -> regs.add(LintTypeDecl(name = rd.name, isPrivate = isPriv, aliasRhs = None))
-      case IExposedRec(rd) -> regs.add(LintTypeDecl(name = rd.name, isPrivate = isPriv, aliasRhs = None))
-      case IUnion(ud) -> regs.add(LintTypeDecl(name = ud.name, isPrivate = isPriv, aliasRhs = None))
-      case IEnum(ed) -> regs.add(LintTypeDecl(name = ed.name, isPrivate = isPriv, aliasRhs = None))
-      case IOpaque(od) -> regs.add(LintTypeDecl(name = od.name, isPrivate = isPriv, aliasRhs = None))
-      case IProtected(pd) -> regs.add(LintTypeDecl(name = pd.name, isPrivate = isPriv, aliasRhs = None))
-      case IDistinctType(dt) -> regs.add(LintTypeDecl(name = dt.name, isPrivate = isPriv, aliasRhs = None))
-      case IInterface(id) -> regs.add(LintTypeDecl(name = id.name, isPrivate = isPriv, aliasRhs = None))
-      case ITypeAlias(ta) -> regs.add(LintTypeDecl(name = ta.name, isPrivate = isPriv, aliasRhs = Some(value = ta.rhs)))
+      case IRecord(rd) -> regs.add(
+        LintTypeDecl(name = rd.name, isPrivate = isPriv, aliasRhs = None, aliasGenerics = noNames())
+      )
+      case IExposedRec(rd) -> regs.add(
+        LintTypeDecl(
+          name = rd.name,
+          isPrivate = isPriv,
+          aliasRhs = None,
+          aliasGenerics = noNames()
+        )
+      )
+      case IUnion(ud) -> regs.add(
+        LintTypeDecl(name = ud.name, isPrivate = isPriv, aliasRhs = None, aliasGenerics = noNames())
+      )
+      case IEnum(ed) -> regs.add(
+        LintTypeDecl(name = ed.name, isPrivate = isPriv, aliasRhs = None, aliasGenerics = noNames())
+      )
+      case IOpaque(od) -> regs.add(
+        LintTypeDecl(name = od.name, isPrivate = isPriv, aliasRhs = None, aliasGenerics = noNames())
+      )
+      case IProtected(pd) -> regs.add(
+        LintTypeDecl(
+          name = pd.name,
+          isPrivate = isPriv,
+          aliasRhs = None,
+          aliasGenerics = noNames()
+        )
+      )
+      case IDistinctType(dt) -> regs.add(
+        LintTypeDecl(
+          name = dt.name,
+          isPrivate = isPriv,
+          aliasRhs = None,
+          aliasGenerics = noNames()
+        )
+      )
+      case IInterface(id) -> regs.add(
+        LintTypeDecl(
+          name = id.name,
+          isPrivate = isPriv,
+          aliasRhs = None,
+          aliasGenerics = noNames()
+        )
+      )
+      case ITypeAlias(ta) -> regs.add(
+        LintTypeDecl(
+          name = ta.name,
+          isPrivate = isPriv,
+          aliasRhs = Some(value = ta.rhs),
+          aliasGenerics = genericParamNames(ta.generics)
+        )
+      )
       case _ -> ()
     }
     i = i + 1
   }
+}
+
+func buildTypeRegistry(file: in SourceFile): List[LintTypeDecl] {
+  val regs: List[LintTypeDecl] = newList()
+  addTypeDecls(regs, file)
   regs
 }
 
@@ -248,11 +307,12 @@ func findTypeDecl(regs: in List[LintTypeDecl], name: in String): Option[LintType
   None
 }
 
-// Chases a same-file type name through alias indirection (`alias X =
-// PrivateType`) to decide whether it ultimately names a private type.  A
-// name not declared in this file (imported, or declared in a sibling file of
-// the same package) is never treated as private — this pass has no
-// visibility into it (see the scope note above).
+// Chases a type name through alias indirection (`alias X = PrivateType`,
+// `alias X = Box[Int]`, `alias X = List[PrivateType]`) to decide whether it
+// ultimately names a private type.  A name absent from the registry
+// (imported, or declared in a file the registry was not built from) is never
+// treated as private — this pass has no visibility into it (see the scope
+// note above).
 func isPrivateTypeName(regs: in List[LintTypeDecl], name: in String, depth: in Int): Bool {
   if depth > 8 {
     return false
@@ -266,16 +326,9 @@ func isPrivateTypeName(regs: in List[LintTypeDecl], name: in String, depth: in I
         match decl.aliasRhs {
           case None -> false
           case Some(rhs) -> {
-            match rhs.kind {
-              case TRef(path) -> {
-                if path.segments.count == 1 {
-                  isPrivateTypeName(regs, path.segments[0], depth + 1)
-                } else {
-                  false
-                }
-              }
-              case _ -> false
-            }
+            val found: List[String] = newList()
+            collectPrivateTypes(rhs, regs, decl.aliasGenerics, found, depth + 1)
+            found.count > 0
           }
         }
       }
@@ -332,12 +385,18 @@ func mergeNames(a: in List[String], b: in List[String]): List[String] {
 // mentions — including inside array/slice/tuple/nullable/function-type
 // shapes and generic arguments — skipping names that are in-scope generic
 // parameters rather than concrete type references.
-func collectPrivateTypes(ty: in TypeExpr, regs: in List[LintTypeDecl], generics: in List[String], acc: in List[String]) {
+func collectPrivateTypes(
+  ty: in TypeExpr,
+  regs: in List[LintTypeDecl],
+  generics: in List[String],
+  acc: in List[String],
+  depth: in Int,
+) {
   match ty.kind {
     case TRef(path) -> {
       if path.segments.count == 1 {
         val nm = path.segments[0]
-        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, depth) {
           acc.add(nm)
         }
       }
@@ -345,25 +404,25 @@ func collectPrivateTypes(ty: in TypeExpr, regs: in List[LintTypeDecl], generics:
     case TGenericApp(head, args) -> {
       if head.segments.count == 1 {
         val nm = head.segments[0]
-        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, depth) {
           acc.add(nm)
         }
       }
       var i = 0
       while i < args.count {
         match args[i] {
-          case TAType(t) -> collectPrivateTypes(t, regs, generics, acc)
+          case TAType(t) -> collectPrivateTypes(t, regs, generics, acc, depth)
           case TAValue(_) -> ()
         }
         i = i + 1
       }
     }
-    case TArray(_, element) -> collectPrivateTypes(element, regs, generics, acc)
-    case TSlice(element) -> collectPrivateTypes(element, regs, generics, acc)
+    case TArray(_, element) -> collectPrivateTypes(element, regs, generics, acc, depth)
+    case TSlice(element) -> collectPrivateTypes(element, regs, generics, acc, depth)
     case TRefined(underlying, _) -> {
       if underlying.segments.count == 1 {
         val nm = underlying.segments[0]
-        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, 0) {
+        if not containsName(generics, nm) and isPrivateTypeName(regs, nm, depth) {
           acc.add(nm)
         }
       }
@@ -371,20 +430,20 @@ func collectPrivateTypes(ty: in TypeExpr, regs: in List[LintTypeDecl], generics:
     case TTuple(types) -> {
       var i = 0
       while i < types.count {
-        collectPrivateTypes(types[i], regs, generics, acc)
+        collectPrivateTypes(types[i], regs, generics, acc, depth)
         i = i + 1
       }
     }
-    case TNullable(inner) -> collectPrivateTypes(inner, regs, generics, acc)
+    case TNullable(inner) -> collectPrivateTypes(inner, regs, generics, acc, depth)
     case TFunction(parameters, retTy) -> {
       var i = 0
       while i < parameters.count {
-        collectPrivateTypes(parameters[i], regs, generics, acc)
+        collectPrivateTypes(parameters[i], regs, generics, acc, depth)
         i = i + 1
       }
-      collectPrivateTypes(retTy, regs, generics, acc)
+      collectPrivateTypes(retTy, regs, generics, acc, depth)
     }
-    case TParen(inner) -> collectPrivateTypes(inner, regs, generics, acc)
+    case TParen(inner) -> collectPrivateTypes(inner, regs, generics, acc, depth)
     case _ -> ()
   }
 }
@@ -403,7 +462,7 @@ func checkTypePrivacy(
   sp: in Span,
 ): List[LintDiag] {
   val names: List[String] = newList()
-  collectPrivateTypes(ty, regs, generics, names)
+  collectPrivateTypes(ty, regs, generics, names, 0)
   val acc: List[LintDiag] = newList()
   // One warning per distinct private type in a position: `Map[K, K]`
   // names `K` once as far as the author is concerned.
@@ -1137,20 +1196,21 @@ func sortDiags(diags: in List[LintDiag]): List[LintDiag] {
   diags
 }
 
-// ─── Public entry ─────────────────────────────────────────────────────────────
-pub func lint(source: in String): List[LintDiag] {
-  val pr = parse(source)
-  val file = pr.file
-  var isRuntimeChecked = false
+// ─── Public entries ───────────────────────────────────────────────────────────
+func isRuntimeCheckedFile(file: in SourceFile): Bool {
   var ai = 0
   while ai < file.fileAnnotations.count {
     val ann = file.fileAnnotations[ai]
     if ann.name.segments.count == 1 and ann.name.segments[0] == "runtime_checked" {
-      isRuntimeChecked = true
+      return true
     }
     ai = ai + 1
   }
-  val regs = buildTypeRegistry(file)
+  false
+}
+
+func lintParsed(file: in SourceFile, regs: in List[LintTypeDecl]): List[LintDiag] {
+  val isRuntimeChecked = isRuntimeCheckedFile(file)
   val acc: List[LintDiag] = newList()
   var i = 0
   while i < file.items.count {
@@ -1159,4 +1219,41 @@ pub func lint(source: in String): List[LintDiag] {
     i = i + 1
   }
   sortDiags(acc)
+}
+
+pub func lint(source: in String): List[LintDiag] {
+  val file = parse(source).file
+  lintParsed(file, buildTypeRegistry(file))
+}
+
+// Lints every file of a project.  Files declaring the same package share one
+// L007 type registry, so a package-private type declared in one file is seen
+// from a `pub` signature in another (#7607); files of different packages
+// never see each other's types.  The result is parallel to `sources`.
+pub func lintPackage(sources: in List[String]): List[List[LintDiag]] {
+  val files: List[SourceFile] = newList()
+  val pkgKeys: List[String] = newList()
+  var i = 0
+  while i < sources.count {
+    val file = parse(sources[i]).file
+    files.add(file)
+    pkgKeys.add(Str.joinList(".", file.packageDecl.path.segments))
+    i = i + 1
+  }
+  val result: List[List[LintDiag]] = newList()
+  var j = 0
+  while j < files.count {
+    val regs: List[LintTypeDecl] = newList()
+    addTypeDecls(regs, files[j])
+    var k = 0
+    while k < files.count {
+      if k != j and pkgKeys[k] == pkgKeys[j] {
+        addTypeDecls(regs, files[k])
+      }
+      k = k + 1
+    }
+    result.add(lintParsed(files[j], regs))
+    j = j + 1
+  }
+  result
 }

@@ -1451,7 +1451,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `L003` | warning | `pub` item has no doc comment (`///`) |
 | `L004` | warning | Doc comment contains `TODO` or `FIXME` |
 | `L005` | warning | `pub func` with a block body has no `requires:`/`ensures:` contracts |
-| `L007` | warning | `pub`/`internal` item's signature names a package-private type from the same file (receiver, parameter, return, field, union case payload, interface method, `pub val` type) |
+| `L007` | warning | `pub`/`internal` item's signature names a package-private type from the same package (project mode sees all files of the package) (receiver, parameter, return, field, union case payload, interface method, `pub val` type) |
 
 ### Parser (P-series)
 

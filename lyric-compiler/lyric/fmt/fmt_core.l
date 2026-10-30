@@ -188,134 +188,118 @@ func intToChar(n: in Int): Char {
   Ch.fromInt(n)
 }
 
-/// Format a code-point as four zero-padded hex digits (`XXXX`), with no
+/// Format a code-point as at least four zero-padded hex digits, with no
 /// escape prefix.  Callers wrap the result in `\u{…}` (the only Unicode
 /// escape form the self-hosted lexer accepts — the legacy braceless
-/// `\uXXXX` is an L0021 parse error).
+/// `\uXXXX` is an L0021 parse error — and the one that reaches
+/// supplementary-plane scalars).
 @pure
-func uHex4(cp: in Int): String {
-  // 0..0xFFFF only (BMP); higher code-points never reach `escapeStr`.
-  val h0 = (cp / 4096) % 16
-  val h1 = (cp / 256) % 16
-  val h2 = (cp / 16) % 16
-  val h3 = cp % 16
-  charToStr(hexDigit(h0)) + charToStr(hexDigit(h1)) + charToStr(hexDigit(h2)) + charToStr(hexDigit(h3))
+func uHexCp(cp: in Int): String {
+  var digits = ""
+  var n = cp
+  while n > 0 {
+    digits = charToStr(hexDigit(n % 16)) + digits
+    n = n / 16
+  }
+  while digits.length < 4 {
+    digits = "0" + digits
+  }
+  digits
 }
 
-/// Escape a string for emission inside a `"…"` literal.  Mirrors the
-/// `escapeStr` in Fmt.fs: `"`, `\`, control characters, and the four
-/// common whitespace escapes are translated.  A literal `${` is also
-/// escaped to `\${`: the lexer treats an unescaped `${` inside a string
-/// as the start of an interpolation hole, so without this a plain string
-/// whose content happens to contain `${` would re-lex as an interpolated
-/// string and fail to round-trip.
+/// True for code points a reader cannot see or tell apart from another
+/// character when printed raw: controls (C0, DEL, C1), format characters
+/// (Cf), non-ASCII whitespace and line/paragraph separators, variation
+/// selectors, the combining grapheme joiner, Hangul fillers, and the
+/// supplementary-plane tag and variation-selector blocks.  The formatter
+/// keeps these as `\u{…}` escapes (#7303).
+@pure
+func isInvisibleCodepoint(cp: in Int): Bool {
+  if cp < 32 or (cp >= 127 and cp <= 160) {
+    return true
+  }
+  if cp < 173 {
+    return false
+  }
+  cp == 173 or cp == 847 or cp == 1564 or cp == 4447 or cp == 4448 or cp == 5760 or (cp >= 6155 and cp <= 6158) or
+    (cp >= 8192 and cp <= 8207) or
+    (cp >= 8232 and cp <= 8239) or
+    (cp >= 8287 and cp <= 8303) or
+    cp == 12288 or
+    cp == 12644 or
+    (cp >= 65024 and cp <= 65039) or
+    cp == 65279 or
+    cp == 65440 or
+    (cp >= 65529 and cp <= 65531) or
+    (cp >= 119155 and cp <= 119162) or
+    (cp >= 917504 and cp <= 917631) or
+    (cp >= 917760 and cp <= 917999)
+}
+
+/// True for the combining-mark blocks (Mn/Me) that have no visible form of
+/// their own and attach to the preceding character.
+@pure
+func isCombiningCodepoint(cp: in Int): Bool {
+  (cp >= 768 and cp <= 879) or (cp >= 6832 and cp <= 6911) or (cp >= 7616 and cp <= 7679) or (cp >= 8400 and cp <= 8447) or
+    (cp >= 65056 and cp <= 65071)
+}
+
+/// Escape a string for emission inside a `"…"` literal: `"`, `\`, and the
+/// common whitespace escapes are translated, and every character that
+/// `isInvisibleCodepoint` flags — plus a combining mark with no base
+/// character before it — stays a `\u{…}` escape rather than being printed
+/// raw (#7303).  A literal `${` is also escaped to `\${`: the lexer treats an
+/// unescaped `${` inside a string as the start of an interpolation hole, so
+/// without this a plain string whose content happens to contain `${` would
+/// re-lex as an interpolated string and fail to round-trip.
 @pure
 pub func escapeStr(s: in String): String {
   var acc = ""
   var i = 0
+  // Whether the previous character can carry a combining mark.
+  var hasBase = false
   while i < s.length {
-    // A supplementary-plane character (an emoji) is two UTF-16 units, neither
-    // of which is a `Char`: the scan reads them as U+FFFD (no escape applies)
-    // and copies the raw units in the final branch.
-    val c = Str.charAtOrReplacement(s, i)
-    if c == '"' {
-      acc = acc + "\\\""
-    } else if c == '\\' {
-      acc = acc + "\\\\"
-    } else if c == '\n' {
-      acc = acc + "\\n"
-    } else if c == '\r' {
-      acc = acc + "\\r"
-    } else if c == '\t' {
-      acc = acc + "\\t"
-    } else if c == '$' and i + 1 < s.length and Str.charAtOrReplacement(s, i + 1) == '{' {
-      acc = acc + "\\$"
-    } else if charIsControl(c) {
-      acc = acc + "\\u{" + uHex4(charCodepoint(c)) + "}"
-    } else {
-      acc = acc + Str.substring(s, i, 1)
+    val u = Str.codeUnitAt(s, i)
+    // A supplementary-plane character is a UTF-16 surrogate pair: decode it
+    // so invisible scalars (tags, variation selectors) are escaped; any
+    // other pair, an emoji say, is copied raw unit by unit.
+    var cp = u
+    var width = 1
+    if u >= 55296 and u <= 56319 and i + 1 < s.length {
+      val lo = Str.codeUnitAt(s, i + 1)
+      if lo >= 56320 and lo <= 57343 {
+        cp = 65536 + (u - 55296) * 1024 + (lo - 56320)
+        width = 2
+      }
     }
-    i = i + 1
+    if cp == 34 {
+      acc = acc + "\\\""
+      hasBase = true
+    } else if cp == 92 {
+      acc = acc + "\\\\"
+      hasBase = true
+    } else if cp == 10 {
+      acc = acc + "\\n"
+      hasBase = false
+    } else if cp == 13 {
+      acc = acc + "\\r"
+      hasBase = false
+    } else if cp == 9 {
+      acc = acc + "\\t"
+      hasBase = false
+    } else if cp == 36 and i + 1 < s.length and Str.codeUnitAt(s, i + 1) == 123 {
+      acc = acc + "\\$"
+      hasBase = true
+    } else if isInvisibleCodepoint(cp) or (isCombiningCodepoint(cp) and not hasBase) {
+      acc = acc + "\\u{" + uHexCp(cp) + "}"
+      hasBase = false
+    } else {
+      acc = acc + Str.substring(s, i, width)
+      hasBase = cp != 32
+    }
+    i = i + width
   }
   acc
-}
-
-@pure
-func charIsControl(c: in Char): Bool {
-  charCodepoint(c) < 32
-}
-
-@pure
-func charCodepoint(c: in Char): Int {
-  // ASCII fast path covers the only call site (escapeStr) which only
-  // ever asks for control characters in 0..31.
-  if c == '\u{0000}' {
-    0
-  } else if c == '\u{0001}' {
-    1
-  } else if c == '\u{0002}' {
-    2
-  } else if c == '\u{0003}' {
-    3
-  } else if c == '\u{0004}' {
-    4
-  } else if c == '\u{0005}' {
-    5
-  } else if c == '\u{0006}' {
-    6
-  } else if c == '\u{0007}' {
-    7
-  } else if c == '\u{0008}' {
-    8
-  } else if c == '\t' {
-    9
-  } else if c == '\n' {
-    10
-  } else if c == '\u{000b}' {
-    11
-  } else if c == '\u{000c}' {
-    12
-  } else if c == '\r' {
-    13
-  } else if c == '\u{000e}' {
-    14
-  } else if c == '\u{000f}' {
-    15
-  } else if c == '\u{0010}' {
-    16
-  } else if c == '\u{0011}' {
-    17
-  } else if c == '\u{0012}' {
-    18
-  } else if c == '\u{0013}' {
-    19
-  } else if c == '\u{0014}' {
-    20
-  } else if c == '\u{0015}' {
-    21
-  } else if c == '\u{0016}' {
-    22
-  } else if c == '\u{0017}' {
-    23
-  } else if c == '\u{0018}' {
-    24
-  } else if c == '\u{0019}' {
-    25
-  } else if c == '\u{001a}' {
-    26
-  } else if c == '\u{001b}' {
-    27
-  } else if c == '\u{001c}' {
-    28
-  } else if c == '\u{001d}' {
-    29
-  } else if c == '\u{001e}' {
-    30
-  } else if c == '\u{001f}' {
-    31
-  } else {
-    32
-  }  // sentinel "non-control"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -428,13 +412,13 @@ func charLitStr(cp: in Int): String {
   } else if cp < 32 or cp == 127 {
     // DEL (127) is a non-printable control character; emit as \u{007F}
     // alongside the rest of the C0 range.
-    "'\\u{" + uHex4(cp) + "}'"
+    "'\\u{" + uHexCp(cp) + "}'"
   } else if cp < 127 {
     "'" + charToStr(intToChar(cp)) + "'"
   } else {
     // Non-ASCII BMP: emit as `\u{XXXX}`.  Non-BMP scalars (> U+FFFF)
     // would need surrogate pairs which Fmt.fs also does not handle.
-    "'\\u{" + uHex4(cp) + "}'"
+    "'\\u{" + uHexCp(cp) + "}'"
   }
 }
 
@@ -1077,7 +1061,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
     case EList(elems) -> exprListMulti(col, ctx, elems, "[", "]")
     case ETuple(elems) -> exprListMulti(col, ctx, elems, "(", ")")
     case EParen(inner) -> exprParenMulti(col, ctx, inner)
-    case ELambda(ps, body) -> exprLambdaMulti(col, ctx, ps, body)
+    case ELambda(ps, body) -> exprLambdaMulti(col, ctx, e.span.startPos.offset, ps, body)
     case EForall(bs, w, body, form) -> exprQuantMulti(col, ctx, "forall", bs, w, body, form)
     case EExists(bs, w, body, form) -> exprQuantMulti(col, ctx, "exists", bs, w, body, form)
     // When an if-expression (brace form) or match-expression is too wide to
@@ -1349,6 +1333,19 @@ func lambdaBodyIsBareExpr(body: in Block): Option[Expr] {
   }
 }
 
+/// Detects the paren-arrow lambda whose body is an explicit braced block
+/// (`(params) -> { ... }`, #7151).  `parseArrowLambdaTail` builds it from
+/// `parseBlock`, so it is AST-identical to the brace form `{ params -> ... }`
+/// except for spans: a brace-form lambda's body block starts at the lambda's
+/// own opening `{` (the two spans coincide), whereas here the lambda starts
+/// at `(` and the block's `{` comes strictly later.  `lambdaStart` is the
+/// lambda expression's own start offset; callers rule out the bare-expression
+/// spelling first with `lambdaBodyIsBareExpr`.
+@pure
+func lambdaIsParenBlock(lambdaStart: in Int, body: in Block): Bool {
+  body.span.startPos.offset > lambdaStart
+}
+
 /// `ELambda` multi-line layout:
 ///
 ///     { param1, param2 ->
@@ -1367,13 +1364,21 @@ func lambdaBodyIsBareExpr(body: in Block): Option[Expr] {
 /// A paren-arrow expression-bodied lambda (`(params) -> expr`, see
 /// `lambdaBodyIsBareExpr`) has no brace pair to break onto its own line,
 /// so it gets its own layout in `exprArrowLambdaMulti` instead.
-func exprLambdaMulti(col: in Int, ctx: inout FmtCtx, ps: in List[LambdaParam], body: in Block): List[String] {
+func exprLambdaMulti(
+  col: in Int, ctx: inout FmtCtx, lambdaStart: in Int, ps: in List[LambdaParam], body: in Block
+): List[String] {
   match lambdaBodyIsBareExpr(body) {
     case Some(e) -> return exprArrowLambdaMulti(col, ctx, ps, e)
     case None -> {
     }
   }
-  val opener = if ps.count == 0 { "{ ->" } else { "{ " + braceLambdaHead(ps) + " ->" }
+  val opener = if lambdaIsParenBlock(lambdaStart, body) {
+    "(" + lambdaParamsStr(ps) + ") -> {"
+  } else if ps.count == 0 {
+    "{ ->"
+  } else {
+    "{ " + braceLambdaHead(ps) + " ->"
+  }
   val acc: List[String] = newList()
   acc.add(opener)
   val bd = indentDoc(2, blockLines(body, ctx))
@@ -1607,7 +1612,7 @@ pub func exprInline(minPrec: in Int, e: in Expr): String {
     case EExists(bs, w, body, form) -> quantifierStr("exists", bs, w, body, form)
     case ESelf -> "self"
     case EResult -> "result"
-    case ELambda(ps, body) -> lambdaInlineStr(ps, body)
+    case ELambda(ps, body) -> lambdaInlineStr(e.span.startPos.offset, ps, body)
     case ECall(fn, args) -> exprInline(0, fn) + "(" + callArgsStr(args) + ")"
     case ETypeApp(fn, args) -> exprInline(0, fn) + "[" + typeArgsStr(args) + "]"
     case EIndex(recv, idx) -> exprInline(0, recv) + "[" + exprsStr(idx) + "]"
@@ -1682,11 +1687,14 @@ func quantifierStr(
   }
 }
 
-func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {
+func lambdaInlineStr(lambdaStart: in Int, ps: in List[LambdaParam], body: in Block): String {
   match lambdaBodyIsBareExpr(body) {
     case Some(e) -> return "(" + lambdaParamsStr(ps) + ") -> " + exprInline(0, e)
     case None -> {
     }
+  }
+  if lambdaIsParenBlock(lambdaStart, body) {
+    return "(" + lambdaParamsStr(ps) + ") -> { " + blockInline(body) + " }"
   }
   if ps.count == 0 {
     "{ -> " + blockInline(body) + " }"
@@ -2028,10 +2036,13 @@ func exprStartsWithBracket(e: in Expr): Bool {
     case EMember(r, _) -> exprStartsWithBracket(r)
     case EPropagate(inner) -> exprStartsWithBracket(inner)
     case EBinop(_, lhs, _) -> exprStartsWithBracket(lhs)
-    // A paren-arrow lambda (`(params) -> expr`, see `lambdaBodyIsBareExpr`)
-    // starts with `(` just like `EParen`/`ETuple`; a brace-form lambda
+    // A paren-arrow lambda (`(params) -> expr` or `(params) -> { ... }`, see
+    // `lambdaBodyIsBareExpr` / `lambdaIsParenBlock`) starts with `(` just like `EParen`/`ETuple`; a brace-form lambda
     // starts with `{` and is not part of this hazard.
-    case ELambda(_, body) -> match lambdaBodyIsBareExpr(body) { case Some(_) -> true; case None -> false }
+    case ELambda(_, body) -> match lambdaBodyIsBareExpr(body) {
+      case Some(_) -> true
+      case None -> lambdaIsParenBlock(e.span.startPos.offset, body)
+    }
     case _ -> false
   }
 }

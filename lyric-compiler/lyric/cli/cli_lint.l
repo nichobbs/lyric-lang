@@ -63,21 +63,33 @@ func cmdLint(argv: in slice[String]): Int {
     var warningCount = 0
     var readFailCount = 0
     var fileCount = 0
+    // Read every file first: L007 builds one type registry per package from
+    // all of its files (#7607), so the sources are linted together.
+    val readPaths: List[String] = newList()
+    val readSources: List[String] = newList()
     var pi = 0
     while pi < sourcePaths.count {
       val sp = sourcePaths[pi]
       pi += 1
       fileCount += 1
-      val source = match File.readText(sp) {
-        case Ok(t) -> t
+      match File.readText(sp) {
+        case Ok(t) -> {
+          readPaths.add(sp)
+          readSources.add(t)
+        }
         case Err(e) -> {
           printErr("lint: cannot read " + sp + ": " + IOError.message(e))
           hasError = true
           readFailCount += 1
-          continue
         }
       }
-      val lintDiags = Lint.lint(source)
+    }
+    val packageDiags = Lint.lintPackage(readSources)
+    var ri = 0
+    while ri < readPaths.count {
+      val sp = readPaths[ri]
+      val lintDiags = packageDiags[ri]
+      ri += 1
       for d in lintDiags.toArray() {
         val sev = match d.severity { case LintError -> "error"; case LintWarning -> "warning" }
         printErr(
