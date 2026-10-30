@@ -69,3 +69,12 @@ test "a record field passed as inout Self is rebound too" {
   assertEqualInt(x.replace(p.a), 600, "the field's new record")
   assertEqualInt(p.a.n, 600, "the field now holds the new record")
 }
+
+test "inout Self through an interface value rebinds the caller's interface variable (#8252)" {
+  val k: Merger = Acc(n = 5)
+  var o: Merger = Acc(n = 7)
+  var kept: Merger = o
+  assertEqualInt(k.replace(o), 1000, "the new record, doubled through a forwarded inout")
+  assertEqualInt(k.merge(o), 1005, "the next call sees the value the first one stored")
+  assertEqualInt(k.merge(kept), 12, "a copy of the old interface value still holds the old record")
+}

@@ -1414,14 +1414,18 @@ func widerNumericTEMono(prev: in TypeExpr, cand: in TypeExpr): Bool {
 // later binding of a type parameter replaces an earlier one only when it is
 // the wider numeric type and every earlier binding came from a bare `T`
 // parameter. `bareBound` records, per bound name, whether its binding is
-// still bare-only.
+// still bare-only, and under `"inout:" + name` whether an `out`/`inout`
+// parameter pinned it: the binding is then the place's type, which a later
+// argument (a literal that adapts to it) never replaces (#8238).
 func unifyArgMono(
   typeParams: in List[String],
   paramTE: in TypeExpr,
+  mode: in ParamMode,
   argTE: in TypeExpr,
   subst: in Map[String, TypeExpr],
   bareBound: in Map[String, Bool],
 ): Unit {
+  val byRef = match mode { case PMIn -> false; case _ -> true }
   val fresh: Map[String, TypeExpr] = newMap()
   unifyTE(typeParams, paramTE, argTE, fresh)
   val bareName = match paramTE.kind {
@@ -1432,6 +1436,24 @@ func unifyArgMono(
     match mapGet(fresh, name) {
       case Some(te) -> {
         val bare = name == bareName
+        val pinKey = "inout:" + name
+        if bareBound.containsKey(pinKey) {
+          // An `out`/`inout` parameter already fixed this parameter to its
+          // place's type; a flexible argument (an integer literal) adapts.
+          continue
+        }
+        if byRef and bare {
+          if subst.containsKey(name) {
+            subst.remove(name)
+          }
+          subst.add(name, te)
+          if bareBound.containsKey(name) {
+            bareBound.remove(name)
+          }
+          bareBound.add(name, false)
+          bareBound.add(pinKey, true)
+          continue
+        }
         match mapGet(subst, name) {
           case None -> {
             subst.add(name, te)
@@ -2585,7 +2607,7 @@ func substMethodRetTE(
           val ai = slots[pi]
           if ai >= 0 {
             match argTEForParamMono(state, env, callArgExpr(args[ai]), params[pi].ty) {
-              case Some(argTE) -> unifyArgMono(methodParams, params[pi].ty, argTE, subst, bareBound)
+              case Some(argTE) -> unifyArgMono(methodParams, params[pi].ty, params[pi].mode, argTE, subst, bareBound)
               case None -> ()
             }
           }
@@ -3449,7 +3471,7 @@ func inferReturnFromName(
                     } else {
                       match argTEForParamMono(state, env, callArgExpr(args[ai]), decl.params[i].ty) {
                         case Some(argTE) -> {
-                          unifyArgMono(typeParams, decl.params[i].ty, argTE, subst, bareBound)
+                          unifyArgMono(typeParams, decl.params[i].ty, decl.params[i].mode, argTE, subst, bareBound)
                           evidenced = true
                         }
                         case None -> ()
@@ -6474,7 +6496,7 @@ func markArgsExpectedMono(
     if slots[j] >= 0 and not isGenericCallExprMono(state, callArgExpr(args[slots[j]])) {
       match argTEForParamMono(state, env, callArgExpr(args[slots[j]]), callee.params[j].ty) {
         case Some(argTE) -> if not teMentionsTypeParam(typeParams, argTE) {
-          unifyArgMono(typeParams, callee.params[j].ty, argTE, subst, bareBound)
+          unifyArgMono(typeParams, callee.params[j].ty, callee.params[j].mode, argTE, subst, bareBound)
         }
         case None -> ()
       }
@@ -8061,7 +8083,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                               }
                               match argTEForParamMono(state, env, evidenceArg, baseDecl.params[i].ty) {
                                 case Some(argTE) -> {
-                                  unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
+                                  unifyArgMono(typeParams, baseDecl.params[i].ty, baseDecl.params[i].mode, argTE, subst, bareBound)
                                   evidenced = true
                                 }
                                 case None -> ()
@@ -8254,7 +8276,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                   while qi < qSlots.count {
                     if qSlots[qi] >= 0 {
                       match argTEForParamMono(state, env, callArgExpr(args[qSlots[qi]]), qBaseDecl.params[qi].ty) {
-                        case Some(qArgTE) -> unifyArgMono(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst, qBareBound)
+                        case Some(qArgTE) -> unifyArgMono(
+                          qTypeParams,
+                          qBaseDecl.params[qi].ty,
+                          qBaseDecl.params[qi].mode,
+                          qArgTE,
+                          qSubst,
+                          qBareBound
+                        )
                         case None -> ()
                       }
                     }
