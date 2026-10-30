@@ -781,6 +781,8 @@ func sqlLintExpr(e: in Expr, acc: in List[LintDiag]) {
           sqlLintExpr(lo, acc)
           sqlLintExpr(hi, acc)
         }
+        case RBLowerOpen(hi) -> sqlLintExpr(hi, acc)
+        case RBUpperOpen(lo) -> sqlLintExpr(lo, acc)
       }
     }
     case EAssign(t, _, v) -> {
