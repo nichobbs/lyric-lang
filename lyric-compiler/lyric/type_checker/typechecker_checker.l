@@ -465,17 +465,15 @@ func checkTestBody(
 // declaration is checked when its own package is, and a consumer can neither
 // name nor call it; the private generic helpers a restored package carries for
 // its `pub` generics are the one case a consumer meets, when it specialises
-// one, and they are tracked with the rest of that path in #8546.  Items and
-// diagnostics are matched by offset, which is exact while a package's files
-// share one merged source; per-file parsing (docs/70 §4.1, #8612) must match
-// on file as well.
+// one, and they are tracked with the rest of that path in #8546.  A
+// diagnostic belongs to the item whose span, in the same file, contains it.
 func exportedSurfaceDiagnostics(items: in List[Item], pkgDiag: in List[Diagnostic]): List[Diagnostic] {
   val kept: List[Diagnostic] = newList()
   for d in pkgDiag {
     val at = d.span.startPos.offset
     var exported = false
     for item in items {
-      if at >= item.span.startPos.offset and at <= item.span.endPos.offset {
+      if d.span.startPos.fileId == item.span.startPos.fileId and at >= item.span.startPos.offset and at <= item.span.endPos.offset {
         exported = match item.kind {
           case IImpl(_) -> true
           // A carried private generic (`__priv_<Pkg>_<name>`) is written to
@@ -641,10 +639,6 @@ func foldOrErr(tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, 
       None
     }
   }
-}
-
-func spanWithin(inner: in Span, outer: in Span): Bool {
-  inner.startPos.offset >= outer.startPos.offset and inner.endPos.offset <= outer.endPos.offset
 }
 
 func checkClosed(
@@ -4556,7 +4550,7 @@ func earlierProtectedImplWithMethod(
   while i < items.count {
     match items[i].kind {
       case IImpl(other) -> {
-        if other.span.startPos.offset == decl.span.startPos.offset and other.span.endPos.offset == decl.span.endPos.offset {
+        if sameSpan(other.span, decl.span) {
           return None
         }
         if implTargetNamesProtected(other, name) {
@@ -4627,7 +4621,7 @@ func earlierImplWithMethodForTarget(
   while i < items.count {
     match items[i].kind {
       case IImpl(other) -> {
-        if other.span.startPos.offset == decl.span.startPos.offset and other.span.endPos.offset == decl.span.endPos.offset {
+        if sameSpan(other.span, decl.span) {
           return None
         }
         val scratch: List[Diagnostic] = newList()

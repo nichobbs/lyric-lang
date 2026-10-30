@@ -49,14 +49,18 @@ import Std.Parse
 // ─────────────────────────────────────────────────────────────────────────────
 // Position and Span — mirror compiler/src/Lyric.Lexer/Span.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-/// A position in source.  `offset` is a 0-based UTF-16 code-unit offset
-/// into the (already CR/LF-normalised) source string; `line` and
-/// `column` are 1-based.
+/// A position in source.  `line` and `column` are 1-based within the file
+/// `fileId` names (docs/70 §4.1).  `offset` is a 0-based UTF-16 code-unit
+/// offset into the (already CR/LF-normalised) source of the package: each
+/// file of a package is lexed at an offset base past the end of the files
+/// before it, so offsets identify a position across the whole package and
+/// `offset - base` indexes the file's own text.  A single file has base 0.
 @stable(since = "0.1")
 pub record Position {
   offset: Int
   line: Int
   column: Int
+  fileId: Int = 0
 }
 
 @stable(since = "0.1")
@@ -74,6 +78,22 @@ pub record Span {
 @stable(since = "0.1")
 pub func makeSpan(startP: in Position, endP: in Position): Span {
   Span(startPos = startP, endPos = endP)
+}
+
+/// A key naming span `sp` among every span of its package, whose offsets
+/// are unique across the package's files (see `Position`).
+pub func spanKey(sp: in Span): String = toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+
+/// Whether `a` and `b` cover the same source range of the same file.
+pub func sameSpan(a: in Span, b: in Span): Bool {
+  a.startPos.fileId == b.startPos.fileId and a.startPos.offset == b.startPos.offset and
+    a.endPos.offset == b.endPos.offset
+}
+
+/// Whether `inner` lies within `outer`, in the same file.
+pub func spanWithin(inner: in Span, outer: in Span): Bool {
+  inner.startPos.fileId == outer.startPos.fileId and inner.startPos.offset >= outer.startPos.offset and
+    inner.endPos.offset <= outer.endPos.offset
 }
 
 /// Zero-length span used for synthetic tokens (STMT_END, EOF).
@@ -653,6 +673,8 @@ union Mode {
 /// without reconstructing the record.
 record LexerState {
   source: String
+  fileId: Int
+  offsetBase: Int
   var pos: Int
   var line: Int
   var column: Int
@@ -685,9 +707,11 @@ record LexerState {
   var pendingTrivia: List[Trivia]
 }
 
-func newState(source: in String): LexerState {
+func newState(source: in String, fileId: in Int, offsetBase: in Int): LexerState {
   LexerState(
     source = source,
+    fileId = fileId,
+    offsetBase = offsetBase,
     pos = 0,
     line = 1,
     column = 1,
@@ -720,11 +744,14 @@ func sourceSlice(state: in LexerState, startOffset: in Int, endOffset: in Int): 
   Str.substring(state.source, startOffset, endOffset - startOffset)
 }
 
+// The index into this file's source of a position the lexer produced.
+func posIndex(state: in LexerState, p: in Position): Int = p.offset - state.offsetBase
+
 /// Append a captured trivia run.  `startP` was recorded before the run
 /// began; the current position bounds the end.
 func recordTrivia(state: inout LexerState, kind: in TriviaKind, startP: in Position): Unit {
   val sp = makeSpan(startP, currentPosition(state))
-  val text = sourceSlice(state, sp.startPos.offset, sp.endPos.offset)
+  val text = sourceSlice(state, posIndex(state, sp.startPos), posIndex(state, sp.endPos))
   state.pendingTrivia.add(Trivia(kind = kind, text = text, span = sp))
 }
 
@@ -823,7 +850,7 @@ func advanceRaw(state: inout LexerState): String {
 
 @pure
 func currentPosition(state: in LexerState): Position {
-  Position(offset = state.pos, line = state.line, column = state.column)
+  Position(offset = state.offsetBase + state.pos, line = state.line, column = state.column, fileId = state.fileId)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1638,19 +1665,24 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   val kind = if base == 16 { "hexadecimal" } else if base == 8 { "octal" } else { "binary" }
   val sfx = if tail.length == 0 { Some(value = NoIntSuffix) } else { intSuffixNamed(tail) }
   if body.length == 0 {
-    val prefix = sourceSlice(state, startP.offset, prefixEnd.offset)
+    val prefix = sourceSlice(state, posIndex(state, startP), posIndex(state, prefixEnd))
     recordError(state, "L0016", emptyRadixMessage(prefix, kind), makeSpan(startP, prefixEnd))
     val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
-    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
     return
   }
   val badAt = firstInvalidDigit(raw, base)
   if badAt >= 0 {
-    val digitP = Position(offset = startP.offset + 2 + badAt, line = startP.line, column = startP.column + 2 + badAt)
-    val digitEnd = Position(offset = digitP.offset + 1, line = digitP.line, column = digitP.column + 1)
+    val digitP = Position(
+      offset = startP.offset + 2 + badAt,
+      line = startP.line,
+      column = startP.column + 2 + badAt,
+      fileId = startP.fileId
+    )
+    val digitEnd = Position(offset = digitP.offset + 1, line = digitP.line, column = digitP.column + 1, fileId = digitP.fileId)
     recordError(state, "L0017", invalidDigitMessage(charToString(raw[badAt]), base, kind), makeSpan(digitP, digitEnd))
     val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
-    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
     return
   }
   match sfx {
@@ -1673,7 +1705,7 @@ func emitIntLiteral(
   suffix: in IntSuffix,
   report: in Bool,
 ): Unit {
-  val raw = sourceSlice(state, startP.offset, state.pos)
+  val raw = sourceSlice(state, posIndex(state, startP), state.pos)
   match parsed {
     case IntLitOk(v) -> emit(state, TInt(value = v, suffix = suffix, raw = raw), startP)
     // The minimum's magnitude (`9223372036854775808`, `128i8`) is only
@@ -1999,13 +2031,13 @@ func lexDecimalNumber(state: inout LexerState): Unit {
           recordError(state, "L0015", unknownSuffixMessage(tail, "float"), makeSpan(suffixP, currentPosition(state)))
         }
         val fv = match suffix { case F32 -> roundToFloat32(stripUnderscores(raw), v); case _ -> v }
-        emit(state, TFloat(value = fv, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+        emit(state, TFloat(value = fv, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
       }
       // A malformed body (`1e`, `2e+`) is the one diagnostic: whatever
       // follows an exponent with no digits is not a separate suffix error.
       case None -> {
         recordError(state, "L0011", "invalid float literal", makeSpan(startP, currentPosition(state)))
-        emit(state, TFloat(value = 0.0, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+        emit(state, TFloat(value = 0.0, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
       }
     }
   } else {
@@ -2819,9 +2851,13 @@ pub func normaliseLineEndings(s: in String): String {
 /// trailing `TEof`; diagnostics include all the recoverable lexer
 /// errors with their `L00xx` codes, matching the bootstrap.
 @stable(since = "0.1")
-pub func lex(source: in String): LexResult {
+pub func lex(source: in String): LexResult = lexFile(source, 0, 0)
+
+/// `lex` for file `fileId` of a package whose offsets start at
+/// `offsetBase` (see `Position`).
+pub func lexFile(source: in String, fileId: in Int, offsetBase: in Int): LexResult {
   val normalised = normaliseLineEndings(source)
-  var state = newState(normalised)
+  var state = newState(normalised, fileId, offsetBase)
   while not isAtEnd(state) {
     lexNext(state)
   }

@@ -5697,10 +5697,6 @@ func ioFunctionSpans(file: in SourceFile): List[Span] {
   spans
 }
 
-func spanWithin(inner: in Span, outer: in Span): Bool {
-  inner.startPos.offset >= outer.startPos.offset and inner.endPos.offset <= outer.endPos.offset
-}
-
 /// The layer diagnostics (D149) for a package that may not do I/O: a
 /// package-level `@pure`, or a `[layers]` layer whose rule does not allow
 /// `io` (`layerReason`, "" when none).  In a `@pure` package the functions

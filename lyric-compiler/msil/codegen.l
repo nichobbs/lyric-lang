@@ -35316,7 +35316,7 @@ func actionSlotArityMsil(slotTy: in MsilType): Int {
 // span.  Only used for literals with a non-empty span (a synthesized node may
 // carry an empty one, and is never marked).
 func lambdaSpanKeyMsil(sp: in Span): String {
-  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset) + "@" + toString(sp.startPos.line) + "." +
+  spanKey(sp) + "@" + toString(sp.startPos.line) + "." +
     toString(sp.startPos.column)
 }
 

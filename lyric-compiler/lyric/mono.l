@@ -6221,7 +6221,7 @@ func spanKeyMono(state: in MonoState, sp: in Span): String {
   if sp.endPos.offset <= sp.startPos.offset {
     return ""
   }
-  state.originScope[state.originScope.count - 1] + "@" + toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
+  state.originScope[state.originScope.count - 1] + "@" + spanKey(sp)
 }
 
 // Whether the type checker's span-keyed sites (`copySites`, `funcRefSites`,

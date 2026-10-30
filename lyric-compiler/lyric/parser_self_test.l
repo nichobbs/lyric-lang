@@ -2819,3 +2819,28 @@ test "ref record parses as a record with the ref flag (D222)" {
   val ident = parse("package P\nfunc f(): Int {\n  val ref = 1\n  ref\n}\n")
   assertEqualInt(diagCount(ident), 0, "ref stays an ordinary identifier elsewhere")
 }
+
+// docs/70 §4.1: each file of a package is parsed on its own, positions name
+// their file, lines restart per file and offsets stay unique across the
+// package.
+test "the files of a package parse with their own file ids, lines and offset bases" {
+  val first = "package P\nfunc a(): Int = 1\n"
+  val second = "package P\n\nfunc b(): Int = 2\n"
+  val one = parseFile(first, 0, 0)
+  val two = parseFile(second, 1, first.length)
+  assertEqualInt(diagCount(one) + diagCount(two), 0, "both files parse")
+  val a = one.file.items[0].span
+  val b = two.file.items[0].span
+  assertEqualInt(a.startPos.fileId, 0, "file 0's item names file 0")
+  assertEqualInt(b.startPos.fileId, 1, "file 1's item names file 1")
+  assertEqualInt(a.startPos.line, 2, "file 0's item is on its line 2")
+  assertEqualInt(b.startPos.line, 3, "file 1's item is on its own line 3")
+  assertTrue(b.startPos.offset >= first.length, "file 1's offsets follow file 0's")
+  assertTrue(not sameSpan(a, b), "spans of two files are distinct")
+  assertTrue(spanWithin(b, two.file.items[0].span), "a span lies within itself")
+  assertTrue(not spanWithin(a, two.file.items[0].span), "a span of another file is not within")
+  assertTrue(spanKey(a) != spanKey(b), "span keys of two files differ")
+  val single = parse(second)
+  assertEqualInt(single.file.items[0].span.startPos.fileId, 0, "parse is file 0")
+  assertEqualInt(single.file.items[0].span.startPos.offset, b.startPos.offset - first.length, "parse is base 0")
+}

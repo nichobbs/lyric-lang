@@ -4283,8 +4283,12 @@ func hasContractSourceAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
-pub func parse(source: in String): ParseResult {
-  val lexResult = lex(source)
+pub func parse(source: in String): ParseResult = parseFile(source, 0, 0)
+
+/// `parse` for file `fileId` of a package, its offsets starting at
+/// `offsetBase` (docs/70 §4.1; see `Lyric.Lexer.Position`).
+pub func parseFile(source: in String, fileId: in Int, offsetBase: in Int): ParseResult {
+  val lexResult = lexFile(source, fileId, offsetBase)
   var st = makeParseState(lexResult.tokens, lexResult.diagnostics)
   // Wrap the entire file in a single SkSourceFile CST node so every
   // token (including the trailing TEof) is reachable from a single

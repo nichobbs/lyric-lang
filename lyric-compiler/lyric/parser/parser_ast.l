@@ -1872,9 +1872,7 @@ pub record LambdaParamTypesSite {
 }
 
 /// The key of a record-copy call site: its span's start and end offsets.
-pub func recordCopySiteKey(sp: in Span): String {
-  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
-}
+pub func recordCopySiteKey(sp: in Span): String = spanKey(sp)
 
 /// The key of a method call site in `SymbolTable.methodCallArities`: the
 /// span of its callee with any parentheses or explicit type arguments

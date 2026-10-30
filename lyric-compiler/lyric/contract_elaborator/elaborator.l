@@ -3351,10 +3351,6 @@ func hasClauseAt(contracts: in List[ContractClause], e: in Expr, sp: in Span): B
   false
 }
 
-func sameSpan(a: in Span, b: in Span): Bool {
-  a.startPos.offset == b.startPos.offset and a.endPos.offset == b.endPos.offset
-}
-
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the
 // source-level clause list so contract metadata and the verifier see only
 // what the author wrote on this declaration.
