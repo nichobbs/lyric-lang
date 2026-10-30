@@ -59,6 +59,9 @@ func rewriteOverflowExpr(e: in Expr, sites: in Map[String, String], checked: in 
       if what == "wrap" {
         return wrappingCall(e, tn)
       }
+      if what == "ulong" {
+        return ulongConversion(e, tn)
+      }
       if not checked {
         return e
       }
@@ -92,6 +95,81 @@ func wrappingCall(e: in Expr, tn: in String): Expr {
     }
     case _ -> e
   }
+}
+
+// `w.toLong()`, `w.toDouble()` and `w.toFloat()` on a `ULong` (#8450).  The
+// 64 bits of a `ULong` are the bits of a `Long`, so the plain conversion reads
+// the top bit as a sign.  The conversion is always checked or corrected,
+// whatever the build profile:
+//
+//   toLong    panics when the top bit is set (the value is above Long.MaxValue);
+//   toDouble  and toFloat convert the unsigned value: a value with the top bit
+//             set is halved with its low bit folded in (so the single rounding
+//             is the correct one), converted, and doubled.
+//
+// The conversions inside the block are the plain ones on a `Long` the checker
+// leaves alone (zero-width spans), so every backend lowers them as it lowers
+// any `Long` conversion.
+func ulongConversion(e: in Expr, name: in String): Expr {
+  val sp = syntheticSpan(e.span)
+  val recv = match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(r, _) -> if args.count == 0 { r } else { return e }
+      case _ -> return e
+    }
+    case _ -> return e
+  }
+  val base = tempBase(e.span)
+  val uName = base + "_u"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedLocal(uName, Some(value = primTypeExpr("ULong", sp)), recv, sp))
+  val u = localRef(uName, sp)
+  val zero = typedIntLit("Long", 0i64, sp)
+  if name == "toLong" {
+    stmts.add(
+      panicIf(
+        bin(BLt, method0(u, "toLong", sp), zero, sp),
+        "ULong value is above Long.MaxValue and does not fit in a Long",
+        sp
+      )
+    )
+    stmts.add(mkStmt(SExpr(expr = method0(u, "toLong", sp)), sp))
+    return blockOf(stmts, sp)
+  }
+  val sName = base + "_s"
+  stmts.add(typedLocal(sName, Some(value = primTypeExpr("Long", sp)), method0(u, "toLong", sp), sp))
+  val s = localRef(sName, sp)
+  val isFloat = name == "toFloat"
+  val two = if isFloat {
+    mkExpr(ELiteral(lit = LFloat(value = 2.0, suffix = F32, raw = "2.0f32")), sp)
+  } else {
+    mkExpr(ELiteral(lit = LFloat(value = 2.0, suffix = NoFloatSuffix, raw = "2.0")), sp)
+  }
+  val maxLong = typedIntLit("Long", 9223372036854775807i64, sp)
+  val one = typedIntLit("Long", 1i64, sp)
+  val halved = method1(
+    method1(method1(s, "shr", typedIntLit("Int", 1i64, sp), sp), "and", maxLong, sp),
+    "or",
+    method1(s, "and", one, sp),
+    sp
+  )
+  val direct = method0(s, name, sp)
+  val viaHalf = bin(BMul, method0(halved, name, sp), two, sp)
+  val thenStmts: List[Statement] = newList()
+  thenStmts.add(mkStmt(SExpr(expr = direct), sp))
+  val elseStmts: List[Statement] = newList()
+  elseStmts.add(mkStmt(SExpr(expr = viaHalf), sp))
+  val pick = mkExpr(
+    EIf(
+      cond = bin(BGte, s, zero, sp),
+      thenBranch = EOBBlock(block = Block(statements = thenStmts, span = sp)),
+      elseBranch = Some(value = EOBBlock(block = Block(statements = elseStmts, span = sp))),
+      thenForm = false
+    ),
+    sp
+  )
+  stmts.add(mkStmt(SExpr(expr = pick), sp))
+  blockOf(stmts, sp)
 }
 
 func rewriteOverflowStmt(

@@ -3078,16 +3078,17 @@ func isNumericPrimType(t: in Type): Bool {
 // representation with `Int`, so the plain signed conversion would read the top
 // bit as a sign: the `UInt` is zero-extended to a `ULong` first (a lossless
 // widening, whose pattern is a non-negative `Long`).  A `ULong` shares the
-// 64-bit representation of `Long`, and there is no checked or floating-point
-// conversion for it on every target yet, so `toLong`, `toDouble` and `toFloat`
-// on one are T0103 rather than a silent reinterpretation.  Returns false when
-// it reported an error.
+// 64-bit representation of `Long`, so its `toLong` (checked: it panics above
+// `Long.MaxValue`), `toDouble` and `toFloat` (the unsigned value) are recorded
+// as overflow sites that `Lyric.ContractElaborator.lowerOverflowChecks`
+// lowers to plain `Long` operations on every target (#8450).
 func noteUnsignedSourceConversion(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
   recvE: in Expr,
   rt: in Type,
   mname: in String,
+  callSpan: in Span,
 ): Bool {
   if isPrimOf(rt, PtUInt) {
     if mname == "toLong" or mname == "toDouble" or mname == "toFloat" or mname == "toNat" {
@@ -3096,15 +3097,10 @@ func noteUnsignedSourceConversion(
     return true
   }
   if isPrimOf(rt, PtULong) and (mname == "toLong" or mname == "toDouble" or mname == "toFloat") {
-    diag.add(
-      errorDiagnostic(
-        "T0103",
-        "conversion method '" + mname + "' is not applicable to " + renderType(rt) +
-          " (a ULong above 2^63 - 1 has no Long or floating-point value; use toInt() to truncate to 32 bits, or keep the value a ULong)",
-        recvE.span
-      )
-    )
-    return false
+    // The lowering's own conversions on the `Long` it binds are plain ones.
+    if callSpan.startPos.offset != callSpan.endPos.offset {
+      recordOverflowSite(tbl, callSpan, "ulong:" + mname)
+    }
   }
   true
 }
@@ -16633,7 +16629,7 @@ func inferExprCore(
           case Some(target) -> if args.count == 0 {
             val rt = inferExpr(sc, tbl, sigs, diag, recvE)
             if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) {
-              if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname) {
+              if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname, e.span) {
                 return TyError
               }
               return TyPrim(pt = target)
