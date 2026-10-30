@@ -778,3 +778,30 @@ test "another package's method defaults are spliced into a call (JVM, #7820)" {
   assertEqualInt(result.exitCode, 0, "cross_package_method_default: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "6\n4000000000\n12\n8", "each call takes the default it resolves through")
 }
+
+// #7777: an importer reads another package's unannotated `pub val` over a
+// private helper at the type the declaring package checked, with no
+// annotation on the val (the MSIL twin lives in
+// `msil_project_bridge_self_test.l`).
+test "an unannotated pub val over a private helper is readable from another package (JVM, #7777)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XVal7777.Lib\n" + "\n" + "func helper(): Int {\n" + "  41\n" + "}\n" + "\n" + "func greeting(): String {\n" +
+      "  \"hi\"\n" +
+      "}\n" +
+      "\n" +
+      "pub val answer = helper() + 1\n" +
+      "pub val hello = greeting() + \"!\"\n"
+  )
+  pkgSrcs.add(
+    "package XVal7777.App\n" + "\n" + "import XVal7777.Lib\n" + "\n" + "func main(): Int {\n" +
+      "  println(toString(answer))\n" +
+      "  println(toString(answer + 1))\n" +
+      "  println(hello)\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("cross-package-unannotated-val-7777", pkgSrcs, "XVal7777.App")
+  assertEqualInt(result.exitCode, 0, "unannotated_pub_val: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42\n43\nhi!", "read at the declaring package's checked type")
+}

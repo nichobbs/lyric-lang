@@ -1226,7 +1226,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                                       panic(
                                         "Jvm.Codegen: " + toString(pos.line) + ":" + toString(pos.column) + ": reference '" + name +
                                           "' resolves to no local, parameter, receiver field, wire binding, union case, or module-level val. " +
-                                          "If this names an imported package's `pub val` with a non-literal initialiser and no type annotation, " +
+                                          "If this names an imported package's `pub val` whose type the checker could not infer, " +
                                           "add an explicit type annotation to that val so its cross-package field type is known."
                                       )
                                     }
