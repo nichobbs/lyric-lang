@@ -3864,6 +3864,12 @@ test "a method of a generic record returning its type parameter is called at the
       "func both(a: in Box[Int], b: in Box[Bool]): Int\n  requires: b.getV()\n  ensures: result == a.getV() + 1\n{\n  a.getV() + 1\n}\n",
     "generic-method-two-instances"
   )
+  // A method with type parameters of its own is left as an unmodelled value:
+  // its result sort depends on the call's arguments.
+  assertUntranslatable(
+    "record Cell {\n  n: Int\n  @pure\n  func pick[U](self: in Cell, x: in U): U { x }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.pick(1)\n{\n  c.pick(1)\n}\n",
+    "method-with-own-generics"
+  )
   // A record that is not generic gets its method's declared sort too.
   assertRefuted(
     "record Cell {\n  n: Int\n  @pure\n  func get(self: in Cell): Int { self.n }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.get() + 1\n{\n  c.get()\n}\n",
