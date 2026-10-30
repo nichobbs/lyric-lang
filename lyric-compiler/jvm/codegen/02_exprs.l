@@ -185,11 +185,11 @@ func lowerCmp(
         // (`segs[i] == ".."` in lyric-storage's traversal guard).
         match op {
           case BEq -> {
-            emitObjectsEquals(insns)
+            emitObjectsEquals(ctx, insns)
             insns.add(LIfne(label = trueLabel))
           }
           case BNeq -> {
-            emitObjectsEquals(insns)
+            emitObjectsEquals(ctx, insns)
             insns.add(LIfeq(label = trueLabel))
           }
           case _ -> panic(
@@ -243,12 +243,15 @@ func lowerCmp(
 }
 
 // Null-safe value equality on two reference operands already stacked
-// [lhs, rhs]: `java.util.Objects.equals(Object, Object)Z`.
-func emitObjectsEquals(insns: in List[LInsn]): Unit {
+// [lhs, rhs], through the package's `__lyricKeyEq` helper: D172's relation, so
+// a `List`/`Map`/`Set` holding `0.0` equals one holding `-0.0` and a `NaN`
+// equals itself (`Objects.equals` compared a `Double` with `Double.equals`).
+func emitObjectsEquals(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   val oePs: List[JvmType] = newList()
   oePs.add(JRef(className = "java/lang/Object"))
   oePs.add(JRef(className = "java/lang/Object"))
-  insns.add(LInvokestatic(owner = "java/util/Objects", name = "equals", params = oePs, ret = JBoolean))
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = keyEqHelperName(), params = oePs, ret = JBoolean))
+  markRuntimeHelper(ctx, keyEqHelperName())
 }
 
 // `String.compareTo(String)I` on two String operands already stacked
@@ -2867,7 +2870,12 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
 // Both operands must already be on the stack; both are consumed.  `isUnsigned`
 // (#6748) mirrors `lowerCmp`'s parameter of the same name.
 func lowerCmpFail(
-  insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String, isUnsigned: in Bool
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  op: in BinOp,
+  lhsTy: in JvmType,
+  failLabel: in String,
+  isUnsigned: in Bool,
 ): Unit {
   match lhsTy {
     case JLong -> {
@@ -2954,11 +2962,11 @@ func lowerCmpFail(
         // Value equality via `Objects.equals` — see the trueLabel twin.
         match op {
           case BEq -> {
-            emitObjectsEquals(insns)
+            emitObjectsEquals(ctx, insns)
             insns.add(LIfeq(label = failLabel))
           }
           case BNeq -> {
-            emitObjectsEquals(insns)
+            emitObjectsEquals(ctx, insns)
             insns.add(LIfne(label = failLabel))
           }
           // A relational operator on a non-String reference has no lowering
@@ -3046,37 +3054,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BEq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BEq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BNeq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BNeq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BLt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BLt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BLte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BLte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BGt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BGt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BGte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
+          lowerCmpFail(ctx, insns, BGte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): `cond` may lower to an

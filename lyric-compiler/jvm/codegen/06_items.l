@@ -8135,8 +8135,21 @@ func makeKeyEqHelperFunc(owner: in String): LFunc {
   val getPs: List[JvmType] = newList()
   getPs.add(JInt)
   // Slot 2 (the loop index) is an `int` on every path, so every frame agrees.
+  // Slots 3-7 serve the `HashSet`/`HashMap` arm and are declared here for the
+  // same reason: key snapshots of `a` and `b`, the scan index, and the current
+  // key of `a` and its match in `b`.
   insns.add(LIconst(v = 0))
   insns.add(LIstore(slot = 2))
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 3, className = listCls))
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 4, className = listCls))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 5))
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 6, className = "java/lang/Object"))
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 7, className = "java/lang/Object"))
   insns.add(LAload(slot = 0))
   insns.add(LAload(slot = 1))
   insns.add(LIfAcmpne(label = "__ke_ne"))
@@ -8160,7 +8173,7 @@ func makeKeyEqHelperFunc(owner: in String): LFunc {
   insns.add(LLabel(name = "__ke_list"))
   insns.add(LAload(slot = 0))
   insns.add(LInstanceof(className = listCls))
-  insns.add(LIfeq(label = "__ke_prim0"))
+  insns.add(LIfeq(label = "__ke_set"))
   insns.add(LAload(slot = 1))
   insns.add(LInstanceof(className = listCls))
   insns.add(LIfeq(label = "__ke_f"))
@@ -8189,6 +8202,11 @@ func makeKeyEqHelperFunc(owner: in String): LFunc {
   insns.add(LIfeq(label = "__ke_f"))
   insns.add(LIinc(slot = 2, delta = 1))
   insns.add(LGoto(label = "__ke_list_loop"))
+  // `HashSet` / `HashMap`: sizes, then each member (key) of `a` against `b`.
+  insns.add(LLabel(name = "__ke_set"))
+  emitKeyEqHashed(insns, owner, "java/util/HashSet", false, "__ke_map")
+  insns.add(LLabel(name = "__ke_map"))
+  emitKeyEqHashed(insns, owner, "java/util/HashMap", true, "__ke_prim0")
   // Other typed arrays through `Arrays.equals`.
   val elems = keyEqArraysElems()
   var k = 0
@@ -8233,8 +8251,121 @@ func makeKeyEqHelperFunc(owner: in String): LFunc {
     ret = JBoolean,
     insns = insns,
     maxStack = 6,
-    maxLocals = 3
+    maxLocals = 8
   )
+}
+
+// When `a` (slot 0) is a `cls` (`HashSet`, or `HashMap` when `isMap`), compare
+// it with `b` (slot 1) under D172 and return; otherwise go to `next`.  Equal
+// sizes, then every member (key) of `a` must have a match in `b`: the host
+// lookup first, and when it misses a linear scan through `__lyricKeyEq`, since
+// the host lookup holds `0.0` and `-0.0` apart.  A map's values at the matched
+// keys are then compared through `__lyricKeyEq`.  Uses slots 2-7.
+func emitKeyEqHashed(insns: in List[LInsn], owner: in String, cls: in String, isMap: in Bool, next: in String): Unit {
+  val objT = JRef(className = "java/lang/Object")
+  val listCls = "java/util/ArrayList"
+  val tag = if isMap { "__ke_hm" } else { "__ke_hs" }
+  val noPs: List[JvmType] = newList()
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  val objPs: List[JvmType] = newList()
+  objPs.add(objT)
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(objT)
+  eqPs.add(objT)
+  val collPs: List[JvmType] = newList()
+  collPs.add(JRef(className = "java/util/Collection"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = cls))
+  insns.add(LIfeq(label = next))
+  insns.add(LAload(slot = 1))
+  insns.add(LInstanceof(className = cls))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = cls))
+  insns.add(LInvokevirtual(owner = cls, name = "size", params = noPs, ret = JInt))
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = cls))
+  insns.add(LInvokevirtual(owner = cls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpne(label = "__ke_f"))
+  // Snapshot each side's members (keys) into slots 3 and 4.
+  var side = 0
+  while side < 2 {
+    insns.add(LNew(className = listCls))
+    insns.add(LDup)
+    insns.add(LAload(slot = side))
+    insns.add(LCheckcast(className = cls))
+    if isMap {
+      insns.add(LInvokevirtual(owner = cls, name = "keySet", params = noPs, ret = JRef(className = "java/util/Set")))
+    }
+    insns.add(LInvokespecial(owner = listCls, name = "<init>", params = collPs, ret = JVoid))
+    insns.add(LAstoreAs(slot = 3 + side, className = listCls))
+    side = side + 1
+  }
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LLabel(name = tag + "_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 3))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpge(label = "__ke_t"))
+  insns.add(LAload(slot = 3))
+  insns.add(LIload(slot = 2))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LAstoreAs(slot = 6, className = "java/lang/Object"))
+  insns.add(LAload(slot = 6))
+  insns.add(LAstoreAs(slot = 7, className = "java/lang/Object"))
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = cls))
+  insns.add(LAload(slot = 6))
+  insns.add(
+    LInvokevirtual(owner = cls, name = if isMap { "containsKey" } else { "contains" }, params = objPs, ret = JBoolean)
+  )
+  insns.add(LIfne(label = tag + "_found"))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 5))
+  insns.add(LLabel(name = tag + "_scan"))
+  insns.add(LIload(slot = 5))
+  insns.add(LAload(slot = 4))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpge(label = "__ke_f"))
+  insns.add(LAload(slot = 6))
+  insns.add(LAload(slot = 4))
+  insns.add(LIload(slot = 5))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LInvokestatic(owner = owner, name = keyEqHelperName(), params = eqPs, ret = JBoolean))
+  insns.add(LIfne(label = tag + "_hit"))
+  insns.add(LIinc(slot = 5, delta = 1))
+  insns.add(LGoto(label = tag + "_scan"))
+  insns.add(LLabel(name = tag + "_hit"))
+  insns.add(LAload(slot = 4))
+  insns.add(LIload(slot = 5))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LAstoreAs(slot = 7, className = "java/lang/Object"))
+  // A scan hit that `a` itself holds was already claimed by that member, so
+  // two members of `a` (`0.0` and `-0.0`) cannot share one match.
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = cls))
+  insns.add(LAload(slot = 7))
+  insns.add(
+    LInvokevirtual(owner = cls, name = if isMap { "containsKey" } else { "contains" }, params = objPs, ret = JBoolean)
+  )
+  insns.add(LIfne(label = "__ke_f"))
+  insns.add(LLabel(name = tag + "_found"))
+  if isMap {
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = cls))
+    insns.add(LAload(slot = 6))
+    insns.add(LInvokevirtual(owner = cls, name = "get", params = objPs, ret = objT))
+    insns.add(LAload(slot = 1))
+    insns.add(LCheckcast(className = cls))
+    insns.add(LAload(slot = 7))
+    insns.add(LInvokevirtual(owner = cls, name = "get", params = objPs, ret = objT))
+    insns.add(LInvokestatic(owner = owner, name = keyEqHelperName(), params = eqPs, ret = JBoolean))
+    insns.add(LIfeq(label = "__ke_f"))
+  }
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = tag + "_loop"))
 }
 
 // When `a` (slot 0) is a `boxCls`, return the scalar helper's verdict on it
