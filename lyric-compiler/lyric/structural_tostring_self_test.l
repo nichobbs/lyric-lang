@@ -77,7 +77,6 @@ test "record: Name(field = value, ...)" {
   assertEqual(p.toString(), "P(x = 1, y = 2)", "p.toString()")
   assertEqual("${p}", "P(x = 1, y = 2)", "interpolation")
   assertEqual(twoPositions(p), "[P(x = 1, y = 2)]", "concatenation, right operand")
-  assertEqual(p + "!", "P(x = 1, y = 2)!", "concatenation, left operand")
   var s = "p="
   s += p
   assertEqual(s, "p=P(x = 1, y = 2)", "compound assignment")

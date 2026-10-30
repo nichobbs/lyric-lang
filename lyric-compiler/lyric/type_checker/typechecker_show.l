@@ -72,7 +72,7 @@ func showHelperName(tbl: in SymbolTable, t: in Type): Option[String] {
   if showKind(tbl, ut) == 0 {
     return None
   }
-  val key = renderType(ut)
+  val key = showTypeKey(tbl, ut)
   match mapGet(tbl.showHelperNames, key) {
     case Some(n) -> return Some(value = n)
     case None -> ()
@@ -82,7 +82,7 @@ func showHelperName(tbl: in SymbolTable, t: in Type): Option[String] {
     case Some(x) -> x
     case None -> return None
   }
-  val name = "__lyric_str_" + toString(tbl.showHelperNames.count)
+  val name = "__lyric_str_" + key
   tbl.showHelperNames.add(key, name)
   val stmts = showHelperBody(tbl, ut, te, sp)
   val params: List[Param] = newList()
@@ -645,4 +645,68 @@ func showEnumCasePath(te: in TypeExpr, typeName: in String, caseName: in String,
   }
   segs.add(caseName)
   covPath(segs, sp)
+}
+
+// The name-safe text identifying `t` by its declaring package and name, the
+// same in every check of the same program, so a specialisation re-checked on
+// its own (`Lyric.Pipeline.recheckSpecs`) names the function rendering a type
+// as the file's own check does and the two are one function.  Letters and
+// digits are kept; every run of other characters becomes one `_` (a `__` in
+// a name marks a monomorphised copy).
+func showTypeKey(tbl: in SymbolTable, t: in Type): String {
+  showSanitize(showTypeText(tbl, t))
+}
+
+func showTypeText(tbl: in SymbolTable, t: in Type): String {
+  match unrefine(t) {
+    case TyPrim(pt) -> primName(pt)
+    case TyTuple(elems) -> "Tuple" + showTypeListText(tbl, elems)
+    case TySlice(e) -> "Slice" + showTypeListText(tbl, showSingleType(e))
+    case TyUser(tid, name, args) -> {
+      val pkg = match symTableTypeSymbolOf(tbl, tid) {
+        case Some(sym) -> sym.originPackage
+        case None -> ""
+      }
+      pkg + "." + name + (if args.count > 0 { showTypeListText(tbl, args) } else { "" })
+    }
+    case other -> renderType(other)
+  }
+}
+
+func showSingleType(t: in Type): List[Type] {
+  val l: List[Type] = newList()
+  l.add(t)
+  l
+}
+
+func showTypeListText(tbl: in SymbolTable, ts: in List[Type]): String {
+  var out = "("
+  var i = 0
+  while i < ts.count {
+    if i > 0 {
+      out = out + ","
+    }
+    out = out + showTypeText(tbl, ts[i])
+    i = i + 1
+  }
+  out + ")"
+}
+
+func showSanitize(text: in String): String {
+  var out = ""
+  var lastSep = false
+  var i = 0
+  while i < text.length {
+    val c = text[i]
+    val keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
+    if keep {
+      out = out + c.toString()
+      lastSep = false
+    } else if not lastSep {
+      out = out + "_"
+      lastSep = true
+    }
+    i = i + 1
+  }
+  out
 }

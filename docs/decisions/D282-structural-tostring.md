@@ -84,10 +84,13 @@ contain an identity hash that changes between runs. docs/01 did not say what
 
 8. **Generics.** A generic function is checked once, over its type parameters,
    so `toString(x)` for `x: T` is a site only where the checker knows `T`. A
-   specialisation that binds a type parameter to one of these types is checked
-   again (as it is for D172 item 4 and unsigned operands), and its stringified
-   operands are rendered. A generic declared in another package that is
-   specialised in a consumer is covered by the same re-check.
+   specialisation, in the package that declares the generic, that binds a type
+   parameter to one of these types is checked again (as it is for D172 item 4
+   and unsigned operands), and its stringified operands are rendered. A generic
+   declared in *another* package is checked in that package's scope, where the
+   consumer's type is not visible, so a `toString` of a `T` inside it reaches
+   the host's text. That includes the standard library's generics. This is a
+   known gap, not a choice; it is tracked in a follow-up issue.
 
 ## Rationale
 
