@@ -145,7 +145,7 @@ func makeVerifierBytes(): List[Byte] {
   emitInvokevirtual(asm, println)
 
   emitGetstatic(asm, sysOut)
-  emitPushString(asm, "utf8=caf\u{e9} \u{4e2d}\u{6587}")
+  emitPushString(asm, "utf8=café 中文")
   emitInvokevirtual(asm, println)
 
   emitReturn(asm)

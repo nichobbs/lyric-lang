@@ -88,7 +88,12 @@ func emitSetUtf8Stream(asm: in MethodAssembler, pool: in Pool, fdField: in Strin
   val psClass = poolClass(pool, "java/io/PrintStream")
   val fosClass = poolClass(pool, "java/io/FileOutputStream")
   val fosInit = poolMethodref(pool, "java/io/FileOutputStream", "<init>", "(Ljava/io/FileDescriptor;)V")
-  val psInit = poolMethodref(pool, "java/io/PrintStream", "<init>", "(Ljava/io/OutputStream;ZLjava/nio/charset/Charset;)V")
+  val psInit = poolMethodref(
+    pool,
+    "java/io/PrintStream",
+    "<init>",
+    "(Ljava/io/OutputStream;ZLjava/nio/charset/Charset;)V"
+  )
   val fd = poolFieldref(pool, "java/io/FileDescriptor", fdField, "Ljava/io/FileDescriptor;")
   val utf8 = poolFieldref(pool, "java/nio/charset/StandardCharsets", "UTF_8", "Ljava/nio/charset/Charset;")
   val set = poolMethodref(pool, "java/lang/System", setter, "(Ljava/io/PrintStream;)V")
