@@ -525,21 +525,6 @@ pub func fromInt(n: in Int): String {
 // views that can see every position: raw code units and Unicode scalar
 // values (code points). Indices and `s.length` count code units: UTF-16
 // units on .NET and the JVM, UTF-8 bytes on native (D-N-006).
-//
-// The `Option[Char]` postconditions below go through the non-generic
-// `noChar`: the stage-0 seed compiler that builds the stdlib cannot infer
-// `isNone`'s type argument from `result` inside a contract clause (#7466,
-// fixed in the compiler itself; the seed predates the fix), and
-// `--target native` does not yet lower the explicit `isNone[Char](result)`
-// spelling.
-@pure
-func noChar(o: in Option[Char]): Bool {
-  match o {
-    case Some(_) -> false
-    case None -> true
-  }
-}
-
 /// The code unit at `index` as an `Int`: a UTF-16 unit (0..65535, surrogate
 /// halves included) on .NET and the JVM, a UTF-8 byte (0..255) on native.
 /// The free-function form of `s.codeUnitAt(index)`.
@@ -689,7 +674,7 @@ func isCharBoundaryUnit(s: in String, index: in Int): Bool {
 @pure
 @stable(since = "1.0")
 pub func charAt(s: in String, index: in Int): Option[Char]
-  ensures: (index >= 0 and index < s.length) or noChar(result)
+  ensures: (index >= 0 and index < s.length) or isNone(result)
 {
   // Bound with its type: `--target native` cannot infer `None`'s type
   // argument from the declared return type once the `ensures` clause has
@@ -726,7 +711,7 @@ pub func charAtOrReplacement(s: in String, index: in Int): Char
 @pure
 @stable(since = "1.0")
 pub func first(s: in String): Option[Char]
-  ensures: s.length > 0 or noChar(result)
+  ensures: s.length > 0 or isNone(result)
 {
   charAt(s, 0)
 }
@@ -737,7 +722,7 @@ pub func first(s: in String): Option[Char]
 @pure
 @stable(since = "1.0")
 pub func last(s: in String): Option[Char]
-  ensures: s.length > 0 or noChar(result)
+  ensures: s.length > 0 or isNone(result)
 {
   charAt(s, s.length - 1)
 }

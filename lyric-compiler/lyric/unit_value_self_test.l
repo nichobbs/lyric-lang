@@ -1,6 +1,6 @@
 //! unit_value_self_test.l -- `Unit` is an ordinary type with exactly one value
 //! on every target (#8236, #8266; repo-owner decision recorded in
-//! docs/decisions/D209-unit-is-an-ordinary-value.md).
+//! docs/decisions/D271-unit-is-an-ordinary-value.md).
 //!
 //! Before the fix a `Unit`-typed parameter, local, field, or type argument was
 //! lowered as "no value": dotnet emitted `InvalidProgramException` /

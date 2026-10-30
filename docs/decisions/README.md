@@ -20,9 +20,11 @@ it.)
 
 ## Adding a decision
 
-1. Pick the next number: one past the highest `D-progress-N` across **both**
-   this directory and the archive (`docs/03-decision-log.md`). At time of
-   writing the archive ends at `D-progress-885`, so the next is `886`.
+1. Pick the next number: one past the highest id across **all** of: this
+   directory on `main`, the archive (`docs/03-decision-log.md`), and every open
+   PR that adds a file here (search the open PRs for `docs/decisions/`). Ids use
+   the same prefix family as their neighbours (`D<n>` for design decisions,
+   `D-progress-<n>` for the legacy progress series).
 2. Create `docs/decisions/D-progress-<zero-padded-4-digit-N>-<kebab-slug>.md`,
    e.g. `docs/decisions/D-progress-0886-graph-service-retry-outbox.md`.
 3. Inside, use a single top-level heading that carries the id and title, then
@@ -43,12 +45,21 @@ it.)
 ## Numbering races
 
 Numbers are allocated by convention, not by a lock, so two PRs opened close
-together can both pick `886`. Because their slugs differ, they land as two
-*different* files (both kept — no conflict); the shared number is cosmetic (the
-ids are referenced textually, never by a unique constraint). Reconcile a
-duplicate opportunistically by renaming the later entry to the next free number
-and updating any inbound cross-reference. This is strictly better than the old
-guaranteed append conflict on every PR.
+together can pick the same id. Because slugs differ both files would land, but
+ids are referenced textually (`See D207`), so a shared id makes every such
+reference ambiguous. CI therefore enforces uniqueness:
+`scripts/ci/check-decision-ids.sh` (run in the `actionlint` job) fails when two
+files here share an id.
+
+If it fails on your PR, renumber your entry to the next free id: rename the
+file, change the id in its heading, and update every reference to it in `docs/`,
+`book/`, code comments and scripts. Read each reference first: while the id was
+shared, some of the existing references may mean the other entry.
+
+`scripts/ci/decision-id-allowlist.txt` lists the ids that were already
+duplicated when the check landed (the `D-progress-NNNN` series, #7141), with the
+most files each may keep. It can only shrink: the check also fails on a listed
+id that no longer has duplicates, so remove its line when you reconcile it.
 
 ## Superseding an archive decision
 

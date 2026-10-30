@@ -206,17 +206,13 @@ pub func isAscii(c: in Char): Bool {
   Host.hostCharToInt(c) <= 127
 }
 
-// `isNone[Int](result)` names the type argument explicitly: the stage-0
-// seed compiler that builds the stdlib cannot infer it from `result` inside a
-// contract clause (#7466, fixed in the compiler itself; the seed predates the
-// fix).
 /// The decimal value of an ASCII digit '0'..'9' (code points 48..57), or
 /// `None` for other chars. Uses integer subtraction so the prover can verify
 /// the range directly.
 @pure
 @stable(since = "1.0")
 pub func digitValue(c: in Char): Option[Int]
-  ensures: isNone[Int](result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 9)
+  ensures: isNone(result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 9)
 {
   val cp = Host.hostCharToInt(c)
   if cp >= 48 and cp <= 57 {
@@ -231,7 +227,7 @@ pub func digitValue(c: in Char): Option[Int]
 @pure
 @stable(since = "1.0")
 pub func hexDigitValue(c: in Char): Option[Int]
-  ensures: isNone[Int](result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 15)
+  ensures: isNone(result) or (unwrapOr(result, 0 - 1) >= 0 and unwrapOr(result, 0 - 1) <= 15)
 {
   // '0'..'9' = 48..57, 'a'..'f' = 97..102, 'A'..'F' = 65..70.
   val cp = Host.hostCharToInt(c)

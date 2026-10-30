@@ -390,6 +390,14 @@ jobs:
       - name: Check ci.yml workflow-file size (#6387 guardrail)
         run: bash scripts/ci/check-workflow-size.sh
 
+      # Guardrail for #8537/#7141: parallel PRs claim the same decision id.
+      # Fails when two files in docs/decisions/ share an id outside the
+      # shrinking allow-list.
+      - name: Check decision ids are unique
+        run: |
+          bash scripts/ci/check-decision-ids-self-test.sh
+          bash scripts/ci/check-decision-ids.sh
+
       # Guardrail for #6997: the has_msil_changes/has_jvm_changes/
       # has_native_changes backend-split regexes in
       # scripts/ci/detect-code-changes.sh fail *silently* when wrong -- the
@@ -6936,6 +6944,7 @@ jobs:
           overall=0
           "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml || overall=$?
           "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features local || overall=$?
+          "$LYRIC_CLI_PATH" test --manifest lyric-lambda/lyric.toml --features web || overall=$?
           exit "$overall"
 
       - name: Run tests (web)

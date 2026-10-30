@@ -1,9 +1,10 @@
 //! Contract examples: requires, ensures, invariants, assert, old().
 package Examples.Contracts
+
 import Std.Core
+import Std.Collections
 
 // ─── Basic precondition and postcondition ────────────────────────────────────
-
 pub func divide(n: in Int, d: in Int): Int
   requires: d != 0
   ensures: result * d + (n % d) == n
@@ -12,75 +13,99 @@ pub func divide(n: in Int, d: in Int): Int
 }
 
 // ─── Multiple requires clauses ───────────────────────────────────────────────
+pub type Cents = Long range 0 ..= 100_000_000_000
 
-pub func transfer(from: in Account, to: in Account, amount: in Amount): Result[TransferReceipt, TransferError]
-  requires: from.id != to.id
+pub record Account {
+  pub id: Long
+  pub balance: Cents
+}
+
+pub record TransferReceipt {
+  pub fromId: Long
+  pub toId: Long
+  pub amount: Long
+}
+
+pub union TransferError {
+  case InsufficientFunds(needed: Long)
+}
+
+pub func transfer(source: in Account, target: in Account, amount: in Long): Result[TransferReceipt, TransferError]
+  requires: source.id != target.id
   requires: amount > 0
 {
-  // ...
+  if source.balance.toLong() < amount {
+    return Err(error = InsufficientFunds(needed = amount))
+  }
+  return Ok(value = TransferReceipt(fromId = source.id, toId = target.id, amount = amount))
 }
 
 // ─── ensures with implies ────────────────────────────────────────────────────
+pub union AccountError {
+  case Overdrawn
+}
 
-pub func debit(a: in Account, amount: in Amount): Result[Account, AccountError]
-  ensures: result.isOk implies result.value.balance == a.balance - amountValue(amount)
-  ensures: result.isErr implies a.balance < amountValue(amount)
+pub func debit(a: in Account, amount: in Long): Result[Account, AccountError]
+  requires: amount > 0
+  ensures: result.isOk implies a.balance.toLong() >= amount
+  ensures: result.isErr implies a.balance.toLong() < amount
 {
-  if a.balance < amountValue(amount) {
-    return Err(InsufficientFunds)
+  if a.balance.toLong() < amount {
+    return Err(error = Overdrawn)
   }
-  return Ok(a.copy(balance = a.balance - amountValue(amount)))
+  return Ok(value = Account(id = a.id, balance = Cents.from(a.balance.toLong() - amount)))
 }
 
 // ─── old() for pre-state in postconditions ───────────────────────────────────
-
-func push(s: inout Stack[T], x: in T): Unit
-  ensures: s.depth == old(s.depth) + 1
-  ensures: s.top() == x
+pub func incr(counter: inout Int): Unit
+  ensures: counter == old(counter) + 1
 {
-  // ...
+  counter = counter + 1
 }
 
 // ─── forall in ensures ───────────────────────────────────────────────────────
-
-pub func nonNegativeAll(xs: in slice[Int]): slice[Int]
+pub func nonNegativeOnly(xs: in slice[Int]): List[Int]
   ensures: forall (x: Int) where result.contains(x) implies x >= 0
 {
-  return xs.filter { x -> x >= 0 }
+  val kept: List[Int] = newList()
+  for x in xs {
+    if x >= 0 {
+      kept.add(x)
+    }
+  }
+  return kept
 }
 
 // ─── assert vs requires ──────────────────────────────────────────────────────
-
-pub func processItems(items: in slice[Item]): slice[Result[Processed, ItemError]]
-  requires: items.length > 0              // caller obligation: PreconditionViolated if broken
+pub func doubleAll(items: in slice[Int]): List[Int]
+  requires: items.length > 0
 {
-  var results: slice[Result[Processed, ItemError]] = []
+  // caller obligation: PreconditionViolated if broken
+  val results: List[Int] = newList()
   for item in items {
-    val processed = transform(item)
-    assert(processed.id == item.id, "transform must preserve id")  // internal: AssertionFailed
-    results = results.append(Ok(processed))
+    val doubled = item * 2
+    assert(doubled - item == item, "doubling must add the item once")  // internal: AssertionFailed
+    results.add(doubled)
   }
   return results
 }
 
 // ─── opaque type with invariant ──────────────────────────────────────────────
-
-pub opaque type Account {
-  balance: Cents
+pub opaque type Wallet {
+  balance: Long
   invariant: balance >= 0 and balance <= 1_000_000_000_00
-
-  pub func make(initial: in Cents): Result[Account, ContractViolation] {
-    if initial < 0 or initial > 1_000_000_000_00 {
-      return Err(ContractViolation("balance out of range"))
-    }
-    return Ok(Account(balance = initial))
-  }
-
-  pub func balance(self: in Account): Cents = self.balance
 }
 
-// ─── @proof_required package annotation (declared at file top) ───────────────
+pub func makeWallet(initial: in Long): Result[Wallet, String] {
+  if initial < 0 or initial > 1_000_000_000_00 {
+    return Err(error = "balance out of range")
+  }
+  return Ok(value = Wallet(balance = initial))
+}
 
+pub func walletBalance(self: in Wallet): Long = self.balance
+
+// ─── @proof_required package annotation (declared at file top) ───────────────
 // @proof_required
 // package Money
 //
@@ -89,10 +114,36 @@ pub opaque type Account {
 // Run: lyric prove money.l
 //      lyric prove --explain --goal 0 money.l
 //      lyric prove --json money.l
+func main(): Unit {
+  println("divide: ${toString(divide(17, 5))}")
 
-// ─── @axiom for trusted extern boundaries ────────────────────────────────────
+  val a = Account(id = 1, balance = Cents.from(500))
+  val b = Account(id = 2, balance = Cents.from(0))
+  match transfer(a, b, 200) {
+    case Ok(receipt) -> println(
+      "transferred ${toString(receipt.amount)} from ${toString(receipt.fromId)} to ${toString(receipt.toId)}"
+    )
+    case Err(InsufficientFunds(needed)) -> println("needs ${toString(needed)}")
+  }
+  match debit(a, 900) {
+    case Ok(_) -> println("debited")
+    case Err(_) -> println("overdrawn")
+  }
 
-// @axiom("BCL System.Math spec")
-// extern func mathAbs(n: in Int): Int
-//   ensures: result >= 0
-//   ensures: result == n or result == -n
+  var n = 41
+  incr(n)
+  println("incr: ${toString(n)}")
+
+  val kept = nonNegativeOnly([3, -1, 4, -1, 5])
+  println("kept ${toString(kept.count)}")
+  println("doubled ${toString(doubleAll([1, 2, 3]).count)}")
+
+  match makeWallet(250) {
+    case Ok(w) -> println("wallet ${toString(walletBalance(w))}")
+    case Err(e) -> println("wallet error: ${e}")
+  }
+  match makeWallet(-1) {
+    case Ok(_) -> println("unexpected")
+    case Err(e) -> println("wallet error: ${e}")
+  }
+}

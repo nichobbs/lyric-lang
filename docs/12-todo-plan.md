@@ -143,7 +143,7 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   the graphics libraries and their examples (D219).
 - **Private helpers of a generic.**  A `pub` generic carries the private generics it
   reaches on every target (D215), and so does a self-contained private non-generic
-  helper (D231); one that reads module state, names a private type or has a
+  helper (D273); one that reads module state, names a private type or has a
   contract clause is still T0123 on dotnet and the JVM (docs/01 §3.3, #8546).
 - **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
   tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
@@ -166,7 +166,7 @@ left is verification and release work, tracked in `docs/36`:
 ## Tier 5 — feature work, in dependency order
 
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
-   pool (D202) and the native `lyric-ui` host (D203, D204) are implemented on
+   pool (D202) and the native `lyric-ui` host (D203, D268) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
    Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32

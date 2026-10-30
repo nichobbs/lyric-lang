@@ -16,16 +16,14 @@
 //! whichever backend feature is active) to run it against a real engine;
 //! otherwise it asserts the clean-skip path.
 //!
-//! Only the default feature set (`elasticsearch`) is exercised by this
-//! file's precise, backend-specific assertions, matching how CI invokes
-//! `lyric test` (no `--features` override — see .github/workflows/ci.yml).
-//! Tests that need to work under either backend feature use the
-//! `@cfg`-gated-helper-function dispatch trick already established by this
-//! file before this change (`probeConnect`): a plain (non-`test`) function
-//! is compiled differently per active feature, and the `test` block that
-//! calls it stays unconditional — because `test` blocks don't reliably
-//! survive `@cfg` erasure through test synthesis (observed to compile into
-//! an invalid MSIL program when gated directly).
+//! The backend-specific assertions run under `--features elasticsearch` (the
+//! default) and `--features meilisearch`; CI runs both (see
+//! .github/workflows/ci.yml).
+//! Tests of one backend's request or response handling carry
+//! `@cfg(feature = "elasticsearch")` or `@cfg(feature = "meilisearch")` and are
+//! absent from builds with the other feature. Tests that run against either
+//! backend call a feature-selected helper that names the backend to use
+//! (`probeConnect`).
 @test_module
 package Search
 
@@ -208,18 +206,12 @@ func probeEsFilterEq(): String {
   esFilterClause(makeFilter("status", "active"))
 }
 
-@cfg(feature = "meilisearch")
-func probeEsFilterEq(): String {
-  ""
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch filter clause (eq): maps to a term query" {
   val clause = probeEsFilterEq()
-  if clause.length > 0 {
-    assertTrue(Str.contains(clause, "\"term\""), "eq operator maps to term query")
-    assertTrue(Str.contains(clause, "status"), "clause references the field")
-    assertTrue(Str.contains(clause, "active"), "clause references the value")
-  }
+  assertTrue(Str.contains(clause, "\"term\""), "eq operator maps to term query")
+  assertTrue(Str.contains(clause, "status"), "clause references the field")
+  assertTrue(Str.contains(clause, "active"), "clause references the value")
 }
 
 @cfg(feature = "elasticsearch")
@@ -227,17 +219,11 @@ func probeEsFilterRange(): String {
   esFilterClause(SearchFilter(field = "price", value = "10", operator = "gte"))
 }
 
-@cfg(feature = "meilisearch")
-func probeEsFilterRange(): String {
-  ""
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch filter clause (gte): maps to a range query" {
   val clause = probeEsFilterRange()
-  if clause.length > 0 {
-    assertTrue(Str.contains(clause, "\"range\""), "gte operator maps to range query")
-    assertTrue(Str.contains(clause, "\"gte\""), "range clause carries the gte bound")
-  }
+  assertTrue(Str.contains(clause, "\"range\""), "gte operator maps to range query")
+  assertTrue(Str.contains(clause, "\"gte\""), "range clause carries the gte bound")
 }
 
 @cfg(feature = "elasticsearch")
@@ -245,11 +231,7 @@ func probeEsQueryClauseEmpty(): String {
   esQueryClause("")
 }
 
-@cfg(feature = "meilisearch")
-func probeEsQueryClauseEmpty(): String {
-  "{\"match_all\":{}}"
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch query clause: empty query text maps to match_all" {
   assertEqual(
     probeEsQueryClauseEmpty(),
@@ -269,24 +251,18 @@ func probeEsQueryClauseLuceneShaped(): String {
   esQueryClause("title:evil OR *:* AND user.password:*")
 }
 
-@cfg(feature = "meilisearch")
-func probeEsQueryClauseLuceneShaped(): String {
-  ""
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch query clause: never emits query_string (Lucene injection/DoS surface)" {
   val clause = probeEsQueryClauseLuceneShaped()
-  if clause.length > 0 {
-    assertTrue(
-      not Str.contains(clause, "query_string"),
-      "query_string must never be emitted for user-supplied query text"
-    )
-    assertTrue(Str.contains(clause, "\"multi_match\""), "the default query clause is multi_match")
-    assertTrue(
-      Str.contains(clause, "title:evil OR *:* AND user.password:*"),
-      "Lucene-operator-shaped input is carried as a literal value, not parsed as syntax"
-    )
-  }
+  assertTrue(
+    not Str.contains(clause, "query_string"),
+    "query_string must never be emitted for user-supplied query text"
+  )
+  assertTrue(Str.contains(clause, "\"multi_match\""), "the default query clause is multi_match")
+  assertTrue(
+    Str.contains(clause, "title:evil OR *:* AND user.password:*"),
+    "Lucene-operator-shaped input is carried as a literal value, not parsed as syntax"
+  )
 }
 
 @cfg(feature = "elasticsearch")
@@ -295,26 +271,20 @@ func probeEsBuildSearchBody(): String {
   esBuildSearchBody(q)
 }
 
-@cfg(feature = "meilisearch")
-func probeEsBuildSearchBody(): String {
-  ""
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch search body: carries query text, from, and size" {
   val body = probeEsBuildSearchBody()
-  if body.length > 0 {
-    assertTrue(Str.contains(body, "widget"), "query text appears in body")
-    assertTrue(Str.contains(body, "\"from\":0"), "default from appears in body")
-    assertTrue(Str.contains(body, "\"size\":10"), "default size appears in body")
-    assertTrue(
-      Str.contains(body, "\"multi_match\""),
-      "non-empty query uses multi_match, not the Lucene-syntax query_string"
-    )
-    assertTrue(
-      Str.contains(body, "\"fields\":[\"*\"]"),
-      "multi_match searches every field, matching query_string's prior 'search everything' behaviour"
-    )
-  }
+  assertTrue(Str.contains(body, "widget"), "query text appears in body")
+  assertTrue(Str.contains(body, "\"from\":0"), "default from appears in body")
+  assertTrue(Str.contains(body, "\"size\":10"), "default size appears in body")
+  assertTrue(
+    Str.contains(body, "\"multi_match\""),
+    "non-empty query uses multi_match, not the Lucene-syntax query_string"
+  )
+  assertTrue(
+    Str.contains(body, "\"fields\":[\"*\"]"),
+    "multi_match searches every field, matching query_string's prior 'search everything' behaviour"
+  )
 }
 
 @cfg(feature = "elasticsearch")
@@ -324,17 +294,11 @@ func probeEsFieldsToJsonObject(): String {
   esFieldsToJsonObject(fields)
 }
 
-@cfg(feature = "meilisearch")
-func probeEsFieldsToJsonObject(): String {
-  ""
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch document body: fields map becomes a flat JSON object" {
   val body = probeEsFieldsToJsonObject()
-  if body.length > 0 {
-    assertTrue(Str.contains(body, "\"name\""), "field name is present")
-    assertTrue(Str.contains(body, "\"Widget\""), "field value is present")
-  }
+  assertTrue(Str.contains(body, "\"name\""), "field name is present")
+  assertTrue(Str.contains(body, "\"Widget\""), "field value is present")
 }
 
 // ─── Elasticsearch: response parsing against canned JSON ────────────────────
@@ -343,36 +307,23 @@ func esIndexResultJson(): String {
   "{\"_id\":\"p-1\",\"_version\":3,\"result\":\"updated\"}"
 }
 
-@cfg(feature = "meilisearch")
-func esIndexResultJson(): String {
-  "{}"
-}
-
 // `esParseIndexResult`/`esParseSearchResponse`/`esParseSuggestResponse`
 // are defined in `elasticsearch_backend.l`, which is entirely `@cfg`-erased
-// when the `elasticsearch` feature is inactive — calling them
-// unconditionally would reference a symbol that doesn't exist in a
-// `--features meilisearch` build. Route through the same `@cfg`-paired-
-// helper-function dispatch trick used for the Meilisearch equivalents.
+// when the `elasticsearch` feature is inactive, so the tests that call them
+// are gated on that feature too.
 @cfg(feature = "elasticsearch")
 func probeEsParseIndexResult(root: in JsonElement): IndexResult {
   esParseIndexResult(root)
 }
 
-@cfg(feature = "meilisearch")
-func probeEsParseIndexResult(root: in JsonElement): IndexResult {
-  IndexResult(id = "", version = 0i64, status = "")
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch: parses a real index-response shape" {
   val doc = parseJson(esIndexResultJson())
   val result = probeEsParseIndexResult(rootElement(doc))
   disposeJson(doc)
-  if result.id.length > 0 {
-    assertEqual(result.id, "p-1", "id is read from _id")
-    assertEqualLong(result.version, 3i64, "version is read from _version")
-    assertEqual(result.status, "updated", "status is read from result")
-  }
+  assertEqual(result.id, "p-1", "id is read from _id")
+  assertEqualLong(result.version, 3i64, "version is read from _version")
+  assertEqual(result.status, "updated", "status is read from result")
 }
 
 @cfg(feature = "elasticsearch")
@@ -384,43 +335,32 @@ func esSearchResponseJson(): String {
     "]}}"
 }
 
-@cfg(feature = "meilisearch")
-func esSearchResponseJson(): String {
-  "{}"
-}
-
 @cfg(feature = "elasticsearch")
 func probeEsParseSearchResponse(root: in JsonElement): SearchResult {
   esParseSearchResponse(root)
 }
 
-@cfg(feature = "meilisearch")
-func probeEsParseSearchResponse(root: in JsonElement): SearchResult {
-  SearchResult(total = 0i64, hits = [], tookMs = 0, scrollId = None)
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch: parses a real search-response shape, including highlights" {
   val json = esSearchResponseJson()
   val doc = parseJson(json)
   val result = probeEsParseSearchResponse(rootElement(doc))
   disposeJson(doc)
-  if json.length > 2 {
-    assertEqualInt(result.tookMs, 7, "tookMs is read from took")
-    assertEqualLong(result.total, 2i64, "total is read from hits.total.value")
-    assertEqualInt(result.hits.length, 2, "both hits are parsed")
-    val first = result.hits[0]
-    assertEqual(first.id, "p-1", "first hit id")
-    assertEqual(first.index, "products", "first hit index")
-    match mapGet(first.source, "name") {
-      case Some(v) -> assertEqual(v, "Widget", "first hit source.name")
-      case None -> assertTrue(false, "first hit source.name must be present")
-    }
-    assertEqualInt(first.highlights.length, 1, "first hit has one highlighted field")
-    assertEqual(first.highlights[0].field, "name", "highlighted field name")
-    assertEqualInt(first.highlights[0].fragments.length, 1, "one highlight fragment")
-    val second = result.hits[1]
-    assertEqualInt(second.highlights.length, 0, "second hit has no highlight object, so no highlights")
+  assertEqualInt(result.tookMs, 7, "tookMs is read from took")
+  assertEqualLong(result.total, 2i64, "total is read from hits.total.value")
+  assertEqualInt(result.hits.length, 2, "both hits are parsed")
+  val first = result.hits[0]
+  assertEqual(first.id, "p-1", "first hit id")
+  assertEqual(first.index, "products", "first hit index")
+  match mapGet(first.source, "name") {
+    case Some(v) -> assertEqual(v, "Widget", "first hit source.name")
+    case None -> assertTrue(false, "first hit source.name must be present")
   }
+  assertEqualInt(first.highlights.length, 1, "first hit has one highlighted field")
+  assertEqual(first.highlights[0].field, "name", "highlighted field name")
+  assertEqualInt(first.highlights[0].fragments.length, 1, "one highlight fragment")
+  val second = result.hits[1]
+  assertEqualInt(second.highlights.length, 0, "second hit has no highlight object, so no highlights")
 }
 
 @cfg(feature = "elasticsearch")
@@ -429,32 +369,21 @@ func esSuggestResponseJson(): String {
     "]}}"
 }
 
-@cfg(feature = "meilisearch")
-func esSuggestResponseJson(): String {
-  "{}"
-}
-
 @cfg(feature = "elasticsearch")
 func probeEsParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
   esParseSuggestResponse(root, field)
 }
 
-@cfg(feature = "meilisearch")
-func probeEsParseSuggestResponse(root: in JsonElement, field: in String): SuggestResult {
-  SuggestResult(suggestions = [], tookMs = 0)
-}
-
+@cfg(feature = "elasticsearch")
 test "elasticsearch: parses a real suggest-response shape" {
   val json = esSuggestResponseJson()
   val doc = parseJson(json)
   val result = probeEsParseSuggestResponse(rootElement(doc), "name")
   disposeJson(doc)
-  if json.length > 2 {
-    assertEqualInt(result.tookMs, 2, "tookMs is read from took")
-    assertEqualInt(result.suggestions.length, 2, "both suggestions are extracted")
-    assertEqual(result.suggestions[0], "Widget", "first suggestion")
-    assertEqual(result.suggestions[1], "Widgetron", "second suggestion")
-  }
+  assertEqualInt(result.tookMs, 2, "tookMs is read from took")
+  assertEqualInt(result.suggestions.length, 2, "both suggestions are extracted")
+  assertEqual(result.suggestions[0], "Widget", "first suggestion")
+  assertEqual(result.suggestions[1], "Widgetron", "second suggestion")
 }
 
 // ─── Meilisearch: request-body construction (feature = "meilisearch") ───────
@@ -463,16 +392,10 @@ func probeMsFilterEq(): String {
   msFilterExpr(makeFilter("status", "active"))
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsFilterEq(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch filter expression (eq): field = 'value'" {
   val expr = probeMsFilterEq()
-  if expr.length > 0 {
-    assertEqual(expr, "status = 'active'", "eq operator maps to field = 'value'")
-  }
+  assertEqual(expr, "status = 'active'", "eq operator maps to field = 'value'")
 }
 
 @cfg(feature = "meilisearch")
@@ -480,16 +403,10 @@ func probeMsFilterContains(): String {
   msFilterExpr(SearchFilter(field = "name", value = "widg", operator = "contains"))
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsFilterContains(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch filter expression (contains): field CONTAINS 'value'" {
   val expr = probeMsFilterContains()
-  if expr.length > 0 {
-    assertEqual(expr, "name CONTAINS 'widg'", "contains operator maps to CONTAINS expression")
-  }
+  assertEqual(expr, "name CONTAINS 'widg'", "contains operator maps to CONTAINS expression")
 }
 
 @cfg(feature = "meilisearch")
@@ -497,16 +414,10 @@ func probeMsQuoteEscaping(): String {
   msQuote("O'Brien")
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsQuoteEscaping(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch msQuote: escapes an embedded single quote" {
   val quoted = probeMsQuoteEscaping()
-  if quoted.length > 0 {
-    assertEqual(quoted, "'O\\'Brien'", "embedded quote is backslash-escaped")
-  }
+  assertEqual(quoted, "'O\\'Brien'", "embedded quote is backslash-escaped")
 }
 
 // #5585: `msQuote` originally escaped only `'`, leaving a literal `\` in
@@ -518,16 +429,10 @@ func probeMsQuoteBackslash(): String {
   msQuote("C:\\evil\\path")
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsQuoteBackslash(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch msQuote: escapes an embedded backslash" {
   val quoted = probeMsQuoteBackslash()
-  if quoted.length > 0 {
-    assertEqual(quoted, "'C:\\\\evil\\\\path'", "every backslash is doubled")
-  }
+  assertEqual(quoted, "'C:\\\\evil\\\\path'", "every backslash is doubled")
 }
 
 @cfg(feature = "meilisearch")
@@ -539,16 +444,10 @@ func probeMsQuoteBackslashAndQuote(): String {
   msQuote("it\\'s a trap")
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsQuoteBackslashAndQuote(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch msQuote: escapes a backslash immediately followed by a quote" {
   val quoted = probeMsQuoteBackslashAndQuote()
-  if quoted.length > 0 {
-    assertEqual(quoted, "'it\\\\\\'s a trap'", "backslash and quote are each escaped independently")
-  }
+  assertEqual(quoted, "'it\\\\\\'s a trap'", "backslash and quote are each escaped independently")
 }
 
 // #5585: an attacker-controlled field name (not just a value) is spliced
@@ -560,17 +459,11 @@ func probeMsFilterUnsafeField(): String {
   msFilterExpr(SearchFilter(field = "status = 'active' OR 1 = 1 OR x", value = "ignored", operator = "eq"))
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsFilterUnsafeField(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch filter expression: an unsafe field name is not spliced into the filter" {
   val expr = probeMsFilterUnsafeField()
-  if expr.length > 0 {
-    assertTrue(not Str.contains(expr, "OR 1 = 1"), "injected boolean logic from the field name must not reach the filter")
-    assertTrue(not Str.contains(expr, "status = 'active' OR"), "the raw unsafe field name must not appear verbatim")
-  }
+  assertTrue(not Str.contains(expr, "OR 1 = 1"), "injected boolean logic from the field name must not reach the filter")
+  assertTrue(not Str.contains(expr, "status = 'active' OR"), "the raw unsafe field name must not appear verbatim")
 }
 
 @cfg(feature = "meilisearch")
@@ -578,16 +471,10 @@ func probeMsFilterSafeFieldWithDot(): String {
   msFilterExpr(SearchFilter(field = "attributes.color", value = "red", operator = "eq"))
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsFilterSafeFieldWithDot(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch filter expression: a dotted nested-attribute field name passes through" {
   val expr = probeMsFilterSafeFieldWithDot()
-  if expr.length > 0 {
-    assertEqual(expr, "attributes.color = 'red'", "a safe, dotted field name is not rejected")
-  }
+  assertEqual(expr, "attributes.color = 'red'", "a safe, dotted field name is not rejected")
 }
 
 @cfg(feature = "meilisearch")
@@ -597,17 +484,11 @@ func probeMsDocToJsonObject(): String {
   msDocToJsonObject(makeDoc("products", "p-1", fields))
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsDocToJsonObject(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch document body: carries an explicit id field plus the document fields" {
   val body = probeMsDocToJsonObject()
-  if body.length > 0 {
-    assertTrue(Str.contains(body, "\"id\":\"p-1\""), "primary key id is embedded")
-    assertTrue(Str.contains(body, "\"name\":\"Widget\""), "document field is embedded")
-  }
+  assertTrue(Str.contains(body, "\"id\":\"p-1\""), "primary key id is embedded")
+  assertTrue(Str.contains(body, "\"name\":\"Widget\""), "document field is embedded")
 }
 
 @cfg(feature = "meilisearch")
@@ -616,19 +497,13 @@ func probeMsBuildSearchBody(): String {
   msBuildSearchBody(q, true)
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsBuildSearchBody(): String {
-  ""
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch search body: carries q, offset, limit, and showRankingScore" {
   val body = probeMsBuildSearchBody()
-  if body.length > 0 {
-    assertTrue(Str.contains(body, "\"q\":\"widget\""), "query text appears as q")
-    assertTrue(Str.contains(body, "\"offset\":0"), "default offset appears in body")
-    assertTrue(Str.contains(body, "\"limit\":10"), "default limit appears in body")
-    assertTrue(Str.contains(body, "\"showRankingScore\":true"), "ranking score is requested")
-  }
+  assertTrue(Str.contains(body, "\"q\":\"widget\""), "query text appears as q")
+  assertTrue(Str.contains(body, "\"offset\":0"), "default offset appears in body")
+  assertTrue(Str.contains(body, "\"limit\":10"), "default limit appears in body")
+  assertTrue(Str.contains(body, "\"showRankingScore\":true"), "ranking score is requested")
 }
 
 // ─── Meilisearch: response parsing against canned JSON ──────────────────────
@@ -639,51 +514,37 @@ func msSearchResponseJson(): String {
     "],\"estimatedTotalHits\":1,\"processingTimeMs\":3}"
 }
 
-@cfg(feature = "elasticsearch")
-func msSearchResponseJson(): String {
-  "{}"
-}
-
-// `msParseSearchResponse` is defined in `meilisearch_backend.l`,
-// which is entirely `@cfg`-erased when the `meilisearch` feature is
-// inactive (the default build is `elasticsearch`-only) — calling it
-// unconditionally would reference a symbol that doesn't exist in this
-// build. Route the call through the same `@cfg`-paired-helper-function
-// dispatch trick used elsewhere in this file.
+// `msParseSearchResponse` lives in `meilisearch_backend.l`, which is entirely
+// `@cfg`-erased when the `meilisearch` feature is inactive, so the test that
+// calls it is gated on that feature too.
 @cfg(feature = "meilisearch")
 func probeMsParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
   msParseSearchResponse(root, index)
 }
 
-@cfg(feature = "elasticsearch")
-func probeMsParseSearchResponse(root: in JsonElement, index: in String): SearchResult {
-  SearchResult(total = 0i64, hits = [], tookMs = 0, scrollId = None)
-}
-
+@cfg(feature = "meilisearch")
 test "meilisearch: parses a real search-response shape, including _formatted highlights" {
   val json = msSearchResponseJson()
   val doc = parseJson(json)
   val result = probeMsParseSearchResponse(rootElement(doc), "products")
   disposeJson(doc)
-  if json.length > 2 {
-    assertEqualInt(result.tookMs, 3, "tookMs is read from processingTimeMs")
-    assertEqualLong(result.total, 1i64, "total is read from estimatedTotalHits")
-    assertEqualInt(result.hits.length, 1, "one hit is parsed")
-    val hit = result.hits[0]
-    assertEqual(hit.id, "p-1", "hit id is read from the document's own id field")
-    assertEqual(hit.index, "products", "hit index is the queried index (Meilisearch responses don't echo it)")
-    match mapGet(hit.source, "name") {
-      case Some(v) -> assertEqual(v, "Widget", "hit source.name")
-      case None -> assertTrue(false, "hit source.name must be present")
-    }
-    match mapGet(hit.source, "_formatted") {
-      case Some(_) -> assertTrue(false, "_formatted must not leak into source")
-      case None -> ()
-    }
-    assertEqualInt(hit.highlights.length, 1, "one highlighted field")
-    assertEqual(hit.highlights[0].field, "name", "highlighted field name")
-    assertEqual(hit.highlights[0].fragments[0], "<em>Widget</em>", "formatted fragment is preserved verbatim")
+  assertEqualInt(result.tookMs, 3, "tookMs is read from processingTimeMs")
+  assertEqualLong(result.total, 1i64, "total is read from estimatedTotalHits")
+  assertEqualInt(result.hits.length, 1, "one hit is parsed")
+  val hit = result.hits[0]
+  assertEqual(hit.id, "p-1", "hit id is read from the document's own id field")
+  assertEqual(hit.index, "products", "hit index is the queried index (Meilisearch responses don't echo it)")
+  match mapGet(hit.source, "name") {
+    case Some(v) -> assertEqual(v, "Widget", "hit source.name")
+    case None -> assertTrue(false, "hit source.name must be present")
   }
+  match mapGet(hit.source, "_formatted") {
+    case Some(_) -> assertTrue(false, "_formatted must not leak into source")
+    case None -> ()
+  }
+  assertEqualInt(hit.highlights.length, 1, "one highlighted field")
+  assertEqual(hit.highlights[0].field, "name", "highlighted field name")
+  assertEqual(hit.highlights[0].fragments[0], "<em>Widget</em>", "formatted fragment is preserved verbatim")
 }
 
 // ─── Wired dispatch (issue #5067 / #5408) ─────────────────────────────────────

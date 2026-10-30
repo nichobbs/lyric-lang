@@ -1,6 +1,6 @@
 # 2026-10-23 - `inout`/`out` parameter batch
 
-Group `inout-out-params`. Decision: D205.
+Group `inout-out-params`. Decision: D269.
 
 - #8255: a default on an `out`/`inout` parameter is T0182 on every target.
 - #8318, #8229: an `out`/`inout` parameter on an `async` function is T0183 on

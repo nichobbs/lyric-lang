@@ -1,4 +1,4 @@
-# D209 - `Unit` is an ordinary type with exactly one value, on every target
+# D271 - `Unit` is an ordinary type with exactly one value, on every target
 
 **Status:** accepted, implemented (#8236, #8266). Decided by the repo owner 2026-10-23.
 

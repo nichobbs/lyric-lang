@@ -4,7 +4,7 @@
 and `paragraph` the `Ui.Widgets` generics, failed with
 `System.ArrayTypeMismatchException` when `v` was added to a
 `List[View[Msg]]` on dotnet. Binding `paragraph(...)` to a typed local first
-worked, and D230 left that workaround in two files.
+worked, and D272 left that workaround in two files.
 
 Two places in `Lyric.Mono`, and the native backend's own inference, lost the type:
 

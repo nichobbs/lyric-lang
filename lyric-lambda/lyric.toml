@@ -126,15 +126,10 @@ output_assembly = "Lambda.dll"
 "Lambda.LambdaTests" = "tests/lambda_tests.l"
 "Lambda.DispatchTests" = "tests/lambda_dispatch_tests.l"
 "Lambda.AspectWeavingTests" = "tests/lambda_aspect_weaving_tests.l"
-# tests/lambda_webbridge_tests.l (needs --features web) and
-# tests/lambda_runtime_loop_tests.l (needs --target jvm --features jvm)
-# are real, complete, manually-verified tests deliberately NOT registered
-# here: this manifest's [project.tests] entries all run together under
-# whatever single --features/--target combination a `lyric test` invocation
-# picks, and there is currently no way to opt one entry out of a build
-# where it doesn't apply without hitting #6868 (a lyric test / @cfg
-# interaction bug found while trying) -- see each file's own header
-# comment for the manual-run recipe and the full explanation.
+# Both suites below gate themselves with a file-level `@cfg`, so they are
+# absent (0 tests, exit 0) from builds where their feature is inactive.
+"Lambda.WebBridgeTests" = "tests/lambda_webbridge_tests.l"
+"Lambda.RuntimeLoopTests" = "tests/lambda_runtime_loop_tests.l"
 
 [dependencies]
 "Lyric.Web"    = { workspace = true }

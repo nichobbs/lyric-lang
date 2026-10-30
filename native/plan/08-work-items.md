@@ -573,7 +573,7 @@ the "do not hardcode a table" directive below. `func` members are locked
 too (the language reference makes both `entry` and `func` exclusive),
 unlike MSIL (`entry`-only) or JVM (no locking, #855/#1833) — native has no
 try/finally-equivalent epilogue, hence the wrapper/inner split rather than
-one lock/unlock pair per return site. `when:` barriers shipped in D175; generic
+one lock/unlock pair per return site. `when:` barriers shipped in D267; generic
 protected types in D176 (#7864: a generic record layout per instantiation plus
 generic lock/unlock wrapper functions). Deferred: invariant re-checking.
 

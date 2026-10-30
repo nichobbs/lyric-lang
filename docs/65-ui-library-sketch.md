@@ -5,7 +5,7 @@ U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
 implemented, as is U6 (prerendered first paint, D152; `Lazy` subtrees,
 D153; the data grid, D154) and U5 on MSIL and JVM (the desktop webview
-host, D162), as are widgets from plugins (§6.5, D230); see
+host, D162), as are widgets from plugins (§6.5, D272); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -375,7 +375,7 @@ change in session storage and shows them again once the next page loads.
 
 ### 6.5 Widgets from plugins
 
-D230 (docs/69 §15.1). A widget the closed set lacks can come from a plugin
+D272 (docs/69 §15.1). A widget the closed set lacks can come from a plugin
 of point `Ui.Plugins.WidgetPlugin`, running out of process (any payload,
 wasm included). Such a widget is a model-view-update component in miniature,
 and it plugs into the screen the way §6.2's embedded components do, with
@@ -875,7 +875,7 @@ shaping, IME and accessibility become the library's problem.
 The native host is `Ui.Native.Run` (`lyric-ui/native/`, D203, `docs/67-native-graphics-plan.md`
 phase G10), on a GPU renderer (`lyric-draw`, `webgpu.h`) and FreeType/HarfBuzz text rather
 than Skia. It is the protocol's client in-process: the same `route(url)` an application gives the web or
-desktop host runs unchanged. Multi-line fields wrap, grow and scroll (D204). The accessibility tree (`Ui.Native.Access`, roles and states as the web runtime assigns ARIA, D214) is built host-free; publishing it through AccessKit (#8489) and macOS are not done.
+desktop host runs unchanged. Multi-line fields wrap, grow and scroll (D268). The accessibility tree (`Ui.Native.Access`, roles and states as the web runtime assigns ARIA, D214) is built host-free; publishing it through AccessKit (#8489) and macOS are not done.
 
 ### 13.4 Server-side rendering for first paint
 
@@ -968,7 +968,7 @@ custom properties (design tokens) with light and dark sets.
 | U5 | Desktop webview host | Implemented on MSIL and JVM (D162, over D158/D161): a webview window on the loopback web host, tested in a real window under Xvfb on both targets; also implemented on native over `libwebview` (`-lwebview`), tested the same way (#7990, #8155) |
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
-| U8 | Widgets from plugins (§6.5) | Implemented (D230): `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`; real plugin processes (dotnet, JVM, native and wasm payloads) with dotnet, JVM and native hosts in `scripts/ci/ui-widget-plugins-e2e.sh` |
+| U8 | Widgets from plugins (§6.5) | Implemented (D272): `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`; real plugin processes (dotnet, JVM, native and wasm payloads) with dotnet, JVM and native hosts in `scripts/ci/ui-widget-plugins-e2e.sh` |
 
 ---
 

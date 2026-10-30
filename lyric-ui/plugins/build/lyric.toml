@@ -1,5 +1,5 @@
 # Ui.Plugins.Build — builders for a lyric-ui widget plugin's view
-# (docs/65 §6.5, D230): the Ui.Widgets builders, producing Ui.Plugins
+# (docs/65 §6.5, D272): the Ui.Widgets builders, producing Ui.Plugins
 # WidgetTree values with message strings in place of messages.
 #
 # A widget plugin depends on it beside Ui.Plugins:

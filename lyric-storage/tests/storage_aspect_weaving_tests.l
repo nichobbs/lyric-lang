@@ -25,18 +25,13 @@
 //! JVM; `lyric-storage`'s is (band J6, #1444/#2669), so this file cannot do
 //! the same without breaking that step.
 //!
-//! `test` blocks (and whole test files) do not reliably respect `@cfg`
-//! erasure through `Lyric.TestSynth` — only ordinary `func`/`aspect` items
-//! do (see the identical workaround in `lyric-search/tests/search_tests.l`
-//! and `lyric-jobs/tests/jobs_tests.l`). So this file gates the ASPECT
-//! INSTANTIATION and its target handler by feature, not the `test` blocks:
-//! `dotnet` gets the real woven path (the load-bearing regression coverage
-//! this test exists for); `jvm` gets a hand-written stand-in under the
-//! identical `storageKeyGuardedHandler` name reproducing ValidateKey's exact
-//! empty-key contract, so the JVM leg of CI's hard-gated `--target jvm` run
-//! stays green without touching the known-broken weaver codegen. Once the
-//! JVM B'-mode `call`-context gap is fixed, delete the `jvm` branch and let
-//! the real aspect run unconditionally on both targets.
+//! The aspect instantiation, its target handler and the tests that exercise
+//! them are all gated to `dotnet` (`@cfg(feature = "dotnet")`); on `jvm` the
+//! tests are absent from the run, so the hard-gated `--target jvm` step stays
+//! green without touching the known-broken weaver codegen. Once the JVM
+//! B'-mode `call`-context gap is fixed, drop the gates and let the real aspect
+//! run on both targets. `Storage.isSafeKey` itself, which the aspect applies, is
+//! covered on both targets by the storage suite.
 @test_module
 package Storage.StorageAspectWeavingTests
 
@@ -55,18 +50,7 @@ pub func storageKeyGuardedHandler(key: in String): Result[String, StorageError] 
   return Ok("stored:" + key)
 }
 
-// JVM stand-in: see module header. Reproduces ValidateKey's key
-// contract (Err(StorageError(code = "INVALID_KEY"))) directly, without
-// instantiating the aspect, so it never touches the crashing B'-mode
-// call-context codegen.
-@cfg(feature = "jvm")
-pub func storageKeyGuardedHandler(key: in String): Result[String, StorageError] {
-  if not isSafeKey(key) {
-    return Err(StorageError(message = "storage key rejected", code = "INVALID_KEY"))
-  }
-  return Ok("stored:" + key)
-}
-
+@cfg(feature = "dotnet")
 test "ValidateKey aspect: an empty key is rejected with INVALID_KEY (was a panic)" {
   match storageKeyGuardedHandler("") {
     case Ok(_) -> assertTrue(false, "empty key must be rejected, not reach the handler")
@@ -74,6 +58,7 @@ test "ValidateKey aspect: an empty key is rejected with INVALID_KEY (was a panic
   }
 }
 
+@cfg(feature = "dotnet")
 test "ValidateKey aspect: a valid key passes through to the handler" {
   match storageKeyGuardedHandler("uploads/photo.jpg") {
     case Ok(v) -> assertEqual(v, "stored:uploads/photo.jpg", "valid key reaches the handler")
@@ -84,6 +69,7 @@ test "ValidateKey aspect: a valid key passes through to the handler" {
 // ValidateKey used to check only empty keys, a leading '/' and "..", and had
 // an env-settable `allowDots` switch that disabled even that; it now applies
 // `Storage.isSafeKey` in full (#7242).
+@cfg(feature = "dotnet")
 test "ValidateKey aspect: every key isSafeKey rejects is rejected before the handler" {
   val bad = ["../etc/passwd", "%2e%2e/etc", "%252e%252e/etc", "a//b", "a/./b", "dir/", "x.meta.json", "a\u{0001}b"]
   for k in bad {

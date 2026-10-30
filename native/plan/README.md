@@ -34,7 +34,7 @@ non-generic `impl I for Record`, ASan-verified).  Protected types (N3.4)
 SHIPPED in D-progress-573 (D-N-017): a record-shaped heap object with a
 trailing heap-buffer mutex field, `entry`/`func` members both locking via
 a codegen-synthesised lock/unlock wrapper around a desugared inner body,
-ASan-verified.  N3 is complete (`when:` barriers shipped in D175 and generic
+ASan-verified.  N3 is complete (`when:` barriers shipped in D267 and generic
 protected types in D176; invariant re-checking remains deferred, tracked in D-N-017).
 
 Phase N4 is COMPLETE (D-progress-540 shipped N4.1/N4.6 and the

@@ -1,6 +1,6 @@
 # Contract and range soundness batch (#7900, #7901, #8145, #8226, #8331, #7410, #7529, #7436)
 
-See D207 for the decisions.
+See D270 for the decisions.
 
 - **Range bounds fit the base type** (T0190, #7900): `typechecker_resolver.l`
   `checkRangeBoundsFitBase`, called for inline refinements and named subtypes.

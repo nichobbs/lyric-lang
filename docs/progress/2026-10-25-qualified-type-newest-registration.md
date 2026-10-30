@@ -15,5 +15,5 @@ newest entry.
 `resolveTypePath`'s owner-qualified override now scans newest-first, like
 every other lookup. The type-checker self-test registers a package twice and
 checks that an alias-qualified annotation, its constructor and a parameter of
-the package agree. `lyric-ui/plugins/build/tests/build_tests.l` (D230) is back
+the package agree. `lyric-ui/plugins/build/tests/build_tests.l` (D272) is back
 to the `B.Choice` spelling.

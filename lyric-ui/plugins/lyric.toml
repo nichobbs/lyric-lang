@@ -1,5 +1,5 @@
 # Ui.Plugins — the widget plugin point of lyric-ui (docs/69 §15.1,
-# docs/65 §6.5, D230).
+# docs/65 §6.5, D272).
 #
 #   Ui.Plugins  the WidgetPlugin point and its boundary types
 #               (WidgetTree, WidgetStep, WidgetContributions, ...)

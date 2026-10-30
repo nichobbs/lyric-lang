@@ -3594,7 +3594,7 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
         )
       }
     }
-    // The one `Unit` value renders as `()` on every target (D209).
+    // The one `Unit` value renders as `()` on every target (D271).
     case JVoid -> insns.add(LPushString(s = "()"))
     // A void operand left nothing on the stack; silently pushing "" here
     // would mask a type-checker or lowering bug as wrong output (#4685).

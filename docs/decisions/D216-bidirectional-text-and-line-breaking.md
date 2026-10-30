@@ -1,7 +1,7 @@
 # D216 - Bidirectional text and UAX #14 line breaking in the native lyric-ui host
 
 **Status:** accepted, implemented for text areas (docs/67 phase G10, #8410); extends D199 (`lyric-text`) and
-D204 item 3 (wrapped text areas)
+D268 item 3 (wrapped text areas)
 
 ## Decision
 
@@ -29,7 +29,7 @@ D204 item 3 (wrapped text areas)
    sequence), and for a paragraph with right to left letters, Arabic digits or direction controls resolves levels
    once and gives each line its runs (`VisualLine.runs`, `rtl`, `visibleTo`, `width`). Text with none of those, the
    usual case, is answered without a table look-up and every line of it is *plain*: one piece from the left edge, and
-   the numbers of D204 unchanged (the five existing golden frames are byte-identical).
+   the numbers of D268 unchanged (the five existing golden frames are byte-identical).
 4. **A line is a list of pieces in visual order.** `Wrap.linePieces` gives each run its place (a right to left
    paragraph is aligned to the right of the box) and its text in reading order without the spaces at its ends: the
    layout of `lyric-text` drops leading and trailing spaces, so a piece's text is drawn from `textX` and the spaces

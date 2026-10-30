@@ -44,7 +44,7 @@ packages, with its tests.
 | `Ui.Host.Web` | app | server-driven web host over `lyric-web` + `lyric-ws` |
 | `Ui.Host.Desktop` | app | the web host on loopback, shown in a `webview` window |
 | `Ui.Host.Assets` | runtime | the embedded TypeScript runtime and theme (generated) |
-| `Ui.PluginWidgets` | logic, effects, view | widgets from plugins: placements, their transitions and `widgetView` (docs/65 §6.5, D230) |
+| `Ui.PluginWidgets` | logic, effects, view | widgets from plugins: placements, their transitions and `widgetView` (docs/65 §6.5, D272) |
 | `Ui.PluginWidgets.Host` | effects | runs plugin-widget calls (`runWidgetRequest`) and lists the widgets plugins offer |
 
 `Ui.Plugins` (`plugins/`) holds the `WidgetPlugin` point and the
@@ -147,7 +147,7 @@ A `textArea` wraps its text to the box, grows with it up to a limit and scrolls 
 and PageDown move by visual line keeping the column, Home and End go to the edges of the line, and a click
 or drag places the caret by row and column. Lines break at the opportunities of UAX #14, and text in Hebrew, Arabic and other right to left scripts is reordered with UAX #9 (a right to left paragraph is aligned to the right, Left and Right move by screen position, a selection is one band per run; D216). It is built from a host-free core (`Ui.Native.Layout`,
 `Ui.Native.Wrap` and friends, tested on every target) and a painter and window loop. Not done yet:
-accessibility, macOS, bidirectional text in single-line inputs (D203, D204, D216).
+accessibility, macOS, bidirectional text in single-line inputs (D203, D268, D216).
 
 ## A desktop window
 

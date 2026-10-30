@@ -5313,10 +5313,56 @@ func inferMember(
         case None -> {
         }
       }
+      // A bare member of `Std.Core.Result` / `Option` that names none of their
+      // accessors and no function: the member surface of these two is fully
+      // known, so it is a mistake rather than something codegen could resolve.
+      // Lyric has no trailing-lambda call syntax, so `r.mapErr { e -> ... }`
+      // lands here as the bare member `r.mapErr` followed by a block (#8472).
+      match stdCoreMonadName(tbl, recvRaw) {
+        case Some(monad) -> if not isUniversalMethodName(name) and not anyFunctionNamed(sigs, name) {
+          diag.add(
+            errorDiagnostic(
+              "T0113",
+              "no member '" + name + "' on type '" + monad + "' -- a '" + monad + "' has " + monadAccessorList(monad) +
+                "; to call a function pass its arguments in parentheses, `x." +
+                name +
+                "(...)` (there is no trailing-lambda call syntax)",
+              span
+            )
+          )
+          return TyError
+        }
+        case None -> {
+        }
+      }
       maybeUnknownMemberDiag(tbl, sigs, diag, recvRaw, name, span, false)
       TyError
     }
     case _ -> TyError
+  }
+}
+
+// "Result" or "Option" when `recvRaw` is the `Std.Core` type of that name.
+func stdCoreMonadName(tbl: in SymbolTable, recvRaw: in Type): Option[String] {
+  match unrefine(recvRaw) {
+    case TyUser(tid, nm, targs) -> {
+      if nm == "Result" and targs.count == 2 and isStdCoreMonadType(tbl, tid, "Result") {
+        return Some(value = "Result")
+      }
+      if nm == "Option" and targs.count == 1 and isStdCoreMonadType(tbl, tid, "Option") {
+        return Some(value = "Option")
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+func monadAccessorList(monad: in String): String {
+  if monad == "Result" {
+    ".isOk, .isErr, .value and .error"
+  } else {
+    ".isSome, .isNone and .value"
   }
 }
 

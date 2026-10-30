@@ -1,4 +1,4 @@
-# D204 - Follow-ups to the native graphics phases: generic helpers, enum patterns, wrapped text areas
+# D268 - Follow-ups to the native graphics phases: generic helpers, enum patterns, wrapped text areas
 
 **Status:** shipped (#8417, #8421, #8422 part); supersedes the last sentence of D201 ("Not in this slice"), which called `frameLoop` and `drawFrame` `pub` for #8417
 

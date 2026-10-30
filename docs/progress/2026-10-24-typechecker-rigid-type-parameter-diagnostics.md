@@ -1,6 +1,6 @@
 # Type checker: rigid type parameters in more places, T0208 and T0209 (#8332, #8449, #8018, #7786, #7978, #8104)
 
-Worked the `group:typechecker-diagnostics` issues. Decisions in D231.
+Worked the `group:typechecker-diagnostics` issues. Decisions in D274.
 
 - A bare type parameter is rejected where a `Bool` is required: `while`, contract clauses, quantifier guards and bodies
   (T0132) and the operands of `and`/`or`/`not` (T0034) (#8332).

@@ -155,10 +155,10 @@ The Lyric primitives map directly to .NET BCL primitives:
 | `Double` | `System.Double`      |                                      |
 | `Char`   | `System.Text.Rune`   | Unicode scalar value, not UTF-16 surrogate |
 | `String` | `System.String`      | immutable, UTF-16 in memory; UTF-8 only at I/O boundaries |
-| `Unit`   | `void` (return) / `object` holding `null` (every other slot) | see "`Unit`" below (D209) |
+| `Unit`   | `void` (return) / `object` holding `null` (every other slot) | see "`Unit`" below (D271) |
 | `Never`  | (no CLR type)        | uninhabited; functions returning `Never` are emitted with return type `void` and a final `throw`/`unreachable` |
 
-**`Unit` (D209).** `Unit` is an ordinary one-valued type, so a slot that must
+**`Unit` (D271).** `Unit` is an ordinary one-valued type, so a slot that must
 hold it is not `void`. A *return* slot encodes `void` (`ELEMENT_TYPE_VOID`); a
 parameter, a field (record, union case, protected type), a closure-class
 capture field, a lambda parameter and a generic type argument all encode
@@ -702,7 +702,7 @@ user-facing requirement.
 ### 11.4 `inout` and async
 
 An `async` function cannot declare an `out` or `inout` parameter: the type
-checker rejects it (T0183, D205) on every target, so the state-machine
+checker rejects it (T0183, D269) on every target, so the state-machine
 lowering never sees a by-reference parameter and needs no special case.
 
 ### 11.5 Closures and lambdas
