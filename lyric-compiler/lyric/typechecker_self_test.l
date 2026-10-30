@@ -11867,6 +11867,48 @@ test "identical interpolated and if defaults are not T0161 (#8085)" {
   assertEqualInt(countDiagCode(condDiff, "T0161"), 1, "a different if: " + diagCodesOf(condDiff))
 }
 
+// #8100: T0161 compares what the two defaults mean, not how they are written.
+// Equal constants written differently are the same default; the same name for
+// different constants of two packages is not.
+test "T0161 compares defaults by folded value and resolved name (#8100)" {
+  val folded = parseCheck(ifaceDefaultSrc("k: in Int = 1 + 1", "k: in Int = 2"))
+  assertEqualInt(countDiagCode(folded, "T0161"), 0, "1 + 1 is 2: " + diagCodesOf(folded))
+  val foldedDiffer = parseCheck(ifaceDefaultSrc("k: in Int = 1 + 1", "k: in Int = 3"))
+  assertEqualInt(countDiagCode(foldedDiffer, "T0161"), 1, "1 + 1 is not 3: " + diagCodesOf(foldedDiffer))
+  val viaConst = parseCheck(
+    "package P\nconst Two: Int = 2\n" +
+      ifaceDefaultSrc("k: in Int = Two", "k: in Int = 1 + 1").replace("package P\n", "")
+  )
+  assertEqualInt(countDiagCode(viaConst, "T0161"), 0, "a constant and its value: " + diagCodesOf(viaConst))
+
+  val pkgA = parse(
+    "package PkgA\npub const LIMIT: Int = 1\npub interface Shape {\n  func area(self: in Self, k: in Int = LIMIT): Int\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "PkgA",
+      items = pkgA.file.items,
+      imports = collectImportNames(pkgA.file.imports),
+      wholeImports = collectWholeImportNames(pkgA.file.imports)
+    )
+  )
+  val implSrc = "package App\nimport PkgA\nconst LIMIT: Int = 2\nrecord Sq { s: Int }\n" +
+    "impl Shape for Sq {\n  func area(self: in Sq, k: in Int = LIMIT): Int { self.s * k }\n}\n"
+  val different = checkWithImportedPackages(parse(implSrc).file, packages)
+  assertEqualInt(
+    countDiagCode(different, "T0161"),
+    1,
+    "same name, different constants of two packages: " + diagCodesOf(different)
+  )
+  val equalValues = checkWithImportedPackages(parse(implSrc.replace("LIMIT: Int = 2", "LIMIT: Int = 1")).file, packages)
+  assertEqualInt(
+    countDiagCode(equalValues, "T0161"),
+    0,
+    "same name, constants of equal value: " + diagCodesOf(equalValues)
+  )
+}
+
 // #8173: a call through the type name to a generic dot-named function
 // (`Box.get(b)`) is checked against the function's signature: before, its
 // callee was typed as an error with no diagnostic, so a wrong argument count
