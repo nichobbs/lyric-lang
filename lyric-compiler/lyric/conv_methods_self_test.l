@@ -248,3 +248,47 @@ test "UInt converts by value to Long, Double and Float" {
   val max: UInt = 4294967295u32
   assertEqualLong(max.toLong(), 4294967295i64, "UInt.MaxValue")
 }
+
+// A `ULong` converts by value too (#8450): `toLong` is checked and panics above
+// `Long.MaxValue`; `toDouble` and `toFloat` read the unsigned value, rounding
+// to nearest even.
+test "ULong.toLong is checked" {
+  val ok: ULong = 9223372036854775807u64
+  assertEqualLong(ok.toLong(), 9223372036854775807i64, "Long.MaxValue fits")
+  val zero: ULong = 0u64
+  assertEqualLong(zero.toLong(), 0i64, "zero")
+  val small: ULong = 42u64
+  assertEqualLong(small.toLong(), 42i64, "a small ULong")
+  val over: ULong = 9223372036854775808u64
+  assertPanicsWith("2^63.toLong()", "does not fit in a Long", { -> val _ = over.toLong() })
+  val max: ULong = 18446744073709551615u64
+  assertPanics("ULong.MaxValue.toLong()", { -> val _ = max.toLong() })
+}
+
+test "ULong.toDouble and toFloat read the unsigned value" {
+  val small: ULong = 12345u64
+  assertTrue(small.toDouble() == 12345.0, "a small ULong to Double")
+  assertTrue(small.toFloat() == 12345.0f32, "a small ULong to Float")
+  val maxLong: ULong = 9223372036854775807u64
+  assertTrue(maxLong.toDouble() == 9223372036854775808.0, "Long.MaxValue rounds up to 2^63")
+  val top: ULong = 9223372036854775808u64
+  assertTrue(top.toDouble() == 9223372036854775808.0, "2^63 as a Double")
+  assertTrue(top.toFloat() == 9223372036854775808.0f32, "2^63 as a Float")
+  val max: ULong = 18446744073709551615u64
+  assertTrue(max.toDouble() == 18446744073709551616.0, "ULong.MaxValue rounds to 2^64")
+  assertTrue(max.toFloat() == 18446744073709551616.0f32, "ULong.MaxValue as a Float rounds to 2^64")
+  val big: ULong = 10000000000000000000u64
+  assertTrue(big.toDouble() == 10000000000000000000.0, "10^19 as a Double")
+  // 2^63 + 2^10 + 1 is above the halfway point between two doubles, so the
+  // low bit folded into the halved value must still round it up.
+  val sticky: ULong = 9223372036854777857u64
+  assertTrue(sticky.toDouble() == 9223372036854777856.0, "the sticky bit rounds to the nearest even Double")
+}
+
+func sevenULong(): ULong = 7u64
+
+test "ULong conversion of a call result" {
+  assertEqualLong(sevenULong().toLong(), 7i64, "a call receiver to Long")
+  assertTrue(sevenULong().toDouble() == 7.0, "a call receiver to Double")
+  assertTrue((sevenULong() + 1u64).toFloat() == 8.0f32, "an arithmetic receiver to Float")
+}

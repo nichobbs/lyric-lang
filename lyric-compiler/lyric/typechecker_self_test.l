@@ -10554,11 +10554,22 @@ test "unary minus on a Nat is T0147 (#7901)" {
   assertTrue(Str.contains(msg, "-(n.toLong())"), "the message suggests a signed conversion: " + msg)
 }
 
-test "a ULong has no Long or floating-point conversion (#7901)" {
+test "a ULong converts to Long, Double and Float through an overflow site (#8450)" {
   for m in ["toLong", "toDouble", "toFloat"] {
     val cr = parseCheck(negSrc("func f(w: in ULong): Unit {\n  val v = w." + m + "()\n}\n"))
-    assertEqualInt(countDiagCode(cr, "T0103"), 1, "ULong." + m + ": T0103 (" + diagCodesOf(cr) + ")")
+    assertEqualInt(diagCount(cr), 0, "ULong." + m + ": clean (" + diagCodesOf(cr) + ")")
+    assertEqualInt(cr.symbols.overflowSites.count, 1, "ULong." + m + ": one site")
+    for k in mapKeys(cr.symbols.overflowSites) {
+      match mapGet(cr.symbols.overflowSites, k) {
+        case Some(kind) -> assertTrue(kind == "ulong:" + m, "the site kind names the method: " + kind)
+        case None -> ()
+      }
+    }
   }
+  val noSite = parseCheck(negSrc("func f(u: in UInt, l: in Long): Unit {\n  val a = u.toLong()\n  val b = l.toDouble()\n}\n"))
+  assertEqualInt(noSite.symbols.overflowSites.count, 0, "UInt and Long conversions record no ulong site")
+}
+
   val ok = parseCheck(
     negSrc(
       "func f(u: in UInt, w: in ULong, b: in Byte): Unit {\n  val a = u.toLong()\n  val c = u.toDouble()\n  val d = w.toInt()\n  val e = b.toLong()\n}\n"
