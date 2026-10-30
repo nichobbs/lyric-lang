@@ -1049,10 +1049,14 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   (MemoryStream accumulator) + IEEE 754 bit extraction (BitConverter).  Used
   by lyric-grpc for payload framing and available directly for manual OTLP or
   other protobuf message construction.
-- `lyric-grpc/` — `lyric-grpc` library: general-purpose gRPC client (D068).
-  Wraps `Grpc.Net.Client` on .NET with a pass-through `byte[]` marshaller;
-  `io.grpc.ManagedChannel` on JVM (Phase 6).  Accepts and returns raw
-  `slice[Byte]` payloads — compose with lyric-proto for protobuf encoding.
+- `lyric-grpc/` — `lyric-grpc` library: general-purpose gRPC client (D068, D281).
+  Real on both targets and tested end to end against in-process servers:
+  `Grpc.Net.Client` on .NET, grpc-java on the JVM, both through
+  `extern type` + auto-FFI (no `extern package`). Unary and server-streaming
+  calls, metadata, deadlines, `GrpcStatus` mapping and `checkRateLimit`;
+  accepts and returns raw `slice[Byte]` payloads, so compose with lyric-proto
+  for protobuf encoding. Server hosting (`start`/`startHandle`/`stop`) is not
+  implemented on either target (#8642).
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue

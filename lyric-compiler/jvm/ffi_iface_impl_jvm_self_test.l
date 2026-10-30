@@ -71,3 +71,31 @@ test "second impl of the same extern interface resolves independently" {
   assertTrue(not f.accept(dir, "anything"), "RejectAllFilter always rejects")
   assertEqualInt(f.count, 0, "RejectAllFilter field still readable")
 }
+
+// A GENERIC extern interface erases its type parameter in the descriptor the
+// JVM dispatches through: `Comparator<T>.compare(T, T)` is `compare(Object,
+// Object)I`, while the impl method spells `String`.  The impl method's own
+// descriptor is `compare(String, String)I`, which does not override the slot,
+// so a call through the interface failed with `AbstractMethodError`.  The
+// backend now reads the slot's descriptor from the interface's class metadata
+// and emits the synthetic bridge javac emits (cast each narrowed parameter,
+// forward to the real method) — lyric-grpc's `MethodDescriptor.Marshaller<T>`
+// needs exactly this.
+extern type JComparator = "java.util.Comparator"
+
+record ByLength {
+  tag: Int
+}
+
+impl JComparator for ByLength {
+  func compare(a: in String, b: in String): Int {
+    a.length - b.length
+  }
+}
+
+test "impl <generic ExternInterface> narrowing an erased parameter is reachable through the interface" {
+  val cmp: JComparator = ByLength(tag = 1)
+  assertTrue(cmp.compare("aaa", "b") > 0, "longer string sorts after the shorter one through the interface")
+  assertTrue(cmp.compare("b", "aaa") < 0, "and the reverse")
+  assertEqualInt(cmp.compare("xy", "zw"), 0, "equal lengths compare equal")
+}

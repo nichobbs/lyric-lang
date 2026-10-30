@@ -2402,57 +2402,109 @@ func implBridgeJvm(
   match slot {
     case None -> None
     case Some(sig) -> {
-      if not sig.isIface or sig.params.count != target.params.count {
+      if not sig.isIface {
         return None
       }
-      var differs = typeDescriptor(sig.ret) != typeDescriptor(target.ret)
-      var castable = true
-      var i = 0
-      while i < target.params.count {
-        if typeDescriptor(sig.params[i]) != typeDescriptor(target.params[i]) {
-          differs = true
-          if not (isReferenceJvm(sig.params[i]) and isReferenceJvm(target.params[i])) {
-            castable = false
-          }
-        }
-        i = i + 1
-      }
-      if typeDescriptor(sig.ret) != typeDescriptor(target.ret) and not (isReferenceJvm(sig.ret) and isReferenceJvm(target.ret)) {
-        castable = false
-      }
-      if not differs or not castable {
-        return None
-      }
-      val insns: List[LInsn] = newList()
-      insns.add(LAload(slot = 0))
-      var local = 1
-      var pi = 0
-      while pi < target.params.count {
-        insns.add(bridgeLoadInsnJvm(sig.params[pi], local))
-        if typeDescriptor(sig.params[pi]) != typeDescriptor(target.params[pi]) {
-          match bridgeCastTargetJvm(target.params[pi]) {
-            case Some(c) -> insns.add(LCheckcast(className = c))
-            case None -> ()
-          }
-        }
-        local = local + bridgeSlotWidthJvm(sig.params[pi])
-        pi = pi + 1
-      }
-      insns.add(LInvokevirtual(owner = targetClass, name = target.name, params = target.params, ret = target.ret))
-      insns.add(bridgeReturnInsnJvm(sig.ret))
-      Some(
-        value = LFunc(
-          flags = 0x1041,
-          name = target.name,
-          params = sig.params,
-          ret = sig.ret,
-          insns = insns,
-          maxStack = 0,
-          maxLocals = 0
-        )
-      )
+      implBridgeFromSlotJvm(targetClass, target, sig.params, sig.ret)
     }
   }
+}
+
+// The descriptor of the abstract method `name` (with `arity` parameters) of the
+// extern interface `javaFqn`, read from its class metadata: the slot an
+// `impl <ExternInterface>` method must be reachable through. A generic
+// interface (`MethodDescriptor.Marshaller<T>`) erases `T` to `Object` there,
+// so the impl method (which spells the concrete type) needs a bridge. None
+// when the class is not on the reference path or the name is overloaded at
+// that arity.
+record ExternSlotJvm {
+  params: List[JvmType]
+  ret: JvmType
+}
+
+func externIfaceSlotJvm(
+  autoFfi: in AutoFfiCtx, javaFqn: in String, name: in String, arity: in Int
+): Option[ExternSlotJvm] {
+  match loadClass(autoFfi, javaFqn) {
+    case None -> None
+    case Some(ci) -> {
+      var found: Option[ClassMethod] = None
+      var matches = 0
+      for m in ci.methods {
+        if m.name == name and m.isAbstract and not m.isStatic and parseDescriptorParams(m.descriptor).count == arity {
+          found = Some(value = m)
+          matches = matches + 1
+        }
+      }
+      if matches != 1 {
+        return None
+      }
+      match found {
+        case None -> None
+        case Some(m) -> {
+          val params: List[JvmType] = newList()
+          for pd in parseDescriptorParams(m.descriptor) {
+            params.add(descStrToJvmType(pd))
+          }
+          Some(value = ExternSlotJvm(params = params, ret = descStrToJvmType(returnDescFromMethodDesc(m.descriptor))))
+        }
+      }
+    }
+  }
+}
+
+func implBridgeFromSlotJvm(
+  targetClass: in String, target: in LFunc, slotParams: in List[JvmType], slotRet: in JvmType
+): Option[LFunc] {
+  if slotParams.count != target.params.count {
+    return None
+  }
+  var differs = typeDescriptor(slotRet) != typeDescriptor(target.ret)
+  var castable = true
+  var i = 0
+  while i < target.params.count {
+    if typeDescriptor(slotParams[i]) != typeDescriptor(target.params[i]) {
+      differs = true
+      if not (isReferenceJvm(slotParams[i]) and isReferenceJvm(target.params[i])) {
+        castable = false
+      }
+    }
+    i = i + 1
+  }
+  if typeDescriptor(slotRet) != typeDescriptor(target.ret) and not (isReferenceJvm(slotRet) and isReferenceJvm(target.ret)) {
+    castable = false
+  }
+  if not differs or not castable {
+    return None
+  }
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  var local = 1
+  var pi = 0
+  while pi < target.params.count {
+    insns.add(bridgeLoadInsnJvm(slotParams[pi], local))
+    if typeDescriptor(slotParams[pi]) != typeDescriptor(target.params[pi]) {
+      match bridgeCastTargetJvm(target.params[pi]) {
+        case Some(c) -> insns.add(LCheckcast(className = c))
+        case None -> ()
+      }
+    }
+    local = local + bridgeSlotWidthJvm(slotParams[pi])
+    pi = pi + 1
+  }
+  insns.add(LInvokevirtual(owner = targetClass, name = target.name, params = target.params, ret = target.ret))
+  insns.add(bridgeReturnInsnJvm(slotRet))
+  Some(
+    value = LFunc(
+      flags = 0x1041,
+      name = target.name,
+      params = slotParams,
+      ret = slotRet,
+      insns = insns,
+      maxStack = 0,
+      maxLocals = 0
+    )
+  )
 }
 
 // Build a protected-type class as a record-shaped `LPRecord`: data fields plus
@@ -9779,6 +9831,21 @@ pub func codegenPackageWithSigsSeeded(
               if not isExternIfaceHere {
                 match implBridgeJvm(targetClass, ifaceClass, loweredImpl, funcSigs) {
                   case Some(bridge) -> implFuncs.add(bridge)
+                  case None -> ()
+                }
+              } else {
+                // The slot of an extern interface comes from its class
+                // metadata: a generic one (`Marshaller<T>`) erases `T` to
+                // `Object`, so an impl method spelling the concrete type
+                // needs the same synthetic bridge a Lyric interface gets.
+                match implIfaceExternDottedFqn(decl.iface, externTypes) {
+                  case Some(javaFqn) -> match externIfaceSlotJvm(autoFfi, javaFqn, loweredImpl.name, loweredImpl.params.count) {
+                    case Some(slotSig) -> match implBridgeFromSlotJvm(targetClass, loweredImpl, slotSig.params, slotSig.ret) {
+                      case Some(bridge) -> implFuncs.add(bridge)
+                      case None -> ()
+                    }
+                    case None -> ()
+                  }
                   case None -> ()
                 }
               }

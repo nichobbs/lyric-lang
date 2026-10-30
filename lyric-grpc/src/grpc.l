@@ -1,13 +1,10 @@
 //! Grpc — gRPC client and server API.
-//! Stability: @experimental. Real and tested today: channel lifecycle
-//! (openChannel/closeChannel, backed by Grpc.Net.Client.GrpcChannel) and
-//! checkRateLimit's sliding-window limiter. callUnary/openServerStream/
-//! start/startHandle honestly fail fast (Err/panic) rather than dispatch —
-//! blocked on #6581 (a self-hosted-compiler generic-BCL-API gap, confirmed
-//! to also block server hosting: no non-generic RPC-route-registration
-//! surface exists on Grpc.AspNetCore.Server 2.65.0 either) and have not
-//! been exercised against a real gRPC service in CI — see README.md's
-//! platform-parity table for the precise real-vs-blocked split.
+//! Stability: @experimental. The client (openChannel/closeChannel, callUnary,
+//! openServerStream/nextMessage/closeStream, checkRateLimit) is real on both
+//! targets and tested end to end against in-process gRPC servers
+//! (Grpc.Net.Client on dotnet, grpc-java on the JVM). Server hosting
+//! (start/startHandle/stop) is not implemented on either target and panics
+//! naming #8642; see README.md's platform-parity table.
 //!
 //! Client (outbound calls):
 //!   val ch = Grpc.openChannel("https://host:4317").unwrap()
@@ -34,11 +31,9 @@
 //!
 //! See docs/37-grpc-proto-sketch.md.
 //!
-//! This package applies to the dotnet target only: the JVM kernel
-//! (`Grpc.Kernel.Jvm`) is a declaration-only sketch until Phase 6, so a
-//! project build for another target leaves this package empty instead of
-//! failing to compile its `jvm`-feature bodies (#8357).
-@cfg(target = "dotnet")
+//! Each public function has a `dotnet`-feature body calling `Grpc.Kernel.Net`
+//! and a `jvm`-feature body calling `Grpc.Kernel.Jvm`; the feature selects
+//! which one a build keeps.
 @runtime_checked
 @io
 package Grpc

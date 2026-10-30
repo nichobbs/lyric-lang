@@ -410,10 +410,11 @@ several of these are core, not edge-case, functionality:
   honest about the test gap, but the aspect weaving specifically (pure
   Lyric, no AWS dependency) is testable today with a mock subsegment
   handle and should be.
-- **lyric-grpc** (`tests/grpc_types_tests.l`): only enum/status-code
-  mapping is tested; the `GrpcChannel` opaque type and call functions
-  need a live gRPC server per the file's own comment. No unary/streaming/
-  timeout/error-recovery tests exist.
+- **lyric-grpc** (resolved by D281): the client is now tested end to end on
+  both targets against in-process servers (`tests/client_dotnet_tests.l`,
+  `tests/client_jvm_tests.l`: unary, streaming, metadata, deadline and
+  error-status cases). Server hosting remains untested because it is
+  unimplemented (#8642).
 - **lyric-docker** (`tests/basic_operations_tests.l`): only stream
   demultiplexing is tested; zero coverage of container/image operations,
   error paths, or auth/config. `docker_api.l:14-23`'s
