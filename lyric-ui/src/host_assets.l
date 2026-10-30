@@ -9,7 +9,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "017fe670da2faea7"
+pub val assetVersion: String = "dd9265e806072be5"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
