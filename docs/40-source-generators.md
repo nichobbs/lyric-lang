@@ -377,7 +377,7 @@ No new F# shim is needed. The steps are:
    the consumer's `--target` (D150).
 3. Load it as a plugin. The compiler is a `Std.Plugin` host offering the
    `SourceGenerator` point (3.0) and the `ProjectRead` capability. On the first
-   `@generate` naming the generator it runs `dotnet exec <dll>
+   `@generate` naming a path or workspace generator it runs `dotnet exec <dll>
    --lyric-plugin-manifest`, checks that the manifest implements
    `Lyric.GeneratorSdk.SourceGenerator`, and registers it with a `dotnet exec`
    payload. The grant policy grants exactly the capabilities the generator

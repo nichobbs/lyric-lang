@@ -302,6 +302,17 @@ name    = "SomeLib"
 version = "1.0.0"
 source  = { git = "https://github.com/user/repo", rev = "d4f9a1b2c3e..." }
 
+[[package]]
+name    = "Acme.Describe"
+version = "0.1.1"
+source  = "nuget:https://api.nuget.org/v3/index.json"
+sha512  = "sha512-abc123..."
+key     = "3f9c0a1b2c3d4e5f60718293a4b5c6d7"
+
+# `key` appears only on a source generator restored from a registry or git
+# (D266): the id of the key its plugin artifact is signed with.  A restore
+# that finds another key fails until `lyric restore --update <name>`.
+
 # [[package.platform.dotnet]] is a TOML sub-array nested under the preceding
 # [[package]] element (SomeLib in this case).  Each entry represents a NuGet
 # package that SomeLib's kernel code wraps and that must be included in the

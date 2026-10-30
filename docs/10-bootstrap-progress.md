@@ -433,7 +433,10 @@ deferred to Phase 3 by design.
   --sign-key` (D263 narrows listing paths to printable ASCII), load-time
   verification in `discoverPlugins` with `PluginHostConfig.trust` (D264),
   and per-application catalogues: `Std.Zip`, `Std.PluginCatalogue`,
-  `lyric plugin catalogue`/`install` and `pack --zip` (D265).
+  `lyric plugin catalogue`/`install` and `pack --zip` (D265), and source
+  generators restored from a registry or git as signed artifacts, their key id
+  pinned in `lyric.lock` (`lyric restore --update`, `lyric publish
+  --sign-key`, D266).
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped
   (D-progress-064): `forAllIntRange` / `forAllBool` / `forAllDouble` /
   `forAllIntPair` random-sample helpers, caller-supplied seeded `Random`
