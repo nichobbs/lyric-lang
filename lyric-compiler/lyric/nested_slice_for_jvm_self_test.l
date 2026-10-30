@@ -133,3 +133,16 @@ test "List-outer, reference inner: List[slice[String]] nested for-loop concatena
   xs.add(strRow(["d", "e", "f"]))
   assertEqual(concatNestedListOfSlice(xs), "abcdef", "concat of a List of string slices")
 }
+
+func firstRowSum(xs: in slice[slice[Int]]): Int {
+  val row = xs[0]
+  var total = 0
+  for v in row {
+    total = total + v
+  }
+  total
+}
+
+test "indexed read of a slice[slice[Int]] element binds a verifiable int[] (#7783)" {
+  assertEqualInt(firstRowSum([intRow([7, 8]), intRow([1])]), 15, "first row")
+}
