@@ -425,7 +425,8 @@ pub func synthesizeBuildInfo(
   }
   outItems.add(buildInfoFuncItem(version, targetName, profile, gitHash, buildTs, features, sf.span))
   SourceFile(
-    moduleDoc = sf.moduleDoc, files = sf.files,
+    moduleDoc = sf.moduleDoc,
+    files = sf.files,
     fileAnnotations = sf.fileAnnotations,
     packageDecl = sf.packageDecl,
     imports = sf.imports,
@@ -521,7 +522,8 @@ pub func applyBuildDefines(defines: in List[Define], sf: in SourceFile): BuildDe
     i = i + 1
   }
   val outFile = SourceFile(
-    moduleDoc = sf.moduleDoc, files = sf.files,
+    moduleDoc = sf.moduleDoc,
+    files = sf.files,
     fileAnnotations = sf.fileAnnotations,
     packageDecl = sf.packageDecl,
     imports = sf.imports,

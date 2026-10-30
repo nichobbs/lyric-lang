@@ -349,10 +349,7 @@ func hasMockingImport(imports: in List[ImportDecl]): Bool {
   var i = 0
   while i < imports.count {
     val imp = imports[i]
-    if imp.path.segments.count == 3
-      and imp.path.segments[0] == "Std"
-      and imp.path.segments[1] == "Testing"
-      and imp.path.segments[2] == "Mocking" {
+    if imp.path.segments.count == 3 and imp.path.segments[0] == "Std" and imp.path.segments[1] == "Testing" and imp.path.segments[2] == "Mocking" {
       return true
     }
     i = i + 1
@@ -372,14 +369,16 @@ func addMockingImport(imports: in List[ImportDecl], span: in Span): List[ImportD
   segs.add("Std")
   segs.add("Testing")
   segs.add("Mocking")
-  result.add(ImportDecl(
-    path = ModulePath(segments = segs, span = span),
-    selector = None,
-    asAlias = None,
-    isPubUse = false,
-    isExtern = false,
-    span = span
-  ))
+  result.add(
+    ImportDecl(
+      path = ModulePath(segments = segs, span = span),
+      selector = None,
+      asAlias = None,
+      isPubUse = false,
+      isExtern = false,
+      span = span
+    )
+  )
   result
 }
 
@@ -402,7 +401,8 @@ pub func stubbableRewriteFile(file: in SourceFile): SourceFile {
   val newItems = synthesiseItems(file.items)
   val stubsAdded = newItems.count > file.items.count
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = buildImports(file, stubsAdded),

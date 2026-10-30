@@ -1865,7 +1865,8 @@ pub func lowerPropagateFileWithTypeArgCallees(
     i = i + 1
   }
   val newFile = SourceFile(
-    moduleDoc = hoisted.moduleDoc, files = hoisted.files,
+    moduleDoc = hoisted.moduleDoc,
+    files = hoisted.files,
     fileAnnotations = hoisted.fileAnnotations,
     packageDecl = hoisted.packageDecl,
     imports = hoisted.imports,

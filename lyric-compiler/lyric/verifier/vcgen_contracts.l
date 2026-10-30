@@ -165,4 +165,3 @@ func dedupeDiagnostics(diags: in List[Diagnostic]): List[Diagnostic] {
   }
   kept
 }
-

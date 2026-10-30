@@ -56,7 +56,8 @@ func mapFileWith(file: in SourceFile, m: in AstMapper): SourceFile {
     i = i + 1
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

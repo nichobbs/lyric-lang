@@ -81,7 +81,8 @@ func oneItemFile(fn: in FunctionDecl, template: in Item): SourceFile {
     )
   )
   SourceFile(
-    moduleDoc = newList(), files = newList(),
+    moduleDoc = newList(),
+    files = newList(),
     fileAnnotations = newList(),
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = template.span), span = template.span),
     imports = newList(),

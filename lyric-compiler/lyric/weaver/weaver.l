@@ -2623,7 +2623,8 @@ pub func injectWeaveImports(file: in SourceFile): SourceFile {
     return file
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = addStdTimeImport(file.imports, file.span),
@@ -2964,7 +2965,8 @@ pub func weaveFile(file: in SourceFile): SourceFile {
   val noOrigins: Map[String, CollectedTemplate] = newMap()
   val newItems = weaveItemsCore(file0.items, packagePathString(file0), file0.imports, noOrigins, newTypeOwnerIndex()).items
   SourceFile(
-    moduleDoc = file0.moduleDoc, files = file0.files,
+    moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = file0.packageDecl,
     imports = file0.imports,
@@ -5019,7 +5021,8 @@ pub func weaveFileWithDiagsAndTemplates(
     di = di + 1
   }
   val newFile = SourceFile(
-    moduleDoc = file0.moduleDoc, files = file0.files,
+    moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = file0.packageDecl,
     imports = file0.imports,

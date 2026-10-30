@@ -2138,7 +2138,8 @@ pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): 
   }
   if exports.count == 0 and not hasImage {
     val importOnly = SourceFile(
-      moduleDoc = file.moduleDoc, files = file.files,
+      moduleDoc = file.moduleDoc,
+      files = file.files,
       fileAnnotations = file.fileAnnotations,
       packageDecl = file.packageDecl,
       imports = file.imports,
@@ -2184,7 +2185,8 @@ pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): 
     }
   }
   val merged = SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = imports,

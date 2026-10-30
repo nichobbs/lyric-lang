@@ -2481,7 +2481,8 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
     gi = gi + 1
   }
   SourceFile(
-    moduleDoc = postMono.moduleDoc, files = postMono.files,
+    moduleDoc = postMono.moduleDoc,
+    files = postMono.files,
     fileAnnotations = postMono.fileAnnotations,
     packageDecl = postMono.packageDecl,
     imports = postMono.imports,

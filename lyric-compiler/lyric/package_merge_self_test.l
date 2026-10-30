@@ -499,7 +499,14 @@ func itemNames(items: in List[Item]): String {
 // The assembly of `srcs` agrees with their merge: the same diagnostics and,
 // when those leave the package usable, the same items, imports, file-level
 // annotations and module-doc lines.
-func assertAssemblyMatchesMerge(srcs: in List[String], paths: in List[String], active: in List[String], declared: in List[String], target: in String, what: in String): Unit {
+func assertAssemblyMatchesMerge(
+  srcs: in List[String],
+  paths: in List[String],
+  active: in List[String],
+  declared: in List[String],
+  target: in String,
+  what: in String,
+): Unit {
   val merged = PM.mergePackageFiles("P", srcs, paths, active, declared, target, true)
   val assembled = PM.assemblePackageFiles("P", srcs, paths, active, declared, target)
   assertEqual(assembleSummary(assembled), diagSummary(merged), what + ": diagnostics")
@@ -523,13 +530,34 @@ test "an assembled package matches the merge of the same files" {
   assertAssemblyMatchesMerge(two(a, gated), two("a.l", "b.l"), declared, declared, "dotnet", "a gated-on file")
   val levels = "@proof_required\npackage P\npub func c(): Int { 3 }\n"
   assertAssemblyMatchesMerge(two(a, levels), two("a.l", "b.l"), none(), none(), "dotnet", "B0014")
-  assertAssemblyMatchesMerge(two(a, "package Q\npub func c(): Int { 3 }\n"), two("a.l", "b.l"), none(), none(), "dotnet", "B0013")
+  assertAssemblyMatchesMerge(
+    two(a, "package Q\npub func c(): Int { 3 }\n"),
+    two("a.l", "b.l"),
+    none(),
+    none(),
+    "dotnet",
+    "B0013"
+  )
   assertAssemblyMatchesMerge(two(a, "// stray\n@axiom\n"), two("a.l", "b.l"), none(), none(), "dotnet", "P0020")
   val aliasA = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
   val aliasB = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
   assertAssemblyMatchesMerge(two(aliasA, aliasB), two("a.l", "b.l"), none(), none(), "dotnet", "B0012")
-  assertAssemblyMatchesMerge(two("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n"), two("a.l", "b.l"), none(), none(), "dotnet", "unit mode")
-  assertAssemblyMatchesMerge(two(a, "package P\npub func broken( {\n"), two("a.l", "b.l"), none(), none(), "dotnet", "a file that does not parse")
+  assertAssemblyMatchesMerge(
+    two("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n"),
+    two("a.l", "b.l"),
+    none(),
+    none(),
+    "dotnet",
+    "unit mode"
+  )
+  assertAssemblyMatchesMerge(
+    two(a, "package P\npub func broken( {\n"),
+    two("a.l", "b.l"),
+    none(),
+    none(),
+    "dotnet",
+    "a file that does not parse"
+  )
 }
 
 test "each file of an assembled package keeps its own header, lines and offsets" {

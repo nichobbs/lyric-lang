@@ -183,7 +183,8 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
     gi = gi + 1
   }
   SourceFile(
-    moduleDoc = postMono.moduleDoc, files = postMono.files,
+    moduleDoc = postMono.moduleDoc,
+    files = postMono.files,
     fileAnnotations = postMono.fileAnnotations,
     packageDecl = postMono.packageDecl,
     imports = postMono.imports,
@@ -2899,7 +2900,8 @@ func jvmProjectFrontEnd(
             mil = mil + 1
           }
           val merged = SourceFile(
-            moduleDoc = existing.moduleDoc, files = existing.files,
+            moduleDoc = existing.moduleDoc,
+            files = existing.files,
             fileAnnotations = existing.fileAnnotations,
             packageDecl = existing.packageDecl,
             imports = mergedImports,

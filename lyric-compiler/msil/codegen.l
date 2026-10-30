@@ -35316,8 +35316,7 @@ func actionSlotArityMsil(slotTy: in MsilType): Int {
 // span.  Only used for literals with a non-empty span (a synthesized node may
 // carry an empty one, and is never marked).
 func lambdaSpanKeyMsil(sp: in Span): String {
-  spanKey(sp) + "@" + toString(sp.startPos.line) + "." +
-    toString(sp.startPos.column)
+  spanKey(sp) + "@" + toString(sp.startPos.line) + "." + toString(sp.startPos.column)
 }
 
 // Mark the lambda literals that produce the value of `expr` — `expr` itself,
@@ -38082,7 +38081,8 @@ pub func reifyGenericOpaquesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNa
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -39484,7 +39484,8 @@ pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
   }
 
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -42668,7 +42669,8 @@ pub func synthesizeBareFuncRefThunksMsil(file: in SourceFile): SourceFile {
     k = k + 1
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -43081,7 +43083,8 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   }
 
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

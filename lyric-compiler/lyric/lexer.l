@@ -1679,7 +1679,12 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
       column = startP.column + 2 + badAt,
       fileId = startP.fileId
     )
-    val digitEnd = Position(offset = digitP.offset + 1, line = digitP.line, column = digitP.column + 1, fileId = digitP.fileId)
+    val digitEnd = Position(
+      offset = digitP.offset + 1,
+      line = digitP.line,
+      column = digitP.column + 1,
+      fileId = digitP.fileId
+    )
     recordError(state, "L0017", invalidDigitMessage(charToString(raw[badAt]), base, kind), makeSpan(digitP, digitEnd))
     val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
     emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
@@ -2037,7 +2042,11 @@ func lexDecimalNumber(state: inout LexerState): Unit {
       // follows an exponent with no digits is not a separate suffix error.
       case None -> {
         recordError(state, "L0011", "invalid float literal", makeSpan(startP, currentPosition(state)))
-        emit(state, TFloat(value = 0.0, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)), startP)
+        emit(
+          state,
+          TFloat(value = 0.0, suffix = suffix, raw = sourceSlice(state, posIndex(state, startP), state.pos)),
+          startP
+        )
       }
     }
   } else {

@@ -347,7 +347,8 @@ func withArrayImports(file: in SourceFile, source: in String): SourceFile {
     )
   )
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = imports,
@@ -381,7 +382,8 @@ func markWrappingArith(file: in SourceFile, defines: in List[BD.Define]): Source
   val noArgs: List[AnnotationArg] = newList()
   anns.add(Annotation(name = ModulePath(segments = segs, span = file.span), args = noArgs, span = file.span))
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = anns,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -644,7 +646,8 @@ pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
     return file
   }
   val converted = SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -1094,7 +1097,8 @@ pub func fixturesAsModuleVals(file: in SourceFile): SourceFile {
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -2327,7 +2331,8 @@ func specHasMemberAccess(decl: in FunctionDecl): Bool {
   val items: List[Item] = newList()
   items.add(funcItem(decl))
   val f = SourceFile(
-    moduleDoc = noDocs, files = newList(),
+    moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -2400,7 +2405,8 @@ func checkInOriginScope(
     items.add(funcItem(d))
   }
   val checkFile = SourceFile(
-    moduleDoc = file0.moduleDoc, files = file0.files,
+    moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = PackageDecl(
       path = ModulePath(segments = dottedSegments(origin), span = file0.span),
@@ -2758,7 +2764,8 @@ func endForeignUnitLambdas(file: in SourceFile, sitesByOrigin: in Map[String, Ma
       case IFunc(fd) -> match mapGet(sitesByOrigin, originPkgOf(fd.annotations)) {
         case Some(sites) -> {
           val single = SourceFile(
-            moduleDoc = file.moduleDoc, files = file.files,
+            moduleDoc = file.moduleDoc,
+            files = file.files,
             fileAnnotations = file.fileAnnotations,
             packageDecl = file.packageDecl,
             imports = file.imports,
@@ -2773,7 +2780,8 @@ func endForeignUnitLambdas(file: in SourceFile, sitesByOrigin: in Map[String, Ma
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -2992,7 +3000,8 @@ func specCallsAnyMethod(decl: in FunctionDecl, names: in Map[String, Bool]): Boo
   val items: List[Item] = newList()
   items.add(funcItem(decl))
   val f = SourceFile(
-    moduleDoc = noDocs, files = newList(),
+    moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -3012,7 +3021,8 @@ func specUsesEquality(decl: in FunctionDecl): Bool {
   val items: List[Item] = newList()
   items.add(funcItem(decl))
   val f = SourceFile(
-    moduleDoc = noDocs, files = newList(),
+    moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -3096,7 +3106,8 @@ func recheckSpecRound(
     items.add(funcItem(cd))
   }
   val checkFile = SourceFile(
-    moduleDoc = file0.moduleDoc, files = file0.files,
+    moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = pkgDecl,
     imports = imports,
@@ -3309,7 +3320,8 @@ func lowerSpecArrays(
           val one: List[Item] = newList()
           one.add(it)
           val oneFile = SourceFile(
-            moduleDoc = file.moduleDoc, files = file.files,
+            moduleDoc = file.moduleDoc,
+            files = file.files,
             fileAnnotations = file.fileAnnotations,
             packageDecl = file.packageDecl,
             imports = file.imports,
@@ -3346,7 +3358,8 @@ func lowerSpecArrays(
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc, files = file.files,
+    moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -4841,7 +4854,8 @@ func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile 
     items.add(funcItem(h))
   }
   SourceFile(
-    moduleDoc = converted.moduleDoc, files = converted.files,
+    moduleDoc = converted.moduleDoc,
+    files = converted.files,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
     imports = converted.imports,
@@ -5292,7 +5306,8 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
     i = i + 1
   }
   val withImports = SourceFile(
-    moduleDoc = source.moduleDoc, files = source.files,
+    moduleDoc = source.moduleDoc,
+    files = source.files,
     fileAnnotations = source.fileAnnotations,
     packageDecl = source.packageDecl,
     imports = decls,
