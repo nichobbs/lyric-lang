@@ -7367,9 +7367,7 @@ pub func isByrefMode(m: in ParamMode): Bool {
   }
 }
 
-// Wrap each `out`/`inout` parameter's MsilType in `MByRef` so a method
-// signature encodes a managed pointer (`T&`).  Result is index-aligned with
-// `baseTypes`; `in` (and default) parameters pass through unchanged.  #1761.
+// Declared parameter names, index-aligned with the parameters, for the Param table.
 func paramNamesMsil(params: in List[Param]): List[String] {
   val names: List[String] = newList()
   for p in params {
@@ -7378,6 +7376,9 @@ func paramNamesMsil(params: in List[Param]): List[String] {
   names
 }
 
+// Wrap each `out`/`inout` parameter's MsilType in `MByRef` so a method
+// signature encodes a managed pointer (`T&`).  Result is index-aligned with
+// `baseTypes`; `in` (and default) parameters pass through unchanged.  #1761.
 func byrefWrapSigTypes(params: in List[Param], baseTypes: in List[MsilType]): List[MsilType] {
   val acc: List[MsilType] = newList()
   var i = 0
