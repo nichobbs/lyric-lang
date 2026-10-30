@@ -83,7 +83,7 @@ func testFileLevelCfgGatesWhenInactive(): Unit {
 
 func testFileLevelCfgSynthesisesWhenActive(): Unit {
   match synthesizeFor(fileLevelCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("exp"), emptyFeatureList()) {
-    case Synthesised(_, n, sk) -> {
+    case Synthesised(_, n, sk, _) -> {
       assertEqualInt(n, 1, "the one test synthesised once the gating feature is active")
       assertEqualInt(sk, 0, "no skips")
     }
@@ -113,7 +113,7 @@ func testFileLevelTargetCfgGatesWhenTargetMismatched(): Unit {
 
 func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
   match synthesizeFor(fileLevelTargetCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.dotnet"), emptyFeatureList()) {
-    case Synthesised(_, n, sk) -> {
+    case Synthesised(_, n, sk, _) -> {
       assertEqualInt(n, 1, "the one test synthesised once \"target.dotnet\" is in the active set")
       assertEqualInt(sk, 0, "no skips")
     }
@@ -128,7 +128,7 @@ func testFileLevelTargetCfgSynthesisesWhenTargetMatches(): Unit {
 // T0020 "unknown name" compile error, and the TAP plan counted it.
 func testSynthesisesAnnotatedCfgTest(): Unit {
   match synthesize(annotatedCfgTestSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "only the ungated test is runnable while feature 'exp' is inactive")
       assertEqualInt(sk, 0, "a gated test is absent, not skipped")
       val annAt = Str.indexOfRaw(rewritten, "@cfg(feature = \"exp\")")
@@ -151,7 +151,7 @@ func testSynthesisesAnnotatedCfgTest(): Unit {
 
 func testAnnotatedCfgTestRunsWhenFeatureActive(): Unit {
   match synthesizeFor(annotatedCfgTestSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("exp"), emptyFeatureList()) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 2, "both tests runnable once feature 'exp' is active")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(Str.contains(rewritten, "    __lyric_test_0()"), "main calls the gated test")
@@ -171,7 +171,7 @@ func targetGatedTestsSource(): String {
 
 func testTargetGatedTestsSelectOnePerTarget(): Unit {
   match synthesizeFor(targetGatedTestsSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.jvm"), emptyFeatureList()) {
-    case Synthesised(rewritten, n, _) -> {
+    case Synthesised(rewritten, n, _, _) -> {
       assertEqualInt(n, 2, "jvm test plus the ungated test")
       assertTrue(not Str.contains(rewritten, "    __lyric_test_0()"), "dotnet test not called on jvm")
       assertTrue(Str.contains(rewritten, "ok 1 - on jvm"), "jvm test numbered 1")
@@ -181,7 +181,7 @@ func testTargetGatedTestsSelectOnePerTarget(): Unit {
     case _ -> panic("expected Synthesised outcome")
   }
   match synthesizeFor(targetGatedTestsSource(), None, false, false, propertyRunConfigFromOverrides(None, None), singletonFeatureList("target.dotnet"), emptyFeatureList()) {
-    case Synthesised(rewritten, n, _) -> {
+    case Synthesised(rewritten, n, _, _) -> {
       assertEqualInt(n, 2, "dotnet test plus the ungated test")
       assertTrue(not Str.contains(rewritten, "    __lyric_test_1()"), "jvm test not called on dotnet")
       assertTrue(Str.contains(rewritten, "ok 1 - on dotnet"), "dotnet test numbered 1")
@@ -194,8 +194,9 @@ func testTargetGatedTestsSelectOnePerTarget(): Unit {
 // a filter skip either.
 func testGatedTestNotReportedAsFilterSkip(): Unit {
   match synthesize(annotatedCfgTestSource(), Some(value = "zzz")) {
-    case Synthesised(rewritten, n, _) -> {
+    case Synthesised(rewritten, n, _, sel) -> {
       assertEqualInt(n, 1, "only the ungated test is in the run")
+      assertEqualInt(sel, 0, "the filter selects no test, gated or not")
       assertTrue(Str.contains(rewritten, "# skip 1 - b (filter)"), "ungated test filtered out")
       assertTrue(not Str.contains(rewritten, " - a (filter)"), "gated test never mentioned")
     }
@@ -211,7 +212,7 @@ func gatedPropertySource(): String {
 
 func testGatedPropertyAbsentWithoutProperties(): Unit {
   match synthesize(gatedPropertySource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one runnable test")
       assertEqualInt(sk, 0, "the gated property is not reported as a skip")
       assertTrue(not Str.contains(rewritten, "gated prop"), "gated property absent from main")
@@ -224,7 +225,7 @@ func testGatedPropertyAbsentWithoutProperties(): Unit {
 func testGatedPropertyAbsentWithProperties(): Unit {
   val cfg = propertyRunConfigFromOverrides(None, None)
   match synthesizeWithPropertiesConfig(gatedPropertySource(), Some(value = ""), cfg, emptyFeatureList(), emptyFeatureList()) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "the gated property driver is not in the run")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(not Str.contains(rewritten, "    __lyric_prop_0()"), "main never calls the erased property driver")
@@ -233,7 +234,7 @@ func testGatedPropertyAbsentWithProperties(): Unit {
     case _ -> panic("expected Synthesised outcome")
   }
   match synthesizeWithPropertiesConfig(gatedPropertySource(), Some(value = ""), cfg, singletonFeatureList("exp"), emptyFeatureList()) {
-    case Synthesised(rewritten, n, _) -> {
+    case Synthesised(rewritten, n, _, _) -> {
       assertEqualInt(n, 2, "test plus the property driver once 'exp' is active")
       assertTrue(Str.contains(rewritten, "    __lyric_prop_0()"), "main calls the property driver")
     }
@@ -269,7 +270,7 @@ func headerLineNumbersSource(): String {
 
 func testHeaderLineNumbersPreserved(): Unit {
   match synthesize(headerLineNumbersSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one test")
       assertEqualInt(sk, 0, "no skips")
       val lines = Str.split(rewritten, "\n")
@@ -318,7 +319,7 @@ func importGapLineNumbersSource(): String {
 
 func testImportGapLineNumbersPreserved(): Unit {
   match synthesize(importGapLineNumbersSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one test")
       assertEqualInt(sk, 0, "no skips")
       val lines = Str.split(rewritten, "\n")
@@ -346,7 +347,7 @@ func testSynthesisesPassingTwoTests(): Unit {
   // the self-hosted emitter (test program) and the F# bootstrap-compiled
   // Lyric.TestSynth.dll (#2557).
   match synthesize(passingSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 2, "two tests detected")
       assertEqualInt(sk, 0, "no skips")
       // Synthesised source includes two helper functions and a main.
@@ -380,7 +381,7 @@ func testRejectsUserMain(): Unit {
 
 func testSynthesisesFixture(): Unit {
   match synthesize(fixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one test")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(Str.contains(rewritten, "val clock: Int = 0"), "fixture rewritten as val")
@@ -392,7 +393,7 @@ func testSynthesisesFixture(): Unit {
 
 func testSynthesisesFixtureNoType(): Unit {
   match synthesize(fixtureNoTypeSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one test")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(Str.contains(rewritten, "val count = 42"), "fixture without type annotation rewritten as val")
@@ -404,7 +405,7 @@ func testSynthesisesFixtureNoType(): Unit {
 
 func testSynthesisesMultipleFixtures(): Unit {
   match synthesize(multiFixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 2, "two tests")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(Str.contains(rewritten, "val x: Int = 1"), "first fixture rewritten")
@@ -417,7 +418,7 @@ func testSynthesisesMultipleFixtures(): Unit {
 
 func testSynthesisesAnnotatedFixture(): Unit {
   match synthesize(annotatedFixtureSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one test")
       assertEqualInt(sk, 0, "no skips")
       assertTrue(Str.contains(rewritten, "val clock: Int = 0"), "annotated fixture rewritten as val")
@@ -432,7 +433,7 @@ func testPropertyReportedAsSkip(): Unit {
   // Use Some(value = "") for the same reason as testSynthesisesPassingTwoTests
   // (#2557 cross-assembly nullary-union ABI).
   match synthesize(propertySource(), Some(value = "")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, _) -> {
       assertEqualInt(n, 1, "one runnable test")
       assertEqualInt(sk, 1, "one skip")
       assertTrue(Str.contains(rewritten, "ok 1 - unit"), "test runs")
@@ -444,9 +445,10 @@ func testPropertyReportedAsSkip(): Unit {
 
 func testFilterSkipsNonMatching(): Unit {
   match synthesize(passingSource(), Some(value = "a")) {
-    case Synthesised(rewritten, n, sk) -> {
+    case Synthesised(rewritten, n, sk, sel) -> {
       assertEqualInt(n, 2, "still two tests parsed")
       assertEqualInt(sk, 0, "skip count is zero (skips here come from filter, not from properties)")
+      assertEqualInt(sel, 1, "the filter selects one of the two tests")
       assertTrue(Str.contains(rewritten, "ok 1 - a"), "matching test runs")
       assertTrue(Str.contains(rewritten, "# skip 2 - b (filter)"), "non-matching test skipped")
     }
@@ -468,7 +470,7 @@ func lineDriftSource(): String {
 func testRewritePreservesLineNumbers(): Unit {
   val src = lineDriftSource()
   match synthesize(src, None) {
-    case Synthesised(rewritten, _, _) -> assertEqualInt(
+    case Synthesised(rewritten, _, _, _) -> assertEqualInt(
       lineOf(rewritten, "func marker"),
       lineOf(src, "func marker"),
       "later declarations keep their source line"
@@ -517,14 +519,14 @@ func crlfSource(): String {
 
 func testCrlfSourceRewritesCleanly(): Unit {
   match synthesize(crlfSource(), Some(value = "")) {
-    case Synthesised(rewritten, n, _) -> {
+    case Synthesised(rewritten, n, _, _) -> {
       assertEqualInt(n, 2, "two tests")
       assertTrue(not Str.contains(rewritten, "\r"), "the rewrite is in the normalised text")
       assertTrue(Str.contains(rewritten, "  \"a string\"\n}"), "the helper is copied whole")
       assertTrue(Str.contains(rewritten, "assertTrue(helper() == \"a string\", \"x\")"), "the first test body is whole")
       assertTrue(Str.contains(rewritten, "ok 2 - second"), "both tests are registered")
       match synthesize(Str.replace(crlfSource(), "\r\n", "\n"), Some(value = "")) {
-        case Synthesised(lfRewritten, _, _) -> assertTrue(rewritten == lfRewritten, "identical to the LF rewrite")
+        case Synthesised(lfRewritten, _, _, _) -> assertTrue(rewritten == lfRewritten, "identical to the LF rewrite")
         case _ -> panic("expected Synthesised outcome for the LF form")
       }
     }
@@ -568,6 +570,18 @@ test "synthesises multiple fixtures" {
   testSynthesisesMultipleFixtures()
 }
 
+// `selectedCount` lets `lyric test` skip compiling a module whose tests the
+// filter excludes; without a filter it is every runnable test.
+func testSelectedCountWithoutFilter(): Unit {
+  match synthesize(passingSource(), None) {
+    case Synthesised(_, n, _, sel) -> {
+      assertEqualInt(n, 2, "two tests parsed")
+      assertEqualInt(sel, 2, "no filter selects every test")
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
 test "synthesises annotated fixture" {
   testSynthesisesAnnotatedFixture()
 }
@@ -578,6 +592,10 @@ test "property reported as skip" {
 
 test "filter skips non-matching tests" {
   testFilterSkipsNonMatching()
+}
+
+test "selected count is every test without a filter" {
+  testSelectedCountWithoutFilter()
 }
 
 test "file-level @cfg gates the whole module when inactive (#6868)" {
@@ -660,7 +678,7 @@ func testDoctestModuleHoistsImportsAndTitlesByLocation(): Unit {
     case None -> panic("doctest title missing")
   }
   match synthesizeFor(dm.source, None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
-    case Synthesised(_, n, sk) -> {
+    case Synthesised(_, n, sk, _) -> {
       assertEqualInt(n, 2, "both doctests become tests")
       assertEqualInt(sk, 0, "none skipped")
     }

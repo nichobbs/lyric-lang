@@ -1167,6 +1167,7 @@ lyric build --watch                    # project/single build: rebuild on source
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
+                                       # (a file with no matching test is not compiled)
 lyric test <file.l> --list             # print test titles only (honours @cfg); do not compile or run
 lyric test <file.l> --fail-fast        # stop after the first file with failing tests;
                                        # print an early summary and exit 1
@@ -1205,6 +1206,8 @@ lyric test                             # project mode: run every [project.tests]
                                        # falls back to scanning [project.packages] for
                                        # @test_module files when [project.tests] is empty
 lyric test --fail-fast                 # project mode: stop after first failing test entry
+lyric test --suite <name>              # project mode: run only the named [project.tests]
+                                       # entry; repeat to run several (e.g. CI shards)
 lyric test --properties                # project mode: also run `property` declarations in
                                        # every test entry (composes with --fail-fast/--filter)
 lyric test --properties \

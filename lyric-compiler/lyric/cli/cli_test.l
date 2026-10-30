@@ -313,12 +313,21 @@ func cmdTest(argv: in slice[String]): Int {
   var noDefaultFeatures = false
   var allFeatures = false
   val cliFeatures: List[String] = newList()
+  val suiteArgs: List[String] = newList()
   val positional: List[String] = newList()
 
   var i = 1
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--filter" {
+    if arg == "--suite" {
+      if i + 1 < argv.length {
+        suiteArgs.add(argv[i + 1])
+        i += 2
+      } else {
+        printErr("test: --suite requires a [project.tests] entry name")
+        return 1
+      }
+    } else if arg == "--filter" {
       if i + 1 < argv.length {
         filterArg = Some(value = argv[i + 1])
         i += 2
@@ -544,6 +553,7 @@ func cmdTest(argv: in slice[String]): Int {
     case Some(p) -> return cmdTestManifest(
       p,
       filterArg,
+      suiteArgs,
       targetJvm,
       failFast,
       runProperties,
@@ -568,6 +578,7 @@ func cmdTest(argv: in slice[String]): Int {
       case TestShouldRunManifest(p) -> return cmdTestManifest(
         p,
         filterArg,
+        suiteArgs,
         targetJvm,
         failFast,
         runProperties,
@@ -584,6 +595,12 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   if rejectExtraPositional("test", positional) {
+    return 1
+  }
+  if suiteArgs.count > 0 {
+    printErr(
+      "test: --suite selects [project.tests] entries, so it needs a project (run it without a test file, or with --manifest)"
+    )
     return 1
   }
   val sourcePath = positional[0]
@@ -764,7 +781,11 @@ func cmdTest(argv: in slice[String]): Int {
       Console.println("0 test(s), module gated by inactive @cfg")
       return 0
     }
-    case Synthesised(synthesised, testCnt, skipCnt) -> {
+    case Synthesised(synthesised, testCnt, skipCnt, selectedCnt) -> {
+      if selectedCnt == 0 and testCnt > 0 {
+        Console.println(toString(testCnt) + " test(s), none match --filter; not compiled")
+        return 0
+      }
       Console.println(toString(testCnt) + " test(s), " + toString(skipCnt) + " skipped")
       val rewritten = if coverage { TestSynth.withCoverageDump(synthesised) } else { synthesised }
 
@@ -1083,6 +1104,39 @@ func indexOfPackageNamed(pkgs: in List[Emitter.ProjectPackage], name: in String)
   -1
 }
 
+// The summary's count of test entries `--filter` left with nothing to run.
+func notRunSummary(notRun: in Int): String {
+  if notRun == 0 {
+    ""
+  } else {
+    ", " + toString(notRun) + " not run (no test matches --filter)"
+  }
+}
+
+// Whether `[project.tests]` declares an entry named `name`.
+func projectDeclaresTest(proj: in Mf.ProjectSection, name: in String): Bool {
+  for e in proj.tests {
+    if e.name == name {
+      return true
+    }
+  }
+  false
+}
+
+// Whether `--suite` selects the `[project.tests]` entry `name`; with no
+// `--suite`, every entry runs.
+func suiteSelected(suites: in List[String], name: in String): Bool {
+  if suites.count == 0 {
+    return true
+  }
+  for s in suites {
+    if s == name {
+      return true
+    }
+  }
+  false
+}
+
 // The package `lib` with the synthesised test module `testRewritten` (read
 // from `testPath`) added as a last file, so the tests are compiled as part of
 // the package and reach its non-`pub` items (#678, D245).  The module's
@@ -1111,6 +1165,7 @@ func mergeTestModuleIntoPackage(
 func cmdTestManifest(
   mfPath: in String,
   filterArg: in Option[String],
+  suites: in List[String],
   targetJvm: in Bool,
   failFast: in Bool,
   runProperties: in Bool,
@@ -1156,6 +1211,30 @@ func cmdTestManifest(
   // Set when the `@test_module` fallback below ran files and some failed, in a
   // `--doctests` run that goes on to the packages' doctests.
   var fallbackFailed = false
+  if suites.count > 0 {
+    if proj.tests.count == 0 {
+      printErr("test: --suite selects [project.tests] entries, and " + mfPath + " has none")
+      return 1
+    }
+    val unknown: List[String] = newList()
+    for name in suites {
+      if not projectDeclaresTest(proj, name) {
+        unknown.add(name)
+      }
+    }
+    if unknown.count > 0 {
+      val known: List[String] = newList()
+      for e in proj.tests {
+        known.add(e.name)
+      }
+      printErr(
+        "test: --suite " + Str.joinList(", ", unknown) + " is not a [project.tests] entry of " + mfPath + " (entries: " +
+          Str.joinList(", ", known) +
+          ")"
+      )
+      return 1
+    }
+  }
   if proj.tests.count == 0 and coverage {
     printErr(
       "test: --coverage in project mode needs [project.tests] entries in " + mfPath +
@@ -1811,6 +1890,8 @@ func cmdTestManifest(
 
   var totalPassed = 0
   var totalFailed = 0
+  // Test entries not compiled because `--filter` selects none of their tests.
+  var totalNotRun = 0
 
   // Resolved once (matching buildProject): a `[nuget]` dependency may itself
   // be a Lyric package (e.g. `Lyric.Web`), so its contract is routed through
@@ -1873,10 +1954,12 @@ func cmdTestManifest(
   var ji = 0
   while ji < proj.tests.count {
     val te = proj.tests[ji]
-    jobNames.add(te.name)
-    jobPaths.add(te.path)
-    jobAbs.add(if Path.isAbsolute(te.path) { te.path } else { Path.join(mfDir, te.path) })
-    jobSources.add("")
+    if suiteSelected(suites, te.name) {
+      jobNames.add(te.name)
+      jobPaths.add(te.path)
+      jobAbs.add(if Path.isAbsolute(te.path) { te.path } else { Path.join(mfDir, te.path) })
+      jobSources.add("")
+    }
     ji += 1
   }
   if doctests {
@@ -1941,8 +2024,15 @@ func cmdTestManifest(
       TestSynth.synthesizeFor(testSourceRun, filterArg, false, false, propCfg, cfgActiveWithTarget, mfDeclared)
     }
     match testSynthResult {
-      case Synthesised(rw, _, _) -> {
-        rewritten = if coverage { TestSynth.withCoverageDump(rw) } else { rw }
+      case Synthesised(rw, testCnt, _, selectedCnt) -> {
+        if selectedCnt == 0 and testCnt > 0 {
+          // Nothing in this module would run, so skip its whole-project compile.
+          Console.println(toString(testCnt) + " test(s), none match --filter; not compiled")
+          totalNotRun += 1
+          synthFailed = true
+        } else {
+          rewritten = if coverage { TestSynth.withCoverageDump(rw) } else { rw }
+        }
       }
       case NoTestModule(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": not a @test_module — add @test_module annotation")
@@ -2139,7 +2229,9 @@ func cmdTestManifest(
     if failFast and totalFailed > 0 {
       Console.println("")
       Console.println(
-        "== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed (stopped early)"
+        "== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed" +
+          notRunSummary(totalNotRun) +
+          " (stopped early)"
       )
       return 1
     }
@@ -2147,7 +2239,10 @@ func cmdTestManifest(
   }
 
   Console.println("")
-  Console.println("== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed")
+  Console.println(
+    "== summary: " + toString(totalPassed) + " passed, " + toString(totalFailed) + " failed" +
+      notRunSummary(totalNotRun)
+  )
   val suiteRc = if totalFailed > 0 or fallbackFailed { 1 } else { 0 }
   if coverage {
     return finishCoverageRun(covSession, covDumps, Path.join(mfDir, ".lyric-test"), minCoverage, suiteRc)

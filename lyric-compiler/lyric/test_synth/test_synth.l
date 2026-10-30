@@ -47,7 +47,10 @@ import Lyric.Cfg
 // §1. Public surface.
 // ─────────────────────────────────────────────────────────────────────────────
 pub union Outcome {
-  case Synthesised(source: String, testCount: Int, skipCount: Int)
+  // `selectedCount` is how many of the `testCount` runnable tests the
+  // `filter` selects (equal to `testCount` without one), so a caller can skip
+  // compiling a module whose tests the filter excludes.
+  case Synthesised(source: String, testCount: Int, skipCount: Int, selectedCount: Int)
   case NoTestModule(span: Span)
   case UserMainExists(span: Span)
   case ParseFailures(diagnostics: List[Diagnostic])
@@ -928,7 +931,13 @@ pub func synthesizeFor(
   }
   sb = sb + "\n\n"
   sb = sb + synthesizeMain(tests, skipped, filter, nativeMode)
-  Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count)
+  var selected = 0
+  for t in tests.toArray() {
+    if filterAccepts(filter, t.title) {
+      selected = selected + 1
+    }
+  }
+  Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count, selectedCount = selected)
 }
 
 /// Whether `rawSource` carries a file-level `@test_module`.
