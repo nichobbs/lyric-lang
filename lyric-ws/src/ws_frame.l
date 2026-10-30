@@ -75,7 +75,7 @@ pub union WsFrameEvent {
 /// Internal fragmented-message accumulator. Never exposed — see
 /// `FrameDecoder`'s note on why this is nonetheless a plain `record`, not
 /// `opaque` (mirrors `Std.HttpEngine.Connection`'s #5937 workaround).
-record FragState {
+pub record FragState {
   active: Bool
   isText: Bool
   acc: List[Byte]

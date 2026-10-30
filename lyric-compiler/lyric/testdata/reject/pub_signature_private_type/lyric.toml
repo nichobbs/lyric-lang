@@ -1,0 +1,8 @@
+[package]
+name = "reject-pub-private"
+version = "0.1.0"
+[project]
+name = "RejectPubPrivate"
+[project.packages]
+"Lib" = "lib"
+"App" = "app"

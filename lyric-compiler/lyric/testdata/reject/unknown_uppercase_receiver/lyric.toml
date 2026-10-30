@@ -1,0 +1,7 @@
+[package]
+name = "reject-upper-receiver"
+version = "0.1.0"
+[project]
+name = "RejectUpperReceiver"
+[project.packages]
+"App" = "app"

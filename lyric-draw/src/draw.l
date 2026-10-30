@@ -54,7 +54,7 @@ pub record Image {
   pixelArt: Bool
 }
 
-ref record Batch {
+pub ref record Batch {
   texture: G.Texture
   crisp: Bool
   first: Int

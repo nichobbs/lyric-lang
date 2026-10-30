@@ -659,6 +659,11 @@ pub record SymbolTable {
   importVisibleNames: Map[String, Bool]
   /// `<package>` -> the alias an `import P as Q` gives it.
   importAliases: Map[String, String]
+  /// Non-empty when the checked file is `@contract_source`: a restored
+  /// dependency's metadata synthesised back into source, whose preamble copies
+  /// sibling packages' types into the file's own package, so a qualified type
+  /// there may resolve to the copy (docs/70 phase 5 removes the synthesis).
+  contractSourceFile: List[Bool]
   /// The native target's FFI intrinsic types (`NativePtr`, `NativeWeak`,
   /// docs/01 §11.6), by name, when the file is checked for `--target
   /// native`; empty for every other target, which has no representation for
@@ -759,6 +764,7 @@ pub func newSymbolTable(): SymbolTable {
   stdCollectionsHostIndexed.add(0)
   SymbolTable(
     symbols = newList(),
+    contractSourceFile = newList(),
     scopePkg = newList(),
     scopeImports = newList(),
     impls = newList(),

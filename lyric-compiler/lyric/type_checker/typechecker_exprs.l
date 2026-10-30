@@ -1188,7 +1188,7 @@ func checkUnimportedTypeReceiver(
       // whether or not that package is imported, so this is T0097 (adding an
       // import cannot fix it), checked before reachability.
       if symbolIsPackagePrivateBinding(sym) {
-        checkImportedVisibility(sym, span, diag)
+        checkImportedVisibility(tbl, sym, span, diag)
         return
       }
       // An extern-type binding (no visibility modifier) keeps its
@@ -1210,16 +1210,58 @@ func checkUnimportedTypeReceiver(
       // type stays T0097 (#7499): no import would make it nameable.
       for cand in symTableTryFindAll(tbl, name) {
         if symbolIsType(cand) and cand.originPackage != curPkg and symbolIsPackagePrivateBinding(cand) {
-          checkImportedVisibility(cand, span, diag)
+          checkImportedVisibility(tbl, cand, span, diag)
           return
         }
       }
       val hint = symTableHiddenImportHint(tbl, name)
       if hint.length > 0 {
         diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
+      } else if not receiverNamesPackageOrParam(tbl, sc, name) {
+        // Nothing any loaded package declares, and no package, alias or
+        // generic parameter of that name: no backend can resolve it either
+        // (docs/70 §5.3).
+        diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
       }
     }
   }
+}
+
+// Whether an uppercase receiver that names no symbol still names something a
+// qualified call can go through: a primitive type (`Int.shl(k, 2)`), a
+// generic parameter in scope, `Self`, a
+// loaded package (by its full path, its first segment as in `Std.Http.GET`, or
+// its last segment, the implicit alias of `import A.B`), an import alias, or an
+// `extern package` block.
+func receiverNamesPackageOrParam(tbl: in SymbolTable, sc: in Scope, name: in String): Bool {
+  if name == "Self" {
+    return true
+  }
+  match primFromString(name) {
+    case Some(_) -> return true
+    case None -> ()
+  }
+  for g in sc.genericNames {
+    if g == name {
+      return true
+    }
+  }
+  if symTablePackageHasAnySymbol(tbl, name) or symTablePackageHasAnyExternBlockMember(tbl, name) {
+    return true
+  }
+  val suffix = "." + name
+  val prefix = name + "."
+  for pkg in mapKeys(tbl.symbolPackages) {
+    if pkg.endsWith(suffix) or pkg.startsWith(prefix) {
+      return true
+    }
+  }
+  for alias in mapValues(tbl.importAliases) {
+    if alias == name {
+      return true
+    }
+  }
+  false
 }
 
 // #7499: a symbol whose cross-package use `checkImportedVisibility` rejects
@@ -1421,7 +1463,7 @@ func checkQualifiedPackageRef(
     case Some(sym) -> {
       if symbolIsType(sym) and symbolIsPackagePrivateBinding(sym) {
         val vd: List[Diagnostic] = newList()
-        checkImportedVisibility(sym, span, vd)
+        checkImportedVisibility(tbl, sym, span, vd)
         var i = 0
         while i < vd.count {
           addDiagnosticOnce(diag, vd[i])
@@ -4953,20 +4995,6 @@ func stringListContains(xs: in List[String], x: in String): Bool {
   false
 }
 
-// True when a plain function called `name` is registered, whatever its arity.
-func anyFunctionNamed(sigs: in Map[String, ResolvedSignature], name: in String): Bool {
-  if sigs.containsKey(name) {
-    return true
-  }
-  val prefix = name + "/"
-  for k in mapKeys(sigs) {
-    if k.startsWith(prefix) {
-      return true
-    }
-  }
-  false
-}
-
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface,
 // local or imported (`symTableIsMemberComplete`; a restored contract's record
@@ -5009,10 +5037,10 @@ func maybeUnknownMemberDiag(
       if not symTableIsMemberComplete(tbl, tid) and not unionCall {
         return
       }
-      // A plain function of that name, in this package or any package the
-      // checker was given, is what a method call on a union binds to by its
-      // first argument (`o.isSome()`, `o.assertSome()`).
-      if unionCall and anyFunctionNamed(sigs, name) {
+      // A plain function of that name that the file can call bare is what a
+      // method call on a union binds to by its first argument (`o.isSome()`,
+      // `o.assertSome()`); one the import rule hides is not (docs/70 §4.5).
+      if unionCall and visibleBareFuncSigs(tbl, sigs, name, -1).count > 0 {
         return
       }
       if isUniversalMethodName(name) {
@@ -5072,7 +5100,7 @@ func maybeUnknownMemberDiag(
     // throws when reached (never lowering its lambda arguments, which then
     // failed T0115 as unreachable lifted bodies) and the JVM rejected it
     // (J008), so the front end decides.
-    case TySlice(_) -> sliceUnknownMethodDiag(sigs, diag, recv, name, span, isCall)
+    case TySlice(_) -> sliceUnknownMethodDiag(tbl, sigs, diag, recv, name, span, isCall)
     case _ -> {
     }
   }
@@ -5119,7 +5147,7 @@ func packageDeclaresExternType(tbl: in SymbolTable): Bool {
 // Named`) would otherwise be duck-typed against whatever the type argument
 // has, and a typo would fail in a backend.  Silent when the name is one every
 // receiver has (`toString`, the derive-synthesised names), when a plain
-// function of that name could bind by UFCS, when a bound is a marker or an
+// function of that name the file can call could bind by UFCS, when a bound is a marker or an
 // interface whose members the checker cannot enumerate, for a type
 // parameter of the enclosing record or impl, whose bounds are not in scope,
 // and in a package that declares an `extern type`.
@@ -5140,7 +5168,7 @@ func maybeUnknownTypeParamMethodDiag(
       if isSelfTypeArgument(sc.selfType, tvName) {
         return
       }
-      if isUniversalMethodName(name) or isPrimitiveBuiltinMethodName(name) or anyFunctionNamed(sigs, name) {
+      if isUniversalMethodName(name) or isPrimitiveBuiltinMethodName(name) or visibleBareFuncSigs(tbl, sigs, name, -1).count > 0 {
         return
       }
       for b in sc.bounds {
@@ -5186,6 +5214,7 @@ func maybeUnknownTypeParamMethodDiag(
 }
 
 func sliceUnknownMethodDiag(
+  tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   recv: in Type,
@@ -5198,7 +5227,7 @@ func sliceUnknownMethodDiag(
     return
   }
   val tname = renderType(recv)
-  val hint = if anyFunctionNamed(sigs, name) {
+  val hint = if visibleBareFuncSigs(tbl, sigs, name, -1).count > 0 {
     "; '" + name + "' is a plain function, not a method of " + tname + ": call it as '" + name + "(xs, ...)'"
   } else {
     ""
@@ -5484,7 +5513,7 @@ func inferMember(
       // Lyric has no trailing-lambda call syntax, so `r.mapErr { e -> ... }`
       // lands here as the bare member `r.mapErr` followed by a block (#8472).
       match stdCoreMonadName(tbl, recvRaw) {
-        case Some(monad) -> if not isUniversalMethodName(name) and not anyFunctionNamed(sigs, name) {
+        case Some(monad) -> if not isUniversalMethodName(name) and visibleBareFuncSigs(tbl, sigs, name, -1).count == 0 {
           diag.add(
             errorDiagnostic(
               "T0113",
@@ -6634,7 +6663,7 @@ func resolveQualifiedFuncValue(
     return Some(value = TyError)
   }
   val sym = chosen[0]
-  checkImportedVisibility(sym, sp, diag)
+  checkImportedVisibility(tbl, sym, sp, diag)
   val arity = match sym.kind { case DKFunc(fd) -> fd.params.count; case _ -> 0 }
   match pkgFuncSig(sigs, sym.originPackage, name, arity) {
     case Some(sig) -> if recordFuncRefSite(tbl, diag, sig, name, sp) {
@@ -6727,7 +6756,7 @@ func resolveExprPath(
     match moduleValSymbolOfSegs(sc, tbl, path.segments) {
       case Some(vsym) -> match vsym.kind {
         case DKVal(vd) -> {
-          checkImportedVisibility(vsym, span, diag)
+          checkImportedVisibility(tbl, vsym, span, diag)
           return moduleValReadType(tbl, sigs, vsym, vd)
         }
         case _ -> ()
@@ -6797,7 +6826,7 @@ func resolveExprPath(
       // the symbol table for the same name to enforce cross-package visibility.
       match symTableTryFindOne(tbl, name) {
         case Some(sym) -> {
-          checkImportedVisibility(sym, span, diag)
+          checkImportedVisibility(tbl, sym, span, diag)
           // `sigs` keeps the first-registered function of this name from ANY
           // loaded package; the value is the one in scope here, the same one
           // a call would bind (D-progress-963).
@@ -6874,7 +6903,7 @@ func resolveExprPath(
   }
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
-      checkImportedVisibility(sym, span, diag)
+      checkImportedVisibility(tbl, sym, span, diag)
       match sym.kind {
         case DKUnionCase(_, _) -> {
           // A bare constructor reference like `Some` without call args infers as the
@@ -9520,7 +9549,7 @@ func unionCaseSymbolForScrutinee(
                 // `checkUnimportedTypeReceiver`'s ordering (privacy before
                 // reachability).
                 if symbolIsPackagePrivateBinding(scrCands[sci]) {
-                  checkImportedVisibility(scrCands[sci], fn.span, diag)
+                  checkImportedVisibility(tbl, scrCands[sci], fn.span, diag)
                   return None
                 }
                 if flatSegs.count >= 2 {
@@ -9594,7 +9623,7 @@ func unionCaseSymbolForScrutinee(
                 // #7591: see the DKUnionCase arm's identical comments above
                 // — privacy applies whether the head is qualified or bare.
                 if symbolIsPackagePrivateBinding(scrCands[sci]) {
-                  checkImportedVisibility(scrCands[sci], fn.span, diag)
+                  checkImportedVisibility(tbl, scrCands[sci], fn.span, diag)
                   return None
                 }
                 if flatSegs.count >= 2 {
@@ -9725,7 +9754,7 @@ func checkRecordPatternHead(
           // before reachability (T0020), so an unimported private record
           // still gets T0097.
           if symbolIsPackagePrivateBinding(cands[ci]) {
-            checkImportedVisibility(cands[ci], span, diag)
+            checkImportedVisibility(tbl, cands[ci], span, diag)
             return
           }
           if segs.count >= 2 {
@@ -9824,7 +9853,7 @@ func checkBareCasePatternScrutinee(
         }
         if own {
           if symbolIsPackagePrivateBinding(cands[e]) {
-            checkImportedVisibility(cands[e], span, diag)
+            checkImportedVisibility(tbl, cands[e], span, diag)
           }
           return ()
         }
@@ -17680,7 +17709,7 @@ func inferExprCore(
       match moduleValSymbolOfExpr(sc, tbl, e) {
         case Some(vsym) -> match vsym.kind {
           case DKVal(vd) -> {
-            checkImportedVisibility(vsym, e.span, diag)
+            checkImportedVisibility(tbl, vsym, e.span, diag)
             return moduleValReadType(tbl, sigs, vsym, vd)
           }
           case _ -> ()

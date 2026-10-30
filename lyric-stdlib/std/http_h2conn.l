@@ -331,7 +331,7 @@ pub union H2SendError {
 /// Reference semantics: a stream fetched from `H2Connection.streams` and
 /// mutated in place updates the tracked value.
 @experimental
-record H2Stream {
+pub record H2Stream {
   id: Int
   var state: H2StreamState
   var sendWindow: Int
@@ -346,7 +346,7 @@ record H2Stream {
 /// which the byte-budget guard alone would never stop) — see
 /// `maxContinuationFrames`.
 @experimental
-record ContinuationState {
+pub record ContinuationState {
   streamId: Int
   buffer: List[Byte]
   endStream: Bool
@@ -370,7 +370,7 @@ record ContinuationState {
 /// Grouping five fields here keeps the arity safely under that threshold.
 /// Filed as #6089.
 @experimental
-record H2ShutdownState {
+pub record H2ShutdownState {
   var goAwaySent: Bool
   var goAwayLastStreamId: Int
   var goAwayReceived: Bool

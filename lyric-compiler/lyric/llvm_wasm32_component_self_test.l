@@ -192,25 +192,25 @@ console.log('loop=' + [1, 2, 3].map((i) => p.echo('x'.repeat(i * 1000)).length).
 
 val richProgram: String = r#"package Probe
 
-record Point {
+pub record Point {
   x: Int
   y: Int
 }
 
-record Person {
+pub record Person {
   name: String
   age: Int
   tags: List[String]
   home: Option[Point]
 }
 
-enum Color {
+pub enum Color {
   case Red
   case Green
   case Blue
 }
 
-union Shape {
+pub union Shape {
   case Square(side: Double)
   case Circle(radius: Double)
   case Label(text: String)
@@ -1566,7 +1566,7 @@ val tupleProgram: String = r#"package Probe
 
 import Std.Collections
 
-record Box {
+pub record Box {
   pair: (Int, String)
   span: Option[(Int, Int)]
 }
@@ -1613,25 +1613,25 @@ pub func divmod(a: Int, b: Int): Result[(Int, Int), String] {
 
 val imageImportProgram: String = r#"package Probe
 
-record Point {
+pub record Point {
   x: Int
   y: Int
 }
 
-record Person {
+pub record Person {
   name: String
   age: Int
   tags: List[String]
   home: Option[Point]
 }
 
-enum Color {
+pub enum Color {
   case Red
   case Green
   case Blue
 }
 
-union Shape {
+pub union Shape {
   case Square(side: Double)
   case Big(count: Long)
   case Label(text: String)

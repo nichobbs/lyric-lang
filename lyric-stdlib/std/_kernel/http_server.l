@@ -363,7 +363,7 @@ pub record HttpContext {
 // Per-connection ownership flag. `taken` flips once, on the puller thread,
 // before it releases the context's `done` semaphore; the connection task reads
 // it after `semWait(done)`, so the semaphore orders the write before the read.
-record ConnHandoff {
+pub record ConnHandoff {
   var taken: Bool = false
 }
 
@@ -374,7 +374,7 @@ record ConnHandoff {
 // flow-controlled DATA on `streamId`. Kept free of any `H2Connection` reference
 // so the FSM state stays touched only by the connection task (no cross-thread
 // mutation of the shared hpack encoder / flow windows).
-record H2Exchange {
+pub record H2Exchange {
   streamId: Int
   var status: Int
   var contentType: String

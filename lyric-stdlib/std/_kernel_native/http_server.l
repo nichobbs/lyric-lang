@@ -455,7 +455,7 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 // Concurrency primitives: mutex-guarded FIFO queue + per-request one-shot
 // semaphore (module header).
 // =====================================================================
-ref record ServerQueue {
+pub ref record ServerQueue {
   mutex: Long
   available: Long
   items: List[HttpContext]

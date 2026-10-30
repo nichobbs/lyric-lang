@@ -1,0 +1,8 @@
+[package]
+name = "reject-union-method"
+version = "0.1.0"
+[project]
+name = "RejectUnionMethod"
+[project.packages]
+"Zed" = "z"
+"App" = "app"

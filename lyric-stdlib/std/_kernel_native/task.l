@@ -192,7 +192,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
 // Threads.
 // =====================================================================
 /// One started action; `finished` is read and written under the global lock.
-ref record Job {
+pub ref record Job {
   var finished: Bool = false
 }
 
