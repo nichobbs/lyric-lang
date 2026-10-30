@@ -12920,8 +12920,13 @@ func nestedLambdaSource(depth: in Int): String {
     i = i + 1
   }
   "package P\nfunc each[T](xs: in slice[T], f: in (T) -> Unit): Unit {\n  for x in xs { f(x) }\n}\n" +
-    "func run(xs: in slice[Int], out: in List[Int]): Unit {\n" + open + "out.add(a" + toString(depth - 1) +
-    " + a0)\n" + close + "}\n"
+    "func run(xs: in slice[Int], out: in List[Int]): Unit {\n" +
+    open +
+    "out.add(a" +
+    toString(depth - 1) +
+    " + a0)\n" +
+    close +
+    "}\n"
 }
 
 test "lambda arguments nested to depth 14 check in polynomial time (#7879)" {
@@ -12955,4 +12960,6 @@ test "method syntax on a slice naming a plain function is T0113 (#8471)" {
   assertEqualInt(countDiagCode(parseCheck(ok), "T0113"), 0, "the function form is clean")
   val builtin = "package P\nfunc f(xs: in slice[Int]): Int {\n  xs.append(1).concat(xs).slice(0, 1).length\n}\n"
   assertEqualInt(countDiagCode(parseCheck(builtin), "T0113"), 0, "built-in slice members are clean")
+  val toArr = "package P\nfunc f(xs: in slice[Int]): Int {\n  xs.toArray().length\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(toArr), "T0113"), 0, "toArray is the identity on a slice (#7480)")
 }

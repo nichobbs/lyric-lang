@@ -5164,7 +5164,8 @@ func sliceUnknownMethodDiag(
   span: in Span,
   isCall: in Bool,
 ): Unit {
-  if not isCall or isUniversalMethodName(name) {
+  // `.toArray()` is the identity on a slice (#7480).
+  if not isCall or isUniversalMethodName(name) or name == "toArray" {
     return
   }
   val tname = renderType(recv)

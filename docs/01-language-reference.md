@@ -428,7 +428,7 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 `.slice(start, end)` panics if `start < 0`, `end < start`, or `end > xs.length` — the full range must satisfy `0 <= start <= end <= xs.length`.
 
-A slice's members are `.length`, `.append`, `.concat`, `.slice` and `.toList()`; a method call naming any other member is **T0113** (#8471). A function from `Std.Iter` or elsewhere is not a method of a slice, so `xs.filter({ u -> u > k })` is written `filter(xs, { u -> u > k })`, and the message names that form when a plain function of the name exists.
+A slice's members are `.length`, `.append`, `.concat`, `.slice`, `.toList()` and `.toArray()` (the identity); a method call naming any other member is **T0113** (#8471). A function from `Std.Iter` or elsewhere is not a method of a slice, so `xs.filter({ u -> u > k })` is written `filter(xs, { u -> u > k })`, and the message names that form when a plain function of the name exists.
 
 `xs.toList()` returns a shallow-copied `List[T]` holding `xs`'s elements — the round-trip shuttle back from `List[T].toArray()` — on every target (`--target jvm` copies the array into an `ArrayList`, #7662, #8323).
 

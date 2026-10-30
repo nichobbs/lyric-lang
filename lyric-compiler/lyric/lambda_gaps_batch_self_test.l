@@ -372,7 +372,15 @@ test "an explicitly returned lambda builds the declared Result instantiation" {
 
 test "the same lambda passed directly as an argument" {
   var n = 0
-  assertEqual(pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }), "some 1", "direct some")
+  assertEqual(
+    pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }),
+    "some 1",
+    "direct some"
+  )
   n = 1
-  assertEqual(pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }), "none", "direct none")
+  assertEqual(
+    pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }),
+    "none",
+    "direct none"
+  )
 }
