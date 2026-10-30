@@ -131,6 +131,7 @@ for t in \
   lyric-compiler/lyric/async_generator_self_test.l \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_dispose_self_test.l \
+  lyric-compiler/lyric/for_loop_dispose_enumerable_self_test.l \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \

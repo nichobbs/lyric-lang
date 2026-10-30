@@ -198,7 +198,7 @@ bash scripts/ci/plugin-protocol-e2e.sh "$lyric_bin" dotnet native
 # D231: a native host loading a trusted plugin's `--shape plugin` library into
 # its own process (docs/69 §10).
 bash scripts/ci/plugin-trusted-e2e.sh "$lyric_bin" native
-# D230: lyric-ui plugin widgets with a native host and native plugins, and a
+# D272: lyric-ui plugin widgets with a native host and native plugins, and a
 # dotnet host with native plugins.
 bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" native native
 bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet native

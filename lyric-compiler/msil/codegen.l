@@ -20509,13 +20509,13 @@ func emitStackValueToStringMsil(
   }
 }
 
-// The one `Unit` value renders as `()` on every target (D209).
+// The one `Unit` value renders as `()` on every target (D271).
 func emitUnitStringMsil(cctx: in CodegenCtx, insns: in List[MInsn]): Unit {
   insns.add(MLdStr(token = ctxInternUs(cctx.lctx, "()")))
 }
 
 // `Object.ToString()` on the object reference on the stack.  Lyric has no
-// null, so a null in an `object` slot is the `Unit` value (D209) and renders
+// null, so a null in an `object` slot is the `Unit` value (D271) and renders
 // as `()` instead of faulting.
 func emitNullSafeObjToStringMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn]): Unit {
   val nonNullL = freshLabelMsil(fctx)

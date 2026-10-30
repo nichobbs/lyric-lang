@@ -1,4 +1,4 @@
-# D230 - The lyric-ui widget plugin point (docs/69 P6, first half)
+# D272 - The lyric-ui widget plugin point (docs/69 P6, first half)
 
 **Status:** shipped. Extends D137/D138 (docs/65) and D207/D228 (docs/69);
 implements the widget half of docs/69 §16 P6. Trusted mode, the other half,

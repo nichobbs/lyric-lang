@@ -29,26 +29,13 @@
 //! (`jvm/codegen/05_stmts.l`) has no such restriction — verified by
 //! `async_spawn_self_test.l`.
 //!
-//! A file-level `@cfg(feature = "jvm")` looked like the natural way to
-//! keep this out of CI's dotnet-only default `lyric test --manifest
-//! lyric-lambda/lyric.toml` / `--features local` invocations (which would
-//! otherwise hang on the deadlock above) — it was tried and reverted: it
-//! compiles clean but crashes at runtime with `System.
-//! MissingMethodException: Entry point not found` once `web`/`jvm` is
-//! inactive, because `Lyric.TestSynth` synthesises `main()`'s test calls
-//! *before* `@cfg` erasure runs, so a fully-erased test module ends up
-//! with no entry point at all rather than a clean "0 tests" pass. Filed
-//! as #6868 (see that issue for the isolated repro). Until it's fixed,
-//! this file is **not registered in `lyric-lambda/lyric.toml`'s
-//! `[project.tests]`** — registering it would either hang every default
-//! CI invocation (no `@cfg` at all) or crash it (`@cfg`-gated). It is a
-//! real, complete, manually-verified test in the meantime.
-//!
-//! Verified manually against this exact tree: temporarily add
-//! `"Lambda.RuntimeLoopTests" = "tests/lambda_runtime_loop_tests.l"` under
-//! `[project.tests]` in `lyric.toml`, then:
-//!   lyric test --target jvm --manifest lyric-lambda/lyric.toml --features jvm
-//! Both cases passed (see this PR's description for the captured output).
+//! The whole module is gated by a file-level `@cfg(feature = "jvm")`, so the
+//! default dotnet runs of `lyric test --manifest lyric-lambda/lyric.toml`
+//! (including `--features local`), which would otherwise hang on the deadlock
+//! above, report `0 test(s), module gated by inactive @cfg` and exit 0. The
+//! tests run under the JVM suite:
+//!   lyric test --target jvm --manifest lyric-lambda/lyric.toml --no-default-features --features jvm
+@cfg(feature = "jvm")
 @test_module
 package Lambda.RuntimeLoopTests
 

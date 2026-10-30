@@ -1,6 +1,6 @@
 # D215 - The private generic helpers of a pub generic travel with it on every target
 
-**Status:** shipped (#8427, generic helpers); supersedes the table in D204 item 1 for the private-generic column; non-generic helpers stay as D204 left them
+**Status:** shipped (#8427, generic helpers); supersedes the table in D268 item 1 for the private-generic column; non-generic helpers stay as D268 left them
 
 ## Decision
 

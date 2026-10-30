@@ -1,4 +1,4 @@
-# D205 - Restrictions on `out`/`inout` parameters: no default, no `async`, no function value
+# D269 - Restrictions on `out`/`inout` parameters: no default, no `async`, no function value
 
 **Status:** accepted, implemented (#8255, #8318, #8229, #8369)
 

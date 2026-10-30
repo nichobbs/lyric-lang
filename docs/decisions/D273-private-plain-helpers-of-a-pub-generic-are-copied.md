@@ -1,4 +1,4 @@
-# D231 - The private non-generic helpers of a pub generic are copied with it, when a copy is the same function
+# D273 - The private non-generic helpers of a pub generic are copied with it, when a copy is the same function
 
 **Status:** shipped (#8427, non-generic helpers); extends D215, which carried the private generic helpers; the helpers a copy would change the meaning of stay T0123, tracked in #8546
 
@@ -25,7 +25,7 @@ answers have different costs:
 
 1. **Hybrid, by what the copy would change.** A private non-generic helper a `pub` generic reaches (directly, through
    other helpers, or from a lambda, to a fixpoint) is **copied** (a) when the copy is the same function: it is
-   self-contained. Otherwise it stays as D204 left it, `T0123`, and (b) is the plan for exactly those helpers
+   self-contained. Otherwise it stays as D268 left it, `T0123`, and (b) is the plan for exactly those helpers
    (#8546). (a) first because it needs no change to emitted assemblies and gives the right semantics for the large
    class of pure helpers; (b) is rejected for now because it widens the emitted assembly's public surface and needs
    a new binding path in both code generators and in contract metadata for every helper, when only the stateful

@@ -26,7 +26,7 @@
 #      runtime into its own process (scripts/ci/plugin-trusted-e2e.sh).
 #   8. `lyric plugin sdk`, `pack` and `check` with C#, Java and TypeScript
 #      plugins (scripts/ci/plugin-sdk-e2e.sh).
-#   8. lyric-ui widget plugins (docs/65 §6.5, D230): the Ui.Plugins.Build tests and
+#   8. lyric-ui widget plugins (docs/65 §6.5, D272): the Ui.Plugins.Build tests and
 #      the review example's tests on dotnet, then a screen of plugin widgets
 #      against real plugin processes, every pair of a dotnet or JVM host and
 #      a dotnet or JVM plugin (scripts/ci/ui-widget-plugins-e2e.sh). The JVM

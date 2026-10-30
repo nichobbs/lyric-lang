@@ -9,7 +9,7 @@ through phase P3 of §16: the annotations and `Lyric.PluginExpand`
 plugins on every target including wasm32-wasi under `wasmtime run`,
 `lyric plugin pack`/`check`/`sdk` with C#, Java and TypeScript SDKs, and source
 generators (docs/40) as the first plugin point, protocol points (P4, D228),
-the `lyric-ui` widget point (the first half of P6, D230, §15.1) and trusted
+the `lyric-ui` widget point (the first half of P6, D272, §15.1) and trusted
 (in-process) mode (P6's second half, D231, §10), and WIT-typed components
 hosted in-process by wasmtime (P5, D247, §9.3). Signing and per-application
 catalogues (§12, Q-PLG-006/007) are specced in D248 and not yet implemented
@@ -1078,7 +1078,7 @@ What changed relative to the pre-D207 docs/40:
 
 ### 15.1 Widgets: the `lyric-ui` point
 
-`Ui.Plugins` (`lyric-ui/plugins/`, D230) is the API package of the second
+`Ui.Plugins` (`lyric-ui/plugins/`, D272) is the API package of the second
 plugin point, `WidgetPlugin` (docs/65 §6.5):
 
 ```lyric
@@ -1124,7 +1124,7 @@ plugin and a screen that uses it.
 | P3 | Wasm mode: wasm32-wasi command payloads under `wasmtime run` (§9.2) | Done; generators still use dotnet payloads (§15) |
 | P4 | Protocol points: supervised `ProtocolSession`, routing through grants (`<C>As`, `callCapabilityAs`), the LSP example (`examples/plugins/lsp`), `contributes[T] each` and keyed contributions (D228) | Done |
 | P5 | WIT-typed components and in-process wasmtime (Q-PLG-001): `--shape component` plugins, `ComponentPayload`, `lyric plugin pack --targets component`, `K0013`/`K0014`, `Std.PluginWasm` component mode on dotnet, JVM and native hosts over C callbacks through `@library` bindings (D229, D247) | Done; Windows hosts #8542 |
-| P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D230) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
+| P6 | `lyric-ui` widget point (docs/65 §6.5, §15.1, D272) | Done: `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`, `scripts/ci/ui-widget-plugins-e2e.sh` |
 | P6 | Trusted mode (§10): `trusted` payloads, `GrantDecision.trusted`, `Std.Plugin.Trusted`, `--shape plugin`, `lyric plugin pack --trusted` (D231) | Done; Windows native hosts #8558 |
 | P7 | Signing (§12, D248, D263, D264): `Std.Ed25519`, `plugin.sig`, `lyric plugin keygen`/`sign`/`verify`, `pack --sign-key`, load-time verification and `PluginHostConfig.trust`, `K0105`-`K0110`; examples and CI scripts signed with a test key | Done; restored generators with signed lock entries in D266 |
 | P8 | Catalogues (§12, D248, D265): `Std.Zip`, `catalogue.json`/`catalogue.sig`, `lyric plugin catalogue` and `install`, `pack --zip`, `Std.PluginCatalogue`, `K0120`-`K0123` | Done; the compiler's private zip readers moved to `Std.Zip` in #8582 |

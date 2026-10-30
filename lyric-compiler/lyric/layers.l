@@ -106,7 +106,7 @@ func uiRule(name: in String, layers: in List[String], allow: in List[String], al
 /// `Ui.Core`'s data types, `Ui.Routing`'s URL helpers (which a
 /// `@generate(Ui.Routes)` route union calls, D151), `Ui.Grid`'s pure
 /// data-grid state (D154) and `Ui.PluginWidgets`' pure plugin-widget
-/// placements (D230), effects also run plugin-widget calls
+/// placements (D272), effects also run plugin-widget calls
 /// (`Ui.PluginWidgets.Host`), and only views build widgets.  A view may also import another view, which an embedded
 /// component needs (§6.2).
 pub func presetRules(preset: in String): List[LayerRule] {

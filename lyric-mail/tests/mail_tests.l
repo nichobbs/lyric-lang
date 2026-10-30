@@ -1034,55 +1034,35 @@ test "Mail.connectSmtp returns a sender on this target" {
 // default silently; now it must be named in a structured Err.
 // `Std.Environment.setVar` is a documented no-op on `--target jvm` (see
 // `Mail.validateSmtpConfig`'s doc comment), so a round-trip through it would
-// only ever observe the default config on that target — the same reason
-// `Mail.validateSmtpConfig`'s own tests below call the pure validator
-// directly instead of round-tripping through env vars. Each test here is
-// unconditional (so `Lyric.TestSynth`'s dispatcher, generated ahead of
-// `@cfg` erasure, always finds its synthesized function — see the
-// `messageToJsonForTest` note above) and consults a per-target helper to
-// know whether the env-var round-trip is meaningful on this target.
+// only ever observe the default config on that target: the test is gated to
+// `dotnet`, and the same reason has `Mail.validateSmtpConfig`'s own tests below
+// call the pure validator directly instead.
 @cfg(feature = "dotnet")
-func envVarConfigRoundTripSupported(): Bool {
-  true
-}
-
-@cfg(feature = "jvm")
-func envVarConfigRoundTripSupported(): Bool {
-  false
-}
-
 test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_PORT" {
-  if not envVarConfigRoundTripSupported() {
-    assertTrue(true, "Std.Environment.setVar is a no-op on this target (jvm)")
-  } else {
-    val savedPort = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_PORT", "587")
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", "not-a-port")
-    match Mail.connectSmtp() {
-      case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric port: code is INVALID_CONFIG")
-      case Ok(sender) -> {
-        sender.close()
-        assertTrue(false, "a non-numeric port must never be silently accepted")
-      }
+  val savedPort = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_PORT", "587")
+  Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", "not-a-port")
+  match Mail.connectSmtp() {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric port: code is INVALID_CONFIG")
+    case Ok(sender) -> {
+      sender.close()
+      assertTrue(false, "a non-numeric port must never be silently accepted")
     }
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", savedPort)
   }
+  Std.Environment.setVar("LYRIC_CONFIG_SMTP_PORT", savedPort)
 }
 
+@cfg(feature = "dotnet")
 test "Mail.connectSmtp rejects a non-numeric LYRIC_CONFIG_SMTP_TIMEOUTMS" {
-  if not envVarConfigRoundTripSupported() {
-    assertTrue(true, "Std.Environment.setVar is a no-op on this target (jvm)")
-  } else {
-    val savedTimeout = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", "not-a-timeout")
-    match Mail.connectSmtp() {
-      case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric timeoutMs: code is INVALID_CONFIG")
-      case Ok(sender) -> {
-        sender.close()
-        assertTrue(false, "a non-numeric timeoutMs must never be silently accepted")
-      }
+  val savedTimeout = Std.Environment.getVarOrDefault("LYRIC_CONFIG_SMTP_TIMEOUTMS", "30000")
+  Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", "not-a-timeout")
+  match Mail.connectSmtp() {
+    case Err(e) -> assertEqual(e.code, "INVALID_CONFIG", "non-numeric timeoutMs: code is INVALID_CONFIG")
+    case Ok(sender) -> {
+      sender.close()
+      assertTrue(false, "a non-numeric timeoutMs must never be silently accepted")
     }
-    Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", savedTimeout)
   }
+  Std.Environment.setVar("LYRIC_CONFIG_SMTP_TIMEOUTMS", savedTimeout)
 }
 
 // ─── isPlausibleAddress shape check (#7476 suggestion 5) ─────────────────────
@@ -1375,29 +1355,13 @@ test "Mail.send rejects a message whose attachments individually fit under the c
 // ─── messageToJson: control-character escaping and displayName carry-through
 // (#7476 suggestion 2, suggestion 8) ──────────────────────────────────────────
 // `Mail.messageToJson` is `@cfg(feature = "jvm")` (plus `smtp`), so it does
-// not exist as a symbol on `--target dotnet` at all — a `@cfg`-gated `test`
-// item would leave `Lyric.TestSynth`'s generated dispatcher referencing a
-// test function that erasure removed (test-synthesis runs over the
-// unconditional item list, ahead of `@cfg` erasure). Each test below is
-// therefore unconditional and calls a same-named, per-target helper (the
-// `storageKeyGuardedHandler` idiom in `lyric-storage`'s aspect-weaving
-// tests): the `jvm` + `smtp` variant calls the real `Mail.messageToJson`,
-// the `dotnet` variant returns `None` so the test degenerates to a no-op
-// assertion on that target. `Std.Json` is BCL-backed (.NET-only, see
-// mail.l's kernel notes), so a parse-based round-trip is not available on
-// `--target jvm` either; the escaped form is asserted directly instead, per
-// the finding's own fallback.
+// not exist as a symbol on `--target dotnet`: each test below is gated on the
+// same features and is absent from the run elsewhere. `Std.Json` is
+// BCL-backed (.NET-only, see mail.l's kernel notes), so a parse-based
+// round-trip is not available on `--target jvm` either; the escaped form is
+// asserted directly instead, per the finding's own fallback.
 @cfg(feature = "jvm")
 @cfg(feature = "smtp")
-func messageToJsonForTest(msg: in EmailMessage): Option[String] {
-  return Some(value = Mail.messageToJson(msg))
-}
-
-@cfg(feature = "dotnet")
-func messageToJsonForTest(msg: in EmailMessage): Option[String] {
-  return None
-}
-
 test "Mail.messageToJson escapes a multi-line textBody as valid JSON (no raw newlines)" {
   val msg = EmailMessage(
     from = EmailAddress(address = "s@example.com", displayName = ""),
@@ -1410,18 +1374,16 @@ test "Mail.messageToJson escapes a multi-line textBody as valid JSON (no raw new
     attachments = [],
     replyTo = None
   )
-  match messageToJsonForTest(msg) {
-    case None -> assertTrue(true, "messageToJson is not available on this target (dotnet)")
-    case Some(jsonStr) -> {
-      assertTrue(not containsRawControlChar(jsonStr), "no raw CR/LF/TAB in the JSON output")
-      assertTrue(
-        Std.String.contains(jsonStr, "line one\\nline two\\r\\nline three\\ttabbed"),
-        "body escaped with short forms"
-      )
-    }
-  }
+  val jsonStr = Mail.messageToJson(msg)
+  assertTrue(not containsRawControlChar(jsonStr), "no raw CR/LF/TAB in the JSON output")
+  assertTrue(
+    Std.String.contains(jsonStr, "line one\\nline two\\r\\nline three\\ttabbed"),
+    "body escaped with short forms"
+  )
 }
 
+@cfg(feature = "jvm")
+@cfg(feature = "smtp")
 test "Mail.messageToJson escapes a control character below U+0020 as \\u00XX" {
   val msg = EmailMessage(
     from = EmailAddress(address = "s@example.com", displayName = ""),
@@ -1434,15 +1396,13 @@ test "Mail.messageToJson escapes a control character below U+0020 as \\u00XX" {
     attachments = [],
     replyTo = None
   )
-  match messageToJsonForTest(msg) {
-    case None -> assertTrue(true, "messageToJson is not available on this target (dotnet)")
-    case Some(jsonStr) -> {
-      assertTrue(not containsRawControlChar(jsonStr), "no raw control character in the JSON output")
-      assertTrue(Std.String.contains(jsonStr, "before\\u0001after"), "control char escaped as \\u0001")
-    }
-  }
+  val jsonStr = Mail.messageToJson(msg)
+  assertTrue(not containsRawControlChar(jsonStr), "no raw control character in the JSON output")
+  assertTrue(Std.String.contains(jsonStr, "before\\u0001after"), "control char escaped as \\u0001")
 }
 
+@cfg(feature = "jvm")
+@cfg(feature = "smtp")
 test "Mail.messageToJson carries the from/to displayName through to the JSON output" {
   val msg = EmailMessage(
     from = EmailAddress(address = "sender@example.com", displayName = "Sender Name"),
@@ -1455,13 +1415,9 @@ test "Mail.messageToJson carries the from/to displayName through to the JSON out
     attachments = [],
     replyTo = None
   )
-  match messageToJsonForTest(msg) {
-    case None -> assertTrue(true, "messageToJson is not available on this target (dotnet)")
-    case Some(jsonStr) -> {
-      assertTrue(Std.String.contains(jsonStr, "\"displayName\":\"Sender Name\""), "from displayName present in JSON")
-      assertTrue(Std.String.contains(jsonStr, "\"displayName\":\"Recv Name\""), "to displayName present in JSON")
-    }
-  }
+  val jsonStr = Mail.messageToJson(msg)
+  assertTrue(Std.String.contains(jsonStr, "\"displayName\":\"Sender Name\""), "from displayName present in JSON")
+  assertTrue(Std.String.contains(jsonStr, "\"displayName\":\"Recv Name\""), "to displayName present in JSON")
 }
 
 // Any bare CR, LF, or TAB character — used to assert `messageToJson` never

@@ -3,7 +3,7 @@
 `Lyric.Mono.resolveAmbiguousOverload` broke a tie between two same-named,
 same-signature candidates by the root file's imports (`uniqueRootImported`),
 but inside a generic body specialised from another package P it gave up
-(`None`): the call was never specialised. D230 hit it with `Ui.Forms.formFieldAt`
+(`None`): the call was never specialised. D272 hit it with `Ui.Forms.formFieldAt`
 calling `Ui.Widgets.field` in a bundle that also held `Ui.Plugins.Build.field`
 (`NoSuchMethodError: Ui.Widgets.field(String, ArrayList, Object)` on the JVM,
 an Object fallback on dotnet), and avoided it by moving `Ui.Plugins.Build`

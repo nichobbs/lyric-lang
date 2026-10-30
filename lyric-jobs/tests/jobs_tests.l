@@ -874,13 +874,9 @@ test "enqueueWith wrapper: honours explicit maxAttempts/timeoutMs (#3174, #3515)
 }
 
 // ─── NativeJobScheduler (real backend, `quartz` feature) ──────────────────────
-// `test` blocks don't reliably survive `@cfg` erasure through test synthesis
-// (observed to compile into an invalid MSIL program when gated directly on
-// the `test` itself — see lyric-search/tests/search_tests.l), so the feature
-// split lives on plain helper functions instead, one `@cfg` variant per
-// mutually-exclusive backend feature (`inprocess`/`hangfire`/`quartz` — see
-// lyric.toml's `[features]` comment) so exactly one always survives erasure
-// and the bare `test` block below always compiles.
+// The helper functions and the `test` are gated on the `quartz` feature (see
+// lyric.toml's `[features]` comment), so the scenario is absent from any build
+// that does not select the Quartz backend.
 //
 // This is a genuine, real end-to-end run: `Jobs.connectQuartz()` starts a
 // real `org.quartz.impl.StdScheduler` (JVM) or returns the tracked "not yet
@@ -964,16 +960,7 @@ func quartzE2ECancelAndErrorScenario(scheduler: in NativeJobScheduler): String {
   }
 }
 
-@cfg(feature = "hangfire")
-func quartzE2EScenario(): String {
-  "OK"    // Hangfire's real-backend coverage is out of scope for this test; see the quartz variant.
-}
-
-@cfg(feature = "inprocess")
-func quartzE2EScenario(): String {
-  "OK"    // No NativeJobScheduler backend selected in this build; nothing to test here.
-}
-
+@cfg(feature = "quartz")
 test "NativeJobScheduler (quartz feature): real end-to-end schedule, run, poll, cancel, and error paths" {
   assertEqual(
     quartzE2EScenario(),

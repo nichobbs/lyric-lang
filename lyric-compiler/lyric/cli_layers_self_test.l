@@ -21,7 +21,7 @@ import Lyric.Emitter as Emitter
 
 val domainSrc = "package Review.Domain\nimport Std.Core\npub record Draft {\n  count: Int\n}\n"
 
-// A match arm whose body is an assignment (P0201), as in the D230 review
+// A match arm whose body is an assignment (P0201), as in the D272 review
 // example's `src/logic.l`.
 val brokenLogicSrc = "package Review.Logic\nimport Std.Core\nimport Review.Domain\npub func bump(d: in Draft, n: in Option[Int]): Draft {\n  var next = d\n  match n {\n    case Some(k) -> next = next.copy(count = k)\n    case None -> ()\n  }\n  next\n}\n"
 

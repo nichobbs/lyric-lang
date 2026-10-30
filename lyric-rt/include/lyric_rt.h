@@ -1304,7 +1304,7 @@ int32_t lyric_tls_validate_identity_pem(const char* cert_pem, const char* key_pe
 LyricString* lyric_tls_last_error_string(void);
 LyricString* lyric_tls_alpn_string(void* conn);
 
-/* ── Trusted in-process plugins (docs/69 §10, D230; lyric_plugin.c) ──────
+/* ── Trusted in-process plugins (docs/69 §10, D231; lyric_plugin.c) ──────
  *
  * A trusted native plugin is a shared library built with `--shape plugin`.
  * It holds no copy of this runtime: its lyric_rt references resolve against

@@ -1,4 +1,4 @@
-# Plugins P6 (first half): the lyric-ui widget plugin point (D230)
+# Plugins P6 (first half): the lyric-ui widget plugin point (D272)
 
 - **The point** (`lyric-ui/plugins`, package `Ui.Plugins`):
   - `WidgetPlugin` 1.0 has `init`, `update` and `configure`, each returning a

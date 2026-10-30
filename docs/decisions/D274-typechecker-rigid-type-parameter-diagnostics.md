@@ -1,4 +1,4 @@
-# D231 - A bare type parameter is rigid in more places; explicit constructor type arguments and overloaded protected members are rejected
+# D274 - A bare type parameter is rigid in more places; explicit constructor type arguments and overloaded protected members are rejected
 
 **Status:** shipped (#8332, #8449, #8018, #7786, #7978, #8104).
 

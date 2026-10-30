@@ -14,11 +14,11 @@ missing or ambiguous, file an issue before inventing a representation.
 | `Long` | `i64` | 64-bit signed integer |
 | `Float` | `double` | 64-bit IEEE 754 double |
 | `Bool` | `i1` | 1-bit; `true` = 1, `false` = 0 |
-| `Unit` | `void` (return) / `i8` placeholder (any other slot) | See "`Unit`" below (D209) |
+| `Unit` | `void` (return) / `i8` placeholder (any other slot) | See "`Unit`" below (D271) |
 | `Byte` | `i8` | Unsigned 8-bit (for `slice[Byte]`, I/O buffers) |
 | `Char` | `i32` | Unicode scalar value; NOT a character in a string buffer |
 
-**Note on `Unit` (D209):** `Unit` is an ordinary type with exactly one value.
+**Note on `Unit` (D271):** `Unit` is an ordinary type with exactly one value.
 A function that returns it emits `ret void`, and an expression of type `Unit`
 that nothing reads has no SSA value (the codegen's `NVoid`).  Everywhere else
 the one value is materialised as an `i8` placeholder that carries no data: a

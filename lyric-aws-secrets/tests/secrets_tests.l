@@ -124,9 +124,8 @@ test "errorMessage: BinaryValueUnsupported includes secret name" {
 // succeeds (annotation scanning is a no-op; env var overrides are checked
 // later, at config-field read time), and every fetch call always returns
 // NotFound (there is no AWS SDK in local mode — set the corresponding env var
-// instead). The `aws`/`jvm` variants below are not applicable to this
-// backend's specific no-op contract, so they skip with a trivial "OK" —
-// see the JVM kernel section further down for what actually is covered
+// instead). Each test is gated on `local`, so it is absent from `aws` and
+// `jvm` builds; see the JVM kernel section further down for what is covered
 // under `--features jvm`.
 @cfg(feature = "local")
 func localModeInitScenario(): String {
@@ -136,16 +135,7 @@ func localModeInitScenario(): String {
   }
 }
 
-@cfg(feature = "aws")
-func localModeInitScenario(): String {
-  "OK" // local-mode-specific contract; not applicable under aws
-}
-
-@cfg(feature = "jvm")
-func localModeInitScenario(): String {
-  "OK" // local-mode-specific contract; not applicable under jvm
-}
-
+@cfg(feature = "local")
 test "init(): always succeeds in local mode" {
   assertEqual(localModeInitScenario(), "OK", "init() must return Ok in local mode")
 }
@@ -165,16 +155,7 @@ func localModeGetSecretScenario(): String {
   }
 }
 
-@cfg(feature = "aws")
-func localModeGetSecretScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func localModeGetSecretScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "local")
 test "getSecret(): always returns NotFound in local mode" {
   assertEqual(localModeGetSecretScenario(), "OK", "getSecret() must return NotFound(name) in local mode")
 }
@@ -194,16 +175,7 @@ func localModeGetSecretFieldScenario(): String {
   }
 }
 
-@cfg(feature = "aws")
-func localModeGetSecretFieldScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func localModeGetSecretFieldScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "local")
 test "getSecretField(): always returns NotFound in local mode" {
   assertEqual(localModeGetSecretFieldScenario(), "OK", "getSecretField() must return NotFound(name) in local mode")
 }
@@ -223,16 +195,7 @@ func localModeGetParameterScenario(): String {
   }
 }
 
-@cfg(feature = "aws")
-func localModeGetParameterScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func localModeGetParameterScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "local")
 test "getParameter(): always returns NotFound in local mode" {
   assertEqual(localModeGetParameterScenario(), "OK", "getParameter() must return NotFound(name) in local mode")
 }
@@ -252,16 +215,7 @@ func localModeGetParameterRawScenario(): String {
   }
 }
 
-@cfg(feature = "aws")
-func localModeGetParameterRawScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func localModeGetParameterRawScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "local")
 test "getParameterRaw(): always returns NotFound in local mode" {
   assertEqual(localModeGetParameterRawScenario(), "OK", "getParameterRaw() must return NotFound(name) in local mode")
 }
@@ -316,16 +270,7 @@ func jvmClassifySecretsErrorScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func jvmClassifySecretsErrorScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "aws")
-func jvmClassifySecretsErrorScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "jvm")
 test "jvm kernel: classifySecretsError maps known AWS error messages to typed SecretsError variants" {
   assertEqual(
     jvmClassifySecretsErrorScenario(),
@@ -369,16 +314,7 @@ func jvmClassifyParameterErrorScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func jvmClassifyParameterErrorScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "aws")
-func jvmClassifyParameterErrorScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "jvm")
 test "jvm kernel: classifyParameterError maps known AWS error messages to typed SecretsError variants" {
   assertEqual(
     jvmClassifyParameterErrorScenario(),
@@ -422,16 +358,7 @@ func awsRealCallNeverPanicsScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func awsRealCallNeverPanicsScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func awsRealCallNeverPanicsScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: getSecret/getParameter never panic uncaught without AWS credentials, always a typed Err" {
   assertEqual(
     awsRealCallNeverPanicsScenario(),
@@ -481,16 +408,7 @@ func netClassifySecretsErrorScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func netClassifySecretsErrorScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func netClassifySecretsErrorScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: classifySecretsError maps known AWS error messages to typed SecretsError variants" {
   assertEqual(
     netClassifySecretsErrorScenario(),
@@ -534,16 +452,7 @@ func netClassifyParameterErrorScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func netClassifyParameterErrorScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func netClassifyParameterErrorScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: classifyParameterError maps known AWS error messages to typed SecretsError variants" {
   assertEqual(
     netClassifyParameterErrorScenario(),
@@ -613,16 +522,7 @@ func netExtractSecretFieldScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func netExtractSecretFieldScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func netExtractSecretFieldScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: extractSecretField returns ParseError (never panics) for a non-string or missing JSON field" {
   assertEqual(
     netExtractSecretFieldScenario(),
@@ -658,16 +558,7 @@ func netExtractSecretValueScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func netExtractSecretValueScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func netExtractSecretValueScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: extractSecretValue converts a binary (null SecretString) secret into BinaryValueUnsupported, never Ok(null)" {
   assertEqual(
     netExtractSecretValueScenario(),
@@ -720,16 +611,7 @@ func netCacheKeyCollisionScenario(): String {
   "OK"
 }
 
-@cfg(feature = "local")
-func netCacheKeyCollisionScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "jvm")
-func netCacheKeyCollisionScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "aws")
 test "aws kernel: secretCacheKeyFor/parameterCacheKeyFor never collide across differently-split inputs" {
   assertEqual(
     netCacheKeyCollisionScenario(),
@@ -804,16 +686,7 @@ func jvmExtractSecretFieldScenario(): String {
   }
 }
 
-@cfg(feature = "local")
-func jvmExtractSecretFieldScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "aws")
-func jvmExtractSecretFieldScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "jvm")
 test "jvm kernel: extractSecretField returns ParseError (never panics) for a non-string or missing JSON field" {
   assertEqual(
     jvmExtractSecretFieldScenario(),
@@ -881,16 +754,7 @@ func jvmCacheKeyCollisionScenario(): String {
   "OK"
 }
 
-@cfg(feature = "local")
-func jvmCacheKeyCollisionScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "aws")
-func jvmCacheKeyCollisionScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "jvm")
 test "jvm kernel: secretCacheKeyFor/parameterCacheKeyFor never collide across differently-split inputs (#7046)" {
   assertEqual(
     jvmCacheKeyCollisionScenario(),
@@ -950,16 +814,7 @@ func jvmExtractSecretValueScenario(): String {
   "OK"
 }
 
-@cfg(feature = "local")
-func jvmExtractSecretValueScenario(): String {
-  "OK"
-}
-
-@cfg(feature = "aws")
-func jvmExtractSecretValueScenario(): String {
-  "OK"
-}
-
+@cfg(feature = "jvm")
 test "jvm kernel: extractSecretValue converts a binary (null SecretString) secret into BinaryValueUnsupported, never Ok(null) (#7047)" {
   assertEqual(
     jvmExtractSecretValueScenario(),

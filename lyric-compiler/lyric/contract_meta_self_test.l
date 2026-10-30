@@ -836,7 +836,7 @@ func testBuildCarriesPrivateGenericHelpers(): Unit {
   )
 }
 
-// A private non-generic helper a `pub` generic reaches is carried too (#8427, D231), under a
+// A private non-generic helper a `pub` generic reaches is carried too (#8427, D273), under a
 // package-unique name, with its body; a helper that touches module state, names a private type,
 // has a contract clause, or is shadowed by a parameter is left where it is.
 func testBuildCarriesPrivatePlainHelpers(): Unit {

@@ -4106,7 +4106,7 @@ static void test_char_classification(void) {
 
 /* The structured-key hash helpers agree with D172's equality (#8167): both
  * zeros hash alike, every NaN does, and equal strings hash alike. */
-/* Trusted plugins (D230): a library that does not exist is refused with a
+/* Trusted plugins (D231): a library that does not exist is refused with a
  * message, lookups on a null handle are null, and the text helpers copy. */
 static const char* plugin_test_text(void) { return "abi-fingerprint"; }
 

@@ -72,3 +72,29 @@ for target in dotnet jvm; do
   fi
   echo "PASS"
 done
+# The other examples/agent files are runnable references too (#8472): each must
+# keep compiling and printing the same output on both targets, and tests.l must
+# keep passing under `lyric test`.
+run_agent_example() {
+  local file="$1" expected="$2" target="$3"
+  echo "=== run examples/agent/$file --target $target ==="
+  local got
+  got="$(LYRIC_CONFIG_EXAMPLES_CONFIGANDASPECTS_DB_URL=postgres://db "$lyric_bin" run --target "$target" "examples/agent/$file" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' | grep -v '^built ' | grep -v 'warning\[W0002\]')" || true
+  if [ "$got" != "$expected" ]; then
+    echo "FAIL: unexpected output from examples/agent/$file --target $target:"
+    echo "$got"
+    exit 1
+  fi
+  echo "PASS"
+}
+expected_contracts=$'divide: 3\ntransferred 200 from 1 to 2\noverdrawn\nincr: 42\nkept 3\ndoubled 3\nwallet 250\nwallet error: balance out of range'
+expected_di=$'clock: 1000\ncreate: created amy\nagain: conflict: user already exists\nsequential: profile-4 40\nparallel: profile-5 50\ntokens left: 2\nwithLog: 42 start,cleanup'
+expected_config=$'server: 0.0.0.0:8080\nconnecting to postgres://db with pool 10\ngetUser: user-7 [auth: check handleGetUser, log: enter handleGetUser, log: exit handleGetUser]\nhealth: ok []\nmetrics: metrics [auth: check handleMetrics]'
+for target in dotnet jvm; do
+  run_agent_example contracts.l "$expected_contracts" "$target"
+  run_agent_example di-and-async.l "$expected_di" "$target"
+  run_agent_example config-and-aspects.l "$expected_config" "$target"
+  echo "=== test examples/agent/tests.l --target $target ==="
+  "$lyric_bin" test --target "$target" examples/agent/tests.l > /tmp/agent-tests-"$target".log 2>&1 \
+    && echo "PASS" || { echo "FAIL"; cat /tmp/agent-tests-"$target".log; exit 1; }
+done

@@ -1,0 +1,29 @@
+# Decision ids that already have more than one file in docs/decisions/, with
+# the most files each may keep.  check-decision-ids.sh fails when an id not
+# listed here is claimed twice, or when a listed id gains a file.  These are the
+# D-progress-N collisions of #7141: ids are referenced textually, so renaming
+# them cannot be done mechanically.  Reconcile an entry by renumbering all but
+# one file to a free id (and every reference to it), then delete its line here.
+# Format: <id> <max files>
+D-progress-0886 5
+D-progress-0887 3
+D-progress-0888 2
+D-progress-0889 2
+D-progress-0891 2
+D-progress-0892 3
+D-progress-0908 3
+D-progress-0912 4
+D-progress-0913 3
+D-progress-0914 3
+D-progress-0915 2
+D-progress-0916 2
+D-progress-0917 2
+D-progress-0941 9
+D-progress-0942 4
+D-progress-0944 2
+D-progress-0955 2
+D-progress-0956 2
+D-progress-0957 2
+D-progress-0980 2
+D-progress-0999 2
+D-progress-1003 2

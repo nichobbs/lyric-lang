@@ -91,6 +91,7 @@ for t in \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_control_flow_dotnet_self_test.l \
   lyric-compiler/lyric/generator_dispose_self_test.l \
+  lyric-compiler/lyric/for_loop_dispose_enumerable_self_test.l \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
@@ -265,6 +266,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/cfg-gated-test-items-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/cfg-gated-test-items-e2e.sh
   ran="$ran cfg-gated-test-items-e2e"
+fi
+# #8472: a bare unknown member of Result/Option is a compile-time T0113 (the
+# `r.mapErr { ... }` mistake), checked through the CLI.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/monad-unknown-member-negative-test.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/monad-unknown-member-negative-test.sh
+  ran="$ran monad-unknown-member-negative-test"
 fi
 # #678: a `@test_module` merged into the package it declares (non-`pub` access)
 # and `lyric test --doctests`, manifest + single-file, both targets (this job has

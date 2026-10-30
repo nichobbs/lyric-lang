@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # ui-widget-plugins-e2e.sh — lyric-ui plugin widgets end to end (docs/65 §6.5,
-# docs/69 §16 P6, D230).
+# docs/69 §16 P6, D272).
 #
 # Usage: ui-widget-plugins-e2e.sh <lyric-binary> <host-target> <plugin-target>
 #

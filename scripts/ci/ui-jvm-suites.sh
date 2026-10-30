@@ -3,7 +3,7 @@
 # ui-jvm-suites.sh — the UI library on JVM (#7378, D139): the erased-receiver
 # JVM self-test that pins the backend fixes it needed, then the lyric-forms,
 # lyric-ui, Ui.Plugins.Build (lyric-ui/plugins/build), examples/ui-customers and the
-# plugin-widget review example (D230) suites on --target jvm, then the
+# plugin-widget review example (D272) suites on --target jvm, then the
 # browser end-to-end test and the desktop-window end-to-end test against the
 # JVM host.  lyric-ui's web
 # host reaches Undertow only through lyric-web and lyric-ws, so the restore

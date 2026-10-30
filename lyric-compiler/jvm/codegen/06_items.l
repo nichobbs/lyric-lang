@@ -8779,7 +8779,7 @@ func emitUnboxErasedElement(insns: in List[LInsn], elem: in JvmType): Unit {
 func makeErasedToStringHelperFunc(): LFunc {
   val strTy = JRef(className = "java/lang/String")
   val insns: List[LInsn] = newList()
-  // Lyric has no null: a null in an erased slot is the `Unit` value (D209).
+  // Lyric has no null: a null in an erased slot is the `Unit` value (D271).
   insns.add(LAload(slot = 0))
   insns.add(LIfnonnull(label = "__ets_nn"))
   insns.add(LPushString(s = "()"))

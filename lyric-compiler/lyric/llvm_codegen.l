@@ -3065,7 +3065,7 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
     )
     case NDouble -> callRuntime(ctx, insns, "lyric_string_from_float", lyricStringNType(), arg1(NDouble, v.value))
     case NFloat -> callRuntime(ctx, insns, "lyric_string_from_float32", lyricStringNType(), arg1(NFloat, v.value))
-    // The one `Unit` value renders as `()` on every target (D209).
+    // The one `Unit` value renders as `()` on every target (D271).
     case NVoid -> emitStringLiteral(ctx, insns, "()")
     case _ -> {
       if isStringNType(v.ty) {

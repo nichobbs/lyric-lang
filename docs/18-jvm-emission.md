@@ -240,7 +240,7 @@ matches the Java-side idiom for unsigned-byte handling.
 
 ### 4.5 `Unit` and `Void`
 
-`Unit` is an ordinary type with exactly one value (D209), and the JVM has no
+`Unit` is an ordinary type with exactly one value (D271), and the JVM has no
 zero-arity tuple type.  We use:
 - `Unit`-typed *return*: emit `void` (no return value pushed).
 - `Unit`-typed *slot that holds a value* -- a parameter (any mode, free
