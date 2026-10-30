@@ -607,6 +607,8 @@ Functions of one name in a package may be overloaded when at least one is generi
 
 A record method may declare type parameters of its own (`func wrap[U](self: in Box[T], x: in U): List[U]`), beside the record's. They are erased in the method's body, so a parameter passed by reference (`out` or `inout`) whose type mentions one is **T0214**: take the value with `in` and return the result, or declare the function outside the record, where it is specialised per type argument (#8241).
 
+A call under explicit type arguments (`firstOf[Int](xs, 1)`) is checked against the signature those arguments instantiate: a wrong argument count is **T0042** and an argument that does not fit its instantiated parameter is **T0043**, as for a call without them. A package-qualified callee (`Core.unwrapOr[Int](o, 5)`) takes explicit type arguments on every target (#8282). Explicit type arguments on a record method (`s.pick[Int](4)`) are not yet supported.
+
 Package generics (Ada-style parameterization of whole modules) are deferred to v2.
 
 ### 2.12 Interfaces
@@ -655,6 +657,8 @@ impl Repository[User, UserId] for PostgresUserRepository {
   the argument expressions.
 - Both forms may be combined:
   `impl[T] Transformer for Container[T] { func transform[U](x: in U): U = x }`.
+
+A generic interface (`interface Holder[T]`) can be declared, and an `impl Holder[Int] for IntBox` is checked against it with the interface's type parameters replaced by the impl's arguments (an argument count that differs is **T0216**); an impl method may rename the interface method's own type parameters. No code generator lowers a generic interface yet, so such an impl is **T0217**: declare a non-generic interface for each instantiation (#7791). A method-level generic interface method (`func id[U](self: in Self, x: in U): U`) runs on `--target dotnet` and `--target jvm`; `--target native` reports **N0007** for it.
 
 Async state-machine lowering for generic impl methods (Phase B SM) is deferred;
 generic async impl methods fall back to the `Task.FromResult` path.

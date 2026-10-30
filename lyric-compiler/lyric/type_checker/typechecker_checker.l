@@ -2287,6 +2287,35 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       // for its target and for its methods' signatures (#7704).
       val ctx = declGenericContext(decl.generics)
       val selfTy = resolveType(tbl, ctx, diag, decl.target)
+      val ifaceGenNames = extractGenericNames(ifaceDecl.generics)
+      val ifaceArgTys: List[Type] = newList()
+      for ia in decl.iface.args {
+        match ia {
+          case TAType(te) -> ifaceArgTys.add(resolveType(tbl, ctx, diag, te))
+          case TAValue(_) -> ifaceArgTys.add(TyError)
+        }
+      }
+      if ifaceArgTys.count != ifaceGenNames.count {
+        diag.add(
+          errorDiagnostic(
+            "T0216",
+            "interface '" + ifaceName + "' takes " + toString(ifaceGenNames.count) + " type argument(s) but the impl gives " +
+              toString(ifaceArgTys.count),
+            decl.span
+          )
+        )
+        return
+      }
+      if ifaceGenNames.count > 0 {
+        diag.add(
+          errorDiagnostic(
+            "T0217",
+            "an impl of the generic interface '" + ifaceName +
+              "' is not supported by the code generators yet: declare a non-generic interface for each instantiation (#7791)",
+            decl.span
+          )
+        )
+      }
       var i = 0
       while i < ifaceDecl.members.count {
         match ifaceDecl.members[i] {
@@ -2322,6 +2351,12 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                     fn.params
                   )
                 }
+                val sigGenNames = extractGenericNames(sig.generics)
+                val fnGenNames = extractGenericNames(fn.generics)
+                val sigGenVars: List[Type] = newList()
+                for gn in sigGenNames {
+                  sigGenVars.add(TyVar(name = gn))
+                }
                 if fn.params.count != sig.params.count {
                   diag.add(
                     errorDiagnostic(
@@ -2334,11 +2369,28 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   )
                 } else {
                   // C11: check each parameter type matches (with Self substitution).
+                  // The interface's own type parameters and the method's are in
+                  // scope on the interface side; the former take the impl's
+                  // interface arguments, and the impl method's own parameters
+                  // are renamed to the interface method's (#7791).
                   val ictx = newGenericContext()
+                  gctxPush(ictx, ifaceGenNames)
+                  gctxPush(ictx, sigGenNames)
+                  gctxPush(ctx, fnGenNames)
                   var pi = 0
                   while pi < sig.params.count {
-                    val ifacePTy = substitutesSelf(resolveIfaceType(tbl, ifaceSym, ictx, diag, sig.params[pi].ty), selfTy)
-                    val implPTy = substitutesSelf(resolveType(tbl, ctx, diag, fn.params[pi].ty), selfTy)
+                    val ifacePTy = substitutesSelf(
+                      substituteTyVars(
+                        resolveIfaceType(tbl, ifaceSym, ictx, diag, sig.params[pi].ty),
+                        ifaceGenNames,
+                        ifaceArgTys
+                      ),
+                      selfTy
+                    )
+                    val implPTy = substitutesSelf(
+                      substituteTyVars(resolveType(tbl, ctx, diag, fn.params[pi].ty), fnGenNames, sigGenVars),
+                      selfTy
+                    )
                     if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
                       diag.add(
                         errorDiagnostic(
@@ -2355,14 +2407,25 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   }
                   // C11: check return type matches (with Self substitution).
                   val ifaceRetTy = substitutesSelf(
-                    match sig.ret {
-                      case None -> TyPrim(pt = PtUnit)
-                      case Some(te) -> resolveIfaceType(tbl, ifaceSym, ictx, diag, te)
-                    },
+                    substituteTyVars(
+                      match sig.ret {
+                        case None -> TyPrim(pt = PtUnit)
+                        case Some(te) -> resolveIfaceType(tbl, ifaceSym, ictx, diag, te)
+                      },
+                      ifaceGenNames,
+                      ifaceArgTys
+                    ),
                     selfTy
                   )
                   val implRetTy = substitutesSelf(
-                    match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ctx, diag, te) },
+                    substituteTyVars(
+                      match fn.ret {
+                        case None -> TyPrim(pt = PtUnit)
+                        case Some(te) -> resolveType(tbl, ctx, diag, te)
+                      },
+                      fnGenNames,
+                      sigGenVars
+                    ),
                     selfTy
                   )
                   if not argSatisfiesParam(tbl, ifaceRetTy, implRetTy) {
@@ -2376,6 +2439,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                       )
                     )
                   }
+                  gctxPop(ctx)
                 }
               }
             }

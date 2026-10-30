@@ -15977,6 +15977,114 @@ func checkExplicitValueGenericCall(
   Some(value = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, 0, args, argTypes)))
 }
 
+// The signature `sig` with its type parameters replaced by `targs`: the form
+// an explicit type-argument call (`firstOf[Int](xs, 1)`) is checked against.
+func instantiateSigAt(sig: in ResolvedSignature, targs: in List[Type]): ResolvedSignature {
+  val ps: List[ResolvedParam] = newList()
+  for p in sig.params {
+    ps.add(p.copy(ty = substituteTyVars(p.ty, sig.generics, targs)))
+  }
+  val noGenerics: List[String] = newList()
+  val noBounds: List[ResolvedBound] = newList()
+  sig.copy(
+    generics = noGenerics,
+    bounds = noBounds,
+    params = ps,
+    returnTy = substituteTyVars(sig.returnTy, sig.generics, targs)
+  )
+}
+
+// A call to a plain generic function under explicit type arguments
+// (`firstOf[Int](xs, 1)`, the parser's `ECall(EIndex(fn, targs), args)`) is
+// checked against the signature those arguments instantiate: the argument
+// count (T0042) and each argument's type (T0043).  The callee is found by
+// name when no declaration takes this many arguments, so a wrong count is
+// reported here and not as an internal error in a backend (#8282).
+func checkExplicitTypeArgCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sp: in Span,
+): Unit {
+  if explicitGenericArgs(fn).count == 0 {
+    return
+  }
+  match valueGenericCallee(tbl, fn, args.count) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> { return } }
+  var iname = ""
+  match inner.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 and not scopeHasName(sc, path.segments[0]) {
+        iname = path.segments[0]
+      }
+    }
+    case _ -> ()
+  }
+  if iname.length == 0 {
+    return
+  }
+  val found = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
+    case Some(s) -> s
+    case None -> {
+      val sameArity: List[ResolvedSignature] = newList()
+      for c in gatherOverloadCandidates(sigs, byNameSigKey(iname)) {
+        if c.generics.count == explicitGenericArgs(fn).count {
+          sameArity.add(c)
+        }
+      }
+      if sameArity.count != 1 {
+        return
+      }
+      sameArity[0]
+    }
+  }
+  if found.isAsync or found.isGenerator or found.isExternFunc or found.generics.count == 0 {
+    return
+  }
+  match explicitCallTypeArgs(sc, tbl, fn, found) {
+    case Some(targs) -> {
+      val inst = instantiateSigAt(found, targs)
+      var deferred = false
+      for a in args {
+        val ae = callArgExpr(a)
+        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) or argIsListHoldingTuple(ae) or argIsPropagate(ae) or argIsPropagateCall(tbl, ae) {
+          deferred = true
+        }
+      }
+      if not deferred {
+        checkCallArgsAgainstSig(sc, tbl, sigs, diag, inst, args, argTypes, sp)
+      } else {
+        // An argument typed from its parameter (a lambda or bracket literal)
+        // has no type yet here; only the count can be checked.
+        var minRequired = 0
+        for p in inst.params {
+          if not p.hasDefault {
+            minRequired = minRequired + 1
+          }
+        }
+        if args.count < minRequired or args.count > inst.params.count {
+          val expectedMsg = if minRequired == inst.params.count {
+            toString(inst.params.count) + " argument(s)"
+          } else {
+            toString(minRequired) + "–" + toString(inst.params.count) + " argument(s)"
+          }
+          diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(args.count), sp))
+        }
+      }
+    }
+    case None -> ()
+  }
+}
+
 func anyErrorType(ts: in List[Type]): Bool {
   for t in ts {
     match t {
@@ -16967,6 +17075,7 @@ func inferExprCore(
       // and its callee types as an error; its arguments and lengths are
       // checked here and give the call its type.
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
+      checkExplicitTypeArgCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)

@@ -125,6 +125,10 @@ func collectCallKeys(e: in Expr, acc: in List[String], rc: in Map[String, String
           case EPath(ip) -> {
             if ip.segments.count == 1 {
               acc.add(ip.segments[0] + "/" + args.count.toString())
+            } else if ip.segments.count > 1 {
+              // `Pkg.f[T](args)` (#8282).
+              acc.add(modulePathJoin(ip.segments) + "/" + args.count.toString())
+              acc.add(ip.segments[ip.segments.count - 1] + "/" + args.count.toString())
             }
           }
           case _ -> {
@@ -134,6 +138,10 @@ func collectCallKeys(e: in Expr, acc: in List[String], rc: in Map[String, String
           case EPath(tp) -> {
             if tp.segments.count == 1 {
               acc.add(tp.segments[0] + "/" + args.count.toString())
+            } else if tp.segments.count > 1 {
+              // `Pkg.f[T](args)` (#8282).
+              acc.add(modulePathJoin(tp.segments) + "/" + args.count.toString())
+              acc.add(tp.segments[tp.segments.count - 1] + "/" + args.count.toString())
             }
           }
           case _ -> {

@@ -5488,10 +5488,28 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case IMSig(sig) -> {
-              registerIfaceSig(into, ifClass, sig.name, sig.params, sig.ret, owner, externTypes, ifaceTps)
+              registerIfaceSig(
+                into,
+                ifClass,
+                sig.name,
+                sig.params,
+                sig.ret,
+                owner,
+                externTypes,
+                withOwnGenericNames(ifaceTps, sig.generics)
+              )
             }
             case IMFunc(fn) -> {
-              registerIfaceSig(into, ifClass, fn.name, fn.params, fn.ret, owner, externTypes, ifaceTps)
+              registerIfaceSig(
+                into,
+                ifClass,
+                fn.name,
+                fn.params,
+                fn.ret,
+                owner,
+                externTypes,
+                withOwnGenericNames(ifaceTps, fn.generics)
+              )
             }
             case IMAssoc(_) -> ()
           }
@@ -6320,6 +6338,20 @@ func refreshMethodSigDefaultsJvm(found: in Option[JvmFuncSig], cls: in String, r
 // `holderAwareParamTypes(erase = true, the interface's own type params)` and
 // an extern-aware return — so the registered descriptor and the emitted
 // interface method stay in lockstep (#5054, #5534).
+// `outer` with the type parameters `own` declares appended: the names an
+// interface method's signature erases to `Object` (a method-level `[U]` as
+// well as the interface's own, #7791).
+func withOwnGenericNames(outer: in List[String], own: in Option[GenericParams]): List[String] {
+  val acc: List[String] = newList()
+  for n in outer {
+    acc.add(n)
+  }
+  for n in genericParamNames(own) {
+    acc.add(n)
+  }
+  acc
+}
+
 func registerIfaceSig(
   into: in Map[String, JvmFuncSig],
   ifClass: in String,
@@ -6337,7 +6369,10 @@ func registerIfaceSig(
   // `registerInstanceSigErased` and the MSIL `stripExplicitSelfParamMsil`.
   val realParams = stripLeadingSelfParam(params)
   val ps = holderAwareParamTypes(realParams, owner, true, typeParams, externTypes)
-  val ret = match retOpt { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
+  val ret = match retOpt {
+    case Some(te) -> typeExprToJvmErasedExtern(te, owner, typeParams, externTypes)
+    case None -> JVoid
+  }
   val pNames: List[String] = newList()
   val pDefs: List[Option[Expr]] = newList()
   val pModes: List[ParamMode] = newList()
@@ -10132,8 +10167,12 @@ pub func codegenPackageWithSigsSeeded(
               // and the registered call-site descriptor must stay in
               // lockstep (#5607, same invariant as #5534).
               val sigRealParams = stripLeadingSelfParam(sig.params)
-              val params = holderAwareParamTypes(sigRealParams, pkgName, true, ifaceEmitTps, externTypes)
-              val ret = match sig.ret { case Some(te) -> typeExprToJvmExtern(te, pkgName, externTypes); case None -> JVoid }
+              val sigEmitTps = withOwnGenericNames(ifaceEmitTps, sig.generics)
+              val params = holderAwareParamTypes(sigRealParams, pkgName, true, sigEmitTps, externTypes)
+              val ret = match sig.ret {
+                case Some(te) -> typeExprToJvmErasedExtern(te, pkgName, sigEmitTps, externTypes)
+                case None -> JVoid
+              }
               val desc = buildDescriptor(params, ret)
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
