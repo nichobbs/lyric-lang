@@ -7185,6 +7185,55 @@ test "two renames to one name are both T0148 (#7928)" {
   assertEqualInt(countDiagCode(cr, "T0148"), 2, "each rename is reported")
 }
 
+// #7926: a selective import of a name the package does not declare is an error
+// at the import item, renamed or not, with a did-you-mean hint for a near name.
+test "a selective import of an undeclared name is T0210 (#7926)" {
+  val plain = checkRenamed("package App\nimport PkgY.{fromZ}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(plain, "T0210"), 1, "fromZ (" + diagCodesOf(plain) + ")")
+  assertTrue(diagMessageFor(plain, "T0210").contains("did you mean 'fromY'"), diagMessageFor(plain, "T0210"))
+  val far = checkRenamed("package App\nimport PkgY.{nope}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(far, "T0210"), 1, "nope")
+  assertTrue(not diagMessageFor(far, "T0210").contains("did you mean"), diagMessageFor(far, "T0210"))
+  val renamed = checkRenamed("package App\nimport PkgY.{nope as n}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(renamed, "T0210"), 1, "a renamed item is checked too (" + diagCodesOf(renamed) + ")")
+  val one = checkRenamed("package App\nimport PkgY.{fromY, nope, LIMIT}\nfunc f(): Int { fromY() + LIMIT }\n")
+  assertEqualInt(countDiagCode(one, "T0210"), 1, "only the undeclared name of a group is reported")
+}
+
+test "a selective import of a declared or re-exported name, or of an unknown package, is clean (#7926)" {
+  assertEqualInt(
+    diagCount(
+      checkRenamed("package App\nimport PkgY.{fromY, otherY, LIMIT}\nfunc f(): Int { fromY() + otherY() + LIMIT }\n")
+    ),
+    0,
+    "declared names"
+  )
+  val packages: List[ImportedPackage] = importRulePackages()
+  val reexport = parse("package PkgR\nimport PkgY\npub func own(): Int { 1 }\n")
+  packages.add(
+    ImportedPackage(
+      name = "PkgR",
+      items = reexport.file.items,
+      imports = collectImportNames(reexport.file.imports),
+      wholeImports = collectWholeImportNames(reexport.file.imports)
+    )
+  )
+  val viaR = checkWithImportedPackages(
+    parse("package App\nimport PkgR.{own, fromY}\nfunc f(): Int { own() }\n").file,
+    packages
+  )
+  assertEqualInt(
+    countDiagCode(viaR, "T0210"),
+    0,
+    "fromY is reachable through PkgR's own import (" + diagCodesOf(viaR) + ")"
+  )
+  val unknown = checkWithImportedPackages(
+    parse("package App\nimport Elsewhere.{anything}\nfunc f(): Int { 1 }\n").file,
+    packages
+  )
+  assertEqualInt(countDiagCode(unknown, "T0210"), 0, "a package the checker has no source for is not checked")
+}
+
 // #7929: the rewriter would send every bare `Circle` (constructions and
 // pattern heads) to the renamed import, so a rename sharing this
 // package's own case name is reported.
@@ -12740,6 +12789,28 @@ test "a member of a where-bounded type parameter read off a record field resolve
   val src = "package P\ninterface Named {\n  func name(self: in Self): String\n}\nref record Box[T] { var v: T }\nfunc g[T](b: in Box[T]): String where T: Named {\n  b.v.name()\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "b.v.name() under T: Named (" + diagCodesOf(cr) + ")")
+}
+
+test "a call of an unknown method on a type parameter is T0197 (#8018)" {
+  val named = "package P\ninterface Named {\n  func name(self: in Self): String\n}\nref record Box[T] { var v: T }\n"
+  val bare = parseCheck("package P\nfunc f[T](x: in T): Int {\n  x.zork()\n}\n")
+  assertEqualInt(countDiagCode(bare, "T0197"), 1, "x.zork() on an unbounded T (" + diagCodesOf(bare) + ")")
+  val bounded = parseCheck(named + "func g[T](x: in T): String where T: Named {\n  x.zork()\n}\n")
+  assertEqualInt(countDiagCode(bounded, "T0197"), 1, "x.zork() under T: Named (" + diagCodesOf(bounded) + ")")
+  val viaField = parseCheck(named + "func g[T](b: in Box[T]): String where T: Named {\n  b.v.zork()\n}\n")
+  assertEqualInt(countDiagCode(viaField, "T0197"), 1, "b.v.zork() under T: Named (" + diagCodesOf(viaField) + ")")
+  val promised = parseCheck(named + "func g[T](x: in T): String where T: Named {\n  x.name()\n}\n")
+  assertEqualInt(diagCount(promised), 0, "the bound's own method is fine (" + diagCodesOf(promised) + ")")
+  val universal = parseCheck("package P\nfunc g[T](x: in T): String {\n  x.toString()\n}\n")
+  assertEqualInt(diagCount(universal), 0, "toString is on every value (" + diagCodesOf(universal) + ")")
+  val recordLevel = parseCheck(
+    "package P\nref record Box[T] {\n  var v: T\n  func peek(self: in Box[T]): Int {\n    self.v.zork()\n  }\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(recordLevel, "T0197"),
+    0,
+    "a record-level T has no bounds in scope, so it is not diagnosed"
+  )
 }
 
 test "a call through a function-typed field of an open hoisted receiver is T0154 until annotated (#8047)" {

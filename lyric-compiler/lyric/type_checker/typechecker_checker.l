@@ -5565,6 +5565,7 @@ func installImportRule(
     w = w + 1
   }
   checkRenamedImports(diag, renames, names, whole, aliasPkgs, aliasNames, importedPackages, fileItems)
+  checkSelectiveImportsDeclared(diag, userPkg, imports, importedPackages)
   symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
 }
 
@@ -5750,6 +5751,187 @@ func checkCBindingType(
       )
     )
   }
+}
+
+// T0210: a selective import (`import P.{f}` or `import P.{f as g}`) of a
+// name `P` does not declare is an error at the import item (#7926), where a
+// stale import left behind by a rename in `P` would otherwise surface only at
+// a use (T0020), or never.  A name counts as declared when `P` declares an
+// item or union/enum case of that name, or when a package `P` imports (at any
+// depth) does, because `pub use` re-exports reach a consumer through `P`.  A
+// package the checker was not given the source of, and one holding an extern
+// package or a destructuring `val` (whose members it cannot enumerate here),
+// is never diagnosed.
+func checkSelectiveImportsDeclared(
+  diag: in List[Diagnostic],
+  userPkg: in String,
+  imports: in List[ImportDecl],
+  importedPackages: in List[ImportedPackage],
+): Unit {
+  for imp in imports {
+    if not imp.isExtern {
+      val pkg = dottedPackageName(imp.path)
+      if pkg != userPkg and importedPackageKnown(importedPackages, pkg) {
+        match imp.selector {
+          case Some(sel) -> {
+            val items: List[ImportItem] = match sel {
+              case ISGroup(group) -> group
+              case ISSingle(one) -> {
+                val single: List[ImportItem] = newList()
+                single.add(one)
+                single
+              }
+            }
+            for item in items {
+              val visited: List[String] = newList()
+              if not packageDeclaresName(importedPackages, pkg, item.name, visited) {
+                val near = nearestDeclaredName(importedPackages, pkg, item.name)
+                val hint = if near.length > 0 { "; did you mean '" + near + "'?" } else { "" }
+                diag.add(
+                  errorDiagnostic(
+                    "T0210",
+                    "package " + pkg + " declares no public '" + item.name + "', so it cannot be imported" + hint,
+                    item.span
+                  )
+                )
+              }
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
+}
+
+func importedPackageKnown(importedPackages: in List[ImportedPackage], pkg: in String): Bool {
+  for ip in importedPackages {
+    if ip.name == pkg {
+      return true
+    }
+  }
+  false
+}
+
+func packageDeclaresName(
+  importedPackages: in List[ImportedPackage],
+  pkg: in String,
+  name: in String,
+  visited: in List[String],
+): Bool {
+  for v in visited {
+    if v == pkg {
+      return false
+    }
+  }
+  visited.add(pkg)
+  for ip in importedPackages {
+    if ip.name == pkg {
+      if itemsMayDeclare(ip.items, name) {
+        return true
+      }
+      for dep in ip.imports {
+        if packageDeclaresName(importedPackages, dep, name, visited) {
+          return true
+        }
+      }
+    }
+  }
+  false
+}
+
+func itemsMayDeclare(items: in List[Item], name: in String): Bool {
+  for it in items {
+    match topLevelItemName(it) {
+      case Some(n) -> if n == name { return true }
+      case None -> ()
+    }
+    for cn in caseNamesOf(it) {
+      if cn == name {
+        return true
+      }
+    }
+    val other = match it.kind {
+      case IVal(vd) -> match vd.pattern.kind { case PBinding(n, None) -> n == name; case _ -> true }
+      case IExternFunc(ed) -> ed.name == name
+      case IWire(wd) -> wd.name == name
+      case IConfig(cd) -> cd.name == name
+      case IAspect(ad) -> ad.name == name
+      case IScopeKind(sd) -> sd.name == name
+      case IExtern(_) -> true
+      case IFixture(_) -> true
+      case IError -> true
+      case _ -> false
+    }
+    if other {
+      return true
+    }
+  }
+  false
+}
+
+// The declared name of `pkg` closest to `name`, or "" when none is near
+// enough (edit distance 2, and under half the name's length) to be a typo.
+func nearestDeclaredName(importedPackages: in List[ImportedPackage], pkg: in String, name: in String): String {
+  var best = ""
+  var bestDist = 3
+  for ip in importedPackages {
+    if ip.name == pkg {
+      for it in ip.items {
+        val cands: List[String] = caseNamesOf(it)
+        match topLevelItemName(it) {
+          case Some(n) -> cands.add(n)
+          case None -> ()
+        }
+        for c in cands {
+          val d = nameEditDistance(c, name)
+          if d < bestDist and d * 2 <= name.length and d > 0 {
+            best = c
+            bestDist = d
+          }
+        }
+      }
+    }
+  }
+  best
+}
+
+func nameEditDistance(a: in String, b: in String): Int {
+  val n = a.length
+  val m = b.length
+  if n == 0 {
+    return m
+  }
+  if m == 0 {
+    return n
+  }
+  var prev: List[Int] = newList()
+  var j = 0
+  while j <= m {
+    prev.add(j)
+    j = j + 1
+  }
+  var i = 1
+  while i <= n {
+    val cur: List[Int] = newList()
+    cur.add(i)
+    var k = 1
+    while k <= m {
+      val cost = if a.substring(i - 1, 1) == b.substring(k - 1, 1) { 0 } else { 1 }
+      var best = prev[k] + 1
+      if cur[k - 1] + 1 < best {
+        best = cur[k - 1] + 1
+      }
+      if prev[k - 1] + cost < best {
+        best = prev[k - 1] + cost
+      }
+      cur.add(best)
+      k = k + 1
+    }
+    prev = cur
+    i = i + 1
+  }
+  prev[m]
 }
 
 // A renamed selective import: `local` is the bare name for `pkg.name`.
