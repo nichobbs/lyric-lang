@@ -70,50 +70,50 @@ func dottedPath(path: in ModulePath): String {
 // §1. Reachability walk (function granularity).
 // ─────────────────────────────────────────────────────────────────────────────
 // Collect the `callKeyOf` key of every call site in an expression tree.
-func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
+func collectCallKeys(e: in Expr, acc: in List[String], rc: in Map[String, String]): Unit {
   match e.kind {
     case EInterpolated(segs) -> {
       var i = 0
       while i < segs.count {
         match segs[i] {
-          case ISExpr(ex) -> collectCallKeys(ex, acc)
+          case ISExpr(ex) -> collectCallKeys(ex, acc, rc)
           case ISText(_, _) -> {
           }
         }
         i = i + 1
       }
     }
-    case EParen(inner) -> collectCallKeys(inner, acc)
-    case ETuple(exprs) -> collectExprListKeys(exprs, acc)
-    case EList(exprs) -> collectExprListKeys(exprs, acc)
+    case EParen(inner) -> collectCallKeys(inner, acc, rc)
+    case ETuple(exprs) -> collectExprListKeys(exprs, acc, rc)
+    case EList(exprs) -> collectExprListKeys(exprs, acc, rc)
     case EIf(cond, thenB, elseB, _) -> {
-      collectCallKeys(cond, acc)
-      collectEobKeys(thenB, acc)
+      collectCallKeys(cond, acc, rc)
+      collectEobKeys(thenB, acc, rc)
       match elseB {
-        case Some(eb) -> collectEobKeys(eb, acc)
+        case Some(eb) -> collectEobKeys(eb, acc, rc)
         case None -> {
         }
       }
     }
     case EMatch(scrut, arms) -> {
-      collectCallKeys(scrut, acc)
+      collectCallKeys(scrut, acc, rc)
       var i = 0
       while i < arms.count {
         match arms[i].guard {
-          case Some(g) -> collectCallKeys(g, acc)
+          case Some(g) -> collectCallKeys(g, acc, rc)
           case None -> {
           }
         }
-        collectEobKeys(arms[i].body, acc)
+        collectEobKeys(arms[i].body, acc, rc)
         i = i + 1
       }
     }
-    case EAwait(inner) -> collectCallKeys(inner, acc)
-    case EYield(inner) -> collectCallKeys(inner, acc)
-    case ESpawn(inner) -> collectCallKeys(inner, acc)
-    case ETry(inner) -> collectCallKeys(inner, acc)
-    case EOld(inner) -> collectCallKeys(inner, acc)
-    case ELambda(_, body) -> collectBlockKeys(body, acc)
+    case EAwait(inner) -> collectCallKeys(inner, acc, rc)
+    case EYield(inner) -> collectCallKeys(inner, acc, rc)
+    case ESpawn(inner) -> collectCallKeys(inner, acc, rc)
+    case ETry(inner) -> collectCallKeys(inner, acc, rc)
+    case EOld(inner) -> collectCallKeys(inner, acc, rc)
+    case ELambda(_, body) -> collectBlockKeys(body, acc, rc)
     case ECall(fn, args) -> {
       val key = callKeyOf(fn, args.count)
       if key.length > 0 {
@@ -146,7 +146,7 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       // resolve without the registry, so an unresolvable key is fine).
       match fn.kind {
         case EMember(recv, memberName) -> {
-          collectCallKeys(recv, acc)
+          collectCallKeys(recv, acc, rc)
           // UFCS on a VALUE receiver (`cfg.identity.rawHandle()`) is
           // invisible to `callKeyOf` — it only resolves an `EMember` whose
           // receiver is itself a bare type/package `EPath` (the
@@ -160,7 +160,10 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
           // the bundle also matches) but never under-inclusive, mirroring
           // `Lyric.LlvmCodegen.lowerUfcsCall`'s own bare-name fallback.
           if key.length == 0 or isLocalLikeReceiver(recv) {
-            acc.add(memberName + "/" + (args.count + 1).toString())
+            // The checker's class of the receiver (#8413) narrows which
+            // same-named candidates this call can name; see `reachKey`.
+            val cls = match mapGet(rc, recordCopySiteKey(recv.span)) { case Some(c) -> "@" + c; case None -> "" }
+            acc.add(memberName + "/" + (args.count + 1).toString() + cls)
           }
         }
         case _ -> {
@@ -169,19 +172,19 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       var i = 0
       while i < args.count {
         match args[i] {
-          case CANamed(_, value, _) -> collectCallKeys(value, acc)
-          case CAPositional(ex) -> collectCallKeys(ex, acc)
+          case CANamed(_, value, _) -> collectCallKeys(value, acc, rc)
+          case CAPositional(ex) -> collectCallKeys(ex, acc, rc)
         }
         i = i + 1
       }
     }
-    case ETypeApp(fn, _) -> collectCallKeys(fn, acc)
+    case ETypeApp(fn, _) -> collectCallKeys(fn, acc, rc)
     case EIndex(receiver, indices) -> {
-      collectCallKeys(receiver, acc)
-      collectExprListKeys(indices, acc)
+      collectCallKeys(receiver, acc, rc)
+      collectExprListKeys(indices, acc, rc)
     }
     case EMember(recv, memberName) -> {
-      collectCallKeys(recv, acc)
+      collectCallKeys(recv, acc, rc)
       acc.add("v:" + memberName)
     }
     case EPath(p) -> {
@@ -189,18 +192,18 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
         acc.add("v:" + p.segments[p.segments.count - 1])
       }
     }
-    case EPropagate(inner) -> collectCallKeys(inner, acc)
-    case EPrefix(_, operand) -> collectCallKeys(operand, acc)
+    case EPropagate(inner) -> collectCallKeys(inner, acc, rc)
+    case EPrefix(_, operand) -> collectCallKeys(operand, acc, rc)
     case EBinop(_, lhs, rhs) -> {
-      collectCallKeys(lhs, acc)
-      collectCallKeys(rhs, acc)
+      collectCallKeys(lhs, acc, rc)
+      collectCallKeys(rhs, acc, rc)
     }
     case EAssign(target, _, value) -> {
-      collectCallKeys(target, acc)
-      collectCallKeys(value, acc)
+      collectCallKeys(target, acc, rc)
+      collectCallKeys(value, acc, rc)
     }
-    case EBlock(block) -> collectBlockKeys(block, acc)
-    case EUnsafe(block) -> collectBlockKeys(block, acc)
+    case EBlock(block) -> collectBlockKeys(block, acc, rc)
+    case EUnsafe(block) -> collectBlockKeys(block, acc, rc)
     case _ -> {
     }
   }
@@ -225,30 +228,30 @@ func isLocalLikeReceiver(recv: in Expr): Bool {
   }
 }
 
-func collectExprListKeys(exprs: in List[Expr], acc: in List[String]): Unit {
+func collectExprListKeys(exprs: in List[Expr], acc: in List[String], rc: in Map[String, String]): Unit {
   var i = 0
   while i < exprs.count {
-    collectCallKeys(exprs[i], acc)
+    collectCallKeys(exprs[i], acc, rc)
     i = i + 1
   }
 }
 
-func collectEobKeys(eob: in ExprOrBlock, acc: in List[String]): Unit {
+func collectEobKeys(eob: in ExprOrBlock, acc: in List[String], rc: in Map[String, String]): Unit {
   match eob {
-    case EOBExpr(ex) -> collectCallKeys(ex, acc)
-    case EOBBlock(b) -> collectBlockKeys(b, acc)
+    case EOBExpr(ex) -> collectCallKeys(ex, acc, rc)
+    case EOBBlock(b) -> collectBlockKeys(b, acc, rc)
   }
 }
 
-func collectStmtKeys(s: in Statement, acc: in List[String]): Unit {
+func collectStmtKeys(s: in Statement, acc: in List[String], rc: in Map[String, String]): Unit {
   match s.kind {
     case SLocal(binding) -> {
       match binding {
-        case LBVal(_, _, init) -> collectCallKeys(init, acc)
-        case LBLet(_, _, init) -> collectCallKeys(init, acc)
+        case LBVal(_, _, init) -> collectCallKeys(init, acc, rc)
+        case LBLet(_, _, init) -> collectCallKeys(init, acc, rc)
         case LBVar(_, _, init) -> {
           match init {
-            case Some(ie) -> collectCallKeys(ie, acc)
+            case Some(ie) -> collectCallKeys(ie, acc, rc)
             case None -> {
             }
           }
@@ -256,44 +259,44 @@ func collectStmtKeys(s: in Statement, acc: in List[String]): Unit {
       }
     }
     case SAssign(target, _, value) -> {
-      collectCallKeys(target, acc)
-      collectCallKeys(value, acc)
+      collectCallKeys(target, acc, rc)
+      collectCallKeys(value, acc, rc)
     }
-    case SReturn(value) -> match value { case Some(v) -> collectCallKeys(v, acc); case None -> () }
-    case SThrow(ex) -> collectCallKeys(ex, acc)
+    case SReturn(value) -> match value { case Some(v) -> collectCallKeys(v, acc, rc); case None -> () }
+    case SThrow(ex) -> collectCallKeys(ex, acc, rc)
     case STry(body, catches, finally_) -> {
-      collectBlockKeys(body, acc)
+      collectBlockKeys(body, acc, rc)
       var i = 0
       while i < catches.count {
-        collectBlockKeys(catches[i].body, acc)
+        collectBlockKeys(catches[i].body, acc, rc)
         i = i + 1
       }
       match finally_ {
-        case Some(fb) -> collectBlockKeys(fb, acc)
+        case Some(fb) -> collectBlockKeys(fb, acc, rc)
         case None -> {
         }
       }
     }
-    case SDefer(body) -> collectBlockKeys(body, acc)
-    case SScope(_, body) -> collectBlockKeys(body, acc)
+    case SDefer(body) -> collectBlockKeys(body, acc, rc)
+    case SScope(_, body) -> collectBlockKeys(body, acc, rc)
     case SFor(_, _, iter, body) -> {
-      collectCallKeys(iter, acc)
-      collectBlockKeys(body, acc)
+      collectCallKeys(iter, acc, rc)
+      collectBlockKeys(body, acc, rc)
     }
     case SWhile(_, cond, body) -> {
-      collectCallKeys(cond, acc)
-      collectBlockKeys(body, acc)
+      collectCallKeys(cond, acc, rc)
+      collectBlockKeys(body, acc, rc)
     }
-    case SLoop(_, body) -> collectBlockKeys(body, acc)
-    case SInvariant(ex) -> collectCallKeys(ex, acc)
-    case SExpr(ex) -> collectCallKeys(ex, acc)
+    case SLoop(_, body) -> collectBlockKeys(body, acc, rc)
+    case SInvariant(ex) -> collectCallKeys(ex, acc, rc)
+    case SExpr(ex) -> collectCallKeys(ex, acc, rc)
     case SRule(lhs, rhs) -> {
-      collectCallKeys(lhs, acc)
-      collectCallKeys(rhs, acc)
+      collectCallKeys(lhs, acc, rc)
+      collectCallKeys(rhs, acc, rc)
     }
     case SItem(it) -> {
       match it.kind {
-        case IFunc(decl) -> collectFnBodyKeys(decl, acc)
+        case IFunc(decl) -> collectFnBodyKeys(decl, acc, rc)
         case _ -> {
         }
       }
@@ -303,20 +306,20 @@ func collectStmtKeys(s: in Statement, acc: in List[String]): Unit {
   }
 }
 
-func collectBlockKeys(b: in Block, acc: in List[String]): Unit {
+func collectBlockKeys(b: in Block, acc: in List[String], rc: in Map[String, String]): Unit {
   var i = 0
   while i < b.statements.count {
-    collectStmtKeys(b.statements[i], acc)
+    collectStmtKeys(b.statements[i], acc, rc)
     i = i + 1
   }
 }
 
-func collectFnBodyKeys(decl: in FunctionDecl, acc: in List[String]): Unit {
+func collectFnBodyKeys(decl: in FunctionDecl, acc: in List[String], rc: in Map[String, String]): Unit {
   // A default argument is evaluated at each call that omits it, so what it
   // calls is reachable whenever the function is.
   for p in decl.params {
     match p.dflt {
-      case Some(d) -> collectCallKeys(d, acc)
+      case Some(d) -> collectCallKeys(d, acc, rc)
       case None -> {
       }
     }
@@ -324,8 +327,8 @@ func collectFnBodyKeys(decl: in FunctionDecl, acc: in List[String]): Unit {
   match decl.body {
     case Some(fb) -> {
       match fb {
-        case FBExpr(ex) -> collectCallKeys(ex, acc)
-        case FBBlock(b) -> collectBlockKeys(b, acc)
+        case FBExpr(ex) -> collectCallKeys(ex, acc, rc)
+        case FBBlock(b) -> collectBlockKeys(b, acc, rc)
       }
     }
     case None -> {
@@ -1540,11 +1543,15 @@ pub func compileToNativeWithFeatures(
   // Bodies indexed by canonical id so the walk can chase callees.
   val bodyIndex: Map[String, FunctionDecl] = newMap()
   val pkgOfId: Map[String, String] = newMap()
+  val prune1 = emptyPruneIndex()
   indexFileFns(userFile, bodyIndex, pkgOfId)
+  indexFileRecvClasses(userFile, optsRecvOut, prune1)
+  indexNominalNames(userFile, prune1.nominal)
   seedImplMethods(userFile, bodyIndex, pkgOfId, reachable, fnWorklist)
   var bi2 = 0
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
+    indexNominalNames(toBundle[bi2], prune1.nominal)
     bi2 = bi2 + 1
   }
   val pkgImports: Map[String, List[String]] = newMap()
@@ -1569,7 +1576,7 @@ pub func compileToNativeWithFeatures(
     reachable,
     pkgImports,
     implTypes,
-    emptyPruneIndex()
+    prune1
   )
 
   // Assemble the codegen units: the user package in full, then each
@@ -1797,6 +1804,8 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
+  // Each own file's `memberRecvClassesOut` (#8413), parallel to `ownFiles`.
+  val ownRecvClasses: List[Map[String, String]] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val importedItemsForMono = flattenImportedItems(importedPkgs)
@@ -1841,6 +1850,7 @@ pub func compileProjectToNativeWithShape(
     // codegen can instantiate them for a call from another package.
     ownFiles.add(lowerConfigBlocksNative(withGenericItems(checked, optsGenericItems)))
     ownCallArities.add(optsCallArities)
+    ownRecvClasses.add(optsRecvOut)
     for fr in optsForeignRecords {
       foreignRecords.add(fr)
     }
@@ -1975,6 +1985,8 @@ pub func compileProjectToNativeWithShape(
   var ifi = 0
   while ifi < ownFiles.count {
     indexFileFns(ownFiles[ifi], bodyIndex, pkgOfId)
+    indexFileRecvClasses(ownFiles[ifi], ownRecvClasses[ifi], prune)
+    indexNominalNames(ownFiles[ifi], prune.nominal)
     if prunedPkg[ifi] {
       indexPrunedFile(ownFiles[ifi], prune, bodyIndex, pkgOfId)
     } else {
@@ -1985,6 +1997,7 @@ pub func compileProjectToNativeWithShape(
   var bi2 = 0
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
+    indexNominalNames(toBundle[bi2], prune.nominal)
     bi2 = bi2 + 1
   }
 
@@ -2901,7 +2914,7 @@ pub func pkgTransitiveClosure(pkgImports: in Map[String, List[String]], root: in
 // complete one.
 // ─────────────────────────────────────────────────────────────────────────────
 func reachKey(
-  raw: in String,
+  rawTagged: in String,
   curPkg: in String,
   fnWorklist: in List[String],
   canonical: in Map[String, String],
@@ -2914,6 +2927,11 @@ func reachKey(
   prune: in PruneIndex,
   pkgClosureMemo: in Map[String, Map[String, Bool]],
 ): Unit {
+  // A call key carries the checker's class of its receiver after `@` (#8413):
+  // only candidates that class can reach are marked.
+  val atIdx = Str.indexOfRaw(rawTagged, "@")
+  val raw = if atIdx >= 0 { Str.substring(rawTagged, 0, atIdx) } else { rawTagged }
+  val recvCls = if atIdx >= 0 { Str.substring(rawTagged, atIdx + 1, rawTagged.length - atIdx - 1) } else { "" }
   val closure: Map[String, Bool] = if curPkg.length == 0 {
     val none: Map[String, Bool] = newMap()
     none
@@ -2959,12 +2977,15 @@ func reachKey(
       }
     }
   }
+  if target.length > 0 and recvCls.length > 0 and not candidateAcceptsClass(target, recvCls, bodyIndex, prune.nominal) {
+    target = ""
+  }
   if target.length > 0 and not reachable.containsKey(target) {
     reachable.add(target, true)
     fnWorklist.add(target)
   }
   noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist, pkgImports)
-  touchPrunedTypeGroups(raw, prune, reachable, fnWorklist, curPkg, closure)
+  touchPrunedTypeGroups(raw, recvCls, prune, reachable, fnWorklist, curPkg, closure)
   // `raw` may ALSO be a bare UFCS trailing-segment key
   // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
   // resolve it through the multi-valued `bareTrailing` map
@@ -2992,6 +3013,9 @@ func reachKey(
             allowed = true
           }
         }
+        if allowed and recvCls.length > 0 and not candidateAcceptsClass(cand, recvCls, bodyIndex, prune.nominal) {
+          allowed = false
+        }
         if allowed and not reachable.containsKey(cand) {
           reachable.add(cand, true)
           fnWorklist.add(cand)
@@ -3009,7 +3033,8 @@ func reachKey(
         ti = ti + 1
         val btPkg = match mapGet(pkgOfId, bt) { case Some(p) -> p; case None -> "" }
         val inClosure = curPkg.length == 0 or btPkg == curPkg or closure.containsKey(btPkg)
-        if inClosure and not reachable.containsKey(bt) {
+        val classOk = recvCls.length == 0 or candidateAcceptsClass(bt, recvCls, bodyIndex, prune.nominal)
+        if inClosure and classOk and not reachable.containsKey(bt) {
           reachable.add(bt, true)
           fnWorklist.add(bt)
         }
@@ -3081,7 +3106,8 @@ func walkReachableFns(
     match mapGet(bodyIndex, cur) {
       case Some(decl) -> {
         val keys: List[String] = newList()
-        collectFnBodyKeys(decl, keys)
+        val fnRecv = match mapGet(prune.recvOfId, cur) { case Some(m) -> m; case None -> noRecvClasses() }
+        collectFnBodyKeys(decl, keys, fnRecv)
         var ki = 0
         while ki < keys.count {
           val raw = keys[ki]
@@ -4198,6 +4224,12 @@ record PruneIndex {
   groupPkgs: Map[String, String]
   /// The dependency packages (the ones this index prunes).
   depPkgs: Map[String, Bool]
+  /// Function id to the checker's receiver classes of its file
+  /// (`SymbolTable.memberRecvClasses`), keyed by receiver span (#8413).
+  recvOfId: Map[String, Map[String, String]]
+  /// Bare names of the nominal types (records, unions, enums, opaque,
+  /// distinct, protected) the bundle declares, plus the built-in value types.
+  nominal: Map[String, Bool]
   /// Call keys that became live and the walk has yet to resolve.
   pending: List[RootKey]
 }
@@ -4219,8 +4251,56 @@ func emptyPruneIndex(): PruneIndex {
     fnByName = newMap(),
     groupPkgs = newMap(),
     depPkgs = newMap(),
+    recvOfId = newMap(),
+    nominal = builtinNominalNames(),
     pending = newList()
   )
+}
+
+func noRecvClasses(): Map[String, String] {
+  val m: Map[String, String] = newMap()
+  m
+}
+
+func builtinNominalNames(): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  for n in ["String", "Int", "Long", "Short", "Byte", "Bool", "Char", "Float", "Double", "UInt", "ULong", "Unit", "List", "Map", "Set"] {
+    m.add(n, true)
+  }
+  m
+}
+
+/// Whether a candidate `id` (a function the walk could mark reachable by name)
+/// can be what a call on a receiver of class `cls` (`Pkg.Type`) names (#8413):
+/// a dot-named function `Type.m` must be the receiver's own type's, and a free
+/// function must take that type (or a type that is not a nominal one, such as
+/// an interface, alias or type parameter) as its first parameter.  A candidate
+/// this cannot classify is kept.
+func candidateAcceptsClass(
+  id: in String,
+  cls: in String,
+  bodyIndex: in Map[String, FunctionDecl],
+  nominal: in Map[String, Bool],
+): Bool {
+  val decl = match mapGet(bodyIndex, id) { case Some(d) -> d; case None -> return true }
+  val clsDot = lastDotIndex(cls)
+  val clsBare = if clsDot >= 0 { Str.substring(cls, clsDot + 1, cls.length - clsDot - 1) } else { cls }
+  val nameDot = lastDotIndex(decl.name)
+  if nameDot >= 0 {
+    val prefix = Str.substring(decl.name, 0, nameDot)
+    val pd = lastDotIndex(prefix)
+    val prefixBare = if pd >= 0 { Str.substring(prefix, pd + 1, prefix.length - pd - 1) } else { prefix }
+    return prefixBare == clsBare or not nominal.containsKey(prefixBare)
+  }
+  if decl.params.count == 0 {
+    return true
+  }
+  val head = match decl.params[0].ty.kind {
+    case TRef(path) -> path.segments[path.segments.count - 1]
+    case TGenericApp(h, _) -> h.segments[h.segments.count - 1]
+    case _ -> return true
+  }
+  head == clsBare or not nominal.containsKey(head)
 }
 
 func addToGroupList(m: in Map[String, List[String]], name: in String, gid: in String): Unit {
@@ -4322,6 +4402,7 @@ func touchPrunedGroup(
 
 func touchPrunedTypeGroups(
   callKey: in String,
+  recvCls: in String,
   prune: in PruneIndex,
   reachable: in Map[String, Bool],
   fnWorklist: in List[String],
@@ -4332,7 +4413,7 @@ func touchPrunedTypeGroups(
   match mapGet(prune.methodGroups, last) {
     case Some(gids) -> {
       for gid in gids {
-        if groupInScope(gid, prune, curPkg, closure) {
+        if groupInScope(gid, prune, curPkg, closure) and (recvCls.length == 0 or gid == recvCls) {
           touchPrunedGroup(gid, prune, reachable, fnWorklist)
         }
       }
@@ -4411,7 +4492,7 @@ func touchPrunedVal(
 
 func exprRootKeys(e: in Expr, pkg: in String, dest: in List[RootKey]): Unit {
   val keys: List[String] = newList()
-  collectCallKeys(e, keys)
+  collectCallKeys(e, keys, noRecvClasses())
   for k in keys {
     dest.add(RootKey(key = k, pkg = pkg))
   }
@@ -4427,7 +4508,7 @@ func optExprRootKeys(e: in Option[Expr], pkg: in String, dest: in List[RootKey])
 
 func fnRootKeys(fn: in FunctionDecl, pkg: in String, dest: in List[RootKey]): Unit {
   val keys: List[String] = newList()
-  collectFnBodyKeys(fn, keys)
+  collectFnBodyKeys(fn, keys, noRecvClasses())
   for k in keys {
     dest.add(RootKey(key = k, pkg = pkg))
   }
@@ -4436,8 +4517,8 @@ func fnRootKeys(fn: in FunctionDecl, pkg: in String, dest: in List[RootKey]): Un
 func bodyRootKeys(body: in FunctionBody, pkg: in String, dest: in List[RootKey]): Unit {
   val keys: List[String] = newList()
   match body {
-    case FBExpr(ex) -> collectCallKeys(ex, keys)
-    case FBBlock(b) -> collectBlockKeys(b, keys)
+    case FBExpr(ex) -> collectCallKeys(ex, keys, noRecvClasses())
+    case FBBlock(b) -> collectBlockKeys(b, keys, noRecvClasses())
   }
   for k in keys {
     dest.add(RootKey(key = k, pkg = pkg))
@@ -4614,6 +4695,46 @@ func seedMethodList(
       reachable.add(id, true)
       fnWorklist.add(id)
     }
+  }
+}
+
+/// Record the receiver classes the checker produced for `f` against each of its
+/// functions' ids, so the reachability walk narrows UFCS calls by receiver
+/// type (#8413).
+func indexFileRecvClasses(f: in SourceFile, recv: in Map[String, String], prune: in PruneIndex): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  for it in f.items {
+    match it.kind {
+      case IFunc(decl) -> {
+        val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
+        if not prune.recvOfId.containsKey(id) {
+          prune.recvOfId.add(id, recv)
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+/// The bare names of the nominal types `f` declares.
+func indexNominalNames(f: in SourceFile, nominal: in Map[String, Bool]): Unit {
+  for it in f.items {
+    match it.kind {
+      case IRecord(d) -> addNominal(nominal, d.name)
+      case IExposedRec(d) -> addNominal(nominal, d.name)
+      case IUnion(d) -> addNominal(nominal, d.name)
+      case IEnum(d) -> addNominal(nominal, d.name)
+      case IDistinctType(d) -> addNominal(nominal, d.name)
+      case IProtected(d) -> addNominal(nominal, d.name)
+      case IOpaque(d) -> addNominal(nominal, d.name)
+      case _ -> ()
+    }
+  }
+}
+
+func addNominal(nominal: in Map[String, Bool], name: in String): Unit {
+  if not nominal.containsKey(name) {
+    nominal.add(name, true)
   }
 }
 
