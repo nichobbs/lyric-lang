@@ -1441,6 +1441,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # Name-resolution self-test (#8350, #7799, #8562): function-typed vals
+      # hiding imports in call position, aliased facade imports, explicit
+      # alias type arguments.
+      - name: Name-resolution self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/name_resolution_self_test.l
+
       # Qualified constructor calls (D159): a package- or alias-qualified
       # record constructor and a union-qualified case build the qualifier's
       # type even when this package declares the same simple name.
@@ -4153,6 +4162,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # JVM half of the name-resolution self-test (#8350, #7799, #8562).
+      - name: Name-resolution self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/name_resolution_self_test.l
 
       # JVM half of the qualified-constructor self-test (D159).
       - name: Qualified-constructor self-test on JVM (native lyric test --target jvm)

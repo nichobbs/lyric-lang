@@ -1373,7 +1373,14 @@ func checkQualifiedPackageRef(
     }
     case None -> ()
   }
-  if not qualifiedPkgReachable(tbl, curPkg, pkg) {
+  // #7799: a value or call written with a package's full path needs that
+  // package imported by the file itself.  The kernel/host re-export idiom
+  // (`Std.Collections` importing `Std.CollectionsHost`) is reached through the
+  // facade's qualifier (`Coll.newList()`), not by naming the host package:
+  // the backends resolve a qualified callee from the file's own imports, so
+  // accepting a transitively reachable path here was a T0115 on MSIL and
+  // accepted on the JVM.
+  if not symTableScopeAllows(tbl, pkg) {
     addDiagnosticOnce(
       diag,
       errorDiagnostic(
@@ -6533,13 +6540,25 @@ func resolveQualifiedFuncValue(
   }
   val all = symTableTryFindAll(tbl, name)
   val funcs: List[Symbol] = newList()
+  val reexported: List[Symbol] = newList()
   var i = 0
   while i < all.count {
     match all[i].kind {
-      case DKFunc(_) -> if pkgMatchesQualifier(all[i].originPackage, pkg) { funcs.add(all[i]) }
+      case DKFunc(_) -> {
+        if pkgMatchesQualifier(all[i].originPackage, pkg) {
+          funcs.add(all[i])
+        } else if pkgReexportsFrom(tbl, pkg, all[i].originPackage) {
+          reexported.add(all[i])
+        }
+      }
       case _ -> ()
     }
     i = i + 1
+  }
+  if funcs.count == 0 {
+    for rc in reexported {
+      funcs.add(rc)
+    }
   }
   if funcs.count == 0 {
     return None
@@ -6559,14 +6578,37 @@ func resolveQualifiedFuncValue(
   }
   val chosen = if inScope.count > 0 { inScope } else { funcs }
   if chosen.count > 1 {
-    diag.add(
-      errorDiagnostic(
-        "T0123",
-        "'" + pkg + "." + name +
-          "' names several functions; a function value cannot pick an overload, so wrap the call in a lambda with typed parameters",
-        sp
+    val origins: List[String] = newList()
+    for c in chosen {
+      if not origins.contains(c.originPackage) {
+        origins.add(c.originPackage)
+      }
+    }
+    if origins.count > 1 {
+      diag.add(
+        errorDiagnostic(
+          "T0123",
+          "'" + pkg + "." + name + "' is ambiguous: the qualifier '" + pkg + "' ends " + toString(origins.count) +
+            " packages (" +
+            joinPackageNames(origins) +
+            "), none of which this package imports; write the full package path (for example '" +
+            origins[0] +
+            "." +
+            name +
+            "') or import the one you mean",
+          sp
+        )
       )
-    )
+    } else {
+      diag.add(
+        errorDiagnostic(
+          "T0123",
+          "'" + pkg + "." + name +
+            "' names several functions; a function value cannot pick an overload, so wrap the call in a lambda with typed parameters",
+          sp
+        )
+      )
+    }
     return Some(value = TyError)
   }
   val sym = chosen[0]
@@ -6579,6 +6621,40 @@ func resolveQualifiedFuncValue(
       Some(value = TyError)
     }
     case None -> None
+  }
+}
+
+// Whether some loaded package's path ends in the dotted `qualifier`
+// (`Sub.Bar` for `Lib.Sub.Bar`), as `pkgMatchesQualifier` reads it (#7368).
+func anyPackageEndsWithQualifier(tbl: in SymbolTable, qualifier: in String): Bool {
+  var i = 0
+  while i < tbl.symbols.count {
+    if pkgMatchesQualifier(tbl.symbols[i].originPackage, qualifier) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// #7799: does a package `pkg` imports declare `name`, so that `pkg` re-exports
+// it to the file that imports `pkg` (the kernel/host idiom)?
+func packageReexportsMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
+  for imp in symTablePackageImportsOf(tbl, pkg) {
+    if symTablePackageHasMember(tbl, imp, name) {
+      return true
+    }
+  }
+  false
+}
+
+// Whether the bare `name` denotes a module-level `val` or `const` in scope
+// (the current package's own declaration first, then the imports', as
+// `symTableTryFindOne` orders them) rather than a function.
+func bareNameIsModuleValue(tbl: in SymbolTable, name: in String): Bool {
+  match symTableTryFindOne(tbl, name) {
+    case Some(vs) -> match vs.kind { case DKVal(_) -> true; case DKConst(_) -> true; case _ -> false }
+    case None -> false
   }
 }
 
@@ -6637,7 +6713,7 @@ func resolveExprPath(
       case None -> ()
     }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
-    if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
+    if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) and not packageReexportsMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
     }
     return TyError
@@ -6653,14 +6729,7 @@ func resolveExprPath(
   // The name's symbol in scope (the current package's first, then its
   // imports') is a `val` or `const`: it hides an imported function of that
   // name, as the package's own declarations hide its imports (#8283).
-  val valueInScope = match symTableTryFindOne(tbl, name) {
-    case Some(vs) -> match vs.kind {
-      case DKVal(_) -> true
-      case DKConst(_) -> true
-      case _ -> false
-    }
-    case None -> false
-  }
+  val valueInScope = bareNameIsModuleValue(tbl, name)
   val noSig: Option[ResolvedSignature] = None
   val bareSig = match mapGet(sigs, name) {
     case Some(first) -> if valueInScope { noSig } else { visibleBareSig(tbl, sigs, name, first) }
@@ -17600,7 +17669,7 @@ func inferExprCore(
               qi = qi + 1
             }
             val qualPkg = modulePathJoin(qualSegs)
-            if symTablePackageHasAnySymbol(tbl, qualPkg) {
+            if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
                 case Some(ft) -> return ft
                 case None -> ()
@@ -21083,6 +21152,29 @@ func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
   pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
 }
 
+// #7799: `origin` is a package the qualifier's package re-exports, in the
+// kernel/host idiom of bare names (`Std.Collections` imports
+// `Std.CollectionsHost`, where `newList` is declared, so `import
+// Std.Collections` makes the bare `newList()` visible): the qualified spelling
+// `Coll.newList()` through that package or an alias of it finds the same
+// function.
+func pkgReexportsFrom(tbl: in SymbolTable, qualifier: in String, origin: in String): Bool {
+  if origin.length == 0 {
+    return false
+  }
+  match mapGet(tbl.packageImports, qualifier) {
+    case Some(imps) -> {
+      for imp in imps {
+        if imp == origin {
+          return true
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
 // Every function named `name` that a call writing `args` fits, from every
 // package: the non-generic ones first, then the generic ones.  A qualified call picks
 // among them by package.  The indexed `arityKey@i` slots hold non-generic
@@ -21623,6 +21715,13 @@ func findDirectSigPick(
           }
         }
       }
+      // #8350: a module-level `val`/`const` in scope hides an imported
+      // function of that name in call position too, as it does for a bare
+      // reference (#8283): the call is the val's, resolved by the `ECall`
+      // arm's general `fnT` path.
+      if path.segments.count == 1 and bareNameIsModuleValue(tbl, name) {
+        return None
+      }
       val arityKey = name + "/" + toString(arity)
       // `Box.get(b)`: a dot-named function called through its type (#8173),
       // registered under its full dotted name.
@@ -21668,9 +21767,18 @@ func findDirectSigPick(
         // function (D-progress-946: `Widgets.field(...)` resolved to
         // `Forms.field`).
         val pkgCands: List[ResolvedSignature] = newList()
+        val reexported: List[ResolvedSignature] = newList()
         for qc in qualifiedCallCandidates(sigs, name, args) {
           if pkgMatchesQualifier(qc.originPackage, wantPkg) {
             pkgCands.add(qc)
+          } else if pkgReexportsFrom(tbl, wantPkg, qc.originPackage) {
+            reexported.add(qc)
+          }
+        }
+        // A package's own declaration beats one it merely re-exports (#7799).
+        if pkgCands.count == 0 {
+          for rc in reexported {
+            pkgCands.add(rc)
           }
         }
         if pkgCands.count > 0 {

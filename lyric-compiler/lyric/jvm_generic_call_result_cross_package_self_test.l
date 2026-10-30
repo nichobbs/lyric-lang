@@ -66,6 +66,7 @@ import Std.Core
 import Std.Collections
 import Std.File as File
 import Std.Path as Path
+import Std.String as Str
 import Std.ProcessCapture as Capture
 import Std.Testing
 import Std.Uuid
@@ -149,7 +150,7 @@ test "field read on a local bound to a cross-package generic function's call res
   )
   val result = compileAndRunJvm("genret-basic", pkgSrcs, "App")
   assertEqualInt(result.exitCode, 0, "run must succeed (stderr=" + result.stderr + ")")
-  assertEqual(Std.String.trim(result.stdout), "42", "e.value reads the real Int field, not an erased-Object miscompile")
+  assertEqual(Str.trim(result.stdout), "42", "e.value reads the real Int field, not an erased-Object miscompile")
 }
 
 test "chained field read on a cross-package generic function's call result resolves through two levels (#6929)" {
@@ -173,7 +174,7 @@ test "chained field read on a cross-package generic function's call result resol
   )
   val result = compileAndRunJvm("genret-chained", pkgSrcs, "App2")
   assertEqualInt(result.exitCode, 0, "run must succeed (stderr=" + result.stderr + ")")
-  val lines = Std.String.split(Std.String.trim(result.stdout), "\n")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
   assertEqualInt(lines.length, 2, "expected 2 output lines (stdout=" + result.stdout + ")")
   assertEqual(lines[0], "id-1", "e.key reads the real String field")
   assertEqual(lines[1], "7", "e.value reads the real Int field")
@@ -214,7 +215,7 @@ test "extern-typed function return does not collide with an unrelated package's 
   )
   val result = compileAndRunJvm("genret-extern-collision", pkgSrcs, "App3")
   assertEqualInt(result.exitCode, 0, "run must succeed, not throw ClassCastException (stderr=" + result.stderr + ")")
-  val lines = Std.String.split(Std.String.trim(result.stdout), "\n")
+  val lines = Str.split(Str.trim(result.stdout), "\n")
   assertEqualInt(lines.length, 2, "expected 2 output lines (stdout=" + result.stdout + ")")
   assertEqual(lines[0], "1", "real ConcurrentHashMap size, not a bogus checkcast to the unrelated record")
   assertEqual(lines[1], "local-value", "the unrelated package's own record still constructs and reads correctly")
