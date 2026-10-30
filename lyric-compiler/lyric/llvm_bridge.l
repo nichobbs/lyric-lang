@@ -840,12 +840,14 @@ pub func missingStdlibMessage(pkg: in String, loadedPackages: in Int, stdPathOve
   if loadedPackages == 0 {
     val overrideDesc = if stdPathOverride.length == 0 { "unset" } else { "'" + stdPathOverride + "'" }
     "error[N0029]: no standard library sources were found for --target native (needed by the import of '" + pkg +
-      "'). Searched, in order: $LYRIC_STD_PATH (" + overrideDesc +
+      "'). Searched, in order: $LYRIC_STD_PATH (" +
+      overrideDesc +
       "); lyric-stdlib/std in the directory of the lyric binary and each of its parents; lyric-stdlib/std in the current directory and each of its parents. Set LYRIC_STD_PATH to the lyric-stdlib/std directory of a Lyric checkout or install, or run lyric from inside one."
   } else {
     "error[N0030]: package '" + pkg +
       "' is imported, but no file of the standard library that was found declares it. Check that LYRIC_STD_PATH (or the lyric-stdlib/std next to the lyric binary) points at a stdlib that matches this compiler, and that '" +
-      pkg + "' is spelled correctly."
+      pkg +
+      "' is spelled correctly."
   }
 }
 
@@ -2487,9 +2489,7 @@ func lowerConfigBlocksNative(file: in SourceFile): SourceFile {
   var hasConfig = false
   for it in file.items {
     match it.kind {
-      case IConfig(decl) -> if decl.fields.count > 0 {
-        hasConfig = true
-      }
+      case IConfig(decl) -> if decl.fields.count > 0 { hasConfig = true }
       case _ -> ()
     }
   }
@@ -2553,7 +2553,8 @@ func lowerConfigBlocksNative(file: in SourceFile): SourceFile {
 
 /// `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>`, as the dotnet and JVM lowerings derive it.
 func configEnvVarName(pkgName: in String, blockName: in String, fieldName: in String): String {
-  "LYRIC_CONFIG_" + Str.toUpper(Str.replace(pkgName, ".", "_")) + "_" + Str.toUpper(blockName) + "_" + Str.toUpper(fieldName)
+  "LYRIC_CONFIG_" + Str.toUpper(Str.replace(pkgName, ".", "_")) + "_" + Str.toUpper(blockName) + "_" +
+    Str.toUpper(fieldName)
 }
 
 func configLitExpr(lit: in Literal, sp: in Span): Expr {
@@ -2667,14 +2668,7 @@ func configFieldRange(te: in TypeExpr): ConfigRangeInfo {
         }
       }
     }
-    case _ -> ConfigRangeInfo(
-      hasMin = false,
-      hasMax = false,
-      upperExclusive = false,
-      lo = zero,
-      hi = zero,
-      desc = ""
-    )
+    case _ -> ConfigRangeInfo(hasMin = false, hasMax = false, upperExclusive = false, lo = zero, hi = zero, desc = "")
   }
 }
 
@@ -2695,10 +2689,7 @@ func configReaderCall(blockName: in String, cf: in ConfigField, pkgName: in Stri
     case "Bool" -> {
       val dv = match cf.default {
         case Some(e) -> match e.kind {
-          case ELiteral(lit) -> match lit {
-            case LBool(b) -> b
-            case _ -> false
-          }
+          case ELiteral(lit) -> match lit { case LBool(b) -> b; case _ -> false }
           case _ -> false
         }
         case None -> false
@@ -2769,9 +2760,9 @@ func configReaderCall(blockName: in String, cf: in ConfigField, pkgName: in Stri
       "readDouble"
     }
     case _ -> panic(
-        "Lyric.LlvmBridge: config field '" + blockName + "." + cf.name + "' has type '" + typeName +
-          "', which the type checker (G0009) should have rejected"
-      )
+      "Lyric.LlvmBridge: config field '" + blockName + "." + cf.name + "' has type '" + typeName +
+        "', which the type checker (G0009) should have rejected"
+    )
   }
   val calleeSegs: List[String] = newList()
   calleeSegs.add("Std")
@@ -2782,7 +2773,9 @@ func configReaderCall(blockName: in String, cf: in ConfigField, pkgName: in Stri
 }
 
 /// The module-level `val Block.field: T = <init>` item for one config field.
-func configFieldValItem(blockItem: in Item, valName: in String, ty: in TypeExpr, init: in Expr, cf: in ConfigField): Item {
+func configFieldValItem(
+  blockItem: in Item, valName: in String, ty: in TypeExpr, init: in Expr, cf: in ConfigField
+): Item {
   val sp = cf.span
   val noInner: Option[Pattern] = None
   val pat = Pattern(kind = PBinding(name = valName, inner = noInner), span = sp)

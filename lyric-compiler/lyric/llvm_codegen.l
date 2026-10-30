@@ -4503,7 +4503,8 @@ func packageQualifiedMemberSegs(ctx: in Ctx, e: in Expr): List[String] {
 /// case: the case VALUE (#8478), see `isNullaryUnionCaseValue`.
 func isNullaryCaseReceiver(ctx: in Ctx, receiver: in Expr, method: in String, arity: in Int): Bool {
   match receiver.kind {
-    case EPath(p) -> p.segments.count == 1 and not ctx.varTypes.containsKey(p.segments[0]) and isNullaryUnionCaseValue(ctx, p.segments[0], method, arity)
+    case EPath(p) -> p.segments.count == 1 and not ctx.varTypes.containsKey(p.segments[0]) and
+      isNullaryUnionCaseValue(ctx, p.segments[0], method, arity)
     case _ -> false
   }
 }
@@ -4515,10 +4516,7 @@ func isNullaryCaseReceiver(ctx: in Ctx, receiver: in Expr, method: in String, ar
 func isNullaryUnionCaseValue(ctx: in Ctx, head: in String, method: in String, arity: in Int): Bool {
   match curPkgQualifiedGet(ctx, ctx.caseRefs, head) {
     case Some(cref) -> {
-      val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
-        case Some(u) -> u
-        case None -> return false
-      }
+      val ui = match mapGet(ctx.unionDefs, cref.unionKey) { case Some(u) -> u; case None -> return false }
       if ui.cases[cref.caseIdx].fieldNames.count > 0 {
         return false
       }
@@ -16082,10 +16080,7 @@ func bufferPlaceNType(ctx: in Ctx, e: in Expr): Option[NType] {
     case EParen(inner) -> bufferPlaceNType(ctx, inner)
     case EIndex(recv, idxs) -> if idxs.count == 1 {
       match placeNType(ctx, recv) {
-        case Some(rt) -> match rt {
-          case NArray(_, _) -> None
-          case _ -> listElemOfType(ctx, rt)
-        }
+        case Some(rt) -> match rt { case NArray(_, _) -> None; case _ -> listElemOfType(ctx, rt) }
         case None -> None
       }
     } else {
@@ -16122,10 +16117,7 @@ func lowerBufferArrayElemAssign(
           // unique and its address taken, as in `lowerBufferElemAssign`.
           val outer = lowerExprExpecting(ctx, insns, outerIdxs[0], NI64)
           val inIdx = lowerArrayIndexValue(ctx, insns, idxExpr, n, line)
-          val rhs = match op {
-            case AssEq -> lowerExprExpecting(ctx, insns, value, el)
-            case _ -> lowerExpr(ctx, insns, value)
-          }
+          val rhs = match op { case AssEq -> lowerExprExpecting(ctx, insns, value, el); case _ -> lowerExpr(ctx, insns, value) }
           lowerBufferEnsureUnique(ctx, insns, inner, line)
           val buf = lowerExpr(ctx, insns, inner)
           val rowPtr = bufferElemPtr(ctx, insns, buf, rowTy, outer.value)

@@ -18,57 +18,13 @@ package Std.ConfigHost
 
 import Std.Core
 
-extern func rtConfigInt(
-  env: String,
-  label: String,
-  rangeDesc: String,
-  hasDefault: Int,
-  def: Int,
-  hasMin: Int,
-  lo: Long,
-  hasMax: Int,
-  hi: Long,
-  upperExclusive: Int,
-): Int = "lyric_config_int"
+extern func rtConfigInt(env: String, label: String, rangeDesc: String, hasDefault: Int, def: Int, hasMin: Int, lo: Long, hasMax: Int, hi: Long, upperExclusive: Int): Int = "lyric_config_int"
 
-extern func rtConfigLong(
-  env: String,
-  label: String,
-  rangeDesc: String,
-  hasDefault: Int,
-  def: Long,
-  hasMin: Int,
-  lo: Long,
-  hasMax: Int,
-  hi: Long,
-  upperExclusive: Int,
-): Long = "lyric_config_long"
+extern func rtConfigLong(env: String, label: String, rangeDesc: String, hasDefault: Int, def: Long, hasMin: Int, lo: Long, hasMax: Int, hi: Long, upperExclusive: Int): Long = "lyric_config_long"
 
-extern func rtConfigDouble(
-  env: String,
-  label: String,
-  rangeDesc: String,
-  hasDefault: Int,
-  def: Double,
-  hasMin: Int,
-  lo: Double,
-  hasMax: Int,
-  hi: Double,
-  upperExclusive: Int,
-): Double = "lyric_config_double"
+extern func rtConfigDouble(env: String, label: String, rangeDesc: String, hasDefault: Int, def: Double, hasMin: Int, lo: Double, hasMax: Int, hi: Double, upperExclusive: Int): Double = "lyric_config_double"
 
-extern func rtConfigFloat(
-  env: String,
-  label: String,
-  rangeDesc: String,
-  hasDefault: Int,
-  def: Float,
-  hasMin: Int,
-  lo: Float,
-  hasMax: Int,
-  hi: Float,
-  upperExclusive: Int,
-): Float = "lyric_config_float"
+extern func rtConfigFloat(env: String, label: String, rangeDesc: String, hasDefault: Int, def: Float, hasMin: Int, lo: Float, hasMax: Int, hi: Float, upperExclusive: Int): Float = "lyric_config_float"
 
 extern func rtConfigBool(env: String, label: String, hasDefault: Int, def: Int): Int = "lyric_config_bool"
 

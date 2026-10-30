@@ -66,7 +66,11 @@ pub func isSupported(): Bool {
 
 func checkKey(key: in String): Result[Unit, ConfigOverrideError] {
   if not hostConfigOverrideSupported() {
-    return Err(error = Unsupported(reason = "this target reads config blocks before main runs (native), so a registration would never be seen"))
+    return Err(
+      error = Unsupported(
+        reason = "this target reads config blocks before main runs (native), so a registration would never be seen"
+      )
+    )
   }
   if not key.startsWith(keyPrefix()) or key.length == keyPrefix().length {
     return Err(error = InvalidKey(key = key))

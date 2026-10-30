@@ -146,10 +146,7 @@ pub func enumerateDirectories(path: in String): Result[slice[String], IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return match hostListDirsResult(path) {
-    case Ok(dirs) -> Ok(value = dirs.toArray())
-    case Err(e) -> Err(error = e)
-  }
+  return match hostListDirsResult(path) { case Ok(dirs) -> Ok(value = dirs.toArray()); case Err(e) -> Err(error = e) }
 }
 
 /// Delete an empty directory.

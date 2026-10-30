@@ -280,7 +280,8 @@ test "a config block in a package of a project builds and reads its own var (#74
     NativeSourcePackage(
       name = "CfgProj.Lib",
       path = "",
-      source = "package CfgProj.Lib\n" + "config Knobs {\n" + "  scale: Int = 6\n" + "}\n" + "pub func scaled(x: in Int): Int {\n" +
+      source = "package CfgProj.Lib\n" + "config Knobs {\n" + "  scale: Int = 6\n" + "}\n" +
+        "pub func scaled(x: in Int): Int {\n" +
         "  x * Knobs.scale\n" +
         "}\n"
     )

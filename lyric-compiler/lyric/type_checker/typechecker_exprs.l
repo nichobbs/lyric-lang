@@ -6413,7 +6413,7 @@ func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
       case DKFunc(fd) -> {
         if all[i].originPackage == scopePkg {
           localArities.add(fd.params.count)
-        // An import under an alias is named `Alias.name`, never bare (#8155).
+          // An import under an alias is named `Alias.name`, never bare (#8155).
         } else if all[i].originPackage.length > 0 and symTableScopeAllows(tbl, all[i].originPackage) and not tbl.importAliases.containsKey(all[i].originPackage) {
           importedArities.add(fd.params.count)
         }
