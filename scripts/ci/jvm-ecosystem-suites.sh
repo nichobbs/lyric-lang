@@ -37,6 +37,12 @@
 #   proto       the protobuf wire codec; its IEEE 754 bit casts come from
 #               Std.Math, which binds java.lang.Float/Double raw-bits methods
 #
+#   docker      the generated Docker API client and the tcp:// DOCKER_HOST path;
+#               the Unix-socket fallback test is dotnet-only (#2663) (#7511)
+#   grpc        Grpc.Types and the JVM kernel package compiling together; the
+#               rate-limit, channel and aspect-weaving suites are dotnet-gated
+#               and the JVM kernel's `extern package` calls are #8527
+#
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
 # the script fails if any did.
@@ -58,7 +64,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail mq proto docker grpc)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 

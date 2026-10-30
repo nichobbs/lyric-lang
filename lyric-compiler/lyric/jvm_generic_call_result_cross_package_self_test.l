@@ -49,6 +49,14 @@
 //! `jvm_cross_package_collision_self_test.l`'s `compileAndRunJvm`), runs it
 //! via `java -jar`, and asserts on stdout.
 //!
+//! Both cases above call the generic with literal arguments, so `Lyric.Mono`
+//! specialises each call and only `collectMonoSpecializedSigs` registers the
+//! signature.  The two cases at the end (#7194) call
+//! `Cg.collectFileCtors` / `Cg.collectFileSigsSeeded` on the parsed packages
+//! directly and read the registered `JvmFuncSig`, which pins the
+//! unspecialised `collectFileSigsSeeded` half on its own, whether or not any
+//! source shape can reach it through the monomorphizer.
+//!
 //! Run in CI via:
 //!   lyric test lyric-compiler/lyric/jvm_generic_call_result_cross_package_self_test.l
 @test_module
@@ -63,6 +71,8 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Jvm.Bridge
+import Jvm.Codegen as Cg
+import Lyric.Parser as Prs
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -208,4 +218,46 @@ test "extern-typed function return does not collide with an unrelated package's 
   assertEqualInt(lines.length, 2, "expected 2 output lines (stdout=" + result.stdout + ")")
   assertEqual(lines[0], "1", "real ConcurrentHashMap size, not a bogus checkcast to the unrelated record")
   assertEqual(lines[1], "local-value", "the unrelated package's own record still constructs and reads correctly")
+}
+
+// #7194: the direct (unspecialised) registration path, isolated. The generic
+// function's own declared signature is registered with `collectFileSigsSeeded`
+// before any caller resolves it; its `recordRetClass` side-channel has to name
+// the record declared in a DIFFERENT package, from the bundle-wide ctor registry.
+func registerMakerSig(withCtors: in Bool): Option[JvmFuncSig] {
+  val entryFile = Prs.parse("package EntryPkg4\n\npub record Entry[K, V] {\n  key: K\n  value: V\n}\n").file
+  val makerFile = Prs.parse("package MakerPkg4\n" + "\n" + "import EntryPkg4\n" + "\n" + "pub func makeEntry[K, V](k: K, v: V): EntryPkg4.Entry[K, V] {\n" + "  EntryPkg4.Entry(key = k, value = v)\n" + "}\n").file
+  val ctorReg: Map[String, String] = newMap()
+  if withCtors {
+    Cg.collectFileCtors(entryFile, ctorReg)
+    Cg.collectFileCtors(makerFile, ctorReg)
+  }
+  val sigs: Map[String, JvmFuncSig] = newMap()
+  val externSeed: Map[String, String] = newMap()
+  Cg.collectFileSigsSeeded(makerFile, sigs, externSeed, ctorReg)
+  mapGet(sigs, "makeEntry")
+}
+
+test "collectFileSigsSeeded alone resolves a cross-package generic return's record class from the bundle ctor registry (#7194)" {
+  match registerMakerSig(true) {
+    case Some(sig) -> {
+      match sig.recordRetClass {
+        case Some(cls) -> assertEqual(cls, "EntryPkg4/Entry", "direct registration names the real record class")
+        case None -> panic("direct registration left recordRetClass empty")
+      }
+    }
+    case None -> panic("makeEntry was not registered")
+  }
+}
+
+test "collectFileSigsSeeded without the ctor registry leaves the record class unresolved (#7194)" {
+  match registerMakerSig(false) {
+    case Some(sig) -> {
+      match sig.recordRetClass {
+        case Some(cls) -> panic("expected no record class without a ctor registry, got " + cls)
+        case None -> ()
+      }
+    }
+    case None -> panic("makeEntry was not registered")
+  }
 }

@@ -783,6 +783,9 @@ test "tryMakeDockerClient returns Ok for a valid tcp:// DOCKER_HOST" {
   assertTrue(isOk(result), "valid tcp:// DOCKER_HOST is Ok")
 }
 
+// The JVM has no Unix-domain-socket HTTP transport (Std.Http reports it as
+// unsupported, tracked in #2663), so the Unix-socket fallback only exists on dotnet.
+@cfg(target = "dotnet")
 test "tryMakeDockerClient returns Ok on the Unix-socket path when DOCKER_HOST has no tcp:// value" {
   Std.Environment.setVar("DOCKER_HOST", "")
   defer {
