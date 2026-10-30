@@ -306,8 +306,16 @@ This generates `parseRoute(url): Option[Route]` and `routeUrl(r): String`:
   and converts it with `CustomerId.tryFrom`, so `/customers/0` matches no
   route when `CustomerId` starts at 1. A field whose type is declared in
   the same file needs no `:Long`.
-- **Matching:** cases are tried in declaration order, and the query and
-  fragment are ignored.
+- **Query parameters:** `@query(field)` on a case (or `@query(field,
+  "name")` to rename the parameter) reads `field` from `?name=value`
+  instead of a path segment. The field is an `Option[T]` of a type a path
+  segment could hold: an absent parameter is `None`, an unusable one (not a
+  number, a bad escape) makes the case not match, and `routeUrl` writes a
+  `Some` after the path and leaves a `None` out. For example,
+  `@path("/search") @query(term) case Search(term: Option[String])`
+  matches `/search` and `/search?term=ada`.
+- **Matching:** cases are tried in declaration order, and the fragment is
+  ignored.
 
 A view links with `Widgets.link(c.name, routeUrl(EditCustomer(id = c.id)))`.
 The application maps each route to a screen with an exhaustive `match`, so

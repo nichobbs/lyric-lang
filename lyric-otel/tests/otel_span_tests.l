@@ -327,6 +327,20 @@ test "shouldSample honours the rate at its bounds and in between" {
   assertFalse(shouldSample(0.5, 0.75), "a draw above the rate is not")
 }
 
+test "sampling at the bounds is deterministic and in between is neither all nor none" {
+  var sampled = 0
+  var i = 0
+  while i < 400 {
+    if shouldSample(0.5, randomUnit()) {
+      sampled = sampled + 1
+    }
+    assertTrue(shouldSample(1.0, randomUnit()), "rate 1.0 samples every draw")
+    assertFalse(shouldSample(0.0, randomUnit()), "rate 0.0 samples no draw")
+    i = i + 1
+  }
+  assertTrue(sampled > 100 and sampled < 300, "rate 0.5 samples roughly half of 400 draws")
+}
+
 func levelName(l: in LogLevel): String {
   match l {
     case LogLevel.Debug -> "debug"

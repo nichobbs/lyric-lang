@@ -22,7 +22,8 @@
 # jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298;
 # extern_upcast_jvm_self_test.l and jvm-stdlib-type-check-gate.sh, D212;
 # match_return_defer_jvm_self_test.l, #7541;
-# nested_generic_result_jvm_self_test.l, #8242, #8528),
+# nested_generic_result_jvm_self_test.l, #8242, #8528;
+# lyric-stdlib/tests/http_client_wire_tests.l, #8560),
 # through one
 # `lyric test`
 # invocation per file.
@@ -55,6 +56,7 @@ fi
 
 ran=""
 for t in \
+  lyric-stdlib/tests/http_client_wire_tests.l \
   lyric-compiler/jvm/generic_param_field_read_jvm_self_test.l \
   lyric-compiler/lyric/bounded_generic_ops_self_test.l \
   lyric-compiler/lyric/generic_default_named_self_test.l \

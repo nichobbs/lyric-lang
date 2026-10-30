@@ -732,10 +732,16 @@ test "Std.HttpServer.urlDecode matches Uri.UnescapeDataString semantics" {
   assertEqual(HttpSrv.urlDecode("%E2%82%AC5"), "€5", "three-byte UTF-8 escape run decodes")
 }
 
-test "unsupported JVM paths fail loudly: Unix-socket client and https prefix" {
-  // Fail-loud stubs (tracked in #2663): a wrong-but-running TCP client or a
-  // silently-plaintext "https" server would be worse than a panic.
-  assertPanics("clientWithUnixSocket panics on the JVM target", { -> clientWithUnixSocket("/var/run/docker.sock"); () })
+test "unsupported JVM paths fail loudly: https prefix; a Unix-socket client constructs" {
+  // A silently-plaintext "https" server would be worse than a panic (tracked
+  // in #2663). Unix-socket clients are supported since #8560: construction
+  // does not dial, and a missing socket is an error on the first request
+  // (http_unix_socket_jvm_tests.l runs real exchanges).
+  val unix = clientWithUnixSocket("/nonexistent/lyric-test.sock")
+  match await unix.get("http://localhost/") {
+    case Ok(_) -> assertTrue(false, "nothing listens on that socket")
+    case Err(_) -> ()
+  }
   assertPanics(
     "https startListener prefix panics on the JVM target",
     { -> HttpSrv.startListener("https://127.0.0.1:8443/"); () }

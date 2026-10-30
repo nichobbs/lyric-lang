@@ -308,7 +308,7 @@ which decodes Docker's framed stdout/stderr multiplex format. It returns
 
 ### How It Works
 
-1. Creates an `HttpClient` connected to `/var/run/docker.sock` via `System.Net.Sockets.UnixDomainSocketEndPoint`
+1. Creates an `HttpClient` connected to `/var/run/docker.sock`: on `--target dotnet` via `System.Net.Sockets.UnixDomainSocketEndPoint`, on `--target jvm` via a `java.nio.channels.SocketChannel` over `UnixDomainSocketAddress` (JDK 16+; `java.net.http.HttpClient` has no Unix-socket transport, so the JVM kernel frames HTTP/1.1 itself with `Std.HttpClientWire`)
 2. Routes all HTTP requests through the Unix socket
 3. Parses JSON responses and presents typed Lyric results
 

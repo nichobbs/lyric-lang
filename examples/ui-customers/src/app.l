@@ -11,7 +11,7 @@ import Ui.Host.{Instance, instance}
 import Ui.Session.{Program}
 import Customers.Domain.{CustomerId}
 import Customers.Ports.{CustomerRepository}
-import Customers.Routes.{Route, CustomerList, EditCustomer, parseRoute}
+import Customers.Routes.{Route, CustomerList, CustomerSearch, EditCustomer, parseRoute}
 import Customers.Edit.Logic
 import Customers.Edit.Effects
 import Customers.Edit.View
@@ -26,7 +26,11 @@ pub func route(repo: in CustomerRepository, url: in String): Option[Instance] {
 
 // Exhaustive over `Route`, so a page without a screen does not compile.
 func screenFor(repo: in CustomerRepository, r: in Route): Instance {
-  return match r { case CustomerList -> listScreen(repo); case EditCustomer(id) -> editScreen(repo, id) }
+  return match r {
+    case CustomerList -> listScreen(repo)
+    case CustomerSearch(_, _) -> listScreen(repo)
+    case EditCustomer(id) -> editScreen(repo, id)
+  }
 }
 
 func listScreen(repo: in CustomerRepository): Instance {

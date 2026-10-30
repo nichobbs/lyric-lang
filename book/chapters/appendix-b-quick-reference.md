@@ -1752,6 +1752,7 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `RT004` | A field type a path segment cannot hold; name the segment's type, as in `{id:Long}`. |
 | `RT005` | Two cases with the same path shape. |
 | `RT006` | A generic union. |
+| `RT007` | A `@query` problem: it names no field, takes the wrong arguments, marks a field twice or two fields on one parameter, is on a field that is not an `Option[T]`, or is on a field that is also a path segment. |
 
 ### Plugins (K-series)
 

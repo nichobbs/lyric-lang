@@ -56,6 +56,7 @@ preset = "ui"
 [project.tests]
 "Customers.EditTests" = "tests/edit_tests.l"
 "Customers.ListTests" = "tests/list_tests.l"
+"Customers.RoutesTests" = "tests/routes_tests.l"
 
 [dependencies]
 "Lyric.Forms"   = { path = "../../lyric-forms" }

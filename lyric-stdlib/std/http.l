@@ -695,19 +695,17 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
 
   val hasTls = hasTlsOptions(b)
   val tlsSupported = HostHttp.hostSupportsTlsConfig()
-  // Unix sockets and TLS options don't compose on `--target dotnet` today
-  // (see `_kernel/http_host.l`'s TLS section header: Unix sockets require
-  // `SocketsHttpHandler`, whose only certificate-validation hook is a
-  // custom .NET delegate type the current FFI delegate-bridge cannot bind
-  // to). `--target jvm` never reaches this branch for a DIFFERENT,
-  // unrelated, pre-existing reason: Unix domain sockets are unconditionally
-  // unsupported there regardless of TLS (#2663 — `java.net.http.HttpClient`
-  // has no Unix-socket transport at all; `hostClientWithUnixSocket` panics
-  // unconditionally on that target). Gated on `tlsSupported` so this
-  // dotnet-specific reason never shadows the generic "unsupported on this
-  // target" reason below on a hypothetical future target with no TLS
-  // config support at all. `hostClientWithTls` is therefore only ever
-  // called when there is no socket path at all.
+  // Unix sockets and TLS options don't compose on either target today.
+  // On `--target dotnet`, Unix sockets require `SocketsHttpHandler`, whose
+  // only certificate-validation hook is a custom .NET delegate type the
+  // current FFI delegate-bridge cannot bind to (see `_kernel/http_host.l`'s
+  // TLS section header; #5947).  On `--target jvm` the Unix-socket
+  // transport is the kernel's own `SocketChannel` plus `Std.HttpClientWire`
+  // (#8560), a plaintext HTTP/1.1 path with no TLS layer.  Gated on
+  // `tlsSupported` so this never shadows the generic "unsupported on this
+  // target" reason below on a target with no TLS config support at all.
+  // `hostClientWithTls` is therefore only ever called when there is no
+  // socket path at all.
   val unixSocketBlocksTls = isSome(b.socketPath) and hasTls and tlsSupported
   val tlsHandledByKernel = hasTls and tlsSupported and not unixSocketBlocksTls
 
@@ -773,8 +771,9 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   val tlsUnsupportedReason = if unixSocketBlocksTls {
     Some(
       value = "TLS client configuration combined with withUnixSocket is not supported yet on this target " +
-        "(SslClientAuthenticationOptions.RemoteCertificateValidationCallback is a custom .NET delegate type " +
-        "the current FFI delegate-bridge cannot bind to); see issue #5947"
+        "(dotnet: SslClientAuthenticationOptions.RemoteCertificateValidationCallback is a custom .NET delegate " +
+        "type the current FFI delegate-bridge cannot bind to, see issue #5947; jvm: the Unix-socket transport " +
+        "carries plaintext HTTP/1.1)"
     )
   } else if hasTls and not tlsSupported {
     // Reached by the wasm32 module shape, whose `fetch` host owns

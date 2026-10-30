@@ -182,7 +182,7 @@ failed before it ends.
 | Field        | Type       | Default              | Description                              |
 |--------------|------------|----------------------|------------------------------------------|
 | `enabled`    | `Bool`     | `true`               | Master switch; `false` skips all tracing |
-| `sampleRate` | `Float range 0.0 ..= 1.0` | `1.0`  | Probability a call is traced; each call draws independently, an unsampled call runs untraced |
+| `sampleRate` | `Float range 0.0 ..= 1.0` | `1.0`  | Probability a call is traced; each call draws independently (every span is its own trace root today, see Known limitations), an unsampled call runs untraced |
 | `spanKind`   | `SpanKind` | `SpanKind.Internal`  | OTel span kind for every span            |
 
 `SpanKind` values: `Internal`, `Server`, `Client`, `Producer`, `Consumer`.
@@ -241,7 +241,12 @@ follow-up, not a promise this library doesn't yet keep:
   single-span trace — nested `startSpan` calls do not appear as parent/
   child in the collector today. Parent/child linkage (OTLP's
   `parent_span_id`) is a natural follow-up once this library threads a
-  "current span" through call context.
+  "current span" through call context. Sampling follows the same
+  boundary: because every span is a trace root, `Tracing.sampleRate`
+  is the head-based root decision and is drawn per call. When a current
+  span exists, a child span will inherit its parent's sampled/unsampled
+  decision and only roots will draw (parent-based sampling, D278), so a
+  sampled trace is never missing spans below an unsampled one.
 - **No OTLP logs exporter.** `configureOtlpLogs` always returns `Err`.
   Traces and metrics only.
 - **OTLP/gRPC is not implemented** (either target). Only OTLP/HTTP

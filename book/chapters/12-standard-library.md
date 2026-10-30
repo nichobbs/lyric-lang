@@ -551,7 +551,7 @@ pub interface HttpClient {
 
 The real `HttpClient` implementation wraps `System.Net.Http.HttpClient`. In production you wire it through your `wire` block. In tests you inject a stub that returns canned responses. Chapter 13 covers the FFI aspect of this wrapping; Chapter 15 covers the test stub pattern.
 
-For custom transport configuration (redirect policy, Unix sockets, HTTP version), build a client with `HttpClientBuilder` instead of the plain factory functions:
+For custom transport configuration (redirect policy, Unix sockets, which work on `--target dotnet` and `--target jvm` but speak HTTP/1.1 only on the JVM, HTTP version), build a client with `HttpClientBuilder` instead of the plain factory functions:
 
 ```lyric
 val client = HttpClientBuilder.new().withRedirects(5).withHttpVersion(Http11).build()

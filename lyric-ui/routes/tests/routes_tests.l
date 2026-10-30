@@ -10,6 +10,37 @@ import Std.Testing
 import Lyric.GeneratorSdk
 import Ui.Routes
 
+// An `Option[inner]` case field; it is a query field only if the case says so
+// with `@query(name)`.
+func queryField(name: in String, inner: in String): FieldDescriptor {
+  FieldDescriptor(
+    name = name,
+    fieldType = FieldType(kind = OptionType, name = "Option[" + inner + "]", typeArgs = [inner]),
+    isPublic = true,
+    annotations = []
+  )
+}
+
+func query(args: in slice[String]): AnnotationDescriptor {
+  AnnotationDescriptor(name = "query", args = args)
+}
+
+func queryCase(
+  name: in String,
+  path: in String,
+  fields: in slice[FieldDescriptor],
+  queries: in slice[AnnotationDescriptor],
+): CaseDescriptor {
+  val anns: List[AnnotationDescriptor] = newList()
+  anns.add(AnnotationDescriptor(name = "path", args = ["\"" + path + "\""]))
+  var i = 0
+  while i < queries.length {
+    anns.add(queries[i])
+    i += 1
+  }
+  CaseDescriptor(name = name, annotations = anns.toArray(), fields = fields)
+}
+
 func named(name: in String, ty: in String): FieldDescriptor {
   FieldDescriptor(
     name = name,
@@ -84,7 +115,7 @@ test "parseRoute and routeUrl for literal and field segments" {
   val src = r.lyricSource
   assertTrue(src.contains("pub func parseRoute(url: in String): Option[Route] {"), "parse: " + src)
   assertTrue(
-    src.contains("  match parseRouteCustomerList(segments) {\n    case Some(r) -> return Some(value = r)"),
+    src.contains("  match parseRouteCustomerList(segments, url) {\n    case Some(r) -> return Some(value = r)"),
     "cases tried in order"
   )
   assertTrue(src.contains("  if segments[1] != \"new\" {\n    return None\n  }"), "literal segment")
@@ -181,4 +212,118 @@ test "a segment type names how to read a field declared elsewhere" {
   )
   val unknown = generateSource(request([routeCase("A", "/a/{x}", [named("x", "Money")])], []))
   assertTrue(unknown.diagnostics[0].message.contains("{x:Long}"), "the RT004 message suggests a segment type")
+}
+
+test "a @query field is read from the query and written after the path" {
+  val sort = DeclarationDescriptor(
+    name = "Sort",
+    kind = DeclaredEnum,
+    underlying = None,
+    range = None,
+    cases = [
+      CaseDescriptor(name = "ByName", annotations = [], fields = []),
+      CaseDescriptor(name = "ByLimit", annotations = [], fields = [])
+    ]
+  )
+  val r = generateSource(
+    request(
+      [
+        queryCase(
+          "Search",
+          "/search/{scope}",
+          [
+            named("scope", "String"),
+            queryField("term", "String"),
+            queryField("page", "Int"),
+            queryField("sort", "Sort")
+          ],
+          [query(["term"]), query(["page", "\"p\""]), query(["sort"])]
+        )
+      ],
+      [sort]
+    )
+  )
+  assertEqualInt(r.diagnostics.length, 0, "no diagnostics")
+  val src = r.lyricSource
+  assertTrue(
+    src.contains("func parseRouteSearch(segments: in List[String], url: in String): Option[Route] {"),
+    "url reaches the case: " + src
+  )
+  assertTrue(
+    src.contains("match routeSearchTermQuery(url) {\n    case Some(term) ->"),
+    "query field bound from the url"
+  )
+  assertTrue(src.contains("GenRouting.queryPresent(url, \"term\")"), "the parameter defaults to the field name")
+  assertTrue(src.contains("GenRouting.queryPresent(url, \"p\")"), "@query(page, \"p\") renames the parameter")
+  assertTrue(src.contains("val absent: Option[String] = None"), "absent is None")
+  assertTrue(
+    src.contains("func routeSearchPageQuery(url: in String): Option[Option[Int]] {"),
+    "a failed parse rejects the case"
+  )
+  assertFalse(src.contains("GenRouting.longSegment(text)"), "Int uses intSegment")
+  assertTrue(src.contains("GenRouting.intSegment(text)"), "Int parse")
+  assertTrue(src.contains("func routeSearchSortQueryText(v: in Option[Sort]): Option[String] {"), "enum text helper")
+  assertTrue(src.contains("routeSearchSortText(inner)"), "enum text")
+  assertTrue(
+    src.contains(
+      "case Search(scope, term, page, sort) -> GenRouting.withQuery(GenRouting.withQuery(GenRouting.withQuery(\"/search\" + \"/\" + GenRouting.encodeSegment(scope), \"term\", routeSearchTermQueryText(term)), \"p\", routeSearchPageQueryText(page)), \"sort\", routeSearchSortQueryText(sort))"
+    ),
+    "url appends the query in field order"
+  )
+}
+
+test "@query problems are reported" {
+  val plain = [named("x", "String")]
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String")], [query(["y"])])], []))).contains(
+      "RT007"
+    ),
+    "names no field"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", plain, [query(["x"])])], []))).contains("RT007"),
+    "not an Option"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "Money")], [query(["x"])])], []))).contains(
+      "RT004"
+    ),
+    "an unsupported value type"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a/{x}", [queryField("x", "String")], [query(["x"])])], []))).contains(
+      "RT007"
+    ),
+    "a query field in the path"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String"), queryField("y", "String")], [query(["x"]), query(["y", "\"x\""])])], []))).contains(
+      "RT007"
+    ),
+    "two fields on one parameter"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String")], [query(["x"]), query(["x"])])], []))).contains(
+      "RT007"
+    ),
+    "one field marked twice"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String")], [query([])])], []))).contains(
+      "RT007"
+    ),
+    "no field named"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String")], [query(["x", "\"\""])])], []))).contains(
+      "RT007"
+    ),
+    "an empty parameter name"
+  )
+  assertTrue(
+    codes(generateSource(request([queryCase("A", "/a", [queryField("x", "String")], [query(["x", "name"])])], []))).contains(
+      "RT007"
+    ),
+    "a parameter name that is not a literal"
+  )
 }

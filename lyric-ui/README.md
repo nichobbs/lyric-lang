@@ -70,9 +70,11 @@ pub union Route {
 - **Segments:** each `{field}` segment binds a case field; `{field:Long}`
   (or `:Int`, `:String`) names the segment's type for a distinct type
   declared in another file.
-- **Matching:** cases are tried in order, and the query and fragment are
-  ignored.
-- **Diagnostics:** `RT001`–`RT006`.
+- **Query parameters:** `@query(field)` (or `@query(field, "name")`) on a
+  case reads an `Option[T]` field from `?name=value` instead of a path
+  segment; see `docs/65` §6.1.
+- **Matching:** cases are tried in order, and the fragment is ignored.
+- **Diagnostics:** `RT001`–`RT007`.
 
 Declare `"Ui.Routes" = { path = "../lyric-ui/routes" }` beside `Lyric.Ui`.
 

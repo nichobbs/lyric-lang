@@ -158,9 +158,9 @@ affected by this constraint — `.new(args)` is safe to use there today.
   parity"). Accurately documented but worth a runtime-facing note in
   `otel.l` so users importing on JVM don't expect traces to actually
   export.
-- **stdlib JVM gaps**: HTTP Unix-domain-socket support
-  (`std/_kernel_jvm/http_host.l:106-116`, tracked #2663) still routes to
-  a stub. Regex timeout (`std/_kernel_jvm/regex_host.l`, tracked #1103)
+- **stdlib JVM gaps**: HTTP Unix-domain-socket support is **fixed**
+  (#8560): `std/_kernel_jvm/http_host.l` writes the request to a
+  `SocketChannel` and frames it with `Std.HttpClientWire`. Regex timeout (`std/_kernel_jvm/regex_host.l`, tracked #1103)
   is **fixed** — no longer a stub: `hostIsMatch`/`hostMatchOne`/
   `hostReplace` now race each match on a daemon `Thread` against the
   compiled-in timeout, verified against a real catastrophic-backtracking

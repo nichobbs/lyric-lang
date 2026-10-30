@@ -15,4 +15,10 @@ pub union Route {
   case CustomerList
   @path("/customers/{id:Long}")
   case EditCustomer(id: CustomerId)
+  // A deep link into the list: `?term=` and `?page=` are optional query
+  // parameters, not path segments.
+  @path("/customers/search")
+  @query(term)
+  @query(page)
+  case CustomerSearch(term: Option[String], page: Option[Int])
 }

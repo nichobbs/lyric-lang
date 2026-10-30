@@ -7208,7 +7208,7 @@ jobs:
       # 1-split sub-batch) must and do produce identical results.
       - name: Std.HttpEngine test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_engine_tests.l
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_engine_tests.l && bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_client_wire_tests.l
 
       # Std.HttpEngine.Hpack (HPACK / RFC 7541) coverage (#5886, docs/61 §6.4
       # phase 4.1): the pure-Lyric HPACK header-compression codec — static +
