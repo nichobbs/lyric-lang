@@ -13036,6 +13036,7 @@ test "value-returning lambdas nested three deep keep their types under the lenie
   val bad = head +
     "func run(xs: in slice[Int], ys: in slice[Int]): Int {\n  val r = mapS(xs, { a -> mapS(ys, { b -> mapS(xs, { c -> a + b + c + \"x\" }) }) })\n  r[0][0][0]\n}\n"
   assertTrue(diagCount(parseCheck(bad)) > 0, "a mismatch in the innermost body is still reported")
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // #7368: a qualified function value reports "ambiguous qualifier" (several
