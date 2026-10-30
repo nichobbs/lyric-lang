@@ -118,18 +118,18 @@ test "Ui.Forms renders a schema with values, bounds and errors" {
 test "a code editor is a text area with the code variant and its settings as properties" {
   val opts = EditorOpts(input = inputOpts(), language = "lyric", lineNumbers = false, tabSize = 4)
   val v: View[Child] = codeEditor[Child]("val x = 1", { s: String -> Typed(s = s) }, opts)
-  assertEqual(propOf(v, "variant").getOrElse(""), "code", "variant")
-  assertEqual(propOf(v, "value").getOrElse(""), "val x = 1", "value")
-  assertEqual(propOf(v, "language").getOrElse(""), "lyric", "language")
-  assertEqual(propOf(v, "lineNumbers").getOrElse(""), "false", "line numbers")
-  assertEqual(propOf(v, "tabSize").getOrElse(""), "4", "tab size")
+  assertEqual(unwrapOr(propOf(v, "variant"), ""), "code", "variant")
+  assertEqual(unwrapOr(propOf(v, "value"), ""), "val x = 1", "value")
+  assertEqual(unwrapOr(propOf(v, "language"), ""), "lyric", "language")
+  assertEqual(unwrapOr(propOf(v, "lineNumbers"), ""), "false", "line numbers")
+  assertEqual(unwrapOr(propOf(v, "tabSize"), ""), "4", "tab size")
 }
 
 test "a code editor's defaults leave the language and tab size out" {
   val v: View[Child] = codeEditor[Child]("", { s: String -> Typed(s = s) }, editorOpts())
   assertTrue(propOf(v, "language") == None, "no language")
-  assertEqual(propOf(v, "lineNumbers").getOrElse(""), "true", "line numbers on")
-  assertEqual(propOf(v, "tabSize").getOrElse(""), "2", "two-space tab")
+  assertEqual(unwrapOr(propOf(v, "lineNumbers"), ""), "true", "line numbers on")
+  assertEqual(unwrapOr(propOf(v, "tabSize"), ""), "2", "two-space tab")
   assertTrue(propOf(v, "readonly") == None, "editable")
 }
 
@@ -143,7 +143,7 @@ test "an editable code editor produces its text, a read-only one produces nothin
   }
   val ro = EditorOpts(input = inputOpts().copy(readonly = true), language = "json", lineNumbers = true, tabSize = 2)
   val locked: View[Child] = field("Code", noErrors, codeEditor[Child]("{}", typedMsg, ro))
-  assertEqual(propOf(codeEditor[Child]("{}", typedMsg, ro), "readonly").getOrElse(""), "true", "readonly")
+  assertEqual(unwrapOr(propOf(codeEditor[Child]("{}", typedMsg, ro), "readonly"), ""), "true", "readonly")
   match UiTest.typeInto(locked, "Code", "x") {
     case Some(_) -> assertTrue(false, "a read-only editor must not produce a message")
     case None -> assertTrue(true, "no message")

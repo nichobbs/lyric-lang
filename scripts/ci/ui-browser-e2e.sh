@@ -86,6 +86,10 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+# The code editor widget (docs/65 §13.10, D275) needs no application: it drives the compiled
+# runtime's CodeEditor with real keys, so it runs once here beside the application test.
+(cd lyric-ui/runtime && npx --yes -p typescript@6.0.2 tsc -p tsconfig.json && node --test e2e/editor.e2e.mjs)
+
 status=0
 LYRIC_UI_E2E_URL="$url" LYRIC_UI_E2E_TARGET="$target" \
   node --test lyric-ui/runtime/e2e/customers.e2e.mjs || status=$?

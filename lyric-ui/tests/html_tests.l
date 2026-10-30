@@ -99,21 +99,33 @@ test "ids are numbered in document order, so the same tree renders the same text
 test "a code editor renders the runtime's wrapper, gutter and textarea" {
   val opts = EditorOpts(input = inputOpts(), language = "lyric", lineNumbers = true, tabSize = 4)
   val v: View[Msg] = codeEditor[Msg]("a <b>\nc", typed, opts)
-  val out = html(v)
+  val rendered = html(v)
   assertTrue(
-    startsWith(out, "<div class=\"lui-input lui-code\" data-language=\"lyric\" data-variant=\"code\">"),
-    "wrapper: " + out
+    startsWith(rendered, "<div class=\"lui-input lui-code\" data-language=\"lyric\" data-variant=\"code\">"),
+    "wrapper: " + rendered
   )
-  assertTrue(contains(out, "<div class=\"lui-code-gutter\" aria-hidden=\"true\"><div>1\n2</div></div>"), "gutter: " + out)
-  assertTrue(contains(out, "<pre class=\"lui-code-highlight\" aria-hidden=\"true\" style=\"tab-size:4\"><code>a &lt;b&gt;\nc\n</code></pre>"), "highlight layer: " + out)
-  assertTrue(contains(out, "<textarea class=\"lui-code-input\" id=\"lui-s1\" spellcheck=\"false\" wrap=\"off\""), "textarea: " + out)
-  assertTrue(endsWith(out, ">a &lt;b&gt;\nc</textarea></div></div>"), "text is escaped: " + out)
+  assertTrue(
+    contains(rendered, "<div class=\"lui-code-gutter\" aria-hidden=\"true\"><div>1\n2</div></div>"),
+    "gutter: " + rendered
+  )
+  assertTrue(
+    contains(
+      rendered,
+      "<pre class=\"lui-code-highlight\" aria-hidden=\"true\" style=\"tab-size:4\"><code>a &lt;b&gt;\nc\n</code></pre>"
+    ),
+    "highlight layer: " + rendered
+  )
+  assertTrue(
+    contains(rendered, "<textarea class=\"lui-code-input\" id=\"lui-s1\" spellcheck=\"false\" wrap=\"off\""),
+    "textarea: " + rendered
+  )
+  assertTrue(endsWith(rendered, ">a &lt;b&gt;\nc</textarea></div></div>"), "text is escaped: " + rendered)
 }
 
 test "a code editor without line numbers is marked, and a read-only one is read-only" {
   val opts = EditorOpts(input = inputOpts().copy(readonly = true), language = "", lineNumbers = false, tabSize = 0)
-  val out = html(codeEditor[Msg]("", typed, opts))
-  assertTrue(contains(out, "class=\"lui-input lui-code lui-code-nogutter\""), "no gutter: " + out)
-  assertFalse(contains(out, "data-language"), "no language: " + out)
-  assertTrue(contains(out, " readonly"), "read-only: " + out)
+  val rendered = html(codeEditor[Msg]("", typed, opts))
+  assertTrue(contains(rendered, "class=\"lui-input lui-code lui-code-nogutter\""), "no gutter: " + rendered)
+  assertFalse(contains(rendered, "data-language"), "no language: " + rendered)
+  assertTrue(contains(rendered, " readonly"), "read-only: " + rendered)
 }

@@ -323,7 +323,10 @@ func codeEditor(props: in List[Prop], id: in String, controlAttrs: in String): S
   val value = text(props, "value")
   val gutter = if text(props, "lineNumbers") == "false" then " lui-code-nogutter" else ""
   val invalid = if flag(props, "invalid") then " lui-invalid" else ""
-  val tab = match prop(props, "tabSize") { case Some(v) -> " style=\"tab-size:" + escapeHtml(v) + "\""; case None -> "" }
+  val tab = match prop(props, "tabSize") {
+    case Some(v) -> " style=\"tab-size:" + escapeHtml(v) + "\""
+    case None -> ""
+  }
   return "<div" + attr("class", "lui-input lui-code" + gutter + invalid) + optAttr(props, "language", "data-language") +
     dataAttrs(props) +
     "><div" +
