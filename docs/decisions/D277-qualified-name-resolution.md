@@ -1,4 +1,4 @@
-# D275 — Qualified names resolve through re-exports; module vals hide imports in calls; explicit alias type arguments (#7799, #8350, #8562, #7368)
+# D277 — Qualified names resolve through re-exports; module vals hide imports in calls; explicit alias type arguments (#7799, #8350, #8562, #7368)
 
 **Status:** shipped
 
