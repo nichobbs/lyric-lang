@@ -3909,13 +3909,22 @@ test "a generic callee is applied at the type arguments its arguments fix (#8631
     ident + "func two(n: in Int, s: in String): Int\n  ensures: result == n and ident(s) == s\n{\n  ident(n)\n}\n",
     "two-instances"
   )
-  assertDischarged(ident + "func viaGeneric[U](x: in U): Int\n  ensures: result == 3\n{\n  ident(3)\n}\n", "through-a-generic-caller")
+  assertDischarged(
+    ident + "func viaGeneric[U](x: in U): Int\n  ensures: result == 3\n{\n  ident(3)\n}\n",
+    "through-a-generic-caller"
+  )
   // Applied to a value of the caller's own type parameter, the call is at
   // that sort, but a value the verifier cannot compare is not unfolded.
-  assertRefuted(ident + "func viaGeneric[U](x: in U): U\n  ensures: result == x\n{\n  ident(x)\n}\n", "at-a-type-parameter")
+  assertRefuted(
+    ident + "func viaGeneric[U](x: in U): U\n  ensures: result == x\n{\n  ident(x)\n}\n",
+    "at-a-type-parameter"
+  )
   // A contract on a generic callee is checked at the instance.
   val pos = "func firstOf[T](x: in T, y: in T): T\n  requires: true\n  ensures: result == x\n{\n  x\n}\n"
-  assertDischarged(pos + "func f(a: in Int, b: in Int): Int\n  ensures: result == a\n{\n  firstOf(a, b)\n}\n", "contract-instance")
+  assertDischarged(
+    pos + "func f(a: in Int, b: in Int): Int\n  ensures: result == a\n{\n  firstOf(a, b)\n}\n",
+    "contract-instance"
+  )
   // A type parameter no argument fixes fails closed.
   assertUntranslatable(
     "func mk[T](): Int\n  ensures: result == 1\n{\n  1\n}\nfunc f(): Int\n  ensures: result == 1\n{\n  mk()\n}\n",
@@ -3925,8 +3934,14 @@ test "a generic callee is applied at the type arguments its arguments fix (#8631
 
 test "a method declared in a record body is applied by its contract (#8356)" {
   val box = "record Box[T] {\n  v: T\n  func getV(self: in Box[T]): T\n    ensures: result == self.v\n  { self.v }\n}\n"
-  assertDischarged(box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v\n{\n  b.getV()\n}\n", "generic-method-ensures")
-  assertRefuted(box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v + 1\n{\n  b.getV()\n}\n", "generic-method-refuted")
+  assertDischarged(
+    box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
+    "generic-method-ensures"
+  )
+  assertRefuted(
+    box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v + 1\n{\n  b.getV()\n}\n",
+    "generic-method-refuted"
+  )
   assertDischarged(
     "record Box[T] {\n  v: T\n  @pure\n  func getV(self: in Box[T]): T { self.v }\n}\n" +
       "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
@@ -3934,7 +3949,10 @@ test "a method declared in a record body is applied by its contract (#8356)" {
   )
   // The method's `requires:` is the caller's obligation.
   val guarded = "record Cell {\n  n: Int\n  func pos(self: in Cell): Int\n    requires: self.n > 0\n    ensures: result == self.n\n  { self.n }\n}\n"
-  assertDischarged(guarded + "func readIt(c: in Cell): Int\n  requires: c.n > 0\n  ensures: result == c.n\n{\n  c.pos()\n}\n", "requires-met")
+  assertDischarged(
+    guarded + "func readIt(c: in Cell): Int\n  requires: c.n > 0\n  ensures: result == c.n\n{\n  c.pos()\n}\n",
+    "requires-met"
+  )
   assertRefuted(guarded + "func readIt(c: in Cell): Int\n  ensures: result == c.n\n{\n  c.pos()\n}\n", "requires-unmet")
 }
 

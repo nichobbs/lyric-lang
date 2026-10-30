@@ -198,7 +198,11 @@ func calleeSortInfoAt(env: in VEnv, decl: in FunctionDecl, targs: in List[Sort],
 // arguments do not pair with the parameters, do not fit, or leave a type
 // parameter open.
 func inferCallTypeArgs(
-  env: in VEnv, decl: in FunctionDecl, tparams: in List[String], args: in List[CallArg], rawArgTerms: in List[Term]
+  env: in VEnv,
+  decl: in FunctionDecl,
+  tparams: in List[String],
+  args: in List[CallArg],
+  rawArgTerms: in List[Term],
 ): Result[List[Sort], String] {
   val names: List[String] = newList()
   for p in decl.params {
@@ -335,7 +339,10 @@ func translateResolvedCall(
       }
       case Err(why) -> {
         allArgDiags.add(
-          untranslatableDiag("the type arguments of the call to '" + decl.name + "' are not fixed by its arguments: " + why, callSpan)
+          untranslatableDiag(
+            "the type arguments of the call to '" + decl.name + "' are not fixed by its arguments: " + why,
+            callSpan
+          )
         )
         val openTR = TranslateResult(
           term = poisonTerm(freshVar(env, rawName + "!result", SUninterp(name = "call"))),
@@ -348,7 +355,10 @@ func translateResolvedCall(
     }
   }
   val name = if targs.count > 0 { instanceCalleeName(rawName, targs) } else { rawName }
-  val resultInfo = match decl.ret { case Some(te) -> calleeSortInfoAt(env, decl, targs, te); case None -> unitSortInfo() }
+  val resultInfo = match decl.ret {
+    case Some(te) -> calleeSortInfoAt(env, decl, targs, te)
+    case None -> unitSortInfo()
+  }
   // What an earlier translation of this call left for `havocOutArgs` is
   // not this one's (#8111).
   forgetOutPosts(env, outParamRoots(decl, args), callSpan)

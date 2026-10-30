@@ -370,14 +370,7 @@ pub func goalsForFileInScope(
               if sameName == 1 and rmFn.params.count >= 1 and rmFn.params[0].name == "self" {
                 val calleeKey = recordMethodCalleeKey(rmDecl.name, rmFn.name)
                 if not callees.containsKey(calleeKey) {
-                  val md = methodAsFunction(
-                    rmDecl.name + "::" + rmFn.name,
-                    rmFields,
-                    rmDecl.generics,
-                    rmSelf,
-                    rmSiblings,
-                    rmFn
-                  )
+                  val md = methodAsFunction(rmDecl.name + "::" + rmFn.name, rmFields, rmDecl.generics, rmSelf, rmSiblings, rmFn)
                   callees.add(calleeKey, md)
                   calleeDecls.add(md)
                 }

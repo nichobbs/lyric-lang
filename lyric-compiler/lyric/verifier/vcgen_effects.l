@@ -47,7 +47,14 @@ func emptyEffects(): Effects {
   val calls: List[String] = newList()
   val outOther: List[String] = newList()
   val outCalls: List[OutCall] = newList()
-  Effects(assigned = assigned, outArgs = outArgs, jumps = jumps, calls = calls, outOther = outOther, outCalls = outCalls)
+  Effects(
+    assigned = assigned,
+    outArgs = outArgs,
+    jumps = jumps,
+    calls = calls,
+    outOther = outOther,
+    outCalls = outCalls
+  )
 }
 
 // The last name segment a callee expression names, or "".
@@ -476,7 +483,11 @@ func havocVarsLinked(env: in VEnv, names: in List[String], tag: in String, linke
     match envLookupSort(vname, env) {
       case Some(vinfo) -> {
         val t = match mapGet(linked, vname) {
-          case Some(post) -> if smtRenderSort(sortOf(post)) == smtRenderSort(vinfo.sort) { post } else { freshVar(env, vname + "!" + tag, vinfo.sort) }
+          case Some(post) -> if smtRenderSort(sortOf(post)) == smtRenderSort(vinfo.sort) {
+            post
+          } else {
+            freshVar(env, vname + "!" + tag, vinfo.sort)
+          }
           case None -> freshVar(env, vname + "!" + tag, vinfo.sort)
         }
         envH = envBindTerm(vname, t, vinfo, envH)
