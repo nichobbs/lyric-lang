@@ -1,6 +1,6 @@
 # 45 — Contract Metadata Direct Resolution
 
-**Status**: Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580. Parameter defaults (§5 of "Changes Required") specced and shipped in D168 (#7827).
+**Status**: Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 are superseded by the checked package interface of docs/70 §9 (D267), which also replaces the v3 emitter. Parameter defaults (§5 of "Changes Required") specced and shipped in D168 (#7827).
 
 ## Problem
 

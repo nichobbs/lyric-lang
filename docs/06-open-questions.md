@@ -573,6 +573,16 @@ open; the consumer side of `@generate` shipped in D150 and D151.
 
 ---
 
+## Typed IR and package interface questions
+
+Open questions for the compiler restructure (Q-TIR-001–Q-TIR-005) are
+maintained in `docs/70-typed-ir-and-package-interfaces.md` §15 (D267). They
+cover internal-error gating, assuming runtime-checked postconditions in
+proofs, eliding discharged preconditions, a file-private tier, and an
+advisory call-site checker plugin point. All are open.
+
+---
+
 ## UI library questions
 
 UI library open questions (Q-UI-001–Q-UI-011) are maintained in
