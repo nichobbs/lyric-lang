@@ -93,6 +93,7 @@ for t in \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
   lyric-compiler/lyric/member_local_shadow_panics_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
+  lyric-compiler/lyric/propagate_never_value_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l \
   lyric-compiler/lyric/protected_byref_self_test.l \
   lyric-compiler/lyric/inout_aliasing_self_test.l \

@@ -77,6 +77,7 @@ for t in \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
+  lyric-compiler/lyric/propagate_never_value_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/buffer_self_test.l \
   lyric-compiler/lyric/buffer_spawn_self_test.l \

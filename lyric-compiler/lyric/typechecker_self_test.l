@@ -11876,13 +11876,13 @@ test "T0161 compares defaults by folded value and resolved name (#8100)" {
   val foldedDiffer = parseCheck(ifaceDefaultSrc("k: in Int = 1 + 1", "k: in Int = 3"))
   assertEqualInt(countDiagCode(foldedDiffer, "T0161"), 1, "1 + 1 is not 3: " + diagCodesOf(foldedDiffer))
   val viaConst = parseCheck(
-    "package P\nconst Two: Int = 2\n" +
+    "package P\nval Two: Int = 2\n" +
       ifaceDefaultSrc("k: in Int = Two", "k: in Int = 1 + 1").replace("package P\n", "")
   )
   assertEqualInt(countDiagCode(viaConst, "T0161"), 0, "a constant and its value: " + diagCodesOf(viaConst))
 
   val pkgA = parse(
-    "package PkgA\npub const LIMIT: Int = 1\npub interface Shape {\n  func area(self: in Self, k: in Int = LIMIT): Int\n}\n"
+    "package PkgA\npub val LIMIT: Int = 1\npub interface Shape {\n  func area(self: in Self, k: in Int = LIMIT): Int\n}\n"
   )
   val packages: List[ImportedPackage] = newList()
   packages.add(
@@ -11893,7 +11893,7 @@ test "T0161 compares defaults by folded value and resolved name (#8100)" {
       wholeImports = collectWholeImportNames(pkgA.file.imports)
     )
   )
-  val implSrc = "package App\nimport PkgA\nconst LIMIT: Int = 2\nrecord Sq { s: Int }\n" +
+  val implSrc = "package App\nimport PkgA\nval LIMIT: Int = 2\nrecord Sq { s: Int }\n" +
     "impl Shape for Sq {\n  func area(self: in Sq, k: in Int = LIMIT): Int { self.s * k }\n}\n"
   val different = checkWithImportedPackages(parse(implSrc).file, packages)
   assertEqualInt(
