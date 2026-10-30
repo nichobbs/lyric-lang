@@ -84,7 +84,9 @@ processes do not inherit it.  An empty value is no override, which is also how
 `clearConfigOverride` works.  Register before the block's first read: a value
 set afterwards is not seen.  `lyric-aws-secrets` (`@secretsManager`,
 `@parameterStore`, `AwsSecrets.init()`) is built on this.  On dotnet and the
-JVM only; native has no config blocks yet.
+JVM only: native reads every config field before `main` runs, so a
+registration made by the program could never be seen there, and
+`Std.ConfigOverride` reports `Unsupported`.
 
 ## Sensitive fields
 

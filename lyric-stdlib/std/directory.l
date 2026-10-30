@@ -1,8 +1,9 @@
 //! std/directory.l - Result-based directory operations.
 //!
 //! Directory APIs mirror Std.File's boundary style: user-input problems
-//! become IOError values, while host failures are caught at this wrapper
-//! layer and do not leak as Bug into application code.
+//! become IOError values, and host failures come back from the kernel's
+//! exception-free Result seams (`Std.FileHost`), which every target implements,
+//! so no `Bug` is caught here (native has no try/catch).
 @runtime_checked
 @io
 package Std.Directory
@@ -57,12 +58,7 @@ pub func create(path: in String): Result[Unit, IOError] {
     case None -> ()
   }
 
-  return try {
-    hostCreateDirectory(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  return hostCreateDirResult(path)
 }
 
 /// Create a directory and all parent directories as needed.
@@ -102,10 +98,9 @@ pub func enumerate(path: in String): Result[slice[String], IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return try {
-    Ok(value = hostEnumerateFileSystemEntries(path))
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+  return match hostListEntriesResult(path) {
+    case Ok(entries) -> Ok(value = entries.toArray())
+    case Err(e) -> Err(error = e)
   }
 }
 
@@ -127,10 +122,9 @@ pub func enumerateFiles(path: in String): Result[slice[String], IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return try {
-    Ok(value = hostEnumerateFiles(path))
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
+  return match hostListFilesResult(path) {
+    case Ok(files) -> Ok(value = files.toArray())
+    case Err(e) -> Err(error = e)
   }
 }
 
@@ -152,11 +146,7 @@ pub func enumerateDirectories(path: in String): Result[slice[String], IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return try {
-    Ok(value = hostEnumerateDirectories(path))
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  return match hostListDirsResult(path) { case Ok(dirs) -> Ok(value = dirs.toArray()); case Err(e) -> Err(error = e) }
 }
 
 /// Delete an empty directory.
@@ -187,12 +177,7 @@ pub func delete(path: in String): Result[Unit, IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return try {
-    hostDeleteDirectory(path)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  return hostDeleteDirEmptyResult(path)
 }
 
 /// Delete a directory and all of its contents recursively.
@@ -222,12 +207,7 @@ pub func deleteRecursive(path: in String): Result[Unit, IOError] {
     return Err(error = DirectoryNotFound(path = path))
   }
 
-  return try {
-    hostDeleteDirectoryRecursive(path, true)
-    Ok(value = ())
-  } catch Bug as b {
-    Err(error = IoError(path = path, message = b.message))
-  }
+  return hostDeleteDirRecursiveResult(path)
 }
 
 // Future: move, copy, metadata (createdAt, modifiedAt, size,

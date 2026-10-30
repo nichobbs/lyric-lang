@@ -757,6 +757,27 @@ LyricList* lyric_dir_list_typed(const char* path, int64_t* ok);
  * value, or NULL if the variable is unset. */
 LyricString* lyric_env_get(const char* name);
 
+/* ── Config blocks (docs/25, #7435; lyric_config.c) ──────────────────────
+ * Startup reads of a `config { }` field from its env var.  `env` is the var
+ * name, `label` is "Block.field", `range_desc` the range text of a G0004
+ * message.  An unset or empty var takes the default (or, without one, stops
+ * startup: exit 78); an unparseable or out-of-range value stops startup the
+ * same way.  The bool and string readers have no range. */
+int32_t      lyric_config_int(LyricString* env, LyricString* label, LyricString* range_desc, int32_t has_default,
+                              int32_t def, int32_t has_min, int64_t lo, int32_t has_max, int64_t hi,
+                              int32_t upper_exclusive);
+int64_t      lyric_config_long(LyricString* env, LyricString* label, LyricString* range_desc, int32_t has_default,
+                               int64_t def, int32_t has_min, int64_t lo, int32_t has_max, int64_t hi,
+                               int32_t upper_exclusive);
+double       lyric_config_double(LyricString* env, LyricString* label, LyricString* range_desc, int32_t has_default,
+                                 double def, int32_t has_min, double lo, int32_t has_max, double hi,
+                                 int32_t upper_exclusive);
+float        lyric_config_float(LyricString* env, LyricString* label, LyricString* range_desc, int32_t has_default,
+                                float def, int32_t has_min, float lo, int32_t has_max, float hi,
+                                int32_t upper_exclusive);
+int32_t      lyric_config_bool(LyricString* env, LyricString* label, int32_t has_default, int32_t def);
+LyricString* lyric_config_string(LyricString* env, LyricString* label, int32_t has_default, LyricString* def);
+
 /* Status-returning variant for Lyric kernels: 0 and *out set when the
  * variable exists; -1 otherwise with *out untouched. */
 int32_t lyric_env_get_ok(const char* name, LyricString** out);

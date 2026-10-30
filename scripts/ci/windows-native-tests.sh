@@ -140,6 +140,7 @@ for t in \
   lyric-compiler/lyric/fixed_array_restored_self_test.l \
   lyric-compiler/lyric/native_dependency_self_test.l \
   lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
+  lyric-compiler/lyric/native_missing_stdlib_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
   lyric-compiler/lyric/llvm_self_test_impl_direct.l ; do
   echo "--- $t"

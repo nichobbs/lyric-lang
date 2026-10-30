@@ -2018,25 +2018,6 @@ test "Native: formatN inside a bundled Std package is lowered (ASan)" {
   }
 }
 
-// #7435: a `config { }` block has no native lowering yet, so a program using
-// one is stopped by a diagnostic (N0025) before codegen, never an unhandled
-// codegen exception.
-test "Native: a config block is rejected with a diagnostic, not a codegen crash (#7435)" {
-  val stdlib = findStdlibSourcesNative()
-  val dir = Path.join(tempBase(), "lyric-llvm-stdlib-selftest")
-  val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
-  val flags: List[String] = newList()
-  val src = "package CfgNative\n" + "config Limits {\n  port: Int = 8080\n}\n" + "func main(): Int {\n" +
-    "  Limits.port - 8080\n" +
-    "}\n"
-  assertFalse(
-    compileToNativeWithFlags(src, stem, stdlib, "", "0", flags, newList(), "", true),
-    "the build stops on the config block"
-  )
-  assertFalse(File.fileExists(stem), "no binary is written")
-}
-
 // #8330: through the full pipeline, an unannotated lambda that calls a method
 // on a captured `List` — the dotted callee `log.add` — captures `log`.
 test "Native: a lambda calling a method on a captured List (#8330, ASan)" {

@@ -26,6 +26,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <signal.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #if !defined(_WIN32)
 /* Internal seam helper (no public header decl); driven directly here to
@@ -872,13 +877,8 @@ static void test_last_error_string(void) {
  * wrapper directly against the SERVER side's negotiated connection so
  * both call shapes are covered without duplicating the handshake.
  *
- * A request/response round trip (like run_tls_scenario's own REQUEST/
- * RESPONSE exchange) is required before either side shuts down: with no
- * data exchanged, both threads race to SSL_shutdown/close, and whichever
- * side's close_notify write lands on an already-reset peer socket takes
- * a process-killing SIGPIPE (no SIGPIPE suppression anywhere in the
- * socket/TLS write paths, unlike lyric_process.c's pipe writes). The read
- * gives both sides a synchronization point before either tears down. */
+ * Both sides exchange a request/response before tearing down so the
+ * negotiated-connection checks run against a live peer. */
 static int alpn_string_server_saw_conn;
 
 static void* alpn_string_server(void* arg) {
@@ -1246,6 +1246,93 @@ static void test_tls_read_timeout(void) {
     lyric_tls_ctx_free(client);
 }
 
+
+#if !defined(_WIN32)
+/* ── Peer that closes early must not kill the process (issue #8460) ───────
+ *
+ * The peer connects and goes away with an RST (SO_LINGER 0).  The server
+ * then keeps writing; the write that hits the dead socket must fail with
+ * an error instead of raising a process-killing SIGPIPE.  SIGPIPE keeps
+ * its default disposition throughout -- the runtime must not rely on the
+ * process ignoring it. */
+static void reset_close(int fd) {
+    struct linger lg;
+    lg.l_onoff = 1;
+    lg.l_linger = 0;
+    setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+    lyric_sock_close(fd);
+}
+
+static void test_plain_write_after_peer_close(void) {
+    signal(SIGPIPE, SIG_DFL);
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    int cfd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(cfd >= 0);
+    int sfd = lyric_sock_accept(listen_fd);
+    CHECK(sfd >= 0);
+    set_timeout(sfd);
+    reset_close(cfd);
+    uint8_t chunk[1024];
+    memset(chunk, 'x', sizeof(chunk));
+    int64_t rc = 0;
+    for (int i = 0; i < 2500 && rc >= 0; i++) {
+        rc = lyric_sock_write(sfd, chunk, (int64_t)sizeof(chunk));
+        usleep(2000);
+    }
+    CHECK(rc < 0);
+    lyric_sock_close(sfd);
+    lyric_sock_close(listen_fd);
+}
+
+static void* early_close_server(void* arg) {
+    int listen_fd = *(int*)arg;
+    int fd = lyric_sock_accept(listen_fd);
+    if (fd < 0) return NULL;
+    set_timeout(fd);
+    void* server_ctx = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, "", 0, "");
+    void* conn = lyric_tls_server_accept(server_ctx, fd);
+    if (conn) {
+        uint8_t chunk[1024];
+        memset(chunk, 'x', sizeof(chunk));
+        int64_t rc = 0;
+        for (int i = 0; i < 2500 && rc >= 0; i++) {
+            rc = lyric_tls_write(conn, chunk, (int64_t)sizeof(chunk));
+            usleep(2000);
+        }
+        CHECK(rc < 0);
+        lyric_tls_shutdown(conn);
+        lyric_tls_free(conn);
+    }
+    lyric_tls_ctx_free(server_ctx);
+    lyric_sock_close(fd);
+    return NULL;
+}
+
+static void test_tls_write_after_peer_close(void) {
+    signal(SIGPIPE, SIG_DFL);
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    int64_t th = 0;
+    lyric_thread_create(&th, early_close_server, &listen_fd);
+
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    int fd = lyric_sock_connect("127.0.0.1", port);
+    CHECK(fd >= 0);
+    set_timeout(fd);
+    void* conn = lyric_tls_client_connect(client, fd, "localhost", "");
+    CHECK(conn != NULL);
+    if (conn) lyric_tls_free(conn);
+    reset_close(fd);
+    lyric_thread_join(th, NULL);
+    lyric_sock_close(listen_fd);
+    lyric_tls_ctx_free(client);
+}
+#endif /* !_WIN32: Windows has no SIGPIPE */
+
 int main(void) {
     test_plain_roundtrip();
     test_sock_peer_string();
@@ -1292,6 +1379,10 @@ int main(void) {
     test_validate_identity_pem();
     test_last_error_string();
     test_alpn_string();
+#if !defined(_WIN32)
+    test_plain_write_after_peer_close();
+    test_tls_write_after_peer_close();
+#endif
     test_tls_bytes_roundtrip();
     test_tls_handshake_timeout();
     test_tls_read_timeout();

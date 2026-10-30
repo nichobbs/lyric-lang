@@ -823,6 +823,38 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
   None
 }
 
+/// True when an import of `pkg` should have been satisfied by the bundled
+/// stdlib: the `Std` head is reserved for it.
+func isStdlibPackageName(pkg: in String): Bool {
+  pkg == "Std" or Str.startsWith(pkg, "Std.")
+}
+
+/// The diagnostic for a `Std.*` import the bundled stdlib cannot satisfy
+/// (#8455).  With no stdlib package loaded at all (`loadedPackages == 0`) the
+/// search itself failed (`N0029`: the message names every location
+/// `Lyric.Emitter.findStdlibSourcesNative` looks in, with `stdPathOverride`
+/// the value of `LYRIC_STD_PATH`); with some loaded, the package is simply
+/// absent from them (`N0030`).  Either way the build stops before codegen
+/// would surface it as an unrelated `N0007` unresolved call.
+pub func missingStdlibMessage(pkg: in String, loadedPackages: in Int, stdPathOverride: in String): String {
+  if loadedPackages == 0 {
+    val overrideDesc = if stdPathOverride.length == 0 { "unset" } else { "'" + stdPathOverride + "'" }
+    "error[N0029]: no standard library sources were found for --target native (needed by the import of '" + pkg +
+      "'). Searched, in order: $LYRIC_STD_PATH (" +
+      overrideDesc +
+      "); lyric-stdlib/std in the directory of the lyric binary and each of its parents; lyric-stdlib/std in the current directory and each of its parents. Set LYRIC_STD_PATH to the lyric-stdlib/std directory of a Lyric checkout or install, or run lyric from inside one."
+  } else {
+    "error[N0030]: package '" + pkg +
+      "' is imported, but no file of the standard library that was found declares it. Check that LYRIC_STD_PATH (or the lyric-stdlib/std next to the lyric binary) points at a stdlib that matches this compiler, and that '" +
+      pkg +
+      "' is spelled correctly."
+  }
+}
+
+func reportMissingStdlibPackage(pkg: in String, stdlib: in NativeStdlib) {
+  Console.error(missingStdlibMessage(pkg, stdlib.importedPkgs.count, Environment.getVarOrDefault("LYRIC_STD_PATH", "")))
+}
+
 /// The label a diagnostic in bundled stdlib package `pkg` is reported
 /// under: its source file's path, or the package name when it has none.
 func stdlibDiagLabel(pkg: in String, stdlib: in NativeStdlib): String {
@@ -1048,36 +1080,11 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
             match decl.ty {
               case Some(ty) -> {
                 if not isLiteralInit(decl.init) {
-                  val noDocs: List[DocComment] = newList()
-                  val noAnns: List[Annotation] = newList()
-                  val noParams: List[Param] = newList()
-                  val noContracts: List[ContractClause] = newList()
-                  val fd = FunctionDecl(
-                    docComments = noDocs,
-                    annotations = noAnns,
-                    visibility = None,
-                    isAsync = false,
-                    name = mvInitFnName(vn),
-                    generics = None,
-                    params = noParams,
-                    ret = Some(value = ty),
-                    whereClause = None,
-                    contracts = noContracts,
-                    body = Some(value = FBBlock(block = typedInitBlock(ty, decl.init, decl.span))),
-                    span = decl.span
-                  )
-                  hoisted.add(
-                    Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span)
-                  )
+                  hoisted.add(mvInitFuncItem(vn, ty, decl.init, decl.span))
                   // The `val` now just calls its initializer function, so the
                   // (possibly generic) initializer expression lives only in
                   // the typed hoisted body.
-                  val segs: List[String] = newList()
-                  segs.add(mvInitFnName(vn))
-                  val noArgs: List[CallArg] = newList()
-                  val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = decl.span)), span = decl.span)
-                  val callInit = Expr(kind = ECall(fn = callee, args = noArgs), span = decl.span)
-                  val newDecl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = callInit, span = decl.span)
+                  val newDecl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = mvInitCallExpr(vn, decl.span), span = decl.span)
                   items.add(
                     Item(
                       docComments = it.docComments,
@@ -1111,6 +1118,39 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
     items = items,
     span = sf.span
   )
+}
+
+/// The function computing module-level `val` `vn`'s initial value: `init`
+/// evaluated at the declared type `ty` (`Lyric.LlvmCodegen.mvInitFnName`).
+func mvInitFuncItem(vn: in String, ty: in TypeExpr, init: in Expr, sp: in Span): Item {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noParams: List[Param] = newList()
+  val noContracts: List[ContractClause] = newList()
+  val fd = FunctionDecl(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = None,
+    isAsync = false,
+    name = mvInitFnName(vn),
+    generics = None,
+    params = noParams,
+    ret = Some(value = ty),
+    whereClause = None,
+    contracts = noContracts,
+    body = Some(value = FBBlock(block = typedInitBlock(ty, init, sp))),
+    span = sp
+  )
+  Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = sp)
+}
+
+/// The call of `vn`'s initializer function, which the hoisted `val` holds.
+func mvInitCallExpr(vn: in String, sp: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(mvInitFnName(vn))
+  val noArgs: List[CallArg] = newList()
+  val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)
+  Expr(kind = ECall(fn = callee, args = noArgs), span = sp)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1386,14 +1426,12 @@ pub func compileToNativeWithFeatures(
     "",
     contractsEnabled
   )
-  val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
+  val userFileChecked = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
     case None -> return false
   }
+  val userFile = lowerConfigBlocksNative(userFileChecked)
   val userPkg = dottedPath(userFile.packageDecl.path)
-  if DiagUtil.diagReportAndAbort(nativeConfigBlockDiagnostics(userFile)) {
-    return false
-  }
 
   // Transitive stdlib import closure, in deterministic worklist order.
   val toBundle: List[SourceFile] = newList()
@@ -1451,6 +1489,10 @@ pub func compileToNativeWithFeatures(
           }
         }
         case None -> {
+          if isStdlibPackageName(pkg) {
+            reportMissingStdlibPackage(pkg, stdlib)
+            return false
+          }
         }
       }
     }
@@ -1789,7 +1831,7 @@ pub func compileProjectToNativeWithShape(
     }
     // Mono erased the package's visible generic functions; put them back so
     // codegen can instantiate them for a call from another package.
-    ownFiles.add(withGenericItems(checked, optsGenericItems))
+    ownFiles.add(lowerConfigBlocksNative(withGenericItems(checked, optsGenericItems)))
     ownCallArities.add(optsCallArities)
     for fr in optsForeignRecords {
       foreignRecords.add(fr)
@@ -1797,13 +1839,6 @@ pub func compileProjectToNativeWithShape(
     mei = mei + 1
   }
   withForeignValueRecords(ownFiles, foreignRecords)
-  var cfgFi = 0
-  while cfgFi < ownFiles.count {
-    if DiagUtil.diagReportAndAbort(nativeConfigBlockDiagnostics(ownFiles[cfgFi])) {
-      return false
-    }
-    cfgFi = cfgFi + 1
-  }
 
   // Transitive stdlib import closure across every own package's imports.
   val toBundle: List[SourceFile] = newList()
@@ -1862,6 +1897,10 @@ pub func compileProjectToNativeWithShape(
           }
         }
         case None -> {
+          if isStdlibPackageName(pkg) {
+            reportMissingStdlibPackage(pkg, stdlib)
+            return false
+          }
         }
       }
     }
@@ -2345,8 +2384,7 @@ func nativeMiddleEndOptions(
   )
 }
 
-// The passes up to the mode check on `file`, as a native build runs them, and
-// the build's rejection of a `config { }` block (N0025) after them, into
+// The passes up to the mode check on `file`, as a native build runs them, into
 // `sink`.
 func nativeCheckFront(
   file: in SourceFile,
@@ -2367,12 +2405,7 @@ func nativeCheckFront(
     ioForbiddenReason,
     true
   )
-  match pipeCheckFront(file, importedPkgs, opts, sink) {
-    case Some(front) -> {
-      val _ = pipeGateTo(sink, label, origins, nativeConfigBlockDiagnostics(front.checked))
-    }
-    case None -> ()
-  }
+  val _ = pipeCheckFront(file, importedPkgs, opts, sink)
 }
 
 /// What a native build of the single source `source` (for the host when
@@ -2381,7 +2414,7 @@ func nativeCheckFront(
 /// diagnostic of the build's own front end (`nativeSourceFrontEnd`: `@cfg`
 /// erasure by `target_os` too, the native standard library prepared as the
 /// build prepares it), of the passes up to the mode check with the build's
-/// options, and the build's N0025, attributed to `path` and never printed.
+/// options, attributed to `path` and never printed.
 /// The arguments are `compileToNativeWithFeatures`'s, for an ordinary
 /// binary.  The bundled standard-library packages are the compiler's, so
 /// they are not checked here.
@@ -2442,27 +2475,318 @@ pub func checkProjectTypesNative(
   located
 }
 
-/// `N0025`: a `config { }` block (D046, docs/25) has no lowering on native
-/// yet (#7435). Without this gate a program reading a config field reached
-/// codegen's "unknown name" panic as an unhandled exception; the build now
-/// stops with a normal diagnostic naming the block, as for the other
-/// unsupported-on-native shapes.
-func nativeConfigBlockDiagnostics(file: in SourceFile): List[Diagnostic] {
-  val diags: List[Diagnostic] = newList()
+/// `config { }` blocks on native (docs/25, #7435).  Each field becomes a
+/// module-level `val` named `Block.field` -- the key a `Block.field` read
+/// resolves to -- whose initializer calls a `Std.ConfigHost` reader.  Native
+/// stores a `val` with a call initializer in a static global that start-up code
+/// fills in before `main` (`hoistModuleValInits`, `Lyric.LlvmCodegen.loadModuleGlobal`),
+/// so the environment is read once, as on dotnet and the JVM, and a missing,
+/// malformed or out-of-range value stops startup with exit 78 inside the runtime.
+/// Runs after type checking, which has already validated the block (G0009,
+/// G0010, G0013); `import Std.ConfigHost` is added when a block is lowered, so
+/// the reader joins the bundled stdlib closure.
+func lowerConfigBlocksNative(file: in SourceFile): SourceFile {
+  var hasConfig = false
   for it in file.items {
     match it.kind {
-      case IConfig(decl) -> diags.add(
-        errorDiagnostic(
-          "N0025",
-          "config block '" + decl.name +
-            "' is not supported for --target native yet (docs/25; tracked in #7435); build for --target dotnet or --target jvm, or read the value from the environment with Std.Environment",
-          it.span
-        )
-      )
+      case IConfig(decl) -> if decl.fields.count > 0 { hasConfig = true }
       case _ -> ()
     }
   }
-  diags
+  if not hasConfig {
+    return file
+  }
+  val pkgName = dottedPath(file.packageDecl.path)
+  val items: List[Item] = newList()
+  val hoisted: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IConfig(decl) -> {
+        for cf in decl.fields {
+          val valName = decl.name + "." + cf.name
+          val ty = configFieldBaseType(cf.ty)
+          val reader = configReaderCall(decl.name, cf, pkgName)
+          items.add(configFieldValItem(it, valName, ty, mvInitCallExpr(valName, cf.span), cf))
+          hoisted.add(mvInitFuncItem(valName, ty, reader, cf.span))
+        }
+      }
+      case _ -> items.add(it)
+    }
+  }
+  for h in hoisted {
+    items.add(h)
+  }
+  val imports: List[ImportDecl] = newList()
+  var hasHost = false
+  for im in file.imports {
+    if dottedPath(im.path) == "Std.ConfigHost" {
+      hasHost = true
+    }
+    imports.add(im)
+  }
+  if not hasHost {
+    val segs: List[String] = newList()
+    segs.add("Std")
+    segs.add("ConfigHost")
+    val noSelector: Option[ImportSelector] = None
+    val noAlias: Option[String] = None
+    imports.add(
+      ImportDecl(
+        path = ModulePath(segments = segs, span = file.span),
+        selector = noSelector,
+        asAlias = noAlias,
+        isPubUse = false,
+        isExtern = false,
+        span = file.span
+      )
+    )
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = imports,
+    items = items,
+    span = file.span
+  )
+}
+
+/// `LYRIC_CONFIG_<PKG>_<BLOCK>_<FIELD>`, as the dotnet and JVM lowerings derive it.
+func configEnvVarName(pkgName: in String, blockName: in String, fieldName: in String): String {
+  "LYRIC_CONFIG_" + Str.toUpper(Str.replace(pkgName, ".", "_")) + "_" + Str.toUpper(blockName) + "_" +
+    Str.toUpper(fieldName)
+}
+
+func configLitExpr(lit: in Literal, sp: in Span): Expr {
+  Expr(kind = ELiteral(lit = lit), span = sp)
+}
+
+func configStringArg(text: in String, sp: in Span): CallArg {
+  CAPositional(expr = configLitExpr(LString(text = text), sp))
+}
+
+func configIntArg(v: in Long, sp: in Span): CallArg {
+  CAPositional(expr = configLitExpr(LInt(value = v, suffix = NoIntSuffix, raw = ""), sp))
+}
+
+func configFlagArg(on: in Bool, sp: in Span): CallArg {
+  configIntArg(if on { 1i64 } else { 0i64 }, sp)
+}
+
+func configFloatArg(v: in Double, is32: in Bool, sp: in Span): CallArg {
+  val sfx = if is32 { F32 } else { F64 }
+  CAPositional(expr = configLitExpr(LFloat(value = v, suffix = sfx, raw = ""), sp))
+}
+
+/// The last segment of a config field's declared type name (`Int` for both
+/// `Int` and `Int range 1 ..= 5`).
+func configFieldTypeName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case TRefined(path, _) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case _ -> ""
+  }
+}
+
+func configFieldBaseType(te: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TRefined(path, _) -> TypeExpr(kind = TRef(path = path), span = te.span)
+    case _ -> te
+  }
+}
+
+/// The text a G0004 message gives for a range: `[lo, hi]`, `[lo, hi)`,
+/// `(at least lo)` or `(at most hi)`; bounds print as the dotnet and JVM
+/// lowerings print them.
+func configBoundText(b: in LiteralBound): String {
+  if b.isFloat {
+    b.d.toString()
+  } else {
+    b.l.toString()
+  }
+}
+
+record ConfigRangeInfo {
+  hasMin: Bool
+  hasMax: Bool
+  upperExclusive: Bool
+  lo: LiteralBound
+  hi: LiteralBound
+  desc: String
+}
+
+func configFieldRange(te: in TypeExpr): ConfigRangeInfo {
+  val zero = LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
+  match te.kind {
+    case TRefined(_, rb) -> {
+      match rb {
+        case RBClosed(loE, hiE) -> {
+          val lo = foldLiteralBound(loE)
+          val hi = foldLiteralBound(hiE)
+          ConfigRangeInfo(
+            hasMin = true,
+            hasMax = true,
+            upperExclusive = false,
+            lo = lo,
+            hi = hi,
+            desc = "[" + configBoundText(lo) + ", " + configBoundText(hi) + "]"
+          )
+        }
+        case RBHalfOpen(loE, hiE, _) -> {
+          val lo = foldLiteralBound(loE)
+          val hi = foldLiteralBound(hiE)
+          ConfigRangeInfo(
+            hasMin = true,
+            hasMax = true,
+            upperExclusive = true,
+            lo = lo,
+            hi = hi,
+            desc = "[" + configBoundText(lo) + ", " + configBoundText(hi) + ")"
+          )
+        }
+        case RBLowerOpen(hiE) -> {
+          val hi = foldLiteralBound(hiE)
+          ConfigRangeInfo(
+            hasMin = false,
+            hasMax = true,
+            upperExclusive = false,
+            lo = zero,
+            hi = hi,
+            desc = "(at most " + configBoundText(hi) + ")"
+          )
+        }
+        case RBUpperOpen(loE) -> {
+          val lo = foldLiteralBound(loE)
+          ConfigRangeInfo(
+            hasMin = true,
+            hasMax = false,
+            upperExclusive = false,
+            lo = lo,
+            hi = zero,
+            desc = "(at least " + configBoundText(lo) + ")"
+          )
+        }
+      }
+    }
+    case _ -> ConfigRangeInfo(hasMin = false, hasMax = false, upperExclusive = false, lo = zero, hi = zero, desc = "")
+  }
+}
+
+/// The `Std.ConfigHost.readT(...)` call that reads one field of a config block.
+func configReaderCall(blockName: in String, cf: in ConfigField, pkgName: in String): Expr {
+  val sp = cf.span
+  val typeName = configFieldTypeName(cf.ty)
+  val rng = configFieldRange(cf.ty)
+  val hasDefault = match cf.default { case Some(_) -> true; case None -> false }
+  val dflt: LiteralBound = match cf.default {
+    case Some(e) -> foldLiteralBound(e)
+    case None -> LiteralBound(ok = true, isFloat = false, l = 0i64, d = 0.0)
+  }
+  val args: List[CallArg] = newList()
+  args.add(configStringArg(configEnvVarName(pkgName, blockName, cf.name), sp))
+  args.add(configStringArg(blockName + "." + cf.name, sp))
+  val reader = match typeName {
+    case "Bool" -> {
+      val dv = match cf.default {
+        case Some(e) -> match e.kind {
+          case ELiteral(lit) -> match lit { case LBool(b) -> b; case _ -> false }
+          case _ -> false
+        }
+        case None -> false
+      }
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configFlagArg(dv, sp))
+      "readBool"
+    }
+    case "String" -> {
+      val dv = match cf.default {
+        case Some(e) -> match e.kind {
+          case ELiteral(lit) -> match lit {
+            case LString(t) -> t
+            case LTripleString(t) -> t
+            case LRawString(t) -> t
+            case _ -> ""
+          }
+          case _ -> ""
+        }
+        case None -> ""
+      }
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configStringArg(dv, sp))
+      "readString"
+    }
+    case "Int" -> {
+      args.add(configStringArg(rng.desc, sp))
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configIntArg(dflt.l, sp))
+      args.add(configFlagArg(rng.hasMin, sp))
+      args.add(configIntArg(rng.lo.l, sp))
+      args.add(configFlagArg(rng.hasMax, sp))
+      args.add(configIntArg(rng.hi.l, sp))
+      args.add(configFlagArg(rng.upperExclusive, sp))
+      "readInt"
+    }
+    case "Long" -> {
+      args.add(configStringArg(rng.desc, sp))
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configIntArg(dflt.l, sp))
+      args.add(configFlagArg(rng.hasMin, sp))
+      args.add(configIntArg(rng.lo.l, sp))
+      args.add(configFlagArg(rng.hasMax, sp))
+      args.add(configIntArg(rng.hi.l, sp))
+      args.add(configFlagArg(rng.upperExclusive, sp))
+      "readLong"
+    }
+    case "Float" -> {
+      args.add(configStringArg(rng.desc, sp))
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configFloatArg(dflt.f32, true, sp))
+      args.add(configFlagArg(rng.hasMin, sp))
+      args.add(configFloatArg(rng.lo.f32, true, sp))
+      args.add(configFlagArg(rng.hasMax, sp))
+      args.add(configFloatArg(rng.hi.f32, true, sp))
+      args.add(configFlagArg(rng.upperExclusive, sp))
+      "readFloat"
+    }
+    case "Double" -> {
+      args.add(configStringArg(rng.desc, sp))
+      args.add(configFlagArg(hasDefault, sp))
+      args.add(configFloatArg(if dflt.isFloat { dflt.d } else { dflt.l.toDouble() }, false, sp))
+      args.add(configFlagArg(rng.hasMin, sp))
+      args.add(configFloatArg(if rng.lo.isFloat { rng.lo.d } else { rng.lo.l.toDouble() }, false, sp))
+      args.add(configFlagArg(rng.hasMax, sp))
+      args.add(configFloatArg(if rng.hi.isFloat { rng.hi.d } else { rng.hi.l.toDouble() }, false, sp))
+      args.add(configFlagArg(rng.upperExclusive, sp))
+      "readDouble"
+    }
+    case _ -> panic(
+      "Lyric.LlvmBridge: config field '" + blockName + "." + cf.name + "' has type '" + typeName +
+        "', which the type checker (G0009) should have rejected"
+    )
+  }
+  val calleeSegs: List[String] = newList()
+  calleeSegs.add("Std")
+  calleeSegs.add("ConfigHost")
+  calleeSegs.add(reader)
+  val callee = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = sp)), span = sp)
+  Expr(kind = ECall(fn = callee, args = args), span = sp)
+}
+
+/// The module-level `val Block.field: T = <init>` item for one config field.
+func configFieldValItem(
+  blockItem: in Item, valName: in String, ty: in TypeExpr, init: in Expr, cf: in ConfigField
+): Item {
+  val sp = cf.span
+  val noInner: Option[Pattern] = None
+  val pat = Pattern(kind = PBinding(name = valName, inner = noInner), span = sp)
+  val decl = ValDecl(pattern = pat, ty = Some(value = ty), init = init, span = sp)
+  Item(
+    docComments = cf.docComments,
+    annotations = blockItem.annotations,
+    visibility = None,
+    kind = IVal(decl = decl),
+    span = sp
+  )
 }
 
 // Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose

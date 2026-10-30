@@ -178,6 +178,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/native-stdlib-type-check-gate.sh
 echo "Native native_kernel_twins_tests.l (--target native) passed"
 bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target native
 echo "Native console-stdin-test (--target native) passed"
+bash scripts/ci/console-readline-test.sh "$lyric_bin" --target native
+echo "Native console-readline-test (--target native) passed"
 # Std.Hash on native (#7684): the FIPS 180-4 / RFC 4231 vectors, and
 # sha512OfFile, whose unreadable-file path is a Result seam rather than a
 # catch (D-N-003).

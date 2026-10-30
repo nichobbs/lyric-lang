@@ -40,10 +40,12 @@
 #include <errno.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -70,6 +72,7 @@ static _Thread_local int32_t g_sock_accept_errno;
  * (#6115). */
 static char g_load_err[256];
 
+static void sock_nosigpipe(int fd);
 static void set_err(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -162,6 +165,7 @@ int32_t lyric_sock_connect(const char* host, int32_t port) {
             last_errno = errno;
             continue;
         }
+        sock_nosigpipe(fd);
         int rc;
         do {
             rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
@@ -258,10 +262,64 @@ int32_t lyric_sock_local_port(int32_t fd) {
     return -1;
 }
 
+/* ── SIGPIPE suppression (issue #8460) ────────────────────────────────────
+ *
+ * A write to a socket whose peer has already closed raises SIGPIPE, which
+ * by default kills the whole process (exit 141).  A server must survive a
+ * client that disconnects early, so every socket and TLS write path turns
+ * the signal into the EPIPE error the callers already report.  The process
+ * disposition is left alone (a program writing to a closed stdout pipe
+ * should still die): suppression is per fd on macOS (SO_NOSIGPIPE, set
+ * wherever this file creates or adopts a socket fd) and per call on Linux
+ * (send(MSG_NOSIGNAL) for plain writes; OpenSSL's socket BIO calls
+ * write(2) itself, so SSL_* calls run with SIGPIPE blocked on the calling
+ * thread and a SIGPIPE they generated is consumed before unblocking,
+ * skipped when the caller already had it blocked -- then it stays pending
+ * for them, as in lyric_process.c's stdin_write). */
+static void sock_nosigpipe(int fd) {
+#if defined(SO_NOSIGPIPE)
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#else
+    (void)fd;
+#endif
+}
+
+#if defined(SO_NOSIGPIPE)
+typedef int sigpipe_guard;
+static void sigpipe_block(sigpipe_guard* g) { (void)g; }
+static void sigpipe_unblock(sigpipe_guard* g) { (void)g; }
+#else
+typedef sigset_t sigpipe_guard;
+static void sigpipe_block(sigpipe_guard* g) {
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGPIPE);
+    if (pthread_sigmask(SIG_BLOCK, &set, g) != 0) {
+        lyric_panic_msg("cannot block SIGPIPE around a socket write", "lyric_tls.c", __LINE__);
+    }
+}
+static void sigpipe_unblock(sigpipe_guard* g) {
+    int saved = errno;
+    if (!sigismember(g, SIGPIPE)) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, SIGPIPE);
+        struct timespec zero = {0, 0};
+        sigtimedwait(&set, NULL, &zero);
+    }
+    if (pthread_sigmask(SIG_SETMASK, g, NULL) != 0) {
+        lyric_panic_msg("cannot restore the signal mask after a socket write", "lyric_tls.c", __LINE__);
+    }
+    errno = saved;
+}
+#endif
+
 /* An accepted socket is blocking whatever the listener is: BSD-derived systems
  * (macOS) hand it the listener's O_NONBLOCK, Linux does not, and every read and
  * write here assumes a blocking descriptor with SO_RCVTIMEO/SO_SNDTIMEO. */
 static void accepted_fd_blocking(int fd) {
+    sock_nosigpipe(fd);
     int flags = fcntl(fd, F_GETFL);
     if (flags >= 0 && (flags & O_NONBLOCK)) {
         (void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
@@ -478,6 +536,7 @@ int32_t lyric_sock_set_timeouts(int32_t fd, int32_t timeout_ms) {
     return 0;
 }
 
+
 static int is_timeout_errno(int e) {
     return e == EAGAIN || e == EWOULDBLOCK;
 }
@@ -502,7 +561,11 @@ int64_t lyric_sock_read(int32_t fd, uint8_t* buf, int64_t n) {
 int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
     int64_t off = 0;
     while (off < n) {
+#if defined(MSG_NOSIGNAL)
+        ssize_t w = send(fd, buf + off, (size_t)(n - off), MSG_NOSIGNAL);
+#else
         ssize_t w = write(fd, buf + off, (size_t)(n - off));
+#endif
         if (w < 0) {
             if (errno == EINTR) continue;
             if (is_timeout_errno(errno)) {
@@ -1135,6 +1198,7 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
         set_ossl_err("create client TLS connection");
         return NULL;
     }
+    sock_nosigpipe(fd);
     if (O.SSL_set_fd(ssl, fd) != 1) {
         set_ossl_err("bind socket to TLS connection");
         O.SSL_free(ssl);
@@ -1177,7 +1241,11 @@ void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_hos
         O.SSL_set_alpn_protos(ssl, wire, wire_len);
         free(wire);
     }
-    if (O.SSL_connect(ssl) != 1) {
+    sigpipe_guard guard;
+    sigpipe_block(&guard);
+    int connect_rc = O.SSL_connect(ssl);
+    sigpipe_unblock(&guard);
+    if (connect_rc != 1) {
         set_ossl_err("TLS handshake");
         O.SSL_free(ssl);
         return NULL;
@@ -1287,13 +1355,18 @@ void* lyric_tls_server_accept(void* server_ctx, int32_t fd) {
         set_ossl_err("create server TLS connection");
         return NULL;
     }
+    sock_nosigpipe(fd);
     if (O.SSL_set_fd(ssl, fd) != 1) {
         set_ossl_err("bind socket to TLS connection");
         O.SSL_free(ssl);
         return NULL;
     }
     errno = 0;
-    if (O.SSL_accept(ssl) != 1) {
+    sigpipe_guard guard;
+    sigpipe_block(&guard);
+    int accept_rc = O.SSL_accept(ssl);
+    sigpipe_unblock(&guard);
+    if (accept_rc != 1) {
         /* A socket timeout (lyric_sock_set_timeouts) makes the underlying
          * recv/send fail with EAGAIN, which is still in errno here (it was
          * cleared just before SSL_accept). */
@@ -1316,7 +1389,10 @@ int64_t lyric_tls_read(void* conn, uint8_t* buf, int64_t n) {
     int want = (n > 0x7fffffff) ? 0x7fffffff : (int)n;
     for (;;) {
         errno = 0;
+        sigpipe_guard guard;
+        sigpipe_block(&guard);
         int r = O.SSL_read(ssl, buf, want);
+        sigpipe_unblock(&guard);
         if (r > 0) return (int64_t)r;
         int saved_errno = errno;
         int err = O.SSL_get_error(ssl, r);
@@ -1344,7 +1420,10 @@ int64_t lyric_tls_write(void* conn, const uint8_t* buf, int64_t n) {
         int64_t remaining = n - off;
         int chunk = (remaining > 0x7fffffff) ? 0x7fffffff : (int)remaining;
         errno = 0;
+        sigpipe_guard guard;
+        sigpipe_block(&guard);
         int w = O.SSL_write(ssl, buf + off, chunk);
+        sigpipe_unblock(&guard);
         if (w > 0) {
             off += w;
             continue;
@@ -1428,7 +1507,10 @@ int32_t lyric_tls_alpn(void* conn, char* out, int32_t out_cap) {
 
 void lyric_tls_shutdown(void* conn) {
     if (!conn) return;
+    sigpipe_guard guard;
+    sigpipe_block(&guard);
     O.SSL_shutdown((ossl_ssl*)conn);
+    sigpipe_unblock(&guard);
 }
 
 void lyric_tls_free(void* conn) {

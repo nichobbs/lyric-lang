@@ -80,6 +80,8 @@ for t in \
   lyric-compiler/lyric/native_dependency_self_test.l \
   lyric-compiler/lyric/native_libs_self_test.l \
   lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
+  lyric-compiler/lyric/native_missing_stdlib_self_test.l \
+  lyric-compiler/lyric/llvm_config_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
   lyric-compiler/lyric/llvm_self_test_impl_direct.l ; do
   echo "=== $t ==="
@@ -184,6 +186,7 @@ for t in \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/char_native_tests.l \
   lyric-stdlib/tests/path_tests.l \
+  lyric-stdlib/tests/directory_tests.l \
   lyric-stdlib/tests/plugin_manifest_tests.l \
   lyric-stdlib/tests/plugin_sign_tests.l \
   lyric-stdlib/tests/plugin_catalogue_tests.l \

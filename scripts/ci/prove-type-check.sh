@@ -130,12 +130,7 @@ grep -q "error\[J001\]" "$err" || fail "main(): Long: expected the JVM build's J
 echo "PASS: main(): Long, the JVM build agrees"
 expect_proved "config block, dotnet" "$lyric_bin" prove "$tc/config_block.l"
 expect_proved "config block, --target jvm" "$lyric_bin" prove --target jvm "$tc/config_block.l"
-expect_type_error "config block, --target native" N0025 "$lyric_bin" prove --target native "$tc/config_block.l"
-grep -q "config_block.l: error\[N0025\] 8:" "$err" || fail "config block, --target native: expected the error at the block"
-rc="$(run "$lyric_bin" build --target native "$tc/config_block.l" -o "$proofs/config-native")"
-[ "$rc" -ne 0 ] || fail "config block: expected the native build to reject it too"
-grep -q "error\[N0025\]" "$err" || fail "config block: expected the native build's N0025"
-echo "PASS: config block, the native build agrees"
+expect_proved "config block, --target native" "$lyric_bin" prove --target native "$tc/config_block.l"
 
 # A dependency that is not built stops the proof, as it stops a build.
 rc="$(run "$lyric_bin" prove "$tc/unbuiltdep/app/src/app.l")"
