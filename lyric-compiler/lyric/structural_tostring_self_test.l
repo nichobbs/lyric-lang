@@ -49,7 +49,7 @@ record Mixed {
 union Shape {
   case Circle(radius: Int)
   case Pair(Int, Int)
-  case Unit
+  case Dot
 }
 
 enum Color {
@@ -102,12 +102,12 @@ test "record: scalar leaves render as they do standing alone" {
 
 test "union: Case(field = value) and the bare case name" {
   val c: Shape = Circle(radius = 5)
-  val z: Shape = Unit
+  val z: Shape = Dot
   val pr: Shape = Pair(1, 2)
   assertEqual(toString(c), "Circle(radius = 5)", "case with a named field")
-  assertEqual(toString(z), "Unit", "case with no fields")
+  assertEqual(toString(z), "Dot", "case with no fields")
   assertEqual(toString(pr), "Pair(1, 2)", "case with positional fields")
-  assertEqual("${c} ${z}", "Circle(radius = 5) Unit", "interpolation")
+  assertEqual("${c} ${z}", "Circle(radius = 5) Dot", "interpolation")
 }
 
 test "union: recursive" {

@@ -383,59 +383,59 @@ func showMapBody(tbl: in SymbolTable, ty: in Type, stmts: in List[Statement], sp
     case Some(t) -> t
     case None -> showPrimTypeExpr("String", sp)
   }
-  val keyListTe = TypeExpr(
-    kind = TGenericApp(head = refTypePath(showSingle("List"), sp), args = showSingleTypeArg(keyTe, sp)),
-    span = sp
-  )
-  val keysCall = showCollectionsCall("mapKeys", showSingleExpr(covNameExpr("x", sp)), sp)
-  stmts.add(showValLocal("keys", keyListTe, keysCall, sp))
-  val body: List[Statement] = newList()
-  val ksAdd: List[Expr] = newList()
-  ksAdd.add(showExprFor(tbl, kt, covNameExpr("k", sp), sp))
-  body.add(showExprStmt(showMethodCall(covNameExpr("ks", sp), "add", ksAdd, sp), sp))
   val valTe = match typeExprForRef(tbl, vt, sp) {
     case Some(t) -> t
     case None -> showPrimTypeExpr("String", sp)
   }
-  val optTe = TypeExpr(
-    kind = TGenericApp(head = refTypePath(showSingle("Option"), sp), args = showSingleTypeArg(valTe, sp)),
+  val keyListTe = TypeExpr(
+    kind = TGenericApp(head = refTypePath(showSingle("List"), sp), args = showSingleTypeArg(keyTe, sp)),
     span = sp
   )
-  val getArgs: List[Expr] = newList()
-  getArgs.add(covNameExpr("x", sp))
-  getArgs.add(covNameExpr("k", sp))
-  body.add(showValLocal("ov", optTe, showCollectionsCall("mapGet", getArgs, sp), sp))
-  val someArgs: List[Expr] = newList()
-  someArgs.add(showExprFor(tbl, vt, covNameExpr("v", sp), sp))
-  val noneArgs: List[Expr] = newList()
-  noneArgs.add(showStrLit("", sp))
-  val somePats: List[Pattern] = newList()
-  somePats.add(Pattern(kind = PBinding(name = "v", inner = None), span = sp))
-  val arms: List[MatchArm] = newList()
-  arms.add(
-    MatchArm(
-      pattern = Pattern(kind = PConstructor(head = covPath(showSingle("Some"), sp), args = somePats), span = sp),
-      guard = None,
-      body = EOBExpr(expr = showMethodCall(covNameExpr("vs", sp), "add", someArgs, sp)),
-      span = sp
-    )
+  val valListTe = TypeExpr(
+    kind = TGenericApp(head = refTypePath(showSingle("List"), sp), args = showSingleTypeArg(valTe, sp)),
+    span = sp
   )
-  arms.add(
-    MatchArm(
-      pattern = Pattern(kind = PBinding(name = "None", inner = None), span = sp),
-      guard = None,
-      body = EOBExpr(expr = showMethodCall(covNameExpr("vs", sp), "add", noneArgs, sp)),
-      span = sp
-    )
-  )
-  body.add(showExprStmt(mkExpr(EMatch(scrutinee = covNameExpr("ov", sp), arms = arms), sp), sp))
-  val keyPat = Pattern(kind = PBinding(name = "k", inner = None), span = sp)
   stmts.add(
+    showValLocal("keys", keyListTe, showCollectionsCall("mapKeys", showSingleExpr(covNameExpr("x", sp)), sp), sp)
+  )
+  stmts.add(
+    showValLocal("values", valListTe, showCollectionsCall("mapValues", showSingleExpr(covNameExpr("x", sp)), sp), sp)
+  )
+  // The keys and values of a map are enumerated in the same order.
+  val zero = showIntLit(0, sp)
+  stmts.add(covStmt(SLocal(binding = LBVar(name = "i", ty = None, init = Some(value = zero))), sp))
+  val body: List[Statement] = newList()
+  val kLocal = "k"
+  val vLocal = "v"
+  val kRead = mkExpr(EIndex(receiver = covNameExpr("keys", sp), indices = showSingleExpr(covNameExpr("i", sp))), sp)
+  val vRead = mkExpr(EIndex(receiver = covNameExpr("values", sp), indices = showSingleExpr(covNameExpr("i", sp))), sp)
+  body.add(showValLocal(kLocal, keyTe, kRead, sp))
+  body.add(showValLocal(vLocal, valTe, vRead, sp))
+  val ksAdd: List[Expr] = newList()
+  ksAdd.add(showExprFor(tbl, kt, covNameExpr(kLocal, sp), sp))
+  body.add(showExprStmt(showMethodCall(covNameExpr("ks", sp), "add", ksAdd, sp), sp))
+  val vsAdd: List[Expr] = newList()
+  vsAdd.add(showExprFor(tbl, vt, covNameExpr(vLocal, sp), sp))
+  body.add(showExprStmt(showMethodCall(covNameExpr("vs", sp), "add", vsAdd, sp), sp))
+  body.add(
     covStmt(
-      SFor(label = None, pat = keyPat, iter = covNameExpr("keys", sp), body = Block(statements = body, span = sp)),
+      SAssign(
+        target = covNameExpr("i", sp),
+        op = AssEq,
+        value = showConcat(covNameExpr("i", sp), showIntLit(1, sp), sp)
+      ),
       sp
     )
   )
+  val cond = mkExpr(
+    EBinop(
+      op = BLt,
+      lhs = covNameExpr("i", sp),
+      rhs = mkExpr(EMember(receiver = covNameExpr("keys", sp), memberName = "count"), sp)
+    ),
+    sp
+  )
+  stmts.add(covStmt(SWhile(label = None, cond = cond, body = Block(statements = body, span = sp)), sp))
   val joinArgs: List[Expr] = newList()
   joinArgs.add(covNameExpr("ks", sp))
   joinArgs.add(covNameExpr("vs", sp))
