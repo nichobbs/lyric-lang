@@ -2210,6 +2210,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   } else {
     symTableTryFindOne(tbl, ifaceName)
   }
+  val ifacePkgName = match ifaceSym { case Some(isym) -> isym.originPackage; case None -> "" }
   val found = match ifaceSym {
     case Some(isym) -> match isym.kind {
       case DKInterface(_, d) -> Some(value = d)
@@ -2249,7 +2250,16 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   )
                 }
                 if fn.params.count == sig.params.count {
-                  reportImplDefaultMismatches(diag, ifaceName, sig.name, sig.params, fn.params)
+                  reportImplDefaultMismatches(
+                    tbl,
+                    diag,
+                    ifacePkgName,
+                    symTableScopePkg(tbl),
+                    ifaceName,
+                    sig.name,
+                    sig.params,
+                    fn.params
+                  )
                 }
                 if fn.params.count != sig.params.count {
                   diag.add(
@@ -2323,7 +2333,16 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 )
               }
               if fn.params.count == ifn.params.count {
-                reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+                reportImplDefaultMismatches(
+                  tbl,
+                  diag,
+                  ifacePkgName,
+                  symTableScopePkg(tbl),
+                  ifaceName,
+                  ifn.name,
+                  ifn.params,
+                  fn.params
+                )
               }
             }
             case None -> ()
@@ -2344,7 +2363,10 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
 // type and a call on the concrete type would fill the argument differently
 // (#7828).  `ifaceParams` and `implParams` have the same count.
 func reportImplDefaultMismatches(
+  tbl: in SymbolTable,
   diag: in List[Diagnostic],
+  ifacePkg: in String,
+  implPkg: in String,
   ifaceName: in String,
   methodName: in String,
   ifaceParams: in List[Param],
@@ -2361,7 +2383,7 @@ func reportImplDefaultMismatches(
         // A default declared in a package restored from its contract
         // metadata is a call to the thunk compiled from it (#7827); its
         // expression is not known here, so it is not compared.
-        case Some(me) -> if sameDefaultExpr(ie, me) or isDefaultThunkCall(ie) or isDefaultThunkCall(me) {
+        case Some(me) -> if sameDefaultExpr(tbl, ifacePkg, implPkg, ie, me) or isDefaultThunkCall(ie) or isDefaultThunkCall(me) {
           ""
         } else {
           subject + " has a different default from the one interface '" + ifaceName + "' declares; " + through +
@@ -2387,12 +2409,83 @@ func reportImplDefaultMismatches(
   }
 }
 
-// True when two default expressions are written the same way: their
-// canonical, span-free renderings (`Lyric.Fmt.exprInline`) agree, ignoring
-// enclosing parentheses.  Every expression form compares, so two `if`,
-// `match` or interpolated defaults written alike are the same default.
-func sameDefaultExpr(a: in Expr, b: in Expr): Bool {
-  Fmt.exprInline(0, stripExprParens(a)) == Fmt.exprInline(0, stripExprParens(b))
+// True when two defaults mean the same value: both fold to the same integer
+// constant, each with its names read in its own package (`1 + 1` and `2`
+// agree, a `LIMIT` of one package and a different `LIMIT` of another do not),
+// or they are written the same way (their canonical, span-free renderings,
+// `Lyric.Fmt.exprInline`, agree, ignoring enclosing parentheses) and every
+// name in them resolves to the same declaration from both packages.  Every
+// expression form compares, so two `if`, `match` or interpolated defaults
+// written alike are the same default (#8100).
+func sameDefaultExpr(tbl: in SymbolTable, ifacePkg: in String, implPkg: in String, a: in Expr, b: in Expr): Bool {
+  val x = stripExprParens(a)
+  val y = stripExprParens(b)
+  match tryFoldIntInPackage(tbl, ifacePkg, x) {
+    case FoldOk(xv) -> match tryFoldIntInPackage(tbl, implPkg, y) { case FoldOk(yv) -> return xv == yv; case _ -> () }
+    case _ -> ()
+  }
+  if Fmt.exprInline(0, x) != Fmt.exprInline(0, y) {
+    return false
+  }
+  val xOrigins: List[String] = newList()
+  val yOrigins: List[String] = newList()
+  collectDefaultNameOrigins(tbl, ifacePkg, x, xOrigins)
+  collectDefaultNameOrigins(tbl, implPkg, y, yOrigins)
+  if xOrigins.count != yOrigins.count {
+    return false
+  }
+  var i = 0
+  while i < xOrigins.count {
+    if xOrigins[i] != yOrigins[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// The declaration each bare name in a default resolves to from `pkg`, in
+// source order, as `name@package@declaration site`; a name nothing declares
+// contributes its bare name.  Only the forms a default is usually built from
+// are walked: any other form's names are left to the text comparison.
+func collectDefaultNameOrigins(tbl: in SymbolTable, pkg: in String, e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> if path.segments.count == 1 {
+      val name = path.segments[0]
+      val found = if pkg.length > 0 { symTableTryFindInPackage(tbl, pkg, name) } else { symTableTryFindOne(tbl, name) }
+      match found {
+        case Some(sym) -> acc.add(name + "@" + sym.originPackage + "@" + recordCopySiteKey(sym.declSpan))
+        case None -> acc.add(name)
+      }
+    }
+    case EParen(inner) -> collectDefaultNameOrigins(tbl, pkg, inner, acc)
+    case EPrefix(_, operand) -> collectDefaultNameOrigins(tbl, pkg, operand, acc)
+    case EBinop(_, lhs, rhs) -> {
+      collectDefaultNameOrigins(tbl, pkg, lhs, acc)
+      collectDefaultNameOrigins(tbl, pkg, rhs, acc)
+    }
+    case EMember(receiver, _) -> collectDefaultNameOrigins(tbl, pkg, receiver, acc)
+    case ETuple(es) -> {
+      for x in es {
+        collectDefaultNameOrigins(tbl, pkg, x, acc)
+      }
+    }
+    case EList(es) -> {
+      for x in es {
+        collectDefaultNameOrigins(tbl, pkg, x, acc)
+      }
+    }
+    case ECall(fn, args) -> {
+      collectDefaultNameOrigins(tbl, pkg, fn, acc)
+      for arg in args {
+        match arg {
+          case CAPositional(v) -> collectDefaultNameOrigins(tbl, pkg, v, acc)
+          case CANamed(_, v, _) -> collectDefaultNameOrigins(tbl, pkg, v, acc)
+        }
+      }
+    }
+    case _ -> ()
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

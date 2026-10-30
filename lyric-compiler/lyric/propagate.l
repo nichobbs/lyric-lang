@@ -643,6 +643,38 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
   }
 }
 
+// `return Err(error = <errValue>)`, the error first bound at its own type and
+// converted when it widens to the function's error type (#8181).
+func errReturnStmts(
+  errValue: in Expr, widening: in Option[PropagateErrWidening], sp: in Span, st: in PropState
+): List[Statement] {
+  val errStmts: List[Statement] = newList()
+  val converted = match widening {
+    case Some(w) -> {
+      val wName = "__lyric_prop_w" + freshSuffix(st)
+      val noInner: Option[Pattern] = None
+      errStmts.add(
+        mkStmt(
+          SLocal(
+            binding = LBVal(
+              pat = mkPat(PBinding(name = wName, inner = noInner), sp),
+              ty = Some(value = w.fromType),
+              init = errValue
+            )
+          ),
+          sp
+        )
+      )
+      val noArgs: List[CallArg] = newList()
+      mkExpr(ECall(fn = mkExpr(EMember(receiver = pathExpr(wName, sp), memberName = w.method), sp), args = noArgs), sp)
+    }
+    case None -> errValue
+  }
+  val errCall = mkExpr(ECall(fn = pathExpr("Err", sp), args = posArg(converted)), sp)
+  errStmts.add(mkStmt(SReturn(value = Some(value = errCall)), sp))
+  errStmts
+}
+
 // `match (await inner) { case Ok(v) -> v; case Err(x) -> { return Err(x) } }`
 func buildResultMatch(inner: in Expr, sp: in Span, widening: in Option[PropagateErrWidening], st: in PropState): Expr {
   val vName = "__lyric_prop_v" + freshSuffix(st)
@@ -653,32 +685,7 @@ func buildResultMatch(inner: in Expr, sp: in Span, widening: in Option[Propagate
   val okArm = MatchArm(pattern = okPat, guard = None, body = okBody, span = sp)
 
   val errPat = mkPat(PConstructor(head = mkPath("Err", sp), args = bindArg(eName, sp)), sp)
-  // An error that widens to the function's error type is bound at its own
-  // type and converted (#8181).
-  val errStmts: List[Statement] = newList()
-  val errValue = match widening {
-    case Some(w) -> {
-      val wName = "__lyric_prop_w" + freshSuffix(st)
-      val noInner: Option[Pattern] = None
-      errStmts.add(
-        mkStmt(
-          SLocal(
-            binding = LBVal(
-              pat = mkPat(PBinding(name = wName, inner = noInner), sp),
-              ty = Some(value = w.fromType),
-              init = pathExpr(eName, sp)
-            )
-          ),
-          sp
-        )
-      )
-      val noArgs: List[CallArg] = newList()
-      mkExpr(ECall(fn = mkExpr(EMember(receiver = pathExpr(wName, sp), memberName = w.method), sp), args = noArgs), sp)
-    }
-    case None -> pathExpr(eName, sp)
-  }
-  val errCall = mkExpr(ECall(fn = pathExpr("Err", sp), args = posArg(errValue)), sp)
-  errStmts.add(mkStmt(SReturn(value = Some(value = errCall)), sp))
+  val errStmts = errReturnStmts(pathExpr(eName, sp), widening, sp, st)
   val errBody: ExprOrBlock = EOBBlock(block = Block(statements = errStmts, span = sp))
   val errArm = MatchArm(pattern = errPat, guard = None, body = errBody, span = sp)
 
@@ -1263,11 +1270,238 @@ func rewriteStmt(s: in Statement, kind: in PropKind, st: in PropState): Statemen
   }
 }
 
+// #8257: a `?` whose operand can only be `Err(..)` or `None` never produces a
+// value; it always returns.  Leaving it as a `match` gives its result a type
+// no code path can fill, and a member read of that result is unverifiable on
+// dotnet and rejected on native.  The statement holding it is lowered to the
+// return itself instead, and the statements after it in the block, which can
+// never run, are dropped.
+//
+// `staticDivergeStmts` lowers an operand that is `Err(..)` / `None` (the
+// constructor the enclosing function's monad calls for), or an `if`/`else`,
+// `match` or block whose every branch ends in one, to statements that each
+// return on every path.
+func isUnshadowedName(e: in Expr, name: in String, st: in PropState): Bool {
+  match e.kind {
+    case EPath(path) -> path.segments.count == 1 and path.segments[0] == name and not st.localNames.containsKey(name)
+    case _ -> false
+  }
+}
+
+func staticDivergeStmts(
+  e: in Expr, kind: in PropKind, widening: in Option[PropagateErrWidening], st: in PropState
+): Option[List[Statement]] {
+  match e.kind {
+    case EParen(inner) -> staticDivergeStmts(inner, kind, widening, st)
+    case EPath(_) -> match kind {
+      case PropOption -> if isUnshadowedName(e, "None", st) {
+        val res: List[Statement] = newList()
+        res.add(mkStmt(SReturn(value = Some(value = pathExpr("None", e.span))), e.span))
+        Some(value = res)
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case ECall(fn, args) -> match kind {
+      case PropResult -> if isUnshadowedName(fn, "Err", st) and args.count == 1 {
+        val errArg = match args[0] { case CAPositional(v) -> v; case CANamed(_, v, _) -> v }
+        Some(value = errReturnStmts(rewriteExpr(errArg, kind, st), widening, e.span, st))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case EIf(cond, thenBranch, elseOpt, _) -> match elseOpt {
+      case None -> None
+      case Some(elseBranch) -> match staticDivergeEob(thenBranch, kind, widening, st) {
+        case None -> None
+        case Some(thenStmts) -> match staticDivergeEob(elseBranch, kind, widening, st) {
+          case None -> None
+          case Some(elseStmts) -> {
+            val ifExpr = mkExpr(
+              EIf(
+                cond = rewriteExpr(cond, kind, st),
+                thenBranch = EOBBlock(block = Block(statements = thenStmts, span = e.span)),
+                elseBranch = Some(value = EOBBlock(block = Block(statements = elseStmts, span = e.span))),
+                thenForm = false
+              ),
+              e.span
+            )
+            val res: List[Statement] = newList()
+            res.add(mkStmt(SExpr(expr = ifExpr), e.span))
+            Some(value = res)
+          }
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        match staticDivergeEob(arm.body, kind, widening, st) {
+          case None -> return None
+          case Some(stmts) -> {
+            val newGuard: Option[Expr] = match arm.guard {
+              case Some(g) -> Some(value = rewriteExpr(g, kind, st))
+              case None -> None
+            }
+            newArms.add(
+              MatchArm(
+                pattern = arm.pattern,
+                guard = newGuard,
+                body = EOBBlock(block = Block(statements = stmts, span = arm.span)),
+                span = arm.span
+              )
+            )
+          }
+        }
+        i = i + 1
+      }
+      if newArms.count == 0 {
+        return None
+      }
+      val res: List[Statement] = newList()
+      res.add(
+        mkStmt(SExpr(expr = mkExpr(EMatch(scrutinee = rewriteExpr(scrutinee, kind, st), arms = newArms), e.span)), e.span)
+      )
+      Some(value = res)
+    }
+    case EBlock(blk) -> match typedOperandInit(e) {
+      // An operand the type checker typed is `{ val __lyric_ho_<n>: T = e; __lyric_ho_<n> }`.
+      case Some(init) -> staticDivergeStmts(init, kind, widening, st)
+      case None -> staticDivergeBlock(blk, kind, widening, st)
+    }
+    case _ -> None
+  }
+}
+
+func staticDivergeEob(
+  eob: in ExprOrBlock,
+  kind: in PropKind,
+  widening: in Option[PropagateErrWidening],
+  st: in PropState,
+): Option[List[Statement]] {
+  match eob {
+    case EOBExpr(e) -> staticDivergeStmts(e, kind, widening, st)
+    case EOBBlock(blk) -> staticDivergeBlock(blk, kind, widening, st)
+  }
+}
+
+// A block whose last statement is a diverging operand: the statements before
+// it are kept, so their effects still happen before the return.
+func staticDivergeBlock(
+  blk: in Block, kind: in PropKind, widening: in Option[PropagateErrWidening], st: in PropState
+): Option[List[Statement]] {
+  if blk.statements.count == 0 {
+    return None
+  }
+  val lastIdx = blk.statements.count - 1
+  match blk.statements[lastIdx].kind {
+    case SExpr(tail) -> match staticDivergeStmts(tail, kind, widening, st) {
+      case None -> None
+      case Some(tailStmts) -> {
+        val res: List[Statement] = newList()
+        var i = 0
+        while i < lastIdx {
+          res.add(rewriteStmt(blk.statements[i], kind, st))
+          i = i + 1
+        }
+        var j = 0
+        while j < tailStmts.count {
+          res.add(tailStmts[j])
+          j = j + 1
+        }
+        Some(value = res)
+      }
+    }
+    case _ -> None
+  }
+}
+
+// The statements a diverging `?` turns `e` into, when `e` evaluates that `?`
+// before anything else (so nothing observable is skipped by returning at it).
+func divergeFromExpr(e: in Expr, kind: in PropKind, st: in PropState): Option[List[Statement]] {
+  match e.kind {
+    case EPropagate(inner) -> match kind {
+      case PropResult -> staticDivergeStmts(
+        inner,
+        kind,
+        mapGet(st.errWidenings, recordCopySiteKey(e.span)),
+        st
+      )
+      case PropOption -> staticDivergeStmts(inner, kind, None, st)
+      case _ -> None
+    }
+    case EParen(inner) -> divergeFromExpr(inner, kind, st)
+    case ETuple(es) -> if es.count > 0 { divergeFromExpr(es[0], kind, st) } else { None }
+    case EList(es) -> if es.count > 0 { divergeFromExpr(es[0], kind, st) } else { None }
+    case EMember(receiver, _) -> divergeFromExpr(receiver, kind, st)
+    case EIndex(receiver, _) -> divergeFromExpr(receiver, kind, st)
+    case EPrefix(_, operand) -> divergeFromExpr(operand, kind, st)
+    case EBinop(_, lhs, _) -> divergeFromExpr(lhs, kind, st)
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(receiver, _) -> divergeFromExpr(receiver, kind, st)
+      case EPath(_) -> if args.count > 0 {
+        match args[0] {
+          case CAPositional(v) -> divergeFromExpr(v, kind, st)
+          case CANamed(_, v, _) -> divergeFromExpr(v, kind, st)
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+func divergeFromStmt(s: in Statement, kind: in PropKind, st: in PropState): Option[List[Statement]] {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init) -> divergeFromExpr(init, kind, st)
+      case LBLet(_, _, init) -> divergeFromExpr(init, kind, st)
+      case LBVar(_, _, initOpt) -> match initOpt {
+        case Some(init) -> divergeFromExpr(init, kind, st)
+        case None -> None
+      }
+    }
+    case SAssign(target, _, value) -> match target.kind {
+      case EPath(_) -> divergeFromExpr(value, kind, st)
+      case _ -> None
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(v) -> divergeFromExpr(v, kind, st); case None -> None }
+    case SExpr(ex) -> divergeFromExpr(ex, kind, st)
+    case _ -> None
+  }
+}
+
 func rewriteBlock(blk: in Block, kind: in PropKind, st: in PropState): Block {
   val acc: List[Statement] = newList()
   var i = 0
   while i < blk.statements.count {
-    acc.add(rewriteStmt(blk.statements[i], kind, st))
+    match divergeFromStmt(blk.statements[i], kind, st) {
+      case Some(stmts) -> {
+        var j = 0
+        while j < stmts.count {
+          acc.add(stmts[j])
+          j = j + 1
+        }
+        // Nothing after the return runs; a nested item declaration is not
+        // code that runs, so it stays.
+        var k = i + 1
+        while k < blk.statements.count {
+          match blk.statements[k].kind {
+            case SItem(_) -> acc.add(rewriteStmt(blk.statements[k], kind, st))
+            case _ -> ()
+          }
+          k = k + 1
+        }
+        return Block(statements = acc, span = blk.span)
+      }
+      case None -> acc.add(rewriteStmt(blk.statements[i], kind, st))
+    }
     i = i + 1
   }
   Block(statements = acc, span = blk.span)

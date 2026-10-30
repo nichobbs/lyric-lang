@@ -194,6 +194,64 @@ func unsignedPrimName(segments: in List[String]): Option[String] {
   }
 }
 
+/// `tryFoldInt` with every name read in package `pkg` (a constant's own
+/// initializer in the package that declares it), so two defaults that name
+/// same-named constants of different packages fold to their own values
+/// (T0161, #8100).  An empty `pkg` reads names through the current scope.
+pub func tryFoldIntInPackage(tbl: in SymbolTable, pkg: in String, root: in Expr): FoldResult {
+  foldInPackage(tbl, pkg, 0, root)
+}
+
+func foldInPackage(tbl: in SymbolTable, pkg: in String, depth: in Int, e: in Expr): FoldResult {
+  if depth > 64 {
+    return FoldErr(error = FECycle(name = "<depth>"))
+  }
+  match e.kind {
+    case EParen(inner) -> foldInPackage(tbl, pkg, depth, inner)
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _, _) -> FoldOk(value = v)
+      case _ -> FoldErr(error = FENotConstant)
+    }
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> match foldInPackage(tbl, pkg, depth, inner) {
+        case FoldErr(e2) -> FoldErr(error = e2)
+        case FoldOk(v) -> if v == -9223372036854775808i64 {
+          FoldErr(error = FEOverflow)
+        } else {
+          FoldOk(value = 0i64 - v)
+        }
+      }
+      case _ -> FoldErr(error = FENotConstant)
+    }
+    case EBinop(op, l, r) -> match foldInPackage(tbl, pkg, depth, l) {
+      case FoldErr(e2) -> FoldErr(error = e2)
+      case FoldOk(lv) -> match foldInPackage(tbl, pkg, depth, r) {
+        case FoldErr(e2) -> FoldErr(error = e2)
+        case FoldOk(rv) -> foldArith(op, lv, rv)
+      }
+    }
+    case EPath(path) -> {
+      if path.segments.count != 1 {
+        return FoldErr(error = FENotConstant)
+      }
+      val found = if pkg.length > 0 {
+        symTableTryFindInPackage(tbl, pkg, path.segments[0])
+      } else {
+        symTableTryFindOne(tbl, path.segments[0])
+      }
+      match found {
+        case None -> FoldErr(error = FENotConstant)
+        case Some(sym) -> match sym.kind {
+          case DKConst(cd) -> foldInPackage(tbl, sym.originPackage, depth + 1, cd.init)
+          case DKVal(vd) -> foldInPackage(tbl, sym.originPackage, depth + 1, vd.init)
+          case _ -> FoldErr(error = FENotConstant)
+        }
+      }
+    }
+    case _ -> FoldErr(error = FENotConstant)
+  }
+}
+
 func foldArith(op: in BinOp, lv: in Long, rv: in Long): FoldResult {
   match op {
     case BAdd -> FoldOk(value = lv + rv)
