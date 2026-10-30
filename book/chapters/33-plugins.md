@@ -749,6 +749,12 @@ reads its manifest, starts it once per build and calls `generate` for each
 requests and refuses any path outside the granted roots, an absolute path, or
 one with `..` in it.
 
+A generator restored from a registry or git is not built: its package carries
+the signed artifact (`lyric publish --sign-key` packs it), `lyric restore`
+pins the signing key's id in `lyric.lock`, and the compiler loads it with
+`discoverPlugins` under that key alone. Section 30.7 covers publishing and key
+rotation.
+
 ## A widget for lyric-ui
 
 `lyric-ui` (chapter 31) has its own plugin point, `Ui.Plugins.WidgetPlugin`. A

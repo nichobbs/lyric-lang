@@ -134,6 +134,24 @@ Steps performed by the CLI:
 6. **Record** — appends a `[[published]]` entry to `lyric.lock` with the package
    name, version, and SHA-512 of the `.nupkg`.
 
+### 4.2 Source generator packages
+
+A `[package] kind = "source-generator"` package is published as its signed
+plugin artifact rather than as a library (D266). `lyric publish` runs `lyric
+plugin pack` (dotnet payload), signs the artifact with `--sign-key <file>` or
+`LYRIC_PLUGIN_SIGNING_KEY` (one is required), and packs only:
+
+```
+lyric-plugin/<id>-<version>/   # the packed artifact, with plugin.sig
+lyric-plugin/signer.pub        # the public key it is signed with
+```
+
+The package has no `lib/` assembly and no NuGet dependencies, since the
+artifact carries everything the generator runs with, and is tagged
+`lyric-source-generator` beside `lyric-package`. A generator restored from git
+commits the same `lyric-plugin/` layout at the root of its checkout (or
+`subdir`).
+
 **Workspace `{ workspace = true }` deps are substituted** for registry-version
 deps before the `.nuspec` is generated (see `docs/38-workspace.md` §5). If a
 sibling dep has not been published at the declared version, the publish fails
@@ -214,6 +232,13 @@ sha512   = "sha512-ghi789..."
 `lyric restore` in CI (`--locked` flag) refuses to update the lock file and
 fails if any package hash does not match. This provides supply-chain integrity
 equivalent to `cargo --locked`.
+
+A restored source generator's entry also records `key`, the id of the key its
+artifact is signed with (D266). The key comes from a `key = "lyric-ed25519:..."`
+pin on the dependency if there is one, else from the package's
+`lyric-plugin/signer.pub` the first time it is restored. A later restore that
+finds another key fails until `lyric restore --update <name>` accepts it;
+`--locked` fails on a changed key id, and `lyric update` keeps the pinned ids.
 
 ---
 
