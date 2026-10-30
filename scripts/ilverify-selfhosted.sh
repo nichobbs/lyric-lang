@@ -306,6 +306,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/slice_func_tolist_self_test.l
   lyric-compiler/lyric/closure_correctness_self_test.l
   lyric-compiler/lyric/lambda_gaps_batch_self_test.l
+  lyric-compiler/lyric/nested_slice_for_jvm_self_test.l
+  lyric-compiler/lyric/slice_string_self_test.l
 )
 st_errors=0
 st_failed=()

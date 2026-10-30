@@ -13301,7 +13301,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 if elem == MString {
                   insns.add(MCastclassByName(className = "System.String"))
                 } else {
-                  castObjectToMsil(cctx, insns, elem)
+                  narrowBoxedParamMsil(cctx, fctx, insns, elem)
                 }
                 insns.add(MLabel(id = doneL))
                 return elem
@@ -13328,6 +13328,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // delegate type (#8299).
               narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
               castObjectToDelegateMsil(cctx, insns, MObject, elem)
+              match elem {
+                case MArray(e) -> if sliceElemHasArrayTokenMsil(e) { emitObjectToSliceArrayMsil(cctx, fctx, insns, e) }
+                case _ -> ()
+              }
             }
             elem
           }
@@ -15110,7 +15114,7 @@ func lowerIfExprMsil(
         brRets.add(false)
         brRets.add(false)
         val brJoined = if thenTy == MVoid or elseTy == MVoid { MVoid } else { thenTy }
-        val brTy = unboxObjectArmsMsil(cctx, brBufs, brTys, brRets, brJoined)
+        val brTy = unboxObjectArmsMsil(cctx, fctx, brBufs, brTys, brRets, brJoined)
         if brTy != brJoined {
           thenTy = brTy
           elseTy = brTy
@@ -16767,7 +16771,7 @@ func lowerMatchExprMsil(
   // Arms that agree on a type to unbox to, beside arms whose value is only
   // known as `object` (a closure call's result whose type the checker left
   // unknown, #7671), all yield that type: the `object` arms unbox to it.
-  val resultTy = unboxObjectArmsMsil(cctx, armBuffers, armTys, armRets, joinedTy)
+  val resultTy = unboxObjectArmsMsil(cctx, fctx, armBuffers, armTys, armRets, joinedTy)
 
   // Pass 2: splice each arm's buffer in order, normalising the stack depth.
   var k = 0
@@ -16814,6 +16818,60 @@ func lowerMatchExprMsil(
   resultTy
 }
 
+// A `match`/`if` whose fall-through arms yield a genuine `e[]` slice beside
+// arms yielding a `List`-backed value or `object` (an empty `[]` built where no
+// slice was expected, #2539) joins at `e[]`: the other arms are converted with
+// `emitObjectToSliceArrayMsil` so the join, and the local it binds to, verify
+// (#7783).  `None` when the arms do not have that shape.
+func joinedSliceArmsMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  buffers: in List[List[MInsn]],
+  tys: in List[MsilType],
+  rets: in List[Bool],
+  joined: in MsilType,
+): Option[MsilType] {
+  val e = match joined {
+    case MArray(e) -> if sliceElemHasArrayTokenMsil(e) { e } else { return None }
+    case _ -> return None
+  }
+  var i = 0
+  var needConvert = false
+  while i < tys.count {
+    if not rets[i] {
+      match tys[i] {
+        case MArray(_) -> ()
+        case MVoid -> return None
+        case MObject -> {
+          needConvert = true
+        }
+        case MListOf(_) -> {
+          needConvert = true
+        }
+        case MConcreteList(_) -> {
+          needConvert = true
+        }
+        case _ -> return None
+      }
+    }
+    i = i + 1
+  }
+  if not needConvert {
+    return None
+  }
+  var j = 0
+  while j < tys.count {
+    if not rets[j] {
+      match tys[j] {
+        case MArray(_) -> ()
+        case _ -> emitObjectToSliceArrayMsil(cctx, fctx, buffers[j], e)
+      }
+    }
+    j = j + 1
+  }
+  Some(value = joined)
+}
+
 // The join type of a value-producing `match`'s or `if`'s fall-through arms
 // (`armRets[i]` false) when some arms yield `object` and the others agree on
 // a type parameter or value type: that type, with an `unbox.any` appended to
@@ -16821,6 +16879,7 @@ func lowerMatchExprMsil(
 // `object` there is the other arms' type, boxed.
 func unboxObjectArmsMsil(
   cctx: in CodegenCtx,
+  fctx: in FuncCtx,
   buffers: in List[List[MInsn]],
   tys: in List[MsilType],
   rets: in List[Bool],
@@ -16828,6 +16887,10 @@ func unboxObjectArmsMsil(
 ): MsilType {
   if joined == MVoid {
     return joined
+  }
+  match joinedSliceArmsMsil(cctx, fctx, buffers, tys, rets, joined) {
+    case Some(t) -> return t
+    case None -> ()
   }
   var target: Option[MsilType] = None
   var anyObject = false
@@ -25114,7 +25177,7 @@ func emitCollectionForMsil(
       // element (ref or value), so no narrow is emitted.
       match iterTy {
         case MConcreteList(_) -> ()
-        case _ -> if forElemTy != MObject { castObjectToMsil(cctx, insns, forElemTy) }
+        case _ -> if forElemTy != MObject { narrowBoxedParamMsil(cctx, fctx, insns, forElemTy) }
       }
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
       insns.add(MLabel(id = readDoneL))
