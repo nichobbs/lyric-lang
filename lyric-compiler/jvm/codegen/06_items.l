@@ -8342,6 +8342,15 @@ func emitKeyEqHashed(insns: in List[LInsn], owner: in String, cls: in String, is
   insns.add(LIload(slot = 5))
   insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
   insns.add(LAstoreAs(slot = 7, className = "java/lang/Object"))
+  // A scan hit that `a` itself holds was already claimed by that member, so
+  // two members of `a` (`0.0` and `-0.0`) cannot share one match.
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = cls))
+  insns.add(LAload(slot = 7))
+  insns.add(
+    LInvokevirtual(owner = cls, name = if isMap { "containsKey" } else { "contains" }, params = objPs, ret = JBoolean)
+  )
+  insns.add(LIfne(label = "__ke_f"))
   insns.add(LLabel(name = tag + "_found"))
   if isMap {
     insns.add(LAload(slot = 0))

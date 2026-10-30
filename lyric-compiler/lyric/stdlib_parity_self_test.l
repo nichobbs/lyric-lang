@@ -251,3 +251,30 @@ test "== on a Set[Double] and a Map with Double values follows D172 (#8439)" {
   m5.add("b", 0.0)
   assertFalse(m1 == m5, "a different key")
 }
+
+test "a Set[Double] holding both zeros is not equal to one holding a single zero (#8439)" {
+  val both: Set[Double] = newSet()
+  setAdd(both, 0.0)
+  setAdd(both, -0.0)
+  val one: Set[Double] = newSet()
+  setAdd(one, 0.0)
+  setAdd(one, 1.0)
+  assertFalse(both == one, "two members cannot share one match")
+  assertFalse(one == both, "and the other way round")
+}
+
+test "== on a Map with Double keys and on nested Lists follows D172 (#8439)" {
+  val k1: Map[Double, Int] = newMap()
+  k1.add(0.0, 1)
+  val k2: Map[Double, Int] = newMap()
+  k2.add(-0.0, 1)
+  assertTrue(k1 == k2, "a key found by the scan")
+  val k3: Map[Double, Int] = newMap()
+  k3.add(-0.0, 2)
+  assertFalse(k1 == k3, "the value at the matched key differs")
+  val outer1: List[List[Double]] = newList()
+  outer1.add(doubles(0.0, 1.0))
+  val outer2: List[List[Double]] = newList()
+  outer2.add(doubles(-0.0, 1.0))
+  assertTrue(outer1 == outer2, "a nested list")
+}

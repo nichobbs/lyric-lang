@@ -13,6 +13,5 @@
 - Tests: `stdlib_parity_self_test.l` (`List[Double]`, `Set[Double]`,
   `Map[String, Double]` with `0.0`/`-0.0` and `NaN`), dotnet and JVM.
 
-Not covered: native `==` on a `List`/`Map` compares by address (no structural
-collection equality there), and the JVM hash helper does not yet fold a
-`Set[Double]` field's zeros alike.
+Not covered (tracked in #8600 and #8601): native `==` on a `List`/`Map` compares by address, and the JVM hash helper does not yet fold
+a `Set[Double]` field's zeros alike.
