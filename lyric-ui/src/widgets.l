@@ -318,6 +318,44 @@ pub func textArea[Msg](value: in String, onInput: in (String) -> Msg, opts: in I
   return element(WidgetKind.TextArea, inputProps(value, opts), hs, noCs)
 }
 
+/// Options of a code editor: the text options of any input, the language the
+/// text is highlighted as (`lyric` and `json` today; anything else is plain
+/// text), whether a line-number gutter shows, and the width of a tab in
+/// spaces.
+pub record EditorOpts {
+  input: InputOpts
+  language: String
+  lineNumbers: Bool
+  tabSize: Int
+}
+
+/// The default editor options: no language, line numbers on, a tab of two spaces.
+pub func editorOpts(): EditorOpts {
+  return EditorOpts(input = inputOpts(), language = "", lineNumbers = true, tabSize = 2)
+}
+
+/// A code editor (docs/65 §13.10): a multi-line text input drawn in a monospace
+/// font with a line-number gutter and syntax highlighting.  Tab indents,
+/// Shift+Tab outdents and Enter keeps the line's indentation, on hosts that
+/// support them.  It is a `TextArea` with `variant = "code"`, so a host that
+/// does not draw code specially shows a plain multi-line field with the same
+/// value, handler and events.  The variant is fixed for a node: a screen that
+/// switches a field between plain and code gives them different keys.
+pub func codeEditor[Msg](value: in String, onInput: in (String) -> Msg, opts: in EditorOpts): View[Msg] {
+  val noCs: List[View[Msg]] = newList()
+  val ps = inputProps(value, opts.input)
+  ps.add(prop("variant", "code"))
+  if opts.language.length > 0 {
+    ps.add(prop("language", opts.language))
+  }
+  ps.add(prop("lineNumbers", if opts.lineNumbers then "true" else "false"))
+  if opts.tabSize > 0 {
+    ps.add(prop("tabSize", opts.tabSize.toString()))
+  }
+  val hs: List[Handler[Msg]] = inputHandlers(onInput, opts.input)
+  return element(WidgetKind.TextArea, ps, hs, noCs)
+}
+
 /// Inclusive advisory bounds for a numeric input.
 pub record NumberBounds {
   min: Long

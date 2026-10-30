@@ -208,6 +208,8 @@ it natively:
 Input widgets take a function from the typed text to a message, for
 example `Widgets.textInput("text", m.name, { v: String -> NameEdited(value = v) }, Widgets.inputOpts())`.
 
+For source and other structured text, `Widgets.codeEditor(value, onInput, opts)` is a `textArea` drawn as a code editor: a monospace face, a line-number gutter, highlighting for `lyric` and `json` (`EditorOpts.language`), Tab and Shift+Tab to indent and outdent, and Enter keeping the indentation. It sends the whole text as the same input event, so the screen's logic is the one a plain text area has. The browser keeps selection, IME and undo, because the field is still a real `<textarea>`; Escape then Tab leaves it. A host that does not draw code specially (the native host today) shows a plain multi-line field. A plugin builds one with `Ui.Plugins.Build.codeEditor`.
+
 ### Keys for dynamic lists
 
 Wrap each item of a list that can change with `keyed`:

@@ -955,6 +955,47 @@ stable.
 Each semantic widget maps to ARIA roles once, in the runtime. Theming via CSS
 custom properties (design tokens) with light and dark sets.
 
+### 13.10 Code editor
+
+For editing source, configuration and other structured text: a multi-line
+field in a monospace font with a line-number gutter, syntax highlighting, and
+the editing keys a programmer expects.
+
+**Implemented (D275)** as a variant of `TextArea`, not a new widget kind:
+
+- **Widget.** `Widgets.codeEditor(value, onInput, opts)` is a `TextArea` with
+  `variant = "code"` and the properties `language`, `lineNumbers` and
+  `tabSize`. The vocabulary stays closed, and a host that draws no code
+  specially (the native host today) shows a plain multi-line field with the
+  same value, handler and events. The variant is fixed for a node: a screen
+  that switches a field between plain and code gives them different keys.
+- **Web runtime.** `CodeEditor` (`runtime/src/editor.ts`) puts a real
+  `<textarea>` over a highlighted copy of its text, with the text itself
+  transparent, so selection, the caret, IME composition, undo and the
+  platform's accessibility behaviour stay the browser's. The gutter and the
+  highlight layer follow the textarea's scroll.
+- **Keys.** Tab indents (spaces up to the next tab stop, or every selected
+  line) and Shift+Tab outdents. Enter keeps the line's indentation, adds a
+  level after an opening bracket, and between a bracket pair opens an
+  indented blank line. Escape then Tab leaves the field, so keyboard users
+  are not trapped. Edits go through the browser's editing command, so undo
+  keeps working. A read-only editor takes no edits.
+- **Languages.** `lyric` and `json` (the tokenizers are in
+  `runtime/src/highlight.ts`); any other name is plain text. Highlighting
+  re-tokenizes the whole text on each input, which is fine for a screenful of
+  source and not meant for megabyte documents.
+- **Events and echo.** The editor reports the whole text as an `input` event,
+  with the same input versions as any text input (§9.4), so a stale server
+  echo never moves the caret.
+- **First paint.** `Ui.Html` renders the same wrapper, gutter and textarea
+  without highlighting; the runtime highlights when it takes over.
+- **Plugins.** A widget plugin builds one with
+  `Ui.Plugins.Build.codeEditor(value, message, language)`; the host keeps the
+  `variant`, `language`, `lineNumbers` and `tabSize` properties.
+- **Not yet.** The native host's gutter, monospace face and highlighting
+  (#8625), bracket auto-closing, multiple cursors, search and find, and
+  language servers.
+
 ---
 
 ## 14. Phases
@@ -969,6 +1010,7 @@ custom properties (design tokens) with light and dark sets.
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
 | U8 | Widgets from plugins (§6.5) | Implemented (D272): `Ui.Plugins`, `Ui.PluginWidgets`, `examples/plugins/ui-widgets`; real plugin processes (dotnet, JVM, native and wasm payloads) with dotnet, JVM and native hosts in `scripts/ci/ui-widget-plugins-e2e.sh` |
+| U9 | Code editor (§13.10) | Implemented on the web host and the desktop webview (D275): `Widgets.codeEditor`, `CodeEditor` in the TS runtime, `node --test` and a Chromium test; the native host shows a plain text area |
 
 ---
 

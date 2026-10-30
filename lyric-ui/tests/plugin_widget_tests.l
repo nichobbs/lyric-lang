@@ -451,3 +451,16 @@ test "a host event on the plugin's button reaches the plugin as its message" {
   assertEqualInt(o2.effects.count, 1, "an update request")
   assertEqual(updateMessage(o2.effects[0]), "inc=@{\"count\":0}", "the plugin's message")
 }
+
+test "a plugin's code editor keeps its language, line-number and tab-size properties" {
+  val props: List[NodeProp] = newList()
+  props.add(NodeProp(name = "variant", value = "code"))
+  props.add(NodeProp(name = "language", value = "lyric"))
+  props.add(NodeProp(name = "lineNumbers", value = "false"))
+  props.add(NodeProp(name = "tabSize", value = "4"))
+  props.add(NodeProp(name = "spellcheck", value = "true"))
+  val ps = PluginWidgets.hostProps(props)
+  assertEqualInt(ps.count, 4, "the unknown property is dropped")
+  assertEqual(ps[1].name, "language", "language kept")
+  assertEqual(ps[3].value, "4", "tab size kept")
+}

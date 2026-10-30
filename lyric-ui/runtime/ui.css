@@ -1,4 +1,4 @@
-/* lyric-ui default theme (docs/65 §13.9). Design tokens are CSS custom
+/* lyric-ui default theme (docs/65 §13.10). Design tokens are CSS custom
    properties; override them on :root to theme an application. */
 :root {
   --lui-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -98,3 +98,30 @@ body { margin: 0; background: var(--lui-bg); color: var(--lui-text); font: 15px/
 
 .lui-toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; }
 .lui-toast { background: var(--lui-surface); border: 1px solid var(--lui-border); border-left: 4px solid var(--lui-tone, var(--lui-info)); border-radius: var(--lui-radius); padding: 10px 14px; }
+
+.lui-code { display: flex; padding: 0; overflow: hidden; min-height: 160px; height: 240px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+.lui-code-gutter { flex: none; overflow: hidden; padding: 7px 8px; text-align: right; color: var(--lui-muted, color-mix(in srgb, currentColor 55%, transparent)); border-right: 1px solid var(--lui-border); background: color-mix(in srgb, var(--lui-border) 25%, transparent); white-space: pre; user-select: none; }
+.lui-code-nogutter .lui-code-gutter { display: none; }
+.lui-code-body { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+.lui-code-highlight, .lui-code-input { margin: 0; padding: 7px 9px; font: inherit; line-height: inherit; white-space: pre; tab-size: 2; box-sizing: border-box; border: 0; }
+.lui-code-highlight { position: absolute; top: 0; left: 0; min-width: 100%; pointer-events: none; }
+.lui-code-input { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; overflow: auto; background: transparent; color: transparent; caret-color: var(--lui-text); outline: none; }
+.lui-code-input::placeholder { color: color-mix(in srgb, currentColor 50%, transparent); }
+.lui-code-input::selection { background: color-mix(in srgb, var(--lui-accent) 35%, transparent); color: transparent; }
+.lui-code:focus-within { outline: 2px solid var(--lui-accent); outline-offset: 2px; }
+.lui-code-input[readonly] { cursor: default; }
+.lui-tok-keyword { color: var(--lui-tok-keyword, #7c3aed); font-weight: 600; }
+.lui-tok-type { color: var(--lui-tok-type, #0f766e); }
+.lui-tok-string { color: var(--lui-tok-string, #b45309); }
+.lui-tok-comment { color: var(--lui-tok-comment, #6b7280); font-style: italic; }
+.lui-tok-number, .lui-tok-literal { color: var(--lui-tok-number, #1d4ed8); }
+.lui-tok-key { color: var(--lui-tok-key, #0369a1); }
+.lui-tok-punct { color: var(--lui-tok-punct, #6b7280); }
+@media (prefers-color-scheme: dark) {
+  .lui-tok-keyword { color: var(--lui-tok-keyword, #c4b5fd); }
+  .lui-tok-type { color: var(--lui-tok-type, #5eead4); }
+  .lui-tok-string { color: var(--lui-tok-string, #fbbf24); }
+  .lui-tok-comment { color: var(--lui-tok-comment, #9ca3af); }
+  .lui-tok-number, .lui-tok-literal { color: var(--lui-tok-number, #93c5fd); }
+  .lui-tok-key { color: var(--lui-tok-key, #7dd3fc); }
+}

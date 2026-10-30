@@ -17,6 +17,9 @@ const assets = [
   ["runtimeTreeJs", "dist/tree.js"],
   ["runtimeRenderJs", "dist/render.js"],
   ["runtimeToastsJs", "dist/toasts.js"],
+  ["runtimeEditorJs", "dist/editor.js"],
+  ["runtimeEditingJs", "dist/editing.js"],
+  ["runtimeHighlightJs", "dist/highlight.js"],
   ["themeCss", "ui.css"],
 ];
 

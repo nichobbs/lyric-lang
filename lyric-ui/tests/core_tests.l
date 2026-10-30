@@ -7,10 +7,10 @@ import Std.Core
 import Std.Testing
 import Forms
 import Forms.{FieldError, FormSchema, FieldSpec, InputKind}
-import Ui.Core.{View, Handler, OnClick, OnInput, eventName, fire, mapView}
+import Ui.Core.{View, Handler, OnClick, OnInput, eventName, fire, mapView, propOf}
 import Ui.Forms.{formFields}
 import Ui.Testing as UiTest
-import Ui.Widgets.{button, column, field, textInput, inputOpts, primaryButton}
+import Ui.Widgets.{button, column, field, textInput, inputOpts, primaryButton, codeEditor, editorOpts, EditorOpts}
 
 union Child {
   case Pressed
@@ -112,5 +112,40 @@ test "Ui.Forms renders a schema with values, bounds and errors" {
   match UiTest.typeInto(v, "Id", "x") {
     case Some(_) -> assertTrue(false, "read-only input must not produce input messages")
     case None -> assertTrue(true, "read-only")
+  }
+}
+
+test "a code editor is a text area with the code variant and its settings as properties" {
+  val opts = EditorOpts(input = inputOpts(), language = "lyric", lineNumbers = false, tabSize = 4)
+  val v: View[Child] = codeEditor[Child]("val x = 1", { s: String -> Typed(s = s) }, opts)
+  assertEqual(unwrapOr(propOf(v, "variant"), ""), "code", "variant")
+  assertEqual(unwrapOr(propOf(v, "value"), ""), "val x = 1", "value")
+  assertEqual(unwrapOr(propOf(v, "language"), ""), "lyric", "language")
+  assertEqual(unwrapOr(propOf(v, "lineNumbers"), ""), "false", "line numbers")
+  assertEqual(unwrapOr(propOf(v, "tabSize"), ""), "4", "tab size")
+}
+
+test "a code editor's defaults leave the language and tab size out" {
+  val v: View[Child] = codeEditor[Child]("", { s: String -> Typed(s = s) }, editorOpts())
+  assertTrue(propOf(v, "language") == None, "no language")
+  assertEqual(unwrapOr(propOf(v, "lineNumbers"), ""), "true", "line numbers on")
+  assertEqual(unwrapOr(propOf(v, "tabSize"), ""), "2", "two-space tab")
+  assertTrue(propOf(v, "readonly") == None, "editable")
+}
+
+test "an editable code editor produces its text, a read-only one produces nothing" {
+  val noErrors: List[String] = newList()
+  val typedMsg: (String) -> Child = { s: String -> Typed(s = s) }
+  val editable: View[Child] = field("Code", noErrors, codeEditor[Child]("", typedMsg, editorOpts()))
+  match UiTest.typeInto(editable, "Code", "val x = 1") {
+    case Some(Typed(s)) -> assertEqual(s, "val x = 1", "the text")
+    case _ -> assertTrue(false, "expected Typed")
+  }
+  val ro = EditorOpts(input = inputOpts().copy(readonly = true), language = "json", lineNumbers = true, tabSize = 2)
+  val locked: View[Child] = field("Code", noErrors, codeEditor[Child]("{}", typedMsg, ro))
+  assertEqual(unwrapOr(propOf(codeEditor[Child]("{}", typedMsg, ro), "readonly"), ""), "true", "readonly")
+  match UiTest.typeInto(locked, "Code", "x") {
+    case Some(_) -> assertTrue(false, "a read-only editor must not produce a message")
+    case None -> assertTrue(true, "no message")
   }
 }
