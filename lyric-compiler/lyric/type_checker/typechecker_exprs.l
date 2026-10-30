@@ -5700,6 +5700,44 @@ func typeExprsForRefV(tbl: in SymbolTable, ts: in List[Type], sp: in Span, vars:
   Some(value = acc)
 }
 
+// Record `sig`, a function of the package being checked, referenced bare as a
+// value at `sp` (see `SymbolTable.ownFuncValueSites`).  A function a
+// forwarding lambda cannot stand for (generic, async, a non-`in` parameter, a
+// parameter type not nameable here) is left out: its specialised use keeps
+// the bare name, as before (#8329).
+func recordOwnFuncValueSite(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String, sp: in Span): Unit {
+  if tbl.funcRefCallees.containsKey(recordCopySiteKey(sp)) or sig.isAsync or sig.generics.count > 0 {
+    return
+  }
+  val ptys: List[Type] = newList()
+  for p in sig.params {
+    match p.mode {
+      case PMIn -> ptys.add(p.ty)
+      case _ -> return
+    }
+  }
+  match typeExprsForRef(tbl, ptys, sp) {
+    case Some(ptes) -> {
+      val segs = dottedSegsTc(symTableScopePkg(tbl))
+      segs.add(name)
+      val key = recordCopySiteKey(sp)
+      if tbl.ownFuncValueSites.containsKey(key) {
+        tbl.ownFuncValueSites.remove(key)
+      }
+      tbl.ownFuncValueSites.add(
+        key,
+        FuncRefSite(
+          calleeSegs = segs,
+          paramTypes = ptes,
+          retType = typeExprForRef(tbl, sig.returnTy, sp),
+          startOffset = sp.startPos.offset
+        )
+      )
+    }
+    case None -> ()
+  }
+}
+
 // Record `sig` (the function `name` of another package) referenced as a value
 // at `sp`.  Only a function a forwarding lambda can stand for is recorded:
 // non-generic, synchronous, every parameter `in`.
@@ -6685,6 +6723,7 @@ func resolveExprPath(
         pts.add(sig.params[i].ty)
         i = i + 1
       }
+      recordOwnFuncValueSite(tbl, sig, name, span)
       return TyFunction(params = pts, ret = sig.returnTy, isAsync = sig.isAsync)
     }
     case None -> {

@@ -1892,6 +1892,16 @@ pub func pipeCheckAndMono(
     monoGenFuncs,
     opts.nativeIntrinsics
   )
+  val foreignProp = foreignPropagateSites(monoRes0.foreignSpecs, file0, importedPkgs, monoGenFuncs, opts)
+  val foreignFuncValues: Map[String, FuncRefSite] = newMap()
+  foreignFuncValueSites(
+    monoRes0.foreignSpecs,
+    file0,
+    importedPkgs,
+    monoGenFuncs,
+    opts.nativeIntrinsics,
+    foreignFuncValues
+  )
   // A specialisation whose body uses `==`/`!=` on a type parameter bound to
   // a named type or a tuple is re-checked too, so the comparison is lowered
   // as the bound type's (D172 item 4).
@@ -1930,7 +1940,7 @@ pub func pipeCheckAndMono(
     return None
   }
   if toRecheck.count == 0 {
-    return match finishValueRecords(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), file0, importedPkgs, tcRes, opts) {
+    return match finishValueRecords(lowerForeignPropagate(rewriteForeignFuncValues(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), foreignFuncValues), foreignProp, opts), file0, importedPkgs, tcRes, opts) {
       case Some(f) -> Some(value = finishMono(f, opts))
       case None -> None
     }
@@ -1971,7 +1981,7 @@ pub func pipeCheckAndMono(
   // A specialisation is lowered in the consuming file, so whether its
   // overflow checks apply follows the consumer's profile and package (the
   // marker on `file0`), not the file the generic was declared in.
-  match finishValueRecords(lowerSpecArrays(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), specArrays, opts.primitiveArrays, not opts.arraysAsLists, not hasWrappingArith(file0)), file0, importedPkgs, tcRes, opts) {
+  match finishValueRecords(lowerSpecArrays(lowerForeignPropagate(rewriteForeignFuncValues(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), foreignFuncValues), foreignProp, opts), specArrays, opts.primitiveArrays, not opts.arraysAsLists, not hasWrappingArith(file0)), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None
   }
@@ -2396,6 +2406,280 @@ pub func foreignUnitLambdaSites(
     }
   }
   sitesByOrigin
+}
+
+// ─── Function values in other packages' generics (#8329) ────────────────────
+// A package's own function named as a value (not called) inside its generic
+// body is stood for, in that package, by a forwarding thunk.  A
+// specialisation of the generic in another package is lowered there, which
+// has no such thunk and cannot see the name, so each specialisation whose
+// body names one of its origin package's functions as a bare path is checked
+// in the scope of that package, and what the checker records
+// (`SymbolTable.ownFuncValueSites`) goes to `acc` keyed
+// `<origin>|<recordCopySiteKey>`; `rewriteForeignFuncValues` turns each such
+// reference into a forwarding lambda calling the function by its qualified
+// name, as a function of an imported package used as a value is (D-progress-963).
+pub func foreignFuncValueSites(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, FuncRefSite],
+): Unit {
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    if sp.originPkg.length == 0 {
+      continue
+    }
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) and specNamesOriginFunc(sp.specDecl, sp.originPkg, importedPkgs) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+        case Some(res) -> {
+          for k in mapKeys(res.symbols.ownFuncValueSites) {
+            if not acc.containsKey(origin + "|" + k) {
+              match mapGet(res.symbols.ownFuncValueSites, k) {
+                case Some(site) -> acc.add(origin + "|" + k, site)
+                case None -> ()
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+}
+
+// Whether the body of `decl`, specialised from a generic of `origin`, names
+// one of that package's non-generic functions as a bare path.
+func specNamesOriginFunc(decl: in FunctionDecl, origin: in String, importedPkgs: in List[ImportedPackage]): Bool {
+  val names: Map[String, Bool] = newMap()
+  for ip in importedPkgs {
+    if ip.name == origin {
+      for it in ip.items {
+        match it.kind {
+          case IFunc(fd) -> match fd.generics { case Some(_) -> (); case None -> names.add(fd.name, true) }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  if names.count == 0 {
+    return false
+  }
+  val isRef = { e: Expr ->
+    match e.kind {
+      case EPath(p) -> p.segments.count == 1 and names.containsKey(p.segments[0])
+      case _ -> false
+    }
+  }
+  match decl.body {
+    case Some(FBBlock(b)) -> anyInBlock(b, isRef)
+    case Some(FBExpr(ex)) -> anyInExpr(ex, isRef)
+    case None -> false
+  }
+}
+
+/// Each function of `file` specialised from another package's generic, its
+/// references to that package's functions as values replaced by forwarding
+/// lambdas as that package's check recorded them (`foreignFuncValueSites`).
+pub func rewriteForeignFuncValues(file: in SourceFile, sites: in Map[String, FuncRefSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  var changed = false
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> {
+        val origin = originPkgOf(fd.annotations)
+        val own: Map[String, FuncRefSite] = newMap()
+        if origin.length > 0 {
+          val prefix = origin + "|"
+          for k in mapKeys(sites) {
+            if Str.startsWith(k, prefix) {
+              match mapGet(sites, k) {
+                case Some(site) -> own.add(k.substring(prefix.length), site)
+                case None -> ()
+              }
+            }
+          }
+        }
+        if own.count > 0 {
+          changed = true
+          val one = mapExprsInFile(
+            oneItemFile(file, it),
+            { e: Expr ->
+              match e.kind {
+                case EPath(_) -> match mapGet(own, recordCopySiteKey(e.span)) {
+                  case Some(site) -> funcRefLambdaMono(site, e.span)
+                  case None -> e
+                }
+                case _ -> e
+              }
+            }
+          )
+          items.add(one.items[0])
+        } else {
+          items.add(it)
+        }
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if changed {
+    file.copy(items = items)
+  } else {
+    file
+  }
+}
+
+// ─── `?` in other packages' generics (#8337) ───────────────────────────────
+// `?` is lowered into a `match` and an early return before specialisation,
+// for this package's own code.  A generic of another package arrives as it was
+// written (a sibling package's parsed source, a restored package's contract
+// body), so its `?` would reach the backend unlowered and compile as the
+// operand itself.  Each specialisation of such a generic is lowered here,
+// with what the check of its body in its own package's scope records: the
+// error widenings of its `?`s and its direct async calls.  A package that is
+// not available to check is lowered without them.
+pub record ForeignPropagateSites {
+  widenings: Map[String, PropagateErrWidening]
+  asyncCalls: Map[String, Bool]
+  typeArgCallees: Map[String, Bool]
+}
+
+pub func foreignPropagateSites(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  opts: in MiddleEndOptions,
+): Map[String, ForeignPropagateSites] {
+  val sitesByOrigin: Map[String, ForeignPropagateSites] = newMap()
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    if sp.originPkg.length == 0 {
+      continue
+    }
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) and funcDeclHasPropagate(sp.specDecl) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, opts.nativeIntrinsics) {
+        case Some(res) -> sitesByOrigin.add(
+          origin,
+          ForeignPropagateSites(
+            widenings = res.symbols.propagateErrWidenings,
+            asyncCalls = if opts.awaitAsyncCalls {
+              res.symbols.asyncCallSites
+            } else {
+              newMap()
+            },
+            typeArgCallees = res.symbols.typeArgCalleeSites
+          )
+        )
+        case None -> sitesByOrigin.add(
+          origin,
+          ForeignPropagateSites(
+            widenings = newMap(),
+            asyncCalls = newMap(),
+            typeArgCallees = newMap()
+          )
+        )
+      }
+      case None -> ()
+    }
+  }
+  sitesByOrigin
+}
+
+func funcDeclHasPropagate(fd: in FunctionDecl): Bool {
+  val isProp = { e: Expr -> match e.kind { case EPropagate(_) -> true; case _ -> false } }
+  match fd.body {
+    case Some(FBBlock(b)) -> anyInBlock(b, isProp)
+    case Some(FBExpr(ex)) -> anyInExpr(ex, isProp)
+    case None -> false
+  }
+}
+
+/// Each function of `file` specialised from another package's generic, its
+/// `?` lowered as `foreignPropagateSites` recorded for that package.
+pub func lowerForeignPropagate(
+  file: in SourceFile,
+  sitesByOrigin: in Map[String, ForeignPropagateSites],
+  opts: in MiddleEndOptions,
+): SourceFile {
+  if sitesByOrigin.count == 0 {
+    return file
+  }
+  val noRecords: List[RecordDecl] = newList()
+  var changed = false
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> match mapGet(sitesByOrigin, originPkgOf(fd.annotations)) {
+        case Some(sites) -> {
+          if funcDeclHasPropagate(fd) {
+            val res = lowerPropagateFileWithTypeArgCallees(
+              oneItemFile(file, it),
+              noRecords,
+              opts.awaitInTryIsHazard,
+              sites.asyncCalls,
+              sites.widenings,
+              sites.typeArgCallees
+            )
+            // The lowering's own diagnostics (F0020, F0045) are properties of the
+            // generic's body, so the declaring package's build already reported
+            // them; a specialisation cannot newly fail them.
+            if res.diagnostics.count == 0 and res.file.items.count == 1 {
+              changed = true
+              items.add(res.file.items[0])
+            } else {
+              items.add(it)
+            }
+          } else {
+            items.add(it)
+          }
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if changed {
+    file.copy(items = items)
+  } else {
+    file
+  }
 }
 
 func funcDeclHasLambda(fd: in FunctionDecl): Bool {

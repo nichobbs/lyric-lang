@@ -655,6 +655,12 @@ pub record CodegenCtx {
   // `methodCallSiteKey`; set per package by the bridge).  Method dispatch
   // keys an overload by it, not by the number of arguments written (#7828).
   methodCallArities: Map[String, Int]
+  // The nominal class of each field-access receiver the type checker
+  // resolved, keyed by `recordCopySiteKey` of the receiver's span (and
+  // `<origin>|<key>` in a body specialised from another package's generic);
+  // set per package by the bridge.  A receiver whose static type erased to
+  // `object` is narrowed to it before the field read (#8358).
+  memberRecvClasses: Map[String, String]
   // A restored function's declared parameter MsilTypes, keyed by FQN.
   // `funcParamTypes` records its scalar parameters as `MObject` (see
   // `registerRestoredFunc`), which the method-style call of a restored
@@ -2515,6 +2521,7 @@ pub func newCodegenCtx(
     methodParamModes = newMap(),
     methodParamDecls = newMap(),
     methodCallArities = newMap(),
+    memberRecvClasses = newMap(),
     restoredFuncParamTypes = newMap(),
     implEntries = newList(),
     nextMethodDefRow = newList(),
@@ -12396,6 +12403,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> {
             }
           }
+          val erasedField = erasedRecvFieldMsil(cctx, fctx, recvTy, recv, memberName)
           match recvTy {
             case MClass(cls) -> {
               val key = cls + "/" + memberName
@@ -12688,6 +12696,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               }
             }
             case _ -> {
+              // A receiver erased to `object` whose class the type checker
+              // resolved (a method-level generic's result, #8358): narrow it
+              // to that class, including one from a restored dependency,
+              // before the field read.
+              match erasedField {
+                case Some(hit) -> {
+                  insns.add(MCastclassByName(className = hit.cls))
+                  insns.add(MLdfld(fieldToken = hit.tok))
+                  return hit.ty
+                }
+                case None -> ()
+              }
               // TyException built-in members: .message and .typeName.
               // Catch-clause exception bindings are stored as MObject; detect by member name.
               if memberName == "message" {
@@ -19980,6 +20000,57 @@ func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy
       case _ -> ()
     }
     case _ -> ()
+  }
+}
+
+// A field of the class the type checker resolved for a field-access receiver.
+record ErasedRecvField {
+  cls: String
+  tok: Int
+  ty: MsilType
+}
+
+// The field `memberName` of the receiver class the type checker recorded for
+// `recv` (`cctx.memberRecvClasses`) when the receiver's lowered type is
+// `object`: such a value comes from a method-level generic or another
+// position whose static type the backend erases (#8358).  A class in a
+// restored dependency is found through its registered field tokens like a
+// same-package one.  None when nothing was recorded, the class is generic
+// (its field is read through a TypeSpec), or it has no such field.
+func erasedRecvFieldMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  recvTy: in MsilType,
+  recv: in Expr,
+  memberName: in String,
+): Option[ErasedRecvField] {
+  match recvTy {
+    case MObject -> ()
+    case _ -> return None
+  }
+  val siteKey = recordCopySiteKey(recv.span)
+  val key = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    fctx.originPkg + "|" + siteKey
+  } else {
+    siteKey
+  }
+  val cls = match mapGet(cctx.memberRecvClasses, key) { case Some(c) -> c; case None -> return None }
+  if cctx.genericTypeArity.containsKey(cls) {
+    return None
+  }
+  val fkey = cls + "/" + memberName
+  match mapGet(cctx.fieldTokens, fkey) {
+    case Some(tok) -> Some(
+      value = ErasedRecvField(
+        cls = cls,
+        tok = tok,
+        ty = match mapGet(cctx.fieldMsilTypes, fkey) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      )
+    )
+    case None -> None
   }
 }
 

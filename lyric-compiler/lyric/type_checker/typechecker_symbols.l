@@ -325,6 +325,13 @@ pub record SymbolTable {
   /// Span keys of call callees, whose function reference is a call rather
   /// than a value and is never desugared.
   funcRefCallees: Map[String, Bool]
+  /// Every function of the package being checked referenced bare as a value
+  /// (never a call callee), keyed like `funcRefSites`.  A package's own
+  /// function values need no desugar in its own code (a forwarding thunk
+  /// stands for them); this is read for a specialisation of this package's
+  /// generic in another package, whose body must name the function there
+  /// (`Lyric.Pipeline.foreignFuncValueSites`, #8329).
+  ownFuncValueSites: Map[String, FuncRefSite]
   /// Callees of the form `f[A, B]` (an index of a name, as the parser leaves
   /// explicit type arguments written in source) that name a generic
   /// function under type arguments, keyed by `recordCopySiteKey` of the
@@ -766,6 +773,7 @@ pub func newSymbolTable(): SymbolTable {
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
     funcRefCallees = newMap(),
+    ownFuncValueSites = newMap(),
     typeArgCalleeSites = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
