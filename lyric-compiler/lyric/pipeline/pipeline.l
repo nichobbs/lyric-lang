@@ -1049,6 +1049,60 @@ pub func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
   false
 }
 
+/// Each `fixture n[: T] = e` as the module-level `val n[: T] = e` it stands
+/// for, exactly as `Lyric.TestSynth` rewrites it for `lyric test`, so a
+/// fixture is one thing in every command: a module `val` any item of a
+/// `@test_module` may read.  Without this the checker accepted an ordinary
+/// function reading a fixture and codegen, which dropped fixtures, failed
+/// with a location-less T0115 / J008 (#8327).
+pub func fixturesAsModuleVals(file: in SourceFile): SourceFile {
+  var any = false
+  for it in file.items {
+    match it.kind {
+      case IFixture(_) -> {
+        any = true
+      }
+      case _ -> ()
+    }
+  }
+  if not any {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFixture(fd) -> items.add(
+        Item(
+          docComments = it.docComments,
+          annotations = it.annotations,
+          visibility = it.visibility,
+          kind = IVal(
+            decl = ValDecl(
+              pattern = Pattern(
+                kind = PBinding(name = fd.name, inner = None),
+                span = fd.nameSpan
+              ),
+              ty = fd.ty,
+              init = fd.init,
+              span = fd.span
+            )
+          ),
+          span = it.span
+        )
+      )
+      case _ -> items.add(it)
+    }
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
 /// The source rewrites the type checker expects to have run: the build
 /// (`pipeExpandAndRewrite`) and the language server both call this, so the
 /// editor reports what `lyric build` reports (#7512: the server checked the
@@ -1059,7 +1113,7 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   // (#7763) before any pass indexes module values, so every backend and the
   // checker see the same single-name items; a refutable pattern (T0144)
   // stops here, whether or not the type check that follows is fatal.
-  val mvRes = desugarModuleValPatterns(file)
+  val mvRes = desugarModuleValPatterns(fixturesAsModuleVals(file))
   val diags: List[Diagnostic] = newList()
   var i = 0
   while i < mvRes.diagnostics.count {

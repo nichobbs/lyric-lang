@@ -668,52 +668,44 @@ func checkImportedPackages(state: in LspState, file: in SourceFile): List[Import
     state.stdlibPackages.add(MsilBridge.stdlibImportedPackagesFromSources(Emitter.findStdlibSources()))
   }
   val packages: List[ImportedPackage] = newList()
-  val noImports: List[String] = newList()
-  packages.add(
-    ImportedPackage(name = "", items = buildImportedItems(state, file), imports = noImports, wholeImports = noImports)
-  )
+  for wp in buildImportedWorkspacePackages(state, file) {
+    packages.add(wp)
+  }
   for sp in state.stdlibPackages[0] {
     packages.add(sp)
   }
   packages
 }
 
-func buildImportedItems(state: in LspState, file: in SourceFile): List[Item] {
-  val items: List[Item] = newList()
-  val fileImports = file.imports
-  var i = 0
-  while i < fileImports.count {
-    val imp = fileImports[i]
-    val impPath = imp.path
-    val impSegs = impPath.segments
-    var pkg = ""
-    var si = 0
-    while si < impSegs.count {
-      if si > 0 {
-        pkg = pkg + "."
-      }
-      pkg = pkg + impSegs[si]
-      si = si + 1
-    }
-    match mapGet(state.wsIndex, pkg) {
-      case None -> {
-      }
-      case Some(fp) -> {
-        if hostFileExists(fp) {
-          val impParsed = parse(hostReadAllText(fp))
-          val impFile = impParsed.file
-          val impItems = impFile.items
-          var ki = 0
-          while ki < impItems.count {
-            items.add(impItems[ki])
-            ki = ki + 1
+// Each workspace package the document imports, parsed from its indexed file
+// and named as the build names it, so a qualified reference into it resolves
+// in its own package (and one into a package the workspace lacks is reported).
+func buildImportedWorkspacePackages(state: in LspState, file: in SourceFile): List[ImportedPackage] {
+  val packages: List[ImportedPackage] = newList()
+  val seen: List[String] = newList()
+  for imp in file.imports {
+    val pkg = modulePathJoin(imp.path.segments)
+    if not seen.contains(pkg) {
+      seen.add(pkg)
+      match mapGet(state.wsIndex, pkg) {
+        case None -> ()
+        case Some(fp) -> {
+          if hostFileExists(fp) {
+            val impFile = parse(hostReadAllText(fp)).file
+            packages.add(
+              ImportedPackage(
+                name = pkg,
+                items = impFile.items,
+                imports = collectImportNames(impFile.imports),
+                wholeImports = collectWholeImportNames(impFile.imports)
+              )
+            )
           }
         }
       }
     }
-    i = i + 1
   }
-  items
+  packages
 }
 
 func addRevDep(state: in LspState, importedUri: in String, consumerUri: in String): Unit {

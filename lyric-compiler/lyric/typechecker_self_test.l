@@ -13224,3 +13224,41 @@ test "a function-typed val, local or parameter hides an imported function in cal
     "control: with no shadowing the import is called"
   )
 }
+
+// #8327: a fixture is the module-level `val` `lyric test` makes it in every
+// command, so a helper that reads one type-checks and reaches codegen as a
+// `val` read instead of a dropped fixture.
+test "fixtures become module vals before the build checks them (#8327)" {
+  val src = "@test_module\npackage P\nfixture base: Int = 41\nfunc helper(): Int { base + 1 }\ntest \"t\" {\n  val y: Int = helper()\n}\n"
+  val res = Lyric.Pipeline.pipePrepareForCheck(parse(src).file, false)
+  assertEqualInt(res.diagnostics.count, 0, "no diagnostics")
+  var fixtures = 0
+  var vals = 0
+  for it in res.file.items {
+    match it.kind {
+      case IFixture(_) -> {
+        fixtures = fixtures + 1
+      }
+      case IVal(_) -> {
+        vals = vals + 1
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(fixtures, 0, "no fixture item survives")
+  assertEqualInt(vals, 1, "the fixture is a val")
+  assertEqualInt(diagCount(check(res.file)), 0, "the helper reads the fixture")
+}
+
+// #7989: a qualified call through an import no dependency provides reports the
+// package and never resolves to an unrelated function of the same bare name.
+test "a qualified call into a package no dependency provides is T0215 (#7989)" {
+  val aliased = checkRenamed("package App\nimport PkgGone as G\nfunc f(): Int { G.fromY() }\n")
+  assertEqualInt(countDiagCode(aliased, "T0215"), 1, "alias: " + diagCodesOf(aliased))
+  assertTrue(diagMessageFor(aliased, "T0215").contains("PkgGone"), diagMessageFor(aliased, "T0215"))
+  assertEqualInt(countDiagCode(aliased, "T0043"), 0, "no argument mismatch against another package's fromY")
+  val plain = checkRenamed("package App\nimport PkgGone\nfunc f(): Int { PkgGone.fromY() }\n")
+  assertEqualInt(countDiagCode(plain, "T0215"), 1, "plain import: " + diagCodesOf(plain))
+  val known = checkRenamed("package App\nimport PkgY as Y\nfunc f(): Int { Y.fromY() }\n")
+  assertEqualInt(diagCount(known), 0, "a provided package resolves: " + diagCodesOf(known))
+}

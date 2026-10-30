@@ -245,7 +245,7 @@ follow-up, not a promise this library doesn't yet keep:
   boundary: because every span is a trace root, `Tracing.sampleRate`
   is the head-based root decision and is drawn per call. When a current
   span exists, a child span will inherit its parent's sampled/unsampled
-  decision and only roots will draw (parent-based sampling, D278), so a
+  decision and only roots will draw (parent-based sampling, D279), so a
   sampled trace is never missing spans below an unsampled one.
 - **No OTLP logs exporter.** `configureOtlpLogs` always returns `Err`.
   Traces and metrics only.

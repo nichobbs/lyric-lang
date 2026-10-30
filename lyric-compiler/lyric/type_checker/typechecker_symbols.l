@@ -1206,6 +1206,9 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
   val hasImports = tbl.scopeImports.count > 0
   val ruled = hasScope and symTableImportRuleApplies(tbl, curPkg)
   var best2: Option[Symbol] = None
+  var best2b: Option[Symbol] = None
+  var has2b = false
+  val reach: Map[String, Bool] = newMap()
   var best3: Option[Symbol] = None
   var i = tbl.symbols.count - 1
   while i >= 0 {
@@ -1223,6 +1226,16 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
           }
         }
       }
+      // An imported package's signature scope also sees what the packages
+      // it imports declare (the kernel re-export idiom: `Std.Uuid` imports
+      // the `Uuid` type from its host package), ahead of an unrelated
+      // same-named declaration of whichever package is being checked
+      // (#7372).  The user package's own bare lookups are bound by the
+      // import rule above instead.
+      if hasImports and not ruled and hasScope and not has2b and reachableOnce(tbl, reach, s.originPackage) {
+        best2b = Some(value = s)
+        has2b = true
+      }
       match best3 {
         case None -> {
           best3 = Some(value = s)
@@ -1235,8 +1248,36 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
   }
   match best2 {
     case Some(_) -> best2
-    case None -> best3
+    case None -> match best2b { case Some(_) -> best2b; case None -> best3 }
   }
+}
+
+// True when `pkg` is imported, at any depth, by a package the current scope
+// imports.  The registered import lists record only a package's own imports,
+// so the walk follows them with a visited set.  `reach` holds the set once
+// built, for one `symTableTryFindOne` call; it is empty until the first
+// candidate needs it.
+func reachableOnce(tbl: in SymbolTable, reach: in Map[String, Bool], pkg: in String): Bool {
+  if pkg.length == 0 {
+    return false
+  }
+  if reach.count == 0 {
+    val pending: List[String] = newList()
+    for imp in tbl.scopeImports {
+      pending.add(imp)
+    }
+    while pending.count > 0 {
+      val cur = pending[pending.count - 1]
+      pending.removeAt(pending.count - 1)
+      if not reach.containsKey(cur) {
+        reach.add(cur, true)
+        for dep in symTablePackageImportsOf(tbl, cur) {
+          pending.add(dep)
+        }
+      }
+    }
+  }
+  reach.containsKey(pkg)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

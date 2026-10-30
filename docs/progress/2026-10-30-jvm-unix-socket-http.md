@@ -1,7 +1,7 @@
 # JVM: Unix-domain-socket HTTP clients (#8560)
 
 `Std.Http.clientWithUnixSocket` and `HttpClientBuilder.withUnixSocket` now work
-on `--target jvm` (D278). Before, the JVM kernel panicked because
+on `--target jvm` (D279). Before, the JVM kernel panicked because
 `java.net.http.HttpClient` cannot dial a Unix socket.
 
 - `lyric-stdlib/std/http_client_wire.l`: `Std.HttpClientWire`, a sans-IO

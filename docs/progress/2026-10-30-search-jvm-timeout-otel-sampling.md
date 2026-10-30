@@ -14,6 +14,6 @@
   here.
 - `OTel.randomUnit` (public, `@stable`) draws from `Std.Random` instead of
   `Std.SecureRandom`; ids still come from the secure source. The parent-based
-  sampling design is recorded in D278 and the `lyric-otel` README: every span is
+  sampling design is recorded in D279 and the `lyric-otel` README: every span is
   a trace root today, so the per-call draw is the root decision.
 - The named connect timeout (item 2 of #8571) shipped in #8576.

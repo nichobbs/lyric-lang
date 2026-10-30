@@ -1303,6 +1303,32 @@ func addDiagnosticOnce(diag: in List[Diagnostic], d: in Diagnostic): Unit {
   diag.add(d)
 }
 
+// True when the current file imports `pkg` (`import pkg` or `import pkg as A`,
+// whose uses the alias rewriter spells with the full path) yet the checker
+// holds no declaration of it: no dependency provides the package (#7989).  An
+// `extern package` path and a package known only by extern-block members are
+// provided, and so is the standard library, which the toolchain supplies
+// whether or not a dependency or the caller loaded its sources.
+func importedPackageMissing(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  pkg: in String,
+  name: in String,
+): Bool {
+  if pkg.startsWith("Std.") or pkg == "Std" or not symTableScopeAllows(tbl, pkg) {
+    return false
+  }
+  if symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg) or symTableIsExternPathPackage(tbl, pkg) {
+    return false
+  }
+  for c in gatherOverloadCandidates(sigs, byNameSigKey(name)) {
+    if pkgMatchesQualifier(c.originPackage, pkg) {
+      return false
+    }
+  }
+  true
+}
+
 // #7495: `pkgSegs` spells a package-qualified reference's qualifier
 // (`Std.Rest` in `Std.Rest.RestClient.create(url)`), `member` the segment
 // after it. docs/01 §9.2: apart from the `Std.Core` prelude, a name is usable
@@ -6707,6 +6733,17 @@ func resolveExprPath(
         case _ -> ()
       }
       case None -> ()
+    }
+    if importedPackageMissing(tbl, sigs, pkg, name) {
+      diag.add(
+        errorDiagnostic(
+          "T0215",
+          "package " + pkg + " is imported but no dependency provides it, so '" + pkg + "." + name +
+            "' cannot be resolved (a stale or missing restored dependency?)",
+          span
+        )
+      )
+      return TyError
     }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) and not packageReexportsMember(tbl, pkg, name) {
@@ -21779,6 +21816,12 @@ func findDirectSigPick(
         }
         if pkgCands.count > 0 {
           return pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
+        }
+        // A qualifier naming a package the file imports but no dependency
+        // provides never falls back to a bare-name lookup: the qualified
+        // reference reports the missing package instead (T0215, #7989).
+        if importedPackageMissing(tbl, sigs, wantPkg, name) {
+          return None
         }
       }
       // The arity-key "primary" is the historical lookup: a user definition
