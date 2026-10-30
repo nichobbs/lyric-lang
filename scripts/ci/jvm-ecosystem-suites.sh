@@ -95,6 +95,11 @@ run_suite() {
   if ! grep -q '^\[features\]' "lyric-$lib/lyric.toml"; then
     feature_args=()
   fi
+  # `search`'s features pick a backend (`elasticsearch` by default), not a
+  # target, so it runs with its default feature set.
+  if [ "$lib" = "search" ]; then
+    feature_args=()
+  fi
   "${runner[@]}" --target jvm "${feature_args[@]}" \
     > "$log_dir/$lib.log" 2>&1
   echo $? > "$log_dir/$lib.rc"
