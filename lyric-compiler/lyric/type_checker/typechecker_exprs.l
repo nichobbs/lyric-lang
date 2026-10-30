@@ -20665,6 +20665,18 @@ func typeQualifiedDotSig(
     if cands.count > 0 {
       return Some(value = cands[0])
     }
+    // No dot-named function and no applicable body method: the call still
+    // names the type's method, so the count and types are reported against
+    // its signature (T0042/T0043) rather than passing unchecked.
+    match unrefine(recv) {
+      case TyUser(tid, _, targs) -> {
+        val ms = symTableMethodSigs(tbl, tid, member)
+        if ms.count > 0 {
+          return Some(value = withReceiverParam(substituteMethodSig(ms[0], unrefine(recv), targs), recv))
+        }
+      }
+      case _ -> ()
+    }
   }
   dottedSigLookup(sigs, owner + "." + member, arity)
 }

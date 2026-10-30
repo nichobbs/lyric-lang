@@ -5555,6 +5555,23 @@ test "impl method call: wrong arity is T0042" {
   assertTrue(hasDiagCode(parseCheck(src), "T0042"), "impl method wrong arity: T0042")
 }
 
+test "static-form call of a body method is argument-checked (#8104)" {
+  val decl = "package P\nrecord Acc {\n  n: Int\n  func add(self: in Acc, k: in Int): Int { self.n + k }\n}\n"
+  val missing = decl + "func f(a: in Acc): Int { Acc.add(a) }\n"
+  assertTrue(
+    hasDiagCode(parseCheck(missing), "T0042"),
+    "static form missing k: T0042: " + diagCodesOf(parseCheck(missing))
+  )
+  val extra = decl + "func f(a: in Acc): Int { Acc.add(a, 1, 2) }\n"
+  assertTrue(hasDiagCode(parseCheck(extra), "T0042"), "static form extra argument: T0042")
+  val ok = decl + "func f(a: in Acc): Int { Acc.add(a, 1) }\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "static form with receiver and k is accepted: " + diagCodesOf(parseCheck(ok))
+  )
+}
+
 test "method return type flows onward" {
   val src = "package P\nrecord Named {\n  tag: Int\n  func name(): String { \"n\" }\n}\nfunc wantInt(x: in Int): Int { x }\nfunc consume(n: in Named): Int { wantInt(n.name()) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0043"), "String method result into Int param: T0043 (return type known)")
