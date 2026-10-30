@@ -528,6 +528,17 @@ The demo runs headless in CI on SDL's `offscreen` video driver and `disk` audio 
 
 `foreign record` is allowed only in a stdlib `_kernel_native/` package or in a file annotated `@unsafe_ffi` at file level (N0101 elsewhere), and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
 
+An `opaque type` that wraps a raw handle can release it through ARC on the native target. Annotate it with `@nativeDtor("symbol")` after the type name:
+
+```lyric
+opaque type CBuffer @nativeDtor("lyric_cstring_free") {
+  p: NativePtr[Byte]
+  label: String
+}
+```
+
+When the last reference to a `CBuffer` goes away, the compiler-generated destructor calls `lyric_cstring_free(p)` and then releases `label`. The C function receives the type's first field, which must be a scalar or a `NativePtr`; it must accept NULL if the field can hold `nativeNullPtr()`. A generic type, a non-identifier symbol or a first field that is a `String` or other reference type is `N0104`. The annotation does nothing on the .NET and JVM targets.
+
 ## §13.11 JavaScript and NPM packages
 
 On the `wasm32` target the foreign boundary is JavaScript rather than the BCL or C. A

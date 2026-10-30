@@ -24,12 +24,11 @@
 //! an opaque type's destructor, exactly like `llvm_heap_self_test.l`'s
 //! record ARC cases.
 //!
-//! A custom-destructor hook for an opaque type wrapping a raw resource
-//! (e.g. a `NativePtr` OS handle) is a separate, unimplemented gap
-//! (#6234 part 2) — deliberately not exercised here; every field in
-//! these cases is either scalar or ARC-managed (String), so the
-//! synthesised record-style destructor releases it correctly with no
-//! custom cleanup hook needed.
+//! `@nativeDtor("symbol")` (#6234 part 2, D282) gives an opaque type wrapping a
+//! raw resource ARC-driven cleanup: when the last reference drops, the
+//! destructor calls the C function with the type's first field, then releases
+//! the ref-typed fields. The `nativeDtor` cases below run that under ASan with
+//! a control that leaks without the annotation, and pin the `N0104` rejections.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -239,4 +238,104 @@ test "arc: opaque type instances with a string field construct and release in a 
     "}\n"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "opaque allocation loop leak-free (ASan)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// @nativeDtor (#6234 part 2).
+// ─────────────────────────────────────────────────────────────────────────────
+func cstrPrelude(dtor: in String): String {
+  "package T\n" + "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
+    "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "opaque type CStr " +
+    dtor +
+    " {\n" +
+    "  p: NativePtr[Byte]\n" +
+    "  label: String\n" +
+    "}\n"
+}
+
+func cstrLoopMain(): String {
+  "@unsafe_ffi\n" + "func main(): Int {\n" + "  var total = 0\n" + "  var i = 0\n" + "  while i < 2000 {\n" +
+    "    val c = CStr(p = toC(\"handle\"), label = \"n\" + i.toString())\n" +
+    "    total = total + cStrlen(c.p).toInt() + c.label.length - 6\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  if total > 0 {\n" +
+    "    0\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+}
+
+test "nativeDtor: an opaque type frees its raw handle when the last reference drops" {
+  val src = cstrPrelude("@nativeDtor(\"lyric_cstring_free\")") + cstrLoopMain()
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "handle freed on release, string field released after it (ASan)")
+}
+
+test "nativeDtor: without the annotation the same program leaks, so the case above has teeth" {
+  val src = cstrPrelude("") + cstrLoopMain()
+  val r = compileAndRunAsan(src)
+  assertTrue(r.exitCode != 0, "the unannotated type leaks its handle and LeakSanitizer fails the run")
+}
+
+test "nativeDtor: a shared opaque value frees its handle exactly once" {
+  val src = cstrPrelude("@nativeDtor(\"lyric_cstring_free\")") + "record Holder {\n" + "  a: CStr\n" + "  b: CStr\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val shared = CStr(p = toC(\"shared\"), label = \"s\")\n" +
+    "  val h = Holder(a = shared, b = shared)\n" +
+    "  cStrlen(h.a.p).toInt() + cStrlen(h.b.p).toInt() - 12\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "two references, one free (ASan reports a double free)")
+}
+
+test "nativeDtor: a destructor-only handle type with no ref fields still gets a destructor" {
+  val src = "package T\n" + "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
+    "opaque type Raw @nativeDtor(\"lyric_cstring_free\") {\n" +
+    "  p: NativePtr[Byte]\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  var i = 0\n" +
+    "  while i < 500 {\n" +
+    "    val r = Raw(p = toC(\"x\"))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "a type with only an inert handle field was a destructor-less value before")
+}
+
+func nativeDtorRejection(src: in String): String {
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
+  try {
+    val pkg = codegenNativePackage(pr.file, nativeHostCodegenTriple())
+    val _ = lowerNativePackage(pkg)
+  } catch Bug as b {
+    return b.message
+  }
+  ""
+}
+
+test "nativeDtor: a malformed or unusable declaration is rejected with N0104" {
+  val noArg = nativeDtorRejection("package T\nopaque type H @nativeDtor {\n  p: Long\n}\nfunc main(): Int {\n  0\n}\n")
+  assertTrue(Str.contains(noArg, "N0104"), "no argument (got: " + noArg + ")")
+  val badSym = nativeDtorRejection(
+    "package T\nopaque type H @nativeDtor(\"a-b\") {\n  p: Long\n}\nfunc main(): Int {\n  0\n}\n"
+  )
+  assertTrue(Str.contains(badSym, "N0104"), "a symbol that is not a C identifier (got: " + badSym + ")")
+  val refFirst = nativeDtorRejection(
+    "package T\nopaque type H @nativeDtor(\"free\") {\n  name: String\n}\nfunc main(): Int {\n  0\n}\n"
+  )
+  assertTrue(Str.contains(refFirst, "N0104"), "a String first field (got: " + refFirst + ")")
+  val genericTy = nativeDtorRejection(
+    "package T\nopaque type H[T] @nativeDtor(\"free\") {\n  p: Long\n}\nfunc main(): Int {\n  0\n}\n"
+  )
+  assertTrue(Str.contains(genericTy, "N0104"), "a generic type (got: " + genericTy + ")")
 }

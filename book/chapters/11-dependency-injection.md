@@ -194,6 +194,8 @@ For custom scope kinds like `Tenant`, you control entry and exit explicitly in t
 
 Scope state propagates across `await` boundaries via .NET's `AsyncLocal<T>`. When a `scoped[Request]` value is resolved inside an async function, the active scope is the one that was current when the request started — even if several `await` expressions have intervened.
 
+Every member's initialiser is type-checked against its declared type when the wire is compiled, so `singleton x: Int = "s"` or a `contributes[T] each extras = 42` (which needs a `List[T]`) is a type error at the member, not a failure at run time. Members can read one another in any order.
+
 ## §11.7 Wire templates, `include`, and `contributes[T]`
 
 Everything so far had you hand-assemble each graph. A library can instead

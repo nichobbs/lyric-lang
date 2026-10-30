@@ -4794,6 +4794,7 @@ func unitOf(
   val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
+  val nativeDtors: Map[String, String] = newMap()
   val eqByFields: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
@@ -4864,6 +4865,10 @@ func unitOf(
         if decl.hasBody {
           records.add(opaqueToRecordDecl(decl))
           opaqueNames.add(decl.name)
+          val dtorSym = nativeDtorOf(decl)
+          if dtorSym.length > 0 {
+            nativeDtors.add(decl.name, dtorSym)
+          }
         }
       }
       // Interface + impl (N3.2).  An interface is only a box and vtable type,
@@ -4910,6 +4915,7 @@ func unitOf(
     wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
+    nativeDtors = nativeDtors,
     eqByFields = eqByFields,
     unions = unions,
     enums = enums,
