@@ -10925,6 +10925,7 @@ func inferMatchExpr(
     scopePush(sc)
     bindPatternTyped(sc, tbl, sigs, diag, arms[ai].pattern, st)
     bindOpenTuplePattern(sc, tbl, arms[ai].pattern, scrutKey)
+    bindOpenCasePattern(sc, tbl, arms[ai].pattern, scrutKey)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
     recordTuplePatternBindings(tbl, arms[ai].pattern, st, false, sc.genericNames)
     match arms[ai].guard {
@@ -11191,7 +11192,76 @@ pub func registerOpenBindingSite(sc: in Scope, tbl: in SymbolTable, init: in Exp
   if isEvidenceFreeOpenInit(tbl, init, initTy) {
     return addOpenBindingSite(tbl, init, unrefine(initTy), "")
   }
+  val srcKey = openSiteOfExpr(sc, init)
+  if srcKey != "" {
+    return registerOpenAliasSite(sc, tbl, init, initTy, srcKey)
+  }
   registerOpenTupleSite(sc, tbl, init, initTy)
+}
+
+// An unannotated `val o2 = o` / `var o2 = o` initialised from a bare name that
+// is an open site is itself open (#7887): evidence from a use of either name
+// fixes the element for both.  The alias's site has the source's children (a
+// tuple source's own, or the source itself at the empty position for a plain
+// one), so a type noted on the alias reaches the source's sites, and the
+// alias's annotation is the source's type, resolved from whatever evidence
+// reached it through either name.
+func registerOpenAliasSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, initTy: in Type, srcKey: in String): String {
+  if isNoSourceSpan(init.span) or init.span.endPos.offset <= init.span.startPos.offset {
+    return ""
+  }
+  val key = recordCopySiteKey(init.span)
+  if tbl.openBindingSites.containsKey(key) {
+    return key
+  }
+  match mapGet(tbl.openBindingSites, srcKey) {
+    case None -> ""
+    case Some(src) -> {
+      val childKeys: List[String] = newList()
+      val childPaths: List[List[Int]] = newList()
+      if src.childKeys.count > 0 {
+        var ci = 0
+        while ci < src.childKeys.count {
+          childKeys.add(src.childKeys[ci])
+          childPaths.add(src.childPaths[ci])
+          ci = ci + 1
+        }
+      } else {
+        childKeys.add(srcKey)
+        childPaths.add(newList())
+      }
+      val typeParams: List[String] = newList()
+      var gi = 0
+      while gi < sc.genericNames.count {
+        typeParams.add(sc.genericNames[gi])
+        gi = gi + 1
+      }
+      tbl.openBindingSites.add(
+        key,
+        OpenBindingSite(
+          initSpan = init.span,
+          initTy = unrefine(initTy),
+          sinkTy = newList(),
+          sinkTe = newList(),
+          storeTy = newList(),
+          storeTe = newList(),
+          sinkConflict = newList(),
+          storeConflict = newList(),
+          childKeys = childKeys,
+          childPaths = childPaths,
+          parentKey = "",
+          hoistExprs = newList(),
+          hoistPaths = newList(),
+          typeParams = typeParams,
+          patSpans = newList(),
+          patPaths = newList(),
+          argKeys = newList(),
+          argIdx = newList()
+        )
+      )
+      key
+    }
+  }
 }
 
 // Whether `init`, of type `initTy`, is a construction that fixes nothing
@@ -11274,7 +11344,9 @@ func addOpenBindingSite(tbl: in SymbolTable, init: in Expr, ty: in Type, parentK
         hoistPaths = newList(),
         typeParams = newList(),
         patSpans = newList(),
-        patPaths = newList()
+        patPaths = newList(),
+        argKeys = newList(),
+        argIdx = newList()
       )
     )
   }
@@ -11353,7 +11425,9 @@ func registerOpenTupleSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, ini
             hoistPaths = hoistPaths,
             typeParams = typeParams,
             patSpans = newList(),
-            patPaths = newList()
+            patPaths = newList(),
+            argKeys = newList(),
+            argIdx = newList()
           )
         )
         key
@@ -11560,6 +11634,200 @@ func exprIsHoistExempt(sc: in Scope, e: in Expr): Bool {
   }
 }
 
+// A constructor pattern in a `match` arm on an open local (#8250):
+// `case Err(e)` on `val r = Ok(value = true)` binds `e` at the type argument
+// `E` the construction leaves open.  The name is open to that argument: what
+// `e` flows into fixes `E`, and `resolveOpenBindingSites` folds it into the
+// local's type, so the local is declared at the closed type rather than
+// reaching a backend open.
+pub func bindOpenCasePattern(sc: in Scope, tbl: in SymbolTable, pat: in Pattern, key: in String): Unit {
+  if key == "" {
+    return
+  }
+  val target = openAliasTarget(tbl, key)
+  match mapGet(tbl.openBindingSites, target) {
+    case Some(site) -> if site.childKeys.count == 0 { bindOpenCasePatternAt(sc, tbl, target, site, pat) }
+    case None -> ()
+  }
+}
+
+// The site an alias site (`registerOpenAliasSite`) stands for: the plain site
+// it holds as its one child at the empty position, else `key` itself.
+func openAliasTarget(tbl: in SymbolTable, key: in String): String {
+  var cur = key
+  var guard = 0
+  while guard < 16 {
+    match mapGet(tbl.openBindingSites, cur) {
+      case Some(site) -> if site.childKeys.count == 1 and site.childPaths[0].count == 0 {
+        cur = site.childKeys[0]
+      } else {
+        return cur
+      }
+      case None -> return cur
+    }
+    guard = guard + 1
+  }
+  cur
+}
+
+func bindOpenCasePatternAt(
+  sc: in Scope, tbl: in SymbolTable, key: in String, site: in OpenBindingSite, pat: in Pattern
+): Unit {
+  match pat.kind {
+    case PParen(inner) -> bindOpenCasePatternAt(sc, tbl, key, site, inner)
+    case PConstructor(head, pargs) -> {
+      val siteTargs = match site.initTy { case TyUser(_, _, targs) -> targs; case _ -> return }
+      val siteTid = match site.initTy { case TyUser(tid, _, _) -> tid; case _ -> return }
+      val fnExpr = Expr(kind = EPath(path = head), span = pat.span)
+      match unionCaseSymbolOf(tbl, fnExpr) {
+        case Some(caseSym) -> match caseSym.kind {
+          case DKUnionCase(parentId, uc) -> {
+            if not typeIdEq(parentId, siteTid) {
+              return
+            }
+            match parentUnionDeclOf(tbl, parentId) {
+              case Some(decl) -> {
+                val gnames = unionDeclGenericNames(decl)
+                if gnames.count != siteTargs.count {
+                  return
+                }
+                val scratch: List[Diagnostic] = newList()
+                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+                var i = 0
+                while i < pargs.count and i < ftypes.count {
+                  bindOpenCaseArg(sc, tbl, key, site, pargs[i], ftypes[i], gnames, siteTargs)
+                  i = i + 1
+                }
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// `argPat` is the pattern for a payload field of declared type `fty`: a bare
+// name over a field typed by one of the union's type parameters whose argument
+// is open at `site` becomes open to that argument.
+func bindOpenCaseArg(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  key: in String,
+  site: in OpenBindingSite,
+  argPat: in Pattern,
+  fty: in Type,
+  gnames: in List[String],
+  siteTargs: in List[Type],
+): Unit {
+  match argPat.kind {
+    case PParen(inner) -> bindOpenCaseArg(sc, tbl, key, site, inner, fty, gnames, siteTargs)
+    case PBinding(name, None) -> {
+      if name == "_" or isConstructorPatternName(tbl, name) {
+        return
+      }
+      val gname = match fty { case TyVar(g) -> g; case _ -> return }
+      var gi = -1
+      var k = 0
+      while k < gnames.count {
+        if gnames[k] == gname {
+          gi = k
+        }
+        k = k + 1
+      }
+      if gi < 0 or typeIsClosed(siteTargs[gi]) or isNoSourceSpan(argPat.span) or argPat.span.endPos.offset <= argPat.span.startPos.offset {
+        return
+      }
+      val argKey = recordCopySiteKey(argPat.span)
+      if not tbl.openBindingSites.containsKey(argKey) {
+        tbl.openBindingSites.add(
+          argKey,
+          OpenBindingSite(
+            initSpan = argPat.span,
+            initTy = TyError,
+            sinkTy = newList(),
+            sinkTe = newList(),
+            storeTy = newList(),
+            storeTe = newList(),
+            sinkConflict = newList(),
+            storeConflict = newList(),
+            childKeys = newList(),
+            childPaths = newList(),
+            parentKey = key,
+            hoistExprs = newList(),
+            hoistPaths = newList(),
+            typeParams = newList(),
+            patSpans = newList(),
+            patPaths = newList(),
+            argKeys = newList(),
+            argIdx = newList()
+          )
+        )
+        site.argKeys.add(argKey)
+        site.argIdx.add(gi)
+      }
+      match scopeTryFind(sc, name) {
+        case Some(b) -> scopeAdd(sc, LocalBinding(name = name, ty = b.ty, isMutable = b.isMutable, openSite = argKey))
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Fold the type arguments the names bound by constructor patterns fixed into
+// the type of each open site that has such names (#8250): the site then has
+// the closed type those names and its own uses agree on.
+func foldOpenCaseArgs(tbl: in SymbolTable): Unit {
+  val keys = mapKeys(tbl.openBindingSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.openBindingSites, keys[i]) {
+      case Some(site) -> if site.argKeys.count > 0 {
+        match site.initTy {
+          case TyUser(tid, nm, targs) -> {
+            val filled: List[Type] = newList()
+            var k = 0
+            while k < targs.count {
+              filled.add(targs[k])
+              k = k + 1
+            }
+            var ai = 0
+            while ai < site.argKeys.count {
+              match mapGet(tbl.openBindingSites, site.argKeys[ai]) {
+                case Some(argSite) -> {
+                  val fixed: Option[Type] = match openSiteChoice(argSite) {
+                    case 1 -> Some(value = argSite.sinkTy[0])
+                    case 2 -> Some(value = argSite.storeTy[0])
+                    case _ -> None
+                  }
+                  match fixed {
+                    case Some(ft) -> {
+                      filled[site.argIdx[ai]] = ft
+                    }
+                    case None -> ()
+                  }
+                }
+                case None -> ()
+              }
+              ai = ai + 1
+            }
+            val noParams: List[String] = newList()
+            noteOpenBindingType(tbl, keys[i], TyUser(id = tid, name = nm, args = filled), true, noParams)
+          }
+          case _ -> ()
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
 // `pat` binds the value of the open site `key`: each name it binds at the
 // position of one of the site's children is open to that child (#7855), and
 // each name it binds to a tuple holding children (the whole value, or a
@@ -11663,7 +11931,9 @@ func openSiteAtPath(
           hoistPaths = newList(),
           typeParams = site.typeParams,
           patSpans = newList(),
-          patPaths = newList()
+          patPaths = newList(),
+          argKeys = newList(),
+          argIdx = newList()
         )
       )
       subKey
@@ -11777,6 +12047,10 @@ func noteOpenBindingType(
             iargs.count == targs.count
           case _ -> false
         }
+        // The site of a name a constructor pattern binds to a type argument
+        // (`bindOpenCasePattern`) has no constructor of its own: any closed
+        // type is the argument.
+        case TyError -> true
         case _ -> false
       }
       if not sameCtor {
@@ -12505,6 +12779,7 @@ func openBindingInitArity(tbl: in SymbolTable, key: in String): Int {
 // own (its tuple's carries its type); only the names patterns bind from it
 // are recorded.
 pub func resolveOpenBindingSites(tbl: in SymbolTable): Unit {
+  foldOpenCaseArgs(tbl)
   val keys = mapKeys(tbl.openBindingSites)
   var i = 0
   while i < keys.count {

@@ -3889,6 +3889,44 @@ func scalarDefaultOfParamMono(subst: in Map[String, TypeExpr], fn: in Expr, args
   }
 }
 
+// `T.default()` over a type parameter bound to a named (distinct or record)
+// type is `X.default()` on that type, which `namedTypeDefaultCallMono` lowers
+// once the specialised body is rewritten (#8531).
+func namedDefaultOfParamMono(subst: in Map[String, TypeExpr], fn: in Expr, args: in List[CallArg]): Option[ExprKind] {
+  if args.count != 0 {
+    return None
+  }
+  match fn.kind {
+    case EMember(recv, memberName) -> {
+      if memberName != "default" {
+        return None
+      }
+      match recv.kind {
+        case EPath(p) -> {
+          if p.segments.count != 1 {
+            return None
+          }
+          match mapGet(subst, p.segments[0]) {
+            case Some(te) -> match te.kind {
+              case TRef(tp) -> {
+                if tp.segments.count != 1 {
+                  return None
+                }
+                val tyPath = singleSegPathExpr(tp.segments[0], recv.span)
+                Some(value = ECall(fn = Expr(kind = EMember(receiver = tyPath, memberName = "default"), span = fn.span), args = args))
+              }
+              case _ -> None
+            }
+            case None -> None
+          }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
 func scalarZeroMono(te: in TypeExpr): Option[ExprKind] {
   match te.kind {
     case TParen(inner) -> scalarZeroMono(inner)
@@ -3931,6 +3969,107 @@ func scalarZeroMono(te: in TypeExpr): Option[ExprKind] {
         return Some(value = ELiteral(lit = LUnit))
       }
       None
+    }
+    case _ -> None
+  }
+}
+
+// The zero value of `te` for `X.default()` on a type that derives `Default`
+// (#8531): a scalar's literal zero, a distinct type's `X.from(<zero of its
+// underlying type>)`, a non-generic record's constructor with each field at its
+// declared default or its own zero.  `None` when some part has no zero here
+// (a generic or recursive type, a collection), which leaves the call alone.
+func defaultExprOfTypeMono(state: in MonoState, te: in TypeExpr, span: in Span, depth: in Int): Option[Expr] {
+  if depth > 8 {
+    return None
+  }
+  match scalarZeroMono(te) {
+    case Some(k) -> return Some(value = Expr(kind = k, span = span))
+    case None -> ()
+  }
+  match te.kind {
+    case TParen(inner) -> defaultExprOfTypeMono(state, inner, span, depth)
+    case TRef(path) -> if path.segments.count == 1 {
+      defaultExprOfNamedMono(state, path.segments[0], span, depth)
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+func defaultExprOfNamedMono(state: in MonoState, name: in String, span: in Span, depth: in Int): Option[Expr] {
+  match mapGet(state.distinctDecls, name) {
+    case Some(d) -> {
+      match d.generics {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      match defaultExprOfTypeMono(state, d.underlying, span, depth + 1) {
+        case Some(inner) -> {
+          val fromFn = Expr(kind = EMember(receiver = singleSegPathExpr(name, span), memberName = "from"), span = span)
+          val fromArgs: List[CallArg] = newList()
+          fromArgs.add(CAPositional(expr = inner))
+          return Some(value = Expr(kind = ECall(fn = fromFn, args = fromArgs), span = span))
+        }
+        case None -> return None
+      }
+    }
+    case None -> ()
+  }
+  match mapGet(state.recordDecls, name) {
+    case Some(r) -> {
+      match r.generics {
+        case Some(_) -> return None
+        case None -> ()
+      }
+      val ctorArgs: List[CallArg] = newList()
+      var i = 0
+      while i < r.members.count {
+        match r.members[i] {
+          case RMField(f) -> match f.dflt {
+            case Some(_) -> ()
+            case None -> match defaultExprOfTypeMono(state, f.ty, span, depth + 1) {
+              case Some(z) -> ctorArgs.add(CANamed(name = f.name, value = z, span = span))
+              case None -> return None
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      Some(value = Expr(kind = ECall(fn = singleSegPathExpr(name, span), args = ctorArgs), span = span))
+    }
+    case None -> None
+  }
+}
+
+// `X.default()` written on a concrete distinct type or record, or reached by
+// substituting `T.default()` at one (#8531).
+func namedTypeDefaultCallMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fn: in Expr,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Expr] {
+  if args.count != 0 {
+    return None
+  }
+  match fn.kind {
+    case EMember(recv, memberName) -> {
+      if memberName != "default" {
+        return None
+      }
+      match recv.kind {
+        case EPath(p) -> {
+          if p.segments.count != 1 or env.containsKey(p.segments[0]) or state.moduleValTypes.containsKey(p.segments[0]) {
+            return None
+          }
+          defaultExprOfNamedMono(state, p.segments[0], span, 0)
+        }
+        case _ -> None
+      }
     }
     case _ -> None
   }
@@ -4089,9 +4228,12 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
       }
       match scalarDefaultOfParamMono(subst, fn, na) {
         case Some(zero) -> zero
-        case None -> match explicitTypeArgsOverParamsMono(subst, fn) {
-          case Some(typeApp) -> ECall(fn = typeApp, args = na)
-          case None -> ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+        case None -> match namedDefaultOfParamMono(subst, fn, na) {
+          case Some(named) -> named
+          case None -> match explicitTypeArgsOverParamsMono(subst, fn) {
+            case Some(typeApp) -> ECall(fn = typeApp, args = na)
+            case None -> ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+          }
         }
       }
     }
@@ -7811,6 +7953,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
     //     where the user already wrote the type arguments inline (#349
     //     called out that `ETypeApp` was pass-through before).
     case ECall(fn, args) -> {
+      match namedTypeDefaultCallMono(state, env, fn, args, s) {
+        case Some(zero) -> return rewriteExpr(state, env, zero)
+        case None -> ()
+      }
       match dottedGenericMethodMono(state, env, fn) {
         case Some(direct) -> return rewriteExpr(state, env, receiverFirstCallMono(fn, direct, args, s))
         case None -> ()

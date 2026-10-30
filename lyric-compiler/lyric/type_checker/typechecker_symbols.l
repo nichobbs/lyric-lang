@@ -709,6 +709,14 @@ pub record OpenBindingSite {
   /// so a backend that erases the element (the JVM) reads it at that type.
   patSpans: List[Span]
   patPaths: List[List[Int]]
+  /// A name a `match` arm's constructor pattern binds to a payload typed by a
+  /// type parameter of an open union value (`case Err(e)` on `val r = Ok(value = true)`)
+  /// is open to that type argument (#8250).  `argKeys[i]` is the site of the
+  /// name bound to type argument `argIdx[i]` of this site's type; its sink or
+  /// store type fixes that argument, and `resolveOpenBindingSites` folds the
+  /// fixed arguments into this site's own type.  Empty for any other site.
+  argKeys: List[String]
+  argIdx: List[Int]
 }
 
 pub record ImplPair {
