@@ -158,7 +158,7 @@ does not check the call-graph rule.
 | `V0012` | _(planned code, **repurposed**)_ The mode checker now uses `V0012` for `await` inside a `try`/`catch`/`finally` block in an async function (a CLR IL constraint, #2985/#3113), not for the broad "async in proof-required" rejection planned here.  The actual verifier-side rejection of contracts on async/generator functions ships as `V0032` (below, #3298). | — | — |
 | `V0031` | **Retired** in #336.  The self-hosted aspect weaver (`Lyric.Weaver.weaveFile`, ported from `bootstrap/src/Lyric.Emitter/Weaver.fs`) now runs in the verifier driver before VC generation, so proofs discharge against the woven wrapper's composed contracts — not the bare body.  The same-package limitation that previously made the warning incomplete is gone; cross-package aspect detection is still future work (imported aspect annotations don't fire weaving today, mirroring the original `V0031` cross-package gap). | — | — |
 | `V0032` | A `@proof_required` `async func` or `yield`-bearing generator carries a contract clause (`requires:`/`ensures:`).  The WP/SP calculus has no model for suspend/resume control flow — `await`/`yield` has no Term translation and would be coerced to an opaque symbol, so the contract would be checked against an unmodelled body.  `goalsForFunction` rejects such functions before VC generation and emits no goals (rather than vacuous/opaque ones).  A non-contract async function is unaffected.  Effect-aware VC generation is future work (#3298). | error | move the contract to a synchronous core, or mark `@runtime_checked` |
-| `V0027` | A `match` arm whose pattern the verifier does not model: a constructor, record, tuple, range, type-test, or-, or const pattern, a bare name that names a union or enum case (or may name one in scope: §5.4), or `name @ p` with such a `p` (#8230). The arm's guard and body are still checked; the match's value is unknown, and every obligation it reaches is not discharged. A `@pure` callee whose value comes from such a match is not unfolded, and an obligation not discharged without it gets V0027 too. | warning at the arm; error at each obligation the match's value reaches | rewrite the match over a modelled pattern (a literal or a guard on a binding), or keep its value out of the contract |
+| `V0027` | A `match` arm whose pattern the verifier does not model: a record, tuple, range, type-test, or-, or const pattern, or a constructor pattern other than the standard `Result`/`Option` cases `Ok`, `Err` and `Some` (and `None`, #8168), a bare name that names a union or enum case (or may name one in scope: §5.4), or `name @ p` with such a `p` (#8230). The arm's guard and body are still checked; the match's value is unknown, and every obligation it reaches is not discharged. A `@pure` callee whose value comes from such a match is not unfolded, and an obligation not discharged without it gets V0027 too. | warning at the arm; error at each obligation the match's value reaches | rewrite the match over a modelled pattern (a literal or a guard on a binding), or keep its value out of the contract |
 | `V0033` | A proof obligation cannot be translated into the proof logic faithfully: an integer/bitvector sort mix with no implicit conversion (a `UInt` operand beside an `Int` variable, a negative constant or a constant too wide for an unsigned type, the negation of an unsigned value), a declared result range whose bound is not an integer literal that fits its base, or a call whose arguments cannot be paired with the callee's parameters (an unknown parameter name, a parameter given twice, an omitted parameter with no default; #7873).  The verifier reports the construct instead of reasoning about a term that means something else, once: at the construct when VC generation meets it (a construct in a callee's contract is reported once however many calls translate it), or at the goal when substitution first brings the mix together. Every goal the construct reaches stays failed (`unknown`, never `discharged` — an untranslatable result range included), and neither the trivial discharger nor the solver sees it (#7848, #7874). | error | add an explicit conversion, or state the bound as a literal of the base type |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
@@ -273,7 +273,7 @@ Lyric.Verifier/
 | `Double`                  | SMT-LIB `Float64` (IEEE 754 binary64)        | literals are `((_ to_fp 11 53) RNE d)`, `NaN` and the infinities `(_ NaN 11 53)`, `(_ +oo 11 53)`, `(_ -oo 11 53)`; `+ - * /` are `fp.add`/`fp.sub`/`fp.mul`/`fp.div` rounding to nearest-even, `<`, `<=`, `>`, `>=`, `==` are `fp.lt`/`fp.leq`/`fp.gt`/`fp.geq`/`fp.eq` (`NaN != NaN`), so `x == x` and `x + 1.0 > x` are refuted; the trivial discharger never closes a float comparison by reflexivity. `%` has no faithful translation (`fp.rem` is the IEEE remainder, not the truncating one) and fails closed (`V0033`) (#8141, #7883) |
 | `Float`                   | none: the goal fails closed (`V0033`)        | `Float` is 64-bit on dotnet and native and 32-bit on the JVM, so no one sort is faithful on every target; use `Double` in a proved function (#8141) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
-| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read is instantiated at the receiver's type arguments; a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
+| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read, or the result of a call to one of the record's own methods, is instantiated at the receiver's type arguments (#8356: the call is an uninterpreted application of that sort; the method's contract and `@pure` body are not applied at a call on a record-body method); a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
@@ -638,9 +638,12 @@ Calls the verifier cannot follow fail closed or are over-approximated
   captured `var`/`out`/`inout` binding whatever it holds by then and every
   other capture at its value where the lambda is made; nothing the body
   establishes is assumed outside it.
-- The right operand of `??` runs only when the left is null, which is not
-  modelled: its side conditions hold under an unknown condition (so they
-  must hold) and its facts give nothing.
+- The right operand of `??` runs only when the left is null. On an
+  `Option` (or nullable `T?`) left operand that is the case test: `a ?? b`
+  is `isSome(a) ? value(a) : b`, and `b`'s side conditions and facts hold
+  under `not isSome(a)` alone (#8168). On any other left operand the null
+  test is not modelled: the side conditions hold under an unknown condition
+  (so they must hold) and the facts give nothing.
 - A `?` or other jump in a loop condition fails closed (`V0026`) (#8143).
 - `e?` splits the path where it runs (#8108). Where `e` is an `Err`/`None`
   the function returns `Err(e.error)` or `None` at its own result type, as
@@ -700,6 +703,15 @@ Calls the verifier cannot follow fail closed or are over-approximated
   `.isNone` and `isOk(r)`-style calls are case tests, and `.value` and
   `.error` read the payload with the obligation that the value is that
   case, since reading the other case's payload traps (#8108).
+  A `match` arm `Ok(p)`, `Err(p)`, `Some(p)` or `None` over the standard
+  `Result`/`Option` matches where the case test holds and the payload
+  matches `p` (a nested pattern included); `p`'s bindings are the payload
+  (`Result!value`, `Result!error`, `Option!value`). Unguarded arms that
+  cover both cases end the match, so no `V0029` is reported for them. A type
+  alias of `Result`, `Option` or `T?` (non-generic) has the datatype's sort.
+  A type of the same name that the file declares or may import from outside
+  `Std.*` is the user's own, never `Lyric!Result`/`Lyric!Option`, and its
+  patterns stay unmodelled (`V0027`) (#8168).
 - `old(e)` is `e` evaluated with every name that has an entry snapshot (a
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
   entry value.
