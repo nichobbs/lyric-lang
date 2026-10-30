@@ -22,8 +22,12 @@ record Pair[T] {
 }
 
 impl[T] Shows for Pair[T] {
-  func first(): Int { self.a * 2 }
-  func plus(n: in Int): Int { self.a + n }
+  func first(): Int {
+    self.a * 2
+  }
+  func plus(n: in Int): Int {
+    self.a + n
+  }
 }
 
 record Box[T] {
@@ -35,7 +39,9 @@ interface Named {
 }
 
 impl[T] Named for Box[T] {
-  func label(): String { "box" }
+  func label(): String {
+    "box"
+  }
 }
 
 func viaIface(s: in Shows): Int {

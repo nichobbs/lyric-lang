@@ -12512,9 +12512,7 @@ func ensureFnInst(
     var pt = 0
     while pt < nParams {
       match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
-        case Some(t) -> paramTys.add(
-          if pt >= preCount and isByRefMode(fd.params[pt].mode) { NPtr(pointee = t) } else { t }
-        )
+        case Some(t) -> paramTys.add(if pt >= preCount and isByRefMode(fd.params[pt].mode) { NPtr(pointee = t) } else { t })
         case None -> panic(
           "Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name +
             "' for --target native"
@@ -20820,11 +20818,7 @@ func ifaceVtableInitStr(
 /// `Self` parameter, calls the impl method with the values, and boxes a
 /// `Self` result, which the caller owns.
 func byValueVtableInitStr(
-  ctx: in Ctx,
-  implIrs: in List[String],
-  ri: in NRecInfo,
-  ii: in NIfaceInfo,
-  fns: in List[NFunc],
+  ctx: in Ctx, implIrs: in List[String], ri: in NRecInfo, ii: in NIfaceInfo, fns: in List[NFunc]
 ): String {
   val recTy = recPtrType(ri)
   val boxTy = byValueBoxType(ctx, recTy)
@@ -21007,9 +21001,7 @@ func genericImplVtable(ctx: in Ctx, rir: in String, info: in NIfaceInfo): Option
       val bi = envIndexOf(boundNames, pn)
       if bi < 0 {
         panic(
-          "Lyric.LlvmCodegen: cannot infer type argument '" + pn + "' of the impl of '" + info.key + "' for '" +
-            rir +
-            "'"
+          "Lyric.LlvmCodegen: cannot infer type argument '" + pn + "' of the impl of '" + info.key + "' for '" + rir + "'"
         )
       }
       envTys.add(boundTys[bi])

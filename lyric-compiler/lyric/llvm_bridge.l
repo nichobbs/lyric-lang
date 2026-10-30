@@ -1483,7 +1483,11 @@ pub func compileToNativeWithFeatures(
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
           // `pipeCheckAndMono`'s propagate step for the entry file.
-          val stdProp = lowerPropagateFileWithExtraRecords(stdElaborated, stdlibVisibleRecordDecls(pkg, stdlib), opts.awaitInTryIsHazard)
+          val stdProp = lowerPropagateFileWithExtraRecords(
+            stdElaborated,
+            stdlibVisibleRecordDecls(pkg, stdlib),
+            opts.awaitInTryIsHazard
+          )
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
@@ -1567,17 +1571,7 @@ pub func compileToNativeWithFeatures(
     indexBundledImpls(toBundle[bi4], implTypes)
     bi4 = bi4 + 1
   }
-  walkReachableFns(
-    fnWorklist,
-    canonical,
-    bareTrailing,
-    bodyIndex,
-    pkgOfId,
-    reachable,
-    pkgImports,
-    implTypes,
-    prune1
-  )
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune1)
 
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
