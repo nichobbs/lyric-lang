@@ -10854,7 +10854,7 @@ func teMentionsArrayMono(te: in TypeExpr): Bool {
   }
 }
 
-func teMentionsUnsignedMono(te: in TypeExpr): Bool {
+pub func teMentionsUnsignedMono(te: in TypeExpr): Bool {
   match te.kind {
     case TRef(p) -> isUnsignedPathMono(p)
     case TRefined(p, _) -> isUnsignedPathMono(p)

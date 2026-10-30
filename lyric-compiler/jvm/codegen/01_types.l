@@ -2526,6 +2526,21 @@ func uniqueCtorInPkgsJvm(ctx: in FuncCtx, key: in String, name: in String): Opti
 // the one the call actually expects (#5976).  Still tries the current
 // package's own declaration first, exactly like `ctorClassFor`.
 pub func ctorClassForExpecting(ctx: in FuncCtx, name: in String): Option[String] {
+  // #8481: two unions of one package may share a case name, and the
+  // `<pkg>::<name>` entry below holds only the last one declared. The
+  // directly-enclosing expectation names the union the checker resolved, so
+  // the `<pkg>::<Union>$<name>` entry for exactly that union wins.
+  if ctx.ctorExpectClassStack.count > 0 {
+    val expectedClass = ctx.ctorExpectClassStack[ctx.ctorExpectClassStack.count - 1]
+    if expectedClass.length > 0 {
+      val owner = jvmClassOwnerPkg(expectedClass)
+      val unionSimple = if owner.length > 0 { expectedClass.substring(owner.length + 1) } else { expectedClass }
+      match mapGet(ctx.ctors, owner + "::" + unionSimple + "$" + name) {
+        case Some(cls0) -> return Some(value = cls0)
+        case None -> ()
+      }
+    }
+  }
   match mapGet(ctx.ctors, ctorHomePkg(ctx) + "::" + name) {
     case Some(cls) -> return Some(value = cls)
     case None -> ()

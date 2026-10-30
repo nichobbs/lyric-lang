@@ -2845,6 +2845,10 @@ jobs:
       # inlining), the CLI gate is lifted, so a `--define` feeds a `@build_const`
       # val on native. Asserts the in-source fallback (no --define) and the
       # substituted value (--define) in the actual native binary.
+      - name: Shared union case names resolve by expected type on native (#8481)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target native lyric-compiler/lyric/union_shared_case_self_test.l
+
       - name: Native --define build (docs/60 #5977)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-define-build.sh
@@ -8158,6 +8162,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/crosspackage-restored-generic-values.sh
+      - name: Bounded operators and unsigned operands in another package's generic (#8530, #8019)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/crosspackage-bounded-ops-unsigned.sh
+      - name: Shared union case names resolve by expected type on JVM (#8481)
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/union_shared_case_self_test.l
       - name: Private helpers of a pub generic cross the package boundary (#8427)
         background: true
         working-directory: ${{ github.workspace }}

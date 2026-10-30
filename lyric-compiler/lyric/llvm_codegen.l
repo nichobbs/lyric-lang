@@ -5982,6 +5982,30 @@ func tryLowerConstruct(
     case None -> {
     }
   }
+  // #8481: two unions of one package may share a case name; `caseRefs`
+  // holds the first declared. The expected type is the union the checker
+  // resolved, so a case of that union wins.
+  match retWant {
+    case Some(want) -> {
+      match unionInfoOfType(ctx, want) {
+        case Some(eui) -> {
+          val nameDot = lastDotIndex(name)
+          val bareName = if nameDot >= 0 { Str.substring(name, nameDot + 1, name.length - nameDot - 1) } else { name }
+          var eci = 0
+          while eci < eui.cases.count {
+            if eui.cases[eci].name == bareName {
+              return Some(value = lowerUnionConstruct(ctx, insns, eui, eci, args))
+            }
+            eci = eci + 1
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    case None -> {
+    }
+  }
   match curPkgQualifiedGet(ctx, ctx.caseRefs, name) {
     case Some(cref) -> {
       val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
