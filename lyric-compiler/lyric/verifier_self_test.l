@@ -3437,9 +3437,14 @@ test "a bare enum or union case is a case, never a binding (#8230)" {
       "func f(o: in Opt): Bool\n  ensures: result\n{\n  match o {\n    case Has(_) -> true\n    case Nothing -> true\n    case Other -> false\n  }\n}\n",
     "union-constructor-and-bare-cases"
   )
-  assertUnmodelledMatch(
+  // `None` over the standard `Option` is its case test, not a binding (#8168).
+  assertRefuted(
     "func f(o: in Option[Int]): Bool\n  ensures: result\n{\n  match o {\n    case None -> false\n    case _ -> true\n  }\n}\n",
     "bare-none"
+  )
+  assertDischarged(
+    "func f(o: in Option[Int]): Bool\n  ensures: result == o.isSome\n{\n  match o {\n    case None -> false\n    case _ -> true\n  }\n}\n",
+    "bare-none-is-not-some"
   )
 }
 
@@ -3867,7 +3872,7 @@ test "a method of a generic record returning its type parameter is called at the
   // A method with type parameters of its own is left as an unmodelled value:
   // its result sort depends on the call's arguments.
   assertUntranslatable(
-    "record Cell {\n  n: Int\n  @pure\n  func pick[U](self: in Cell, x: in U): U { x }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.pick(1)\n{\n  c.pick(1)\n}\n",
+    "record Cell {\n  n: Int\n  @pure\n  func pick[U](self: in Cell, x: in U): U { x }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.pick(1) + 1\n{\n  c.pick(1) + 1\n}\n",
     "method-with-own-generics"
   )
   // A record that is not generic gets its method's declared sort too.

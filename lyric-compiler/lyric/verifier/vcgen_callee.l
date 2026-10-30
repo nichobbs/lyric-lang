@@ -468,7 +468,11 @@ func translateMethodCall(
       }
       val t = match selfResult {
         case Some(te) -> TApp(name = ufName, args = ufArgs, retSort = sortOfTypeExprE(env, te).sort)
-        case None -> TApp(name = ufName, args = ufArgs, retSort = recordMethodResultSort(env, sortOf(recvR.term), methodName))
+        case None -> TApp(
+          name = ufName,
+          args = ufArgs,
+          retSort = recordMethodResultSort(env, sortOf(recvR.term), methodName)
+        )
       }
       val methodTR = TranslateResult(term = t, sideConds = sides, assumed = facts)
       val methodPair: (TranslateResult, List[Diagnostic]) = (methodTR, diags)
@@ -482,6 +486,10 @@ func translateMethodCall(
 // instance, so a method of `Box[T]` returning `T` returns an `Int` on a
 // `Box[Int]` (#8356).  A method the file's records do not declare, or one
 // whose result is left uninterpreted, has the sort of an unmodelled value.
+// Only the sort is carried: a result of a range subtype is an `Int` with no
+// range assumed, which assumes less and so stays sound; the method's own
+// contract is not applied at the call yet (record-body methods are not
+// callees).
 func recordMethodResultSort(env: in VEnv, recvSort: in Sort, methodName: in String): Sort {
   val unmodelled = SUninterp(name = "call")
   match recvSort {
