@@ -375,6 +375,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh dotnet jvm
   ran="$ran inout-receiver-e2e"
 fi
+# #8358, #8337, #8329, #7776: a dependency's (or sibling package's) erased
+# receivers, `?` and function values in generics, and branch joins of its
+# classes, both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/restored-dependency-codegen-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/restored-dependency-codegen-e2e.sh dotnet jvm
+  ran="$ran restored-dependency-codegen-e2e"
+fi
 # #8299: Unit lambdas made in a sibling package's or a dependency's generic,
 # both targets (Java 21, as above).
 idx=$((idx + 1))

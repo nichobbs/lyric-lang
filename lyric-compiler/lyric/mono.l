@@ -4959,7 +4959,7 @@ func isPrimitiveName(name: in String): Bool {
 // `{ __fnref_p0: T0, ... -> Pkg.f(__fnref_p0, ...) }` for a cross-package
 // function value (D-progress-963): a lambda every backend lowers, whose body
 // is an ordinary qualified call.
-func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
+pub func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
   val lparams: List[LambdaParam] = newList()
   val args: List[CallArg] = newList()
   var i = 0

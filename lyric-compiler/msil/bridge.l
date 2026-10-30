@@ -123,6 +123,18 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 // method-call arities the next `codegenMPackage` call dispatches by.  They
 // are keyed by source spans, which only mean something within the package
 // they were recorded for, so each package's codegen sees its own (#7828).
+func useMemberRecvClassesMsil(cctx: in CodegenCtx, classes: in Map[String, String]): Unit {
+  for k in mapKeys(cctx.memberRecvClasses) {
+    cctx.memberRecvClasses.remove(k)
+  }
+  for k in mapKeys(classes) {
+    match mapGet(classes, k) {
+      case Some(c) -> cctx.memberRecvClasses.add(k, c)
+      case None -> ()
+    }
+  }
+}
+
 func useMethodCallAritiesMsil(cctx: in CodegenCtx, arities: in Map[String, Int]): Unit {
   for k in mapKeys(cctx.methodCallArities) {
     cctx.methodCallArities.remove(k)
@@ -303,6 +315,7 @@ pub func compileToMsilWithVersion(
     contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut,
+    foreignRecvClasses = true,
     methodCallAritiesOut = singleFileCallArities,
     typeArgCalleesOut = singleFileTypeArgCallees,
     genericItemsOut = newList(),
@@ -425,6 +438,7 @@ pub func compileToMsilWithVersion(
   // same way the type-checker / mode-checker error lists just above in this
   // pipeline gate the build, instead of proceeding to lower invalid IR.
   useMethodCallAritiesMsil(cctx, singleFileCallArities)
+  useMemberRecvClassesMsil(cctx, singleFileOptsRecvOut)
   val pkg = codegenMPackage(liftedFile, cctx)
   if abortOnCodegenDiagnosticsMsil(cctx) {
     return false
@@ -920,6 +934,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val perPkgFiles: List[SourceFile] = newList()
   // Each package's `methodCallAritiesOut` (#7828), parallel to `perPkgFiles`.
   val perPkgCallArities: List[Map[String, Int]] = newList()
+  val perPkgRecvClasses: List[Map[String, String]] = newList()
   val perPkgTypeArgCallees: List[Map[String, Bool]] = newList()
   // The type-checked, `.copy`-desugared file per package: contract metadata
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
@@ -958,6 +973,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut,
+      foreignRecvClasses = true,
       methodCallAritiesOut = projCallArities,
       typeArgCalleesOut = projTypeArgCallees,
       genericItemsOut = newList(),
@@ -972,6 +988,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
     perPkgFiles.add(monoFile)
     perPkgCallArities.add(projCallArities)
+    perPkgRecvClasses.add(projOptsRecvOut)
     perPkgTypeArgCallees.add(projTypeArgCallees)
     perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
     perPkgNames.add(pp.name)
@@ -1262,6 +1279,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var ci = 0
   while ci < liftedFiles.count {
     useMethodCallAritiesMsil(cctx, perPkgCallArities[ci])
+    useMemberRecvClassesMsil(cctx, perPkgRecvClasses[ci])
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, parsedPkgs[ci].label, parsedPkgs[ci].origins) {
