@@ -12,6 +12,13 @@
 //! Expected Java output (via `java -jar`):
 //!   annotation_count=1
 //!   annotation_type=lyric.runtime.jvm.LyricTest
+//!   utf8=café 中文
+//!
+//! The last line proves the test-host class's `<clinit>` rebinds `System.out`
+//! to UTF-8 (#7686): the verifier loads `math_tests` through `Class.forName`
+//! (which initialises it) and prints a non-ASCII line, and
+//! `scripts/ci/test-host-locale-c-test.sh` byte-compares the output under
+//! `LC_ALL=C`.
 package Jvm.SelfTestB126
 
 import Std.Core
@@ -135,6 +142,10 @@ func makeVerifierBytes(): List[Byte] {
   emitInvokeinterface(asm, annIfaceIdx, 1)
   emitInvokevirtual(asm, classGetName)
   emitInvokevirtual(asm, strConcat)
+  emitInvokevirtual(asm, println)
+
+  emitGetstatic(asm, sysOut)
+  emitPushString(asm, "utf8=café 中文")
   emitInvokevirtual(asm, println)
 
   emitReturn(asm)

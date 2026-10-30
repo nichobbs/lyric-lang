@@ -61,6 +61,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Jvm.AutoFfi
+import Jvm.ClassReader
 import Jvm.Bridge
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
@@ -637,5 +638,62 @@ test "Cli.buildProject: lyric-web --manifest --target jvm succeeds end-to-end (a
     "lyric build --manifest lyric-web/lyric.toml --target jvm must succeed — previously failed with " +
       "'JVM auto-FFI: no matching instance or inherited method for java.lang.Object.toLower()' compiling " +
       "Web.Kernel.Runtime.buildRequestHeaders (#6565)"
+  )
+}
+
+// ─── #7446: subtype-argument scoring follows the whole supertype graph ───────
+func scoringFixture(): ClassInfo {
+  val methods: List[ClassMethod] = newList()
+  methods.add(ClassMethod(name = "pick", descriptor = "(Ljava/lang/Object;)V", isStatic = true, isAbstract = false))
+  methods.add(ClassMethod(name = "pick", descriptor = "(Ljava/util/Collection;)V", isStatic = true, isAbstract = false))
+  methods.add(ClassMethod(name = "pick", descriptor = "(Ljava/lang/Iterable;)V", isStatic = true, isAbstract = false))
+  val none: List[String] = newList()
+  ClassInfo(
+    binaryName = "fixture/Scoring",
+    superName = "java/lang/Object",
+    interfaces = none,
+    methods = methods,
+    constructors = newList(),
+    fields = newList(),
+    isAbstract = false,
+    isInterface = false
+  )
+}
+
+func bestPickDescriptor(argDesc: in String): String {
+  val ctx = buildAutoFfiCtx()
+  val args: List[String] = newList()
+  args.add(argDesc)
+  val flags: List[Bool] = newList()
+  match findBestMethod(ctx, scoringFixture(), "pick", args, true, flags) {
+    case Some(m) -> m.descriptor
+    case None -> "<none>"
+  }
+}
+
+test "an interface reached through a super-interface outranks the Object overload (#7446)" {
+  // List -> SequencedCollection -> Collection -> Iterable: Collection is two
+  // hops from List, so a directly-declared-interfaces-only check scored it as
+  // unverifiable (1) and the Object overload (3) won.
+  assertEqual(
+    bestPickDescriptor("Ljava/util/List;"),
+    "(Ljava/util/Collection;)V",
+    "List argument picks the nearest verified supertype parameter"
+  )
+}
+
+test "a concrete class reaches interfaces inherited through its superclass and super-interfaces (#7446)" {
+  assertEqual(
+    bestPickDescriptor("Ljava/util/ArrayList;"),
+    "(Ljava/util/Collection;)V",
+    "ArrayList argument verifies against Collection"
+  )
+}
+
+test "an argument with no verified supertype relation still falls back to the Object overload (#7446)" {
+  assertEqual(
+    bestPickDescriptor("Ljava/lang/String;"),
+    "(Ljava/lang/Object;)V",
+    "String is neither a Collection nor an Iterable"
   )
 }
