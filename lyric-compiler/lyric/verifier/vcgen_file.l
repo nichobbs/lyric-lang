@@ -280,6 +280,7 @@ pub func goalsForFileInScope(
             }
             fi = fi + 1
           }
+          addRecordMethodResults(recDecl, recTypeParams, sortParamSorts, fieldInfosMap, distinctMap)
           val dtCtors: List[DatatypeCtor] = newList()
           dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
           sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors, params = sortParams))

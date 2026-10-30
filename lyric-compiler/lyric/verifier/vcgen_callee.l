@@ -468,12 +468,41 @@ func translateMethodCall(
       }
       val t = match selfResult {
         case Some(te) -> TApp(name = ufName, args = ufArgs, retSort = sortOfTypeExprE(env, te).sort)
-        case None -> TApp(name = ufName, args = ufArgs, retSort = SUninterp(name = "call"))
+        case None -> TApp(name = ufName, args = ufArgs, retSort = recordMethodResultSort(env, sortOf(recvR.term), methodName))
       }
       val methodTR = TranslateResult(term = t, sideConds = sides, assumed = facts)
       val methodPair: (TranslateResult, List[Diagnostic]) = (methodTR, diags)
       methodPair
     }
+  }
+}
+
+// The sort of the result of the method `methodName` of the record the sort
+// `recvSort` is an instance of: the method's declared result sort at that
+// instance, so a method of `Box[T]` returning `T` returns an `Int` on a
+// `Box[Int]` (#8356).  A method the file's records do not declare, or one
+// whose result is left uninterpreted, has the sort of an unmodelled value.
+func recordMethodResultSort(env: in VEnv, recvSort: in Sort, methodName: in String): Sort {
+  val unmodelled = SUninterp(name = "call")
+  match recvSort {
+    case SDatatype(rName, _) -> {
+      if not env.recordMethods.containsKey(rName + "." + methodName) {
+        return unmodelled
+      }
+      match mapGet(env.fieldInfos, recordMethodResultKey(rName, methodName)) {
+        case Some(info) -> {
+          if smtRenderSort(info.sort) == smtRenderSort(unmodelled) {
+            return unmodelled
+          }
+          match instantiateRecordSort(env, recvSort, info.sort) {
+            case Some(srt) -> srt
+            case None -> unmodelled
+          }
+        }
+        case None -> unmodelled
+      }
+    }
+    case _ -> unmodelled
   }
 }
 

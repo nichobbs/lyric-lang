@@ -3757,6 +3757,35 @@ test "a method of a generic record reads its fields on self (#8340)" {
   assertTrue(sizeHolds, "methods: size's ensures is proved")
 }
 
+test "a method of a generic record returning its type parameter is called at the receiver's instance (#8356)" {
+  val box = "record Box[T] {\n  v: T\n  @pure\n  func getV(self: in Box[T]): T { self.v }\n}\n"
+  // The call has the sort of the instance (`Int`), so arithmetic on it is
+  // well-sorted; equal calls are equal.
+  assertDischarged(
+    box + "func fromBox(b: in Box[Int]): Int\n  requires: b.getV() >= 0\n  ensures: result >= 0\n{\n  b.getV()\n}\n",
+    "generic-method-instance"
+  )
+  assertRefuted(
+    box + "func fromBox(b: in Box[Int]): Int\n  ensures: result == b.getV() + 1\n{\n  b.getV()\n}\n",
+    "generic-method-instance-refuted"
+  )
+  // At a type parameter, the call is a value of that parameter's sort.
+  assertDischarged(
+    box + "func fromGeneric[U](b: in Box[U]): U\n  ensures: result == b.getV()\n{\n  b.getV()\n}\n",
+    "generic-method-type-parameter"
+  )
+  // Two instances of one record: each call has its own instance's sort.
+  assertDischarged(
+    box + "func both(a: in Box[Int], b: in Box[Bool]): Int\n  requires: b.getV()\n  ensures: result == a.getV() + 1\n{\n  a.getV() + 1\n}\n",
+    "generic-method-two-instances"
+  )
+  // A record that is not generic gets its method's declared sort too.
+  assertRefuted(
+    "record Cell {\n  n: Int\n  @pure\n  func get(self: in Cell): Int { self.n }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.get() + 1\n{\n  c.get()\n}\n",
+    "plain-method-sort"
+  )
+}
+
 test "a generic record built from its fields is the instance they give it (#8340)" {
   assertDischarged(
     genericBox() +

@@ -384,6 +384,103 @@ func addGenericDatatypeField(
   }
 }
 
+// The key under which `fieldInfos` records the declared result sort of the
+// method `method` of the record `record`, in terms of the record's sort
+// parameters (#8356).  `!` keeps it apart from every field selector.
+func recordMethodResultKey(record: in String, method: in String): String {
+  record + "." + method + "!result"
+}
+
+// Record the result sort of each method of `rd` that declares one, read with
+// the record's type parameters in scope and named by the datatype's sort
+// parameters as a field's is, so a call on a value of the record sort
+// `Box[Int]` instantiates it there (`instantiateRecordSort`).  A method with
+// type parameters of its own, one whose result names `Self`, and a name
+// declared twice with different result sorts are left out: such a call keeps
+// the sort of an unmodelled value.
+func addRecordMethodResults(
+  rd: in RecordDecl,
+  typeParams: in List[String],
+  sortParamSorts: in List[Sort],
+  infos: in Map[String, SortInfo],
+  distinctMap: in Map[String, TypeExpr],
+): Unit {
+  for m in rd.members {
+    match m {
+      case RMFunc(fn) -> {
+        val key = recordMethodResultKey(rd.name, fn.name)
+        val own = genericTypeParamNames(fn.generics)
+        var info = SortInfo(sort = SUninterp(name = "call"), range = RBKNone)
+        match fn.ret {
+          case Some(te) -> {
+            if own.count == 0 and not typeNamesSelf(te) {
+              val raw = sortOfTypeExprIn(distinctMap, typeParams, te)
+              info = SortInfo(
+                sort = substSortParams(raw.sort, typeParams, sortParamSorts),
+                range = raw.range,
+                intBits = raw.intBits
+              )
+            }
+          }
+          case None -> ()
+        }
+        if infos.containsKey(key) {
+          match mapGet(infos, key) {
+            case Some(prev) -> {
+              if smtRenderSort(prev.sort) != smtRenderSort(info.sort) {
+                infos.add(key, SortInfo(sort = SUninterp(name = "call"), range = RBKNone))
+              }
+            }
+            case None -> ()
+          }
+        } else {
+          infos.add(key, info)
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+// Whether the type expression `te` mentions `Self`, or is of a kind the
+// result sorts above do not read.
+func typeNamesSelf(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSelf -> true
+    case TError -> true
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Self"
+    case TGenericApp(head, targs) -> {
+      if head.segments.count == 1 and head.segments[0] == "Self" {
+        return true
+      }
+      for ta in targs {
+        match ta {
+          case TAType(inner) -> {
+            if typeNamesSelf(inner) {
+              return true
+            }
+          }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case TArray(_, element) -> typeNamesSelf(element)
+    case TSlice(element) -> typeNamesSelf(element)
+    case TTuple(types) -> {
+      for t in types {
+        if typeNamesSelf(t) {
+          return true
+        }
+      }
+      false
+    }
+    case TNullable(inner) -> typeNamesSelf(inner)
+    case TParen(inner) -> typeNamesSelf(inner)
+    case _ -> false
+  }
+}
+
 // Whether a field of the generic record `rd` has a sort that names `rd`.
 func recordFieldsNameRecord(rd: in RecordDecl, typeParams: in List[String], distinctMap: in Map[String, TypeExpr]): Bool {
   for m in rd.members {
