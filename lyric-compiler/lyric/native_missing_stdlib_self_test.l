@@ -9,6 +9,9 @@
 @test_module
 package Lyric.NativeMissingStdlibSelfTest
 
+import Std.Core
+import Std.Collections
+import Std.Testing
 import Std.File as File
 import Std.Path as Path
 import Std.Environment as Environment
@@ -27,7 +30,9 @@ func buildStem(): String {
   Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
 }
 
-const helloSource = "package MissingStdlibHello\nimport Std.Console\nfunc main(): Unit {\n  println(\"hi\")\n}\n"
+func helloSource(): String {
+  "package MissingStdlibHello\nimport Std.Console\nfunc main(): Unit {\n  println(\"hi\")\n}\n"
+}
 
 test "an empty LYRIC_STD_PATH fails the build before codegen (#8455)" {
   val emptyDir = Path.join(tempBase(), "lyric-native-empty-stdlib-" + Uuid.uuidToString(Uuid.newUuid()))
@@ -36,11 +41,11 @@ test "an empty LYRIC_STD_PATH fails the build before codegen (#8455)" {
   Environment.setVar("LYRIC_STD_PATH", emptyDir)
   val stdlib = findStdlibSourcesNative()
   Environment.setVar("LYRIC_STD_PATH", saved)
-  assertEq(stdlib.count, 0, "an empty LYRIC_STD_PATH directory yields no stdlib sources")
+  assertEqualInt(stdlib.count, 0, "an empty LYRIC_STD_PATH directory yields no stdlib sources")
   val noFlags: List[String] = newList()
   var panicked = false
   val ok = try {
-    compileToNativeWithFlags(helloSource, buildStem(), stdlib, "", "0", noFlags, newList(), "", true)
+    compileToNativeWithFlags(helloSource(), buildStem(), stdlib, "", "0", noFlags, newList(), "", true)
   } catch Bug as _b {
     panicked = true
     false

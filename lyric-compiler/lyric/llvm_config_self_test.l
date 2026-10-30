@@ -68,13 +68,13 @@ func withEnv(names: in List[String], values: in List[String], run: in () -> RunO
     Environment.setVar(names[i], values[i])
     i = i + 1
   }
-  val out = run()
+  val res = run()
   var j = 0
   while j < names.count {
     Environment.setVar(names[j], "")
     j = j + 1
   }
-  out
+  res
 }
 
 func runWith1(source: in String, n1: in String, v1: in String): RunOutcome {
@@ -239,7 +239,7 @@ test "a value outside a range field's bounds stops startup with exit 78 (#7435)"
   expectOutsideRange("CfgRangeC", "Int range 0 ..< 10 = 1", "10", "[0, 10)")
   expectOutsideRange("CfgRangeD", "Long range 5 .. = 5", "4", "(at least 5)")
   expectOutsideRange("CfgRangeE", "Double range ..= 1.5 = 1.0", "1.5000001", "(at most 1.5)")
-  expectOutsideRange("CfgRangeF", "Double range 0.0 ..= 1.0 = 0.5", "nan", "[0.0, 1.0]")
+  expectOutsideRange("CfgRangeF", "Double range 0.25 ..= 1.5 = 0.5", "nan", "[0.25, 1.5]")
 }
 
 test "a value inside the bounds, an edge included, is accepted (#7435)" {
@@ -265,7 +265,7 @@ test "config fields are read inside functions, closures and another block (#7435
     "  A.n + B.m\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val f = { -> A.n * B.m }\n" +
+    "  val f: () -> Int = { -> A.n * B.m }\n" +
     "  println(B.label + f().toString())\n" +
     "  sum()\n" +
     "}\n"
