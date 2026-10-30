@@ -392,10 +392,15 @@ pub func readIdent(st: inout ParseState, whatFor: in String): NameAndSpan {
       // that the cause is a reserved word (D093).
       match peekToken(st) {
         case TKeyword(k) -> {
+          val hint = if k == KwSpawn {
+            "; `spawn e` starts a task, so `spawn(a, b)` is a spawn of the tuple `(a, b)` and never a call: choose a different name, and to bind a host function called 'spawn' declare it under another name with @externTarget"
+          } else {
+            "; choose a different name"
+          }
           emitErr(
             st,
             "P0051",
-            "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a " + whatFor + " name",
+            "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a " + whatFor + " name" + hint,
             sp
           )
         }
