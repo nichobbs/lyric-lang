@@ -12906,3 +12906,53 @@ test "a protected type's members cannot be overloaded (#8104)" {
   val ok = "package P\nprotected type Ctr {\n  var c: Int = 0\n  entry bump(): Unit { c = c + 1 }\n  entry bumpBy(by: in Int): Unit { c = c + by }\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "distinct names are clean")
 }
+
+// #7879: a lambda argument is typed twice per call (a lenient first pass, then
+// against the selected parameter type), so a lambda whose body calls a function
+// with another lambda argument cost 2^depth checks.
+func nestedLambdaSource(depth: in Int): String {
+  var open = ""
+  var close = ""
+  var i = 0
+  while i < depth {
+    open = open + "each(xs, { a" + toString(i) + " ->\n"
+    close = close + "})\n"
+    i = i + 1
+  }
+  "package P\nfunc each[T](xs: in slice[T], f: in (T) -> Unit): Unit {\n  for x in xs { f(x) }\n}\n" +
+    "func run(xs: in slice[Int], out: in List[Int]): Unit {\n" + open + "out.add(a" + toString(depth - 1) +
+    " + a0)\n" + close + "}\n"
+}
+
+test "lambda arguments nested to depth 14 check in polynomial time (#7879)" {
+  val start = Time.nowEpochMillis()
+  val src = nestedLambdaSource(14)
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0042"), 0, "no argument errors (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0043"), 0, "no argument type errors (" + diagCodesOf(cr) + ")")
+  val elapsed = Time.nowEpochMillis() - start
+  assertTrue(elapsed < 20000i64, "depth-14 lambda nest checked in " + toString(elapsed) + " ms")
+}
+
+test "a lambda argument is still checked against its parameter type when nested (#7879)" {
+  val src = "package P\nfunc each[T](xs: in slice[T], f: in (T) -> Unit): Unit {\n  for x in xs { f(x) }\n}\n" +
+    "func run(xs: in slice[Int]): Unit {\n  each(xs, { a ->\n    each(xs, { b ->\n      val s: String = a + b\n    })\n  })\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(diagCount(cr) > 0, "the nested mismatch is reported (" + diagCodesOf(cr) + ")")
+}
+
+// #8471: a method call on a slice that names none of its members is rejected
+// by the front end; `Std.Iter.filter` is a plain function, so `xs.filter(..)`
+// bound nothing on either backend.
+test "method syntax on a slice naming a plain function is T0113 (#8471)" {
+  val src = "package P\nfunc keep(xs: in slice[Int], k: in Int): slice[Int] {\n  xs.filter({ u -> u > k })\n}\n" +
+    "func filter(xs: in slice[Int], p: in (Int) -> Bool): slice[Int] { xs }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0113"), 1, "xs.filter(..) (" + diagCodesOf(cr) + ")")
+  assertTrue(diagMessagesContain(cr, "call it as 'filter(xs, ...)'"), "the message names the function form")
+  val ok = "package P\nfunc keep(xs: in slice[Int], k: in Int): slice[Int] {\n  filter(xs, { u -> u > k })\n}\n" +
+    "func filter(xs: in slice[Int], p: in (Int) -> Bool): slice[Int] { xs }\n"
+  assertEqualInt(countDiagCode(parseCheck(ok), "T0113"), 0, "the function form is clean")
+  val builtin = "package P\nfunc f(xs: in slice[Int]): Int {\n  xs.append(1).concat(xs).slice(0, 1).length\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(builtin), "T0113"), 0, "built-in slice members are clean")
+}

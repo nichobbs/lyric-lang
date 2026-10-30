@@ -6717,6 +6717,17 @@ pub record FuncCtx {
   // the lambda ticker only predicts the right `__lambda_<i>` name once every
   // earlier statement's lambdas have been lowered.
   var voidLambdaTailOffset: Int
+  // The function's declared return type expression (#7679).  A lambda literal
+  // returned from the function takes its `() -> R` parameter and result types
+  // from it (`seedReturnedLambdaFnTypesMsil`), as one bound to an annotated
+  // local does, so a bare union-case construction in its body is typed `R`
+  // rather than erased to `object` where the case does not mention a type
+  // argument.
+  var declaredRetTe: Option[TypeExpr]
+  // Source offset of the function body's implicit-return tail expression when
+  // it is a lambda literal, else -1; armed like `voidLambdaTailOffset` and
+  // consumed by `lowerStmtsExprFromMsil` when it reaches that tail (#7679).
+  var retLambdaTailOffset: Int
   // The package a monomorphized copy of an imported generic was DECLARED in
   // (`Lyric.Parser.originPkgOf` of its `__lyric_origin` annotation), or "".
   // The copy is compiled into the calling package, but its body was written
@@ -15182,6 +15193,10 @@ func lowerStmtsExprFromMsil(
         if fctx.voidLambdaTailOffset > 0 and e.span.startPos.offset == fctx.voidLambdaTailOffset {
           fctx.voidLambdaTailOffset = -1
           seedNextLambdaVoidRetMsil(cctx, fctx)
+        }
+        if fctx.retLambdaTailOffset > 0 and e.span.startPos.offset == fctx.retLambdaTailOffset {
+          fctx.retLambdaTailOffset = -1
+          seedReturnedLambdaFnTypesMsil(cctx, fctx, e)
         }
         lowerExprMsil(cctx, fctx, insns, e)
       }
@@ -25792,6 +25807,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // THIS function's own declared enum return type.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             seedLambdaLiteralVoidRetMsil(cctx, fctx, e, fctx.declaredRetTy)
+            seedReturnedLambdaFnTypesMsil(cctx, fctx, e)
             val retExprTy1 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint1)
@@ -25862,6 +25878,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // #5995: see the matching comment on the protected-region arm above.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             seedLambdaLiteralVoidRetMsil(cctx, fctx, e, fctx.declaredRetTy)
+            seedReturnedLambdaFnTypesMsil(cctx, fctx, e)
             val retExprTy2 = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedRetHint2)
@@ -26796,6 +26813,8 @@ func makeFuncCtxMsil(
     enumHint = newList(),
     declaredRetEnumTy = "",
     voidLambdaTailOffset = -1,
+    declaredRetTe = None,
+    retLambdaTailOffset = -1,
     originPkg = "",
     bareSelfFields = true,
     protectedMember = false,
@@ -35053,6 +35072,28 @@ func seedNextLambdaVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx): Unit {
   }
 }
 
+// #7679: a lambda literal that is the value a function returns takes its
+// parameter and result types from the function's declared `(P…) -> R` return
+// type, like a literal bound to an annotated local
+// (`registerLocalLambdaLiteralFnTypesMsil`).  Without them the lifted body
+// falls back to the Uniform Func ABI's `object` result, so a bare `Ok(v)` /
+// `None` in it erases the type arguments its arguments do not fix and the
+// caller's cast to the declared closed type throws.  A generic function's own
+// parameters erase in its lambdas, so it keeps the ABI's `object`.
+func seedReturnedLambdaFnTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): Unit {
+  match stripExprParens(expr).kind {
+    case ELambda(_, _) -> ()
+    case _ -> return
+  }
+  if fctx.generics.count > 0 or fctx.reifiedGenerics.count > 0 {
+    return
+  }
+  match fctx.declaredRetTe {
+    case Some(te) -> registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, Some(value = te), stripExprParens(expr))
+    case None -> ()
+  }
+}
+
 func seedLambdaLiteralVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr, slotTy: in MsilType): Unit {
   if lambdaLiteralTargetsActionSlotMsil(expr, slotTy) {
     seedNextLambdaVoidRetMsil(cctx, fctx)
@@ -35775,6 +35816,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // whichever same-named enum `resolveEnumCaseOrdinalByScope` prefers by
   // CALLER scope instead of the function's own declared return type.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.declaredRetTe = decl.ret
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   val insns: List[MInsn] = newList()
@@ -36039,6 +36081,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
               pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
               match blockTailExprMsil(block) {
                 case Some(tailE) -> {
+                  if tailE.span.startPos.offset > 0 {
+                    fctx.retLambdaTailOffset = tailE.span.startPos.offset
+                  }
                   if tailE.span.startPos.offset > 0 and lambdaLiteralTargetsActionSlotMsil(tailE, retTy) {
                     fctx.voidLambdaTailOffset = tailE.span.startPos.offset
                   } else {
@@ -36053,6 +36098,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
               }
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
               fctx.voidLambdaTailOffset = -1
+              fctx.retLambdaTailOffset = -1
               popEnumHintMsil(fctx)
               restoreHintTyArgs(fctx, savedTrailHint)
               popCollExpect(fctx)
@@ -36078,6 +36124,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
             // #5995: see the matching FBBlock comment above.
             pushEnumHintMsil(fctx, fctx.declaredRetEnumTy)
             seedLambdaLiteralVoidRetMsil(cctx, fctx, e, retTy)
+            seedReturnedLambdaFnTypesMsil(cctx, fctx, e)
             val exprTailTy = lowerExprMsil(cctx, fctx, insns, e)
             popEnumHintMsil(fctx)
             restoreHintTyArgs(fctx, savedExprHint)
@@ -36553,6 +36600,7 @@ pub func lowerImplMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = this, no name binding
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.declaredRetTe = decl.ret
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   fctx.protectedMember = protectedMember
@@ -36732,6 +36780,7 @@ pub func lowerRecordMethodMsil(
   fctx.slotTicker.add(0)  // slot 0 = self ("this"), no name binding — ESelf reads ldarg.0 directly
   // #5995: see the matching comment in lowerFuncMsil.
   fctx.declaredRetEnumTy = match decl.ret { case Some(te) -> paramEnumHintMsil(cctx, pkgName, te); case None -> "" }
+  fctx.declaredRetTe = decl.ret
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   bindGenericSelfMsil(fctx, targetTypeName, generics)

@@ -5036,6 +5036,15 @@ func maybeUnknownMemberDiag(
       }
       case None -> ()
     }
+    // A method call on a slice or fixed-size array that names none of its
+    // built-in members (`xs.filter(...)`, #8471).  Neither has dot-named
+    // functions or extensions, so a plain function such as `Std.Iter.filter`
+    // is never bound by method syntax: MSIL lowered the call to a stub that
+    // throws when reached (never lowering its lambda arguments, which then
+    // failed T0115 as unreachable lifted bodies) and the JVM rejected it
+    // (J008), so the front end decides.
+    case TySlice(_) -> sliceUnknownMethodDiag(sigs, diag, recv, name, span, isCall)
+    case TyArray(_, _, _) -> sliceUnknownMethodDiag(sigs, diag, recv, name, span, isCall)
     case _ -> {
     }
   }
@@ -5146,6 +5155,26 @@ func maybeUnknownTypeParamMethodDiag(
     }
     case _ -> ()
   }
+}
+
+func sliceUnknownMethodDiag(
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recv: in Type,
+  name: in String,
+  span: in Span,
+  isCall: in Bool,
+): Unit {
+  if not isCall or isUniversalMethodName(name) {
+    return
+  }
+  val tname = renderType(recv)
+  val hint = if anyFunctionNamed(sigs, name) {
+    "; '" + name + "' is a plain function, not a method of " + tname + ": call it as '" + name + "(xs, ...)'"
+  } else {
+    ""
+  }
+  diag.add(errorDiagnostic("T0113", "no method '" + name + "' on type '" + tname + "'" + hint, span))
 }
 
 // The methods every backend gives a primitive receiver itself: `toString`,
@@ -16686,7 +16715,9 @@ func inferExprCore(
         }
         if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) or argIsListHoldingTuple(ae) {
           val scratch: List[Diagnostic] = newList()
+          tbl.lenientArgDepth.add(0)
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
+          tbl.lenientArgDepth.removeAt(tbl.lenientArgDepth.count - 1)
           anyDeferredLambda = true
         } else {
           argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
@@ -16870,6 +16901,9 @@ func inferExprCore(
             } else {
               inferExpr(sc, tbl, sigs, diag, dae)
             }
+          } else if argIsLambdaLiteral(dae) and tbl.lenientArgDepth.count > 0 {
+            // Inside an enclosing lenient first pass: this lambda is re-checked
+            // against its expectation when that pass's argument is (#7879).
           } else if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           } else if argIsCaseCtorCall(tbl, dae) or argIsWideningBuiltValue(tbl, dae) {

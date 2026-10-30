@@ -429,7 +429,7 @@ val sl = xs.slice(1, 3)          // sub-slice [1, 3)
 for x in xs { println("${x}") } // iteration
 ```
 
-There is no in-place mutation. `append` and `concat` produce new slices.
+There is no in-place mutation. `append` and `concat` produce new slices. A slice has no other methods: functions such as `filter` and `map` from `Std.Iter` are called with the slice as the first argument (`filter(xs, { u -> u > k })`), and `xs.filter(...)` is a compile error (T0113).
 
 A bracket literal is a slice unless its position expects something else. Where a `List[T]` is expected (a binding's annotation, a parameter, a field or the return type), the same literal builds that `List` directly. A generic function's parameter counts too: `size([1, 2, 3])` with `size[T](xs: List[T])` binds `T` to `Int`, and `pick(base, [1, 2])` with `pick[T](a: T, b: T)` and `base: List[Int]` passes a `List[Int]`. The literals inside such a literal get the shape of its element type, so `[[1], [5, 6]]` passed as a `List[slice[Int]]` is a `List` holding two slices:
 
