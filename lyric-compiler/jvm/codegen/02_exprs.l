@@ -200,6 +200,16 @@ func lowerCmp(
         }
       }
     }
+    // `==` on two slices compares the arrays by reference, as it does on
+    // dotnet (docs/01 §2.7); an `array[N, T]` was lowered to an element-wise
+    // comparison before this point (#8218).
+    case JArray(_) -> {
+      match op {
+        case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
+        case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
+        case _ -> panic("Jvm.Codegen: unsupported slice comparison op")
+      }
+    }
     case _ -> {
       // Integer comparison (int, bool, char, byte, short) — `UInt` erases
       // here too, so a `UInt`-typed operand (#6748) dispatches through

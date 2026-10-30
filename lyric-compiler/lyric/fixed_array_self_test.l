@@ -243,6 +243,13 @@ test "toSlice on a bracket literal is the slice of its elements (#8218)" {
   assertTrue(names[1] == "b", "second name")
 }
 
+test "== on a slice compares by reference and compiles on every target (#8218)" {
+  val a = [1, 2].toSlice()
+  val b = a
+  assertTrue(a == b, "the same slice")
+  assertTrue(not (a != b), "not unequal to itself")
+}
+
 test "equality compares element by element" {
   val a: array[3, Int] = [1, 2, 3]
   val b: array[3, Int] = [1, 2, 3]
