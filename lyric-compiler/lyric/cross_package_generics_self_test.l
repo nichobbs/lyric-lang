@@ -1102,3 +1102,126 @@ test "cross-package operator-bounded generic at a consumer distinct type is M000
   // M0008 itself goes to stderr; the result carries the build-level B0001.
   assertTrue(refused, "cpgen_op_distinct: the build is refused (diagnostics: " + codes + ")")
 }
+
+// #7372: a restored function's signature types resolve in the producer's
+// scope.  The consumer declares its own `Uuid`; `Lib.show` and `Lib.zero`
+// still speak the stdlib's, so a direct call runs, and the consumer's record
+// neither captures the signature nor satisfies it.
+func consumerBuildRefused(tmpDir: in String, pkgName: in String, source: in String, libDll: in String): Bool {
+  val dllPath = Path.join(tmpDir, pkgName + ".dll")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg(pkgName, source))
+  val restored: List[String] = newList()
+  restored.add("CpUuid.Lib" + "\t" + libDll)
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = pkgName,
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> true
+    case Some(_) -> false
+  }
+}
+
+test "a restored signature type is not captured by a same-named consumer type (#7372)" {
+  val tmpDir = freshTempDir("cpuuid-capture")
+  val producerSrc = "package CpUuid.Lib\n" + "\n" + "import Std.Uuid\n" + "\n" + "pub func zero(): Uuid { nilUuid() }\n" +
+    "pub func show(u: in Uuid): String { uuidToString(u) }\n"
+  val producerDll = buildDll(tmpDir, "CpUuid.Lib", producerSrc, "CpUuid.Lib")
+  val consumerSrc = "package CpUuid.App\n" + "\n" + "import CpUuid.Lib\n" + "\n" + "record Uuid { n: Int }\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  println(Lib.show(Lib.zero()))\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpUuid.App",
+    consumerSrc,
+    "CpUuid.App",
+    "CpUuid.Lib",
+    producerDll
+  )
+  assertEqualInt(captured.exitCode, 0, "cpuuid: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "00000000-0000-0000-0000-000000000000", "cpuuid: the nil uuid")
+  val recordArg = "package CpUuid.Bad1\n" + "\n" + "import CpUuid.Lib\n" + "\n" + "record Uuid { n: Int }\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  println(Lib.show(Uuid(n = 1)))\n" +
+    "}\n"
+  assertTrue(
+    consumerBuildRefused(tmpDir, "CpUuid.Bad1", recordArg, producerDll),
+    "cpuuid: a consumer record is not the restored Uuid"
+  )
+  val annotated = "package CpUuid.Bad2\n" + "\n" + "import CpUuid.Lib\n" + "\n" + "record Uuid { n: Int }\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val z: Uuid = Lib.zero()\n" +
+    "  println(z.n)\n" +
+    "}\n"
+  assertTrue(
+    consumerBuildRefused(tmpDir, "CpUuid.Bad2", annotated, producerDll),
+    "cpuuid: the restored result is not the consumer record"
+  )
+  val fnValue = "package CpUuid.Bad3\n" + "\n" + "import CpUuid.Lib\n" + "\n" + "record Uuid { n: Int }\n" + "\n" +
+    "func main(): Unit {\n" +
+    "  val show = Lib.show\n" +
+    "  println(show(Lib.zero()))\n" +
+    "}\n"
+  assertTrue(
+    consumerBuildRefused(tmpDir, "CpUuid.Bad3", fnValue, producerDll),
+    "cpuuid: a function value cannot spell the shadowed type (T0128)"
+  )
+  cleanup(tmpDir)
+}
+
+// #7203: `.copy(field = v)` on a record a restored package declares, called
+// from another package, binds to the record's synthesised method.
+test "cross-package record copy with a named field (#7203)" {
+  val tmpDir = freshTempDir("cpcopy")
+  val producerSrc = "package CpCopy.Lib\n" + "\n" + "pub record Config { trials: Int = 100; seed: Int = 1000 }\n"
+  val producerDll = buildDll(tmpDir, "CpCopy.Lib", producerSrc, "CpCopy.Lib")
+  val consumerSrc = "package CpCopy.App\n" + "\n" + "import CpCopy.Lib\n" + "\n" +
+    "func build(t: in Option[Int], s: in Option[Int]): Config {\n" +
+    "  var cfg = Config()\n" +
+    "  match t {\n" +
+    "    case Some(n) -> { cfg = cfg.copy(trials = n) }\n" +
+    "    case None -> ()\n" +
+    "  }\n" +
+    "  match s {\n" +
+    "    case Some(n) -> { cfg = cfg.copy(seed = n) }\n" +
+    "    case None -> ()\n" +
+    "  }\n" +
+    "  cfg\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val c = build(Some(value = 500), Some(value = 42))\n" +
+    "  println(c.trials)\n" +
+    "  println(c.seed)\n" +
+    "  val d = build(None, None)\n" +
+    "  println(d.trials)\n" +
+    "}\n"
+  val captured = buildAndRunConsumerWithStdlib(
+    tmpDir,
+    "CpCopy.App",
+    consumerSrc,
+    "CpCopy.App",
+    "CpCopy.Lib",
+    producerDll
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpcopy: exit 0 (stderr=" + captured.stderr + ")")
+  val lines = Str.split(Str.trim(captured.stdout), "\n")
+  assertEqual(lines[0], "500", "cpcopy: trials overridden")
+  assertEqual(lines[1], "42", "cpcopy: seed overridden")
+  assertEqual(lines[2], "100", "cpcopy: default kept")
+}

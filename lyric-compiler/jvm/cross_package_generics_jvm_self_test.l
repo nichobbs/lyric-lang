@@ -463,3 +463,63 @@ test "a restored range subtype in a consumer signature renders as its value (jvm
   assertEqualInt(captured.exitCode, 0, "cprange_restored_jvm: exit 0 (stderr=" + captured.stderr + ")")
   assertEqual(Str.trim(captured.stdout), "5000 5000 5000", "cprange_restored_jvm: restored range renders by value")
 }
+
+// #7372 (JVM parity): a restored function's signature types resolve in the
+// producer's scope, so a consumer record named like the stdlib `Uuid` neither
+// captures nor satisfies them.  The resolution is the shared type checker's;
+// this pins the JVM build.
+func jvmConsumerBuildRefused(tmpDir: in String, pkgName: in String, source: in String, libJar: in String): Bool {
+  val jarPath = Path.join(tmpDir, pkgName + ".jar")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg(pkgName, source))
+  val restored: List[String] = newList()
+  restored.add("CpUuidJvm.Lib" + "\t" + libJar)
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = pkgName,
+    outputPath = jarPath,
+    target = Emitter.Jvm,
+    restoredDllPaths = restored,
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> true
+    case Some(_) -> false
+  }
+}
+
+test "a restored signature type is not captured by a same-named consumer type (jvm, #7372)" {
+  val tmpDir = freshTempDir("cpuuid-capture-jvm")
+  val producerSrc = "package CpUuidJvm.Lib\n" + "\n" + "import Std.Uuid\n" + "\n" +
+    "pub func zero(): Uuid { nilUuid() }\n" +
+    "pub func show(u: in Uuid): String { uuidToString(u) }\n"
+  val producerJar = buildJar(tmpDir, "CpUuidJvm.Lib", producerSrc, "CpUuidJvm.Lib")
+  val recordArg = "package CpUuidJvm.Bad1\n" + "\n" + "import CpUuidJvm.Lib\n" + "\n" + "record Uuid { n: Int }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(Lib.show(Uuid(n = 1)))\n" +
+    "}\n"
+  assertTrue(
+    jvmConsumerBuildRefused(tmpDir, "CpUuidJvm.Bad1", recordArg, producerJar),
+    "cpuuid_jvm: a consumer record is not the restored Uuid"
+  )
+  val annotated = "package CpUuidJvm.Bad2\n" + "\n" + "import CpUuidJvm.Lib\n" + "\n" + "record Uuid { n: Int }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val z: Uuid = Lib.zero()\n" +
+    "  println(z.n)\n" +
+    "}\n"
+  assertTrue(
+    jvmConsumerBuildRefused(tmpDir, "CpUuidJvm.Bad2", annotated, producerJar),
+    "cpuuid_jvm: the restored result is not the consumer record"
+  )
+  cleanup(tmpDir)
+}

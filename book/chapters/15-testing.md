@@ -353,6 +353,8 @@ Skipped counts reflect property test inputs that were discarded due to `where` g
 
 ### Tests for one target or feature
 
+A `fixture name: T = expr` is a module-level `val` of the `@test_module`, under `lyric build` and `lyric prove` as under `lyric test`: tests and ordinary helper functions of the module read it by name.
+
 A `test` (or `property`, or `fixture`) can be gated with `@cfg`, exactly like a function. When the feature or target is not active for the run, the test is left out entirely — it is not reported as skipped and is not counted in the `1..N` plan — so its body can use code that only exists under that feature:
 
 ```lyric
