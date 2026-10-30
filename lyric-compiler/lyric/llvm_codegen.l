@@ -21203,6 +21203,13 @@ func registerGenericImplMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit 
 func registerGenericImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
   val implParams = match decl.generics { case Some(gp) -> gp.params; case None -> return }
   val recName = match genericImplTargetRecord(decl.target) { case Some(n) -> n; case None -> return }
+  // Only `impl[T, ...] I for R[T, ...]`, whose target arguments are exactly the
+  // impl's own type parameters in order: a narrower target
+  // (`impl[T] I for R[Option[T]]`) names one instantiation family, which two
+  // impls of an interface could split between them.
+  if not implTargetArgsAreParams(decl.target, implParams) {
+    return
+  }
   if not (ctx.genericRecordDefs.containsKey(pkg + "." + recName) or ctx.genericRecordDefs.containsKey(recName)) {
     return
   }
@@ -21255,6 +21262,35 @@ func registerGenericImpl(ctx: in Ctx, pkg: in String, decl: in ImplDecl): Unit {
       }
       case IMplAssoc(_) -> ()
     }
+  }
+}
+
+/// Whether `target` is `R[P1, ..., Pn]` with `Pi` the impl's own type
+/// parameters, in declaration order.
+func implTargetArgsAreParams(target: in TypeExpr, implParams: in List[GenericParam]): Bool {
+  match target.kind {
+    case TParen(inner) -> implTargetArgsAreParams(inner, implParams)
+    case TGenericApp(_, args) -> {
+      if args.count != implParams.count {
+        return false
+      }
+      var i = 0
+      while i < args.count {
+        val pname = match implParams[i] { case GPType(n, _) -> n; case GPValue(_, _, _) -> return false }
+        match args[i] {
+          case TAType(ty) -> match ty.kind {
+            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname {
+              return false
+            }
+            case _ -> return false
+          }
+          case TAValue(_) -> return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case _ -> false
   }
 }
 

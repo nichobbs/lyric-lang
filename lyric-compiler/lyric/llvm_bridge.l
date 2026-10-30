@@ -867,11 +867,6 @@ func stdlibDiagLabel(pkg: in String, stdlib: in NativeStdlib): String {
   }
 }
 
-/// The stdlib packages `pkg` reaches through its imports, transitively,
-/// itself excluded: the scope a check of `pkg`'s own source needs.  Kept in
-/// stdlib load order, which the checker's last-registered-wins lookup
-/// depends on (kernels before the public files that re-export them; see
-/// `Lyric.Emitter.findStdlibSources`).
 /// Record decls of every package visible to bundled stdlib package `pkg`
 /// (#7212): threaded into the `?`-hoist so an `impl` block's target type
 /// resolves its own fields when it is declared in another bundled package,
@@ -880,6 +875,11 @@ func stdlibVisibleRecordDecls(pkg: in String, stdlib: in NativeStdlib): List[Rec
   pipeRecordDecls(flattenImportedItems(stdlibImportClosure(pkg, stdlib)))
 }
 
+/// The stdlib packages `pkg` reaches through its imports, transitively,
+/// itself excluded: the scope a check of `pkg`'s own source needs.  Kept in
+/// stdlib load order, which the checker's last-registered-wins lookup
+/// depends on (kernels before the public files that re-export them; see
+/// `Lyric.Emitter.findStdlibSources`).
 func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[ImportedPackage] {
   // A package split across several files reaches the union of their imports.
   val importsOf: Map[String, List[String]] = newMap()

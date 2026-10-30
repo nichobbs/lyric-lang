@@ -2850,7 +2850,8 @@ jobs:
         run: bash scripts/ci/native-define-build.sh
 
       # Reachability by receiver type (#8413): a call on a user record's
-      # `normalize` does not pull `Std.String.normalize` into the bundle.
+      # `equalsCaseInsensitive` does not pull `Std.String.equalsCaseInsensitive`
+      # into the bundle.
       - name: Native reachability by receiver type (#8413)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-reachability-e2e.sh

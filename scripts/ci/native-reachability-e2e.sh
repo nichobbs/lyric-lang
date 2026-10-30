@@ -28,6 +28,7 @@ fi
 export LYRIC_KEEP_LL=1
 
 work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
 
 cat > "$work/own.l" <<'LYR'
 package ownprobe
