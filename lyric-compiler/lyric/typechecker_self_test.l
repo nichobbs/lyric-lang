@@ -12963,3 +12963,14 @@ test "method syntax on a slice naming a plain function is T0113 (#8471)" {
   val toArr = "package P\nfunc f(xs: in slice[Int]): Int {\n  xs.toArray().length\n}\n"
   assertEqualInt(countDiagCode(parseCheck(toArr), "T0113"), 0, "toArray is the identity on a slice (#7480)")
 }
+
+test "value-returning lambdas nested three deep keep their types under the lenient first pass (#7879)" {
+  val head = "package P\nfunc mapS[T, U](xs: in slice[T], f: in (T) -> U): slice[U] {\n  [f(xs[0])]\n}\n"
+  val ok = head +
+    "func run(xs: in slice[Int], ys: in slice[Int]): Int {\n  val r = mapS(xs, { a -> mapS(ys, { b -> mapS(xs, { c -> a + b + c }) }) })\n  r[0][0][0]\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "the nested result is slice[slice[slice[Int]]] (" + diagCodesOf(okCr) + ")")
+  val bad = head +
+    "func run(xs: in slice[Int], ys: in slice[Int]): Int {\n  val r = mapS(xs, { a -> mapS(ys, { b -> mapS(xs, { c -> a + b + c + \"x\" }) }) })\n  r[0][0][0]\n}\n"
+  assertTrue(diagCount(parseCheck(bad)) > 0, "a mismatch in the innermost body is still reported")
+}
