@@ -812,7 +812,18 @@ func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, Typ
         }
         true
       } else {
-        args.count == 0 and valueTypes.containsKey(name)
+        // A generic record or union is a value when its arguments are.
+        if not valueTypes.containsKey(name) {
+          return false
+        }
+        var ai = 0
+        while ai < args.count {
+          if not isValueSort(valueTypes, distincts, args[ai], depth + 1) {
+            return false
+          }
+          ai = ai + 1
+        }
+        true
       }
     }
     case _ -> false
@@ -874,6 +885,7 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
   val valueTypes: Map[String, Bool] = newMap()
   val candidates: List[String] = newList()
   val candidateFields: List[List[TypeExpr]] = newList()
+  val candidateParams: List[List[String]] = newList()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -883,46 +895,44 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
         }
       }
       case IRecord(d) -> {
-        if isNone(d.generics) {
-          val tys: List[TypeExpr] = newList()
-          var mutable = false
-          var mi = 0
-          while mi < d.members.count {
-            match d.members[mi] {
-              case RMField(fld) -> {
-                if fld.isMutable {
-                  mutable = true
-                }
-                tys.add(fld.ty)
+        val tys: List[TypeExpr] = newList()
+        var mutable = false
+        var mi = 0
+        while mi < d.members.count {
+          match d.members[mi] {
+            case RMField(fld) -> {
+              if fld.isMutable {
+                mutable = true
               }
-              case _ -> ()
+              tys.add(fld.ty)
             }
-            mi = mi + 1
+            case _ -> ()
           }
-          if not mutable {
-            candidates.add(d.name)
-            candidateFields.add(tys)
-          }
+          mi = mi + 1
+        }
+        if not mutable {
+          candidates.add(d.name)
+          candidateFields.add(tys)
+          candidateParams.add(genericTypeParamNames(d.generics))
         }
       }
       case IUnion(d) -> {
-        if isNone(d.generics) {
-          val tys: List[TypeExpr] = newList()
-          var ci = 0
-          while ci < d.cases.count {
-            var fi = 0
-            while fi < d.cases[ci].fields.count {
-              match d.cases[ci].fields[fi] {
-                case UFNamed(_, ty, _) -> tys.add(ty)
-                case UFPos(ty, _) -> tys.add(ty)
-              }
-              fi = fi + 1
+        val tys: List[TypeExpr] = newList()
+        var ci = 0
+        while ci < d.cases.count {
+          var fi = 0
+          while fi < d.cases[ci].fields.count {
+            match d.cases[ci].fields[fi] {
+              case UFNamed(_, ty, _) -> tys.add(ty)
+              case UFPos(ty, _) -> tys.add(ty)
             }
-            ci = ci + 1
+            fi = fi + 1
           }
-          candidates.add(d.name)
-          candidateFields.add(tys)
+          ci = ci + 1
         }
+        candidates.add(d.name)
+        candidateFields.add(tys)
+        candidateParams.add(genericTypeParamNames(d.generics))
       }
       case _ -> ()
     }
@@ -937,12 +947,25 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
       if not valueTypes.containsKey(name) {
         val tys = candidateFields[ci]
         var allValues = true
+        // A type parameter stands for whatever the record is applied to:
+        // the arguments decide, at each use (`isValueSort`).
+        val tps = candidateParams[ci]
+        val addedParams: List[String] = newList()
+        for tp in tps {
+          if not valueTypes.containsKey(tp) {
+            valueTypes.add(tp, true)
+            addedParams.add(tp)
+          }
+        }
         var ti = 0
         while ti < tys.count {
-          if not isValueSort(valueTypes, distincts, sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+          if not isValueSort(valueTypes, distincts, sortOfTypeExprIn(distincts, tps, tys[ti]).sort, 0) {
             allValues = false
           }
           ti = ti + 1
+        }
+        for tp in addedParams {
+          val _ = valueTypes.remove(tp)
         }
         if allValues {
           valueTypes.add(name, true)
