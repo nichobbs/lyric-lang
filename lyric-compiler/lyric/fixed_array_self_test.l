@@ -233,6 +233,16 @@ test "toSlice copies the elements into a slice" {
   assertEqualInt(s[2], 7, "last element")
 }
 
+test "toSlice on a bracket literal is the slice of its elements (#8218)" {
+  val s = [1, 2, 3].toSlice()
+  assertEqualInt(s.length, 3, "length")
+  assertEqualInt(s[0], 1, "first")
+  assertEqualInt(s[2], 3, "last")
+  val names = (["a", "b"]).toSlice()
+  assertEqualInt(names.length, 2, "String elements")
+  assertTrue(names[1] == "b", "second name")
+}
+
 test "equality compares element by element" {
   val a: array[3, Int] = [1, 2, 3]
   val b: array[3, Int] = [1, 2, 3]
