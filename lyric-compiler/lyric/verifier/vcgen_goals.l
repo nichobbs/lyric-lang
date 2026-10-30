@@ -424,7 +424,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 

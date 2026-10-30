@@ -405,7 +405,8 @@ pub func goalsForFileInScope(
     contractStack = env0Init.contractStack,
     cyclic = cyclicNames,
     valueTypes = valueTypesMap,
-    typeParams = env0Init.typeParams
+    typeParams = env0Init.typeParams,
+    outPosts = env0Init.outPosts
   )
 
   val allGoals: List[Goal] = newList()

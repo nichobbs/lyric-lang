@@ -124,6 +124,63 @@ func outArgsAlias(decl: in FunctionDecl, args: in List[CallArg]): String {
   }
 }
 
+// The key of the value variable `root` holds after the call at `sp`.
+func outPostKey(root: in String, sp: in Span): String {
+  root + "@" + intToString(sp.startPos.offset) + "-" + intToString(sp.endPos.offset)
+}
+
+func forgetOutPosts(env: in VEnv, roots: in List[String], sp: in Span): Unit {
+  var i = 0
+  while i < roots.count {
+    if roots[i].length > 0 {
+      val key = outPostKey(roots[i], sp)
+      if env.outPosts.containsKey(key) {
+        val _ = env.outPosts.remove(key)
+      }
+    }
+    i = i + 1
+  }
+}
+
+// For each parameter of `decl`, the variable `args` passes to it when it is
+// an `out`/`inout` parameter given just a variable's name, else "".
+func outParamRoots(decl: in FunctionDecl, args: in List[CallArg]): List[String] {
+  val roots: List[String] = newList()
+  val names: List[String] = newList()
+  var k = 0
+  while k < decl.params.count {
+    names.add(decl.params[k].name)
+    roots.add("")
+    k = k + 1
+  }
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      var si = 0
+      while si < slots.count and si < roots.count {
+        if slots[si] >= 0 {
+          match decl.params[si].mode {
+            case PMIn -> ()
+            case _ -> {
+              val argExpr = match args[slots[si]] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
+              if isPlainVarArg(argExpr) {
+                match rootVarOf(argExpr) {
+                  case Some(root) -> {
+                    roots[si] = root
+                  }
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+        si = si + 1
+      }
+    }
+    case Err(_) -> ()
+  }
+  roots
+}
+
 // How many contracts and defaults may unfold inside one another at a call.
 func maxUnfoldDepth(): Int {
   32
@@ -195,6 +252,9 @@ func translateResolvedCall(
   allArgDiags: in List[Diagnostic],
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> calleeSortInfo(env, decl, te); case None -> unitSortInfo() }
+  // What an earlier translation of this call left for `havocOutArgs` is
+  // not this one's (#8111).
+  forgetOutPosts(env, outParamRoots(decl, args), callSpan)
   // A backstop on how deep contracts and defaults unfold into one
   // another: past it the call fails closed rather than recursing on.
   if env.contractStack.count >= maxUnfoldDepth() {
@@ -277,7 +337,8 @@ func translateResolvedCall(
     contractStack = contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = typeParamNames(decl)
+    typeParams = typeParamNames(decl),
+    outPosts = env.outPosts
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -448,6 +509,7 @@ func translateResolvedCall(
     }
     case _ -> ()
   }
+  val outRoots = outParamRoots(decl, args)
   var psi = 0
   while psi < decl.params.count {
     val pp = decl.params[psi]
@@ -460,7 +522,11 @@ func translateResolvedCall(
         resultVarNames2.add(oldKey)
         postSubst.add(oldKey, argTerms[psi])
         postSubstNames.add(oldKey)
-        postSubst.add(pp.name, TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi]))
+        val postVar = TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi])
+        postSubst.add(pp.name, postVar)
+        if paired.paired and aliased.length == 0 and psi < outRoots.count and outRoots[psi].length > 0 {
+          env.outPosts.add(outPostKey(outRoots[psi], callSpan), postVar)
+        }
       }
     }
     postSubstNames.add(pp.name)
@@ -484,7 +550,8 @@ func translateResolvedCall(
     contractStack = contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = typeParamNames(decl)
+    typeParams = typeParamNames(decl),
+    outPosts = env.outPosts
   )
   ci = 0
   while ci < decl.contracts.count {

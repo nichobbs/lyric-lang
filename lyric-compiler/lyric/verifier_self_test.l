@@ -1744,6 +1744,22 @@ test "an out or inout argument holds a new value after the call (#8102)" {
   )
 }
 
+test "a callee's ensures about an out or inout argument reach the caller (#8111)" {
+  val inc = "func inc(x: inout Int): Unit\n  ensures: x == old(x) + 1\n{\n  x = x + 1\n}\n"
+  assertDischarged(
+    inc + "func g(): Int\n  ensures: result == 6\n{\n  var a = 5\n  inc(a)\n  a\n}\n",
+    "caller-sees-the-callee-ensures"
+  )
+  assertDischarged(
+    inc + "func g(a0: in Int): Int\n  ensures: result == a0 + 2\n{\n  var a = a0\n  inc(a)\n  inc(a)\n  a\n}\n",
+    "two-calls-chain"
+  )
+  assertRefuted(
+    inc + "func g(a0: in Int): Int\n  ensures: result == a0 + 2\n{\n  var a = a0\n  inc(a)\n  a\n}\n",
+    "one-call-is-not-two"
+  )
+}
+
 test "a protected entry's invariant holds of the fields it leaves (#8102)" {
   assertRefuted(
     "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n  }\n}\n",

@@ -456,7 +456,7 @@ func hoistCall(ctx: in HoistCtx, e: in Expr, fn: in Expr, args: in List[CallArg]
   // parameters and receiver (every mutable one, for a callee it does not
   // resolve).
   val ownEff = emptyEffects()
-  effOutArgs(ctx.env, fn, args, ownEff)
+  effOutArgs(ctx.env, fn, args, e.span, ownEff)
   match calleeOperand {
     case Some(c) -> {
       ops.add(c)
