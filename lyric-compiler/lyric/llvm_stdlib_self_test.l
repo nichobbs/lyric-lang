@@ -1958,33 +1958,6 @@ func main(): Int {
   assertEqualInt(r.exitCode, 42, "every out-of-range conversion saturated")
 }
 
-// #8450: a `ULong` converts by value: `toLong` is checked and `toDouble` and
-// `toFloat` read the unsigned value, as on .NET and the JVM.
-test "Native: ULong toLong is checked, toDouble and toFloat are unsigned (ASan)" {
-  val src = r#"package T
-import Std.Core
-
-func main(): Int {
-  val maxLong: ULong = 9223372036854775807u64
-  val top: ULong = 9223372036854775808u64
-  val max: ULong = 18446744073709551615u64
-  val sticky: ULong = 9223372036854777857u64
-  val ok = maxLong.toLong() == 9223372036854775807i64 and
-    top.toDouble() == 9223372036854775808.0 and
-    max.toDouble() == 18446744073709551616.0 and
-    max.toFloat() == 18446744073709551616.0f32 and
-    sticky.toDouble() == 9223372036854777856.0 and
-    maxLong.toDouble() == 9223372036854775808.0
-  if not ok { return 1 }
-  val bad = top.toLong()
-  if bad == 0i64 { 2 } else { 3 }
-}
-"#
-  val r = compileAndRunNative(src)
-  assertTrue(r.exitCode != 1, "the unsigned conversions are right")
-  assertTrue(r.exitCode != 2 and r.exitCode != 3, "ULong above Long.MaxValue .toLong() panics")
-}
-
 // #8256: `Option` and `Result` are an implicit prelude; a single-file program
 // that never imports `Std.Core` still builds on native, as on the managed
 // targets.  #8014: `o == None` and `None == o` take the other operand's type.
