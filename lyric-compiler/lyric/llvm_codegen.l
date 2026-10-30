@@ -3610,6 +3610,13 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       case None -> ()
     }
   }
+  // Lists compare element by element (D172), not by identity.
+  if op == BEq or op == BNeq {
+    match listElemOfType(ctx, a.ty) {
+      case Some(el) -> return lowerListEq(ctx, insns, el, a, b, op == BNeq)
+      case None -> ()
+    }
+  }
   // By-value records compare field by field.
   if (op == BEq or op == BNeq) and isByValueStructNType(a.ty) {
     val eq = emitStructEq(ctx, insns, a.ty, a.value, b.value)
@@ -13736,6 +13743,100 @@ func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc 
   )
 }
 
+/// The name of the equality function for two lists of `elemTy`
+/// (`i1 eq(i8* a, i8* b)`: equal lengths and every element pair equal under
+/// `emitValueEqN`, so a `Double` element follows D172), synthesising it into
+/// the module on first use.
+func ensureListEq(ctx: in Ctx, elemTy: in NType): String {
+  val fnName = "__list.eq." + mangleNTypeArg(elemTy)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    ctx.moduleFns.add(synthListEq(ctx, elemTy, fnName))
+  }
+  fnName
+}
+
+func synthListEq(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc {
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI1)
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val p8 = NPtr(pointee = NI8)
+  val idxSlot = "leq.idx"
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))
+  body.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
+  val lenA = callRuntime(ctx, body, "lyric_list_len", NI64, arg1(p8, NLocal(name = "a")))
+  val lenB = callRuntime(ctx, body, "lyric_list_len", NI64, arg1(p8, NLocal(name = "b")))
+  val sameLen = freshTmp(ctx)
+  body.add(NICmp(dest = sameLen, pred = IEq, ty = NI64, a = lenA.value, b = lenB.value))
+  body.add(NCondBr(cond = NLocal(name = sameLen), thenLabel = "leq.cond", elseLabel = "leq.false"))
+  body.add(NLabel(name = "leq.cond"))
+  val cur = freshTmp(ctx)
+  body.add(NLoad(dest = cur, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val inRange = freshTmp(ctx)
+  body.add(NICmp(dest = inRange, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = lenA.value))
+  body.add(NCondBr(cond = NLocal(name = inRange), thenLabel = "leq.body", elseLabel = "leq.true"))
+  body.add(NLabel(name = "leq.body"))
+  val sa = callRuntime(ctx, body, "lyric_list_get", NI64, arg2(p8, NLocal(name = "a"), NI64, NLocal(name = cur)))
+  val sb = callRuntime(ctx, body, "lyric_list_get", NI64, arg2(p8, NLocal(name = "b"), NI64, NLocal(name = cur)))
+  val ea = valOfSlot(ctx, body, sa.value, elemTy)
+  val eb = valOfSlot(ctx, body, sb.value, elemTy)
+  val eq = emitValueEqN(ctx, body, elemTy, localNameOf(ea), localNameOf(eb))
+  body.add(NCondBr(cond = NLocal(name = eq), thenLabel = "leq.next", elseLabel = "leq.false"))
+  body.add(NLabel(name = "leq.next"))
+  val bumped = freshTmp(ctx)
+  body.add(NAdd(dest = bumped, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI64)))
+  body.add(NStore(ty = NI64, value = NLocal(name = bumped), ptr = NLocal(name = idxSlot)))
+  body.add(NBr(label = "leq.cond"))
+  body.add(NLabel(name = "leq.true"))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 1i64, ty = NI1)))
+  body.add(NLabel(name = "leq.false"))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "a", ty = p8))
+  params.add(NParam(name = "b", ty = p8))
+  val attrs: List[String] = newList()
+  val finalBody: List[NInsn] = newList()
+  finalBody.add(NLabel(name = "entry"))
+  appendInsns(finalBody, ctx.allocas)
+  var bi = 1
+  while bi < body.count {
+    finalBody.add(body[bi])
+    bi = bi + 1
+  }
+  NFunc(
+    name = fnName,
+    params = params,
+    retTy = NI1,
+    isPublic = false,
+    isExtern = false,
+    body = finalBody,
+    attributes = attrs
+  )
+}
+
+/// `a == b` (or `!=`) on two lists of `elemTy`, through the synthesised
+/// element-wise equality function.
+func lowerListEq(
+  ctx: in Ctx, insns: in List[NInsn], elemTy: in NType, a: in NVal, b: in NVal, negate: in Bool
+): NVal {
+  val fnName = ensureListEq(ctx, elemTy)
+  val ra = freshTmp(ctx)
+  insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = NPtr(pointee = NI8)))
+  val rb = freshTmp(ctx)
+  insns.add(NBitcast(dest = rb, fromTy = b.ty, value = b.value, toTy = NPtr(pointee = NI8)))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
+  val eq = freshTmp(ctx)
+  insns.add(NCall(dest = eq, retTy = NI1, fn = NGlobal(name = fnName), args = args))
+  if not negate {
+    return NVal(ty = NI1, value = NLocal(name = eq))
+  }
+  val ne = freshTmp(ctx)
+  insns.add(NXor(dest = ne, ty = NI1, a = NLocal(name = eq), b = NLitInt(v = 1i64, ty = NI1)))
+  NVal(ty = NI1, value = NLocal(name = ne))
+}
+
 func unionEqName(ui: in NUnionInfo): String {
   ui.irName + ".eq"
 }
@@ -14049,6 +14150,21 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
   }
   if isByValueStructNType(t) {
     return emitStructEq(ctx, body, t, NLocal(name = a), NLocal(name = b))
+  }
+  match listElemOfType(ctx, t) {
+    case Some(el) -> {
+      val fnName = ensureListEq(ctx, el)
+      val ra = freshTmp(ctx)
+      body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
+      val rb = freshTmp(ctx)
+      body.add(NBitcast(dest = rb, fromTy = t, value = NLocal(name = b), toTy = NPtr(pointee = NI8)))
+      val args: List[NArg] = newList()
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
+      body.add(NCall(dest = dest, retTy = NI1, fn = NGlobal(name = fnName), args = args))
+      return dest
+    }
+    case None -> ()
   }
   // A heap record that compares field by field goes through its equality
   // function; a mutable one keeps identity (D164, D172).

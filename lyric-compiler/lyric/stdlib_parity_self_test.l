@@ -278,3 +278,21 @@ test "== on a Map with Double keys and on nested Lists follows D172 (#8439)" {
   outer2.add(doubles(-0.0, 1.0))
   assertTrue(outer1 == outer2, "a nested list")
 }
+
+record Seen {
+  zs: Set[Double]
+}
+
+func seenOf(z: in Double): Seen {
+  val s: Set[Double] = newSet()
+  setAdd(s, z)
+  Seen(zs = s)
+}
+
+test "a record holding a Set[Double] hashes alike when its sets compare equal (#8439)" {
+  assertTrue(seenOf(0.0) == seenOf(-0.0), "equal under D172")
+  val m: Map[Seen, Int] = newMap()
+  m.add(seenOf(0.0), 7)
+  assertTrue(m.containsKey(seenOf(-0.0)), "found through the equal key")
+  assertEqual(m[seenOf(-0.0)], 7, "and reads the same value")
+}

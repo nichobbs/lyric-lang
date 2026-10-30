@@ -8642,6 +8642,12 @@ func makeKeyHashHelperFunc(owner: in String): LFunc {
   insns.add(LIstore(slot = 1))
   insns.add(LIconst(v = 0))
   insns.add(LIstore(slot = 2))
+  // Slots 3 and 4 serve the `HashSet`/`HashMap` arm and are declared here so
+  // every frame agrees: the member snapshot and the current member.
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 3, className = listCls))
+  insns.add(LAconstNull)
+  insns.add(LAstoreAs(slot = 4, className = "java/lang/Object"))
   insns.add(LAload(slot = 0))
   insns.add(LIfnonnull(label = "__kh_dbl"))
   insns.add(LIconst(v = 0))
@@ -8671,7 +8677,7 @@ func makeKeyHashHelperFunc(owner: in String): LFunc {
   insns.add(LLabel(name = "__kh_list"))
   insns.add(LAload(slot = 0))
   insns.add(LInstanceof(className = listCls))
-  insns.add(LIfeq(label = "__kh_prim0"))
+  insns.add(LIfeq(label = "__kh_set"))
   insns.add(LLabel(name = "__kh_list_loop"))
   insns.add(LIload(slot = 2))
   insns.add(LAload(slot = 0))
@@ -8690,6 +8696,10 @@ func makeKeyHashHelperFunc(owner: in String): LFunc {
   insns.add(LIstore(slot = 1))
   insns.add(LIinc(slot = 2, delta = 1))
   insns.add(LGoto(label = "__kh_list_loop"))
+  insns.add(LLabel(name = "__kh_set"))
+  emitKeyHashHashed(insns, owner, "java/util/HashSet", false, "__kh_map")
+  insns.add(LLabel(name = "__kh_map"))
+  emitKeyHashHashed(insns, owner, "java/util/HashMap", true, "__kh_prim0")
   val elems = keyEqArraysElems()
   var k = 0
   while k < elems.count {
@@ -8721,8 +8731,66 @@ func makeKeyHashHelperFunc(owner: in String): LFunc {
     ret = JInt,
     insns = insns,
     maxStack = 6,
-    maxLocals = 3
+    maxLocals = 5
   )
+}
+
+// When `a` (slot 0) is a `cls` (`HashSet`, or `HashMap` when `isMap`), return
+// the sum over its members of `__lyricKeyHash(member)` (a map member also
+// xors in `__lyricKeyHash` of its value), so the hash does not depend on
+// iteration order and agrees with `__lyricKeyEq`'s treatment of `0.0` and
+// `-0.0`; otherwise go to `next`.  Uses slots 1-4.
+func emitKeyHashHashed(insns: in List[LInsn], owner: in String, cls: in String, isMap: in Bool, next: in String): Unit {
+  val objT = JRef(className = "java/lang/Object")
+  val listCls = "java/util/ArrayList"
+  val tag = if isMap { "__kh_hm" } else { "__kh_hs" }
+  val noPs: List[JvmType] = newList()
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  val objPs: List[JvmType] = newList()
+  objPs.add(objT)
+  val collPs: List[JvmType] = newList()
+  collPs.add(JRef(className = "java/util/Collection"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = cls))
+  insns.add(LIfeq(label = next))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 1))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LNew(className = listCls))
+  insns.add(LDup)
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = cls))
+  if isMap {
+    insns.add(LInvokevirtual(owner = cls, name = "keySet", params = noPs, ret = JRef(className = "java/util/Set")))
+  }
+  insns.add(LInvokespecial(owner = listCls, name = "<init>", params = collPs, ret = JVoid))
+  insns.add(LAstoreAs(slot = 3, className = listCls))
+  insns.add(LLabel(name = tag + "_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 3))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpge(label = "__kh_done"))
+  insns.add(LAload(slot = 3))
+  insns.add(LIload(slot = 2))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LAstoreAs(slot = 4, className = "java/lang/Object"))
+  insns.add(LIload(slot = 1))
+  insns.add(LAload(slot = 4))
+  insns.add(LInvokestatic(owner = owner, name = keyHashHelperName(), params = objPs, ret = JInt))
+  if isMap {
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = cls))
+    insns.add(LAload(slot = 4))
+    insns.add(LInvokevirtual(owner = cls, name = "get", params = objPs, ret = objT))
+    insns.add(LInvokestatic(owner = owner, name = keyHashHelperName(), params = objPs, ret = JInt))
+    insns.add(LIxor)
+  }
+  insns.add(LIadd)
+  insns.add(LIstore(slot = 1))
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = tag + "_loop"))
 }
 
 // When `a` (slot 0) is a `<prim>[]`, fold its elements' hashes into slot 1

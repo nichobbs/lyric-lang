@@ -623,3 +623,31 @@ test "Map with union, record and array keys finds an equal key built elsewhere (
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 127, "every lookup, overwrite and removal agrees with structural equality")
 }
+
+// #8439: `==` / `!=` on lists compares element by element under D172 (a
+// `Double` leaf is equal when `==` holds or both are `NaN`), not by pointer.
+test "== on lists compares elements: Double zero and NaN, String, nested, in a record (ASan)" {
+  val src = "package T\n" + "record Bag {\n  xs: List[Double]\n}\n" +
+    "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
+    "func nanD(z: in Double): Double = z / z\n" +
+    "func doubles(a: in Double, b: in Double): List[Double] {\n" +
+    "  val xs: List[Double] = newList()\n  xs.add(a)\n  xs.add(b)\n  xs\n}\n" +
+    "func strs(a: in String): List[String] {\n" +
+    "  val xs: List[String] = newList()\n  xs.add(a)\n  xs\n}\n" +
+    "func main(): Int {\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(doubles(0.0, 1.5) == doubles(-0.0, 1.5)) * 1\n" +
+    "  code = code + flag(not (doubles(0.0, 1.5) != doubles(-0.0, 1.5))) * 2\n" +
+    "  code = code + flag(doubles(nanD(0.0), 1.0) == doubles(nanD(0.0), 1.0)) * 4\n" +
+    "  code = code + flag(not (doubles(0.0, 1.5) == doubles(0.0, 2.5))) * 8\n" +
+    "  code = code + flag(strs(\"a\" + \"b\") == strs(\"ab\")) * 16\n" +
+    "  code = code + flag(not (strs(\"a\") == strs(\"b\"))) * 32\n" +
+    "  val short: List[Double] = newList()\n" +
+    "  short.add(0.0)\n" +
+    "  code = code + flag(not (short == doubles(0.0, 1.5))) * 64\n" +
+    "  code = code + flag(Bag(xs = doubles(0.0, 1.0)) == Bag(xs = doubles(-0.0, 1.0))) * 128\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 255, "every list comparison agrees with structural equality")
+}
