@@ -310,7 +310,8 @@ sha512  = "sha512-abc123..."
 key     = "3f9c0a1b2c3d4e5f60718293a4b5c6d7"
 
 # `key` appears only on a source generator restored from a registry or git
-# (D266): the id of the key its plugin artifact is signed with.  A restore
+# (D266): the id (32 hex digits) of the key its plugin artifact is signed
+# with, not the `lyric-ed25519:...` public key a manifest `key` pin names.  A restore
 # that finds another key fails until `lyric restore --update <name>`.
 
 # [[package.platform.dotnet]] is a TOML sub-array nested under the preceding

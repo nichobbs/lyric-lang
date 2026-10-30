@@ -134,24 +134,6 @@ Steps performed by the CLI:
 6. **Record** — appends a `[[published]]` entry to `lyric.lock` with the package
    name, version, and SHA-512 of the `.nupkg`.
 
-### 4.2 Source generator packages
-
-A `[package] kind = "source-generator"` package is published as its signed
-plugin artifact rather than as a library (D266). `lyric publish` runs `lyric
-plugin pack` (dotnet payload), signs the artifact with `--sign-key <file>` or
-`LYRIC_PLUGIN_SIGNING_KEY` (one is required), and packs only:
-
-```
-lyric-plugin/<id>-<version>/   # the packed artifact, with plugin.sig
-lyric-plugin/signer.pub        # the public key it is signed with
-```
-
-The package has no `lib/` assembly and no NuGet dependencies, since the
-artifact carries everything the generator runs with, and is tagged
-`lyric-source-generator` beside `lyric-package`. A generator restored from git
-commits the same `lyric-plugin/` layout at the root of its checkout (or
-`subdir`).
-
 **Workspace `{ workspace = true }` deps are substituted** for registry-version
 deps before the `.nuspec` is generated (see `docs/38-workspace.md` §5). If a
 sibling dep has not been published at the declared version, the publish fails
@@ -175,6 +157,24 @@ Steps:
 
 JVM publish is deferred until Phase 6 ships; the `.NET` publish path is the
 v1.0 deliverable.
+
+### 4.3 Source generator packages
+
+A `[package] kind = "source-generator"` package is published as its signed
+plugin artifact rather than as a library (D266). `lyric publish` runs `lyric
+plugin pack` (dotnet payload), signs the artifact with `--sign-key <file>` or
+`LYRIC_PLUGIN_SIGNING_KEY` (one is required), and packs only:
+
+```
+lyric-plugin/<id>-<version>/   # the packed artifact, with plugin.sig
+lyric-plugin/signer.pub        # the public key it is signed with
+```
+
+The package has no `lib/` assembly and no NuGet dependencies, since the
+artifact carries everything the generator runs with, and is tagged
+`lyric-source-generator` beside `lyric-package`. A generator restored from git
+commits the same `lyric-plugin/` layout at the root of its checkout (or
+`subdir`).
 
 ---
 
