@@ -3874,8 +3874,10 @@ test "a method of a generic record returning its type parameter is called at the
     box + "func fromBox(b: in Box[Int]): Int\n  ensures: result == b.getV() + 1\n{\n  b.getV()\n}\n",
     "generic-method-instance-refuted"
   )
-  // At a type parameter, the call is a value of that parameter's sort.
-  assertDischarged(
+  // At a type parameter the call is a value of that parameter's sort, well
+  // sorted; a value of an unknown type is not assumed to behave the same
+  // at two calls, so the call is not unfolded (see `isValueSort`).
+  assertRefuted(
     box + "func fromGeneric[U](b: in Box[U]): U\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
     "generic-method-type-parameter"
   )
