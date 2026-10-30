@@ -1,4 +1,4 @@
-# Name-resolution fixes (D267)
+# Name-resolution fixes (D275)
 
 Shipped: #7799 (qualified names through a facade's re-exports; MSIL/JVM
 agreement on a transitively reachable host package), #8350 (a module-level
