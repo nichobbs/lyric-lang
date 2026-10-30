@@ -430,7 +430,7 @@ val sub = xs.slice(start, end)       // new slice, the half-open sub-range [star
 
 A slice's members are `.length`, `.append`, `.concat`, `.slice`, `.toList()` and `.toArray()` (the identity); a method call naming any other member is **T0113** (#8471). A function from `Std.Iter` or elsewhere is not a method of a slice, so `xs.filter({ u -> u > k })` is written `filter(xs, { u -> u > k })`, and the message names that form when a plain function of the name exists.
 
-`==` on two `slice[T]` values does not compare contents: on `--target dotnet` it compares the slices by reference, so two slices holding equal elements can compare unequal. Compare `.length` and the elements, or `.toList()`, instead. (An `array[N, T]` compares element by element, §4.9.) `lyric prove` fails closed (V0033) on a slice `==` (#8218).
+`==` on two `slice[T]` values does not compare contents: on `--target dotnet` it compares the slices by reference, so two slices holding equal elements can compare unequal. Compare `.length` and the elements, or `.toList()`, instead. (An `array[N, T]` compares element by element, below.) `lyric prove` fails closed (V0033) on a slice `==` (#8218).
 
 `xs.toList()` returns a shallow-copied `List[T]` holding `xs`'s elements — the round-trip shuttle back from `List[T].toArray()` — on every target (`--target jvm` copies the array into an `ArrayList`, #7662, #8323).
 
