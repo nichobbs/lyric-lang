@@ -3542,6 +3542,21 @@ pub func compileProjectToJarBundledWithRestored(
     dpi = dpi + 1
   }
 
+  // #7777: an unannotated module `val` with a non-literal initialiser has a
+  // static-field type only the checker knows.  Check each bundled package that
+  // declares one and register its values at the inferred (annotated) type, so
+  // another package can read them without an annotation.  The declaring
+  // package emits the field at the same type from its own middle-ended file.
+  for vbf in toBundle {
+    if fileHasInferredModuleVal(vbf) {
+      registerCheckedModuleVals(
+        pipeCheckedDefaults(vbf, importedPkgs),
+        registry,
+        externSeedForFileCached(vbf, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+      )
+    }
+  }
+
   // ── Call-reachability fixpoint (J1 B-6, #2664) ──────────────────────────
   // Build a function-level call graph over the user package plus every bundled
   // package: each function's canonical key (`owner/name`) maps to the keys of

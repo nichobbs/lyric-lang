@@ -2799,3 +2799,107 @@ test "ref record keeps its keyword through a format round trip" {
   assertTrue(Str.contains(acc, "pub ref record Counter {"), "format: ref keyword kept")
   assertTrue(isFormatted(acc, pr), "format: ref record idempotent")
 }
+
+// #7151: a paren-arrow lambda whose body is an explicit braced block
+// (`(v) -> { v > 0 }`) is AST-identical to `{ v -> v > 0 }` apart from
+// spans; before the fix it was rendered in brace form and the loss-check
+// refused the whole file.
+test "paren-arrow lambda with a braced block body round-trips (#7151)" {
+  val src = "package P\n\nval f = (v) -> { v > 0 }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "paren-arrow block lambda: round-trips, not refused")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "(v) -> { v > 0 }"), "paren-arrow block lambda: keeps its spelling")
+  assertEqual(once, format(parse(once)), "paren-arrow block lambda: idempotent")
+}
+
+test "paren-arrow lambda with a multi-statement braced block round-trips (#7151)" {
+  val src = "package P\n\nfunc g(): Int {\n  val f = (v) -> {\n    // positive?\n    val w = v + 1\n    w\n  }\n  f(1)\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "multi-statement paren-arrow block lambda: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "(v) -> {"), "multi-statement paren-arrow block lambda: keeps its opener")
+  assertTrue(not Str.contains(once, "{ v ->"), "multi-statement paren-arrow block lambda: not rewritten to brace form")
+  assertEqual(once, format(parse(once)), "multi-statement paren-arrow block lambda: idempotent")
+}
+
+test "zero-param paren-arrow lambda with a braced block round-trips (#7151)" {
+  val src = "package P\n\nval f = () -> { 1 }\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(src)), "zero-param paren-arrow block lambda: round-trips")
+  assertTrue(Str.contains(format(parse(src)), "() -> { 1 }"), "zero-param paren-arrow block lambda: keeps its spelling")
+}
+
+// #7303: `\u{...}` escapes that decode to invisible or ambiguous characters
+// must stay escapes, not become raw characters.
+test "invisible characters in string literals stay escaped (#7303)" {
+  val src = "package P\n\nval shy = \"\\u{AD}\"\nval zw = \"a\\u{200B}b\"\nval nb = \"\\u{A0}\"\nval bom = \"\\u{FEFF}\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "invisible-character escapes: round-trip losslessly")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "\"\\u{00ad}\""), "soft hyphen stays an escape")
+  assertTrue(Str.contains(once, "\"a\\u{200b}b\""), "zero-width space stays an escape")
+  assertTrue(Str.contains(once, "\"\\u{00a0}\""), "no-break space stays an escape")
+  assertTrue(Str.contains(once, "\"\\u{feff}\""), "byte-order mark stays an escape")
+  assertEqual(once, format(parse(once)), "invisible-character escapes: idempotent")
+}
+
+test "controls, C1 and supplementary-plane tag characters stay escaped (#7303)" {
+  val src = "package P\n\nval c1 = \"\\u{85}\"\nval del = \"\\u{7F}\"\nval tag = \"\\u{E0041}\"\nval vs = \"\\u{FE0F}\"\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "control and tag escapes: round-trip losslessly")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "\"\\u{0085}\""), "C1 control stays an escape")
+  assertTrue(Str.contains(once, "\"\\u{007f}\""), "DEL stays an escape")
+  assertTrue(Str.contains(once, "\"\\u{e0041}\""), "tag character stays an escape")
+  assertTrue(Str.contains(once, "\"\\u{fe0f}\""), "variation selector stays an escape")
+  assertEqual(once, format(parse(once)), "control and tag escapes: idempotent")
+}
+
+test "a combining mark with no base stays escaped but one with a base is printed raw (#7303)" {
+  val src = "package P\n\nval lone = \"\\u{301}\"\nval based = \"e\\u{301}\"\n"
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "\"\\u{0301}\""), "base-less combining mark stays an escape")
+  assertTrue(Str.contains(once, "\"é\""), "combining mark after a base is raw")
+  assertEqual(once, format(parse(once)), "combining marks: idempotent")
+}
+
+test "visible non-ASCII text in string literals stays raw (#7303)" {
+  val src = "package P\n\nval s = \"café 中文\"\n"
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "\"café 中文\""), "visible characters are not escaped")
+}
+
+// #7903: a plain `//` comment between a `///` doc comment and the function
+// belongs above the `func` line, not inside its parameter list.
+test "plain comment between doc comment and func stays above the func (#7903)" {
+  val src = "package P\n\n/// The doc comment.\n// A plain comment.\nfunc pick(sets: in List[String], name: in String): Option[String] {\n  None\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "doc then plain comment then func: round-trips")
+  val once = format(parse(src))
+  assertEqual(
+    once,
+    "package P\n\n/// The doc comment.\n// A plain comment.\nfunc pick(sets: in List[String], name: in String): Option[String] {\n  None\n}\n",
+    "doc then plain comment then func: comment stays put and the signature stays on one line"
+  )
+  assertEqual(once, format(parse(once)), "doc then plain comment then func: idempotent")
+}
+
+test "plain comment between annotation and func stays above the func (#7903)" {
+  val src = "package P\n\n/// d\n@pure\n// plain\nfunc f(a: in Int): Int {\n  a\n}\n"
+  val once = format(parse(src))
+  assertEqual(once, src, "annotation then plain comment then func: unchanged")
+}
+
+test "plain comment between doc comment and a type declaration stays above it (#7903)" {
+  val src = "package P\n\n/// doc\n// plain\nrecord R {\n  x: Int\n}\n\n/// doc\n// plain\nunion U {\n  case A\n}\n"
+  val once = format(parse(src))
+  assertEqual(once, src, "doc then plain comment then type: unchanged")
+}
+
+test "plain comment between doc comment and an interface method does not enter its parameter list (#7903)" {
+  val src = "package P\n\ninterface I {\n  /// doc\n  // plain\n  func m(a: in Int, b: in Int): Int\n}\n"
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "  func m(a: in Int, b: in Int): Int"), "interface method: signature stays on one line")
+  assertTrue(Str.contains(once, "// plain"), "interface method: comment preserved")
+  assertEqual(once, format(parse(once)), "interface method: idempotent")
+}

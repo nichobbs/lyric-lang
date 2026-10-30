@@ -7,6 +7,8 @@
   duplicated are listed in `scripts/ci/decision-id-allowlist.txt` with the most
   files each may keep; the list can only shrink. The seven duplicated `D<n>`
   ids (D175, D204, D205, D207, D209, D230, D231) were renumbered to D267-D274
+  (D267 then collided with #8609's resolver entry, merged at the same time,
+  and the protected-monitor entry moved on to D276)
   and every reference in `docs/`, `book/`, `CLAUDE.md`, comments and scripts
   was moved to the id its entry meant. Four D230 references in `lyric-rt` and
   `lyric.full.toml` described trusted plugins and now name D231. The 22

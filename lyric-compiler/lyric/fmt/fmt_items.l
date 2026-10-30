@@ -199,6 +199,9 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
     }
     pIdx = pIdx + 1
   }
+  // A plain `//` comment between the docs / annotations and `func` stays
+  // above the signature instead of drifting into the parameter list (#7903).
+  val leadComments = popCommentsBefore(ctx, fn.span.startPos.offset)
   val sig = funcSigDocFromParts(sigPrefix, sigSuffix, paramsCol, ctx, paramsFiltered)
 
   // Order on the wire: signature → where? → contracts → body.
@@ -294,7 +297,7 @@ pub func funcDoc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): Lis
       }
     }
   }
-  concatDoc3(fnDocLs, annoLines, body)
+  concatDoc3(fnDocLs, annoLines, concatDoc(leadComments, body))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -707,10 +710,33 @@ pub func protectedMemberDoc(pm: in ProtectedMember, ctx: inout FmtCtx): List[Str
 // ─────────────────────────────────────────────────────────────────────────────
 // Top-level item dispatch.  Mirrors `itemDoc` in Fmt.fs.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Source offset of the declaration proper (its `pub`/keyword, after any
+/// docs and annotations), or -1 for kinds whose span is not known to start
+/// there.  `Item.span` starts at the doc comments, so it cannot serve.
+func declStartOffset(item: in Item): Int {
+  match item.kind {
+    case IRecord(rd) -> rd.span.startPos.offset
+    case IExposedRec(rd) -> rd.span.startPos.offset
+    case IUnion(ud) -> ud.span.startPos.offset
+    case IEnum(ed) -> ed.span.startPos.offset
+    case IDistinctType(dt) -> dt.span.startPos.offset
+    case ITypeAlias(ta) -> ta.span.startPos.offset
+    case IProtected(pd) -> pd.span.startPos.offset
+    case IInterface(id) -> id.span.startPos.offset
+    case IConst(cd) -> cd.span.startPos.offset
+    case IVal(vd) -> vd.span.startPos.offset
+    case _ -> -1
+  }
+}
+
 pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
   val visStr = visibilityPrefixStr(item.visibility)
   val annoLines = annotationLines(item.annotations)
-  val header = concatDoc(docLines(item.docComments), annoLines)
+  // A plain `//` comment written between the `///` docs / annotations and
+  // the declaration keyword belongs to the declaration, not to whatever
+  // sits first inside its body or parameter list (#7903).
+  val lead = popCommentsBefore(ctx, declStartOffset(item))
+  val header = concatDoc3(docLines(item.docComments), annoLines, lead)
   match item.kind {
     case IFunc(fn) -> itemFunc(visStr, fn, ctx)
     case IRecord(rd) -> concatDoc(

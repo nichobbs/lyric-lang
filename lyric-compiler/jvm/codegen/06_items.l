@@ -4652,6 +4652,105 @@ func fnFieldRetTe(te: in TypeExpr): Option[TypeExpr] {
   }
 }
 
+// Register the module-level `val` `decl` of package `owner` in the cross-package
+// registry under `val:`-prefixed keys when its emitted static-field type is
+// derivable without lowering the initialiser (see the IVal arm of
+// `collectFileSigsSeeded`).
+pub func registerModuleValSig(
+  decl: in ValDecl,
+  owner: in String,
+  externTypes: in Map[String, String],
+  into: in Map[String, JvmFuncSig],
+): Unit {
+  match decl.pattern.kind {
+    case PBinding(vname, _) -> {
+      match moduleValRegistryType(decl, owner, externTypes) {
+        case Some(vty) -> {
+          val vsig = JvmFuncSig(
+            owner = owner,
+            params = newList(),
+            ret = vty,
+            paramNames = newList(),
+            paramDefaults = newList(),
+            paramModes = newList(),
+            refElems = newList(),
+            isIface = false,
+            // The declared element / type arguments (#8281), so an
+            // indexed or matched read of the val narrows its erased
+            // `Object` element like a local with the same annotation.
+            retGenericArgs = moduleValGenericArgs(decl, owner, externTypes),
+            closureRetTy = None,
+            recordRetClass = None,
+            // A module-level `val`'s type is never `Self`.
+            retIsSelf = false,
+            retIsUnsigned = false,
+            recordRetHead = newList(),
+            ownTypeParams = newList(),
+            declParamTypeExprs = newList(),
+            declRetTypeExprRaw = None,
+            declRetExternTypes = newMap(),
+            // `getstatic`, never `invoke*` — recorded for symmetry.
+            jvmMethodName = vname
+          )
+          val vqkey = owner + "/val:" + vname
+          if not into.containsKey(vqkey) {
+            into.add(vqkey, vsig)
+          }
+          val vbkey = "val:" + vname
+          if not into.containsKey(vbkey) {
+            into.add(vbkey, vsig)
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Register the module `val`s of `checked`, the type-checked and desugared form of
+// a bundled package's file, whose declarations carry the types the checker
+// inferred for unannotated values (`Lyric.TypeChecker.annotateModuleVals`).  The
+// raw registration skips an unannotated non-literal `val`, so an importer
+// reading `pub val answer = helper() + 1` needed an annotation (#7777); the
+// declaring package emits the field at this same annotated type.
+pub func registerCheckedModuleVals(
+  checked: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+): Unit {
+  val owner = segmentsToJvmPath(checked.packageDecl.path.segments)
+  val externTypes = ownAwareExternTypes(checked, externSeed)
+  for it in checked.items {
+    match it.kind {
+      case IVal(decl) -> registerModuleValSig(decl, owner, externTypes, into)
+      case _ -> ()
+    }
+  }
+}
+
+// True when `file` declares a module `val` whose JVM field type the raw
+// registration cannot know: a simple binding with no annotation and a
+// non-literal initialiser.
+pub func fileHasInferredModuleVal(file: in SourceFile): Bool {
+  val noExtern: Map[String, String] = newMap()
+  for it in file.items {
+    match it.kind {
+      case IVal(decl) -> match decl.pattern.kind {
+        case PBinding(_, _) -> match moduleValRegistryType(decl, "", noExtern) {
+          case Some(_) -> ()
+          case None -> {
+            return true
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
 pub func collectFileSigsSeeded(
   file0: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -5395,52 +5494,10 @@ pub func collectFileSigsSeeded(
         // init): for the rest, `prelowerModuleVals` derives the field type
         // from the lowered initialiser in the DECLARING package's context, so
         // a registry guess here would mis-descriptor the cross-package
-        // `getstatic` (NoSuchFieldError at run time).  Unregistered vals fail
-        // loud at the read site with a pointer to add an annotation.
-        match decl.pattern.kind {
-          case PBinding(vname, _) -> {
-            match moduleValRegistryType(decl, owner, externTypes) {
-              case Some(vty) -> {
-                val vsig = JvmFuncSig(
-                  owner = owner,
-                  params = newList(),
-                  ret = vty,
-                  paramNames = newList(),
-                  paramDefaults = newList(),
-                  paramModes = newList(),
-                  refElems = newList(),
-                  isIface = false,
-                  // The declared element / type arguments (#8281), so an
-                  // indexed or matched read of the val narrows its erased
-                  // `Object` element like a local with the same annotation.
-                  retGenericArgs = moduleValGenericArgs(decl, owner, externTypes),
-                  closureRetTy = None,
-                  recordRetClass = None,
-                  // A module-level `val`'s type is never `Self`.
-                  retIsSelf = false,
-                  retIsUnsigned = false,
-                  recordRetHead = newList(),
-                  ownTypeParams = newList(),
-                  declParamTypeExprs = newList(),
-                  declRetTypeExprRaw = None,
-                  declRetExternTypes = newMap(),
-                  // `getstatic`, never `invoke*` — recorded for symmetry.
-                  jvmMethodName = vname
-                )
-                val vqkey = owner + "/val:" + vname
-                if not into.containsKey(vqkey) {
-                  into.add(vqkey, vsig)
-                }
-                val vbkey = "val:" + vname
-                if not into.containsKey(vbkey) {
-                  into.add(vbkey, vsig)
-                }
-              }
-              case None -> ()
-            }
-          }
-          case _ -> ()
-        }
+        // `getstatic` (NoSuchFieldError at run time).  The bundle registers
+        // those from the declaring package's type-checked file instead
+        // (`registerCheckedModuleVals`, #7777).
+        registerModuleValSig(decl, owner, externTypes, into)
       }
       case IEnum(decl) -> {
         val enumExported = match file.items[i].visibility { case Some(_) -> true; case None -> false }

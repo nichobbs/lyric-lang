@@ -5041,6 +5041,113 @@ func maybeUnknownMemberDiag(
   }
 }
 
+// True when `tvName` is one of the type arguments of the enclosing record or
+// `impl`'s self type, so it is a type parameter of that declaration.
+func isSelfTypeArgument(selfTy: in Type, tvName: in String): Bool {
+  match selfTy {
+    case TyUser(_, _, selfArgs) -> {
+      for sa in selfArgs {
+        match sa {
+          case TyVar(sn) -> {
+            if sn == tvName {
+              return true
+            }
+          }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// Whether the package being checked declares an `extern type` itself (not
+// through an import).
+func packageDeclaresExternType(tbl: in SymbolTable): Bool {
+  for sym in tbl.symbols {
+    if not sym.isImported {
+      match sym.kind {
+        case DKExternType(_, _) -> return true
+        case _ -> ()
+      }
+    }
+  }
+  false
+}
+
+// T0197 for a method call on a value of a function-level type parameter that
+// no `where` bound promises (#8018): a type parameter has no fields and only
+// the methods of its bounds, so `x.zork()` (or `b.v.zork()` under `where T:
+// Named`) would otherwise be duck-typed against whatever the type argument
+// has, and a typo would fail in a backend.  Silent when the name is one every
+// receiver has (`toString`, the derive-synthesised names), when a plain
+// function of that name could bind by UFCS, when a bound is a marker or an
+// interface whose members the checker cannot enumerate, for a type
+// parameter of the enclosing record or impl, whose bounds are not in scope,
+// and in a package that declares an `extern type`.
+func maybeUnknownTypeParamMethodDiag(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recvRaw: in Type,
+  name: in String,
+  span: in Span,
+): Unit {
+  match unrefine(recvRaw) {
+    case TyVar(tvName) -> {
+      if not sc.genericNames.contains(tvName) {
+        return
+      }
+      if isSelfTypeArgument(sc.selfType, tvName) {
+        return
+      }
+      if isUniversalMethodName(name) or isPrimitiveBuiltinMethodName(name) or anyFunctionNamed(sigs, name) {
+        return
+      }
+      for b in sc.bounds {
+        if b.name == tvName {
+          for cname in b.constraints {
+            if not (isPlainMarker(cname) or isKnownDeriveMarker(cname)) {
+              match constraintInterfaceSym(tbl, cname) {
+                case Some(ifaceSym) -> match ifaceSym.kind {
+                  case DKInterface(ifaceId, _) -> {
+                    if not symTableIsMemberComplete(tbl, ifaceId) or symTableMethodSigs(tbl, ifaceId, name).count > 0 {
+                      return
+                    }
+                  }
+                  case _ -> return
+                }
+                case None -> {
+                  return
+                }
+              }
+            }
+          }
+        }
+      }
+      // A package that declares an `extern type` is an FFI boundary (a
+      // `_kernel*` file): there a type-parameter value may be a host object,
+      // and a call on it resolves against the host type at codegen (on the
+      // JVM every value is a java.lang.Object, so `target.getClass()` is
+      // well-typed), the same open-endedness a `String` receiver has.
+      if packageDeclaresExternType(tbl) {
+        return
+      }
+      diag.add(
+        errorDiagnostic(
+          "T0197",
+          "no method '" + name + "' on type parameter '" + tvName +
+            "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+          span
+        )
+      )
+    }
+    case _ -> ()
+  }
+}
+
 // The methods every backend gives a primitive receiver itself: `toString`,
 // the conversions, the bitwise and the wrapping arithmetic.  A call of any
 // other name on a primitive needs a dot-named function of it.
@@ -17176,7 +17283,10 @@ func inferExprCore(
                   if isMemberCallee {
                     match fnT {
                       case TyError -> match memberRecvTy {
-                        case Some(rt5) -> maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
+                        case Some(rt5) -> {
+                          maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
+                          maybeUnknownTypeParamMethodDiag(sc, tbl, sigs, diag, rt5, memberName, fn.span)
+                        }
                         case None -> {
                         }
                       }

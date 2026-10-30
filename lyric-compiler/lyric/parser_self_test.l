@@ -5,6 +5,7 @@ package Lyric.ParserSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
@@ -657,6 +658,17 @@ test "aspect args row clause duplicate field emits P0331" {
   assertTrue(hasDiagCode(pr, "P0331"), "P0331: duplicate field in args row constraint")
 }
 
+func diagMessageOf(pr: in ParseResult, code: in String): String {
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == code {
+      return pr.diagnostics[i].message
+    }
+    i = i + 1
+  }
+  ""
+}
+
 func hasDiagCode(pr: in ParseResult, code: in String): Bool {
   var i = 0
   while i < pr.diagnostics.count {
@@ -715,6 +727,17 @@ test "reserved keyword as identifier diagnostic" {
   assertTrue(hasDiagCode(asBinding, "P0051"), "reserved-kw: `let match` → P0051")
   val asParam = parse("package P\nfunc g(if: in Int): Int { 0 }\n")
   assertTrue(hasDiagCode(asParam, "P0051"), "reserved-kw: `if` param name → P0051")
+}
+
+test "a function named spawn is P0051 with a rename hint (#7936)" {
+  val decl = parse("package P\nfunc spawn(a: in Int, b: in Int): Int { a + b }\n")
+  assertTrue(hasDiagCode(decl, "P0051"), "func spawn -> P0051")
+  val ext = parse("package P\n@externTarget(\"Host.spawn\")\nfunc spawn(a: in Int): Int = ()\n")
+  assertTrue(hasDiagCode(ext, "P0051"), "an extern binding named spawn -> P0051")
+  val ok = parse("package P\n@externTarget(\"Host.spawn\")\nfunc hostSpawn(a: in Int): Int = ()\n")
+  assertEqualInt(diagCount(ok), 0, "a renamed binding parses cleanly")
+  val msg = diagMessageOf(decl, "P0051")
+  assertTrue(Str.contains(msg, "@externTarget"), "the message points at @externTarget (" + msg + ")")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
