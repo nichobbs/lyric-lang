@@ -5036,7 +5036,7 @@ func maybeUnknownMemberDiag(
       }
       case None -> ()
     }
-    // A method call on a slice or fixed-size array that names none of its
+    // A method call on a slice that names none of its
     // built-in members (`xs.filter(...)`, #8471).  Neither has dot-named
     // functions or extensions, so a plain function such as `Std.Iter.filter`
     // is never bound by method syntax: MSIL lowered the call to a stub that
@@ -5044,7 +5044,6 @@ func maybeUnknownMemberDiag(
     // failed T0115 as unreachable lifted bodies) and the JVM rejected it
     // (J008), so the front end decides.
     case TySlice(_) -> sliceUnknownMethodDiag(sigs, diag, recv, name, span, isCall)
-    case TyArray(_, _, _) -> sliceUnknownMethodDiag(sigs, diag, recv, name, span, isCall)
     case _ -> {
     }
   }

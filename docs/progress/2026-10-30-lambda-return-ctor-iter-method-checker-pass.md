@@ -17,7 +17,7 @@ Covered by `lambda_gaps_batch_self_test.l` (dotnet, JVM and native, ilverify-gat
   `xs.filter(...)`: a slice has no such method, the checker typed it as `TyError` and accepted it, the JVM
   rejected it (J008) and dotnet lowered it to a stub that throws when reached, never lowering its lambda
   argument, whose lifted body (with no recorded captures) then failed T0115. The checker now reports T0113 for a
-  method call on a slice or array that names none of its built-in members, naming the function form when a plain
+  method call on a slice that names none of its built-in members, naming the function form when a plain
   function of that name exists.
 - **#7879.** A call checked inside an enclosing lenient first pass of a deferred argument no longer runs its own
   lambda-argument second pass (`SymbolTable.lenientArgDepth`): the enclosing argument is re-checked against its
