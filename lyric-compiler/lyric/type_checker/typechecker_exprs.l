@@ -7324,7 +7324,15 @@ func resolvePropagateCallArgs(
                 boundArgTys.add(genericArgFromResultExpected(sig, cargs, bi, TyError, resultExpected))
                 bi = bi + 1
               }
-              recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, fn, cargs.count), cargs, boundArgTys, fn.span)
+              recordGenericCallTypeArgs(
+                tbl,
+                sc.genericNames,
+                sig,
+                valueGenericParamsOf(tbl, fn, cargs.count),
+                cargs,
+                boundArgTys,
+                fn.span
+              )
             }
             case _ -> ()
           }
@@ -10949,6 +10957,7 @@ func inferMatchExpr(
     scopePush(sc)
     bindPatternTyped(sc, tbl, sigs, diag, arms[ai].pattern, st)
     bindOpenTuplePattern(sc, tbl, arms[ai].pattern, scrutKey)
+    bindOpenCasePattern(sc, tbl, arms[ai].pattern, scrutKey)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
     recordTuplePatternBindings(tbl, arms[ai].pattern, st, false, sc.genericNames)
     match arms[ai].guard {
@@ -11215,7 +11224,76 @@ pub func registerOpenBindingSite(sc: in Scope, tbl: in SymbolTable, init: in Exp
   if isEvidenceFreeOpenInit(tbl, init, initTy) {
     return addOpenBindingSite(tbl, init, unrefine(initTy), "")
   }
+  val srcKey = openSiteOfExpr(sc, init)
+  if srcKey != "" {
+    return registerOpenAliasSite(sc, tbl, init, initTy, srcKey)
+  }
   registerOpenTupleSite(sc, tbl, init, initTy)
+}
+
+// An unannotated `val o2 = o` / `var o2 = o` initialised from a bare name that
+// is an open site is itself open (#7887): evidence from a use of either name
+// fixes the element for both.  The alias's site has the source's children (a
+// tuple source's own, or the source itself at the empty position for a plain
+// one), so a type noted on the alias reaches the source's sites, and the
+// alias's annotation is the source's type, resolved from whatever evidence
+// reached it through either name.
+func registerOpenAliasSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, initTy: in Type, srcKey: in String): String {
+  if isNoSourceSpan(init.span) or init.span.endPos.offset <= init.span.startPos.offset {
+    return ""
+  }
+  val key = recordCopySiteKey(init.span)
+  if tbl.openBindingSites.containsKey(key) {
+    return key
+  }
+  match mapGet(tbl.openBindingSites, srcKey) {
+    case None -> ""
+    case Some(src) -> {
+      val childKeys: List[String] = newList()
+      val childPaths: List[List[Int]] = newList()
+      if src.childKeys.count > 0 {
+        var ci = 0
+        while ci < src.childKeys.count {
+          childKeys.add(src.childKeys[ci])
+          childPaths.add(src.childPaths[ci])
+          ci = ci + 1
+        }
+      } else {
+        childKeys.add(srcKey)
+        childPaths.add(newList())
+      }
+      val typeParams: List[String] = newList()
+      var gi = 0
+      while gi < sc.genericNames.count {
+        typeParams.add(sc.genericNames[gi])
+        gi = gi + 1
+      }
+      tbl.openBindingSites.add(
+        key,
+        OpenBindingSite(
+          initSpan = init.span,
+          initTy = unrefine(initTy),
+          sinkTy = newList(),
+          sinkTe = newList(),
+          storeTy = newList(),
+          storeTe = newList(),
+          sinkConflict = newList(),
+          storeConflict = newList(),
+          childKeys = childKeys,
+          childPaths = childPaths,
+          parentKey = "",
+          hoistExprs = newList(),
+          hoistPaths = newList(),
+          typeParams = typeParams,
+          patSpans = newList(),
+          patPaths = newList(),
+          argKeys = newList(),
+          argIdx = newList()
+        )
+      )
+      key
+    }
+  }
 }
 
 // Whether `init`, of type `initTy`, is a construction that fixes nothing
@@ -11298,7 +11376,9 @@ func addOpenBindingSite(tbl: in SymbolTable, init: in Expr, ty: in Type, parentK
         hoistPaths = newList(),
         typeParams = newList(),
         patSpans = newList(),
-        patPaths = newList()
+        patPaths = newList(),
+        argKeys = newList(),
+        argIdx = newList()
       )
     )
   }
@@ -11377,7 +11457,9 @@ func registerOpenTupleSite(sc: in Scope, tbl: in SymbolTable, init: in Expr, ini
             hoistPaths = hoistPaths,
             typeParams = typeParams,
             patSpans = newList(),
-            patPaths = newList()
+            patPaths = newList(),
+            argKeys = newList(),
+            argIdx = newList()
           )
         )
         key
@@ -11584,6 +11666,200 @@ func exprIsHoistExempt(sc: in Scope, e: in Expr): Bool {
   }
 }
 
+// A constructor pattern in a `match` arm on an open local (#8250):
+// `case Err(e)` on `val r = Ok(value = true)` binds `e` at the type argument
+// `E` the construction leaves open.  The name is open to that argument: what
+// `e` flows into fixes `E`, and `resolveOpenBindingSites` folds it into the
+// local's type, so the local is declared at the closed type rather than
+// reaching a backend open.
+pub func bindOpenCasePattern(sc: in Scope, tbl: in SymbolTable, pat: in Pattern, key: in String): Unit {
+  if key == "" {
+    return
+  }
+  val target = openAliasTarget(tbl, key)
+  match mapGet(tbl.openBindingSites, target) {
+    case Some(site) -> if site.childKeys.count == 0 { bindOpenCasePatternAt(sc, tbl, target, site, pat) }
+    case None -> ()
+  }
+}
+
+// The site an alias site (`registerOpenAliasSite`) stands for: the plain site
+// it holds as its one child at the empty position, else `key` itself.
+func openAliasTarget(tbl: in SymbolTable, key: in String): String {
+  var cur = key
+  var guard = 0
+  while guard < 16 {
+    match mapGet(tbl.openBindingSites, cur) {
+      case Some(site) -> if site.childKeys.count == 1 and site.childPaths[0].count == 0 {
+        cur = site.childKeys[0]
+      } else {
+        return cur
+      }
+      case None -> return cur
+    }
+    guard = guard + 1
+  }
+  cur
+}
+
+func bindOpenCasePatternAt(
+  sc: in Scope, tbl: in SymbolTable, key: in String, site: in OpenBindingSite, pat: in Pattern
+): Unit {
+  match pat.kind {
+    case PParen(inner) -> bindOpenCasePatternAt(sc, tbl, key, site, inner)
+    case PConstructor(head, pargs) -> {
+      val siteTargs = match site.initTy { case TyUser(_, _, targs) -> targs; case _ -> return }
+      val siteTid = match site.initTy { case TyUser(tid, _, _) -> tid; case _ -> return }
+      val fnExpr = Expr(kind = EPath(path = head), span = pat.span)
+      match unionCaseSymbolOf(tbl, fnExpr) {
+        case Some(caseSym) -> match caseSym.kind {
+          case DKUnionCase(parentId, uc) -> {
+            if not typeIdEq(parentId, siteTid) {
+              return
+            }
+            match parentUnionDeclOf(tbl, parentId) {
+              case Some(decl) -> {
+                val gnames = unionDeclGenericNames(decl)
+                if gnames.count != siteTargs.count {
+                  return
+                }
+                val scratch: List[Diagnostic] = newList()
+                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+                var i = 0
+                while i < pargs.count and i < ftypes.count {
+                  bindOpenCaseArg(sc, tbl, key, site, pargs[i], ftypes[i], gnames, siteTargs)
+                  i = i + 1
+                }
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// `argPat` is the pattern for a payload field of declared type `fty`: a bare
+// name over a field typed by one of the union's type parameters whose argument
+// is open at `site` becomes open to that argument.
+func bindOpenCaseArg(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  key: in String,
+  site: in OpenBindingSite,
+  argPat: in Pattern,
+  fty: in Type,
+  gnames: in List[String],
+  siteTargs: in List[Type],
+): Unit {
+  match argPat.kind {
+    case PParen(inner) -> bindOpenCaseArg(sc, tbl, key, site, inner, fty, gnames, siteTargs)
+    case PBinding(name, None) -> {
+      if name == "_" or isConstructorPatternName(tbl, name) {
+        return
+      }
+      val gname = match fty { case TyVar(g) -> g; case _ -> return }
+      var gi = -1
+      var k = 0
+      while k < gnames.count {
+        if gnames[k] == gname {
+          gi = k
+        }
+        k = k + 1
+      }
+      if gi < 0 or typeIsClosed(siteTargs[gi]) or isNoSourceSpan(argPat.span) or argPat.span.endPos.offset <= argPat.span.startPos.offset {
+        return
+      }
+      val argKey = recordCopySiteKey(argPat.span)
+      if not tbl.openBindingSites.containsKey(argKey) {
+        tbl.openBindingSites.add(
+          argKey,
+          OpenBindingSite(
+            initSpan = argPat.span,
+            initTy = TyError,
+            sinkTy = newList(),
+            sinkTe = newList(),
+            storeTy = newList(),
+            storeTe = newList(),
+            sinkConflict = newList(),
+            storeConflict = newList(),
+            childKeys = newList(),
+            childPaths = newList(),
+            parentKey = key,
+            hoistExprs = newList(),
+            hoistPaths = newList(),
+            typeParams = newList(),
+            patSpans = newList(),
+            patPaths = newList(),
+            argKeys = newList(),
+            argIdx = newList()
+          )
+        )
+        site.argKeys.add(argKey)
+        site.argIdx.add(gi)
+      }
+      match scopeTryFind(sc, name) {
+        case Some(b) -> scopeAdd(sc, LocalBinding(name = name, ty = b.ty, isMutable = b.isMutable, openSite = argKey))
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Fold the type arguments the names bound by constructor patterns fixed into
+// the type of each open site that has such names (#8250): the site then has
+// the closed type those names and its own uses agree on.
+func foldOpenCaseArgs(tbl: in SymbolTable): Unit {
+  val keys = mapKeys(tbl.openBindingSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.openBindingSites, keys[i]) {
+      case Some(site) -> if site.argKeys.count > 0 {
+        match site.initTy {
+          case TyUser(tid, nm, targs) -> {
+            val filled: List[Type] = newList()
+            var k = 0
+            while k < targs.count {
+              filled.add(targs[k])
+              k = k + 1
+            }
+            var ai = 0
+            while ai < site.argKeys.count {
+              match mapGet(tbl.openBindingSites, site.argKeys[ai]) {
+                case Some(argSite) -> {
+                  val fixed: Option[Type] = match openSiteChoice(argSite) {
+                    case 1 -> Some(value = argSite.sinkTy[0])
+                    case 2 -> Some(value = argSite.storeTy[0])
+                    case _ -> None
+                  }
+                  match fixed {
+                    case Some(ft) -> {
+                      filled[site.argIdx[ai]] = ft
+                    }
+                    case None -> ()
+                  }
+                }
+                case None -> ()
+              }
+              ai = ai + 1
+            }
+            val noParams: List[String] = newList()
+            noteOpenBindingType(tbl, keys[i], TyUser(id = tid, name = nm, args = filled), true, noParams)
+          }
+          case _ -> ()
+        }
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
 // `pat` binds the value of the open site `key`: each name it binds at the
 // position of one of the site's children is open to that child (#7855), and
 // each name it binds to a tuple holding children (the whole value, or a
@@ -11687,7 +11963,9 @@ func openSiteAtPath(
           hoistPaths = newList(),
           typeParams = site.typeParams,
           patSpans = newList(),
-          patPaths = newList()
+          patPaths = newList(),
+          argKeys = newList(),
+          argIdx = newList()
         )
       )
       subKey
@@ -11801,6 +12079,10 @@ func noteOpenBindingType(
             iargs.count == targs.count
           case _ -> false
         }
+        // The site of a name a constructor pattern binds to a type argument
+        // (`bindOpenCasePattern`) has no constructor of its own: any closed
+        // type is the argument.
+        case TyError -> true
         case _ -> false
       }
       if not sameCtor {
@@ -12529,6 +12811,7 @@ func openBindingInitArity(tbl: in SymbolTable, key: in String): Int {
 // own (its tuple's carries its type); only the names patterns bind from it
 // are recorded.
 pub func resolveOpenBindingSites(tbl: in SymbolTable): Unit {
+  foldOpenCaseArgs(tbl)
   val keys = mapKeys(tbl.openBindingSites)
   var i = 0
   while i < keys.count {
@@ -13550,6 +13833,7 @@ func reportOpenHoistedReceiver(
   own: in Type,
   expected: in Type,
   memberName: in String,
+  hazard: in Bool,
 ): Unit {
   if not hoistBindsOperand(sc, recv) or not typeMentionsGenericInst(own) {
     return
@@ -13558,15 +13842,36 @@ func reportOpenHoistedReceiver(
   if typeIsClosedOver(t, sc.genericNames) {
     return
   }
+  val why = if hazard {
+    "it is evaluated before an 'await' or '?' in the arguments, and neither the receiver, the other arguments " +
+      "nor the type expected of the result fixes them"
+  } else {
+    "neither the receiver, the arguments nor the type expected of the result fixes them"
+  }
   diag.add(
     errorDiagnostic(
       "T0154",
-      "cannot infer the type arguments of the receiver of '" + memberName +
-        "': it is evaluated before an 'await' or '?' in the arguments, and neither the receiver, the other arguments " +
-        "nor the type expected of the result fixes them; bind the receiver to a local with a type annotation first",
+      "cannot infer the type arguments of the receiver of '" + memberName + "': " + why +
+        "; bind the receiver to a local with a type annotation first",
       recv.span
     )
   )
+}
+
+// Whether the callee `fn` is a member call whose receiver is itself a call
+// that leaves a type argument of its result open.
+func openCallReceiver(sc: in Scope, fn: in Expr, memberRecvTy: in Option[Type]): Bool {
+  match fn.kind {
+    case EMember(recv, _) -> match stripExprParens(recv).kind {
+      case ECall(_, _) -> match memberRecvTy {
+        case Some(t) -> typeMentionsGenericInst(unrefine(t)) and
+          not typeIsClosedOver(unrefine(t), sc.genericNames)
+        case None -> false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 // Whether any argument of a call contains an `await` or a `?`.
@@ -14603,7 +14908,16 @@ func directCallType(
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
       recordDottedGenericCallSite(tbl, fn.span, dottedCalleeName(fn, sig), false, sig)
-      recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
+      val noGenerics: List[String] = newList()
+      recordGenericCallTypeArgs(
+        tbl,
+        noGenerics,
+        sig,
+        valueGenericParamsOf(tbl, dottedFn, args.count),
+        args,
+        argTypes,
+        fn.span
+      )
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
     case None -> bindValueGenericCall(tbl, diag, fn, args, argTypes, ret)
@@ -15138,8 +15452,10 @@ func recordDottedGenericMethodCall(
   for a in args {
     fullArgs.add(a)
   }
+  val noGenerics: List[String] = newList()
   recordGenericCallTypeArgs(
     tbl,
+    noGenerics,
     fullSig,
     valueGenericParamsOf(tbl, dottedFn, fullArgs.count),
     fullArgs,
@@ -15307,6 +15623,7 @@ func anyErrorType(ts: in List[Type]): Bool {
 // one span, or a re-check against an expected type) is `conflicting`.
 func recordGenericCallTypeArgs(
   tbl: in SymbolTable,
+  genericNames: in List[String],
   sig: in ResolvedSignature,
   valueParams: in List[String],
   args: in List[CallArg],
@@ -15345,7 +15662,23 @@ func recordGenericCallTypeArgs(
   if targs.count == 0 {
     return
   }
-  match typeExprsForRef(tbl, targs, sp) {
+  // A call in a generic body may bind a type argument to the body's own type
+  // parameter (`mapOption(o, { v: T -> 3 })` over `o: Option[T]`): spelled by
+  // its name, flagged for a pass that substitutes it (#8301).
+  var mentionsVars = false
+  for ta in targs {
+    if not typeIsClosed(ta) {
+      mentionsVars = true
+    }
+  }
+  if mentionsVars {
+    for ta in targs {
+      if not typeIsClosedOver(ta, genericNames) {
+        return
+      }
+    }
+  }
+  match typeExprsForRefV(tbl, targs, sp, mentionsVars) {
     case Some(tes) -> {
       val key = recordCopySiteKey(sp)
       val renderedArgs: List[String] = newList()
@@ -15364,7 +15697,8 @@ func recordGenericCallTypeArgs(
               typeParams = prev.typeParams,
               typeArgs = prev.typeArgs,
               rendered = prev.rendered,
-              conflicting = true
+              conflicting = true,
+              mentionsVars = prev.mentionsVars
             )
           )
         }
@@ -15374,7 +15708,8 @@ func recordGenericCallTypeArgs(
             typeParams = typeParamNames,
             typeArgs = tes,
             rendered = rendered,
-            conflicting = false
+            conflicting = false,
+            mentionsVars = mentionsVars
           )
         )
       }
@@ -16394,7 +16729,15 @@ func inferExprCore(
                     boundArgTys.add(if bi == di { argExp } else { argTypes[bi] })
                     bi = bi + 1
                   }
-                  recordGenericCallTypeArgs(tbl, osig, valueGenericParamsOf(tbl, fn, args.count), args, boundArgTys, fn.span)
+                  recordGenericCallTypeArgs(
+                    tbl,
+                    sc.genericNames,
+                    osig,
+                    valueGenericParamsOf(tbl, fn, args.count),
+                    args,
+                    boundArgTys,
+                    fn.span
+                  )
                 }
                 case _ -> ()
               }
@@ -16472,7 +16815,12 @@ func inferExprCore(
       // other arguments or the type expected of the result (#7844).
       // A receiver passed by reference is a place the call keeps, like a
       // by-reference argument (#8179): never hoisted into a temporary.
-      if isMemberCallee and callArgsHaveHoistHazard(args) and not isRewrittenDotPick(tbl, methodPick, fn, memberRecvTy) {
+      // A call receiver whose own type leaves a type argument open
+      // (`emptyCell().orDefault(5)`) is typed the same way with no `await` in
+      // the arguments, so `Lyric.Mono` need not infer the generic callee's
+      // type arguments from the call alone (#8038).
+      val hoistHazard = callArgsHaveHoistHazard(args)
+      if isMemberCallee and (hoistHazard or openCallReceiver(sc, fn, memberRecvTy)) and not isRewrittenDotPick(tbl, methodPick, fn, memberRecvTy) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
             case Some(hoistRecvTy) -> {
@@ -16491,7 +16839,7 @@ func inferExprCore(
                 resultExpected
               )
               recordHoistOperandType(sc, tbl, hoistRecv, hoistRecvTy, recvExpected)
-              reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName)
+              reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName, hoistHazard)
             }
             case None -> ()
           }
@@ -16581,6 +16929,7 @@ func inferExprCore(
           match fn.kind {
             case EPath(_) -> recordGenericCallTypeArgs(
               tbl,
+              sc.genericNames,
               sig,
               valueGenericParamsOf(tbl, fn, args.count),
               args,

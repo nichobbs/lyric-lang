@@ -53,6 +53,12 @@ for t in \
   lyric-compiler/lyric/parser_self_test.l \
   lyric-compiler/lyric/typechecker_self_test.l \
   lyric-compiler/lyric/bounded_generic_ops_self_test.l \
+  lyric-compiler/lyric/generic_default_named_self_test.l \
+  lyric-compiler/lyric/open_alias_self_test.l \
+  lyric-compiler/lyric/generic_overload_arity_self_test.l \
+  lyric-compiler/lyric/method_generic_self_test.l \
+  lyric-compiler/lyric/open_receiver_self_test.l \
+  lyric-compiler/lyric/generic_member_stdlib_native_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
   lyric-compiler/lyric/generic_member_calls_std_self_test.l \
   lyric-compiler/lyric/generic_protected_calls_self_test.l \

@@ -122,7 +122,7 @@ The full set of derivable markers is:
 | `Compare` | `<`, `<=`, `>`, `>=` and `IComparable<T>` |
 | `Hash` | Consistent hash code (implies `Equals`) |
 | `Equals` | `==`, `!=` and `IEquatable<T>` |
-| `Default` | `T.default()` — the canonical zero-like value |
+| `Default` | `T.default()` — the canonical zero-like value: a primitive's zero, a distinct type's `X.from(<zero>)`, a record's fields at their zeros |
 
 `Default` is rejected as a derive if the underlying primitive's default value falls outside a declared range. `type Age = Int range 0 ..= 150 derives Default` is fine — `0` is a valid age. `type DiceRoll = Int range 1 ..= 6 derives Default` is a compile error — `0` is not a valid die face.
 

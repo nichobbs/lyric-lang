@@ -4052,7 +4052,31 @@ test "a hoisted receiver whose type nothing fixes is T0154 (#7844)" {
   )
   val noAwait = decls + "func f(): Int {\n  emptyBox().size(5)\n}\n"
   val noAwaitCr = checkWithImportedPackages(parse(noAwait).file, stdCollectionsHostPackages())
-  assertEqualInt(countDiagCode(noAwaitCr, "T0154"), 0, "no await, nothing hoisted: no T0154")
+  // #8038: the same typing applies with no `await`, since `Lyric.Mono` could not
+  // build the receiver at an open instantiation either (M0002).
+  assertEqualInt(
+    countDiagCode(noAwaitCr, "T0154"),
+    1,
+    "no await, nothing fixes T: one T0154 (" + diagCodesOf(noAwaitCr) + ")"
+  )
+  assertTrue(
+    diagMessagesContain(noAwaitCr, "neither the receiver, the arguments nor the type expected"),
+    "message without await"
+  )
+  val noAwaitArg = decls + "func f(): Int {\n  emptyBox().orDefault(5)\n}\n"
+  val noAwaitArgCr = checkWithImportedPackages(parse(noAwaitArg).file, stdCollectionsHostPackages())
+  assertEqualInt(
+    diagCount(noAwaitArgCr),
+    0,
+    "no await, the argument fixes T: clean (" + diagCodesOf(noAwaitArgCr) + ")"
+  )
+  val noAwaitResult = decls + "func f(): Opt[Int] {\n  val r: Opt[Int] = emptyBox().peek(1)\n  r\n}\n"
+  val noAwaitResultCr = checkWithImportedPackages(parse(noAwaitResult).file, stdCollectionsHostPackages())
+  assertEqualInt(
+    diagCount(noAwaitResultCr),
+    0,
+    "no await, the expected result fixes T: clean (" + diagCodesOf(noAwaitResultCr) + ")"
+  )
 }
 
 // #8181: the native-only fallback type offered for the operand starting at
@@ -10229,11 +10253,22 @@ test "a generic call's resolved type arguments are recorded (#7865)" {
   val openCall = parseCheck(
     "package P\nfunc applyT[T](f: in () -> T): T { f() }\nfunc g[U](u: in U): U { applyT({ -> u }) }\n"
   )
-  assertEqualInt(
-    openCall.symbols.genericCallTypeArgSites.count,
-    0,
-    "a type argument naming a type parameter is not recorded"
-  )
+  // A type argument naming the enclosing generic's type parameter is recorded
+  // by its name and flagged, for a pass that substitutes it (#8301); `Lyric.Mono`
+  // does not read such a site.
+  val openKeys = mapKeys(openCall.symbols.genericCallTypeArgSites)
+  assertEqualInt(openKeys.count, 1, "a type argument naming a type parameter is recorded")
+  match mapGet(openCall.symbols.genericCallTypeArgSites, openKeys[0]) {
+    case Some(site) -> {
+      assertTrue(site.mentionsVars, "flagged as naming a type parameter")
+      assertEqual(typeExprText(site.typeArgs[0]), "U", "spelled by the parameter's name")
+    }
+    case None -> assertTrue(false, "open site present")
+  }
+  match mapGet(cr.symbols.genericCallTypeArgSites, keys[0]) {
+    case Some(closedSite) -> assertFalse(closedSite.mentionsVars, "a closed site is not flagged")
+    case None -> assertTrue(false, "closed site present")
+  }
 }
 
 // #7865: the types a lambda's unannotated parameters take from the expected
@@ -11655,6 +11690,20 @@ test "same-name methods with one parameter count are T0162 (#8085)" {
       "  func scale(self: in R, x: in Int, f: in Int = 2): Int { x * f }\n}\n"
   )
   assertEqualInt(countDiagCode(ok, "T0162"), 0, "different counts: " + diagCodesOf(ok))
+}
+
+// #8241: a record method's own type parameter is erased, so one taken by
+// reference is T0214; by value, in a result or inside a collection it is fine.
+test "a by-reference parameter of a method-level type parameter is T0214 (#8241)" {
+  val viaInout = parseCheck("package P\nrecord R {\n  n: Int\n  func bump[U](self: in R, x: inout U): U { x }\n}\n")
+  assertEqualInt(countDiagCode(viaInout, "T0214"), 1, "inout: " + diagCodesOf(viaInout))
+  assertTrue(diagMessagesContain(viaInout, "parameter 'x' of method 'bump' of 'R'"), "message")
+  val viaOut = parseCheck("package P\nrecord R {\n  n: Int\n  func fill[U](self: in R, x: out List[U]): Unit { }\n}\n")
+  assertEqualInt(countDiagCode(viaOut, "T0214"), 1, "out: " + diagCodesOf(viaOut))
+  val ok = parseCheck(
+    "package P\nrecord R {\n  n: Int\n  func keep[U](self: in R, x: in U): U { x }\n  func fixed(self: in R, x: inout Int): Int { x }\n}\n"
+  )
+  assertEqualInt(countDiagCode(ok, "T0214"), 0, "by value / concrete: " + diagCodesOf(ok))
 }
 
 // #8085 review: T0161 compares every expression form, so an interpolated or

@@ -1844,12 +1844,16 @@ pub record ArgOrderSite {
 /// unannotated module `val`, or ends in an `if` or a block); it falls back to
 /// these, so such a call specialises instead of failing with `M0002` (#7865).
 /// Two checks of one call at different type arguments are `conflicting` and
-/// never used.
+/// never used. A call in a generic body whose type arguments name the body's
+/// own type parameters is `mentionsVars`: the arguments are only meaningful
+/// to a pass that substitutes those parameters (the native lambda spelling,
+/// #8301), so `Lyric.Mono`'s fallback does not read it.
 pub record GenericCallTypeArgsSite {
   typeParams: List[String]
   typeArgs: List[TypeExpr]
   rendered: String
   conflicting: Bool
+  mentionsVars: Bool = false
 }
 
 /// The types a lambda's unannotated parameters took from the function type

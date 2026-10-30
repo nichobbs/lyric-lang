@@ -2453,11 +2453,105 @@ func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       case RMField(field) -> {
         val _ = resolveType(tbl, ctx, diag, field.ty)
       }
-      case RMFunc(fn) -> checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+      case RMFunc(fn) -> {
+        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        checkMethodGenericByRefParams(diag, decl.name, fn)
+      }
       case RMInvariant(_) -> {
       }
     }
     i = i + 1
+  }
+}
+
+// T0214: a record method's own type parameter is erased in its body, so an
+// `out` or `inout` parameter typed by it would take a reference to a caller's
+// variable of the concrete type where the method expects one to an erased
+// value, which a backend with reified value types cannot pass (#8241).  A free
+// generic function is specialised per type argument and has no such limit.
+func checkMethodGenericByRefParams(diag: in List[Diagnostic], owner: in String, fn: in FunctionDecl): Unit {
+  val own: List[String] = newList()
+  match fn.generics {
+    case Some(g) -> {
+      for gp in g.params {
+        match gp {
+          case GPType(nm, _) -> own.add(nm)
+          case GPValue(_, _, _) -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  if own.count == 0 {
+    return
+  }
+  for p in fn.params {
+    val byRef = match p.mode { case PMIn -> false; case PMOut -> true; case PMInout -> true }
+    if byRef {
+      val hit = typeExprNamesAny(p.ty, own)
+      if hit != "" {
+        diag.add(
+          errorDiagnostic(
+            "T0214",
+            "parameter '" + p.name + "' of method '" + fn.name + "' of '" + owner + "' is passed by reference (" +
+              (match p.mode { case PMOut -> "out"; case _ -> "inout" }) +
+              ") and its type mentions the method's own type parameter '" +
+              hit +
+              "'; a method's type parameters are erased, so declare '" +
+              fn.name +
+              "' as a free generic function taking the record, or take the value with `in` and return the result",
+            p.span
+          )
+        )
+      }
+    }
+  }
+}
+
+// The first of `names` that `te` mentions as a type name, or "".
+func typeExprNamesAny(te: in TypeExpr, names: in List[String]): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count == 1 and names.contains(path.segments[0]) { path.segments[0] } else { "" }
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and names.contains(head.segments[0]) {
+        return head.segments[0]
+      }
+      for a in args {
+        match a {
+          case TAType(t) -> {
+            val h = typeExprNamesAny(t, names)
+            if h != "" {
+              return h
+            }
+          }
+          case TAValue(_) -> ()
+        }
+      }
+      ""
+    }
+    case TArray(_, element) -> typeExprNamesAny(element, names)
+    case TSlice(element) -> typeExprNamesAny(element, names)
+    case TTuple(types) -> {
+      for t in types {
+        val h = typeExprNamesAny(t, names)
+        if h != "" {
+          return h
+        }
+      }
+      ""
+    }
+    case TNullable(inner) -> typeExprNamesAny(inner, names)
+    case TFunction(ps, ret) -> {
+      for t in ps {
+        val h = typeExprNamesAny(t, names)
+        if h != "" {
+          return h
+        }
+      }
+      typeExprNamesAny(ret, names)
+    }
+    case TParen(inner) -> typeExprNamesAny(inner, names)
+    case _ -> ""
   }
 }
 
