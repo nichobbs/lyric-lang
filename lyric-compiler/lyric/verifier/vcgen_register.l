@@ -232,6 +232,13 @@ func overloadCalleeKey(name: in String, arity: in Int): String {
   name + "/" + toString(arity)
 }
 
+// The callee-table key of the method `method` declared in the body of record
+// `record`, which a `recv.method(...)` call reaches before any dot-named
+// function (#8356).
+func recordMethodCalleeKey(record: in String, method: in String): String {
+  "!method/" + record + "::" + method
+}
+
 // The callee-table key present when `name` names functions of more than
 // one declaration (#8341).
 func overloadedMarkerKey(name: in String): String {

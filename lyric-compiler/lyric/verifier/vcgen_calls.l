@@ -181,6 +181,79 @@ func outParamRoots(decl: in FunctionDecl, args: in List[CallArg]): List[String] 
   roots
 }
 
+// `decl`'s sort info for `te` with its type parameters replaced by `targs`
+// (none for a callee that is not generic).
+func calleeSortInfoAt(env: in VEnv, decl: in FunctionDecl, targs: in List[Sort], te: in TypeExpr): SortInfo {
+  val si = calleeSortInfo(env, decl, te)
+  if targs.count == 0 {
+    si
+  } else {
+    si.copy(sort = substSortParams(si.sort, typeParamNames(decl), targs))
+  }
+}
+
+// The sorts the type parameters `tparams` of `decl` take at a call whose
+// arguments are `args` (terms `rawArgTerms`): each parameter's declared sort
+// is matched with the sort of the argument it receives.  Err when the
+// arguments do not pair with the parameters, do not fit, or leave a type
+// parameter open.
+func inferCallTypeArgs(
+  env: in VEnv, decl: in FunctionDecl, tparams: in List[String], args: in List[CallArg], rawArgTerms: in List[Term]
+): Result[List[Sort], String] {
+  val names: List[String] = newList()
+  for p in decl.params {
+    names.add(p.name)
+  }
+  val bound: List[Option[Sort]] = newList()
+  for _tp in tparams {
+    bound.add(None)
+  }
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      var i = 0
+      while i < decl.params.count {
+        if slots[i] >= 0 {
+          val pattern = calleeSortInfo(env, decl, decl.params[i].ty).sort
+          if not matchArgSortParams(pattern, rawArgTerms[slots[i]], tparams, bound) {
+            return Err(error = "the argument for '" + decl.params[i].name + "' does not fit its parameter's type")
+          }
+        }
+        i = i + 1
+      }
+    }
+    case Err(why) -> {
+      return Err(error = why)
+    }
+  }
+  val found: List[Sort] = newList()
+  var k = 0
+  while k < tparams.count {
+    match bound[k] {
+      case Some(srt) -> found.add(srt)
+      case None -> {
+        return Err(error = "'" + tparams[k] + "' is not determined")
+      }
+    }
+    k = k + 1
+  }
+  Ok(value = found)
+}
+
+// The name of the uninterpreted function standing for `name` at the type
+// arguments `targs`: one function per instance.
+func instanceCalleeName(name: in String, targs: in List[Sort]): String {
+  var text = name + "<"
+  var i = 0
+  while i < targs.count {
+    if i > 0 {
+      text = text + ","
+    }
+    text = text + smtRenderSort(targs[i])
+    i = i + 1
+  }
+  text + ">"
+}
+
 // How many contracts and defaults may unfold inside one another at a call.
 func maxUnfoldDepth(): Int {
   32
@@ -241,7 +314,7 @@ func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: i
 // value of its own; `old(p)` is the argument (#8102).
 func translateResolvedCall(
   env: in VEnv,
-  name: in String,
+  rawName: in String,
   decl: in FunctionDecl,
   args: in List[CallArg],
   rawArgTerms: in List[Term],
@@ -251,7 +324,31 @@ func translateResolvedCall(
   argAssumed: in List[Term],
   allArgDiags: in List[Diagnostic],
 ): (TranslateResult, List[Diagnostic]) {
-  val resultInfo = match decl.ret { case Some(te) -> calleeSortInfo(env, decl, te); case None -> unitSortInfo() }
+  // A generic callee is applied at the type arguments its arguments fix; a
+  // call that leaves one open fails closed (#8356, #8631).
+  val tparams = typeParamNames(decl)
+  var targs: List[Sort] = newList()
+  if tparams.count > 0 {
+    match inferCallTypeArgs(env, decl, tparams, args, rawArgTerms) {
+      case Ok(found) -> {
+        targs = found
+      }
+      case Err(why) -> {
+        allArgDiags.add(
+          untranslatableDiag("the type arguments of the call to '" + decl.name + "' are not fixed by its arguments: " + why, callSpan)
+        )
+        val openTR = TranslateResult(
+          term = poisonTerm(freshVar(env, rawName + "!result", SUninterp(name = "call"))),
+          sideConds = argSides,
+          assumed = argAssumed
+        )
+        val openPair: (TranslateResult, List[Diagnostic]) = (openTR, allArgDiags)
+        return openPair
+      }
+    }
+  }
+  val name = if targs.count > 0 { instanceCalleeName(rawName, targs) } else { rawName }
+  val resultInfo = match decl.ret { case Some(te) -> calleeSortInfoAt(env, decl, targs, te); case None -> unitSortInfo() }
   // What an earlier translation of this call left for `havocOutArgs` is
   // not this one's (#8111).
   forgetOutPosts(env, outParamRoots(decl, args), callSpan)
@@ -302,7 +399,7 @@ func translateResolvedCall(
   val paramSorts: List[Sort] = newList()
   var pi = 0
   while pi < decl.params.count {
-    paramSorts.add(calleeSortInfo(env, decl, decl.params[pi].ty).sort)
+    paramSorts.add(calleeSortInfoAt(env, decl, targs, decl.params[pi].ty).sort)
     pi = pi + 1
   }
   addUserFunOnce(env.symbols, name, paramSorts, resultSort)
@@ -313,7 +410,7 @@ func translateResolvedCall(
   val innerVarNames: List[String] = newList()
   var ii = 0
   while ii < decl.params.count {
-    val pInfo = calleeSortInfo(env, decl, decl.params[ii].ty)
+    val pInfo = calleeSortInfoAt(env, decl, targs, decl.params[ii].ty)
     innerVars.add(decl.params[ii].name, TVar(name = decl.params[ii].name, sort = pInfo.sort))
     innerSorts.add(decl.params[ii].name, pInfo)
     innerVarNames.add(decl.params[ii].name)
@@ -518,7 +615,7 @@ func translateResolvedCall(
       case _ -> {
         val oldKey = "old." + pp.name
         resultVars2.add(oldKey, TVar(name = oldKey, sort = paramSorts[psi]))
-        resultSorts2.add(oldKey, calleeSortInfo(env, decl, pp.ty))
+        resultSorts2.add(oldKey, calleeSortInfoAt(env, decl, targs, pp.ty))
         resultVarNames2.add(oldKey)
         postSubst.add(oldKey, argTerms[psi])
         postSubstNames.add(oldKey)

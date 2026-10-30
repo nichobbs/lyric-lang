@@ -338,6 +338,17 @@ pub func goalsForFileInScope(
   while rmi < modelFile.items.count {
     match modelFile.items[rmi].kind {
       case IRecord(rmDecl) -> {
+        val rmSiblings: List[SiblingMethod] = newList()
+        var rms = 0
+        while rms < rmDecl.members.count {
+          match rmDecl.members[rms] {
+            case RMFunc(sibFn) -> rmSiblings.add(SiblingMethod(name = sibFn.name, ret = sibFn.ret))
+            case _ -> ()
+          }
+          rms = rms + 1
+        }
+        val rmFields = SelfFields.recordFieldNames(rmDecl.members)
+        val rmSelf = Some(value = typeOfDeclaration(rmDecl.name, rmDecl.generics))
         var rmj = 0
         while rmj < rmDecl.members.count {
           match rmDecl.members[rmj] {
@@ -345,6 +356,31 @@ pub func goalsForFileInScope(
               val rmKey = rmDecl.name + "." + rmFn.name
               if not recordMethodsMap.containsKey(rmKey) {
                 recordMethodsMap.add(rmKey, true)
+              }
+              // A method is a callee when no other method of its record
+              // has its name and it takes a `self` receiver; its contract
+              // and `@pure` body are then applied at a call like a
+              // function's (#8356).
+              var sameName = 0
+              for sm in rmSiblings {
+                if sm.name == rmFn.name {
+                  sameName = sameName + 1
+                }
+              }
+              if sameName == 1 and rmFn.params.count >= 1 and rmFn.params[0].name == "self" {
+                val calleeKey = recordMethodCalleeKey(rmDecl.name, rmFn.name)
+                if not callees.containsKey(calleeKey) {
+                  val md = methodAsFunction(
+                    rmDecl.name + "::" + rmFn.name,
+                    rmFields,
+                    rmDecl.generics,
+                    rmSelf,
+                    rmSiblings,
+                    rmFn
+                  )
+                  callees.add(calleeKey, md)
+                  calleeDecls.add(md)
+                }
               }
             }
             case _ -> ()

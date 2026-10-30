@@ -102,7 +102,20 @@ func resolveMethodCallee(
   val recvSort = sortOf(recvTerm)
   match recvSort {
     case SDatatype(rName, targs) -> {
-      if targs.count > 0 or env.recordMethods.containsKey(rName + "." + methodName) {
+      // A method declared in the record's body is the callee, its type
+      // parameters those of the record, read off the receiver's sort at the
+      // call (#8356).
+      if env.recordMethods.containsKey(rName + "." + methodName) {
+        match mapGet(env.callees, recordMethodCalleeKey(rName, methodName)) {
+          case Some(mdecl) -> {
+            return Some(value = ResolvedCallee(name = mdecl.name, decl = mdecl))
+          }
+          case None -> {
+            return None
+          }
+        }
+      }
+      if targs.count > 0 {
         return None
       }
       match findRecordFields(env, rName) {
