@@ -410,6 +410,24 @@ test "a call whose value is a generic instantiation keeps its type" {
   assertEqualInt(lb[0].toInt(), 2, "a List[Byte] result")
 }
 
+func setFrom[T](nv: in T, x: inout T): Unit {
+  x = nv
+}
+
+test "a generic inout T keeps the place's type when a literal fixes T too" {
+  var b: Byte = 2u8
+  val lb = takeList(b, 3)
+  assertEqualInt(lb[0].toInt(), 2, "a List[Byte] from a Byte local and a literal")
+  assertEqualInt(b.toInt(), 3, "the Byte local was written")
+  var bytes: array[2, Byte] = [1u8, 2u8]
+  val le = takeList(bytes[1], 3)
+  assertEqualInt(le[0].toInt(), 2, "a List[Byte] from a Byte element and a literal")
+  assertEqualInt(bytes[1].toInt(), 3, "the Byte element was written")
+  var c: Byte = 9u8
+  setFrom(4, c)
+  assertEqualInt(c.toInt(), 4, "the literal before the Byte place")
+}
+
 test "an array that is copied keeps its own elements" {
   var a: array[3, Int] = [1, 2, 3]
   val before = a

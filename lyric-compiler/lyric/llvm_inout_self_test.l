@@ -56,8 +56,10 @@
 //!     `k.swapI(k)` through an interface, a generic `swapG(k, k)`): the
 //!     borrow is retained for the call, so the callee's write cannot free
 //!     what it still reads, under ASan;
-//!   - `N0023` (#8252), positioned at the argument, for an `out`/`inout`
-//!     `Self` parameter in a call through an interface value;
+//!   - an `out`/`inout` `Self` parameter of an interface method called
+//!     through an interface value, on a heap and a by-value implementer, under
+//!     ASan (#8252); `N0023`, positioned at the argument, when the argument
+//!     is a place of another type than the interface;
 //!   - `N0024` (#7891), positioned at the argument, for a variable a
 //!     closure captures passed by reference from inside the closure (a
 //!     closure-local variable, and a field of a captured record, still
@@ -452,49 +454,91 @@ test "a borrow that is also the by-ref place of the same call stays alive (ASan)
   assertEqualInt(compileAndRunAsan(viaGeneric).exitCode, 0, "swapG(k, k, ...)")
 }
 
-test "an out/inout Self parameter through an interface value is N0023 at the argument (#8252)" {
-  val src = "package T\n" + "interface Sw {\n  func swapWith(self: in Self, other: inout Self): Unit\n}\n" +
-    "record A {\n  n: Int\n}\n" +
-    "impl Sw for A {\n" +
-    "  func swapWith(self: in Self, other: inout Self): Unit {\n" +
-    "    other = A(n = self.n + other.n)\n" +
-    "  }\n" +
+func selfIfaceSource(recordDecl: in String, ctor: in String, mainBody: in String): String {
+  "package T\n" + "interface Sw {\n" + "  func swapWith(self: in Self, other: inout Self): Unit\n" +
+    "  func mk(self: in Self, j: in Int, other: out Self): Unit\n" +
+    "  func total(self: in Self): Int\n" +
     "}\n" +
-    "func main(): Int {\n" +
-    "  val k: Sw = A(n = 1)\n" +
-    "  var o: Sw = A(n = 2)\n" +
-    "  k.swapWith(o)\n" +
-    "  0\n" +
-    "}\n"
-  assertPanicsWith("inout Self through an interface", "error[N0023] 16:14:", { -> codegenOnly(src) })
-  val direct = "package T\n" + "interface Sw {\n  func swapWith(self: in Self, other: inout Self): Unit\n}\n" +
-    "record A {\n  n: Int\n}\n" +
-    "impl Sw for A {\n" +
+    recordDecl +
+    "impl Sw for " +
+    ctor +
+    " {\n" +
     "  func swapWith(self: in Self, other: inout Self): Unit {\n" +
-    "    other = A(n = self.n + other.n)\n" +
+    "    other = " +
+    ctor +
+    "(n = self.n + other.n)\n" +
     "  }\n" +
-    "}\n" +
-    "func main(): Int {\n" +
-    "  val k = A(n = 1)\n" +
-    "  var o = A(n = 2)\n" +
-    "  k.swapWith(o)\n" +
-    "  o.n\n" +
-    "}\n"
-  assertEqualInt(compileAndRunAsan(direct).exitCode, 3, "the same call on the implementing type")
-  val outNamed = "package T\n" + "interface Sw {\n  func mk(self: in Self, j: in Int, other: out Self): Unit\n}\n" +
-    "ref record H {\n  var n: Int\n}\n" +
-    "impl Sw for H {\n" +
     "  func mk(self: in Self, j: in Int, other: out Self): Unit {\n" +
-    "    other = H(n = self.n + j)\n" +
+    "    other = " +
+    ctor +
+    "(n = self.n + j)\n" +
+    "  }\n" +
+    "  func total(self: in Self): Int {\n" +
+    "    self.n\n" +
     "  }\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val k: Sw = H(n = 1)\n" +
-    "  var o: Sw = H(n = 2)\n" +
-    "  k.mk(other = o, j = 3)\n" +
-    "  0\n" +
+    mainBody +
     "}\n"
-  assertPanicsWith("out Self, named, heap implementer", "error[N0023] 16:16:", { -> codegenOnly(outNamed) })
+}
+
+test "an out/inout Self parameter through an interface value, by-value implementer (#8252)" {
+  val decl = "record A {\n  n: Int\n}\n"
+  val inoutCall = selfIfaceSource(
+    decl,
+    "A",
+    "  val k: Sw = A(n = 1)\n  var o: Sw = A(n = 2)\n  k.swapWith(o)\n  if o.total() == 3 and k.total() == 1 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(inoutCall).exitCode, 0, "inout Self through the interface")
+  val shared = selfIfaceSource(
+    decl,
+    "A",
+    "  val k: Sw = A(n = 1)\n  var o: Sw = A(n = 2)\n  val keep: Sw = o\n  k.swapWith(o)\n  k.swapWith(o)\n" +
+      "  if o.total() == 4 and keep.total() == 2 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(shared).exitCode, 0, "a copy of the interface value keeps the old value")
+  val outNamed = selfIfaceSource(
+    decl,
+    "A",
+    "  val k: Sw = A(n = 1)\n  var o: Sw = A(n = 2)\n  k.mk(other = o, j = 3)\n  if o.total() == 4 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(outNamed).exitCode, 0, "out Self, named arguments")
+  val recvIsPlace = selfIfaceSource(
+    decl,
+    "A",
+    "  var k: Sw = A(n = 5)\n  k.swapWith(k)\n  if k.total() == 10 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(recvIsPlace).exitCode, 0, "the receiver is also the place")
+}
+
+test "an out/inout Self parameter through an interface value, heap implementer (#8252)" {
+  val decl = "ref record H {\n  var n: Int\n  var tag: String = \"a\" + \"b\"\n}\n"
+  val inoutCall = selfIfaceSource(
+    decl,
+    "H",
+    "  val k: Sw = H(n = 1)\n  var o: Sw = H(n = 2)\n  k.swapWith(o)\n  if o.total() == 3 and k.total() == 1 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(inoutCall).exitCode, 0, "inout Self, heap implementer")
+  val outNamed = selfIfaceSource(
+    decl,
+    "H",
+    "  val k: Sw = H(n = 1)\n  var o: Sw = H(n = 2)\n  k.mk(other = o, j = 3)\n  if o.total() == 4 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(outNamed).exitCode, 0, "out Self, heap implementer")
+  val loop = selfIfaceSource(
+    decl,
+    "H",
+    "  val k: Sw = H(n = 1)\n  var o: Sw = H(n = 0)\n  var i = 0\n  while i < 50 {\n    k.swapWith(o)\n    i = i + 1\n  }\n  if o.total() == 50 { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(loop).exitCode, 0, "repeated calls do not leak")
+}
+
+test "an out/inout Self parameter through an interface value, other argument shapes (#8252)" {
+  val decl = "record A {\n  n: Int\n}\n"
+  val wrongType = selfIfaceSource(decl, "A", "  val k: Sw = A(n = 1)\n  var o = A(n = 2)\n  k.swapWith(o)\n  0\n")
+  assertPanicsWith("a place of the implementing type", "error[N0023] 24:14:", { -> codegenOnly(wrongType) })
+  val direct = selfIfaceSource(decl, "A", "  val k = A(n = 1)\n  var o = A(n = 2)\n  k.swapWith(o)\n  o.n\n")
+  assertEqualInt(compileAndRunAsan(direct).exitCode, 3, "the same call on the implementing type")
 }
 
 test "a captured variable passed by reference inside a closure is N0024 at the argument (#7891)" {

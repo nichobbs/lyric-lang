@@ -20715,69 +20715,96 @@ func byValueVtableInitStr(
     }
     val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
     val thunkName = implIr + ".vthunk"
-    // A method with an `out`/`inout` `Self` parameter is never called
-    // through this slot (`rejectSelfByRefThroughIface`, N0023): its impl
-    // takes that parameter as a pointer to the record, which the erased
-    // slot cannot carry, so the thunk only traps.
-    var selfByRefSlot = false
-    for sbr in ii.methodParamSelfByRef[i] {
-      if sbr {
-        selfByRefSlot = true
-      }
-    }
     val body: List[NInsn] = newList()
     body.add(NLabel(name = "entry"))
     val params: List[NParam] = newList()
     params.add(NParam(name = "self", ty = i8p))
     val implArgs: List[NArg] = newList()
-    if not selfByRefSlot {
-      implArgs.add(
-        NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
-      )
-    }
+    implArgs.add(
+      NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
+    )
     val implParamTys: List[NType] = newList()
     implParamTys.add(recTy)
     val thunkParamTys: List[NType] = newList()
     thunkParamTys.add(i8p)
+    // An `out`/`inout` `Self` parameter arrives as a pointer to a cell holding
+    // the interface value's box (#8252).  The thunk reads the record into a
+    // local the impl method writes, then boxes the local into a fresh box
+    // (the old one may be shared with another interface value), stores it in
+    // the cell and releases the box the cell owned.
+    val cellParams: List[String] = newList()
+    val cellLocals: List[String] = newList()
     var pi = 0
     while pi < ii.methodParamTys[i].count {
       val pty = ii.methodParamTys[i][pi]
       val pname = "a" + toString(pi)
       params.add(NParam(name = pname, ty = pty))
       thunkParamTys.add(pty)
-      if not selfByRefSlot {
-        if ii.methodParamIsSelf[i][pi] {
-          implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
-          implParamTys.add(recTy)
-        } else {
-          implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
-          implParamTys.add(pty)
-        }
+      if ii.methodParamSelfByRef[i][pi] {
+        val cellPtr = freshTmp(ctx)
+        body.add(NBitcast(dest = cellPtr, fromTy = i8p, value = NLocal(name = pname), toTy = NPtr(pointee = i8p)))
+        val oldBox = freshTmp(ctx)
+        body.add(NLoad(dest = oldBox, ty = i8p, ptr = NLocal(name = cellPtr)))
+        val local = "selfcell." + freshTmp(ctx)
+        body.add(NAlloca(dest = local, ty = recTy))
+        body.add(
+          NStore(
+            ty = recTy,
+            value = loadFromByValueBox(ctx, body, NLocal(name = oldBox), boxTy, boxStructTy, recTy),
+            ptr = NLocal(name = local)
+          )
+        )
+        implArgs.add(NArg(ty = NPtr(pointee = recTy), value = NLocal(name = local)))
+        implParamTys.add(NPtr(pointee = recTy))
+        cellParams.add(cellPtr)
+        cellLocals.add(local)
+      } else if ii.methodParamIsSelf[i][pi] {
+        implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
+        implParamTys.add(recTy)
+      } else {
+        implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
+        implParamTys.add(pty)
       }
       pi = pi + 1
     }
     val retTy = ii.methodRetTys[i]
     val retIsSelf = ii.methodRetIsSelf[i]
     val implRetTy = if retIsSelf { recTy } else { retTy }
-    if selfByRefSlot {
-      body.add(NUnreachable)
-    } else {
-      match implRetTy {
-        case NVoid -> {
-          body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
-          body.add(NRetVoid)
+    val writeBack: List[NInsn] = newList()
+    var wi = 0
+    while wi < cellParams.count {
+      val written = freshTmp(ctx)
+      writeBack.add(NLoad(dest = written, ty = recTy, ptr = NLocal(name = cellLocals[wi])))
+      val newBox = boxByValue(ctx, writeBack, NVal(ty = recTy, value = NLocal(name = written)))
+      val newRaw = freshTmp(ctx)
+      writeBack.add(NBitcast(dest = newRaw, fromTy = newBox.ty, value = newBox.value, toTy = i8p))
+      val oldAgain = freshTmp(ctx)
+      writeBack.add(NLoad(dest = oldAgain, ty = i8p, ptr = NLocal(name = cellParams[wi])))
+      writeBack.add(NStore(ty = i8p, value = NLocal(name = newRaw), ptr = NLocal(name = cellParams[wi])))
+      writeBack.add(NCallVoid(fn = NGlobal(name = "lyric_release"), args = arg1(i8p, NLocal(name = oldAgain))))
+      wi = wi + 1
+    }
+    match implRetTy {
+      case NVoid -> {
+        body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
+        for w in writeBack {
+          body.add(w)
         }
-        case _ -> {
-          val r = freshTmp(ctx)
-          body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
-          if retIsSelf {
-            val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
-            val raw = freshTmp(ctx)
-            body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
-            body.add(NRet(ty = retTy, value = NLocal(name = raw)))
-          } else {
-            body.add(NRet(ty = retTy, value = NLocal(name = r)))
-          }
+        body.add(NRetVoid)
+      }
+      case _ -> {
+        val r = freshTmp(ctx)
+        body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
+        for w in writeBack {
+          body.add(w)
+        }
+        if retIsSelf {
+          val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
+          val raw = freshTmp(ctx)
+          body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
+          body.add(NRet(ty = retTy, value = NLocal(name = raw)))
+        } else {
+          body.add(NRet(ty = retTy, value = NLocal(name = r)))
         }
       }
     }
@@ -21067,46 +21094,107 @@ func lowerIfaceArgAt(
   cv
 }
 
-/// The message of `N0023`: an `out`/`inout` `Self` parameter in a call
-/// through an interface value (#8252).
-pub func selfByRefThroughIfaceMessage(methodName: in String, paramName: in String): String {
-  "interface method '." + methodName + "' takes its parameter '" + paramName +
-    "' as out/inout 'Self', which a call through an interface value cannot pass on --target native yet (#8252): " +
-    "the interface value would have to be unboxed into a place the implementing method writes and boxed again " +
-    "after the call; call the method on the implementing type instead"
+/// The message of `N0023`: an `out`/`inout` `Self` argument of a call through
+/// an interface value that the call cannot pass on (#8252).
+pub func selfByRefThroughIfaceMessage(methodName: in String, paramName: in String, why: in String): String {
+  "interface method '." + methodName + "' takes its parameter '" + paramName + "' as out/inout 'Self', " + why
 }
 
-/// `N0023` (#8252): a call through an interface value of a method with an
-/// `out`/`inout` `Self` parameter.  Its slot keeps the erased `Self` shape,
-/// so the call is rejected at the argument for that parameter rather than
-/// passing an object where the implementing method writes through a
-/// pointer.  Only the call through the interface is rejected: the receiver's
-/// static type decides, which a pre-pass over the untyped declarations
-/// cannot see, and the same method called on the implementing type is fine.
-func rejectSelfByRefThroughIface(ii: in NIfaceInfo, slot: in Int, argSlots: in List[Int], argExprs: in List[Expr]): Unit {
-  val selfByRef = ii.methodParamSelfByRef[slot]
-  var pi = 0
-  while pi < selfByRef.count {
-    if selfByRef[pi] {
-      val msg = selfByRefThroughIfaceMessage(ii.methodNames[slot], ii.methodParamNames[slot][pi])
-      var ai = 0
-      while ai < argSlots.count {
-        if argSlots[ai] == pi {
-          val sp = argExprs[ai].span
-          panic("error[N0023] " + sp.startPos.line.toString() + ":" + sp.startPos.column.toString() + ": " + msg)
-        }
-        ai = ai + 1
-      }
-      match ii.methodParamDefaults[slot][pi] {
-        case Some(dex) -> panic(
-          "error[N0023] " + dex.span.startPos.line.toString() + ":" + dex.span.startPos.column.toString() +
-            ": " +
-            msg
-        )
-        case None -> panic("error[N0023]: " + msg)
-      }
-    }
-    pi = pi + 1
+func ifaceSelfByRefPanic(sp: in Span, msg: in String): Unit {
+  panic("error[N0023] " + sp.startPos.line.toString() + ":" + sp.startPos.column.toString() + ": " + msg)
+}
+
+/// One `out`/`inout` `Self` argument of a call through an interface value
+/// (#8252): `place` is the address of the caller's interface-typed place and
+/// `cell` the stack slot the callee receives instead.
+record NIfaceSelfCell {
+  place: NVal
+  cell: String
+}
+
+/// The argument for an `out`/`inout` `Self` slot.  The slot is an erased
+/// `i8*` that points at a cell holding the implementing object: the caller
+/// passes the interface value's object in a fresh cell it owns a reference
+/// to (the value's box keeps its own), and the implementing method (a heap
+/// implementer directly, a by-value one through its vtable thunk) assigns
+/// the cell like any `inout` place, releasing the object it replaces.
+/// `finishIfaceSelfCell` then boxes whatever the cell holds after the call
+/// and stores it into the caller's place.
+func lowerIfaceSelfCellArg(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ii: in NIfaceInfo,
+  ex: in Expr,
+  methodName: in String,
+  paramName: in String,
+  pending: in List[NIfaceSelfCell],
+): NVal {
+  val place = lowerByRefPlace(ctx, insns, ex)
+  val boxTy = ifaceBoxPtrType(ii)
+  if nTypeToIrString(place.ty) != nTypeToIrString(NPtr(pointee = boxTy)) {
+    ifaceSelfByRefPanic(
+      ex.span,
+      selfByRefThroughIfaceMessage(
+        methodName,
+        paramName,
+        "which a call through an interface value passes only a place of that interface type (#8252); " +
+          "this argument is a place of another type, so declare it with the interface type"
+      )
+    )
+  }
+  val i8p = NPtr(pointee = NI8)
+  val oldBox = freshTmp(ctx)
+  insns.add(NLoad(dest = oldBox, ty = boxTy, ptr = place.value))
+  val objSlot = freshTmp(ctx)
+  val objArgs: List[NArg] = newList()
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
+  insns.add(NGEP(dest = objSlot, ty = ifaceBoxStructType(ii), ptr = NLocal(name = oldBox), indices = objArgs))
+  val obj = freshTmp(ctx)
+  insns.add(NLoad(dest = obj, ty = i8p, ptr = NLocal(name = objSlot)))
+  emitRetain(ctx, insns, NVal(ty = i8p, value = NLocal(name = obj)))
+  val cell = "ifaceself.cell." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = cell, ty = i8p))
+  insns.add(NStore(ty = i8p, value = NLocal(name = obj), ptr = NLocal(name = cell)))
+  val raw = freshTmp(ctx)
+  insns.add(NBitcast(dest = raw, fromTy = NPtr(pointee = i8p), value = NLocal(name = cell), toTy = i8p))
+  pending.add(NIfaceSelfCell(place = place, cell = cell))
+  NVal(ty = i8p, value = NLocal(name = raw))
+}
+
+/// After the call: box the object each cell now holds with the receiver's
+/// vtable (the implementing type wrote its own `Self`), store the box into
+/// the caller's place and release the box it replaces.
+func finishIfaceSelfCells(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ii: in NIfaceInfo,
+  vtbl: in NVal,
+  pending: in List[NIfaceSelfCell],
+): Unit {
+  val boxTy = ifaceBoxPtrType(ii)
+  val structTy = ifaceBoxStructType(ii)
+  val i8p = NPtr(pointee = NI8)
+  for c in pending {
+    val newObj = freshTmp(ctx)
+    insns.add(NLoad(dest = newObj, ty = i8p, ptr = NLocal(name = c.cell)))
+    val box = emitHeapAlloc(ctx, insns, boxTy, ifaceBoxDtorName(ii))
+    val objSlot = freshTmp(ctx)
+    val objArgs: List[NArg] = newList()
+    objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    objArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxObjSlot, ty = NI32)))
+    insns.add(NGEP(dest = objSlot, ty = structTy, ptr = NLocal(name = box), indices = objArgs))
+    insns.add(NStore(ty = i8p, value = NLocal(name = newObj), ptr = NLocal(name = objSlot)))
+    val vtSlot = freshTmp(ctx)
+    val vtArgs: List[NArg] = newList()
+    vtArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    vtArgs.add(NArg(ty = NI32, value = NLitInt(v = ifaceBoxVtblSlot, ty = NI32)))
+    insns.add(NGEP(dest = vtSlot, ty = structTy, ptr = NLocal(name = box), indices = vtArgs))
+    insns.add(NStore(ty = NPtr(pointee = ifaceVtStructType(ii)), value = vtbl.value, ptr = NLocal(name = vtSlot)))
+    val oldBox = freshTmp(ctx)
+    insns.add(NLoad(dest = oldBox, ty = boxTy, ptr = c.place.value))
+    insns.add(NStore(ty = boxTy, value = NLocal(name = box), ptr = c.place.value))
+    emitRelease(ctx, insns, NVal(ty = boxTy, value = NLocal(name = oldBox)))
   }
 }
 
@@ -21184,12 +21272,31 @@ func lowerIfaceDispatch(
   for a in args {
     argExprs.add(nativeCallArgExpr(a))
   }
-  rejectSelfByRefThroughIface(ii, slot, argSlots, argExprs)
+  val paramSelfByRef = ii.methodParamSelfByRef[slot]
+  val selfCells: List[NIfaceSelfCell] = newList()
   var anyByRef = false
   for br in paramByRef {
     if br {
       anyByRef = true
     }
+  }
+  var sbi = 0
+  while sbi < paramSelfByRef.count {
+    if paramSelfByRef[sbi] {
+      anyByRef = true
+      match ii.methodAsyncElem[slot] {
+        case Some(_) -> panic(
+          "error[N0023]: " +
+            selfByRefThroughIfaceMessage(
+              ii.methodNames[slot],
+              paramNames[sbi],
+              "which an async method cannot take by reference (a suspended coroutine cannot hold a pointer into the caller's frame)"
+            )
+        )
+        case None -> ()
+      }
+    }
+    sbi = sbi + 1
   }
   // The receiver's box is a borrow too: `k.swapWith(k)` must not free it
   // when the method writes `k`.
@@ -21205,7 +21312,11 @@ func lowerIfaceDispatch(
   var ai = 0
   while ai < argExprs.count {
     val ps = argSlots[ai]
-    slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps], paramByRef[ps], anyByRef)
+    if paramSelfByRef[ps] {
+      slotVals[ps] = lowerIfaceSelfCellArg(ctx, insns, ii, argExprs[ai], ii.methodNames[slot], paramNames[ps], selfCells)
+    } else {
+      slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps], paramByRef[ps], anyByRef)
+    }
     slotFilled[ps] = true
     ai = ai + 1
   }
@@ -21217,7 +21328,10 @@ func lowerIfaceDispatch(
           slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di], paramByRef[di], anyByRef)
         }
         case None -> panic(
-          "Lyric.LlvmCodegen: no argument bound for parameter '" + paramNames[di] + "' of interface method '." +
+          (if paramSelfByRef[di] { "error[N0023]: " } else { "" }) +
+            "Lyric.LlvmCodegen: no argument bound for parameter '" +
+            paramNames[di] +
+            "' of interface method '." +
             ii.methodNames[slot] +
             "', which has no default"
         )
@@ -21254,11 +21368,13 @@ func lowerIfaceDispatch(
   match retTy {
     case NVoid -> {
       insns.add(NCallVoid(fn = NLocal(name = fnTyped), args = callArgs))
+      finishIfaceSelfCells(ctx, insns, ii, NVal(ty = vtPtrTy, value = NLocal(name = vtbl)), selfCells)
       NVal(ty = NVoid, value = NUndef(ty = NVoid))
     }
     case _ -> {
       val dest = freshTmp(ctx)
       insns.add(NCall(dest = dest, retTy = retTy, fn = NLocal(name = fnTyped), args = callArgs))
+      finishIfaceSelfCells(ctx, insns, ii, NVal(ty = vtPtrTy, value = NLocal(name = vtbl)), selfCells)
       // #7585: a `Self`-declared return dispatched through the interface
       // types the call expression as the interface (T0113), not the
       // erased raw pointer — rebox before handing the value back.

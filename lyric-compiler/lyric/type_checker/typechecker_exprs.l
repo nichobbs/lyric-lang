@@ -9700,7 +9700,7 @@ func recordGenericArgWidenings(
     slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
     k = k + 1
   }
-  val targs = inferGenericArgsDeep(sig.generics, paramTys, slotTys)
+  val targs = inferGenericArgsForSig(sig, paramTys, slotTys)
   var j = 0
   while j < srcIdx.count {
     val ai = srcIdx[j]
@@ -10037,6 +10037,30 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
   bound
 }
 
+// `inferGenericArgsDeep` for a call to `sig`, where a bare `T` parameter an
+// `out`/`inout` parameter declares is bound by its argument's type alone: the
+// parameter refers to the caller's place (D183), so `T` is the place's type,
+// and an argument that adapts to it (an integer literal) never widens it
+// (`takeList(b, 3)` with `b: Byte` is `List[Byte]`, #8238).
+func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], argTys: in List[Type]): List[Type] {
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTys)
+  var g = 0
+  while g < sig.generics.count {
+    var pi = 0
+    var pinned = false
+    while pi < sig.params.count and pi < argTys.count and pi < paramTys.count and not pinned {
+      val byRef = match sig.params[pi].mode { case PMIn -> false; case _ -> true }
+      if byRef and isBareTyVar(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
+        targs[g] = argTys[pi]
+        pinned = true
+      }
+      pi = pi + 1
+    }
+    g = g + 1
+  }
+  targs
+}
+
 func typeIsHole(t: in Type): Bool {
   match t {
     case TyError -> true
@@ -10071,7 +10095,7 @@ func instantiateReturnType(
     paramTys.add(sig.params[i].ty)
     i = i + 1
   }
-  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypesInSigOrder(sig, skip, args, argTypes))
+  val targs = inferGenericArgsForSig(sig, paramTys, argTypesInSigOrder(sig, skip, args, argTypes))
   substituteTyVars(sig.returnTy, sig.generics, targs)
 }
 
@@ -10130,7 +10154,7 @@ func checkBoundsSatisfied(
     paramTys.add(sig.params[pi].ty)
     pi = pi + 1
   }
-  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypesInSigOrder(sig, 0, args, argTypes))
+  val targs = inferGenericArgsForSig(sig, paramTys, argTypesInSigOrder(sig, 0, args, argTypes))
   var bi = 0
   while bi < sig.bounds.count {
     val bound = sig.bounds[bi]
@@ -14552,7 +14576,7 @@ func sigCallTypeArgsInOrder(
     slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
     k = k + 1
   }
-  inferGenericArgsDeep(sig.generics, paramTys, slotTys)
+  inferGenericArgsForSig(sig, paramTys, slotTys)
 }
 
 // The value generic parameters of the value-generic function `fn` names.
@@ -19105,7 +19129,7 @@ func expectedCallArgTypes(
             argsInParamOrder.add(slotTy)
             k = k + 1
           }
-          targs = inferGenericArgsDeep(sig.generics, paramTys, argsInParamOrder)
+          targs = inferGenericArgsForSig(sig, paramTys, argsInParamOrder)
         }
         var k2 = 0
         while k2 < sig.params.count {
