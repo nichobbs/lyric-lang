@@ -116,6 +116,7 @@ contain an identity hash that changes between runs. docs/01 did not say what
 - `--target native` accepts these operands in `println`/`toString`/
   interpolation where it used to reject them at compile time (docs/01 §2:
   "rejects any other argument").
+- Native has no `Set` or `UInt` at all (N0007), so those rows apply to dotnet and the JVM.
 - The `array[N, T]` type, a `foreign record` and `buffer[T]` are not rendered
   structurally yet; they keep the host text on dotnet and the JVM and remain
   rejected on native. Tracked as a follow-up.

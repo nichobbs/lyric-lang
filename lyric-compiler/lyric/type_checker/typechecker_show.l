@@ -78,10 +78,7 @@ func showHelperName(tbl: in SymbolTable, t: in Type): Option[String] {
     case None -> ()
   }
   val sp = noSourceSpan()
-  val te = match typeExprForRef(tbl, ut, sp) {
-    case Some(x) -> x
-    case None -> return None
-  }
+  val te = match typeExprForRef(tbl, ut, sp) { case Some(x) -> x; case None -> return None }
   val name = "__lyric_str_" + key
   tbl.showHelperNames.add(key, name)
   val stmts = showHelperBody(tbl, ut, te, sp)
@@ -238,8 +235,16 @@ func showExprFor(tbl: in SymbolTable, ty: in Type, v: in Expr, sp: in Span): Exp
     case TyPrim(pt) -> match pt {
       case PtString -> v
       case PtUnit -> showStrLit("()", sp)
-      case PtUInt -> showCall("toString", showSingleExpr(showMethodCall(v, "toUInt", newExprList(), sp)), sp)
-      case PtULong -> showCall("toString", showSingleExpr(showMethodCall(v, "toULong", newExprList(), sp)), sp)
+      case PtUInt -> showCall(
+        "toString",
+        showSingleExpr(showMethodCall(v, "toUInt", newExprList(), sp)),
+        sp
+      )
+      case PtULong -> showCall(
+        "toString",
+        showSingleExpr(showMethodCall(v, "toULong", newExprList(), sp)),
+        sp
+      )
       case _ -> showCall("toString", showSingleExpr(v), sp)
     }
     case other -> match showHelperName(tbl, other) {
@@ -326,11 +331,7 @@ func showElementType(tbl: in SymbolTable, ty: in Type): Type {
 
 // `val (b0, b1): (A, B) = x`, each part then bound at its own type.
 func showTupleBody(
-  tbl: in SymbolTable,
-  elems: in List[Type],
-  te: in TypeExpr,
-  stmts: in List[Statement],
-  sp: in Span,
+  tbl: in SymbolTable, elems: in List[Type], te: in TypeExpr, stmts: in List[Statement], sp: in Span
 ): Unit {
   val pats: List[Pattern] = newList()
   var i = 0
@@ -339,9 +340,7 @@ func showTupleBody(
     i = i + 1
   }
   val tupPat = Pattern(kind = PTuple(patterns = pats), span = sp)
-  stmts.add(
-    covStmt(SLocal(binding = LBVal(pat = tupPat, ty = Some(value = te), init = covNameExpr("x", sp))), sp)
-  )
+  stmts.add(covStmt(SLocal(binding = LBVal(pat = tupPat, ty = Some(value = te), init = covNameExpr("x", sp))), sp))
   stmts.add(showPartsDecl(sp))
   var j = 0
   while j < elems.count {
@@ -379,14 +378,8 @@ func showMapBody(tbl: in SymbolTable, ty: in Type, stmts: in List[Statement], sp
   val stringList = showListOfStringTe(sp)
   stmts.add(showValLocal("ks", stringList, showCall("newList", noArgs, sp), sp))
   stmts.add(showValLocal("vs", stringList, showCall("newList", noArgs, sp), sp))
-  val keyTe = match typeExprForRef(tbl, kt, sp) {
-    case Some(t) -> t
-    case None -> showPrimTypeExpr("String", sp)
-  }
-  val valTe = match typeExprForRef(tbl, vt, sp) {
-    case Some(t) -> t
-    case None -> showPrimTypeExpr("String", sp)
-  }
+  val keyTe = match typeExprForRef(tbl, kt, sp) { case Some(t) -> t; case None -> showPrimTypeExpr("String", sp) }
+  val valTe = match typeExprForRef(tbl, vt, sp) { case Some(t) -> t; case None -> showPrimTypeExpr("String", sp) }
   val keyListTe = TypeExpr(
     kind = TGenericApp(head = refTypePath(showSingle("List"), sp), args = showSingleTypeArg(keyTe, sp)),
     span = sp
@@ -513,12 +506,7 @@ func showUserTypeBody(
     val armStmts: List[Statement] = newList()
     showCtorRender(tbl, c, "v", te, deeper, armStmts, sp)
     arms.add(
-      MatchArm(
-        pattern = pat,
-        guard = None,
-        body = EOBBlock(block = Block(statements = armStmts, span = sp)),
-        span = sp
-      )
+      MatchArm(pattern = pat, guard = None, body = EOBBlock(block = Block(statements = armStmts, span = sp)), span = sp)
     )
   }
   stmts.add(showExprStmt(mkExpr(EMatch(scrutinee = covNameExpr("x", sp), arms = arms), sp), sp))
@@ -565,12 +553,7 @@ func showCtorRender(
 // The part rendering the field in local `local`: through a nested function with
 // `d + 1` when the enclosing type is a ref record.
 func showFieldPart(
-  tbl: in SymbolTable,
-  ty: in Type,
-  local: in String,
-  label: in String,
-  deeper: in Bool,
-  sp: in Span,
+  tbl: in SymbolTable, ty: in Type, local: in String, label: in String, deeper: in Bool, sp: in Span
 ): Expr {
   val v = covNameExpr(local, sp)
   val body: Expr = match unrefine(ty) {
@@ -594,10 +577,7 @@ func showFieldPart(
 
 func showIsRefRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
   match symTableTypeSymbolOf(tbl, tid) {
-    case Some(sym) -> match sym.kind {
-      case DKRecord(_, rd) -> rd.isRef
-      case _ -> false
-    }
+    case Some(sym) -> match sym.kind { case DKRecord(_, rd) -> rd.isRef; case _ -> false }
     case None -> false
   }
 }
@@ -606,10 +586,7 @@ func showIsRefRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
 func showEnumBody(tbl: in SymbolTable, ty: in Type, te: in TypeExpr, stmts: in List[Statement], sp: in Span): Unit {
   val tid = match ty { case TyUser(i, _, _) -> i; case _ -> return }
   val ed = match symTableTypeSymbolOf(tbl, tid) {
-    case Some(sym) -> match sym.kind {
-      case DKEnum(_, decl) -> decl
-      case _ -> return
-    }
+    case Some(sym) -> match sym.kind { case DKEnum(_, decl) -> decl; case _ -> return }
     case None -> return
   }
   val typeName = ed.name
@@ -635,10 +612,7 @@ func newPatternList(): List[Pattern] {
 
 // The path `Type.Case`, qualified by the type's package when it has one.
 func showEnumCasePath(te: in TypeExpr, typeName: in String, caseName: in String, sp: in Span): ModulePath {
-  val head: ModulePath = match te.kind {
-    case TRef(p) -> p
-    case _ -> covPath(showSingle(typeName), sp)
-  }
+  val head: ModulePath = match te.kind { case TRef(p) -> p; case _ -> covPath(showSingle(typeName), sp) }
   val segs: List[String] = newList()
   for s in head.segments {
     segs.add(s)
@@ -663,10 +637,7 @@ func showTypeText(tbl: in SymbolTable, t: in Type): String {
     case TyTuple(elems) -> "Tuple" + showTypeListText(tbl, elems)
     case TySlice(e) -> "Slice" + showTypeListText(tbl, showSingleType(e))
     case TyUser(tid, name, args) -> {
-      val pkg = match symTableTypeSymbolOf(tbl, tid) {
-        case Some(sym) -> sym.originPackage
-        case None -> ""
-      }
+      val pkg = match symTableTypeSymbolOf(tbl, tid) { case Some(sym) -> sym.originPackage; case None -> "" }
       pkg + "." + name + (if args.count > 0 { showTypeListText(tbl, args) } else { "" })
     }
     case other -> renderType(other)

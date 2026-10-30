@@ -3333,9 +3333,7 @@ func lowerSpecArrays(
   val shownHelpers: Map[String, Bool] = newMap()
   for it in file.items {
     match it.kind {
-      case IFunc(fd) -> if Str.startsWith(fd.name, "__lyric_str_") {
-        shownHelpers.add(fd.name, true)
-      }
+      case IFunc(fd) -> if Str.startsWith(fd.name, "__lyric_str_") { shownHelpers.add(fd.name, true) }
       case _ -> ()
     }
   }
@@ -4783,14 +4781,8 @@ pub func pipeUsesFormatBuiltin(file: in SourceFile): Bool {
 func mayRenderStructure(e: in Expr): Bool {
   match e.kind {
     case EInterpolated(_) -> true
-    case EBinop(op, _, _) -> match op {
-      case BAdd -> true
-      case _ -> false
-    }
-    case EAssign(_, op, _) -> match op {
-      case AssPlus -> true
-      case _ -> false
-    }
+    case EBinop(op, _, _) -> match op { case BAdd -> true; case _ -> false }
+    case EAssign(_, op, _) -> match op { case AssPlus -> true; case _ -> false }
     case ECall(fn, _) -> match fn.kind {
       case EPath(p) -> p.segments.count == 1 and isStringifyingBuiltin(p.segments[0])
       case EMember(_, name) -> name == "toString"

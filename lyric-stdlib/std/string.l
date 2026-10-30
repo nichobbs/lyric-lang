@@ -735,7 +735,6 @@ pub func last(s: in String): Option[Char]
 // synthesised function that renders the parts of the value, then joins them
 // with the functions below, so the separators, brackets and the `Map`/`Set`
 // order are defined once, in Lyric, not once per backend.
-
 /// `open`, the `parts` separated by `", "`, then `close`: `[1, 2]`, `(1, 2)`,
 /// and `P(x = 1, y = 2)` (with `open` = `"P("`).
 @pure

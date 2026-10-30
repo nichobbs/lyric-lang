@@ -97,7 +97,11 @@ test "record: no fields, generic, nested, collection field" {
 
 test "record: scalar leaves render as they do standing alone" {
   val m = Mixed(d = 1500.0, b = true, c = 'z', u = 4000000000u32, w = 200u8)
-  assertEqual(toString(m), "Mixed(d = 1500, b = true, c = z, u = 4000000000, w = 200)", "Double, Bool, Char, UInt, Byte")
+  assertEqual(
+    toString(m),
+    "Mixed(d = 1500, b = true, c = z, u = 4000000000, w = 200)",
+    "Double, Bool, Char, UInt, Byte"
+  )
 }
 
 test "union: Case(field = value) and the bare case name" {
