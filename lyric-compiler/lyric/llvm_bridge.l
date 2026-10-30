@@ -869,6 +869,14 @@ func stdlibDiagLabel(pkg: in String, stdlib: in NativeStdlib): String {
 /// stdlib load order, which the checker's last-registered-wins lookup
 /// depends on (kernels before the public files that re-export them; see
 /// `Lyric.Emitter.findStdlibSources`).
+/// Record decls of every package visible to bundled stdlib package `pkg`
+/// (#7212): threaded into the `?`-hoist so an `impl` block's target type
+/// resolves its own fields when it is declared in another bundled package,
+/// as `pipeCheckAndMono` does for the entry file with `monoRecordDecls`.
+func stdlibVisibleRecordDecls(pkg: in String, stdlib: in NativeStdlib): List[RecordDecl] {
+  pipeRecordDecls(flattenImportedItems(stdlibImportClosure(pkg, stdlib)))
+}
+
 func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[ImportedPackage] {
   // A package split across several files reaches the union of their imports.
   val importsOf: Map[String, List[String]] = newMap()
@@ -1472,7 +1480,7 @@ pub func compileToNativeWithFeatures(
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
           // `pipeCheckAndMono`'s propagate step for the entry file.
-          val stdProp = lowerPropagateFile(stdElaborated, opts.awaitInTryIsHazard)
+          val stdProp = lowerPropagateFileWithExtraRecords(stdElaborated, stdlibVisibleRecordDecls(pkg, stdlib), opts.awaitInTryIsHazard)
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
@@ -1880,7 +1888,7 @@ pub func compileProjectToNativeWithShape(
             case None -> return false
           }
           val stdElaborated = elaborateFileWithInterfaces(stdChecked, newList(), true)
-          val stdProp = lowerPropagateFile(stdElaborated, true)
+          val stdProp = lowerPropagateFileWithExtraRecords(stdElaborated, stdlibVisibleRecordDecls(pkg, stdlib), true)
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
