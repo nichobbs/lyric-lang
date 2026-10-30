@@ -680,33 +680,33 @@ func showSingleType(t: in Type): List[Type] {
 }
 
 func showTypeListText(tbl: in SymbolTable, ts: in List[Type]): String {
-  var out = "("
+  var acc = "("
   var i = 0
   while i < ts.count {
     if i > 0 {
-      out = out + ","
+      acc = acc + ","
     }
-    out = out + showTypeText(tbl, ts[i])
+    acc = acc + showTypeText(tbl, ts[i])
     i = i + 1
   }
-  out + ")"
+  acc + ")"
 }
 
 func showSanitize(text: in String): String {
-  var out = ""
+  var acc = ""
   var lastSep = false
   var i = 0
   while i < text.length {
     val c = text[i]
     val keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
     if keep {
-      out = out + c.toString()
+      acc = acc + c.toString()
       lastSep = false
     } else if not lastSep {
-      out = out + "_"
+      acc = acc + "_"
       lastSep = true
     }
     i = i + 1
   }
-  out
+  acc
 }
