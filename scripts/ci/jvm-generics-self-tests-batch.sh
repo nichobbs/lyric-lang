@@ -110,6 +110,7 @@ for t in \
   lyric-compiler/lyric/local_as_pattern_self_test.l \
   lyric-compiler/lyric/record_method_option_param_self_test.l \
   lyric-compiler/lyric/string_split_intrinsic_self_test.l \
+  lyric-compiler/lyric/impl_self_spelling_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
   lyric-compiler/lyric/generic_opaque_self_test.l \

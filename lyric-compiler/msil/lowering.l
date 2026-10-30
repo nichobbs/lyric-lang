@@ -1022,6 +1022,9 @@ pub record MFunc {
   insns: List[MInsn]
   var maxStack: Int
   locals: List[MsilType]   // local variable type list (in order)
+  // Declared parameter names, index-aligned with `params`, for the Param
+  // table.  Empty for a synthesised method with no source-level names.
+  paramNames: List[String] = newList()
 }
 
 pub record MRecord {
@@ -1156,6 +1159,7 @@ pub record MInterfaceMethod {
   name: String
   params: List[MsilType]
   ret: MsilType
+  paramNames: List[String] = newList()
 }
 
 // One slot in an interface definition, in declaration order.
@@ -3274,6 +3278,35 @@ func buildLvSigKey(locals: in List[MsilType]): String {
   key
 }
 
+// One Param row per declared parameter (ECMA-335 II.22.33): sequence 1..n in
+// declaration order, `this` and the return value (sequence 0) not included.
+// `names` is index-aligned with the parameters; a missing name leaves the Name
+// column 0.  Flags stay `PRA_NONE`: the metadata reader only treats a
+// parameter as optional / defaulted when the Optional or HasDefault flag is
+// set, so a Lyric-emitted assembly never trips default admission.
+func addParamRows(t: in MetadataTables, sh: in StringHeap, names: in List[String], count: in Int): Unit {
+  var i = 0
+  while i < count {
+    val nm = if i < names.count { internString(sh, names[i]) } else { 0 }
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = i + 1, name = nm))
+    i = i + 1
+  }
+}
+
+func fieldParamNames(fields: in List[MField]): List[String] {
+  val names: List[String] = newList()
+  for f in fields {
+    names.add(f.name)
+  }
+  names
+}
+
+func singleParamName(name: in String): List[String] {
+  val names: List[String] = newList()
+  names.add(name)
+  names
+}
+
 // Lower an MFunc to a MethodBody and register it in the context.
 // Returns the MethodBody (for RVA assignment by the caller).
 pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
@@ -3477,7 +3510,6 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val rvasC2 = methodBodyRvas(ctx.bodies)
     val ctorRva2 = rvasC2[ctx.bodies.count - 1]
     val firstPrm2 = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     val mRow = addMethodDef(
       t,
       MethodDefRow(
@@ -3532,7 +3564,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val ctorRva = rvas[ctx.bodies.count - 1]
     val firstParam = t.params_.count + 1
 
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, fieldParamNames(r.fields), r.fields.count)
 
     val mRow = addMethodDef(
       t,
@@ -3562,7 +3594,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide in `internBlob`'s dedup.
     val bMSig = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, m.paramNames, m.params.count)
     val mRow = addMethodDef(
       t,
       MethodDefRow(
@@ -3645,7 +3677,6 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val sCtor = internString(sh, ".ctor")
   val ctorSig = buildInstanceMethodSig(newList(), MVoid)
   val bCtorSig = internBlob(bh, "ctor_" + r.className, ctorSig)
-  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
   val mRow = addMethodDef(
     t,
     MethodDefRow(
@@ -3674,7 +3705,6 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val sCctor = internString(sh, ".cctor")
   val cctorSig = buildStaticMethodSig(newList(), MVoid)
   val bCctorSig = internBlob(bh, "cctor_" + r.className, cctorSig)
-  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
   val mRow2 = addMethodDef(
     t,
     MethodDefRow(
@@ -3703,7 +3733,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
     val nmSig = buildInstanceMethodSigWithCtx(nm.params, nm.ret, ctx)
     val bNmSig = internBlob(bh, "meth_" + r.className + "_" + nm.name + "/" + toString(nm.params.count), nmSig)
     val fpNm = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, nm.paramNames, nm.params.count)
     val mRowNm = addMethodDef(
       t,
       MethodDefRow(
@@ -3794,7 +3824,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "basemeth_" + u.baseName + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, m.paramNames, m.params.count)
     val mRow = addMethodDef(
       t,
       MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bSig, paramList = fp)
@@ -3819,7 +3849,6 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   val rvasBaseCtor = methodBodyRvas(ctx.bodies)
   val baseCtorRva = rvasBaseCtor[ctx.bodies.count - 1]
   val fpBaseCtor = t.params_.count + 1
-  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
   val mRow2 = addMethodDef(
     t,
     MethodDefRow(
@@ -3899,7 +3928,7 @@ pub func distinctConvName(inner: in MsilType): String {
   }
 }
 
-// Add one synthesised method (body + a placeholder Param row + MethodDef row).
+// Add one synthesised method (body + Param rows + MethodDef row).
 // Mirrors the per-method emission the union/record lowerers use.
 func addSynthMethodDef(
   ctx: in LoweringCtx,
@@ -3914,7 +3943,7 @@ func addSynthMethodDef(
   val rvas = methodBodyRvas(ctx.bodies)
   val rva = rvas[ctx.bodies.count - 1]
   val fp = ctx.tables.params_.count + 1
-  addParam(ctx.tables, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+  addParamRows(ctx.tables, ctx.strings, newList(), paramCount)
   val mRow = addMethodDef(
     ctx.tables,
     MethodDefRow(
@@ -4467,7 +4496,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val ctorRva = rvas[ctx.bodies.count - 1]
   val sCtor = internString(sh, ".ctor")
   val firstParam = t.params_.count + 1
-  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+  addParamRows(t, sh, singleParamName("value"), 1)
   val mRow = addMethodDef(
     t,
     MethodDefRow(
@@ -4646,7 +4675,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
         // Arity-qualify the intern key (#1536) — see the `meth_` site above.
         val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
         val fp = t.params_.count + 1
-        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+        addParamRows(t, sh, m.paramNames, m.params.count)
         val mRow = addMethodDef(
           t,
           MethodDefRow(
@@ -4666,7 +4695,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
         val dmSig = buildInstanceMethodSigWithCtx(dm.params, dm.ret, ctx)
         val bDmSig = internBlob(bh, "ifdmeth_" + iface.className + "_" + dm.name + "/" + toString(dm.params.count), dmSig)
         val fpDm = t.params_.count + 1
-        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+        addParamRows(t, sh, dm.paramNames, dm.params.count)
         val dmRow = addMethodDef(
           t,
           MethodDefRow(
@@ -5674,7 +5703,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     val rvasVCtor = methodBodyRvas(ctx.bodies)
     val viewCtorRva = rvasVCtor[ctx.bodies.count - 1]
     val fpvc = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, newList(), viewCtorPs.count)
     addMethodDef(
       t,
       MethodDefRow(
@@ -5704,7 +5733,6 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
         val dSig = buildInstanceMethodSig(newList(), MObject)
         val bTryIntoSigD = internBlob(bh, "vtryinto_disc_" + viewFqn, dSig)
         val fptiD = t.params_.count + 1
-        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
         addMethodDef(
           t,
           MethodDefRow(
@@ -5765,7 +5793,6 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
             val rvasTryInto = methodBodyRvas(ctx.bodies)
             val tryIntoRva = rvasTryInto[ctx.bodies.count - 1]
             val fpti = t.params_.count + 1
-            addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
             val _ = addMethodDef(
               t,
               MethodDefRow(
@@ -5856,7 +5883,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     val rvasCtor2 = methodBodyRvas(ctx.bodies)
     val ctorRva2 = rvasCtor2[ctx.bodies.count - 1]
     val fp2 = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, fieldParamNames(op.fields), op.fields.count)
     addMethodDef(
       t,
       MethodDefRow(
@@ -5881,7 +5908,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       val mSig2 = buildInstanceMethodSigWithCtx(m2.params, m2.ret, ctx)
       val bMSig2 = internBlob(bh, "ometh_" + op.className + "_" + m2.name, mSig2)
       val fpm2 = t.params_.count + 1
-      addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+      addParamRows(t, sh, m2.paramNames, m2.params.count)
       addMethodDef(
         t,
         MethodDefRow(rva = mRva2, implFlags = 0, flags = m2.flags, name = sN2, signature = bMSig2, paramList = fpm2)
@@ -5937,7 +5964,6 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     val rvasToView = methodBodyRvas(ctx.bodies)
     val toViewRva = rvasToView[ctx.bodies.count - 1]
     val fptvw = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     addMethodDef(
       t,
       MethodDefRow(
@@ -6026,7 +6052,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     val rvas = methodBodyRvas(ctx.bodies)
     val ctorRva = rvas[ctx.bodies.count - 1]
     val fp = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, fieldParamNames(op.fields), op.fields.count)
     addMethodDef(
       t,
       MethodDefRow(
@@ -6051,7 +6077,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
       val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
       val fpm = t.params_.count + 1
-      addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+      addParamRows(t, sh, m.paramNames, m.params.count)
       addMethodDef(
         t,
         MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bMSig, paramList = fpm)
@@ -6252,7 +6278,6 @@ pub func lowerMFuncsToHostClass(
     val cctorSig = buildStaticMethodSig(newList(), MVoid)
     val bCctorSig = internBlob(bh, "cctor_" + hostClass, cctorSig)
     val fpc = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     val cctorRow = addMethodDef(
       t,
       MethodDefRow(
@@ -6276,7 +6301,7 @@ pub func lowerMFuncsToHostClass(
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide and inherit the wrong signature blob.
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
     val fp = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addParamRows(t, sh, f.paramNames, f.params.count)
     if isPinvokeFlags(f.flags) {
       // A C binding (D158): no body; the runtime resolves the symbol from
       // the ImplMap row, and PreserveSig passes the C return value through.
@@ -6784,7 +6809,6 @@ func lowerMConfig(
     val cctorSig = buildStaticMethodSig(newList(), MVoid)
     val bCctorSig = internBlob(bh, "cfg_cctor_" + ns + "_" + typeName, cctorSig)
     val fpc = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     val mRow = addMethodDef(
       t,
       MethodDefRow(

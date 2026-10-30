@@ -26,6 +26,12 @@
 #   the library compiled the default into, including a default that reads a
 #   private value and a widening default. Built for both targets (a DLL run
 #   under `dotnet`, a JAR under `java`).
+# - restored_generic_field_write_self_test.l (#7676): plain and compound
+#   writes to a `var` field of a generic record declared in a restored
+#   dependency (the `MGenericInst` receiver arm of the assignment lowering).
+# - module_val_shadow_import_self_test.l (#7963): a module `val` that shadows
+#   an imported `pub val`, restored, in one bundle, and on the JVM; every
+#   intra-package call must still hit its own MethodDef.
 #
 # Every test runs even if an earlier one fails; the script exits non-zero
 # if any failed. Each run goes through scripts/ci-retry-on-signal.sh (#5933).
@@ -41,6 +47,8 @@ tests=(
   lyric-compiler/lyric/restored_async_self_test.l
   lyric-compiler/lyric/restored_slice_list_return_self_test.l
   lyric-compiler/lyric/restored_default_args_self_test.l
+  lyric-compiler/lyric/restored_generic_field_write_self_test.l
+  lyric-compiler/lyric/module_val_shadow_import_self_test.l
 )
 
 failed=()

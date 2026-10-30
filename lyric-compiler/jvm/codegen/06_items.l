@@ -2336,6 +2336,125 @@ func lowerImplMethod(
   LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
 
+// The load opcode for a parameter of JVM type `t` read from local `slot`.
+func bridgeLoadInsnJvm(t: in JvmType, slot: in Int): LInsn {
+  match t {
+    case JLong -> LLload(slot = slot)
+    case JDouble -> LDload(slot = slot)
+    case JFloat -> LFload(slot = slot)
+    case JRef(_) -> LAload(slot = slot)
+    case JArray(_) -> LAload(slot = slot)
+    case _ -> LIload(slot = slot)
+  }
+}
+
+func bridgeSlotWidthJvm(t: in JvmType): Int {
+  match t {
+    case JLong -> 2
+    case JDouble -> 2
+    case _ -> 1
+  }
+}
+
+func bridgeReturnInsnJvm(t: in JvmType): LInsn {
+  match t {
+    case JVoid -> LReturn
+    case JLong -> LLreturn
+    case JDouble -> LDreturn
+    case JFloat -> LFreturn
+    case JRef(_) -> LAreturn
+    case JArray(_) -> LAreturn
+    case _ -> LIreturn
+  }
+}
+
+func bridgeCastTargetJvm(t: in JvmType): Option[String] {
+  match t {
+    case JRef(c) -> if c == "java/lang/Object" { None } else { Some(value = c) }
+    case JArray(_) -> Some(value = typeDescriptor(t))
+    case _ -> None
+  }
+}
+
+func isReferenceJvm(t: in JvmType): Bool {
+  match t {
+    case JRef(_) -> true
+    case JArray(_) -> true
+    case _ -> false
+  }
+}
+
+// An impl method whose own descriptor is narrower than the interface slot it
+// implements has no implementation for the slot: the interface erases `Self`
+// (and an erased generic parameter) to `Object`, while the impl method spells
+// the target type, so an interface-typed call fails with `AbstractMethodError`
+// (#8426).  Emit the synthetic bridge javac emits for a covariant override: a
+// method with the slot's descriptor that casts each narrowed parameter and
+// forwards to the real method.  None when the descriptors already agree, or
+// differ in a way a cast cannot reconcile.
+func implBridgeJvm(
+  targetClass: in String, ifaceClass: in String, target: in LFunc, funcSigs: in Map[String, JvmFuncSig]
+): Option[LFunc] {
+  val slot = match mapGet(funcSigs, ifaceClass + "#" + target.name + "/" + toString(target.params.count)) {
+    case Some(s) -> Some(value = s)
+    case None -> mapGet(funcSigs, ifaceClass + "#" + target.name)
+  }
+  match slot {
+    case None -> None
+    case Some(sig) -> {
+      if not sig.isIface or sig.params.count != target.params.count {
+        return None
+      }
+      var differs = typeDescriptor(sig.ret) != typeDescriptor(target.ret)
+      var castable = true
+      var i = 0
+      while i < target.params.count {
+        if typeDescriptor(sig.params[i]) != typeDescriptor(target.params[i]) {
+          differs = true
+          if not (isReferenceJvm(sig.params[i]) and isReferenceJvm(target.params[i])) {
+            castable = false
+          }
+        }
+        i = i + 1
+      }
+      if typeDescriptor(sig.ret) != typeDescriptor(target.ret) and not (isReferenceJvm(sig.ret) and isReferenceJvm(target.ret)) {
+        castable = false
+      }
+      if not differs or not castable {
+        return None
+      }
+      val insns: List[LInsn] = newList()
+      insns.add(LAload(slot = 0))
+      var local = 1
+      var pi = 0
+      while pi < target.params.count {
+        insns.add(bridgeLoadInsnJvm(sig.params[pi], local))
+        if typeDescriptor(sig.params[pi]) != typeDescriptor(target.params[pi]) {
+          match bridgeCastTargetJvm(target.params[pi]) {
+            case Some(c) -> insns.add(LCheckcast(className = c))
+            case None -> ()
+          }
+        }
+        local = local + bridgeSlotWidthJvm(sig.params[pi])
+        pi = pi + 1
+      }
+      insns.add(LInvokevirtual(owner = targetClass, name = target.name, params = target.params, ret = target.ret))
+      insns.add(bridgeReturnInsnJvm(sig.ret))
+      Some(
+        value = LFunc(
+          flags = 0x1041,
+          name = target.name,
+          params = sig.params,
+          ret = sig.ret,
+          insns = insns,
+          maxStack = 0,
+          maxLocals = 0
+        )
+      )
+    }
+  }
+}
+
 // Build a protected-type class as a record-shaped `LPRecord`: data fields plus
 // the entry / helper methods as instance methods.  This mirrors the MSIL
 // backend (`lowerProtectedMsil`), which also emits protected types as records.
@@ -9535,26 +9654,31 @@ pub func codegenPackageWithSigsSeeded(
               // inside the body dispatch as `invokevirtual`.  `out`/`inout` params
               // are fully supported via `setupInstanceParamSlotsAndHolders` and
               // `lowerVirtualCallWithHolders` at the call site (#1763).
-              implFuncs.add(
-                lowerImplMethod(
-                  targetClass,
-                  fn,
-                  pkgName,
-                  funcSigs,
-                  caseFields,
-                  ctors,
-                  externTypes,
-                  autoFfi,
-                  moduleVals,
-                  configFieldTypes,
-                  opaqueTypes,
-                  closureAcc,
-                  usedRuntimeHelpers,
-                  importsStdString,
-                  isExternIfaceHere,
-                  genericParamNames(decl.generics)
-                )
+              val loweredImpl = lowerImplMethod(
+                targetClass,
+                fn,
+                pkgName,
+                funcSigs,
+                caseFields,
+                ctors,
+                externTypes,
+                autoFfi,
+                moduleVals,
+                configFieldTypes,
+                opaqueTypes,
+                closureAcc,
+                usedRuntimeHelpers,
+                importsStdString,
+                isExternIfaceHere,
+                genericParamNames(decl.generics)
               )
+              implFuncs.add(loweredImpl)
+              if not isExternIfaceHere {
+                match implBridgeJvm(targetClass, ifaceClass, loweredImpl, funcSigs) {
+                  case Some(bridge) -> implFuncs.add(bridge)
+                  case None -> ()
+                }
+              }
             }
             case IMplAssoc(_) -> {
             }

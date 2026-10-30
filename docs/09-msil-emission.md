@@ -724,6 +724,17 @@ The closure's class is sealed and emitted in the same assembly as
 the enclosing function. AOT compilation pre-instantiates closures
 that appear in the call graph.
 
+### 11.5a Param table rows
+
+Each method gets one `Param` row per declared parameter (ECMA-335 II.22.33):
+`Sequence` 1..n in declaration order (the implicit `this` and the return
+value, sequence 0, get none) and `Name` the declared name, so a reader sees
+`addInts(a, b)` as `a` (1) and `b` (2). Flags stay `PRA_NONE`: no Lyric-emitted
+parameter is `Optional` or `HasDefault`, which is what keeps the metadata
+reader from admitting a Lyric method as a defaulted overload (#7445).
+A synthesised method with no source-level names writes rows with an empty
+`Name`; a method with no parameters writes none.
+
 ### 11.6 Default parameter values
 
 A default parameter value lowers to a CLR `[DefaultParameterValue]`
