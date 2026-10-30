@@ -667,11 +667,15 @@ pub func refDescToBinary(desc: in String): String {
 }
 
 // True when reference type `fromBin` IS-A `toBin` per loaded class metadata:
-// walks `fromBin`'s superclass chain, matching each class and its directly-declared
-// interfaces.  Interface→super-interface chains are not followed (the reader skips
-// ACC_INTERFACE files), so an unprovable assignability returns `false` and the
-// caller falls back to the permissive blind match — never a rejection.  Uses the
-// load → `findCacheIdx` → `cacheVals[idx]` walk to dodge the stage-0 Option binding bug.
+// a breadth-first walk of `fromBin`'s whole supertype graph, following each
+// visited class's superclass AND every directly-declared interface, so an
+// interface reached through a super-interface (`java/util/List` ->
+// `SequencedCollection` -> `Collection` -> `Iterable`) is found the same way
+// the MSIL scorer's base-chain walk finds an `Extends` upcast.  A type whose
+// class file cannot be loaded ends that branch of the walk; an unprovable
+// assignability returns `false` and the caller falls back to the permissive
+// blind match — never a rejection.  Uses the load -> `findCacheIdx` ->
+// `cacheVals[idx]` walk to dodge the stage-0 Option binding bug.
 func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): Bool {
   if fromBin == toBin {
     return true
@@ -679,28 +683,33 @@ func isAssignableRef(ctx: in AutoFfiCtx, fromBin: in String, toBin: in String): 
   if toBin == "java/lang/Object" {
     return true
   }
-  var cur = fromBin
-  var guard = 0
-  while cur.length > 0 and guard < 64 {
+  val queue: List[String] = newList()
+  val seen: List[String] = newList()
+  queue.add(fromBin)
+  var qi = 0
+  // Bounds the walk on a malformed or cyclic hierarchy.
+  while qi < queue.count and qi < 256 {
+    val cur = queue[qi]
+    qi = qi + 1
     if cur == toBin {
       return true
     }
-    val fqn = cur.replace("/", ".")
-    loadClass(ctx, fqn)
-    val idx = findCacheIdx(ctx, cur)
-    if idx < 0 {
-      return false
-    }
-    val ci = ctx.cacheVals[idx]
-    var i = 0
-    while i < ci.interfaces.count {
-      if ci.interfaces[i] == toBin {
-        return true
+    if cur.length > 0 and not binNameSeen(seen, cur) {
+      seen.add(cur)
+      loadClass(ctx, cur.replace("/", "."))
+      val idx = findCacheIdx(ctx, cur)
+      if idx >= 0 {
+        val ci = ctx.cacheVals[idx]
+        var i = 0
+        while i < ci.interfaces.count {
+          queue.add(ci.interfaces[i])
+          i = i + 1
+        }
+        if ci.superName.length > 0 {
+          queue.add(ci.superName)
+        }
       }
-      i = i + 1
     }
-    cur = ci.superName
-    guard = guard + 1
   }
   false
 }

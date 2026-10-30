@@ -34,6 +34,13 @@ but is not sufficient for full JVM test integration.
 - **IDE-compatible** — test classes visible to the standard JUnit 5 platform
   launcher so VS Code / IntelliJ gutter icons work.
 
+## 2a. Console encoding
+
+The engine bypasses the synthesised `main`, which is where `System.out` and
+`System.err` are rebound to UTF-8 (#7513). The generated test-host class
+therefore carries the same rebinding in its `<clinit>` (#7686), so a harness
+that loads the class gets UTF-8 console output under any locale.
+
 ## 3. `@LyricTest` annotation
 
 The JVM emitter emits a `@lyric.runtime.jvm.LyricTest` annotation on each
