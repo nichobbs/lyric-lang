@@ -1,6 +1,6 @@
 //! lint/lint.l — self-hosted `lyric lint` style and quality checker.
 //! Mirrors compiler/src/Lyric.Cli/Lint.fs (Phase 5 §M5.3 shim elimination).
-//! Six AST-only rules: L001-L005, L007 (#7549; L006 retired, docs/01 §14.6).
+//! Seven AST-only rules: L001-L005, L007 (#7549), L008 (#8520); L006 retired, docs/01 §14.6.
 package Lyric.Lint
 
 import Std.Core
@@ -614,6 +614,292 @@ func patternBindingName(p: in Pattern): Option[String] {
   }
 }
 
+// ─── L008: non-literal argument to `sql(...)` ─────────────────────────────────
+// `Db.sql` builds the SqlText that `lyric-db` hands to a driver; it is meant
+// for string literals with values bound through `@p<N>` parameters.  A call
+// whose argument is not a literal (or a `+` chain of literals) assembles SQL at
+// run time, which is exactly the injection shape `SqlText` exists to stop.
+// The rule is AST-only, so it matches the callee by name: `sql(x)` and
+// `<anything>.sql(x)` / `Db.sql(x)`.
+func isStringLiteral(lit: in Literal): Bool {
+  match lit {
+    case LString(_) -> true
+    case LTripleString(_) -> true
+    case LRawString(_) -> true
+    case _ -> false
+  }
+}
+
+func isLiteralSqlText(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> isStringLiteral(lit)
+    case EParen(inner) -> isLiteralSqlText(inner)
+    case EInterpolated(segs) -> {
+      var i = 0
+      var pure = true
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(_) -> {
+            pure = false
+          }
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+      pure
+    }
+    case EBinop(op, lhs, rhs) -> {
+      match op {
+        case BAdd -> isLiteralSqlText(lhs) and isLiteralSqlText(rhs)
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func isSqlCallee(fn: in Expr): Bool {
+  match fn.kind {
+    case EPath(path) -> path.segments.count > 0 and path.segments[path.segments.count - 1] == "sql"
+    case EMember(_, name) -> name == "sql"
+    case _ -> false
+  }
+}
+
+func firstSqlArg(args: in List[CallArg]): Option[Expr] {
+  if args.count == 0 {
+    return None
+  }
+  match args[0] {
+    case CAPositional(e) -> Some(value = e)
+    case CANamed(_, e, _) -> Some(value = e)
+  }
+}
+
+func sqlLintExprOrBlock(eob: in ExprOrBlock, acc: in List[LintDiag]) {
+  match eob {
+    case EOBExpr(e) -> sqlLintExpr(e, acc)
+    case EOBBlock(b) -> sqlLintBlock(b, acc)
+  }
+}
+
+func sqlLintExprs(es: in List[Expr], acc: in List[LintDiag]) {
+  var i = 0
+  while i < es.count {
+    sqlLintExpr(es[i], acc)
+    i = i + 1
+  }
+}
+
+func sqlLintExpr(e: in Expr, acc: in List[LintDiag]) {
+  match e.kind {
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(inner) -> sqlLintExpr(inner, acc)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> sqlLintExpr(inner, acc)
+    case ETuple(es) -> sqlLintExprs(es, acc)
+    case EList(es) -> sqlLintExprs(es, acc)
+    case EIf(c, t, el, _) -> {
+      sqlLintExpr(c, acc)
+      sqlLintExprOrBlock(t, acc)
+      match el {
+        case Some(b) -> sqlLintExprOrBlock(b, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      sqlLintExpr(scrut, acc)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> sqlLintExpr(g, acc)
+          case None -> ()
+        }
+        sqlLintExprOrBlock(arms[i].body, acc)
+        i = i + 1
+      }
+    }
+    case EAwait(inner) -> sqlLintExpr(inner, acc)
+    case EYield(inner) -> sqlLintExpr(inner, acc)
+    case ESpawn(inner) -> sqlLintExpr(inner, acc)
+    case ETry(inner) -> sqlLintExpr(inner, acc)
+    case EPropagate(inner) -> sqlLintExpr(inner, acc)
+    case ELambda(_, body) -> sqlLintBlock(body, acc)
+    case ECall(fn, args) -> {
+      if isSqlCallee(fn) {
+        match firstSqlArg(args) {
+          case Some(arg) -> {
+            if not isLiteralSqlText(arg) {
+              acc.add(
+                lintWarning(
+                  "L008",
+                  "argument to 'sql' is not a string literal, so SQL assembled at run time bypasses the injection guard; bind values through params (@p0, @p1, ...) or, for audited dynamic text, use 'unsafeRawSql'",
+                  e.span
+                )
+              )
+            }
+          }
+          case None -> ()
+        }
+      }
+      sqlLintExpr(fn, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(a) -> sqlLintExpr(a, acc)
+          case CANamed(_, a, _) -> sqlLintExpr(a, acc)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> sqlLintExpr(fn, acc)
+    case EIndex(recv, idx) -> {
+      sqlLintExpr(recv, acc)
+      sqlLintExprs(idx, acc)
+    }
+    case EMember(recv, _) -> sqlLintExpr(recv, acc)
+    case EPrefix(_, operand) -> sqlLintExpr(operand, acc)
+    case EBinop(_, l, r) -> {
+      sqlLintExpr(l, acc)
+      sqlLintExpr(r, acc)
+    }
+    case ERange(b) -> {
+      match b {
+        case RBClosed(lo, hi) -> {
+          sqlLintExpr(lo, acc)
+          sqlLintExpr(hi, acc)
+        }
+        case RBHalfOpen(lo, hi, _) -> {
+          sqlLintExpr(lo, acc)
+          sqlLintExpr(hi, acc)
+        }
+        case RBLowerOpen(hi) -> sqlLintExpr(hi, acc)
+        case RBUpperOpen(lo) -> sqlLintExpr(lo, acc)
+      }
+    }
+    case EAssign(t, _, v) -> {
+      sqlLintExpr(t, acc)
+      sqlLintExpr(v, acc)
+    }
+    case EBlock(b) -> sqlLintBlock(b, acc)
+    case EUnsafe(b) -> sqlLintBlock(b, acc)
+    case _ -> ()
+  }
+}
+
+func sqlLintStmt(st: in Statement, acc: in List[LintDiag]) {
+  match st.kind {
+    case SLocal(b) -> {
+      match b {
+        case LBVal(_, _, init) -> sqlLintExpr(init, acc)
+        case LBVar(_, _, init) -> {
+          match init {
+            case Some(i) -> sqlLintExpr(i, acc)
+            case None -> ()
+          }
+        }
+        case LBLet(_, _, init) -> sqlLintExpr(init, acc)
+      }
+    }
+    case SAssign(t, _, v) -> {
+      sqlLintExpr(t, acc)
+      sqlLintExpr(v, acc)
+    }
+    case SReturn(v) -> {
+      match v {
+        case Some(x) -> sqlLintExpr(x, acc)
+        case None -> ()
+      }
+    }
+    case SThrow(x) -> sqlLintExpr(x, acc)
+    case STry(body, catches, fin) -> {
+      sqlLintBlock(body, acc)
+      var i = 0
+      while i < catches.count {
+        sqlLintBlock(catches[i].body, acc)
+        i = i + 1
+      }
+      match fin {
+        case Some(f) -> sqlLintBlock(f, acc)
+        case None -> ()
+      }
+    }
+    case SDefer(b) -> sqlLintBlock(b, acc)
+    case SScope(_, b) -> sqlLintBlock(b, acc)
+    case SFor(_, _, iter, b) -> {
+      sqlLintExpr(iter, acc)
+      sqlLintBlock(b, acc)
+    }
+    case SWhile(_, c, b) -> {
+      sqlLintExpr(c, acc)
+      sqlLintBlock(b, acc)
+    }
+    case SLoop(_, b) -> sqlLintBlock(b, acc)
+    case SExpr(x) -> sqlLintExpr(x, acc)
+    case SItem(it) -> sqlLintItem(it, acc)
+    case _ -> ()
+  }
+}
+
+func sqlLintBlock(b: in Block, acc: in List[LintDiag]) {
+  var i = 0
+  while i < b.statements.count {
+    sqlLintStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func sqlLintFn(fn: in FunctionDecl, acc: in List[LintDiag]) {
+  match fn.body {
+    case Some(FBExpr(e)) -> sqlLintExpr(e, acc)
+    case Some(FBBlock(b)) -> sqlLintBlock(b, acc)
+    case None -> ()
+  }
+}
+
+func sqlLintItem(item: in Item, acc: in List[LintDiag]) {
+  match item.kind {
+    case IFunc(fn) -> sqlLintFn(fn, acc)
+    case IVal(vd) -> sqlLintExpr(vd.init, acc)
+    case IConst(cd) -> sqlLintExpr(cd.init, acc)
+    case ITest(td) -> sqlLintBlock(td.body, acc)
+    case IImpl(id) -> {
+      var i = 0
+      while i < id.members.count {
+        match id.members[i] {
+          case IMplFunc(fn) -> sqlLintFn(fn, acc)
+          case IMplAssoc(_) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case IProtected(pd) -> {
+      var i = 0
+      while i < pd.members.count {
+        match pd.members[i] {
+          case PMEntry(ed) -> {
+            match ed.body {
+              case FBExpr(e) -> sqlLintExpr(e, acc)
+              case FBBlock(b) -> sqlLintBlock(b, acc)
+            }
+          }
+          case PMFunc(fn) -> sqlLintFn(fn, acc)
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // ─── Item walker ──────────────────────────────────────────────────────────────
 func checkItem(item: in Item, isRuntimeChecked: in Bool, regs: in List[LintTypeDecl]): List[LintDiag] {
   val acc: List[LintDiag] = newList()
@@ -869,6 +1155,7 @@ pub func lint(source: in String): List[LintDiag] {
   var i = 0
   while i < file.items.count {
     appendDiags(acc, checkItem(file.items[i], isRuntimeChecked, regs))
+    sqlLintItem(file.items[i], acc)
     i = i + 1
   }
   sortDiags(acc)

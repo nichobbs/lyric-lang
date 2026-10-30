@@ -289,3 +289,32 @@ test "SQLite: an injection-shaped value stays data when bound; unsafeRawSql carr
     }
   }
 }
+
+test "SQLite: a parameter-count mismatch is an Err before the driver runs, on a connection and in a transaction (#8520)" {
+  match Db.connectSqlite("sqlite::memory:", 5000) {
+    case Err(e) -> assertTrue(false, "connect failed: " + e.message)
+    case Ok(conn) -> {
+      val _ = conn.execute(Db.sql("CREATE TABLE pairs (a TEXT, b TEXT)"), [])
+      match conn.execute(Db.sql("INSERT INTO pairs (a, b) VALUES (@p0, @p1)"), ["only-one"]) {
+        case Ok(_) -> assertTrue(false, "too few parameters must be rejected")
+        case Err(e) -> assertEqual(e.code, "PARAM_COUNT_MISMATCH", "execute: too few")
+      }
+      match conn.query(Db.sql("SELECT a FROM pairs"), ["extra"]) {
+        case Ok(_) -> assertTrue(false, "an extra parameter must be rejected")
+        case Err(e) -> assertEqual(e.code, "PARAM_COUNT_MISMATCH", "query: too many")
+      }
+      match conn.transaction() {
+        case Err(e) -> assertTrue(false, "begin failed: " + e.message)
+        case Ok(tx) -> {
+          match tx.execute(Db.sql("INSERT INTO pairs (a, b) VALUES (@p0, @p1)"), ["x"]) {
+            case Ok(_) -> assertTrue(false, "tx: too few parameters must be rejected")
+            case Err(e) -> assertEqual(e.code, "PARAM_COUNT_MISMATCH", "tx execute: too few")
+          }
+          assertTrue(tx.isActive(), "a rejected statement does not finish the transaction")
+          val _ = tx.rollback()
+        }
+      }
+      conn.close()
+    }
+  }
+}

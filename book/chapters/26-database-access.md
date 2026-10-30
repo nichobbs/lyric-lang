@@ -68,7 +68,12 @@ conn.query(Db.sql("SELECT id FROM users WHERE name = @p0"), [name])
 string literal, or a placeholder that is not `@p<N>`. When a fragment really is
 built at run time, say so with `Db.unsafeRawSql(text)`; it skips the check, so
 only use it for fixed fragments such as a table name from an allow-list, and
-expect reviewers to grep for it.
+expect reviewers to grep for it. `lyric lint` warns (`L008`) when the argument
+to `sql(...)` is not a literal, so a spliced string is flagged at the call.
+
+The statement also knows how many parameters it needs: one more than its
+highest `@p<N>`. Passing a different number of values makes `query`/`execute`
+return an `Err` with code `PARAM_COUNT_MISMATCH` before the driver is called.
 
 ## DML (INSERT / UPDATE / DELETE)
 

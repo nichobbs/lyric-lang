@@ -145,56 +145,109 @@ func pathGetFullPath(path: in String): String {
   }
 }
 
-// `--target native`: `realpath(3)` on the longest prefix of the path that
-// exists, so every symlink resolves the way the C library's `open` resolves it
-// (#7249, #8507): a link inside the static root that points outside it lands
-// outside it, and `..` after a link climbs from the link's target, not from
-// the link.  A relative path is taken from the working directory.  The part
-// that does not exist yet is appended lexically (`..` pops a segment), so a
-// missing file is still a 404 rather than an error; a `..` after a missing
-// segment can differ from `open`, which fails on the missing segment, but
-// such a path names no file either way.  A link loop (or any other
-// resolution failure) yields "", which is never within any root.
-@cfg(feature = "native")
-func pathGetFullPath(path: in String): String {
-  var absolute = path
-  if not path.startsWith("/") {
-    absolute = Env.currentDirectory() + "/" + path
+// ─── Separator-aware path helpers (pure; shared by the native resolver) ───────
+// The native resolver works on a prefix plus a segment list so a Windows path
+// (`C:\site\public`, `C:/site/public`, `\\server\share\x`) is understood the
+// way `lyric_path_real_ok`'s Win32 twin returns it.  `windows` selects the
+// flavour: on a POSIX target `\` is an ordinary filename character, so only
+// `/` separates and only a leading `/` is absolute.
+@cfg(target_os = "windows")
+func isWindowsTarget(): Bool {
+  true
+}
+
+@cfg(not(target_os = "windows"))
+func isWindowsTarget(): Bool {
+  false
+}
+
+func isSepCode(c: in Int, windows: in Bool): Bool {
+  c == 47 or (windows and c == 92)
+}
+
+func isDriveLetterCode(c: in Int): Bool {
+  (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+}
+
+// The root of `path`: "" (relative), "/" (rooted), "//" (UNC, Windows only),
+// "X:" (a drive, followed by a separator, Windows only) or "?" for a path that
+// is neither relative nor fully rooted (`C:foo`, bare `C:`), which has no
+// meaning independent of per-drive state and fails closed.
+func nativePathPrefix(path: in String, windows: in Bool): String {
+  val n = path.length
+  if n == 0 {
+    return ""
   }
-  val segs: List[String] = newList()
-  for seg in absolute.split("/") {
-    if seg.length > 0 and seg != "." {
-      segs.add(seg)
-    }
+  val c0 = codeUnitAt(path, 0)
+  if not windows {
+    return if c0 == 47 { "/" } else { "" }
   }
-  var existing = segs.count
-  while existing >= 0 {
-    var prefix = ""
-    var pi = 0
-    while pi < existing {
-      prefix = prefix + "/" + segs[pi]
-      pi = pi + 1
+  if isSepCode(c0, true) {
+    if n > 1 and isSepCode(codeUnitAt(path, 1), true) {
+      return "//"
     }
-    match HttpKernel.realPath(if prefix.length == 0 { "/" } else { prefix }) {
-      case Resolved(real) -> return appendLexically(real, segs, existing)
-      case Missing -> {
-        existing = existing - 1
-      }
-      case Unresolvable -> return ""
+    return "/"
+  }
+  if n >= 2 and isDriveLetterCode(c0) and codeUnitAt(path, 1) == 58 {
+    if n >= 3 and isSepCode(codeUnitAt(path, 2), true) {
+      return path.substring(0, 2)
     }
+    return "?"
   }
   ""
 }
 
-// `base` (absolute, canonical) with `segs[from..]` applied lexically.
-@cfg(feature = "native")
-func appendLexically(base: in String, segs: in List[String], from: in Int): String {
-  val kept: List[String] = newList()
-  for seg in base.split("/") {
-    if seg.length > 0 {
-      kept.add(seg)
+func isDrivePrefix(prefix: in String): Bool {
+  prefix.length == 2 and prefix != "//"
+}
+
+// The non-empty, non-`.` segments of `path` after its root.
+func nativePathSegments(path: in String, windows: in Bool): List[String] {
+  val prefix = nativePathPrefix(path, windows)
+  val rest = if isDrivePrefix(prefix) and prefix != "?" { path.substring(2) } else { path }
+  val segs: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i <= rest.length {
+    if i == rest.length or isSepCode(codeUnitAt(rest, i), windows) {
+      if i > start {
+        val seg = rest.substring(start, i - start)
+        if seg != "." {
+          segs.add(seg)
+        }
+      }
+      start = i + 1
     }
+    i = i + 1
   }
+  segs
+}
+
+// `prefix` and `segs` joined with `/` (a canonical form on every target; the
+// Win32 file APIs accept it).
+func joinNativePath(prefix: in String, segs: in List[String]): String {
+  var joined = if prefix == "/" or prefix == "//" { "" } else { prefix }
+  var i = 0
+  while i < segs.count {
+    joined = joined + (if i == 0 and prefix == "//" { "//" } else { "/" }) + segs[i]
+    i = i + 1
+  }
+  if joined.length == 0 {
+    "/"
+  } else if segs.count == 0 and isDrivePrefix(prefix) {
+    joined + "/"
+  } else {
+    joined
+  }
+}
+
+/// `base` (absolute, canonical) with `segs[from..]` applied lexically (`..`
+/// pops a segment).  Exposed so the Windows flavour can be tested on any host;
+/// `windows` is the path flavour.
+@stable(since = "0.1")
+pub func staticAppendLexically(base: in String, segs: in List[String], from: in Int, windows: in Bool): String {
+  val prefix = nativePathPrefix(base, windows)
+  val kept = nativePathSegments(base, windows)
   var i = from
   while i < segs.count {
     val seg = segs[i]
@@ -207,15 +260,51 @@ func appendLexically(base: in String, segs: in List[String], from: in Int): Stri
     }
     i = i + 1
   }
-  var joined = ""
-  for seg in kept {
-    joined = joined + "/" + seg
+  joinNativePath(if prefix.length == 0 { "/" } else { prefix }, kept)
+}
+
+// `--target native`: `realpath(3)` on the longest prefix of the path that
+// exists, so every symlink resolves the way the C library's `open` resolves it
+// (#7249, #8507): a link inside the static root that points outside it lands
+// outside it, and `..` after a link climbs from the link's target, not from
+// the link.  A relative path is taken from the working directory.  The part
+// that does not exist yet is appended lexically (`..` pops a segment), so a
+// missing file is still a 404 rather than an error; a `..` after a missing
+// segment can differ from `open`, which fails on the missing segment, but
+// such a path names no file either way.  A link loop (or any other
+// resolution failure) yields "", which is never within any root.  On Windows
+// (#8584) both `/` and `\` separate, a drive (`C:`) or UNC (`\\`) prefix is
+// absolute, and the result uses `/` throughout.
+@cfg(feature = "native")
+func pathGetFullPath(path: in String): String {
+  val windows = isWindowsTarget()
+  var absolute = path
+  var prefix = nativePathPrefix(path, windows)
+  if prefix == "" {
+    absolute = Env.currentDirectory() + "/" + path
+    prefix = nativePathPrefix(absolute, windows)
   }
-  if joined.length == 0 {
-    "/"
-  } else {
-    joined
+  if prefix == "?" or prefix == "" {
+    return ""
   }
+  val segs = nativePathSegments(absolute, windows)
+  var existing = segs.count
+  while existing >= 0 {
+    val sub: List[String] = newList()
+    var pi = 0
+    while pi < existing {
+      sub.add(segs[pi])
+      pi = pi + 1
+    }
+    match HttpKernel.realPath(joinNativePath(prefix, sub)) {
+      case Resolved(real) -> return staticAppendLexically(real, segs, existing, windows)
+      case Missing -> {
+        existing = existing - 1
+      }
+      case Unresolvable -> return ""
+    }
+  }
+  ""
 }
 
 @cfg(feature = "jvm")
@@ -924,6 +1013,31 @@ pub config StaticFiles {
   fallbackToIndex: Bool = false
 }
 
+func trimTrailingSlashes(p: in String): String {
+  var stop = p.length
+  while stop > 0 and codeUnitAt(p, stop - 1) == 47 {
+    stop = stop - 1
+  }
+  p.substring(0, stop)
+}
+
+/// True when `fullCandidate` is `fullRoot` or lies beneath it.  Both are
+/// canonical absolute paths from `pathGetFullPath`; an empty root contains
+/// nothing.  With `windows`, separators compare as `/` and case is ignored,
+/// matching NTFS's default.  Exposed so the Windows flavour can be tested on
+/// any host.
+@stable(since = "0.1")
+pub func staticPathWithinRoot(fullRoot: in String, fullCandidate: in String, windows: in Bool): Bool {
+  if fullRoot.length == 0 or fullCandidate.length == 0 {
+    return false
+  }
+  val r0 = if windows { fullRoot.replace("\\", "/").toLower() } else { fullRoot }
+  val c0 = if windows { fullCandidate.replace("\\", "/").toLower() } else { fullCandidate }
+  val r = trimTrailingSlashes(r0)
+  val c = trimTrailingSlashes(c0)
+  c == r or c.startsWith(r + "/")
+}
+
 // Path traversal guard, in two layers:
 //   1. Reject a null byte outright (a classic string-truncation attack
 //      against the underlying file APIs).
@@ -936,7 +1050,18 @@ pub config StaticFiles {
 //      the read cannot resolve differently from the check.  A root that
 //      does not resolve ("") contains nothing.
 func withinFullRoot(fullRoot: in String, fullCandidate: in String): Bool {
-  fullRoot.length > 0 and (fullCandidate == fullRoot or fullCandidate.startsWith(fullRoot + "/"))
+  staticPathWithinRoot(fullRoot, fullCandidate, isWindowsTarget())
+}
+
+/// True when the request path (below the mount prefix) may be resolved.  A
+/// null byte is never allowed.  A backslash is rejected on every target: it
+/// separates on Windows, so `/..\secret` would otherwise slip past the
+/// segment-based `..` handling there, and it is not a character a URL names a
+/// file with on the others.  On Windows a `:` is rejected too (a drive prefix
+/// or an NTFS alternate data stream, `file.txt:stream`).
+@stable(since = "0.1")
+pub func staticRequestPathAllowed(relative: in String, windows: in Bool): Bool {
+  not (relative.contains("\u{0000}") or relative.contains("\\") or (windows and relative.contains(":")))
 }
 
 // A static file to serve: `path` is the canonical path the root check
@@ -948,7 +1073,7 @@ record StaticHit {
 }
 
 func resolveStaticFile(cfg: in StaticFiles, relative: in String): Option[StaticHit] {
-  if relative.contains("\u{0000}") {
+  if not staticRequestPathAllowed(relative, isWindowsTarget()) {
     return None
   }
   val cleaned = if relative.startsWith("/") { relative.substring(1) } else { relative }

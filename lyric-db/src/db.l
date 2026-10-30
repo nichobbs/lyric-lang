@@ -82,7 +82,9 @@ pub record DbError {
 @stable(since = "0.2")
 pub opaque type SqlText {
   text: String
+  placeholders: Int
   invariant: hasSqlContent(text)
+  invariant: placeholders >= 0
 }
 
 @pure
@@ -179,6 +181,75 @@ pub func sqlIsWellFormed(text: in String): Bool {
   ok and not inLiteral
 }
 
+/// Number of positional parameters `text` expects: one more than the highest
+/// `@p<N>` index outside a string literal, or 0 when it has none.  Gaps are
+/// allowed (`@p0` and `@p2` expect three parameters).  `@` followed by anything
+/// else is ignored here (`sqlIsWellFormed` is what rejects it).
+@pure
+@stable(since = "0.2")
+pub func sqlPlaceholderCount(text: in String): Int {
+  val n = text.length
+  var i = 0
+  var inLiteral = false
+  var count = 0
+  while i < n {
+    val c = Str.charAtOrReplacement(text, i)
+    if inLiteral {
+      if c == '\'' {
+        if i + 1 < n and Str.charAtOrReplacement(text, i + 1) == '\'' {
+          i = i + 1
+        } else {
+          inLiteral = false
+        }
+      }
+    } else if c == '\'' {
+      inLiteral = true
+    } else if c == '@' and i + 2 < n and Str.charAtOrReplacement(text, i + 1) == 'p' and isSqlDigit(Str.charAtOrReplacement(text, i + 2)) {
+      var j = i + 2
+      var idx = 0
+      while j < n and isSqlDigit(Str.charAtOrReplacement(text, j)) {
+        if idx < 100000000 {
+          idx = idx * 10 + (Str.codeUnitAt(text, j) - 48)
+        }
+        j = j + 1
+      }
+      if idx + 1 > count {
+        count = idx + 1
+      }
+      i = j - 1
+    }
+    i = i + 1
+  }
+  count
+}
+
+func mkSqlText(text: in String): SqlText {
+  SqlText(text = text, placeholders = sqlPlaceholderCount(text))
+}
+
+/// The error for running `stmt` with a parameter list of the wrong length, or
+/// `None` when `params` has exactly the number of values the statement's
+/// highest `@p<N>` placeholder needs.  Every `DbConnection` / `DbTransaction`
+/// in this package returns it as an `Err` (code `PARAM_COUNT_MISMATCH`)
+/// before the statement reaches a driver.
+@stable(since = "0.2")
+pub func sqlParamsError(stmt: in SqlText, params: in slice[String]): Option[DbError] {
+  if stmt.placeholders == params.length {
+    return None
+  }
+  Some(
+    value = DbError(
+      message = "SQL statement expects " + stmt.placeholders.toString() +
+        " parameter(s) (highest placeholder @p" +
+        (stmt.placeholders - 1).toString() +
+        ") but " +
+        params.length.toString() +
+        " were supplied",
+      code = "PARAM_COUNT_MISMATCH"
+    )
+  )
+}
+
 /// Build a `SqlText` from SQL source.  Intended for string literals: values
 /// go in the `params` list as `@p0`, `@p1`, ....  Panics (contract failure)
 /// when `text` is not `sqlIsWellFormed`; use `trySql` to handle that as an
@@ -187,7 +258,7 @@ pub func sqlIsWellFormed(text: in String): Bool {
 pub func sql(text: in String): SqlText
   requires: sqlIsWellFormed(text)
 {
-  SqlText(text = text)
+  mkSqlText(text)
 }
 
 /// Like `sql`, but a text that is not `sqlIsWellFormed` is an `Err` with code
@@ -195,7 +266,7 @@ pub func sql(text: in String): SqlText
 @stable(since = "0.2")
 pub func trySql(text: in String): Result[SqlText, DbError] {
   if sqlIsWellFormed(text) {
-    return Ok(SqlText(text = text))
+    return Ok(mkSqlText(text))
   }
   Err(
     DbError(
@@ -215,7 +286,7 @@ pub func trySql(text: in String): Result[SqlText, DbError] {
 pub func unsafeRawSql(text: in String): SqlText
   requires: hasSqlContent(text)
 {
-  SqlText(text = text)
+  mkSqlText(text)
 }
 
 /// The SQL source held by a `SqlText`.  For `DbConnection` implementations
@@ -350,6 +421,10 @@ record NativeConnection {
 
 impl DbConnection for NativeConnection {
   func query(sql: in SqlText, params: in slice[String]): Result[slice[DbRow], DbError] {
+    match sqlParamsError(sql, params) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
     match DbKernel.query(self.conn, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "QUERY_ERROR"))
@@ -357,6 +432,10 @@ impl DbConnection for NativeConnection {
   }
 
   func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError] {
+    match sqlParamsError(sql, params) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
     match DbKernel.execute(self.conn, sql.text, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "EXECUTE_ERROR"))
@@ -390,6 +469,10 @@ impl DbTransaction for NativeTransaction {
     if self.finished {
       return Err(txFinishedError())
     }
+    match sqlParamsError(sql, params) {
+      case Some(e) -> return Err(e)
+      case None -> ()
+    }
     match DbKernel.txQuery(self.conn, self.tx, sql.text, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
@@ -399,6 +482,10 @@ impl DbTransaction for NativeTransaction {
   func execute(sql: in SqlText, params: in slice[String]): Result[Int, DbError] {
     if self.finished {
       return Err(txFinishedError())
+    }
+    match sqlParamsError(sql, params) {
+      case Some(e) -> return Err(e)
+      case None -> ()
     }
     match DbKernel.txExecute(self.conn, self.tx, sql.text, params) {
       case Ok(n) -> Ok(n)

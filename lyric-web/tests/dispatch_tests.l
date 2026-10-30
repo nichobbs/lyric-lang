@@ -926,3 +926,77 @@ test "dispatch: a static mount matches whole path segments only" {
     "a sibling path is not the mount"
   )
 }
+
+// ─── Static files: Windows path flavour (#8584) ──────────────────────────────
+test "static paths (Windows flavour): drive and UNC roots are absolute, both separators split" {
+  val segs: List[String] = ["x", "..", "y"]
+  assertEqual(
+    Web.staticAppendLexically("C:\\site\\public", ["a", "b"], 0, true),
+    "C:/site/public/a/b",
+    "backslash drive path"
+  )
+  assertEqual(
+    Web.staticAppendLexically("C:/site/public", ["a"], 0, true),
+    "C:/site/public/a",
+    "forward-slash drive path"
+  )
+  assertEqual(Web.staticAppendLexically("C:\\site", segs, 0, true), "C:/site/y", "`..` pops one segment")
+  assertEqual(Web.staticAppendLexically("C:\\", ["..", "a"], 0, true), "C:/a", "`..` cannot climb above the drive root")
+  assertEqual(Web.staticAppendLexically("C:\\", [], 0, true), "C:/", "a bare drive root keeps its slash")
+  assertEqual(Web.staticAppendLexically("\\\\srv\\share\\dir", ["f.txt"], 0, true), "//srv/share/dir/f.txt", "UNC path")
+  assertEqual(Web.staticAppendLexically("/usr/lib", ["x"], 0, false), "/usr/lib/x", "POSIX flavour is unchanged")
+  assertEqual(
+    Web.staticAppendLexically("/a/b", ["..", "..", "..", "c"], 0, false),
+    "/c",
+    "POSIX `..` stops at the root"
+  )
+  assertEqual(
+    Web.staticAppendLexically("/a\\b", ["c"], 0, false),
+    "/a\\b/c",
+    "a backslash is a filename character on POSIX"
+  )
+}
+
+test "static paths: a root containment check compares separators and case on Windows only" {
+  assertTrue(Web.staticPathWithinRoot("C:/Site/Public", "C:/Site/Public/a.txt", true), "child")
+  assertTrue(Web.staticPathWithinRoot("C:/Site/Public", "C:/Site/Public", true), "the root itself")
+  assertTrue(Web.staticPathWithinRoot("C:\\Site\\Public", "C:/Site/Public/a.txt", true), "mixed separators")
+  assertTrue(Web.staticPathWithinRoot("C:/Site/Public", "c:/site/public/A.TXT", true), "case-insensitive")
+  assertFalse(Web.staticPathWithinRoot("C:/Site/Public", "C:/Site/PublicX/a.txt", true), "sibling with a shared prefix")
+  assertFalse(Web.staticPathWithinRoot("C:/Site/Public", "D:/Site/Public/a.txt", true), "another drive")
+  assertTrue(Web.staticPathWithinRoot("C:/", "C:/any/file", true), "a drive root contains its files")
+  assertFalse(Web.staticPathWithinRoot("/srv/Public", "/srv/public/a.txt", false), "POSIX compares case-sensitively")
+  assertTrue(Web.staticPathWithinRoot("/srv/public", "/srv/public/a.txt", false), "POSIX child")
+  assertTrue(Web.staticPathWithinRoot("/", "/etc/x", false), "the filesystem root contains everything")
+  assertFalse(Web.staticPathWithinRoot("", "/etc/x", false), "an unresolved root contains nothing")
+  assertFalse(Web.staticPathWithinRoot("/srv", "", false), "an unresolved candidate is never within a root")
+}
+
+test "static paths: a backslash, null byte or (on Windows) colon is refused in the request path" {
+  assertTrue(Web.staticRequestPathAllowed("/css/site.css", false), "ordinary path")
+  assertTrue(Web.staticRequestPathAllowed("/css/site.css", true), "ordinary path on Windows")
+  assertFalse(Web.staticRequestPathAllowed("/..\\secret.txt", false), "backslash traversal on POSIX")
+  assertFalse(Web.staticRequestPathAllowed("/..\\secret.txt", true), "backslash traversal on Windows")
+  assertFalse(Web.staticRequestPathAllowed("/a\u{0000}.txt", false), "null byte")
+  assertTrue(Web.staticRequestPathAllowed("/a:b.txt", false), "colon is a filename character on POSIX")
+  assertFalse(Web.staticRequestPathAllowed("/a.txt:stream", true), "NTFS alternate data stream")
+  assertFalse(Web.staticRequestPathAllowed("/C:/Windows/win.ini", true), "drive prefix inside the request path")
+}
+
+test "dispatch: static file middleware answers 404 for a backslash traversal" {
+  val dir = scratchDir("static_backslash")
+  val _ = createDir(dir + "/public")
+  val _ = writeText(dir + "/secret.txt", "secret")
+  var router = Web.create()
+  router = Web.withStaticFiles(
+    router,
+    Web.StaticFiles(
+      root = dir + "/public",
+      mountPrefix = "",
+      cacheControlSeconds = 60,
+      fallbackToIndex = false
+    )
+  )
+  val resp = Web.dispatch(router, getRequest("/..\\secret.txt"))
+  assertEqualInt(resp.status, 404, "backslash traversal is not served")
+}

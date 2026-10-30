@@ -405,7 +405,7 @@ deferred to Phase 3 by design.
   method-wins on both targets across all member kinds (#6489,
   D-progress-775).
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
-- Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): six AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts, L007 a `pub`/`internal` signature naming a same-file package-private type (#7549; single-file, see #7607). L006 is retired and not reused. `--error-on-warning` flag. Runs on non-compiling code.
+- Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): seven AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts, L007 a `pub`/`internal` signature naming a same-file package-private type (#7549; single-file, see #7607), L008 a non-literal argument to `sql(...)` (#8520). L006 is retired and not reused. `--error-on-warning` flag. Runs on non-compiling code.
 - Plugins (docs/69, D204, D207, D228, D231, D247) — **shipped** on every target: the plugin
   annotations and `Lyric.PluginExpand` (K0000-K0014), `Std.Plugin` hosts on
   dotnet, the JVM and native, process-mode payloads for dotnet, the JVM and
