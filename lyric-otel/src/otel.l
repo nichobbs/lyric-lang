@@ -176,7 +176,7 @@ pub aspect Tracing {
   // unsampled call runs untraced.  Every span is the root of its own trace
   // (no context propagation yet), so this draw is the trace-root decision;
   // once a current span exists, a child inherits its parent's decision
-  // instead of drawing (D278).
+  // instead of drawing (D279).
   around(call) -> ret {
     if not enabled or (sampleRate < 1.0 and not shouldSample(sampleRate, randomUnit())) {
       ret = call.proceed()

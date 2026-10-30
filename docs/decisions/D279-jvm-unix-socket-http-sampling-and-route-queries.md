@@ -1,4 +1,4 @@
-# D278 - JVM Unix-socket HTTP, trace-root sampling, and `@query` route parameters
+# D279 - JVM Unix-socket HTTP, trace-root sampling, and `@query` route parameters
 
 **Status:** shipped (#8560, #8571, #7907 in part). Extends D259 and D151.
 
