@@ -274,7 +274,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // does not model: an unknown condition, so `b`'s side conditions must
       // hold however it falls and its facts give nothing (#8107).
       val coalesce = match op { case BCoalesce -> true; case _ -> false }
-      val rR = if coalesce {
+      val optionLhs = coalesce and isOptionSort(sortOf(lR.term))
+      val rR = if optionLhs {
+        guardTR(mkNot(mkIsSome(lR.term)), rRaw)
+      } else if coalesce {
         guardTR(freshVar(env, "isnull", SBool), rRaw)
       } else {
         match builtinOfBinop(op) {
@@ -282,6 +285,30 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           case Some(BOpImplies) -> guardTR(lR.term, rRaw)
           case Some(BOpOr) -> guardTR(mkNot(lR.term), rRaw)
           case _ -> rRaw
+        }
+      }
+      // `a ?? b` on an `Option` left operand is its payload when it is a
+      // `Some`, else `b`, which runs on that path alone (#8168).
+      if optionLhs {
+        match coerceToSort(rR.term, monadArgSort(sortOf(lR.term), 0)) {
+          case Ok(rAt) -> {
+            val joined = TIte(cond = mkIsSome(lR.term), thenT = mkOptionValue(lR.term), elseT = rAt)
+            val coalesced = if termIsPoisoned(lR.term) or termIsPoisoned(rR.term) { poisonTerm(joined) } else { joined }
+            val coalesceSides: List[Term] = newList()
+            appendTermList(coalesceSides, lR.sideConds)
+            appendTermList(coalesceSides, afterFacts(lR.assumed, rR.sideConds))
+            val coalesceDiags: List[Diagnostic] = newList()
+            appendTermList2(coalesceDiags, lDiags)
+            appendTermList2(coalesceDiags, rDiags)
+            val coalesceTR = TranslateResult(
+              term = coalesced,
+              sideConds = coalesceSides,
+              assumed = termsWith(lR.assumed, rR.assumed)
+            )
+            val coalescePair: (TranslateResult, List[Diagnostic]) = (coalesceTR, coalesceDiags)
+            return coalescePair
+          }
+          case Err(_) -> ()
         }
       }
       match builtinOfBinop(op) {

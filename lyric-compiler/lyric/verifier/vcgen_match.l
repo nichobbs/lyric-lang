@@ -89,7 +89,7 @@ func buildMatchIte(
       )
     }
     case Some(cond) -> {
-      val isUnconditional = isTrueT(cond)
+      val isUnconditional = isTrueT(cond) or monadArmsComplete(env, scrutInfo.sort, arms, idx)
       // Extend env with pattern bindings.
       val bindings = patternBindings(arm.pattern, scrutTerm)
       var armEnv = env
@@ -98,7 +98,11 @@ func buildMatchIte(
         val bname = bindings[bi].bindName
         val bterm = bindings[bi].bindTerm
         // Every binding a supported pattern makes is the scrutinee itself.
-        val info = SortInfo(sort = sortOf(bterm), range = scrutInfo.range, intBits = scrutInfo.intBits)
+        val info = if smtRenderSort(sortOf(bterm)) == smtRenderSort(scrutInfo.sort) {
+          SortInfo(sort = sortOf(bterm), range = scrutInfo.range, intBits = scrutInfo.intBits)
+        } else {
+          SortInfo(sort = sortOf(bterm), range = RBKNone)
+        }
         armEnv = envSetMutable(envBindTerm(bname, bterm, info, armEnv), bname, false)
         bi = bi + 1
       }
@@ -155,6 +159,126 @@ func buildMatchIte(
         TIte(cond = armMatches, thenT = armTerm, elseT = restTerm)
       }
     }
+  }
+}
+
+// How a constructor pattern `head(args)` splits the value `subject`, a
+// standard `Result` or `Option`: the case test that selects it and the
+// payload it binds (#8168).  `None` for anything else, including a pattern
+// whose arity does not fit.
+record MonadPatternParts {
+  tag: Term
+  payload: Term
+  caseName: String
+}
+
+func monadPatternParts(
+  subjectSort: in Sort, head: in ModulePath, args: in List[Pattern], subject: in Term
+): Option[MonadPatternParts] {
+  if head.segments.count != 1 or args.count != 1 {
+    return None
+  }
+  val name = head.segments[0]
+  if isResultSort(subjectSort) and name == "Ok" {
+    return Some(value = MonadPatternParts(tag = mkIsOk(subject), payload = mkResultValue(subject), caseName = name))
+  }
+  if isResultSort(subjectSort) and name == "Err" {
+    return Some(
+      value = MonadPatternParts(tag = mkNot(mkIsOk(subject)), payload = mkResultError(subject), caseName = name)
+    )
+  }
+  if isOptionSort(subjectSort) and name == "Some" {
+    return Some(value = MonadPatternParts(tag = mkIsSome(subject), payload = mkOptionValue(subject), caseName = name))
+  }
+  None
+}
+
+// The condition under which `Ok(p)`, `Err(p)` or `Some(p)` matches a
+// `Result` or `Option` `subject`: the case holds and the payload matches
+// `p` (#8168).
+func monadPatternCond(
+  env: in VEnv, scrutSort: in Sort, head: in ModulePath, args: in List[Pattern], subject: in Term
+): Option[Term] {
+  match monadPatternParts(scrutSort, head, args, subject) {
+    case Some(parts) -> {
+      match matchCondKind(env, sortOf(parts.payload), args[0].kind, parts.payload) {
+        case Some(inner) -> {
+          if isTrueT(inner) {
+            Some(value = parts.tag)
+          } else {
+            Some(value = mkAnd(termList2(parts.tag, inner)))
+          }
+        }
+        case None -> None
+      }
+    }
+    case None -> None
+  }
+}
+
+// Whether the arms up to and including `idx`, those without a guard,
+// cover both cases of a standard `Result` or `Option` scrutinee, so the
+// arms after `idx` are never reached: the case an unguarded `Err(e)` arm
+// after an unguarded `Ok(v)` arm completes (#8168).
+func monadArmsComplete(env: in VEnv, scrutSort: in Sort, arms: in List[MatchArm], idx: in Int): Bool {
+  if not isResultSort(scrutSort) and not isOptionSort(scrutSort) {
+    return false
+  }
+  val first = if isResultSort(scrutSort) { "Ok" } else { "Some" }
+  val second = if isResultSort(scrutSort) { "Err" } else { "None" }
+  var haveFirst = false
+  var haveSecond = false
+  var i = 0
+  while i <= idx {
+    if isNone(arms[i].guard) {
+      val name = irrefutableMonadArm(env, scrutSort, arms[i].pattern)
+      if name == "*" {
+        return true
+      }
+      if name == first {
+        haveFirst = true
+      }
+      if name == second {
+        haveSecond = true
+      }
+    }
+    i = i + 1
+  }
+  haveFirst and haveSecond
+}
+
+// "*" for a pattern that matches every value, `Ok`, `Err`, `Some` or `None`
+// for one that matches every value of that case, "" otherwise.
+func irrefutableMonadArm(env: in VEnv, scrutSort: in Sort, pat: in Pattern): String {
+  match pat.kind {
+    case PParen(inner) -> irrefutableMonadArm(env, scrutSort, inner)
+    case PWildcard -> "*"
+    case PBinding(name, inner) -> {
+      if name == "None" and isNone(inner) and isOptionSort(scrutSort) {
+        return "None"
+      }
+      if bareNameBinds(env, scrutSort, name) {
+        match inner {
+          case Some(p) -> irrefutableMonadArm(env, scrutSort, p)
+          case None -> "*"
+        }
+      } else {
+        ""
+      }
+    }
+    case PConstructor(head, args) -> {
+      val noSubject = freshVar(env, "subject", scrutSort)
+      match monadPatternParts(scrutSort, head, args, noSubject) {
+        case Some(parts) -> {
+          match matchCondKind(env, sortOf(parts.payload), args[0].kind, parts.payload) {
+            case Some(inner) -> if isTrueT(inner) { parts.caseName } else { "" }
+            case None -> ""
+          }
+        }
+        case None -> ""
+      }
+    }
+    case _ -> ""
   }
 }
 
@@ -252,7 +376,12 @@ func matchCond(env: in VEnv, scrutSort: in Sort, pat: in Pattern, subject: in Te
 func matchCondKind(env: in VEnv, scrutSort: in Sort, kind: in PatternKind, subject: in Term): Option[Term] {
   match kind {
     case PWildcard -> Some(value = trueT())
+    case PConstructor(head, args) -> monadPatternCond(env, scrutSort, head, args, subject)
     case PBinding(name, inner) -> {
+      // `None` against the standard `Option` (#8168).
+      if name == "None" and isNone(inner) and isOptionSort(scrutSort) {
+        return Some(value = mkNot(mkIsSome(subject)))
+      }
       if not bareNameBinds(env, scrutSort, name) {
         return None
       }
@@ -461,7 +590,16 @@ func patternBindings(pat: in Pattern, subject: in Term): List[PatBind] {
 
 func collectBindings(kind: in PatternKind, subject: in Term, output: in List[PatBind]): Unit {
   match kind {
+    case PConstructor(head, args) -> {
+      match monadPatternParts(sortOf(subject), head, args, subject) {
+        case Some(parts) -> collectBindings(args[0].kind, parts.payload, output)
+        case None -> ()
+      }
+    }
     case PBinding(name, innerOpt) -> {
+      if name == "None" and isNone(innerOpt) and isOptionSort(sortOf(subject)) {
+        return ()
+      }
       output.add(PatBind(bindName = name, bindTerm = subject))
       match innerOpt {
         case Some(p) -> collectBindings(p.kind, subject, output)

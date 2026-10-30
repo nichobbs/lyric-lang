@@ -14,6 +14,7 @@ import Lyric.SelfFields as SelfFields
 // distinct or range subtype, or another such alias — under its name, so a
 // value declared with the alias has the sort, width and range of what it
 // names: a quantifier over `alias S = Small` ranges over `Small` (#8214).
+// An alias of `Result`, `Option` or a nullable type is registered too (#8168).
 // An alias of a record, union or other named type is left as it was: its
 // name is not a distinct type's, which `S(x)` would otherwise construct.
 func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, TypeExpr]): Unit {
@@ -42,6 +43,16 @@ func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, Type
 func aliasNamesScalar(distinctMap: in Map[String, TypeExpr], te: in TypeExpr): Bool {
   match te.kind {
     case TRefined(_, _) -> true
+    // An alias of the standard library's `Result`, `Option` or a nullable
+    // type has that datatype's sort: it is resolved before the sort is
+    // chosen (#8168).  A user's own `Result`/`Option` is renamed apart
+    // later (`unshadowMonadSort`), so it never reaches `Lyric!Result`.
+    case TGenericApp(head, targs) -> head.segments.count == 1 and
+      (
+        head.segments[0] == "Result" and targs.count == 2 or
+          head.segments[0] == "Option" and targs.count == 1
+      )
+    case TNullable(_) -> true
     case TRef(path) -> {
       if path.segments.count == 1 {
         val name = path.segments[0]

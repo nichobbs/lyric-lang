@@ -2499,6 +2499,90 @@ test "a type named Result or Option other than the standard library's is not mod
   )
 }
 
+test "match patterns on Result and Option are cases with their payloads (#8168)" {
+  val res = "func f(r: in Result[Int, String]): Int\n  requires: r.isOk and r.value > 5\n  ensures: result > 5\n{\n  match r {\n    case Ok(v) -> v\n    case Err(_) -> 0\n  }\n}\n"
+  assertDischarged(res, "result-payload-bound")
+  assertRefuted(res.replace("result > 5", "result > 6"), "result-payload-refuted")
+  assertDischarged(
+    "func f(r: in Result[Int, String]): Int\n  ensures: r.isOk or result == 0\n{\n  match r {\n    case Ok(v) -> v\n    case Err(e) -> 0\n  }\n}\n",
+    "err-arm-reached-when-not-ok"
+  )
+  assertRefuted(
+    "func f(r: in Result[Int, String]): Int\n  ensures: result == 0\n{\n  match r {\n    case Ok(v) -> v\n    case Err(e) -> 0\n  }\n}\n",
+    "ok-arm-reached"
+  )
+  assertDischarged(
+    "func f(o: in Option[Int]): Int\n  ensures: o.isSome or result == 7\n{\n  match o {\n    case Some(v) -> v\n    case None -> 7\n  }\n}\n",
+    "option-none-arm"
+  )
+  assertRefuted(
+    "func f(o: in Option[Int]): Int\n  ensures: result == 7\n{\n  match o {\n    case Some(v) -> v\n    case None -> 7\n  }\n}\n",
+    "option-some-arm"
+  )
+  // A nested payload pattern is part of the arm's condition; the arms still
+  // cover both cases.
+  assertDischarged(
+    "func f(o: in Option[Int]): Int\n  ensures: result >= 1 and result <= 3\n{\n  match o {\n    case Some(0) -> 1\n    case Some(_) -> 2\n    case None -> 3\n  }\n}\n",
+    "nested-literal-payload"
+  )
+  assertRefuted(
+    "func f(o: in Option[Int]): Int\n  ensures: result == 2\n{\n  match o {\n    case Some(0) -> 1\n    case Some(_) -> 2\n    case None -> 3\n  }\n}\n",
+    "nested-literal-payload-refuted"
+  )
+  // No warning about a match that does not cover its cases.
+  val exhaustive = provePkg(
+    "func f(o: in Option[Int]): Int {\n  match o {\n    case Some(v) -> v\n    case None -> 0\n  }\n}\n"
+  )
+  assertTrue(not summaryHasDiagCode(exhaustive, "V0029"), "exhaustive: no V0029")
+  assertTrue(not summaryHasDiagCode(exhaustive, "V0027"), "exhaustive: no V0027")
+  // A guarded arm does not cover its case.
+  assertRefuted(
+    "func f(o: in Option[Int]): Int\n  ensures: result == 1\n{\n  match o {\n    case Some(v) if v > 0 -> 1\n    case Some(_) -> 2\n    case None -> 1\n  }\n}\n",
+    "guarded-arm"
+  )
+}
+
+test "?? on an Option takes the payload, or the right operand on the None path alone (#8168)" {
+  assertDischarged(
+    "func f(o: in Option[Int]): Int\n  ensures: o.isSome or result == 5\n{\n  o ?? 5\n}\n",
+    "coalesce-none"
+  )
+  assertDischarged(
+    "func f(o: in Option[Int]): Int\n  requires: o.isSome and o.value == 9\n  ensures: result == 9\n{\n  o ?? 5\n}\n",
+    "coalesce-some"
+  )
+  assertRefuted("func f(o: in Option[Int]): Int\n  ensures: result == 5\n{\n  o ?? 5\n}\n", "coalesce-some-refuted")
+  assertDischarged(
+    posFn() + "func f(o: in Option[Int]): Int\n  requires: o.isSome\n{\n  o ?? pos(0)\n}\n",
+    "right-operand-unreachable"
+  )
+  assertRefuted(posFn() + "func f(o: in Option[Int]): Int\n{\n  o ?? pos(0)\n}\n", "right-operand-reachable")
+  assertDischarged("func f(o: in Int?): Int\n  ensures: o.isSome or result == 3\n{\n  o ?? 3\n}\n", "nullable")
+}
+
+test "an alias of Result or Option has the datatype's sort (#8168)" {
+  assertDischarged(
+    "alias Res = Result[Int, String]\nfunc f(r: in Res): Int\n  ensures: r.isOk or result == 0\n{\n  match r {\n    case Ok(v) -> v\n    case Err(_) -> 0\n  }\n}\n",
+    "result-alias"
+  )
+  assertDischarged(
+    "alias Maybe = Option[Int]\nfunc f(o: in Maybe): Maybe\n  ensures: result.isSome == o.isSome\n{\n  o\n}\n",
+    "option-alias"
+  )
+  assertRefuted(
+    "alias Res = Result[Int, String]\nfunc f(r: in Res): Bool\n  ensures: result\n{\n  r.isOk\n}\n",
+    "result-alias-refuted"
+  )
+}
+
+test "a union named Result is the user's own, never the standard library's (#8168)" {
+  assertUnmodelledMatch(
+    "union Result[T, E] {\n  case Ok(value: T)\n  case Err(error: E)\n}\n" +
+      "func f(r: in Result[Int, String]): Int\n  ensures: result >= 0\n{\n  match r {\n    case Ok(v) -> 1\n    case Err(e) -> 0\n  }\n}\n",
+    "user-result-union"
+  )
+}
+
 test "an out or inout argument before a `?` is the variable itself, never a copy (#8108)" {
   val decls = "func zap(a: inout Int, b: in Int): Unit {\n  a = 0\n}\n" +
     "func g(): Result[Int, String] {\n  Ok(5)\n}\n" +
@@ -3776,7 +3860,8 @@ test "a method of a generic record returning its type parameter is called at the
   )
   // Two instances of one record: each call has its own instance's sort.
   assertDischarged(
-    box + "func both(a: in Box[Int], b: in Box[Bool]): Int\n  requires: b.getV()\n  ensures: result == a.getV() + 1\n{\n  a.getV() + 1\n}\n",
+    box +
+      "func both(a: in Box[Int], b: in Box[Bool]): Int\n  requires: b.getV()\n  ensures: result == a.getV() + 1\n{\n  a.getV() + 1\n}\n",
     "generic-method-two-instances"
   )
   // A record that is not generic gets its method's declared sort too.
