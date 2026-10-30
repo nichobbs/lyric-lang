@@ -1,4 +1,4 @@
-# Native: protected-type `when:` barriers; `Std.Task` waits block instead of polling (#8154, D267)
+# Native: protected-type `when:` barriers; `Std.Task` waits block instead of polling (#8154, D276)
 
 - `lyric-rt` gains condition variables (`lyric_cond_*`), a global condition paired with the global lock
   (`lyric_global_cond_*`), and a monitor for a protected type's lock buffer (`lyric_mutex_wait`,

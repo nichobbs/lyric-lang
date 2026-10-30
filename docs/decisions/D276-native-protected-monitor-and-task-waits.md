@@ -1,4 +1,4 @@
-# D267 — A protected type's lock is a monitor on native; `Std.Task` waits block (#8154)
+# D276 — A protected type's lock is a monitor on native; `Std.Task` waits block (#8154)
 
 **Status:** shipped
 
