@@ -7297,6 +7297,23 @@ test "a selective import of an undeclared name is T0210 (#7926)" {
   assertEqualInt(countDiagCode(one, "T0210"), 1, "only the undeclared name of a group is reported")
 }
 
+test "a did-you-mean hint also draws on names re-exported through the package (#7926)" {
+  val packages: List[ImportedPackage] = importRulePackages()
+  val reexport = parse("package PkgR\nimport PkgY\npub func own(): Int { 1 }\n")
+  packages.add(
+    ImportedPackage(
+      name = "PkgR",
+      items = reexport.file.items,
+      imports = collectImportNames(reexport.file.imports),
+      wholeImports = collectWholeImportNames(reexport.file.imports)
+    )
+  )
+  val viaR = checkWithImportedPackages(parse("package App\nimport PkgR.{fromZ}\nfunc f(): Int { 1 }\n").file, packages)
+  assertEqualInt(countDiagCode(viaR, "T0210"), 1, "fromZ (" + diagCodesOf(viaR) + ")")
+  assertTrue(diagMessageFor(viaR, "T0210").contains("did you mean 'fromY'"), diagMessageFor(viaR, "T0210"))
+  assertTrue(not diagMessageFor(viaR, "T0210").contains("public"), diagMessageFor(viaR, "T0210"))
+}
+
 test "a selective import of a declared or re-exported name, or of an unknown package, is clean (#7926)" {
   assertEqualInt(
     diagCount(
@@ -12932,6 +12949,14 @@ test "a call of an unknown method on a type parameter is T0197 (#8018)" {
     countDiagCode(recordLevel, "T0197"),
     0,
     "a record-level T has no bounds in scope, so it is not diagnosed"
+  )
+  val implLevel = parseCheck(
+    "package P\nrecord Box[T] {\n  value: T\n}\ninterface Peek {\n  func peek(self: in Self): Int\n}\nimpl[T] Peek for Box[T] {\n  func peek(self: in Box[T]): Int {\n    self.value.zork()\n  }\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(implLevel, "T0197"),
+    0,
+    "an impl-level T is a type argument of the self type, so it is not diagnosed (" + diagCodesOf(implLevel) + ")"
   )
   val kernel = parseCheck(
     "package P\nextern type JClass = \"java.lang.Class\"\nfunc cls[A](target: in A): String {\n  val c: JClass = target.getClass()\n  c.getName()\n}\n"
