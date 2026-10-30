@@ -4,6 +4,7 @@
 **Implementation:** `Lyric.PackageMerge` (#8234); §3 and §4 describe the
 shipped compiler, which differs from the original F#-era plan.
 **Decision-log entry:** D180 (`docs/decisions/D180-package-merge-from-parses.md`).
+**Superseded in part:** D267 (docs/70 §4.1) makes imports per file and replaces the text merge with separately parsed files; §4 step 2, `B0012` and §8's "no per-file visibility scopes" no longer describe the target design and are rewritten when docs/70 phase 2 ships.
 
 ## 1. Motivation
 
