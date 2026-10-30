@@ -428,6 +428,15 @@ func isRealDirNative(path: in String): Bool {
 // `hostDirectoryExists`, `hostDeleteFileResult`, `removeDirOne`) that
 // already crossed the boundary, matching `hostCreateDirResult` /
 // `hostListFilesResult` / `hostListDirsResult`.
+/// Deletes an EMPTY directory; a non-empty one is an `IoError`.
+pub func hostDeleteDirEmptyResult(path: in String): Result[Unit, IOError] {
+  if removeDirOne(path) {
+    Ok(value = ())
+  } else {
+    Err(error = IoError(path = path, message = "the directory could not be deleted (it may not be empty): " + path))
+  }
+}
+
 pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
   match listEntryNamesNative(path) {
     case Ok(names) -> {
@@ -463,12 +472,11 @@ pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
   }
 }
 
-// ── Panicking directory entry points (Std.Directory) ────────────────────────
+// ── Panicking directory entry points ────────────────────────────────────────
 // The managed twins' throwing `hostCreateDirectory`/`hostEnumerate*`/
-// `hostDeleteDirectory*`, which `Std.Directory` calls inside `try`/`catch`.
-// Here a failure panics with the Result seam's message instead: this target
-// has no unwinding (D-N-003), so those `Std.Directory` bodies do not lower on
-// native yet, and the panic is what an uncaught throw would do (#7933).
+// `hostDeleteDirectory*`, for callers that go straight to the host boundary.
+// `Std.Directory` itself uses the Result seams above.  Here a failure panics
+// with the Result seam's message, which is what an uncaught throw would do.
 // Enumeration yields `dir + "/" + name`, as `hostListFilesResult` does.
 func orPanic[T](r: in Result[T, IOError]): T {
   match r {

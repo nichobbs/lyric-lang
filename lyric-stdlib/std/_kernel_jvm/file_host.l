@@ -428,6 +428,16 @@ pub func hostListDirsResult(dir: in String): Result[List[String], IOError] {
 // nonexistent path would silently yield Ok — the managed twin reports
 // Err(IoError) there (BCL DirectoryNotFoundException), and this seam
 // keeps that parity.
+/// Deletes an EMPTY directory; a non-empty one is an `IoError`.
+pub func hostDeleteDirEmptyResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteDirectory(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 pub func hostDeleteDirRecursiveResult(path: in String): Result[Unit, IOError] {
   try {
     val d = JFile.new(path)

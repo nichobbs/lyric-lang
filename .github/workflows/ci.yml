@@ -7341,6 +7341,7 @@ jobs:
             "$lyric_bin" run "lyric-stdlib/tests/$suite.l"
           done
           bash scripts/ci/console-stdin-test.sh "$lyric_bin"
+          bash scripts/ci/console-readline-test.sh "$lyric_bin"
           bash scripts/ci/console-stdout-bytes-test.sh "$lyric_bin"
           bash scripts/ci/console-locale-c-test.sh "$lyric_bin"
           bash scripts/ci/jsonrpc-content-length-locale-c-test.sh "$lyric_bin"
@@ -7409,6 +7410,7 @@ jobs:
           "$lyric_bin" run --target jvm lyric-stdlib/tests/process_tests.l
           "$lyric_bin" run --target jvm lyric-stdlib/tests/process_piped_bytes_tests.l
           bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target jvm
+          bash scripts/ci/console-readline-test.sh "$lyric_bin" --target jvm
           bash scripts/ci/console-stdout-bytes-test.sh "$lyric_bin" --target jvm
           # Non-ASCII console I/O under a C/POSIX locale (#7513): before
           # `Jvm.Codegen.emitConsoleUtf8Setup`, System.out/err/in decoded

@@ -41,6 +41,7 @@ add_library(lyric_rt STATIC
     src/lyric_async.c
     src/lyric_parallel.c
     src/lyric_plugin.c
+    src/lyric_config.c
     ${LYRIC_RT_PLATFORM_SRCS}
 )
 target_include_directories(lyric_rt PUBLIC include)

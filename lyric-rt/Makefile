@@ -48,7 +48,7 @@ BUILD   := build
 SRCS := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
         src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
         src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c \
-        src/lyric_plugin.c src/lyric_wasmhost.c
+        src/lyric_plugin.c src/lyric_wasmhost.c src/lyric_config.c
 OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 
 # lyric_wasmhost.c compiles against the vendored wasmtime 49.0.3 C API headers
@@ -178,7 +178,7 @@ WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
                src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c \
-               src/lyric_plugin.c src/lyric_wasmhost_unsupported.c
+               src/lyric_plugin.c src/lyric_wasmhost_unsupported.c src/lyric_config.c
 WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
 
 $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
@@ -234,7 +234,7 @@ WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_sock_win32.c \
                src/lyric_tls_win32.c src/lyric_parallel.c src/lyric_plugin.c \
-               src/lyric_wasmhost_unsupported.c
+               src/lyric_wasmhost_unsupported.c src/lyric_config.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
 # lyric_rt_md.lib is the same runtime against the DLL C runtime, which an
 # AddressSanitizer build links (Windows ASan works only with the DLL CRT);

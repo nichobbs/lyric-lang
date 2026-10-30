@@ -1,6 +1,6 @@
 //! dot_named_receivers_self_test.l — runtime regression test for method calls
 //! on dot-named functions (`func T.m(self: in T, ...)`) whose receiver is an
-//! enum (#8254), a union or `Option` (#8037) or a generic record (#8037), and
+//! enum (#8254), a union (including a bare nullary case literal, #8478) or `Option` (#8037) or a generic record (#8037), and
 //! for the bodies of dot-named record functions: an `async` one reading `self`
 //! and awaited with method syntax or through the type (#8253), and one whose
 //! lambda captures `self` (#8291).  Runs on every target.
@@ -145,6 +145,8 @@ test "a union receiver" {
   assertEqualInt(Square(side = 3).scaled(2), 18, "scaled")
   val none: Shape = Empty
   assertEqual(none.tagged("n="), "n=0", "tagged on a nullary case")
+  assertEqual(Empty.tagged("n="), "n=0", "tagged on the bare nullary case literal (#8478)")
+  assertEqualInt(Empty.scaled(5), 0, "scaled on the bare nullary case literal (#8478)")
   val s: Shape = Square(side = 5)
   assertEqual(s.tagged("s"), "s25", "tagged")
 }

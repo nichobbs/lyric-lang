@@ -7,7 +7,10 @@ blocks shipped (#3228): each field lowers to a `public static final` field
 plus a `<clinit>` that reads the env var and falls back to the declared
 default, mirroring the MSIL `.cctor`.  (The docs/58 config-*template* /
 wire-embedded layering remains `--target dotnet` only for now — a separate
-follow-up, unrelated to base config blocks, tracked in #6213.)  v1 surface (parser + AST +
+follow-up, unrelated to base config blocks, tracked in #6213.)  Native parity shipped in #7435: each
+field lowers to a module-level global filled in before `main` by the lyric-rt
+readers (`lyric_config.c`, reached through `Std.ConfigHost`), with the same
+env var names, defaults, `G0003`/`G0004` messages and exit code 78.  v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
 self-hosted compiler (PRs #206, #227).  v2 spec:
 `docs/29-config-v2-sketch.md` (D048, file source + layered
@@ -314,7 +317,8 @@ process would inherit it.
 - A block is initialised **once, on its first access**, and reads the store
   then. Register before that access (normally at the start of `main`); a value
   registered afterwards is not seen by that block.
-- `--target native` has no `config { }` lowering (`N0025`, #7435), so
+- `--target native` reads every config field before `main` runs (§2.1, #7435),
+  so there is no window in which a registration could be seen:
   `Std.ConfigOverride` reports `Unsupported` there.
 
 `Std.AnnotationMeta` records each annotated field's store key in

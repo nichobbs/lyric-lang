@@ -2726,7 +2726,9 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
 /// initial value (`Lyric.LlvmBridge.hoistModuleValInits` adds it, before
 /// monomorphisation, so generic initializers instantiate like any call).
 pub func mvInitFnName(name: in String): String {
-  "__lyric_mvinit_" + name
+  // A config field's `val` is named `Block.field`; a `.` in a function name
+  // would read as a method of a type.
+  "__lyric_mvinit_" + Str.replace(name, ".", "__")
 }
 
 // Read a module-level `val` backed by a static global. The first reference
@@ -4497,6 +4499,27 @@ func packageQualifiedMemberSegs(ctx: in Ctx, e: in Expr): List[String] {
   }
 }
 
+/// True when `head` names a nullary case of a registered union and `head.m(...)`
+/// is not the call of a function registered under that dotted name: the
+/// receiver is then the case VALUE (`Empty.tagged("n=")`, #8478), as on
+/// dotnet and the JVM, not a package qualifier.
+func isNullaryUnionCaseValue(ctx: in Ctx, head: in String, method: in String, arity: in Int): Bool {
+  match curPkgQualifiedGet(ctx, ctx.caseRefs, head) {
+    case Some(cref) -> {
+      val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
+        case Some(u) -> u
+        case None -> return false
+      }
+      if ui.cases[cref.caseIdx].fieldNames.count > 0 {
+        return false
+      }
+      val key = head + "." + method + "/" + arity.toString()
+      not (ctx.sigs.containsKey(key) or ctx.sigs.containsKey(ctx.curPkg[0] + "." + key))
+    }
+    case None -> false
+  }
+}
+
 func isPackagePathExpr(ctx: in Ctx, e: in Expr): Bool {
   // A member receiver is a package path (not a value) when it is a path
   // whose head is not a local variable, nor a bare module-level `val`/`const`
@@ -5498,7 +5521,7 @@ func lowerCallEx(
         val headSegs: List[String] = newList()
         headSegs.add(mpath.segments[0])
         val headExpr = Expr(kind = EPath(path = ModulePath(segments = headSegs, span = mpath.span)), span = fnExpr.span)
-        if not isPackagePathExpr(ctx, headExpr) {
+        if not isPackagePathExpr(ctx, headExpr) or isNullaryUnionCaseValue(ctx, mpath.segments[0], mpath.segments[1], args.count) {
           val memberCallee = Expr(kind = EMember(receiver = headExpr, memberName = mpath.segments[1]), span = fnExpr.span)
           return lowerCallEx(ctx, insns, memberCallee, args, line, wantTask)
         }
@@ -16038,6 +16061,84 @@ func lowerBufferPointerCall(
   Some(value = lowerClosureCall(ctx, insns, fnVal, cs, ptrArgs))
 }
 
+/// `placeNType`, or, for the element of a heap array (an `array[N, T]` whose
+/// element is not plain is a `List` in a place), that element's type: a buffer
+/// held by `xs[i]` is a place whatever holds the reference (`xs[i][j] = v`).
+func bufferPlaceNType(ctx: in Ctx, e: in Expr): Option[NType] {
+  match placeNType(ctx, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match e.kind {
+    case EParen(inner) -> bufferPlaceNType(ctx, inner)
+    case EIndex(recv, idxs) -> if idxs.count == 1 {
+      match placeNType(ctx, recv) {
+        case Some(rt) -> match rt {
+          case NArray(_, _) -> None
+          case _ -> listElemOfType(ctx, rt)
+        }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// `b[i][j] = v` / `b[i][j] op= v` where `b` is a place holding a buffer of
+/// inline arrays; false when the receiver is not one.  The buffer takes the
+/// storage a write may modify first, as for `b[i] = v` (`lowerBufferElemAssign`),
+/// then the element array is addressed inside the buffer and written in place.
+func lowerBufferArrayElemAssign(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  idxExpr: in Expr,
+  op: in AssignOp,
+  value: in Expr,
+  line: in Int,
+): Bool {
+  match receiver.kind {
+    case EParen(inner) -> return lowerBufferArrayElemAssign(ctx, insns, inner, idxExpr, op, value, line)
+    case EIndex(inner, outerIdxs) -> {
+      if outerIdxs.count != 1 {
+        return false
+      }
+      val bufTy = match bufferPlaceNType(ctx, inner) { case Some(t) -> t; case None -> return false }
+      val rowTy = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+      match rowTy {
+        case NArray(el, n) -> {
+          // Both indices and the value are evaluated before the buffer is made
+          // unique and its address taken, as in `lowerBufferElemAssign`.
+          val outer = lowerExprExpecting(ctx, insns, outerIdxs[0], NI64)
+          val inIdx = lowerArrayIndexValue(ctx, insns, idxExpr, n, line)
+          val rhs = match op {
+            case AssEq -> lowerExprExpecting(ctx, insns, value, el)
+            case _ -> lowerExpr(ctx, insns, value)
+          }
+          lowerBufferEnsureUnique(ctx, insns, inner, line)
+          val buf = lowerExpr(ctx, insns, inner)
+          val rowPtr = bufferElemPtr(ctx, insns, buf, rowTy, outer.value)
+          val ptr = arrayElemPtr(ctx, insns, rowPtr, rowTy, el, inIdx)
+          val newVal = match op {
+            case AssEq -> rhs
+            case _ -> {
+              val curDest = freshTmp(ctx)
+              insns.add(NLoad(dest = curDest, ty = el, ptr = ptr.value))
+              combineIndexedAssignValue(ctx, insns, op, el, NVal(ty = el, value = NLocal(name = curDest)), rhs, line)
+            }
+          }
+          insns.add(NStore(ty = el, value = newVal.value, ptr = ptr.value))
+          true
+        }
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 /// `b[i] = v` / `b[i] op= v` where `b` is a place holding a buffer; false when
 /// the receiver is not one.  Copy on write (docs/67 §4.4): the place first takes
 /// the buffer a write may modify, so a buffer other bindings still hold is left
@@ -16052,7 +16153,7 @@ func lowerBufferElemAssign(
   value: in Expr,
   line: in Int,
 ): Bool {
-  val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
+  val bufTy = match bufferPlaceNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
   val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
   // The index and the value are evaluated before the buffer is made unique and
   // its address taken: the value may copy the buffer (marking it shared after
@@ -16104,6 +16205,9 @@ func lowerIndexAssign(
     return
   }
   if lowerBufferElemAssign(ctx, insns, receiver, indices[0], op, value, line) {
+    return
+  }
+  if lowerBufferArrayElemAssign(ctx, insns, receiver, indices[0], op, value, line) {
     return
   }
   val recv = lowerExpr(ctx, insns, receiver)

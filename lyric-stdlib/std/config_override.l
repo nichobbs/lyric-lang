@@ -17,8 +17,9 @@
 //! environment, the declared default.  An empty value counts as no override.
 //!
 //! Targets: .NET (the `AppDomain` data table) and JVM (system properties).
-//! The native backend has no `config { }` lowering yet (N0025, #7435), so
-//! every call reports `Unsupported` there.
+//! The native backend reads every `config { }` field before `main` runs
+//! (#7435), so there is no point at which a registration could be seen; every
+//! call reports `Unsupported` there.
 //! `Unsupported` on native is the only case where a registration is not
 //! effective: it is always reported, never silently dropped.
 @runtime_checked
@@ -65,7 +66,7 @@ pub func isSupported(): Bool {
 
 func checkKey(key: in String): Result[Unit, ConfigOverrideError] {
   if not hostConfigOverrideSupported() {
-    return Err(error = Unsupported(reason = "this target does not lower config blocks (native, #7435)"))
+    return Err(error = Unsupported(reason = "this target reads config blocks before main runs (native), so a registration would never be seen"))
   }
   if not key.startsWith(keyPrefix()) or key.length == keyPrefix().length {
     return Err(error = InvalidKey(key = key))
@@ -79,7 +80,7 @@ func checkKey(key: in String): Result[Unit, ConfigOverrideError] {
 /// clears any registration.
 ///
 /// # Errors
-/// - `Unsupported`: the target lowers no config blocks (native).
+/// - `Unsupported`: the target reads config blocks before `main` (native).
 /// - `InvalidKey`: `key` does not start with `LYRIC_CONFIG_`.
 /// - `InvalidValue`: `value` contains a NUL character.
 @stable(since = "0.1")
@@ -100,7 +101,7 @@ pub func setConfigOverride(key: in String, value: in String): Result[Unit, Confi
 /// and its default as usual.
 ///
 /// # Errors
-/// - `Unsupported`: the target lowers no config blocks (native).
+/// - `Unsupported`: the target reads config blocks before `main` (native).
 /// - `InvalidKey`: `key` does not start with `LYRIC_CONFIG_`.
 @stable(since = "0.1")
 pub func clearConfigOverride(key: in String): Result[Unit, ConfigOverrideError] {

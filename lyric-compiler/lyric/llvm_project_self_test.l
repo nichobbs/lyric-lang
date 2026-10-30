@@ -474,11 +474,13 @@ test "two-package project: same-bare-name interfaces from different packages pan
   )
 }
 
-test "a function value whose name has a local and an imported overload at different arities is rejected (#7527)" {
+test "a function value whose name has a local and an imported overload at different arities is rejected with T0123 (#7527, #7923)" {
   // `pick` is `Proj7.App.pick(a)` locally and `Proj7.Lib.pick(a, b)` by
   // import. A local function shadows an import only at its own arity, so
   // passing `pick` as a value is ambiguous and must not silently pick the
-  // local one.
+  // local one.  The type checker reports it (T0123, as for a qualified
+  // reference to several functions) before codegen; no codegen panic is
+  // involved.
   val pkgs: List[NativeSourcePackage] = newList()
   pkgs.add(
     NativeSourcePackage(
@@ -500,11 +502,24 @@ test "a function value whose name has a local and an imported overload at differ
         "}\n"
     )
   )
-  assertPanicsWith(
-    "a function value overloaded by arity across a local and an imported function must fail to compile",
-    "is overloaded by arity",
-    { -> val _ = compileAndRunProject(pkgs) }
-  )
+  val stdlib = findStdlibSourcesNative()
+  if stdlib.count == 0 {
+    panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
+  }
+  val noFeatures: List[String] = newList()
+  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val diags = checkProjectTypesNative(pkgs, stdlib, "", newList(), noFeatures, noFeatures, "", noOrigins)
+  var found = false
+  for d in diags {
+    if d.diagnostic.code == "T0123" and Str.contains(d.diagnostic.message, "'pick' names several functions") {
+      found = true
+    }
+  }
+  assertTrue(found, "a function value overloaded by arity across a local and an imported function must report T0123")
+  match compileAndRunProjectWithFeatures(pkgs, noFeatures) {
+    case Some(_) -> panic("the ambiguous function value must fail to compile")
+    case None -> ()
+  }
 }
 
 test "a genuinely multi-file [project.packages] entry merges through Emitter.emitNativeProject" {

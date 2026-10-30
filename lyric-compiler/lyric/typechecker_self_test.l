@@ -6530,6 +6530,62 @@ test "bare union case constructor call ambiguous across two imported packages is
   )
 }
 
+func libPickPackage(): List[ImportedPackage] {
+  val lib = parse("package Lib\npub func pick(a: in Int, b: in Int): Int { a + b }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  packages
+}
+
+// #7527, #7923: a local function shadows an import only at its own arity, so
+// a bare function VALUE cannot pick between a local `pick(a)` and an imported
+// `pick(a, b)`.  The checker reports it, so no backend reaches a codegen panic.
+test "a function value naming a local and an imported function of different arities is T0123" {
+  val src = "package App\nimport Lib\nfunc pick(a: in Int): Int { a }\n" +
+    "func apply(f: in (Int) -> Int, x: in Int): Int { f(x) }\n" +
+    "func main(): Int { apply(pick, 3) }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libPickPackage()), "T0123"),
+    1,
+    "pick as a value is ambiguous between App.pick/1 and Lib.pick/2"
+  )
+}
+
+test "a function value naming a function declared at several arities in one package is T0123" {
+  val src = "package App\nfunc pick(a: in Int): Int { a }\nfunc pick(a: in Int, b: in Int): Int { a + b }\n" +
+    "func apply(f: in (Int) -> Int, x: in Int): Int { f(x) }\n" +
+    "func main(): Int { apply(pick, 3) }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, newList()), "T0123"),
+    1,
+    "pick as a value is ambiguous between pick/1 and pick/2"
+  )
+}
+
+test "calling a local function that shadows an import at its own arity, and passing it as a value, is not T0123" {
+  val src = "package App\nimport Lib\nfunc pick(a: in Int, b: in Int): Int { a * b }\n" +
+    "func apply(f: in (Int, Int) -> Int, x: in Int): Int { f(x, x) }\n" +
+    "func main(): Int { apply(pick, 3) + pick(2, 3) }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, libPickPackage()), "T0123"),
+    0,
+    "a same-arity local shadows the import, so the value is unambiguous"
+  )
+  val callOnly = "package App\nimport Lib\nfunc pick(a: in Int): Int { a }\nfunc main(): Int { pick(1) + pick(1, 2) }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(callOnly).file, libPickPackage()), "T0123"),
+    0,
+    "calls pick by arity, never as a value"
+  )
+}
+
 // Same ambiguity again, but through a bare (unqualified) FUNCTION reference —
 // #6652 review: `sigs`'s first-in-wins insertion policy for imported
 // functions (typechecker_checker.l, "Sig-map insertion policy") let a bare

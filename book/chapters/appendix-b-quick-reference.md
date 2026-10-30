@@ -1716,6 +1716,8 @@ span, exactly like `T0120`/`J008`.
 | `N0026` | An AddressSanitizer build for Windows (`-fsanitize=address`) cannot bundle clang's `clang_rt.asan_dynamic-x86_64.dll` beside the executable: this clang has no such runtime (an LLVM install without compiler-rt), or the copy failed (docs/67 G9, D213). |
 | `N0027` | `--shape plugin` was given a target other than Linux or macOS: a Windows DLL cannot import the runtime from the executable that loads it, and wasm32 has no dynamic loading (docs/69 §10, D231). |
 | `N0028` | `--shape plugin` builds a trusted plugin library from a package with a `@plugin` record, and the package declares none (D231). |
+| `N0029` | A native build found no standard library sources (#8455). The message names every location searched: `$LYRIC_STD_PATH`, `lyric-stdlib/std` in the directory of the `lyric` binary and each of its parents, and `lyric-stdlib/std` in the current directory and each of its parents. Set `LYRIC_STD_PATH` to the `lyric-stdlib/std` directory of a Lyric checkout or install, or run `lyric` from inside one. |
+| `N0030` | A native build imports a `Std.*` package that no file of the standard library it found declares (#8455): a misspelt name, or a `LYRIC_STD_PATH` that does not match this compiler. |
 
 ### Custom source generators (X-series)
 

@@ -173,6 +173,16 @@ pub func hostCreateDirResult(path: in String): Result[Unit, IOError] {
   }
 }
 
+/// Deletes an EMPTY directory; a non-empty one is an `IoError`.
+pub func hostDeleteDirEmptyResult(path: in String): Result[Unit, IOError] {
+  try {
+    hostDeleteDirectory(path)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
   try {
     hostDeleteFile(path)

@@ -1,7 +1,6 @@
-//! A program with a `config { }` block.  The dotnet and JVM builds compile
-//! it; the native build rejects the block (N0025), and so does `lyric prove
-//! --target native`, whose check is the native bridge's own front end
-//! (#8311).
+//! A program with a `config { }` block, which every target compiles.
+//! `lyric prove --target native` checks it with the native bridge's own front
+//! end (#8311).
 @proof_required
 package ConfigBlockUse
 

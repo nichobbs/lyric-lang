@@ -5,9 +5,12 @@
 //! field and an `inout` parameter, copies on assignment, passing and
 //! returning (a write through one binding is never seen through another),
 //! `.length`, `for x in b`, the `Std.Buffer` functions, and the bounds panic.
+//! A buffer nested with an array (a buffer of arrays, an array of buffers)
+//! copies on the first write to either level (D226, #8521).
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/buffer_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/buffer_self_test.l
+//!   lyric test --target native lyric-compiler/lyric/buffer_self_test.l
 @test_module
 package Lyric.BufferSelfTest
 
@@ -365,4 +368,39 @@ test "a copy shares storage until the first write, which copies once" {
   assertTrue(allocatedBytes() - afterWrite < 10000i64, "later writes are in place")
   assertEqualInt(a[0], 5, "a")
   assertEqualInt(b[0] + b[1] + b[2], 6, "b")
+}
+
+test "an array of buffers copies each buffer on write, not on copy" {
+  var xs: array[2, buffer[Int]] = [filled(2, 1), filled(2, 2)]
+  var ys = xs
+  ys[0][0] = 7
+  assertEqualInt(xs[0][0], 1, "xs first element")
+  assertEqualInt(ys[0][0], 7, "ys first element")
+  xs[1][1] = 8
+  assertEqualInt(ys[1][1], 2, "ys second element")
+  assertEqualInt(xs[1][1], 8, "xs second element")
+}
+
+test "a buffer of arrays: a write to an element array does not reach a copy" {
+  val row: array[2, Int] = [0, 0]
+  var rows = filled(2, row)
+  rows[0][1] = 5
+  assertEqualInt(rows[0][1], 5, "written element")
+  var dup = rows
+  dup[0][0] = 9
+  assertEqualInt(rows[0][0], 0, "the original row")
+  assertEqualInt(dup[0][0], 9, "the copy's row")
+  assertEqualInt(dup[0][1], 5, "the copy kept the earlier write")
+}
+
+test "a compound write to an element array after a copy leaves the copy alone" {
+  val row: array[2, Int] = [10, 20]
+  var rows = filled(2, row)
+  val snapshot = rows
+  rows[1][0] += 5
+  rows[1][1] -= 7
+  assertEqualInt(snapshot[1][0], 10, "snapshot first")
+  assertEqualInt(snapshot[1][1], 20, "snapshot second")
+  assertEqualInt(rows[1][0], 15, "rows first")
+  assertEqualInt(rows[1][1], 13, "rows second")
 }

@@ -1,19 +1,19 @@
 //! std/_kernel_native/config_override_host.l - native twin of
 //! `_kernel/config_override_host.l` (D230).
 //!
-//! The native backend has no lowering for `config { }` blocks yet (`N0025`,
-//! #7435), so there is no initialiser that could consult an override store.
-//! The kernel says so through `hostConfigOverrideSupported`, and
-//! `Std.ConfigOverride` turns it into an `Unsupported` error instead of
-//! accepting a registration nothing will ever read.  The native lowering and
-//! this twin's real store are part of #7435.
-@axiom("The native backend lowers no config blocks; the probe reports false")
+//! The native backend reads every `config { }` field before `main` runs
+//! (`Std.ConfigHost`, #7435), so no registration made by the program could ever
+//! be seen: the window the store needs, between startup and the block's first
+//! access, does not exist.  The kernel says so through
+//! `hostConfigOverrideSupported`, and `Std.ConfigOverride` turns it into an
+//! `Unsupported` error instead of accepting a registration nothing will read.
+@axiom("The native backend reads config blocks before main; the probe reports false")
 @io
 package Std.ConfigOverrideHost
 
 import Std.Core
 
-/// False: the native backend lowers no `config { }` blocks.
+/// False: native config fields are read before `main` runs.
 pub func hostConfigOverrideSupported(): Bool {
   false
 }

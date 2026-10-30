@@ -6398,6 +6398,49 @@ func pkgFuncCount(tbl: in SymbolTable, pkg: in String, name: in String): Int {
   n
 }
 
+// True when a bare function VALUE `name` cannot pick one function: the
+// current package declares it at several arities, or declares it and an import
+// in scope declares one of an arity the package does not (a local function
+// shadows an import only at its own arity, #7527).
+func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
+  val scopePkg = symTableScopePkg(tbl)
+  val all = symTableTryFindAll(tbl, name)
+  val localArities: List[Int] = newList()
+  val importedArities: List[Int] = newList()
+  var i = 0
+  while i < all.count {
+    match all[i].kind {
+      case DKFunc(fd) -> {
+        if all[i].originPackage == scopePkg {
+          localArities.add(fd.params.count)
+        } else if all[i].originPackage.length > 0 and symTableScopeAllows(tbl, all[i].originPackage) {
+          importedArities.add(fd.params.count)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  if localArities.count == 0 {
+    return false
+  }
+  if localArities.count > 1 {
+    return true
+  }
+  for a in importedArities {
+    var shadowed = false
+    for l in localArities {
+      if l == a {
+        shadowed = true
+      }
+    }
+    if not shadowed {
+      return true
+    }
+  }
+  false
+}
+
 func resolveQualifiedFuncValue(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -6557,6 +6600,17 @@ func resolveExprPath(
       // bare callee name (see `constructorSymbolOf`'s comment above, which
       // depends on that being true).
       if checkBareNameAmbiguity(tbl, diag, name, span) {
+        return TyError
+      }
+      if not tbl.funcRefCallees.containsKey(recordCopySiteKey(span)) and localShadowsImportedArity(tbl, name) {
+        diag.add(
+          errorDiagnostic(
+            "T0123",
+            "'" + name +
+              "' names several functions; a function value cannot pick an overload, so wrap the call in a lambda with typed parameters",
+            span
+          )
+        )
         return TyError
       }
       // #1484: a function resolves via `sigs` (no visibility there) — consult
