@@ -9,7 +9,7 @@
 package Ui.Host.Assets
 
 /// Content digest of the embedded assets, used as a cache-busting version.
-pub val assetVersion: String = "b2e4bc7366f8b959"
+pub val assetVersion: String = "017fe670da2faea7"
 
 /// dist/main.js
 pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
@@ -365,6 +365,7 @@ pub val runtimeRenderJs: String = r#####"// Lyric UI host runtime: DOM rendering
 // for widgets without children). Non-child chrome (a field's <label>, a
 // card's title) lives outside `container`, so child indices map directly to
 // container child positions.
+import { CodeEditor } from "./editor.js";
 let nextId = 1;
 function el(tag, cls) {
     const e = document.createElement(tag);
@@ -495,6 +496,9 @@ export class DomRenderer {
             case "dateInput":
                 return this.input(node, el("input", "lui-input"));
             case "textArea":
+                if (node.props.variant === "code") {
+                    return this.codeEditor(node);
+                }
                 return this.input(node, el("textarea", "lui-input lui-textarea"));
             case "checkbox": {
                 const root = el("label", "lui-checkbox");
@@ -734,6 +738,68 @@ export class DomRenderer {
         });
         return h;
     }
+    codeEditor(node) {
+        const h = { root: document.createElement("div"), container: null, localVersion: 0 };
+        const editor = new CodeEditor((value) => {
+            h.localVersion += 1;
+            this.fire(node, "input", value, h.localVersion);
+        });
+        editor.textarea.id = `lui-${nextId++}`;
+        h.root = editor.root;
+        h.editor = editor;
+        return h;
+    }
+    // Properties of a code editor: the text and the settings go to the editor,
+    // the rest to its textarea.
+    applyEditorProp(editor, node, name, value) {
+        const flag = value === "true";
+        switch (name) {
+            case "value":
+                editor.setValue(value ?? "");
+                return;
+            case "language":
+                editor.setLanguage(value ?? "");
+                return;
+            case "lineNumbers":
+                editor.setLineNumbers(value !== "false");
+                return;
+            case "tabSize":
+                editor.setTabSize(Number(value));
+                return;
+            case "readonly":
+                editor.textarea.readOnly = flag;
+                return;
+            case "disabled":
+                editor.textarea.disabled = flag;
+                return;
+            case "required":
+                editor.textarea.required = flag;
+                editor.textarea.setAttribute("aria-required", String(flag));
+                return;
+            case "placeholder":
+                if (value === null) {
+                    editor.textarea.removeAttribute("placeholder");
+                }
+                else {
+                    editor.textarea.setAttribute("placeholder", value);
+                }
+                return;
+            case "maxLength":
+                if (value === null) {
+                    editor.textarea.removeAttribute("maxlength");
+                }
+                else {
+                    editor.textarea.setAttribute("maxlength", value);
+                }
+                return;
+            case "invalid":
+                editor.root.classList.toggle("lui-invalid", flag);
+                this.afterChildrenChanged(node);
+                return;
+            default:
+                return;
+        }
+    }
     fire(node, event, data, inputVersion) {
         if (node.events.includes(event)) {
             this.sink(node, event, data, inputVersion);
@@ -742,6 +808,10 @@ export class DomRenderer {
     // ─── Properties ─────────────────────────────────────────────────────────────
     applyProp(node, name, value) {
         const h = hostOf(node);
+        if (h.editor) {
+            this.applyEditorProp(h.editor, node, name, value);
+            return;
+        }
         const root = h.root;
         const flag = value === "true";
         switch (name) {
@@ -861,7 +931,7 @@ export class DomRenderer {
             return;
         }
         const target = hostOf(input).root;
-        const control = target instanceof HTMLLabelElement ? target.querySelector("input") : target;
+        const control = target instanceof HTMLLabelElement ? target.querySelector("input") : hostOf(input).editor ? hostOf(input).editor.textarea : target;
         if (!(control instanceof HTMLElement)) {
             return;
         }
@@ -931,8 +1001,505 @@ export function takeStashedToasts(store) {
 }
 "#####
 
+/// dist/editor.js
+pub val runtimeEditorJs: String = r#####"// The code editor widget (docs/65 §13.10): a `textArea` with `variant="code"`.
+//
+// A real <textarea> sits over a highlighted copy of its text, with the text
+// itself made transparent, so selection, the caret, IME composition, undo and
+// the platform's spell and accessibility behaviour all stay the browser's.
+// A gutter shows line numbers. Tab indents (and Escape then Tab leaves the
+// field, so keyboard users are not trapped), Shift+Tab outdents and Enter
+// keeps the indentation.
+import { indent, lineCount, newline, outdent } from "./editing.js";
+import { tokenize } from "./highlight.js";
+export class CodeEditor {
+    root;
+    textarea;
+    gutter;
+    gutterInner;
+    code;
+    highlight;
+    language = "";
+    tabSize = 2;
+    lines = 0;
+    // After Escape the next Tab moves focus instead of indenting.
+    leaving = false;
+    // Counts the input events the textarea has fired, so an edit applied
+    // through `execCommand` (which fires one) is not reported twice.
+    inputs = 0;
+    constructor(onUserInput) {
+        this.root = document.createElement("div");
+        this.root.className = "lui-input lui-code";
+        this.gutter = document.createElement("div");
+        this.gutter.className = "lui-code-gutter";
+        this.gutter.setAttribute("aria-hidden", "true");
+        this.gutterInner = document.createElement("div");
+        this.gutter.appendChild(this.gutterInner);
+        const body = document.createElement("div");
+        body.className = "lui-code-body";
+        this.highlight = document.createElement("pre");
+        this.highlight.className = "lui-code-highlight";
+        this.highlight.setAttribute("aria-hidden", "true");
+        this.code = document.createElement("code");
+        this.highlight.appendChild(this.code);
+        this.textarea = document.createElement("textarea");
+        this.textarea.className = "lui-code-input";
+        this.textarea.spellcheck = false;
+        this.textarea.setAttribute("wrap", "off");
+        this.textarea.setAttribute("autocapitalize", "off");
+        this.textarea.setAttribute("autocomplete", "off");
+        body.append(this.highlight, this.textarea);
+        this.root.append(this.gutter, body);
+        this.textarea.addEventListener("input", () => {
+            this.inputs += 1;
+            this.refresh();
+            onUserInput(this.textarea.value);
+        });
+        this.textarea.addEventListener("scroll", () => this.syncScroll());
+        this.textarea.addEventListener("keydown", (e) => this.keydown(e, onUserInput));
+        this.textarea.addEventListener("blur", () => {
+            this.leaving = false;
+        });
+        this.refresh();
+    }
+    get value() {
+        return this.textarea.value;
+    }
+    /// Sets the text from the server, leaving the caret alone when it is
+    /// already the current text (an echo of the user's own edit).
+    setValue(value) {
+        if (this.textarea.value !== value) {
+            this.textarea.value = value;
+            this.refresh();
+        }
+    }
+    setLanguage(language) {
+        this.language = language;
+        this.root.dataset.language = language;
+        this.refresh();
+    }
+    setTabSize(n) {
+        this.tabSize = Number.isInteger(n) && n >= 1 && n <= 16 ? n : 2;
+        this.textarea.style.tabSize = String(this.tabSize);
+        this.highlight.style.tabSize = String(this.tabSize);
+    }
+    setLineNumbers(on) {
+        this.root.classList.toggle("lui-code-nogutter", !on);
+    }
+    // Redraws the highlight and the gutter from the textarea's text.
+    refresh() {
+        const value = this.textarea.value;
+        const frag = document.createDocumentFragment();
+        for (const t of tokenize(this.language, value)) {
+            if (t.type === "plain") {
+                frag.appendChild(document.createTextNode(t.text));
+            }
+            else {
+                const span = document.createElement("span");
+                span.className = `lui-tok-${t.type}`;
+                span.textContent = t.text;
+                frag.appendChild(span);
+            }
+        }
+        // A final newline needs a character after it, or the last empty line
+        // would have no height and the two layers would drift apart.
+        frag.appendChild(document.createTextNode("\n"));
+        this.code.replaceChildren(frag);
+        const n = lineCount(value);
+        if (n !== this.lines) {
+            this.lines = n;
+            const numbers = [];
+            for (let i = 1; i <= n; i++) {
+                numbers.push(String(i));
+            }
+            this.gutterInner.textContent = numbers.join("\n");
+        }
+        this.syncScroll();
+    }
+    syncScroll() {
+        const x = this.textarea.scrollLeft;
+        const y = this.textarea.scrollTop;
+        this.highlight.style.transform = `translate(${-x}px, ${-y}px)`;
+        this.gutterInner.style.transform = `translateY(${-y}px)`;
+    }
+    keydown(e, onUserInput) {
+        if (e.key === "Escape") {
+            this.leaving = true;
+            return;
+        }
+        if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey || this.textarea.readOnly) {
+            return;
+        }
+        const value = this.textarea.value;
+        const a = this.textarea.selectionStart;
+        const b = this.textarea.selectionEnd;
+        let edit = null;
+        if (e.key === "Tab") {
+            if (this.leaving) {
+                this.leaving = false;
+                return;
+            }
+            edit = e.shiftKey ? outdent(value, a, b, this.tabSize) : indent(value, a, b, this.tabSize);
+            if (edit === null) {
+                e.preventDefault();
+                return;
+            }
+        }
+        else if (e.key === "Enter" && !e.shiftKey) {
+            edit = newline(value, a, b, this.tabSize);
+        }
+        else {
+            this.leaving = false;
+            return;
+        }
+        e.preventDefault();
+        const before = this.inputs;
+        this.apply(edit);
+        if (this.inputs === before) {
+            onUserInput(this.textarea.value);
+        }
+    }
+    // Applies an edit through the browser's editing command, which keeps the
+    // undo stack; falls back to a direct replacement.
+    apply(edit) {
+        const ta = this.textarea;
+        ta.setSelectionRange(edit.start, edit.end);
+        let done = false;
+        try {
+            done = document.execCommand("insertText", false, edit.text);
+        }
+        catch {
+            done = false;
+        }
+        if (!done) {
+            ta.setRangeText(edit.text, edit.start, edit.end, "end");
+        }
+        ta.setSelectionRange(edit.selStart, edit.selEnd);
+        this.refresh();
+    }
+}
+"#####
+
+/// dist/editing.js
+pub val runtimeEditingJs: String = r#####"// Pure text edits for the code editor (docs/65 §13.10): what Tab, Shift+Tab
+// and Enter do to a value and a selection. Each function returns an `Edit`
+// that replaces `[start, end)` of the value with `text` and then selects
+// `[selStart, selEnd)` of the result, so the DOM layer can apply it through
+// the browser's own editing command and keep the undo stack.
+const openers = "{([";
+const closers = "})]";
+function lineStart(value, at) {
+    return value.lastIndexOf("\n", at - 1) + 1;
+}
+function lineEnd(value, at) {
+    const e = value.indexOf("\n", at);
+    return e < 0 ? value.length : e;
+}
+function leadingSpaces(line) {
+    let n = 0;
+    while (n < line.length && (line[n] === " " || line[n] === "\t")) {
+        n += 1;
+    }
+    return n;
+}
+/// Tab with no selection inserts spaces up to the next tab stop; with a
+/// selection spanning lines it indents every line the selection touches.
+export function indent(value, selStart, selEnd, tabSize) {
+    const crossesLines = value.slice(selStart, selEnd).includes("\n");
+    if (selStart === selEnd || !crossesLines) {
+        const column = selStart - lineStart(value, selStart);
+        const pad = " ".repeat(tabSize - (column % tabSize));
+        return { start: selStart, end: selEnd, text: pad, selStart: selStart + pad.length, selEnd: selStart + pad.length };
+    }
+    const first = lineStart(value, selStart);
+    // A selection that ends at the start of a line does not touch that line.
+    const last = selEnd > selStart && value[selEnd - 1] === "\n" ? selEnd - 1 : selEnd;
+    const block = value.slice(first, lineEnd(value, last));
+    const lines = block.split("\n");
+    const pad = " ".repeat(tabSize);
+    const text = lines.map((l) => pad + l).join("\n");
+    return {
+        start: first,
+        end: first + block.length,
+        text,
+        selStart: selStart + pad.length,
+        selEnd: selEnd + pad.length * lines.length,
+    };
+}
+/// Shift+Tab removes up to one tab stop of leading spaces (or one tab) from
+/// every line the selection touches. `null` when there is nothing to remove.
+export function outdent(value, selStart, selEnd, tabSize) {
+    const first = lineStart(value, selStart);
+    const last = selEnd > selStart && value[selEnd - 1] === "\n" ? selEnd - 1 : selEnd;
+    const block = value.slice(first, lineEnd(value, last));
+    const lines = block.split("\n");
+    const removed = [];
+    const kept = lines.map((l) => {
+        let n = 0;
+        if (l[0] === "\t") {
+            n = 1;
+        }
+        else {
+            while (n < tabSize && l[n] === " ") {
+                n += 1;
+            }
+        }
+        removed.push(n);
+        return l.slice(n);
+    });
+    const total = removed.reduce((a, b) => a + b, 0);
+    if (total === 0) {
+        return null;
+    }
+    const firstRemoved = removed[0];
+    const startInLine = selStart - first;
+    return {
+        start: first,
+        end: first + block.length,
+        text: kept.join("\n"),
+        selStart: selStart - Math.min(firstRemoved, startInLine),
+        selEnd: Math.max(selStart === selEnd ? selStart - Math.min(firstRemoved, startInLine) : selEnd - total, first),
+    };
+}
+/// Enter keeps the current line's indentation. After an opening bracket it
+/// indents one more level, and between a bracket pair it opens a blank,
+/// indented line and leaves the closing bracket on the line after.
+export function newline(value, selStart, selEnd, tabSize) {
+    const ls = lineStart(value, selStart);
+    const before = value.slice(ls, selStart);
+    // Copy the leading whitespace verbatim, so tabs stay tabs.
+    const lead = before.slice(0, leadingSpaces(before));
+    const prev = before.trimEnd().slice(-1);
+    const next = value[selEnd] ?? "";
+    const opens = prev !== "" && openers.includes(prev);
+    if (opens && next !== "" && closers.includes(next) && closers.indexOf(next) === openers.indexOf(prev)) {
+        const inner = lead + " ".repeat(tabSize);
+        const text = "\n" + inner + "\n" + lead;
+        return { start: selStart, end: selEnd, text, selStart: selStart + 1 + inner.length, selEnd: selStart + 1 + inner.length };
+    }
+    const extra = opens ? " ".repeat(tabSize) : "";
+    const text = "\n" + lead + extra;
+    return { start: selStart, end: selEnd, text, selStart: selStart + text.length, selEnd: selStart + text.length };
+}
+/// The number of lines in `value` (a trailing newline starts a new, empty line).
+export function lineCount(value) {
+    let n = 1;
+    for (let i = 0; i < value.length; i++) {
+        if (value[i] === "\n") {
+            n += 1;
+        }
+    }
+    return n;
+}
+"#####
+
+/// dist/highlight.js
+pub val runtimeHighlightJs: String = r#####"// Syntax highlighting for the code editor (docs/65 §13.10): a tokenizer per
+// language, kept small and dependency-free. A token's `type` is a CSS class
+// suffix (`lui-tok-<type>`); text that is none of these is `plain`.
+// Tokenizing is lossless: concatenating the tokens' text gives back the input.
+const lyricKeywords = new Set([
+    "package", "import", "pub", "func", "val", "var", "record", "union", "enum", "case", "match", "if", "else",
+    "while", "for", "in", "return", "break", "continue", "interface", "impl", "type", "alias", "opaque", "protected",
+    "async", "await", "spawn", "scope", "test", "requires", "ensures", "invariant", "wire", "config", "aspect",
+    "extern", "defer", "try", "catch", "and", "or", "not", "out", "inout", "self", "when", "from", "as",
+]);
+const lyricLiterals = new Set(["true", "false", "None", "Some", "Ok", "Err"]);
+export const languages = ["plain", "lyric", "json"];
+function isDigit(c) {
+    return c >= "0" && c <= "9";
+}
+function isIdentStart(c) {
+    return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_";
+}
+function isIdentPart(c) {
+    return isIdentStart(c) || isDigit(c);
+}
+// Appends to `out`, merging with a preceding token of the same type.
+function push(out, type, text) {
+    if (text.length === 0) {
+        return;
+    }
+    const last = out[out.length - 1];
+    if (last && last.type === type) {
+        last.text += text;
+    }
+    else {
+        out.push({ type, text });
+    }
+}
+// A number literal starting at `i`: digits, an optional fraction and
+// exponent, hex/binary/octal prefixes, `_` separators and a type suffix
+// (`10i64`, `0.5f32`). Returns the end index.
+function numberEnd(s, i) {
+    let j = i;
+    if (s[j] === "0" && (s[j + 1] === "x" || s[j + 1] === "X" || s[j + 1] === "b" || s[j + 1] === "o")) {
+        j += 2;
+        while (j < s.length && (isIdentPart(s[j]))) {
+            j += 1;
+        }
+        return j;
+    }
+    while (j < s.length && (isDigit(s[j]) || s[j] === "_")) {
+        j += 1;
+    }
+    if (s[j] === "." && isDigit(s[j + 1] ?? "")) {
+        j += 1;
+        while (j < s.length && (isDigit(s[j]) || s[j] === "_")) {
+            j += 1;
+        }
+    }
+    if ((s[j] === "e" || s[j] === "E") && (isDigit(s[j + 1] ?? "") || ((s[j + 1] === "+" || s[j + 1] === "-") && isDigit(s[j + 2] ?? "")))) {
+        j += 2;
+        while (j < s.length && isDigit(s[j])) {
+            j += 1;
+        }
+    }
+    while (j < s.length && isIdentPart(s[j])) {
+        j += 1;
+    }
+    return j;
+}
+// A double-quoted string starting at `i` (a backslash escapes the next
+// character); an unterminated string ends at the end of its line.
+function stringEnd(s, i) {
+    let j = i + 1;
+    while (j < s.length && s[j] !== "\n") {
+        if (s[j] === "\\") {
+            j += 2;
+            continue;
+        }
+        if (s[j] === '"') {
+            return j + 1;
+        }
+        j += 1;
+    }
+    return Math.min(j, s.length);
+}
+function lyric(s) {
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+        const c = s[i];
+        if (c === "/" && s[i + 1] === "/") {
+            const e = s.indexOf("\n", i);
+            const end = e < 0 ? s.length : e;
+            push(out, "comment", s.slice(i, end));
+            i = end;
+        }
+        else if (c === "/" && s[i + 1] === "*") {
+            // Block comments nest.
+            let depth = 1;
+            let j = i + 2;
+            while (j < s.length && depth > 0) {
+                if (s[j] === "/" && s[j + 1] === "*") {
+                    depth += 1;
+                    j += 2;
+                }
+                else if (s[j] === "*" && s[j + 1] === "/") {
+                    depth -= 1;
+                    j += 2;
+                }
+                else {
+                    j += 1;
+                }
+            }
+            push(out, "comment", s.slice(i, j));
+            i = j;
+        }
+        else if (c === '"') {
+            const e = stringEnd(s, i);
+            push(out, "string", s.slice(i, e));
+            i = e;
+        }
+        else if (isDigit(c)) {
+            const e = numberEnd(s, i);
+            push(out, "number", s.slice(i, e));
+            i = e;
+        }
+        else if (isIdentStart(c)) {
+            let j = i + 1;
+            while (j < s.length && isIdentPart(s[j])) {
+                j += 1;
+            }
+            const word = s.slice(i, j);
+            const type = lyricKeywords.has(word)
+                ? "keyword"
+                : lyricLiterals.has(word)
+                    ? "literal"
+                    : c >= "A" && c <= "Z"
+                        ? "type"
+                        : "plain";
+            push(out, type, word);
+            i = j;
+        }
+        else if ("{}()[]<>=+-*/%!&|^~?:;,.@".includes(c)) {
+            push(out, "punct", c);
+            i += 1;
+        }
+        else {
+            push(out, "plain", c);
+            i += 1;
+        }
+    }
+    return out;
+}
+function json(s) {
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+        const c = s[i];
+        if (c === '"') {
+            const e = stringEnd(s, i);
+            // A string followed (after spaces) by a colon is an object key.
+            let k = e;
+            while (k < s.length && (s[k] === " " || s[k] === "\t")) {
+                k += 1;
+            }
+            push(out, s[k] === ":" ? "key" : "string", s.slice(i, e));
+            i = e;
+        }
+        else if (isDigit(c) || (c === "-" && isDigit(s[i + 1] ?? ""))) {
+            const e = numberEnd(s, i + 1);
+            push(out, "number", s.slice(i, e));
+            i = e;
+        }
+        else if (isIdentStart(c)) {
+            let j = i + 1;
+            while (j < s.length && isIdentPart(s[j])) {
+                j += 1;
+            }
+            const word = s.slice(i, j);
+            push(out, word === "true" || word === "false" || word === "null" ? "literal" : "plain", word);
+            i = j;
+        }
+        else if ("{}[],:".includes(c)) {
+            push(out, "punct", c);
+            i += 1;
+        }
+        else {
+            push(out, "plain", c);
+            i += 1;
+        }
+    }
+    return out;
+}
+/// Splits `text` into tokens for `language` (`lyric`, `json`; anything else
+/// is plain text).
+export function tokenize(language, text) {
+    switch (language) {
+        case "lyric":
+            return lyric(text);
+        case "json":
+            return json(text);
+        default:
+            return text.length === 0 ? [] : [{ type: "plain", text }];
+    }
+}
+"#####
+
 /// ui.css
-pub val themeCss: String = r#####"/* lyric-ui default theme (docs/65 §13.9). Design tokens are CSS custom
+pub val themeCss: String = r#####"/* lyric-ui default theme (docs/65 §13.10). Design tokens are CSS custom
    properties; override them on :root to theme an application. */
 :root {
   --lui-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -1032,5 +1599,32 @@ body { margin: 0; background: var(--lui-bg); color: var(--lui-text); font: 15px/
 
 .lui-toasts { position: fixed; bottom: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; }
 .lui-toast { background: var(--lui-surface); border: 1px solid var(--lui-border); border-left: 4px solid var(--lui-tone, var(--lui-info)); border-radius: var(--lui-radius); padding: 10px 14px; }
+
+.lui-code { display: flex; padding: 0; overflow: hidden; min-height: 160px; height: 240px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; }
+.lui-code-gutter { flex: none; overflow: hidden; padding: 7px 8px; text-align: right; color: var(--lui-muted, color-mix(in srgb, currentColor 55%, transparent)); border-right: 1px solid var(--lui-border); background: color-mix(in srgb, var(--lui-border) 25%, transparent); white-space: pre; user-select: none; }
+.lui-code-nogutter .lui-code-gutter { display: none; }
+.lui-code-body { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+.lui-code-highlight, .lui-code-input { margin: 0; padding: 7px 9px; font: inherit; line-height: inherit; white-space: pre; tab-size: 2; box-sizing: border-box; border: 0; }
+.lui-code-highlight { position: absolute; top: 0; left: 0; min-width: 100%; pointer-events: none; }
+.lui-code-input { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; overflow: auto; background: transparent; color: transparent; caret-color: var(--lui-text); outline: none; }
+.lui-code-input::placeholder { color: color-mix(in srgb, currentColor 50%, transparent); }
+.lui-code-input::selection { background: color-mix(in srgb, var(--lui-accent) 35%, transparent); color: transparent; }
+.lui-code:focus-within { outline: 2px solid var(--lui-accent); outline-offset: 2px; }
+.lui-code-input[readonly] { cursor: default; }
+.lui-tok-keyword { color: var(--lui-tok-keyword, #7c3aed); font-weight: 600; }
+.lui-tok-type { color: var(--lui-tok-type, #0f766e); }
+.lui-tok-string { color: var(--lui-tok-string, #b45309); }
+.lui-tok-comment { color: var(--lui-tok-comment, #6b7280); font-style: italic; }
+.lui-tok-number, .lui-tok-literal { color: var(--lui-tok-number, #1d4ed8); }
+.lui-tok-key { color: var(--lui-tok-key, #0369a1); }
+.lui-tok-punct { color: var(--lui-tok-punct, #6b7280); }
+@media (prefers-color-scheme: dark) {
+  .lui-tok-keyword { color: var(--lui-tok-keyword, #c4b5fd); }
+  .lui-tok-type { color: var(--lui-tok-type, #5eead4); }
+  .lui-tok-string { color: var(--lui-tok-string, #fbbf24); }
+  .lui-tok-comment { color: var(--lui-tok-comment, #9ca3af); }
+  .lui-tok-number, .lui-tok-literal { color: var(--lui-tok-number, #93c5fd); }
+  .lui-tok-key { color: var(--lui-tok-key, #7dd3fc); }
+}
 "#####
 

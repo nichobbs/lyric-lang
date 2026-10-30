@@ -188,6 +188,10 @@ func element(
       controlAttrs +
       ">"
   }
+  if kind == "textArea" and text(props, "variant") == "code" {
+    val id = if forcedId.length > 0 then forcedId else freshId(ids)
+    return codeEditor(props, id, controlAttrs)
+  }
   if kind == "textArea" {
     val id = if forcedId.length > 0 then forcedId else freshId(ids)
     return "<textarea" + classes("lui-input lui-textarea", props) + dataAttrs(props) + attr("id", id) + inputAttrs(props) +
@@ -299,6 +303,55 @@ func option(c: in WireNode, selected: in String, ids: in IdCounter): String {
     }
     case _ -> node(c, ids, "", "")
   }
+}
+
+// The line numbers of a code editor's gutter, one per line of `value`.
+func gutterNumbers(value: in String): String {
+  val n = split(value, "\n").length
+  var acc = "1"
+  var i = 2
+  while i <= n {
+    acc = acc + "\n" + i.toString()
+    i = i + 1
+  }
+  return acc
+}
+
+// A code editor as the runtime's `CodeEditor` builds it, without the
+// highlighting the runtime adds when it takes over.
+func codeEditor(props: in List[Prop], id: in String, controlAttrs: in String): String {
+  val value = text(props, "value")
+  val gutter = if text(props, "lineNumbers") == "false" then " lui-code-nogutter" else ""
+  val invalid = if flag(props, "invalid") then " lui-invalid" else ""
+  val tab = match prop(props, "tabSize") { case Some(v) -> " style=\"tab-size:" + escapeHtml(v) + "\""; case None -> "" }
+  return "<div" + attr("class", "lui-input lui-code" + gutter + invalid) + optAttr(props, "language", "data-language") +
+    dataAttrs(props) +
+    "><div" +
+    attr("class", "lui-code-gutter") +
+    attr("aria-hidden", "true") +
+    "><div>" +
+    gutterNumbers(value) +
+    "</div></div><div" +
+    attr("class", "lui-code-body") +
+    "><pre" +
+    attr("class", "lui-code-highlight") +
+    attr("aria-hidden", "true") +
+    tab +
+    "><code>" +
+    escapeHtml(value) +
+    "\n</code></pre><textarea" +
+    attr("class", "lui-code-input") +
+    attr("id", id) +
+    attr("spellcheck", "false") +
+    attr("wrap", "off") +
+    attr("autocapitalize", "off") +
+    attr("autocomplete", "off") +
+    tab +
+    inputAttrs(props) +
+    controlAttrs +
+    ">" +
+    escapeHtml(value) +
+    "</textarea></div></div>"
 }
 
 // `disabled`, `readonly` and `required` (with `aria-required`).

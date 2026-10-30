@@ -159,6 +159,21 @@ pub func router(cfg: in HostConfig, route: in (String) -> Option[Instance]): Res
     "/_ui/runtime/toasts.js",
     Asset(body = Assets.runtimeToastsJs, contentType = "text/javascript; charset=utf-8")
   )
+  r = Web.addGet(
+    r,
+    "/_ui/runtime/editor.js",
+    Asset(body = Assets.runtimeEditorJs, contentType = "text/javascript; charset=utf-8")
+  )
+  r = Web.addGet(
+    r,
+    "/_ui/runtime/editing.js",
+    Asset(body = Assets.runtimeEditingJs, contentType = "text/javascript; charset=utf-8")
+  )
+  r = Web.addGet(
+    r,
+    "/_ui/runtime/highlight.js",
+    Asset(body = Assets.runtimeHighlightJs, contentType = "text/javascript; charset=utf-8")
+  )
   r = Web.addGet(r, "/_ui/theme.css", Asset(body = Assets.themeCss, contentType = "text/css; charset=utf-8"))
   val shell = Shell(
     title = cfg.title,

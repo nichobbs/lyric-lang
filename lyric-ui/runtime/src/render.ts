@@ -8,6 +8,7 @@
 // card's title) lives outside `container`, so child indices map directly to
 // container child positions.
 
+import { CodeEditor } from "./editor.js";
 import type { MNode, TreeObserver } from "./tree.js";
 
 export interface HostEl {
@@ -20,6 +21,9 @@ export interface HostEl {
   // not report it again. Cleared when the grid's rows change.
   lastViewport?: string;
   viewportPending?: boolean;
+  // Code editors (a `textArea` with `variant="code"`): the editor whose
+  // `root` is this element's root.
+  editor?: CodeEditor;
 }
 
 export type EventSink = (node: MNode, event: string, data: string, inputVersion: number) => void;
@@ -159,6 +163,9 @@ export class DomRenderer implements TreeObserver {
       case "dateInput":
         return this.input(node, el("input", "lui-input"));
       case "textArea":
+        if (node.props.variant === "code") {
+          return this.codeEditor(node);
+        }
         return this.input(node, el("textarea", "lui-input lui-textarea"));
       case "checkbox": {
         const root = el("label", "lui-checkbox");
@@ -404,6 +411,68 @@ export class DomRenderer implements TreeObserver {
     return h;
   }
 
+  private codeEditor(node: MNode): HostEl {
+    const h: HostEl = { root: document.createElement("div"), container: null, localVersion: 0 };
+    const editor = new CodeEditor((value) => {
+      h.localVersion += 1;
+      this.fire(node, "input", value, h.localVersion);
+    });
+    editor.textarea.id = `lui-${nextId++}`;
+    h.root = editor.root;
+    h.editor = editor;
+    return h;
+  }
+
+  // Properties of a code editor: the text and the settings go to the editor,
+  // the rest to its textarea.
+  private applyEditorProp(editor: CodeEditor, node: MNode, name: string, value: string | null): void {
+    const flag = value === "true";
+    switch (name) {
+      case "value":
+        editor.setValue(value ?? "");
+        return;
+      case "language":
+        editor.setLanguage(value ?? "");
+        return;
+      case "lineNumbers":
+        editor.setLineNumbers(value !== "false");
+        return;
+      case "tabSize":
+        editor.setTabSize(Number(value));
+        return;
+      case "readonly":
+        editor.textarea.readOnly = flag;
+        return;
+      case "disabled":
+        editor.textarea.disabled = flag;
+        return;
+      case "required":
+        editor.textarea.required = flag;
+        editor.textarea.setAttribute("aria-required", String(flag));
+        return;
+      case "placeholder":
+        if (value === null) {
+          editor.textarea.removeAttribute("placeholder");
+        } else {
+          editor.textarea.setAttribute("placeholder", value);
+        }
+        return;
+      case "maxLength":
+        if (value === null) {
+          editor.textarea.removeAttribute("maxlength");
+        } else {
+          editor.textarea.setAttribute("maxlength", value);
+        }
+        return;
+      case "invalid":
+        editor.root.classList.toggle("lui-invalid", flag);
+        this.afterChildrenChanged(node);
+        return;
+      default:
+        return;
+    }
+  }
+
   private fire(node: MNode, event: string, data: string, inputVersion: number): void {
     if (node.events.includes(event)) {
       this.sink(node, event, data, inputVersion);
@@ -413,6 +482,10 @@ export class DomRenderer implements TreeObserver {
   // ─── Properties ─────────────────────────────────────────────────────────────
   private applyProp(node: MNode, name: string, value: string | null): void {
     const h = hostOf(node);
+    if (h.editor) {
+      this.applyEditorProp(h.editor, node, name, value);
+      return;
+    }
     const root = h.root as HTMLElement;
     const flag = value === "true";
     switch (name) {
@@ -527,7 +600,7 @@ export class DomRenderer implements TreeObserver {
       return;
     }
     const target = hostOf(input).root as HTMLElement;
-    const control = target instanceof HTMLLabelElement ? target.querySelector("input") : target;
+    const control = target instanceof HTMLLabelElement ? target.querySelector("input") : hostOf(input).editor ? hostOf(input).editor!.textarea : target;
     if (!(control instanceof HTMLElement)) {
       return;
     }

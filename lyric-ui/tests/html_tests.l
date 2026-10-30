@@ -11,7 +11,7 @@ import Std.Testing
 import Ui.Core.{View}
 import Ui.Diff.{toWire}
 import Ui.Html.{renderHtml, escapeHtml}
-import Ui.Widgets.{button, column, field, textInput, inputOpts, checkbox, select, SelectChoice, heading, banner, card, spinner, InputOpts}
+import Ui.Widgets.{button, column, field, textInput, inputOpts, checkbox, select, SelectChoice, heading, banner, card, spinner, InputOpts, codeEditor, editorOpts, EditorOpts}
 
 union Msg {
   case Typed(s: String)
@@ -94,4 +94,26 @@ test "ids are numbered in document order, so the same tree renders the same text
   assertEqual(once, html(v), "deterministic")
   assertTrue(contains(once, "id=\"lui-s1\" type=\"text\" value=\"a\""), once)
   assertTrue(contains(once, "id=\"lui-s2\" type=\"email\" value=\"b\""), once)
+}
+
+test "a code editor renders the runtime's wrapper, gutter and textarea" {
+  val opts = EditorOpts(input = inputOpts(), language = "lyric", lineNumbers = true, tabSize = 4)
+  val v: View[Msg] = codeEditor[Msg]("a <b>\nc", typed, opts)
+  val out = html(v)
+  assertTrue(
+    startsWith(out, "<div class=\"lui-input lui-code\" data-language=\"lyric\" data-variant=\"code\">"),
+    "wrapper: " + out
+  )
+  assertTrue(contains(out, "<div class=\"lui-code-gutter\" aria-hidden=\"true\"><div>1\n2</div></div>"), "gutter: " + out)
+  assertTrue(contains(out, "<pre class=\"lui-code-highlight\" aria-hidden=\"true\" style=\"tab-size:4\"><code>a &lt;b&gt;\nc\n</code></pre>"), "highlight layer: " + out)
+  assertTrue(contains(out, "<textarea class=\"lui-code-input\" id=\"lui-s1\" spellcheck=\"false\" wrap=\"off\""), "textarea: " + out)
+  assertTrue(endsWith(out, ">a &lt;b&gt;\nc</textarea></div></div>"), "text is escaped: " + out)
+}
+
+test "a code editor without line numbers is marked, and a read-only one is read-only" {
+  val opts = EditorOpts(input = inputOpts().copy(readonly = true), language = "", lineNumbers = false, tabSize = 0)
+  val out = html(codeEditor[Msg]("", typed, opts))
+  assertTrue(contains(out, "class=\"lui-input lui-code lui-code-nogutter\""), "no gutter: " + out)
+  assertFalse(contains(out, "data-language"), "no language: " + out)
+  assertTrue(contains(out, " readonly"), "read-only: " + out)
 }

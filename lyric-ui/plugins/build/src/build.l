@@ -228,6 +228,21 @@ pub func textArea(value: in String, message: in String): WidgetTree {
   node(NodeKind.TextArea, ps, hs, noChildren())
 }
 
+/// A code editor: a multi-line text input drawn in a monospace font with a
+/// line-number gutter and highlighting for `language` (`lyric` and `json`; any
+/// other name is plain text); edits as for `textInput`.
+pub func codeEditor(value: in String, message: in String, language: in String): WidgetTree {
+  val ps = noProps()
+  ps.add(prop("value", value))
+  ps.add(prop("variant", "code"))
+  if language.length > 0 {
+    ps.add(prop("language", language))
+  }
+  val hs = noHandlers()
+  hs.add(on(NodeEvent.Input, message))
+  node(NodeKind.TextArea, ps, hs, noChildren())
+}
+
 /// A numeric input with inclusive advisory bounds; edits as for `textInput`.
 pub func numberInput(value: in String, message: in String, min: in Long, max: in Long): WidgetTree
   requires: min <= max

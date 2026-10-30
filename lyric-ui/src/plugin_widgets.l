@@ -433,7 +433,7 @@ pub func safeHref(url: in String): Bool {
 /// are dropped.
 pub func widgetPropNames(): List[String] {
   val names: List[String] = newList()
-  for n in ["busy", "checked", "disabled", "header", "href", "invalid", "label", "level", "max", "maxLength", "min", "placeholder", "readonly", "required", "title", "tone", "type", "value", "variant"] {
+  for n in ["busy", "checked", "disabled", "header", "href", "invalid", "label", "language", "level", "lineNumbers", "max", "maxLength", "min", "placeholder", "readonly", "required", "tabSize", "title", "tone", "type", "value", "variant"] {
     names.add(n)
   }
   names
