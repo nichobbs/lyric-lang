@@ -5041,15 +5041,6 @@ func maybeUnknownMemberDiag(
   }
 }
 
-// T0197 for a method call on a value of a function-level type parameter that
-// no `where` bound promises (#8018): a type parameter has no fields and only
-// the methods of its bounds, so `x.zork()` (or `b.v.zork()` under `where T:
-// Named`) would otherwise be duck-typed against whatever the type argument
-// has, and a typo would fail in a backend.  Silent when the name is one every
-// receiver has (`toString`, the derive-synthesised names), when a plain
-// function of that name could bind by UFCS, when a bound is a marker or an
-// interface whose members the checker cannot enumerate, and for a type
-// parameter of the enclosing record or impl, whose bounds are not in scope.
 // True when `tvName` is one of the type arguments of the enclosing record or
 // `impl`'s self type, so it is a type parameter of that declaration.
 func isSelfTypeArgument(selfTy: in Type, tvName: in String): Bool {
@@ -5071,6 +5062,30 @@ func isSelfTypeArgument(selfTy: in Type, tvName: in String): Bool {
   }
 }
 
+// Whether the package being checked declares an `extern type` itself (not
+// through an import).
+func packageDeclaresExternType(tbl: in SymbolTable): Bool {
+  for sym in tbl.symbols {
+    if not sym.isImported {
+      match sym.kind {
+        case DKExternType(_, _) -> return true
+        case _ -> ()
+      }
+    }
+  }
+  false
+}
+
+// T0197 for a method call on a value of a function-level type parameter that
+// no `where` bound promises (#8018): a type parameter has no fields and only
+// the methods of its bounds, so `x.zork()` (or `b.v.zork()` under `where T:
+// Named`) would otherwise be duck-typed against whatever the type argument
+// has, and a typo would fail in a backend.  Silent when the name is one every
+// receiver has (`toString`, the derive-synthesised names), when a plain
+// function of that name could bind by UFCS, when a bound is a marker or an
+// interface whose members the checker cannot enumerate, for a type
+// parameter of the enclosing record or impl, whose bounds are not in scope,
+// and in a package that declares an `extern type`.
 func maybeUnknownTypeParamMethodDiag(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -5111,6 +5126,14 @@ func maybeUnknownTypeParamMethodDiag(
             }
           }
         }
+      }
+      // A package that declares an `extern type` is an FFI boundary (a
+      // `_kernel*` file): there a type-parameter value may be a host object,
+      // and a call on it resolves against the host type at codegen (on the
+      // JVM every value is a java.lang.Object, so `target.getClass()` is
+      // well-typed), the same open-endedness a `String` receiver has.
+      if packageDeclaresExternType(tbl) {
+        return
       }
       diag.add(
         errorDiagnostic(

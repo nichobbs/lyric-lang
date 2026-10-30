@@ -12811,6 +12811,14 @@ test "a call of an unknown method on a type parameter is T0197 (#8018)" {
     0,
     "a record-level T has no bounds in scope, so it is not diagnosed"
   )
+  val kernel = parseCheck(
+    "package P\nextern type JClass = \"java.lang.Class\"\nfunc cls[A](target: in A): String {\n  val c: JClass = target.getClass()\n  c.getName()\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(kernel, "T0197"),
+    0,
+    "an FFI-boundary package (declares an extern type) resolves the call on the host type (" + diagCodesOf(kernel) + ")"
+  )
 }
 
 test "a call through a function-typed field of an open hoisted receiver is T0154 until annotated (#8047)" {
