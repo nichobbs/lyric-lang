@@ -101,6 +101,87 @@ pub func decodeSegment(s: in String): Option[String] {
   return Enc.tryDecodeUtf8(decoded.toArray())
 }
 
+// The raw (still percent-encoded) `name=value` pairs of `url`'s query, in
+// order; the fragment is dropped.
+func queryPairs(url: in String): List[String] {
+  var rest = url
+  match indexOf(rest, "#") {
+    case Some(i) -> {
+      rest = substring(rest, 0, i)
+    }
+    case None -> ()
+  }
+  val pairs: List[String] = newList()
+  match indexOf(rest, "?") {
+    case Some(i) -> {
+      for pair in split(substring(rest, i + 1), "&") {
+        if pair.length > 0 {
+          pairs.add(pair)
+        }
+      }
+    }
+    case None -> ()
+  }
+  return pairs
+}
+
+// A query component decoded as `application/x-www-form-urlencoded` does:
+// `+` is a space, then `%XX` escapes are decoded.  A literal `+` travels as
+// `%2B`, which `withQuery` always writes.
+func decodeQueryComponent(s: in String): Option[String] {
+  return decodeSegment(replace(s, "+", " "))
+}
+
+// The raw `name=value` pair of `url`'s query whose decoded name is `name`
+// (the first, if several), or `None`.
+func firstQueryPair(url: in String, name: in String): Option[String] {
+  for pair in queryPairs(url) {
+    val eq = indexOf(pair, "=")
+    val rawName = match eq { case Some(i) -> substring(pair, 0, i); case None -> pair }
+    match decodeQueryComponent(rawName) {
+      case Some(n) -> {
+        if n == name {
+          return Some(value = pair)
+        }
+      }
+      case None -> ()
+    }
+  }
+  return None
+}
+
+/// True when `url`'s query has a pair named `name` (`?name`, `?name=` and
+/// `?name=v` all count).  The fragment is ignored and names are
+/// percent-decoded.
+pub func queryPresent(url: in String, name: in String): Bool {
+  return match firstQueryPair(url, name) { case Some(_) -> true; case None -> false }
+}
+
+/// The decoded value of the first query pair of `url` named `name`: `+` is a
+/// space and `%XX` escapes are decoded.  A pair without `=` has the empty
+/// value.  `None` when no pair has that name, or when its value holds an
+/// invalid escape or decodes to invalid UTF-8; `queryPresent` tells the two
+/// apart.
+pub func queryValue(url: in String, name: in String): Option[String] {
+  return match firstQueryPair(url, name) {
+    case Some(pair) -> match indexOf(pair, "=") {
+      case Some(i) -> decodeQueryComponent(substring(pair, i + 1))
+      case None -> Some(value = "")
+    }
+    case None -> None
+  }
+}
+
+/// `url` with `name=value` appended to its query (`?` for the first pair, `&`
+/// after), both percent-encoded; `url` unchanged when `value` is `None`.
+pub func withQuery(url: in String, name: in String, value: in Option[String]): String {
+  return match value {
+    case Some(v) -> url + (if contains(url, "?") then "&" else "?") + encodeSegment(name) + "=" +
+      encodeSegment(v)
+    case None -> url
+  }
+}
+
 /// `s` as a whole `Int`, or `None`.
 pub func intSegment(s: in String): Option[Int] {
   return match P.parseOptLong(s) {

@@ -15,8 +15,24 @@
 //! `:String`) names the segment's type, for a distinct type declared
 //! elsewhere: the segment is parsed as that type and converted with the
 //! field type's `tryFrom`.  `parseT` tries the cases
-//! in declaration order and ignores the query and fragment; segments are
+//! in declaration order and ignores the fragment; segments are
 //! percent-decoded, and `tUrl` percent-encodes field values.
+//!
+//! A case annotation `@query(field)` (or `@query(field, "name")`, to name the
+//! query parameter) makes `field` a query field instead of a path segment
+//! (an annotation sits on the case because a case's parameters take none):
+//!
+//!   @path("/customers/search")
+//!   @query(term)
+//!   @query(page, "p")
+//!   case CustomerSearch(term: Option[String], page: Option[Int])
+//!
+//! A query field is read from `?name=value` and must be an `Option` of one of
+//! the types above.  An absent parameter is `None`; one
+//! whose value does not parse (or holds an invalid escape) makes the case not
+//! match.  `tUrl` writes a `Some` field as `name=value` after the path
+//! (percent-encoded, in field order) and leaves a `None` out, so `parseT` of
+//! `tUrl(r)` is `r`.
 //!
 //! The generated code refers to `Ui.Routing` through the alias
 //! `GenRouting`.
@@ -45,8 +61,13 @@ union Segment {
 
 record RouteField {
   name: String
+  // The field's type as written: `Option[T]` for a query field.
   typeText: String
+  // The parsed value's type, without `Option` for a query field.
+  valueType: String
   param: Param
+  // The query parameter name, for a `@query` field.
+  query: Option[String]
 }
 
 record RouteCase {
@@ -165,7 +186,12 @@ func caseOf(req: in GeneratorRequest, c: in CaseDescriptor, diags: in List[Gener
       }
     }
   }
+  val queryDecls = queryDeclsOf(c, diags)
+  if diags.count > 0 {
+    return None
+  }
   val fields: List[RouteField] = newList()
+  val queryNames: List[String] = newList()
   var k = 0
   while k < c.fields.length {
     val f = c.fields[k]
@@ -174,28 +200,51 @@ func caseOf(req: in GeneratorRequest, c: in CaseDescriptor, diags: in List[Gener
       return None
     }
     val ty = Str.trim(f.fieldType.name)
-    val param: Option[Param] = match hintFor(segments, f.name) {
-      case Some(h) -> Some(value = hintedParam(h, ty))
-      case None -> paramOf(req, ty, 0)
-    }
-    match param {
-      case Some(p) -> fields.add(RouteField(name = f.name, typeText = f.fieldType.name, param = p))
-      case None -> {
-        report(
-          diags,
-          "RT004",
-          "field '" + f.name + "' of route case '" + c.name + "' has type " + f.fieldType.name +
-            ", which a path segment cannot hold; use String, Int, Long, or an enum, distinct or range type declared in this file, " +
-            "or name the segment's type, as in {" +
-            f.name +
-            ":Long}"
+    val queryParam = queryParamFor(queryDecls, f.name)
+    if hasValue(queryParam) {
+      match queryFieldOf(req, c, f, queryParam, diags) {
+        case Some(qf) -> {
+          match qf.query {
+            case Some(qn) -> {
+              if queryNames.contains(qn) {
+                report(diags, "RT007", "route case '" + c.name + "' reads the query parameter '" + qn + "' twice")
+                return None
+              }
+              queryNames.add(qn)
+            }
+            case None -> ()
+          }
+          fields.add(qf)
+        }
+        case None -> return None
+      }
+    } else {
+      val param: Option[Param] = match hintFor(segments, f.name) {
+        case Some(h) -> Some(value = hintedParam(h, ty))
+        case None -> paramOf(req, ty, 0)
+      }
+      match param {
+        case Some(p) -> fields.add(
+          RouteField(name = f.name, typeText = f.fieldType.name, valueType = ty, param = p, query = None)
         )
-        return None
+        case None -> {
+          report(
+            diags,
+            "RT004",
+            "field '" + f.name + "' of route case '" + c.name + "' has type " + f.fieldType.name +
+              ", which a path segment cannot hold; use String, Int, Long, or an enum, distinct or range type declared in this file, " +
+              "or name the segment's type, as in {" +
+              f.name +
+              ":Long}"
+          )
+          return None
+        }
       }
     }
     k += 1
   }
-  // Every field appears exactly once, and every {name} is a field.
+  // Every path field appears exactly once, a query field never, and every
+  // {name} is a field.
   for f in fields {
     var uses = 0
     for s in segments {
@@ -208,7 +257,16 @@ func caseOf(req: in GeneratorRequest, c: in CaseDescriptor, diags: in List[Gener
         case Literal(_) -> ()
       }
     }
-    if uses != 1 {
+    if isQuery(f) {
+      if uses != 0 {
+        report(
+          diags,
+          "RT007",
+          "field '" + f.name + "' of route case '" + c.name + "' is a @query field, so it cannot also be a path segment"
+        )
+        return None
+      }
+    } else if uses != 1 {
       report(
         diags,
         "RT003",
@@ -236,6 +294,132 @@ func caseOf(req: in GeneratorRequest, c: in CaseDescriptor, diags: in List[Gener
     }
   }
   Some(value = RouteCase(name = c.name, segments = segments, fields = fields))
+}
+
+func isQuery(f: in RouteField): Bool {
+  return match f.query { case Some(_) -> true; case None -> false }
+}
+
+func hasValue(o: in Option[String]): Bool {
+  return match o { case Some(_) -> true; case None -> false }
+}
+
+// One `@query(field)` / `@query(field, "name")` annotation of a case.
+record QueryDecl {
+  field: String
+  param: String
+}
+
+func queryDeclsOf(c: in CaseDescriptor, diags: in List[GeneratorDiagnostic]): List[QueryDecl] {
+  val decls: List[QueryDecl] = newList()
+  var i = 0
+  while i < c.annotations.length {
+    val a = c.annotations[i]
+    if a.name == "query" {
+      if a.args.length < 1 or a.args.length > 2 {
+        report(
+          diags,
+          "RT007",
+          "@query on route case '" + c.name +
+            "' takes the field name and, optionally, the parameter name: @query(field, \"name\")"
+        )
+        return decls
+      }
+      val field = Str.trim(a.args[0])
+      var known = false
+      var k = 0
+      while k < c.fields.length {
+        if c.fields[k].name == field {
+          known = true
+        }
+        k += 1
+      }
+      if not known {
+        report(diags, "RT007", "@query(" + field + ") on route case '" + c.name + "' names no field of the case")
+        return decls
+      }
+      for d in decls {
+        if d.field == field {
+          report(diags, "RT007", "route case '" + c.name + "' marks field '" + field + "' as @query twice")
+          return decls
+        }
+      }
+      var param = field
+      if a.args.length == 2 {
+        match stringLiteralText(a.args[1]) {
+          case Some(n) -> {
+            if n.length == 0 {
+              report(diags, "RT007", "@query(" + field + ") on route case '" + c.name + "' names an empty parameter")
+              return decls
+            }
+            param = n
+          }
+          case None -> {
+            report(
+              diags,
+              "RT007",
+              "@query(" + field + ", ...) on route case '" + c.name + "' takes a plain string literal, the parameter name"
+            )
+            return decls
+          }
+        }
+      }
+      decls.add(QueryDecl(field = field, param = param))
+    }
+    i += 1
+  }
+  return decls
+}
+
+func queryParamFor(decls: in List[QueryDecl], field: in String): Option[String] {
+  for d in decls {
+    if d.field == field {
+      return Some(value = d.param)
+    }
+  }
+  return None
+}
+
+// A `@query` field: `Option[T]` for a type `T` a query value can hold, read
+// from the parameter `param`.
+func queryFieldOf(
+  req: in GeneratorRequest,
+  c: in CaseDescriptor,
+  f: in FieldDescriptor,
+  param: in Option[String],
+  diags: in List[GeneratorDiagnostic],
+): Option[RouteField] {
+  val isOption = match f.fieldType.kind { case OptionType -> true; case _ -> false }
+  if not isOption or f.fieldType.typeArgs.length != 1 {
+    report(
+      diags,
+      "RT007",
+      "@query field '" + f.name + "' of route case '" + c.name + "' has type " + f.fieldType.name +
+        "; a query parameter may be absent, so its type is Option[T]"
+    )
+    return None
+  }
+  val inner = Str.trim(f.fieldType.typeArgs[0])
+  return match paramOf(req, inner, 0) {
+    case Some(p) -> Some(
+      value = RouteField(
+        name = f.name,
+        typeText = f.fieldType.name,
+        valueType = inner,
+        param = p,
+        query = param
+      )
+    )
+    case None -> {
+      report(
+        diags,
+        "RT004",
+        "@query field '" + f.name + "' of route case '" + c.name + "' holds " + inner +
+          ", which a query value cannot hold; use String, Int, Long, or an enum, distinct or range type declared in this file"
+      )
+      None
+    }
+  }
 }
 
 // Two cases whose paths have the same literals and fields in the same places
@@ -413,6 +597,10 @@ func emit(m: in Model): String {
     parts.add(emitCaseParse(m, c))
     for f in c.fields {
       parts.add(emitFieldParse(m, c, f))
+      if isQuery(f) {
+        parts.add(emitQueryParse(m, c, f))
+        parts.add(emitQueryText(m, c, f))
+      }
       match f.param {
         case ChoiceParam(enumName, cases) -> parts.add(emitChoiceText(m, c, f, enumName, cases))
         case _ -> ()
@@ -431,26 +619,34 @@ func fieldParseName(m: in Model, c: in RouteCase, f: in RouteField): String {
   m.lower + c.name + upperFirst(f.name) + "Segment"
 }
 
+func queryParseName(m: in Model, c: in RouteCase, f: in RouteField): String {
+  m.lower + c.name + upperFirst(f.name) + "Query"
+}
+
+func queryTextName(m: in Model, c: in RouteCase, f: in RouteField): String {
+  m.lower + c.name + upperFirst(f.name) + "QueryText"
+}
+
 func choiceTextName(m: in Model, c: in RouteCase, f: in RouteField): String {
   m.lower + c.name + upperFirst(f.name) + "Text"
 }
 
 func emitParse(m: in Model): String {
   var s = "/// The `" + m.typeName + "` that `url` names, or `None`.  Cases are tried in declaration order;\n" +
-    "/// the query and fragment are ignored.\npub func parse" +
+    "/// the fragment is ignored, and the query is read only by `@query` fields.\npub func parse" +
     m.typeName +
     "(url: in String): Option[" +
     m.typeName +
     "] {\n  val segments = match GenRouting.pathSegments(url) {\n    case Some(s) -> s\n    case None -> return None\n  }\n"
   for c in m.cases {
     s = s + "  match " + caseParseName(m, c) +
-      "(segments) {\n    case Some(r) -> return Some(value = r)\n    case None -> ()\n  }\n"
+      "(segments, url) {\n    case Some(r) -> return Some(value = r)\n    case None -> ()\n  }\n"
   }
   s + "  return None\n}\n"
 }
 
 func emitCaseParse(m: in Model, c: in RouteCase): String {
-  var s = "func " + caseParseName(m, c) + "(segments: in List[String]): Option[" + m.typeName +
+  var s = "func " + caseParseName(m, c) + "(segments: in List[String], url: in String): Option[" + m.typeName +
     "] {\n  if segments.count != " +
     Str.fromInt(c.segments.count) +
     " {\n    return None\n  }\n"
@@ -477,12 +673,12 @@ func emitCaseParse(m: in Model, c: in RouteCase): String {
   var k = c.fields.count - 1
   while k >= 0 {
     val f = c.fields[k]
-    body = "match " + fieldParseName(m, c, f) + "(segments[" + Str.fromInt(segmentIndex(c, f.name)) +
-      "]) {\n    case Some(" +
-      f.name +
-      ") -> " +
-      body +
-      "\n    case None -> None\n  }"
+    val source = if isQuery(f) {
+      queryParseName(m, c, f) + "(url"
+    } else {
+      fieldParseName(m, c, f) + "(segments[" + Str.fromInt(segmentIndex(c, f.name)) + "]"
+    }
+    body = "match " + source + ") {\n    case Some(" + f.name + ") -> " + body + "\n    case None -> None\n  }"
     k -= 1
   }
   s + "  return " + body + "\n}\n"
@@ -505,7 +701,7 @@ func segmentIndex(c: in RouteCase, name: in String): Int {
 }
 
 func emitFieldParse(m: in Model, c: in RouteCase, f: in RouteField): String {
-  val head = "func " + fieldParseName(m, c, f) + "(text: in String): Option[" + f.typeText + "] {\n  return "
+  val head = "func " + fieldParseName(m, c, f) + "(text: in String): Option[" + f.valueType + "] {\n  return "
   val body = match f.param {
     case TextParam(distinct) -> match distinct {
       case Some(t) -> "Some(value = " + t + ".from(text))"
@@ -539,11 +735,54 @@ func emitChoiceText(m: in Model, c: in RouteCase, f: in RouteField, enumName: in
 }
 
 func segmentText(m: in Model, c: in RouteCase, f: in RouteField): String {
+  valueText(m, c, f, f.name)
+}
+
+// The text of the value held in variable `v`, as written to a segment or a
+// query parameter.
+func valueText(m: in Model, c: in RouteCase, f: in RouteField, v: in String): String {
   match f.param {
-    case TextParam(distinct) -> match distinct { case Some(_) -> f.name + ".toString()"; case None -> f.name }
-    case NumberParam(_, _) -> f.name + ".toString()"
-    case ChoiceParam(_, _) -> choiceTextName(m, c, f) + "(" + f.name + ")"
+    case TextParam(distinct) -> match distinct { case Some(_) -> v + ".toString()"; case None -> v }
+    case NumberParam(_, _) -> v + ".toString()"
+    case ChoiceParam(_, _) -> choiceTextName(m, c, f) + "(" + v + ")"
   }
+}
+
+func queryName(f: in RouteField): String {
+  match f.query {
+    case Some(n) -> n
+    case None -> f.name
+  }
+}
+
+// `Option[Option[T]]`: `None` when the parameter is present but unusable (the
+// case does not match), `Some(None)` when it is absent.  The `val`s carry the
+// types, since an unannotated `None` arm is mistyped by the MSIL backend
+// (#7906).
+func emitQueryParse(m: in Model, c: in RouteCase, f: in RouteField): String {
+  val name = quoted(queryName(f))
+  "func " + queryParseName(m, c, f) + "(url: in String): Option[" + f.typeText +
+    "] {\n  if not GenRouting.queryPresent(url, " +
+    name +
+    ") {\n    val absent: " +
+    f.typeText +
+    " = None\n    return Some(value = absent)\n  }\n" +
+    "  val text = match GenRouting.queryValue(url, " +
+    name +
+    ") {\n    case Some(t) -> t\n    case None -> return None\n  }\n" +
+    "  val parsed = match " +
+    fieldParseName(m, c, f) +
+    "(text) {\n    case Some(v) -> v\n    case None -> return None\n  }\n" +
+    "  val present: " +
+    f.typeText +
+    " = Some(value = parsed)\n  return Some(value = present)\n}\n"
+}
+
+func emitQueryText(m: in Model, c: in RouteCase, f: in RouteField): String {
+  "func " + queryTextName(m, c, f) + "(v: in " + f.typeText +
+    "): Option[String] {\n  val inner = match v {\n    case Some(x) -> x\n    case None -> return None\n  }\n  return Some(value = " +
+    valueText(m, c, f, "inner") +
+    ")\n}\n"
 }
 
 func emitUrl(m: in Model): String {
@@ -582,6 +821,12 @@ func emitUrl(m: in Model): String {
     }
     if url == "" {
       url = quoted("/")
+    }
+    for f in c.fields {
+      if isQuery(f) {
+        url = "GenRouting.withQuery(" + url + ", " + quoted(queryName(f)) + ", " + queryTextName(m, c, f) + "(" + f.name +
+          "))"
+      }
     }
     s = s + "    case " + pattern + " -> " + url + "\n"
   }

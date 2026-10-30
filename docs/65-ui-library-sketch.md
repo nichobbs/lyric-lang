@@ -309,8 +309,18 @@ pub union Route {
 As implemented (D151), `Ui.Routes` lives in `lyric-ui/routes/`:
 
 - **Matching:** `parseRoute` tries the cases in declaration order and
-  ignores the query and fragment. Each `{field}` segment binds one case
-  field, and every field appears once.
+  ignores the fragment. Each `{field}` segment binds one case field, and
+  every path field appears once.
+- **Query parameters (#7907):** a case annotation `@query(field)` or
+  `@query(field, "name")` makes `field` a query field. It is not in the path
+  and must be an `Option[T]` for a `T` a segment can hold. `parseRoute`
+  reads `?name=value` (`+` is a space, `%XX` escapes decode, the first of a
+  repeated name wins): absent is `None`, a value that does not parse makes
+  the case not match. `routeUrl` appends `name=value` for each `Some` field
+  in field order and omits a `None`, so `parseRoute(routeUrl(r))` is `r`.
+  The annotation sits on the case because a case's parameter list takes no
+  annotations; `Ui.Routing.queryPresent`, `queryValue` and `withQuery` are
+  the pure helpers the generated code calls.
 - **Field types:** a field is a `String`, `Int` or `Long`, or a same-file
   enum, distinct or range type. `{field:Long}` (or `:Int`, `:String`) names
   the segment's type for a distinct type declared elsewhere; a value outside
@@ -318,8 +328,8 @@ As implemented (D151), `Ui.Routes` lives in `lyric-ui/routes/`:
 - **Encoding:** segments are percent-decoded, and `routeUrl` encodes field
   values through the pure `Ui.Routing` package. The `ui` layer preset lets
   logic, effects and views import it.
-- **Diagnostics:** `RT001`–`RT006`, including RT005 for two cases with the
-  same path shape.
+- **Diagnostics:** `RT001`–`RT007`, including RT005 for two cases with the
+  same path shape and RT007 for a `@query` problem.
 
 The application maps each `Route` case to a `Screen` with an exhaustive
 `match`, so a route without a screen is a compile error.

@@ -52,3 +52,39 @@ test "numeric segments" {
   assertTrue(match Routing.longSegment("3000000000") { case Some(n) -> n == 3000000000; case None -> false }, "a Long")
   assertTrue(match Routing.longSegment("4x") { case None -> true; case Some(_) -> false }, "not a number")
 }
+
+test "queryPresent and queryValue read the first pair of a name" {
+  assertTrue(Routing.queryPresent("/a?x=1&y=2", "y"), "present")
+  assertFalse(Routing.queryPresent("/a?x=1", "y"), "absent")
+  assertFalse(Routing.queryPresent("/a#frag?y=1", "y"), "a fragment hides the query")
+  assertTrue(Routing.queryPresent("/a?flag", "flag"), "a pair without = is present")
+  assertEqual(optionOr(Routing.queryValue("/a?flag", "flag"), "<none>"), "", "and has the empty value")
+  assertEqual(optionOr(Routing.queryValue("/a?x=1&x=2", "x"), "<none>"), "1", "the first of repeated names wins")
+  assertEqual(optionOr(Routing.queryValue("/a?q=caf%C3%A9+au%20lait", "q"), "<none>"), "café au lait", "decoded")
+  assertEqual(optionOr(Routing.queryValue("/a?q=1%2B1", "q"), "<none>"), "1+1", "%2B is a literal plus")
+  assertEqual(optionOr(Routing.queryValue("/a?a%20b=2", "a b"), "<none>"), "2", "names are decoded too")
+  assertEqual(optionOr(Routing.queryValue("/a?x=1#y=2", "y"), "<none>"), "<none>", "the fragment is dropped")
+}
+
+test "a malformed query value is present but has no value" {
+  assertTrue(Routing.queryPresent("/a?q=%zz", "q"), "present")
+  assertEqual(optionOr(Routing.queryValue("/a?q=%zz", "q"), "<none>"), "<none>", "bad escape")
+  assertEqual(optionOr(Routing.queryValue("/a?q=%E9", "q"), "<none>"), "<none>", "invalid UTF-8")
+}
+
+test "withQuery appends encoded pairs and skips None" {
+  val one = Routing.withQuery("/a", "q", Some(value = "x y"))
+  assertEqual(one, "/a?q=x%20y", "first pair")
+  assertEqual(Routing.withQuery(one, "page", Some(value = "2")), "/a?q=x%20y&page=2", "second pair")
+  assertEqual(Routing.withQuery("/a", "q", None), "/a", "None leaves the url alone")
+  assertEqual(Routing.withQuery("/a", "q", Some(value = "1+1&")), "/a?q=1%2B1%26", "reserved characters")
+  assertEqual(
+    optionOr(Routing.queryValue(Routing.withQuery("/a", "q", Some(value = "ü + &=")), "q"), "<none>"),
+    "ü + &=",
+    "round trip"
+  )
+}
+
+func optionOr(o: in Option[String], fallback: in String): String {
+  return match o { case Some(v) -> v; case None -> fallback }
+}
