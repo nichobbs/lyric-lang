@@ -78,9 +78,20 @@ func checkTypeName(name: in String, sp: in Span): List[LintDiag] {
   acc
 }
 
-// L002 — function name must start with a lowercase letter.
+// L002 — function name must start with a lowercase letter.  A UFCS function
+// `func Type.method` is judged on its last segment: the leading segment names
+// the receiver type, which is PascalCase.
 func checkFuncName(name: in String, sp: in Span): List[LintDiag] {
-  if startsLower(name) {
+  var last = name
+  var dot = name.length - 1
+  while dot >= 0 {
+    if name.substring(dot, 1) == "." {
+      last = name.substring(dot + 1, name.length - dot - 1)
+      break
+    }
+    dot = dot - 1
+  }
+  if startsLower(last) {
     return newList()
   }
   val acc: List[LintDiag] = newList()
@@ -1240,19 +1251,27 @@ pub func lintPackage(sources: in List[String]): List[List[LintDiag]] {
     pkgKeys.add(Str.joinList(".", file.packageDecl.path.segments))
     i = i + 1
   }
+  val uniqueKeys: List[String] = newList()
+  val registries: List[List[LintTypeDecl]] = newList()
+  val regIndex: List[Int] = newList()
+  var r = 0
+  while r < files.count {
+    var idx = 0
+    while idx < uniqueKeys.count and uniqueKeys[idx] != pkgKeys[r] {
+      idx = idx + 1
+    }
+    if idx == uniqueKeys.count {
+      uniqueKeys.add(pkgKeys[r])
+      registries.add(newList())
+    }
+    addTypeDecls(registries[idx], files[r])
+    regIndex.add(idx)
+    r = r + 1
+  }
   val result: List[List[LintDiag]] = newList()
   var j = 0
   while j < files.count {
-    val regs: List[LintTypeDecl] = newList()
-    addTypeDecls(regs, files[j])
-    var k = 0
-    while k < files.count {
-      if k != j and pkgKeys[k] == pkgKeys[j] {
-        addTypeDecls(regs, files[k])
-      }
-      k = k + 1
-    }
-    result.add(lintParsed(files[j], regs))
+    result.add(lintParsed(files[j], registries[regIndex[j]]))
     j = j + 1
   }
   result

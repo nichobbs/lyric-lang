@@ -358,3 +358,11 @@ test "L008: a call nested in a match arm, lambda and test body is found" {
     "}\n"
   assertEqualInt(countCode(lint(src), "L008"), 2, "match-arm block and test body are both walked")
 }
+
+test "L002: a UFCS function name is judged on its last segment" {
+  val ok = "package P\npub record Boom { n: Int }\n/// Doc.\npub func Boom.message(self: in Boom): String {\n  \"x\"\n}\n"
+  assertEqualInt(countCode(lint(ok), "L002"), 0, "Boom.message is camelCase on its method segment")
+  assertEqualInt(countCode(lint(ok), "L001"), 0, "the receiver segment is not a type declaration")
+  val bad = "package P\npub record Boom { n: Int }\n/// Doc.\npub func Boom.Message(self: in Boom): String {\n  \"x\"\n}\n"
+  assertEqualInt(countCode(lint(bad), "L002"), 1, "Boom.Message still fails on the method segment")
+}

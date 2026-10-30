@@ -5851,11 +5851,12 @@ func checkCBindingType(
 // name `P` does not declare is an error at the import item (#7926), where a
 // stale import left behind by a rename in `P` would otherwise surface only at
 // a use (T0020), or never.  A name counts as declared when `P` declares an
-// item or union/enum case of that name, or when a package `P` imports (at any
-// depth) does, because `pub use` re-exports reach a consumer through `P`.  A
-// package the checker was not given the source of, and one holding an extern
-// package or a destructuring `val` (whose members it cannot enumerate here),
-// is never diagnosed.
+// item or union/enum case of that name (whatever its visibility; this check
+// does not judge access), or when a package `P` imports (at any depth) does,
+// because `pub use` re-exports reach a consumer through `P`.  A package the
+// checker was not given the source of, and one holding an extern package, a
+// fixture, an error item or a destructuring `val` (whose members it cannot
+// enumerate here), is never diagnosed.
 func checkSelectiveImportsDeclared(
   diag: in List[Diagnostic],
   userPkg: in String,
@@ -5884,7 +5885,7 @@ func checkSelectiveImportsDeclared(
                 diag.add(
                   errorDiagnostic(
                     "T0210",
-                    "package " + pkg + " declares no public '" + item.name + "', so it cannot be imported" + hint,
+                    "package " + pkg + " declares no '" + item.name + "', so it cannot be imported" + hint,
                     item.span
                   )
                 )
@@ -5964,11 +5965,34 @@ func itemsMayDeclare(items: in List[Item], name: in String): Bool {
   false
 }
 
-// The declared name of `pkg` closest to `name`, or "" when none is near
-// enough (edit distance 2, and under half the name's length) to be a typo.
+// The declared name of `pkg`, or of a package reached through its imports (the
+// packages `packageDeclaresName` walks), closest to `name`, or "" when none is
+// near enough (edit distance 2, and under half the name's length) to be a typo.
+// Ties go to the first declared name.
 func nearestDeclaredName(importedPackages: in List[ImportedPackage], pkg: in String, name: in String): String {
-  var best = ""
-  var bestDist = 3
+  val visited: List[String] = newList()
+  val best: List[String] = newList()
+  best.add("")
+  val bestDist: List[Int] = newList()
+  bestDist.add(3)
+  nearestDeclaredNameIn(importedPackages, pkg, name, visited, best, bestDist)
+  best[0]
+}
+
+func nearestDeclaredNameIn(
+  importedPackages: in List[ImportedPackage],
+  pkg: in String,
+  name: in String,
+  visited: in List[String],
+  best: in List[String],
+  bestDist: in List[Int],
+): Unit {
+  for v in visited {
+    if v == pkg {
+      return
+    }
+  }
+  visited.add(pkg)
   for ip in importedPackages {
     if ip.name == pkg {
       for it in ip.items {
@@ -5979,15 +6003,17 @@ func nearestDeclaredName(importedPackages: in List[ImportedPackage], pkg: in Str
         }
         for c in cands {
           val d = nameEditDistance(c, name)
-          if d < bestDist and d * 2 <= name.length and d > 0 {
-            best = c
-            bestDist = d
+          if d < bestDist[0] and d * 2 <= name.length and d > 0 {
+            best[0] = c
+            bestDist[0] = d
           }
         }
       }
+      for dep in ip.imports {
+        nearestDeclaredNameIn(importedPackages, dep, name, visited, best, bestDist)
+      }
     }
   }
-  best
 }
 
 func nameEditDistance(a: in String, b: in String): Int {
