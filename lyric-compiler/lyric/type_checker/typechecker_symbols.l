@@ -480,6 +480,13 @@ pub record SymbolTable {
   /// type (#7771): a same-named method, type-associated function or local
   /// function value never counts.
   generatorCallSites: Map[String, Bool]
+  /// One entry per enclosing lenient first pass of a deferred call argument
+  /// (the scratch-diagnostics pass of `ECall`, A2 / #7865).  A call checked
+  /// inside one skips its own lambda-argument second pass: the enclosing
+  /// argument is re-checked against its expectation anyway, which re-runs this
+  /// call with both passes, so repeating the second pass here made nested
+  /// lambda arguments cost 2^depth checks (#7879).
+  lenientArgDepth: List[Int]
   /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is
   /// one of the stdlib's evidence-free collection constructors
   /// (`Std.CollectionsHost.newList` / `newListWithCapacity` / `newMap`),
@@ -802,6 +809,7 @@ pub func newSymbolTable(): SymbolTable {
     lambdaUnitSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
+    lenientArgDepth = newList(),
     emptyCollectionCtorSites = newMap(),
     asyncCallSites = newMap(),
     effectCallSites = newMap(),

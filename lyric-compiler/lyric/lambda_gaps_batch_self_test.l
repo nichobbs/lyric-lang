@@ -18,6 +18,9 @@
 //!   * #7460  a closure writing a field of a captured record, `var` and `val`.
 //!   * #7152  `return` nested in a lambda's `if`/`else` returns the lambda's
 //!            own result type.
+//!   * #8471  a capturing lambda through the `Std.Iter` functions.
+//!   * #7679  a generic union constructor in a returned lambda's `if`/`else`
+//!            takes the function's declared result type.
 //!   * #7219  a `Unit`-returning function value stored in a field and passed
 //!            to a parameter of the same function type.
 //!
@@ -31,6 +34,7 @@ package Lyric.LambdaGapsBatchSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.Iter
 import Std.Testing
 
 // ─── #8345 ──────────────────────────────────────────────────────────────────
@@ -284,4 +288,99 @@ test "a Unit-returning function value stored in a field and passed on" {
   callWith(h.start, 3)
   assertEqualInt(seen.count, 3, "called three times")
   assertEqualInt(seen[2], 3, "the field's value is the same function")
+}
+
+// ─── #8471 ──────────────────────────────────────────────────────────────────
+func keepAbove(k: in Int, xs: in slice[Int]): slice[Int] {
+  filter(xs, { u -> u > k })
+}
+
+func addAll(k: in Int, xs: in slice[Int]): slice[Int] {
+  map(xs, { u: Int -> u + k })
+}
+
+func weighted(k: in Int, xs: in slice[Int]): Int {
+  fold(xs, 0, { a, b -> a + b * k })
+}
+
+test "a capturing lambda passed to the Std.Iter functions" {
+  val z = 3
+  val xs: slice[Int] = [1, 5, 9]
+  assertEqualInt(keepAbove(z, xs).length, 2, "filter")
+  assertEqualInt(addAll(z, xs)[2], 12, "map")
+  assertEqualInt(weighted(2, xs), 30, "fold")
+  assertEqualInt(count(xs, { u -> u > z }), 2, "count over a captured local")
+  assertTrue(any(xs, { u -> u == z + 2 }), "any")
+  assertFalse(all(xs, { u -> u > z }), "all")
+}
+
+// ─── #7679 ──────────────────────────────────────────────────────────────────
+record ChunkSrc {
+  chunks: List[slice[Byte]]
+  var next: Int
+}
+
+func chunkReader(src: in ChunkSrc): () -> Result[Option[slice[Byte]], String] {
+  { ->
+    if src.next >= src.chunks.count {
+      Ok(value = None)
+    } else {
+      val chunk = src.chunks[src.next]
+      src.next = src.next + 1
+      Ok(value = Some(value = chunk))
+    }
+  }
+}
+
+func chunkReaderReturn(src: in ChunkSrc): () -> Result[Option[slice[Byte]], String] {
+  return { ->
+    if src.next >= src.chunks.count {
+      Ok(value = None)
+    } else {
+      src.next = src.next + 1
+      Ok(value = Some(value = src.chunks[src.next - 1]))
+    }
+  }
+}
+
+func pullChunk(f: in () -> Result[Option[slice[Byte]], String]): String {
+  match f() {
+    case Ok(Some(b)) -> "some " + toString(b.length)
+    case Ok(None) -> "none"
+    case Err(e) -> "err " + e
+  }
+}
+
+func oneChunk(): ChunkSrc {
+  val cs: List[slice[Byte]] = newList()
+  val b: slice[Byte] = [1u8, 2u8]
+  cs.add(b)
+  ChunkSrc(chunks = cs, next = 0)
+}
+
+test "a returned lambda's if/else builds the declared Result instantiation" {
+  val s = oneChunk()
+  assertEqual(pullChunk(chunkReader(s)), "some 2", "first pull")
+  assertEqual(pullChunk(chunkReader(s)), "none", "second pull")
+}
+
+test "an explicitly returned lambda builds the declared Result instantiation" {
+  val s = oneChunk()
+  assertEqual(pullChunk(chunkReaderReturn(s)), "some 2", "first pull")
+  assertEqual(pullChunk(chunkReaderReturn(s)), "none", "second pull")
+}
+
+test "the same lambda passed directly as an argument" {
+  var n = 0
+  assertEqual(
+    pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }),
+    "some 1",
+    "direct some"
+  )
+  n = 1
+  assertEqual(
+    pullChunk({ -> if n > 0 { Ok(value = None) } else { Ok(value = Some(value = [7u8])) } }),
+    "none",
+    "direct none"
+  )
 }
