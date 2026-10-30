@@ -1309,9 +1309,24 @@ func addDiagnosticOnce(diag: in List[Diagnostic], d: in Diagnostic): Unit {
 // `extern package` path and a package known only by extern-block members are
 // provided, and so is the standard library, which the toolchain supplies
 // whether or not a dependency or the caller loaded its sources.
-func importedPackageMissing(tbl: in SymbolTable, pkg: in String): Bool {
-  not pkg.startsWith("Std.") and pkg != "Std" and symTableScopeAllows(tbl, pkg) and
-    not (symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg) or symTableIsExternPathPackage(tbl, pkg))
+func importedPackageMissing(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  pkg: in String,
+  name: in String,
+): Bool {
+  if pkg.startsWith("Std.") or pkg == "Std" or not symTableScopeAllows(tbl, pkg) {
+    return false
+  }
+  if symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg) or symTableIsExternPathPackage(tbl, pkg) {
+    return false
+  }
+  for c in gatherOverloadCandidates(sigs, byNameSigKey(name)) {
+    if pkgMatchesQualifier(c.originPackage, pkg) {
+      return false
+    }
+  }
+  true
 }
 
 // #7495: `pkgSegs` spells a package-qualified reference's qualifier
@@ -6719,7 +6734,7 @@ func resolveExprPath(
       }
       case None -> ()
     }
-    if importedPackageMissing(tbl, pkg) {
+    if importedPackageMissing(tbl, sigs, pkg, name) {
       diag.add(
         errorDiagnostic(
           "T0215",
@@ -21805,7 +21820,7 @@ func findDirectSigPick(
         // A qualifier naming a package the file imports but no dependency
         // provides never falls back to a bare-name lookup: the qualified
         // reference reports the missing package instead (T0215, #7989).
-        if importedPackageMissing(tbl, wantPkg) {
+        if importedPackageMissing(tbl, sigs, wantPkg, name) {
           return None
         }
       }
