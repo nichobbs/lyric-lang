@@ -273,7 +273,7 @@ Lyric.Verifier/
 | `Double`                  | SMT-LIB `Float64` (IEEE 754 binary64)        | literals are `((_ to_fp 11 53) RNE d)`, `NaN` and the infinities `(_ NaN 11 53)`, `(_ +oo 11 53)`, `(_ -oo 11 53)`; `+ - * /` are `fp.add`/`fp.sub`/`fp.mul`/`fp.div` rounding to nearest-even, `<`, `<=`, `>`, `>=`, `==` are `fp.lt`/`fp.leq`/`fp.gt`/`fp.geq`/`fp.eq` (`NaN != NaN`), so `x == x` and `x + 1.0 > x` are refuted; the trivial discharger never closes a float comparison by reflexivity. `%` has no faithful translation (`fp.rem` is the IEEE remainder, not the truncating one) and fails closed (`V0033`) (#8141, #7883) |
 | `Float`                   | none: the goal fails closed (`V0033`)        | `Float` is 64-bit on dotnet and native and 32-bit on the JVM, so no one sort is faithful on every target; use `Double` in a proved function (#8141) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
-| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read, or the result of a call to one of the record's own methods, is instantiated at the receiver's type arguments (#8356: the call is an uninterpreted application of that sort; the method's contract and `@pure` body are not applied at a call on a record-body method); a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
+| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read, or the result of a call to one of the record's own methods, is instantiated at the receiver's type arguments (#8356: a call of a record-body method is applied by the method's contract and, if `@pure`, its body, with the record's type parameters instantiated at the receiver's); a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
@@ -532,9 +532,14 @@ introduces — a call result, a havocked variable, an unmodelled
 expression — has a name of its own, with a `!` no Lyric identifier
 contains (#8101).
 
-An argument passed to an `out`/`inout` parameter holds a new, unknown
-value after the call; in the callee's `ensures:` the parameter is its
-value after the call, a symbol of its own, and `old(p)` the argument.
+An argument passed to an `out`/`inout` parameter holds a new value after the
+call; in the callee's `ensures:` the parameter is its value after the call,
+a symbol of its own, and `old(p)` the argument. Where the argument is just a
+variable's name, and that call alone changes the variable in the expression,
+the variable takes that symbol, so the callee's `ensures:` about the
+parameter (`x == old(x) + 1`) reach the caller (#8111). Any other argument (a
+field, an element) or a variable also changed by another call in the same
+expression takes an unrelated new value.
 A write to a record field or element fails closed (`V0026`): a record is
 a reference, and the verifier has no heap to follow its aliases.
 
@@ -833,10 +838,21 @@ which of several the type checker binds is not a stated rule — and keep the
 first of two same-named fields or types; the build's mode check, which
 `lyric prove` runs first, sees the merged package.
 
-Known limitations, tracked separately: no heap model, and a method's
-contract not used at its calls (#8110); a callee's `ensures:` about an
-`out`/`inout` parameter not linked back to the argument (#8111);
-precision and range gaps (#8103).
+A generic callee is applied at the type arguments its arguments fix: each
+parameter's declared sort is matched with the sort of the argument it
+receives, the callee's parameter and result sorts and its contract are
+instantiated, and each instance is its own uninterpreted function. A call
+that leaves a type parameter open (one no argument mentions) fails closed
+(`V0033`) (#8631). A method declared in a record body is a callee when it takes
+a `self` receiver and no other method of the record has its name: its
+`requires:` are the caller's obligation, its `ensures:` and, for a `@pure`
+method, its body are applied at a call, with the record's type parameters
+read off the receiver's sort (#8356). A generic record or union is a value
+type (so a `@pure` call over it is unfolded) when its type arguments are.
+
+Known limitations, tracked separately: no heap model; a protected-type
+member's contract not used at its calls (#8110); precision and range gaps
+(#8103); generic aliases of `Result`/`Option` (#8631).
 
 An index read `xs[i]` on an array, a slice or a `String` carries the
 obligation `0 <= i < length`, the runtime bounds check; the length is one
