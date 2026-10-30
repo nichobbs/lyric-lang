@@ -1,4 +1,4 @@
-//! theme.l - Ui.Native.Theme: the design tokens of the native host (docs/65 §13.10, docs/67 G10).
+//! theme.l - Ui.Native.Theme: the design tokens of the native host (docs/65 §13.9, docs/67 G10).
 //!
 //! The same tokens `runtime/ui.css` defines for the web host, as plain data so the layout engine
 //! and the painter agree on them without either importing the other.  Colours are straight RGBA
