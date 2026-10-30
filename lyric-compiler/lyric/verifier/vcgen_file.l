@@ -46,7 +46,7 @@ func withSiblingTypes(file: in SourceFile, typeItems: in List[Item]): SourceFile
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

@@ -38082,7 +38082,7 @@ pub func reifyGenericOpaquesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNa
     }
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -39484,7 +39484,7 @@ pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
   }
 
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -42668,7 +42668,7 @@ pub func synthesizeBareFuncRefThunksMsil(file: in SourceFile): SourceFile {
     k = k + 1
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -43081,7 +43081,7 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   }
 
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

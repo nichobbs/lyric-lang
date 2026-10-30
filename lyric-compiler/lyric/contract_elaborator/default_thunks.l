@@ -148,7 +148,7 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
     items.add(a)
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

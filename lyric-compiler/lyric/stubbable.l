@@ -402,7 +402,7 @@ pub func stubbableRewriteFile(file: in SourceFile): SourceFile {
   val newItems = synthesiseItems(file.items)
   val stubsAdded = newItems.count > file.items.count
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = buildImports(file, stubsAdded),

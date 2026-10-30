@@ -17,6 +17,7 @@ import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser as Parser
+import Lyric.Parser.{Item, IFunc, IRecord, modulePathJoin}
 import Lyric.PackageMerge as PM
 import Std.Errors
 import Std.File as File
@@ -469,4 +470,84 @@ test "a directory entry leaves out a sub-package entry nested in it" {
     case Ok(_) -> ()
     case Err(_) -> ()
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// docs/70 §4.1: a package assembled from its separately parsed files has the
+// diagnostics, items and header the merge gives the same files.
+// ─────────────────────────────────────────────────────────────────────────────
+func assembleSummary(r: in PM.PackageAssembly): String {
+  val parts: List[String] = newList()
+  for d in r.diagnostics {
+    parts.add(d.path + ":" + d.diag.code + ":" + toString(d.diag.span.startPos.line))
+  }
+  Str.joinList(",", parts)
+}
+
+func itemNames(items: in List[Item]): String {
+  val names: List[String] = newList()
+  for it in items {
+    match it.kind {
+      case IFunc(fd) -> names.add(fd.name)
+      case IRecord(rd) -> names.add(rd.name)
+      case _ -> names.add("?")
+    }
+  }
+  Str.joinList(",", names)
+}
+
+// The assembly of `srcs` agrees with their merge: the same diagnostics and,
+// when those leave the package usable, the same items, imports, file-level
+// annotations and module-doc lines.
+func assertAssemblyMatchesMerge(srcs: in List[String], paths: in List[String], active: in List[String], declared: in List[String], target: in String, what: in String): Unit {
+  val merged = PM.mergePackageFiles("P", srcs, paths, active, declared, target, true)
+  val assembled = PM.assemblePackageFiles("P", srcs, paths, active, declared, target)
+  assertEqual(assembleSummary(assembled), diagSummary(merged), what + ": diagnostics")
+  if not PM.mergeHasErrors(merged) {
+    val mf = Parser.parse(merged.source).file
+    assertEqual(itemNames(assembled.file.items), itemNames(mf.items), what + ": items")
+    assertEqualInt(assembled.file.imports.count, mf.imports.count, what + ": imports")
+    assertEqualInt(assembled.file.fileAnnotations.count, mf.fileAnnotations.count, what + ": file-level annotations")
+    assertEqualInt(assembled.file.files.count, srcs.count, what + ": one header per file")
+  }
+}
+
+test "an assembled package matches the merge of the same files" {
+  val a = "//! A doc\n@runtime_checked\npackage P\n\nimport Std.Core\nimport Std.String as Str\n\npub func a(): Int { 1 }\n"
+  val b = "@runtime_checked\npackage P\nimport Std.Core\n\npub func b(): Int { 2 }\nrecord R {\n  n: Int\n}\n"
+  assertAssemblyMatchesMerge(two(a, b), two("a.l", "b.l"), none(), none(), "dotnet", "two files")
+  val declared: List[String] = newList()
+  declared.add("extra")
+  val gated = "@cfg(feature = \"extra\")\n@proof_required\npackage P\nimport Std.Math\n\npub func pick(): Int { 999 }\n"
+  assertAssemblyMatchesMerge(two(a, gated), two("a.l", "b.l"), none(), declared, "dotnet", "a gated-off file")
+  assertAssemblyMatchesMerge(two(a, gated), two("a.l", "b.l"), declared, declared, "dotnet", "a gated-on file")
+  val levels = "@proof_required\npackage P\npub func c(): Int { 3 }\n"
+  assertAssemblyMatchesMerge(two(a, levels), two("a.l", "b.l"), none(), none(), "dotnet", "B0014")
+  assertAssemblyMatchesMerge(two(a, "package Q\npub func c(): Int { 3 }\n"), two("a.l", "b.l"), none(), none(), "dotnet", "B0013")
+  assertAssemblyMatchesMerge(two(a, "// stray\n@axiom\n"), two("a.l", "b.l"), none(), none(), "dotnet", "P0020")
+  val aliasA = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
+  val aliasB = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
+  assertAssemblyMatchesMerge(two(aliasA, aliasB), two("a.l", "b.l"), none(), none(), "dotnet", "B0012")
+  assertAssemblyMatchesMerge(two("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n"), two("a.l", "b.l"), none(), none(), "dotnet", "unit mode")
+  assertAssemblyMatchesMerge(two(a, "package P\npub func broken( {\n"), two("a.l", "b.l"), none(), none(), "dotnet", "a file that does not parse")
+}
+
+test "each file of an assembled package keeps its own header, lines and offsets" {
+  val a = "package P\nimport Std.String as Str\n\npub func a(): Int { 1 }\n"
+  val b = "package P\nimport Std.Math\n\n\npub func b(): Int { 2 }\n"
+  val r = PM.assemblePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), none(), "dotnet")
+  assertEqual(assembleSummary(r), "", "no diagnostics")
+  assertEqualInt(r.file.items.count, 2, "both items")
+  val ia = r.file.items[0].span.startPos
+  val ib = r.file.items[1].span.startPos
+  assertEqualInt(ia.fileId, 0, "a's item is file 0")
+  assertEqualInt(ib.fileId, 1, "b's item is file 1")
+  assertEqualInt(ia.line, 4, "a's item on a.l line 4")
+  assertEqualInt(ib.line, 5, "b's item on b.l line 5")
+  assertTrue(ib.offset >= a.length, "b's offsets follow a's")
+  assertEqualInt(r.file.files[1].offsetBase, a.length + 1, "b's base")
+  assertEqual(r.file.files[0].path, "a.l", "file 0's path")
+  assertEqualInt(r.file.files[0].imports.count, 1, "a.l's own imports")
+  assertEqual(modulePathJoin(r.file.files[1].imports[0].path.segments), "Std.Math", "b.l's own import")
+  assertEqualInt(r.file.imports.count, 2, "the union of both")
 }

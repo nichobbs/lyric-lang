@@ -4311,13 +4311,27 @@ pub func parseFile(source: in String, fileId: in Int, offsetBase: in Int): Parse
     st.pos = st.pos + 1
   }
   cstFinish(st)
+  val fileSpan = joinSpans(startSpan, endSpan)
+  val files: List[FileHeader] = newList()
+  files.add(
+    FileHeader(
+      path = "",
+      moduleDoc = moduleDoc,
+      fileAnnotations = fileAnnotations,
+      packageDecl = packageDecl,
+      imports = imports,
+      span = fileSpan,
+      offsetBase = offsetBase
+    )
+  )
   val file = SourceFile(
     moduleDoc = moduleDoc,
     fileAnnotations = fileAnnotations,
     packageDecl = packageDecl,
     imports = imports,
     items = items,
-    span = joinSpans(startSpan, endSpan)
+    span = fileSpan,
+    files = files
   )
   val cst = buildGreenTree(st.cstEvents, st.tokens)
   // The text the spans index (a CRLF file's offsets count no `\r`).

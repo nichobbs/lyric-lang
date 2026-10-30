@@ -2858,7 +2858,7 @@ func canonicalizeFileUnitAliases(file: in SourceFile): SourceFile {
         i = i + 1
       }
       SourceFile(
-        moduleDoc = file.moduleDoc,
+        moduleDoc = file.moduleDoc, files = file.files,
         fileAnnotations = file.fileAnnotations,
         packageDecl = file.packageDecl,
         imports = file.imports,
@@ -3642,7 +3642,7 @@ pub func elaborateFileWithTypes(
     i = i + 1
   }
   SourceFile(
-    moduleDoc = canonFile.moduleDoc,
+    moduleDoc = canonFile.moduleDoc, files = canonFile.files,
     fileAnnotations = canonFile.fileAnnotations,
     packageDecl = canonFile.packageDecl,
     imports = canonFile.imports,

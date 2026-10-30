@@ -1156,6 +1156,23 @@ pub record PackageDecl {
   span: Span
 }
 
+/// One file of a package as written: its own header (docs/70 §4.1).  Its
+/// items are the package's items whose span names this file.
+pub record FileHeader {
+  path: String
+  moduleDoc: List[DocComment]
+  fileAnnotations: List[Annotation]
+  packageDecl: PackageDecl
+  imports: List[ImportDecl]
+  span: Span
+  /// The package offset this file's offsets start at (see
+  /// `Lyric.Lexer.Position`).
+  offsetBase: Int
+}
+
+/// A package: its items and the header every file shares.  `imports` is
+/// the union of the files' imports; `files` keeps each file's own, in the
+/// order `fileId` numbers them.
 pub record SourceFile {
   moduleDoc: List[DocComment]
   fileAnnotations: List[Annotation]
@@ -1163,6 +1180,7 @@ pub record SourceFile {
   imports: List[ImportDecl]
   items: List[Item]
   span: Span
+  files: List[FileHeader]
 }
 
 pub record ParseResult {

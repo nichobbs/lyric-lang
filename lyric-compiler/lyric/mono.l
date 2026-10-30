@@ -5177,7 +5177,7 @@ pub func desugarCheckedFile(
     i = i + 1
   }
   val desugared = SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -10577,7 +10577,7 @@ pub func monoFileWithLambdaTypes(
   }
 
   val newFile = SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

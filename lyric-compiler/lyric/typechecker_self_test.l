@@ -8718,6 +8718,7 @@ test "old() in a raises: clause type is T0080 (#7756)" {
         )
         val file = SourceFile(
           moduleDoc = pf.moduleDoc,
+          files = pf.files,
           fileAnnotations = pf.fileAnnotations,
           packageDecl = pf.packageDecl,
           imports = pf.imports,

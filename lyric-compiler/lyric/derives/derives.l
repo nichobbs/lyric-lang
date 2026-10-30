@@ -1859,7 +1859,7 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
     newImports.add(stdJsonImportDecl())
   }
   SourceFile(
-    moduleDoc = file.moduleDoc,
+    moduleDoc = file.moduleDoc, files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = newImports,
