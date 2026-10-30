@@ -71,3 +71,17 @@ test("lineCount counts a trailing newline as a new line", () => {
   assert.equal(lineCount("a\nb"), 2);
   assert.equal(lineCount("a\n"), 2);
 });
+
+test("Shift+Tab over lines, starting inside the indentation, keeps the selection on the text", () => {
+  const v = "  a\n  b";
+  const r = run(v, outdent(v, 1, 7, 2));
+  assert.equal(r.value, "a\nb");
+  assert.deepEqual(r.sel, [0, 3]);
+});
+
+test("Shift+Tab skips lines with nothing to remove and counts the rest", () => {
+  const v = "a\n  b\n    c";
+  const r = run(v, outdent(v, 0, v.length, 2));
+  assert.equal(r.value, "a\nb\n  c");
+  assert.deepEqual(r.sel, [0, v.length - 4]);
+});

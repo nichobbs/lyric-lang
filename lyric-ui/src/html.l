@@ -353,6 +353,7 @@ func codeEditor(props: in List[Prop], id: in String, controlAttrs: in String): S
     inputAttrs(props) +
     controlAttrs +
     ">" +
+    "\n" +
     escapeHtml(value) +
     "</textarea></div></div>"
 }

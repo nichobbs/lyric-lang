@@ -119,7 +119,10 @@ test "a code editor renders the runtime's wrapper, gutter and textarea" {
     contains(rendered, "<textarea class=\"lui-code-input\" id=\"lui-s1\" spellcheck=\"false\" wrap=\"off\""),
     "textarea: " + rendered
   )
-  assertTrue(endsWith(rendered, ">a &lt;b&gt;\nc</textarea></div></div>"), "text is escaped: " + rendered)
+  assertTrue(
+    endsWith(rendered, ">\na &lt;b&gt;\nc</textarea></div></div>"),
+    "text is escaped, after the newline a parser drops: " + rendered
+  )
 }
 
 test "a code editor without line numbers is marked, and a read-only one is read-only" {
