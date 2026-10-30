@@ -209,6 +209,8 @@ test "a Bool is exactly 1, 0, true or false in any case (#7435)" {
     "error: config field C.v (env var LYRIC_CONFIG_CFGBOOL_C_V) is not a valid Bool (G0003)\n",
     "maybe: stderr"
   )
+  val spaced = runWith1(src, "LYRIC_CONFIG_CFGBOOL_C_V", " true")
+  assertEqualInt(spaced.exitCode, 78, "a Bool is not trimmed, as on the JVM: exit code")
   val ok = runWith1(src, "LYRIC_CONFIG_CFGBOOL_C_V", "True")
   assertEqualInt(ok.exitCode, 0, "True: exit code; stderr: " + ok.stderr)
   assertEqual(ok.stdout, "true\n", "True")

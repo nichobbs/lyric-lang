@@ -26,9 +26,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#if !defined(_WIN32)
 #include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #if !defined(_WIN32)
 /* Internal seam helper (no public header decl); driven directly here to
@@ -1245,6 +1247,7 @@ static void test_tls_read_timeout(void) {
 }
 
 
+#if !defined(_WIN32)
 /* ── Peer that closes early must not kill the process (issue #8460) ───────
  *
  * The peer connects and goes away with an RST (SO_LINGER 0).  The server
@@ -1328,6 +1331,7 @@ static void test_tls_write_after_peer_close(void) {
     lyric_sock_close(listen_fd);
     lyric_tls_ctx_free(client);
 }
+#endif /* !_WIN32: Windows has no SIGPIPE */
 
 int main(void) {
     test_plain_roundtrip();
@@ -1375,8 +1379,10 @@ int main(void) {
     test_validate_identity_pem();
     test_last_error_string();
     test_alpn_string();
+#if !defined(_WIN32)
     test_plain_write_after_peer_close();
     test_tls_write_after_peer_close();
+#endif
     test_tls_bytes_roundtrip();
     test_tls_handshake_timeout();
     test_tls_read_timeout();
