@@ -2870,7 +2870,12 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
 // Both operands must already be on the stack; both are consumed.  `isUnsigned`
 // (#6748) mirrors `lowerCmp`'s parameter of the same name.
 func lowerCmpFail(
-  ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String, isUnsigned: in Bool
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  op: in BinOp,
+  lhsTy: in JvmType,
+  failLabel: in String,
+  isUnsigned: in Bool,
 ): Unit {
   match lhsTy {
     case JLong -> {

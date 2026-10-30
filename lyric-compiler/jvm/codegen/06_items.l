@@ -8318,7 +8318,9 @@ func emitKeyEqHashed(insns: in List[LInsn], owner: in String, cls: in String, is
   insns.add(LAload(slot = 1))
   insns.add(LCheckcast(className = cls))
   insns.add(LAload(slot = 6))
-  insns.add(LInvokevirtual(owner = cls, name = if isMap { "containsKey" } else { "contains" }, params = objPs, ret = JBoolean))
+  insns.add(
+    LInvokevirtual(owner = cls, name = if isMap { "containsKey" } else { "contains" }, params = objPs, ret = JBoolean)
+  )
   insns.add(LIfne(label = tag + "_found"))
   insns.add(LIconst(v = 0))
   insns.add(LIstore(slot = 5))
