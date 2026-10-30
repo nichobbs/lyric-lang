@@ -10566,10 +10566,13 @@ test "a ULong converts to Long, Double and Float through an overflow site (#8450
       }
     }
   }
-  val noSite = parseCheck(negSrc("func f(u: in UInt, l: in Long): Unit {\n  val a = u.toLong()\n  val b = l.toDouble()\n}\n"))
+  val noSite = parseCheck(
+    negSrc("func f(u: in UInt, l: in Long): Unit {\n  val a = u.toLong()\n  val b = l.toDouble()\n}\n")
+  )
   assertEqualInt(noSite.symbols.overflowSites.count, 0, "UInt and Long conversions record no ulong site")
 }
 
+test "UInt and Byte convert by value, ULong truncates with toInt (#7901)" {
   val ok = parseCheck(
     negSrc(
       "func f(u: in UInt, w: in ULong, b: in Byte): Unit {\n  val a = u.toLong()\n  val c = u.toDouble()\n  val d = w.toInt()\n  val e = b.toLong()\n}\n"

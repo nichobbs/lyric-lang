@@ -147,7 +147,12 @@ func ulongConversion(e: in Expr, name: in String): Expr {
   }
   val maxLong = typedIntLit("Long", 9223372036854775807i64, sp)
   val one = typedIntLit("Long", 1i64, sp)
-  val halved = method1(method1(method1(s, "shr", typedIntLit("Int", 1i64, sp), sp), "and", maxLong, sp), "or", method1(s, "and", one, sp), sp)
+  val halved = method1(
+    method1(method1(s, "shr", typedIntLit("Int", 1i64, sp), sp), "and", maxLong, sp),
+    "or",
+    method1(s, "and", one, sp),
+    sp
+  )
   val direct = method0(s, name, sp)
   val viaHalf = bin(BMul, method0(halved, name, sp), two, sp)
   val thenStmts: List[Statement] = newList()

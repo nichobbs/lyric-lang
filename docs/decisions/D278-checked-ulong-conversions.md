@@ -30,8 +30,7 @@ signed or floating-point value.
     non-negative, and otherwise convert `((s shr 1) and Long.MaxValue) or (s and 1)`
     (the value halved with its low bit folded in, which keeps the single rounding
     exact) and double the result.
-  The panic message and the results are therefore identical on MSIL, the JVM and
-  native, with no backend change and no dependency on `toNat` (which the JVM lacks
+  The panic message and the results are therefore identical on MSIL and the JVM, with no backend change (`--target native` does not support the `ULong` type at all yet, so it has no surface for these conversions; the lowering is target-independent and applies when it does) and no dependency on `toNat` (which the JVM lacks
   on a `ULong` receiver).
 - The conversions the lowering itself emits (zero-width spans) are plain `Long`
   conversions on a `ULong`-typed local; the checker neither records nor rejects them.
@@ -40,5 +39,5 @@ signed or floating-point value.
 ## Consequences
 
 `docs/01` §4.1 and the book's quick reference describe the three conversions.
-Tests: `lyric-compiler/lyric/conv_methods_self_test.l` (MSIL, JVM and native) and
+Tests: `lyric-compiler/lyric/conv_methods_self_test.l` (MSIL and JVM) and
 `typechecker_self_test.l`.
