@@ -4499,6 +4499,15 @@ func packageQualifiedMemberSegs(ctx: in Ctx, e: in Expr): List[String] {
   }
 }
 
+/// `Empty.tagged(...)` with a single-segment receiver naming a nullary union
+/// case: the case VALUE (#8478), see `isNullaryUnionCaseValue`.
+func isNullaryCaseReceiver(ctx: in Ctx, receiver: in Expr, method: in String, arity: in Int): Bool {
+  match receiver.kind {
+    case EPath(p) -> p.segments.count == 1 and not ctx.varTypes.containsKey(p.segments[0]) and isNullaryUnionCaseValue(ctx, p.segments[0], method, arity)
+    case _ -> false
+  }
+}
+
 /// True when `head` names a nullary case of a registered union and `head.m(...)`
 /// is not the call of a function registered under that dotted name: the
 /// receiver is then the case VALUE (`Empty.tagged("n=")`, #8478), as on
@@ -5331,7 +5340,7 @@ func lowerCallEx(
       }
     }
     case EMember(receiver, memberName) -> {
-      if not isPackagePathExpr(ctx, receiver) {
+      if not isPackagePathExpr(ctx, receiver) or isNullaryCaseReceiver(ctx, receiver, memberName, args.count) {
         // `isPackagePathExpr` only recognizes a flat `EPath` receiver, so a
         // multi-segment qualified callee (`Pkg.Sub.Thing(...)`) that
         // `Lyric.AliasRewriter` left uncollapsed — because a local/param in
