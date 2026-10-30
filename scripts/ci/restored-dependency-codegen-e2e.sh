@@ -304,4 +304,4 @@ mksib fnref FrLib FrApp
 runsib fnref "3"
 
 [ "$fail" = 0 ] || exit 1
-echo "restored-dependency codegen: erased member access, protected types, branch joins, \`?\` in generics, function values, on: ${targets[*]}"
+echo "restored-dependency codegen: erased member access, branch joins, \`?\` in generics, function values, on: ${targets[*]}"

@@ -2657,6 +2657,9 @@ pub func lowerForeignPropagate(
               sites.widenings,
               sites.typeArgCallees
             )
+            // The lowering's own diagnostics (F0020, F0045) are properties of the
+            // generic's body, so the declaring package's build already reported
+            // them; a specialisation cannot newly fail them.
             if res.diagnostics.count == 0 and res.file.items.count == 1 {
               changed = true
               items.add(res.file.items[0])

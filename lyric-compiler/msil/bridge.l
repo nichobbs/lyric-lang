@@ -119,10 +119,9 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
   }
 }
 
-// Make `arities` (one package's `MiddleEndOptions.methodCallAritiesOut`) the
-// method-call arities the next `codegenMPackage` call dispatches by.  They
-// are keyed by source spans, which only mean something within the package
-// they were recorded for, so each package's codegen sees its own (#7828).
+// Make `classes` (one package's `MiddleEndOptions.memberRecvClassesOut`) the
+// receiver classes the next `codegenMPackage` call narrows erased receivers
+// with; keyed by source spans like the arities below (#8358).
 func useMemberRecvClassesMsil(cctx: in CodegenCtx, classes: in Map[String, String]): Unit {
   for k in mapKeys(cctx.memberRecvClasses) {
     cctx.memberRecvClasses.remove(k)
@@ -135,6 +134,10 @@ func useMemberRecvClassesMsil(cctx: in CodegenCtx, classes: in Map[String, Strin
   }
 }
 
+// Make `arities` (one package's `MiddleEndOptions.methodCallAritiesOut`) the
+// method-call arities the next `codegenMPackage` call dispatches by.  They
+// are keyed by source spans, which only mean something within the package
+// they were recorded for, so each package's codegen sees its own (#7828).
 func useMethodCallAritiesMsil(cctx: in CodegenCtx, arities: in Map[String, Int]): Unit {
   for k in mapKeys(cctx.methodCallArities) {
     cctx.methodCallArities.remove(k)
