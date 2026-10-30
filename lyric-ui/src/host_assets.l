@@ -12,7 +12,7 @@ package Ui.Host.Assets
 pub val assetVersion: String = "dd9265e806072be5"
 
 /// dist/main.js
-pub val runtimeMainJs: String = r#"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
+pub val runtimeMainJs: String = r#####"// Lyric UI host runtime: connection to the session (docs/65 §9.3, §10.1).
 //
 // The page shell (served by `Ui.Host.Web`) contains
 //   <div id="lyric-ui" data-ws="ws://host:port/_ui" data-sid="...">first view</div>
@@ -181,10 +181,10 @@ const mount = document.getElementById("lyric-ui");
 if (mount && mount.dataset.ws) {
     new Host(mount, mount.dataset.ws, mount.dataset.sid ?? "").connect();
 }
-"#
+"#####
 
 /// dist/tree.js
-pub val runtimeTreeJs: String = r#"// Lyric UI host runtime: the mirror tree and patch semantics.
+pub val runtimeTreeJs: String = r#####"// Lyric UI host runtime: the mirror tree and patch semantics.
 //
 // This module has no DOM dependency. It keeps a mirror of the session's
 // rendered tree and applies protocol patches to it (docs/65 §9.2). The DOM
@@ -353,10 +353,10 @@ export function toWire(n) {
     }
     return w;
 }
-"#
+"#####
 
 /// dist/render.js
-pub val runtimeRenderJs: String = r#"// Lyric UI host runtime: DOM rendering of the semantic widget set
+pub val runtimeRenderJs: String = r#####"// Lyric UI host runtime: DOM rendering of the semantic widget set
 // (docs/65 §7.1). Implements `TreeObserver`, so every mirror change made by
 // tree.ts is reflected in the DOM.
 //
@@ -952,10 +952,10 @@ function gridNumber(node, name, fallback) {
     const n = Number(node.props[name]);
     return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
-"#
+"#####
 
 /// dist/toasts.js
-pub val runtimeToastsJs: String = r#"// Toasts carried across a navigation the session asks for (docs/65 §6.3).
+pub val runtimeToastsJs: String = r#####"// Toasts carried across a navigation the session asks for (docs/65 §6.3).
 //
 // A screen commonly notifies and then navigates in one step ("Customer
 // saved", then the list page). The navigation replaces the page, so the
@@ -999,10 +999,10 @@ export function takeStashedToasts(store) {
     }
     return parsed.filter((t) => typeof t === "object" && t !== null && typeof t.m === "string" && typeof t.level === "string");
 }
-"#
+"#####
 
 /// dist/editor.js
-pub val runtimeEditorJs: String = r#"// The code editor widget (docs/65 §13.10): a `textArea` with `variant="code"`.
+pub val runtimeEditorJs: String = r#####"// The code editor widget (docs/65 §13.10): a `textArea` with `variant="code"`.
 //
 // A real <textarea> sits over a highlighted copy of its text, with the text
 // itself made transparent, so selection, the caret, IME composition, undo and
@@ -1178,10 +1178,10 @@ export class CodeEditor {
         this.refresh();
     }
 }
-"#
+"#####
 
 /// dist/editing.js
-pub val runtimeEditingJs: String = r#"// Pure text edits for the code editor (docs/65 §13.10): what Tab, Shift+Tab
+pub val runtimeEditingJs: String = r#####"// Pure text edits for the code editor (docs/65 §13.10): what Tab, Shift+Tab
 // and Enter do to a value and a selection. Each function returns an `Edit`
 // that replaces `[start, end)` of the value with `text` and then selects
 // `[selStart, selEnd)` of the result, so the DOM layer can apply it through
@@ -1291,10 +1291,10 @@ export function lineCount(value) {
     }
     return n;
 }
-"#
+"#####
 
 /// dist/highlight.js
-pub val runtimeHighlightJs: String = r#"// Syntax highlighting for the code editor (docs/65 §13.10): a tokenizer per
+pub val runtimeHighlightJs: String = r#####"// Syntax highlighting for the code editor (docs/65 §13.10): a tokenizer per
 // language, kept small and dependency-free. A token's `type` is a CSS class
 // suffix (`lui-tok-<type>`); text that is none of these is `plain`.
 // Tokenizing is lossless: concatenating the tokens' text gives back the input.
@@ -1496,10 +1496,10 @@ export function tokenize(language, text) {
             return text.length === 0 ? [] : [{ type: "plain", text }];
     }
 }
-"#
+"#####
 
 /// ui.css
-pub val themeCss: String = r#"/* lyric-ui default theme (docs/65 §13.10). Design tokens are CSS custom
+pub val themeCss: String = r#####"/* lyric-ui default theme (docs/65 §13.10). Design tokens are CSS custom
    properties; override them on :root to theme an application. */
 :root {
   --lui-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -1626,4 +1626,5 @@ body { margin: 0; background: var(--lui-bg); color: var(--lui-text); font: 15px/
   .lui-tok-number, .lui-tok-literal { color: var(--lui-tok-number, #93c5fd); }
   .lui-tok-key { color: var(--lui-tok-key, #7dd3fc); }
 }
-"#
+"#####
+
