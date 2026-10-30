@@ -11841,6 +11841,44 @@ test "same-name methods with one parameter count are T0162 (#8085)" {
   assertEqualInt(countDiagCode(ok, "T0162"), 0, "different counts: " + diagCodesOf(ok))
 }
 
+// #8282: a call under explicit type arguments is checked against the
+// signature they instantiate; it used to reach codegen unchecked (T0120).
+test "an explicit type-argument call is checked against its signature (#8282)" {
+  val head = "package P\nrecord Box[T] { v: T }\nfunc firstOf[T](b: in Box[T], k: in Int): T { b.v }\n"
+  val tooMany = parseCheck(head + "func main(): Unit { val b = Box(v = 1); val _ = firstOf[Int](b, 1, 3) }\n")
+  assertEqualInt(countDiagCode(tooMany, "T0042"), 1, "too many: " + diagCodesOf(tooMany))
+  val wrongTy = parseCheck(head + "func main(): Unit { val b = Box(v = 1); val _ = firstOf[Int](b, \"s\") }\n")
+  assertEqualInt(countDiagCode(wrongTy, "T0043"), 1, "wrong type: " + diagCodesOf(wrongTy))
+  val wrongArg = parseCheck(head + "func main(): Unit { val b = Box(v = \"x\"); val _ = firstOf[Int](b, 1) }\n")
+  assertEqualInt(countDiagCode(wrongArg, "T0043"), 1, "type argument contradicts the box: " + diagCodesOf(wrongArg))
+  val ok = parseCheck(head + "func main(): Unit { val b = Box(v = 1); val _ = firstOf[Int](b, 1) }\n")
+  assertEqualInt(diagCount(ok), 0, "well-formed: " + diagCodesOf(ok))
+}
+
+// #7791: an impl of a generic interface is compared against the interface's
+// signatures with its type parameters replaced by the impl's arguments (it was
+// an unresolvable T0010), and is then reported as not yet supported by the code
+// generators (T0217) instead of failing in them.
+test "an impl of a generic interface is conformance-checked, then T0217 (#7791)" {
+  val head = "package P\ninterface Holder[T] { func get(self: in Self): T }\nrecord IntBox { v: Int }\n"
+  val good = parseCheck(head + "impl Holder[Int] for IntBox { func get(self: in IntBox): Int = self.v }\n")
+  assertEqualInt(countDiagCode(good, "T0010"), 0, "no T0010: " + diagCodesOf(good))
+  assertEqualInt(countDiagCode(good, "T0107"), 0, "conforms: " + diagCodesOf(good))
+  assertEqualInt(countDiagCode(good, "T0217"), 1, "unsupported: " + diagCodesOf(good))
+  val bad = parseCheck(head + "impl Holder[Int] for IntBox { func get(self: in IntBox): String = \"x\" }\n")
+  assertEqualInt(countDiagCode(bad, "T0107"), 1, "return mismatch: " + diagCodesOf(bad))
+  val arity = parseCheck(head + "impl Holder[Int, Int] for IntBox { func get(self: in IntBox): Int = self.v }\n")
+  assertEqualInt(countDiagCode(arity, "T0216"), 1, "argument count: " + diagCodesOf(arity))
+}
+
+// #7791: an impl method may rename the interface method's own type parameter.
+test "an impl method renames the interface method's type parameter (#7791)" {
+  val ok = parseCheck(
+    "package P\ninterface Echo { func id[U](self: in Self, x: in U): U }\nrecord R { n: Int }\nimpl Echo for R { func id[V](self: in R, x: in V): V = x }\n"
+  )
+  assertEqualInt(diagCount(ok), 0, "renamed: " + diagCodesOf(ok))
+}
+
 // #8241: a record method's own type parameter is erased, so one taken by
 // reference is T0214; by value, in a result or inside a collection it is fine.
 test "a by-reference parameter of a method-level type parameter is T0214 (#8241)" {

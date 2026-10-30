@@ -5469,10 +5469,15 @@ func lowerCallEx(
       // an ETypeApp — recover the type arguments from the index
       // expressions.
       var iname = ""
+      // The callee's dotted path, for a package-qualified generic function
+      // (`Core.unwrapOr[Int](...)`, #8282).
+      var qname = ""
       match ir.kind {
         case EPath(ip) -> {
           if ip.segments.count == 1 {
             iname = ip.segments[0]
+          } else if ip.segments.count > 1 {
+            qname = modulePathJoin(ip.segments)
           }
         }
         case _ -> {
@@ -5496,6 +5501,17 @@ func lowerCallEx(
           idxTes.add(exprAsTypeExpr(ix))
         }
         match tryLowerExplicitGenericCall(ctx, insns, iname, idxTes, args, line, wantTask, retWant) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
+      }
+      if qname.length > 0 and explicitGenericFnKey(ctx, qname, args.count).length > 0 {
+        val qTes: List[TypeExpr] = newList()
+        for ix in idxs {
+          qTes.add(exprAsTypeExpr(ix))
+        }
+        match tryLowerExplicitGenericCall(ctx, insns, qname, qTes, args, line, wantTask, retWant) {
           case Some(v) -> return v
           case None -> {
           }
@@ -21279,9 +21295,7 @@ func implTargetArgsAreParams(target: in TypeExpr, implParams: in List[GenericPar
         val pname = match implParams[i] { case GPType(n, _) -> n; case GPValue(_, _, _) -> return false }
         match args[i] {
           case TAType(ty) -> match ty.kind {
-            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname {
-              return false
-            }
+            case TRef(path) -> if path.segments.count != 1 or path.segments[0] != pname { return false }
             case _ -> return false
           }
           case TAValue(_) -> return false
