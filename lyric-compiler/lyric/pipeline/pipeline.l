@@ -1643,7 +1643,7 @@ pub func pipeCheckFront(
   // Component-wise arithmetic on homogeneous numeric records (D155), and
   // field-by-field `==` / `!=` on value records and records deriving
   // `Equals` (D164).
-  val recordLowered = lowerRecordSites(distinctLowered, tcRes.symbols)
+  val recordLowered = lowerShowSites(lowerRecordSites(distinctLowered, tcRes.symbols), tcRes.symbols)
   // `array[N, T]` (D167): bounds-checked indexing, `.length`, `.toSlice()`,
   // `for` over an array, copies on store and zero-filled declarations become
   // forms every backend lowers.  Before the overflow pass, which still finds
@@ -4731,7 +4731,35 @@ pub func pipeLowerFormatBuiltins(file: in SourceFile): SourceFile {
 /// bundling backend (JVM, native) otherwise links only when some bundled
 /// package imports it.
 pub func pipeUsesFormatBuiltin(file: in SourceFile): Bool {
-  anyExprInFile(file, { e: Expr -> isFormatCall(e) })
+  anyExprInFile(file, { e: Expr -> isFormatCall(e) or mayRenderStructure(e) })
+}
+
+/// True for an expression that may stringify a record, union, tuple or
+/// collection (D282): an interpolation, a `+` or `+=` (which concatenates when
+/// an operand is a `String`), a `println`/`print`/`toString` call or a
+/// `.toString()` call.  The rendering functions the type checker synthesizes
+/// for such a stringification call `Std.String.showSeq`, `showMap` and
+/// `showSet` and `Std.Collections`, but which operand types occur is known only
+/// after the check, after a bundling backend has chosen the packages it links.
+/// So these expressions are over-approximated to link `Std.String` too.
+func mayRenderStructure(e: in Expr): Bool {
+  match e.kind {
+    case EInterpolated(_) -> true
+    case EBinop(op, _, _) -> match op {
+      case BAdd -> true
+      case _ -> false
+    }
+    case EAssign(_, op, _) -> match op {
+      case AssPlus -> true
+      case _ -> false
+    }
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> p.segments.count == 1 and isStringifyingBuiltin(p.segments[0])
+      case EMember(_, name) -> name == "toString"
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 func isFormatCall(e: in Expr): Bool {
@@ -4838,6 +4866,59 @@ func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile 
     items.add(it)
   }
   for h in syms.covariantHelpers {
+    items.add(funcItem(h))
+  }
+  SourceFile(
+    moduleDoc = converted.moduleDoc,
+    fileAnnotations = converted.fileAnnotations,
+    packageDecl = converted.packageDecl,
+    imports = converted.imports,
+    items = items,
+    span = converted.span
+  )
+}
+
+/// `file` with each stringified operand of a structured type
+/// (`SymbolTable.showSites`, D282) passed through the function the checker
+/// synthesized to render it, which is added to the file.  The wrapping call has
+/// no source span: it is a `String`, and a span-keyed side table must never
+/// type it as the operand it wraps.
+pub func lowerShowSites(file: in SourceFile, syms: in SymbolTable): SourceFile {
+  if syms.showSites.count == 0 {
+    return file
+  }
+  val pending: Map[String, String] = newMap()
+  for k in mapKeys(syms.showSites) {
+    match mapGet(syms.showSites, k) {
+      case Some(helper) -> pending.add(k, helper)
+      case None -> ()
+    }
+  }
+  val wsp = noSourceSpan()
+  val converted = mapExprsInFile(
+    file,
+    { e: Expr ->
+      val key = recordCopySiteKey(e.span)
+      match mapGet(pending, key) {
+        case Some(helper) -> {
+          pending.remove(key)
+          val segs: List[String] = newList()
+          segs.add(helper)
+          val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = wsp)), span = wsp)
+          val args: List[CallArg] = newList()
+          args.add(CAPositional(expr = e))
+          args.add(CAPositional(expr = Expr(kind = ELiteral(lit = LInt(value = 0, suffix = I32, raw = "")), span = wsp)))
+          Expr(kind = ECall(fn = callee, args = args), span = wsp)
+        }
+        case None -> e
+      }
+    }
+  )
+  val items: List[Item] = newList()
+  for it in converted.items {
+    items.add(it)
+  }
+  for h in syms.showHelpers {
     items.add(funcItem(h))
   }
   SourceFile(

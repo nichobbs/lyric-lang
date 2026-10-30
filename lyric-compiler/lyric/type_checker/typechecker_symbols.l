@@ -357,6 +357,16 @@ pub record SymbolTable {
   covariantHelpers: List[FunctionDecl]
   /// `covariantHelpers` by the source and target types they convert between.
   covariantHelperNames: Map[String, String]
+  /// Stringified operands of a structured type (a record, union, enum,
+  /// tuple, `List`, `Map`, `Set` or slice), keyed like `recordCopySites`, with
+  /// the name of the function in `showHelpers` that renders the operand
+  /// (D282).  `Lyric.Pipeline` wraps each in a call of it.
+  showSites: Map[String, String]
+  /// The rendering functions `showSites` name, synthesized by the checker
+  /// (`showHelperName`) for the file being checked.
+  showHelpers: List[FunctionDecl]
+  /// `showHelpers` by the rendered type.
+  showHelperNames: Map[String, String]
   /// Result types of qualified and method calls and of field reads, keyed
   /// like `recordCopySites`: evidence for `Lyric.Mono`, which cannot see the
   /// signatures of other packages' non-generic functions (D-progress-969) or
@@ -792,6 +802,9 @@ pub func newSymbolTable(): SymbolTable {
     covariantSites = newMap(),
     covariantHelpers = newList(),
     covariantHelperNames = newMap(),
+    showSites = newMap(),
+    showHelpers = newList(),
+    showHelperNames = newMap(),
     callResultTypes = newMap(),
     localBindingTypeSites = newMap(),
     openBindingSites = newMap(),
