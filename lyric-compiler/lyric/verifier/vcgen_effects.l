@@ -26,6 +26,18 @@ record Effects {
   // The last name segment of every callee the code calls (`f` for `f(x)`,
   // `P.f(x)` and `r.f()`), for the contract-call graph.
   calls: List[String]
+  // The variables something other than a plain argument of a resolved call
+  // may have changed (`outArgs` minus these are changed by such arguments
+  // alone), and each such argument with its call's span: where one call
+  // alone changes a variable, `havocOutArgs` gives it the callee's own
+  // post-call value (#8111).
+  outOther: List[String]
+  outCalls: List[OutCall]
+}
+
+record OutCall {
+  root: String
+  span: Span
 }
 
 func emptyEffects(): Effects {
@@ -33,7 +45,16 @@ func emptyEffects(): Effects {
   val outArgs: List[String] = newList()
   val jumps: List[String] = newList()
   val calls: List[String] = newList()
-  Effects(assigned = assigned, outArgs = outArgs, jumps = jumps, calls = calls)
+  val outOther: List[String] = newList()
+  val outCalls: List[OutCall] = newList()
+  Effects(
+    assigned = assigned,
+    outArgs = outArgs,
+    jumps = jumps,
+    calls = calls,
+    outOther = outOther,
+    outCalls = outCalls
+  )
 }
 
 // The last name segment a callee expression names, or "".
@@ -75,6 +96,21 @@ func hasEffectsOtherThanCalls(eff: in Effects): Bool {
 func addName(names: in List[String], n: in String): Unit {
   if not names.contains(n) {
     names.add(n)
+  }
+}
+
+func addOutOther(eff: in Effects, n: in String): Unit {
+  addName(eff.outArgs, n)
+  addName(eff.outOther, n)
+}
+
+// An argument that is just a variable's name: the call replaces the whole
+// variable.
+func isPlainVarArg(e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> path.segments.count == 1
+    case EParen(inner) -> isPlainVarArg(inner)
+    case _ -> false
   }
 }
 
@@ -227,7 +263,7 @@ func effExpr(env: in VEnv, e: in Expr, inLambda: in Bool, eff: in Effects): Unit
         effExpr(env, argExpr, inLambda, eff)
         i = i + 1
       }
-      effOutArgs(env, fn, args, eff)
+      effOutArgs(env, fn, args, e.span, eff)
       val leaf = calleeLeaf(fn)
       if leaf.length > 0 {
         addName(eff.calls, leaf)
@@ -292,10 +328,10 @@ func effExpr(env: in VEnv, e: in Expr, inLambda: in Bool, eff: in Effects): Unit
 // parameters receive (and a non-`in` receiver).  A call the verifier cannot
 // resolve may have such parameters too: every argument (and receiver)
 // naming a binding a call may store into is taken to change (#8102).
-func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effects): Unit {
+func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], callSpan: in Span, eff: in Effects): Unit {
   match typeAppCallee(env, fn) {
     case Some(inner) -> {
-      return effOutArgs(env, inner, args, eff)
+      return effOutArgs(env, inner, args, callSpan, eff)
     }
     case None -> ()
   }
@@ -304,11 +340,11 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
     return ()
   }
   match fn.kind {
-    case EParen(inner) -> effOutArgs(env, inner, args, eff)
+    case EParen(inner) -> effOutArgs(env, inner, args, callSpan, eff)
     case EPath(path) -> {
       val name = joinPathSegments(path.segments)
       match fileCallee(env, name, args) {
-        case Some(decl) -> effOutParams(decl, 0, args, eff)
+        case Some(decl) -> effOutParams(decl, 0, args, callSpan, eff)
         case None -> {
           val known = name == "assert" or env.protectedMembers.contains(name) or isFileDistinct(env, name)
           val isRecord = match findRecordFields(env, name) { case Some(_) -> true; case None -> false }
@@ -320,7 +356,7 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
     }
     case EMember(receiver, methodName) -> {
       match resolveStaticCallee(env, receiver, methodName, args) {
-        case Some(rc) -> effOutParams(rc.decl, 0, args, eff)
+        case Some(rc) -> effOutParams(rc.decl, 0, args, callSpan, eff)
         case None -> {
           val methodOpt = match staticSortOfExpr(env, receiver) {
             case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName, args)
@@ -330,9 +366,9 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
             case Some(rc) -> {
               match rc.decl.params[0].mode {
                 case PMIn -> ()
-                case _ -> match rootVarOf(receiver) { case Some(n) -> addName(eff.outArgs, n); case None -> () }
+                case _ -> match rootVarOf(receiver) { case Some(n) -> addOutOther(eff, n); case None -> () }
               }
-              effOutParams(rc.decl, 1, args, eff)
+              effOutParams(rc.decl, 1, args, callSpan, eff)
             }
             case None -> {
               match distinctFromCallee(env, fn) {
@@ -364,14 +400,14 @@ func effMutableRoot(env: in VEnv, e: in Expr, eff: in Effects): Unit {
   match rootVarOf(e) {
     case Some(n) -> {
       if env.mutables.contains(n) {
-        addName(eff.outArgs, n)
+        addOutOther(eff, n)
       }
     }
     case None -> ()
   }
 }
 
-func effOutParams(decl: in FunctionDecl, skip: in Int, args: in List[CallArg], eff: in Effects): Unit {
+func effOutParams(decl: in FunctionDecl, skip: in Int, args: in List[CallArg], callSpan: in Span, eff: in Effects): Unit {
   val names: List[String] = newList()
   var k = 0
   while k < decl.params.count {
@@ -389,7 +425,14 @@ func effOutParams(decl: in FunctionDecl, skip: in Int, args: in List[CallArg], e
             case _ -> {
               val argExpr = match args[slot] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
               match rootVarOf(argExpr) {
-                case Some(n) -> addName(eff.outArgs, n)
+                case Some(n) -> {
+                  if isPlainVarArg(argExpr) {
+                    addName(eff.outArgs, n)
+                    eff.outCalls.add(OutCall(root = n, span = callSpan))
+                  } else {
+                    addOutOther(eff, n)
+                  }
+                }
                 case None -> ()
               }
             }
@@ -405,7 +448,7 @@ func effOutParams(decl: in FunctionDecl, skip: in Int, args: in List[CallArg], e
       while ai < args.count {
         val argExpr = match args[ai] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
         match rootVarOf(argExpr) {
-          case Some(n) -> addName(eff.outArgs, n)
+          case Some(n) -> addOutOther(eff, n)
           case None -> ()
         }
         ai = ai + 1
@@ -425,6 +468,13 @@ record Havoc {
 }
 
 func havocVars(env: in VEnv, names: in List[String], tag: in String): Havoc {
+  val none: Map[String, Term] = newMap()
+  havocVarsLinked(env, names, tag, none)
+}
+
+// `havocVars`, except that a name in `linked` takes that value, when it has
+// the variable's sort, in place of a new one.
+func havocVarsLinked(env: in VEnv, names: in List[String], tag: in String, linked: in Map[String, Term]): Havoc {
   var envH = env
   val hyps: List[Term] = newList()
   var i = 0
@@ -432,7 +482,14 @@ func havocVars(env: in VEnv, names: in List[String], tag: in String): Havoc {
     val vname = names[i]
     match envLookupSort(vname, env) {
       case Some(vinfo) -> {
-        val t = freshVar(env, vname + "!" + tag, vinfo.sort)
+        val t = match mapGet(linked, vname) {
+          case Some(post) -> if smtRenderSort(sortOf(post)) == smtRenderSort(vinfo.sort) {
+            post
+          } else {
+            freshVar(env, vname + "!" + tag, vinfo.sort)
+          }
+          case None -> freshVar(env, vname + "!" + tag, vinfo.sort)
+        }
         envH = envBindTerm(vname, t, vinfo, envH)
         appendTermList(hyps, valueFactsForTerm(t, vinfo))
       }
@@ -448,7 +505,29 @@ func havocVars(env: in VEnv, names: in List[String], tag: in String): Havoc {
 // `inout` parameter hold new values (#8102).
 func havocOutArgs(env: in VEnv, e: in Expr): Havoc {
   val eff = effectsOfExpr(env, e)
-  havocVars(env, eff.outArgs, "out")
+  val linked: Map[String, Term] = newMap()
+  var i = 0
+  while i < eff.outCalls.count {
+    val oc = eff.outCalls[i]
+    var hits = 0
+    var j = 0
+    while j < eff.outCalls.count {
+      if eff.outCalls[j].root == oc.root {
+        hits = hits + 1
+      }
+      j = j + 1
+    }
+    // A variable one call alone changes holds what that call's `ensures:`
+    // say of it afterwards (#8111).
+    if hits == 1 and not eff.outOther.contains(oc.root) {
+      match mapGet(env.outPosts, outPostKey(oc.root, oc.span)) {
+        case Some(post) -> linked.add(oc.root, post)
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  havocVarsLinked(env, eff.outArgs, "out", linked)
 }
 
 // `env` where `name` is (or is no longer) a binding a call may store into.
@@ -489,7 +568,8 @@ func envInOwnContract(env: in VEnv, name: in String): VEnv {
     contractStack = termsWithNames(env.contractStack, name),
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 
@@ -514,7 +594,8 @@ func envWithTypeParams(env: in VEnv, names: in List[String]): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = names
+    typeParams = names,
+    outPosts = env.outPosts
   )
 }
 
@@ -538,7 +619,8 @@ func envWithDistincts(env: in VEnv, distincts: in Map[String, TypeExpr]): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 
@@ -568,7 +650,8 @@ func envWithState(
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 

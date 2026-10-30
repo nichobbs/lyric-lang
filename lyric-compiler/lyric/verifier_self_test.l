@@ -1744,6 +1744,22 @@ test "an out or inout argument holds a new value after the call (#8102)" {
   )
 }
 
+test "a callee's ensures about an out or inout argument reach the caller (#8111)" {
+  val inc = "func inc(x: inout Int): Unit\n  ensures: x == old(x) + 1\n{\n  x = x + 1\n}\n"
+  assertDischarged(
+    inc + "func g(): Int\n  ensures: result == 6\n{\n  var a = 5\n  inc(a)\n  a\n}\n",
+    "caller-sees-the-callee-ensures"
+  )
+  assertDischarged(
+    inc + "func g(a0: in Int): Int\n  ensures: result == a0 + 2\n{\n  var a = a0\n  inc(a)\n  inc(a)\n  a\n}\n",
+    "two-calls-chain"
+  )
+  assertRefuted(
+    inc + "func g(a0: in Int): Int\n  ensures: result == a0 + 2\n{\n  var a = a0\n  inc(a)\n  a\n}\n",
+    "one-call-is-not-two"
+  )
+}
+
 test "a protected entry's invariant holds of the fields it leaves (#8102)" {
   assertRefuted(
     "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n  }\n}\n",
@@ -3858,9 +3874,11 @@ test "a method of a generic record returning its type parameter is called at the
     box + "func fromBox(b: in Box[Int]): Int\n  ensures: result == b.getV() + 1\n{\n  b.getV()\n}\n",
     "generic-method-instance-refuted"
   )
-  // At a type parameter, the call is a value of that parameter's sort.
-  assertDischarged(
-    box + "func fromGeneric[U](b: in Box[U]): U\n  ensures: result == b.getV()\n{\n  b.getV()\n}\n",
+  // At a type parameter the call is a value of that parameter's sort, well
+  // sorted; a value of an unknown type is not assumed to behave the same
+  // at two calls, so the call is not unfolded (see `isValueSort`).
+  assertRefuted(
+    box + "func fromGeneric[U](b: in Box[U]): U\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
     "generic-method-type-parameter"
   )
   // Two instances of one record: each call has its own instance's sort.
@@ -3869,10 +3887,10 @@ test "a method of a generic record returning its type parameter is called at the
       "func both(a: in Box[Int], b: in Box[Bool]): Int\n  requires: b.getV()\n  ensures: result == a.getV() + 1\n{\n  a.getV() + 1\n}\n",
     "generic-method-two-instances"
   )
-  // A method with type parameters of its own is left as an unmodelled value:
-  // its result sort depends on the call's arguments.
-  assertUntranslatable(
-    "record Cell {\n  n: Int\n  @pure\n  func pick[U](self: in Cell, x: in U): U { x }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.pick(1) + 1\n{\n  c.pick(1) + 1\n}\n",
+  // A method with type parameters of its own is applied at the type
+  // arguments its arguments fix (#8631).
+  assertDischarged(
+    "record Cell {\n  n: Int\n  @pure\n  func pick[U](self: in Cell, x: in U): U { x }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.pick(1) + 1 - 1 + 1\n{\n  c.pick(1) + 1\n}\n",
     "method-with-own-generics"
   )
   // A record that is not generic gets its method's declared sort too.
@@ -3880,6 +3898,62 @@ test "a method of a generic record returning its type parameter is called at the
     "record Cell {\n  n: Int\n  @pure\n  func get(self: in Cell): Int { self.n }\n}\nfunc fromCell(c: in Cell): Int\n  ensures: result == c.get() + 1\n{\n  c.get()\n}\n",
     "plain-method-sort"
   )
+}
+
+test "a generic callee is applied at the type arguments its arguments fix (#8631)" {
+  val ident = "@pure\nfunc ident[T](x: in T): T { x }\n"
+  assertDischarged(ident + "func useId(n: in Int): Int\n  ensures: result == n\n{\n  ident(n)\n}\n", "plain")
+  assertRefuted(ident + "func useId(n: in Int): Int\n  ensures: result == n + 1\n{\n  ident(n)\n}\n", "plain-refuted")
+  assertDischarged(ident + "func useId(n: in Int): Int\n  ensures: result == n\n{\n  ident(ident(n))\n}\n", "nested")
+  assertDischarged(
+    ident + "func two(n: in Int, s: in String): Int\n  ensures: result == n and ident(s) == s\n{\n  ident(n)\n}\n",
+    "two-instances"
+  )
+  assertDischarged(
+    ident + "func viaGeneric[U](x: in U): Int\n  ensures: result == 3\n{\n  ident(3)\n}\n",
+    "through-a-generic-caller"
+  )
+  // Applied to a value of the caller's own type parameter, the call is at
+  // that sort, but a value the verifier cannot compare is not unfolded.
+  assertRefuted(
+    ident + "func viaGeneric[U](x: in U): U\n  ensures: result == x\n{\n  ident(x)\n}\n",
+    "at-a-type-parameter"
+  )
+  // A contract on a generic callee is checked at the instance.
+  val pos = "func firstOf[T](x: in T, y: in T): T\n  requires: true\n  ensures: result == x\n{\n  x\n}\n"
+  assertDischarged(
+    pos + "func f(a: in Int, b: in Int): Int\n  ensures: result == a\n{\n  firstOf(a, b)\n}\n",
+    "contract-instance"
+  )
+  // A type parameter no argument fixes fails closed.
+  assertUntranslatable(
+    "func mk[T](): Int\n  ensures: result == 1\n{\n  1\n}\nfunc f(): Int\n  ensures: result == 1\n{\n  mk()\n}\n",
+    "open-type-parameter"
+  )
+}
+
+test "a method declared in a record body is applied by its contract (#8356)" {
+  val box = "record Box[T] {\n  v: T\n  func getV(self: in Box[T]): T\n    ensures: result == self.v\n  { self.v }\n}\n"
+  assertDischarged(
+    box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
+    "generic-method-ensures"
+  )
+  assertRefuted(
+    box + "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v + 1\n{\n  b.getV()\n}\n",
+    "generic-method-refuted"
+  )
+  assertDischarged(
+    "record Box[T] {\n  v: T\n  @pure\n  func getV(self: in Box[T]): T { self.v }\n}\n" +
+      "func readIt(b: in Box[Int]): Int\n  ensures: result == b.v\n{\n  b.getV()\n}\n",
+    "generic-method-pure-body"
+  )
+  // The method's `requires:` is the caller's obligation.
+  val guarded = "record Cell {\n  n: Int\n  func pos(self: in Cell): Int\n    requires: self.n > 0\n    ensures: result == self.n\n  { self.n }\n}\n"
+  assertDischarged(
+    guarded + "func readIt(c: in Cell): Int\n  requires: c.n > 0\n  ensures: result == c.n\n{\n  c.pos()\n}\n",
+    "requires-met"
+  )
+  assertRefuted(guarded + "func readIt(c: in Cell): Int\n  ensures: result == c.n\n{\n  c.pos()\n}\n", "requires-unmet")
 }
 
 test "a generic record built from its fields is the instance they give it (#8340)" {

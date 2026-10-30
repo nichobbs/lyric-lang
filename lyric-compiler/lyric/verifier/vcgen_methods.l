@@ -398,38 +398,18 @@ func implTargetName(target: in TypeExpr): String {
   }
 }
 
-// Verify the method `fn` of the type `owner`: its body and own clauses with
-// every bare reference to one of `fields` read as `self.<field>`, as the
-// type checker and the backends read it (`Lyric.SelfFields`, #8264); the
-// type's parameters `typeGenerics` in scope beside the method's own; `Self`
-// read as `selfType` when it is known (an `impl` target); a bare call of a
-// sibling method (`methodNames`) read as the call on `self` it is, which the
-// verifier does not interpret (a method's contract is not yet used at its
-// calls, #8110); and the `inherited` interface clauses checked beside its
-// own.  Goals are labelled `<owner>.<method>`.
-func goalsForMethod(
-  level: in VerificationLevel,
-  env0: in VEnv,
-  owner: in String,
+// A method of a type as a function of its own named `name`: bare field and
+// sibling-method names in its contracts and body resolved against `self`,
+// `Self` replaced by the type, and the type's generic parameters ahead of
+// the method's.
+func methodAsFunction(
+  name: in String,
   fields: in Map[String, Bool],
   typeGenerics: in Option[GenericParams],
   selfType: in Option[TypeExpr],
   siblings: in List[SiblingMethod],
   fn: in FunctionDecl,
-  inherited: in Result[InheritedClauses, String],
-  allGoals: in List[Goal],
-  allDiags: in List[Diagnostic],
-): Unit {
-  if not vlIsProofRequired(levelOfFunction(level, fn)) {
-    return
-  }
-  val inheritedClauses = match inherited {
-    case Ok(ic) -> ic
-    case Err(why) -> {
-      allDiags.add(untranslatableDiag("the clauses this method inherits from the interface it implements: " + why, fn.span))
-      noInheritedClauses()
-    }
-  }
+): FunctionDecl {
   val noCases: Map[String, Bool] = newMap()
   val methods: Map[String, Bool] = newMap()
   for sm in siblings {
@@ -464,12 +444,12 @@ func goalsForMethod(
     }
     case None -> None
   }
-  val method = FunctionDecl(
+  FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
     visibility = fn.visibility,
     isAsync = fn.isAsync,
-    name = owner + "." + fn.name,
+    name = name,
     generics = mergeGenerics(typeGenerics, fn.generics),
     params = params,
     ret = ret,
@@ -478,6 +458,41 @@ func goalsForMethod(
     body = body,
     span = fn.span
   )
+}
+
+// Verify the method `fn` of the type `owner`: its body and own clauses with
+// every bare reference to one of `fields` read as `self.<field>`, as the
+// type checker and the backends read it (`Lyric.SelfFields`, #8264); the
+// type's parameters `typeGenerics` in scope beside the method's own; `Self`
+// read as `selfType` when it is known (an `impl` target); a bare call of a
+// sibling method (`methodNames`) read as the call on `self` it is, which the
+// verifier does not interpret (a method's contract is not yet used at its
+// calls, #8110); and the `inherited` interface clauses checked beside its
+// own.  Goals are labelled `<owner>.<method>`.
+func goalsForMethod(
+  level: in VerificationLevel,
+  env0: in VEnv,
+  owner: in String,
+  fields: in Map[String, Bool],
+  typeGenerics: in Option[GenericParams],
+  selfType: in Option[TypeExpr],
+  siblings: in List[SiblingMethod],
+  fn: in FunctionDecl,
+  inherited: in Result[InheritedClauses, String],
+  allGoals: in List[Goal],
+  allDiags: in List[Diagnostic],
+): Unit {
+  if not vlIsProofRequired(levelOfFunction(level, fn)) {
+    return
+  }
+  val inheritedClauses = match inherited {
+    case Ok(ic) -> ic
+    case Err(why) -> {
+      allDiags.add(untranslatableDiag("the clauses this method inherits from the interface it implements: " + why, fn.span))
+      noInheritedClauses()
+    }
+  }
+  val method = methodAsFunction(owner + "." + fn.name, fields, typeGenerics, selfType, siblings, fn)
   // A call of a sibling method on `self` has the sibling's declared result
   // type; it is otherwise not interpreted.
   val distincts: Map[String, TypeExpr] = newMap()

@@ -16798,6 +16798,27 @@ func inferExprCore(
         }
         case _ -> ()
       }
+      // `[1, 2].toSlice()`: a bracket literal is a `slice[T]`, which has no
+      // `toSlice`, so a literal that is the receiver of one is the array of
+      // its elements (#8218).
+      match fn.kind {
+        case EMember(recvE, mname) -> if mname == "toSlice" and args.count == 0 {
+          match peelParens(recvE).kind {
+            case EList(elems) -> if elems.count > 0 {
+              match inferExpr(sc, tbl, sigs, diag, recvE) {
+                case TySlice(el) -> {
+                  val arrT = TyArray(size = Some(value = elems.count), element = el, sizeVar = "")
+                  noteArrayLiteralType(tbl, recvE, arrT)
+                  cachedRecvType = Some(value = arrT)
+                }
+                case _ -> ()
+              }
+            }
+            case _ -> ()
+          }
+        }
+        case _ -> ()
+      }
       match fn.kind {
         case EMember(recvE, mname) -> match numericConvTarget(mname) {
           case Some(target) -> if args.count == 0 {

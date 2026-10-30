@@ -76,6 +76,13 @@ pub record VEnv {
   // instantiated at a call is checked again over the argument terms
   // (#8109).
   pub typeParams: List[String]
+  // The value an `out`/`inout` argument holds after a call to a function this
+  // file declares, as that function's `ensures:` speak of it: keyed by the
+  // argument variable and the call's source span (`outPostKey`), shared by
+  // every copy of the environment.  `havocOutArgs` binds the argument to it
+  // instead of an unrelated new value, so the callee's `ensures:` about the
+  // parameter reach the caller (#8111).
+  pub outPosts: Map[String, Term]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -341,6 +348,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val cyclic: List[String] = newList()
   val valueTypes: Map[String, Bool] = newMap()
   val typeParams: List[String] = newList()
+  val outPosts: Map[String, Term] = newMap()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -359,7 +367,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     contractStack = contractStack,
     cyclic = cyclic,
     valueTypes = valueTypes,
-    typeParams = typeParams
+    typeParams = typeParams,
+    outPosts = outPosts
   )
 }
 
@@ -398,7 +407,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 
@@ -436,7 +446,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 
@@ -587,7 +598,8 @@ func envUnbind(name: in String, env: in VEnv): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }
 
@@ -1198,6 +1210,7 @@ func varlessEnv(env: in VEnv): VEnv {
     contractStack = env.contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = env.typeParams
+    typeParams = env.typeParams,
+    outPosts = env.outPosts
   )
 }

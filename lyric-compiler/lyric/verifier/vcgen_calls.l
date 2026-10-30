@@ -124,6 +124,140 @@ func outArgsAlias(decl: in FunctionDecl, args: in List[CallArg]): String {
   }
 }
 
+// The key of the value variable `root` holds after the call at `sp`.
+func outPostKey(root: in String, sp: in Span): String {
+  root + "@" + intToString(sp.startPos.offset) + "-" + intToString(sp.endPos.offset)
+}
+
+func forgetOutPosts(env: in VEnv, roots: in List[String], sp: in Span): Unit {
+  var i = 0
+  while i < roots.count {
+    if roots[i].length > 0 {
+      val key = outPostKey(roots[i], sp)
+      if env.outPosts.containsKey(key) {
+        val _ = env.outPosts.remove(key)
+      }
+    }
+    i = i + 1
+  }
+}
+
+// For each parameter of `decl`, the variable `args` passes to it when it is
+// an `out`/`inout` parameter given just a variable's name, else "".
+func outParamRoots(decl: in FunctionDecl, args: in List[CallArg]): List[String] {
+  val roots: List[String] = newList()
+  val names: List[String] = newList()
+  var k = 0
+  while k < decl.params.count {
+    names.add(decl.params[k].name)
+    roots.add("")
+    k = k + 1
+  }
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      var si = 0
+      while si < slots.count and si < roots.count {
+        if slots[si] >= 0 {
+          match decl.params[si].mode {
+            case PMIn -> ()
+            case _ -> {
+              val argExpr = match args[slots[si]] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
+              if isPlainVarArg(argExpr) {
+                match rootVarOf(argExpr) {
+                  case Some(root) -> {
+                    roots[si] = root
+                  }
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+        si = si + 1
+      }
+    }
+    case Err(_) -> ()
+  }
+  roots
+}
+
+// `decl`'s sort info for `te` with its type parameters replaced by `targs`
+// (none for a callee that is not generic).
+func calleeSortInfoAt(env: in VEnv, decl: in FunctionDecl, targs: in List[Sort], te: in TypeExpr): SortInfo {
+  val si = calleeSortInfo(env, decl, te)
+  if targs.count == 0 {
+    si
+  } else {
+    si.copy(sort = substSortParams(si.sort, typeParamNames(decl), targs))
+  }
+}
+
+// The sorts the type parameters `tparams` of `decl` take at a call whose
+// arguments are `args` (terms `rawArgTerms`): each parameter's declared sort
+// is matched with the sort of the argument it receives.  Err when the
+// arguments do not pair with the parameters, do not fit, or leave a type
+// parameter open.
+func inferCallTypeArgs(
+  env: in VEnv,
+  decl: in FunctionDecl,
+  tparams: in List[String],
+  args: in List[CallArg],
+  rawArgTerms: in List[Term],
+): Result[List[Sort], String] {
+  val names: List[String] = newList()
+  for p in decl.params {
+    names.add(p.name)
+  }
+  val bound: List[Option[Sort]] = newList()
+  for _tp in tparams {
+    bound.add(None)
+  }
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      var i = 0
+      while i < decl.params.count {
+        if slots[i] >= 0 {
+          val pattern = calleeSortInfo(env, decl, decl.params[i].ty).sort
+          if not matchArgSortParams(pattern, rawArgTerms[slots[i]], tparams, bound) {
+            return Err(error = "the argument for '" + decl.params[i].name + "' does not fit its parameter's type")
+          }
+        }
+        i = i + 1
+      }
+    }
+    case Err(why) -> {
+      return Err(error = why)
+    }
+  }
+  val found: List[Sort] = newList()
+  var k = 0
+  while k < tparams.count {
+    match bound[k] {
+      case Some(srt) -> found.add(srt)
+      case None -> {
+        return Err(error = "'" + tparams[k] + "' is not determined")
+      }
+    }
+    k = k + 1
+  }
+  Ok(value = found)
+}
+
+// The name of the uninterpreted function standing for `name` at the type
+// arguments `targs`: one function per instance.
+func instanceCalleeName(name: in String, targs: in List[Sort]): String {
+  var text = name + "<"
+  var i = 0
+  while i < targs.count {
+    if i > 0 {
+      text = text + ","
+    }
+    text = text + smtRenderSort(targs[i])
+    i = i + 1
+  }
+  text + ">"
+}
+
 // How many contracts and defaults may unfold inside one another at a call.
 func maxUnfoldDepth(): Int {
   32
@@ -184,7 +318,7 @@ func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: i
 // value of its own; `old(p)` is the argument (#8102).
 func translateResolvedCall(
   env: in VEnv,
-  name: in String,
+  rawName: in String,
   decl: in FunctionDecl,
   args: in List[CallArg],
   rawArgTerms: in List[Term],
@@ -194,7 +328,40 @@ func translateResolvedCall(
   argAssumed: in List[Term],
   allArgDiags: in List[Diagnostic],
 ): (TranslateResult, List[Diagnostic]) {
-  val resultInfo = match decl.ret { case Some(te) -> calleeSortInfo(env, decl, te); case None -> unitSortInfo() }
+  // A generic callee is applied at the type arguments its arguments fix; a
+  // call that leaves one open fails closed (#8356, #8631).
+  val tparams = typeParamNames(decl)
+  var targs: List[Sort] = newList()
+  if tparams.count > 0 {
+    match inferCallTypeArgs(env, decl, tparams, args, rawArgTerms) {
+      case Ok(found) -> {
+        targs = found
+      }
+      case Err(why) -> {
+        allArgDiags.add(
+          untranslatableDiag(
+            "the type arguments of the call to '" + decl.name + "' are not fixed by its arguments: " + why,
+            callSpan
+          )
+        )
+        val openTR = TranslateResult(
+          term = poisonTerm(freshVar(env, rawName + "!result", SUninterp(name = "call"))),
+          sideConds = argSides,
+          assumed = argAssumed
+        )
+        val openPair: (TranslateResult, List[Diagnostic]) = (openTR, allArgDiags)
+        return openPair
+      }
+    }
+  }
+  val name = if targs.count > 0 { instanceCalleeName(rawName, targs) } else { rawName }
+  val resultInfo = match decl.ret {
+    case Some(te) -> calleeSortInfoAt(env, decl, targs, te)
+    case None -> unitSortInfo()
+  }
+  // What an earlier translation of this call left for `havocOutArgs` is
+  // not this one's (#8111).
+  forgetOutPosts(env, outParamRoots(decl, args), callSpan)
   // A backstop on how deep contracts and defaults unfold into one
   // another: past it the call fails closed rather than recursing on.
   if env.contractStack.count >= maxUnfoldDepth() {
@@ -242,7 +409,7 @@ func translateResolvedCall(
   val paramSorts: List[Sort] = newList()
   var pi = 0
   while pi < decl.params.count {
-    paramSorts.add(calleeSortInfo(env, decl, decl.params[pi].ty).sort)
+    paramSorts.add(calleeSortInfoAt(env, decl, targs, decl.params[pi].ty).sort)
     pi = pi + 1
   }
   addUserFunOnce(env.symbols, name, paramSorts, resultSort)
@@ -253,7 +420,7 @@ func translateResolvedCall(
   val innerVarNames: List[String] = newList()
   var ii = 0
   while ii < decl.params.count {
-    val pInfo = calleeSortInfo(env, decl, decl.params[ii].ty)
+    val pInfo = calleeSortInfoAt(env, decl, targs, decl.params[ii].ty)
     innerVars.add(decl.params[ii].name, TVar(name = decl.params[ii].name, sort = pInfo.sort))
     innerSorts.add(decl.params[ii].name, pInfo)
     innerVarNames.add(decl.params[ii].name)
@@ -277,7 +444,8 @@ func translateResolvedCall(
     contractStack = contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = typeParamNames(decl)
+    typeParams = typeParamNames(decl),
+    outPosts = env.outPosts
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -448,6 +616,7 @@ func translateResolvedCall(
     }
     case _ -> ()
   }
+  val outRoots = outParamRoots(decl, args)
   var psi = 0
   while psi < decl.params.count {
     val pp = decl.params[psi]
@@ -456,11 +625,15 @@ func translateResolvedCall(
       case _ -> {
         val oldKey = "old." + pp.name
         resultVars2.add(oldKey, TVar(name = oldKey, sort = paramSorts[psi]))
-        resultSorts2.add(oldKey, calleeSortInfo(env, decl, pp.ty))
+        resultSorts2.add(oldKey, calleeSortInfoAt(env, decl, targs, pp.ty))
         resultVarNames2.add(oldKey)
         postSubst.add(oldKey, argTerms[psi])
         postSubstNames.add(oldKey)
-        postSubst.add(pp.name, TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi]))
+        val postVar = TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi])
+        postSubst.add(pp.name, postVar)
+        if paired.paired and aliased.length == 0 and psi < outRoots.count and outRoots[psi].length > 0 {
+          env.outPosts.add(outPostKey(outRoots[psi], callSpan), postVar)
+        }
       }
     }
     postSubstNames.add(pp.name)
@@ -484,7 +657,8 @@ func translateResolvedCall(
     contractStack = contractStack,
     cyclic = env.cyclic,
     valueTypes = env.valueTypes,
-    typeParams = typeParamNames(decl)
+    typeParams = typeParamNames(decl),
+    outPosts = env.outPosts
   )
   ci = 0
   while ci < decl.contracts.count {
@@ -648,7 +822,18 @@ func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, Typ
         }
         true
       } else {
-        args.count == 0 and valueTypes.containsKey(name)
+        // A generic record or union is a value when its arguments are.
+        if not valueTypes.containsKey(name) {
+          return false
+        }
+        var ai = 0
+        while ai < args.count {
+          if not isValueSort(valueTypes, distincts, args[ai], depth + 1) {
+            return false
+          }
+          ai = ai + 1
+        }
+        true
       }
     }
     case _ -> false
@@ -710,6 +895,7 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
   val valueTypes: Map[String, Bool] = newMap()
   val candidates: List[String] = newList()
   val candidateFields: List[List[TypeExpr]] = newList()
+  val candidateParams: List[List[String]] = newList()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -719,46 +905,44 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
         }
       }
       case IRecord(d) -> {
-        if isNone(d.generics) {
-          val tys: List[TypeExpr] = newList()
-          var mutable = false
-          var mi = 0
-          while mi < d.members.count {
-            match d.members[mi] {
-              case RMField(fld) -> {
-                if fld.isMutable {
-                  mutable = true
-                }
-                tys.add(fld.ty)
+        val tys: List[TypeExpr] = newList()
+        var mutable = false
+        var mi = 0
+        while mi < d.members.count {
+          match d.members[mi] {
+            case RMField(fld) -> {
+              if fld.isMutable {
+                mutable = true
               }
-              case _ -> ()
+              tys.add(fld.ty)
             }
-            mi = mi + 1
+            case _ -> ()
           }
-          if not mutable {
-            candidates.add(d.name)
-            candidateFields.add(tys)
-          }
+          mi = mi + 1
+        }
+        if not mutable {
+          candidates.add(d.name)
+          candidateFields.add(tys)
+          candidateParams.add(genericTypeParamNames(d.generics))
         }
       }
       case IUnion(d) -> {
-        if isNone(d.generics) {
-          val tys: List[TypeExpr] = newList()
-          var ci = 0
-          while ci < d.cases.count {
-            var fi = 0
-            while fi < d.cases[ci].fields.count {
-              match d.cases[ci].fields[fi] {
-                case UFNamed(_, ty, _) -> tys.add(ty)
-                case UFPos(ty, _) -> tys.add(ty)
-              }
-              fi = fi + 1
+        val tys: List[TypeExpr] = newList()
+        var ci = 0
+        while ci < d.cases.count {
+          var fi = 0
+          while fi < d.cases[ci].fields.count {
+            match d.cases[ci].fields[fi] {
+              case UFNamed(_, ty, _) -> tys.add(ty)
+              case UFPos(ty, _) -> tys.add(ty)
             }
-            ci = ci + 1
+            fi = fi + 1
           }
-          candidates.add(d.name)
-          candidateFields.add(tys)
+          ci = ci + 1
         }
+        candidates.add(d.name)
+        candidateFields.add(tys)
+        candidateParams.add(genericTypeParamNames(d.generics))
       }
       case _ -> ()
     }
@@ -773,12 +957,25 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
       if not valueTypes.containsKey(name) {
         val tys = candidateFields[ci]
         var allValues = true
+        // A type parameter stands for whatever the record is applied to:
+        // the arguments decide, at each use (`isValueSort`).
+        val tps = candidateParams[ci]
+        val addedParams: List[String] = newList()
+        for tp in tps {
+          if not valueTypes.containsKey(tp) {
+            valueTypes.add(tp, true)
+            addedParams.add(tp)
+          }
+        }
         var ti = 0
         while ti < tys.count {
-          if not isValueSort(valueTypes, distincts, sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+          if not isValueSort(valueTypes, distincts, sortOfTypeExprIn(distincts, tps, tys[ti]).sort, 0) {
             allValues = false
           }
           ti = ti + 1
+        }
+        for tp in addedParams {
+          val _ = valueTypes.remove(tp)
         }
         if allValues {
           valueTypes.add(name, true)
