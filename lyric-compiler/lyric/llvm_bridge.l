@@ -3768,11 +3768,13 @@ func seedImplMethods(
         val methods: List[FunctionDecl] = newList()
         collectRecordMethods(pkg, decl, methods)
         seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+        seedGenericRecordBodies(pkg, decl, bodyIndex, pkgOfId, reachable, fnWorklist)
       }
       case IExposedRec(decl) -> {
         val methods: List[FunctionDecl] = newList()
         collectRecordMethods(pkg, decl, methods)
         seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+        seedGenericRecordBodies(pkg, decl, bodyIndex, pkgOfId, reachable, fnWorklist)
       }
       case IProtected(decl) -> {
         val methods: List[FunctionDecl] = newList()
@@ -3782,6 +3784,50 @@ func seedImplMethods(
       case _ -> ()
     }
   }
+}
+
+/// The methods of a generic record are not lowered as members (the codegen
+/// instantiates them), so `collectRecordMethods` leaves them out; a stdlib
+/// generic one of them calls (`isSome(self.v)`) must still be linked (#8301).
+func seedGenericRecordBodies(
+  pkg: in String,
+  decl: in RecordDecl,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  match decl.generics {
+    case Some(_) -> {
+      val fns: List[FunctionDecl] = newList()
+      for m in decl.members {
+        match m {
+          case RMFunc(fn) -> fns.add(fn)
+          case _ -> ()
+        }
+      }
+      seedGenericMemberBodies(pkg, decl.name, fns, bodyIndex, pkgOfId, reachable, fnWorklist)
+    }
+    case None -> ()
+  }
+}
+
+/// Seed `fns` as reachable bodies under ids that cannot collide with a real
+/// function's, named by their owner and source position.
+func seedGenericMemberBodies(
+  pkg: in String,
+  owner: in String,
+  fns: in List[FunctionDecl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  val renamed: List[FunctionDecl] = newList()
+  for fn in fns {
+    renamed.add(fn.copy(name = owner + "." + fn.name + "@" + fn.span.startPos.offset.toString()))
+  }
+  seedMethodList(pkg, renamed, bodyIndex, pkgOfId, reachable, fnWorklist)
 }
 
 /// Reachability of a dependency package's record and protected-type code

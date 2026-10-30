@@ -7324,7 +7324,15 @@ func resolvePropagateCallArgs(
                 boundArgTys.add(genericArgFromResultExpected(sig, cargs, bi, TyError, resultExpected))
                 bi = bi + 1
               }
-              recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, fn, cargs.count), cargs, boundArgTys, fn.span)
+              recordGenericCallTypeArgs(
+                tbl,
+                sc.genericNames,
+                sig,
+                valueGenericParamsOf(tbl, fn, cargs.count),
+                cargs,
+                boundArgTys,
+                fn.span
+              )
             }
             case _ -> ()
           }
@@ -13801,6 +13809,7 @@ func reportOpenHoistedReceiver(
   own: in Type,
   expected: in Type,
   memberName: in String,
+  hazard: in Bool,
 ): Unit {
   if not hoistBindsOperand(sc, recv) or not typeMentionsGenericInst(own) {
     return
@@ -13809,15 +13818,36 @@ func reportOpenHoistedReceiver(
   if typeIsClosedOver(t, sc.genericNames) {
     return
   }
+  val why = if hazard {
+    "it is evaluated before an 'await' or '?' in the arguments, and neither the receiver, the other arguments " +
+      "nor the type expected of the result fixes them"
+  } else {
+    "neither the receiver, the arguments nor the type expected of the result fixes them"
+  }
   diag.add(
     errorDiagnostic(
       "T0154",
-      "cannot infer the type arguments of the receiver of '" + memberName +
-        "': it is evaluated before an 'await' or '?' in the arguments, and neither the receiver, the other arguments " +
-        "nor the type expected of the result fixes them; bind the receiver to a local with a type annotation first",
+      "cannot infer the type arguments of the receiver of '" + memberName + "': " + why +
+        "; bind the receiver to a local with a type annotation first",
       recv.span
     )
   )
+}
+
+// Whether the callee `fn` is a member call whose receiver is itself a call
+// that leaves a type argument of its result open.
+func openCallReceiver(sc: in Scope, fn: in Expr, memberRecvTy: in Option[Type]): Bool {
+  match fn.kind {
+    case EMember(recv, _) -> match stripExprParens(recv).kind {
+      case ECall(_, _) -> match memberRecvTy {
+        case Some(t) -> typeMentionsGenericInst(unrefine(t)) and
+          not typeIsClosedOver(unrefine(t), sc.genericNames)
+        case None -> false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 // Whether any argument of a call contains an `await` or a `?`.
@@ -14854,7 +14884,16 @@ func directCallType(
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
       recordDottedGenericCallSite(tbl, fn.span, dottedCalleeName(fn, sig), false, sig)
-      recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
+      val noGenerics: List[String] = newList()
+      recordGenericCallTypeArgs(
+        tbl,
+        noGenerics,
+        sig,
+        valueGenericParamsOf(tbl, dottedFn, args.count),
+        args,
+        argTypes,
+        fn.span
+      )
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
     case None -> bindValueGenericCall(tbl, diag, fn, args, argTypes, ret)
@@ -15389,8 +15428,10 @@ func recordDottedGenericMethodCall(
   for a in args {
     fullArgs.add(a)
   }
+  val noGenerics: List[String] = newList()
   recordGenericCallTypeArgs(
     tbl,
+    noGenerics,
     fullSig,
     valueGenericParamsOf(tbl, dottedFn, fullArgs.count),
     fullArgs,
@@ -15558,6 +15599,7 @@ func anyErrorType(ts: in List[Type]): Bool {
 // one span, or a re-check against an expected type) is `conflicting`.
 func recordGenericCallTypeArgs(
   tbl: in SymbolTable,
+  genericNames: in List[String],
   sig: in ResolvedSignature,
   valueParams: in List[String],
   args: in List[CallArg],
@@ -15596,7 +15638,23 @@ func recordGenericCallTypeArgs(
   if targs.count == 0 {
     return
   }
-  match typeExprsForRef(tbl, targs, sp) {
+  // A call in a generic body may bind a type argument to the body's own type
+  // parameter (`mapOption(o, { v: T -> 3 })` over `o: Option[T]`): spelled by
+  // its name, flagged for a pass that substitutes it (#8301).
+  var mentionsVars = false
+  for ta in targs {
+    if not typeIsClosed(ta) {
+      mentionsVars = true
+    }
+  }
+  if mentionsVars {
+    for ta in targs {
+      if not typeIsClosedOver(ta, genericNames) {
+        return
+      }
+    }
+  }
+  match typeExprsForRefV(tbl, targs, sp, mentionsVars) {
     case Some(tes) -> {
       val key = recordCopySiteKey(sp)
       val renderedArgs: List[String] = newList()
@@ -15615,7 +15673,8 @@ func recordGenericCallTypeArgs(
               typeParams = prev.typeParams,
               typeArgs = prev.typeArgs,
               rendered = prev.rendered,
-              conflicting = true
+              conflicting = true,
+              mentionsVars = prev.mentionsVars
             )
           )
         }
@@ -15625,7 +15684,8 @@ func recordGenericCallTypeArgs(
             typeParams = typeParamNames,
             typeArgs = tes,
             rendered = rendered,
-            conflicting = false
+            conflicting = false,
+            mentionsVars = mentionsVars
           )
         )
       }
@@ -16645,7 +16705,15 @@ func inferExprCore(
                     boundArgTys.add(if bi == di { argExp } else { argTypes[bi] })
                     bi = bi + 1
                   }
-                  recordGenericCallTypeArgs(tbl, osig, valueGenericParamsOf(tbl, fn, args.count), args, boundArgTys, fn.span)
+                  recordGenericCallTypeArgs(
+                    tbl,
+                    sc.genericNames,
+                    osig,
+                    valueGenericParamsOf(tbl, fn, args.count),
+                    args,
+                    boundArgTys,
+                    fn.span
+                  )
                 }
                 case _ -> ()
               }
@@ -16723,7 +16791,12 @@ func inferExprCore(
       // other arguments or the type expected of the result (#7844).
       // A receiver passed by reference is a place the call keeps, like a
       // by-reference argument (#8179): never hoisted into a temporary.
-      if isMemberCallee and callArgsHaveHoistHazard(args) and not isRewrittenDotPick(tbl, methodPick, fn, memberRecvTy) {
+      // A call receiver whose own type leaves a type argument open
+      // (`emptyCell().orDefault(5)`) is typed the same way with no `await` in
+      // the arguments, so `Lyric.Mono` need not infer the generic callee's
+      // type arguments from the call alone (#8038).
+      val hoistHazard = callArgsHaveHoistHazard(args)
+      if isMemberCallee and (hoistHazard or openCallReceiver(sc, fn, memberRecvTy)) and not isRewrittenDotPick(tbl, methodPick, fn, memberRecvTy) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
             case Some(hoistRecvTy) -> {
@@ -16742,7 +16815,7 @@ func inferExprCore(
                 resultExpected
               )
               recordHoistOperandType(sc, tbl, hoistRecv, hoistRecvTy, recvExpected)
-              reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName)
+              reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName, hoistHazard)
             }
             case None -> ()
           }
@@ -16832,6 +16905,7 @@ func inferExprCore(
           match fn.kind {
             case EPath(_) -> recordGenericCallTypeArgs(
               tbl,
+              sc.genericNames,
               sig,
               valueGenericParamsOf(tbl, fn, args.count),
               args,

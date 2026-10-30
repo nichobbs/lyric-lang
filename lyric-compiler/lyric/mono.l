@@ -1894,6 +1894,50 @@ func extractAllParamInfo(gps: in Option[GenericParams]): List[GenericParamInfo] 
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Specialised function name mangling
 // ─────────────────────────────────────────────────────────────────────────────
+// The generic declaration a call `fname(args)` binds to.  A name with one
+// generic declaration is that declaration; a same-package overload set
+// (`ambiguousFuncOverloads`, #8461) resolves per call site, and a call that
+// resolves to a non-generic overload is not a generic call at all.
+func genDeclForCallSiteMono(
+  state: in MonoState, env: in Map[String, TypeExpr], fname: in String, args: in List[CallArg]
+): Option[FunctionDecl] {
+  match mapGet(state.genDecls, fname) {
+    case None -> None
+    case Some(first) -> {
+      if originPkgOf(first.annotations).length > 0 or not state.ambiguousFuncOverloads.containsKey(fname) {
+        return Some(value = first)
+      }
+      match resolveAmbiguousOverload(state, env, fname, args) {
+        case Some(resolved) -> match resolved.generics { case Some(_) -> Some(value = resolved); case None -> None }
+        case None -> Some(value = first)
+      }
+    }
+  }
+}
+
+// The base name specialisations of `decl` are mangled from: its own name, or,
+// for one of a same-package overload set, the name qualified by its position
+// in the set so two overloads never share a specialisation (#8461).
+func specBaseNameMono(state: in MonoState, fname: in String, decl: in FunctionDecl): String {
+  if originPkgOf(decl.annotations).length > 0 {
+    return fname
+  }
+  match mapGet(state.ambiguousFuncOverloads, fname) {
+    case Some(cands) -> {
+      val key = funcSigKeyMono(decl)
+      var i = 0
+      while i < cands.count {
+        if funcSigKeyMono(cands[i]) == key {
+          return if i == 0 { fname } else { fname + "__o" + toString(i) }
+        }
+        i = i + 1
+      }
+      fname
+    }
+    case None -> fname
+  }
+}
+
 // Mangle the specialised function name from the base name + the ordered
 // list of generic params, looking up each substitution in either
 // `subst` (for `GPType`) or `valueSubst` (for `GPValue`).  Value-arg
@@ -6439,7 +6483,7 @@ func fillCheckedTypeArgsMono(
   }
   match mapGet(state.genericCallTypeArgSites, recordCopySiteKey(calleeSpan)) {
     case Some(site) -> {
-      if site.conflicting or site.typeParams.count != typeParams.count {
+      if site.conflicting or site.mentionsVars or site.typeParams.count != typeParams.count {
         return
       }
       var i = 0
@@ -8035,7 +8079,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
             case EPath(path) -> {
               if path.segments.count == 1 {
                 val fname = path.segments[0]
-                match mapGet(state.genDecls, fname) {
+                match genDeclForCallSiteMono(state, env, fname, args) {
                   case Some(baseDecl) -> {
                     val allParams = extractAllParamInfo(baseDecl.generics)
                     if allParams.count > 0 and targs.count == allParams.count {
@@ -8065,7 +8109,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           i = i + 1
                         }
                         if allParamsBound(allParams, subst, valueSubst) {
-                          val name = specFuncName(fname, allParams, subst, valueSubst)
+                          val name = specFuncName(specBaseNameMono(state, fname, baseDecl), allParams, subst, valueSubst)
                           validateWhereBounds(baseDecl, subst, fn.span, state.diags)
                           if substMentionsEnclosingTypeParamMono(state, subst) and memberSpecAvailableMono(state, env) {
                             return memberSpecCallMono(state, baseDecl, name, subst, valueSubst, fn.span, newArgs, s)
@@ -8124,7 +8168,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
         case EPath(path) -> {
           if path.segments.count == 1 {
             val fname = path.segments[0]
-            match mapGet(state.genDecls, fname) {
+            match genDeclForCallSiteMono(state, env, fname, args) {
               case Some(baseDecl) -> {
                 val typeParams = extractTypeParamNames(baseDecl.generics)
                 val valueParams = extractValueParamNames(baseDecl.generics)
@@ -8294,7 +8338,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                     }
                     if substIsComplete(typeParams, subst) {
                       val allParams = extractAllParamInfo(baseDecl.generics)
-                      val name = specFuncName(fname, allParams, subst, checkedValues)
+                      val name = specFuncName(specBaseNameMono(state, fname, baseDecl), allParams, subst, checkedValues)
                       validateWhereBounds(baseDecl, subst, fn.span, state.diags)
                       if substMentionsEnclosingTypeParamMono(state, subst) and memberSpecAvailableMono(state, env) {
                         return memberSpecCallMono(state, baseDecl, name, subst, checkedValues, fn.span, newArgs, s)
@@ -9916,6 +9960,48 @@ pub func monoFileWithLambdaTypes(
   val importedFuncSigKeys: Map[String, String] = newMap()
   val ambiguousImportedFuncNames: Map[String, Bool] = newMap()
   val ambiguousFuncOverloads: Map[String, List[FunctionDecl]] = newMap()
+  // #8461: same-package functions of one name whose signatures differ, at least
+  // one of them generic (`two[T](x)` and `two[T](x, y)`), are an overload set
+  // resolved per call site like an imported one.  Without it the first
+  // declaration owned the name and a call to any other specialised against the
+  // wrong body.
+  val localOverloadGroups: Map[String, List[FunctionDecl]] = newMap()
+  for lit in file.items {
+    match lit.kind {
+      case IFunc(lfd) -> if not annsInferenceOnlyMono(lfd.annotations) {
+        match mapGet(localOverloadGroups, lfd.name) {
+          case Some(grp) -> grp.add(lfd)
+          case None -> {
+            val grp: List[FunctionDecl] = newList()
+            grp.add(lfd)
+            localOverloadGroups.add(lfd.name, grp)
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  for lname in mapKeys(localOverloadGroups) {
+    match mapGet(localOverloadGroups, lname) {
+      case Some(grp) -> {
+        var anyGeneric = false
+        for gd in grp {
+          match gd.generics {
+            case Some(_) -> {
+              anyGeneric = true
+            }
+            case None -> ()
+          }
+        }
+        if grp.count > 1 and anyGeneric {
+          for gd in grp {
+            addAmbiguousOverloadCandidate(ambiguousFuncOverloads, gd, funcSigKeyMono(gd))
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
   // #6669: every union-case ctor synth in scope, keyed by bare case name,
   // WITHOUT the first-wins collapse `funcDecls` applies below — lets
   // `bindPatternEnvMono`'s `PConstructor` arm verify a match pattern's case
