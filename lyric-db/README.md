@@ -166,6 +166,18 @@ still passes. Keep `sql(...)` arguments literal, and review every
 `unsafeRawSql` call (`grep -rn unsafeRawSql`). `Db.sqlToString(stmt)` returns
 the text for `DbConnection` implementations.
 
+**Parameter count.** A `SqlText` records how many parameters it expects: one
+more than its highest `@p<N>` outside a string literal (`Db.sqlPlaceholderCount`).
+`query` and `execute` on a connection and on a transaction return
+`Err(DbError(code = "PARAM_COUNT_MISMATCH"))` before the statement reaches a
+driver when `params.length` differs (`Db.sqlParamsError` is the same check for
+`DbConnection` implementations of your own). A gap still counts (`@p0` and
+`@p2` need three values), so supply a value for every index up to the highest.
+
+**Lint.** `lyric lint` rule `L008` warns on a `sql(...)` / `Db.sql(...)` call
+whose argument is not a string literal or a `+` chain of literals, pointing at
+`unsafeRawSql` for audited dynamic text (#8520).
+
 **Migrating from `String`:** wrap each literal in `Db.sql(...)`; wrap a
 deliberately dynamic fragment in `Db.unsafeRawSql(...)` with a comment saying
 why it is safe. A `DbConnection`/`DbTransaction` implementation changes its

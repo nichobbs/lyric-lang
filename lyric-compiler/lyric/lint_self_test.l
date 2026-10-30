@@ -245,3 +245,28 @@ test "L007: protected type func member with no visibility modifier is not flagge
   val diags = lint(src)
   assertEqualInt(countCode(diags, "L007"), 0, "a package-private helper func is never externally reachable")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N. L008 — non-literal argument to sql(...) (#8520)
+// ─────────────────────────────────────────────────────────────────────────────
+test "L008: an interpolated string passed to Db.sql is flagged" {
+  val src = "package P\n" + "func q(name: in String): Int {\n" + "  val s = Db.sql(\"SELECT 1 WHERE x = '${name}'\")\n" + "  0\n" + "}\n"
+  assertEqualInt(countCode(lint(src), "L008"), 1, "one L008 for the interpolation")
+}
+
+test "L008: a variable and a concatenation with a variable are flagged, a bare sql() call too" {
+  val src = "package P\n" + "func q(t: in String): Int {\n" + "  val a = sql(t)\n" + "  val b = Db.sql(\"SELECT * FROM \" + t)\n" + "  0\n" + "}\n"
+  val diags = lint(src)
+  assertEqualInt(countCode(diags, "L008"), 2, "both non-literal calls are flagged")
+  assertTrue(anyMessageContains(diags, "L008", "unsafeRawSql"), "message points at unsafeRawSql")
+}
+
+test "L008: literals, parenthesised literals and literal + chains are accepted" {
+  val src = "package P\n" + "func q(): Int {\n" + "  val a = Db.sql(\"SELECT 1\")\n" + "  val b = sql((\"SELECT \" + \"2\"))\n" + "  val c = Db.sql(\"SELECT * FROM t \" + \"WHERE a = @p0\")\n" + "  0\n" + "}\n"
+  assertEqualInt(countCode(lint(src), "L008"), 0, "no L008 for literal SQL")
+}
+
+test "L008: a call nested in a match arm, lambda and test body is found" {
+  val src = "package P\n" + "func q(t: in String): Int {\n" + "  match t {\n" + "    case _ -> {\n" + "      val a = Db.sql(t)\n" + "      0\n" + "    }\n" + "  }\n" + "}\n" + "test \"x\" {\n" + "  val z = Db.sql(\"a${1}\")\n" + "}\n"
+  assertEqualInt(countCode(lint(src), "L008"), 2, "match-arm block and test body are both walked")
+}

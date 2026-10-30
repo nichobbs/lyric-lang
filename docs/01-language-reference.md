@@ -3397,6 +3397,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | `L004` | warning | Doc comments must not contain `TODO` or `FIXME`. |
 | `L005` | warning | `pub func` with a block body should declare at least one `requires:` or `ensures:` contract. Expression-body stubs are excluded. |
 | `L007` | warning | A `pub`/`internal` item's signature (receiver, parameter, return type, `pub`/`internal` field, union case payload, interface method, or `pub val` type) names a package-private type declared in the same file (#7549). `L006` is retired (§14.6) and not reused. |
+| `L008` | warning | A call to `sql(...)` / `Db.sql(...)` whose first argument is not a string literal, a parenthesised literal, or a `+` chain of literals (an interpolation with a `${...}` part counts as non-literal). SQL assembled at run time bypasses the `SqlText` injection guard of `lyric-db`; bind values through `@p<N>` parameters or use `unsafeRawSql` for audited dynamic text (#8520). The callee is matched by name only (the rule is AST-based), so an unrelated function called `sql` is flagged too. |
 
 `L007` is single-file (per §"Diagnostic codes" above, `lyric lint` works entirely from the parsed AST): it only sees type declarations in the file it is linting, so a package-private type declared in a *sibling* file of a split multi-file package (§3.4) is not visible to this rule. Cross-package private types are unaffected either way — those already fail T0097 (§3.1) at every use site. A package-wide registry for `lyric lint --manifest` is tracked in #7607.
 
