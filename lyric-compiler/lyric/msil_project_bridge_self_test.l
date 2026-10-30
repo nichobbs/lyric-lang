@@ -3277,3 +3277,36 @@ test "a parameter that shadows a private non-generic helper is left alone" {
   assertEqualInt(result.exitCode, 0, "plain shadowing: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "5\n109", "the parameter was called, the helper was carried for the other")
 }
+
+// #7970: a project build resolves a bare name exactly as a single-file check
+// does. A package imported only under an alias makes no name visible bare, so
+// the bare call is rejected (T0020) and the qualified spelling builds.
+test "a bare name from an aliased-only import is rejected in a project build (#7970)" {
+  val noActive: List[String] = newList()
+  val noDeclared: List[String] = newList()
+  val lib = mkPkg("Pkg7970Lib", "package Pkg7970Lib\n\npub func helper(): Int {\n  7\n}\n")
+  val bare: List[ProjectPackagePayload] = newList()
+  bare.add(lib)
+  bare.add(
+    mkPkg(
+      "Pkg7970Bare",
+      "package Pkg7970Bare\n\nimport Pkg7970Lib as L\n\nfunc main(): Unit {\n  println(helper())\n}\n"
+    )
+  )
+  assertFalse(
+    compileAndGetSucceeded("aliased-bare-7970", bare, "AliasedBare7970", noActive, noDeclared),
+    "helper() through an alias-only import must not build"
+  )
+  val qualified: List[ProjectPackagePayload] = newList()
+  qualified.add(lib)
+  qualified.add(
+    mkPkg(
+      "Pkg7970Qual",
+      "package Pkg7970Qual\n\nimport Pkg7970Lib as L\n\nfunc main(): Unit {\n  println(L.helper())\n}\n"
+    )
+  )
+  assertTrue(
+    compileAndGetSucceeded("aliased-qualified-7970", qualified, "AliasedQualified7970", noActive, noDeclared),
+    "L.helper() builds"
+  )
+}

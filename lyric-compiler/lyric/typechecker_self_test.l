@@ -7599,12 +7599,19 @@ test "imported package-qualified references resolve cleanly (#7495)" {
   )
 }
 
-test "package-qualified reference reachable only transitively resolves cleanly (#7495)" {
-  val src = "package App\nimport Lib.Wrap\nfunc f(): Int {\n  val w = Lib.Rest.Widget.create(\"x\")\n  Lib.Rest.ping()\n}\n"
+// #7799: the backends resolve a qualified callee from the file's own imports,
+// so naming a package reached only through an imported package's imports in a
+// value or call path is T0020 (it was accepted here, a T0115 on MSIL).
+test "package-qualified call reachable only transitively needs its own import (#7799)" {
+  val src = "package App\nimport Lib.Wrap\nfunc f(): Int {\n  Lib.Rest.ping()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, libRestPackages())
+  assertEqualInt(countDiagCode(cr, "T0020"), 1, "Lib.Rest is not imported by the file: T0020")
+  assertTrue(diagMessagesContain(cr, "add `import Lib.Rest`"), "the message advises the import")
+  val withImport = "package App\nimport Lib.Wrap\nimport Lib.Rest\nfunc f(): Int {\n  Lib.Rest.ping()\n}\n"
   assertEqualInt(
-    countDiagCode(checkWithImportedPackages(parse(src).file, libRestPackages()), "T0020"),
+    countDiagCode(checkWithImportedPackages(parse(withImport).file, libRestPackages()), "T0020"),
     0,
-    "Lib.Rest is reachable through Lib.Wrap's own import (kernel/host idiom): no T0020"
+    "with the import: no T0020"
   )
 }
 
@@ -13029,4 +13036,109 @@ test "value-returning lambdas nested three deep keep their types under the lenie
   val bad = head +
     "func run(xs: in slice[Int], ys: in slice[Int]): Int {\n  val r = mapS(xs, { a -> mapS(ys, { b -> mapS(xs, { c -> a + b + c + \"x\" }) }) })\n  r[0][0][0]\n}\n"
   assertTrue(diagCount(parseCheck(bad)) > 0, "a mismatch in the innermost body is still reported")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7368: a qualified function value reports "ambiguous qualifier" (several
+// packages end in it, none in scope) apart from "overloaded function" (one
+// package declares several overloads).
+// ─────────────────────────────────────────────────────────────────────────────
+func importedPkg(name: in String, src: in String): ImportedPackage {
+  val pr = parse(src)
+  ImportedPackage(
+    name = name,
+    items = pr.file.items,
+    imports = collectImportNames(pr.file.imports),
+    wholeImports = collectWholeImportNames(pr.file.imports)
+  )
+}
+
+test "a qualified function value whose qualifier ends several unimported packages is an ambiguous qualifier" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(importedPkg("Lib.Sub.Bar", "package Lib.Sub.Bar\npub func parse(s: in String): Int { 1 }\n"))
+  packages.add(importedPkg("Other.Sub.Bar", "package Other.Sub.Bar\npub func parse(s: in String): Int { 2 }\n"))
+  val src = "package App\nfunc g(): Unit {\n  val f: (String) -> Int = Sub.Bar.parse\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), packages)
+  assertTrue(hasDiagCode(cr, "T0123"), "ambiguous qualifier: T0123")
+  assertTrue(diagMessagesContain(cr, "is ambiguous"), "the message calls the qualifier ambiguous")
+  assertTrue(
+    diagMessagesContain(cr, "Lib.Sub.Bar") and diagMessagesContain(cr, "Other.Sub.Bar"),
+    "the message names both packages"
+  )
+  assertTrue(diagMessagesContain(cr, "full package path"), "the message advises the full package path")
+  assertTrue(not diagMessagesContain(cr, "wrap the call in a lambda"), "no lambda advice for an ambiguous qualifier")
+}
+
+test "a qualified function value naming overloads keeps the lambda advice" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    importedPkg(
+      "Ovl.Other",
+      "package Ovl.Other\npub func pad(s: in String, n: in Int): String { s }\npub func pad(s: in String): String { s }\n"
+    )
+  )
+  val src = "package Ovl.App\nimport Ovl.Other\nfunc g(): Unit {\n  val f: (String) -> String = Other.pad\n}\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), packages)
+  assertTrue(hasDiagCode(cr, "T0123"), "overloads: T0123")
+  assertTrue(diagMessagesContain(cr, "wrap the call in a lambda"), "overloads keep the lambda advice")
+  assertTrue(not diagMessagesContain(cr, "is ambiguous"), "overloads are not an ambiguous qualifier")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7799: a qualified name through a facade package finds what the facade
+// re-exports from its own imports, as the bare name does (kernel/host idiom).
+// ─────────────────────────────────────────────────────────────────────────────
+test "an aliased facade import resolves a re-exported function qualified" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(importedPkg("Host.Impl", "package Host.Impl\npub func make(): Int { 4 }\n"))
+  packages.add(importedPkg("Host.Facade", "package Host.Facade\nimport Host.Impl\npub func other(): Int { 1 }\n"))
+  val aliased = "package App\nimport Host.Facade as F\nfunc g(): Int {\n  F.make()\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(aliased).file), packages)),
+    0,
+    "F.make() resolves through the facade's import"
+  )
+  val full = "package App\nimport Host.Facade\nfunc g(): Int {\n  Host.Facade.make()\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(full).file), packages)),
+    0,
+    "Host.Facade.make() resolves through the facade's import"
+  )
+  val missing = "package App\nimport Host.Facade as F\nfunc g(): Int {\n  F.absent()\n}\n"
+  assertTrue(
+    hasDiagCode(checkWithImportedPackages(rewriteFile(parse(missing).file), packages), "T0020"),
+    "a name neither the facade nor its imports declare is still T0020"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #8350: a module-level val, a local or a parameter of function type hides an
+// imported function of the same name in call position.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a function-typed val, local or parameter hides an imported function in call position" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(importedPkg("Lib", "package Lib\npub func twice(n: in Int): Int { n + n }\n"))
+  val moduleVal = "package App\nimport Lib.{twice}\nval twice: (Int) -> Bool = { n -> n > 1 }\nfunc g(): Bool {\n  twice(3)\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(moduleVal).file), packages)),
+    0,
+    "module-level val: the call is the val's (Bool), not Lib.twice (Int)"
+  )
+  val param = "package App\nimport Lib.{twice}\nfunc g(twice: in (Int) -> Bool): Bool {\n  twice(3)\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(param).file), packages)),
+    0,
+    "parameter: the call is the parameter's"
+  )
+  val local = "package App\nimport Lib.{twice}\nfunc g(): Bool {\n  val twice: (Int) -> Bool = { n -> n > 1 }\n  twice(3)\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(local).file), packages)),
+    0,
+    "local: the call is the local's"
+  )
+  val control = "package App\nimport Lib.{twice}\nfunc g(): Int {\n  twice(3)\n}\n"
+  assertEqualInt(
+    diagCount(checkWithImportedPackages(rewriteFile(parse(control).file), packages)),
+    0,
+    "control: with no shadowing the import is called"
+  )
 }

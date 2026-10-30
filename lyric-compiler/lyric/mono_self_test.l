@@ -37,6 +37,8 @@ import Lyric.ContractElaborator
 import Lyric.Mono
 import Lyric.TypeChecker
 import Lyric.Pipeline
+import Lyric.TypeAliasResolve as TAR
+import Lyric.BareFuncRef as BFR
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -3253,4 +3255,17 @@ test "re-checking an operator-bounded specialisation records the operators it ho
   }
   assertEqualInt(distinct, 2, "Score's + and > are distinct-type operator sites")
   assertEqualInt(records, 1, "V2's + is a record arithmetic site")
+}
+
+// #8562: an explicit alias type argument (`sum2[Count](1, 2)`) is resolved to
+// the alias's target before the specialisation key is built, as an inferred
+// alias argument already was, so no M0002 and the `Int` specialisation is
+// emitted.
+test "an explicit alias type argument specialises on the alias target (#8562)" {
+  val src = "package P\nalias Count = Int\nfunc sum2[T](a: in T, b: in T): T { a }\nfunc caller(): Int { sum2[Count](1, 2) }\n"
+  val pr = parse(src)
+  val resolved = TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(pr.file), pr.file)
+  val res = monoFile(resolved)
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no M0002 for the alias argument")
+  assertTrue(hasFunc(res.file, "sum2__Int"), "sum2__Int specialisation emitted for sum2[Count]")
 }

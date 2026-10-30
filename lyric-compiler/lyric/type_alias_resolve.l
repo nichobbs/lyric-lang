@@ -927,6 +927,32 @@ func resolveExpr(aliasTargets: in Map[String, TypeExpr], genericNames: in List[S
   resolveExprAt(aliasTargets, genericNames, expr, 0)
 }
 
+// An index of `f[Count](...)`, the surface spelling of an explicit type
+// application, that names a type alias: the alias's target path, so the
+// middle end's specialisation key is built from the real type (#8562).  Any
+// other index (a value, or a name that is no alias) is resolved as an ordinary
+// expression.
+func resolveAliasIndexAt(
+  aliasTargets: in Map[String, TypeExpr],
+  genericNames: in List[String],
+  idx: in Expr,
+  depth: in Int,
+): Expr {
+  match idx.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 and aliasTargets.containsKey(p.segments[0]) and not genericNames.contains(p.segments[0]) {
+        val resolved = resolveTypeExprAt(aliasTargets, genericNames, TypeExpr(kind = TRef(path = p), span = idx.span), depth)
+        match resolved.kind {
+          case TRef(rp) -> return Expr(kind = EPath(path = rp), span = idx.span)
+          case _ -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+  resolveExprAt(aliasTargets, genericNames, idx, depth)
+}
+
 func resolveExprAt(
   aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], expr: in Expr, depth: in Int
 ): Expr {
@@ -1032,7 +1058,7 @@ func resolveExprAt(
       val ni: List[Expr] = newList()
       var i = 0
       while i < indices.count {
-        ni.add(resolveExprAt(aliasTargets, genericNames, indices[i], depth))
+        ni.add(resolveAliasIndexAt(aliasTargets, genericNames, indices[i], depth))
         i = i + 1
       }
       EIndex(receiver = resolveExprAt(aliasTargets, genericNames, receiver, depth), indices = ni)
