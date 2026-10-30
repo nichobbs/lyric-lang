@@ -2345,6 +2345,16 @@ test "protected type annotation before non-first entry (#5815)" {
   )
 }
 
+test "contextual keywords are accepted as member names after a dot (#8310)" {
+  val src = "package P\n" + "func f(c: in Outer): String {\n" + "  c.entry.name\n" + "}\n" +
+    "func g(c: in Outer): Int {\n" +
+    "  c.when + c.invariant + c.result + c.type + c.record\n" +
+    "}\n"
+  assertEqualInt(diagCount(parse(src)), 0, "entry, when, invariant, result, type and record read as members")
+  val bad = parse("package P\nfunc f(c: in Outer): Int {\n  c.if\n}\n")
+  assertTrue(diagCount(bad) > 0, "a reserved word at member position is still a parse error")
+}
+
 test "protected type annotation before non-first func member (#5815)" {
   val src = "package P\n" + "protected type Buf {\n" + "  var n: Int\n" + "\n" + "  entry push(): Unit { n = n + 1 }\n" +
     "\n" +

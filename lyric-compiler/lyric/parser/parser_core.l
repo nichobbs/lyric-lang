@@ -297,6 +297,13 @@ pub func contextualIdentKeyword(k: in Keyword): Option[String] {
   }
 }
 
+func isContextualIdentKeyword(k: in Keyword): Bool {
+  match contextualIdentKeyword(k) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
 // `result` is a contextual keyword: valid as an identifier everywhere
 // except inside `ensures:` expression position.  The pure
 // position-introducer keywords in `contextualIdentKeyword` are likewise
@@ -333,7 +340,10 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
 // bitwise integer methods); the parameter-mode keywords `in`, `out`, and
 // `inout` are accepted because member position is unambiguous (only a name
 // can follow `.`) and JDK auto-FFI code reads fields spelled with them —
-// `System.in` and `System.out` being the canonical cases.  All other
+// `System.in` and `System.out` being the canonical cases.  The contextual
+// identifier keywords (`contextualIdentKeyword`: `entry`, `type`, `record`, …)
+// plus `when`, `invariant` and `result` are accepted too, so a field named
+// `entry` reads as `c.entry.name` (#8310).  All other
 // keywords at member position remain a parse error (P0081), preserving
 // clear diagnostics for mistakes like `x.if(...)` or `x.return`.
 pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
@@ -344,7 +354,10 @@ pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
       Some(value = NameAndSpan(name = name, span = t.span))
     }
     case TKeyword(k) -> {
-      val allowed = k == KwAnd or k == KwOr or k == KwXor or k == KwIn or k == KwOut or k == KwInout
+      val allowed = k == KwAnd or k == KwOr or k == KwXor or k == KwIn or k == KwOut or k == KwInout or k == KwWhen or
+        k == KwInvariant or
+        k == KwResult or
+        isContextualIdentKeyword(k)
       if allowed {
         st.pos = st.pos + 1
         Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))

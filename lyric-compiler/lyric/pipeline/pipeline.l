@@ -1535,18 +1535,19 @@ pub func pipeCheckFront(
     // is purely syntactic — no builtin-coverage gap can make it a false
     // positive — and codegen has no lowering for a stray `old`, so it gates
     // regardless (#7731).  So does T0144: a module `val` pattern its
-    // initializer can never match has no lowering either (#7763).
+    // initializer can never match has no lowering either (#7763).  These are
+    // the advisory-mode diagnostics that still stop the build.
     val advisory: List[Diagnostic] = newList()
-    val misplacedOld: List[Diagnostic] = newList()
+    val gatingAdvisoryDiags: List[Diagnostic] = newList()
     for d in tcRes.diagnostics {
       if d.code == "T0080" or d.code == "T0144" {
-        misplacedOld.add(d)
+        gatingAdvisoryDiags.add(d)
       } else {
         advisory.add(d)
       }
     }
     reportTo(sink, opts.pkgLabel, opts.lineOrigins, advisory)
-    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, misplacedOld) {
+    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, gatingAdvisoryDiags) {
       return None
     }
   }

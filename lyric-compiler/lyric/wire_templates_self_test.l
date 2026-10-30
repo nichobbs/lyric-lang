@@ -107,6 +107,30 @@ pub wire ServerModule {
   overridable cors
 }
 
+pub wire CountModule {
+  @provided tag: String
+  contributes[Middleware] cors = Cors(tag = tag)
+  contributes[Middleware] logging = Logging(tag = tag)
+  singleton innerCount: Int = Middleware.count
+  expose innerCount
+}
+
+// Consumer 5: aliased include of a template that reads `.count` of its own
+// collection through a dotted path (#8540).  The consumer's own `auth`
+// entry joins the consumer's collection, not the isolated instance, so the
+// template must still see exactly its own two entries.
+wire CountApp {
+  @provided tag: String
+  include CountModule as Mw {
+    @provided tag: tag
+  }
+  contributes[Middleware] auth = Auth(tag = tag)
+  singleton innerSeen: Int = Mw.innerCount
+  singleton outerSeen: Int = Middleware.count
+  expose innerSeen
+  expose outerSeen
+}
+
 // Consumer 1: plain include, consumer contribution ordered against the
 // template's entries, bare `@provided` passthrough.
 wire ProdApp {
@@ -338,6 +362,12 @@ test "direct contributes in a plain wire, no include" {
 test "collection named after the entries' constructor type" {
   SameNameApp.bootstrap("s2")
   assertEqualInt(SameNameApp.total(), 2, "ctor call head is not a collection dependency (no false W0001)")
+}
+
+test "aliased include renames the head of a dotted collection path" {
+  CountApp.bootstrap("c1")
+  assertEqualInt(CountApp.innerSeen(), 2, "template reads its isolated collection (#8540)")
+  assertEqualInt(CountApp.outerSeen(), 1, "consumer collection stays separate")
 }
 
 test "aliased include reorder remaps ordering-clause names" {
