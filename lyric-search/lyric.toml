@@ -19,6 +19,9 @@ output_assembly = "Search.dll"
 
 [project.tests]
 "Search.SearchTests" = "tests/search_tests.l"
+# JVM-only (file-level `@cfg(target = "jvm")`): a silent in-process backend
+# exercises the request-deadline branch (#8571).
+"Search.SearchJvmTimeoutTests" = "tests/search_jvm_timeout_tests.l"
 
 # `elasticsearch` and `meilisearch` are MUTUALLY EXCLUSIVE per build:
 # `search.l`'s generic client operations (index/search/suggest/delete/...)

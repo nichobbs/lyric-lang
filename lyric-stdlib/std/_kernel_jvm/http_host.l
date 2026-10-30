@@ -47,6 +47,10 @@ package Std.HttpHost
 
 import Std.Core
 import Std.Collections
+import Std.String
+import Std.Encoding
+import Std.HttpEngine
+import Std.HttpClientWire
 import Std.Task
 import Std.Tls
 import Std.TlsHost
@@ -54,7 +58,7 @@ import Std.TlsHost
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
 // =====================================================================
-extern type HttpClientHandle = "java.net.http.HttpClient"
+extern type JHttpClient = "java.net.http.HttpClient"
 
 extern type JHttpClientBuilder = "java.net.http.HttpClient$Builder"
 
@@ -91,6 +95,18 @@ extern type JDuration = "java.time.Duration"
 
 extern type JSystem = "java.lang.System"
 
+/// A client. `unixPath` is empty for the JDK transport (`jdk` is the client
+/// that sends); otherwise every request is written to that Unix domain socket
+/// by the pure-Lyric HTTP/1.1 codec (`Std.HttpClientWire`) and `jdk` is unused
+/// (`java.net.http.HttpClient` has no Unix-socket transport, #8560).
+/// `maxRedirects` is the redirect hop limit of the Unix path, 0 meaning none;
+/// the JDK transport takes its redirect policy from `jdk` itself.
+pub record HttpClientHandle {
+  jdk: JHttpClient
+  unixPath: String
+  maxRedirects: Int
+}
+
 /// Request under construction: method/URL/headers/body accumulate in
 /// pure Lyric; the JDK `HttpRequest` is built once in the send path
 /// (module header).  `timeoutNanos` (0 = none) carries a
@@ -110,7 +126,8 @@ pub record HttpRequestMessage {
 /// the negotiated wire protocol (docs/61 §5.1; #5879).
 pub record HttpResponseMessage {
   status: Int
-  jheaders: JHttpHeaders
+  jheaders: Option[JHttpHeaders]
+  wireHeaders: List[HeaderField]
   bodyBytes: slice[Byte]
   version: JHttpVersion
 }
@@ -123,15 +140,20 @@ pub record HttpResponseMessage {
 // `DefaultRequestVersion`/`DefaultVersionPolicy` properties, there is no
 // post-construction way to change it — so every construction path takes the
 // desired version up front rather than patching an already-built client.
+func jdkHandle(client: in JHttpClient): HttpClientHandle {
+  HttpClientHandle(jdk = client, unixPath = "", maxRedirects = 0)
+}
+
 func buildClient(followRedirects: in Bool, version: in JHttpVersion): HttpClientHandle {
-  val b: JHttpClientBuilder = HttpClientHandle.newBuilder()
+  val b: JHttpClientBuilder = JHttpClient.newBuilder()
   val withRedirect: JHttpClientBuilder = if followRedirects {
     b.followRedirects(JRedirect.NORMAL)
   } else {
     b.followRedirects(JRedirect.NEVER)
   }
   val withVersion: JHttpClientBuilder = withRedirect.version(version)
-  withVersion.build()
+  val built: JHttpClient = withVersion.build()
+  jdkHandle(built)
 }
 
 // #333 parity with the .NET twin: process-wide client singleton,
@@ -179,42 +201,47 @@ pub func hostClientNoRedirectsHttp11(): HttpClientHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Unix domain socket support: not available on this target.
-// `java.net.http.HttpClient` exposes no Unix-socket transport; until the
-// JDK grows one, constructing such a client fails loudly rather than
-// returning a client that silently dials TCP.  Tracked with the JVM
-// parity umbrella, #2663.  Unsupported regardless of HTTP version, so the
-// `*Http11` variants below fail the same way as their plain counterparts.
+// Unix domain socket support (#8560).  `java.net.http.HttpClient` exposes no
+// Unix-socket transport, so a Unix-socket client writes each request to a
+// `java.nio.channels.SocketChannel` itself and parses the response with the
+// sans-IO `Std.HttpClientWire` codec (transport below, "Unix domain socket
+// transport").  HTTP/1.1 only, so the `*Http11` variants are the plain ones.
 // ---------------------------------------------------------------------------
-func unixSocketUnsupported(): HttpClientHandle {
-  panic(
-    "Std.Http: Unix domain socket clients are not supported on the JVM target: " +
-      "java.net.http.HttpClient has no Unix-socket transport (tracked in #2663)"
+/// Redirect hop limit of a Unix-socket client built without an explicit
+/// `maxRedirects`; .NET's `SocketsHttpHandler.MaxAutomaticRedirections`
+/// default, which the dotnet kernel's Unix-socket client follows.
+val DEFAULT_UNIX_REDIRECTS: Int = 50
+
+func unixHandle(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
+  HttpClientHandle(
+    jdk = processClient.jdk,
+    unixPath = socketPath,
+    maxRedirects = if maxRedirects > 0 { maxRedirects } else { 0 }
   )
 }
 
 pub func hostClientWithUnixSocket(socketPath: in String): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, DEFAULT_UNIX_REDIRECTS)
 }
 
 pub func hostClientWithUnixSocketAndRedirects(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, maxRedirects)
 }
 
 pub func hostClientWithUnixSocketNoRedirects(socketPath: in String): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, 0)
 }
 
 pub func hostClientWithUnixSocketHttp11(socketPath: in String): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, DEFAULT_UNIX_REDIRECTS)
 }
 
 pub func hostClientWithUnixSocketAndRedirectsHttp11(socketPath: in String, maxRedirects: in Int): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, maxRedirects)
 }
 
 pub func hostClientWithUnixSocketNoRedirectsHttp11(socketPath: in String): HttpClientHandle {
-  unixSocketUnsupported()
+  unixHandle(socketPath, 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -925,7 +952,7 @@ pub func hostClientWithTls(
     }
   }
   val version: JHttpVersion = if pinHttp11 { JHttpVersion.HTTP_1_1 } else { JHttpVersion.HTTP_2 }
-  val b: JHttpClientBuilder = HttpClientHandle.newBuilder()
+  val b: JHttpClientBuilder = JHttpClient.newBuilder()
   val withRedirect: JHttpClientBuilder = if followRedirects {
     b.followRedirects(JRedirect.NORMAL)
   } else {
@@ -934,7 +961,8 @@ pub func hostClientWithTls(
   val withVersion: JHttpClientBuilder = withRedirect.version(version)
   val withCtx: JHttpClientBuilder = withVersion.sslContext(ctx)
   val withParams: JHttpClientBuilder = withCtx.sslParameters(params)
-  withParams.build()
+  val built: JHttpClient = withParams.build()
+  jdkHandle(built)
 }
 
 // =====================================================================
@@ -1052,13 +1080,19 @@ func readAllAndClose(ins: in JInputStream): slice[Byte] {
 }
 
 func doSend(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage {
+  if client.unixPath.length > 0 {
+    return doSendUnix(client, request)
+  }
   val jreq = buildJavaRequest(request)
-  val resp: JHttpResponse = client.send(jreq, JBodyHandlers.ofInputStream())
+  val jdk: JHttpClient = client.jdk
+  val resp: JHttpResponse = jdk.send(jreq, JBodyHandlers.ofInputStream())
   val ins: JInputStream = resp.body()
   val bytes = readAllAndClose(ins)
+  val headers: JHttpHeaders = resp.headers()
   HttpResponseMessage(
     status = resp.statusCode(),
-    jheaders = resp.headers(),
+    jheaders = Some(value = headers),
+    wireHeaders = noWireHeaders(),
     bodyBytes = bytes,
     version = resp.version()
   )
@@ -1091,6 +1125,242 @@ func doPostString(
 }
 
 // =====================================================================
+// Unix domain socket transport (#8560).
+// =====================================================================
+// One connection per request (`Connection: close`).  The channel is
+// non-blocking and driven by a `Selector` so a `makeCancelSourceTimeout`
+// deadline bounds the write and the read, which a blocking channel cannot
+// honour.  The response is read to end of stream and handed to
+// `Std.HttpClientWire.parseClientResponse`, which frames it.
+extern type JSocketChannel = "java.nio.channels.SocketChannel"
+
+extern type JUnixSocketAddress = "java.net.UnixDomainSocketAddress"
+
+extern type JSelector = "java.nio.channels.Selector"
+
+extern type JSelectionKey = "java.nio.channels.SelectionKey"
+
+extern type JByteBuffer = "java.nio.ByteBuffer"
+
+extern type JByteArrayOutputStream = "java.io.ByteArrayOutputStream"
+
+extern type JSet = "java.util.Set"
+
+val OP_READ: Int = 1
+
+val OP_WRITE: Int = 4
+
+val UNIX_READ_BUFFER_BYTES: Int = 65536
+
+func noWireHeaders(): List[HeaderField] {
+  val h: List[HeaderField] = newList()
+  h
+}
+
+/// Block until the channel is ready for `ops` or `deadlineNanos` (an absolute
+/// `System.nanoTime()` value, 0 for none) passes; panics with the JDK's own
+/// timeout wording on expiry.
+func awaitReady(selector: in JSelector, key: in JSelectionKey, ops: in Int, deadlineNanos: in Long): Unit {
+  key.interestOps(ops)
+  if deadlineNanos > 0i64 {
+    val remainingNanos = deadlineNanos - JSystem.nanoTime()
+    if remainingNanos <= 0i64 {
+      panic("request timed out")
+    }
+    val remainingMs = remainingNanos / 1000000i64 + 1i64
+    selector.select(remainingMs)
+  } else {
+    selector.select()
+  }
+  val selected: JSet = selector.selectedKeys()
+  selected.clear()
+}
+
+func writeFully(
+  channel: in JSocketChannel,
+  selector: in JSelector,
+  key: in JSelectionKey,
+  bytes: in slice[Byte],
+  deadlineNanos: in Long,
+): Unit {
+  val buf: JByteBuffer = JByteBuffer.wrap(bytes)
+  while buf.hasRemaining() {
+    val n: Int = channel.write(buf)
+    if n == 0 {
+      awaitReady(selector, key, OP_WRITE, deadlineNanos)
+    }
+  }
+}
+
+func readToEnd(
+  channel: in JSocketChannel, selector: in JSelector, key: in JSelectionKey, deadlineNanos: in Long
+): slice[Byte] {
+  val sink: JByteArrayOutputStream = JByteArrayOutputStream.new()
+  val buf: JByteBuffer = JByteBuffer.allocate(UNIX_READ_BUFFER_BYTES)
+  var eof = false
+  while not eof {
+    buf.clear()
+    val n: Int = channel.read(buf)
+    if n < 0 {
+      eof = true
+    } else if n == 0 {
+      awaitReady(selector, key, OP_READ, deadlineNanos)
+    } else {
+      val array: slice[Byte] = buf.array()
+      sink.write(array, 0, n)
+    }
+  }
+  sink.toByteArray()
+}
+
+/// Write `requestBytes` to the Unix socket at `path` and return everything
+/// the peer sends before closing.  Both the channel and the selector are
+/// closed on every path.
+func unixRoundTrip(path: in String, requestBytes: in slice[Byte], deadlineNanos: in Long): slice[Byte] {
+  val address: JUnixSocketAddress = JUnixSocketAddress.of(path)
+  val channel: JSocketChannel = JSocketChannel.open(address)
+  val selector: JSelector = JSelector.open()
+  try {
+    channel.configureBlocking(false)
+    val key: JSelectionKey = channel.register(selector, OP_WRITE)
+    writeFully(channel, selector, key, requestBytes, deadlineNanos)
+    val response = readToEnd(channel, selector, key, deadlineNanos)
+    selector.close()
+    channel.close()
+    response
+  } catch Bug as b {
+    selector.close()
+    channel.close()
+    panic(b.message)
+  }
+}
+
+/// `host`/`target` of an absolute `http://` URL.  `https://` is refused: the
+/// socket is plaintext.  A fragment is dropped (never sent on the wire).
+record UnixTarget {
+  host: String
+  target: String
+}
+
+func splitUnixUrl(url: in String): UnixTarget {
+  if url.startsWith("https://") {
+    panic("Std.Http: https:// is not supported over a Unix domain socket: " + url)
+  }
+  if not url.startsWith("http://") {
+    panic("Std.Http: a Unix domain socket request needs an absolute http:// URL: " + url)
+  }
+  val rest = url.substring(7)
+  val noFragment = match indexOf(rest, "#") { case Some(i) -> rest.substring(0, i); case None -> rest }
+  var hostEnd = noFragment.length
+  var i = 0
+  while i < noFragment.length and hostEnd == noFragment.length {
+    val c = noFragment.substring(i, 1)
+    if c == "/" or c == "?" {
+      hostEnd = i
+    }
+    i = i + 1
+  }
+  val host = noFragment.substring(0, hostEnd)
+  val tail = noFragment.substring(hostEnd)
+  val target = if tail.length == 0 { "/" } else if tail.startsWith("?") { "/" + tail } else { tail }
+  UnixTarget(host = host, target = target)
+}
+
+func wireRequestHeaders(request: in HttpRequestMessage): List[HeaderField] {
+  val headers: List[HeaderField] = newList()
+  var i = 0
+  while i < request.headerNames.count {
+    headers.add(HeaderField(name = request.headerNames[i], value = request.headerValues[i]))
+    i = i + 1
+  }
+  headers
+}
+
+func isRedirectStatus(status: in Int): Bool {
+  status == 301 or status == 302 or status == 303 or status == 307 or status == 308
+}
+
+/// Resolve a `Location` value against the URL it answered. Every host maps
+/// onto the one socket, so only the path matters; the scheme must stay `http`.
+func resolveRedirect(current: in String, location: in String): String {
+  if location.startsWith("http://") {
+    location
+  } else if location.startsWith("https://") {
+    panic("Std.Http: redirect to https:// is not supported over a Unix domain socket: " + location)
+  } else {
+    val base = splitUnixUrl(current)
+    if location.startsWith("/") {
+      "http://" + base.host + location
+    } else {
+      val path = match indexOf(base.target, "?") { case Some(q) -> base.target.substring(0, q); case None -> base.target }
+      val dir = match lastIndexOf(path, "/") { case Some(slash) -> path.substring(0, slash + 1); case None -> "/" }
+      "http://" + base.host + dir + location
+    }
+  }
+}
+
+func unixHop(client: in HttpClientHandle, request: in HttpRequestMessage, deadlineNanos: in Long): ClientResponse {
+  val parts = splitUnixUrl(request.url)
+  val body: Option[slice[Byte]] = if request.hasBody { Some(value = encodeUtf8(request.body)) } else { None }
+  val requestBytes = match serializeClientRequest(request.method, parts.target, parts.host, wireRequestHeaders(request), request.contentType, body) {
+    case Ok(bytes) -> bytes
+    case Err(message) -> panic("Std.Http: " + message)
+  }
+  val raw = unixRoundTrip(client.unixPath, requestBytes, deadlineNanos)
+  match parseClientResponse(raw, request.method.toUpper() == "HEAD", true) {
+    case Complete(response) -> response
+    case Malformed(message) -> panic("Std.Http: malformed HTTP response from " + client.unixPath + ": " + message)
+    case Incomplete -> panic("Std.Http: incomplete HTTP response from " + client.unixPath)
+  }
+}
+
+func doSendUnix(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage {
+  val deadlineNanos = if request.timeoutNanos > 0i64 { JSystem.nanoTime() + request.timeoutNanos } else { 0i64 }
+  var current = request
+  var hops = 0
+  var result = unixHop(client, current, deadlineNanos)
+  while client.maxRedirects > 0 and isRedirectStatus(result.status) and hasLocation(result) {
+    if hops >= client.maxRedirects {
+      panic("Std.Http: too many redirects (limit " + client.maxRedirects.toString() + ")")
+    }
+    val next = resolveRedirect(current.url, locationOf(result))
+    val method = current.method.toUpper()
+    val keepsMethod = result.status == 307 or result.status == 308
+    val becomesGet = not keepsMethod and method != "GET" and method != "HEAD"
+    current = HttpRequestMessage(
+      method = if becomesGet { "GET" } else { current.method },
+      url = next,
+      headerNames = current.headerNames,
+      headerValues = current.headerValues,
+      contentType = if becomesGet { "" } else { current.contentType },
+      body = if becomesGet { "" } else { current.body },
+      hasBody = if becomesGet { false } else { current.hasBody },
+      timeoutNanos = current.timeoutNanos
+    )
+    result = unixHop(client, current, deadlineNanos)
+    hops = hops + 1
+  }
+  HttpResponseMessage(
+    status = result.status,
+    jheaders = None,
+    wireHeaders = result.headers,
+    bodyBytes = result.body,
+    version = JHttpVersion.HTTP_1_1
+  )
+}
+
+func hasLocation(response: in ClientResponse): Bool {
+  locationOf(response).length > 0
+}
+
+func locationOf(response: in ClientResponse): String {
+  match headerValue(response.headers, "Location") {
+    case Some(value) -> value
+    case None -> ""
+  }
+}
+
+// =====================================================================
 // Response accessors.
 // =====================================================================
 pub func hostStatusCode(response: in HttpResponseMessage): Int {
@@ -1116,9 +1386,14 @@ pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
 /// headers in the same map, matching the .NET twin's two-collection
 /// fallthrough.
 pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {
-  val opt: JOptional = response.jheaders.firstValue(name)
-  val value: String = opt.orElse("")
-  value
+  match response.jheaders {
+    case Some(headers) -> {
+      val opt: JOptional = headers.firstValue(name)
+      val value: String = opt.orElse("")
+      value
+    }
+    case None -> match headerValue(response.wireHeaders, name) { case Some(value) -> value; case None -> "" }
+  }
 }
 
 func readBodyTextOf(response: in HttpResponseMessage): String {

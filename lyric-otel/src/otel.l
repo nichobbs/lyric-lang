@@ -21,6 +21,7 @@ package OTel
 
 import OTel.Types
 import Std.Core
+import Std.Random
 import Std.SecureRandom
 import Std.Log as StdLog
 
@@ -123,10 +124,15 @@ pub func shouldSample(rate: Float, unit: Float): Bool {
   unit < rate
 }
 
-/// A uniform draw in `[0, 1)` from the secure random source (24 bits).
-func randomUnit(): Float {
-  val b = secureGetBytes(3)
-  val n = b[0].toInt() * 65536 + b[1].toInt() * 256 + b[2].toInt()
+/// A uniform draw in `[0, 1)` (24 bits) from the process-wide `Std.Random`
+/// instance.  A sampling decision needs no unpredictability, so it avoids the
+/// operating-system entropy call `secureGetBytes` makes on every traced call;
+/// trace and span ids still come from `Std.SecureRandom`.
+@stable(since = "0.2")
+pub func randomUnit(): Float
+  ensures: result >= 0.0 and result < 1.0
+{
+  val n = nextIntBelow(sharedRandom(), 16777216)
   n.toFloat() / 16777216.0
 }
 
@@ -167,7 +173,10 @@ pub aspect Tracing {
   }
   // sampleRate is the probability that a call is traced: each call draws
   // independently, so 0.5 traces about half of them and 0.0 none.  An
-  // unsampled call runs untraced.
+  // unsampled call runs untraced.  Every span is the root of its own trace
+  // (no context propagation yet), so this draw is the trace-root decision;
+  // once a current span exists, a child inherits its parent's decision
+  // instead of drawing (D278).
   around(call) -> ret {
     if not enabled or (sampleRate < 1.0 and not shouldSample(sampleRate, randomUnit())) {
       ret = call.proceed()
