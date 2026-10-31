@@ -33,8 +33,7 @@ func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, Type
           if not isGeneric and not distinctMap.containsKey(ad.name) and aliasNamesScalar(distinctMap, ad.rhs) {
             distinctMap.add(ad.name, ad.rhs)
             changed = true
-          } else if isGeneric and not distinctMap.containsKey(genericAliasKey(ad.name)) and
-            genericAliasIsMonad(ad.rhs) and genericAliasParamsAreTypes(ad.generics) {
+          } else if isGeneric and not distinctMap.containsKey(genericAliasKey(ad.name)) and genericAliasIsMonad(ad.rhs) and genericAliasParamsAreTypes(ad.generics) {
             distinctMap.add(genericAliasKey(ad.name), ad.rhs)
             distinctMap.add(genericAliasParamsKey(ad.name), genericAliasParamsCarrier(ad.generics, ad.span))
             changed = true

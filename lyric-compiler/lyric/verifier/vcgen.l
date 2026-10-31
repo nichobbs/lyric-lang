@@ -125,9 +125,7 @@ func resolveDistinct(distincts: in Map[String, TypeExpr], te: in TypeExpr): Type
 // at the use (#8631).  A type parameter in scope that is spelt like the alias
 // shadows it, as for every file-level type.
 func expandGenericAlias(
-  distincts: in Map[String, TypeExpr],
-  typeParams: in List[String],
-  te: in TypeExpr,
+  distincts: in Map[String, TypeExpr], typeParams: in List[String], te: in TypeExpr
 ): Option[TypeExpr] {
   match te.kind {
     case TGenericApp(head, args) -> {
@@ -146,10 +144,7 @@ func expandGenericAlias(
               var i = 0
               while i < params.count {
                 match params[i].kind {
-                  case TRef(p) -> match args[i] {
-                    case TAType(arg) -> subst.add(p.segments[0], arg)
-                    case TAValue(_) -> return None
-                  }
+                  case TRef(p) -> match args[i] { case TAType(arg) -> subst.add(p.segments[0], arg); case TAValue(_) -> return None }
                   case _ -> return None
                 }
                 i = i + 1

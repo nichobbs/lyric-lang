@@ -149,7 +149,6 @@ record Dial {
 
 impl Gauge for Dial {
   func read(self: in Dial): Int
-    requires: self.n > 1000
     ensures: result > 1000
   {
     self.n

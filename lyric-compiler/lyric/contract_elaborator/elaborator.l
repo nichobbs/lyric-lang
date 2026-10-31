@@ -3207,11 +3207,7 @@ func elaborateProtectedMember(
       // is `pub` on a `pub` type, its `requires:`; the type invariants are
       // system-level and stay.  The source-level clauses are restored on the
       // result.
-      val checkedClauses = if releaseElide {
-        releaseKeptClauseList(ed.contracts, typeIsPub)
-      } else {
-        ed.contracts
-      }
+      val checkedClauses = if releaseElide { releaseKeptClauseList(ed.contracts, typeIsPub) } else { ed.contracts }
       val hasReq = collectRequires(checkedClauses, owner).count > 0
       val hasEns = collectEnsures(checkedClauses, owner).count > 0 or invariants.count > 0
       val hasInv = entryBodyHasInvariant(ed.body)
@@ -3430,7 +3426,12 @@ func elaborateFunctionWith(
     merged.add(ownKept[j])
     j = j + 1
   }
-  val acc = elaborateMember(withContracts(fn, merged), owner, contractsEnabled, selfScope.copy(inherited = extraKept.count))
+  val acc = elaborateMember(
+    withContracts(fn, merged),
+    owner,
+    contractsEnabled,
+    selfScope.copy(inherited = extraKept.count)
+  )
   withContracts(acc, fn.contracts)
 }
 
@@ -3602,16 +3603,14 @@ func releaseKeptClauseList(clauses: in List[ContractClause], isPub: in Bool): Li
   kept
 }
 
-func releaseKeptClauses(fn: in FunctionDecl, isPub: in Bool): List[ContractClause] =
-  releaseKeptClauseList(fn.contracts, isPub)
+func releaseKeptClauses(fn: in FunctionDecl, isPub: in Bool): List[ContractClause] = releaseKeptClauseList(fn.contracts, isPub)
 
 // The clauses an `impl` method inherits from its interface under the release
 // policy: an interface method is callable from outside the package, so its
 // `requires:` is part of a public boundary and stays; its `ensures:` goes.
 // (A record or protected-type member has no visibility of its own: it takes its
 // type's, so `typeIsPub` is the whole test.)
-func releaseKeptInherited(extra: in List[ContractClause]): List[ContractClause] =
-  releaseKeptClauseList(extra, true)
+func releaseKeptInherited(extra: in List[ContractClause]): List[ContractClause] = releaseKeptClauseList(extra, true)
 
 func itemIsPub(it: in Item): Bool = isPubVisibility(it.visibility)
 
@@ -3629,18 +3628,42 @@ func elaborateItem(
     case IRecord(decl) -> withKind(
       it,
       IRecord(
-        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, itemIsPub(it))
+        decl = elaborateRecordDecl(
+          decl,
+          cases,
+          pkg,
+          contractsEnabled,
+          releaseElide,
+          itemIsPub(it)
+        )
       )
     )
     case IExposedRec(decl) -> withKind(
       it,
       IExposedRec(
-        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, itemIsPub(it))
+        decl = elaborateRecordDecl(
+          decl,
+          cases,
+          pkg,
+          contractsEnabled,
+          releaseElide,
+          itemIsPub(it)
+        )
       )
     )
     case IImpl(decl) -> withKind(
       it,
-      IImpl(decl = elaborateImplDecl(decl, ifaces, typeFields, cases, pkg, contractsEnabled, releaseElide))
+      IImpl(
+        decl = elaborateImplDecl(
+          decl,
+          ifaces,
+          typeFields,
+          cases,
+          pkg,
+          contractsEnabled,
+          releaseElide
+        )
+      )
     )
     case IFunc(fn) -> {
       val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }

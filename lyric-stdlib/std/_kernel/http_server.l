@@ -1548,7 +1548,7 @@ func h2BeginDrain(state: in H2ConnState): Unit {
   if not state.draining {
     state.draining = true
     val timeoutMs = resolveConnectionIdleTimeoutMs()
-    val _watchdog = taskRun({ -> h2DrainWatchdog(state, timeoutMs) })
+    val _watchdog = taskRun({ -> h2DrainWatchdog(state, timeoutMs) });
     ()
   }
 }
@@ -1569,8 +1569,7 @@ func h2DrainWatchdog(state: in H2ConnState, timeoutMs: in Int): Unit {
 }
 
 // True once a draining connection has nothing left to wait for.
-func h2DrainFinished(state: in H2ConnState): Bool =
-  state.draining and (state.drainExpired or state.exchanges.count == 0)
+func h2DrainFinished(state: in H2ConnState): Bool = state.draining and (state.drainExpired or state.exchanges.count == 0)
 
 // Feed everything the reader task has queued into the connection FSM. A
 // zero-length entry is the reader's end-of-input marker.
