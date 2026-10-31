@@ -48002,6 +48002,52 @@ func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl:
   if not cctx.distinctClasses.containsKey(className) {
     cctx.distinctClasses.add(className, true)
   }
+  // The construction API `lowerMDistinctType` emits on the declaring
+  // assembly's type, as MemberRefs with the same signatures: `.ctor(value)`,
+  // static `from`, static `tryFrom` (when `Result` is seeded, as for an
+  // in-bundle distinct type) and the `toX` projection.  Without them
+  // `Score.from(40)` on a restored `Score` lowered to the unsupported-method
+  // stub and threw at run time (#8648).
+  val innerTy = typeExprToMsilCtx(cctx, decl.underlying, packageName)
+  val single: List[MsilType] = newList()
+  single.add(innerTy)
+  if not cctx.recordCtorTokens.containsKey(className) {
+    val ctorSig = buildInstanceMethodSigWithCtx(single, MVoid, cctx.lctx)
+    val ctorRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", "restored_dctor_" + className, ctorSig)
+    cctx.recordCtorTokens.add(className, 0x0A000000 + ctorRow)
+  }
+  if not cctx.distinctFromTokens.containsKey(className) {
+    val fromSig = buildStaticMethodSigWithCtx(single, MClass(className = className), cctx.lctx)
+    val fromRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "from", "restored_dfrom_" + className, fromSig)
+    cctx.distinctFromTokens.add(className, 0x0A000000 + fromRow)
+  }
+  val hasTryFrom = cctx.lctx.stdCoreResultOk2Row.count > 0 and cctx.lctx.stdCoreResultErr2Row.count > 0 and
+    cctx.lctx.stdCoreResultRow.count > 0
+  if hasTryFrom and not cctx.distinctTryFromTokens.containsKey(className) {
+    val triArgs: List[MsilType] = newList()
+    triArgs.add(MClass(className = className))
+    triArgs.add(MString)
+    val triRet = MGenericInst(
+      typeRefCode = tdrTypeRef(cctx.lctx.stdCoreResultRow[0]),
+      headFqn = "Std.Core.Result",
+      typeArgs = triArgs
+    )
+    val trySig = buildStaticMethodSigWithCtx(single, triRet, cctx.lctx)
+    val tryRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "tryFrom", "restored_dtry_" + className, trySig)
+    cctx.distinctTryFromTokens.add(className, 0x0A000000 + tryRow)
+    cctx.distinctTryFromRetTypes.add(className, triRet)
+  }
+  val convName = distinctConvName(innerTy)
+  if convName.length > 0 {
+    val convKey = className + "/" + convName
+    if not cctx.methodTokens.containsKey(convKey) {
+      val noParams: List[MsilType] = newList()
+      val convSig = buildInstanceMethodSigWithCtx(noParams, innerTy, cctx.lctx)
+      val convRow = ctxAddMemberRef(cctx.lctx, typeRefRow, convName, "restored_dconv_" + convKey, convSig)
+      cctx.methodTokens.add(convKey, 0x0A000000 + convRow)
+      cctx.methodRetTypes.add(convKey, innerTy)
+    }
+  }
 }
 
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {

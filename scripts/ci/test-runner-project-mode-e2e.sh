@@ -130,9 +130,14 @@ EOF
 # An enum whose case shares its name with a stdlib enum case
 # (`Std.File.EntryKind.Other`): a linked entry must use the restored enum's
 # ordinal as a call argument, in a match, in a comparison and in an annotated
-# binding.
+# binding.  The distinct type `Score` checks that a linked entry can call its
+# `from` constructor and `toInt` conversion.
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
+
+pub type Score = Int derives Add, Compare
+
+pub func addScores(a: in Score, b: in Score): Score = a + b
 
 pub enum Category {
   case Alpha
@@ -173,6 +178,10 @@ test "case compared and annotated" {
   val c: Category = Other
   assertTrue(c == Other, "c == Other")
   assertTrue(categoryName(c) == "other", "categoryName(c)")
+}
+
+test "distinct type constructed and converted" {
+  assertEqualInt(addScores(Score.from(40), Score.from(2)).toInt(), 42, "Score")
 }
 EOF
 cat > "$proj/tests/math_tests.l" <<'EOF'
