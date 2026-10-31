@@ -8824,7 +8824,17 @@ func invariantCheckerPath(tbl: in SymbolTable, sym: in Symbol): Option[String] {
     case DKOpaque(_, od) -> opaqueDeclHasInvariant(od.members)
     case _ -> false
   }
-  if not hasInv {
+  // A restored type's contract `repr` carries no `invariant:` clauses, so an
+  // imported record or opaque type is judged by its checker instead: the
+  // reserved `__lyric_checked_<Name>` is synthesized only for a type that
+  // declares invariants, and the declaring package exports it with the type.
+  val restoredShape = match sym.kind {
+    case DKRecord(_, _) -> true
+    case DKExposedRec(_, _) -> true
+    case DKOpaque(_, _) -> true
+    case _ -> false
+  }
+  if not hasInv and not (sym.isImported and restoredShape) {
     return None
   }
   val checker = "__lyric_checked_" + sym.name

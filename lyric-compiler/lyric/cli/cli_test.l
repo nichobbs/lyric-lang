@@ -23,6 +23,7 @@ import Lyric.Release as Release
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.Coverage as Cov
+import Msil.Codegen as MsilCodegen
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
@@ -1092,6 +1093,92 @@ func notRunSummary(notRun: in Int): String {
   }
 }
 
+// Whether `diags` holds an error.
+func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
+  for d in diags {
+    match d.severity {
+      case DiagError -> return true
+      case DiagWarning -> ()
+    }
+  }
+  false
+}
+
+// Whether the assembly at `path` contains the codegen's unresolved-call stub,
+// found by its message prefix (`unresolvedCallStubPrefix`) in the user-string
+// heap (UTF-16LE).  Code generation lowers a call it cannot bind to a throw
+// of that message instead of failing the build (#1481 item 4).  A linked entry
+// can reach it where the compile with the library binds the call, so a linked
+// entry that contains it is compiled again with the library.
+func hasUnresolvedCallStub(path: in String): Bool {
+  val bytes = match File.readBytes(path) { case Ok(b) -> b; case Err(_) -> return false }
+  val marker = MsilCodegen.unresolvedCallStubPrefix()
+  val n = bytes.length
+  val m = marker.length * 2
+  var i = 0
+  while i + m <= n {
+    var j = 0
+    var hit = true
+    while hit and j < marker.length {
+      val code = Str.codeUnitAt(marker, j)
+      if bytes[i + 2 * j].toInt() != code or bytes[i + 2 * j + 1].toInt() != 0 {
+        hit = false
+      }
+      j += 1
+    }
+    if hit {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+// `restored` plus the shared library build, as a restored dependency entry.
+func withSharedLibrary(restored: in List[String], stem: in String, path: in String): List[String] {
+  val combined: List[String] = newList()
+  for r in restored {
+    combined.add(r)
+  }
+  combined.add(stem + "\t" + path)
+  combined
+}
+
+// `templates` plus the library packages, whose sources still supply their
+// aspect, wire and plugin templates to a linked entry, as a path
+// dependency's do.
+func withLibraryTemplates(
+  templates: in List[Emitter.ProjectPackage], libPkgs: in List[Emitter.ProjectPackage]
+): List[Emitter.ProjectPackage] {
+  val combined: List[Emitter.ProjectPackage] = newList()
+  for t in templates {
+    combined.add(t)
+  }
+  for lp in libPkgs {
+    combined.add(lp)
+  }
+  combined
+}
+
+// The assembly stem of the shared library build `cmdTestManifest` links the
+// test entries against (#8648): one that no entry's own assembly uses.
+func sharedTestLibraryStem(jobPaths: in List[String]): String {
+  var stem = "LyricTestLibrary"
+  var clash = true
+  while clash {
+    clash = false
+    for p in jobPaths {
+      if stemOf(Path.basename(p), 2) == stem {
+        clash = true
+      }
+    }
+    if clash {
+      stem = stem + "_"
+    }
+  }
+  stem
+}
+
 // Whether `[project.tests]` declares an entry named `name`.
 func projectDeclaresTest(proj: in Mf.ProjectSection, name: in String): Bool {
   for e in proj.tests {
@@ -1960,6 +2047,11 @@ func cmdTestManifest(
     }
   }
 
+  val sharedLibStem = sharedTestLibraryStem(jobPaths)
+  val sharedLibPath = Path.join(testOutDir, sharedLibStem + testExt)
+  var sharedLibAttempted = false
+  var sharedLibOk = false
+
   var ti = 0
   while ti < jobNames.count {
     val jobName = jobNames[ti]
@@ -2067,33 +2159,161 @@ func cmdTestManifest(
       testPaths.add(abs)
       allPkgs.add(Emitter.ProjectPackage(name = jobName, sources = testSrcs, paths = testPaths, nameFromManifest = true))
     }
-    var si = 0
-    while si < libPkgs.count {
-      if si != mergeIdx {
-        allPkgs.add(libPkgs[si])
-      }
-      si += 1
-    }
     val asmStem = stemOf(Path.basename(jobPath), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
-
     val testContractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+
+    // #8648: on dotnet, an entry that does not merge into a library package
+    // links one build of the `[project.packages]` library, made the first
+    // time an entry needs it, instead of compiling the whole library again
+    // for every entry.  A merging entry reaches its package's non-`pub`
+    // items, and a JVM run compiles its dependencies from source into each
+    // bundle (#6750), so both still compile the library with the entry.
+    val linkSharedLibrary = mergeIdx < 0 and not targetJvm and libPkgs.count > 0
+    if linkSharedLibrary and not sharedLibAttempted {
+      sharedLibAttempted = true
+      Console.println("== building the [project.packages] library once for the test entries")
+      val libResult = Emitter.emitProject(
+        Emitter.EmitProjectRequest(
+          packages = libPkgs,
+          assemblyName = sharedLibStem,
+          outputPath = sharedLibPath,
+          target = testTarget,
+          restoredDllPaths = restoredDlls,
+          activeFeatures = activeFeatures,
+          declaredFeatures = mfDeclared,
+          packageVersion = manifest.packageSection.version,
+          depTemplateSrcs = depTemplatePkgsList,
+          nugetAssemblyPaths = nugetThirdPartyPaths,
+          defines = newList(),
+          packageFeatures = depPackageFeatures,
+          contractsEnabled = testContractsEnabled
+        )
+      )
+      var libFailed = false
+      for d in libResult.diagnostics.toArray() {
+        match d.severity {
+          case DiagError -> {
+            libFailed = true
+          }
+          case DiagWarning -> ()
+        }
+        printDiag(d)
+      }
+      sharedLibOk = not libFailed
+    }
+    if linkSharedLibrary and not sharedLibOk {
+      printErr(abs + ": test build failed: the [project.packages] library does not compile (errors above)")
+      totalFailed += 1
+      ti += 1
+      continue
+    }
+    // Linking is only a shortcut: an entry the linked form does not
+    // type-check is compiled with the library as before, so a test never
+    // sees a difference beyond the time it takes.  The check collects its
+    // diagnostics instead of printing them (`typeCheckProject`); a real
+    // error in the test module surfaces from the full compile below.
+    var useSharedLibrary = linkSharedLibrary
+    var linkFallbackReason = ""
+    if linkSharedLibrary {
+      val probe = Emitter.typeCheckProject(
+        Emitter.EmitProjectRequest(
+          packages = allPkgs,
+          assemblyName = asmStem,
+          outputPath = outPath,
+          target = testTarget,
+          restoredDllPaths = withSharedLibrary(restoredDlls, sharedLibStem, sharedLibPath),
+          activeFeatures = activeFeatures,
+          declaredFeatures = mfDeclared,
+          packageVersion = manifest.packageSection.version,
+          depTemplateSrcs = withLibraryTemplates(depTemplatePkgsList, libPkgs),
+          nugetAssemblyPaths = nugetThirdPartyPaths,
+          defines = newList(),
+          packageFeatures = depPackageFeatures,
+          contractsEnabled = testContractsEnabled
+        )
+      )
+      for ld in probe {
+        match ld.diagnostic.severity {
+          case DiagError -> if linkFallbackReason.length == 0 {
+            linkFallbackReason = ld.diagnostic.code + ": " + ld.diagnostic.message
+          }
+          case DiagWarning -> ()
+        }
+      }
+      useSharedLibrary = linkFallbackReason.length == 0
+    }
+    var jobRestoredDlls = if useSharedLibrary {
+      withSharedLibrary(restoredDlls, sharedLibStem, sharedLibPath)
+    } else {
+      restoredDlls
+    }
+    val jobTemplateSrcs = if useSharedLibrary {
+      withLibraryTemplates(depTemplatePkgsList, libPkgs)
+    } else {
+      depTemplatePkgsList
+    }
+    if not useSharedLibrary {
+      var si = 0
+      while si < libPkgs.count {
+        if si != mergeIdx {
+          allPkgs.add(libPkgs[si])
+        }
+        si += 1
+      }
+    }
+
     val projReq = Emitter.EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
       outputPath = outPath,
       target = testTarget,
-      restoredDllPaths = restoredDlls,
+      restoredDllPaths = jobRestoredDlls,
       activeFeatures = activeFeatures,
       declaredFeatures = mfDeclared,
       packageVersion = manifest.packageSection.version,
-      depTemplateSrcs = depTemplatePkgsList,
+      depTemplateSrcs = jobTemplateSrcs,
       nugetAssemblyPaths = nugetThirdPartyPaths,
       defines = newList(),
       packageFeatures = depPackageFeatures,
       contractsEnabled = testContractsEnabled
     )
-    val result = Emitter.emitProject(projReq)
+    var result = Emitter.emitProject(projReq)
+    val linkedFailed = useSharedLibrary and hasErrorDiagnostic(result.diagnostics)
+    val linkedStub = useSharedLibrary and not linkedFailed and hasUnresolvedCallStub(outPath)
+    if linkedFailed or linkedStub {
+      // A gap found only in code generation (a qualified read of a
+      // non-literal `pub val` from a restored package is T0115, #6133, or a
+      // call into a restored type lowered to the unresolved-call stub)
+      // passes the check above.  The compile with the library below is the
+      // entry's real result.
+      if linkedFailed {
+        Console.println("note: the linked build of this entry failed (errors above); compiling it with the library instead")
+      } else {
+        Console.println("note: the linked build of this entry left a call unresolved; compiling it with the library instead")
+      }
+      for lp in libPkgs {
+        allPkgs.add(lp)
+      }
+      jobRestoredDlls = restoredDlls
+      result = Emitter.emitProject(
+        Emitter.EmitProjectRequest(
+          packages = allPkgs,
+          assemblyName = asmStem,
+          outputPath = outPath,
+          target = testTarget,
+          restoredDllPaths = restoredDlls,
+          activeFeatures = activeFeatures,
+          declaredFeatures = mfDeclared,
+          packageVersion = manifest.packageSection.version,
+          depTemplateSrcs = depTemplatePkgsList,
+          nugetAssemblyPaths = nugetThirdPartyPaths,
+          defines = newList(),
+          packageFeatures = depPackageFeatures,
+          contractsEnabled = testContractsEnabled
+        )
+      )
+    }
     var hadBuildError = false
     for d in result.diagnostics.toArray() {
       match d.severity {
@@ -2109,6 +2329,9 @@ func cmdTestManifest(
       totalFailed += 1
       ti += 1
       continue
+    }
+    if linkFallbackReason.length > 0 {
+      Console.println("note: compiled with the library instead of linking its shared build (" + linkFallbackReason + ")")
     }
     if coverage {
       val covDump = outPath + ".cov"
@@ -2174,7 +2397,7 @@ func cmdTestManifest(
       // package's `Cache.dll`) beside the test assembly — a flat probing path
       // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
       // dep-DLL copy the CI ecosystem step used to do by hand.
-      copyRestoredDepDlls(outPath, restoredDlls)
+      copyRestoredDepDlls(outPath, jobRestoredDlls)
       copyNugetAssembliesBeside(outPath, nugetThirdPartyPaths)
       copyNugetNativeAssetsBeside(outPath, nativeAssetPaths)
       writeRuntimeConfigWithProbing(outPath, depBinDirs)

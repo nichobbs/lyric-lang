@@ -278,6 +278,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/cfg-gated-test-items-e2e.sh
   ran="$ran cfg-gated-test-items-e2e"
 fi
+# #8648: project-mode `lyric test` --suite/--filter selection and the shared
+# library build entries link against (dotnet), through the CLI.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/test-runner-project-mode-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/test-runner-project-mode-e2e.sh
+  ran="$ran test-runner-project-mode-e2e"
+fi
 # #8472: a bare unknown member of Result/Option is a compile-time T0113 (the
 # `r.mapErr { ... }` mistake), checked through the CLI.
 idx=$((idx + 1))

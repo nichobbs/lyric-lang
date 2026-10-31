@@ -965,3 +965,37 @@ test "synthesised source carries the package class" {
     "no class annotation when unclassified"
   )
 }
+
+// #8648: a contract that names a sibling package's type by its qualified path
+// (here a `pub alias` over it, as `CloudAgents.Pg` re-exports
+// `CloudAgents.Scope.TenantScope`) re-checks when that package is restored
+// alongside it; the flattened preamble cannot resolve the qualified path, and
+// the consumer's full type check sees the sibling's items.
+func qualifiedSiblingAliasArtifact(target: in String): RestoredArtifact {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("alias", "Thing", "pub alias Thing = " + target))
+  decls.add(mkDecl("func", "thingX", "pub func thingX(t: in Thing): Int"))
+  mkArtifact("MyApp.Shapes", decls)
+}
+
+test "synthesise artifact: qualified type of a restored sibling package re-checks (#8648)" {
+  val siblings: List[String] = newList()
+  siblings.add("MyApp.Lib")
+  match synthesiseArtifactAmong(qualifiedSiblingAliasArtifact("MyApp.Lib.Thing"), emptyDecls(), siblings) {
+    case Err(e) -> panic("qualified sibling type: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> assertEqualInt(sa.source.items.count, 2, "alias and function parsed")
+  }
+}
+
+test "synthesise artifact: qualified type of a package outside the restored set still fails (#8648)" {
+  val siblings: List[String] = newList()
+  siblings.add("MyApp.Lib")
+  match synthesiseArtifactAmong(qualifiedSiblingAliasArtifact("MyApp.Other.Thing"), emptyDecls(), siblings) {
+    case Ok(_) -> panic("a package that is not restored must not be whitelisted")
+    case Err(_) -> ()
+  }
+  match synthesiseArtifact(qualifiedSiblingAliasArtifact("MyApp.Lib.Thing"), emptyDecls()) {
+    case Ok(_) -> panic("without siblings the qualified path stays an error")
+    case Err(_) -> ()
+  }
+}

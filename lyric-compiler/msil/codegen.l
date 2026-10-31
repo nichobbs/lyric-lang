@@ -539,6 +539,12 @@ pub record CodegenCtx {
   // this list to disambiguate by package scope when it has more than one
   // entry; a single-entry (or absent) list keeps the original fast path.
   enumTypeCaseDeclarers: Map[String, List[String]]
+  // `<Case>` → every `<pkgName>::<EnumTypeSimpleName>` declaring a case with
+  // that name, in registration order.  `resolveBareEnumCaseOrdinalByScope`
+  // uses it for a bare case reference with no expected enum type in scope,
+  // so the case resolves to an enum the current package can see rather than
+  // to whichever enum registered first (#8648).
+  enumCaseDeclarers: Map[String, List[String]]
   // `<pkgName>::<EnumTypeSimpleName>.<Case>` → ordinal. Always unambiguous
   // (a package cannot declare the same enum type twice), used by
   // `resolveEnumCaseOrdinalByScope` once it has picked the right package.
@@ -2469,6 +2475,7 @@ pub func newCodegenCtx(
     aliasTargets = newMap(),
     enumCaseOrdinals = newMap(),
     enumTypeCaseDeclarers = newMap(),
+    enumCaseDeclarers = newMap(),
     enumCaseOrdinalsByPkgType = newMap(),
     enumTypeDeclarers = newMap(),
     ffiAsmRefs = newMap(),
@@ -2861,6 +2868,15 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
     if not cctx.enumCaseOrdinals.containsKey(cn) {
       cctx.enumCaseOrdinals.add(cn, ei)
     }
+    val caseDeclarer = pkgName + "::" + decl.name
+    match mapGet(cctx.enumCaseDeclarers, cn) {
+      case Some(existing) -> if not existing.contains(caseDeclarer) { existing.add(caseDeclarer) }
+      case None -> {
+        val fresh: List[String] = newList()
+        fresh.add(caseDeclarer)
+        cctx.enumCaseDeclarers.add(cn, fresh)
+      }
+    }
     val qn = pkgName + "." + cn
     if not cctx.enumCaseOrdinals.containsKey(qn) {
       cctx.enumCaseOrdinals.add(qn, ei)
@@ -2918,6 +2934,38 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
       cctx.enumCaseOrdinalsByPkgType.add(pkgTypeKey, ei)
     }
     ei = ei + 1
+  }
+}
+
+// The ordinal of a bare enum case `caseName` with no expected enum type in
+// scope: the current package's own enum with that case, else one declared by
+// a package whose import makes the case visible bare, else the first
+// registered (the previous behaviour).  Registration order differs between a
+// bundle and its restored dependencies (stdlib enums register before a
+// restored package's), so first-registered alone read
+// `Std.File.EntryKind.Other` for a restored `Category.Other` (#8648).
+func resolveBareEnumCaseOrdinalByScope(cctx: in CodegenCtx, fctx: in FuncCtx, caseName: in String): Option[Int] {
+  match mapGet(cctx.enumCaseDeclarers, caseName) {
+    case None -> mapGet(cctx.enumCaseOrdinals, caseName)
+    case Some(declarers) -> {
+      if declarers.count <= 1 {
+        return mapGet(cctx.enumCaseOrdinals, caseName)
+      }
+      val currentPkg = fctx.pkgName
+      for d in declarers {
+        if d.startsWith(currentPkg + "::") {
+          return mapGet(cctx.enumCaseOrdinalsByPkgType, d + "." + caseName)
+        }
+      }
+      for imp in bareImportListForNameMsil(cctx, currentPkg, caseName) {
+        for d in declarers {
+          if d.startsWith(imp + "::") {
+            return mapGet(cctx.enumCaseOrdinalsByPkgType, d + "." + caseName)
+          }
+        }
+      }
+      mapGet(cctx.enumCaseOrdinals, caseName)
+    }
   }
 }
 
@@ -12026,7 +12074,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 case Some(o) -> Some(value = o)
                 case None -> match qualifiedOrdHit {
                   case Some(o) -> Some(value = o)
-                  case None -> mapGet(cctx.enumCaseOrdinals, name)
+                  case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, name)
                 }
               }
               match ordHit {
@@ -17677,7 +17725,7 @@ func lowerPatternTestMsil(
           }
           val ordHit = match hintedOrd {
             case Some(o) -> Some(value = o)
-            case None -> mapGet(cctx.enumCaseOrdinals, pBindName)
+            case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, pBindName)
           }
           match ordHit {
             case Some(ordv) -> {
@@ -17930,7 +17978,7 @@ func lowerPatternTestMsil(
         // fall back to the bare name for robustness.
         val scopedOrd = match resolveEnumCaseOrdinalByScope(cctx, fctx, enumPenult, caseName) {
           case Some(o) -> Some(value = o)
-          case None -> mapGet(cctx.enumCaseOrdinals, caseName)
+          case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, caseName)
         }
         match scopedOrd {
           case Some(ordv) -> {
@@ -24205,7 +24253,8 @@ func lowerMethodCallMsil(
         // a runtime throw rather than a compile-time abort keeps programs whose
         // unreachable paths mention such a call compilable, while any path that
         // actually executes it fails loudly and located.  #1481 item 4.
-        val msg = "unsupported method '" + memberName + "' on the receiver type at this call site (no matching user method, " +
+        val msg = unresolvedCallStubPrefix() + memberName +
+          "' on the receiver type at this call site (no matching user method, " +
           "extern binding, or built-in intrinsic)"
         insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
         insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
@@ -24214,6 +24263,13 @@ func lowerMethodCallMsil(
       }
     }
   }
+}
+
+// The start of the message the unresolved-call stub above throws.  `lyric test`
+// looks for it in a linked entry's assembly to decide whether to compile the
+// entry again with its library, so the two share this definition.
+pub func unresolvedCallStubPrefix(): String {
+  "unsupported method '"
 }
 
 // A `List`/`Map`/`Set` receiver reaching the unknown-method fallback names a
@@ -47954,6 +48010,52 @@ func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl:
   if not cctx.distinctClasses.containsKey(className) {
     cctx.distinctClasses.add(className, true)
   }
+  // The construction API `lowerMDistinctType` emits on the declaring
+  // assembly's type, as MemberRefs with the same signatures: `.ctor(value)`,
+  // static `from`, static `tryFrom` (when `Result` is seeded, as for an
+  // in-bundle distinct type) and the `toX` projection.  Without them
+  // `Score.from(40)` on a restored `Score` lowered to the unsupported-method
+  // stub and threw at run time (#8648).
+  val innerTy = typeExprToMsilCtx(cctx, decl.underlying, packageName)
+  val single: List[MsilType] = newList()
+  single.add(innerTy)
+  if not cctx.recordCtorTokens.containsKey(className) {
+    val ctorSig = buildInstanceMethodSigWithCtx(single, MVoid, cctx.lctx)
+    val ctorRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", "restored_dctor_" + className, ctorSig)
+    cctx.recordCtorTokens.add(className, 0x0A000000 + ctorRow)
+  }
+  if not cctx.distinctFromTokens.containsKey(className) {
+    val fromSig = buildStaticMethodSigWithCtx(single, MClass(className = className), cctx.lctx)
+    val fromRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "from", "restored_dfrom_" + className, fromSig)
+    cctx.distinctFromTokens.add(className, 0x0A000000 + fromRow)
+  }
+  val hasTryFrom = cctx.lctx.stdCoreResultOk2Row.count > 0 and cctx.lctx.stdCoreResultErr2Row.count > 0 and
+    cctx.lctx.stdCoreResultRow.count > 0
+  if hasTryFrom and not cctx.distinctTryFromTokens.containsKey(className) {
+    val triArgs: List[MsilType] = newList()
+    triArgs.add(MClass(className = className))
+    triArgs.add(MString)
+    val triRet = MGenericInst(
+      typeRefCode = tdrTypeRef(cctx.lctx.stdCoreResultRow[0]),
+      headFqn = "Std.Core.Result",
+      typeArgs = triArgs
+    )
+    val trySig = buildStaticMethodSigWithCtx(single, triRet, cctx.lctx)
+    val tryRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "tryFrom", "restored_dtry_" + className, trySig)
+    cctx.distinctTryFromTokens.add(className, 0x0A000000 + tryRow)
+    cctx.distinctTryFromRetTypes.add(className, triRet)
+  }
+  val convName = distinctConvName(innerTy)
+  if convName.length > 0 {
+    val convKey = className + "/" + convName
+    if not cctx.methodTokens.containsKey(convKey) {
+      val noParams: List[MsilType] = newList()
+      val convSig = buildInstanceMethodSigWithCtx(noParams, innerTy, cctx.lctx)
+      val convRow = ctxAddMemberRef(cctx.lctx, typeRefRow, convName, "restored_dconv_" + convKey, convSig)
+      cctx.methodTokens.add(convKey, 0x0A000000 + convRow)
+      cctx.methodRetTypes.add(convKey, innerTy)
+    }
+  }
 }
 
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
@@ -48129,6 +48231,23 @@ func registerRestoredFunc(
   while pi < fn.params.count {
     paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
     pi = pi + 1
+  }
+  // Each parameter's enum type, as an in-bundle function records it
+  // (#5995/#6688), so a bare enum case passed to this function resolves
+  // against the callee's enum.  Without it the case falls back to the
+  // first-registered enum with that case name: `categoryName(Other)` read
+  // `Std.File.EntryKind.Other`'s ordinal instead of the restored
+  // `Category.Other`'s (#8648).
+  val paramEnumTys: List[String] = newList()
+  for p in fn.params {
+    paramEnumTys.add(paramEnumHintMsil(cctx, packageName, p.ty))
+  }
+  val enumArityKey = fqn + "/" + toString(fn.params.count)
+  if not cctx.funcParamEnumTypeNames.containsKey(enumArityKey) {
+    cctx.funcParamEnumTypeNames.add(enumArityKey, paramEnumTys)
+  }
+  if not cctx.funcParamEnumTypeNames.containsKey(fqn) {
+    cctx.funcParamEnumTypeNames.add(fqn, paramEnumTys)
   }
   // NOTE: a restored function's `TFunction`-typed params get their
   // `funcParamFnInner`/`funcParamFnRetType` entries populated below by the
@@ -49332,6 +49451,19 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     }
     if not cctx.pkgBareImports.containsKey(art.packageName) {
       recordRestoredBareImportsMsil(cctx, art.packageName, art.contract.wholeImports, art.contract.selectedImports)
+    }
+    // The package's extern types map the Lyric names in its signatures to CLR
+    // types.  Without them a `pub func` that returns or takes one encodes it
+    // as `object` in the consumer's MemberRef and fails to bind at run time
+    // (MissingMethodException), which #1602 fixed for the stdlib in
+    // `registerStdlibTypeItemRefs`; first-wins, as there.
+    for it in art.source.items {
+      match it.kind {
+        case IExternType(et) -> if not cctx.externTypeNames.containsKey(et.name) {
+          cctx.externTypeNames.add(et.name, et.clrName)
+        }
+        case _ -> ()
+      }
     }
     var di = 0
     while di < art.contract.decls.count {
