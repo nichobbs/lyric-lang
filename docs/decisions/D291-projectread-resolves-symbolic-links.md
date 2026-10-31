@@ -1,4 +1,4 @@
-# D287 - `Std.File.realPath`, and `ProjectRead` refuses a symbolic link that leaves a granted root (#8468)
+# D291 - `Std.File.realPath`, and `ProjectRead` refuses a symbolic link that leaves a granted root (#8468)
 
 **Status:** shipped
 

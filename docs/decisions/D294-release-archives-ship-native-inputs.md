@@ -1,4 +1,4 @@
-# D290 - Release archives ship the native target's inputs (#8454)
+# D294 - Release archives ship the native target's inputs (#8454)
 
 **Status:** shipped
 

@@ -1,4 +1,4 @@
-# D289 - The language server runs `Lyric.PluginExpand` (#8488)
+# D293 - The language server runs `Lyric.PluginExpand` (#8488)
 
 **Status:** shipped
 

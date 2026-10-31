@@ -675,7 +675,7 @@ SDK version.
 
 ### Q-SG-004: IDE / LSP integration
 
-**Status:** Open. The language server runs `Lyric.PluginExpand` (D289) but does not run
+**Status:** Open. The language server runs `Lyric.PluginExpand` (D293) but does not run
 generators yet; the plugin form gives it a long-lived process to call.
 
 **Question:** Should the LSP server run generators eagerly (so autocompletion shows

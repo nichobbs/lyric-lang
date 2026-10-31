@@ -1,4 +1,4 @@
-# D288 - Plugin interface hash and `K0104` (#8486)
+# D292 - Plugin interface hash and `K0104` (#8486)
 
 **Status:** shipped (points and capabilities; see Limits)
 

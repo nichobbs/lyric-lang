@@ -1,6 +1,6 @@
 # 2026-10-31 - Interface hash (K0104), plugin items in the LSP, ProjectRead symlinks, native release inputs
 
-Four issues, one PR; decisions D287-D290.
+Four issues, one PR; decisions D291-D294.
 
 - **#8468** `Std.File.realPath` with a twin on each kernel; `ProjectRead.readText`
   resolves the file and the granted root and refuses a link that leaves the root.

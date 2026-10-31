@@ -1085,7 +1085,7 @@ What changed relative to the pre-D207 docs/40:
   the whole build, and one call per annotated type is a request on an open
   connection, not a process start.
 - **Q-SG-004 (LSP)** gets a long-lived generator the language server can call;
-  the language server runs the plugin pass (D289) but does not run generators yet.
+  the language server runs the plugin pass (D293) but does not run generators yet.
 - **Q-SG-005 (sandboxing)** is not answered yet. Generators are built for
   dotnet (D150) and run as process payloads with ambient I/O (`preferWasm` is
   off and a crashed generator is not restarted). Building them as wasm
