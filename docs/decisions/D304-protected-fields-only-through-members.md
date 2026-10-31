@@ -21,8 +21,11 @@ write skips the barrier re-evaluation and the invariant check. On dotnet,
    `impl` method (D-progress-1009), whose scope names the type as its own.
 2. Inside a member the fields stay available by bare name, through `self.`, and
    through another value of the same type.
-3. Construction (`Counter(total = 40)`) is not a field access and is unchanged.
-4. The check reads the receiver's checked type, so it covers a value reached
+3. A contract clause (`requires:`, `ensures:`, `invariant:`) may name a protected
+   field of a value: it states a property (`ensures: result.tokens == capacity`
+   in `examples/token_bucket_proof.l`), it is not a state access by program code.
+4. Construction (`Counter(total = 40)`) is not a field access and is unchanged.
+5. The check reads the receiver's checked type, so it covers a value reached
    through a parameter, a local, a field or a call result, and a protected type
    of an imported package.
 

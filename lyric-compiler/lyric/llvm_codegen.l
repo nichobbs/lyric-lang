@@ -11048,6 +11048,9 @@ func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
   }
   val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts, byValue = false)
   ctx.recordDefs.add(nm, ri)
+  // A tuple is immutable, so it compares element by element (D172): `==`,
+  // `List.contains`/`indexOf`/`lastIndexOf`/`remove` use `Record.eq`, not identity (#8668).
+  ctx.heapValueRecords[nm] = true
   val defnFields: List[NType] = newList()
   addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(elemTys)

@@ -2082,7 +2082,7 @@ protected type BoundedQueue[T] {
 ```
 
 Semantics:
-- A `protected type` wraps state with structurally-enforced mutual exclusion. There is no way to access the state without going through an `entry` or `func`. A field of a protected type is read or written by name only inside the type's own members (`entry`, `func`, invariant, and `impl` methods, §7.5 below): `c.total` or `c.total = 5` on a `Counter` anywhere else, in the declaring package or an importing one, is **T0221**, since it would bypass the instance lock (D304, #8672). A member reads its own fields by bare name or through `self.`, and may read the same type's fields through another value of that type.
+- A `protected type` wraps state with structurally-enforced mutual exclusion. There is no way to access the state without going through an `entry` or `func`. A field of a protected type is read or written by name only inside the type's own members (`entry`, `func`, invariant, and `impl` methods, §7.5 below): `c.total` or `c.total = 5` on a `Counter` anywhere else, in the declaring package or an importing one, is **T0221**, since it would bypass the instance lock (D304, #8672). A member reads its own fields by bare name or through `self.`, and may read the same type's fields through another value of that type; a contract clause may name them too, since it states a property rather than accessing state.
 - `entry` operations are exclusive (one at a time), may have a `when:` barrier (caller blocks until barrier is true), and may mutate state.
 - `func` operations are exclusive too — **[OPEN: should we allow concurrent reads? See 06-open-questions.md]**.
 - Barriers are re-evaluated whenever any operation completes.

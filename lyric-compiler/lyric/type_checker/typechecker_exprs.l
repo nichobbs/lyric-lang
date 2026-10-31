@@ -19430,8 +19430,9 @@ func inferMethodCallExpected(
 // entries and functions (docs/01 §7.5), so a field read or write by name on a
 // value of a protected type is rejected outside that type's own members (an
 // `entry`, a `func`, an invariant, or an `impl` method, whose scope's
-// `selfType` is the type itself).  Both a read and the target of an
-// assignment reach here, since the target is inferred like any member access.
+// `selfType` is the type itself), or in a contract clause.  Both a read and the
+// target of an assignment reach here, since the target is inferred like any
+// member access.
 func checkProtectedFieldAccess(
   sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], recvTy: in Type, name: in String, span: in Span
 ): Unit {
@@ -19457,7 +19458,9 @@ func checkProtectedFieldAccess(
         case Some(own) -> typeIdEq(own, tid)
         case None -> false
       }
-      if not inOwnMember {
+      // A contract clause is specification, not state access: `ensures:
+      // result.tokens == capacity` states what a construction produced.
+      if not inOwnMember and sc.contractDepth.count == 0 {
         diag.add(
           errorDiagnostic(
             "T0221",
