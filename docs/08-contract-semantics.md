@@ -498,7 +498,7 @@ following are *invariant-check points*:
    is written by the callee, `Inv_T` is checked on the new value
    before the writeback to the caller.
 
-**Implementation status (D281).** Points 1, 2, 3 and 5 are enforced by the
+**Implementation status (D284).** Points 1, 2, 3 and 5 are enforced by the
 contract elaborator for non-generic types named directly in the signature of a
 `pub` top-level function; point 5 also applies inside the declaring package.
 The checks call the construction checker, so they raise the same

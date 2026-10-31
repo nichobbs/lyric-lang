@@ -1,4 +1,4 @@
-# D281 - Re-check record and opaque-type invariants at public boundaries and on `inout` (#7222)
+# D284 - Re-check record and opaque-type invariants at public boundaries and on `inout` (#7222)
 
 **Status:** shipped (boundary and `inout` slice; methods, generics and `tryInto` open under #7222)
 

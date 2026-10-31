@@ -1,13 +1,13 @@
 # Invariant boundary re-checks (#7222) and imported callees in proofs (#7532)
 
-## #7222: public-boundary and `inout` invariant re-checks (D281)
+## #7222: public-boundary and `inout` invariant re-checks (D284)
 
 Construction-time enforcement shipped in D-progress-958. This slice adds the
 re-checks of docs/08 section 7.1 points 2, 3 and 5 for non-generic types named
 in the signature of a `pub` top-level function. The type checker exports the
 invariant-bearing types (`invariantBoundaryTypes`); `elaborateMember` adds an
 entry check for foreign-typed parameters and exit asserts for foreign-typed
-results and `inout`/`out` parameters. See D281 and
+results and `inout`/`out` parameters. See D284 and
 `examples/invariant-boundary` (dotnet and JVM).
 
 ## #7532: imported functions in `@proof_required` contracts
