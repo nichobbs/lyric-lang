@@ -248,13 +248,26 @@ func acceptLoop(listener: in Listener): Unit {
   }
 }
 
-func startServer(port: in Int): Listener {
-  match hostListen("127.0.0.1", port) {
+/// Listen on an ephemeral loopback port; `hostLocalPort` reports which.
+func startServer(): Listener {
+  match hostListen("127.0.0.1", 0) {
     case Std.Core.Ok(l) -> {
       val _ = taskRun({ -> acceptLoop(l) })
       l
     }
     case Std.Core.Err(e) -> panic("test server could not listen: " + TcpError.message(e))
+  }
+}
+
+/// A port nothing listens on: bind an ephemeral port, then release it.
+func unusedPort(): Int {
+  match hostListen("127.0.0.1", 0) {
+    case Std.Core.Ok(l) -> {
+      val port = hostLocalPort(l)
+      hostStopListener(l)
+      port
+    }
+    case Std.Core.Err(e) -> panic("could not reserve a port: " + TcpError.message(e))
   }
 }
 
@@ -275,8 +288,8 @@ func bytesOf(xs: in List[Int]): slice[Byte] {
 
 // ─── Unary ───────────────────────────────────────────────────────────────────
 test "callUnary: a request message is echoed back byte for byte" {
-  val server = startServer(18951)
-  val ch = openOrFail(18951)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val payload = bytesOf([0, 1, 2, 250, 255, 7])
   match Grpc.callUnary(ch, "test.Echo", "Echo", payload, Grpc.defaultOptions()) {
     case Std.Core.Ok(resp) -> {
@@ -292,8 +305,8 @@ test "callUnary: a request message is echoed back byte for byte" {
 }
 
 test "callUnary: an empty request message round-trips" {
-  val server = startServer(18952)
-  val ch = openOrFail(18952)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Echo", empty, Grpc.defaultOptions()) {
     case Std.Core.Ok(resp) -> assertEqualInt(resp.length, 0, "empty response")
@@ -304,8 +317,8 @@ test "callUnary: an empty request message round-trips" {
 }
 
 test "callUnary: call metadata reaches the server as request headers" {
-  val server = startServer(18953)
-  val ch = openOrFail(18953)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val opts = Grpc.withMetadata(Grpc.defaultOptions(), "x-trace", "req-42")
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Trace", empty, opts) {
@@ -322,8 +335,8 @@ test "callUnary: call metadata reaches the server as request headers" {
 }
 
 test "callUnary: a server error status maps to its GrpcStatusCode and message" {
-  val server = startServer(18954)
-  val ch = openOrFail(18954)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Fail", empty, Grpc.defaultOptions()) {
     case Std.Core.Ok(_) -> panic("expected the NOT_FOUND status")
@@ -337,8 +350,8 @@ test "callUnary: a server error status maps to its GrpcStatusCode and message" {
 }
 
 test "callUnary: an unknown method is UNIMPLEMENTED" {
-  val server = startServer(18955)
-  val ch = openOrFail(18955)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "NoSuchMethod", empty, Grpc.defaultOptions()) {
     case Std.Core.Ok(_) -> panic("expected UNIMPLEMENTED")
@@ -349,8 +362,8 @@ test "callUnary: an unknown method is UNIMPLEMENTED" {
 }
 
 test "callUnary: a deadline shorter than the server's reply is DEADLINE_EXCEEDED" {
-  val server = startServer(18956)
-  val ch = openOrFail(18956)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val opts = Grpc.withTimeout(Grpc.defaultOptions(), 300)
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Slow", empty, opts) {
@@ -362,7 +375,7 @@ test "callUnary: a deadline shorter than the server's reply is DEADLINE_EXCEEDED
 }
 
 test "callUnary: no server listening is UNAVAILABLE" {
-  val ch = openOrFail(18957)
+  val ch = openOrFail(unusedPort())
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Echo", empty, Grpc.defaultOptions()) {
     case Std.Core.Ok(_) -> panic("expected UNAVAILABLE")
@@ -372,7 +385,7 @@ test "callUnary: no server listening is UNAVAILABLE" {
 }
 
 test "callUnary: a call on a closed channel is FAILED_PRECONDITION, not a crash" {
-  val ch = openOrFail(18958)
+  val ch = openOrFail(unusedPort())
   Grpc.closeChannel(ch)
   val empty: slice[Byte] = []
   match Grpc.callUnary(ch, "test.Echo", "Echo", empty, Grpc.defaultOptions()) {
@@ -383,8 +396,8 @@ test "callUnary: a call on a closed channel is FAILED_PRECONDITION, not a crash"
 
 // ─── Server streaming ────────────────────────────────────────────────────────
 test "openServerStream: messages arrive in order, then end of stream" {
-  val server = startServer(18959)
-  val ch = openOrFail(18959)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   match Grpc.openServerStream(ch, "test.Echo", "Count", bytesOf([3]), Grpc.defaultOptions()) {
     case Std.Core.Err(st) -> panic("open failed: " + st.message)
     case Std.Core.Ok(stream) -> {
@@ -412,8 +425,8 @@ test "openServerStream: messages arrive in order, then end of stream" {
 }
 
 test "openServerStream: a failure after some messages surfaces as Err from nextMessage" {
-  val server = startServer(18960)
-  val ch = openOrFail(18960)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   val empty: slice[Byte] = []
   match Grpc.openServerStream(ch, "test.Echo", "CountThenFail", empty, Grpc.defaultOptions()) {
     case Std.Core.Err(st) -> panic("open failed: " + st.message)
@@ -441,8 +454,8 @@ test "openServerStream: a failure after some messages surfaces as Err from nextM
 }
 
 test "closeStream: closing early cancels the call, a second close and later reads are safe" {
-  val server = startServer(18961)
-  val ch = openOrFail(18961)
+  val server = startServer()
+  val ch = openOrFail(hostLocalPort(server))
   match Grpc.openServerStream(ch, "test.Echo", "Count", bytesOf([200]), Grpc.defaultOptions()) {
     case Std.Core.Err(st) -> panic("open failed: " + st.message)
     case Std.Core.Ok(stream) -> {
@@ -463,7 +476,7 @@ test "closeStream: closing early cancels the call, a second close and later read
 }
 
 test "openServerStream: no server listening is UNAVAILABLE on the first read" {
-  val ch = openOrFail(18962)
+  val ch = openOrFail(unusedPort())
   val empty: slice[Byte] = []
   match Grpc.openServerStream(ch, "test.Echo", "Count", empty, Grpc.defaultOptions()) {
     case Std.Core.Err(st) -> assertTrue(st.code == GrpcStatusCode.Unavailable, "open reported Unavailable")

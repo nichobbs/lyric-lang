@@ -8,8 +8,10 @@
 //! JARs at compile time); there is no `extern package` block here — that form
 //! has no lowering on any target (decision D281).
 //!
-//! Server hosting (`serve` / `netStartHandle` / `netStopHandle`) is not
-//! implemented on this target (#8642); each fails loudly rather than pretending.
+//! Server hosting (`serve` / `netStartHandle` / `netStopHandle`) is a grpc-java
+//! `Server` whose routes are `impl`s of `ServerCalls.UnaryMethod` /
+//! `ServerStreamingMethod` over the same pass-through marshaller; request
+//! metadata reaches handlers through a gRPC `Context` value (D284).
 //! `checkRateLimit` is the pure-Lyric token bucket from `Lyric.Resilience`
 //! (the same algorithm `Web.Kernel.Runtime` uses on this target).
 //!
@@ -351,6 +353,246 @@ pub func netCloseStream(stream: in GrpcStream): Unit {
 }
 
 // ─── Server: hosting ────────────────────────────────────────────────────────────
+// A grpc-java `Server` (Netty transport, plaintext) serving the registry's
+// routes. Handlers run on grpc-java's call executor, one call per thread.
+extern type JServer = "io.grpc.Server"
+
+extern type JNettyServerBuilder = "io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder"
+
+extern type JInetSocketAddress = "java.net.InetSocketAddress"
+
+extern type JServerServiceDefinition = "io.grpc.ServerServiceDefinition"
+
+extern type JServiceBuilder = "io.grpc.ServerServiceDefinition$Builder"
+
+extern type JServerCallHandler = "io.grpc.ServerCallHandler"
+
+extern type JUnaryMethod = "io.grpc.stub.ServerCalls$UnaryMethod"
+
+extern type JServerStreamingMethod = "io.grpc.stub.ServerCalls$ServerStreamingMethod"
+
+extern type JStreamObserver = "io.grpc.stub.StreamObserver"
+
+extern type JStatus = "io.grpc.Status"
+
+extern type JServerInterceptor = "io.grpc.ServerInterceptor"
+
+extern type JServerInterceptors = "io.grpc.ServerInterceptors"
+
+extern type JServerCall = "io.grpc.ServerCall"
+
+extern type JServerCallListener = "io.grpc.ServerCall$Listener"
+
+extern type JContext = "io.grpc.Context"
+
+extern type JContextKey = "io.grpc.Context$Key"
+
+extern type JContexts = "io.grpc.Contexts"
+
+extern type JSet = "java.util.Set"
+
+// The request metadata, encoded as `Types.encodeMetadata` does, travels from
+// the interceptor to the handler in a gRPC `Context` value: a handler runs on
+// an executor thread, not the interceptor's.
+val metadataContextKey: JContextKey = JContext.key("lyric.grpc.metadata")
+
+func isReservedHeader(name: in String): Bool {
+  name == "content-type" or name == "te" or name == "user-agent" or Str.startsWith(name, "grpc-") or
+    Str.endsWith(name, "-bin")
+}
+
+func encodeHeaders(headers: in JMetadata): String {
+  val entries: List[GrpcMetadataEntry] = newList()
+  val it = headers.keys().iterator()
+  while it.hasNext() {
+    val raw: JObject = it.next()
+    val name = raw.toString()
+    if not isReservedHeader(name) {
+      val key = JMetadataKey.of(name, JMetadata.ASCII_STRING_MARSHALLER)
+      val value: JObject = headers.get(key)
+      entries.add(GrpcMetadataEntry(key = name, value = value.toString()))
+    }
+  }
+  Types.encodeMetadata(entries.toArray())
+}
+
+record MetadataCapture {
+  tag: Int
+}
+
+impl JServerInterceptor for MetadataCapture {
+  func interceptCall(call: in JServerCall, headers: in JMetadata, next: in JServerCallHandler): JServerCallListener {
+    val ctx = JContext.current().withValue(metadataContextKey, encodeHeaders(headers))
+    JContexts.interceptCall(ctx, call, headers, next)
+  }
+}
+
+func requestMetadata(): slice[GrpcMetadataEntry] {
+  val encoded: JObject = metadataContextKey.get()
+  Types.decodeMetadata(encoded.toString())
+}
+
+func failCall(observer: in JStreamObserver, status: in GrpcStatus): Unit {
+  try {
+    val code = JStatus.fromCodeValue(Types.statusCodeToInt(status.code))
+    observer.onError(code.withDescription(status.message).asRuntimeException())
+  } catch Bug as _ {
+    ()
+  }
+}
+
+func panicStatus(): GrpcStatus {
+  GrpcStatus(code = GrpcStatusCode.Internal, message = "handler panicked")
+}
+
+func runUnary(
+  handle: in (slice[Byte], slice[GrpcMetadataEntry]) -> Result[slice[Byte], GrpcStatus],
+  request: in JInputStream,
+  observer: in JStreamObserver,
+): Unit {
+  try {
+    match handle(streamToBytes(request), requestMetadata()) {
+      case Ok(response) -> {
+        observer.onNext(bytesToStream(response))
+        observer.onCompleted()
+      }
+      case Err(status) -> failCall(observer, status)
+    }
+  } catch Bug as _ {
+    failCall(observer, panicStatus())
+  }
+}
+
+func sendResponse(observer: in JStreamObserver, message: in slice[Byte]): Bool {
+  try {
+    observer.onNext(bytesToStream(message))
+    true
+  } catch Bug as _ {
+    false
+  }
+}
+
+func runStreaming(
+  handle: in (slice[Byte], slice[GrpcMetadataEntry], (slice[Byte]) -> Bool) -> Result[Unit, GrpcStatus],
+  request: in JInputStream,
+  observer: in JStreamObserver,
+): Unit {
+  try {
+    match handle(streamToBytes(request), requestMetadata(), { m: slice[Byte] -> sendResponse(observer, m) }) {
+      case Ok(_) -> observer.onCompleted()
+      case Err(status) -> failCall(observer, status)
+    }
+  } catch Bug as _ {
+    failCall(observer, panicStatus())
+  }
+}
+
+record UnaryAdapter {
+  handle: (slice[Byte], slice[GrpcMetadataEntry]) -> Result[slice[Byte], GrpcStatus]
+}
+
+impl JUnaryMethod for UnaryAdapter {
+  func invoke(request: in JInputStream, observer: in JStreamObserver): Unit {
+    runUnary(self.handle, request, observer)
+  }
+}
+
+record StreamingAdapter {
+  handle: (slice[Byte], slice[GrpcMetadataEntry], (slice[Byte]) -> Bool) -> Result[Unit, GrpcStatus]
+}
+
+impl JServerStreamingMethod for StreamingAdapter {
+  func invoke(request: in JInputStream, observer: in JStreamObserver): Unit {
+    runStreaming(self.handle, request, observer)
+  }
+}
+
+@externStatic
+@externTarget("io.grpc.stub.ServerCalls.asyncUnaryCall")
+func unaryCallHandler(m: in JUnaryMethod): JServerCallHandler = ()
+
+@externStatic
+@externTarget("io.grpc.stub.ServerCalls.asyncServerStreamingCall")
+func streamingCallHandler(m: in JServerStreamingMethod): JServerCallHandler = ()
+
+@externStatic
+@externTarget("io.grpc.ServerInterceptors.intercept")
+func interceptService(s: in JServerServiceDefinition, interceptors: in JList): JServerServiceDefinition = ()
+
+func addRoute(b: in JServiceBuilder, route: in GrpcRoute): Unit {
+  match route.handler {
+    case GrpcHandler.Unary(handle) -> {
+      val adapter: JUnaryMethod = UnaryAdapter(handle = handle)
+      val _ = b.addMethod(buildMethod(route.service, route.method, JMethodType.UNARY), unaryCallHandler(adapter))
+    }
+    case GrpcHandler.ServerStreaming(handle) -> {
+      val adapter: JServerStreamingMethod = StreamingAdapter(handle = handle)
+      val _ = b.addMethod(
+        buildMethod(route.service, route.method, JMethodType.SERVER_STREAMING),
+        streamingCallHandler(adapter)
+      )
+    }
+  }
+}
+
+func serviceNames(registry: in ServiceRegistry): List[String] {
+  val names: List[String] = newList()
+  for r in registry.routes {
+    var seen = false
+    for n in names {
+      if n == r.service {
+        seen = true
+      }
+    }
+    if not seen {
+      names.add(r.service)
+    }
+  }
+  names
+}
+
+func buildServiceDefinition(service: in String, registry: in ServiceRegistry): JServerServiceDefinition {
+  val b = JServerServiceDefinition.builder(service)
+  for r in registry.routes {
+    if r.service == service {
+      addRoute(b, r)
+    }
+  }
+  val capture: JServerInterceptor = MetadataCapture(tag = 0)
+  interceptService(b.build(), JCollections.singletonList(capture))
+}
+
+func buildServer(host: in String, port: in Int, maxConnectionIdleMs: in Int, registry: in ServiceRegistry): JServer {
+  val builder = JNettyServerBuilder.forAddress(JInetSocketAddress.new(host, port))
+  val _ = builder.maxConnectionIdle(maxConnectionIdleMs.toLong(), JTimeUnit.MILLISECONDS)
+  for service in serviceNames(registry) {
+    val _ = builder.addService(buildServiceDefinition(service, registry))
+  }
+  builder.build()
+}
+
+val serverRegistry: JvmConcurrentDict[String, JServer] = newConcurrentDict[String, JServer]()
+
+func startServer(
+  host: in String,
+  port: in Int,
+  reflectionEnabled: in Bool,
+  maxConnectionIdleMs: in Int,
+  registry: in ServiceRegistry,
+): JServer {
+  if reflectionEnabled {
+    panic("gRPC server reflection is not supported: set GrpcServer.reflectionEnabled to false")
+  }
+  val server = buildServer(host, port, maxConnectionIdleMs, registry)
+  try {
+    val _ = server.start()
+  } catch Bug as b {
+    panic("gRPC server could not start on " + host + ":" + port.toString() + ": " + b.message)
+  }
+  server
+}
+
+/// Start serving and block until the server terminates (the process exits).
 pub func serve(
   host: in String,
   port: in Int,
@@ -358,7 +600,8 @@ pub func serve(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): Unit {
-  panic("gRPC server hosting is not implemented on the JVM target (tracked in #8642)")
+  val server = startServer(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
+  server.awaitTermination()
 }
 
 pub func netStartHandle(
@@ -368,13 +611,35 @@ pub func netStartHandle(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): GrpcServerHandle {
-  panic("gRPC server hosting is not implemented on the JVM target (tracked in #8642)")
+  val server = startServer(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
+  val id = nextHandleId()
+  cdPut(serverRegistry, id.toString(), server)
+  Types.wrapServerHandle(id)
 }
 
+/// The port the server is bound to; `0` for an unknown or already stopped handle.
+pub func netServerPort(handle: in GrpcServerHandle): Int {
+  var server: JServer = default()
+  if cdTryGetValue(serverRegistry, Types.serverHandleId(handle).toString(), server) {
+    server.getPort()
+  } else {
+    0
+  }
+}
+
+/// Stop accepting calls and wait up to `drainTimeoutMs` for in-flight calls to
+/// finish, then cancel the rest. Stopping twice, or a handle from another run,
+/// is a no-op.
 pub func netStopHandle(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
 {
-  ()
+  var server: JServer = default()
+  if cdRemove(serverRegistry, Types.serverHandleId(handle).toString(), server) {
+    val _ = server.shutdown()
+    if not server.awaitTermination(drainTimeoutMs.toLong(), JTimeUnit.MILLISECONDS) {
+      val _ = server.shutdownNow()
+    }
+  }
 }
 
 // ─── Server: rate limiting ────────────────────────────────────────────────────

@@ -63,6 +63,8 @@
 package Std.TcpHost
 
 import Std.Core
+import Std.String as Str
+import Std.Parse as Parse
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
 
@@ -215,6 +217,9 @@ func socketRemoteEndPoint(s: in Socket): EndPoint = ()
 
 @externTarget("System.Object.ToString")
 func endPointToString(e: in EndPoint): String = ()
+
+@externTarget("System.Net.Sockets.TcpListener.get_LocalEndpoint")
+func listenerLocalEndPoint(l: in TcpListener): EndPoint = ()
 
 @externInstance
 @externTarget("System.IO.Stream.Read")
@@ -420,6 +425,26 @@ pub func hostListen(host: in String, port: in Int): Result[Listener, TcpError] {
     Ok(value = Listener(handle = l))
   } catch Bug as b {
     Err(error = BindFailed(message = b.message))
+  }
+}
+
+/// The port `l` is actually bound to: lets a caller bind an ephemeral port
+/// (`hostListen(host, 0)`) and read back the one the OS assigned, the same
+/// accessor the native `Std.TcpHost` twin has. `0` if it cannot be read.
+pub func hostLocalPort(l: in Listener): Int {
+  try {
+    val text = endPointToString(listenerLocalEndPoint(l.handle))
+    val colon = Str.lastIndexOfRaw(text, ":")
+    if colon < 0 {
+      0
+    } else {
+      match Parse.tryParseInt(Str.substring(text, colon + 1)) {
+        case Ok(n) -> n
+        case Err(_) -> 0
+      }
+    }
+  } catch Bug as _ {
+    0
   }
 }
 
