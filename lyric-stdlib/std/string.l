@@ -726,3 +726,103 @@ pub func last(s: in String): Option[Char]
 {
   charAt(s, s.length - 1)
 }
+
+// ---------------------------------------------------------------------------
+// Structural rendering (D282).
+// ---------------------------------------------------------------------------
+// `toString` of a record, union, tuple, `List`, `Map` or `Set` is the same text
+// on every target.  The compiler lowers each such stringification to a
+// synthesised function that renders the parts of the value, then joins them
+// with the functions below, so the separators, brackets and the `Map`/`Set`
+// order are defined once, in Lyric, not once per backend.
+/// `open`, the `parts` separated by `", "`, then `close`: `[1, 2]`, `(1, 2)`,
+/// and `P(x = 1, y = 2)` (with `open` = `"P("`).
+@pure
+@stable(since = "1.2")
+pub func showSeq(open: in String, parts: in List[String], close: in String): String {
+  val sb = StringBuilder.new()
+  sb.append(open)
+  var i = 0
+  while i < parts.count {
+    if i > 0 {
+      sb.append(", ")
+    }
+    sb.append(parts[i])
+    i += 1
+  }
+  sb.append(close)
+  sb.toString()
+}
+
+/// A `Map` as `{k: v, k2: v2}`.  `keys[i]` and `vals[i]` are the rendered key
+/// and value of entry `i`.  The entries are ordered by the rendered text of the
+/// key (code unit order), because the host map's own iteration order differs
+/// between targets.
+@pure
+@stable(since = "1.2")
+pub func showMap(keys: in List[String], vals: in List[String]): String {
+  val order = showOrder(keys)
+  val parts: List[String] = newListWithCapacity(keys.count)
+  var i = 0
+  while i < order.count {
+    val k = order[i]
+    parts.add(keys[k] + ": " + vals[k])
+    i += 1
+  }
+  showSeq("{", parts, "}")
+}
+
+/// A `Set` as `{a, b}`, its members ordered by their rendered text.
+@pure
+@stable(since = "1.2")
+pub func showSet(items: in List[String]): String {
+  val order = showOrder(items)
+  val parts: List[String] = newListWithCapacity(items.count)
+  var i = 0
+  while i < order.count {
+    parts.add(items[order[i]])
+    i += 1
+  }
+  showSeq("{", parts, "}")
+}
+
+// The indices of `texts`, ordered by the text at each index (a stable merge
+// sort; equal texts keep their order).
+func showOrder(texts: in List[String]): List[Int] {
+  val n = texts.count
+  var src: List[Int] = newListWithCapacity(n)
+  var dst: List[Int] = newListWithCapacity(n)
+  var i = 0
+  while i < n {
+    src.add(i)
+    dst.add(i)
+    i += 1
+  }
+  var width = 1
+  while width < n {
+    var lo = 0
+    while lo < n {
+      val mid = if lo + width < n { lo + width } else { n }
+      val hi = if lo + 2 * width < n { lo + 2 * width } else { n }
+      var a = lo
+      var b = mid
+      var o = lo
+      while o < hi {
+        if a < mid and (b >= hi or texts[src[a]] <= texts[src[b]]) {
+          dst[o] = src[a]
+          a += 1
+        } else {
+          dst[o] = src[b]
+          b += 1
+        }
+        o += 1
+      }
+      lo = hi
+    }
+    val tmp = src
+    src = dst
+    dst = tmp
+    width = width * 2
+  }
+  src
+}

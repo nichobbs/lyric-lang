@@ -203,6 +203,7 @@ for t in \
   lyric-compiler/lyric/int_to_nat_self_test.l \
   lyric-compiler/lyric/jvm_erased_types_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
+  lyric-compiler/lyric/structural_tostring_self_test.l \
   lyric-compiler/lyric/println_extern_jvm_self_test.l \
   lyric-compiler/lyric/extern_upcast_jvm_self_test.l ; do
   echo "=== $t ==="

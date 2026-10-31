@@ -6344,7 +6344,10 @@ func recordUnsignedCompoundValue(
   match op {
     case AssSlash -> recordUnsignedOperand(tbl, targetType, value)
     case AssPercent -> recordUnsignedOperand(tbl, targetType, value)
-    case AssPlus -> if stringPlus { recordUnsignedOperand(tbl, valueType, value) }
+    case AssPlus -> if stringPlus {
+      recordUnsignedOperand(tbl, valueType, value)
+      recordShowOperand(tbl, valueType, value)
+    }
     case _ -> ()
   }
 }
@@ -16673,7 +16676,11 @@ func inferExprCore(
         recordUnsignedOperand(tbl, rt, r)
       } else {
         match op {
-          case BAdd -> if isPrimOf(binT, PtString) { recordUnsignedOperand(tbl, rt, r) }
+          case BAdd -> if isPrimOf(binT, PtString) {
+            recordUnsignedOperand(tbl, rt, r)
+            recordShowOperand(tbl, lt, l)
+            recordShowOperand(tbl, rt, r)
+          }
           case _ -> ()
         }
       }
@@ -17362,12 +17369,19 @@ func inferExprCore(
           var si = 0
           while si < args.count {
             recordUnsignedOperand(tbl, argTypes[si], callArgExpr(args[si]))
+            recordShowOperand(tbl, argTypes[si], callArgExpr(args[si]))
             si = si + 1
           }
         }
         case EMember(tsRecv, _) -> if memberName == "toString" and args.count == 0 {
           match memberRecvTy {
-            case Some(tsRecvTy) -> recordUnsignedOperand(tbl, tsRecvTy, tsRecv)
+            case Some(tsRecvTy) -> {
+              recordUnsignedOperand(tbl, tsRecvTy, tsRecv)
+              match methodPick {
+                case None -> recordShowOperand(tbl, tsRecvTy, tsRecv)
+                case Some(_) -> ()
+              }
+            }
             case None -> ()
           }
         }
@@ -18266,7 +18280,11 @@ func inferExprCore(
     case EInterpolated(segs) -> {
       for seg in segs {
         match seg {
-          case ISExpr(se) -> recordUnsignedOperand(tbl, inferExpr(sc, tbl, sigs, diag, se), se)
+          case ISExpr(se) -> {
+            val segTy = inferExpr(sc, tbl, sigs, diag, se)
+            recordUnsignedOperand(tbl, segTy, se)
+            recordShowOperand(tbl, segTy, se)
+          }
           case ISText(_, _) -> ()
         }
       }

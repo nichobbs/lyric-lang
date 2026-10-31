@@ -199,6 +199,20 @@ val msg = "Hello, ${name}! You are ${toString(age)} years old."
 val escaped = "literal: \${not interpolated}"
 ```
 
+A record, union, tuple, `List`, `Map` or `Set` inside `${...}`, `toString(x)` or `println(x)` prints the same text on every target (D282):
+
+```lyric
+record P { x: Int; y: Int }
+
+println(P(x = 1, y = 2))        // P(x = 1, y = 2)
+println(Some(value = 3))        // Some(value = 3)
+println((1, "a"))               // (1, a)
+println(xs)                     // [1, 2]   for a List[Int]
+println(m)                      // {a: 1, b: 2}   for a Map[String, Int]; entries ordered by key text
+```
+
+A `String` or `Char` inside prints without quotes. A `Map` or `Set` lists its entries ordered by the text of the key (`10` before `9`), so the output does not depend on the target's hash order.
+
 **Raw strings** disable escape processing and interpolation:
 
 ```lyric

@@ -1647,7 +1647,7 @@ pub func pipeCheckFront(
   // Component-wise arithmetic on homogeneous numeric records (D155), and
   // field-by-field `==` / `!=` on value records and records deriving
   // `Equals` (D164).
-  val recordLowered = lowerRecordSites(distinctLowered, tcRes.symbols)
+  val recordLowered = lowerShowSites(lowerRecordSites(distinctLowered, tcRes.symbols), tcRes.symbols)
   // `array[N, T]` (D167): bounds-checked indexing, `.length`, `.toSlice()`,
   // `for` over an array, copies on store and zero-filled declarations become
   // forms every backend lowers.  Before the overflow pass, which still finds
@@ -1971,7 +1971,7 @@ pub func pipeCheckAndMono(
   // where a type this package binds it to is not visible; its `==` reaches
   // the bound type's own structural equality (D172 item 3) instead.
   for ss in monoRes0.structSpecs {
-    if ss.originPkg == "" and (specUsesEquality(ss.specDecl) or ss.opBound) {
+    if ss.originPkg == "" and (specUsesEquality(ss.specDecl) or ss.opBound or specMayRender(ss.specDecl)) {
       toRecheck.add(ss)
     }
   }
@@ -2125,6 +2125,11 @@ pub record SpecArraySites {
   /// (D163, #8532).  Empty for the standard library, which always wraps.
   overflow: Map[String, String]
   overflowTemps: Map[String, CompoundTemps]
+  /// The stringified operands of a structured type the specialised body holds
+  /// (D282), which its generic body, checked over a type parameter, could not
+  /// record, and the functions rendering them.
+  show: Map[String, String]
+  showHelpers: List[FunctionDecl]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -3040,6 +3045,26 @@ func specUsesEquality(decl: in FunctionDecl): Bool {
   )
 }
 
+// True when `decl`'s body may stringify a value (D282): a specialisation that
+// binds a type parameter to a record, collection or the like is checked again
+// so the stringified operands of that type are rendered structurally.
+func specMayRender(decl: in FunctionDecl): Bool {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val f = SourceFile(
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
+}
+
 func calleeMethodName(callee: in Expr, names: in Map[String, Bool]): Bool {
   match callee.kind {
     case EParen(inner) -> calleeMethodName(inner, names)
@@ -3188,6 +3213,7 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.distinctOps.count > 0 or
     sa.distinctCompound.count > 0 or
     sa.recordArith.count > 0 or
+    sa.show.count > 0 or
     sa.overflow.count > 0
 }
 
@@ -3229,7 +3255,9 @@ func specArraySitesOf(
       siteSlice(syms.overflowCompoundTemps, p.overflowCompoundTemps, usePrior, lo, hi)
     } else {
       newMap()
-    }
+    },
+    show = siteSlice(syms.showSites, p.showSites, usePrior, lo, hi),
+    showHelpers = syms.showHelpers
   )
 }
 
@@ -3313,6 +3341,13 @@ func lowerSpecArrays(
     return file
   }
   val items: List[Item] = newList()
+  val shownHelpers: Map[String, Bool] = newMap()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> if Str.startsWith(fd.name, "__lyric_str_") { shownHelpers.add(fd.name, true) }
+      case _ -> ()
+    }
+  }
   for it in file.items {
     match it.kind {
       case IFunc(fd) -> match mapGet(specArrays, fd.name) {
@@ -3347,7 +3382,8 @@ func lowerSpecArrays(
             ),
             arraySites
           )
-          val lowered = lowerOverflowChecks(arraysDone, sa.overflow, sa.overflowTemps, checkedArith)
+          val overflowDone = lowerOverflowChecks(arraysDone, sa.overflow, sa.overflowTemps, checkedArith)
+          val lowered = lowerShowSpec(overflowDone, sa.show, sa.showHelpers, shownHelpers)
           for li in lowered.items {
             items.add(li)
           }
@@ -4744,7 +4780,29 @@ pub func pipeLowerFormatBuiltins(file: in SourceFile): SourceFile {
 /// bundling backend (JVM, native) otherwise links only when some bundled
 /// package imports it.
 pub func pipeUsesFormatBuiltin(file: in SourceFile): Bool {
-  anyExprInFile(file, { e: Expr -> isFormatCall(e) })
+  anyExprInFile(file, { e: Expr -> isFormatCall(e) or mayRenderStructure(e) })
+}
+
+/// True for an expression that may stringify a record, union, tuple or
+/// collection (D282): an interpolation, a `+` or `+=` (which concatenates when
+/// an operand is a `String`), a `println`/`print`/`toString` call or a
+/// `.toString()` call.  The rendering functions the type checker synthesizes
+/// for such a stringification call `Std.String.showSeq`, `showMap` and
+/// `showSet` and `Std.Collections`, but which operand types occur is known only
+/// after the check, after a bundling backend has chosen the packages it links.
+/// So these expressions are over-approximated to link `Std.String` too.
+func mayRenderStructure(e: in Expr): Bool {
+  match e.kind {
+    case EInterpolated(_) -> true
+    case EBinop(op, _, _) -> match op { case BAdd -> true; case _ -> false }
+    case EAssign(_, op, _) -> match op { case AssPlus -> true; case _ -> false }
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> p.segments.count == 1 and isStringifyingBuiltin(p.segments[0])
+      case EMember(_, name) -> name == "toString"
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 func isFormatCall(e: in Expr): Bool {
@@ -4856,6 +4914,76 @@ func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile 
   SourceFile(
     moduleDoc = converted.moduleDoc,
     files = converted.files,
+    fileAnnotations = converted.fileAnnotations,
+    packageDecl = converted.packageDecl,
+    imports = converted.imports,
+    items = items,
+    span = converted.span
+  )
+}
+
+/// `file` with each stringified operand of a structured type
+/// (`SymbolTable.showSites`, D282) passed through the function the checker
+/// synthesized to render it, which is added to the file.  The wrapping call has
+/// no source span: it is a `String`, and a span-keyed side table must never
+/// type it as the operand it wraps.
+pub func lowerShowSites(file: in SourceFile, syms: in SymbolTable): SourceFile {
+  val have: Map[String, Bool] = newMap()
+  lowerShowSpec(file, syms.showSites, syms.showHelpers, have)
+}
+
+/// `lowerShowSites` for explicit `sites` and `helpers`; a helper whose name is
+/// in `have` is already in the file (the name identifies the rendered type, so
+/// a re-checked specialisation names the same function the file's check did),
+/// and each helper added is recorded there.
+func lowerShowSpec(
+  file: in SourceFile,
+  sites: in Map[String, String],
+  helpers: in List[FunctionDecl],
+  have: in Map[String, Bool],
+): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  val pending: Map[String, String] = newMap()
+  for k in mapKeys(sites) {
+    match mapGet(sites, k) {
+      case Some(helper) -> pending.add(k, helper)
+      case None -> ()
+    }
+  }
+  val wsp = noSourceSpan()
+  val converted = mapExprsInFile(
+    file,
+    { e: Expr ->
+      val key = recordCopySiteKey(e.span)
+      match mapGet(pending, key) {
+        case Some(helper) -> {
+          pending.remove(key)
+          val segs: List[String] = newList()
+          segs.add(helper)
+          val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = wsp)), span = wsp)
+          val args: List[CallArg] = newList()
+          args.add(CAPositional(expr = e))
+          args.add(CAPositional(expr = Expr(kind = ELiteral(lit = LInt(value = 0, suffix = I32, raw = "")), span = wsp)))
+          Expr(kind = ECall(fn = callee, args = args), span = wsp)
+        }
+        case None -> e
+      }
+    }
+  )
+  val items: List[Item] = newList()
+  for it in converted.items {
+    items.add(it)
+  }
+  for h in helpers {
+    if not have.containsKey(h.name) {
+      have.add(h.name, true)
+      items.add(funcItem(h))
+    }
+  }
+  SourceFile(
+    moduleDoc = converted.moduleDoc,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
     imports = converted.imports,

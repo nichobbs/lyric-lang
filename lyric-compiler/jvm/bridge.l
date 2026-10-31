@@ -1742,6 +1742,10 @@ func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFunc
 // with the derive-synthesized functions, since the pre-check file lacks it.
 func isRangeCheckerName(name: in String): Bool = Str.startsWith(name, "__lyric_range_")
 
+// A rendering function `Lyric.TypeChecker` synthesizes for a structural
+// `toString` (`__lyric_str_<n>`, D282): registered the same way.
+func isShowHelperName(name: in String): Bool = Str.startsWith(name, "__lyric_str_")
+
 func isDeriveFreeName(name: in String): Bool {
   Str.contains(name, ".")
 }
@@ -1761,7 +1765,7 @@ func collectDeriveFreeSigs(
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
-        if isDeriveFreeName(decl.name) or isRangeCheckerName(decl.name) {
+        if isDeriveFreeName(decl.name) or isRangeCheckerName(decl.name) or isShowHelperName(decl.name) {
           // An `out`/`inout` parameter is a place reference with its mode
           // recorded, as for any function (#1763, D183): a dot-named function
           // `Lyric.Mono` specialised (`Box.put__Int`, #8179) is first

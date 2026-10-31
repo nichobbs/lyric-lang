@@ -160,7 +160,8 @@ for t in \
   lyric-compiler/lyric/native_enum_pattern_scrutinee_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l \
   lyric-compiler/lyric/native_stdlib_impl_upcast_self_test.l \
-  lyric-compiler/lyric/generic_arg_collection_ctor_self_test.l ; do
+  lyric-compiler/lyric/generic_arg_collection_ctor_self_test.l \
+  lyric-compiler/lyric/structural_tostring_native_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done

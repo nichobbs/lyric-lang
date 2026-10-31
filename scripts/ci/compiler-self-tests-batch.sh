@@ -233,6 +233,7 @@ for t in \
   lyric-compiler/lyric/slice_func_tolist_self_test.l \
   lyric-compiler/lyric/jvm_erased_types_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
+  lyric-compiler/lyric/structural_tostring_self_test.l \
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
