@@ -5627,7 +5627,8 @@ pub func pipeMiddleEnd(
       monoRecordDecls,
       opts.typeArgCalleesOut,
       opts.contractsEnabled,
-      pipeWovenGenerics(monoGenFuncs, opts.genericItemsOut)
+      pipeWovenGenerics(monoGenFuncs, opts.genericItemsOut),
+      opts.sink
     )
     case None -> None
   }

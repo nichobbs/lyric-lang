@@ -1206,7 +1206,8 @@ func linkedBuildFallbackReason(
 
 // `CODE: message` for a fallback note: a codegen message repeats its own
 // `error[CODE]: ` prefix, dropped here, and only its first clause (up to an em
-// dash) is kept, since the note names the reason rather than explaining it.
+// dash or the end of the first sentence) is kept, since the note names the
+// reason rather than explaining it.
 func fallbackReasonOf(d: in Diagnostic): String {
   var msg = d.message
   val prefix = "error[" + d.code + "]: "
@@ -1214,6 +1215,12 @@ func fallbackReasonOf(d: in Diagnostic): String {
     msg = msg.substring(prefix.length, msg.length - prefix.length)
   }
   match Str.indexOf(msg, " — ") {
+    case Some(i) -> {
+      msg = msg.substring(0, i)
+    }
+    case None -> ()
+  }
+  match Str.indexOf(msg, ". ") {
     case Some(i) -> {
       msg = msg.substring(0, i)
     }
@@ -1239,11 +1246,19 @@ func withLibraryTemplates(
   templates: in List[Emitter.ProjectPackage], libPkgs: in List[Emitter.ProjectPackage]
 ): List[Emitter.ProjectPackage] {
   val combined: List[Emitter.ProjectPackage] = newList()
+  val names: Map[String, Bool] = newMap()
   for t in templates {
     combined.add(t)
+    if not names.containsKey(t.name) {
+      names.add(t.name, true)
+    }
   }
+  // On the JVM the library packages include the path dependencies' packages,
+  // which are template sources already.
   for lp in libPkgs {
-    combined.add(lp)
+    if not names.containsKey(lp.name) {
+      combined.add(lp)
+    }
   }
   combined
 }
@@ -2152,6 +2167,7 @@ func cmdTestManifest(
   val sharedLibPath = Path.join(testOutDir, sharedLibStem + testExt)
   var sharedLibAttempted = false
   var sharedLibOk = false
+  var sharedLibUnbuildable = false
 
   var ti = 0
   while ti < jobNames.count {
@@ -2262,38 +2278,66 @@ func cmdTestManifest(
     }
     val asmStem = stemOf(Path.basename(jobPath), 2)
     val outPath = Path.join(testOutDir, asmStem + testExt)
-    // #8648: on dotnet, an entry that does not merge into a library package
-    // links one build of the `[project.packages]` library, made the first
-    // time an entry needs it, instead of compiling the whole library again
-    // for every entry.  A merging entry reaches its package's non-`pub`
-    // items, and a JVM run compiles its dependencies from source into each
-    // bundle (#6750), so both still compile the library with the entry.
-    val linkSharedLibrary = mergeIdx < 0 and not targetJvm and libPkgs.count > 0
-    if linkSharedLibrary and not sharedLibAttempted {
+    // #8648: an entry that does not merge into a library package links one
+    // build of the `[project.packages]` library, made the first time an entry
+    // needs it, instead of compiling the whole library again for every entry
+    // (#8667: on the JVM too, as a restored JAR, #3094).  A merging entry
+    // reaches its package's non-`pub` items, so it still compiles the library
+    // with the entry.  On the JVM the library build also carries the path
+    // dependencies' packages, which a JVM build compiles from source (#6750).
+    val wantSharedLibrary = mergeIdx < 0 and libPkgs.count > 0
+    if wantSharedLibrary and not sharedLibAttempted {
       sharedLibAttempted = true
       Console.println("== building the [project.packages] library once for the test entries")
-      val libResult = Emitter.emitProject(
-        testBuildRequest(
-          buildSettings,
-          libPkgs,
-          sharedLibStem,
-          sharedLibPath,
-          restoredDlls,
-          depTemplatePkgsList
-        )
+      val libRequest = testBuildRequest(
+        buildSettings,
+        libPkgs,
+        sharedLibStem,
+        sharedLibPath,
+        restoredDlls,
+        depTemplatePkgsList
       )
-      var libFailed = false
-      for d in libResult.diagnostics.toArray() {
-        match d.severity {
-          case DiagError -> {
-            libFailed = true
+      if targetJvm {
+        // On the JVM a library may build only with a consumer: generics are
+        // erased, so a library generic that calls another package's generic
+        // needs a concrete instantiation one of the entries supplies (M0004).
+        // A library that does not build on its own is therefore compiled with
+        // each entry, as before (#8667); its diagnostics are collected and
+        // only the first error is named.
+        val located: List[DiagUtil.LocatedDiagnostic] = newList()
+        val libResult = Emitter.emitProjectCollecting(libRequest, located)
+        val reason = linkedBuildFallbackReason(libResult, located, sharedLibPath)
+        if reason.length == 0 {
+          for ld in located {
+            printErr(DiagUtil.diagFormatLocated(ld))
           }
-          case DiagWarning -> ()
+          for d in libResult.diagnostics.toArray() {
+            printDiag(d)
+          }
+          sharedLibOk = true
+        } else {
+          Console.println(
+            "note: the [project.packages] library does not build on its own on the JVM (" + reason +
+              "); compiling each entry with it"
+          )
+          sharedLibUnbuildable = true
         }
-        printDiag(d)
+      } else {
+        val libResult = Emitter.emitProject(libRequest)
+        var libFailed = false
+        for d in libResult.diagnostics.toArray() {
+          match d.severity {
+            case DiagError -> {
+              libFailed = true
+            }
+            case DiagWarning -> ()
+          }
+          printDiag(d)
+        }
+        sharedLibOk = not libFailed
       }
-      sharedLibOk = not libFailed
     }
+    val linkSharedLibrary = wantSharedLibrary and not sharedLibUnbuildable
     if linkSharedLibrary and not sharedLibOk {
       printErr(abs + ": test build failed: the [project.packages] library does not compile (errors above)")
       totalFailed += 1
@@ -2390,12 +2434,24 @@ func cmdTestManifest(
       // exactly that name — see `Jvm.Bridge`'s Main-Class derivation from the
       // dotted package declaration, which for a synthesised test module is
       // the manifest's `[project.tests]` key).
+      // A linked entry's JAR holds only its own packages: the library's
+      // classes come from the shared library JAR, after the entry's own so
+      // the classes both bundle (the standard library's) resolve to the
+      // entry's.
+      val linkedLibJar = match linkedResult { case Some(_) -> sharedLibPath; case None -> "" }
       val jvmArgs: List[String] = newList()
-      if mavenJarColonSep.length > 0 {
+      if mavenJarColonSep.length > 0 or linkedLibJar.length > 0 {
+        var classpath = outPath
+        if linkedLibJar.length > 0 {
+          classpath = classpath + ":" + linkedLibJar
+        }
+        if mavenJarColonSep.length > 0 {
+          classpath = mavenJarColonSep + ":" + classpath
+        }
         // `-cp` bypasses the JAR manifest's Enable-Native-Access (D158).
         jvmArgs.add("--enable-native-access=ALL-UNNAMED")
         jvmArgs.add("-cp")
-        jvmArgs.add(mavenJarColonSep + ":" + outPath)
+        jvmArgs.add(classpath)
         jvmArgs.add(mainClass)
       } else {
         jvmArgs.add("-jar")
