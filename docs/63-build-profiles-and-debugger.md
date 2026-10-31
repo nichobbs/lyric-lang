@@ -8,8 +8,9 @@ emission, and the debugger — are unimplemented. Three framing decisions are
 recorded as **settled** in §3.4, §4.4, and §8.1; the rest is open
 (Q-BP-001–Q-BP-011, §13).
 
-Deferred out of B0 with tracked follow-ups: `--shape standalone` has no
-toolchain path on any target and fails loud with `F0044` (#6262); the profile
+Deferred out of B0 with tracked follow-ups: `--shape standalone` shipped in
+D297 (#6262; `F0044` retired); contracts follow the profile for free
+functions in D297 (#6263); the profile
 axis reaches codegen only on `--target native` so far — `resolveNativeOptDefault`
 defaults the clang `-O` level from the profile (`2` under `--release`, `0`
 under `--debug`) when neither `--opt` nor `[native] opt_level` supply one
@@ -265,7 +266,7 @@ them unrepresentable. Whether to keep the sugar at all is **Q-BP-001**.
 |            | `--target dotnet` | `--target jvm` | `--target native` |
 |---|---|---|---|
 | `portable` | **default** — `.dll` | **default** — `.jar` | **error `F0043`** |
-| `standalone` | self-contained publish | `jlink` image / fat JAR | **error `F0043`** |
+| `standalone` | **shipped (D297)** — self-contained directory: patched apphost + installed runtime, Linux hosts (macOS and Windows: #8681) | **shipped (D297)** — `jlink` image + launcher + `lib/` jars, Linux and macOS hosts | **error `F0043`** |
 | `aot` | ILC Native AOT | GraalVM `native-image` — **shipped** for Linux/macOS (D131; Windows still #1975) | **default and only valid shape** |
 
 `--target native` fixes the shape at `aot`. Passing `--shape aot` explicitly is
@@ -302,7 +303,7 @@ axis. Preserving them verbatim through the refactor would be a bug.
 | `--define` | rejected when `release` (`cli_build.l:180-183`, `defineBuildGateError`) | rejected when `shape != portable`; `--release --shape portable --define K=V` works |
 | manifest `[build.define]` | rejected when `release` or `autoAot` (`manifestDefineGateError`) | rejected when `shape != portable` |
 | `--watch` | rejected when `release` (`cli_build.l:1116`) | rejected when `shape != portable` (watch is an inner-loop tool; AOT and standalone builds are too slow to watch) |
-| — | — | *(as shipped: both define gates reject every non-`portable` shape, not just `aot` — `standalone` is equally a packaging path that threads no defines. Unobservable today since `standalone` is rejected earlier by `F0044`, but the predicate and its tests encode the general rule.)* |
+| — | — | *(superseded by D297: the packaging shapes compile their staging artifact through the ordinary build and thread `--define` and `[build.define]` into it, so neither define gate looks at the shape any more; `manifestDefineGateError` is gone and `defineBuildGateError` rejects only `--watch` and a non-consumable target.)* |
 | `--rid` | warned unless `release` (`cli_build.l:1092`, `cli_build.l:1137`) | warned unless `shape` is `standalone` or `aot` |
 
 `defineBuildGateError` and `manifestDefineGateError` are already pure,
@@ -391,7 +392,7 @@ ABI restriction, and build defines. Proposed new codes:
 | `F0041` | conflicting shape spellings (`--aot --standalone`, `--aot --shape portable`, …) |
 | `F0042` | `[build] kind = "aot"` — removed; use `shape = "aot"` |
 | `F0043` | shape incompatible with target (`--target native --shape portable`) |
-| `F0044` | shape requested whose implementation does not exist — `standalone` on every target today (#6262). A *toolchain* that is merely absent (e.g. GraalVM `native-image` not installed) is not this code: `Lyric.Release` runs its own preflight and reports that itself. |
+| `F0044` | **retired** (D297): it reported `standalone` as unimplemented. Not reused. Formerly: shape requested whose implementation does not exist (#6262). A *toolchain* that is merely absent (e.g. GraalVM `native-image` not installed) is not this code: `Lyric.Release` runs its own preflight and reports that itself. |
 
 Whether build-shape diagnostics deserve their own family letter rather than
 extending `F` is **Q-BP-004** — and the table above is the argument that they

@@ -90,15 +90,11 @@ The runtime overhead of contract checking is real: evaluating Boolean expression
 
 **Release builds** (`lyric build --release`) apply a more selective policy:
 
-> **Not yet implemented.** The build profile does not currently reach the
-> contract elaborator, so contracts are checked identically in `--debug` and
-> `--release`, and `--release-contracts` has no effect. The profile became an
-> independently selectable axis in docs/63 band B0; wiring it through to
-> codegen for contract elision and optimization is tracked in [#6263] (integer
-> overflow checking already follows the profile, D163). The policy below
-> describes the intended design.
+> **Scope.** The policy below applies to free functions. Methods in `impl`
+> blocks, records and protected types keep all their checks in a release build
+> for now ([#8680]).
 
-[#6263]: https://github.com/nichobbs/lyric-lang/issues/6263
+[#8680]: https://github.com/nichobbs/lyric-lang/issues/8680
 
 - `requires:` on `pub` functions are **always checked**, even in release. A caller outside your package can always pass bad arguments; eliminating those checks would silently corrupt data in production.
 - `requires:` on non-`pub` (internal) functions are **elided**. By the time a value reaches an internal function, it has already passed through a public boundary that validated it.

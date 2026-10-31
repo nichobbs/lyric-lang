@@ -3543,6 +3543,41 @@ func publicBoundary(it: in Item, boundary: in InvariantBoundary): InvariantBound
   }
 }
 
+/// The file annotation `Lyric.Pipeline` sets on a file compiled in the
+/// `release` profile whose contracts follow the release policy (book chapter
+/// 17, section 17.4): `ensures:` clauses and the `requires:` clauses of
+/// non-`pub` functions are not checked at run time.
+pub func releaseElideMarker(): String = "__lyric_release_elide"
+
+pub func hasReleaseElide(anns: in List[Annotation]): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == releaseElideMarker() {
+      return true
+    }
+  }
+  false
+}
+
+// The clauses of a free function that the release policy still checks:
+// every `ensures:` goes, and `requires:` goes unless the function is `pub`
+// (a caller outside the package can always pass bad arguments).  Clauses
+// the elaborator does not lower to run-time checks pass through.
+func releaseKeptClauses(fn: in FunctionDecl, isPub: in Bool): List[ContractClause] {
+  val kept: List[ContractClause] = newList()
+  for c in fn.contracts {
+    match c {
+      case CCEnsures(_, _) -> ()
+      case CCRequires(_, _) -> {
+        if isPub {
+          kept.add(c)
+        }
+      }
+      case other -> kept.add(other)
+    }
+  }
+  kept
+}
+
 func elaborateItem(
   it: in Item,
   ifaces: in Map[String, InterfaceDecl],
@@ -3551,6 +3586,7 @@ func elaborateItem(
   pkg: in String,
   contractsEnabled: in Bool = true,
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
+  releaseElide: in Bool = false,
 ): Item {
   match it.kind {
     case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled)))
@@ -3559,20 +3595,21 @@ func elaborateItem(
       it,
       IImpl(decl = elaborateImplDecl(decl, ifaces, typeFields, cases, pkg, contractsEnabled))
     )
-    case IFunc(fn) -> Item(
-      docComments = it.docComments,
-      annotations = it.annotations,
-      visibility = it.visibility,
-      kind = IFunc(
-        decl = elaborateFunctionOwned(
-          fn,
-          qualify(pkg, fn.name),
-          contractsEnabled,
-          publicBoundary(it, boundary)
-        )
-      ),
-      span = it.span
-    )
+    case IFunc(fn) -> {
+      val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+      // Under the release policy the function is elaborated from a view
+      // without the elided clauses, then given its source-level clauses back
+      // so contract metadata and the verifier still see what was written.
+      val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, isPub)) } else { fn }
+      val done = elaborateFunctionOwned(view, qualify(pkg, fn.name), contractsEnabled, publicBoundary(it, boundary))
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IFunc(decl = if releaseElide { withContracts(done, fn.contracts) } else { done }),
+        span = it.span
+      )
+    }
     case IProtected(decl) -> {
       val invariants: List[InvariantClause] = newList()
       var mi = 0
@@ -3672,6 +3709,7 @@ pub func elaborateFileWithTypes(
   // by the prover), while `lyric prove` reads the source clauses which `fn.contracts`
   // still carries. #7457: impl methods for a protected type become its locked entries.
   val effectiveContractsEnabled = if isProofRequired(canonFile.fileAnnotations) { true } else { contractsEnabled }
+  val releaseElide = hasReleaseElide(canonFile.fileAnnotations) and not isProofRequired(canonFile.fileAnnotations)
   val items = mergeProtectedImpls(canonFile.items, ifaces)
   val typeFields = SelfFields.typeFieldIndex(canonFile, importedRecords)
   val cases = caseSites
@@ -3685,7 +3723,8 @@ pub func elaborateFileWithTypes(
         cases,
         Fmt.pathStr(canonFile.packageDecl.path),
         effectiveContractsEnabled,
-        boundary
+        boundary,
+        releaseElide
       )
     )
     i = i + 1
