@@ -20710,28 +20710,42 @@ func hasFuncOverrideMsil(
 // region: `Monitor.Wait(this)` releases the lock until pulsed, and
 // `Monitor.PulseAll(this)` wakes every waiter to re-test its barrier.
 func lowerProtectedIntrinsicMsil(cctx: in CodegenCtx, insns: in List[MInsn], name: in String): MsilType {
+  insns.add(MLdarg(slot = 0))
+  if name == "__lyric_protected_wait" {
+    insns.add(MCall(methodToken = protectedMonitorTokenMsil(cctx, "Wait")))
+    insns.add(MPop)
+  } else {
+    insns.add(MCall(methodToken = protectedMonitorTokenMsil(cctx, "PulseAll")))
+  }
+  MVoid
+}
+
+// The `Monitor.Wait(object)` / `Monitor.PulseAll(object)` MemberRef token,
+// registered once per compilation (`lowerProtectedMsil` registers both with
+// `Enter` and `Exit`, before any member body is lowered, #8261).  A member
+// body that added them while it was being lowered made a protected type with a
+// `when:` barrier invalid whenever it was compiled as one package of several.
+func protectedMonitorTokenMsil(cctx: in CodegenCtx, method: in String): Int {
+  val key = "System.Threading/Monitor." + method
+  match mapGet(cctx.ffiTypeRefs, key) {
+    case Some(tok) -> return tok
+    case None -> ()
+  }
   val arThreading = ctxAddAssemblyRef(cctx.lctx, "System.Threading", 10, 0)
   val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", arThreading)
   val ps: List[MsilType] = newList()
   ps.add(MObject)
-  insns.add(MLdarg(slot = 0))
-  if name == "__lyric_protected_wait" {
-    val tokWait = 0x0A000000 +
-      ctxAddMemberRef(cctx.lctx, trMonitor, "Wait", "monitor_wait", buildStaticMethodSig(ps, MBool))
-    insns.add(MCall(methodToken = tokWait))
-    insns.add(MPop)
-  } else {
-    val tokPulse = 0x0A000000 +
-      ctxAddMemberRef(
-        cctx.lctx,
-        trMonitor,
-        "PulseAll",
-        "monitor_pulseall",
-        buildStaticMethodSig(ps, MVoid)
-      )
-    insns.add(MCall(methodToken = tokPulse))
-  }
-  MVoid
+  val ret = if method == "Wait" { MBool } else { MVoid }
+  val tok = 0x0A000000 +
+    ctxAddMemberRef(
+      cctx.lctx,
+      trMonitor,
+      method,
+      if method == "Wait" { "monitor_wait" } else { "monitor_pulseall" },
+      buildStaticMethodSig(ps, ret)
+    )
+  cctx.ffiTypeRefs.add(key, tok)
+  tok
 }
 
 // Convert the value on the stack, typed `argTy`, to the `String` that
@@ -40526,6 +40540,8 @@ func lowerProtectedMsil(
   exitPs.add(MObject)
   val tokExit = 0x0A000000 +
     ctxAddMemberRef(cctx.lctx, trMonitor, "Exit", "monitor_exit", buildStaticMethodSig(exitPs, MVoid))
+  val _ = protectedMonitorTokenMsil(cctx, "Wait")
+  val _ = protectedMonitorTokenMsil(cctx, "PulseAll")
 
   val recFields: List[MField] = newList()
   val recMethods: List[MFunc] = newList()
