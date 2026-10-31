@@ -970,6 +970,8 @@ func buildLinkerArgsMac(
   args.add("Foundation")
   args.add("-framework")
   args.add("Security")
+  args.add("-framework")
+  args.add("GSS")
 
   args
 }
