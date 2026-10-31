@@ -2448,6 +2448,7 @@ pub func rewriteFile(file: in SourceFile): SourceFile {
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

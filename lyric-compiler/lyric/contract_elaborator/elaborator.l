@@ -2859,6 +2859,7 @@ func canonicalizeFileUnitAliases(file: in SourceFile): SourceFile {
       }
       SourceFile(
         moduleDoc = file.moduleDoc,
+        files = file.files,
         fileAnnotations = file.fileAnnotations,
         packageDecl = file.packageDecl,
         imports = file.imports,
@@ -3351,10 +3352,6 @@ func hasClauseAt(contracts: in List[ContractClause], e: in Expr, sp: in Span): B
   false
 }
 
-func sameSpan(a: in Span, b: in Span): Bool {
-  a.startPos.offset == b.startPos.offset and a.endPos.offset == b.endPos.offset
-}
-
 // Elaborate `fn` with `extra` clauses prepended to its own, then restore the
 // source-level clause list so contract metadata and the verifier see only
 // what the author wrote on this declaration.
@@ -3647,6 +3644,7 @@ pub func elaborateFileWithTypes(
   }
   SourceFile(
     moduleDoc = canonFile.moduleDoc,
+    files = canonFile.files,
     fileAnnotations = canonFile.fileAnnotations,
     packageDecl = canonFile.packageDecl,
     imports = canonFile.imports,

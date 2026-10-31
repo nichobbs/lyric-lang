@@ -1860,6 +1860,7 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = newImports,

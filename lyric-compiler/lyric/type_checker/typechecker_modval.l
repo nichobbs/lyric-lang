@@ -46,6 +46,7 @@ pub func desugarModuleValPatterns(file: in SourceFile): ModuleValDesugarResult {
   ModuleValDesugarResult(
     file = SourceFile(
       moduleDoc = file.moduleDoc,
+      files = file.files,
       fileAnnotations = file.fileAnnotations,
       packageDecl = file.packageDecl,
       imports = file.imports,
@@ -531,6 +532,7 @@ pub func annotateModuleVals(file: in SourceFile, types: in Map[String, TypeExpr]
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

@@ -138,7 +138,13 @@ The alternatives considered:
 The text merge goes away. Each file is parsed once; a package is a list of
 parsed files. Every `Position` carries a `FileId`, so spans, diagnostics and
 node identities never need the merge's line-origin table (`MergedLineOrigin`
-is deleted). File-level annotations stay package-wide with the existing
+is deleted). Lines and columns are the file's own. Offsets stay unique across
+the package: file N is lexed at an offset base past the end of the files
+before it (`Lyric.Parser.parseFile(source, fileId, offsetBase)`), so the
+offset-keyed side tables the checker hands to later passes
+(`recordCopySiteKey` and the site maps built on it) and every comparison of
+spans by offset keep their meaning without carrying the file; code that
+indexes a file's text subtracts the file's base. File-level annotations stay package-wide with the existing
 `B0014` agreement rule; `B0012` (one alias bound two ways across files) is
 no longer an error, because aliases are per file.
 

@@ -165,7 +165,3 @@ func dedupeDiagnostics(diags: in List[Diagnostic]): List[Diagnostic] {
   }
   kept
 }
-
-func spanKey(sp: in Span): String {
-  intToString(sp.startPos.offset) + "-" + intToString(sp.endPos.offset)
-}

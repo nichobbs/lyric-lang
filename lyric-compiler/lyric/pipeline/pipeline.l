@@ -348,6 +348,7 @@ func withArrayImports(file: in SourceFile, source: in String): SourceFile {
   )
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = imports,
@@ -382,6 +383,7 @@ func markWrappingArith(file: in SourceFile, defines: in List[BD.Define]): Source
   anns.add(Annotation(name = ModulePath(segments = segs, span = file.span), args = noArgs, span = file.span))
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = anns,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -645,6 +647,7 @@ pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
   }
   val converted = SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -1095,6 +1098,7 @@ pub func fixturesAsModuleVals(file: in SourceFile): SourceFile {
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -2328,6 +2332,7 @@ func specHasMemberAccess(decl: in FunctionDecl): Bool {
   items.add(funcItem(decl))
   val f = SourceFile(
     moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -2401,6 +2406,7 @@ func checkInOriginScope(
   }
   val checkFile = SourceFile(
     moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = PackageDecl(
       path = ModulePath(segments = dottedSegments(origin), span = file0.span),
@@ -2759,6 +2765,7 @@ func endForeignUnitLambdas(file: in SourceFile, sitesByOrigin: in Map[String, Ma
         case Some(sites) -> {
           val single = SourceFile(
             moduleDoc = file.moduleDoc,
+            files = file.files,
             fileAnnotations = file.fileAnnotations,
             packageDecl = file.packageDecl,
             imports = file.imports,
@@ -2774,6 +2781,7 @@ func endForeignUnitLambdas(file: in SourceFile, sitesByOrigin: in Map[String, Ma
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -2993,6 +3001,7 @@ func specCallsAnyMethod(decl: in FunctionDecl, names: in Map[String, Bool]): Boo
   items.add(funcItem(decl))
   val f = SourceFile(
     moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -3013,6 +3022,7 @@ func specUsesEquality(decl: in FunctionDecl): Bool {
   items.add(funcItem(decl))
   val f = SourceFile(
     moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -3097,6 +3107,7 @@ func recheckSpecRound(
   }
   val checkFile = SourceFile(
     moduleDoc = file0.moduleDoc,
+    files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = pkgDecl,
     imports = imports,
@@ -3310,6 +3321,7 @@ func lowerSpecArrays(
           one.add(it)
           val oneFile = SourceFile(
             moduleDoc = file.moduleDoc,
+            files = file.files,
             fileAnnotations = file.fileAnnotations,
             packageDecl = file.packageDecl,
             imports = file.imports,
@@ -3347,6 +3359,7 @@ func lowerSpecArrays(
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -4842,6 +4855,7 @@ func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile 
   }
   SourceFile(
     moduleDoc = converted.moduleDoc,
+    files = converted.files,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
     imports = converted.imports,
@@ -5293,6 +5307,7 @@ pub func pipeRestoredItemsWithImports(source: in SourceFile, imports: in List[St
   }
   val withImports = SourceFile(
     moduleDoc = source.moduleDoc,
+    files = source.files,
     fileAnnotations = source.fileAnnotations,
     packageDecl = source.packageDecl,
     imports = decls,
@@ -5695,10 +5710,6 @@ func ioFunctionSpans(file: in SourceFile): List[Span] {
     }
   }
   spans
-}
-
-func spanWithin(inner: in Span, outer: in Span): Bool {
-  inner.startPos.offset >= outer.startPos.offset and inner.endPos.offset <= outer.endPos.offset
 }
 
 /// The layer diagnostics (D149) for a package that may not do I/O: a

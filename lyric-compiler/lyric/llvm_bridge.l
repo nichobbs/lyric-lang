@@ -1073,6 +1073,7 @@ func withGenericItems(file: in SourceFile, generics: in List[Item]): SourceFile 
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
@@ -1131,6 +1132,7 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
   }
   SourceFile(
     moduleDoc = sf.moduleDoc,
+    files = sf.files,
     fileAnnotations = sf.fileAnnotations,
     packageDecl = sf.packageDecl,
     imports = sf.imports,
@@ -2566,6 +2568,7 @@ func lowerConfigBlocksNative(file: in SourceFile): SourceFile {
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = imports,

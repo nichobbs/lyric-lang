@@ -4178,6 +4178,7 @@ func expandFileMode(
   }
   val out2 = SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = withImports(file.imports, paths, file.packageDecl.span),

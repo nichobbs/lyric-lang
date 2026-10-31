@@ -374,6 +374,7 @@ pub func inheritDefaultsFile(file: in SourceFile): ImplDefaultsResult {
   collectTargetNamespace(file.items, overridden, conflicted, diags)
   val rewritten = SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

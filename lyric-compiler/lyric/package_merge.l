@@ -128,6 +128,171 @@ pub func mergePackageFiles(
   mergeFiles(packageName, sources, paths, activeFeatures, declaredFeatures, targetName, true)
 }
 
+/// A package assembled from its separately parsed files (docs/70 §4.1).
+/// `file.items` holds every kept file's items in file order, `file.files`
+/// one header per source (index = `fileId`), and the package-level header
+/// fields the union `mergePackageFiles` would have written.  `diagnostics`
+/// is what `mergePackageFiles` reports for the same files; when it holds an
+/// error, `file` is not usable.
+pub record PackageAssembly {
+  file: SourceFile
+  diagnostics: List[MergeDiagnostic]
+}
+
+/// The files of package `packageName` (`sources`, with `paths` naming them),
+/// each parsed on its own at its own offset base, held to the rules of
+/// `mergePackageFiles`, and joined as one `SourceFile`.
+pub func assemblePackageFiles(
+  packageName: in String,
+  sources: in List[String],
+  paths: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  targetName: in String,
+): PackageAssembly {
+  val diags: List[MergeDiagnostic] = newList()
+  val modePaths: List[String] = newList()
+  val modeSpans: List[Span] = newList()
+  val modeNames: List[String] = newList()
+  val annotationPieces: List[HeaderPiece] = newList()
+  val importPieces: List[HeaderPiece] = newList()
+  val annotations: List[Annotation] = newList()
+  val imports: List[ImportDecl] = newList()
+  val docs: List[DocComment] = newList()
+  val items: List[Item] = newList()
+  val headers: List[FileHeader] = newList()
+  var packageDecl: Option[PackageDecl] = None
+  var base = 0
+  var i = 0
+  while i < sources.count {
+    val path = if i < paths.count { paths[i] } else { "" }
+    val text = normaliseNewlines(sources[i])
+    val fileBase = base
+    val pr = parseFile(text, i, fileBase)
+    base = base + text.length + 1
+    var usable = true
+    for d in pr.diagnostics {
+      if d.severity == DiagError {
+        usable = false
+      }
+    }
+    if not usable {
+      for d in pr.diagnostics {
+        diags.add(MergeDiagnostic(path = path, diag = d))
+      }
+    }
+    val declaredPkg = if pr.file.packageDecl.path.segments.count > 0 or usable {
+      DeclaredPackage(name = modulePathJoin(pr.file.packageDecl.path.segments), span = pr.file.packageDecl.path.span)
+    } else {
+      lexedPackage(text)
+    }
+    if declaredPkg.name.length > 0 and declaredPkg.name != packageName {
+      usable = false
+      diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declaredPkg.name, packageName, declaredPkg.span)))
+    }
+    if usable and declaredPkg.name.length == 0 and (pr.file.fileAnnotations.count > 0 or pr.file.imports.count > 0) {
+      usable = false
+      val at = if pr.file.fileAnnotations.count > 0 { pr.file.fileAnnotations[0].span } else { pr.file.imports[0].span }
+      diags.add(
+        MergeDiagnostic(
+          path = path,
+          diag = errorDiagnostic("P0020", "expected 'package' declaration at the head of the file", at)
+        )
+      )
+    }
+    if usable and declaredPkg.name.length > 0 {
+      var names = ""
+      for a in pr.file.fileAnnotations {
+        val n = annotationName(a)
+        if unitModeAnnotations().contains(n) and not Str.contains(names, "|" + n + "|") {
+          names = names + "|" + n + "|"
+        }
+      }
+      modePaths.add(path)
+      modeSpans.add(pr.file.packageDecl.span)
+      modeNames.add(names)
+      match packageDecl {
+        case None -> {
+          packageDecl = Some(value = pr.file.packageDecl)
+        }
+        case Some(_) -> ()
+      }
+    }
+    if usable {
+      for d in Cfg.fileCfgDiagnostics(declaredFeatures, pr.file.fileAnnotations) {
+        diags.add(MergeDiagnostic(path = path, diag = d))
+      }
+      for a in pr.file.fileAnnotations {
+        if not isCfg(a) {
+          val before = annotationPieces.count
+          addAnnotation(
+            annotationPieces,
+            pieceOf(text, fileBase, annotationName(a), annotationKey(a), "", "", a.span, i, path),
+            packageName,
+            diags
+          )
+          if annotationPieces.count > before {
+            annotations.add(a)
+          }
+        }
+      }
+    }
+    if usable and not fileGatedOut(pr.file.fileAnnotations, activeFeatures, targetName) {
+      for d in pr.file.imports {
+        val aliasName = match d.asAlias { case Some(al) -> al; case None -> "" }
+        val aliasTarget = (if d.isExtern { "extern " } else { "" }) + modulePathJoin(d.path.segments)
+        val before = importPieces.count
+        addImport(importPieces, pieceOf(text, fileBase, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
+        if importPieces.count > before {
+          imports.add(d)
+        }
+      }
+      for doc in pr.file.moduleDoc {
+        docs.add(doc)
+      }
+      for it in pr.file.items {
+        items.add(it)
+      }
+    }
+    headers.add(
+      FileHeader(
+        path = path,
+        moduleDoc = pr.file.moduleDoc,
+        fileAnnotations = pr.file.fileAnnotations,
+        packageDecl = pr.file.packageDecl,
+        imports = pr.file.imports,
+        span = pr.file.span,
+        offsetBase = fileBase
+      )
+    )
+    i = i + 1
+  }
+  checkUnitModes(modePaths, modeSpans, modeNames, diags)
+  val firstSpan = if headers.count > 0 { headers[0].span } else { noSourceSpan() }
+  val decl = match packageDecl {
+    case Some(d) -> d
+    case None -> {
+      val segs: List[String] = newList()
+      for seg in Str.split(packageName, ".") {
+        segs.add(seg)
+      }
+      PackageDecl(path = ModulePath(segments = segs, span = firstSpan), span = firstSpan)
+    }
+  }
+  PackageAssembly(
+    file = SourceFile(
+      moduleDoc = docs,
+      files = headers,
+      fileAnnotations = annotations,
+      packageDecl = decl,
+      imports = imports,
+      items = items,
+      span = firstSpan
+    ),
+    diagnostics = diags
+  )
+}
+
 /// `mergePackageFiles` for the packages the compiler discovers in its own
 /// source trees (the stdlib and the compiler, `Lyric.Emitter`'s per-package
 /// builds): a package of one file is rebuilt in the merged shape too, and no
@@ -275,7 +440,7 @@ func mergeFiles(
         if not isCfg(a) {
           addAnnotation(
             annotations,
-            pieceOf(text, annotationName(a), annotationKey(a), "", "", a.span, i, path),
+            pieceOf(text, 0, annotationName(a), annotationKey(a), "", "", a.span, i, path),
             packageName,
             diags
           )
@@ -286,7 +451,7 @@ func mergeFiles(
       for d in pr.file.imports {
         val aliasName = match d.asAlias { case Some(al) -> al; case None -> "" }
         val aliasTarget = (if d.isExtern { "extern " } else { "" }) + modulePathJoin(d.path.segments)
-        addImport(imports, pieceOf(text, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
+        addImport(imports, pieceOf(text, 0, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
       }
       addModuleDocs(docLines, docOrigins, text, pr.file, path)
       val body = fileBody(text, pr.file, path, withOrigins)
@@ -422,6 +587,7 @@ func annotationName(a: in Annotation): String {
 
 func pieceOf(
   text: in String,
+  base: in Int,
   name: in String,
   key: in String,
   aliasName: in String,
@@ -435,7 +601,7 @@ func pieceOf(
     key = key,
     aliasName = aliasName,
     aliasTarget = aliasTarget,
-    text = text.substring(sp.startPos.offset, sp.endPos.offset - sp.startPos.offset),
+    text = text.substring(sp.startPos.offset - base, sp.endPos.offset - sp.startPos.offset),
     fileIndex = fileIndex,
     path = path,
     line = sp.startPos.line,
@@ -589,7 +755,7 @@ func checkUnitModes(
 }
 
 func spanAt(p: in HeaderPiece): Span {
-  val start = Position(offset = 0, line = p.line, column = p.column)
+  val start = Position(offset = 0, line = p.line, column = p.column, fileId = p.fileIndex)
   Span(startPos = start, endPos = start)
 }
 

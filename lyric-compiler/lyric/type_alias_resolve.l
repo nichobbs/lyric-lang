@@ -1876,6 +1876,7 @@ pub func resolveAliasesInFile(aliasTargets: in Map[String, TypeExpr], file: in S
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

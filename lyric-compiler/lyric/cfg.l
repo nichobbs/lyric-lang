@@ -281,6 +281,7 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
     val emptyImports: List[ImportDecl] = newList()
     val emptied = SourceFile(
       moduleDoc = sf.moduleDoc,
+      files = sf.files,
       fileAnnotations = sf.fileAnnotations,
       packageDecl = sf.packageDecl,
       imports = emptyImports,
@@ -308,6 +309,7 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
 
   val filtered = SourceFile(
     moduleDoc = sf.moduleDoc,
+    files = sf.files,
     fileAnnotations = sf.fileAnnotations,
     packageDecl = sf.packageDecl,
     imports = sf.imports,

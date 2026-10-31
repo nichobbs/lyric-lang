@@ -2499,6 +2499,7 @@ pub func hoistFileWithTypeArgCallees(
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
+    files = file.files,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,

@@ -4372,7 +4372,7 @@ func takesArgCount(sig: in ResolvedSignature, n: in Int): Bool {
 
 func sigListHas(sigs: in List[ResolvedSignature], s: in ResolvedSignature): Bool {
   for x in sigs {
-    if x.originPackage == s.originPackage and x.span.startPos.offset == s.span.startPos.offset and x.span.endPos.offset == s.span.endPos.offset and x.params.count == s.params.count {
+    if x.originPackage == s.originPackage and sameSpan(x.span, s.span) and x.params.count == s.params.count {
       return true
     }
   }
@@ -21778,7 +21778,7 @@ func reportAmbiguousDefaultCall(
     return
   }
   for d in diag {
-    if d.code == "T0200" and d.span.startPos.offset == span.startPos.offset {
+    if d.code == "T0200" and d.span.startPos.fileId == span.startPos.fileId and d.span.startPos.offset == span.startPos.offset {
       return
     }
   }

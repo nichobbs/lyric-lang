@@ -2514,6 +2514,7 @@ pub func expandFile(
   WireExpandResult(
     file = SourceFile(
       moduleDoc = file.moduleDoc,
+      files = file.files,
       fileAnnotations = file.fileAnnotations,
       packageDecl = file.packageDecl,
       imports = if needsCollections { withCollectionsImport(file.imports, file.span) } else { file.imports },

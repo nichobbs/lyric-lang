@@ -4283,8 +4283,12 @@ func hasContractSourceAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
-pub func parse(source: in String): ParseResult {
-  val lexResult = lex(source)
+pub func parse(source: in String): ParseResult = parseFile(source, 0, 0)
+
+/// `parse` for file `fileId` of a package, its offsets starting at
+/// `offsetBase` (docs/70 §4.1; see `Lyric.Lexer.Position`).
+pub func parseFile(source: in String, fileId: in Int, offsetBase: in Int): ParseResult {
+  val lexResult = lexFile(source, fileId, offsetBase)
   var st = makeParseState(lexResult.tokens, lexResult.diagnostics)
   // Wrap the entire file in a single SkSourceFile CST node so every
   // token (including the trailing TEof) is reachable from a single
@@ -4307,13 +4311,27 @@ pub func parse(source: in String): ParseResult {
     st.pos = st.pos + 1
   }
   cstFinish(st)
+  val fileSpan = joinSpans(startSpan, endSpan)
+  val files: List[FileHeader] = newList()
+  files.add(
+    FileHeader(
+      path = "",
+      moduleDoc = moduleDoc,
+      fileAnnotations = fileAnnotations,
+      packageDecl = packageDecl,
+      imports = imports,
+      span = fileSpan,
+      offsetBase = offsetBase
+    )
+  )
   val file = SourceFile(
     moduleDoc = moduleDoc,
     fileAnnotations = fileAnnotations,
     packageDecl = packageDecl,
     imports = imports,
     items = items,
-    span = joinSpans(startSpan, endSpan)
+    span = fileSpan,
+    files = files
   )
   val cst = buildGreenTree(st.cstEvents, st.tokens)
   // The text the spans index (a CRLF file's offsets count no `\r`).
