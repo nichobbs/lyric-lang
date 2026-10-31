@@ -580,19 +580,23 @@ func registerImportedFunctions(
       continue
     }
     val pkgName = joinPathSegments(imp.path.segments)
-    if pkgName == "Std.Core" {
-      continue
-    }
     for rp in imports.packages {
       if rp.name == pkgName {
-        imported.add(rp)
-        for fn in rp.decls.callees {
-          addCalleeIfAbsent(callees, pkgName + "." + fn.name, fn)
-          match imp.asAlias {
-            case Some(alias) -> addCalleeIfAbsent(callees, alias + "." + fn.name, fn)
-            case None -> ()
+        // Every function of an imported package counts towards a bare
+        // name's ambiguity, an ineligible one or one of `Std.Core` as well:
+        // a bare call may be meant for it.
+        for sf in rp.decls.functions {
+          bumpCount(bare, sf.name)
+        }
+        if pkgName != "Std.Core" {
+          imported.add(rp)
+          for fn in rp.decls.callees {
+            addCalleeIfAbsent(callees, pkgName + "." + fn.name, fn)
+            match imp.asAlias {
+              case Some(alias) -> addCalleeIfAbsent(callees, alias + "." + fn.name, fn)
+              case None -> ()
+            }
           }
-          bumpCount(bare, fn.name)
         }
       }
     }

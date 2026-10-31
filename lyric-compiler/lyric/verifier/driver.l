@@ -461,7 +461,9 @@ func clauseExpr(c: in ContractClause): Option[Expr] {
 // A callee resolves its names in the PROVED file's scope, so one that reaches
 // a name of its own package — a function, a constant, a local — would read
 // the caller's.  Only a function whose contracts and body name nothing but
-// its parameters (and call methods on values) is applied.
+// its parameters (and call methods on values) is applied.  A body that binds
+// a local (`val x = ...`) is turned away on purpose: the local is not a
+// parameter, and admitting it would let the name resolve in the caller.
 func importedCalleeEligible(fn: in FunctionDecl): Bool {
   match fn.generics {
     case Some(_) -> return false
