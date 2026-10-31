@@ -3104,8 +3104,6 @@ func jvmProjectFrontEnd(
   )
 }
 
-// A JVM front-end error with no diagnostic of its own: printed as the build
-// has always printed it, or collected into `sink` at `span` (the start of the
 // A JVM build's own report (`headline`, then `detail` lines, already
 // formatted as `error[J00N]: ...` or `note[J003]: ...`): printed as before,
 // or with `sink` collecting, one diagnostic of `severity` whose code is the
@@ -3133,6 +3131,8 @@ func jvmBuildReport(sink: in DiagSink, severity: in DiagnosticSeverity, headline
   }
 }
 
+// A JVM front-end error with no diagnostic of its own: printed as the build
+// has always printed it, or collected into `sink` at `span` (the start of the
 // file when None) under `label`.
 func jvmFrontEndError(
   sink: in DiagSink, label: in String, span: in Option[Span], message: in String, hint: in String
