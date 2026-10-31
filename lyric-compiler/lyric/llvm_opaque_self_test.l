@@ -24,7 +24,7 @@
 //! an opaque type's destructor, exactly like `llvm_heap_self_test.l`'s
 //! record ARC cases.
 //!
-//! `@nativeDtor("symbol")` (#6234 part 2, D282) gives an opaque type wrapping a
+//! `@nativeDtor("symbol")` (#6234 part 2, D283) gives an opaque type wrapping a
 //! raw resource ARC-driven cleanup: when the last reference drops, the
 //! destructor calls the C function with the type's first field, then releases
 //! the ref-typed fields. The `nativeDtor` cases below run that under ASan with
