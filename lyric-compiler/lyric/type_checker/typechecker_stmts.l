@@ -786,7 +786,16 @@ pub func checkStatement(
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a
       // local annotated with the generator's element type (#7750).
-      recordTuplePatternBindings(tbl, pat, eraseTyVars(elemType), forIterIsGeneratorCall(tbl, iter), sc.genericNames)
+      // An extern type's elements likewise reach the loop as the erased
+      // `Object` of the host protocol, so its loop variable is narrowed the
+      // same way (D296).
+      recordTuplePatternBindings(
+        tbl,
+        pat,
+        eraseTyVars(elemType),
+        forIterIsGeneratorCall(tbl, iter) or forIterIsExternHostLoop(tbl, iter, elemType),
+        sc.genericNames
+      )
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
       scopePop(sc)
     }
@@ -2211,7 +2220,10 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
 // collection protocol (`IEnumerable` / `java.lang.Iterable`) decides at
 // codegen; a single-type-parameter extern type iterates its type argument
 // (the phantom-type-param idiom, e.g.
-// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565).
+// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565); one
+// of no type parameters or of two or more iterates what the host protocol
+// declares, as the bridge read it from host metadata (`externIterLoopElem`,
+// D296).
 // Every other type -- a record, union, enum, opaque, protected, distinct or
 // interface type of any arity, a primitive, a tuple, a function, a nullable
 // value, the stdlib `Map` itself -- has no iteration lowering: codegen's
@@ -2248,7 +2260,7 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
         if iterArgs.count == 1 {
           iterArgs[0]
         } else {
-          TyError
+          externIterLoopElem(tbl, diag, iter, iterType, iterId, iterArgs)
         }
       } else {
         reportNotIterable(
@@ -2284,6 +2296,259 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
       iter,
       "cannot iterate over '" + renderType(iterType) + "': not a recognized iterable type"
     )
+  }
+}
+
+// The host type name an `extern type` spells, without the arity suffix, any
+// instantiation in square brackets or the JVM's path separators
+// (`System.Collections.Generic.List`1[System.Int32]` becomes
+// `System.Collections.Generic.List`).  The bridge names the element types it
+// finds the same way, so a host element type finds its `extern type`.
+pub func externHostBase(clrName: in String): String {
+  var s = clrName
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "[" {
+      s = s.substring(0, i)
+    } else {
+      i = i + 1
+    }
+  }
+  var j = 0
+  while j < s.length {
+    if s.substring(j, 1) == "`" {
+      var k = j + 1
+      while k < s.length and isAsciiDigitStr(s.substring(k, 1)) {
+        k = k + 1
+      }
+      s = s.substring(0, j) + s.substring(k, s.length - k)
+    } else {
+      j = j + 1
+    }
+  }
+  var result = ""
+  var m = 0
+  while m < s.length {
+    val ch = s.substring(m, 1)
+    result = result + (if ch == "/" then "." else ch)
+    m = m + 1
+  }
+  result
+}
+
+func isAsciiDigitStr(c: in String): Bool {
+  c.length == 1 and c >= "0" and c <= "9"
+}
+
+// True when the `extern type` spells a concrete instantiation of its host
+// type (`List`1[System.Int32]`), which no host element type names.
+func externDeclIsInstantiation(decl: in ExternTypeDecl): Bool {
+  var i = 0
+  while i < decl.clrName.length {
+    if decl.clrName.substring(i, 1) == "[" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func externDeclArity(decl: in ExternTypeDecl): Int {
+  match decl.generics {
+    case Some(g) -> g.params.count
+    case None -> 0
+  }
+}
+
+// The `extern type` bound to the host type `hostName` with `args.count` type
+// parameters, as a type applied to `args`.  Several packages may bind the same
+// host type (each kernel declares its own `Object`), and they are distinct
+// types, so the one the checked package declares wins, then one of the
+// packages it imports, then any.
+func findExternTypeForHost(tbl: in SymbolTable, hostName: in String, args: in List[Type]): Option[Type] {
+  val scopePkg = symTableScopePkg(tbl)
+  var best: Option[Type] = None
+  var bestRank = 0
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(tid, decl) -> if externDeclArity(decl) == args.count and not externDeclIsInstantiation(decl) and externHostBase(decl.clrName) == hostName {
+        val origin = tbl.symbols[i].originPackage
+        val rank = if scopePkg.length > 0 and origin == scopePkg {
+          3
+        } else if symTableScopeAllows(tbl, origin) {
+          2
+        } else {
+          1
+        }
+        if rank >= bestRank {
+          bestRank = rank
+          best = Some(value = TyUser(id = tid, name = decl.name, args = args))
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  best
+}
+
+// `elem` as a type, reading `EIEArg` from the loop's iterable type arguments.
+// A host element type with no `extern type` binding in scope is appended to
+// `missing` and gives None.
+func externIterElemToType(
+  tbl: in SymbolTable,
+  iterArgs: in List[Type],
+  elem: in ExternIterElem,
+  missing: in List[String],
+): Option[Type] {
+  match elem {
+    case EIEArg(index) -> if index >= 0 and index < iterArgs.count { Some(value = iterArgs[index]) } else { None }
+    case EIEPrim(name) -> match primFromString(name) {
+      case Some(pt) -> Some(value = TyPrim(pt = pt))
+      case None -> None
+    }
+    case EIEHost(hostName, args) -> {
+      val argTys: List[Type] = newList()
+      for a in args {
+        match externIterElemToType(tbl, iterArgs, a, missing) {
+          case Some(t) -> argTys.add(t)
+          case None -> return None
+        }
+      }
+      match findExternTypeForHost(tbl, hostName, argTys) {
+        case Some(t) -> Some(value = t)
+        case None -> {
+          missing.add(hostName)
+          None
+        }
+      }
+    }
+  }
+}
+
+// The element type a `for` binds when it iterates an extern type of no type
+// parameters or of two or more (one parameter is the phantom-type idiom,
+// typed by that argument).  The host decides the protocol (`IEnumerable` /
+// `java.lang.Iterable`) and the bridge read the element type out of the
+// host's metadata (D296):
+//   - neither protocol: not iterable (T0126);
+//   - only the untyped protocol: the host `Object`, which needs an
+//     `extern type` bound to it in scope (T0219);
+//   - the typed protocol: its element type, as an `extern type` in scope
+//     (T0219 when the host element type has none).
+// With no entry (a check whose bridge had no host references) the loop
+// variable is left unchecked.
+func externIterLoopElem(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  iter: in Expr,
+  iterType: in Type,
+  iterId: in TypeId,
+  iterArgs: in List[Type],
+): Type {
+  match symTableExternDeclOf(tbl, iterId) {
+    case None -> TyError
+    case Some(decl) -> match externIterInfoFor(tbl, decl) {
+      case None -> TyError
+      case Some(info) -> match info {
+        case EIINone -> reportNotIterable(
+          diag,
+          iter,
+          "cannot iterate over '" + renderType(iterType) +
+            "': its host type '" +
+            externHostBase(decl.clrName) +
+            "' implements neither IEnumerable nor Iterable"
+        )
+        case EIIObject -> {
+          val noArgs: List[Type] = newList()
+          match findExternTypeForHost(tbl, "System.Object", noArgs) {
+            case Some(t) -> markExternHostLoop(tbl, iter, t)
+            case None -> match findExternTypeForHost(tbl, "java.lang.Object", noArgs) {
+              case Some(t) -> markExternHostLoop(tbl, iter, t)
+              case None -> reportExternIterElemUnbound(
+                diag,
+                iter,
+                iterType,
+                "the host Object (System.Object / java.lang.Object)"
+              )
+            }
+          }
+        }
+        case EIIElem(elem) -> {
+          val missing: List[String] = newList()
+          match externIterElemToType(tbl, iterArgs, elem, missing) {
+            case Some(t) -> markExternHostLoop(tbl, iter, t)
+            case None -> if missing.count > 0 {
+              reportExternIterElemUnbound(diag, iter, iterType, "the host type '" + missing[0] + "'")
+            } else {
+              TyError
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// How the host type behind `decl` iterates: the entry the bridge supplied
+// up front, else the resolver's answer (asked once, then kept).
+func externIterInfoFor(tbl: in SymbolTable, decl: in ExternTypeDecl): Option[ExternIterInfo] {
+  match mapGet(tbl.externIterElems, decl.clrName) {
+    case Some(info) -> return Some(value = info)
+    case None -> ()
+  }
+  if tbl.externIterResolver.count == 0 {
+    return None
+  }
+  match tbl.externIterResolver[0].resolveIter(decl.clrName, externDeclArity(decl)) {
+    case Some(info) -> {
+      tbl.externIterElems.add(decl.clrName, info)
+      Some(value = info)
+    }
+    case None -> None
+  }
+}
+
+func markExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Type): Type {
+  val key = recordCopySiteKey(iter.span)
+  if not tbl.externHostLoopSites.containsKey(key) {
+    tbl.externHostLoopSites.add(key, iter.span.startPos.offset)
+  }
+  elemType
+}
+
+func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterType: in Type, what: in String): Type {
+  diag.add(
+    errorDiagnostic(
+      "T0219",
+      "cannot type the loop variable of a `for` over '" + renderType(iterType) + "': its elements are " + what +
+        ", which has no `extern type` bound to it in scope; declare one (`extern type Elem = \"<host type>\"`) so " +
+        "the elements have a type",
+      iter.span
+    )
+  )
+  TyError
+}
+
+// True when a `for` iterates an extern type through the host's own protocol
+// (`IEnumerable` / `Iterable`) and the checker typed its elements from the
+// bridge's metadata (D296): the loop variable is then bound through a local
+// annotated with that type, as a generator's is.  The stdlib's own host
+// collections (`List`, `MapKeyCollection`, ...) keep their lowerings.
+func forIterIsExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Type): Bool {
+  match elemType {
+    case TyError -> return false
+    case _ -> ()
+  }
+  match iter.kind {
+    case ERange(_) -> return false
+    case _ -> ()
+  }
+  match mapGet(tbl.externHostLoopSites, recordCopySiteKey(iter.span)) {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
