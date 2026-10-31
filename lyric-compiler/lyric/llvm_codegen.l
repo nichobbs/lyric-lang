@@ -13581,10 +13581,7 @@ func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, wa
   // nullary name: two unions of one package may share it (`Idle`), and
   // `caseRefs` holds the first declared (#8649).  Constructions with
   // arguments resolve through `tryLowerConstruct` (#8481).
-  val bareNullary = match e.kind {
-    case EPath(_) -> true
-    case _ -> false
-  }
+  val bareNullary = match e.kind { case EPath(_) -> true; case _ -> false }
   if not ctx.caseToGenericUnion.containsKey(refName) and not bareNullary {
     return None
   }
@@ -13901,7 +13898,14 @@ func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String, fromEnd
   body.add(NCondBr(cond = NLocal(name = eq), thenLabel = foundL, elseLabel = nextL))
   body.add(NLabel(name = nextL))
   val bumped = freshTmp(ctx)
-  body.add(NAdd(dest = bumped, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = if fromEnd { -1i64 } else { 1i64 }, ty = NI64)))
+  body.add(
+    NAdd(
+      dest = bumped,
+      ty = NI64,
+      a = NLocal(name = cur),
+      b = NLitInt(v = if fromEnd { -1i64 } else { 1i64 }, ty = NI64)
+    )
+  )
   body.add(NStore(ty = NI64, value = NLocal(name = bumped), ptr = NLocal(name = idxSlot)))
   body.add(NBr(label = condL))
   body.add(NLabel(name = foundL))

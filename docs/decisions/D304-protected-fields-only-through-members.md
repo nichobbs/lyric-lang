@@ -32,8 +32,19 @@ write skips the barrier re-evaluation and the invariant check. On dotnet,
 ## Audit
 
 The standard library, every `lyric-*/lyric.toml` project, the examples and the
-self-hosted compiler's packages were checked with the rule on: no existing read
-or write of a protected field outside a member exists, so no call site changed.
+self-hosted compiler's packages were checked with the rule on. Existing accesses
+found, and what changed:
+
+- `examples/token_bucket_proof.l`: `ensures: result.tokens == capacity` is a
+  contract clause, now exempt (point 3).
+- `inout_aliasing_self_test.l` passed `c.total` from outside as an `inout` place,
+  the very bypass this decision closes. Its two outside cases now pass a
+  caller-owned local; the field-aliasing cases that matter run inside a member
+  (`selfAlias`, `bumpField`) and are unchanged.
+- `protected_iface_impl_self_type_self_test.l` read `f.n` on a protected result;
+  it calls the `value()` member instead.
+
+No library or compiler source needed a change.
 
 ## Tests
 

@@ -19434,30 +19434,28 @@ func inferMethodCallExpected(
 // target of an assignment reach here, since the target is inferred like any
 // member access.
 func checkProtectedFieldAccess(
-  sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], recvTy: in Type, name: in String, span: in Span
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvTy: in Type,
+  name: in String,
+  span: in Span,
 ): Unit {
-  val tid = match typeIdOfType(recvTy) {
-    case Some(t) -> t
-    case None -> return
-  }
+  val tid = match typeIdOfType(recvTy) { case Some(t) -> t; case None -> return }
   match findProtectedDeclByTypeId(tbl, tid) {
     case Some(pd) -> {
       var isField = false
       for m in pd.members {
         match m {
-          case PMField(pf) -> if protectedFieldAsFieldDecl(pf).name == name {
-            isField = true
-          }
+          case PMField(pf) -> if protectedFieldAsFieldDecl(pf).name == name { isField = true }
           case _ -> ()
         }
       }
       if not isField {
         return
       }
-      val inOwnMember = sc.selfChecked and match typeIdOfType(sc.selfType) {
-        case Some(own) -> typeIdEq(own, tid)
-        case None -> false
-      }
+      val inOwnMember = sc.selfChecked and
+        match typeIdOfType(sc.selfType) { case Some(own) -> typeIdEq(own, tid); case None -> false }
       // A contract clause is specification, not state access: `ensures:
       // result.tokens == capacity` states what a construction produced.
       if not inOwnMember and sc.contractDepth.count == 0 {
@@ -19465,7 +19463,8 @@ func checkProtectedFieldAccess(
           errorDiagnostic(
             "T0221",
             "field '" + name + "' of protected type '" + pd.name +
-              "' cannot be read or written from outside the type's own members; call an `entry` or `func` of '" + pd.name +
+              "' cannot be read or written from outside the type's own members; call an `entry` or `func` of '" +
+              pd.name +
               "' instead (docs/01 §7.5)",
             span
           )
@@ -19483,10 +19482,7 @@ func sharedBareCaseOfExpected(sc: in Scope, tbl: in SymbolTable, p: in ModulePat
   if p.segments.count != 1 or scopeHasName(sc, p.segments[0]) {
     return None
   }
-  val eid = match unrefine(expected) {
-    case TyUser(id, _, _) -> id
-    case _ -> return None
-  }
+  val eid = match unrefine(expected) { case TyUser(id, _, _) -> id; case _ -> return None }
   val candidates = symTableTryFindAllVisible(tbl, p.segments[0])
   if candidates.count < 2 {
     return None
@@ -19494,9 +19490,7 @@ func sharedBareCaseOfExpected(sc: in Scope, tbl: in SymbolTable, p: in ModulePat
   var ci = candidates.count - 1
   while ci >= 0 {
     match candidates[ci].kind {
-      case DKUnionCase(parentId, _) -> if typeIdEq(parentId, eid) {
-        return Some(value = candidates[ci])
-      }
+      case DKUnionCase(parentId, _) -> if typeIdEq(parentId, eid) { return Some(value = candidates[ci]) }
       case _ -> ()
     }
     ci = ci - 1
@@ -19640,7 +19634,12 @@ func inferExprExpectedCore(
     case EPath(p) -> match sharedBareCaseOfExpected(sc, tbl, p, expected) {
       case Some(caseSym) -> {
         symTableNoteBareUse(tbl, caseSym, e.span)
-        adoptUnionCaseExpected(tbl, true, inferUnionCaseConstruction(tbl, diag, caseSym, newList(), newList(), e.span, false), expected)
+        adoptUnionCaseExpected(
+          tbl,
+          true,
+          inferUnionCaseConstruction(tbl, diag, caseSym, newList(), newList(), e.span, false),
+          expected
+        )
       }
       case None -> inferExpr(sc, tbl, sigs, diag, e)
     }
