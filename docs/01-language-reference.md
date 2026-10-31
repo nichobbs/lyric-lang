@@ -1818,7 +1818,7 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 - *`inout` and `out` in the declaring package:* a `pub` top-level function of the type's own package re-checks its `inout` and `out` parameters of the type on exit. A non-`pub` function may leave the value broken; the next public crossing catches it.
 - *Not checked:* a write to a `var` field (it is caught at the next boundary), a field read, and an intra-package call.
 
-Checked today for non-generic types named directly in a signature. Methods in `impl` blocks and record bodies, generic types, a type held inside `Option`, `Result` or a collection, and the `@projectable` `tryInto` result are tracked under #7222.
+Checked today for non-generic types named directly in a signature. Methods in `impl` blocks and record bodies, generic types, a type named through an `alias` or imported under another name, a type held inside `Option`, `Result` or a collection, and the `@projectable` `tryInto` result are tracked under #7222.
 
 An invariant may carry a message for the user, written after its expression on the same line:
 
