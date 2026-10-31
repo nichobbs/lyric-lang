@@ -38592,10 +38592,11 @@ func lambdaMethodSigMsil(cctx: in CodegenCtx, lambdaKey: in String, nparams: in 
 }
 
 // Whether `ty`, the logical type of a lambda parameter that arrives boxed, is
-// a reference type `castObjectToMsil` leaves as `object`: a slice, an in-bundle
-// generic instantiation, a tuple or an erased collection.  Such a value may be
-// an erased construction (a `List`-backed slice, a `Box<object>`), so no cast
-// to the declared type is safe.
+// a reference type `castObjectToMsil` leaves as `object`: a slice, a tuple or
+// an erased collection.  Such a value may be an erased construction (a
+// `List`-backed slice), so no cast to the declared type is safe.  A slice is
+// converted to its array at each read; an in-bundle generic instance is cast
+// to its closed instantiation (#8349).
 func boxedParamNarrowIsNoopMsil(ty: in MsilType): Bool {
   if isValueType(ty) {
     return false
@@ -38607,7 +38608,7 @@ func boxedParamNarrowIsNoopMsil(ty: in MsilType): Bool {
     case MString -> false
     case MClass(_) -> false
     case MGenericInst(_, _, _) -> false
-    case MGenericInstByName(head, _) -> not (isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head))
+    case MGenericInstByName(head, _) -> false
     case MConcreteList(_) -> false
     case MConcreteMap(_, _) -> false
     case MArray(e) -> not sliceElemHasArrayTokenMsil(e)
@@ -38618,10 +38619,18 @@ func boxedParamNarrowIsNoopMsil(ty: in MsilType): Bool {
 // Narrow a lambda parameter held as the `object` it arrived as to its logical
 // type.  A slice of an element type with an array token is converted, since a
 // `List`-backed one (built where no slice was expected, #2539) cannot be cast
-// to `e[]`; everything else is cast as `castObjectToMsil` casts it (#8349).
+// to `e[]`.  An in-bundle generic record or union is cast to its closed
+// instantiation: the argument of a lambda call is built against the lambda's
+// declared parameter type, so it is the closed `Box<int32>` and not an erased
+// `Box<object>` (#8349).  Everything else is cast as `castObjectToMsil` casts it.
 func narrowBoxedParamMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   match ty {
     case MArray(e) -> if sliceElemHasArrayTokenMsil(e) { emitObjectToSliceArrayMsil(cctx, fctx, insns, e) }
+    case MGenericInstByName(head, targs) -> if not (isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head)) {
+      insns.add(MCastclassGeneric(className = head, typeArgs = normalizeCastTyArgsMsil(targs)))
+    } else {
+      castObjectToMsil(cctx, insns, ty)
+    }
     case _ -> castObjectToMsil(cctx, insns, ty)
   }
 }
