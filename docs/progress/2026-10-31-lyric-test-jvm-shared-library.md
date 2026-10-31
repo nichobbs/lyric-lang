@@ -46,9 +46,15 @@ for any consumer of a published Lyric JAR. Both failed only at run time, with
   key includes them.
 - A restored `impl I for R {}` is head-only, so a method called on a value of
   the concrete record type had no signature and was emitted with an `Object`
-  return (lyric-i18n's `InProcessTranslationStore.translate`).
-  `collectFileSigsSeeded` now registers each of I's methods on R when the
-  impl has no members, as `Msil.Codegen.registerRestoredImpl` does (#1602).
+  return (lyric-i18n's `InProcessTranslationStore.translate`, lyric-mcp's
+  `PipedNdjsonTransport.close` from `Std.JsonRpc`'s transport interface).
+  `registerHeadOnlyImplsJvm` now registers each of I's methods on R, after
+  every restored package is collected: from I's declaration when R's package
+  declares it, otherwise by copying the methods registered under I's class.
+  It is not gated on `implIfaceExternDottedFqn`, which also reports another
+  package's Lyric interface as extern. `Msil.Codegen.registerRestoredImpl`
+  (#1602) did the same for an interface of R's own package only; it now
+  finds one another restored package declares too.
 
 `withLibraryTemplates` no longer adds a library package that is already a
 template source: on the JVM the library packages include the path
@@ -58,6 +64,10 @@ dependencies' packages, which are.
 fixture on `--target jvm` and checks the library JAR is built once, linked by
 every entry it can serve (unions, generic records, enums in library records,
 a distinct type, a record invariant, a library signature naming another
-library package's type, an interface impl called on the record), with the two non-literal `pub val`
-entries compiled with the library after a note and no discarded errors in the
-output.
+library package's type, impls of an interface of the record's own package and
+of another library package's, called on the record), with the two non-literal
+`pub val` entries compiled with the library after a note and no discarded
+errors in the output.  The 15 suites of `scripts/ci/jvm-ecosystem-suites.sh`
+all pass linked; 4 entries fall back, each on a compile-time gap of the
+restored path (a non-literal `pub val`, #6133, or a reference only the full
+compile resolves).
