@@ -16,7 +16,8 @@
 #     linked build cannot serve (a non-literal `pub val`, #6133, read bare or
 #     qualified) is compiled with the library instead, with a note; a merged
 #     entry still reaches non-`pub` items; a package-private extern type in a
-#     `pub` signature binds with its CLR type.
+#     `pub` signature binds with its CLR type; a restored enum case named like
+#     a stdlib one (`Other`) keeps the restored enum's ordinal.
 #   - A library that does not compile fails every linking entry, with its
 #     errors printed once.
 #   - On JVM every entry still compiles with the library (no shared build).
@@ -53,6 +54,7 @@ output_assembly = "RunnerE2e.dll"
 "RunnerE2e.Lib" = "src/lib.l"
 "RunnerE2e.Shapes" = "src/shapes.l"
 "RunnerE2e.Ext" = "src/ext.l"
+"RunnerE2e.Kinds" = "src/kinds.l"
 
 [project.tests]
 "RunnerE2e.MathTests" = "tests/math_tests.l"
@@ -61,6 +63,7 @@ output_assembly = "RunnerE2e.dll"
 "RunnerE2e.BareValTests" = "tests/bare_val_tests.l"
 "RunnerE2e.QualifiedValTests" = "tests/qualified_val_tests.l"
 "RunnerE2e.ExtTests" = "tests/ext_tests.l"
+"RunnerE2e.KindsTests" = "tests/kinds_tests.l"
 TOML
 cat > "$proj/src/lib.l" <<'EOF'
 package RunnerE2e.Lib
@@ -122,6 +125,54 @@ import RunnerE2e.Ext
 
 test "extern type crosses the shared build" {
   assertEqualInt(appendLen(newSb(), "abc"), 3, "StringBuilder length")
+}
+EOF
+# An enum whose case shares its name with a stdlib enum case
+# (`Std.File.EntryKind.Other`): a linked entry must use the restored enum's
+# ordinal as a call argument, in a match, in a comparison and in an annotated
+# binding.
+cat > "$proj/src/kinds.l" <<'EOF'
+package RunnerE2e.Kinds
+
+pub enum Category {
+  case Alpha
+  case Other
+}
+
+pub func categoryName(c: in Category): String {
+  match c {
+    case Alpha -> return "alpha"
+    case Other -> return "other"
+  }
+}
+EOF
+cat > "$proj/tests/kinds_tests.l" <<'EOF'
+@test_module
+package RunnerE2e.KindsTests
+
+import Std.Core
+import Std.Testing
+import RunnerE2e.Kinds
+
+func describe(c: in Category): String {
+  match c {
+    case Alpha -> return "a"
+    case Other -> return "o"
+  }
+}
+
+test "case passed to a library function" {
+  assertTrue(categoryName(Other) == "other", "categoryName(Other)")
+}
+
+test "case matched in the test module" {
+  assertTrue(describe(Other) == "o", "describe(Other)")
+}
+
+test "case compared and annotated" {
+  val c: Category = Other
+  assertTrue(c == Other, "c == Other")
+  assertTrue(categoryName(c) == "other", "categoryName(c)")
 }
 EOF
 cat > "$proj/tests/math_tests.l" <<'EOF'
@@ -262,7 +313,7 @@ if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
 elif [ "$(count '== building the [project.packages] library once')" != 1 ]; then fail "$label" "library not built exactly once"
 elif [ ! -f "$proj/.lyric-test/LyricTestLibrary.dll" ]; then fail "$label" "no shared library assembly"
 elif [ "$(count 'note: ')" != 2 ]; then fail "$label" "expected a fallback note for each non-literal pub val entry"
-elif ! grep -q "^== summary: 6 passed, 0 failed$" "$out"; then fail "$label" "summary"
+elif ! grep -q "^== summary: 7 passed, 0 failed$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 
 label="--suite selection"
@@ -286,8 +337,8 @@ else echo "ok   [$label]"; fi
 label="--filter skips entries it empties"
 run --manifest "$m" --filter "circle"
 if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
-elif [ "$(count 'none match --filter; not compiled')" != 5 ]; then fail "$label" "expected five entries not compiled"
-elif ! grep -q "^== summary: 1 passed, 0 failed, 5 not run (no test matches --filter)$" "$out"; then fail "$label" "summary"
+elif [ "$(count 'none match --filter; not compiled')" != 6 ]; then fail "$label" "expected six entries not compiled"
+elif ! grep -q "^== summary: 1 passed, 0 failed, 6 not run (no test matches --filter)$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 
 label="single-file --filter selects nothing"

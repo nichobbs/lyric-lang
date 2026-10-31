@@ -55,6 +55,16 @@ MissingMethodException. The restored-artifact pass in `Msil.Codegen` now
 registers them, first-wins as the stdlib path does. A path dependency hit the
 same failure.
 
+Restored enum cases: a bare enum case with no expected enum type in scope
+resolved to the first-registered enum with that case name. In a bundle the user
+packages' enums register before the stdlib's; with the library restored,
+`Std.File.EntryKind.Other` registered first, so `categoryToString(Other)` in
+`examples/product-catalog` passed that ordinal. A restored function now records
+its parameters' enum types (`funcParamEnumTypeNames`, as an in-bundle function
+does), and `resolveBareEnumCaseOrdinalByScope` resolves a bare case to the
+current package's enum, then an imported package's, before falling back to
+registration order. A path dependency had the same exposure.
+
 Verified by `scripts/ci/test-runner-project-mode-e2e.sh` (a fixture covering a
 literal and two non-literal `pub val` reads, a union, a generic record, a
 merged module, an extern type in `pub` signatures, a library that does not
