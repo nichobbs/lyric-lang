@@ -10050,7 +10050,13 @@ func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String
 /// `lyric_list_hash` / `lyric_map_hash` over the slot-hash function of each
 /// element (key and value) type, so a collection hashes by contents (D172).
 func emitCollectionHash(
-  ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, sym: in String, first: in NType, second: in Option[NType]
+  ctx: in Ctx,
+  body: in List[NInsn],
+  t: in NType,
+  a: in String,
+  sym: in String,
+  first: in NType,
+  second: in Option[NType],
 ): String {
   val p8 = NPtr(pointee = NI8)
   val hashParams: List[NType] = newList()
@@ -13983,7 +13989,9 @@ func lowerMapEq(ctx: in Ctx, insns: in List[NInsn], valTy: in NType, a: in NVal,
   eqParams.add(NI64)
   eqParams.add(NI64)
   val eqPtr = freshTmp(ctx)
-  insns.add(NBitcast(dest = eqPtr, fromTy = NFnPtr(params = eqParams, ret = NI32), value = NGlobal(name = eqFn), toTy = p8))
+  insns.add(
+    NBitcast(dest = eqPtr, fromTy = NFnPtr(params = eqParams, ret = NI32), value = NGlobal(name = eqFn), toTy = p8)
+  )
   val ra = freshTmp(ctx)
   insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = p8))
   val rb = freshTmp(ctx)
@@ -14334,7 +14342,14 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
   }
   match mapValOfType(ctx, t) {
     case Some(vt) -> {
-      val r = lowerMapEq(ctx, body, vt, NVal(ty = t, value = NLocal(name = a)), NVal(ty = t, value = NLocal(name = b)), false)
+      val r = lowerMapEq(
+        ctx,
+        body,
+        vt,
+        NVal(ty = t, value = NLocal(name = a)),
+        NVal(ty = t, value = NLocal(name = b)),
+        false
+      )
       return localOfValue(r.value)
     }
     case None -> ()

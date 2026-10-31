@@ -38,7 +38,8 @@ func fixtureSource(file: in String): String {
 }
 
 func entrySource(): String {
-  "package Inv.App\n" + "import Std.Core\n" + "import Std.Console as Console\n" + "import Std.Environment as Environment\n" +
+  "package Inv.App\n" + "import Std.Core\n" + "import Std.Console as Console\n" +
+    "import Std.Environment as Environment\n" +
     "import Inv.Types\n" +
     "import Inv.Api\n" +
     "func pick(): String {\n" +

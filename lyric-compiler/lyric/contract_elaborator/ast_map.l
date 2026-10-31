@@ -741,8 +741,7 @@ func anyInStmt(s: in Statement, p: in (Expr) -> Bool): Bool {
     // A statement-level assignment is offered to `p` as the `EAssign` it would
     // be in expression position, so a predicate on assignment operators (`s += x`
     // as a statement, #8652) sees it.
-    case SAssign(t, op, v) -> p(Expr(kind = EAssign(target = t, op = op, value = v), span = s.span)) or
-      anyInExpr(t, p) or
+    case SAssign(t, op, v) -> p(Expr(kind = EAssign(target = t, op = op, value = v), span = s.span)) or anyInExpr(t, p) or
       anyInExpr(v, p)
     case SReturn(v) -> anyInExprOpt(v, p)
     case SThrow(x) -> anyInExpr(x, p)
