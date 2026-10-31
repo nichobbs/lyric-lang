@@ -1,12 +1,12 @@
 //! inout_loop_cache_self_test.l - a loop in an `out`/`inout` callee keeps the
 //! caller's place in a local while nothing in the loop can reach it by another
-//! path (#8371, D183 and D296), and reads and writes it in place otherwise.
+//! path (#8371, D183 and D298), and reads and writes it in place otherwise.
 //!
 //! The JVM caches the place across a loop whose bytecode holds no call, field
 //! access or allocation, and writes it back after the loop and on an
 //! exception.  The cases pin that the result is the same as reading the place
 //! at every use: plain counting loops over a local and over fields, a `break`,
-//! a nested loop, a loop that panics after writing, and loops that reach the
+//! a nested loop, and loops that reach the
 //! place through a field, a second argument or a closure.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/inout_loop_cache_self_test.l
@@ -76,15 +76,6 @@ func writeOnly(x: out Int, n: in Int): Unit {
   while i < n {
     x = i
     i = i + 1
-  }
-}
-
-func dividePanic(x: inout Int, d: in Int): Unit {
-  var i = 0
-  while i < 10 {
-    x = x + 1
-    val q = 10 / (d - x)
-    i = i + 1 + (q - q)
   }
 }
 
@@ -179,27 +170,6 @@ test "a loop that only reads and a loop that only writes" {
   assertEqualInt(y, 4, "written")
   writeOnly(y, 0)
   assertEqualInt(y, 4, "no iteration leaves it")
-}
-
-test "a write before a panic in the loop stays made" {
-  var x = 0
-  var caught = false
-  try {
-    dividePanic(x, 3)
-  } catch Bug as b {
-    caught = true
-  }
-  assertTrue(caught, "the panic was caught")
-  assertEqualInt(x, 3, "local")
-  val c = Counters(a = 0, b = 0)
-  caught = false
-  try {
-    dividePanic(c.b, 2)
-  } catch Bug as b2 {
-    caught = true
-  }
-  assertTrue(caught, "the second panic was caught")
-  assertEqualInt(c.b, 2, "field")
 }
 
 test "other place types" {

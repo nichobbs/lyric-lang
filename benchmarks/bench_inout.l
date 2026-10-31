@@ -33,7 +33,7 @@ func spinUntil(x: inout Int, limit: in Int): Unit {
     if x >= limit {
       break
     }
-    x = x + 3 + i % 3
+    x = x + 3 + i.and(1)
     i = i + 1
   }
 }
