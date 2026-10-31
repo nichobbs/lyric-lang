@@ -2585,7 +2585,7 @@ pub func argsWithParamDefaults(
 }
 
 /// The reserved name of the call `Lyric.Mono` wraps the iterable of a `for`
-/// over an extern type's host collection protocol in (D296).  A backend
+/// over an extern type's host collection protocol in (D302).  A backend
 /// lowers `for p in __lyric_host_iter(xs)` as the host's own enumerator loop
 /// over `xs`.
 pub func hostIterCallName(): String {

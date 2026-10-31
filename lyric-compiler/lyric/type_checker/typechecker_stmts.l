@@ -788,7 +788,7 @@ pub func checkStatement(
       // local annotated with the generator's element type (#7750).
       // An extern type's elements likewise reach the loop as the erased
       // `Object` of the host protocol, so its loop variable is narrowed the
-      // same way (D296).
+      // same way (D302).
       recordTuplePatternBindings(
         tbl,
         pat,
@@ -2223,7 +2223,7 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
 // `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565); one
 // of no type parameters or of two or more iterates what the host protocol
 // declares, as the bridge read it from host metadata (`externIterLoopElem`,
-// D296).
+// D302).
 // Every other type -- a record, union, enum, opaque, protected, distinct or
 // interface type of any arity, a primitive, a tuple, a function, a nullable
 // value, the stdlib `Map` itself -- has no iteration lowering: codegen's
@@ -2432,7 +2432,7 @@ func externIterElemToType(
 // parameters or of two or more (one parameter is the phantom-type idiom,
 // typed by that argument).  The host decides the protocol (`IEnumerable` /
 // `java.lang.Iterable`) and the bridge read the element type out of the
-// host's metadata (D296):
+// host's metadata (D302):
 //   - neither protocol: not iterable (T0126);
 //   - only the untyped protocol: the host `Object`, which needs an
 //     `extern type` bound to it in scope (T0219);
@@ -2534,7 +2534,7 @@ func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterT
 
 // True when a `for` iterates an extern type through the host's own protocol
 // (`IEnumerable` / `Iterable`) and the checker typed its elements from the
-// bridge's metadata (D296): the loop variable is then bound through a local
+// bridge's metadata (D302): the loop variable is then bound through a local
 // annotated with that type, as a generator's is.  The stdlib's own host
 // collections (`List`, `MapKeyCollection`, ...) keep their lowerings.
 func forIterIsExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Type): Bool {

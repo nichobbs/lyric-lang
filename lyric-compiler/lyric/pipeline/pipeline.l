@@ -118,7 +118,7 @@ pub record MiddleEndOptions {
   pkgLabel: String
   filePaths: List[String] = newList()
   /// Answers how the host type behind an `extern type` iterates
-  /// (`SymbolTable.externIterResolver`, D296), asked only for the types a
+  /// (`SymbolTable.externIterResolver`, D302), asked only for the types a
   /// `for` iterates: what such a loop binds.  The MSIL and JVM bridges pass
   /// one over host metadata; empty when no references are available, which
   /// leaves such a loop variable unchecked.

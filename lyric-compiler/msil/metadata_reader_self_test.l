@@ -404,7 +404,7 @@ test "resolveExtern: File.OpenHandle(string) synthesizes enum and Long numeric E
   }
 }
 
-// ── Host iteration protocol of an extern type (#7809, D296) ──────────────────
+// ── Host iteration protocol of an extern type (#7809, D302) ──────────────────
 //
 // `iterProtocolOfExtern` walks the base class and InterfaceImpl rows of a
 // reference-pack type, substituting the type's own generic parameters through

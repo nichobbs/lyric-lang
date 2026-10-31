@@ -1243,7 +1243,7 @@ argument (the phantom-type-param idiom for a foreign collection, e.g.
 `extern type JHttpStringCollection[T] = "java.util.Collection"`).
 
 An extern type of no type parameters, or of two or more, takes its loop
-variable's type from the host type's own metadata (#7809, D296): the compiler
+variable's type from the host type's own metadata (#7809, D302): the compiler
 reads the CLR type's `IEnumerable<T>` (or the JVM class's `Iterable<T>`, through
 its generic `Signature`), substituting the extern type's type arguments, so
 `extern type Keys[K, V] = "java.util.concurrent.ConcurrentHashMap$KeySetView"`

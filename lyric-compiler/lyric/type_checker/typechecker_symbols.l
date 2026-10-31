@@ -237,7 +237,7 @@ pub union StringMethodSurface {
 
 /// What a `for` loop over an extern type binds, as one element type the host
 /// declares for the type's iteration protocol, written in terms of the extern
-/// type's own type parameters and host types (docs/42 section 9, D296).  A
+/// type's own type parameters and host types (docs/42 section 9, D302).  A
 /// bridge reads the host metadata (`Msil.MetadataReader`, `Jvm.AutoFfi`);
 /// `Lyric.TypeChecker` is target-agnostic and cannot.
 pub union ExternIterElem {
@@ -555,7 +555,7 @@ pub record SymbolTable {
   /// function value never counts.
   generatorCallSites: Map[String, Bool]
   /// How each extern type's host type iterates, keyed by the `clrName` its
-  /// `extern type` spells (D296).  Filled by the backend bridge before the
+  /// `extern type` spells (D302).  Filled by the backend bridge before the
   /// check from host metadata; a `for` over an extern type of no type
   /// parameters or of two or more consults it.  An absent key means the
   /// bridge could not say (a check with no references): the loop variable is
@@ -567,7 +567,7 @@ pub record SymbolTable {
   /// Span keys (`recordCopySiteKey`) of the `for` iterables whose extern type
   /// the checker typed from `externIterElems`, each with the iterable's start
   /// offset: `Lyric.Mono` marks the loop for the backends and binds its loop
-  /// variable through a local annotated with the element type (D296).
+  /// variable through a local annotated with the element type (D302).
   externHostLoopSites: Map[String, Int]
   /// One entry per enclosing lenient first pass of a deferred call argument
   /// (the scratch-diagnostics pass of `ECall`, A2 / #7865).  A call checked

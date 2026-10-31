@@ -709,7 +709,7 @@ runtime gap.
 
 ---
 
-### §5.10  Iteration protocol (#7809, D296)
+### §5.10  Iteration protocol (#7809, D302)
 
 The same metadata gives the element type of a `for` over an extern type of no
 type parameters or of two or more. `Msil.MetadataReader.iterProtocolOfExtern`
@@ -724,7 +724,7 @@ indexes. `Jvm.AutoFfi.iterProtocolOfExternJvm` does the same over the class
 `clrName` (`MiddleEndOptions.externIterElems`, `SymbolTable.externIterElems`);
 `forIterElemType` types the loop variable from it (element, the host `Object`,
 or T0126 when the type is not enumerable) and reports T0219 when the element
-has no `extern type` in scope. See D296.
+has no `extern type` in scope. See D302.
 
 ## §6  Diagnostics
 
