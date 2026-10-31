@@ -1264,7 +1264,7 @@ the host element type (`KeyValuePair<K, V>` needs an `extern type Pair[K, V] =
 the untyped protocol (`System.Collections.IEnumerable`, a raw `Iterable`)
 yields the host `Object`, which needs an `extern type` bound to
 `System.Object` / `java.lang.Object` in scope. If the host element type has no
-`extern type` in scope the loop is **T0219**, never an unchecked variable. A host
+`extern type` in scope the loop is **T0220**, never an unchecked variable. A host
 type that implements neither protocol (`System.Text.StringBuilder`) is
 **T0126**. Only a check with no host references (no reference pack or class
 path) leaves the loop variable unchecked, as before. Iterating

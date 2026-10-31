@@ -5274,7 +5274,7 @@ test "for over an arity-2 extern whose elements are a host struct binds its exte
   assertEqualInt(countDiagCode(bad, "T0060"), 1, "the loop variable is not Pair[Int, Int]")
 }
 
-test "for over an extern whose host element has no extern type in scope emits T0219 (#7809)" {
+test "for over an extern whose host element has no extern type in scope emits T0220 (#7809)" {
   val clr = "System.Collections.Concurrent.ConcurrentDictionary`2"
   val elem = EIEHost(
     hostName = "System.Collections.Generic.KeyValuePair",
@@ -5286,10 +5286,10 @@ test "for over an extern whose host element has no extern type in scope emits T0
       "\"\nfunc f(d: in Dict[String, Int]): Int {\n  for kv in d {\n  }\n  0\n}\n",
     iter
   )
-  assertEqualInt(countDiagCode(cr, "T0219"), 1, "the host element type needs an extern type")
+  assertEqualInt(countDiagCode(cr, "T0220"), 1, "the host element type needs an extern type")
   assertTrue(
-    Str.contains(diagMessageFor(cr, "T0219"), "System.Collections.Generic.KeyValuePair"),
-    "T0219 names the host type"
+    Str.contains(diagMessageFor(cr, "T0220"), "System.Collections.Generic.KeyValuePair"),
+    "T0220 names the host type"
   )
 }
 
@@ -5299,7 +5299,7 @@ test "for over a non-generically enumerable extern binds the extern Object (#780
     "extern type Obj = \"System.Object\"\nfunc f(b: in Bag): Int {\n  for o in b {\n    val p: Obj = o\n  }\n  0\n}\n"
   assertEqualInt(diagCount(parseCheckIter(src, iter)), 0, "the elements are Obj")
   val noObj = parseCheckIter("package P\n" + bagSrc + "func f(b: in Bag): Int {\n  for o in b {\n  }\n  0\n}\n", iter)
-  assertEqualInt(countDiagCode(noObj, "T0219"), 1, "no extern Object in scope is T0219, not an untyped variable")
+  assertEqualInt(countDiagCode(noObj, "T0220"), 1, "no extern Object in scope is T0220, not an untyped variable")
 }
 
 test "for over an extern whose host type is not enumerable emits T0126 (#7809)" {

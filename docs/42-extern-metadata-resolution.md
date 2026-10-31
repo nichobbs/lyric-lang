@@ -723,7 +723,7 @@ indexes. `Jvm.AutoFfi.iterProtocolOfExternJvm` does the same over the class
 `java.lang.Iterable`. Each bridge hands the checker an `ExternIterInfo` per
 `clrName` (`MiddleEndOptions.externIterElems`, `SymbolTable.externIterElems`);
 `forIterElemType` types the loop variable from it (element, the host `Object`,
-or T0126 when the type is not enumerable) and reports T0219 when the element
+or T0126 when the type is not enumerable) and reports T0220 when the element
 has no `extern type` in scope. See D302.
 
 ## §6  Diagnostics

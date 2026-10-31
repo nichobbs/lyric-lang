@@ -2478,9 +2478,9 @@ func externIterElemToType(
 // host's metadata (D302):
 //   - neither protocol: not iterable (T0126);
 //   - only the untyped protocol: the host `Object`, which needs an
-//     `extern type` bound to it in scope (T0219);
+//     `extern type` bound to it in scope (T0220);
 //   - the typed protocol: its element type, as an `extern type` in scope
-//     (T0219 when the host element type has none).
+//     (T0220 when the host element type has none).
 // With no entry (a check whose bridge had no host references) the loop
 // variable is left unchecked.
 func externIterLoopElem(
@@ -2565,7 +2565,7 @@ func markExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Type): 
 func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterType: in Type, what: in String): Type {
   diag.add(
     errorDiagnostic(
-      "T0219",
+      "T0220",
       "cannot type the loop variable of a `for` over '" + renderType(iterType) + "': its elements are " + what +
         ", which has no `extern type` bound to it in scope; declare one (`extern type Elem = \"<host type>\"`) so " +
         "the elements have a type",

@@ -333,7 +333,7 @@ func total(q: in Queue, keys: in SortedKeys[String, Int]): Int {
 }
 ```
 
-A collection that is only the untyped protocol yields the host `Object`, so declare an `extern type` bound to it (here `Obj`) or the loop is `T0219`. When the element is another host type (`KeyValuePair<K, V>`), declare an `extern type` for it too. A host type that implements neither protocol, such as `StringBuilder`, is `T0126`.
+A collection that is only the untyped protocol yields the host `Object`, so declare an `extern type` bound to it (here `Obj`) or the loop is `T0220`. When the element is another host type (`KeyValuePair<K, V>`), declare an `extern type` for it too. A host type that implements neither protocol, such as `StringBuilder`, is `T0126`.
 
 ## §13.10 Calling C libraries with `@library`
 

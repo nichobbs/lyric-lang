@@ -39,7 +39,7 @@ view). `Lyric.TypeChecker` is target-agnostic and cannot read host metadata.
 4. **Types.** A host element type is the `extern type` in scope bound to it (the
    checked package's own declaration first, then an imported package's); the
    host `Object` is the extern type bound to `System.Object` /
-   `java.lang.Object`. One with no binding is **T0219**, never `TyError`.
+   `java.lang.Object`. One with no binding is **T0220**, never `TyError`.
    Neither protocol is **T0126**. A boxed JVM `Integer`/`Long`/`Boolean`/
    `Double`/`String`/`Byte` and the CLR `int`/`long`/`bool`/`double`/`string`/
    `byte` map to the Lyric primitives; other primitives stay host types
@@ -59,5 +59,5 @@ view). `Lyric.TypeChecker` is target-agnostic and cannot read host metadata.
 
 Arity-one extern types keep the phantom-parameter rule and are not validated
 against the host. Element types the metadata spells as arrays, pointers or
-by-references have no Lyric type and report T0219. `--target native` has no host
+by-references have no Lyric type and report T0220. `--target native` has no host
 metadata and is unchanged.
