@@ -1920,10 +1920,7 @@ pub func pipeCheckAndMono(
   monoRecordDecls: in List[RecordDecl],
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
-  val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) {
-    case Some(f) -> f
-    case None -> return None
-  }
+  val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
   val valueSites = front.valueSites
   val checked = front.checked

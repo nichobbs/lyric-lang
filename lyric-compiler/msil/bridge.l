@@ -175,7 +175,10 @@ func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
 // diagnostic whose file is unknown is labelled `pkgName`.  They are reported
 // into `sink`, printed or collected as the build's other diagnostics are.
 func abortOnCodegenDiagnosticsMsilInFiles(
-  cctx: in CodegenCtx, pkgName: in String, files: in List[String], sink: in DiagSink
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  files: in List[String],
+  sink: in DiagSink,
 ): Bool {
   pipeGateTo(sink, pkgName, files, cctx.diagnostics)
 }
