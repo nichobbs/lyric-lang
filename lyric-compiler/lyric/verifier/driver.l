@@ -13,6 +13,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ModeChecker
 import Lyric.Weaver
+import Lyric.ContractElaborator as CE
 import Lyric.Cfg as Cfg
 import Lyric.Discovery as Disc
 import Lyric.Manifest as Mf
@@ -336,6 +337,10 @@ pub record ScopeDecls {
   /// The records and distinct types, whose fields and underlying types a
   /// proof of the file reads (#8306).
   pub typeItems: List[Item]
+  /// The public functions a proof of a file importing the package can apply
+  /// the contract and `@pure` body of (#7532): non-generic, over primitive
+  /// types, naming nothing but their own parameters.
+  pub callees: List[FunctionDecl]
 }
 
 /// A function's name and how many parameters it declares.
@@ -365,13 +370,15 @@ pub func emptyScopeDecls(): ScopeDecls {
   val noImports: List[String] = newList()
   val noFunctions: List[FunctionArity] = newList()
   val noTypeItems: List[Item] = newList()
+  val noCallees: List[FunctionDecl] = newList()
   ScopeDecls(
     interfaces = noInterfaces,
     unions = noUnions,
     enumCases = none,
     imports = noImports,
     functions = noFunctions,
-    typeItems = noTypeItems
+    typeItems = noTypeItems,
+    callees = noCallees
   )
 }
 
@@ -397,7 +404,12 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
           acc.enumCases.add(c.name)
         }
       }
-      case IFunc(fn) -> acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
+      case IFunc(fn) -> {
+        acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
+        if isPublicItem(it) and importedCalleeEligible(fn) {
+          acc.callees.add(fn)
+        }
+      }
       case IRecord(_) -> acc.typeItems.add(it)
       case IDistinctType(_) -> acc.typeItems.add(it)
       case _ -> ()
@@ -411,6 +423,99 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
       }
     }
   }
+}
+
+func isPublicItem(it: in Item): Bool {
+  match it.visibility {
+    case Some(VisPub(_)) -> true
+    case _ -> false
+  }
+}
+
+func primitiveTypeName(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count != 1 {
+        return false
+      }
+      val n = path.segments[0]
+      n == "Int" or n == "Long" or n == "Bool" or n == "String" or n == "Double" or n == "Float" or n == "Byte" or
+        n == "UInt" or n == "ULong" or n == "UByte" or n == "Short" or n == "UShort"
+    }
+    case _ -> false
+  }
+}
+
+func clauseExpr(c: in ContractClause): Option[Expr] {
+  match c {
+    case CCRequires(e, _) -> Some(value = e)
+    case CCEnsures(e, _) -> Some(value = e)
+    case _ -> None
+  }
+}
+
+// A callee resolves its names in the PROVED file's scope, so one that reaches
+// a name of its own package — a function, a constant, a local — would read
+// the caller's.  Only a function whose contracts and body name nothing but
+// its parameters (and call methods on values) is applied.
+func importedCalleeEligible(fn: in FunctionDecl): Bool {
+  match fn.generics {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  if fn.isAsync {
+    return false
+  }
+  var pure = false
+  for a in fn.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "pure" {
+      pure = true
+    }
+  }
+  if not pure and fn.contracts.count == 0 {
+    return false
+  }
+  val names: List[String] = newList()
+  for p in fn.params {
+    match p.dflt {
+      case Some(_) -> return false
+      case None -> ()
+    }
+    if not primitiveTypeName(p.ty) {
+      return false
+    }
+    match p.mode {
+      case PMIn -> ()
+      case _ -> return false
+    }
+    names.add(p.name)
+  }
+  match fn.ret {
+    case Some(rt) -> if not primitiveTypeName(rt) { return false }
+    case None -> return false
+  }
+  val foreign = { e: Expr ->
+    match e.kind {
+      case EPath(path) -> not names.contains(path.segments[0])
+      case ECall(callee, _) -> match callee.kind {
+        case EPath(_) -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+  }
+  for c in fn.contracts {
+    match clauseExpr(c) {
+      case Some(e) -> if CE.anyInExpr(e, foreign) { return false }
+      case None -> ()
+    }
+  }
+  match fn.body {
+    case Some(FBExpr(e)) -> if CE.anyInExpr(e, foreign) { return false }
+    case Some(FBBlock(blk)) -> if CE.anyInBlock(blk, foreign) { return false }
+    case None -> ()
+  }
+  true
 }
 
 func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
@@ -428,6 +533,9 @@ func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
   }
   for t in more.typeItems {
     acc.typeItems.add(t)
+  }
+  for c in more.callees {
+    acc.callees.add(c)
   }
   for n in more.imports {
     if not acc.imports.contains(n) {

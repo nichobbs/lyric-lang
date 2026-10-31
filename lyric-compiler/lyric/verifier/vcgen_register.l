@@ -550,3 +550,58 @@ func genericTypeParamNames(generics: in Option[GenericParams]): List[String] {
   }
   names
 }
+
+// The contracts and `@pure` bodies of the public functions of the packages
+// `file` imports, so a call to one (`Std.String.isEmpty(s)`) is that function
+// applied to its arguments, with its facts, rather than a value of a sort the
+// verifier does not know (#7532).  `Std.Core` is left to the monad models.
+// A function is reachable by its package-qualified name, by its alias-
+// qualified name when the import is renamed, and by its bare name when
+// nothing else in scope, own or imported, has that name.
+func registerImportedFunctions(
+  file: in SourceFile,
+  imports: in ImportScope,
+  siblingFunctions: in List[FunctionArity],
+  callees: in Map[String, FunctionDecl],
+): Unit {
+  val bare: Map[String, Int] = newMap()
+  for item in file.items {
+    match item.kind {
+      case IFunc(fn) -> bumpCount(bare, fn.name)
+      case _ -> ()
+    }
+  }
+  for sf in siblingFunctions {
+    bumpCount(bare, sf.name)
+  }
+  val imported: List[ResolvedPackage] = newList()
+  for imp in file.imports {
+    if imp.isExtern {
+      continue
+    }
+    val pkgName = joinPathSegments(imp.path.segments)
+    if pkgName == "Std.Core" {
+      continue
+    }
+    for rp in imports.packages {
+      if rp.name == pkgName {
+        imported.add(rp)
+        for fn in rp.decls.callees {
+          addCalleeIfAbsent(callees, pkgName + "." + fn.name, fn)
+          match imp.asAlias {
+            case Some(alias) -> addCalleeIfAbsent(callees, alias + "." + fn.name, fn)
+            case None -> ()
+          }
+          bumpCount(bare, fn.name)
+        }
+      }
+    }
+  }
+  for rp in imported {
+    for fn in rp.decls.callees {
+      if countOf(bare, fn.name) == 1 {
+        addCalleeIfAbsent(callees, fn.name, fn)
+      }
+    }
+  }
+}
