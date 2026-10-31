@@ -75,6 +75,10 @@ extern type NetworkStream = "System.Net.Sockets.NetworkStream"
 
 extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectionContext"
 
+extern type TaskOfResponse = "System.Threading.Tasks.Task`1[System.Net.Http.HttpResponseMessage]"
+
+extern type TaskOfTask = "System.Threading.Tasks.Task`1[System.Threading.Tasks.Task]"
+
 extern type ValueTaskOfStream = "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"
 
 // HTTP-version knob (docs/61 §5.1, D128 decision 4; #5879).
@@ -322,6 +326,22 @@ async func clientPostAsyncCancel(
   content: in StringContent,
   token: in CancellationToken,
 ): HttpResponseMessage = ()
+
+func clientGetTask(client: in HttpClientHandle, url: in String): TaskOfResponse {
+  client.GetAsync(url)
+}
+
+func settleResponse(t: in TaskOfResponse): TaskOfTask {
+  Task.WhenAny(t, t)
+}
+
+func responseTaskOutcome(t: in TaskOfResponse): Result[HttpResponseMessage, String] {
+  return try {
+    Ok(value = t.Result)
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
 
 func responseStatusInt(response: in HttpResponseMessage): Int {
   response.StatusCode
@@ -1085,11 +1105,9 @@ pub async func hostSendSafe(
 }
 
 pub async func hostGetSafe(client: in HttpClientHandle, url: in String): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientGetAsync(client, url))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientGetTask(client, url)
+  val settled = await settleResponse(pending)
+  return responseTaskOutcome(pending)
 }
 
 pub async func hostPostStringSafe(
