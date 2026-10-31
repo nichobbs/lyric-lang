@@ -19196,32 +19196,30 @@ func argIsWideningBuiltValue(tbl: in SymbolTable, e: in Expr): Bool {
 func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> argIsAmbiguousUnionCaseCtor(tbl, inner)
+    // A bare nullary case name (#8649), as `inferExprExpectedCore`'s `EPath`
+    // arm resolves it against the parameter type.
+    case EPath(p) -> p.segments.count == 1 and nameIsSharedUnionCase(tbl, p.segments[0])
     case ECall(fn, _) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 {
-        val candidates = symTableTryFindAll(tbl, p.segments[0])
-        if candidates.count < 2 {
-          false
-        } else {
-          var allUnionCase = true
-          var ci = 0
-          while ci < candidates.count {
-            match candidates[ci].kind {
-              case DKUnionCase(_, _) -> ()
-              case _ -> {
-                allUnionCase = false
-              }
-            }
-            ci = ci + 1
-          }
-          allUnionCase
-        }
-      } else {
-        false
-      }
+      case EPath(p) -> p.segments.count == 1 and nameIsSharedUnionCase(tbl, p.segments[0])
       case _ -> false
     }
     case _ -> false
   }
+}
+
+// True when `name` has two or more candidates and every one is a union case.
+func nameIsSharedUnionCase(tbl: in SymbolTable, name: in String): Bool {
+  val candidates = symTableTryFindAll(tbl, name)
+  if candidates.count < 2 {
+    return false
+  }
+  for cand in candidates {
+    match cand.kind {
+      case DKUnionCase(_, _) -> ()
+      case _ -> return false
+    }
+  }
+  true
 }
 
 // The argument types of a generic record construction checked where an
