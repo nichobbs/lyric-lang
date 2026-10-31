@@ -67,6 +67,39 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
         }
         case IRecord(decl) -> addRecordThunks(added, existing, addedNames, decl, it.span)
         case IExposedRec(decl) -> addRecordThunks(added, existing, addedNames, decl, it.span)
+        case IProtected(decl) -> {
+          val owner = genericNames(decl.generics)
+          val protOwner = singleName(decl.name)
+          for m in decl.members {
+            match m {
+              case PMEntry(en) -> addThunks(
+                added,
+                existing,
+                addedNames,
+                DTProtectedMember,
+                protOwner,
+                en.name,
+                owner,
+                None,
+                en.params,
+                it.span
+              )
+              case PMFunc(fn) -> addThunks(
+                added,
+                existing,
+                addedNames,
+                DTProtectedMember,
+                protOwner,
+                fn.name,
+                owner,
+                fn.generics,
+                fn.params,
+                it.span
+              )
+              case _ -> ()
+            }
+          }
+        }
         case IInterface(decl) -> {
           val owner = genericNames(decl.generics)
           val ifaceOwner = singleName(decl.name)

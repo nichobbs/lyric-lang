@@ -2095,6 +2095,7 @@ func isTypeDeclKind(kind: in String): Bool {
     kind == "alias" or
     kind == "distinct" or
     kind == "opaque" or
+    kind == "protected" or
     kind == "type"
 }
 

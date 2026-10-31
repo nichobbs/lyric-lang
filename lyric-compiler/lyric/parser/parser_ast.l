@@ -724,6 +724,9 @@ pub record EntryDecl {
   contracts: List[ContractClause]
   body: FunctionBody
   span: Span
+  /// False for a head with no body, which only a `@contract_source` file
+  /// carries (#8261): `body` is then an empty block no pass should check.
+  hasBody: Bool = true
 }
 
 pub union ProtectedMember {
@@ -2226,6 +2229,8 @@ pub union DefaultThunkKind {
   case DTInterfaceMember
   /// An `impl` method: the owner is the target type, then the interface.
   case DTImplMethod
+  /// An `entry` or `func` of a protected type: the owner is the type.
+  case DTProtectedMember
 }
 
 /// The name of the thunk a package compiles the default of parameter
@@ -2258,6 +2263,7 @@ pub func defaultThunkName(
     case DTRecordMethod -> "m"
     case DTInterfaceMember -> "i"
     case DTImplMethod -> "p"
+    case DTProtectedMember -> "q"
   }
   var acc = defaultThunkPrefix() + kindKey + thunkNamesKey(owner) + thunkNamesKey(dottedSegments(callable)) +
     thunkCountKey(params.count)

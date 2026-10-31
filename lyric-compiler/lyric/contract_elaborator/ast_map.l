@@ -150,7 +150,8 @@ func mapItem(it: in Item, m: in AstMapper): Item {
                 ret = ed.ret,
                 contracts = mapContracts(ed.contracts, m),
                 body = mapFunctionBody(ed.body, m),
-                span = ed.span
+                span = ed.span,
+                hasBody = ed.hasBody
               )
             )
           )

@@ -667,21 +667,70 @@ func testBuildEnum(): Unit {
   assertEqualInt(rt.diagnostics.count, 0, "enum: repr re-parses with no diagnostics (got " + d.repr + ")")
 }
 
-// `buildContractFromFile` emits a `pub protected type` as an opaque-type
-// anchor (reprForProtected) so a cross-package consumer can resolve the
-// name in a public signature without seeing the locked internal state.
-// Protected types are emitted regardless of source visibility.
+// `buildContractFromFile` exports a `pub protected type` as a protected
+// type with its constructor shape (fields, types, defaults) and bodyless
+// entry and func heads; barriers, the invariant and bodies stay behind
+// (#8261).  The repr re-parses into the same members.
 func testBuildProtected(): Unit {
-  val src = "package P\n\npub protected type Counter {\n  var n: Int = 0\n  entry bump(): Unit { n = n + 1 }\n}\n"
+  val src = "package P\n\npub protected type Counter {\n  var n: Int = 0\n  invariant: n >= 0\n  entry bump(by: in Int, tally: inout Int): Int\n    when: n < 100\n  {\n    n = n + by\n    tally = tally + 1\n    return n\n  }\n  func peek(): Int { return n }\n}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
   val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "opaque", "Counter"),
+    findDeclByKind(c.decls, "protected", "Counter"),
     "buildContractFromFile: protected Counter missing"
   )
-  assertTrue(Str.contains(d.repr, "pub opaque type Counter"), "protected: opaque repr header (got " + d.repr + ")")
-  val rt = parse("package P\n\n" + d.repr + "\n")
+  assertTrue(Str.contains(d.repr, "pub protected type Counter"), "protected: header (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "var n: Int = 0"), "protected: field with default (got " + d.repr + ")")
+  assertTrue(
+    Str.contains(d.repr, "entry bump(by: in Int, tally: inout Int): Int"),
+    "protected: entry head (got " + d.repr + ")"
+  )
+  assertTrue(Str.contains(d.repr, "func peek(): Int"), "protected: func head (got " + d.repr + ")")
+  assertTrue(not Str.contains(d.repr, "when:"), "protected: barrier stays internal (got " + d.repr + ")")
+  assertTrue(not Str.contains(d.repr, "invariant"), "protected: invariant stays internal (got " + d.repr + ")")
+  assertTrue(not Str.contains(d.repr, "return"), "protected: bodies stay internal (got " + d.repr + ")")
+  val rt = parse("@contract_source\npackage P\n\n" + d.repr + "\n")
   assertEqualInt(rt.diagnostics.count, 0, "protected: repr re-parses with no diagnostics (got " + d.repr + ")")
+  var entries = 0
+  var funcs = 0
+  var fields = 0
+  for it in rt.file.items {
+    match it.kind {
+      case IProtected(pd) -> {
+        for m in pd.members {
+          match m {
+            case PMEntry(_) -> {
+              entries = entries + 1
+            }
+            case PMFunc(_) -> {
+              funcs = funcs + 1
+            }
+            case PMField(_) -> {
+              fields = fields + 1
+            }
+            case PMInvariant(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(entries, 1, "protected: one entry round-trips")
+  assertEqualInt(funcs, 1, "protected: one func round-trips")
+  assertEqualInt(fields, 1, "protected: one field round-trips")
+}
+
+// A package-private protected type is exported as an opaque anchor only: its
+// name can appear in a signature, but a consumer cannot construct it.
+func testBuildPrivateProtectedAnchor(): Unit {
+  val src = "package P\n\nprotected type Hidden {\n  var n: Int = 0\n  entry bump(): Unit { n = n + 1 }\n}\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "opaque", "Hidden"),
+    "buildContractFromFile: private protected Hidden anchor missing"
+  )
+  assertTrue(Str.contains(d.repr, "pub opaque type Hidden"), "private protected: opaque anchor (got " + d.repr + ")")
+  assertTrue(not Str.contains(d.repr, "entry"), "private protected: no members exported (got " + d.repr + ")")
 }
 
 // `buildContractFromFile` covers generic interfaces.
@@ -1284,6 +1333,7 @@ test "buildContractFromFile enum" {
 
 test "buildContractFromFile protected" {
   testBuildProtected()
+  testBuildPrivateProtectedAnchor()
 }
 
 test "buildContractFromFile generic interface" {

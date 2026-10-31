@@ -2246,7 +2246,8 @@ func hzRewriteEntry(
     ret = ed.ret,
     contracts = ed.contracts,
     body = hzRewriteBody(cfg, ed.body, edSt),
-    span = ed.span
+    span = ed.span,
+    hasBody = ed.hasBody
   )
 }
 

@@ -3816,7 +3816,7 @@ func checkProtectedMemberBodies(
           isEntry = sig0.isEntry,
           isExternFunc = sig0.isExternFunc
         )
-        val syntheticBody: Option[FunctionBody] = Some(value = entryDecl.body)
+        val syntheticBody: Option[FunctionBody] = if entryDecl.hasBody { Some(value = entryDecl.body) } else { None }
         val fn = FunctionDecl(
           docComments = entryDecl.docComments,
           annotations = entryDecl.annotations,

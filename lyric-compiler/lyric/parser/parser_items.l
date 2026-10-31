@@ -1472,6 +1472,13 @@ func parseImplBody(st: inout ParseState, genericsPrefix: Option[GenericParams]):
 // ─────────────────────────────────────────────────────────────────────────────
 // P8: remaining item kinds.
 // ─────────────────────────────────────────────────────────────────────────────
+func startsBody(t: in Token): Bool {
+  match t {
+    case TPunct(p) -> match p { case Eq -> true; case LBrace -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
 func parseEntryDecl(st: inout ParseState): EntryDecl {
   val startSpan = peekSpan(st)
   val docs = parseItemDocComments(st)
@@ -1491,7 +1498,15 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
   val parameters = parseParamList(st)
   val returnType = match tryEatPunct(st, Colon) { case Some(_) -> Some(parseTypeExpr(st)); case None -> None }
   val contracts = parseContractClauses(st)
-  val body = parseFunctionBody(st)
+  // In the source synthesised from a dependency's contract metadata
+  // (`@contract_source`), an entry is a head with no body, as a record
+  // method's is: a consumer needs only the signature (#8261).
+  val hasBody = not st.blockBraces or startsBody(peekToken(st))
+  val body = if hasBody {
+    parseFunctionBody(st)
+  } else {
+    FBBlock(block = Block(statements = newList(), span = lastSpan(st)))
+  }
   val endSpan = lastSpan(st)
   EntryDecl(
     docComments = docs,
@@ -1502,7 +1517,8 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
     ret = returnType,
     contracts = contracts,
     body = body,
-    span = joinSpans(startSpan, endSpan)
+    span = joinSpans(startSpan, endSpan),
+    hasBody = hasBody
   )
 }
 

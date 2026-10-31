@@ -1256,7 +1256,8 @@ func resolveEntryDecl(
     ret = resolveOptType(aliasTargets, outerGenerics, ed.ret),
     contracts = resolveContracts(aliasTargets, outerGenerics, ed.contracts),
     body = resolveFunctionBody(aliasTargets, outerGenerics, ed.body),
-    span = ed.span
+    span = ed.span,
+    hasBody = ed.hasBody
   )
 }
 

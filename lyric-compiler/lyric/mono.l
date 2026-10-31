@@ -5551,7 +5551,8 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
                   ret = ed.ret,
                   contracts = desugarContracts(state, env, ed.contracts),
                   body = newBody,
-                  span = ed.span
+                  span = ed.span,
+                  hasBody = ed.hasBody
                 )
               )
             )
@@ -9606,7 +9607,8 @@ func rewriteProtectedItemMono(state: in MonoState, item: in Item, decl: in Prote
               ret = ed.ret,
               contracts = ed.contracts,
               body = newBody,
-              span = ed.span
+              span = ed.span,
+              hasBody = ed.hasBody
             )
           )
         )
