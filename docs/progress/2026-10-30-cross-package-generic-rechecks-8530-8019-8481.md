@@ -1,6 +1,6 @@
 # Cross-package generic re-checks and shared union case names (#8530, #8019, #8481)
 
-See D283.
+See D285.
 
 - **#8530.** A generic declared in another package and bounded by `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Compare` can be
   specialised at a distinct or record type the caller declares on dotnet and JVM. The re-check runs in the declaring
