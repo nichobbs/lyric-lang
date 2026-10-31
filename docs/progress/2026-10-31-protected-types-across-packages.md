@@ -29,8 +29,6 @@ protected type with a barrier hit them at once:
   the first byte of the lock's `finally`); also failed on the seed compiler;
 - `Monitor.Wait`/`PulseAll` references are now registered once with the
   protected type instead of while a member body is lowered.
-- `Lyric.Pipeline` had two duplicate `files =` arguments from a merge, which
-  stopped the compiler building; removed.
 
 **Tests.** `scripts/ci/restored-dependency-codegen-e2e.sh` `protected` case
 (restored and sibling, dotnet and JVM; construction, entry, func, `inout`,
