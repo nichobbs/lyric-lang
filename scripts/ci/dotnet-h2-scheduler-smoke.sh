@@ -32,12 +32,21 @@ if [ -z "$t_first" ] || [ -z "$t_second" ] || [ $((t_second - t_first)) -lt 1000
   exit 1
 fi
 
-# 3. The client resets an endless stream after a second: the handler's next
+# 3. A client that sends its request and then half-closes its write side must
+#    still receive the response a handler is producing (#8683): /slow answers
+#    two seconds after the FIN, so the connection has to drain, not close.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! half_close="$(python3 -I "$here/h2-half-close-client.py" "$base" /slow slow)"; then
+  echo "::error::a response in flight was lost when the h2 client half-closed: $half_close"
+  exit 1
+fi
+
+# 4. The client resets an endless stream after a second: the handler's next
 #    chunk write must fail rather than block or spin forever.
 curl -sk --http2 --max-time 1 -o /dev/null "$base/endless" || true
 for _ in $(seq 1 25); do
   if grep -q DOTNET-H2-SMOKE-STREAM-ABORTED "$server_log"; then
-    echo "dotnet Std.HttpServer h2 scheduler smoke passed (fast=${fast_ms}ms slow=${slow_ms}ms, chunk gap=$((t_second - t_first))ms)"
+    echo "dotnet Std.HttpServer h2 scheduler smoke passed (fast=${fast_ms}ms slow=${slow_ms}ms, chunk gap=$((t_second - t_first))ms, half-close: $half_close)"
     exit 0
   fi
   sleep 0.2

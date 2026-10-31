@@ -150,6 +150,7 @@ import Std.TcpHost
 import Std.Environment as Env
 import Std.Parse
 import Std.String
+import Std.Time
 
 // =====================================================================
 // Concurrency externs (BCL threading — the only externs in this file).
@@ -281,6 +282,9 @@ pub func resolveMaxConcurrentConnections(): Int {
 val tlsHandshakeTimeoutMsDefault: Int = 10000
 
 val connectionIdleTimeoutMsDefault: Int = 120000
+
+// How often the h2 drain watchdog checks whether its connection has ended.
+val h2DrainWatchSliceMs: Int = 100
 
 // The largest timeout either override accepts (one day, the same bound the
 // native twin enforces); anything larger falls back to the default.
@@ -487,6 +491,13 @@ ref record H2ConnState {
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
   var open: Bool
+  // The peer half-closed (the reader hit end-of-input): nothing more will be
+  // read, but dispatched exchanges keep running and their responses are still
+  // written. The connection closes once `exchanges` is empty, or when
+  // `drainExpired` (set by the drain watchdog after the idle timeout) says a
+  // handler never answered.
+  var draining: Bool
+  var drainExpired: Bool
   link: H2Link
   // Socket bytes the reader task has read, awaiting the connection task, and
   // the credit that bounds how far the reader may run ahead.
@@ -1528,6 +1539,38 @@ func h2DrainOutbox(state: in H2ConnState): Unit {
   }
 }
 
+// The reader's end-of-input marker arrived. Whether the peer half-closed after
+// sending its requests or the transport failed, responses still being produced
+// are written (a write to a dead socket closes the connection through
+// `h2WriteOrClose`). The watchdog bounds the wait by the idle timeout so a
+// handler that never responds cannot hold the connection open.
+func h2BeginDrain(state: in H2ConnState): Unit {
+  if not state.draining {
+    state.draining = true
+    val timeoutMs = resolveConnectionIdleTimeoutMs()
+    val _watchdog = taskRun({ -> h2DrainWatchdog(state, timeoutMs) });
+    ()
+  }
+}
+
+// Sleeps in short slices until the connection ends or `timeoutMs` has passed;
+// in the latter case it marks the drain expired and wakes the connection task.
+func h2DrainWatchdog(state: in H2ConnState, timeoutMs: in Int): Unit {
+  var waited = 0
+  while waited < timeoutMs and not state.link.closed {
+    sleepMillis(h2DrainWatchSliceMs)
+    waited = waited + h2DrainWatchSliceMs
+  }
+  if not state.link.closed {
+    state.drainExpired = true
+    val _ = semRelease(state.link.wake);
+    ()
+  }
+}
+
+// True once a draining connection has nothing left to wait for.
+func h2DrainFinished(state: in H2ConnState): Bool = state.draining and (state.drainExpired or state.exchanges.count == 0)
+
 // Feed everything the reader task has queued into the connection FSM. A
 // zero-length entry is the reader's end-of-input marker.
 func h2DrainInbound(state: in H2ConnState): Unit {
@@ -1535,7 +1578,7 @@ func h2DrainInbound(state: in H2ConnState): Unit {
   while state.open and cqTryDequeue(state.inbound, ib) {
     val _ = semRelease(state.inCredit)
     if ib.bytes.length == 0 {
-      state.open = false
+      h2BeginDrain(state)
     } else {
       processH2Batch(state, ib.bytes)
     }
@@ -1823,6 +1866,8 @@ func processH2Connection(
     queue = queue,
     available = available,
     open = true,
+    draining = false,
+    drainExpired = false,
     link = link,
     inbound = inbound,
     inCredit = inCredit,
@@ -1841,6 +1886,9 @@ func processH2Connection(
   while state.open and not H2.isFailed(state.h2) {
     semWait(wake)
     h2Cycle(state)
+    if h2DrainFinished(state) {
+      state.open = false
+    }
   };
   ()
 }
