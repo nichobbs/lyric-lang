@@ -4948,12 +4948,11 @@ pub func registerHeadOnlyImplsJvm(file0: in SourceFile, into: in Map[String, Jvm
   val externTypes = ownAwareExternTypes(file, externSeed)
   for it in file.items {
     match it.kind {
+      // Not gated on `implIfaceExternDottedFqn`: `externTypes` also maps the
+      // imported packages' Lyric types, so it reports another package's Lyric
+      // interface as extern.  A host interface has no `<class>#` keys to copy.
       case IImpl(decl) -> {
-        val isExtern = match implIfaceExternDottedFqn(decl.iface, externTypes) {
-          case Some(_) -> true
-          case None -> false
-        }
-        if decl.members.count == 0 and not isExtern {
+        if decl.members.count == 0 {
           val tgtClass = typeExprToJvmClass(decl.target, owner)
           val implTps = genericParamNames(decl.generics)
           match implIfaceDeclJvm(file, decl.iface) {
