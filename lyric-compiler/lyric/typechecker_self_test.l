@@ -11875,6 +11875,25 @@ test "T0161 does not compare a default known only as a thunk call (#7827)" {
   assertEqualInt(countDiagCode(parseCheck(oneSided), "T0161"), 1, "the impl declares none")
 }
 
+// #8076: a restored package writes a default it could not compile into a
+// thunk (its type names a type parameter or `Self`) as a call to the
+// `__lyric_default__unexported` marker; a call leaving that argument out is
+// T0218, not "has no default", and an argument that is passed is accepted.
+test "an unexported restored default is T0218 when omitted (#8076)" {
+  val src = "package P\n" + "func f[T](o: in Option[T] = Q.__lyric_default__unexported(), n: in Int = 1): Int { n }\n" +
+    "record R {\n  v: Int\n  func m(self: in R, k: in Int, s: in Self = Q.__lyric_default__unexported()): Int { k }\n}\n"
+  val omitted = parseCheck(src + "func g(): Int { f[Int]() }\n")
+  assertEqualInt(countDiagCode(omitted, "T0218"), 1, "f[Int]() omits the unexported default: " + diagCodesOf(omitted))
+  assertEqualInt(countDiagCode(omitted, "T0042"), 0, "no misleading arity error")
+  val named = parseCheck(src + "func g(): Int { f[Int](n = 2) }\n")
+  assertEqualInt(countDiagCode(named, "T0218"), 1, "named call omitting it: " + diagCodesOf(named))
+  assertTrue(diagMessagesContain(named, "cannot export it"), "message")
+  val passed = parseCheck(src + "func g(): Int { f(None, 2) }\n")
+  assertEqualInt(countDiagCode(passed, "T0218"), 0, "explicit argument: " + diagCodesOf(passed))
+  val method = parseCheck(src + "func g(r: in R): Int { r.m(1) }\n")
+  assertEqualInt(countDiagCode(method, "T0218"), 1, "method: " + diagCodesOf(method))
+}
+
 // #8085: two methods of one name in one record, interface or impl must
 // differ in their number of parameters, as two functions must (T0001);
 // overloads of different counts stay valid.

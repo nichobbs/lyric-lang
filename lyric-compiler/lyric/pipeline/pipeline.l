@@ -3060,6 +3060,7 @@ func specMayRender(decl: in FunctionDecl): Bool {
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
     items = items,
+    files = newList(),
     span = decl.span
   )
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
@@ -4817,6 +4818,7 @@ pub func pipeWeave(
   extraRecordDecls: in List[RecordDecl],
   typeArgCallees: in Map[String, Bool],
   contractsEnabled: in Bool = true,
+  wovenGenerics: in List[FunctionDecl] = newList(),
 ): Option[SourceFile] {
   // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
   val effectiveContractsEnabled = if ContractElaborator.isProofRequired(file.fileAnnotations) {
@@ -4831,7 +4833,136 @@ pub func pipeWeave(
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
-  Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(formatted, extraRecordDecls, typeArgCallees))
+  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, origins) {
+    case Some(f) -> f
+    case None -> return None
+  }
+  Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(specialised, extraRecordDecls, typeArgCallees))
+}
+
+/// The generics a woven wrapper's aspect contract can call (#7530): every
+/// function visible to mono (`monoFuncs`, the list `pipeCheckAndMono` took)
+/// plus the generic functions the file itself declared, which mono erased
+/// from the file and recorded in `MiddleEndOptions.genericItemsOut`.
+pub func pipeWovenGenerics(monoFuncs: in List[FunctionDecl], ownGenericItems: in List[Item]): List[FunctionDecl] {
+  val all: List[FunctionDecl] = newList()
+  for f in monoFuncs {
+    all.add(f)
+  }
+  for gi in ownGenericItems {
+    match gi.kind {
+      case IFunc(fd) -> all.add(fd)
+      case _ -> ()
+    }
+  }
+  all
+}
+
+/// Aspect contracts exist only once the weaver has built a wrapper, after
+/// `pipeCheckAndMono`, so a generic call in one (`ensures: isSome(result)`)
+/// was never specialised and codegen found no function for it (T0123).  A
+/// second mono run over the woven file specialises those calls, using the
+/// wrapper's declared return type for `result`.  Specialisations the first run
+/// already produced are not added twice.  A file the weaver did not wrap is
+/// returned as it is.
+func specialiseWovenContracts(
+  woven: in SourceFile,
+  generics: in List[FunctionDecl],
+  extraRecordDecls: in List[RecordDecl],
+  pkgLabel: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+): Option[SourceFile] {
+  if generics.count == 0 or not fileHasWovenWrapper(woven) {
+    return Some(value = woven)
+  }
+  val noIfaces: List[InterfaceDecl] = newList()
+  val noTypes: Map[String, TypeExpr] = newMap()
+  val noCallTypes: Map[String, TypeExpr] = newMap()
+  val noTypeArgSites: Map[String, GenericCallTypeArgsSite] = newMap()
+  val noValueSites: Map[String, Map[String, Int]] = newMap()
+  val noLambdaSites: Map[String, LambdaParamTypesSite] = newMap()
+  val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
+  val res = monoFileWithLambdaTypes(
+    woven,
+    generics,
+    noIfaces,
+    extraRecordDecls,
+    noTypes,
+    noCallTypes,
+    noTypeArgSites,
+    noValueSites,
+    noLambdaSites,
+    noSpecSites
+  )
+  if gate(pkgLabel, origins, res.diagnostics) {
+    return None
+  }
+  // A specialisation the first run already made has the same name and arity
+  // as the one made again; same-named functions of other arities are
+  // overloads and stay.  Each key admits as many items as `woven` held, so
+  // overloads that were already there are all kept.
+  val allowed: Map[String, Int] = newMap()
+  for it in woven.items {
+    match it.kind {
+      case IFunc(fd) -> bumpFuncKeyCount(allowed, funcKeyOf(fd))
+      case _ -> ()
+    }
+  }
+  val kept: Map[String, Int] = newMap()
+  val items: List[Item] = newList()
+  for it in res.file.items {
+    match it.kind {
+      case IFunc(fd) -> {
+        val key = funcKeyOf(fd)
+        val limit = match mapGet(allowed, key) { case Some(n) -> n; case None -> 1 }
+        val have = match mapGet(kept, key) { case Some(n) -> n; case None -> 0 }
+        if have >= limit {
+          continue
+        }
+        bumpFuncKeyCount(kept, key)
+      }
+      case _ -> ()
+    }
+    items.add(it)
+  }
+  Some(
+    value = SourceFile(
+      fileAnnotations = res.file.fileAnnotations,
+      moduleDoc = res.file.moduleDoc,
+      packageDecl = res.file.packageDecl,
+      imports = res.file.imports,
+      items = items,
+      span = res.file.span,
+      files = res.file.files
+    )
+  )
+}
+
+func funcKeyOf(fd: in FunctionDecl): String {
+  fd.name + "/" + toString(fd.params.count)
+}
+
+func bumpFuncKeyCount(counts: in Map[String, Int], key: in String): Unit {
+  val n = match mapGet(counts, key) { case Some(c) -> c; case None -> 0 }
+  if counts.containsKey(key) {
+    counts.remove(key)
+  }
+  counts.add(key, n + 1)
+}
+
+// True when the weaver renamed a function to `<name>__aspect_target`.
+func fileHasWovenWrapper(file: in SourceFile): Bool {
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> {
+        if Str.endsWith(fd.name, "__aspect_target") {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
 }
 
 /// `formatN(template, a1, ..., aN)` becomes
@@ -5108,6 +5239,7 @@ func lowerShowSpec(
     packageDecl = converted.packageDecl,
     imports = converted.imports,
     items = items,
+    files = converted.files,
     span = converted.span
   )
 }
@@ -5292,7 +5424,8 @@ pub func pipeMiddleEnd(
       opts.lineOrigins,
       monoRecordDecls,
       opts.typeArgCalleesOut,
-      opts.contractsEnabled
+      opts.contractsEnabled,
+      pipeWovenGenerics(monoGenFuncs, opts.genericItemsOut)
     )
     case None -> None
   }

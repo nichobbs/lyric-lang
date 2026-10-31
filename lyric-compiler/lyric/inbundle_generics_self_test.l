@@ -496,3 +496,24 @@ test "#6568: a bare T field (not a container/self-reference) is unaffected" {
   val b: Box6568Bare[Int] = Box6568Bare(value = 7)
   assertEqualInt(b.value, 7, "Box6568Bare[Int].value")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #8440: a generic call on a field of a generic record bound without a type
+// annotation.  Mono took the binding's type arguments from the annotation
+// only, so the call stayed erased and passed an unboxed field to an `object`
+// parameter.
+// ─────────────────────────────────────────────────────────────────────────────
+record Box8440[T] {
+  v: T
+}
+
+func render8440[T](x: in T): String = toString(x)
+
+test "#8440: a generic call on a field of an unannotated generic record binding" {
+  val d = Box8440(v = 0.5)
+  assertEqual(render8440(d.v), "0.5", "Double field")
+  val n = Box8440(v = 7)
+  assertEqual(render8440(n.v), "7", "Int field")
+  val s = Box8440(v = "s")
+  assertEqual(render8440(s.v), "s", "String field")
+}

@@ -50,6 +50,39 @@ record Holder[T] {
   func put(self: in Holder[T], x: inout T, v: in T): Unit {
     x = v
   }
+
+  func touch(self: in Holder[T], x: inout T, w: in () -> Unit): Unit {
+    w()
+  }
+
+  func readAfter(self: in Holder[T], x: inout T, w: in () -> Unit): T {
+    w()
+    x
+  }
+
+  func runTouch(self: in Holder[T], seed: in T, v: in T): T {
+    var y = seed
+    val w = { -> y = v }
+    self.touch(y, w)
+    y
+  }
+
+  func runRead(self: in Holder[T], seed: in T, v: in T): T {
+    var y = seed
+    val w = { -> y = v }
+    self.readAfter(y, w)
+  }
+}
+
+func touchGeneric[T](x: inout T, w: in () -> Unit): Unit {
+  w()
+}
+
+func runTouchGeneric[T](seed: in T, v: in T): T {
+  var y = seed
+  val w = { -> y = v }
+  touchGeneric(y, w)
+  y
 }
 
 interface Swapper {
@@ -604,4 +637,38 @@ test "an element of a captured array is copied in and out around the call (#8180
   assertEqualInt(other, 20, "the closure wrote another element during the call")
   assertEqualInt(a[1], 20, "that write is kept")
   assertEqualInt(a[0], 6, "the element passed is written")
+}
+
+test "a closure write during a call survives for a type-parameter-typed captured var (#8204)" {
+  val hs: Holder[String] = Holder(tag = 0)
+  assertEqual(hs.runTouch("old", "new"), "new", "String instantiation")
+  assertEqual(hs.runRead("old", "new"), "new", "the callee reads the closure's write")
+  val hi: Holder[Int] = Holder(tag = 0)
+  assertEqualInt(hi.runTouch(1, 9), 9, "Int instantiation")
+  assertEqualInt(hi.runRead(1, 9), 9, "the callee reads the closure's write at Int")
+  val hb: Holder[Box] = Holder(tag = 0)
+  assertEqualInt(hb.runTouch(Box(n = 1), Box(n = 4)).n, 4, "record instantiation")
+}
+
+test "a closure write during a generic function call survives (#8204)" {
+  assertEqualInt(runTouchGeneric(1, 9), 9, "Int")
+  assertEqual(runTouchGeneric("a", "b"), "b", "String")
+}
+
+test "a closure write during an inout T call on a primitive instantiation survives (#8204)" {
+  val h: Holder[Int] = Holder(tag = 0)
+  var x = 1
+  val w = { -> x = 5 }
+  h.touch(x, w)
+  assertEqualInt(x, 5, "Int")
+  val hl: Holder[Long] = Holder(tag = 0)
+  var l: Long = 1
+  val wl = { -> l = 50 }
+  hl.touch(l, wl)
+  assertEqualLong(l, 50, "Long")
+  val hf: Holder[Bool] = Holder(tag = 0)
+  var f = false
+  val wf = { -> f = true }
+  hf.touch(f, wf)
+  assertTrue(f, "Bool")
 }

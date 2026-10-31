@@ -1510,7 +1510,7 @@ types) into a public function its contract metadata names, and the call
 evaluates the default by calling it, so the default may read the package's
 private values and a widening default converts as it does within the package
 (#7827, D168, docs/45 §5). These export no default, so across a restored
-package boundary their argument must be passed (**T0042** otherwise): a
+package boundary their argument must be passed. A call that leaves one out is **T0218** ("parameter 'o' has a default, but the declaring package cannot export it"; the contract writes such a default as a call to the marker `__lyric_default__unexported`, #8076), not a missing-default **T0042**: a
 parameter whose type names a type parameter or value generic parameter of
 the callable or of its owner type anywhere in it (`T`, `T.Item`,
 `array[N, Int]`), or `Self`; a parameter whose default reads a value generic
@@ -3700,6 +3700,8 @@ Multiple names may appear in a single `wraps:` or `inside:` clause, comma-separa
 ### 14.4 Contract augmentation
 
 Aspects may carry `requires:` and `ensures:` clauses. These are composed additively with the matched function's own contract: all `requires:` clauses (function + every matching aspect) must hold before the call; all `ensures:` clauses must hold after. Aspects cannot weaken or remove a function's own contracts.
+
+An aspect clause may call generic functions (`ensures: isSome(result)`): the call is specialised for the matched function's types after the wrapper is built, as a call in the function's own contract is (#7530).
 
 An aspect clause may reference the matched function's parameters through `args.<field>` (e.g. `requires: args.apiKey != ""`). At weave time each `args.<field>` reference is rewritten to the matched function's same-named parameter; this works in every aspect mode (local, C-mode, and B′-mode) because composed clauses always land on the per-match wrapper, whose parameters are the matched function's own. A referenced field with no matching parameter surfaces as a weave-time diagnostic (A0042 for C-mode; A0047 for row-constrained B′-mode).
 

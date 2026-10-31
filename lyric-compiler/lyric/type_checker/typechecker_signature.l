@@ -29,6 +29,10 @@ pub record ResolvedParam {
   // a call leaving it out need not order its evaluation after the explicit
   // arguments (D171).  `false` when unknown: the call then orders it.
   defaultInert: Bool = false
+  // The declaration has a default that a restored package could not export
+  // (its type names a type parameter or `Self`, #8076): `hasDefault` is false
+  // and a call leaving the argument out is T0218, not 'has no default'.
+  defaultUnavailable: Bool = false
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Resolved where-clause bound.
   // ─────────────────────────────────────────────────────────────────────────────

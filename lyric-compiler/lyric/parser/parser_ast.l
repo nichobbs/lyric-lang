@@ -2280,6 +2280,32 @@ pub func defaultThunkPrefix(): String {
   "__lyric_default__"
 }
 
+/// The thunk name a contract gives a default that has no thunk (its type
+/// names a type parameter or `Self`, #8076): no real `defaultThunkName`
+/// can equal it, since those continue with a kind letter and a length.  A
+/// consumer that omits such an argument is told the default exists but
+/// cannot be used across the package boundary (T0218).
+pub func unexportedDefaultThunkName(): String {
+  defaultThunkPrefix() + "unexported"
+}
+
+/// True when `e` is the call a contract writes for a default that has no
+/// thunk (`unexportedDefaultThunkName`).
+pub func isUnexportedDefaultCall(e: in Expr): Bool {
+  match stripExprParens(e).kind {
+    case ECall(fn, args) -> args.count == 0 and
+      (
+        match fn.kind {
+          case EPath(p) -> p.segments.count > 0 and
+            p.segments[p.segments.count - 1] == unexportedDefaultThunkName()
+          case EMember(_, m) -> m == unexportedDefaultThunkName()
+          case _ -> false
+        }
+      )
+    case _ -> false
+  }
+}
+
 // `name`'s dot-separated parts (`Acc.scaled` -> `Acc`, `scaled`).
 func dottedSegments(name: in String): List[String] {
   val acc: List[String] = newList()
