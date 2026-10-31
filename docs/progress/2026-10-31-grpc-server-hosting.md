@@ -29,3 +29,7 @@ TLS, reflection, compression, client and bidirectional streaming, server-side
 deadline enforcement. A stop that overlaps a call in flight (drain) is
 implemented but has no test: a test needs a second concurrently running caller
 and `spawn` is degenerate-synchronous on dotnet.
+
+## examples/product-catalog
+
+The example registered its five methods with `Grpc.addMethod`, removed here, and so stopped compiling. It now registers them through `src/wire.l` (`ProductCatalog.Wire`): hand-written proto3 codecs on `Lyric.Proto` (field numbers from `domain.l`), an adapter per method that reads the `authorization` metadata value as the handler's `authToken`, and `registerProductService`. A test checks that malformed request bytes fail with `INVALID_ARGUMENT`. The handlers that touch the database remain untested without a Postgres instance, as before.

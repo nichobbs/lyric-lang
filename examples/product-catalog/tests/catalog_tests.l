@@ -14,6 +14,7 @@ import Std.Testing
 import Grpc
 import Grpc.Types
 import ProductCatalog.Domain
+import ProductCatalog.Wire
 
 // ─── GrpcStatus constructors ─────────────────────────────────────────────────
 test "invalidArgument has INVALID_ARGUMENT code" {
@@ -169,7 +170,10 @@ test "ListProductsResponse with products" {
 
 // ─── Category + price helpers via Domain ─────────────────────────────────────
 test "categoryFromString electronics then back" {
-  assertTrue(categoryToString(categoryFromString("electronics")) == "electronics", "categoryToString(categoryFromString(electronics))")
+  assertTrue(
+    categoryToString(categoryFromString("electronics")) == "electronics",
+    "categoryToString(categoryFromString(electronics))"
+  )
 }
 
 test "categoryFromString unknown normalises to other" {
@@ -182,4 +186,14 @@ test "priceDollars $9.99" {
 
 test "priceDollars $0.01" {
   assertTrue(priceDollars(1) == "$0.01", "priceDollars(1) == $0.01")
+}
+
+// ─── Wire adapters ───────────────────────────────────────────────────────────
+test "malformed request bytes fail with INVALID_ARGUMENT before any handler runs" {
+  val bad: slice[Byte] = [255.toByte()]
+  val no: slice[GrpcMetadataEntry] = []
+  match ProductCatalog.Wire.getProductHandler(bad, no) {
+    case Ok(_) -> assertTrue(false, "malformed bytes must not decode")
+    case Err(s) -> assertTrue(s.code == GrpcStatusCode.InvalidArgument, "code == InvalidArgument")
+  }
 }
