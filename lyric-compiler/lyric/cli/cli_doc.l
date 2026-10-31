@@ -2,6 +2,7 @@ package Lyric.Cli
 
 import Std.Core
 import Std.Collections
+import Std.Errors
 import Std.Console as Console
 import Std.File as File
 import Std.String as Str

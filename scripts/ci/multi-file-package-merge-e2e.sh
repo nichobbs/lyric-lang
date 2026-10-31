@@ -16,6 +16,8 @@
 #   - files that disagree on the verification level are B0014;
 #   - a file-level `@cfg(target = ...)` keeps each target's own file only;
 #   - an import alias two files bind to different packages is B0012;
+#   - a name only a sibling file imports builds, with W0032 naming the
+#     sibling and the import to add (imports are per file, docs/70 §4.1);
 #   - a package of one file that declares another package is B0013;
 #   - a sub-package whose directory is inside its parent's builds as its own
 #     package, and a plain subdirectory's files stay in the parent;
@@ -238,6 +240,18 @@ EOF
   printf 'package Mf\nimport Std.Math as X\n\npub func other(): Int {\n  1\n}\n' > "$d/src/b_other.l"
   rejected "an alias bound to two packages" "$d" "$target" \
     "src/b_other\.l: error\[B0012\] 2:1: import alias X names Std\.Math here but Std\.String at .*a_main\.l:2"
+
+  # Imports are per file (docs/70 §4.1): a name only a sibling file imports
+  # still builds, as W0032 naming the sibling and the import to add.
+  d="$(project sibling)"
+  printf 'package Mf\nimport Std.String as Str\n\nfunc main(): Unit {\n  println(Str.toUpper(low()))\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\n\nfunc low(): String {\n  Str.toLower("Hi")\n}\n' > "$d/src/b_low.l"
+  runs "a name only a sibling file imports" "$d" "$target" "HI"
+  if ! grep -Eq 'src/b_low\.l: warning\[W0032\] 4:3: .*through `import Std\.String as Str` in .*src/a_main\.l; add `import Std\.String as Str` to this file' "$work/log"; then
+    echo "FAIL [$target] a name only a sibling file imports: no W0032 naming a_main.l"; cat "$work/log"; fail=1
+  else
+    echo "PASS [$target] W0032 names the sibling file and its import"
+  fi
 
   # A package of one file that declares another package.
   d="$(project single)"

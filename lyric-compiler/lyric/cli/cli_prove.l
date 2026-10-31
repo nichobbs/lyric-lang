@@ -8,6 +8,7 @@ import Std.String as Str
 import Std.Path as Path
 import Std.Environment as Environment
 import Std.Json as Json
+import Std.Parse
 import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Parser as Parser

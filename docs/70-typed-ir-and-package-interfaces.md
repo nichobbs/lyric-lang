@@ -714,7 +714,13 @@ builder (I0002) rather than on the current checker.
 Phase 2a status: positions name their file and packages assemble from
 separately parsed files (steps 1-2), and every build path compiles the
 assembled package, with the text merge and its line-origin table deleted
-(step 3, docs/19 §4). Per-file import scopes, which retire `B0012`, are the
+(step 3, docs/19 §4). Step 4 gives each file its own import scope in
+warning mode: the checker builds one rule per file and checks each item in
+its file's scope, aliases and renames rewrite per file, and a name a file
+sees only through a sibling's import still resolves through the union but is
+the warning `W0032`, naming the sibling and the import to add; the compiler,
+stdlib, ecosystem and examples were fixed to build without it. Making
+`W0032` an error, which retires `B0012` and the cross-file `T0148`, is the
 remaining step.
 
 ### Phase 3: TIR and the middle end
@@ -775,6 +781,7 @@ clause on MSIL, JVM and native.
 | T0211 | a dependency's interface names a declaration that cannot be resolved (corrupt or missing dependency) |
 | T0212 | a `pub` or `internal` signature names a less-visible type |
 | T0213 | a carried body, default or contract references a declaration that is neither public nor a hidden export |
+| W0032 | a name a file sees only through a sibling file's import (warning mode of §4.1; becomes an error) |
 | I0001 | internal: a `TyError` with no diagnostic reached the gate |
 | I0002 | internal: the TIR builder found a node the checker did not record |
 | I0003 | internal: a pass produced ill-formed TIR |

@@ -669,6 +669,16 @@ pub record SymbolTable {
   importVisibleNames: Map[String, Bool]
   /// `<package>` -> the alias an `import P as Q` gives it.
   importAliases: Map[String, String]
+  /// Each file's own import rule (docs/70 §4.1), indexed by
+  /// `Position.fileId`; empty for a package of fewer than two files.
+  fileRules: List[FileImportRule]
+  /// The file whose scope is entered, boxed as a 0/1-element list; empty =
+  /// the package union (`symTableEnterFile`).
+  curFile: List[Int]
+  /// W0032: names a file sees only through a sibling file's import, keyed
+  /// `<fileId>|<name>` so each is reported once per file.
+  siblingImportWarnKeys: Map[String, Bool]
+  siblingImportWarnings: List[Diagnostic]
   /// Non-empty when the checked file is `@contract_source`: a restored
   /// dependency's metadata synthesised back into source, whose preamble copies
   /// sibling packages' types into the file's own package, so a qualified type
@@ -871,6 +881,10 @@ pub func newSymbolTable(): SymbolTable {
     importVisiblePkgs = newMap(),
     importVisibleNames = newMap(),
     importAliases = newMap(),
+    fileRules = newList(),
+    curFile = newList(),
+    siblingImportWarnKeys = newMap(),
+    siblingImportWarnings = newList(),
     nativeIntrinsicTypes = newMap()
   )
 }
@@ -1525,6 +1539,317 @@ func hiddenImportHintPass(tbl: in SymbolTable, curPkg: in String, name: in Strin
     i = i - 1
   }
   ""
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4c. Per-file import scopes (docs/70 §4.1, phase 2a).
+// ─────────────────────────────────────────────────────────────────────────────
+/// One file's own imports, as the rule for the names that file may use
+/// (docs/70 §4.1).  Each map pairs what an import makes visible with that
+/// import as written (`import P`, `import P.{X}`), which W0032 tells a file
+/// to add when it relies on a sibling's.
+pub record FileImportRule {
+  /// The file's path ("" when the caller has none).
+  path: String
+  /// Package -> the whole import that makes every name of it visible bare:
+  /// `import P`, or a whole import whose own whole imports reach `P` (D141).
+  wholeVia: Map[String, String]
+  /// `<package>|<name>` -> the selective import that lists the name.
+  namesVia: Map[String, String]
+  /// Package -> the file's import of it, in any form: a qualified `P.x`
+  /// needs one.
+  directVia: Map[String, String]
+  /// Package -> the import through whose own imports the file reaches it,
+  /// for the qualified references that accept a package reached that way.
+  reachVia: Map[String, String]
+  /// The local name an `import extern` binds -> that import.
+  externVia: Map[String, String]
+}
+
+/// Install one rule per file of the package being checked, indexed by
+/// `Position.fileId`.  A package with fewer than two files needs none: its
+/// one file's imports are the union.
+pub func symTableSetFileRules(tbl: in SymbolTable, rules: in List[FileImportRule]): Unit {
+  while tbl.fileRules.count > 0 {
+    tbl.fileRules.removeAt(tbl.fileRules.count - 1)
+  }
+  for r in rules {
+    tbl.fileRules.add(r)
+  }
+}
+
+/// Enter the scope of file `fileId` of the package being checked: a name
+/// written at no source position of its own (a synthesised node) is judged
+/// by that file's imports.  -2 enters a synthesised item, whose every name
+/// (whatever positions its nodes were copied from) is judged by the package
+/// union; any other id with no rule (-1) leaves no file entered, so a name is
+/// judged by the file its own position lies in.
+pub func symTableEnterFile(tbl: in SymbolTable, fileId: in Int): Unit {
+  while tbl.curFile.count > 0 {
+    tbl.curFile.removeAt(tbl.curFile.count - 1)
+  }
+  if fileId == -2 or (fileId >= 0 and fileId < tbl.fileRules.count) {
+    tbl.curFile.add(fileId)
+  }
+}
+
+/// The file whose scope is entered, -2 for a synthesised item, or -1 for
+/// none.
+pub func symTableCurrentFile(tbl: in SymbolTable): Int {
+  if tbl.curFile.count > 0 {
+    tbl.curFile[0]
+  } else {
+    -1
+  }
+}
+
+/// The file of the package being checked that `sp` lies in, or -1 when the
+/// span has no source position (a synthesised item or node: an empty span,
+/// or line 0) or the package has no file table.
+pub func symTableFileOfSpan(tbl: in SymbolTable, sp: in Span): Int {
+  if tbl.fileRules.count == 0 or sp.startPos.line == 0 or sp.startPos.offset == sp.endPos.offset {
+    return -1
+  }
+  val f = sp.startPos.fileId
+  if f >= 0 and f < tbl.fileRules.count {
+    f
+  } else {
+    -1
+  }
+}
+
+/// Enter the file `sp` lies in: the file an item is checked in.  A
+/// synthesised item (no source position) enters the package union (-2).
+pub func symTableEnterSpanFile(tbl: in SymbolTable, sp: in Span): Unit {
+  val f = symTableFileOfSpan(tbl, sp)
+  if f < 0 and tbl.fileRules.count > 0 {
+    symTableEnterFile(tbl, -2)
+  } else {
+    symTableEnterFile(tbl, f)
+  }
+}
+
+// The file whose imports judge a name written at `sp`, when W0032 applies:
+// the file the span lies in, else the entered file; -1 when no per-file rule
+// applies (fewer than two files, a synthetic item, or a scope other than the
+// checked package's own).
+func useFileForSiblingCheck(tbl: in SymbolTable, sp: in Span): Int {
+  if tbl.fileRules.count < 2 {
+    return -1
+  }
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return -1
+  }
+  val cur = symTableCurrentFile(tbl)
+  if cur == -2 {
+    return -1
+  }
+  val f = symTableFileOfSpan(tbl, sp)
+  if f >= 0 {
+    f
+  } else {
+    cur
+  }
+}
+
+// Whether some file of the package binds `name` with an `import extern`.
+func anyFileExternImports(tbl: in SymbolTable, name: in String): Bool {
+  for r in tbl.fileRules {
+    if r.externVia.containsKey(name) {
+      return true
+    }
+  }
+  false
+}
+
+// How `rule` makes `sym` nameable bare from package `curPkg`: `Some("")`
+// when no import is needed (a declaration of the package, the prelude, a
+// binding with no package), `Some(import)` through one of the file's
+// imports, `None` when the file's imports hide it.  Mirrors
+// `symTableImportVisible` for one file's imports.
+func fileBareVia(tbl: in SymbolTable, rule: in FileImportRule, curPkg: in String, sym: in Symbol): Option[String] {
+  val origin = sym.originPackage
+  if origin.length == 0 {
+    val isExtern = match sym.kind { case DKExternType(_, _) -> true; case _ -> false }
+    if isExtern and anyFileExternImports(tbl, sym.name) {
+      return mapGet(rule.externVia, sym.name)
+    }
+    return Some(value = "")
+  }
+  if origin == curPkg {
+    return Some(value = "")
+  }
+  match mapGet(rule.wholeVia, origin) {
+    case Some(via) -> return Some(value = via)
+    case None -> ()
+  }
+  match mapGet(rule.namesVia, origin + "|" + sym.name) {
+    case Some(via) -> return Some(value = via)
+    case None -> ()
+  }
+  val parent = caseParentName(tbl, sym)
+  if origin == "Std.Core" {
+    val preludeName = if parent.length > 0 { parent } else { sym.name }
+    if isPreludeName(preludeName) {
+      return Some(value = "")
+    }
+  }
+  if parent.length > 0 {
+    return mapGet(rule.namesVia, origin + "|" + parent)
+  }
+  None
+}
+
+// `fileBareVia` for a function `name` declared in `origin` (the by-name form
+// `symTableBareFuncVisible` takes).
+func fileBareFuncVia(rule: in FileImportRule, curPkg: in String, origin: in String, name: in String): Option[String] {
+  if origin.length == 0 or origin == curPkg {
+    return Some(value = "")
+  }
+  match mapGet(rule.wholeVia, origin) {
+    case Some(via) -> return Some(value = via)
+    case None -> ()
+  }
+  mapGet(rule.namesVia, origin + "|" + name)
+}
+
+// How `rule` lets a qualified reference name package `pkg`: an import of it
+// in any form, or, when `transitive`, one whose own imports reach it.
+func fileQualifiedVia(rule: in FileImportRule, curPkg: in String, pkg: in String, transitive: in Bool): Option[String] {
+  if pkg == curPkg or pkg == "Std.Core" {
+    return Some(value = "")
+  }
+  match mapGet(rule.directVia, pkg) {
+    case Some(via) -> return Some(value = via)
+    case None -> ()
+  }
+  if transitive {
+    return mapGet(rule.reachVia, pkg)
+  }
+  None
+}
+
+// W0032 for the name `shown`, written in file `f`, that only file `other`'s
+// import `via` makes visible.  One warning per name and file.
+func warnSiblingImport(
+  tbl: in SymbolTable, f: in Int, other: in Int, shown: in String, via: in String, sp: in Span
+): Unit {
+  val key = toString(f) + "|" + shown
+  if tbl.siblingImportWarnKeys.containsKey(key) {
+    return
+  }
+  tbl.siblingImportWarnKeys.add(key, true)
+  val otherPath = tbl.fileRules[other].path
+  val location = if otherPath.length > 0 { otherPath } else { "another file of this package" }
+  tbl.siblingImportWarnings.add(
+    warningDiagnostic(
+      "W0032",
+      "'" + shown + "' is visible here only through `" + via + "` in " + location + "; add `" + via +
+        "` to this file (a file's imports are its own; this becomes an error in a later release)",
+      sp
+    )
+  )
+}
+
+/// Note a bare name, written at `sp`, that resolved to `sym` through the
+/// union of the package's imports: W0032 when the file it is written in does
+/// not make it visible and a sibling file's import does (docs/70 §4.1, phase
+/// 2a warning mode).
+pub func symTableNoteBareUse(tbl: in SymbolTable, sym: in Symbol, sp: in Span): Unit {
+  val f = useFileForSiblingCheck(tbl, sp)
+  if f < 0 {
+    return
+  }
+  val curPkg = symTableScopePkg(tbl)
+  if not symTableImportVisible(tbl, curPkg, sym) {
+    return
+  }
+  match fileBareVia(tbl, tbl.fileRules[f], curPkg, sym) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  var j = 0
+  while j < tbl.fileRules.count {
+    if j != f {
+      match fileBareVia(tbl, tbl.fileRules[j], curPkg, sym) {
+        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, sym.name, via, sp); return }
+        case None -> ()
+      }
+    }
+    j = j + 1
+  }
+}
+
+/// `symTableNoteBareUse` for a bare call or function value `name` bound to a
+/// function of `origin`.
+pub func symTableNoteBareFuncUse(tbl: in SymbolTable, origin: in String, name: in String, sp: in Span): Unit {
+  val f = useFileForSiblingCheck(tbl, sp)
+  if f < 0 {
+    return
+  }
+  if not symTableBareFuncVisible(tbl, origin, name) {
+    return
+  }
+  val curPkg = symTableScopePkg(tbl)
+  match fileBareFuncVia(tbl.fileRules[f], curPkg, origin, name) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  var j = 0
+  while j < tbl.fileRules.count {
+    if j != f {
+      match fileBareFuncVia(tbl.fileRules[j], curPkg, origin, name) {
+        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, name, via, sp); return }
+        case None -> ()
+      }
+    }
+    j = j + 1
+  }
+}
+
+/// `symTableNoteBareUse` for a qualified reference `pkg.member` written at
+/// `sp` that the union of the package's imports lets name `pkg`: an import
+/// of `pkg` in any form, or, when `transitive`, one whose own imports reach
+/// it.  An alias rewritten to its package (`Q.f` to `P.f`) is checked here
+/// too, so the advice names the sibling's `import P as Q`.
+pub func symTableNoteQualifiedUse(
+  tbl: in SymbolTable,
+  pkg: in String,
+  member: in String,
+  sp: in Span,
+  transitive: in Bool,
+): Unit {
+  val f = useFileForSiblingCheck(tbl, sp)
+  if f < 0 {
+    return
+  }
+  val curPkg = symTableScopePkg(tbl)
+  match fileQualifiedVia(tbl.fileRules[f], curPkg, pkg, transitive) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  var j = 0
+  while j < tbl.fileRules.count {
+    if j != f {
+      match fileQualifiedVia(tbl.fileRules[j], curPkg, pkg, transitive) {
+        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, pkg + "." + member, via, sp); return }
+        case None -> ()
+      }
+    }
+    j = j + 1
+  }
+}
+
+/// The W0032 warnings noted while checking the package, in the order noted.
+pub func symTableSiblingImportWarnings(tbl: in SymbolTable): List[Diagnostic] {
+  tbl.siblingImportWarnings
 }
 
 // The interface a `where` constraint names: a bare name resolves in scope, a

@@ -4,6 +4,7 @@ package Lyric.Verifier
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ModeChecker

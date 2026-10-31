@@ -762,6 +762,7 @@ func checkQualifiedTypePackageRef(
     )
     return true
   }
+  symTableNoteQualifiedUse(tbl, pkg, member, span, true)
   false
 }
 
@@ -911,6 +912,7 @@ func resolveTypePath(
     match symTableTryFindOne(tbl, name) {
       case Some(sym) -> {
         if symbolIsType(sym) {
+          symTableNoteBareUse(tbl, sym, span)
           return symbolToType(tbl, ctx, diag, sym, args, span)
         }
         // The scope-resolved symbol is not a type (e.g. a union case or
@@ -923,6 +925,7 @@ func resolveTypePath(
         var ti = 0
         while ti < all.count {
           if symbolIsType(all[ti]) {
+            symTableNoteBareUse(tbl, all[ti], span)
             return symbolToType(tbl, ctx, diag, all[ti], args, span)
           }
           ti = ti + 1

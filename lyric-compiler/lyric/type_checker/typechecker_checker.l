@@ -533,6 +533,7 @@ func registerImplsFromItems(
 ): Unit {
   var i = 0
   while i < items.count {
+    symTableEnterSpanFile(tbl, items[i].span)
     match items[i].kind {
       case IImpl(decl) -> {
         val ifaceTy = resolveType(tbl, ctx, diag, mkTypeRef(decl.iface.head, decl.span))
@@ -552,6 +553,7 @@ func registerImplsFromItems(
     }
     i = i + 1
   }
+  symTableEnterFile(tbl, -1)
 }
 
 // Wrap a `ModulePath` as a `TypeExpr` reference so `resolveType` can resolve an
@@ -1429,6 +1431,7 @@ func addSigsFromItems(
 ): Unit {
   var i = 0
   while i < items.count {
+    symTableEnterSpanFile(tbl, items[i].span)
     match items[i].kind {
       case IFunc(decl) -> addFuncSig(tbl, diag, sigs, decl, false, isImported, pkgName)
       case IExternFunc(decl) -> addFuncSig(tbl, diag, sigs, externFuncAsFunctionDecl(decl), true, isImported, pkgName)
@@ -1457,6 +1460,7 @@ func addSigsFromItems(
     }
     i = i + 1
   }
+  symTableEnterFile(tbl, -1)
 }
 
 func addFuncSig(
@@ -5984,23 +5988,39 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
   }
 }
 
-// Install the docs/01 §9.2 import rule for the file being checked (#7463):
-// a whole import (`import P`) makes every name of `P` visible bare, and so,
-// transitively, do the packages `P` itself imports whole (the kernel/host
-// re-export idiom); a selective import (`import P.{f, T}`) makes only the
-// listed names visible; an aliased import (`import P as Q`) makes none
-// visible bare, since they are reached as `Q.f`.
-func installImportRule(
-  tbl: in SymbolTable,
-  diag: in List[Diagnostic],
-  userPkg: in String,
-  imports: in List[ImportDecl],
-  importedPackages: in List[ImportedPackage],
-  fileItems: in List[Item],
-): Unit {
+// What one list of imports makes visible (docs/01 §9.2): the packages it
+// imports whole, widened to the packages those import whole (D141), the
+// `<package>|<name>` keys of its selectively imported names, its renamed
+// items, and its package aliases.  `wholeVia` and `namesVia`, parallel to
+// `whole` and `names`, hold the import that makes each one visible, as W0032
+// advises adding it.
+record ImportSets {
+  whole: List[String]
+  wholeVia: List[String]
+  names: List[String]
+  namesVia: List[String]
+  renames: List[RenamedImport]
+  aliasPkgs: List[String]
+  aliasNames: List[String]
+}
+
+func importSelectorItems(sel: in ImportSelector): List[ImportItem] {
+  match sel {
+    case ISGroup(group) -> group
+    case ISSingle(one) -> {
+      val single: List[ImportItem] = newList()
+      single.add(one)
+      single
+    }
+  }
+}
+
+func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[ImportedPackage]): ImportSets {
   val whole: List[String] = newList()
+  val wholeVia: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   val names: List[String] = newList()
+  val namesVia: List[String] = newList()
   val renames: List[RenamedImport] = newList()
   val aliasPkgs: List[String] = newList()
   val aliasNames: List[String] = newList()
@@ -6011,25 +6031,21 @@ func installImportRule(
       val pkg = dottedPackageName(imp.path)
       match imp.selector {
         case Some(sel) -> {
-          val items = match sel {
-            case ISGroup(group) -> group
-            case ISSingle(one) -> {
-              val single: List[ImportItem] = newList()
-              single.add(one)
-              single
-            }
-          }
+          val items = importSelectorItems(sel)
           var k = 0
           while k < items.count {
             match items[k].asAlias {
               // A renamed item (`P.{f as g}`, #7564) makes `g`, not `f`,
               // visible bare; `Lyric.AliasRewriter` has already rewritten
               // each use of `g` to `P.f`.  `g` is checked for collisions
-              // below.
+              // (T0148).
               case Some(renamed) -> renames.add(
                 RenamedImport(local = renamed, pkg = pkg, name = items[k].name, span = items[k].span)
               )
-              case None -> names.add(pkg + "|" + items[k].name)
+              case None -> {
+                names.add(pkg + "|" + items[k].name)
+                namesVia.add(importKeyword(imp) + pkg + ".{" + items[k].name + "}")
+              }
             }
             k = k + 1
           }
@@ -6043,6 +6059,7 @@ func installImportRule(
             if not seen.containsKey(pkg) {
               seen.add(pkg, true)
               whole.add(pkg)
+              wholeVia.add(importKeyword(imp) + pkg)
             }
           }
         }
@@ -6061,6 +6078,7 @@ func installImportRule(
           if not seen.containsKey(deps[d]) {
             seen.add(deps[d], true)
             whole.add(deps[d])
+            wholeVia.add(wholeVia[w])
           }
           d = d + 1
         }
@@ -6069,9 +6087,208 @@ func installImportRule(
     }
     w = w + 1
   }
-  checkRenamedImports(diag, renames, names, whole, aliasPkgs, aliasNames, importedPackages, fileItems)
-  checkSelectiveImportsDeclared(diag, userPkg, imports, importedPackages)
-  symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
+  ImportSets(
+    whole = whole,
+    wholeVia = wholeVia,
+    names = names,
+    namesVia = namesVia,
+    renames = renames,
+    aliasPkgs = aliasPkgs,
+    aliasNames = aliasNames
+  )
+}
+
+// `import ` or, for a re-export, `pub use `.
+func importKeyword(imp: in ImportDecl): String {
+  if imp.isPubUse {
+    "pub use "
+  } else {
+    "import "
+  }
+}
+
+// An import as written, for the advice of W0032.
+func renderImportDecl(imp: in ImportDecl): String {
+  var text = importKeyword(imp)
+  if imp.isExtern {
+    text = text + "extern "
+  }
+  text = text + dottedPackageName(imp.path)
+  match imp.selector {
+    case Some(sel) -> {
+      val items = importSelectorItems(sel)
+      text = text + ".{"
+      var k = 0
+      while k < items.count {
+        if k > 0 {
+          text = text + ", "
+        }
+        text = text + items[k].name
+        match items[k].asAlias {
+          case Some(a) -> {
+            text = text + " as " + a
+          }
+          case None -> ()
+        }
+        k = k + 1
+      }
+      text = text + "}"
+    }
+    case None -> ()
+  }
+  match imp.asAlias {
+    case Some(a) -> {
+      text = text + " as " + a
+    }
+    case None -> ()
+  }
+  text
+}
+
+// One file's import rule (docs/70 §4.1): what its own imports make visible,
+// each with the import that does it.
+func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in ImportSets): FileImportRule {
+  val wholeVia: Map[String, String] = newMap()
+  var w = 0
+  while w < sets.whole.count {
+    if not wholeVia.containsKey(sets.whole[w]) {
+      wholeVia.add(sets.whole[w], sets.wholeVia[w])
+    }
+    w = w + 1
+  }
+  val namesVia: Map[String, String] = newMap()
+  var n = 0
+  while n < sets.names.count {
+    if not namesVia.containsKey(sets.names[n]) {
+      namesVia.add(sets.names[n], sets.namesVia[n])
+    }
+    n = n + 1
+  }
+  val directVia: Map[String, String] = newMap()
+  val reachVia: Map[String, String] = newMap()
+  val externVia: Map[String, String] = newMap()
+  val pending: List[String] = newList()
+  val pendingVia: List[String] = newList()
+  for imp in header.imports {
+    val text = renderImportDecl(imp)
+    if imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          for item in importSelectorItems(sel) {
+            val local = match item.asAlias { case Some(a) -> a; case None -> item.name }
+            if not externVia.containsKey(local) {
+              externVia.add(local, text)
+            }
+          }
+        }
+        case None -> ()
+      }
+    } else {
+      val pkg = dottedPackageName(imp.path)
+      if not directVia.containsKey(pkg) {
+        directVia.add(pkg, text)
+        pending.add(pkg)
+        pendingVia.add(text)
+      }
+    }
+  }
+  // The packages the direct imports' own imports reach, for the qualified
+  // references that accept one (`qualifiedPkgReachable`).
+  var r = 0
+  while r < pending.count {
+    val cur = pending[r]
+    if not reachVia.containsKey(cur) {
+      reachVia.add(cur, pendingVia[r])
+      for dep in symTablePackageImportsOf(tbl, cur) {
+        pending.add(dep)
+        pendingVia.add(pendingVia[r])
+      }
+    }
+    r = r + 1
+  }
+  FileImportRule(
+    path = header.path,
+    wholeVia = wholeVia,
+    namesVia = namesVia,
+    directVia = directVia,
+    reachVia = reachVia,
+    externVia = externVia
+  )
+}
+
+// Install the docs/01 §9.2 import rule for the package being checked (#7463):
+// a whole import (`import P`) makes every name of `P` visible bare, and so,
+// transitively, do the packages `P` itself imports whole (the kernel/host
+// re-export idiom); a selective import (`import P.{f, T}`) makes only the
+// listed names visible; an aliased import (`import P as Q`) makes none
+// visible bare, since they are reached as `Q.f`.
+//
+// Imports are per file (docs/70 §4.1).  Each file of `files` gets its own
+// rule, and its renames (T0148) and selective imports (T0210) are checked
+// against its own imports.  Names still resolve through the union of the
+// files' imports (`imports`) in this release: a name a file sees only through
+// a sibling file's import is the warning W0032 (`symTableNoteBareUse` and
+// kin), which the next step of docs/70 phase 2a makes an error.  Until then
+// a rename that collides with a name a sibling's import brings in stays
+// T0148, because resolving through the union would let one spelling mean two
+// things.  A package with no file table, or of one file, has only the union.
+func installImportRule(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  userPkg: in String,
+  imports: in List[ImportDecl],
+  importedPackages: in List[ImportedPackage],
+  fileItems: in List[Item],
+  files: in List[FileHeader],
+): Unit {
+  val u = collectImportSets(imports, importedPackages)
+  if files.count <= 1 {
+    checkRenamedImports(diag, u.renames, u.names, u.whole, u.aliasPkgs, u.aliasNames, importedPackages, fileItems)
+    checkSelectiveImportsDeclared(diag, userPkg, imports, importedPackages)
+  } else {
+    val rules: List[FileImportRule] = newList()
+    val fileDiag: List[Diagnostic] = newList()
+    for h in files {
+      val fs = collectImportSets(h.imports, importedPackages)
+      checkRenamedImports(
+        fileDiag,
+        fs.renames,
+        fs.names,
+        fs.whole,
+        fs.aliasPkgs,
+        fs.aliasNames,
+        importedPackages,
+        fileItems
+      )
+      checkSelectiveImportsDeclared(diag, userPkg, h.imports, importedPackages)
+      rules.add(buildFileImportRule(tbl, h, fs))
+    }
+    for d in fileDiag {
+      diag.add(d)
+    }
+    val unionDiag: List[Diagnostic] = newList()
+    checkRenamedImports(unionDiag, u.renames, u.names, u.whole, u.aliasPkgs, u.aliasNames, importedPackages, fileItems)
+    for d in unionDiag {
+      var own = false
+      for fd in fileDiag {
+        if sameSpan(fd.span, d.span) {
+          own = true
+        }
+      }
+      if not own {
+        diag.add(
+          errorDiagnostic(
+            d.code,
+            d.message +
+              " (through another file's import: the files of a package share their bare names until each file's imports are its own, docs/70 §12.2)",
+            d.span
+          )
+        )
+      }
+    }
+    symTableSetFileRules(tbl, rules)
+  }
+  symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
 }
 
 // Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
@@ -6990,7 +7207,7 @@ func checkWithImportedPackagesCore(
   // its bare names under the file's import rule.
   symTableSetScope(tbl, userPkg, userImports)
   symTableRegisterPackageImports(tbl, userPkg, userImports)
-  installImportRule(tbl, diag, userPkg, file.imports, importedPackages, file.items)
+  installImportRule(tbl, diag, userPkg, file.imports, importedPackages, file.items, file.files)
   checkExternFuncBindings(diag, file.items, nativeIntrinsics)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   checkExportedSignatureVisibility(userPkg, file.items, diag)
@@ -7010,6 +7227,9 @@ func checkWithImportedPackagesCore(
   // T5: check user function bodies.
   var m = 0
   while m < file.items.count {
+    // Each item is checked in the scope of the file it is written in
+    // (docs/70 §4.1); a synthesised item, in the package union.
+    symTableEnterSpanFile(tbl, file.items[m].span)
     match file.items[m].kind {
       case IFunc(decl) -> {
         val noExtraLocals: List[LocalBinding] = newList()
@@ -7059,6 +7279,7 @@ func checkWithImportedPackagesCore(
     }
     m = m + 1
   }
+  symTableEnterFile(tbl, -1)
 
   // T6: FFI-boundary lint (W0006).  A public function must not expose an
   // IMPORTED nested CLR extern type (clrName containing `+`, e.g.
@@ -7078,6 +7299,9 @@ func checkWithImportedPackagesCore(
   reportUnspellableArrayCopies(tbl, diag)
   // A `?` operand whose success type nothing fixed (#8181).
   collectPropagateFallbacks(tbl)
+  for w in symTableSiblingImportWarnings(tbl) {
+    diag.add(w)
+  }
 
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }

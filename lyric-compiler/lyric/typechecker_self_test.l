@@ -13,6 +13,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
 import Lyric.Pipeline
+import Lyric.PackageMerge as PM
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
 import Lyric.Weaver as Weaver
@@ -13412,4 +13413,272 @@ test "T0212: exported signatures name only exported types" {
   assertFalse(hasDiagCode(parseCheck(opaq), "T0212"), "an opaque type's representation is not exposed")
   val generics = "package P\npub func id[T](x: in T): T = x\n"
   assertFalse(hasDiagCode(parseCheck(generics), "T0212"), "a generic parameter is not a declared type")
+}
+
+// docs/70 §4.1, phase 2a step 4: imports are per file, in warning mode.  A
+// package of two files assembled from their own parses, the way every build
+// assembles one (`Lyric.PackageMerge.assemblePackageFiles`), alias-rewritten
+// and checked against PkgY/PkgZ.  Each file's import scope decides what it
+// may name; a name only a sibling's import makes visible still resolves, as
+// the warning W0032 naming the sibling and the import to add.
+func perFilePackages(): List[ImportedPackage] {
+  val packages = importRulePackages()
+  val pkgZ = parse("package PkgZ\npub record Pt {\n  x: Int\n}\npub func mk(): Pt { Pt(x = 1) }\n")
+  packages.add(
+    ImportedPackage(
+      name = "PkgZ",
+      items = pkgZ.file.items,
+      imports = collectImportNames(pkgZ.file.imports),
+      wholeImports = collectWholeImportNames(pkgZ.file.imports)
+    )
+  )
+  packages
+}
+
+func assembleTwo(a: in String, b: in String): SourceFile {
+  val sources: List[String] = newList()
+  sources.add(a)
+  sources.add(b)
+  val paths: List[String] = newList()
+  paths.add("src/a.l")
+  paths.add("src/b.l")
+  val none: List[String] = newList()
+  PM.assemblePackageFiles("App", sources, paths, none, none, "dotnet").file
+}
+
+// The diagnostics of the alias rewrite and the check of the package `file`.
+func checkPerFile(file: in SourceFile): List[Diagnostic] {
+  val rw = rewriteFileReporting(file)
+  val all: List[Diagnostic] = newList()
+  for d in rw.diagnostics {
+    all.add(d)
+  }
+  for d in checkWithImportedPackages(rw.file, perFilePackages()).diagnostics {
+    all.add(d)
+  }
+  all
+}
+
+func countCodeIn(ds: in List[Diagnostic], code: in String): Int {
+  var n = 0
+  for d in ds {
+    if d.code == code {
+      n = n + 1
+    }
+  }
+  n
+}
+
+func firstWithCode(ds: in List[Diagnostic], code: in String): Option[Diagnostic] {
+  for d in ds {
+    if d.code == code {
+      return Some(value = d)
+    }
+  }
+  None
+}
+
+func messageWithCode(ds: in List[Diagnostic], code: in String): String {
+  match firstWithCode(ds, code) {
+    case Some(d) -> d.message
+    case None -> ""
+  }
+}
+
+func fileOfCode(ds: in List[Diagnostic], code: in String): Int {
+  match firstWithCode(ds, code) {
+    case Some(d) -> d.span.startPos.fileId
+    case None -> -1
+  }
+}
+
+test "per-file imports: a bare name only a sibling file imports is W0032 naming that file and the import" {
+  val file = assembleTwo(
+    "package App\nimport PkgY\nfunc a(): Int { fromY() }\n",
+    "package App\n\nfunc b(): Int { otherY() }\n"
+  )
+  val ds = checkPerFile(file)
+  assertEqualInt(countCodeIn(ds, "W0032"), 1, "otherY relies on a.l's import: one W0032")
+  assertEqualInt(ds.count, 1, "and nothing else: the name still resolves through the union")
+  val msg = messageWithCode(ds, "W0032")
+  assertTrue(Str.contains(msg, "'otherY' is visible here only through `import PkgY` in src/a.l"), msg)
+  assertTrue(Str.contains(msg, "add `import PkgY` to this file"), msg)
+  assertEqualInt(fileOfCode(ds, "W0032"), 1, "reported in b.l, where the name is used")
+  match firstWithCode(ds, "W0032") {
+    case Some(d) -> assertEqualInt(d.span.startPos.line, 3, "at the use, b.l's own line 3")
+    case None -> ()
+  }
+}
+
+test "per-file imports: a name the file imports itself does not warn, and each name warns once per file" {
+  val own = assembleTwo(
+    "package App\nimport PkgY\nfunc a(): Int { fromY() }\n",
+    "package App\nimport PkgY\nfunc b(): Int { otherY() }\n"
+  )
+  assertEqualInt(checkPerFile(own).count, 0, "each file imports PkgY itself: no diagnostic")
+  val twice = assembleTwo(
+    "package App\nimport PkgY\nfunc a(): Int { fromY() }\n",
+    "package App\nfunc b(): Int { otherY() }\nfunc c(): Int { otherY() + otherY() }\n"
+  )
+  assertEqualInt(countCodeIn(checkPerFile(twice), "W0032"), 1, "three uses of otherY in b.l: one W0032")
+}
+
+test "per-file imports: a type, a value and a qualified name relying on a sibling warn" {
+  val file = assembleTwo(
+    "package App\nimport PkgY\nimport PkgZ\nfunc a(): Int { fromY() + mk().x }\n",
+    "package App\nfunc b(p: in Pt): Int { p.x + LIMIT + PkgZ.mk().x }\n"
+  )
+  val ds = checkPerFile(file)
+  assertEqualInt(
+    countCodeIn(ds, "W0032"),
+    3,
+    "the type Pt, the value LIMIT and the qualified PkgZ.mk: " + diagMessages(ds)
+  )
+  assertTrue(
+    Str.contains(diagMessages(ds), "'Pt' is visible here only through `import PkgZ` in src/a.l"),
+    diagMessages(ds)
+  )
+  assertTrue(
+    Str.contains(diagMessages(ds), "'LIMIT' is visible here only through `import PkgY` in src/a.l"),
+    diagMessages(ds)
+  )
+  assertTrue(
+    Str.contains(diagMessages(ds), "'PkgZ.mk' is visible here only through `import PkgZ` in src/a.l"),
+    diagMessages(ds)
+  )
+}
+
+test "per-file imports: a declaration's own types are judged by the file that declares it" {
+  // Holder's field type Pt is a.l's to import; b.l reading `h.p.x` names no
+  // imported name itself.
+  val file = assembleTwo(
+    "package App\nimport PkgZ\npub record Holder {\n  p: Pt\n}\n",
+    "package App\nfunc b(h: in Holder): Int { h.p.x }\n"
+  )
+  assertEqualInt(checkPerFile(file).count, 0, "no diagnostic: " + diagMessages(checkPerFile(file)))
+}
+
+test "per-file imports: an alias rewrites only its own file's items" {
+  // a.l's alias Y; b.l imports PkgY whole but has no alias, so `Y.otherY()`
+  // there is the rewriter's W0032 naming a.l's `import PkgY as Y`.
+  val file = assembleTwo(
+    "package App\nimport PkgY as Y\nfunc a(): Int { Y.fromY() }\n",
+    "package App\nimport PkgY\nfunc b(): Int { Y.otherY() }\n"
+  )
+  val ds = checkPerFile(file)
+  assertEqualInt(countCodeIn(ds, "W0032"), 1, diagMessages(ds))
+  assertTrue(
+    Str.contains(messageWithCode(ds, "W0032"), "'Y' is visible here only through `import PkgY as Y` in src/a.l"),
+    diagMessages(ds)
+  )
+  assertEqualInt(fileOfCode(ds, "W0032"), 1, "reported in b.l")
+  // Without any import of PkgY in b.l, the rewritten qualified reference is
+  // the checker's W0032, naming the same import.
+  val bare = assembleTwo(
+    "package App\nimport PkgY as Y\nfunc a(): Int { Y.fromY() }\n",
+    "package App\nfunc b(): Int { Y.otherY() }\n"
+  )
+  val ds2 = checkPerFile(bare)
+  assertEqualInt(countCodeIn(ds2, "W0032"), 1, diagMessages(ds2))
+  assertTrue(Str.contains(messageWithCode(ds2, "W0032"), "through `import PkgY as Y` in src/a.l"), diagMessages(ds2))
+  // The same alias used where it is declared needs nothing.
+  val own = assembleTwo(
+    "package App\nimport PkgY as Y\nfunc a(): Int { Y.fromY() }\n",
+    "package App\nimport PkgY as Y\nfunc b(): Int { Y.otherY() }\n"
+  )
+  assertEqualInt(checkPerFile(own).count, 0, diagMessages(checkPerFile(own)))
+}
+
+test "per-file imports: a bare import's implicit alias is the file's own" {
+  // `import Lib.PkgY` would give `PkgY` as an implicit alias; two files each
+  // with their own `import PkgY` resolve through their own entries.
+  val file = assembleTwo(
+    "package App\nimport PkgY\nfunc a(): Int { PkgY.fromY() }\n",
+    "package App\nimport PkgZ\nfunc b(): Int { PkgZ.mk().x }\n"
+  )
+  assertEqualInt(checkPerFile(file).count, 0, diagMessages(checkPerFile(file)))
+}
+
+test "per-file imports: selective imports are per file" {
+  val file = assembleTwo(
+    "package App\nimport PkgY.{fromY}\nfunc a(): Int { fromY() }\n",
+    "package App\nimport PkgY.{otherY}\nfunc b(): Int { otherY() }\nfunc c(): Int { fromY() }\n"
+  )
+  val ds = checkPerFile(file)
+  assertEqualInt(countCodeIn(ds, "W0032"), 1, "fromY in b.l is a.l's selective import: " + diagMessages(ds))
+  assertTrue(
+    Str.contains(messageWithCode(ds, "W0032"), "'fromY' is visible here only through `import PkgY.{fromY}` in src/a.l"),
+    diagMessages(ds)
+  )
+  // A listed name the package does not declare is T0210 at its own file.
+  val bad = assembleTwo(
+    "package App\nimport PkgY.{fromY}\nfunc a(): Int { fromY() }\n",
+    "package App\nimport PkgY.{nope}\nfunc b(): Int { 1 }\n"
+  )
+  val ds2 = checkPerFile(bad)
+  assertEqualInt(countCodeIn(ds2, "T0210"), 1, diagMessages(ds2))
+  assertEqualInt(fileOfCode(ds2, "T0210"), 1, "T0210 at b.l's own import")
+}
+
+test "per-file imports: a rename is its own file's; one colliding with a sibling's import stays T0148" {
+  val own = assembleTwo(
+    "package App\nimport PkgY.{fromY as fy}\nfunc a(): Int { fy() }\n",
+    "package App\nimport PkgY.{fromY as fy}\nfunc b(): Int { fy() }\n"
+  )
+  assertEqualInt(checkPerFile(own).count, 0, diagMessages(checkPerFile(own)))
+  val sibling = assembleTwo(
+    "package App\nimport PkgY.{fromY as fy}\nfunc a(): Int { fy() }\n",
+    "package App\nfunc b(): Int { fy() }\n"
+  )
+  val ds = checkPerFile(sibling)
+  assertEqualInt(countCodeIn(ds, "W0032"), 1, diagMessages(ds))
+  assertTrue(
+    Str.contains(messageWithCode(ds, "W0032"), "through `import PkgY.{fromY as fy}` in src/a.l"),
+    diagMessages(ds)
+  )
+  val clash = assembleTwo(
+    "package App\nimport PkgY.{fromY as otherY}\nfunc a(): Int { otherY() }\n",
+    "package App\nimport PkgY\nfunc b(): Int { fromY() }\n"
+  )
+  val ds2 = checkPerFile(clash)
+  assertEqualInt(countCodeIn(ds2, "T0148"), 1, diagMessages(ds2))
+  assertTrue(Str.contains(messageWithCode(ds2, "T0148"), "through another file's import"), diagMessages(ds2))
+}
+
+test "per-file imports: a synthesised item is checked against the union" {
+  // a.l imports nothing, b.l imports PkgY; a synthesised item (no source
+  // position) whose body was parsed at file 0's positions uses otherY.
+  val file = assembleTwo("package App\nfunc a(): Int { 1 }\n", "package App\nimport PkgY\nfunc b(): Int { fromY() }\n")
+  val synth = parse("package App\nfunc syn(): Int { otherY() }\n").file.items[0]
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  items.add(
+    Item(
+      docComments = synth.docComments,
+      annotations = synth.annotations,
+      visibility = synth.visibility,
+      kind = synth.kind,
+      span = syntheticSpan()
+    )
+  )
+  val withSynth = SourceFile(
+    moduleDoc = file.moduleDoc,
+    files = file.files,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+  assertEqualInt(checkPerFile(withSynth).count, 0, diagMessages(checkPerFile(withSynth)))
+}
+
+func diagMessages(ds: in List[Diagnostic]): String {
+  var acc = ""
+  for d in ds {
+    acc = acc + d.code + " " + d.message + "\n"
+  }
+  acc
 }

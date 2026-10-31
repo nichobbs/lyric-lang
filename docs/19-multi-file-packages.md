@@ -5,7 +5,7 @@
 §4.1 phase 2a); §3 and §4 describe the shipped compiler, which differs from
 the original F#-era plan.
 **Decision-log entry:** D180 (`docs/decisions/D180-package-merge-from-parses.md`).
-**Superseded in part:** D267 (docs/70 §4.1) makes imports per file. Phase 2a has replaced the text merge with separately parsed files (§4); §4 step 2, `B0012` and §8's "no per-file visibility scopes" still describe the shipped compiler, and are rewritten when per-file import scopes land.
+**Superseded in part:** D267 (docs/70 §4.1) makes imports per file. Phase 2a has replaced the text merge with separately parsed files (§4) and given each file its own import scope (§4 step 2) in warning mode: a name a file sees only through a sibling's import is the warning `W0032`, and the files still share their imports for resolution until the next step makes it an error and retires `B0012`.
 
 ## 1. Motivation
 
@@ -72,15 +72,30 @@ calls it through `Lyric.Pipeline.pipeParsePackageTo` (docs/70 §4.1, phase 2a):
    the normalised end of the file before it), so no two positions of the
    package share an offset. A file's parse diagnostics stop the build. Each
    file must declare the package (§2, `B0013`).
-2. **Imports**: the union of the files' imports, an import written in
-   several files kept once. An alias that two files bind to different
+2. **Imports are per file.** Each file keeps its own imports
+   (`FileHeader.imports`), and the type checker builds one import scope
+   per file: the names a file may use bare or qualified are what its own
+   imports make visible (language reference §9.2), its aliases and renames
+   rewrite its own items only (`Lyric.AliasRewriter.rewriteFileReporting`),
+   and its renames and selective imports are checked against its own
+   imports (`T0148`, `T0210`). An item is checked in the scope of the file
+   it is written in (`Position.fileId`); a synthesised item with no source
+   position is checked against the union. The package also carries the
+   union of the files' imports (`SourceFile.imports`, an import written in
+   several files kept once), and in this release names still resolve
+   through it: the per-file rule is in **warning mode**. A name a file can
+   use only through a sibling file's import is `W0032 — 'X' is visible
+   here only through `import P` in <file>; add `import P` to this file`,
+   once per name and file; the warning comes first so the compiler,
+   stdlib, ecosystem and every user can add the missing imports (an
+   import a sibling already has is accepted by every compiler) before the
+   next step turns it into an error (docs/70 §12.2). Until then the
+   union's own rules stay: an alias that two files bind to different
    packages (`import Std.Core as A` in one, `import Std.Math as A` in
    another) is `B0012 — import alias A names Std.Math here but Std.Core
-   at <file>:<line>`, reported against the later file; the files share
-   one scope, so an alias names one package. The same alias for the same
-   package in two files is one import. A renamed selective import bound
-   two ways (`import Std.Math.{absInt as f}` in one file,
-   `{maxPairInt as f}` in another) is the type checker's `T0148`.
+   at <file>:<line>`, reported against the later file, and a rename that
+   collides with a name another file's import brings in is `T0148`. The
+   same alias for the same package in two files is one import.
 3. **File-level annotations** are package-wide: the package carries the
    union of its files' file-level annotations, an annotation written in
    several files kept once, and a file that writes none takes the
@@ -172,9 +187,9 @@ early split: token types into `tokens.l`, keyword table into
   language reference.
 - Source-tree-relative import paths. Ruled out by the built-in-head /
   restored-package model.
-- Per-file visibility scopes. There is no "file-private" tier; the
-  package's one symbol table makes file boundaries invisible at the
-  package level.
+- A file-private declaration tier (docs/70 Q-TIR-004). Imports are per
+  file (§4 step 2), but every declaration of the package is visible in
+  all of its files.
 
 ## 9. Diagnostic codes
 
@@ -182,7 +197,7 @@ early split: token types into `tokens.l`, keyword table into
 |---|---|---|
 | `B0010` | package matches both single-file and multi-file layout | Not raised: no build finds a package by file name (§3). Raised by the removed F# emitter (D-progress-095) |
 | `B0011` | duplicate declaration across files in same package | Not raised: the type checker's `T0001` reports it against the later file (§4 step 7). Raised by the removed F# emitter (D-progress-095) |
-| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180) |
+| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180); retired when per-file imports leave warning mode (docs/70 §4.1) |
 | `B0013` | a file of the package declares another package | Shipped (#8234, D180) |
 | `B0014` | files of the package disagree on a file-level annotation | Shipped (#8234, D180) |
 
