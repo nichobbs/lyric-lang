@@ -1,4 +1,4 @@
-# D304 - A protected type's fields are reached only through its members (T0221, #8672)
+# D305 - A protected type's fields are reached only through its members (T0221, #8672)
 
 **Status:** shipped (type checker; dotnet, JVM and native share it)
 

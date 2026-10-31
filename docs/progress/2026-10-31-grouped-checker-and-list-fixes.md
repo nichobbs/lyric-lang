@@ -1,6 +1,6 @@
 # Grouped fixes: protected fields (#8672), shared nullary cases (#8649), List of tuples (#8668)
 
-- **#8672 (D304, T0221).** A protected type's field named through a value of the
+- **#8672 (D305, T0221).** A protected type's field named through a value of the
   type outside its own members is rejected, read and write, in the declaring
   package and in importers. Reject-corpus cases added; the stdlib, ecosystem
   libraries, examples and compiler sources contain no such access.
