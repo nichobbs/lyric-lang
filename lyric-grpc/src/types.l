@@ -8,6 +8,8 @@ package Grpc.Types
 
 import Std.Core
 import Std.String as Str
+import Std.Char as Ch
+import Std.Encoding
 import Std.Collections
 
 // ─── Channel ─────────────────────────────────────────────────────────────────
@@ -172,17 +174,119 @@ internal func serverHandleId(h: in GrpcServerHandle): Int {
 }
 
 // ─── Server routing ───────────────────────────────────────────────────────────
-/// Single RPC method registration: proto service name, proto method name,
-/// and the qualified Lyric function name the kernel dispatches to.
+/// The code of a `GrpcStatusCode`, the inverse of `statusCodeFromInt`.
+pub func statusCodeToInt(code: in GrpcStatusCode): Int {
+  match code {
+    case GrpcStatusCode.Ok -> 0
+    case GrpcStatusCode.Cancelled -> 1
+    case GrpcStatusCode.Unknown -> 2
+    case GrpcStatusCode.InvalidArgument -> 3
+    case GrpcStatusCode.DeadlineExceeded -> 4
+    case GrpcStatusCode.NotFound -> 5
+    case GrpcStatusCode.AlreadyExists -> 6
+    case GrpcStatusCode.PermissionDenied -> 7
+    case GrpcStatusCode.ResourceExhausted -> 8
+    case GrpcStatusCode.FailedPrecondition -> 9
+    case GrpcStatusCode.Aborted -> 10
+    case GrpcStatusCode.OutOfRange -> 11
+    case GrpcStatusCode.Unimplemented -> 12
+    case GrpcStatusCode.Internal -> 13
+    case GrpcStatusCode.Unavailable -> 14
+    case GrpcStatusCode.DataLoss -> 15
+    case GrpcStatusCode.Unauthenticated -> 16
+  }
+}
+
+/// A server-side RPC handler. Both kinds receive the single request message
+/// (raw protobuf bytes) and the request metadata (lowercase keys; HTTP/2
+/// pseudo-headers and the reserved `content-type`, `te`, `user-agent` and
+/// `grpc-*` headers are not included).
+///
+///   - `Unary` returns the one response message, or the status to fail with.
+///   - `ServerStreaming` sends each response message through `emit`, which
+///     returns `false` once the client has cancelled or gone away (stop
+///     producing then), and returns `Ok(())` to finish the call or the status
+///     to fail it with after the messages already sent.
+///
+/// A handler that panics fails its call with `Internal`; it never takes the
+/// server down.
+pub union GrpcHandler {
+  case Unary(handle: (slice[Byte], slice[GrpcMetadataEntry]) -> Result[slice[Byte], GrpcStatus])
+  case ServerStreaming(handle: (slice[Byte], slice[GrpcMetadataEntry], (slice[Byte]) -> Bool) -> Result[Unit, GrpcStatus])
+}
+
+/// One registered RPC method: proto service name, proto method name, handler.
 pub record GrpcRoute {
   service: String
   method: String
-  handlerName: String
+  handler: GrpcHandler
 }
 
-/// Immutable registry of gRPC routes; built with Grpc.addMethod, passed to Grpc.start.
+/// Immutable registry of gRPC routes; built with `Grpc.addUnary` /
+/// `Grpc.addServerStreaming`, passed to `Grpc.start` / `Grpc.startHandle`.
 pub record ServiceRegistry {
   routes: slice[GrpcRoute]
+}
+
+/// The registered route for `service` / `method`, if any.
+pub func findRoute(registry: in ServiceRegistry, service: in String, method: in String): Option[GrpcRoute] {
+  for r in registry.routes {
+    if r.service == service and r.method == method {
+      return Some(value = r)
+    }
+  }
+  None
+}
+
+/// Encode a `grpc-message` trailer value: percent-encode `%` and every UTF-8
+/// byte outside printable ASCII (the gRPC HTTP/2 spec).
+pub func encodeGrpcMessage(message: in String): String {
+  val sb = Str.StringBuilder.new()
+  for b in encodeUtf8(message) {
+    val n = b.toInt()
+    if n >= 32 and n <= 126 and n != 37 {
+      Str.StringBuilder.appendChar(sb, Ch.fromInt(n))
+    } else {
+      val one: slice[Byte] = [b]
+      Str.StringBuilder.append(sb, "%" + Str.toUpper(encodeHex(one)))
+    }
+  }
+  Str.StringBuilder.toString(sb)
+}
+
+/// The inverse of `encodeGrpcMessage`; a malformed escape is kept literally.
+pub func decodeGrpcMessage(encoded: in String): String {
+  if Str.indexOfRaw(encoded, "%") < 0 {
+    return encoded
+  }
+  val bytes: List[Byte] = newList()
+  var i = 0
+  while i < encoded.length {
+    val c = Str.substring(encoded, i, 1)
+    if c == "%" and i + 2 < encoded.length {
+      match tryDecodeHex(Str.substring(encoded, i + 1, 2)) {
+        case Some(h) -> {
+          bytes.add(h[0])
+          i = i + 3
+        }
+        case None -> {
+          for b in encodeUtf8(c) {
+            bytes.add(b)
+          }
+          i = i + 1
+        }
+      }
+    } else {
+      for b in encodeUtf8(c) {
+        bytes.add(b)
+      }
+      i = i + 1
+    }
+  }
+  match tryDecodeUtf8(bytes.toArray()) {
+    case Some(s) -> s
+    case None -> encoded
+  }
 }
 
 // ─── Host-exception mapping ───────────────────────────────────────────────────
@@ -276,6 +380,20 @@ pub func statusFromException(typeName: in String, message: in String): GrpcStatu
     }
   }
   GrpcStatus(code = GrpcStatusCode.Unknown, message = typeName + ": " + message)
+}
+
+func metadataEscape(s: in String): String {
+  Str.replace(Str.replace(Str.replace(s, "%", "%25"), ",", "%2C"), ":", "%3A")
+}
+
+/// Encode metadata as the `key:value,key:value` string the kernels exchange
+/// (`%`, `,` and `:` percent-escaped); the inverse of `decodeMetadata`.
+pub func encodeMetadata(entries: in slice[GrpcMetadataEntry]): String {
+  val parts: List[String] = newList()
+  for e in entries {
+    parts.add(metadataEscape(e.key) + ":" + metadataEscape(e.value))
+  }
+  Str.joinList(",", parts)
 }
 
 func metadataUnescape(s: in String): String {

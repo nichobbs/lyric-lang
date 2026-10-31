@@ -1535,18 +1535,19 @@ pub func pipeCheckFront(
     // is purely syntactic — no builtin-coverage gap can make it a false
     // positive — and codegen has no lowering for a stray `old`, so it gates
     // regardless (#7731).  So does T0144: a module `val` pattern its
-    // initializer can never match has no lowering either (#7763).
+    // initializer can never match has no lowering either (#7763).  These are
+    // the advisory-mode diagnostics that still stop the build.
     val advisory: List[Diagnostic] = newList()
-    val misplacedOld: List[Diagnostic] = newList()
+    val gatingAdvisoryDiags: List[Diagnostic] = newList()
     for d in tcRes.diagnostics {
       if d.code == "T0080" or d.code == "T0144" {
-        misplacedOld.add(d)
+        gatingAdvisoryDiags.add(d)
       } else {
         advisory.add(d)
       }
     }
     reportTo(sink, opts.pkgLabel, opts.lineOrigins, advisory)
-    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, misplacedOld) {
+    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, gatingAdvisoryDiags) {
       return None
     }
   }
@@ -1830,7 +1831,11 @@ pub func pipeCheckAndMono(
     monoIfaceDecls,
     monoRecordDecls,
     caseSites,
-    opts.contractsEnabled
+    opts.contractsEnabled,
+    InvariantBoundary(
+      foreign = invariantBoundaryTypes(tcRes.symbols, true),
+      local = invariantBoundaryTypes(tcRes.symbols, false)
+    )
   )
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
@@ -1967,35 +1972,29 @@ pub func pipeCheckAndMono(
   for us in monoRes0.unsignedSpecs {
     toRecheck.add(us)
   }
-  // A generic from another package is checked in that package's scope,
-  // where a type this package binds it to is not visible; its `==` reaches
-  // the bound type's own structural equality (D172 item 3) instead.
+  // A generic from another package is checked in that package's scope, with
+  // the types this package declares added to it (`addConsumerTypes`), so an
+  // operator on a type parameter bound to a distinct or record type declared
+  // here is lowered for that type (#7996, #8017, #8530); its `==` reaches the
+  // bound type's own structural equality (D172 item 3) instead.
   for ss in monoRes0.structSpecs {
-    if ss.originPkg == "" and (specUsesEquality(ss.specDecl) or ss.opBound or specMayRender(ss.specDecl)) {
+    if (ss.originPkg == "" and (specUsesEquality(ss.specDecl) or specMayRender(ss.specDecl))) or ss.opBound {
       toRecheck.add(ss)
     }
   }
-  // An operator on a type parameter bounded by `Add`, `Compare` and the like
-  // is lowered for the type it is bound to, which only a check in the scope
-  // that sees that type can do; another package's generic body is checked in
-  // its own package's scope, where the type is not visible (#7996, #8017).
-  val opDiags: List[Diagnostic] = newList()
-  for ss in monoRes0.structSpecs {
-    if ss.originPkg != "" and ss.opBound {
-      opDiags.add(
-        errorDiagnostic(
-          "M0008",
-          "cannot specialise '" + ss.specName + "': the generic is declared in package '" + ss.originPkg +
-            "' and applies an operator to a type parameter that is bound here to a distinct or record type, which only the declaring package's own types can be lowered for; call it from a function declared in '" +
-            ss.originPkg +
-            "' or use a scalar type argument",
-          ss.callSpan
-        )
-      )
-    }
+  // A generic from another package whose own body spells `UInt`/`ULong` has
+  // concrete unsigned operands independent of its type parameters, which only
+  // a check of the specialisation can give their signedness, whatever the
+  // type arguments are (#8019).
+  val rechecked: Map[String, Bool] = newMap()
+  for rc in toRecheck {
+    rechecked.add(rc.specName, true)
   }
-  if gate(opts.pkgLabel, opts.lineOrigins, opDiags) {
-    return None
+  for fs in monoRes0.foreignSpecs {
+    if not rechecked.containsKey(fs.specName) and specMentionsUnsigned(fs.specDecl) {
+      rechecked.add(fs.specName, true)
+      toRecheck.add(fs)
+    }
   }
   if toRecheck.count == 0 {
     return match finishValueRecords(lowerForeignPropagate(rewriteForeignFuncValues(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), foreignFuncValues), foreignProp, opts), file0, importedPkgs, tcRes, opts) {
@@ -3055,7 +3054,9 @@ func specMayRender(decl: in FunctionDecl): Bool {
   val items: List[Item] = newList()
   items.add(funcItem(decl))
   val f = SourceFile(
+    files = newList(),
     moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -3124,6 +3125,7 @@ func recheckSpecRound(
       return
     }
     pkgDecl = PackageDecl(path = ModulePath(segments = dottedSegments(origin), span = file0.span), span = file0.span)
+    addConsumerTypes(file0, items)
     for sp in round {
       checkDecls.add(sp.specDecl)
     }
@@ -4501,6 +4503,124 @@ func rawGenericDecl(items: in List[Item], sp: in Span): Option[FunctionDecl] {
   None
 }
 
+// ─── Unsigned operands in other packages' generics (#8019) ──────────────────
+// True when the body or signature of `decl` spells `UInt`/`ULong`: a type
+// annotation, a suffixed literal, a conversion method or a type argument.
+func specMentionsUnsigned(decl: in FunctionDecl): Bool {
+  for prm in decl.params {
+    if typeExprMentionsUnsigned(prm.ty) {
+      return true
+    }
+  }
+  match decl.ret {
+    case Some(rt) -> if typeExprMentionsUnsigned(rt) { return true }
+    case None -> ()
+  }
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val f = SourceFile(
+    files = newList(),
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  var typed = false
+  mapStmtsInFile(
+    f,
+    { s: Statement ->
+      match s.kind {
+        case SLocal(b) -> match b {
+          case LBVal(_, Some(t), _) -> if typeExprMentionsUnsigned(t) { typed = true }
+          case LBVar(_, Some(t), _) -> if typeExprMentionsUnsigned(t) { typed = true }
+          case LBLet(_, Some(t), _) -> if typeExprMentionsUnsigned(t) { typed = true }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+      s
+    }
+  )
+  if typed {
+    return true
+  }
+  anyExprInFile(
+    f,
+    { e: Expr ->
+      match e.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(_, sfx, _) -> match sfx { case U32 -> true; case U64 -> true; case _ -> false }
+          case _ -> false
+        }
+        case EMember(_, name) -> name == "toUInt" or name == "toULong"
+        case ETypeApp(_, targs) -> typeArgsMentionUnsigned(targs)
+        case ELambda(lps, _) -> lambdaParamsMentionUnsigned(lps)
+        case EPath(path) -> path.segments.count > 1 and (path.segments[0] == "UInt" or path.segments[0] == "ULong")
+        case _ -> false
+      }
+    }
+  )
+}
+
+func typeArgsMentionUnsigned(targs: in List[TypeArg]): Bool {
+  for ta in targs {
+    match ta {
+      case TAType(t) -> if typeExprMentionsUnsigned(t) { return true }
+      case TAValue(_) -> ()
+    }
+  }
+  false
+}
+
+func lambdaParamsMentionUnsigned(lps: in List[LambdaParam]): Bool {
+  for lp in lps {
+    match lp.ty {
+      case Some(t) -> if typeExprMentionsUnsigned(t) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func typeExprMentionsUnsigned(te: in TypeExpr): Bool = teMentionsUnsignedMono(te)
+
+// ─── The caller's types in another package's scope (#8530) ──────────────────
+// Adds to `items`, the scope of the package declaring a generic, the types
+// `file0` declares (as signatures) that the package does not already declare,
+// so a specialisation bound to one of them type-checks there.
+func addConsumerTypes(file0: in SourceFile, items: in List[Item]): Unit {
+  val declared: Map[String, Bool] = newMap()
+  for it in items {
+    match typeItemName(it) {
+      case Some(n) -> declared.add(n, true)
+      case None -> ()
+    }
+  }
+  for it in file0.items {
+    match typeItemName(it) {
+      case Some(n) -> if not declared.containsKey(n) { declared.add(n, true); items.add(it) }
+      case None -> ()
+    }
+  }
+}
+
+func typeItemName(it: in Item): Option[String] {
+  match it.kind {
+    case ITypeAlias(d) -> Some(value = d.name)
+    case IDistinctType(d) -> Some(value = d.name)
+    case IRecord(d) -> Some(value = d.name)
+    case IExposedRec(d) -> Some(value = d.name)
+    case IUnion(d) -> Some(value = d.name)
+    case IEnum(d) -> Some(value = d.name)
+    case _ -> None
+  }
+}
+
 func itemsDeclareFunc(items: in List[Item], fd: in FunctionDecl): Bool {
   for it in items {
     match it.kind {
@@ -4984,7 +5104,9 @@ func lowerShowSpec(
     }
   }
   SourceFile(
+    files = converted.files,
     moduleDoc = converted.moduleDoc,
+    files = converted.files,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
     imports = converted.imports,

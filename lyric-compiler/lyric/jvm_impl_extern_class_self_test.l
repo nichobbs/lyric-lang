@@ -165,3 +165,43 @@ test "impl <real JDK interface java.lang.Runnable> for Record still compiles fin
   )
   assertTrue(ok, "`impl Runnable for R` compiles successfully")
 }
+
+test "impl <interface with same-arity overloads> whose method matches none of them aborts under error[J013]" {
+  val dir = freshTempDir("overloaded-iface")
+  val outPath = Path.join(dir, "OverloadedImpl.jar")
+  val source = "package OverloadedImpl.App\n" + "\n" + "extern type JAppendable = \"java.lang.Appendable\"\n" + "\n" +
+    "extern type JCharSequence = \"java.lang.CharSequence\"\n" +
+    "\n" +
+    "record Sink { tag: Int }\n" +
+    "\n" +
+    "impl JAppendable for Sink {\n" +
+    "  func append(text: in String): JAppendable {\n" +
+    "    self\n" +
+    "  }\n" +
+    "  func append(text: in JCharSequence, from: in Int, until: in Int): JAppendable {\n" +
+    "    self\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(0)\n" +
+    "}\n"
+  val noStdlib: List[String] = newList()
+  var panicked = false
+  var caughtMessage = ""
+  try {
+    compileToJarBundled(source, outPath, "OverloadedImpl", noStdlib, "")
+  } catch Bug as b {
+    panicked = true
+    caughtMessage = b.message
+  }
+  cleanup(dir)
+  // Lyric allows one method per name and arity in an impl (T0162), so only one
+  // of Appendable's two one-parameter `append` overloads can be written: the
+  // case is an impl of exactly one of several slots, with a type that is none.
+  assertTrue(panicked, "an impl method that matches none of two same-arity overloads must abort compilation")
+  assertTrue(
+    Str.contains(caughtMessage, "error[J013]"),
+    "diagnostic carries the J013 code (got: " + caughtMessage + ")"
+  )
+}

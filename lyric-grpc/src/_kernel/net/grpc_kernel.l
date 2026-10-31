@@ -22,15 +22,10 @@
 //! generic method (`BlockingUnaryCall<TReq,TResp>`) whose type arguments the
 //! wrapper's array types pin (#6581 and its follow-ups).
 //!
-//! NOT implemented — each fails loudly instead of pretending:
-//!   serve() / netStartHandle() / netStopHandle()     — server hosting
-//! `Grpc.AspNetCore` registers an RPC through `ServiceBinderBase`/
-//! `BindableService`, an abstract class a Lyric record cannot yet extend, so a
-//! server needs either a pure-Lyric HTTP/2 gRPC server on `Std.HttpEngine` (the
-//! `encodeResponseTrailers` primitive for it now exists) or class subclassing
-//! in the FFI. The `ServiceRegistry` also names handlers by string
-//! (`handlerName`), which has no dispatch mechanism on either target. Tracked
-//! in #8642.
+//! Server hosting (`serve` / `netStartHandle` / `netStopHandle` /
+//! `netServerPort`) delegates to `Grpc.Kernel.Net.Server`, a pure-Lyric h2c gRPC
+//! server: `Grpc.AspNetCore` registers an RPC through `BindableService` /
+//! `ServiceBinderBase`, abstract classes a Lyric record cannot extend (D284).
 //!
 //! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!
@@ -41,6 +36,7 @@
 package Grpc.Kernel.Net
 
 import Grpc.Types
+import Grpc.Kernel.Net.Server
 import Std.Core
 
 // ─── Opaque .NET types ────────────────────────────────────────────────────────
@@ -440,9 +436,8 @@ pub func netCloseStream(stream: in GrpcStream): Unit {
 }
 
 // ─── Server: hosting ────────────────────────────────────────────────────────────
-// Not implemented — see the module doc comment. `Grpc.start` / `startHandle`
-// declare no `Result`, so a missing server is a `panic` naming the gap rather
-// than a function that returns as if a server were running.
+// The pure-Lyric h2c server lives in `Grpc.Kernel.Net.Server`; these are the
+// entry points `Grpc` calls.
 pub func serve(
   host: in String,
   port: in Int,
@@ -450,7 +445,7 @@ pub func serve(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): Unit {
-  panic("gRPC server hosting is not implemented on the dotnet target (tracked in #8642)")
+  Grpc.Kernel.Net.Server.serve(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
 }
 
 pub func netStartHandle(
@@ -460,15 +455,17 @@ pub func netStartHandle(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): GrpcServerHandle {
-  panic("gRPC server hosting is not implemented on the dotnet target (tracked in #8642)")
+  Grpc.Kernel.Net.Server.startServer(host, port, reflectionEnabled, maxConnectionIdleMs, registry)
 }
 
-/// A handle from `netStartHandle` never exists on this target, so this is
-/// unreachable in practice.
+pub func netServerPort(handle: in GrpcServerHandle): Int {
+  Grpc.Kernel.Net.Server.serverPort(handle)
+}
+
 pub func netStopHandle(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
   requires: drainTimeoutMs >= 0
 {
-  ()
+  Grpc.Kernel.Net.Server.stopServer(handle, drainTimeoutMs)
 }
 
 // ─── Server: rate limiting (System.Threading.RateLimiting) ────────────────────

@@ -2422,33 +2422,45 @@ record ExternSlotJvm {
   ret: JvmType
 }
 
-func externIfaceSlotJvm(
-  autoFfi: in AutoFfiCtx, javaFqn: in String, name: in String, arity: in Int
-): Option[ExternSlotJvm] {
+func externIfaceSlotJvm(autoFfi: in AutoFfiCtx, javaFqn: in String, target: in LFunc): Option[ExternSlotJvm] {
   match loadClass(autoFfi, javaFqn) {
     case None -> None
     case Some(ci) -> {
-      var found: Option[ClassMethod] = None
-      var matches = 0
+      val arity = target.params.count
+      val ownDescriptor = buildDescriptor(target.params, target.ret)
+      val candidates: List[ClassMethod] = newList()
       for m in ci.methods {
-        if m.name == name and m.isAbstract and not m.isStatic and parseDescriptorParams(m.descriptor).count == arity {
-          found = Some(value = m)
-          matches = matches + 1
+        if m.name == target.name and m.isAbstract and not m.isStatic and parseDescriptorParams(m.descriptor).count == arity {
+          candidates.add(m)
         }
       }
-      if matches != 1 {
+      for m in candidates {
+        if m.descriptor == ownDescriptor {
+          return None
+        }
+      }
+      if candidates.count == 0 {
         return None
       }
-      match found {
-        case None -> None
-        case Some(m) -> {
-          val params: List[JvmType] = newList()
-          for pd in parseDescriptorParams(m.descriptor) {
-            params.add(descStrToJvmType(pd))
-          }
-          Some(value = ExternSlotJvm(params = params, ret = descStrToJvmType(returnDescFromMethodDesc(m.descriptor))))
-        }
+      if candidates.count > 1 {
+        // Dispatch through the interface reaches one of several overloads and
+        // none has the impl method's own descriptor: a bridge to a guessed one
+        // would be an AbstractMethodError or a wrong call at run time.
+        panic(
+          "error[J013]: cannot bridge `impl " + javaFqn + "` method '" + target.name + "': " + candidates.count.toString() +
+            " abstract overloads of that name take " +
+            arity.toString() +
+            " parameters and the impl method's descriptor " +
+            ownDescriptor +
+            " matches none of them; spell the parameter and return types of one overload exactly"
+        )
       }
+      val m = candidates[0]
+      val params: List[JvmType] = newList()
+      for pd in parseDescriptorParams(m.descriptor) {
+        params.add(descStrToJvmType(pd))
+      }
+      Some(value = ExternSlotJvm(params = params, ret = descStrToJvmType(returnDescFromMethodDesc(m.descriptor))))
     }
   }
 }
@@ -9839,7 +9851,7 @@ pub func codegenPackageWithSigsSeeded(
                 // `Object`, so an impl method spelling the concrete type
                 // needs the same synthetic bridge a Lyric interface gets.
                 match implIfaceExternDottedFqn(decl.iface, externTypes) {
-                  case Some(javaFqn) -> match externIfaceSlotJvm(autoFfi, javaFqn, loweredImpl.name, loweredImpl.params.count) {
+                  case Some(javaFqn) -> match externIfaceSlotJvm(autoFfi, javaFqn, loweredImpl) {
                     case Some(slotSig) -> match implBridgeFromSlotJvm(targetClass, loweredImpl, slotSig.params, slotSig.ret) {
                       case Some(bridge) -> implFuncs.add(bridge)
                       case None -> ()

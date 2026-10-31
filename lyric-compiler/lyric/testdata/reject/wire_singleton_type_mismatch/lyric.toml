@@ -1,0 +1,7 @@
+[package]
+name = "reject-wire-singleton"
+version = "0.1.0"
+[project]
+name = "RejectWireSingleton"
+[project.packages]
+"App" = "app"

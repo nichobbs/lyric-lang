@@ -2425,6 +2425,8 @@ func elaborateFunctionBody(
   counter: inout RenameCounter,
   isVoidReturn: in Bool,
   contractsEnabled: in Bool = true,
+  entryInvariantChecks: in List[Statement] = newList(),
+  exitInvariantChecks: in List[SpannedExpr] = newList(),
 ): Block {
   // Inline range refinements (#7226): refined parameters are checked first,
   // before any `requires:` that may rely on them; a refined return type is
@@ -2474,6 +2476,11 @@ func elaborateFunctionBody(
     )
     ti = ti + 1
   }
+  var xi = 0
+  while xi < exitInvariantChecks.count {
+    allEnsures.add(exitInvariantChecks[xi])
+    xi = xi + 1
+  }
 
   val outs: List[Statement] = newList()
 
@@ -2507,6 +2514,14 @@ func elaborateFunctionBody(
       rei = rei + 1
     }
     rewrittenEnsures = rewritten
+  }
+
+  // (1-) Public-boundary invariant checks of foreign-typed parameters come
+  //      first, before any range check or `requires:` (docs/08 §7.1.3).
+  var eci = 0
+  while eci < entryInvariantChecks.count {
+    outs.add(entryInvariantChecks[eci])
+    eci = eci + 1
   }
 
   // (1a) Always add parameter range checks (never gated).
@@ -2908,8 +2923,13 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
 
 /// `elaborateFunction`, naming the function `owner` in contract-violation
 /// messages (e.g. `Std.String.repeat`, `Box.scaled`).
-pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
-  elaborateMember(fn, owner, contractsEnabled, noSelfScope())
+pub func elaborateFunctionOwned(
+  fn: in FunctionDecl,
+  owner: in String,
+  contractsEnabled: in Bool = true,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
+): FunctionDecl {
+  elaborateMember(fn, owner, contractsEnabled, noSelfScope(), newList(), boundary)
 }
 
 /// `elaborateFunctionOwned` for a member of a type whose own contract
@@ -2920,6 +2940,7 @@ func elaborateMember(
   contractsEnabled: in Bool,
   selfScope: in SelfScope,
   typeInvariants: in List[InvariantClause] = newList(),
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
@@ -2946,7 +2967,12 @@ func elaborateMember(
     case Some(FBExpr(e)) -> functionHasRangeRefinement(fn.params, fn.ret, wrapExprBody(e))
     case None -> false
   }
-  if not hasReq and not hasEns and not hasInv and not hasRange {
+  // A construction checker is the check itself, never subject to one.
+  val checked = if Str.startsWith(fn.name, "__lyric_checked_") { emptyInvariantBoundary() } else { boundary }
+  val entryInv = boundaryEntryChecks(fn.params, checked)
+  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span)
+  val hasBoundary = entryInv.count > 0 or exitInv.count > 0
+  if not hasReq and not hasEns and not hasInv and not hasRange and not hasBoundary {
     return fn
   }
 
@@ -2965,7 +2991,9 @@ func elaborateMember(
           blk,
           counter,
           isVoid,
-          contractsEnabled
+          contractsEnabled,
+          entryInv,
+          exitInv
         )
       )
       case FBExpr(e) -> FBBlock(
@@ -2979,7 +3007,9 @@ func elaborateMember(
           wrapExprBody(e),
           counter,
           isVoid,
-          contractsEnabled
+          contractsEnabled,
+          entryInv,
+          exitInv
         )
       )
     }
@@ -3505,6 +3535,14 @@ func withKind(it: in Item, kind: in ItemKind): Item {
   )
 }
 
+// The invariant boundary applies to public functions only (docs/08 §7.1).
+func publicBoundary(it: in Item, boundary: in InvariantBoundary): InvariantBoundary {
+  match it.visibility {
+    case Some(VisPub(_)) -> boundary
+    case _ -> emptyInvariantBoundary()
+  }
+}
+
 func elaborateItem(
   it: in Item,
   ifaces: in Map[String, InterfaceDecl],
@@ -3512,6 +3550,7 @@ func elaborateItem(
   cases: in Map[String, Bool],
   pkg: in String,
   contractsEnabled: in Bool = true,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): Item {
   match it.kind {
     case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled)))
@@ -3524,7 +3563,14 @@ func elaborateItem(
       docComments = it.docComments,
       annotations = it.annotations,
       visibility = it.visibility,
-      kind = IFunc(decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name), contractsEnabled)),
+      kind = IFunc(
+        decl = elaborateFunctionOwned(
+          fn,
+          qualify(pkg, fn.name),
+          contractsEnabled,
+          publicBoundary(it, boundary)
+        )
+      ),
       span = it.span
     )
     case IProtected(decl) -> {
@@ -3612,6 +3658,7 @@ pub func elaborateFileWithTypes(
   importedRecords: in List[RecordDecl],
   caseSites: in Map[String, Bool],
   contractsEnabled: in Bool = true,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): SourceFile {
   // A `while` whose condition is a compile-time `true` spelled other than
   // the literal is folded to it first, so the loop is classified exactly
@@ -3637,7 +3684,8 @@ pub func elaborateFileWithTypes(
         typeFields,
         cases,
         Fmt.pathStr(canonFile.packageDecl.path),
-        effectiveContractsEnabled
+        effectiveContractsEnabled,
+        boundary
       )
     )
     i = i + 1

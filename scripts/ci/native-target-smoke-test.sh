@@ -203,3 +203,7 @@ bash scripts/ci/nested-generic-expected-test.sh "$lyric_bin" native
 # a child through Std.JsonRpc.Stdio's process transports.
 "$lyric_bin" run --target native lyric-stdlib/tests/process_piped_bytes_tests.l
 echo "Native process_piped_bytes_tests.l (--target native) passed"
+
+# Two unions of one package sharing a case name build the expected union's case (#8481).
+"$lyric_bin" test --target native lyric-compiler/lyric/union_shared_case_self_test.l
+echo "Native union_shared_case_self_test.l (--target native) passed"

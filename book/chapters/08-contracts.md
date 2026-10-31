@@ -125,7 +125,7 @@ opaque type Account {
 }
 ```
 
-The invariant is checked every time a value of the type is built: each constructor call, wherever it is written, and each `.copy(...)`. `Account(balance = -5)` stops with `InvariantViolated: Bank.Account invariant balance >= 0 and balance <= 1_000_000_000_00`. The language reference (§6.2) also specifies re-checks at public boundaries after in-place mutation of `var` fields; the compiler does not perform those yet (#7222), so keep invariant-bearing types immutable, or re-validate after mutating them.
+The invariant is checked every time a value of the type is built: each constructor call, wherever it is written, and each `.copy(...)`. `Account(balance = -5)` stops with `InvariantViolated: Bank.Account invariant balance >= 0 and balance <= 1_000_000_000_00`. A value is also re-checked where it crosses a public boundary, so a `var` field written after construction is caught the next time the value reaches one. A `pub` top-level function declared in another package checks each `in` or `inout` parameter of the type before its `requires:` clauses, and its result and `inout` or `out` parameters when it returns; a `pub` function of the type's own package re-checks its `inout` and `out` parameters on exit. The writes themselves are not checked, and the language reference (§6.2) lists what is not covered yet (methods, generic types, wrapped types, `tryInto`; #7222).
 
 What this buys you: once you hold an `Account` value, you can assume `balance >= 0` without checking. The type carries its own proof of validity. A function that receives an `Account` does not need to re-validate it; the compiler and runtime ensure it was valid when it entered the package.
 

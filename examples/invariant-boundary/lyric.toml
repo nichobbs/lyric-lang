@@ -1,0 +1,24 @@
+# examples/invariant-boundary/lyric.toml - runtime fixture for the public
+# boundary and `inout` re-checks of record `invariant:` clauses (#7222,
+# docs/08 section 7.1).
+#
+# Test:  lyric test --manifest examples/invariant-boundary/lyric.toml [--target jvm]
+
+[package]
+name        = "Lyric.InvariantBoundary"
+version     = "0.1.0"
+description = "Invariant boundary re-check fixture."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.InvariantBoundary"
+output          = "single"
+output_assembly = "InvariantBoundary.dll"
+
+[project.packages]
+"Inv.Types" = "src/types.l"
+"Inv.Api"   = "src/api.l"
+
+[project.tests]
+"Inv.BoundaryTests" = "tests/boundary_tests.l"

@@ -29464,6 +29464,12 @@ func inferGenericExternWitnessesMsil(
 // `Method<byte[],byte[]>`. Every position that mentions `!!k` must agree, or
 // the `System.Object` convention stands (value types in particular keep it:
 // they are boxed at the call, #6989).
+// Only reference-array bare positions and `MGenericInst` (reference-type
+// generic) arguments contribute a candidate. A value-type generic wrapper
+// position (`MValueTypeGenericInst`) and any other shape fall through to "no
+// candidate" or, in `witnessPositionAgreesMsil`, to "disagrees", which keeps the
+// `System.Object` witness: the safe direction, because that is the convention
+// every binding written before this inference already relies on.
 func collectWitnessCandsMsil(open: in MsilType, lyric: in MsilType, k: in Int, cands: in List[MsilType]): Unit {
   match open {
     case MMethodTypeVar(ok) -> {

@@ -1058,10 +1058,10 @@ test "cross-package operator-bounded generic at a scalar primitive (#7996)" {
   assertEqual(lines[1], "2.5", "cpgen_op_scalar: Double >")
 }
 
-// The same generic called at a distinct type the consumer declares: the
-// declaring package's scope does not see the type, so the operator cannot be
-// lowered for it and the build is refused (M0008) rather than miscompiled.
-test "cross-package operator-bounded generic at a consumer distinct type is M0008 (#7996)" {
+// The same generic called at a distinct type the consumer declares (#8530): the
+// specialisation is checked in the declaring package's scope with the
+// consumer's types added to it, so the operator is lowered for the type.
+test "cross-package operator-bounded generic at a consumer distinct type (#8530)" {
   val tmpDir = freshTempDir("cpgen-op-distinct")
   val producerSrc = "package CpGenOpD.Lib\n" + "\n" + "pub func sum2[T](a: in T, b: in T): T where T: Add {\n" +
     "  a + b\n" +
@@ -1072,35 +1072,10 @@ test "cross-package operator-bounded generic at a consumer distinct type is M000
     "func main(): Unit {\n" +
     "  println(sum2(Score.from(40), Score.from(2)).value)\n" +
     "}\n"
-  val dllPath = Path.join(tmpDir, "CpGenOpD.App.dll")
-  val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(mkPkg("CpGenOpD.App", consumerSrc))
-  val restored: List[String] = newList()
-  restored.add("CpGenOpD.Lib" + "\t" + producerDll)
-  val req = Emitter.EmitProjectRequest(
-    packages = pkgs,
-    assemblyName = "CpGenOpD.App",
-    outputPath = dllPath,
-    target = Emitter.Dotnet,
-    restoredDllPaths = restored,
-    activeFeatures = newList(),
-    declaredFeatures = newList(),
-    packageVersion = "",
-    depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList(),
-    defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures(),
-    contractsEnabled = true
-  )
-  val result = Emitter.emitProject(req)
+  val captured = buildAndRunConsumer(tmpDir, "CpGenOpD.App", consumerSrc, "CpGenOpD.App", "CpGenOpD.Lib", producerDll)
   cleanup(tmpDir)
-  val refused = match result.outputPath { case None -> true; case Some(_) -> false }
-  var codes = ""
-  for d in result.diagnostics {
-    codes = codes + d.code + " "
-  }
-  // M0008 itself goes to stderr; the result carries the build-level B0001.
-  assertTrue(refused, "cpgen_op_distinct: the build is refused (diagnostics: " + codes + ")")
+  assertEqualInt(captured.exitCode, 0, "cpgen_op_distinct: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "42", "cpgen_op_distinct: Score + lowered for the consumer's type")
 }
 
 // #7372: a restored function's signature types resolve in the producer's

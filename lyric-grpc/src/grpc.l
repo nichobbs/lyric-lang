@@ -13,7 +13,7 @@
 //!
 //! Server (service hosting):
 //!   var registry = Grpc.create()
-//!   registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
+//!   registry = Grpc.addUnary(registry, "MyService", "GetItem", { req, meta -> Ok(handle(req)) })
 //!   Grpc.start(registry)              // blocks until SIGTERM
 //!   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
 //!
@@ -128,34 +128,8 @@ pub func isValidMetadataValue(k: in String, v: in String): Bool {
   true
 }
 
-func percentEncodeMetadata(s: in String): String {
-  var buf: String = ""
-  var i = 0
-  while i < s.length {
-    val ch = Str.substring(s, i, 1)
-    if ch == "%" {
-      buf = buf + "%25"
-    } else if ch == "," {
-      buf = buf + "%2C"
-    } else if ch == ":" {
-      buf = buf + "%3A"
-    } else {
-      buf = buf + ch
-    }
-    i = i + 1
-  }
-  return buf
-}
-
 func metadataString(opts: in GrpcCallOptions): String {
-  var result: String = ""
-  for meta in opts.metadata {
-    if result.length > 0 {
-      result = result + ","
-    }
-    result = result + percentEncodeMetadata(meta.key) + ":" + percentEncodeMetadata(meta.value)
-  }
-  return result
+  return encodeMetadata(opts.metadata)
 }
 
 func callTimeoutMs(opts: in GrpcCallOptions): Int {
@@ -394,17 +368,47 @@ pub func create(): ServiceRegistry {
   ServiceRegistry(routes = [])
 }
 
-/// Register a single RPC method.
-@stable(since = "0.1")
-pub func addMethod(
-  registry: in ServiceRegistry, service: in String, method: in String, handlerName: in String
+/// Register a unary RPC method: `handler` receives the request message and
+/// metadata and returns the response message or the status to fail with.
+@stable(since = "0.2")
+pub func addUnary(
+  registry: in ServiceRegistry,
+  service: in String,
+  method: in String,
+  handler: in (slice[Byte], slice[GrpcMetadataEntry]) -> Result[slice[Byte], GrpcStatus],
 ): ServiceRegistry
   requires: service.length > 0
   requires: method.length > 0
-  requires: handlerName.length > 0
+  requires: not hasRoute(registry, service, method)
 {
-  val route = GrpcRoute(service = service, method = method, handlerName = handlerName)
+  val route = GrpcRoute(service = service, method = method, handler = GrpcHandler.Unary(handle = handler))
   return ServiceRegistry(routes = concat(registry.routes, [route]))
+}
+
+/// Register a server-streaming RPC method: `handler` sends each response
+/// message through `emit` (which returns `false` once the client has gone
+/// away) and returns `Ok(())` to finish or the status to fail with.
+@stable(since = "0.2")
+pub func addServerStreaming(
+  registry: in ServiceRegistry,
+  service: in String,
+  method: in String,
+  handler: in (slice[Byte], slice[GrpcMetadataEntry], (slice[Byte]) -> Bool) -> Result[Unit, GrpcStatus],
+): ServiceRegistry
+  requires: service.length > 0
+  requires: method.length > 0
+  requires: not hasRoute(registry, service, method)
+{
+  val route = GrpcRoute(service = service, method = method, handler = GrpcHandler.ServerStreaming(handle = handler))
+  return ServiceRegistry(routes = concat(registry.routes, [route]))
+}
+
+@pure
+func hasRoute(registry: in ServiceRegistry, service: in String, method: in String): Bool {
+  match findRoute(registry, service, method) {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 // ─── Server: entry point ──────────────────────────────────────────────────────
@@ -435,8 +439,9 @@ func checkServerConfig(): Unit {
   }
 }
 
-/// Start the gRPC server.  Blocks until SIGTERM / SIGINT.  Panics before
-/// binding when `GrpcServer` is misconfigured (`serverConfigProblem`).
+/// Start the gRPC server and block serving it until the process exits.
+/// Panics before binding when `GrpcServer` is misconfigured
+/// (`serverConfigProblem`) or when the address cannot be bound.
 @stable(since = "0.1")
 @cfg(feature = "dotnet")
 pub func start(registry: in ServiceRegistry): Unit {
@@ -468,29 +473,54 @@ pub func start(registry: in ServiceRegistry): Unit {
 /// Unlike `start`, this function returns immediately; the server runs in the
 /// background.  Call `stop` to drain in-flight RPCs and shut it down.
 @stable(since = "0.1")
-@cfg(feature = "dotnet")
 pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
   checkServerConfig()
+  return startHandleAt(registry, GrpcServer.host, GrpcServer.port)
+}
+
+/// `startHandle` on an explicit address instead of the `GrpcServer` config's
+/// `host` and `port`. `port = 0` binds an ephemeral port: read it back with
+/// `serverPort`. `host` is an IP literal. Panics when the address cannot be
+/// bound.
+@stable(since = "0.2")
+@cfg(feature = "dotnet")
+pub func startHandleAt(registry: in ServiceRegistry, host: in String, port: in Int): GrpcServerHandle
+  requires: port >= 0 and port <= 65535
+{
   return Grpc.Kernel.Net.netStartHandle(
-    GrpcServer.host,
-    GrpcServer.port,
+    host,
+    port,
     GrpcServer.reflectionEnabled,
     GrpcServer.maxConnectionIdleMs,
     registry
   )
 }
 
-@stable(since = "0.1")
+@stable(since = "0.2")
 @cfg(feature = "jvm")
-pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle {
-  checkServerConfig()
+pub func startHandleAt(registry: in ServiceRegistry, host: in String, port: in Int): GrpcServerHandle
+  requires: port >= 0 and port <= 65535
+{
   return Grpc.Kernel.Jvm.netStartHandle(
-    GrpcServer.host,
-    GrpcServer.port,
+    host,
+    port,
     GrpcServer.reflectionEnabled,
     GrpcServer.maxConnectionIdleMs,
     registry
   )
+}
+
+/// The port a running server is bound to.
+@stable(since = "0.2")
+@cfg(feature = "dotnet")
+pub func serverPort(handle: in GrpcServerHandle): Int {
+  Grpc.Kernel.Net.netServerPort(handle)
+}
+
+@stable(since = "0.2")
+@cfg(feature = "jvm")
+pub func serverPort(handle: in GrpcServerHandle): Int {
+  Grpc.Kernel.Jvm.netServerPort(handle)
 }
 
 /// Stop the gRPC server, waiting up to `drainTimeoutMs` milliseconds for

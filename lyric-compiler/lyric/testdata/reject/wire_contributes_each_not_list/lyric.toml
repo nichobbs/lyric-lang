@@ -1,0 +1,7 @@
+[package]
+name = "reject-wire-each"
+version = "0.1.0"
+[project]
+name = "RejectWireEach"
+[project.packages]
+"App" = "app"

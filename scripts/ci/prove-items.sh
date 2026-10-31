@@ -14,6 +14,9 @@
 #     and a bare `Some`/`None`/`Ok`/`Err` pattern is a case (#8231, #8230);
 #   * the `@proof_required` items no build compiles are listed (#8325);
 #   * a generic record's fields are read at the receiver's instance (#8340);
+#   * a call to an imported function in a contract is that function applied
+#     to its arguments with its `@pure` body (`Std.String.isEmpty`), proved
+#     when it holds and refuted when it does not (#7532);
 #   * functions overloaded by arity are each proved, a call reaching the
 #     one of its arity, without crashing on the shared name (#8341).
 #
@@ -27,6 +30,7 @@ um="$examples/prove-unmodelled-match"
 pm="$examples/prove-methods"
 gr="$examples/prove-generic-records"
 ov="$examples/prove-overloads"
+ic="$examples/prove-imported-callees"
 out="$(mktemp)"
 err="$(mktemp)"
 trap 'rm -f "$out" "$err"' EXIT
@@ -192,6 +196,11 @@ for mode in single manifest; do
   fi
   echo "PASS: an overload in another file, $mode"
 done
+
+# #7532: an imported function in a contract.
+expect_proved "an imported @pure callee in a contract" "$lyric_bin" prove "$ic/holds.l"
+expect_refuted "an imported @pure callee that does not hold" "postcondition of claimsEmpty" \
+  "$lyric_bin" prove "$ic/refuted.l"
 
 # A union of a dependency restored as a compiled assembly is not resolved to
 # a same-named union of a package the verifier read (Std.Http's HttpError):

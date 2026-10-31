@@ -211,6 +211,9 @@ The synthesised destructor for a record/union/closure:
 3. For `List[T]` where T is a reference type: iterate all elements, call
    `lyric_release` on each.
 4. Do NOT free `self` — `lyric_release` does that.
+5. For an `opaque type` annotated `@nativeDtor("symbol")` (D283), call
+   `symbol(field 0)` **first**, while every field is still valid, then run steps
+   1-3. Such a type always has a destructor, even with no reference-typed field.
 
 ---
 

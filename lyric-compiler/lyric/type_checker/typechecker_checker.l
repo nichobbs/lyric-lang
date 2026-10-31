@@ -5329,15 +5329,32 @@ func checkDeclaredInit(
   initNoun: in String,
   sp: in Span,
 ): Unit {
+  val noRte: Option[TypeExpr] = None
+  val noSelfFields: Map[String, Type] = newMap()
+  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, TyError)
+  checkDeclaredInitIn(sc, tbl, sigs, diag, genericNames, te, init, subject, initNoun, sp)
+}
+
+// `checkDeclaredInit` against a caller-supplied scope, for initialisers that
+// read sibling bindings (a wire member reads the other members, #8539).
+func checkDeclaredInitIn(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  te: in TypeExpr,
+  init: in Expr,
+  subject: in String,
+  initNoun: in String,
+  sp: in Span,
+): Unit {
   val ctx = newGenericContext()
   if genericNames.count > 0 {
     gctxPush(ctx, genericNames)
   }
   val scratch: List[Diagnostic] = newList()
   val declT = resolveType(tbl, ctx, scratch, te)
-  val noRte: Option[TypeExpr] = None
-  val noSelfFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, TyError)
   val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
   val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
   if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
@@ -5427,7 +5444,185 @@ func checkFieldDefault(
   }
 }
 
-// Every declared initialiser `item` carries, checked by `checkDeclaredInit`.
+// The name a `bind` member is reachable under: its interface's simple name.
+func wireBindName(iface: in TypeExpr): String {
+  match iface.kind {
+    case TRef(path) -> path.segments[path.segments.count - 1]
+    case TGenericApp(head, _) -> head.segments[head.segments.count - 1]
+    case _ -> "<bind>"
+  }
+}
+
+// #8539: every wire member's initialiser is checked against its declared
+// type.  The expander has already turned each `contributes` entry, the
+// synthesised `List[T]` collection and the `<T>ByKey` map into typed locals,
+// so those are covered by the same rule.  Members read one another in any
+// order (the backends sort them), so every member with a written type is
+// bound up front; an unannotated local is typed from its initialiser once the
+// members it reads are bound.
+func checkWireInits(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in WireDecl,
+): Unit {
+  val noGenerics: List[String] = newList()
+  val noRte: Option[TypeExpr] = None
+  val noSelfFields: Map[String, Type] = newMap()
+  val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, TyError)
+  val ctx = newGenericContext()
+  val scratch: List[Diagnostic] = newList()
+  // A member spliced from a wire template carries references qualified for
+  // the template's own imports, which the including package's scope cannot
+  // always resolve (#6505): only a type mismatch is reported, never a name
+  // the including file cannot see.  An unresolved reference types as
+  // `TyError`, which matches anything.
+  val quiet: List[Diagnostic] = newList()
+  for p in decl.params {
+    scopeAdd(sc, LocalBinding(name = p.name, ty = resolveType(tbl, ctx, scratch, p.ty), isMutable = false))
+  }
+  val untyped: List[Int] = newList()
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case WMProvided(n, ty, _) -> scopeAdd(
+        sc,
+        LocalBinding(name = n, ty = resolveType(tbl, ctx, scratch, ty), isMutable = false)
+      )
+      case WMSingleton(n, ty, _, _) -> scopeAdd(
+        sc,
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
+      )
+      case WMScoped(_, n, ty, _, _) -> scopeAdd(
+        sc,
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
+      )
+      case WMBind(iface, _, _) -> scopeAdd(
+        sc,
+        LocalBinding(
+          name = wireBindName(iface),
+          ty = resolveType(tbl, ctx, scratch, iface),
+          isMutable = false
+        )
+      )
+      case WMLocal(n, Some(ty), _, _) -> scopeAdd(
+        sc,
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
+      )
+      case WMLocal(_, None, _, _) -> untyped.add(i)
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  var pending = untyped
+  var progressed = true
+  while progressed and pending.count > 0 {
+    progressed = false
+    val still: List[Int] = newList()
+    for idx in pending {
+      match decl.members[idx] {
+        case WMLocal(n, _, init, _) -> {
+          val trial: List[Diagnostic] = newList()
+          val t = inferExpr(sc, tbl, sigs, trial, init)
+          if trial.count == 0 {
+            scopeAdd(sc, LocalBinding(name = n, ty = t, isMutable = false))
+            progressed = true
+          } else {
+            still.add(idx)
+          }
+        }
+        case _ -> {
+        }
+      }
+    }
+    pending = still
+  }
+  for idx in pending {
+    match decl.members[idx] {
+      case WMLocal(n, _, init, _) -> {
+        val t = inferExpr(sc, tbl, sigs, quiet, init)
+        scopeAdd(sc, LocalBinding(name = n, ty = t, isMutable = false))
+      }
+      case _ -> {
+      }
+    }
+  }
+  var j = 0
+  while j < decl.members.count {
+    match decl.members[j] {
+      case WMSingleton(n, ty, init, sp) -> checkDeclaredInitIn(
+        sc,
+        tbl,
+        sigs,
+        quiet,
+        noGenerics,
+        ty,
+        init,
+        "wire member '" + n + "'",
+        "initialiser",
+        sp
+      )
+      case WMScoped(_, n, ty, init, sp) -> checkDeclaredInitIn(
+        sc,
+        tbl,
+        sigs,
+        quiet,
+        noGenerics,
+        ty,
+        init,
+        "wire member '" + n + "'",
+        "initialiser",
+        sp
+      )
+      case WMBind(iface, provider, sp) -> checkDeclaredInitIn(
+        sc,
+        tbl,
+        sigs,
+        quiet,
+        noGenerics,
+        iface,
+        provider,
+        "wire binding '" + wireBindName(iface) + "'",
+        "provider",
+        sp
+      )
+      case WMLocal(n, Some(ty), init, sp) -> checkDeclaredInitIn(
+        sc,
+        tbl,
+        sigs,
+        quiet,
+        noGenerics,
+        ty,
+        init,
+        "wire member '" + n + "'",
+        "initialiser",
+        sp
+      )
+      case _ -> {
+      }
+    }
+    j = j + 1
+  }
+  for d in quiet {
+    if d.code == "T0060" {
+      diag.add(d)
+    }
+  }
+}
+
 func checkItemDeclaredInits(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -5471,6 +5666,7 @@ func checkItemDeclaredInits(
         }
       }
     }
+    case IWire(decl) -> checkWireInits(tbl, sigs, diag, decl)
     case IFunc(decl) -> {
       checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
       checkShadowedExtension(tbl, sigs, diag, decl)

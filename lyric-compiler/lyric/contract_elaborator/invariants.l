@@ -307,3 +307,145 @@ func wrapIfConstruction(e: in Expr, sites: in Map[String, String]): Expr {
     case _ -> e
   }
 }
+
+// ─── Pass 3: public-boundary and `inout` re-checks ──────────────────────────
+// docs/08 §7.1 points 2, 3 and 5.  Construction (pass 2) establishes the
+// invariant; a `var` field written afterwards, or an `inout` parameter
+// updated in place, can break it, so the value is re-checked where it next
+// crosses a public boundary.  Every check calls the type's construction
+// checker, so the message and clause text are the construction's.
+/// The invariant-bearing types a public function's signature can name, by
+/// spelled name, with the dotted path of each type's checker.  `foreign`
+/// holds the types declared in another package (parameter and result checks);
+/// `local` those declared in the function's own package (`inout` re-check).
+pub record InvariantBoundary {
+  foreign: Map[String, String]
+  local: Map[String, String]
+}
+
+pub func emptyInvariantBoundary(): InvariantBoundary {
+  val f: Map[String, String] = newMap()
+  val l: Map[String, String] = newMap()
+  InvariantBoundary(foreign = f, local = l)
+}
+
+func boundaryIsEmpty(b: in InvariantBoundary): Bool {
+  b.foreign.count == 0 and b.local.count == 0
+}
+
+func boundaryTypeKey(t: in TypeExpr): Option[String] {
+  match t.kind {
+    case TRef(path) -> {
+      val parts: List[String] = newList()
+      var i = 0
+      while i < path.segments.count {
+        parts.add(path.segments[i])
+        i = i + 1
+      }
+      Some(value = Str.joinList(".", parts))
+    }
+    case TParen(inner) -> boundaryTypeKey(inner)
+    case _ -> None
+  }
+}
+
+func boundaryChecker(m: in Map[String, String], t: in TypeExpr): Option[String] {
+  match boundaryTypeKey(t) {
+    case Some(k) -> mapGet(m, k)
+    case None -> None
+  }
+}
+
+func checkerCall(checker: in String, arg: in Expr, sp: in Span): Expr {
+  val parts = Str.split(checker, ".")
+  val segs: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    segs.add(parts[i])
+    i = i + 1
+  }
+  val callee = mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = arg))
+  mkExpr(ECall(fn = callee, args = args), sp)
+}
+
+// `{ checker(arg); true }`: an ensures expression whose evaluation runs the
+// checker (which panics on a violation) and holds otherwise.
+func checkerHolds(checker: in String, arg: in Expr, sp: in Span): Expr {
+  val stmts: List[Statement] = newList()
+  stmts.add(mkStmt(SExpr(expr = checkerCall(checker, arg, sp)), sp))
+  stmts.add(mkStmt(SExpr(expr = mkExpr(ELiteral(lit = LBool(value = true)), sp)), sp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = sp)), sp)
+}
+
+/// Entry checks of a public function: each `in` or `inout` parameter of a
+/// foreign invariant-bearing type is checked before any `requires:`.
+func boundaryEntryChecks(params: in List[Param], b: in InvariantBoundary): List[Statement] {
+  val acc: List[Statement] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    val isOut = match p.mode { case PMOut -> true; case _ -> false }
+    if not isOut {
+      match boundaryChecker(b.foreign, p.ty) {
+        case Some(checker) -> {
+          val arg = mkPath(p.name, p.span)
+          acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span)), p.span))
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// Exit checks of a public function: the result when its type is a foreign
+/// invariant-bearing type, and each `inout` / `out` parameter of a foreign or
+/// local one, after the body and before the writeback.
+func boundaryExitChecks(
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  b: in InvariantBoundary,
+  owner: in String,
+  sp: in Span,
+): List[SpannedExpr] {
+  val acc: List[SpannedExpr] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    val written = match p.mode { case PMIn -> false; case _ -> true }
+    if written {
+      val checker = match boundaryChecker(b.foreign, p.ty) {
+        case Some(c) -> Some(value = c)
+        case None -> boundaryChecker(b.local, p.ty)
+      }
+      match checker {
+        case Some(c) -> acc.add(
+          SpannedExpr(
+            expr = checkerHolds(c, mkPath(p.name, p.span), p.span),
+            span = p.span,
+            message = "InvariantViolated: " + owner + " parameter " + p.name
+          )
+        )
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  match ret {
+    case Some(rt) -> match boundaryChecker(b.foreign, rt) {
+      case Some(c) -> acc.add(
+        SpannedExpr(
+          expr = checkerHolds(c, mkExpr(EResult, sp), sp),
+          span = sp,
+          message = "InvariantViolated: " + owner + " result"
+        )
+      )
+      case None -> ()
+    }
+    case None -> ()
+  }
+  acc
+}

@@ -180,6 +180,8 @@ generic[K] pub func insert(t: in Tree[K], k: in K): Tree[K]
 
 The `isBst` function is marked `@pure`, which makes it usable in contract expressions. The prover uses its definition as a rewrite rule: whenever it sees `isBst(Node(l, key, r))` in a formula, it can expand the definition.
 
+The same holds for a public `@pure` function of an imported package, `Std.String.isEmpty(s)` for one: a call in a contract is that function applied to its arguments, with its body, when the function takes and returns primitive types and names nothing but its own parameters. Other imported functions are opaque values the prover cannot reason about (#7532).
+
 For `K: Int`, Z3 discharges all three postconditions of `insert`. The key reasoning steps are:
 
 1. **`isBst(result)`**: The implementation inserts into the left subtree when `k < key` and the right subtree when `k > key`. The prover expands `isBst` and verifies that the ordering invariant is maintained by the recursive structure. This involves reasoning over an inductive datatype, which Z3's algebraic datatype theory handles.
