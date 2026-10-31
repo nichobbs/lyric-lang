@@ -4897,15 +4897,29 @@ func specialiseWovenContracts(
   if gate(pkgLabel, origins, res.diagnostics) {
     return None
   }
-  val seen: Map[String, Bool] = newMap()
+  // A specialisation the first run already made has the same name and arity
+  // as the one made again; same-named functions of other arities are
+  // overloads and stay.  Each key admits as many items as `woven` held, so
+  // overloads that were already there are all kept.
+  val allowed: Map[String, Int] = newMap()
+  for it in woven.items {
+    match it.kind {
+      case IFunc(fd) -> bumpFuncKeyCount(allowed, funcKeyOf(fd))
+      case _ -> ()
+    }
+  }
+  val kept: Map[String, Int] = newMap()
   val items: List[Item] = newList()
   for it in res.file.items {
     match it.kind {
       case IFunc(fd) -> {
-        if seen.containsKey(fd.name) {
+        val key = funcKeyOf(fd)
+        val limit = match mapGet(allowed, key) { case Some(n) -> n; case None -> 1 }
+        val have = match mapGet(kept, key) { case Some(n) -> n; case None -> 0 }
+        if have >= limit {
           continue
         }
-        seen.add(fd.name, true)
+        bumpFuncKeyCount(kept, key)
       }
       case _ -> ()
     }
@@ -4921,6 +4935,18 @@ func specialiseWovenContracts(
       span = res.file.span
     )
   )
+}
+
+func funcKeyOf(fd: in FunctionDecl): String {
+  fd.name + "/" + toString(fd.params.count)
+}
+
+func bumpFuncKeyCount(counts: in Map[String, Int], key: in String): Unit {
+  val n = match mapGet(counts, key) { case Some(c) -> c; case None -> 0 }
+  if counts.containsKey(key) {
+    counts.remove(key)
+  }
+  counts.add(key, n + 1)
 }
 
 // True when the weaver renamed a function to `<name>__aspect_target`.

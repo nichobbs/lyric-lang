@@ -541,3 +541,18 @@ test "a generic call in an aspect's ensures: is specialised per woven function (
     case None -> assertTrue(false, "findLabel returned None")
   }
 }
+
+// Functions of one name and different arities in a woven file both survive the
+// second mono run that specialises aspect contracts (#8662).
+func twinArity(x: Int): Int {
+  return x + 1
+}
+
+func twinArity(x: Int, y: Int): Int {
+  return x + y
+}
+
+test "arity overloads in a woven file are kept (#8662)" {
+  assertEqualInt(twinArity(1), 2, "one argument")
+  assertEqualInt(twinArity(1, 2), 3, "two arguments")
+}
