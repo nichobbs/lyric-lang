@@ -2942,6 +2942,7 @@ jobs:
             lyric-compiler/msil/msil_self_test_m2d.l \
             lyric-compiler/msil/msil_self_test_m88.l \
             lyric-compiler/msil/msil_bracket_arg_self_test.l \
+            lyric-compiler/msil/msil_operand_guard_self_test.l \
             lyric-compiler/msil/lowering_token_self_test.l \
             lyric-compiler/msil/metadata_reader_self_test.l ; do
             echo "=== $t ==="
