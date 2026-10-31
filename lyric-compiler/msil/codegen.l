@@ -14070,7 +14070,7 @@ func normalizeIntCmpWidthMsil(
 // disagreement at the val's declaration with the annotation to add; this guard
 // would otherwise fire first, because function bodies are lowered before
 // module-val initialisers.
-func requireTypedArithOperandsMsil(
+pub func requireTypedArithOperandsMsil(
   cctx: in CodegenCtx,
   op: in String,
   lhs: in Expr,
@@ -14098,7 +14098,7 @@ func requireTypedArithOperandsMsil(
 // operand is reconciled against a value-type other side by unboxing it; two
 // erased operands, or an erased operand against a reference type, would
 // compare pointers or call `String.CompareOrdinal` on an `object` (#8344).
-func requireTypedCompareOperandsMsil(
+pub func requireTypedCompareOperandsMsil(
   cctx: in CodegenCtx,
   op: in String,
   lhs: in Expr,
@@ -19138,6 +19138,13 @@ func lowerPatternBindMsil(
           case MObject -> ()
           case MTuple(_) -> ()
           case MArray(e) -> emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
+          // #7517: an in-bundle closed generic record or union.  The tracked
+          // element type is the one the tuple literal's own construction (or
+          // the declared tuple type's construction hint) produced, so the
+          // element genuinely is that instantiation; `castObjectToMsil` leaves
+          // such a type alone because its other callers can hold an erased
+          // `Box<object>` (see `narrowObjectToDeclaredTypeMsil`).
+          case MGenericInstByName(headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
           case _ -> castObjectToMsil(cctx, insns, ptElemTy)
         }
         val ptElemSlot = allocSlotMsil(fctx, "__tup_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)

@@ -240,6 +240,7 @@ for t in \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
   lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
+  lyric-compiler/lyric/tuple_inbundle_generic_self_test.l \
   lyric-compiler/lyric/record_omitted_default_self_test.l \
   lyric-compiler/lyric/slice_byte_lambda_arg_self_test.l \
   lyric-compiler/lyric/app_host_self_test.l \
