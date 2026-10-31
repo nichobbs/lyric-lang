@@ -2676,6 +2676,32 @@ unaffected. Verified against `System.Net.Http.SocketsHttpHandler`'s
 ValueTask<Stream>>`). See D122 in `docs/03-decision-log.md` and
 `docs/50-ffi-delegates-proposal.md`.
 
+The delegate type is read from the BCL member's metadata signature, not
+assumed to be `Func`/`Action` (D288):
+
+- A parameter the BCL declares as another delegate type
+  (`RemoteCertificateValidationCallback`, `Predicate<T>`, `Comparison<T>`,
+  `ThreadStart`) binds to that type: the lambda is built with
+  `newobj <Delegate>::.ctor`, the wrapper's own parameter has that type, and
+  the Lyric function type must take as many arguments as the delegate's
+  `Invoke`. Overloads that differ only in the delegate parameter
+  (`Thread(ThreadStart)` / `Thread(ParameterizedThreadStart)`,
+  `GetOrAdd(K, V)` / `GetOrAdd(K, Func<K,V>)`) are chosen by that argument
+  count. A delegate may also be the receiver of its own `Invoke`.
+- A member of a generic BCL type is called through the `<object,...>`-erased
+  instantiation, so a delegate position the BCL spells `!N`
+  (`List<T>.ForEach(Action<T>)`, `ConcurrentDictionary<K,V>.GetOrAdd(K,
+  Func<K,V>)`, `List<T>.Sort(Comparison<T>)`) is built over `object` and the
+  lambda unboxes its arguments and boxes its result; a position the BCL fixes
+  (the `int` result of `Comparison<T>`) keeps its real type. A receiver or
+  constructed value that already carries a real closed instantiation (a
+  bracketed target such as `List`1[System.String]`, a `List[E]`) keeps the
+  fully typed delegate.
+
+A member with its own generic parameters (`List<T>.ConvertAll<TOutput>`) is
+still unsupported. The bridge is `--target dotnet` only; the JVM represents a
+function value as a functional-interface instance on every route.
+
 `Std.Http.clientWithUnixSocket` (`lyric-stdlib/std/_kernel/http_host.l`,
 D-progress-686) is this mechanism's stdlib consumer, but its
 `ConnectCallback` implementation dials the socket synchronously and does

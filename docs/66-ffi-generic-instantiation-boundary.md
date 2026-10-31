@@ -363,9 +363,9 @@ cross-cutting compiler-internals work, not a one-line change.
 |---|---|---|---|
 | `#6029` | 1a | §5 | **Shipped in this PR** (the `@externTarget` explicit-hint path: setter, getter, and no-bracket-suffix ctor inference). Auto-FFI direct-assignment sugar remains — filed as a follow-up (§5 "What this does not fix"). |
 | `#1760` | 1b | §7 Gap 1b | Not started — new non-erasing `ByRefLike` value-type category, its own epic. |
-| `#5525` | 2 | §7 Gap 2 | Not started — erasure-consistent delegate construction. |
-| `#5800` | 2 | §7 Gap 2 | Not started — closes as a side effect of `#5525`'s fix + test. |
-| `#5947` | 2 | §7 Gap 2 | Not started — metadata-driven named-delegate construction. |
+| `#5525` | 2 | §7 Gap 2 | Shipped (D288) — the erasure decision is made once per call from the member's metadata. |
+| `#5800` | 2 | §7 Gap 2 | Shipped (D288) — regression tests in `generic_extern_self_test.l` and `typed_ffi_delegate_self_test.l`. |
+| `#5947` | 2 | §7 Gap 2 | Shipped for the bridge (D288); lifting the Unix-socket TLS gate in `Std.Http` is a follow-up. |
 | `#4601` | 3 | §7 Gap 3 | Not started — per-local `collExpect` threading from the type checker. |
 | `#5624` | — | §6 | Not part of this family; recommended for a label/issue split, one item (JVM boxed-slice-field read) reconfirmed unreproducible. |
 

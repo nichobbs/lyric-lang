@@ -403,6 +403,24 @@ pub record CodegenCtx {
   // native HOF/lambda call site is unaffected because this flag is only ever
   // true for `@externTarget` functions' own function-typed parameters.
   funcParamIsExternTargetDelegate: Map[String, Bool]
+  // For an `@externTarget` function-typed parameter whose BCL delegate type
+  // mentions the generic-declaring type's own type arguments while the call
+  // erases them to `object` (`List<object>.ForEach(Action<!0>)`): one flag per
+  // delegate type argument (parameters then return), true where the BCL
+  // signature has a `!N` witness.  Those positions are built as `object` in the
+  // delegate, the wrapper's parameter and the lifted lambda, so the delegate
+  // matches the erased receiver and the lambda unboxes its own arguments
+  // (#5525, #5800).  Same "<fqn>#<paramIdx>" keys as funcParamFnInner; absent
+  // when the call does not erase.
+  funcParamErasedDelegateMask: Map[String, List[Bool]]
+  // For an `@externTarget` function-typed parameter whose BCL type is a named
+  // delegate (not `Func`/`Action`): that closed delegate type, same keys as
+  // funcParamFnInner.  The lambda passed there is built as an instance of it
+  // (`ldftn` + `newobj <Delegate>::.ctor`) and the wrapper's parameter has its
+  // type (#5947).
+  funcParamNamedDelegate: Map[String, MsilType]
+  // The same type for a lifted lambda, keyed "<pkg>.__lambda_<idx>".
+  lambdaNamedDelegateType: Map[String, MsilType]
   // Propagated parameter MsilTypes for a lifted lambda, keyed by lambda name
   // ("__lambda_<idx>").  Recorded at the call site (from funcParamFnInner) before
   // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
@@ -2452,6 +2470,9 @@ pub func newCodegenCtx(
     funcParamFnInner = newMap(),
     funcParamFnRetType = newMap(),
     funcParamIsExternTargetDelegate = newMap(),
+    funcParamErasedDelegateMask = newMap(),
+    funcParamNamedDelegate = newMap(),
+    lambdaNamedDelegateType = newMap(),
     lambdaParamTypes = newMap(),
     lambdaRetTypes = newMap(),
     lambdaParamFnRetTypes = newMap(),
@@ -5491,7 +5512,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   case Some(rt) -> rt
                   case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
                 }
-                paramTys.add(buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+                match namedDelegateParamTypeMsil(cctx, decl, pkgName, ppi) {
+                  case Some(namedTy) -> paramTys.add(namedTy)
+                  case None -> {
+                    val erasedMask = erasedDelegateMaskMsil(cctx, decl, pkgName, ppi)
+                    paramTys.add(
+                      buildTypedFuncOrActionMsilType(
+                        cctx,
+                        eraseMaskedParamsMsil(erasedMask, innerParamTys),
+                        eraseMaskedRetMsil(erasedMask, innerParamTys.count, innerRetTy)
+                      )
+                    )
+                  }
+                }
               }
               case _ -> {
               }
@@ -5571,6 +5604,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                 }
                 if not cctx.funcParamIsExternTargetDelegate.containsKey(aKey) {
                   cctx.funcParamIsExternTargetDelegate.add(aKey, true)
+                  match externDelegateSlotMsil(cctx, decl, pkgName, pfi) {
+                    case Some(slot) -> {
+                      if slot.mask.count > 0 {
+                        cctx.funcParamErasedDelegateMask.add(aKey, slot.mask)
+                        cctx.funcParamErasedDelegateMask.add(fKey, slot.mask)
+                      }
+                      if slot.named {
+                        cctx.funcParamNamedDelegate.add(aKey, slot.delegateTy)
+                        cctx.funcParamNamedDelegate.add(fKey, slot.delegateTy)
+                      }
+                    }
+                    case None -> ()
+                  }
                 }
                 if not cctx.funcParamIsExternTargetDelegate.containsKey(fKey) {
                   cctx.funcParamIsExternTargetDelegate.add(fKey, true)
@@ -13780,7 +13826,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // CodegenCtx.funcParamIsExternTargetDelegate's doc comment). Every other
           // lambda (the common case — lambdaExternDelegateParamTypes has no entry)
           // is unaffected.
-          val ctorTok = if returnsVoid {
+          val ctorTok = if cctx.lambdaNamedDelegateType.containsKey(lambdaKey) {
+            match mapGet(cctx.lambdaNamedDelegateType, lambdaKey) {
+              case Some(namedTy) -> buildNamedDelegateCtorTok(cctx, namedTy)
+              case None -> buildFuncNCtorTok(cctx, nparams)
+            }
+          } else if returnsVoid {
             if nparams == 0 {
               cctx.tokActionCtor
             } else {
@@ -21817,9 +21868,17 @@ func lowerBuiltinOrStaticCallMsil(
                             // "__lambda_0" — surfaced by #Std.HttpHost's ConnectCallback
                             // lambda in the full stdlib bundle).
                             if isDelegateTarget and not cctx.lambdaExternDelegateParamTypes.containsKey(qualifiedPredName) {
-                              cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, inner)
+                              val erasedMask = match mapGet(cctx.funcParamErasedDelegateMask, fnInnerKey) {
+                                case Some(m) -> m
+                                case None -> newList()
+                              }
+                              cctx.lambdaExternDelegateParamTypes.add(qualifiedPredName, eraseMaskedParamsMsil(erasedMask, inner))
                               val fnRet = match mapGet(cctx.funcParamFnRetType, fnInnerKey) { case Some(rt) -> rt; case None -> MVoid }
-                              cctx.lambdaExternDelegateRetType.add(qualifiedPredName, fnRet)
+                              cctx.lambdaExternDelegateRetType.add(qualifiedPredName, eraseMaskedRetMsil(erasedMask, inner.count, fnRet))
+                              match mapGet(cctx.funcParamNamedDelegate, fnInnerKey) {
+                                case Some(namedTy) -> cctx.lambdaNamedDelegateType.add(qualifiedPredName, namedTy)
+                                case None -> ()
+                              }
                             }
                           }
                           case None -> {
@@ -27616,6 +27675,40 @@ func buildFuncNTypedCtorTok(
   0x0A000000 + mrRow
 }
 
+// The `.ctor(object, native int)` MemberRef of a named delegate type — the
+// `Func`/`Action` ctor builders' counterpart for a delegate the BCL declares
+// itself (`RemoteCertificateValidationCallback`, `Predicate<T>`), #5947.
+func buildNamedDelegateCtorTok(cctx: in CodegenCtx, delegateTy: in MsilType): Int {
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  match delegateTy {
+    case MClassRef(code, fqn) -> {
+      val mrRow = ctxAddMemberRef(cctx.lctx, code / 4, ".ctor", "named_delegate_ctor_" + fqn, ctorSig)
+      0x0A000000 + mrRow
+    }
+    case MGenericInst(code, headFqn, targs) -> {
+      var keySuffix = ""
+      var ki = 0
+      while ki < targs.count {
+        keySuffix = keySuffix + "_" + msilTypeKeyStr(targs[ki])
+        ki = ki + 1
+      }
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "NamedDelegateSpec_" + headFqn + keySuffix, buildGenericInstBlob(code, targs))
+      val mrRow = ctxAddMemberRefForTypeSpec(
+        cctx.lctx,
+        tsRow,
+        ".ctor",
+        "named_delegate_ctor_" + headFqn + keySuffix,
+        ctorSig
+      )
+      0x0A000000 + mrRow
+    }
+    case _ -> panic("Msil.Codegen ICE: named delegate type is neither a class nor a generic instantiation")
+  }
+}
+
 // Action`N analog of funcNTypedGenericInstBlob: every type argument is a real
 // parameter type (no return-type slot).
 func actionNTypedGenericInstBlob(cctx: in CodegenCtx, nparams: in Int, paramTypes: in List[MsilType]): List[Byte] {
@@ -29226,6 +29319,423 @@ func typeExprToMsilGenBodyOrCtx(
   }
 }
 
+// Whether the receiver (an instance call) or the returned value (a ctor) of an
+// `@externTarget` member of generic type `cleanFqn` already carries a real
+// closed instantiation, so `emitGenericExternMember` reuses it instead of
+// erasing the type arguments to `object`.  Mirrors the `retArgs` selection
+// there; the two must agree or the delegate and the receiver TypeSpec diverge.
+func externGenericReifiedMsil(
+  cctx: in CodegenCtx,
+  decl: in FunctionDecl,
+  pkgName: in String,
+  declGenerics: in List[String],
+  cleanFqn: in String,
+  arity: in Int,
+  isCtor: in Bool,
+  isInstance: in Bool,
+): Bool {
+  if isCtor {
+    match decl.ret {
+      case None -> false
+      case Some(te) -> {
+        val ty = match resolveValueTaskGenericMsilType(cctx, te, pkgName) {
+          case Some(rt) -> rt
+          case None -> match externTargetBracketGenericInstMsil(cctx, te, pkgName, declGenerics) {
+            case Some(gi) -> gi
+            case None -> typeExprToMsilGenBodyOrCtx(cctx, te, pkgName, declGenerics)
+          }
+        }
+        match ty {
+          case MValueTypeGenericInst(_, headFqn, targs) -> headFqn == cleanFqn and targs.count == arity
+          case MGenericInst(_, headFqn, targs) -> headFqn == cleanFqn and targs.count == arity
+          case _ -> false
+        }
+      }
+    }
+  } else if isInstance and decl.params.count > 0 {
+    val p0 = decl.params[0].ty
+    match p0.kind {
+      case TFunction(_, _) -> true
+      case _ -> {
+        val ty = match externTargetBracketGenericInstMsil(cctx, p0, pkgName, declGenerics) {
+          case Some(gi) -> gi
+          case None -> typeExprToMsilGenBodyOrCtx(cctx, p0, pkgName, declGenerics)
+        }
+        match ty {
+          case MGenericInst(_, headFqn, targs) -> headFqn == cleanFqn and targs.count == arity
+          case MConcreteList(_) -> cleanFqn == "System.Collections.Generic.List`1"
+          case MConcreteMap(_, _) -> cleanFqn == "System.Collections.Generic.Dictionary`2"
+          case _ -> false
+        }
+      }
+    }
+  } else {
+    false
+  }
+}
+
+// How an `@externTarget` function-typed parameter reaches the BCL (#5525,
+// #5800, #5947), read from the member's metadata signature.
+//   named:      the BCL parameter is a delegate type other than `Func`/`Action`
+//               (`RemoteCertificateValidationCallback`, `Predicate<T>`); the
+//               wrapper's parameter and the lambda's delegate are that type.
+//   delegateTy: that closed delegate type (valid when `named`); type arguments
+//               that were the generic-declaring type's own `!N` are `object`.
+//   mask:       one flag per Invoke parameter then the return (a `Func`/`Action`
+//               over the same arguments, or the named delegate's `Invoke`),
+//               true where the position is the erased declaring type's `!N`;
+//               empty when nothing is erased.
+record ExternDelegateSlotMsil {
+  named: Bool
+  delegateTy: MsilType
+  mask: List[Bool]
+}
+
+func substObjectForTypeVarsMsil(tys: in List[MsilType]): List[MsilType] {
+  val outTys: List[MsilType] = newList()
+  var i = 0
+  while i < tys.count {
+    outTys.add(match tys[i] { case MTypeVar(_) -> MObject; case other -> other })
+    i = i + 1
+  }
+  outTys
+}
+
+func isFuncOrActionFqnMsil(fqn: in String): Bool {
+  fqn == "System.Action" or startsWith(fqn, "System.Action`") or startsWith(fqn, "System.Func`")
+}
+
+// Resolve the delegate slot for `decl.params[idx]`, or None when this is not a
+// bridged `@externTarget` delegate parameter or the metadata cannot say.  The
+// type arguments of a member of a generic BCL type are erased to `object` by
+// `emitGenericExternMember` unless the receiver or constructed value already
+// carries a real closed instantiation (`externGenericReifiedMsil`); the slot's
+// `mask` reflects that one decision so the delegate, the wrapper's parameter
+// and the lifted lambda cannot disagree.
+func externDelegateSlotMsil(
+  cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, idx: in Int
+): Option[ExternDelegateSlotMsil] {
+  val target = externTargetStringMsil(decl.annotations)
+  if target == "" {
+    return None
+  }
+  val nparams = match decl.params[idx].ty.kind { case TFunction(fnParams, _) -> fnParams.count; case _ -> -1 }
+  if nparams < 0 {
+    return None
+  }
+  match resolveExternTarget(target, hintFromAnnotations(decl.annotations)) {
+    case None -> None
+    case Some(r) -> {
+      val arity = genericArityOfName(r.typeName)
+      val resolvedFqn = if r.namespaceStr == "" { r.typeName } else { r.namespaceStr + "." + r.typeName }
+      val cleanFqn = stripBracketSuffix(resolvedFqn)
+      val declGenericArgsKnown = arity > 0 and parseBracketArgFqns(r.typeName).count == arity
+      ensureMetadataIndex(cctx)
+      // The delegate is the receiver of its own `Invoke`.
+      if idx == 0 and arity <= 0 and r.memberName == "Invoke" and not r.isCtor and decl.params.count > 1 and (match delegateInvokeMethodMsil(cctx, cleanFqn) { case Some(_) -> true; case None -> false }) {
+        if isFuncOrActionFqnMsil(cleanFqn) {
+          return None
+        }
+        match internClassRef(cctx, cleanFqn) {
+          case Some(recvTy) -> {
+            val noArgs: List[MsilType] = newList()
+            return namedDelegateSlotMsil(cctx, cleanFqn, nparams, noArgs, recvTy, false)
+          }
+          case None -> return None
+        }
+      }
+      match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, cleanFqn)) {
+        case None -> None
+        case Some(path) -> {
+          match Mdr.loadParsedAssemblyCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, path) {
+            case None -> None
+            case Some(parsed) -> match Mdr.allMethodSigsOn(parsed.img, parsed.layout, parsed.th, cleanFqn) {
+              case None -> None
+              case Some(methods) -> {
+                // Overloads that differ only in their delegate parameter
+                // (`GetOrAdd(K, V)` / `GetOrAdd(K, Func<K,V>)`, `Thread(ThreadStart)`
+                // / `Thread(ParameterizedThreadStart)`) cannot be told apart by arity
+                // or by the Lyric types, so pick the overload whose parameter at
+                // this position is a delegate taking `nparams` arguments and whose
+                // other parameters accept the declared Lyric types.
+                var best: Option[Mdr.ResolvedMethod] = None
+                var bestScore = 0 - 1
+                var bestInstance = false
+                var mi = 0
+                while mi < methods.count {
+                  val m = methods[mi]
+                  val inst = not m.isStatic and not r.isCtor
+                  val declOffset = if inst { 1 } else { 0 }
+                  val bi = idx - declOffset
+                  if m.name == r.memberName and m.genericArity == 0 and m.paramTypes.count == decl.params.count - declOffset and bi >= 0 and delegateParamFitsMsil(cctx, m.paramTypes[bi], nparams) {
+                    var total = 0
+                    var ok = true
+                    var pj = 0
+                    while pj < m.paramTypes.count and ok {
+                      val lyricIdx = pj + declOffset
+                      if lyricIdx != idx {
+                        match argTyToSig(typeExprToMsilCtx(cctx, decl.params[lyricIdx].ty, pkgName)) {
+                          case Some(sg) -> {
+                            val sc = Mdr.scoreSigTypeLenient(sg, m.paramTypes[pj])
+                            if sc < 0 {
+                              ok = false
+                            } else {
+                              total = total + sc
+                            }
+                          }
+                          case None -> ()
+                        }
+                      }
+                      pj = pj + 1
+                    }
+                    if ok and total > bestScore {
+                      best = Some(value = m)
+                      bestScore = total
+                      bestInstance = inst
+                    }
+                  }
+                  mi = mi + 1
+                }
+                match best {
+                  case None -> None
+                  case Some(chosen) -> {
+                    val bclIdx = if bestInstance { idx - 1 } else { idx }
+                    // Whether this call erases the declaring type's arguments.
+                    val erasing = arity > 0 and not declGenericArgsKnown and
+                      not externGenericReifiedMsil(cctx, decl, pkgName, genericNamesOf(decl.generics), cleanFqn, arity, r.isCtor, bestInstance)
+                    match delegateParamMsilType(cctx, chosen.paramTypes[bclIdx]) {
+                      case Some(MGenericInst(_, headFqn, targs)) -> {
+                        val delegateFqn = stripBracketSuffix(headFqn)
+                        val hasVars = erasedVarCountMsil(targs) > 0
+                        if isFuncOrActionFqnMsil(headFqn) {
+                          if not erasing or not hasVars {
+                            return None
+                          }
+                          val mask: List[Bool] = newList()
+                          var ti = 0
+                          while ti < targs.count {
+                            mask.add(match targs[ti] { case MTypeVar(_) -> true; case _ -> false })
+                            ti = ti + 1
+                          }
+                          Some(value = ExternDelegateSlotMsil(named = false, delegateTy = MObject, mask = mask))
+                        } else {
+                          if hasVars and not erasing {
+                            return None
+                          }
+                          namedDelegateSlotMsil(
+                            cctx,
+                            delegateFqn,
+                            nparams,
+                            targs,
+                            MGenericInst(typeRefCode = 0, headFqn = headFqn, typeArgs = targs),
+                            erasing
+                          )
+                        }
+                      }
+                      case Some(MClassRef(code, fqn)) -> {
+                        if isFuncOrActionFqnMsil(fqn) {
+                          return None
+                        }
+                        val noArgs: List[MsilType] = newList()
+                        namedDelegateSlotMsil(cctx, fqn, nparams, noArgs, MClassRef(typeRefCode = code, clrFqn = fqn), false)
+                      }
+                      case _ -> None
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// A BCL parameter's metadata type as an MsilType that keeps the declaring
+// type's `!N` positions (`genericMemberSigToMsil` over a normalised SigType).
+func delegateParamMsilType(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  genericMemberSigToMsil(cctx, sig)
+}
+
+// The `Invoke` method of `fqn` when it is a delegate type (a direct
+// `System.MulticastDelegate` subclass), else None.
+func delegateInvokeMethodMsil(cctx: in CodegenCtx, fqn: in String): Option[Mdr.ResolvedMethod] {
+  match mapGet(cctx.metadataPathIndex, assemblyForTypeMsil(cctx, fqn)) {
+    case None -> None
+    case Some(dpath) -> {
+      if Mdr.typeBaseFqnCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, dpath, fqn) != "System.MulticastDelegate" {
+        return None
+      }
+      match Mdr.loadParsedAssemblyCached(cctx.metadataParsedPaths, cctx.metadataParsedAssemblies, dpath) {
+        case None -> None
+        case Some(parsed) -> match Mdr.allMethodSigsOn(parsed.img, parsed.layout, parsed.th, fqn) {
+          case None -> None
+          case Some(methods) -> {
+            var found: Option[Mdr.ResolvedMethod] = None
+            var i = 0
+            while i < methods.count {
+              if methods[i].name == "Invoke" {
+                found = Some(value = methods[i])
+              }
+              i = i + 1
+            }
+            found
+          }
+        }
+      }
+    }
+  }
+}
+
+// Whether a BCL parameter type is a delegate a Lyric `(A1..An) -> R` can be
+// bridged to: a `Func`/`Action` over `nparams` arguments, or any other
+// delegate whose `Invoke` takes `nparams`.
+func delegateParamFitsMsil(cctx: in CodegenCtx, pt: in Mdr.SigType, nparams: in Int): Bool {
+  match pt {
+    case Mdr.STNamed(fqn, vt) -> {
+      if vt {
+        false
+      } else {
+        match delegateInvokeMethodMsil(cctx, fqn) {
+          case Some(inv) -> inv.paramTypes.count == nparams
+          case None -> false
+        }
+      }
+    }
+    case Mdr.STNamedGenericInst(fqn, vt, args) -> {
+      if vt {
+        false
+      } else if startsWith(fqn, "System.Func`") {
+        args.count == nparams + 1
+      } else if startsWith(fqn, "System.Action`") {
+        args.count == nparams
+      } else {
+        match delegateInvokeMethodMsil(cctx, fqn) {
+          case Some(inv) -> inv.paramTypes.count == nparams
+          case None -> false
+        }
+      }
+    }
+    case _ -> false
+  }
+}
+
+func erasedVarCountMsil(tys: in List[MsilType]): Int {
+  var n = 0
+  var i = 0
+  while i < tys.count {
+    match tys[i] {
+      case MTypeVar(_) -> {
+        n = n + 1
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  n
+}
+
+// A named delegate (a `MulticastDelegate` other than `Func`/`Action`): check it
+// really is one, that its `Invoke` takes `nparams` arguments, and compute which
+// `Invoke` positions are the erased declaring type's `!N` via the delegate's own
+// generic parameters.  `closedTy` carries the real head TypeRef for a
+// non-generic delegate; for a generic one the head is re-resolved here so the
+// wrapper's parameter is the `object`-instantiated type.
+func namedDelegateSlotMsil(
+  cctx: in CodegenCtx,
+  delegateFqn: in String,
+  nparams: in Int,
+  targs: in List[MsilType],
+  closedTy: in MsilType,
+  erasing: in Bool,
+): Option[ExternDelegateSlotMsil] {
+  match delegateInvokeMethodMsil(cctx, delegateFqn) {
+    case None -> None
+    case Some(inv) -> {
+      if inv.paramTypes.count != nparams {
+        return None
+      }
+      val mask: List[Bool] = newList()
+      var anyErased = false
+      var pj = 0
+      while pj < nparams {
+        val erased = match inv.paramTypes[pj] {
+          case Mdr.STVar(k) -> k < targs.count and (match targs[k] { case MTypeVar(_) -> true; case _ -> false })
+          case _ -> false
+        }
+        if erased {
+          anyErased = true
+        }
+        mask.add(erased)
+        pj = pj + 1
+      }
+      val retErased = match inv.returnType {
+        case Mdr.STVar(k) -> k < targs.count and
+          (match targs[k] { case MTypeVar(_) -> true; case _ -> false })
+        case _ -> false
+      }
+      if retErased {
+        anyErased = true
+      }
+      mask.add(retErased)
+      val finalTy = match closedTy {
+        case MGenericInst(_, headFqn, _) -> {
+          val headRow = internFfiTypeRefNested(cctx, delegateFqn)
+          MGenericInst(typeRefCode = tdrTypeRef(headRow), headFqn = headFqn, typeArgs = substObjectForTypeVarsMsil(targs))
+        }
+        case other -> other
+      }
+      Some(
+        value = ExternDelegateSlotMsil(
+          named = true,
+          delegateTy = finalTy,
+          mask = if anyErased and erasing { mask } else { newList() }
+        )
+      )
+    }
+  }
+}
+
+func erasedDelegateMaskMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, idx: in Int): List[Bool] {
+  match externDelegateSlotMsil(cctx, decl, pkgName, idx) {
+    case Some(slot) -> slot.mask
+    case None -> newList()
+  }
+}
+
+// The wrapper parameter type for a bridged parameter whose BCL type is a named
+// delegate, or None for the `Func`/`Action` shapes.
+func namedDelegateParamTypeMsil(
+  cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String, idx: in Int
+): Option[MsilType] {
+  match externDelegateSlotMsil(cctx, decl, pkgName, idx) {
+    case Some(slot) -> if slot.named { Some(value = slot.delegateTy) } else { None }
+    case None -> None
+  }
+}
+
+func eraseMaskedParamsMsil(mask: in List[Bool], tys: in List[MsilType]): List[MsilType] {
+  if mask.count == 0 {
+    return tys
+  }
+  val erasedTys: List[MsilType] = newList()
+  var i = 0
+  while i < tys.count {
+    erasedTys.add(if i < mask.count and mask[i] { MObject } else { tys[i] })
+    i = i + 1
+  }
+  erasedTys
+}
+
+func eraseMaskedRetMsil(mask: in List[Bool], nparams: in Int, ret: in MsilType): MsilType {
+  if nparams < mask.count and mask[nparams] {
+    MObject
+  } else {
+    ret
+  }
+}
+
 // The metadata token of a TypeDefOrRef coded index (`MClassRef`'s
 // `typeRefCode`, ECMA-335 §II.24.2.6): tag 0 TypeDef, 1 TypeRef, 2 TypeSpec.
 func tdrCodeToTokenMsil(code: in Int): Int {
@@ -30269,7 +30779,17 @@ func emitExternTargetBody(
               case Some(rt) -> rt
               case None -> typeExprToMsilGenBodyOrCtx(cctx, fnRetTe, pkgName, declGenerics)
             }
-            buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy)
+            match namedDelegateParamTypeMsil(cctx, decl, pkgName, pi) {
+              case Some(namedTy) -> namedTy
+              case None -> {
+                val erasedMask = erasedDelegateMaskMsil(cctx, decl, pkgName, pi)
+                buildTypedFuncOrActionMsilType(
+                  cctx,
+                  eraseMaskedParamsMsil(erasedMask, innerParamTys),
+                  eraseMaskedRetMsil(erasedMask, innerParamTys.count, innerRetTy)
+                )
+              }
+            }
           }
           // A bracket-suffixed extern-type-alias parameter (`List<
           // SslApplicationProtocol>`-shaped, #6029 Gap A) needs its real closed
@@ -36368,7 +36888,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // Skipped when this parameter already has a real (non-object) physical signature
     // type (the `@externTarget` delegate-bridging case above) — there the argument
     // arrives as its genuine type, never boxed, so unboxing it would be wrong.
-    if isLambdaFn and paramTy != MObject and pi >= lambdaExternParamTys.count {
+    if isLambdaFn and paramTy != MObject and (pi >= lambdaExternParamTys.count or lambdaExternParamTys[pi] == MObject) {
       fctx.boxedParamTypes.add(slot, paramTy)
     }
     // Phase 1: lambda method signature uses object-based parameters for delegate
@@ -36591,7 +37111,19 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
             case Some(rt) -> rt
             case None -> typeExprToMsilCtx(cctx, fnRetTe, pkgName)
           }
-          paramTypes.add(buildTypedFuncOrActionMsilType(cctx, innerParamTys, innerRetTy))
+          match namedDelegateParamTypeMsil(cctx, decl, pkgName, pi2) {
+            case Some(namedTy) -> paramTypes.add(namedTy)
+            case None -> {
+              val erasedMask = erasedDelegateMaskMsil(cctx, decl, pkgName, pi2)
+              paramTypes.add(
+                buildTypedFuncOrActionMsilType(
+                  cctx,
+                  eraseMaskedParamsMsil(erasedMask, innerParamTys),
+                  eraseMaskedRetMsil(erasedMask, innerParamTys.count, innerRetTy)
+                )
+              )
+            }
+          }
         }
         case _ -> paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi2].ty, pkgName))
       }
