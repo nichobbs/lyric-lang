@@ -4937,7 +4937,7 @@ pub func pipeWeave(
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
-  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, origins) {
+  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files) {
     case Some(f) -> f
     case None -> return None
   }
@@ -4974,7 +4974,7 @@ func specialiseWovenContracts(
   generics: in List[FunctionDecl],
   extraRecordDecls: in List[RecordDecl],
   pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   if generics.count == 0 or not fileHasWovenWrapper(woven) {
     return Some(value = woven)
@@ -4998,7 +4998,7 @@ func specialiseWovenContracts(
     noLambdaSites,
     noSpecSites
   )
-  if gate(pkgLabel, origins, res.diagnostics) {
+  if gate(pkgLabel, files, res.diagnostics) {
     return None
   }
   // A specialisation the first run already made has the same name and arity
