@@ -62,3 +62,14 @@ classes a Lyric record cannot extend.
   positions keep the `System.Object` convention.
 - The dotnet client test peer binds ephemeral ports (`hostLocalPort`) instead of
   fixed ones.
+- The `Tuple.Create` case added to `generic_extern_methodspec_self_test.l` with
+  D281 passed with the witness inference disabled (checked: the wrapper's declared
+  return type is not verified against the instantiated one), so it guarded
+  nothing; it is removed rather than left as a false assurance. The inference is
+  guarded end to end by the lyric-grpc dotnet client tests: without it
+  `CallInvoker.BlockingUnaryCall` receives a `Method<byte[],byte[]>` where it
+  wants `Method<object,object>` and every unary call fails with
+  `InvalidCastException` (observed before the fix). A BCL-only case needs a
+  generic static method whose parameter is an invariant generic class of the same
+  head as the wrapper's alias, which the BCL has none of that is also simple to
+  construct.
