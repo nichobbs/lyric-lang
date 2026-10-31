@@ -19,6 +19,13 @@
 #   --release, package annotated @runtime_checked(release_contracts = full)
 #                              every contract is checked again.
 #
+# A second set of programs repeats the policy for methods (#8680): one each for
+# a record method, an `impl` method, a method inherited from an interface, and
+# a protected-type entry and func.  In each, the `ensures:` and the `requires:`
+# of a non-`pub` member are unchecked in a release build (the program prints
+# their results), while a `pub` member's `requires:` and an interface method's
+# `requires:` still panic.  A protected type keeps its `invariant:`.
+#
 # With no arguments it checks dotnet, jvm and native.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -67,6 +74,159 @@ func main(): Int {
 '
 printf 'package ReleaseContracts\n%s' "$body" > "$work/plain.l"
 printf '@runtime_checked(release_contracts = full)\npackage ReleaseContractsFull\n%s' "$body" > "$work/full.l"
+
+mk_member() {
+  # mk_member NAME BODY: write $work/NAME.l as package Members<NAME>.
+  printf '%s\n' "package Members$1" "$2" > "$work/$1.l"
+}
+
+mk_member record '
+pub record Counter {
+  n: Int
+
+  func ensuresOnly(self: in Counter): Int
+    ensures: result > 1000
+  {
+    self.n * 2
+  }
+
+  func internalRequires(self: in Counter): Int
+    requires: self.n > 1000
+  {
+    self.n
+  }
+
+  pub func publicRequires(self: in Counter): Int
+    requires: self.n > 1000
+  {
+    self.n
+  }
+}
+
+func main(): Int {
+  val c = Counter(n = 3)
+  println("ensures ${c.ensuresOnly()}")
+  println("internal requires ${c.internalRequires()}")
+  println("public requires ${c.publicRequires()}")
+  return 0
+}'
+
+mk_member impl '
+interface Gauge {
+  func read(self: in Self): Int
+}
+
+record Dial {
+  n: Int
+}
+
+impl Gauge for Dial {
+  func read(self: in Dial): Int
+    ensures: result > 1000
+  {
+    self.n
+  }
+}
+
+record Knob {
+  n: Int
+}
+
+impl Knob {
+  func ownRequires(self: in Knob): Int
+    requires: self.n > 1000
+  {
+    self.n
+  }
+
+  pub func publicRequires(self: in Knob): Int
+    requires: self.n > 1000
+  {
+    self.n
+  }
+}
+
+func main(): Int {
+  println("ensures ${Dial(n = 3).read()}")
+  println("internal requires ${Knob(n = 4).ownRequires()}")
+  println("public requires ${Knob(n = 5).publicRequires()}")
+  return 0
+}'
+
+mk_member inherited '
+interface Limited {
+  func take(self: in Self, k: in Int): Int
+    requires: k > 1000
+    ensures: result > 1000
+}
+
+record Box {
+  n: Int
+}
+
+impl Limited for Box {
+  func take(self: in Box, k: in Int): Int {
+    k - 1000
+  }
+}
+
+func main(): Int {
+  println("before ${Box(n = 1).n}")
+  println("ok ${Box(n = 1).take(1500)}")
+  println("take ${Box(n = 1).take(5)}")
+  return 0
+}'
+
+mk_member protected '
+protected type Cell {
+  var v: Int = 0
+  invariant: v >= 0
+
+  entry setAll(k: in Int): Int
+    requires: k > 1000
+    ensures: result > 1000
+  {
+    v = k
+    k
+  }
+
+  func peek(): Int
+    ensures: result > 1000
+  {
+    v
+  }
+
+  entry drop(k: in Int): Unit {
+    v = v - k
+  }
+}
+
+func main(): Int {
+  val c = Cell()
+  println("entry ${c.setAll(5)}")
+  println("func ${c.peek()}")
+  c.drop(10)
+  println("unreachable")
+  return 0
+}'
+
+mk_member protected_invariant '
+protected type Cell {
+  var v: Int = 0
+  invariant: v >= 0
+
+  entry sub(k: in Int): Unit {
+    v = v - k
+  }
+}
+
+func main(): Int {
+  val c = Cell()
+  println("before")
+  c.sub(1)
+  println("unreachable")
+  return 0
+}'
 
 targets=("$@")
 if [[ ${#targets[@]} -eq 0 ]]; then
@@ -141,6 +301,19 @@ for target in "${targets[@]}"; do
   check "$target" release "$work/plain.l" "publicRequires" $'ensures 6\ninternal requires 5' --release "${shape[@]}"
   check "$target" release-keep "$work/plain.l" "internalEnsures" "" --release --release-contracts "${shape[@]}"
   check "$target" release-annotated "$work/full.l" "internalEnsures" "" --release "${shape[@]}"
+
+  # Methods: debug checks the first violated clause; release runs past every
+  # elided one and stops at the first clause that is kept.
+  check "$target" record-debug "$work/record.l" "ensuresOnly" ""
+  check "$target" record-release "$work/record.l" "publicRequires" $'ensures 6\ninternal requires 3' --release "${shape[@]}"
+  check "$target" record-release-keep "$work/record.l" "ensuresOnly" "" --release --release-contracts "${shape[@]}"
+  check "$target" impl-debug "$work/impl.l" "read" ""
+  check "$target" impl-release "$work/impl.l" "publicRequires" $'ensures 3\ninternal requires 4' --release "${shape[@]}"
+  check "$target" inherited-debug "$work/inherited.l" "take" $'before 1'
+  check "$target" inherited-release "$work/inherited.l" "take" $'before 1\nok 500' --release "${shape[@]}"
+  check "$target" protected-debug "$work/protected.l" "setAll" ""
+  check "$target" protected-release "$work/protected.l" "nvariant" $'entry 5\nfunc 5' --release "${shape[@]}"
+  check "$target" protected-invariant "$work/protected_invariant.l" "invariant" $'before' --release "${shape[@]}"
 done
 
 if [[ $fail -ne 0 ]]; then

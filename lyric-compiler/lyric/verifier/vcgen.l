@@ -120,6 +120,88 @@ func resolveDistinct(distincts: in Map[String, TypeExpr], te: in TypeExpr): Type
   current
 }
 
+// `R[Int]` for a generic alias `alias R[T] = Result[T, String]` is the alias's
+// right-hand side with each type parameter replaced by the argument written
+// at the use (#8631).  A type parameter in scope that is spelt like the alias
+// shadows it, as for every file-level type.
+func expandGenericAlias(
+  distincts: in Map[String, TypeExpr],
+  typeParams: in List[String],
+  te: in TypeExpr,
+): Option[TypeExpr] {
+  match te.kind {
+    case TGenericApp(head, args) -> {
+      if head.segments.count != 1 or typeParams.contains(head.segments[0]) {
+        return None
+      }
+      val name = head.segments[0]
+      match mapGet(distincts, genericAliasKey(name)) {
+        case Some(rhs) -> match mapGet(distincts, genericAliasParamsKey(name)) {
+          case Some(carrier) -> match carrier.kind {
+            case TTuple(params) -> {
+              if params.count != args.count {
+                return None
+              }
+              val subst: Map[String, TypeExpr] = newMap()
+              var i = 0
+              while i < params.count {
+                match params[i].kind {
+                  case TRef(p) -> match args[i] {
+                    case TAType(arg) -> subst.add(p.segments[0], arg)
+                    case TAValue(_) -> return None
+                  }
+                  case _ -> return None
+                }
+                i = i + 1
+              }
+              Some(value = substAliasParams(subst, rhs))
+            }
+            case _ -> None
+          }
+          case None -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func substAliasParams(subst: in Map[String, TypeExpr], te: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(subst, path.segments[0]) {
+          case Some(arg) -> arg
+          case None -> te
+        }
+      } else {
+        te
+      }
+    }
+    case TGenericApp(head, args) -> {
+      val newArgs: List[TypeArg] = newList()
+      for a in args {
+        match a {
+          case TAType(inner) -> newArgs.add(TAType(ty = substAliasParams(subst, inner)))
+          case TAValue(_) -> newArgs.add(a)
+        }
+      }
+      TypeExpr(kind = TGenericApp(head = head, args = newArgs), span = te.span)
+    }
+    case TNullable(inner) -> TypeExpr(kind = TNullable(inner = substAliasParams(subst, inner)), span = te.span)
+    case TSlice(inner) -> TypeExpr(kind = TSlice(element = substAliasParams(subst, inner)), span = te.span)
+    case TTuple(types) -> {
+      val newTypes: List[TypeExpr] = newList()
+      for t in types {
+        newTypes.add(substAliasParams(subst, t))
+      }
+      TypeExpr(kind = TTuple(types = newTypes), span = te.span)
+    }
+    case _ -> te
+  }
+}
+
 // Whether `te` names a file-level distinct type or alias: a single-segment
 // name the file declares that no type parameter in scope shadows.
 func namesFileDistinct(distincts: in Map[String, TypeExpr], typeParams: in List[String], te: in TypeExpr): Bool {
@@ -272,6 +354,12 @@ func sortOfTypeExprDepthRaw(
   te: in TypeExpr,
   depth: in Int,
 ): SortInfo {
+  if depth < 16 {
+    match expandGenericAlias(distincts, typeParams, te) {
+      case Some(expanded) -> return sortOfTypeExprDepth(distincts, typeParams, expanded, depth + 1)
+      case None -> ()
+    }
+  }
   val viaFile = namesFileDistinct(distincts, typeParams, te)
   val resolved = if viaFile { resolveDistinct(distincts, te) } else { te }
   val typeScope = if viaFile { noTypeParams() } else { typeParams }

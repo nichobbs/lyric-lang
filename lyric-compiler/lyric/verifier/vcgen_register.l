@@ -15,6 +15,9 @@ import Lyric.SelfFields as SelfFields
 // value declared with the alias has the sort, width and range of what it
 // names: a quantifier over `alias S = Small` ranges over `Small` (#8214).
 // An alias of `Result`, `Option` or a nullable type is registered too (#8168).
+// A generic alias of `Result`, `Option` or a nullable type (`alias R[T] =
+// Result[T, String]`) is registered with its parameter names, and expanded
+// where `R[Int]` is used (`expandGenericAlias`, #8631).
 // An alias of a record, union or other named type is left as it was: its
 // name is not a distinct type's, which `S(x)` would otherwise construct.
 func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, TypeExpr]): Unit {
@@ -30,6 +33,11 @@ func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, Type
           if not isGeneric and not distinctMap.containsKey(ad.name) and aliasNamesScalar(distinctMap, ad.rhs) {
             distinctMap.add(ad.name, ad.rhs)
             changed = true
+          } else if isGeneric and not distinctMap.containsKey(genericAliasKey(ad.name)) and
+            genericAliasIsMonad(ad.rhs) and genericAliasParamsAreTypes(ad.generics) {
+            distinctMap.add(genericAliasKey(ad.name), ad.rhs)
+            distinctMap.add(genericAliasParamsKey(ad.name), genericAliasParamsCarrier(ad.generics, ad.span))
+            changed = true
           }
         }
         case _ -> ()
@@ -38,6 +46,59 @@ func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, Type
     }
     pass = pass + 1
   }
+}
+
+// Map keys under which a generic alias's right-hand side and parameter names
+// are kept in the file's distinct-type map; the leading `!` cannot start a
+// type name.
+pub func genericAliasKey(name: in String): String {
+  "!galias." + name
+}
+
+pub func genericAliasParamsKey(name: in String): String {
+  "!galias.params." + name
+}
+
+// Only a `Result`, `Option` or nullable right-hand side is expanded: the
+// verifier models those datatypes, and a generic alias of anything else
+// stays the uninterpreted type it was.
+func genericAliasIsMonad(te: in TypeExpr): Bool {
+  match te.kind {
+    case TGenericApp(head, targs) -> head.segments.count == 1 and
+      (
+        head.segments[0] == "Result" and targs.count == 2 or
+          head.segments[0] == "Option" and targs.count == 1
+      )
+    case TNullable(_) -> true
+    case _ -> false
+  }
+}
+
+func genericAliasParamsAreTypes(generics: in Option[GenericParams]): Bool {
+  match generics {
+    case Some(gp) -> {
+      for g in gp.params {
+        match g {
+          case GPType(_, _) -> ()
+          case _ -> return false
+        }
+      }
+      true
+    }
+    case None -> false
+  }
+}
+
+// The parameter names ride in a tuple type of single-segment names, since the
+// distinct-type map holds `TypeExpr`s.
+func genericAliasParamsCarrier(generics: in Option[GenericParams], span: in Span): TypeExpr {
+  val tys: List[TypeExpr] = newList()
+  for n in genericTypeParamNames(generics) {
+    val segs: List[String] = newList()
+    segs.add(n)
+    tys.add(TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = span)), span = span))
+  }
+  TypeExpr(kind = TTuple(types = tys), span = span)
 }
 
 func aliasNamesScalar(distinctMap: in Map[String, TypeExpr], te: in TypeExpr): Bool {
