@@ -2092,6 +2092,54 @@ pub func encodeResponseHeaders(
   }
 }
 
+/// `encodeResponseTrailers`'s precondition: every field `isH2ResponseFieldSafe`
+/// and no pseudo-header (RFC 9113 §8.1: a trailer section carries none).
+@pure
+@experimental
+pub func isH2ResponseTrailerListSafe(trailers: in List[HeaderField]): Bool {
+  var i = 0
+  while i < trailers.count {
+    val h = trailers[i]
+    if h.name.startsWith(":") or not isH2ResponseFieldSafe(h.name, h.value) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Frame `trailers` as the final HEADERS block of a response on `streamId`
+/// (RFC 9113 §8.1): it carries END_STREAM and closes the server's half of the
+/// stream, so DATA must already have been sent. gRPC delivers `grpc-status`
+/// and `grpc-message` this way. Fails with `HeaderStreamNotWritable` if the
+/// connection is poisoned or the stream cannot send HEADERS, or
+/// `HeaderEncodingFailed` if HPACK encoding fails.
+///
+/// # Contract
+/// `trailers` satisfies `isH2ResponseTrailerListSafe`.
+@experimental
+pub func encodeResponseTrailers(
+  conn: in H2Connection, streamId: in Int, trailers: in List[HeaderField]
+): Result[slice[Byte], H2SendError]
+  requires: isH2ResponseTrailerListSafe(trailers)
+{
+  var state = conn
+  if isFailed(state) {
+    return Err(error = HeaderStreamNotWritable(streamId = streamId))
+  }
+  match findStream(state, streamId) {
+    case None -> Err(error = HeaderStreamNotWritable(streamId = streamId))
+    case Some(st) -> {
+      val s: H2Stream = st
+      if not streamWritable(s) {
+        Err(error = HeaderStreamNotWritable(streamId = streamId))
+      } else {
+        encodeResponseHeadersOn(state, streamId, trailers, true)
+      }
+    }
+  }
+}
+
 func encodeResponseHeadersOn(
   state: inout H2Connection,
   streamId: in Int,

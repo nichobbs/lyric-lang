@@ -2,14 +2,21 @@
 
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
-> **Status**: @experimental. On `dotnet`: channel lifecycle (`openChannel`/`closeChannel`) and the in-process rate limiter (`checkRateLimit`) are real, `Grpc.Net.Client`-backed, and covered by real tests (no live gRPC service needed — a malformed/lazy-dialed address and local rate-limiter state are both verifiable without one). Unary calls, server streaming, and server hosting are **not implemented** — blocked on two self-hosted MSIL backend gaps (#6581), not a design choice; see `src/_kernel/net/grpc_kernel.l`'s `netCallUnary` and `serve` doc comments for the root cause. A 2026-09-05 investigation re-verified both gaps against `origin/main` and decoded the real `Grpc.Core.Api`/`Grpc.AspNetCore.Server` 2.65.0 reference-assembly metadata directly: server hosting has no non-generic escape hatch either (`IServiceCollection.AddGrpc()` is bindable but every path to an actual registered RPC route — `MapGrpcService<T>`, or the lower-level `ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>` / `ServiceBinderBase.AddMethod<TRequest,TResponse>` it wraps — is a generic-method call over a `Marshaller<T>`-built `Method<TRequest,TResponse>`, hitting both gaps). `jvm` is Phase 6 (planned, not started).
+> **Status**: @experimental. The **client** is real on both targets and covered by end-to-end tests against an in-process gRPC server: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`start`, `startHandle`, `stop`) is not implemented on either target and fails loudly; it needs a handler value in `ServiceRegistry` (a string `handlerName` has no dispatch mechanism) and a way to host an RPC route, tracked in #8642. The aspect templates in `Grpc.Aspects` are `dotnet` only.
 
 ## Platform parity
 
-| Feature flag | Backend | Status |
-|---|---|---|
-| `dotnet` | `Grpc.Net.Client` via `Grpc.Kernel.Net` | Channel lifecycle + rate limiting real and tested; unary/streaming/hosting blocked on #6581 (re-verified 2026-09-05, no bindable non-generic subset found) |
-| `jvm` | `io.grpc:grpc-netty-shaded` via `Grpc.Kernel.Jvm` | Phase 6 (planned) |
+| Feature flag | Backend | Client | Server hosting | Tests |
+|---|---|---|---|---|
+| `dotnet` | `Grpc.Net.Client` / `Grpc.Core.Api` via `Grpc.Kernel.Net` | unary, server streaming, metadata, deadlines, `checkRateLimit` | not implemented (#8642) | `tests/client_dotnet_tests.l` (pure-Lyric h2c test peer on `Std.HttpEngine.H2Conn`), `tests/rate_limit_tests.l`, `tests/channel_lifecycle_tests.l` |
+| `jvm` | `io.grpc:grpc-netty-shaded` / `grpc-stub` via `Grpc.Kernel.Jvm` | unary, server streaming, metadata, deadlines, `checkRateLimit` | not implemented (#8642) | `tests/client_jvm_tests.l` (grpc-java `Server` test peer), `tests/rate_limit_jvm_tests.l` |
+
+Differences to know about:
+
+- **Addresses.** `.NET` accepts any absolute `http(s)` URI `GrpcChannel.ForAddress` accepts. The JVM accepts `http://host[:port]` (plaintext) or `https://host[:port]` (TLS) with no path, query or whitespace (`Grpc.Types.parseAddress`), because a grpc-java target carries none.
+- **Rate limiting.** `.NET` composes a 60 s sliding window at `requestsPerMinute` with a 1 s window at `burstSize`. The JVM uses the `Lyric.Resilience` token bucket: `requestsPerMinute + burstSize` permits, refilled at `requestsPerMinute` a minute. Both return `false` when the method's budget is spent; the margins differ.
+- **Errors.** A failed call is `Err(GrpcStatus)` with the server's code and message (`Grpc.Types.statusFromException` reads grpc-dotnet's `Status(StatusCode="...", Detail="...")` and grpc-java's `CODE: description`). A closed channel is `FailedPrecondition`; no server is `Unavailable`; an expired `withTimeout` is `DeadlineExceeded`. Server-streaming failures arrive from `nextMessage`, not from `openServerStream`, because a call that has not started reading has not failed yet.
+- **Payloads** are raw `slice[Byte]` (protobuf bytes) on both targets: compose with `lyric-proto`.
 
 ## Packages
 

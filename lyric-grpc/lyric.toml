@@ -7,8 +7,8 @@
 #                        and server API (ServiceRegistry, addMethod, start).
 #   Grpc.Aspects       — pub aspect templates: RequiresGrpcAuth,
 #                        RequiresGrpcRole, GrpcRateLimit, GrpcCircuitBreaker.
-#   Grpc.Kernel.Net    — Grpc.Net.Client (client) + Grpc.AspNetCore (server).
-#   Grpc.Kernel.Jvm    — io.grpc client + server (Phase 6).
+#   Grpc.Kernel.Net    — Grpc.Net.Client / Grpc.Core.Api client (server hosting: #8642).
+#   Grpc.Kernel.Jvm    — grpc-java client (server hosting: #8642).
 #
 # Client usage (unary call):
 #   val ch = Grpc.openChannel("https://collector:4317").unwrap()
@@ -37,7 +37,7 @@ license     = "Apache-2.0"
 [features]
 default = ["dotnet"]
 dotnet = []
-# io.grpc (grpc-java) backend (Phase 6).
+# io.grpc (grpc-java) backend.
 jvm    = []
 
 [project]
@@ -52,9 +52,9 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc"            = "src/grpc.l"
 # Pub aspect templates for cross-cutting gRPC handler concerns.
 "Grpc.Aspects"    = "src/aspects.l"
-# .NET kernel: Grpc.Net.Client (client) + Grpc.AspNetCore (server).
+# .NET kernel: Grpc.Net.Client / Grpc.Core.Api client.
 "Grpc.Kernel.Net" = "src/_kernel/net/grpc_kernel.l"
-# JVM kernel: io.grpc client + server (Phase 6).
+# JVM kernel: grpc-java client.
 "Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
 
 [project.tests]
@@ -62,6 +62,9 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.SecurityAspectWeavingTests" = "tests/security_aspect_weaving_tests.l"
 "Grpc.RateLimitTests" = "tests/rate_limit_tests.l"
 "Grpc.ChannelLifecycleTests" = "tests/channel_lifecycle_tests.l"
+"Grpc.ClientDotnetTests" = "tests/client_dotnet_tests.l"
+"Grpc.ClientJvmTests" = "tests/client_jvm_tests.l"
+"Grpc.RateLimitJvmTests" = "tests/rate_limit_jvm_tests.l"
 
 [dependencies]
 "Lyric.Auth"       = { workspace = true }

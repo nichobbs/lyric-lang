@@ -1337,6 +1337,65 @@ test "a busy connection that completes as many streams as it resets is NOT false
   assertFalse(hasConnError(r.events), "no connection error from the balanced workload")
 }
 
+test "encodeResponseTrailers sends a pseudo-header-free END_STREAM HEADERS block after DATA" {
+  var conn = setupDefault()
+  val r1 = H2.feed(conn, headersFrame(1, encodeBlock(requestHeaders()), true, true))
+  var c = r1.conn
+  match H2.encodeResponseHeaders(c, 1, responseHeaders(), false) {
+    case Err(_) -> panic("response header encoding failed")
+    case Ok(_) -> ()
+  }
+  match H2.sendData(c, 1, mkBytes(5, 66), false) {
+    case Err(_) -> panic("sendData failed")
+    case Ok(_) -> ()
+  }
+  assertFalse(stateIs(H2.streamState(c, 1), "closed"), "stream still open before the trailers")
+  val trailers: List[HeaderField] = newList()
+  trailers.add(HeaderField(name = "grpc-status", value = "0"))
+  match H2.encodeResponseTrailers(c, 1, trailers) {
+    case Err(_) -> panic("encodeResponseTrailers failed")
+    case Ok(bytes) -> {
+      val frames = decodeFrames(bytes)
+      assertEqualInt(frames.count, 1, "one HEADERS frame")
+      match frames[0] {
+        case HeadersFrame(sid, _, endStream, endHeaders, _) -> {
+          assertEqualInt(sid, 1, "on the response stream")
+          assertTrue(endStream, "trailers carry END_STREAM")
+          assertTrue(endHeaders, "single header block")
+        }
+        case _ -> panic("expected a HEADERS frame")
+      }
+    }
+  }
+  assertTrue(stateIs(H2.streamState(c, 1), "closed"), "stream closed after the trailers")
+}
+
+test "encodeResponseTrailers on a non-writable stream returns HeaderStreamNotWritable" {
+  var conn = setupDefault()
+  val trailers: List[HeaderField] = newList()
+  trailers.add(HeaderField(name = "grpc-status", value = "0"))
+  match H2.encodeResponseTrailers(conn, 9, trailers) {
+    case Ok(_) -> panic("encoding trailers on an unknown stream must fail")
+    case Err(e) -> match e {
+      case HeaderStreamNotWritable(sid) -> assertEqualInt(sid, 9, "reports the unwritable stream id")
+      case HeaderEncodingFailed(_) -> panic("expected HeaderStreamNotWritable")
+    }
+  }
+}
+
+test "isH2ResponseTrailerListSafe rejects pseudo-headers and connection-specific fields" {
+  val ok: List[HeaderField] = newList()
+  ok.add(HeaderField(name = "grpc-status", value = "0"))
+  ok.add(HeaderField(name = "grpc-message", value = "fine"))
+  assertTrue(H2.isH2ResponseTrailerListSafe(ok), "plain trailer fields are safe")
+  val pseudo: List[HeaderField] = newList()
+  pseudo.add(HeaderField(name = ":status", value = "200"))
+  assertFalse(H2.isH2ResponseTrailerListSafe(pseudo), "a pseudo-header is not a trailer")
+  val conn: List[HeaderField] = newList()
+  conn.add(HeaderField(name = "connection", value = "close"))
+  assertFalse(H2.isH2ResponseTrailerListSafe(conn), "connection-specific fields are refused")
+}
+
 test "encodeResponseHeaders on a non-writable stream returns HeaderStreamNotWritable (#6084)" {
   var conn = setupDefault()
   match H2.encodeResponseHeaders(conn, 9, responseHeaders(), false) {

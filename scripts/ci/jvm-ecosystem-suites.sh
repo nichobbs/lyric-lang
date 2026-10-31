@@ -42,9 +42,11 @@
 #               transport, #8560) (#7511)
 #   search      the request-deadline branch against a silent in-process
 #               backend (`@cfg(target = "jvm")` test, #8571)
-#   grpc        Grpc.Types and the JVM kernel package compiling together; the
-#               rate-limit, channel and aspect-weaving suites are dotnet-gated
-#               and the JVM kernel's `extern package` calls are #8527
+#   grpc        the client against an in-process grpc-java server (unary,
+#               server streaming, metadata, deadlines, status mapping,
+#               early stream cancel, #8527 / #5409) and the Resilience-backed
+#               rate limiter; grpc-java is Maven-restored first. Server hosting
+#               is #8642.
 #
 # Replaces one ci.yml step per library (ci.yml is at its size ceiling,
 # scripts/ci/check-workflow-size.sh). Every suite runs even after a failure;
@@ -73,11 +75,11 @@ trap 'rm -rf "$log_dir"' EXIT
 
 run_suite() {
   local lib="$1"
-  # `web` and `mail` (Jakarta Mail, #7462) need their Maven dependencies restored first; the shared helper
+  # `web`, `mail` (Jakarta Mail, #7462) and `grpc` (grpc-java) need their Maven dependencies restored first; the shared helper
   # installs mvn if missing, builds the resolver under the same lock as the
   # other Maven call sites (#7108), restores, then runs the suite.
   local runner=(bash scripts/ci/self-test.sh --manifest "lyric-$lib/lyric.toml")
-  if [ "$lib" = "web" ] || [ "$lib" = "mail" ]; then
+  if [ "$lib" = "web" ] || [ "$lib" = "mail" ] || [ "$lib" = "grpc" ]; then
     runner=(bash scripts/ci/manifest-jvm-maven-test.sh "lyric-$lib/lyric.toml")
   fi
   # `mail`'s provider backends (`smtp`/`ses`/`sendgrid`) are declared

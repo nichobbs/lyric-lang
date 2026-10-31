@@ -28252,6 +28252,29 @@ func argFqnToMsil(cctx: in CodegenCtx, fqn: in String): MsilType {
     MChar
   } else if fqn == "System.Byte" {
     MByte
+  } else if fqn.length > 2 and fqn.substring(fqn.length - 2, 2) == "[]" {
+    // A single-dimensional array type argument (`Marshaller`1[System.Byte[]]`):
+    // without this arm the whole token interned a TypeRef literally named
+    // `System.Byte[]`, which loads with TypeLoadException.
+    MArray(elemTy = argFqnToMsil(cctx, fqn.substring(0, fqn.length - 2)))
+  } else if isClosedGenericInstFqn(fqn) {
+    // A closed generic nested as a type argument
+    // (`ConcurrentDictionary`2[System.Int32,AsyncServerStreamingCall`1[System.Byte[]]]`).
+    ensureMetadataIndex(cctx)
+    val cleanFqn = stripBracketSuffix(fqn)
+    val innerArgs = parseBracketArgFqns(fqn)
+    val nestedArgs: List[MsilType] = newList()
+    var nai = 0
+    while nai < innerArgs.count {
+      nestedArgs.add(argFqnToMsil(cctx, innerArgs[nai]))
+      nai = nai + 1
+    }
+    val nestedRow = internFfiTypeRefNested(cctx, cleanFqn)
+    if Mdr.isValueTypeFqn(cctx.metadataVtypeSet, cleanFqn) or clrIsValueType(cleanFqn) {
+      MValueTypeGenericInst(typeRefCode = tdrTypeRef(nestedRow), headFqn = cleanFqn, typeArgs = nestedArgs)
+    } else {
+      MGenericInst(typeRefCode = tdrTypeRef(nestedRow), headFqn = cleanFqn, typeArgs = nestedArgs)
+    }
   } else {
     ensureMetadataIndex(cctx)
     val refRow = internFfiTypeRefNested(cctx, fqn)
@@ -29368,10 +29391,106 @@ func inferGenericExternWitnessesMsil(
         )
       )
     }
-    witness.add(if haveCand and not conflict { cand } else { MObject })
+    var chosen: MsilType = if haveCand and not conflict { cand } else { MObject }
+    if not haveCand {
+      match inferWitnessFromWrapperTypesMsil(opens, lyrics, k) {
+        case Some(w) -> {
+          chosen = w
+        }
+        case None -> ()
+      }
+    }
+    witness.add(chosen)
     k = k + 1
   }
   witness
+}
+
+// A generic parameter with no `T[]` position can still be pinned by the
+// wrapper's declared types: a bare `!!k` position the wrapper declares as a
+// concrete reference array (`slice[Byte]` for `BlockingUnaryCall<TReq,TResp>`'s
+// `TReq request`), or an argument of a closed generic instantiation the
+// wrapper names (`Method`2[System.Byte[],System.Byte[]]` against
+// `Method<!!0,!!1>`). `System.Object` would make the call's `Method<object,
+// object>` argument an `InvalidCastException` against the real
+// `Method<byte[],byte[]>`. Every position that mentions `!!k` must agree, or
+// the `System.Object` convention stands (value types in particular keep it:
+// they are boxed at the call, #6989).
+func collectWitnessCandsMsil(open: in MsilType, lyric: in MsilType, k: in Int, cands: in List[MsilType]): Unit {
+  match open {
+    case MMethodTypeVar(ok) -> {
+      if ok == k {
+        match lyric {
+          case MArray(_) -> cands.add(lyric)
+          case _ -> ()
+        }
+      }
+    }
+    case MGenericInst(_, oh, oargs) -> {
+      match lyric {
+        case MGenericInst(_, lh, largs) -> {
+          if oh == lh and oargs.count == largs.count {
+            var i = 0
+            while i < oargs.count {
+              collectWitnessCandsMsil(oargs[i], largs[i], k, cands)
+              i = i + 1
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func witnessPositionAgreesMsil(open: in MsilType, lyric: in MsilType, k: in Int, cand: in MsilType): Bool {
+  if not msilTypeMentionsMethodVarMsil(open, k) {
+    return true
+  }
+  match open {
+    case MMethodTypeVar(_) -> msilTypeKeyStr(lyric) == msilTypeKeyStr(cand)
+    case MGenericInst(_, oh, oargs) -> {
+      match lyric {
+        case MGenericInst(_, lh, largs) -> {
+          if oh != lh or oargs.count != largs.count {
+            return false
+          }
+          var i = 0
+          while i < oargs.count {
+            if not witnessPositionAgreesMsil(oargs[i], largs[i], k, cand) {
+              return false
+            }
+            i = i + 1
+          }
+          true
+        }
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func inferWitnessFromWrapperTypesMsil(opens: in List[MsilType], lyrics: in List[MsilType], k: in Int): Option[MsilType] {
+  val cands: List[MsilType] = newList()
+  var i = 0
+  while i < opens.count {
+    collectWitnessCandsMsil(opens[i], lyrics[i], k, cands)
+    i = i + 1
+  }
+  if cands.count == 0 {
+    return None
+  }
+  val cand = cands[0]
+  var j = 0
+  while j < opens.count {
+    if not witnessPositionAgreesMsil(opens[j], lyrics[j], k, cand) {
+      return None
+    }
+    j = j + 1
+  }
+  Some(value = cand)
 }
 
 // The Lyric spelling of a slice element type named in a generic-extern

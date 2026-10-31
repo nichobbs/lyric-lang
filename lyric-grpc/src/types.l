@@ -7,6 +7,8 @@
 package Grpc.Types
 
 import Std.Core
+import Std.String as Str
+import Std.Collections
 
 // ─── Channel ─────────────────────────────────────────────────────────────────
 /// An open gRPC channel to a single server address.
@@ -137,7 +139,20 @@ pub record GrpcCallOptions {
 
 /// A lazy sequence of server-streaming response messages.
 /// Call nextMessage() repeatedly until it returns None (end of stream) or Err.
-pub opaque type GrpcStream
+/// Same registry-key representation as `GrpcChannel`; see its doc comment.
+pub opaque type GrpcStream {
+  handle: Int
+}
+
+/// Wrap a platform kernel's registry key as a `GrpcStream`. Kernel-only.
+internal func wrapStreamHandle(id: in Int): GrpcStream {
+  GrpcStream(handle = id)
+}
+
+/// Recover the platform kernel's registry key from a `GrpcStream`. Kernel-only.
+internal func streamHandleId(s: in GrpcStream): Int {
+  s.handle
+}
 
 /// A handle to a running gRPC server.
 /// Created by Grpc.startHandle; passed to Grpc.stop for graceful shutdown.
@@ -168,4 +183,166 @@ pub record GrpcRoute {
 /// Immutable registry of gRPC routes; built with Grpc.addMethod, passed to Grpc.start.
 pub record ServiceRegistry {
   routes: slice[GrpcRoute]
+}
+
+// ─── Host-exception mapping ───────────────────────────────────────────────────
+func statusCodeFromName(name: in String): GrpcStatusCode {
+  // Accepts both gRPC-dotnet's PascalCase ("DeadlineExceeded") and
+  // grpc-java's UPPER_SNAKE ("DEADLINE_EXCEEDED") spelling.
+  val key = Str.toLower(Str.replace(name, "_", ""))
+  match key {
+    case "ok" -> GrpcStatusCode.Ok
+    case "cancelled" -> GrpcStatusCode.Cancelled
+    case "canceled" -> GrpcStatusCode.Cancelled
+    case "unknown" -> GrpcStatusCode.Unknown
+    case "invalidargument" -> GrpcStatusCode.InvalidArgument
+    case "deadlineexceeded" -> GrpcStatusCode.DeadlineExceeded
+    case "notfound" -> GrpcStatusCode.NotFound
+    case "alreadyexists" -> GrpcStatusCode.AlreadyExists
+    case "permissiondenied" -> GrpcStatusCode.PermissionDenied
+    case "resourceexhausted" -> GrpcStatusCode.ResourceExhausted
+    case "failedprecondition" -> GrpcStatusCode.FailedPrecondition
+    case "aborted" -> GrpcStatusCode.Aborted
+    case "outofrange" -> GrpcStatusCode.OutOfRange
+    case "unimplemented" -> GrpcStatusCode.Unimplemented
+    case "internal" -> GrpcStatusCode.Internal
+    case "unavailable" -> GrpcStatusCode.Unavailable
+    case "dataloss" -> GrpcStatusCode.DataLoss
+    case "unauthenticated" -> GrpcStatusCode.Unauthenticated
+    case _ -> GrpcStatusCode.Unknown
+  }
+}
+
+func isStatusCodeName(s: in String): Bool {
+  var i = 0
+  if s.length == 0 {
+    return false
+  }
+  while i < s.length {
+    val c = Str.codeUnitAt(s, i)
+    val upper = c >= 65 and c <= 90
+    val lower = c >= 97 and c <= 122
+    if not (upper or lower or c == 95) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Map a caught host exception to a `GrpcStatus`. `typeName` and `message` are
+/// the caught `Bug`'s fields. gRPC-dotnet's `RpcException.Message` is
+/// documented as `Status(StatusCode="Unavailable", Detail="...")` and
+/// grpc-java's `StatusRuntimeException.getMessage()` as
+/// `UNAVAILABLE: description`; any other exception (or an unrecognised
+/// message) is `Unknown` carrying the whole message, never a silent success.
+pub func statusFromException(typeName: in String, message: in String): GrpcStatus {
+  val dotnetPrefix = "Status(StatusCode=\""
+  val dotnetAt = Str.indexOfRaw(message, dotnetPrefix)
+  if dotnetAt >= 0 {
+    val rest = Str.substring(message, dotnetAt + dotnetPrefix.length)
+    val close = Str.indexOfRaw(rest, "\"")
+    if close > 0 {
+      val code = statusCodeFromName(Str.substring(rest, 0, close))
+      val detailMarker = "Detail=\""
+      val d = Str.indexOfRaw(rest, detailMarker)
+      if d >= 0 {
+        var detail = Str.substring(rest, d + detailMarker.length)
+        // The detail ends at the closing quote of `Detail="..."`: either
+        // `", DebugException=...` or the `")` that closes `Status(...)`
+        // (a task's `AggregateException` wraps it in a further `)`).
+        val debugAt = Str.indexOfRaw(detail, "\", DebugException=")
+        val closeAt = Str.indexOfRaw(detail, "\")")
+        var cut = detail.length
+        if debugAt >= 0 {
+          cut = debugAt
+        }
+        if closeAt >= 0 and closeAt < cut {
+          cut = closeAt
+        }
+        detail = Str.substring(detail, 0, cut)
+        return GrpcStatus(code = code, message = detail)
+      }
+      return GrpcStatus(code = code, message = message)
+    }
+  }
+  val sep = Str.indexOfRaw(message, ": ")
+  val head = if sep > 0 { Str.substring(message, 0, sep) } else { message }
+  if isStatusCodeName(head) and (sep > 0 or Str.toUpper(head) == head) {
+    val code = statusCodeFromName(head)
+    if code != GrpcStatusCode.Unknown or Str.toLower(head) == "unknown" {
+      val detail = if sep > 0 { Str.substring(message, sep + 2) } else { "" }
+      return GrpcStatus(code = code, message = detail)
+    }
+  }
+  GrpcStatus(code = GrpcStatusCode.Unknown, message = typeName + ": " + message)
+}
+
+func metadataUnescape(s: in String): String {
+  Str.replace(Str.replace(Str.replace(s, "%3A", ":"), "%2C", ","), "%25", "%")
+}
+
+/// Decode the `key:value,key:value` metadata string `Grpc.callUnary` hands a
+/// kernel (`%25`, `%2C`, `%3A` escape `%`, `,`, `:`); the inverse of
+/// `Grpc.metadataString`. An entry without a `:` is dropped.
+pub func decodeMetadata(metadata: in String): slice[GrpcMetadataEntry] {
+  val entries: List[GrpcMetadataEntry] = newList()
+  if metadata.length == 0 {
+    return entries.toArray()
+  }
+  for part in Str.split(metadata, ",") {
+    val c = Str.indexOfRaw(part, ":")
+    if c > 0 {
+      entries.add(
+        GrpcMetadataEntry(
+          key = metadataUnescape(Str.substring(part, 0, c)),
+          value = metadataUnescape(Str.substring(part, c + 1))
+        )
+      )
+    }
+  }
+  entries.toArray()
+}
+
+// ─── Channel addresses ────────────────────────────────────────────────────────
+/// A parsed `http://host:port` / `https://host:port` channel address.
+pub record GrpcAddress {
+  secure: Bool
+  authority: String
+}
+
+/// Validate a channel address: `http://` or `https://`, then a non-empty
+/// `host[:port]` authority with no whitespace and no path, query or fragment.
+/// grpc-java addresses a server by `host:port` target (the scheme only picks
+/// plaintext or TLS), so the JVM kernel validates with this before building a
+/// channel; `GrpcChannel.ForAddress` does its own URI validation on .NET.
+pub func parseAddress(address: in String): Result[GrpcAddress, String] {
+  var secure = false
+  var rest = ""
+  if Str.startsWith(address, "https://") {
+    secure = true
+    rest = Str.substring(address, 8)
+  } else if Str.startsWith(address, "http://") {
+    rest = Str.substring(address, 7)
+  } else {
+    return Err("gRPC address must start with http:// or https://: " + address)
+  }
+  if rest.length == 0 {
+    return Err("gRPC address has no host: " + address)
+  }
+  if Str.endsWith(rest, "/") {
+    rest = Str.substring(rest, 0, rest.length - 1)
+  }
+  var i = 0
+  while i < rest.length {
+    val c = Str.codeUnitAt(rest, i)
+    if c <= 32 or c == 47 or c == 63 or c == 35 {
+      return Err("gRPC address must be scheme://host[:port] with no path, query or whitespace: " + address)
+    }
+    i = i + 1
+  }
+  if Str.startsWith(rest, ":") {
+    return Err("gRPC address has no host: " + address)
+  }
+  Ok(GrpcAddress(secure = secure, authority = rest))
 }

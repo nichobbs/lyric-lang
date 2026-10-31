@@ -62,13 +62,15 @@ without a generated schema.
 
 ## lyric-grpc — gRPC Client
 
-`lyric-grpc` is `@experimental`. On `.NET`, channel lifecycle
-(`openChannel`/`closeChannel`) and the in-process rate limiter
-(`checkRateLimit`) are real and `Grpc.Net.Client`-backed. Unary calls,
-server streaming, and server hosting are declared (`callUnary`,
-`openServerStream`) but **not implemented** — blocked on two self-hosted
-MSIL backend gaps around generic-method FFI (#6581), not a design choice.
-JVM is Phase 6 (planned, not started).
+`lyric-grpc` is `@experimental`. The client is real on both targets, backed by
+`Grpc.Net.Client` on `.NET` and grpc-java on the JVM, and tested end to end
+against an in-process gRPC server: channels (`openChannel`/`closeChannel`),
+unary calls (`callUnary`), server streaming (`openServerStream`/`nextMessage`/
+`closeStream`), call metadata, deadlines, and the in-process rate limiter
+(`checkRateLimit`). A failed call is `Err(GrpcStatus)` carrying the server's
+status code and message. Payloads are raw protobuf bytes: compose with
+`lyric-proto`. Server hosting (`start`/`startHandle`/`stop`) is not
+implemented on either target and fails loudly (#8642).
 
 ```toml
 [dependencies]
@@ -86,8 +88,6 @@ func callGreet(name: in String): Result[slice[Byte], Grpc.GrpcStatus] {
     case Err(e) -> return Err(Grpc.unavailable(e))
     case Ok(channel) -> {
       val payload = Proto.encodeMessage([Proto.stringField(1, Encoding.encodeUtf8(name))])
-      // callUnary is declared for API-shape parity; see the status note
-      // above — it is not yet a working transport on any target.
       val result = Grpc.callUnary(channel, "hello.Greeter", "SayHello", payload, Grpc.defaultOptions())
       Grpc.closeChannel(channel)
       result
@@ -366,7 +366,7 @@ func main(): Unit {
 | Library | .NET | JVM | Status |
 |---|---|---|---|
 | lyric-proto | stable | planned (Phase 6) | D067 |
-| lyric-grpc | channel lifecycle + rate limiting real; unary/streaming/hosting blocked on #6581 | planned (Phase 6) | D068 |
+| lyric-grpc | client (unary, server streaming, metadata, deadlines) + rate limiting real; server hosting not implemented (#8642) | client + rate limiting real; server hosting not implemented (#8642) | D068, D281 |
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
 | lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `ses`/`sendgrid` real; `smtp` `NOT_IMPLEMENTED` (#7462) | D062 |

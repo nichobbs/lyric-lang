@@ -6,6 +6,14 @@ transport (gRPC / Protobuf).  Will be backed by a decision-log entry
 once field-numbering strategy (Q-G-002) and streaming model (Q-G-003)
 are resolved.
 
+**Implementation status (D281).** The client half of the `lyric-grpc` library
+shipped independently of this sketch's code-first/spec-first layers: raw
+`slice[Byte]` unary and server-streaming calls with metadata, deadlines and
+`GrpcStatus` mapping on `--target dotnet` (`Grpc.Net.Client`) and
+`--target jvm` (grpc-java), tested end to end. Server hosting, the
+`ServiceRegistry` handler model, and everything in §§2-7 below remain design
+(server hosting: #8642).
+
 ---
 
 ## 1. Scope

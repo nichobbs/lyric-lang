@@ -297,3 +297,83 @@ test "JsonNode.GetValue<T>() exercises the INSTANCE-call path through emitGeneri
 // this can't be declared at THIS file's own top level: the panic fires
 // during codegen of the whole test module and would abort the entire
 // `lyric test` run rather than fail one assertion).
+// ── Closed generics whose type argument is an array, or another closed ─────
+// generic (lyric-grpc, #6592): `Marshaller`1[System.Byte[]]`, and a
+// `ConcurrentDictionary`2` keyed by int holding `AsyncServerStreamingCall`1`
+// over `byte[]`.  `argFqnToMsil` had no arm for either shape, so the whole
+// token (`System.Byte[]`, `…`1[System.Byte[]]`) was interned as one TypeRef
+// with a bracketed name, which loads with TypeLoadException.
+extern type ByteArrayList = "System.Collections.Generic.List`1[System.Byte[]]"
+
+@externTarget("System.Collections.Generic.List`1..ctor")
+func newByteArrayList(): ByteArrayList = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.Add")
+func byteArrayListAdd(l: in ByteArrayList, item: in slice[Byte]): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.get_Count")
+func byteArrayListCount(l: in ByteArrayList): Int = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.get_Item")
+func byteArrayListItem(l: in ByteArrayList, index: in Int): slice[Byte] = ()
+
+test "a closed generic with an array type argument (List<byte[]>) loads and works" {
+  val l = newByteArrayList()
+  val a: slice[Byte] = [1, 2, 3]
+  byteArrayListAdd(l, a)
+  assertEqualInt(byteArrayListCount(l), 1, "one element added")
+  assertEqualInt(byteArrayListItem(l, 0).count, 3, "the byte[] round-trips through the typed list")
+}
+
+extern type ByteArrayListByInt = "System.Collections.Generic.Dictionary`2[System.Int32,System.Collections.Generic.List`1[System.Byte[]]]"
+
+@externTarget("System.Collections.Generic.Dictionary`2..ctor")
+func newByteArrayListByInt(): ByteArrayListByInt = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.Dictionary`2.Add")
+func byteArrayListByIntAdd(d: in ByteArrayListByInt, key: in Int, value: in ByteArrayList): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.Dictionary`2.get_Count")
+func byteArrayListByIntCount(d: in ByteArrayListByInt): Int = ()
+
+test "a closed generic nested as a type argument (Dictionary<int, List<byte[]>>) loads and works" {
+  val d = newByteArrayListByInt()
+  byteArrayListByIntAdd(d, 7, newByteArrayList())
+  byteArrayListByIntAdd(d, 8, newByteArrayList())
+  assertEqualInt(byteArrayListByIntCount(d), 2, "two entries in the nested-generic dictionary")
+}
+
+// ── A method's own generic parameters are pinned by the wrapper's types ────
+//
+// `System.Tuple.Create<T1,T2>(T1 item1, T2 item2): Tuple<T1,T2>` has no `T[]`
+// position, so the `object` witness applied: the call returned a
+// `Tuple<object,object>` that the wrapper then cast to its declared
+// `Tuple<byte[],byte[]>` (InvalidCastException) — the same shape as
+// `CallInvoker.BlockingUnaryCall<TReq,TResp>` over `Method<byte[],byte[]>`.
+// Each parameter is now instantiated from the byte array the wrapper declares
+// at the bare position, agreeing with the closed generic return.
+extern type ByteArrayPair = "System.Tuple`2[System.Byte[],System.Byte[]]"
+
+@externTarget("System.Tuple.Create")
+func newByteArrayPair(first: in slice[Byte], second: in slice[Byte]): ByteArrayPair = ()
+
+@externInstance
+@externTarget("System.Tuple`2.get_Item1")
+func byteArrayPairFirst(p: in ByteArrayPair): slice[Byte] = ()
+
+@externInstance
+@externTarget("System.Tuple`2.get_Item2")
+func byteArrayPairSecond(p: in ByteArrayPair): slice[Byte] = ()
+
+test "generic method witnesses follow the wrapper's array types and closed generic return" {
+  val a: slice[Byte] = [9, 8]
+  val b: slice[Byte] = [7]
+  val p = newByteArrayPair(a, b)
+  assertEqualInt(byteArrayPairFirst(p).count, 2, "T1 = byte[] keeps the first array")
+  assertEqualInt(byteArrayPairSecond(p).count, 1, "T2 = byte[] keeps the second array")
+}

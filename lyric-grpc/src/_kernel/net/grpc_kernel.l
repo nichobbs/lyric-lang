@@ -1,59 +1,36 @@
-//! Grpc.Kernel.Net — .NET extern boundary for gRPC client and server.
+//! Grpc.Kernel.Net — .NET extern boundary for the gRPC client.
 //!
-//! Real:
-//!   netOpenChannel / netCloseChannel — channel lifecycle (`GrpcChannel.ForAddress`
-//!     / `.Dispose()`, registry-keyed like `lyric-mq`/`lyric-ws`/`lyric-jobs`)
-//!   checkRateLimit()                 — in-process sliding-window rate limiter
+//! Real, and covered by `tests/client_dotnet_tests.l` against an in-process
+//! gRPC server:
+//!   netOpenChannel / netCloseChannel                 — channel lifecycle
+//!     (`GrpcChannel.ForAddress` / `.Dispose`, registry-keyed like
+//!     `lyric-mq`/`lyric-ws`/`lyric-jobs`)
+//!   netCallUnary                                     — unary RPC
+//!     (`CallInvoker.BlockingUnaryCall<byte[],byte[]>`)
+//!   netOpenServerStream / netNextStreamMessage /
+//!     netCloseStream                                 — server streaming
+//!     (`AsyncServerStreamingCall<byte[]>`, `IAsyncStreamReader<byte[]>`)
+//!   checkRateLimit                                   — in-process sliding-window limiter
 //!
-//! NOT implemented — blocked on a self-hosted-compiler gap (#6581), not a
-//! design choice; see the long comment on `netCallUnary` below for the root
-//! cause. Each fails fast (a typed `Err`, or a `panic` for the two functions
-//! whose signature has no room for one) rather than the ORIGINAL design's
-//! declaration-only `extern package { ... }` blocks against
-//! `Grpc.Net.Client`/`Grpc.AspNetCore`, which the self-hosted MSIL backend
-//! has never actually lowered to any MethodDef/MemberRef (`IExtern` is a
-//! documented no-op there; see `Msil.Codegen`'s item dispatcher) — every
-//! call through one of those blocks either silently dropped (the
-//! pre-#5621/#5516 loud-failure behaviour) or, once that fix landed, would
-//! hard-panic at compile time with no path forward for a caller. Tracked
-//! overall in #6592; the compiler-side blocker itself is #6581:
-//!   netCallUnary                                                 — unary RPC
-//!   netOpenServerStream / netNextStreamMessage / netCloseStream  — server streaming
-//!   serve() / netStartHandle() / netStopHandle()                 — server hosting
+//! Every binding is an `extern type` plus `@externTarget` auto-FFI resolved
+//! from the NuGet reference assemblies; there is no `extern package` block
+//! (that form has no lowering on any target, decision D281). Payloads are raw
+//! `byte[]` through a pass-through `Marshaller<byte[]>`, so no message type is
+//! generated: compose with `lyric-proto`. These bindings needed the MSIL
+//! backend to bind a closed generic whose type argument is an array
+//! (`Marshaller`1[System.Byte[]]`), a closed generic nested in another, and a
+//! generic method (`BlockingUnaryCall<TReq,TResp>`) whose type arguments the
+//! wrapper's array types pin (#6581 and its follow-ups).
 //!
-//! A follow-up investigation (2026-09-05, group:ecosystem-lib-kernels) asked
-//! whether #6581 still stands against `origin/main` and whether server
-//! hosting specifically has a non-generic escape hatch the original #6581
-//! writeup didn't consider (`AddGrpc`/`IServiceCollection`-shaped low-level
-//! registration, a non-generic `Marshallers` overload, etc). Both `main`'s
-//! `genericMemberSigToMsil` (`lyric-compiler/msil/codegen.l`) and
-//! `ctxAddMethodSpec`'s callers (`lyric-compiler/msil/lowering.l`) are
-//! unchanged from #6581's description — no GENERICINST arm, no general
-//! `@externTarget`-generic-method MethodSpec path — and decoding the actual
-//! `Grpc.Core.Api`/`Grpc.AspNetCore.Server` 2.65.0 reference-assembly
-//! metadata directly (the same byte-level read the auto-FFI resolver does)
-//! confirms server hosting has no such escape hatch either: every route
-//! from `IServiceCollection.AddGrpc()` (itself non-generic and bindable) to
-//! an actual registered RPC method is generic. The high-level
-//! `Microsoft.AspNetCore.Builder.GrpcEndpointRouteBuilderExtensions
-//! .MapGrpcService<TService>` is a generic extension method (MVAR, one type
-//! parameter). Its low-level equivalent —
-//! `Grpc.Core.ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>`
-//! and `Grpc.Core.ServiceBinderBase.AddMethod<TRequest,TResponse>`, the pair
-//! `MapGrpcService<T>` itself calls into — are equally generic (MVAR,
-//! two type parameters each, four overloads apiece for
-//! unary/client-streaming/server-streaming/duplex). And every one of those
-//! `AddMethod` overloads takes a `Grpc.Core.Method<TRequest,TResponse>`,
-//! whose only constructor takes two `Marshaller<T>` instances — hitting
-//! Gap 1 a second, independent time (`Marshallers.Create<T>`'s own two
-//! overloads were re-checked too: both still take a GENERICINST delegate
-//! parameter over `T`, confirming no non-generic factory exists there
-//! either). So `AddGrpc()` alone can wire up gRPC's ASP.NET Core middleware
-//! plumbing, but produces a server with zero registered RPC methods — not a
-//! partial win, since a route table with no routes cannot dispatch
-//! anything `Grpc.addMethod` registered. Server hosting therefore fails for
-//! the exact same two compiler gaps as unary/streaming, not a third,
-//! independent one — this investigation found no bindable subset to ship.
+//! NOT implemented — each fails loudly instead of pretending:
+//!   serve() / netStartHandle() / netStopHandle()     — server hosting
+//! `Grpc.AspNetCore` registers an RPC through `ServiceBinderBase`/
+//! `BindableService`, an abstract class a Lyric record cannot yet extend, so a
+//! server needs either a pure-Lyric HTTP/2 gRPC server on `Std.HttpEngine` (the
+//! `encodeResponseTrailers` primitive for it now exists) or class subclassing
+//! in the FFI. The `ServiceRegistry` also names handlers by string
+//! (`handlerName`), which has no dispatch mechanism on either target. Tracked
+//! in #8642.
 //!
 //! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!
@@ -116,6 +93,9 @@ func newChannelDict(): NetGrpcChannelDict = ()
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
 func channelDictTryAdd(dict: in NetGrpcChannelDict, key: in Int, value: in NetGrpcChannel): Bool = ()
 
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
+func channelDictTryGet(dict: in NetGrpcChannelDict, key: in Int, value: out NetGrpcChannel): Bool = ()
+
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove")
 func channelDictTryRemove(dict: in NetGrpcChannelDict, key: in Int, value: out NetGrpcChannel): Bool = ()
 
@@ -159,6 +139,14 @@ ref record ChannelHandleCounter {
 }
 
 val channelHandleCounter: ChannelHandleCounter = ChannelHandleCounter()
+
+func nextStreamHandleId(): Int {
+  monitorEnter(channelHandleCounter)
+  channelHandleCounter.next = channelHandleCounter.next + 1
+  val id = channelHandleCounter.next
+  monitorExit(channelHandleCounter)
+  id
+}
 
 func nextChannelHandleId(): Int {
   monitorEnter(channelHandleCounter)
@@ -205,74 +193,111 @@ pub func netCloseChannel(channel: in GrpcChannel): Unit {
 }
 
 // ─── Client: unary calls ──────────────────────────────────────────────────────
-// BLOCKED — self-hosted-compiler gap, not a `lyric-grpc` design choice.
-//
-// A real unary call needs `Grpc.Core.CallInvoker` (obtained from the
-// channel), a `Grpc.Core.Marshaller<byte[]>` (pass-through identity
-// serializer/deserializer), a `Grpc.Core.Method<byte[],byte[]>`, and
-// `CallInvoker.BlockingUnaryCall<TRequest,TResponse>`. Both of the
-// following are unimplementable from Lyric today without compiler changes
-// (verified empirically against `Grpc.Net.Client`/`Grpc.Core.Api` 2.65.0;
-// root-caused against `lyric-compiler/msil/codegen.l`):
-//
-// 1. `Marshaller<byte[]>` construction. Every `Marshaller<T>` constructor
-//    (and every `Marshallers.Create<T>(...)` static-factory overload — the
-//    one alternative this ticket asked to try) takes a delegate parameter
-//    that is itself a closed generic instantiation over `T`
-//    (`Func<T,byte[]>`, `Func<byte[],T>`, or `Action<T,SerializationContext>`
-//    / `Func<DeserializationContext,T>`). `Marshaller<T>` is a
-//    generic-declaring type (name carries a `` `1 `` arity suffix), so the
-//    MSIL backend routes its member calls through
-//    `emitGenericExternMember` (`lyric-compiler/msil/codegen.l`), which
-//    converts the BCL ctor's real parameter types via
-//    `genericMemberSigToMsil`. That converter only has arms for
-//    `STPrim`/`STVar`/`STByRef`/`STSzArray`/`STNamed` — there is no arm for
-//    a GENERICINST-shaped parameter (`_ -> None`), so it returns `None` for
-//    every `Marshaller<T>` ctor parameter, `convOk` goes false, and
-//    `emitGenericExternMember` silently returns `false`. The caller then
-//    falls through to the "legacy" extern-target lowering, which builds a
-//    `MemberRef` for `.ctor` parented directly on the *open* (unconstructed)
-//    `Marshaller`1` `TypeRef` instead of a closed `GENERICINST` `TypeSpec` —
-//    an ECMA-335 §II.22.25 violation (a member of a generic type must be
-//    referenced through a TypeSpec parent). This compiles and builds a
-//    clean-looking DLL, but the CLR loader faults the moment the ctor is
-//    invoked: `System.TypeLoadException: Could not load type
-//    'Grpc.Core.Marshaller`1' from assembly '<the calling assembly>'`
-//    (confirmed at both `T = System.Byte[]` and `T = System.String`, so
-//    this is not specific to the array-typed witness the real call needs —
-//    it reproduces for *any* `T`). Declaring the wrapper generic in Lyric
-//    itself (`func newMarshaller[T](...): Marshaller[T]`, mirroring the
-//    `ConcurrentDict[K, V]` idiom used elsewhere in this codebase) does not
-//    route around this: `ConcurrentDict[K, V]`'s ctor takes zero
-//    parameters, so it never exercises `genericMemberSigToMsil` on a
-//    GENERICINST parameter in the first place — every real
-//    `Marshaller<T>`-constructing member does, regardless of whether the
-//    Lyric-side wrapper is itself generic or already monomorphized.
-// 2. `CallInvoker.BlockingUnaryCall<TRequest,TResponse>` (and its
-//    `Async*Call` siblings) are *generic methods* (MVAR) on a non-generic
-//    type, not a generic-declaring-type member. Calling a BCL generic
-//    method with explicit witness types needs a `MethodSpec` (table 0x2B)
-//    row at the call site (ECMA-335 §II.22.29); the self-hosted MSIL
-//    backend can already emit `MethodSpec` rows (`ctxAddMethodSpec`,
-//    `lyric-compiler/msil/lowering.l`), but only for a handful of
-//    compiler-internal async-state-machine call sites
-//    (`ATMB<T>.Start<SM>`, `AwaitUnsafeOnCompleted<TAwaiter,SM>`) — there is
-//    no general path from an `@externTarget` user declaration to a
-//    `MethodSpec`-instantiated generic-method call. So even a hypothetical
-//    fix to (1) would still block on this second, independent gap.
-//
-// Tracked as a compiler-side follow-up in #6581 (out of `lyric-grpc`'s
-// scope — see docs/37-grpc-proto-sketch.md and this package's
-// kernel-boundary contract). Channel lifecycle and the rate limiter above
-// have no dependency on either gap and are real. Until #6581 lands, this
-// fails fast (a typed `Err`) instead of the ORIGINAL design's inert
-// `extern package Grpc.Net.Client.Unary { ... }` declaration block, which
-// the self-hosted MSIL backend never lowers to any MethodDef/MemberRef
-// (see the module doc comment) — a caller reaching this function used to
-// hit a silently-dropped call (or, after #5621/#5516's loud-failure fix,
-// a hard compile-time panic naming only a compiler internal). This
-// `Err`-returning function compiles cleanly and fails honestly at the one
-// call site that can actually explain why.
+// Bound against `Grpc.Core.Api` 2.65.0 with a pass-through `byte[]` marshaller:
+// the library hands the caller raw protobuf bytes (compose with `lyric-proto`),
+// so no message type is ever generated. `Marshaller`1`'s constructor takes a
+// closed-generic `Func` delegate and `CallInvoker.BlockingUnaryCall` is a
+// generic method; the MSIL backend binds both since #6581 (#6981).
+extern type NetCallInvoker = "Grpc.Core.CallInvoker"
+
+extern type NetMarshaller = "Grpc.Core.Marshaller`1[System.Byte[]]"
+
+extern type NetMethod = "Grpc.Core.Method`2[System.Byte[],System.Byte[]]"
+
+extern type NetMethodType = "Grpc.Core.MethodType"
+
+extern type NetCallOptions = "Grpc.Core.CallOptions"
+
+extern type NetMetadata = "Grpc.Core.Metadata"
+
+extern type NetDateTime = "System.DateTime"
+
+@externInstance
+@externTarget("Grpc.Net.Client.GrpcChannel.CreateCallInvoker")
+func channelCreateCallInvoker(ch: in NetGrpcChannel): NetCallInvoker = ()
+
+@externTarget("Grpc.Core.Marshaller`1..ctor")
+func newMarshaller(
+  serializer: in (slice[Byte]) -> slice[Byte], deserializer: in (slice[Byte]) -> slice[Byte]
+): NetMarshaller = ()
+
+@externTarget("Grpc.Core.Method`2..ctor")
+func newMethod(
+  kind: in NetMethodType,
+  service: in String,
+  name: in String,
+  req: in NetMarshaller,
+  resp: in NetMarshaller,
+): NetMethod = ()
+
+@externTarget("Grpc.Core.MethodType.Unary")
+func methodTypeUnary(): NetMethodType = ()
+
+@externTarget("Grpc.Core.MethodType.ServerStreaming")
+func methodTypeServerStreaming(): NetMethodType = ()
+
+@externTarget("Grpc.Core.Metadata..ctor")
+func newMetadata(): NetMetadata = ()
+
+@externInstance
+@externTarget("Grpc.Core.Metadata.Add")
+func metadataAdd(m: in NetMetadata, key: in String, value: in String): Unit = ()
+
+@externInstance
+@externTarget("Grpc.Core.CallOptions.WithHeaders")
+func callOptionsWithHeaders(o: in NetCallOptions, headers: in NetMetadata): NetCallOptions = ()
+
+@externInstance
+@externTarget("Grpc.Core.CallOptions.WithDeadline")
+func callOptionsWithDeadline(o: in NetCallOptions, deadline: in NetDateTime): NetCallOptions = ()
+
+@externStatic
+@externTarget("System.DateTime.get_UtcNow")
+func dateTimeUtcNow(): NetDateTime = ()
+
+@externInstance
+@externTarget("System.DateTime.AddMilliseconds")
+func dateTimeAddMillis(d: in NetDateTime, ms: in Double): NetDateTime = ()
+
+@externInstance
+@externTarget("Grpc.Core.CallInvoker.BlockingUnaryCall")
+func invokerBlockingUnary(
+  inv: in NetCallInvoker,
+  m: in NetMethod,
+  host: in String,
+  o: in NetCallOptions,
+  req: in slice[Byte],
+): slice[Byte] = ()
+
+func newByteMarshaller(): NetMarshaller {
+  newMarshaller({ b: slice[Byte] -> b }, { b: slice[Byte] -> b })
+}
+
+func buildCallOptions(timeoutMs: in Int, metadata: in String): NetCallOptions {
+  var o: NetCallOptions = default()
+  val entries = Types.decodeMetadata(metadata)
+  if entries.count > 0 {
+    val md = newMetadata()
+    for e in entries {
+      metadataAdd(md, e.key, e.value)
+    }
+    o = callOptionsWithHeaders(o, md)
+  }
+  if timeoutMs > 0 {
+    o = callOptionsWithDeadline(o, dateTimeAddMillis(dateTimeUtcNow(), timeoutMs.toDouble()))
+  }
+  o
+}
+
+func lookupChannel(channel: in GrpcChannel): Option[NetGrpcChannel] {
+  var ch: NetGrpcChannel = default()
+  if channelDictTryGet(channelRegistry, Types.channelHandleId(channel), ch) {
+    Some(value = ch)
+  } else {
+    None
+  }
+}
+
 pub func netCallUnary(
   channel: in GrpcChannel,
   service: in String,
@@ -281,17 +306,86 @@ pub func netCallUnary(
   timeoutMs: in Int,
   metadata: in String,
 ): Result[slice[Byte], GrpcStatus] {
-  Err(
-    GrpcStatus(
-      code = GrpcStatusCode.Unimplemented,
-      message = "gRPC .NET unary calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
-    )
-  )
+  match lookupChannel(channel) {
+    case None -> Err(GrpcStatus(code = GrpcStatusCode.FailedPrecondition, message = "gRPC channel is closed"))
+    case Some(ch) -> {
+      try {
+        val inv = channelCreateCallInvoker(ch)
+        val m = newMethod(methodTypeUnary(), service, method, newByteMarshaller(), newByteMarshaller())
+        Ok(invokerBlockingUnary(inv, m, "", buildCallOptions(timeoutMs, metadata), payload))
+      } catch Bug as b {
+        Err(statusFromException(b.typeName, b.message))
+      }
+    }
+  }
 }
 
-// ─── Client: server-streaming calls ────────────────────────────────────────────
-/// **BLOCKED** (#6581) — see `netCallUnary`'s long comment; server-streaming
-/// needs the same `CallInvoker`/generic-method machinery.
+// ─── Client: server-streaming calls ───────────────────────────────────────────
+// `AsyncServerStreamingCall<byte[]>` owns the HTTP/2 stream; `ResponseStream`
+// is its `IAsyncStreamReader<byte[]>`. Lyric's call model is synchronous, so
+// each `MoveNext` task is waited on with `Task.Result`. The live call object
+// lives in `streamRegistry`, keyed by the `Int` the opaque `GrpcStream` wraps.
+extern type NetServerStreamingCall = "Grpc.Core.AsyncServerStreamingCall`1[System.Byte[]]"
+
+extern type NetStreamReader = "Grpc.Core.IAsyncStreamReader`1[System.Byte[]]"
+
+extern type NetTaskOfBool = "System.Threading.Tasks.Task`1[System.Boolean]"
+
+extern type NetCancellationToken = "System.Threading.CancellationToken"
+
+extern type NetStreamDict = "System.Collections.Concurrent.ConcurrentDictionary`2[System.Int32,Grpc.Core.AsyncServerStreamingCall`1[System.Byte[]]]"
+
+@externInstance
+@externTarget("Grpc.Core.CallInvoker.AsyncServerStreamingCall")
+func invokerServerStreaming(
+  inv: in NetCallInvoker,
+  m: in NetMethod,
+  host: in String,
+  o: in NetCallOptions,
+  req: in slice[Byte],
+): NetServerStreamingCall = ()
+
+@externInstance
+@externTarget("Grpc.Core.AsyncServerStreamingCall`1.get_ResponseStream")
+func streamingCallResponseStream(c: in NetServerStreamingCall): NetStreamReader = ()
+
+@externInstance
+@externTarget("Grpc.Core.AsyncServerStreamingCall`1.Dispose")
+func streamingCallDispose(c: in NetServerStreamingCall): Unit = ()
+
+@externInstance
+@externTarget("Grpc.Core.IAsyncStreamReader`1.MoveNext")
+func readerMoveNext(r: in NetStreamReader, token: in NetCancellationToken): NetTaskOfBool = ()
+
+@externInstance
+@externTarget("Grpc.Core.IAsyncStreamReader`1.get_Current")
+func readerCurrent(r: in NetStreamReader): slice[Byte] = ()
+
+@externInstance
+@externTarget("System.Threading.Tasks.Task`1.get_Result")
+func taskOfBoolResult(t: in NetTaskOfBool): Bool = ()
+
+@externTarget("System.Threading.CancellationToken.get_None")
+func cancellationTokenNone(): NetCancellationToken = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
+func newStreamDict(): NetStreamDict = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
+func streamDictTryAdd(dict: in NetStreamDict, key: in Int, value: in NetServerStreamingCall): Bool = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
+func streamDictTryGet(dict: in NetStreamDict, key: in Int, value: out NetServerStreamingCall): Bool = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove")
+func streamDictTryRemove(dict: in NetStreamDict, key: in Int, value: out NetServerStreamingCall): Bool = ()
+
+val streamRegistry: NetStreamDict = newStreamDict()
+
+/// Open a server-streaming call. The request is sent immediately; messages
+/// are read with `netNextStreamMessage`. A failure that only surfaces once
+/// the first message is awaited (an unreachable server, a deadline) is
+/// reported by that read, as in every gRPC client.
 pub func netOpenServerStream(
   channel: in GrpcChannel,
   service: in String,
@@ -300,50 +394,55 @@ pub func netOpenServerStream(
   timeoutMs: in Int,
   metadata: in String,
 ): Result[GrpcStream, GrpcStatus] {
-  Err(
-    GrpcStatus(
-      code = GrpcStatusCode.Unimplemented,
-      message = "gRPC .NET server-streaming calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
-    )
-  )
+  match lookupChannel(channel) {
+    case None -> Err(GrpcStatus(code = GrpcStatusCode.FailedPrecondition, message = "gRPC channel is closed"))
+    case Some(ch) -> {
+      try {
+        val inv = channelCreateCallInvoker(ch)
+        val m = newMethod(methodTypeServerStreaming(), service, method, newByteMarshaller(), newByteMarshaller())
+        val call = invokerServerStreaming(inv, m, "", buildCallOptions(timeoutMs, metadata), payload)
+        val id = nextStreamHandleId()
+        val _ = streamDictTryAdd(streamRegistry, id, call)
+        Ok(Types.wrapStreamHandle(id))
+      } catch Bug as b {
+        Err(statusFromException(b.typeName, b.message))
+      }
+    }
+  }
 }
 
-/// A stream from `netOpenServerStream` never exists on this target, so
-/// this is unreachable in practice.
+/// Read the next message: `Ok(Some(bytes))`, `Ok(None)` at end of stream, or
+/// `Err(status)` when the call failed (the stream is then finished).
 pub func netNextStreamMessage(stream: in GrpcStream): Result[Option[slice[Byte]], GrpcStatus] {
-  Err(
-    GrpcStatus(
-      code = GrpcStatusCode.Unimplemented,
-      message = "gRPC .NET server-streaming calls are blocked on a self-hosted-compiler gap (tracked in #6581)"
-    )
-  )
+  var call: NetServerStreamingCall = default()
+  if not streamDictTryGet(streamRegistry, Types.streamHandleId(stream), call) {
+    return Ok(None)
+  }
+  try {
+    val reader = streamingCallResponseStream(call)
+    if taskOfBoolResult(readerMoveNext(reader, cancellationTokenNone())) {
+      Ok(Some(value = readerCurrent(reader)))
+    } else {
+      Ok(None)
+    }
+  } catch Bug as b {
+    Err(statusFromException(b.typeName, b.message))
+  }
 }
 
-/// A stream from `netOpenServerStream` never exists on this target, so
-/// this is unreachable in practice; a real stream-close call is a no-op
-/// stub rather than a panic since closing is idempotent and side-effect-
-/// free to skip.
+/// Cancel (if still running) and release the call. Closing twice, or a
+/// stream from another run, is a no-op.
 pub func netCloseStream(stream: in GrpcStream): Unit {
-  ()
+  var call: NetServerStreamingCall = default()
+  if streamDictTryRemove(streamRegistry, Types.streamHandleId(stream), call) {
+    streamingCallDispose(call)
+  }
 }
 
 // ─── Server: hosting ────────────────────────────────────────────────────────────
-/// **BLOCKED** (#6581) — independently re-verified against
-/// `Grpc.AspNetCore.Server` 2.65.0's real metadata (group:ecosystem-lib-kernels,
-/// 2026-09-05; see this module's doc comment for the full chain).
-/// `IServiceCollection.AddGrpc()` itself is non-generic and would compile,
-/// but every path from there to an actually-dispatchable RPC route needs a
-/// MethodSpec-bound generic-method call (`MapGrpcService<TService>`, or the
-/// `ServerServiceDefinition.Builder.AddMethod<TRequest,TResponse>` /
-/// `ServiceBinderBase.AddMethod<TRequest,TResponse>` pair it wraps — Gap 2
-/// from `netCallUnary`'s comment) over a `Method<TRequest,TResponse>` that
-/// itself needs a `Marshaller<T>` (Gap 1). No non-generic registration
-/// surface exists on this NuGet version. `Grpc.serve` (`grpc.l`) declares
-/// this `Unit`-returning and blocking (it is meant to run the server host
-/// forever) — there is no `Result` in its signature to fail into, so a
-/// real implementation would only ever fail via an unhandled .NET
-/// exception anyway; `panic` matches that contract honestly rather than
-/// silently returning as if a server were actually running.
+// Not implemented — see the module doc comment. `Grpc.start` / `startHandle`
+// declare no `Result`, so a missing server is a `panic` naming the gap rather
+// than a function that returns as if a server were running.
 pub func serve(
   host: in String,
   port: in Int,
@@ -351,16 +450,9 @@ pub func serve(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): Unit {
-  panic("gRPC .NET server hosting is blocked on a self-hosted-compiler gap (tracked in #6581)")
+  panic("gRPC server hosting is not implemented on the dotnet target (tracked in #8642)")
 }
 
-/// **BLOCKED** (#6581). `Grpc.startHandle` (`grpc.l`) declares
-/// this as returning a bare `GrpcServerHandle` (no `Result`) — matching a
-/// real implementation's "throws on failure" contract; `panic` is the
-/// honest signal here too. `GrpcServerHandle` is `opaque type` owned by
-/// `Grpc.Types` with no public constructor exposed to this package, so a
-/// dummy success value cannot be fabricated even if this function's
-/// signature allowed one.
 pub func netStartHandle(
   host: in String,
   port: in Int,
@@ -368,7 +460,7 @@ pub func netStartHandle(
   maxConnectionIdleMs: in Int,
   registry: in ServiceRegistry,
 ): GrpcServerHandle {
-  panic("gRPC .NET server hosting is blocked on a self-hosted-compiler gap (tracked in #6581)")
+  panic("gRPC server hosting is not implemented on the dotnet target (tracked in #8642)")
 }
 
 /// A handle from `netStartHandle` never exists on this target, so this is
@@ -533,7 +625,7 @@ func unwrapLimiter(opt: in Option[NetRateLimiter]): NetRateLimiter {
 /// Check (and consume, if allowed) one permit from both the sustained
 /// (`requestsPerMinute` over a rolling 60s window) and burst (`burstSize`
 /// over a rolling 1s window) limiters for `method`. Returns `true` only if
-/// both grant a permit. Real enforcement — does not depend on #6581.
+/// both grant a permit. Real enforcement.
 pub func checkRateLimit(method: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: requestsPerMinute > 0
   requires: burstSize > 0
