@@ -681,7 +681,10 @@ func testBuildProtected(): Unit {
   )
   assertTrue(Str.contains(d.repr, "pub protected type Counter"), "protected: header (got " + d.repr + ")")
   assertTrue(Str.contains(d.repr, "var n: Int = 0"), "protected: field with default (got " + d.repr + ")")
-  assertTrue(Str.contains(d.repr, "entry bump(by: in Int, tally: inout Int): Int"), "protected: entry head (got " + d.repr + ")")
+  assertTrue(
+    Str.contains(d.repr, "entry bump(by: in Int, tally: inout Int): Int"),
+    "protected: entry head (got " + d.repr + ")"
+  )
   assertTrue(Str.contains(d.repr, "func peek(): Int"), "protected: func head (got " + d.repr + ")")
   assertTrue(not Str.contains(d.repr, "when:"), "protected: barrier stays internal (got " + d.repr + ")")
   assertTrue(not Str.contains(d.repr, "invariant"), "protected: invariant stays internal (got " + d.repr + ")")

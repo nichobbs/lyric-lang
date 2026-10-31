@@ -1474,11 +1474,7 @@ func parseImplBody(st: inout ParseState, genericsPrefix: Option[GenericParams]):
 // ─────────────────────────────────────────────────────────────────────────────
 func startsBody(t: in Token): Bool {
   match t {
-    case TPunct(p) -> match p {
-      case Eq -> true
-      case LBrace -> true
-      case _ -> false
-    }
+    case TPunct(p) -> match p { case Eq -> true; case LBrace -> true; case _ -> false }
     case _ -> false
   }
 }
