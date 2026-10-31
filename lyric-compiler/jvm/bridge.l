@@ -562,6 +562,7 @@ func runMiddleEnd(
   ioForbiddenReason: in String,
   contractsEnabled: in Bool = true,
   quietWarnings: in Bool = false,
+  sink: in DiagSink = printDiagnostics(),
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   val opts = jvmMiddleEndOptions(
@@ -573,7 +574,8 @@ func runMiddleEnd(
     aritiesOut,
     ioForbiddenReason,
     contractsEnabled,
-    quietWarnings
+    quietWarnings,
+    sink
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
@@ -595,6 +597,7 @@ func jvmMiddleEndOptions(
   ioForbiddenReason: in String,
   contractsEnabled: in Bool,
   quietWarnings: in Bool,
+  sink: in DiagSink = printDiagnostics(),
 ): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
   MiddleEndOptions(
@@ -617,7 +620,8 @@ func jvmMiddleEndOptions(
     foreignRecvClasses = true,
     ioForbiddenReason = ioForbiddenReason,
     quietWarnings = quietWarnings,
-    stringSurface = jvmStringSurface()
+    stringSurface = jvmStringSurface(),
+    sink = sink
   )
 }
 
@@ -3033,6 +3037,33 @@ func jvmProjectFrontEnd(
 
 // A JVM front-end error with no diagnostic of its own: printed as the build
 // has always printed it, or collected into `sink` at `span` (the start of the
+// A JVM build's own report (`headline`, then `detail` lines, already
+// formatted as `error[J00N]: ...` or `note[J003]: ...`): printed as before,
+// or with `sink` collecting, one diagnostic of `severity` whose code is the
+// headline's own.
+func jvmBuildReport(sink: in DiagSink, severity: in DiagnosticSeverity, headline: in String, detail: in String): Unit {
+  if sink.collect {
+    val code = match Str.indexOf(headline, "]") {
+      case Some(ci) -> match Str.indexOf(headline, "[") {
+        case Some(oi) -> if ci > oi + 1 {
+          headline.substring(oi + 1, ci - oi - 1)
+        } else {
+          "J002"
+        }
+        case None -> "J002"
+      }
+      case None -> "J002"
+    }
+    val d = Diagnostic(severity = severity, code = code, message = headline + detail, span = pointSpan(initialPosition()))
+    sink.located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = d))
+  } else {
+    Console.error(headline)
+    if detail.length > 0 {
+      Console.error(if detail.startsWith("\n") { detail.substring(1, detail.length - 1) } else { detail })
+    }
+  }
+}
+
 // file when None) under `label`.
 func jvmFrontEndError(
   sink: in DiagSink, label: in String, span: in Option[Span], message: in String, hint: in String
@@ -3284,8 +3315,11 @@ pub func compileProjectToJarBundledWithRestored(
   // `MiddleEndOptions.ioForbiddenReason`.
   ioForbiddenByPkg: in Map[String, String],
   contractsEnabled: in Bool = true,
+  // Where the build's diagnostics go: printed, or collected for a caller
+  // that decides what to show (`Lyric.Emitter.emitProjectCollecting`, #8667).
+  sink: in DiagSink = printDiagnostics(),
 ): Bool {
-  val fe = match jvmProjectFrontEnd(pkgs, stdlibSources, activeFeatures, declaredFeatures, depTemplates, defines, restoredArtifacts, pkgFeatures, printDiagnostics()) {
+  val fe = match jvmProjectFrontEnd(pkgs, stdlibSources, activeFeatures, declaredFeatures, depTemplates, defines, restoredArtifacts, pkgFeatures, sink) {
     case Some(f) -> f
     case None -> return false
   }
@@ -3911,7 +3945,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
   val userCallArities: Map[String, Int] = newMap()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4078,7 +4112,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -4181,12 +4215,15 @@ pub func compileProjectToJarBundledWithRestored(
         // A codegen panic already carrying its own `error[J00N]:` code (e.g.
         // J004/J005) is passed through untouched — re-prefixing it with J002
         // produced nested "error[J002]: error[J004]: ..." output (#3311).
-        if b.message.startsWith("error[J0") {
-          Console.error(b.message)
+        val failure = if b.message.startsWith("error[J0") {
+          b.message
         } else {
-          Console.error("error[J002]: JVM codegen failed for referenced package '" + pkgName + "': " + b.message)
+          "error[J002]: JVM codegen failed for referenced package '" + pkgName + "': " + b.message
         }
-        Console.error(
+        jvmBuildReport(
+          sink,
+          DiagError,
+          failure,
           "  this package's functions are called by the program, so it must compile; " +
             "the failure above names the symbol or construct the JVM backend could not lower"
         )
@@ -4217,16 +4254,20 @@ pub func compileProjectToJarBundledWithRestored(
     bi = bi + 1
   }
   if skippedCount > 0 {
-    Console.error(
-      "note[J003]: " + skippedCount.toString() + " stdlib package(s) could not be bundled (JVM backend gap); " +
-        "runtime calls into them will fail with NoClassDefFoundError — " +
-        "if that happens, please file an issue"
-    )
+    var skippedLines = ""
     var sni = 0
     while sni < skippedNames.count {
-      Console.error("note[J003]:   skipped: " + skippedNames[sni])
+      skippedLines = skippedLines + "\nnote[J003]:   skipped: " + skippedNames[sni]
       sni = sni + 1
     }
+    jvmBuildReport(
+      sink,
+      DiagWarning,
+      "note[J003]: " + skippedCount.toString() + " stdlib package(s) could not be bundled (JVM backend gap); " +
+        "runtime calls into them will fail with NoClassDefFoundError — " +
+        "if that happens, please file an issue",
+      skippedLines
+    )
   }
 
   // Main-Class from the user package declaration.
