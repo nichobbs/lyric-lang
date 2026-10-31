@@ -613,10 +613,6 @@ func isErrorDiag(d: in Diagnostic): Bool {
   isErr
 }
 
-// Keep error diagnostics that are NOT whitelisted T0010 stdlib
-// anchors.  Warnings are dropped — the bridge only cares whether a
-// real (non-whitelisted) error fired; warning-only sets count as
-// "synthesise succeeded" (#1264).
 // True iff `d` is a T0014 "unknown qualified type 'P.Q.T' (...)" whose
 // package `P.Q` is another package of the same restored set (`siblings`).
 // The standalone recheck sees a sibling's types only through the flattened,
@@ -638,6 +634,10 @@ func isQualifiedSiblingType(d: in Diagnostic, siblings: in List[String]): Bool {
   siblings.contains(name.substring(0, dot))
 }
 
+// Keep error diagnostics that are NOT whitelisted T0010 stdlib
+// anchors.  Warnings are dropped — the bridge only cares whether a
+// real (non-whitelisted) error fired; warning-only sets count as
+// "synthesise succeeded" (#1264).
 func filterRealErrors(
   diags: in List[Diagnostic], contract: in Meta.Contract, siblings: in List[String]
 ): List[Diagnostic] {
