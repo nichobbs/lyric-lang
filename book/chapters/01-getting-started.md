@@ -473,7 +473,8 @@ Core commands you will use constantly:
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
 | `lyric test` | Run tests for the discovered project; falls back to scanning packages for `@test_module` |
 | `lyric test <file.l> --list` | Print test titles without compiling |
-| `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
+| `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring; a file with no matching test is not compiled |
+| `lyric test --suite <name>` | Project mode: run only the named `[project.tests]` entry (repeatable) |
 | `lyric test <file.l> --fail-fast` | Stop after the first file with failing tests; print an early summary |
 | `lyric test <file.l> --coverage` | Count the statement lines of the code under test (dotnet or jvm); write `coverage.info` (lcov) and `coverage.xml` (Cobertura) beside the test output |
 | `lyric test --coverage --min-coverage <percent>` | Fail when the covered share of lines is under the percentage |
