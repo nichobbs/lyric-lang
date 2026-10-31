@@ -81,15 +81,23 @@ same_ir restored off
 unset LYRIC_STD_PATH
 
 echo "=== corrupt entries fall back to a full check ==="
-victims=("$entries"/*.ok)
+# A fresh directory, so every entry is one this build reaches (the shared one also holds the
+# entries of the edited stdlib above, which this build never looks up).
+ccache="$work/cache-corrupt"
+centries="$ccache/native-stdlib-check"
+build seed LYRIC_CACHE_DIR="$ccache"
+[ "$(count seed miss-stored)" = "$stored" ] || fail "the seeding build stored $(count seed miss-stored) of $stored packages"
+victims=("$centries"/*.ok)
+[ "${#victims[@]}" -ge 5 ] || fail "expected at least 5 entries to damage, found ${#victims[@]}"
 : > "${victims[0]}"                                              # empty
 head -c 20 "${victims[1]}" > "$work/trunc" && cp "$work/trunc" "${victims[1]}"   # truncated
 printf 'garbage' > "${victims[2]}"                               # foreign
 cp "${victims[4]}" "${victims[3]}"                               # another key's entry
-build corrupt LYRIC_CACHE_DIR="$cache"
+build corrupt LYRIC_CACHE_DIR="$ccache"
 [ "$(count corrupt miss-stored)" = 4 ] || fail "expected exactly the 4 damaged entries re-checked, got $(count corrupt miss-stored)"
+[ "$(count corrupt hit)" = "$((stored - 4))" ] || fail "the undamaged entries must still hit"
 same_ir corrupt off
-build healed LYRIC_CACHE_DIR="$cache"
+build healed LYRIC_CACHE_DIR="$ccache"
 [ "$(count healed miss-stored)" = 0 ] || fail "damaged entries were not rewritten"
 
 echo "=== an unwritable cache location costs the speedup, not the build ==="
