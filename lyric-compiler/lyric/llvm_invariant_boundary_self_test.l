@@ -123,11 +123,11 @@ test "native: the invariant boundary checks hold on every boundary (ASan, #8656)
   assertTrue(result.exitCode != 0, "a broken result panics")
   assertTrue(Str.contains(result.stderr, "InvariantViolated: Inv.Types.Counter"), "result message: " + result.stderr)
 
-  val inout = runCase(exe, "inout")
-  assertTrue(inout.exitCode != 0, "an inout parameter written to a broken value panics on exit")
+  val inoutRun = runCase(exe, "inout")
+  assertTrue(inoutRun.exitCode != 0, "an inout parameter written to a broken value panics on exit")
   assertTrue(
-    Str.contains(inout.stderr, "InvariantViolated: Inv.Types.Counter invariant count >= 0"),
-    "inout message: " + inout.stderr
+    Str.contains(inoutRun.stderr, "InvariantViolated: Inv.Types.Counter invariant count >= 0"),
+    "inout message: " + inoutRun.stderr
   )
 
   val local = runCase(exe, "local-inout")

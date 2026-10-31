@@ -6988,7 +6988,7 @@ func resolveExprPath(
           var unshared = true
           for other in symTableTryFindAll(tbl, name) {
             match other.kind {
-              case DKEnumCase(opid, _) -> if not typeIdEq(opid, pid) {
+              case DKEnumCase(opid, _) -> if not (typeIdEq(opid, pid) or (other.originPackage == sym.originPackage and typeNameOfId(tbl, opid) == typeNameOfId(tbl, pid))) {
                 unshared = false
               }
               case _ -> {

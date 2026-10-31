@@ -653,13 +653,13 @@ test "== on lists compares elements: Double zero and NaN, String, length (ASan)"
 // #8600: `==` / `!=` on maps compares size, keys and values under D172, and a
 // record with a list or map field hashes by contents, so it works as a key.
 test "== on maps and hashing of list and map fields (ASan)" {
-  val src = "package T\n" + "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
+  val src = "package T\n" + optionDecl() + "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
     "func nanD(z: in Double): Double = z / z\n" +
     "func dm(k: in Int, v: in Double): Map[Int, Double] {\n" +
     "  val m: Map[Int, Double] = newMap()\n  m.add(k, v)\n  m\n}\n" +
     "func sm(k: in String, v: in String): Map[String, String] {\n" +
     "  val m: Map[String, String] = newMap()\n  m.add(k, v)\n  m\n}\n" +
-    "record Bag { xs: List[Double]\n  m: Map[Int, Double] }\n" +
+    "record Bag {\n  xs: List[Double]\n  m: Map[Int, Double]\n}\n" +
     "func bag(a: in Double): Bag {\n" +
     "  val xs: List[Double] = newList()\n  xs.add(a)\n" +
     "  Bag(xs = xs, m = dm(1, a))\n}\n" +
@@ -674,7 +674,7 @@ test "== on maps and hashing of list and map fields (ASan)" {
     "  val two: Map[Int, Double] = dm(1, 0.0)\n  two.add(2, 0.0)\n" +
     "  code = code + flag(not (two == dm(1, 0.0))) * 64\n" +
     "  val keyed: Map[Bag, Int] = newMap()\n  keyed.add(bag(0.0), 7)\n" +
-    "  match keyed.get(bag(-0.0)) {\n    case Some(v) -> code = code + flag(v == 7) * 128\n    case None -> ()\n  }\n" +
+    "  match mapGet(keyed, bag(-0.0)) {\n    case Some(v) -> {\n      code = code + flag(v == 7) * 128\n    }\n    case None -> {\n    }\n  }\n" +
     "  code\n" +
     "}\n"
   val r = compileAndRunAsan(src)
