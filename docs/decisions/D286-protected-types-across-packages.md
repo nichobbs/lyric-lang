@@ -31,15 +31,23 @@ type checker and the MSIL registration of restored types.
 3. **Parser.** In a `@contract_source` file an `entry` may be a head with no
    body (as a `func` already could). Hand-written source still requires a body
    (`P0172`).
-4. **Checker.** No change: an imported protected type is a `DKProtected`
+4. **Checker.** Skips the body of an entry head (`EntryDecl.hasBody`, false only
+   for such a head; the passes that rebuild an entry carry it). Otherwise no
+   change: an imported protected type is a `DKProtected`
    symbol, and construction, field checking and member lookup already work on
-   it. Fields were never readable from outside the type.
-5. **MSIL.** `registerRestoredMembers` registers a restored protected type as
+   it. Reading or writing a field by name outside the type's members is
+   accepted today, in the declaring package and now in an importing one; it
+   bypasses the lock and contradicts docs/01 section 7.5. Forbidding it is a
+   separate change (#8672), since it affects existing code.
+5. **MSIL.** Two existing defects had to be fixed for a library protected type
+   with a barrier to run: an entry ending in `return` was an invalid program,
+   and `Monitor.Wait`/`PulseAll` are now registered with the type. And
+   `registerRestoredMembers` registers a restored protected type as
    the record-shaped class `lowerProtectedMsil` emits (one constructor taking
    every field, one instance method per member): the constructor MemberRef,
    the default expressions of the fields, and each member's MemberRef with its
    by-reference parameters.
-6. **JVM.** See the progress entry for what the JVM path needed.
+6. **JVM.** No change: a JVM consumer of a restored `pub` protected type constructs it and calls its members (including an `inout` parameter, a defaulted parameter, a generic type and a barrier) before and after this change; the e2e case pins it.
 
 ## Consequences
 

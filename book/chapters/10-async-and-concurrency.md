@@ -185,7 +185,7 @@ count.set(1)
 
 Generic protected types work on `--target dotnet`, `--target jvm` and `--target native`.
 
-A `pub` protected type can be used from another package, including a library you depend on and restore as a compiled package. The importing code constructs it and calls its entries and funcs like any other value: `val c = Counter()`, `c.bump(5)`, `c.addOut(total, 3)` with an `inout` argument, `Slot(v = "x")` for a generic one. The library's barriers, invariant and lock stay inside the compiled members; the importing package sees only the constructor and the member signatures, and still cannot touch the state directly. This works on `--target dotnet` and `--target jvm`. A protected type that is not `pub` can be named in the library's own signatures but cannot be constructed outside it.
+A `pub` protected type can be used from another package, including a library you depend on and restore as a compiled package. The importing code constructs it and calls its entries and funcs like any other value: `val c = Counter()`, `c.bump(5)`, `c.addOut(total, 3)` with an `inout` argument, `Slot(v = "x")` for a generic one. The library's barriers, invariant and lock stay inside the compiled members; the importing package sees the constructor and the member signatures, and should reach the state only through them. This works on `--target dotnet` and `--target jvm`. A protected type that is not `pub` can be named in the library's own signatures but cannot be constructed outside it.
 
 A protected type can implement an interface. The methods of an `impl` for a protected type become locked members of the type, so they run one at a time with every other member, see the fields directly, and wake barrier waiters:
 
