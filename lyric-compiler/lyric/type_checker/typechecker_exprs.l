@@ -16647,29 +16647,48 @@ func recordCasePatternUnion(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit
 // to.
 func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
   match unrefine(t) {
-    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
-      case Some(sym) -> {
-        val isClass = match sym.kind {
-          case DKRecord(_, _) -> true
-          case DKExposedRec(_, _) -> true
-          case DKUnion(_, _) -> true
-          case DKOpaque(_, _) -> true
-          case DKProtected(_, _) -> true
-          // A distinct value is a wrapper class on dotnet and the JVM
-          // (docs/01 §2.3), so an erased one narrows to it before `.value`.
-          case DKDistinctType(_, _) -> true
-          case _ -> false
-        }
-        if isClass and sym.originPackage.length > 0 {
-          val key = recordCopySiteKey(sp)
-          if not tbl.memberRecvClasses.containsKey(key) {
-            tbl.memberRecvClasses.add(key, sym.originPackage + "." + sym.name)
-          }
-        }
+    // #8668: the stdlib `List` a method is called on, under its own key
+    // prefix.  MSIL erases a `List` of tuples to `object`, so `indexOf`,
+    // `lastIndexOf` and `remove` could not tell it from a `String` or `Map`.
+    case TyUser(tid, _, _) -> if isStdCollectionsHostType(tbl, tid, "List") {
+      val lkey = stdListRecvKeyPrefix() + recordCopySiteKey(sp)
+      if not tbl.memberRecvClasses.containsKey(lkey) {
+        tbl.memberRecvClasses.add(lkey, "Std.CollectionsHost.List")
       }
-      case None -> ()
+    } else {
+      recordMemberRecvClassOfUser(tbl, sp, tid)
     }
     case _ -> ()
+  }
+}
+
+/// The `memberRecvClasses` key prefix of a receiver that is the stdlib `List`.
+pub func stdListRecvKeyPrefix(): String {
+  "stdlist|"
+}
+
+func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in TypeId): Unit {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> {
+      val isClass = match sym.kind {
+        case DKRecord(_, _) -> true
+        case DKExposedRec(_, _) -> true
+        case DKUnion(_, _) -> true
+        case DKOpaque(_, _) -> true
+        case DKProtected(_, _) -> true
+        // A distinct value is a wrapper class on dotnet and the JVM
+        // (docs/01 §2.3), so an erased one narrows to it before `.value`.
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      if isClass and sym.originPackage.length > 0 {
+        val key = recordCopySiteKey(sp)
+        if not tbl.memberRecvClasses.containsKey(key) {
+          tbl.memberRecvClasses.add(key, sym.originPackage + "." + sym.name)
+        }
+      }
+    }
+    case None -> ()
   }
 }
 

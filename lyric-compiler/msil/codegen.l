@@ -11326,6 +11326,24 @@ func isListRecvMsil(recvTy: in MsilType): Bool {
   }
 }
 
+// #8668: true when the receiver, lowered to `object` (a `List` of tuples is
+// the erased `List<object>`, docs/59 F10), is the stdlib `List` the type
+// checker resolved at this site, so `indexOf`/`lastIndexOf`/`remove` take the
+// list operations rather than the `String` or `Map` ones.
+func erasedRecvIsStdListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, recvTy: in MsilType, recv: in Expr): Bool {
+  match recvTy {
+    case MObject -> ()
+    case _ -> return false
+  }
+  val siteKey = stdListRecvKeyPrefix() + recordCopySiteKey(recv.span)
+  val key = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    fctx.originPkg + "|" + siteKey
+  } else {
+    siteKey
+  }
+  cctx.memberRecvClasses.containsKey(key)
+}
+
 // `recv.<op>(item)` for a `List`1` method taking one element — `IndexOf`,
 // `LastIndexOf`, `Remove` — with the receiver already on the stack: the item is
 // widened to the list's element type, and boxed as it for an erased
@@ -23928,7 +23946,11 @@ func lowerMethodCallMsil(
         panicListElemMethodArityMsil(cctx, fctx, insns, args, "remove")
         MBool
       }
-      case _ -> {
+      case _ -> if erasedRecvIsStdListMsil(cctx, fctx, recvTy, recv) and args.count == 1 {
+        // A `List` of tuples (erased `List<object>`, #8668).
+        lowerListElemMethodMsil(cctx, fctx, insns, recvTy, args[0], LoRemove)
+        MBool
+      } else {
         // Non-Map receiver: retain the conservative pop-only behaviour until a
         // real List removal lowering lands.
         var i = 0
@@ -24101,7 +24123,7 @@ func lowerMethodCallMsil(
     // String.TrimEnd(): string  — trims trailing whitespace.
     insns.add(MCallvirt(methodToken = cctx.tokStringTrimEnd))
     MString
-  } else if (memberName == "indexOf" or memberName == "lastIndexOf") and isListRecvMsil(recvTy) {
+  } else if (memberName == "indexOf" or memberName == "lastIndexOf") and (isListRecvMsil(recvTy) or erasedRecvIsStdListMsil(cctx, fctx, recvTy, recv)) {
     // `xs.indexOf(item)` / `xs.lastIndexOf(item)` on a `List[T]` ->
     // `List`1<T>::IndexOf(!0)` / `LastIndexOf(!0)`: int32, -1 when absent.
     // (The String arm below would bind `String.IndexOf` to the list receiver.)
