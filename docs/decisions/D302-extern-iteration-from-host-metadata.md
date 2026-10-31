@@ -1,4 +1,4 @@
-# D296 - A `for` over an extern type is typed from the host's iteration protocol (#7809)
+# D302 - A `for` over an extern type is typed from the host's iteration protocol (#7809)
 
 **Status:** shipped
 

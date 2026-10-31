@@ -4673,7 +4673,7 @@ pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
   }
 }
 
-// ── Layer 8: the iteration protocol of a host type (D296) ────────────────────
+// ── Layer 8: the iteration protocol of a host type (D302) ────────────────────
 //
 // What a `for` over an `extern type` binds depends on which collection
 // protocol the CLR type implements: `IEnumerable<T>` (the elements are `T`,

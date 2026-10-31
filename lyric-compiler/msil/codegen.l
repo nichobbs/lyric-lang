@@ -25041,7 +25041,7 @@ func emitCollectionForMsil(
   iter: in Expr,
   body: in Block,
 ): Unit {
-  // An `extern type` the host iterates through its own protocol (D296):
+  // An `extern type` the host iterates through its own protocol (D302):
   // `Lyric.Mono` wrapped the iterable in `__lyric_host_iter`.  An arity-0
   // type such as `System.Collections.ArrayList`, or a generic one such as
   // `SortedDictionary<K, V>.KeyCollection`, is not necessarily an `IList`,

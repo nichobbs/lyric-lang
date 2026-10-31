@@ -349,7 +349,7 @@ record MonoState {
   /// local annotated with the element type (#7728).
   tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
   /// Each `for` iterable the type checker typed from an extern type's host
-  /// collection protocol (`SymbolTable.externHostLoopSites`, D296), keyed by
+  /// collection protocol (`SymbolTable.externHostLoopSites`, D302), keyed by
   /// `recordCopySiteKey` of the iterable's span; the loop is rewritten to
   /// iterate `__lyric_host_iter(<iterable>)`, which the backends lower
   /// through the host's `IEnumerable` / `Iterable` instead of guessing the
@@ -6193,7 +6193,7 @@ func renameTuplePatternBindingsMono(state: in MonoState, pat: in Pattern, binds:
 }
 
 // `iter` as the iterable of a `for` over an extern type's host collection
-// protocol (D296): `__lyric_host_iter(iter)`.  The backends lower the call
+// protocol (D302): `__lyric_host_iter(iter)`.  The backends lower the call
 // as the host enumerator loop (`IEnumerable` on .NET, `Iterable` on the
 // JVM) rather than infer the protocol from the iterable's erased runtime
 // type, which is `object` for most generic externs.

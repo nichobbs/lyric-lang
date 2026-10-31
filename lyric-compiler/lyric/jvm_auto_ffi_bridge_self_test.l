@@ -698,7 +698,7 @@ test "an argument with no verified supertype relation still falls back to the Ob
   )
 }
 
-// ─── #7809 / D296: the iteration protocol of a JVM class ─────────────────────
+// ─── #7809 / D302: the iteration protocol of a JVM class ─────────────────────
 //
 // `parseClassSignature` reads a class `Signature` attribute; the walk in
 // `iterProtocolOfExternJvm` substitutes a class's type arguments through

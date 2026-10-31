@@ -1,5 +1,5 @@
 //! extern_iter_self_test.l - runtime regression test for `for` over an
-//! `extern type` of no type parameters or of two or more (#7809, D296) on
+//! `extern type` of no type parameters or of two or more (#7809, D302) on
 //! `--target dotnet`.
 //!
 //! The loop variable's type is what the .NET collection protocol declares,

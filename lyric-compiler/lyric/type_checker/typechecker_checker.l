@@ -6940,7 +6940,7 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
 }
 
 /// `checkWithImportedPackages` for a build whose backend bridge can say how the
-/// host types behind the `extern type`s iterate (D296): `externIter` maps an
+/// host types behind the `extern type`s iterate (D302): `externIter` maps an
 /// `extern type`'s `clrName` to the element type its host protocol yields and
 /// `resolver` (zero or one) answers for the types it lacks, which a `for` over
 /// one needs to type its loop variable.  `native` is
@@ -6980,7 +6980,7 @@ pub func checkWithImportedPackagesForTarget(
 }
 
 /// `checkWithImportedPackagesForTarget` for a backend bridge that can say how
-/// the host types behind `extern type`s iterate (D296): `externIter` and
+/// the host types behind `extern type`s iterate (D302): `externIter` and
 /// `resolver` are `checkWithImportedPackagesExternIter`'s.
 pub func checkWithImportedPackagesForTargetIter(
   file: in SourceFile,

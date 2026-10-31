@@ -508,7 +508,7 @@ func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
 }
 
-// ── Host iteration protocol of extern types (D296) ───────────────────────────
+// ── Host iteration protocol of extern types (D302) ───────────────────────────
 //
 // A `for` over an `extern type` of no type parameters or of two or more binds
 // the element type the JVM class's `Iterable<T>` declares.  The checker is

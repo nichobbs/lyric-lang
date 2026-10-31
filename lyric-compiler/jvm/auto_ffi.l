@@ -1427,7 +1427,7 @@ pub func resolveExternTargetJvm(
   }
 }
 
-// ── The iteration protocol of a host class (D296) ────────────────────────────
+// ── The iteration protocol of a host class (D302) ────────────────────────────
 //
 // What a `for` over an `extern type` binds depends on how the JVM class
 // reaches `java.lang.Iterable`: `Iterable<T>` through its generic `Signature`

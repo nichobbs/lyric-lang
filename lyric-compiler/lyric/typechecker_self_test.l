@@ -5197,7 +5197,7 @@ test "for over a non-iterable Lyric-native single-param generic emits T0126" {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `for` over an extern type of no type parameters or of two or more (#7809,
-// D296).  The element type is what the backend bridge read out of the host
+// D302).  The element type is what the backend bridge read out of the host
 // type's metadata and passed in `externIterElems`.
 // ─────────────────────────────────────────────────────────────────────────────
 func parseCheckIter(src: in String, iter: in Map[String, ExternIterInfo]): CheckResult {
@@ -5316,7 +5316,7 @@ test "for over an extern whose host type is not enumerable emits T0126 (#7809)" 
 }
 
 // The first `for` in function `f`, its iterable wrapped as the middle end
-// leaves it for the backends (D296).
+// leaves it for the backends (D302).
 func firstForIterWrapped(file: in SourceFile): Bool {
   for it in file.items {
     match it.kind {
