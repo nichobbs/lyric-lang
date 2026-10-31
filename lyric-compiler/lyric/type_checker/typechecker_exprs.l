@@ -6979,6 +6979,28 @@ func resolveExprPath(
           return t
         }
         case DKVal(vd) -> return moduleValReadType(tbl, sigs, sym, vd)
+        // A bare enum case with no expected type is a value of its enum, so
+        // `println(Green)` renders by case name and `val s: String = Green` is
+        // rejected (#8652). Only a case name no other enum or union shares is typed:
+        // two enums sharing a case name are told apart by the scrutinee or the
+        // expected type, which this site cannot see.
+        case DKEnumCase(pid, _) -> {
+          var unshared = true
+          for other in symTableTryFindAll(tbl, name) {
+            match other.kind {
+              case DKEnumCase(opid, _) -> if not (typeIdEq(opid, pid) or (other.originPackage == sym.originPackage and typeNameOfId(tbl, opid) == typeNameOfId(tbl, pid))) {
+                unshared = false
+              }
+              case _ -> {
+                unshared = false
+              }
+            }
+          }
+          if unshared {
+            val noArgs: List[Type] = newList()
+            return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = noArgs)
+          }
+        }
         case _ -> {
         }
       }

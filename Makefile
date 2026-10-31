@@ -477,6 +477,7 @@ test-native: native-rt ## Run the native backend self-tests (needs clang and ./b
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_codegen_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_byvalue_record_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_inline_union_self_test.l
+	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_invariant_boundary_self_test.l
 
 # ── Maven resolver ──────────────────────────────────────────────────────────
 

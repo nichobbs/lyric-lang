@@ -649,3 +649,34 @@ test "== on lists compares elements: Double zero and NaN, String, length (ASan)"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 127, "every list comparison agrees with structural equality")
 }
+
+// #8600: `==` / `!=` on maps compares size, keys and values under D172, and a
+// record with a list or map field hashes by contents, so it works as a key.
+test "== on maps and hashing of list and map fields (ASan)" {
+  val src = "package T\n" + optionDecl() + "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
+    "func nanD(z: in Double): Double = z / z\n" +
+    "func dm(k: in Int, v: in Double): Map[Int, Double] {\n" +
+    "  val m: Map[Int, Double] = newMap()\n  m.add(k, v)\n  m\n}\n" +
+    "func sm(k: in String, v: in String): Map[String, String] {\n" +
+    "  val m: Map[String, String] = newMap()\n  m.add(k, v)\n  m\n}\n" +
+    "record Bag {\n  xs: List[Double]\n  m: Map[Int, Double]\n}\n" +
+    "func bag(a: in Double): Bag {\n" +
+    "  val xs: List[Double] = newList()\n  xs.add(a)\n" +
+    "  Bag(xs = xs, m = dm(1, a))\n}\n" +
+    "func main(): Int {\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(dm(1, 0.0) == dm(1, -0.0)) * 1\n" +
+    "  code = code + flag(not (dm(1, 0.0) != dm(1, -0.0))) * 2\n" +
+    "  code = code + flag(dm(1, nanD(0.0)) == dm(1, nanD(0.0))) * 4\n" +
+    "  code = code + flag(not (dm(1, 0.0) == dm(2, 0.0))) * 8\n" +
+    "  code = code + flag(not (dm(1, 0.0) == dm(1, 1.0))) * 16\n" +
+    "  code = code + flag(sm(\"a\" + \"b\", \"x\" + \"y\") == sm(\"ab\", \"xy\")) * 32\n" +
+    "  val two: Map[Int, Double] = dm(1, 0.0)\n  two.add(2, 0.0)\n" +
+    "  code = code + flag(not (two == dm(1, 0.0))) * 64\n" +
+    "  val keyed: Map[Bag, Int] = newMap()\n  keyed.add(bag(0.0), 7)\n" +
+    "  match mapGet(keyed, bag(-0.0)) {\n    case Some(v) -> {\n      code = code + flag(v == 7) * 128\n    }\n    case None -> {\n    }\n  }\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 255, "map equality and content hashing agree with structural equality")
+}

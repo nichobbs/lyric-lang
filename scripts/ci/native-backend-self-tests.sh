@@ -74,6 +74,7 @@ for t in \
   lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l \
   lyric-compiler/lyric/llvm_inout_self_test.l \
   lyric-compiler/lyric/llvm_project_self_test.l \
+  lyric-compiler/lyric/llvm_invariant_boundary_self_test.l \
   lyric-compiler/lyric/cli_run_native_project_self_test.l \
   lyric-compiler/lyric/fixed_array_project_self_test.l \
   lyric-compiler/lyric/fixed_array_restored_self_test.l \

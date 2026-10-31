@@ -1,0 +1,7 @@
+[package]
+name = "reject-bare-enum-case"
+version = "0.1.0"
+[project]
+name = "RejectBareEnumCase"
+[project.packages]
+"App" = "app"
