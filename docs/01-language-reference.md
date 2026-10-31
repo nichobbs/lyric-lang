@@ -323,7 +323,7 @@ record Customer {
 - The hash agrees with the relation: both zeros hash alike, all `NaN`s do, and an array (or any `List`-represented field, which shares the array's host representation) hashes element by element.
 - A mutable record that does not derive `Equals` keeps identity, as a key too.
 - `==` inside a generic body compares like the type `Lyric.Mono` binds its type parameter to: a value record field by field, a mutable record by identity.
-- On `--target native`, `List.contains`/`indexOf` compare under this relation for every element type (a scalar by value, a `String` by text, a union or value record structurally; #7429), and a `Map` key may be a `String`, a scalar, a union, a value or `Equals`-deriving record, or an array, hashed and compared by the same relation (#8167); a tuple, list, map or closure key is still **N0007**, and `Set` is not lowered.
+- On `--target native`, `List.contains`/`indexOf`/`lastIndexOf`/`remove` compare under this relation for every element type (a scalar by value, a `String` by text, a union or value record structurally; #7429), and a `Map` key may be a `String`, a scalar, a union, a value or `Equals`-deriving record, or an array, hashed and compared by the same relation (#8167); a tuple, list, map or closure key is still **N0007**, and `Set` is not lowered. `indexOf`, `lastIndexOf` and `remove` on a `List` of tuples find the element by this relation on every target (#8668; dotnet erases such a list to `List<object>` and used to lower them as `String` or `Map` methods).
 - A tuple used directly as a `Map` key or `Set` member is found by structure on dotnet and the JVM (D289): a tuple is an instance of a synthesised host-list subclass whose `Equals`/`GetHashCode` (`equals`/`hashCode`) follow the relation above, element by element, with nested tuples, lists, records and `Double` elements (`(1, 0.0)` and `(1, -0.0)` are one key). `--target native` keeps **N0007** for a tuple key.
 
 **Collection equality (D206, #8169).** `==` and `!=` on two tuples or two `List` values compare their elements in order, and on two `Map` or two `Set` values compare their contents without regard to order: equal sizes, and every key of one in the other with an equal value. A `List`, `Map` or `Set` is not compared by identity even though it is mutable (D157's identity rule is for records with `var` fields): the host collections already compared this way on the JVM, and a record holding a `List` field compares equal to another with an equal list under D172's host `Equals`, so `==` agrees with it. Elements and values are compared by the structural relation above. `--target dotnet` lowers `==` on these types inline (it used to call `Object.Equals`, which compares a `List<T>`, a `Dictionary` or a `HashSet` by reference, so two equal tuples or lists were unequal); the JVM uses `equals`. The JVM lowers `==` on a non-`String` reference through the package's `__lyricKeyEq` helper, which has `ArrayList`, `HashSet` and `HashMap` arms, and `--target native` lowers `==` on a `List` to a synthesised element-wise function, so a `Double` element is equal when `==` holds or both are `NaN` on every target (`[0.0] == [-0.0]`). A record holding a `Set` or `Map` hashes through the same relation, so records that compare equal also hash alike. `==` on a `Map` or `Set` is not yet lowered on `--target native` (native has no `Set`, #8167).
@@ -404,6 +404,13 @@ the literal same expression evaluated twice (or coincided by reference); every
 other comparison — including `None == None` and two independently-constructed
 `Some` values with equal payloads — silently fell back to reference/tag
 identity (issues #6835, #6120).
+
+Two unions of one package may declare a case of the same name. A bare use of
+that name, with fields (`Both(n = 1)`) or without (`Idle`), is the case of the
+union the position expects: a binding's declared type, a parameter, a return
+type, a function's value. The checker resolves it there and every target
+builds that union's case; with no expected type the name is the last union
+declared (#8481, #8649).
 
 ### 2.6 Enums
 
@@ -2075,7 +2082,7 @@ protected type BoundedQueue[T] {
 ```
 
 Semantics:
-- A `protected type` wraps state with structurally-enforced mutual exclusion. There is no way to access the state without going through an `entry` or `func`.
+- A `protected type` wraps state with structurally-enforced mutual exclusion. There is no way to access the state without going through an `entry` or `func`. A field of a protected type is read or written by name only inside the type's own members (`entry`, `func`, invariant, and `impl` methods, §7.5 below): `c.total` or `c.total = 5` on a `Counter` anywhere else, in the declaring package or an importing one, is **T0221**, since it would bypass the instance lock (D304, #8672). A member reads its own fields by bare name or through `self.`, and may read the same type's fields through another value of that type.
 - `entry` operations are exclusive (one at a time), may have a `when:` barrier (caller blocks until barrier is true), and may mutate state.
 - `func` operations are exclusive too — **[OPEN: should we allow concurrent reads? See 06-open-questions.md]**.
 - Barriers are re-evaluated whenever any operation completes.
