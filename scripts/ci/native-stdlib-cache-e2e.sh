@@ -65,7 +65,7 @@ echo "=== a stdlib source edit invalidates the package and its dependents only =
 cp -r lyric-stdlib/std "$work/std"
 export LYRIC_STD_PATH="$work/std"
 build copy LYRIC_CACHE_DIR="$cache"
-[ "$(count copy miss-stored)" = "$stored" ] || fail "a copied stdlib at another path should still be keyed by content, not path (cold path differs)"
+[ "$(count copy hit)" = "$stored" ] || fail "a copy of the stdlib at another path must hit: entries are keyed by content, not path"
 cp "$work/std/string.l" "$work/string.l.orig"
 printf '\n// edited\n' >> "$work/std/string.l"
 build edited LYRIC_CACHE_DIR="$cache"

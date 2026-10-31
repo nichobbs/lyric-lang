@@ -10,6 +10,7 @@ package Lyric.NativeStdlibCacheSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
 import Std.File as File
 import Std.Path as Path
 import Std.Time
@@ -93,7 +94,7 @@ test "a corrupt, truncated, edited, foreign or unreadable entry is a miss" {
 
   val _ = File.writeText(path, "")
   assertFalse(C.lookup(dir, key), "empty file")
-  val _ = File.writeText(path, Std.String.substring(good, 0, good.length - 5))
+  val _ = File.writeText(path, Str.substring(good, 0, good.length - 5))
   assertFalse(C.lookup(dir, key), "truncated file")
   val _ = File.writeText(path, good + "extra\n")
   assertFalse(C.lookup(dir, key), "trailing garbage")
