@@ -1,4 +1,4 @@
-# D286 - Export `pub` protected types through contract metadata with their constructor and member signatures (#8261)
+# D295 - Export `pub` protected types through contract metadata with their constructor and member signatures (#8261)
 
 **Status:** shipped (dotnet and JVM)
 

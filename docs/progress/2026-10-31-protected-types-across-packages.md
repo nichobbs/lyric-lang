@@ -1,4 +1,4 @@
-# Protected types across packages (#8261, D286)
+# Protected types across packages (#8261, D295)
 
 A `pub protected type` of a library can now be constructed and called from a
 package that restores the library (dotnet; the JVM already worked and is pinned
