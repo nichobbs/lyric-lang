@@ -2238,10 +2238,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // `get(i)`.  Element static types are erased to `Object`; precise typing is
       // re-established by the consuming context (pattern sub-binding, call-site
       // coercion to a declared parameter type).
-      insns.add(LNew(className = "java/util/ArrayList"))
+      val tupleCls = tupleClassName(ctx.pkgName)
+      markKeyEqHelpers(ctx.usedRuntimeHelpers)
+      if not runtimeHelperUsed(ctx.usedRuntimeHelpers, tupleClassHelperName()) {
+        ctx.usedRuntimeHelpers.add(tupleClassHelperName())
+      }
+      insns.add(LNew(className = tupleCls))
       insns.add(LDup)
       val tInitPs: List[JvmType] = newList()
-      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = tInitPs, ret = JVoid))
+      insns.add(LInvokespecial(owner = tupleCls, name = "<init>", params = tInitPs, ret = JVoid))
       val tupSlot = allocSlot(ctx, "__tuple_" + freshLabel(ctx), JRef(className = "java/util/ArrayList"))
       // LAstoreAs (not LAstore) so the frame pass types this slot ArrayList,
       // not Object — a branchy element expression now puts a StackMapTable

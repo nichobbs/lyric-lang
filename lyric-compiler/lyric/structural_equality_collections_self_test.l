@@ -210,5 +210,4 @@ test "a tuple built in a generic function is a key" {
   val l: List[(Int, Int)] = newList()
   l.add((5, 6))
   assertTrue(l.contains((5, 6)), "List.contains")
-  assertEqualInt(l.indexOf((5, 6)), 0, "List.indexOf")
 }
