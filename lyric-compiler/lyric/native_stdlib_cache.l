@@ -16,7 +16,8 @@
 //! lowering.
 //!
 //! Key.  An entry's name is the SHA-256 of: the format tag, the compiler
-//! fingerprint (`compilerFingerprint`), the target triple and OS, the package
+//! fingerprint (`compilerFingerprint`), the target OS (the checker reads no
+//! other target input, so not the triple), the package
 //! name, and the name plus source hash of the package and of every package of
 //! its import closure, in load order.  Nothing else reaches the checker.  Any
 //! difference is a different key, so an entry can only be reached by a build
