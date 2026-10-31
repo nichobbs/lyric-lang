@@ -43,6 +43,14 @@ func cdAdd[K, V](dict: in CD[K, V], key: in K, value: in V): Bool = ()
 @externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.set_Item")
 func cdSet[K, V](dict: in CD[K, V], key: in K, value: in V): Unit = ()
 
+@externInstance
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.GetOrAdd")
+func cdGetOrAdd[K, V](dict: in CD[K, V], key: in K, valueFactory: in (K) -> V): V = ()
+
+@externInstance
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.AddOrUpdate")
+func cdAddOrUpdate[K, V](dict: in CD[K, V], key: in K, addValue: in V, updateValueFactory: in (K, V) -> V): V = ()
+
 @externTarget("System.Tuple`2..ctor")
 func newTup[A, B](a: in A, b: in B): Tup[A, B] = ()
 
@@ -175,4 +183,40 @@ test "a generic BCL method over T[] binds T from a String slice (#7807)" {
   arrReverse(s)
   assertEqual(s[0], "c", "Array.Reverse<string> reversed in place")
   assertEqualInt(arrIndexOf(s, "a"), 2, "Array.IndexOf<string>")
+}
+
+// #5800: a generic `@externTarget` wrapper whose own type parameters (`K`, `V`)
+// appear in a callback parameter.  The declaring type's arguments are erased to
+// `object`, so the delegate handed to the BCL must be `Func<object,object>` /
+// `Func<object,object,object>` and the lambda unboxes its own arguments and
+// boxes its result; before, the call-site delegate was built over the
+// concrete `K`/`V` and failed with InvalidCastException.
+val mapStrInt: CD[String, Int] = newCD()
+
+val mapIntStr: CD[Int, String] = newCD()
+
+val mapStrCounter: CD[String, Counter] = newCD()
+
+test "GetOrAdd: Func<K,V> lambda with a reference key and a value-type result (#5800)" {
+  val first = cdGetOrAdd(mapStrInt, "four", { k: String -> k.length })
+  assertEqualInt(first, 4, "the factory ran and its boxed Int result came back unboxed")
+  val second = cdGetOrAdd(mapStrInt, "four", { k: String -> 99 })
+  assertEqualInt(second, 4, "an existing key keeps its value; the factory is not run")
+}
+
+test "GetOrAdd: Func<K,V> lambda with a value-type key and a reference result (#5800)" {
+  val v = cdGetOrAdd(mapIntStr, 21, { k: Int -> toString(k * 2) })
+  assertEqual(v, "42", "the boxed Int key reached the lambda as an Int")
+}
+
+test "GetOrAdd: Func<K,V> lambda returning a record (#5800)" {
+  val c = cdGetOrAdd(mapStrCounter, "x", { k: String -> Counter(n = k.length + 5) })
+  assertEqualInt(c.n, 6, "the record built inside the lambda came back through the erased delegate")
+}
+
+test "AddOrUpdate: Func<K,V,V> lambda over two erased positions (#5800)" {
+  val added = cdAddOrUpdate(mapStrInt, "acc", 1, { k: String, previous: Int -> previous + 10 })
+  assertEqualInt(added, 1, "a fresh key takes the add value")
+  val updated = cdAddOrUpdate(mapStrInt, "acc", 1, { k: String, previous: Int -> previous + 10 })
+  assertEqualInt(updated, 11, "an existing key runs the update factory with the boxed old value")
 }

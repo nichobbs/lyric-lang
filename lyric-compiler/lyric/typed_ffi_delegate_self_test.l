@@ -148,54 +148,14 @@ test "#5315: a lambda binds to Task.ContinueWith's Action<Task> parameter (non-g
   assertTrue(true, "typed Action<Task> delegate bound to Task.ContinueWith without a signature mismatch")
 }
 
-// #5319/#5315/#5312: an attempt was made to add tests here that actually
-// *invoke* a constructed typed delegate (a Func<String,Int> via
-// ConcurrentDictionary.GetOrAdd, a void Action<Int> via List.ForEach, and a
-// zero-arg () -> T via ThreadLocal<T>.Value / Array.ForEach). All of them
-// hit the SAME real runtime bug, independent of which BCL API was used:
-// pairing ANY generic-type receiver (ConcurrentDictionary`2, List`1,
-// ThreadLocal`1 — including the already-battle-tested `Std.Collections`
-// `List[T]`) with a method that also carries a typed Func/Action delegate
-// parameter corrupts the receiver's own TypeRef resolution. The resulting
-// assembly throws `System.TypeLoadException: Could not load type
-// 'System.Collections.Generic.List`1' from assembly
-// '<ThisTestModule>'` at runtime — the receiver's TypeRef ends up pointing
-// at the CURRENT assembly instead of the BCL one it actually lives in.
-// Minimal repro (isolated, no delegate-erasure interaction otherwise):
-//
-//   extern type MyListOf[T] = "System.Collections.Generic.List`1"
-//   @externTarget("System.Collections.Generic.List`1..ctor")
-//   func newMyList(): MyListOf[Int] = ()
-//   @externTarget("System.Collections.Generic.List`1.ForEach")
-//   @externInstance
-//   func myListForEach(l: in MyListOf[Int], action: in (Int) -> Unit): Unit = ()
-//   // newMyList()/myListAdd() alone (no delegate param) work fine; adding
-//   // myListForEach to the same compilation unit breaks List`1's own
-//   // TypeRef, even though List`1 is never redeclared or touched by
-//   // myListForEach's delegate-erasure logic itself.
-//
-// A separate attempt using a non-generic TYPE but a generic STATIC METHOD
-// (`System.Array.ForEach(int[], Action<int>)`) hit a different but equally
-// real failure: `MissingMethodException: Void
-// System.Array.ForEach(Int32[], System.Action`1<Int32>)` — generic-method
-// (as opposed to generic-type) delegate parameters are also unresolved.
-// Filed as a real bug (not a test-authoring mistake — reproduced from
-// scratch in complete isolation, with and without reusing the pre-existing
-// `Std.CollectionsHost` `List[T]` declaration) rather than shipped as a
-// failing/skipped test. No BCL API combining an invokable Func/Action
-// delegate parameter with a non-generic receiver AND a non-generic method
-// was found to substitute, so the file's original single test (which only
-// exercises the delegate CONSTRUCTION/BINDING half, not invocation) was left
-// unchanged for a long time; see the outer task report for full repro
-// details.
-//
-// #5315 follow-up: a BINDING-only test (no invocation) for the Action`N-
-// typed path was added above (`Task.ContinueWith(Action<Task>)`) — `Task` is
-// a non-generic receiver, so #5525's generic-receiver TypeRef corruption
-// does not apply, and the bind call itself succeeds (no
-// `MissingMethodException`). Invoking the bound continuation still does not
-// work on this backend (a separate, pre-existing gap — D-progress-621 item
-// 3 — unrelated to #5525), so invocation remains untested here.
+// #5319/#5315/#5312/#5525/#5800: the delegate is now also INVOKED, through
+// generic BCL receivers (`List<T>`, `ConcurrentDictionary<K,V>`) and through
+// named (non-`Func`/`Action`) delegate types; see the tests below.  A member of
+// a generic BCL type is called through the `<object,...>` erased TypeSpec, so
+// the delegate it receives must be `Action<object>`/`Func<object,object>` at
+// every position the BCL signature spells `!N`; the lambda unboxes its own
+// arguments.  Positions the BCL signature fixes (`Comparison<T>` returns `int`)
+// keep their real type.
 // ---------------------------------------------------------------------------
 // D-progress-686: a `ValueTask`1[...]`-shaped `extern type` RETURN value —
 // as opposed to the delegate PARAMETER shape the test above covers — was
@@ -359,4 +319,165 @@ test "invoking an Action<Int> delegate at the receiver position works (#5851/#58
     true,
     "Action<Int> constructed as a real closed Action`1<Int32> (not the erased Func`2<Int32,object>), invoked via Action`1.Invoke at the receiver position, and the value-type argument was passed unboxed to match the closed instantiation's !0 slot without crashing"
   )
+}
+
+// ---------------------------------------------------------------------------
+// #5525/#5800: a generic BCL receiver paired with a typed delegate parameter.
+extern type ListOf[T] = "System.Collections.Generic.List`1"
+
+extern type DictOf[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
+
+@externTarget("System.Collections.Generic.List`1..ctor")
+func newListOf[T](): ListOf[T] = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.Add")
+func listOfAdd[T](l: in ListOf[T], item: in T): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.get_Count")
+func listOfCount[T](l: in ListOf[T]): Int = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.ForEach")
+func listOfForEach[T](l: in ListOf[T], action: in (T) -> Unit): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.Exists")
+func listOfExists[T](l: in ListOf[T], pred: in (T) -> Bool): Bool = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.RemoveAll")
+func listOfRemoveAll[T](l: in ListOf[T], pred: in (T) -> Bool): Int = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.Sort")
+func listOfSort[T](l: in ListOf[T], cmp: in (T, T) -> Int): Unit = ()
+
+@externInstance
+@externTarget("System.Collections.Generic.List`1.get_Item")
+func listOfGet[T](l: in ListOf[T], index: in Int): T = ()
+
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
+func newDictOf[K, V](): DictOf[K, V] = ()
+
+@externInstance
+@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.GetOrAdd")
+func dictGetOrAdd[K, V](d: in DictOf[K, V], key: in K, valueFactory: in (K) -> V): V = ()
+
+test "#5525: List<T>.ForEach invokes an Action<T> lambda over a value type" {
+  val l = newListOf[Int]()
+  listOfAdd(l, 1)
+  listOfAdd(l, 2)
+  listOfAdd(l, 3)
+  var sum = 0
+  listOfForEach(l, { x: Int -> sum = sum + x })
+  assertEqualInt(sum, 6, "each element reached the lambda unboxed")
+}
+
+test "#5525: List<T>.ForEach invokes an Action<T> lambda over a reference type" {
+  val l = newListOf[String]()
+  listOfAdd(l, "a")
+  listOfAdd(l, "bc")
+  var total = 0
+  listOfForEach(l, { s: String -> total = total + s.length })
+  assertEqualInt(total, 3, "each string reached the lambda narrowed to String")
+}
+
+test "#5800: ConcurrentDictionary<K,V>.GetOrAdd invokes a Func<K,V> lambda and returns its boxed result" {
+  val d = newDictOf[String, Int]()
+  val first = dictGetOrAdd(d, "key", { k: String -> k.length * 10 })
+  assertEqualInt(first, 30, "factory result is unboxed back to Int")
+  val second = dictGetOrAdd(d, "key", { k: String -> 999 })
+  assertEqualInt(second, 30, "an existing key does not run the factory again")
+}
+
+test "#5947: List<T>.Exists and RemoveAll bind a lambda to the named Predicate<T> delegate" {
+  val l = newListOf[Int]()
+  listOfAdd(l, 1)
+  listOfAdd(l, 2)
+  listOfAdd(l, 3)
+  listOfAdd(l, 4)
+  assertTrue(listOfExists(l, { x: Int -> x == 3 }), "Exists finds 3")
+  assertFalse(listOfExists(l, { x: Int -> x == 9 }), "Exists does not find 9")
+  val removed = listOfRemoveAll(l, { x: Int -> x % 2 == 0 })
+  assertEqualInt(removed, 2, "RemoveAll removed the even elements")
+  assertEqualInt(listOfCount(l), 2, "two elements remain")
+}
+
+test "#5947: List<T>.Sort binds a lambda to the named Comparison<T> delegate (erased arguments, fixed int result)" {
+  val l = newListOf[Int]()
+  listOfAdd(l, 3)
+  listOfAdd(l, 1)
+  listOfAdd(l, 2)
+  listOfSort(l, { a: Int, b: Int -> b - a })
+  assertEqualInt(listOfGet(l, 0), 3, "descending: first")
+  assertEqualInt(listOfGet(l, 1), 2, "descending: second")
+  assertEqualInt(listOfGet(l, 2), 1, "descending: third")
+}
+
+// ---------------------------------------------------------------------------
+// #5947: a delegate type the BCL declares itself, on a non-generic receiver.
+extern type Obj = "System.Object"
+
+extern type X509Cert = "System.Security.Cryptography.X509Certificates.X509Certificate"
+
+extern type X509Chain = "System.Security.Cryptography.X509Certificates.X509Chain"
+
+extern type SslPolicyErrors = "System.Net.Security.SslPolicyErrors"
+
+extern type SslClientOptions = "System.Net.Security.SslClientAuthenticationOptions"
+
+extern type Thread = "System.Threading.Thread"
+
+@externTarget("System.Net.Security.SslClientAuthenticationOptions..ctor")
+func newSslClientOptions(): SslClientOptions = ()
+
+@externInstance
+@externTarget("System.Net.Security.SslClientAuthenticationOptions.set_RemoteCertificateValidationCallback")
+func setRemoteCertificateValidationCallback(
+  options: in SslClientOptions,
+  callback: in (Obj, X509Cert, X509Chain, SslPolicyErrors) -> Bool,
+): Unit = ()
+
+@externTarget("System.Object..ctor")
+func newObj(): Obj = ()
+
+@externInstance
+@externTarget("System.Threading.TimerCallback.Invoke")
+func invokeTimerCallback(callback: in (Obj) -> Unit, state: in Obj): Unit = ()
+
+@externTarget("System.Threading.Thread..ctor")
+func newThread(start: in () -> Unit): Thread = ()
+
+@externInstance
+@externTarget("System.Threading.Thread.Start")
+func threadStart(t: in Thread): Unit = ()
+
+@externInstance
+@externTarget("System.Threading.Thread.Join")
+func threadJoin(t: in Thread): Unit = ()
+
+test "#5947: a lambda binds to a custom delegate-typed property setter (RemoteCertificateValidationCallback)" {
+  val options = newSslClientOptions()
+  setRemoteCertificateValidationCallback(
+    options,
+    { sender: Obj, certificate: X509Cert, chain: X509Chain, errors: SslPolicyErrors -> true }
+  )
+  assertTrue(true, "the setter bound a real RemoteCertificateValidationCallback, not a Func`5")
+}
+
+test "#5947: a bridged custom delegate is invoked through its own Invoke and sees its argument" {
+  var calls = 0
+  val state = newObj()
+  invokeTimerCallback({ s: Obj -> calls = calls + 1 }, state)
+  assertEqualInt(calls, 1, "the TimerCallback lambda ran once")
+}
+
+test "#5947: a zero-argument named delegate (ThreadStart) runs the lambda on another thread" {
+  var ran = false
+  val t = newThread({ -> ran = true })
+  threadStart(t)
+  threadJoin(t)
+  assertTrue(ran, "the ThreadStart lambda ran")
 }

@@ -2849,7 +2849,19 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
     // collision, which lives entirely in the `sigArgsContainOpenGeneric`
     // branch above (a wrapped-VAR parameter never reaches this branch at all).
     case STNamedGenericInst(pfqn, pvt, pargs) -> if sigArgsContainOpenGeneric(pargs) {
-      0
+      // An argument instantiating the SAME generic type as an open-generic
+      // parameter (`Func<..>` into `Func<!0,!1>`, `Comparison<..>` into
+      // `Comparison<!0>`) is a structural match, ranked above the bare-VAR tier
+      // so `GetOrAdd(K, Func<K,V>)` beats `GetOrAdd(K, V)` for a delegate
+      // argument; any other argument keeps the weakest admissible tier.
+      match arg {
+        case STNamedGenericInst(afqn, avt, aargs) -> if afqn == pfqn and avt == pvt and aargs.count == pargs.count {
+          2
+        } else {
+          0
+        }
+        case _ -> 0
+      }
     } else {
       match arg {
         case STNamedGenericInst(afqn, avt, aargs) -> if afqn == pfqn and avt == pvt and sigNamedGenericInstArgsExact(aargs, pargs) {
@@ -4138,6 +4150,28 @@ pub func typeBaseFqn(asmPath: in String, typeFqn: in String): String {
         } else {
           resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, readTypeDef(ri.img, ri.layout, typeRow).extendsToken)
         }
+      }
+    }
+  }
+}
+
+// `typeBaseFqn` over the caller-owned parsed-assembly cache, so asking for many
+// types' bases (a delegate check per bridged lambda parameter) does not
+// re-read and re-parse the assembly each time.
+pub func typeBaseFqnCached(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  asmPath: in String,
+  typeFqn: in String,
+): String {
+  match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+    case None -> ""
+    case Some(ri) -> {
+      val typeRow = findTypeDefByFqn(ri.img, ri.layout, ri.th, typeFqn)
+      if typeRow < 0 {
+        ""
+      } else {
+        resolveTypeDefOrRefName(ri.img, ri.layout, ri.th, readTypeDef(ri.img, ri.layout, typeRow).extendsToken)
       }
     }
   }

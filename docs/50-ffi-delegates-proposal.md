@@ -10,6 +10,14 @@ case and `CodegenCtx.funcParamIsExternTargetDelegate`'s doc comment in
 `lyric-compiler/msil/codegen.l` for the exact trigger condition. The proposal
 below is kept as-is for historical context on the fully general form, which
 remains unimplemented.
+
+_Update (D288): the bounded form now reads the delegate type from the BCL
+member's metadata. A parameter typed with a named delegate (not `Func`/`Action`)
+is built with that delegate's own `.ctor`, and a delegate position that the
+`<object,...>`-erased generic-declaring-type call spells `!N` is built over
+`object` with the lambda unboxing its own arguments (#5525, #5800, #5947).
+`typed_ffi_delegate_self_test.l` and `generic_extern_self_test.l` invoke the
+delegates._
 D-progress-687 closed a gap found investigating #5801/#5803: the mechanism
 correctly resolved a `TFunction`-typed parameter's own real closed `Func`/
 `Action` type at every ordinary (non-receiver) position from the start, but a
