@@ -1561,7 +1561,8 @@ func rewriteEntry(ed: in EntryDecl, st: in PropState): EntryDecl {
     ret = ed.ret,
     contracts = ed.contracts,
     body = rewriteFunctionBody(ed.body, kind, fnSt),
-    span = ed.span
+    span = ed.span,
+    hasBody = ed.hasBody
   )
 }
 

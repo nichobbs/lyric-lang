@@ -1799,7 +1799,8 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
     // #6313 — see rewriteFunctionDecl's comment.
     contracts = rewriteContracts(bodyAliases, ed.contracts),
     body = rewriteFunctionBody(bodyAliases, ed.body),
-    span = ed.span
+    span = ed.span,
+    hasBody = ed.hasBody
   )
 }
 

@@ -724,6 +724,9 @@ pub record EntryDecl {
   contracts: List[ContractClause]
   body: FunctionBody
   span: Span
+  /// False for a head with no body, which only a `@contract_source` file
+  /// carries (#8261): `body` is then an empty block no pass should check.
+  hasBody: Bool = true
 }
 
 pub union ProtectedMember {

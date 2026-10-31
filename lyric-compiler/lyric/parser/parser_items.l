@@ -1505,10 +1505,11 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
   // In the source synthesised from a dependency's contract metadata
   // (`@contract_source`), an entry is a head with no body, as a record
   // method's is: a consumer needs only the signature (#8261).
-  val body = if st.blockBraces and not startsBody(peekToken(st)) {
-    FBBlock(block = Block(statements = newList(), span = lastSpan(st)))
-  } else {
+  val hasBody = not st.blockBraces or startsBody(peekToken(st))
+  val body = if hasBody {
     parseFunctionBody(st)
+  } else {
+    FBBlock(block = Block(statements = newList(), span = lastSpan(st)))
   }
   val endSpan = lastSpan(st)
   EntryDecl(
@@ -1520,7 +1521,8 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
     ret = returnType,
     contracts = contracts,
     body = body,
-    span = joinSpans(startSpan, endSpan)
+    span = joinSpans(startSpan, endSpan),
+    hasBody = hasBody
   )
 }
 
