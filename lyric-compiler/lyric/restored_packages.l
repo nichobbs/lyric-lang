@@ -678,7 +678,9 @@ pub func synthesiseArtifact(
 /// them is left to the consumer's full type check, which sees the sibling's
 /// items (`isQualifiedSiblingType`, #8648).
 pub func synthesiseArtifactAmong(
-  art: in RestoredArtifact, preamble: in List[Meta.ContractDecl], siblings: in List[String]
+  art: in RestoredArtifact,
+  preamble: in List[Meta.ContractDecl],
+  siblings: in List[String],
 ): Result[SynthesisedArtifact, RestoredLoadError] {
   // Validation source includes the sibling-type `preamble` so the
   // standalone re-typecheck resolves cross-package references in this

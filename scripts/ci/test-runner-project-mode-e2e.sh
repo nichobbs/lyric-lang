@@ -15,7 +15,8 @@
 #     every entry that does not merge into a library package; an entry the
 #     linked build cannot serve (a non-literal `pub val`, #6133, read bare or
 #     qualified) is compiled with the library instead, with a note; a merged
-#     entry still reaches non-`pub` items.
+#     entry still reaches non-`pub` items; a package-private extern type in a
+#     `pub` signature binds with its CLR type.
 #   - A library that does not compile fails every linking entry, with its
 #     errors printed once.
 #   - On JVM every entry still compiles with the library (no shared build).
@@ -51,6 +52,7 @@ output_assembly = "RunnerE2e.dll"
 [project.packages]
 "RunnerE2e.Lib" = "src/lib.l"
 "RunnerE2e.Shapes" = "src/shapes.l"
+"RunnerE2e.Ext" = "src/ext.l"
 
 [project.tests]
 "RunnerE2e.MathTests" = "tests/math_tests.l"
@@ -58,6 +60,7 @@ output_assembly = "RunnerE2e.dll"
 "RunnerE2e.InternalTests" = "tests/internal_tests.l"
 "RunnerE2e.BareValTests" = "tests/bare_val_tests.l"
 "RunnerE2e.QualifiedValTests" = "tests/qualified_val_tests.l"
+"RunnerE2e.ExtTests" = "tests/ext_tests.l"
 TOML
 cat > "$proj/src/lib.l" <<'EOF'
 package RunnerE2e.Lib
@@ -89,6 +92,36 @@ pub func area(s: in Shape): Int {
     case Circle(r) -> 3 * r * r
     case Square(side) -> add(side * side, 0)
   }
+}
+EOF
+# A package-private extern type in `pub` signatures: a linked entry must call
+# these with the CLR types they were built with, not `object`.  It binds a .NET
+# type, so it is gated to dotnet.
+cat > "$proj/src/ext.l" <<'EOF'
+@cfg(target = "dotnet")
+package RunnerE2e.Ext
+
+extern type Sb = "System.Text.StringBuilder"
+
+pub func newSb(): Sb {
+  return Sb.new()
+}
+
+pub func appendLen(s: in Sb, text: in String): Int {
+  s.Append(text)
+  s.Length
+}
+EOF
+cat > "$proj/tests/ext_tests.l" <<'EOF'
+@cfg(target = "dotnet")
+@test_module
+package RunnerE2e.ExtTests
+
+import Std.Testing
+import RunnerE2e.Ext
+
+test "extern type crosses the shared build" {
+  assertEqualInt(appendLen(newSb(), "abc"), 3, "StringBuilder length")
 }
 EOF
 cat > "$proj/tests/math_tests.l" <<'EOF'
@@ -229,7 +262,7 @@ if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
 elif [ "$(count '== building the [project.packages] library once')" != 1 ]; then fail "$label" "library not built exactly once"
 elif [ ! -f "$proj/.lyric-test/LyricTestLibrary.dll" ]; then fail "$label" "no shared library assembly"
 elif [ "$(count 'note: ')" != 2 ]; then fail "$label" "expected a fallback note for each non-literal pub val entry"
-elif ! grep -q "^== summary: 5 passed, 0 failed$" "$out"; then fail "$label" "summary"
+elif ! grep -q "^== summary: 6 passed, 0 failed$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 
 label="--suite selection"
@@ -253,8 +286,8 @@ else echo "ok   [$label]"; fi
 label="--filter skips entries it empties"
 run --manifest "$m" --filter "circle"
 if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
-elif [ "$(count 'none match --filter; not compiled')" != 4 ]; then fail "$label" "expected four entries not compiled"
-elif ! grep -q "^== summary: 1 passed, 0 failed, 4 not run (no test matches --filter)$" "$out"; then fail "$label" "summary"
+elif [ "$(count 'none match --filter; not compiled')" != 5 ]; then fail "$label" "expected five entries not compiled"
+elif ! grep -q "^== summary: 1 passed, 0 failed, 5 not run (no test matches --filter)$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 
 label="single-file --filter selects nothing"

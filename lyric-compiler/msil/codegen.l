@@ -49327,6 +49327,19 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     if not cctx.pkgBareImports.containsKey(art.packageName) {
       recordRestoredBareImportsMsil(cctx, art.packageName, art.contract.wholeImports, art.contract.selectedImports)
     }
+    // The package's extern types map the Lyric names in its signatures to CLR
+    // types.  Without them a `pub func` that returns or takes one encodes it
+    // as `object` in the consumer's MemberRef and fails to bind at run time
+    // (MissingMethodException), which #1602 fixed for the stdlib in
+    // `registerStdlibTypeItemRefs`; first-wins, as there.
+    for it in art.source.items {
+      match it.kind {
+        case IExternType(et) -> if not cctx.externTypeNames.containsKey(et.name) {
+          cctx.externTypeNames.add(et.name, et.clrName)
+        }
+        case _ -> ()
+      }
+    }
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]

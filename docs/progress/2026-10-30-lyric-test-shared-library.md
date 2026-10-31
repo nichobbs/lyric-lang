@@ -45,6 +45,21 @@ the library with it, as do doctests (merged the same way) and every entry on
 `--target jvm`, where dependencies are compiled from source into each bundle
 (#6750).
 
-Verified with a fixture project covering a top-level `pub val`, a union, a
-generic record and a merged test module, and on nichobbs/cloud-agents' 70
-entries against a live Postgres; see the PR for timings.
+Restored extern types: a restored package's `extern type` declarations were
+never registered in the consumer's `externTypeNames` (only the stdlib's were,
+#1602), so a `pub func` returning or taking one, such as
+`pub func newTable(): Hashtable` over a package-private
+`extern type Hashtable = "System.Collections.Hashtable"`, was encoded as
+`object` in the consumer's MemberRef and failed at run time with
+MissingMethodException. The restored-artifact pass in `Msil.Codegen` now
+registers them, first-wins as the stdlib path does. A path dependency hit the
+same failure.
+
+Verified by `scripts/ci/test-runner-project-mode-e2e.sh` (a fixture covering a
+literal and two non-literal `pub val` reads, a union, a generic record, a
+merged module, an extern type in `pub` signatures, a library that does not
+compile, and jvm), `restored_packages_self_test.l`, and nichobbs/cloud-agents'
+73 entries against a live Postgres: all pass, the two that read a non-literal
+`pub val` compiled with the library. On the same machine the run took 24
+minutes against ~88 minutes before (about 20 s an entry after a one-off ~70 s
+library build, against ~72 s an entry).
