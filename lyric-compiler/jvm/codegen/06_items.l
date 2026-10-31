@@ -4934,6 +4934,65 @@ pub func fileHasInferredModuleVal(file: in SourceFile): Bool {
   false
 }
 
+// A restored package's head-only `impl I for R {}` (its contract carries no
+// members): register each of I's methods on R, as
+// `Msil.Codegen.registerRestoredImpl` does (#1602).  Without them a call on a
+// value of the concrete record type had no signature and was emitted with an
+// `Object` return the producer never declared (`NoSuchMethodError`, #8667).
+// I declared in `file` registers from its declaration; I declared elsewhere
+// has its methods in `into` already, under its own class, and they are
+// copied, so this runs after every file of the bundle is collected.
+pub func registerHeadOnlyImplsJvm(file0: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]): Unit {
+  val file = pipeCBindingsToFuncs(file0)
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  val externTypes = ownAwareExternTypes(file, externSeed)
+  for it in file.items {
+    match it.kind {
+      case IImpl(decl) -> {
+        val isExtern = match implIfaceExternDottedFqn(decl.iface, externTypes) {
+          case Some(_) -> true
+          case None -> false
+        }
+        if decl.members.count == 0 and not isExtern {
+          val tgtClass = typeExprToJvmClass(decl.target, owner)
+          val implTps = genericParamNames(decl.generics)
+          match implIfaceDeclJvm(file, decl.iface) {
+            case Some(idecl) -> {
+              for im in idecl.members {
+                match im {
+                  case IMSig(sig) -> registerInstanceSigErased(
+                    into,
+                    tgtClass,
+                    sig.name,
+                    sig.params,
+                    sig.ret,
+                    owner,
+                    withOwnGenericsJvm(implTps, sig.generics),
+                    externTypes
+                  )
+                  case IMFunc(fn) -> registerInstanceSigErased(
+                    into,
+                    tgtClass,
+                    fn.name,
+                    fn.params,
+                    fn.ret,
+                    owner,
+                    withOwnGenericsJvm(implTps, fn.generics),
+                    externTypes
+                  )
+                  case IMAssoc(_) -> ()
+                }
+              }
+            }
+            case None -> copyIfaceSigsToClassJvm(into, implIfaceClassJvm(decl.iface, owner, externTypes), tgtClass)
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
 // The JVM class of the interface an `impl` names: a qualified path as
 // written, a bare name through the file's imported declared types
 // (`collectFileDeclaredTypeFqns`), else the file's own package.
@@ -5565,49 +5624,6 @@ pub func collectFileSigsSeeded(
         // An impl for a generic target erases its type parameters like the
         // target's own methods do (#7704), matching `lowerImplMethod`.
         val implTps = genericParamNames(decl.generics)
-        // A restored `impl I for R {}` is head-only (its contract carries no
-        // members), so R's methods come from I, looked up among the same
-        // file's items as `Msil.Codegen.registerRestoredImpl` does (#1602).
-        // Without them a call on a value of the concrete record type had no
-        // signature and was emitted with an `Object` return the producer
-        // never declared (`NoSuchMethodError`, #8667).  An in-bundle impl is
-        // never empty here unless I has no methods: its defaults are
-        // expanded into it before codegen.
-        if decl.members.count == 0 and not isExternIfaceReg {
-          match implIfaceDeclJvm(file, decl.iface) {
-            case Some(idecl) -> {
-              for im in idecl.members {
-                match im {
-                  case IMSig(sig) -> registerInstanceSigErased(
-                    into,
-                    tgtClass,
-                    sig.name,
-                    sig.params,
-                    sig.ret,
-                    owner,
-                    withOwnGenericsJvm(implTps, sig.generics),
-                    externTypes
-                  )
-                  case IMFunc(fn) -> registerInstanceSigErased(
-                    into,
-                    tgtClass,
-                    fn.name,
-                    fn.params,
-                    fn.ret,
-                    owner,
-                    withOwnGenericsJvm(implTps, fn.generics),
-                    externTypes
-                  )
-                  case IMAssoc(_) -> ()
-                }
-              }
-            }
-            // An interface another package declares has its methods in the
-            // registry already, under its own class (`registerIfaceSig`):
-            // copy them onto R.
-            case None -> copyIfaceSigsToClassJvm(into, implIfaceClassJvm(decl.iface, owner, externTypes), tgtClass)
-          }
-        }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {

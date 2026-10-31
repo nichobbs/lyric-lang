@@ -3583,6 +3583,16 @@ pub func compileProjectToJarBundledWithRestored(
     }
     rai = rai + 1
   }
+  // After every restored package is registered: a head-only restored impl
+  // of an interface another restored package declares copies that
+  // interface's methods, whichever registered first (#8667).
+  for synArt in restoredArtifacts {
+    registerHeadOnlyImplsJvm(
+      synArt.source,
+      registry,
+      externSeedForFileCached(synArt.source, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
+    )
+  }
 
   // View-twin registration must run after the pre-scan is complete (the
   // substituted view field types depend on the full projectable set).
