@@ -1124,6 +1124,36 @@ func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
   false
 }
 
+// Whether the assembly at `path` contains the codegen's unresolved-call stub,
+// found by its message in the user-string heap (UTF-16LE).  Code generation
+// lowers a call it cannot bind to a throw of exactly this message instead of
+// failing the build (#1481 item 4).  A linked entry can reach it where the
+// compile with the library binds the call, so a linked entry that contains it
+// is compiled again with the library.
+func hasUnresolvedCallStub(path: in String): Bool {
+  val bytes = match File.readBytes(path) { case Ok(b) -> b; case Err(_) -> return false }
+  val marker = "unsupported method '"
+  val n = bytes.length
+  val m = marker.length * 2
+  var i = 0
+  while i + m <= n {
+    var j = 0
+    var hit = true
+    while hit and j < marker.length {
+      val code = Str.codeUnitAt(marker, j)
+      if bytes[i + 2 * j].toInt() != code or bytes[i + 2 * j + 1].toInt() != 0 {
+        hit = false
+      }
+      j += 1
+    }
+    if hit {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
 // `restored` plus the shared library build, as a restored dependency entry.
 func withSharedLibrary(restored: in List[String], stem: in String, path: in String): List[String] {
   val combined: List[String] = newList()
@@ -2269,12 +2299,19 @@ func cmdTestManifest(
       contractsEnabled = testContractsEnabled
     )
     var result = Emitter.emitProject(projReq)
-    if useSharedLibrary and hasErrorDiagnostic(result.diagnostics) {
+    val linkedFailed = useSharedLibrary and hasErrorDiagnostic(result.diagnostics)
+    val linkedStub = useSharedLibrary and not linkedFailed and hasUnresolvedCallStub(outPath)
+    if linkedFailed or linkedStub {
       // A gap found only in code generation (a qualified read of a
-      // non-literal `pub val` from a restored package is T0115, #6133)
-      // passes the check above.  The emitter has printed those errors; the
-      // compile with the library below is the entry's real result.
-      Console.println("note: the linked build of this entry failed (errors above); compiling it with the library instead")
+      // non-literal `pub val` from a restored package is T0115, #6133, or a
+      // call into a restored type lowered to the unresolved-call stub)
+      // passes the check above.  The compile with the library below is the
+      // entry's real result.
+      if linkedFailed {
+        Console.println("note: the linked build of this entry failed (errors above); compiling it with the library instead")
+      } else {
+        Console.println("note: the linked build of this entry left a call unresolved; compiling it with the library instead")
+      }
       for lp in libPkgs {
         allPkgs.add(lp)
       }

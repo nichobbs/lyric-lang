@@ -129,9 +129,10 @@ test "extern type crosses the shared build" {
 EOF
 # An enum whose case shares its name with a stdlib enum case
 # (`Std.File.EntryKind.Other`): a linked entry must use the restored enum's
-# ordinal as a call argument, in a match, in a comparison and in an annotated
-# binding.  The distinct type `Score` checks that a linked entry can call its
-# `from` constructor and `toInt` conversion.
+# ordinal as a call argument, in a match (also on a field of a library record),
+# in a comparison and in an annotated binding.  The distinct type `Score`
+# checks that a linked entry can call its `from` constructor and `toInt`
+# conversion.
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
 
@@ -142,6 +143,10 @@ pub func addScores(a: in Score, b: in Score): Score = a + b
 pub enum Category {
   case Alpha
   case Other
+}
+
+pub record Tagged {
+  category: Category
 }
 
 pub func categoryName(c: in Category): String {
@@ -178,6 +183,15 @@ test "case compared and annotated" {
   val c: Category = Other
   assertTrue(c == Other, "c == Other")
   assertTrue(categoryName(c) == "other", "categoryName(c)")
+}
+
+test "case stored in a library record and matched" {
+  val t = Tagged(category = Other)
+  val name = match t.category {
+    case Other -> "other"
+    case _ -> "not other"
+  }
+  assertTrue(name == "other", "match on t.category")
 }
 
 test "distinct type constructed and converted" {

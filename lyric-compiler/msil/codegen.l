@@ -17725,7 +17725,7 @@ func lowerPatternTestMsil(
           }
           val ordHit = match hintedOrd {
             case Some(o) -> Some(value = o)
-            case None -> mapGet(cctx.enumCaseOrdinals, pBindName)
+            case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, pBindName)
           }
           match ordHit {
             case Some(ordv) -> {
@@ -17978,7 +17978,7 @@ func lowerPatternTestMsil(
         // fall back to the bare name for robustness.
         val scopedOrd = match resolveEnumCaseOrdinalByScope(cctx, fctx, enumPenult, caseName) {
           case Some(o) -> Some(value = o)
-          case None -> mapGet(cctx.enumCaseOrdinals, caseName)
+          case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, caseName)
         }
         match scopedOrd {
           case Some(ordv) -> {

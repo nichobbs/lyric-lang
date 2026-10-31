@@ -64,6 +64,31 @@ its parameters' enum types (`funcParamEnumTypeNames`, as an in-bundle function
 does), and `resolveBareEnumCaseOrdinalByScope` resolves a bare case to the
 current package's enum, then an imported package's, before falling back to
 registration order. A path dependency had the same exposure.
+Match patterns (`case Other ->` and `case Kind.Other ->`) on a scrutinee
+whose enum type is unknown, such as a field of a restored record, now use the
+same resolution. Before, an expression resolved the case by scope and the
+pattern by registration order, so `lyric-forms/derive`'s
+`case Error -> failed = true` never matched a `severity = Error` it had just
+built.
+
+Restored distinct types: only the `value` field was registered, so
+`Score.from(40)` on a restored `Score` lowered to the unresolved-call stub.
+`registerRestoredDistinct` now also registers `.ctor`, `from`, `tryFrom` (when
+`Result` is seeded) and the `toX` conversion, with the signatures
+`lowerMDistinctType` emits.
+
+Restored invariants: the contract `repr` of a record or opaque type carries no
+`invariant:` clauses, so a consumer constructed a restored invariant-bearing
+type unchecked (`lyric-health`, `lyric-session`). For an imported record or
+opaque type the type checker now wraps construction when the declaring package
+exports `__lyric_checked_<Name>`, which is synthesized only for a type with
+invariants. A path dependency had the same gap.
+
+Unresolved calls: code generation lowers a call it cannot bind to a throw of
+"unsupported method '...'" instead of failing the build. A linked entry whose
+assembly contains that stub is compiled again with the library, with a note,
+so a restored-package gap of that kind costs time instead of changing a
+result (`lyric-testing`'s mocks called through restored interfaces).
 
 Verified by `scripts/ci/test-runner-project-mode-e2e.sh` (a fixture covering a
 literal and two non-literal `pub val` reads, a union, a generic record, a
