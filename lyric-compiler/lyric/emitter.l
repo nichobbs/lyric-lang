@@ -2540,7 +2540,11 @@ func emitProjectInProcessTo(req: in EmitProjectRequest, sink: in Pipe.DiagSink):
       sink
     )
   } catch Bug as b {
-    panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    if sink.collect {
+      sink.located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = msilBridgePanicDiagnosticQuiet(b.message)))
+    } else {
+      panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    }
     false
   }
   if ok {
@@ -2707,18 +2711,23 @@ func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
 // message with no embedded location (e.g. T0115, or an uncoded panic
 // wrapped under T0120).
 func msilBridgePanicDiagnostic(message: in String): Diagnostic {
+  val d = msilBridgePanicDiagnosticQuiet(message)
+  Console.error(d.message)
+  d
+}
+
+// `msilBridgePanicDiagnostic` without printing it, for a build whose
+// diagnostics are collected (`emitProjectCollecting`).
+func msilBridgePanicDiagnosticQuiet(message: in String): Diagnostic {
   val sp = spanForPanicMessage(message)
   if message.startsWith("error[T0") {
-    Console.error(message)
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "T0120" }
       case None -> "T0120"
     }
     errorDiagnostic(code, message, sp)
   } else {
-    val text = "error[T0120]: MSIL codegen failed: " + message
-    Console.error(text)
-    errorDiagnostic("T0120", text, sp)
+    errorDiagnostic("T0120", "error[T0120]: MSIL codegen failed: " + message, sp)
   }
 }
 

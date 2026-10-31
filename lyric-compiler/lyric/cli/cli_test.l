@@ -1178,17 +1178,19 @@ func testBuildRequest(
 // `located`, written to `outputPath`) is not used, or "" when it is: the
 // first error it reported, or the unresolved-call stub in its assembly.
 func linkedBuildFallbackReason(
-  result: in Emitter.EmitResult, located: in List[DiagUtil.LocatedDiagnostic], outputPath: in String
+  result: in Emitter.EmitResult,
+  located: in List[DiagUtil.LocatedDiagnostic],
+  outputPath: in String,
 ): String {
   for ld in located {
     match ld.diagnostic.severity {
-      case DiagError -> return ld.diagnostic.code + ": " + ld.diagnostic.message
+      case DiagError -> return fallbackReasonOf(ld.diagnostic)
       case DiagWarning -> ()
     }
   }
   for d in result.diagnostics {
     match d.severity {
-      case DiagError -> return d.code + ": " + d.message
+      case DiagError -> return fallbackReasonOf(d)
       case DiagWarning -> ()
     }
   }
@@ -1200,6 +1202,24 @@ func linkedBuildFallbackReason(
     return "a call is left unresolved"
   }
   ""
+}
+
+// `CODE: message` for a fallback note: a codegen message repeats its own
+// `error[CODE]: ` prefix, dropped here, and only its first clause (up to an em
+// dash) is kept, since the note names the reason rather than explaining it.
+func fallbackReasonOf(d: in Diagnostic): String {
+  var msg = d.message
+  val prefix = "error[" + d.code + "]: "
+  if msg.startsWith(prefix) {
+    msg = msg.substring(prefix.length, msg.length - prefix.length)
+  }
+  match Str.indexOf(msg, " — ") {
+    case Some(i) -> {
+      msg = msg.substring(0, i)
+    }
+    case None -> ()
+  }
+  d.code + ": " + msg
 }
 
 // `restored` plus the shared library build, as a restored dependency entry.
@@ -2253,7 +2273,14 @@ func cmdTestManifest(
       sharedLibAttempted = true
       Console.println("== building the [project.packages] library once for the test entries")
       val libResult = Emitter.emitProject(
-        testBuildRequest(buildSettings, libPkgs, sharedLibStem, sharedLibPath, restoredDlls, depTemplatePkgsList)
+        testBuildRequest(
+          buildSettings,
+          libPkgs,
+          sharedLibStem,
+          sharedLibPath,
+          restoredDlls,
+          depTemplatePkgsList
+        )
       )
       var libFailed = false
       for d in libResult.diagnostics.toArray() {
