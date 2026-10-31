@@ -3060,6 +3060,7 @@ func specMayRender(decl: in FunctionDecl): Bool {
   items.add(funcItem(decl))
   val f = SourceFile(
     moduleDoc = noDocs,
+    files = newList(),
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
@@ -4988,6 +4989,7 @@ func lowerShowSpec(
   }
   SourceFile(
     moduleDoc = converted.moduleDoc,
+    files = converted.files,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
     imports = converted.imports,
