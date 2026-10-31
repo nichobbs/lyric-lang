@@ -34,7 +34,7 @@ artifact they package is compiled by the ordinary build.
    from a view without the elided clauses. No backend changes: all three
    targets behave the same.
    Methods in `impl` blocks, records and protected types keep every check for
-   now (#8680).
+   now (partial: tracked in #8680).
 
 2. **`--shape standalone` is a directory with a bundled runtime** that is still
    JIT-compiled (.NET) or interpreted (JVM), so reflection and dynamic loading

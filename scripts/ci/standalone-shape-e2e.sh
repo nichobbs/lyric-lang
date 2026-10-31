@@ -20,6 +20,9 @@ cd "$REPO_ROOT"
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 lyric_bin="${LYRIC_BIN:-$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+# Absolute, so a `cd` into a scratch project does not lose it (CI passes a
+# repo-relative LYRIC_BIN).
+case "$lyric_bin" in /*) ;; *) lyric_bin="$REPO_ROOT/$lyric_bin" ;; esac
 if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; cannot run the standalone shape e2e" >&2
   exit 1
