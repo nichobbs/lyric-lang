@@ -67,6 +67,7 @@ ref record Call {
 }
 
 ref record ConnState {
+  id: Int
   conn: Conn
   h2: H2.H2Connection
   calls: List[Call]
@@ -83,6 +84,7 @@ ref record ServerState {
   var stopping: Bool
   var stopped: Bool
   var inflight: Int
+  var nextConnId: Int
 }
 
 ref record ServerTable {
@@ -589,8 +591,9 @@ func process(cs: in ConnState, bytes: in slice[Byte]): List[Call] {
 
 func serveConnection(server: in ServerState, conn: in Conn): Unit {
   val h2 = H2.newServerConnection(H2.h2DefaultServerSettings())
-  val cs = ConnState(conn = conn, h2 = h2, calls = newList(), active = 0, open = true)
   monitorEnter(server)
+  server.nextConnId = server.nextConnId + 1
+  val cs = ConnState(id = server.nextConnId, conn = conn, h2 = h2, calls = newList(), active = 0, open = true)
   server.conns.add(cs)
   monitorExit(server)
   hostSetIoTimeout(conn, server.maxIdleMs)
@@ -622,11 +625,32 @@ func serveConnection(server: in ServerState, conn: in Conn): Unit {
       }
     }
   }
+  monitorEnter(cs)
   cs.open = false
   for c in cs.calls {
     c.cancelled = true
   }
+  monitorExit(cs)
   hostClose(conn)
+  forgetConnection(server, cs)
+}
+
+/// A finished connection must not stay reachable from the server: it holds the
+/// HTTP/2 state, the call list and the socket wrapper.
+func forgetConnection(server: in ServerState, cs: in ConnState): Unit {
+  monitorEnter(server)
+  defer {
+    monitorExit(server)
+  }
+  var i = 0
+  while i < server.conns.count {
+    val c: ConnState = server.conns[i]
+    if c.id == cs.id {
+      server.conns.removeAt(i)
+      break
+    }
+    i = i + 1
+  }
 }
 
 func acceptLoop(server: in ServerState): Unit {
@@ -676,7 +700,8 @@ func openServer(
         conns = newList(),
         stopping = false,
         stopped = false,
-        inflight = 0
+        inflight = 0,
+        nextConnId = 0
       )
     }
   }
@@ -730,6 +755,29 @@ pub func serverPort(handle: in GrpcServerHandle): Int {
   }
 }
 
+func inflightCalls(server: in ServerState): Int {
+  monitorEnter(server)
+  defer {
+    monitorExit(server)
+  }
+  server.inflight
+}
+
+/// The connections the server currently tracks (open ones; a closed
+/// connection is forgotten). `0` for an unknown handle.
+pub func trackedConnections(handle: in GrpcServerHandle): Int {
+  match lookup(handle) {
+    case Some(server) -> {
+      monitorEnter(server)
+      defer {
+        monitorExit(server)
+      }
+      server.conns.count
+    }
+    case None -> 0
+  }
+}
+
 /// Stop accepting connections and calls, wait up to `drainTimeoutMs` for the
 /// calls in flight, then close every connection. A second stop is a no-op.
 pub func stopServer(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit {
@@ -743,17 +791,22 @@ pub func stopServer(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit {
       if first {
         hostStopListener(server.listener)
         val giveUpAt = Std.Time.nowEpochMillis() + drainTimeoutMs.toLong()
-        while server.inflight > 0 and Std.Time.nowEpochMillis() < giveUpAt {
+        while inflightCalls(server) > 0 and Std.Time.nowEpochMillis() < giveUpAt {
           sleepMillis(10)
         }
         monitorEnter(server)
         val conns = server.conns.toArray()
         monitorExit(server)
         for cs in conns {
+          monitorEnter(cs)
           cs.open = false
+          monitorExit(cs)
           hostClose(cs.conn)
         }
+        monitorEnter(server)
+        server.conns.clear()
         server.stopped = true
+        monitorExit(server)
       }
     }
   }

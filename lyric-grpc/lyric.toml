@@ -67,6 +67,7 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.ClientDotnetTests" = "tests/client_dotnet_tests.l"
 "Grpc.ClientJvmTests" = "tests/client_jvm_tests.l"
 "Grpc.ServerTests" = "tests/server_tests.l"
+"Grpc.ServerDotnetTests" = "tests/server_dotnet_tests.l"
 "Grpc.RateLimitJvmTests" = "tests/rate_limit_jvm_tests.l"
 
 [dependencies]
