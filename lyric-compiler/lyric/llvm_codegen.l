@@ -3626,6 +3626,10 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       case Some(el) -> return lowerListEq(ctx, insns, el, a, b, op == BNeq)
       case None -> ()
     }
+    match mapValOfType(ctx, a.ty) {
+      case Some(vt) -> return lowerMapEq(ctx, insns, vt, a, b, op == BNeq)
+      case None -> ()
+    }
   }
   // By-value records compare field by field.
   if (op == BEq or op == BNeq) and isByValueStructNType(a.ty) {
@@ -10003,6 +10007,20 @@ func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String
     }
     return hashOrZero(ctx, body, acc)
   }
+  match listElemOfType(ctx, t) {
+    case Some(el) -> return emitCollectionHash(ctx, body, t, a, "lyric_list_hash", el, None)
+    case None -> ()
+  }
+  match mapKeyOfType(ctx, t) {
+    case Some(kt) -> {
+      val vt = match mapValOfType(ctx, t) {
+        case Some(v) -> v
+        case None -> panic("Lyric.LlvmCodegen: internal - a map type without a value type")
+      }
+      return emitCollectionHash(ctx, body, t, a, "lyric_map_hash", kt, Some(value = vt))
+    }
+    case None -> ()
+  }
   match recInfoOfType(ctx, t) {
     case Some(ri) -> if not ri.byValue and ctx.heapValueRecords.containsKey(ri.irName) {
       val fnName = ensureRecordHash(ctx, ri)
@@ -10027,6 +10045,33 @@ func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String
     case _ -> body.add(NPtrToInt(dest = dest, fromTy = t, value = NLocal(name = a), toTy = NI64))
   }
   dest
+}
+
+/// `lyric_list_hash` / `lyric_map_hash` over the slot-hash function of each
+/// element (key and value) type, so a collection hashes by contents (D172).
+func emitCollectionHash(
+  ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, sym: in String, first: in NType, second: in Option[NType]
+): String {
+  val p8 = NPtr(pointee = NI8)
+  val hashParams: List[NType] = newList()
+  hashParams.add(NI64)
+  val hashTy = NFnPtr(params = hashParams, ret = NI64)
+  val args: List[NArg] = newList()
+  val ra = freshTmp(ctx)
+  body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = p8))
+  args.add(NArg(ty = p8, value = NLocal(name = ra)))
+  val p1 = freshTmp(ctx)
+  body.add(NBitcast(dest = p1, fromTy = hashTy, value = NGlobal(name = ensureMapKeyHash(ctx, first)), toTy = p8))
+  args.add(NArg(ty = p8, value = NLocal(name = p1)))
+  match second {
+    case Some(v) -> {
+      val p2 = freshTmp(ctx)
+      body.add(NBitcast(dest = p2, fromTy = hashTy, value = NGlobal(name = ensureMapKeyHash(ctx, v)), toTy = p8))
+      args.add(NArg(ty = p8, value = NLocal(name = p2)))
+    }
+    case None -> ()
+  }
+  localOfValue(callRuntime(ctx, body, sym, NI64, args).value)
 }
 
 func localOfValue(v: in NValue): String {
@@ -13928,6 +13973,36 @@ func lowerListEq(ctx: in Ctx, insns: in List[NInsn], elemTy: in NType, a: in NVa
   NVal(ty = NI1, value = NLocal(name = ne))
 }
 
+/// `a == b` (or `!=`) on two maps whose values are `valTy`: equal sizes, and
+/// every key of `a` present in `b` with an equal value (D172), through
+/// `lyric_map_equal` over the synthesised value-slot equality.
+func lowerMapEq(ctx: in Ctx, insns: in List[NInsn], valTy: in NType, a: in NVal, b: in NVal, negate: in Bool): NVal {
+  val p8 = NPtr(pointee = NI8)
+  val eqFn = ensureMapKeyEq(ctx, valTy)
+  val eqParams: List[NType] = newList()
+  eqParams.add(NI64)
+  eqParams.add(NI64)
+  val eqPtr = freshTmp(ctx)
+  insns.add(NBitcast(dest = eqPtr, fromTy = NFnPtr(params = eqParams, ret = NI32), value = NGlobal(name = eqFn), toTy = p8))
+  val ra = freshTmp(ctx)
+  insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = p8))
+  val rb = freshTmp(ctx)
+  insns.add(NBitcast(dest = rb, fromTy = b.ty, value = b.value, toTy = p8))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = p8, value = NLocal(name = ra)))
+  args.add(NArg(ty = p8, value = NLocal(name = rb)))
+  args.add(NArg(ty = p8, value = NLocal(name = eqPtr)))
+  val raw = callRuntime(ctx, insns, "lyric_map_equal", NI32, args)
+  val eq = freshTmp(ctx)
+  insns.add(NICmp(dest = eq, pred = INe, ty = NI32, a = raw.value, b = NLitInt(v = 0i64, ty = NI32)))
+  if not negate {
+    return NVal(ty = NI1, value = NLocal(name = eq))
+  }
+  val ne = freshTmp(ctx)
+  insns.add(NXor(dest = ne, ty = NI1, a = NLocal(name = eq), b = NLitInt(v = 1i64, ty = NI1)))
+  NVal(ty = NI1, value = NLocal(name = ne))
+}
+
 func unionEqName(ui: in NUnionInfo): String {
   ui.irName + ".eq"
 }
@@ -14254,6 +14329,13 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
       args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
       body.add(NCall(dest = dest, retTy = NI1, fn = NGlobal(name = fnName), args = args))
       return dest
+    }
+    case None -> ()
+  }
+  match mapValOfType(ctx, t) {
+    case Some(vt) -> {
+      val r = lowerMapEq(ctx, body, vt, NVal(ty = t, value = NLocal(name = a)), NVal(ty = t, value = NLocal(name = b)), false)
+      return localOfValue(r.value)
     }
     case None -> ()
   }
@@ -17468,6 +17550,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_map_remove", NI32, p8, NI64))
   decls.add(mkDecl1("lyric_map_len", NI64, p8))
   decls.add(mkDecl1("lyric_map_keys", p8, p8))
+  decls.add(mkDecl3("lyric_map_equal", NI32, p8, p8, p8))
+  decls.add(mkDecl3("lyric_map_hash", NI64, p8, p8, p8))
+  decls.add(mkDecl2("lyric_list_hash", NI64, p8, p8))
   decls.add(mkDecl1("lyric_map_values", p8, p8))
   // Protected-type mutex kernel (N3.4) + raw free for the runtime-sized
   // mutex buffer (D-N-017).  `lyric_mutex_size()` is nullary.

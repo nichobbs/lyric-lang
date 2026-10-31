@@ -586,6 +586,27 @@ LyricList* lyric_map_keys(LyricMap* map) {
     return out;
 }
 
+int32_t lyric_map_equal(LyricMap* a, LyricMap* b, int32_t (*val_eq)(int64_t, int64_t)) {
+    if (a == b) return 1;
+    if (a->len != b->len) return 0;
+    for (int64_t i = 0; i < a->cap; i++) {
+        if (a->slots[i].state != 1) continue;
+        int64_t other = 0;
+        if (!lyric_map_get(b, a->slots[i].key, &other)) return 0;
+        if (!val_eq(a->slots[i].val, other)) return 0;
+    }
+    return 1;
+}
+
+uint64_t lyric_map_hash(LyricMap* m, uint64_t (*key_hash)(int64_t), uint64_t (*val_hash)(int64_t)) {
+    uint64_t acc = (uint64_t)m->len;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->slots[i].state != 1) continue;
+        acc += lyric_hash_mix(key_hash(m->slots[i].key), val_hash(m->slots[i].val));
+    }
+    return acc;
+}
+
 LyricList* lyric_map_values(LyricMap* map) {
     LyricList* out = lyric_list_new(map->vals_are_refs);
     list_grow(out, map->len);
@@ -593,4 +614,11 @@ LyricList* lyric_map_values(LyricMap* map) {
         if (map->slots[i].state == 1) lyric_list_push(out, map->slots[i].val);
     }
     return out;
+}
+
+uint64_t lyric_list_hash(LyricList* l, uint64_t (*elem_hash)(int64_t)) {
+    int64_t n = lyric_list_len(l);
+    uint64_t acc = (uint64_t)n;
+    for (int64_t i = 0; i < n; i++) acc = lyric_hash_mix(acc, elem_hash(lyric_list_get(l, i)));
+    return acc;
 }
