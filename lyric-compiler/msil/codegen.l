@@ -6676,6 +6676,10 @@ pub ref record FuncCtx {
   // position of an expression whose destination is a `Unit`-returning
   // function type (`markActionSlotLambdasMsil`): built as that `Action`.
   actionLambdaSpans: Map[String, Bool]
+  // Lambda literals (keyed by `lambdaSpanKeyMsil`) in a value position of a
+  // returned `if`/`match`/block (`markReturnedLambdasMsil`): each is typed from
+  // the function's declared `(P…) -> R` return type when it is lowered (#8630).
+  retLambdaSpans: Map[String, Bool]
   // Parameter types for function-typed locals/parameters, keyed by variable name.
   // Maps to the full parameter list (in order) to enable typed delegate ABI
   // at the invoke site. Populated alongside funcValRetTypes. (#1877 Phase 3)
@@ -13569,6 +13573,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // (#8299).
       if lambdaBodyEndsInUnitMsil(lbody) {
         seedNextLambdaVoidRetMsil(cctx, fctx)
+      }
+      // A literal in a branch of the function's returned `if`/`match` takes
+      // the declared return type's parameter and result types (#8630).
+      if fctx.retLambdaSpans.containsKey(lambdaSpanKeyMsil(expr.span)) {
+        registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, fctx.declaredRetTe, expr)
       }
       // A lambda in a member of a type with type parameters is hosted by a
       // closure class generic over them (#8284): `liftLambdasMsil` marked it,
@@ -22250,13 +22259,15 @@ func lowerBuiltinOrStaticCallMsil(
                     "', specialised into package '" +
                     fctx.pkgName +
                     "'). A generic function's body is compiled into each package that calls it, so every function " +
-                    "it calls must be `pub` in '" +
+                    "it calls must resolve in the declaring package's scope: '" +
+                    funcName +
+                    "' has to be declared in '" +
                     fctx.originPkg +
                     "' or in a package '" +
                     fctx.originPkg +
-                    "' imports; make '" +
-                    funcName +
-                    "' `pub`. A private helper is copied into the calling package only when it is self-contained: " +
+                    "' imports, and `pub` there. If it is already `pub`, the name did not resolve in that scope (packages searched: '" +
+                    fctx.originPkg +
+                    "' and its imports). A private helper is copied into the calling package only when it is self-contained: " +
                     "no module-level value or constant, no private type, no contract clause or default argument."
                 )
               }
@@ -27111,6 +27122,7 @@ func makeFuncCtxMsil(
     erasedByrefSlots = newMap(),
     funcValRetTypes = funcValRetTypes,
     actionLambdaSpans = newMap(),
+    retLambdaSpans = newMap(),
     funcValParamTypes = funcValParamTypes,
     boxedParamTypes = boxedParamTypes,
     captureNameToIndex = captureNameToIndex,
@@ -35987,19 +35999,56 @@ func seedNextLambdaVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx): Unit {
 // (`registerLocalLambdaLiteralFnTypesMsil`).  Without them the lifted body
 // falls back to the Uniform Func ABI's `object` result, so a bare `Ok(v)` /
 // `None` in it erases the type arguments its arguments do not fix and the
-// caller's cast to the declared closed type throws.  A generic function's own
-// parameters erase in its lambdas, so it keeps the ABI's `object`.
+// caller's cast to the declared closed type throws.  The literals in the
+// branches of a returned `if`/`match`/block are marked by span and seeded as
+// each is lowered (#8630), since the ticker prediction names only the next
+// lambda.  A type parameter of the function resolves as the body resolves it
+// (`typeExprToMsilBodyCtx`).
 func seedReturnedLambdaFnTypesMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr): Unit {
   match stripExprParens(expr).kind {
-    case ELambda(_, _) -> ()
-    case _ -> return
+    case ELambda(_, _) -> {
+      match fctx.declaredRetTe {
+        case Some(te) -> registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, Some(value = te), stripExprParens(expr))
+        case None -> ()
+      }
+    }
+    case _ -> markReturnedLambdasMsil(fctx, expr)
   }
-  if fctx.generics.count > 0 or fctx.reifiedGenerics.count > 0 {
-    return
+}
+
+// Mark the lambda literals that produce the value of the returned `expr` -
+// the branches of an `if`, the arms of a `match` and the tail of a block,
+// through parentheses - for `seedReturnedLambdaFnTypesMsil`.
+func markReturnedLambdasMsil(fctx: in FuncCtx, expr: in Expr): Unit {
+  match expr.kind {
+    case ELambda(_, _) -> if expr.span.endPos.offset > expr.span.startPos.offset {
+      val key = lambdaSpanKeyMsil(expr.span)
+      if not fctx.retLambdaSpans.containsKey(key) {
+        fctx.retLambdaSpans.add(key, true)
+      }
+    }
+    case EParen(inner) -> markReturnedLambdasMsil(fctx, inner)
+    case EIf(_, thenB, elseB, _) -> {
+      markReturnedLambdasEobMsil(fctx, thenB)
+      match elseB {
+        case Some(eb) -> markReturnedLambdasEobMsil(fctx, eb)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        markReturnedLambdasEobMsil(fctx, arm.body)
+      }
+    }
+    case EBlock(b) -> match blockTailExprMsil(b) { case Some(t) -> markReturnedLambdasMsil(fctx, t); case None -> () }
+    case _ -> ()
   }
-  match fctx.declaredRetTe {
-    case Some(te) -> registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, Some(value = te), stripExprParens(expr))
-    case None -> ()
+}
+
+func markReturnedLambdasEobMsil(fctx: in FuncCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> markReturnedLambdasMsil(fctx, e)
+    case EOBBlock(b) -> match blockTailExprMsil(b) { case Some(t) -> markReturnedLambdasMsil(fctx, t); case None -> () }
   }
 }
 

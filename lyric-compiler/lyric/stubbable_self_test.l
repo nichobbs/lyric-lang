@@ -36,7 +36,26 @@ pub interface Ticker {
   func value(): Int
 }
 
+// Async-only interface (#8605): the synthesised impl must implement the
+// async methods too.
+@stubbable
+pub interface Repo {
+  async func findById(id: in Int): String
+  async func touch(id: in Int): Unit
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
+test "async method stub returns its value and counts calls (#8605)" {
+  val r = RepoStub(findById_value = "found")
+  val a = await r.findById(1)
+  val b = await r.findById(2)
+  await r.touch(3)
+  assertEqual(a, "found", "first call value")
+  assertEqual(b, "found", "second call value")
+  assertEqualInt(stubCounterGet(r.findById_counter), 2, "findById counted")
+  assertEqualInt(stubCounterGet(r.touch_counter), 1, "touch counted")
+}
+
 test "value field works" {
   val g = GreeterStub(greet_value = "hello")
   assertEqual(g.greet("Alice"), "hello", "greet returns configured value")

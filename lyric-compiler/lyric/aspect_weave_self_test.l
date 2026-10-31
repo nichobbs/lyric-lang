@@ -542,6 +542,32 @@ test "a generic call in an aspect's ensures: is specialised per woven function (
   }
 }
 
+// A violated woven `ensures:` that calls a generic panics (#8665): the
+// specialised contract is enforced, not only specialised.
+aspect AtLeastTen {
+  matches: name in { tooSmallAspect, bigEnoughAspect }
+  ensures: isSome(result) and unwrapOr(result, 0) >= 10
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+func tooSmallAspect(x: Int): Option[Int] {
+  return Some(value = x)
+}
+
+func bigEnoughAspect(x: Int): Option[Int] {
+  return Some(value = x + 10)
+}
+
+test "a violated woven ensures: that calls a generic panics (#8665)" {
+  assertPanics("contract violated", { -> val _ = tooSmallAspect(3) })
+  match bigEnoughAspect(1) {
+    case Some(v) -> assertEqualInt(v, 11, "satisfied contract passes")
+    case None -> assertTrue(false, "bigEnoughAspect returned None")
+  }
+}
+
 // Functions of one name and different arities in a woven file both survive the
 // second mono run that specialises aspect contracts (#8662).
 func twinArity(x: Int): Int {

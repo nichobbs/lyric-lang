@@ -4473,7 +4473,23 @@ pub func resolveGeneralFuncSig(
       ownerSegs.add(path.segments[si])
       si = si + 1
     }
-    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
+    val ownerKey = joinSegments(ownerSegs, "/")
+    val qkey = ownerKey + "/" + funcName
+    // A call qualified with the current package's own name reaches the same
+    // function as the bare call, including a package-private one, which only
+    // the package-scoped key registers (#8634).
+    if ownerKey == ctx.pkgName {
+      val ownKey = ctx.pkgName + "::" + funcName
+      match mapGet(ctx.funcSigs, ownKey + argcSuffix) {
+        case Some(sig) -> return Some(value = sig)
+        case None -> {
+          match mapGet(ctx.funcSigs, ownKey) {
+            case Some(sig) -> return Some(value = sig)
+            case None -> ()
+          }
+        }
+      }
+    }
     match mapGet(ctx.funcSigs, qkey + argcSuffix) {
       case Some(sig) -> Some(value = sig)
       case None -> {
@@ -4888,13 +4904,15 @@ func lowerGeneralStaticCall(
         originOwn.replace("/", ".") +
         "', specialised into package '" +
         ctx.className +
-        "'. A generic function's body is compiled into each package that calls it, so every function it calls must be `pub` in '" +
+        "'. A generic function's body is compiled into each package that calls it, so every function it calls must resolve in the declaring package's scope: '" +
+        funcName +
+        "' has to be declared in '" +
         originOwn.replace("/", ".") +
         "' or in a package '" +
         originOwn.replace("/", ".") +
-        "' imports; make '" +
-        funcName +
-        "' `pub`. A private helper is copied into the calling package only when it is self-contained: " +
+        "' imports, and `pub` there. If it is already `pub`, the name did not resolve in that scope (packages searched: '" +
+        originOwn.replace("/", ".") +
+        "' and its imports). A private helper is copied into the calling package only when it is self-contained: " +
         "no module-level value or constant, no private type, no contract clause or default argument."
     )
   }
@@ -5299,6 +5317,26 @@ func lowerSliceSliceJvm(ctx: in FuncCtx, insns: in List[LInsn], recvTy: in JvmTy
 // hand-written function, `<pkg>::<Type>.<member>` for a synthesized one
 // (06_items.l).  `None` unless the receiver has at least a package segment
 // and a type segment, or when its first segment is a local (a value chain).
+// The signature of `P.f` when `recv` spells the current package `P` (any
+// number of segments) and `f` is one of its functions, as the bare call `f`
+// resolves it (#8634).
+func ownPackageFuncSigJvm(ctx: in FuncCtx, recv: in Expr, memberName: in String, argc: in Int): Option[JvmFuncSig] {
+  val segs = flattenPathExprSegsJvm(recv)
+  if segs.count == 0 or joinSegments(segs, "/") != ctx.pkgName {
+    return None
+  }
+  match lookupSlot(ctx, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val full: List[String] = newList()
+  for sg in segs {
+    full.add(sg)
+  }
+  full.add(memberName)
+  resolveGeneralFuncSig(ctx, memberName, ModulePath(segments = full, span = recv.span), argc)
+}
+
 func qualifiedDotNamedSigJvm(ctx: in FuncCtx, recv: in Expr, memberName: in String, argc: in Int): Option[JvmFuncSig] {
   val segs = flattenPathExprSegsJvm(recv)
   if segs.count < 2 {

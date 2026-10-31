@@ -2428,6 +2428,7 @@ func rewriteAspectDecl(aliases: in AliasEnv, d: in AspectDecl): AspectDecl {
     contracts = rewriteContracts(contractAliases, d.contracts),
     wraps = d.wraps,
     inside = d.inside,
+    orderOffset = d.orderOffset,
     span = d.span
   )
 }

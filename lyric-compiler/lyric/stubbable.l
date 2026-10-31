@@ -24,7 +24,8 @@
 //!     }
 //!   }
 //!
-//! Generic interfaces, `Self`-bearing and async methods are skipped.
+//! Generic interfaces and `Self`-bearing methods are skipped.  An `async`
+//! method gets an `async` stub method returning its `_value` field (#8605).
 package Lyric.Stubbable
 
 import Std.Core
@@ -93,9 +94,6 @@ func mentionsSelf(te: in TypeExpr): Bool {
 }
 
 func isStubbableMethodSig(sg: in FunctionSig): Bool {
-  if sg.isAsync {
-    return false
-  }
   val returnOk = match sg.ret { case None -> true; case Some(te) -> not mentionsSelf(te) }
   if not returnOk {
     return false

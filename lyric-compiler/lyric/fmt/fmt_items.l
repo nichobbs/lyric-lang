@@ -1532,6 +1532,17 @@ func aspectConfigBlockLines(ad: in AspectDecl, ctx: inout FmtCtx): List[String] 
   acc
 }
 
+func emitAspectOrderLines(ad: in AspectDecl, acc: in List[String]): Unit {
+  if ad.wraps.count > 0 {
+    val wrapStr: String = joinStrings(ad.wraps, ", ")
+    acc.add("  wraps: " + wrapStr)
+  }
+  if ad.inside.count > 0 {
+    val insideStr: String = joinStrings(ad.inside, ", ")
+    acc.add("  inside: " + insideStr)
+  }
+}
+
 func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   // Instantiation form (D051): `aspect Name from Pkg.Template { … }`.  The
@@ -1541,14 +1552,12 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
   // `aspectAroundLines` for that reason.
   val fromStr = match ad.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
   acc.add(visStr + "aspect " + ad.name + fromStr + " {")
-  // §6 ordering: emit wraps:/inside: before matches:
-  if ad.wraps.count > 0 {
-    val wrapStr: String = joinStrings(ad.wraps, ", ")
-    acc.add("  wraps: " + wrapStr)
-  }
-  if ad.inside.count > 0 {
-    val insideStr: String = joinStrings(ad.inside, ", ")
-    acc.add("  inside: " + insideStr)
+  // §6 ordering: emit wraps:/inside: before matches:, unless the source put
+  // them after it (the loss check refuses a token reorder, #8605).
+  val orderAfter = ad.orderOffset >= 0 and ad.matches.count > 0 and
+    ad.orderOffset > aspectMatcherSpanOffset(ad.matches[0])
+  if not orderAfter {
+    emitAspectOrderLines(ad, acc)
   }
   // §8 config / matches ordering: preserve source order when both are present.
   // docs/26 §8 defines `matches:` then `config { }` as canonical, but the
@@ -1584,6 +1593,9 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
       acc.add(cfgOut[cfgI])
       cfgI = cfgI + 1
     }
+  }
+  if orderAfter {
+    emitAspectOrderLines(ad, acc)
   }
   // §5 contract augmentation: emit requires:/ensures: before the around block.
   var ci = 0

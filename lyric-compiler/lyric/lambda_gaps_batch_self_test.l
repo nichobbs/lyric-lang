@@ -21,6 +21,9 @@
 //!   * #8471  a capturing lambda through the `Std.Iter` functions.
 //!   * #7679  a generic union constructor in a returned lambda's `if`/`else`
 //!            takes the function's declared result type.
+//!   * #8630  a lambda in a branch of a returned `if`/`match`, and one
+//!            returned from a generic function, take the function's declared
+//!            result type.
 //!   * #7219  a `Unit`-returning function value stored in a field and passed
 //!            to a parameter of the same function type.
 //!
@@ -368,6 +371,63 @@ test "an explicitly returned lambda builds the declared Result instantiation" {
   val s = oneChunk()
   assertEqual(pullChunk(chunkReaderReturn(s)), "some 2", "first pull")
   assertEqual(pullChunk(chunkReaderReturn(s)), "none", "second pull")
+}
+
+// ─── #8630 ──────────────────────────────────────────────────────────────────
+func branchReader(c: in Bool): () -> Result[Option[Int], String] {
+  if c {
+    { -> Ok(value = None) }
+  } else {
+    { -> Ok(value = Some(value = 1)) }
+  }
+}
+
+func matchReader(n: in Int): () -> Result[Option[Int], String] {
+  match n {
+    case 0 -> {
+      { -> Ok(value = None) }
+    }
+    case _ -> {
+      { -> Ok(value = Some(value = n)) }
+    }
+  }
+}
+
+func returnedBranchReader(c: in Bool): () -> Result[Option[Int], String] {
+  return if c { { -> Ok(value = None) } } else { { -> Ok(value = Some(value = 2)) } }
+}
+
+func genericReader[T](x: in T): () -> Result[Option[T], String] {
+  { -> Ok(value = Some(value = x)) }
+}
+
+func genericNoneReader[T](x: in T): () -> Result[Option[T], String] {
+  { -> Ok(value = None) }
+}
+
+func showOpt(f: in () -> Result[Option[Int], String]): String {
+  match f() {
+    case Ok(Some(v)) -> "some " + toString(v)
+    case Ok(None) -> "none"
+    case Err(e) -> "err " + e
+  }
+}
+
+test "lambdas in the branches of a returned if build the declared Result instantiation" {
+  assertEqual(showOpt(branchReader(true)), "none", "then branch")
+  assertEqual(showOpt(branchReader(false)), "some 1", "else branch")
+  assertEqual(showOpt(returnedBranchReader(true)), "none", "explicit return, then")
+  assertEqual(showOpt(returnedBranchReader(false)), "some 2", "explicit return, else")
+}
+
+test "lambdas in the arms of a returned match build the declared Result instantiation" {
+  assertEqual(showOpt(matchReader(0)), "none", "first arm")
+  assertEqual(showOpt(matchReader(5)), "some 5", "second arm")
+}
+
+test "a lambda returned from a generic function builds the declared Result instantiation" {
+  assertEqual(showOpt(genericReader(7)), "some 7", "Some")
+  assertEqual(showOpt(genericNoneReader(7)), "none", "None")
 }
 
 test "the same lambda passed directly as an argument" {

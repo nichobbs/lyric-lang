@@ -896,15 +896,20 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
                 // p.name }` — and the `?` form, which `Lyric.Propagate`
                 // rewrites into the same match — with `p` erased to `Object`
                 // (J007, #7631).
-                case None -> match recv.kind {
-                  case EPath(p) -> {
-                    val dotKey = lastSegment(p) + "." + memberName
-                    match mapGet(ctx.funcSigs, ctx.pkgName + "::" + dotKey) {
-                      case Some(ssig) -> ssig.retGenericArgs
-                      case None -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, dotKey))
+                case None -> match ownPackageFuncSigJvm(ctx, recv, memberName, callArgs.count) {
+                  // `P.f(...)` inside `package P` calls the package's own
+                  // function; its signature is the bare call's (#8634).
+                  case Some(osig) -> osig.retGenericArgs
+                  case None -> match recv.kind {
+                    case EPath(p) -> {
+                      val dotKey = lastSegment(p) + "." + memberName
+                      match mapGet(ctx.funcSigs, ctx.pkgName + "::" + dotKey) {
+                        case Some(ssig) -> ssig.retGenericArgs
+                        case None -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, dotKey))
+                      }
                     }
+                    case _ -> newList()
                   }
-                  case _ -> newList()
                 }
               }
             }

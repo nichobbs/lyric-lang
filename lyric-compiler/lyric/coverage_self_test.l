@@ -62,6 +62,21 @@ test "match arms, loops and lambdas are walked" {
   assertEqualInt(lineCount(r.source), lineCount(src), "no line moves")
 }
 
+test "a match arm written case X -> return e keeps parsing (#8666)" {
+  val src = "package P\n\npub enum Category {\n  case Alpha\n  case Other\n}\n\npub func name(c: in Category): String {\n  match c {\n    case Alpha -> return \"alpha\"\n    case Other -> return \"other\"\n  }\n}\n"
+  val r = instrumentSource(src, "p.l", 0)
+  assertTrue(
+    Str.contains(r.source, "case Alpha -> { __lyric_cov.hit(1); return \"alpha\" }\n"),
+    "the arm's statement is braced around its hit"
+  )
+  assertTrue(
+    Str.contains(r.source, "case Other -> { __lyric_cov.hit(2); return \"other\" }\n"),
+    "every such arm is braced"
+  )
+  assertEqualInt(r.file.points.count, 3, "the match and both returns are counted")
+  assertEqualInt(lineCount(r.source), lineCount(src), "no line is added or removed")
+}
+
 test "files that are not code under test are left alone" {
   val pure = "@pure\npackage P\n\nfunc f(): Int {\n  1\n}\n"
   assertEqual(instrumentSource(pure, "p.l", 0).source, pure, "a @pure package is not instrumented")
