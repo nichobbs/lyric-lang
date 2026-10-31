@@ -7304,11 +7304,18 @@ jobs:
           # `/hello` response body ("hello h2 dotnet") is captured too and the
           # `2:200` match fails.
           curlh2="$(curl -sk -o /dev/null --http2 --max-time 4 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello || echo 'curl-failed')"
-          kill "$smoke_pid" 2>/dev/null || true
           case "$curlh2" in
             2:200) echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$GITHUB_STEP_SUMMARY" ;;
-            *) echo "::error::curl --http2 against the dotnet TLS listener returned '$curlh2', expected 2:200"; cat /tmp/dotnet_h2_smoke.run.log || true; exit 1 ;;
+            *) echo "::error::curl --http2 against the dotnet TLS listener returned '$curlh2', expected 2:200"; cat /tmp/dotnet_h2_smoke.run.log || true; kill "$smoke_pid" 2>/dev/null || true; exit 1 ;;
           esac
+          # Send-scheduler cross-check with curl (#6107): concurrent streams,
+          # incremental chunked DATA, and stream-reset abort.
+          if ! bash scripts/ci/dotnet-h2-scheduler-smoke.sh https://127.0.0.1:8443 /tmp/dotnet_h2_smoke.run.log >> "$GITHUB_STEP_SUMMARY"; then
+            cat /tmp/dotnet_h2_smoke.run.log || true
+            kill "$smoke_pid" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$smoke_pid" 2>/dev/null || true
 
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not

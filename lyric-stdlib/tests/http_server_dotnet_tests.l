@@ -55,6 +55,8 @@ import Std.Testing
 // `Std.HttpEngine`'s `HttpVersion` cases into scope alongside `Std.Http`'s.
 import Std.HttpEngine as Eng
 import Std.Environment as Env
+import Std.Time
+import Std.Parse
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -1159,4 +1161,170 @@ test "HTTP/2 request body far larger than the initial window arrives intact" {
     case _ -> panic("expected HTTP/2 negotiation; body=" + body)
   }
   assertEqual(body, "len=500000", "every byte of a 500 KB body delivered")
+}
+
+// =====================================================================
+// #6107: the h2 send scheduler. Handlers answer on their own tasks and the
+// connection task interleaves the streams, so these tests need real
+// concurrency on both sides (background `Task.Run` threads).
+// =====================================================================
+// Answers `n` requests, each on its own task. A request for "/slow" sleeps
+// `slowMs` first; every other path is answered at once. Joins all handlers.
+func serveConcurrently(l: in HttpListener, n: in Int, slowMs: in Int): Unit {
+  val handlers: List[Task] = newList()
+  var i = 0
+  while i < n {
+    val ctx = nextContext(l)
+    handlers.add(taskRun({ -> handleMaybeSlow(ctx, slowMs) }))
+    i = i + 1
+  }
+  var j = 0
+  while j < handlers.count {
+    taskWait(handlers[j])
+    j = j + 1
+  }
+}
+
+func handleMaybeSlow(ctx: in HttpContext, slowMs: in Int): Unit {
+  if requestPath(ctx) == "/slow" {
+    threadSleep(slowMs)
+  }
+  respondText(ctx, 200, "done " + requestPath(ctx))
+}
+
+// One client request on the calling thread: GET `url`, record "<tag>:<body>"
+// in `results` when the body has arrived.
+async func fetchInto(client: in HttpClient, url: in String, tag: in String, results: in ConcQueue[String]): Unit {
+  match await client.get(url) {
+    case Ok(r) -> match await r.bodyText() {
+      case Ok(t) -> concEnqueue(results, tag + ":" + t)
+      case Err(_) -> concEnqueue(results, tag + ":body-error")
+    }
+    case Err(e) -> concEnqueue(results, tag + ":error " + HttpError.message(e))
+  }
+}
+
+// A deterministic `n`-byte body for large sizes: `makeBody` grows by repeated
+// concatenation, which is quadratic and far too slow for megabytes. `n` must be
+// a multiple of 10.
+func bigBody(n: in Int): String {
+  Std.String.repeat("0123456789", n / 10)
+}
+
+func elapsedMs(startNanos: in Long): Int {
+  ((monotonicNanos() - startNanos) / 1000000i64).toInt()
+}
+
+func tlsListenerOn(port: in Int): HttpListener {
+  val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
+  match startListenerTls("127.0.0.1", port, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> panic("startListenerTls failed: " + TlsListenError.message(e))
+  }
+}
+
+func trustingClient(): HttpClient {
+  HttpClientBuilder.build(HttpClientBuilder.withExclusiveCaCertificate(HttpClientBuilder.new(), caCertificate()))
+}
+
+test "HTTP/2 a slow handler does not hold up other streams on the connection (#6107)" {
+  val listener = tlsListenerOn(19430)
+  val server = taskRun({ -> serveConcurrently(listener, 2, 2500) })
+  threadSleep(100)
+  val client = trustingClient()
+  val results: ConcQueue[String] = newConcQueue()
+  val start = monotonicNanos()
+  val slowClient = taskRun({ -> fetchInto(client, "https://localhost:19430/slow", "slow", results) })
+  // Let the slow stream reach the server first, then ask for a fast one.
+  threadSleep(300)
+  val fastStart = monotonicNanos()
+  fetchInto(client, "https://localhost:19430/fast", "fast", results)
+  val fastMs = elapsedMs(fastStart)
+  taskWait(slowClient)
+  val totalMs = elapsedMs(start)
+  taskWait(server)
+  stopListener(listener)
+  val order = drainConcQueue(results)
+  assertEqual(order, "fast:done /fast;slow:done /slow;", "the fast stream finishes before the slow one")
+  assertTrue(fastMs < 1500, "the fast stream is not queued behind the slow handler (took " + toString(fastMs) + " ms)")
+  assertTrue(totalMs >= 2500, "the slow stream really was slow (" + toString(totalMs) + " ms)")
+}
+
+// Answers `n` requests concurrently, each with a body of the size the path
+// names ("/<bytes>").
+func serveSizedBodies(l: in HttpListener, n: in Int): Unit {
+  val handlers: List[Task] = newList()
+  var i = 0
+  while i < n {
+    val ctx = nextContext(l)
+    handlers.add(
+      taskRun({ -> respondText(ctx, 200, bigBody(parseInt(requestPath(ctx).substring(1, requestPath(ctx).length - 1)))) })
+    )
+    i = i + 1
+  }
+  var j = 0
+  while j < handlers.count {
+    taskWait(handlers[j])
+    j = j + 1
+  }
+}
+
+test "HTTP/2 interleaves large concurrent response bodies and each arrives intact (#6107)" {
+  val listener = tlsListenerOn(19431)
+  val server = taskRun({ -> serveSizedBodies(listener, 3) })
+  threadSleep(100)
+  val client = trustingClient()
+  val results: ConcQueue[String] = newConcQueue()
+  // 300 KB and 1.5 MB responses, well past the 64 KiB initial windows: they
+  // only complete if the scheduler keeps feeding every stream as the peer
+  // grants window, with no single stream monopolising the connection.
+  val a = taskRun({ -> fetchInto(client, "https://localhost:19431/1500000", "big", results) })
+  val b = taskRun({ -> fetchInto(client, "https://localhost:19431/300000", "mid", results) })
+  val c = taskRun({ -> fetchInto(client, "https://localhost:19431/1000", "small", results) })
+  taskWait(a)
+  taskWait(b)
+  taskWait(c)
+  taskWait(server)
+  stopListener(listener)
+  val all = drainConcQueue(results)
+  assertTrue(all.contains("big:" + bigBody(1500000) + ";"), "1.5 MB body intact")
+  assertTrue(all.contains("mid:" + bigBody(300000) + ";"), "300 KB body intact")
+  assertTrue(all.contains("small:" + bigBody(1000) + ";"), "small body intact")
+}
+
+// Streams `count` chunks of `size` bytes each, then ends.
+func serveManyChunks(l: in HttpListener, count: in Int, size: in Int): Unit {
+  val ctx = nextContext(l)
+  val headers: Map[String, String] = newMap()
+  val s = beginChunkedResponse(ctx, 200, "text/plain; charset=utf-8", headers)
+  val chunk = encodeUtf8(bigBody(size))
+  var i = 0
+  var failed = false
+  while i < count and not failed {
+    match streamWriteChunk(s, chunk, 0, size) {
+      case Ok(_) -> ()
+      case Err(_) -> {
+        failed = true
+      }
+    }
+    i = i + 1
+  }
+  endChunkedResponse(ctx, s)
+}
+
+test "HTTP/2 chunked response streams more than the credit and window with backpressure (#6107)" {
+  val listener = tlsListenerOn(19432)
+  // 200 chunks of 16000 bytes = 3.2 MB through a 32-chunk credit and 64 KiB windows.
+  val server = taskRun({ -> serveManyChunks(listener, 200, 16000) })
+  threadSleep(100)
+  val client = trustingClient()
+  val resp = match await client.get("https://localhost:19432/many") {
+    case Ok(r) -> r
+    case Err(e) -> panic("chunked GET failed: " + HttpError.message(e))
+  }
+  val body = match await resp.bodyText() { case Ok(t) -> t; case Err(_) -> panic("body read failed") }
+  taskWait(server)
+  stopListener(listener)
+  assertEqualInt(resp.statusCode(), 200, "status")
+  assertEqualInt(body.length, 3200000, "every chunk arrived")
 }
