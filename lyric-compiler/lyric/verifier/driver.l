@@ -440,7 +440,11 @@ func primitiveTypeName(te: in TypeExpr): Bool {
       }
       val n = path.segments[0]
       n == "Int" or n == "Long" or n == "Bool" or n == "String" or n == "Double" or n == "Float" or n == "Byte" or
-        n == "UInt" or n == "ULong" or n == "UByte" or n == "Short" or n == "UShort"
+        n == "UInt" or
+        n == "ULong" or
+        n == "UByte" or
+        n == "Short" or
+        n == "UShort"
     }
     case _ -> false
   }
@@ -497,10 +501,7 @@ func importedCalleeEligible(fn: in FunctionDecl): Bool {
   val foreign = { e: Expr ->
     match e.kind {
       case EPath(path) -> not names.contains(path.segments[0])
-      case ECall(callee, _) -> match callee.kind {
-        case EPath(_) -> true
-        case _ -> false
-      }
+      case ECall(callee, _) -> match callee.kind { case EPath(_) -> true; case _ -> false }
       case _ -> false
     }
   }

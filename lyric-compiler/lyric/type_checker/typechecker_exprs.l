@@ -8840,7 +8840,9 @@ func invariantCheckerPath(tbl: in SymbolTable, sym: in Symbol): Option[String] {
   if not found {
     return None
   }
-  Some(value = if sym.isImported and sym.originPackage.length > 0 { sym.originPackage + "." + checker } else { checker })
+  Some(
+    value = if sym.isImported and sym.originPackage.length > 0 { sym.originPackage + "." + checker } else { checker }
+  )
 }
 
 func symbolIsNonGenericInvariantType(sym: in Symbol): Bool {

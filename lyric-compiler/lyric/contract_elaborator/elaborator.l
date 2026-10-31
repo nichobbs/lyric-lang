@@ -3564,7 +3564,12 @@ func elaborateItem(
       annotations = it.annotations,
       visibility = it.visibility,
       kind = IFunc(
-        decl = elaborateFunctionOwned(fn, qualify(pkg, fn.name), contractsEnabled, publicBoundary(it, boundary))
+        decl = elaborateFunctionOwned(
+          fn,
+          qualify(pkg, fn.name),
+          contractsEnabled,
+          publicBoundary(it, boundary)
+        )
       ),
       span = it.span
     )

@@ -314,7 +314,6 @@ func wrapIfConstruction(e: in Expr, sites: in Map[String, String]): Expr {
 // updated in place, can break it, so the value is re-checked where it next
 // crosses a public boundary.  Every check calls the type's construction
 // checker, so the message and clause text are the construction's.
-
 /// The invariant-bearing types a public function's signature can name, by
 /// spelled name, with the dotted path of each type's checker.  `foreign`
 /// holds the types declared in another package (parameter and result checks);
@@ -387,10 +386,7 @@ func boundaryEntryChecks(params: in List[Param], b: in InvariantBoundary): List[
   var i = 0
   while i < params.count {
     val p = params[i]
-    val isOut = match p.mode {
-      case PMOut -> true
-      case _ -> false
-    }
+    val isOut = match p.mode { case PMOut -> true; case _ -> false }
     if not isOut {
       match boundaryChecker(b.foreign, p.ty) {
         case Some(checker) -> {
@@ -413,16 +409,13 @@ func boundaryExitChecks(
   ret: in Option[TypeExpr],
   b: in InvariantBoundary,
   owner: in String,
-  sp: in Span
+  sp: in Span,
 ): List[SpannedExpr] {
   val acc: List[SpannedExpr] = newList()
   var i = 0
   while i < params.count {
     val p = params[i]
-    val written = match p.mode {
-      case PMIn -> false
-      case _ -> true
-    }
+    val written = match p.mode { case PMIn -> false; case _ -> true }
     if written {
       val checker = match boundaryChecker(b.foreign, p.ty) {
         case Some(c) -> Some(value = c)
