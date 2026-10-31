@@ -1815,6 +1815,15 @@ Invariants must hold:
 
 Internal mutations may temporarily violate the invariant; the invariant is checked when control returns to a public boundary.
 
+**When the check runs (D284, #7222).** Every check calls the type's construction checker, so a violation panics with `InvariantViolated: <Package>.<Type> invariant <clause>`.
+
+- *Construction:* every constructor call and every `.copy(...)` of the type, in any package.
+- *Public boundary:* a `pub` top-level function declared in a package other than the type's checks each `in` or `inout` parameter of the type before its `requires:` clauses, and its result, and each `inout` or `out` parameter, when the body finishes (before the `ensures:` clauses and the writeback).
+- *`inout` and `out` in the declaring package:* a `pub` top-level function of the type's own package re-checks its `inout` and `out` parameters of the type on exit. A non-`pub` function may leave the value broken; the next public crossing catches it.
+- *Not checked:* a write to a `var` field (it is caught at the next boundary), a field read, and an intra-package call.
+
+Checked today for non-generic types named directly in a signature. Methods in `impl` blocks and record bodies, generic types, a type named through an `alias` or imported under another name, a type held inside `Option`, `Result` or a collection, and the `@projectable` `tryInto` result are tracked under #7222.
+
 An invariant may carry a message for the user, written after its expression on the same line:
 
 ```

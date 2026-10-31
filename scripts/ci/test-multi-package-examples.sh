@@ -39,6 +39,12 @@ for ex in rbac ledger jobqueue product-catalog; do
   "$lyric_bin" test --manifest "examples/$ex/lyric.toml" > /tmp/"$ex".test.log 2>&1 \
     && echo "PASS" || { echo "FAIL"; cat /tmp/"$ex".test.log; exit 1; }
 done
+# Public-boundary and `inout` invariant re-checks (#7222, D284), on both targets.
+for target in dotnet jvm; do
+  echo "=== test examples/invariant-boundary --target $target ==="
+  "$lyric_bin" test --manifest examples/invariant-boundary/lyric.toml --target "$target" > /tmp/invariant-boundary.$target.log 2>&1 \
+    && echo "PASS" || { echo "FAIL"; cat /tmp/invariant-boundary.$target.log; exit 1; }
+done
 # Build contracts-gating-test (verifies aspect-composed contracts respect [contracts] enabled = false)
 # Test on both dotnet and jvm targets to ensure parity of contract gating across backends (#7701).
 echo "=== build examples/contracts-gating-test --target dotnet ==="

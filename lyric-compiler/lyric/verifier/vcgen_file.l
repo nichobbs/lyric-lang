@@ -123,6 +123,7 @@ pub func goalsForFileInScope(
     calleeDecls,
     calleeDiags
   )
+  registerImportedFunctions(file, pscope.imports, pscope.siblings.functions, callees)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
