@@ -117,7 +117,7 @@ pub func functionHasRangeRefinement(params: in List[Param], ret: in Option[TypeE
 
 // A name in scope, and the refined type it was declared with (`None` for an
 // unrefined binding that shadows an outer refined one).
-record RangeScope {
+ref record RangeScope {
   frames: List[Map[String, Option[TypeExpr]]]
   owner: String
   var found: Bool

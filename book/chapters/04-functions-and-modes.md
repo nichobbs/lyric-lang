@@ -53,7 +53,7 @@ func area(r: Double): Double = 3.14159 * r * r
 func area(r: in Double): Double = 3.14159 * r * r
 ```
 
-`in` is the default when you write no mode keyword. The function receives the value and cannot mutate it. The compiler may pass small types by value and larger types by reference internally, but from the function's perspective the parameter is read-only.
+`in` is the default when you write no mode keyword. The function receives the value and cannot mutate it. The compiler may pass small types by value and larger types by reference internally, but from the function's perspective the parameter is read-only. For a record that is not `ref`, that includes its fields: writing a `var` field through an `in` parameter is error `V0038`. A `ref record` is a handle to a mutable object, so an `in` handle can have its fields written; take a value `inout` when the function should change the caller's copy.
 
 ### `out` — the function writes it
 

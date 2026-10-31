@@ -243,7 +243,7 @@ val readChunkSize: Int = 65536
 
 // ── Public handle + entry points ───────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout.
-pub record PipedHandle {
+pub ref record PipedHandle {
   proc: Proc
   writer: ProcWriter
   stdin: Stream

@@ -107,7 +107,7 @@ func hasDestructuringVal(items: in List[Item]): Bool {
   false
 }
 
-record ModValCounter {
+ref record ModValCounter {
   var next: Int
 }
 

@@ -370,7 +370,7 @@ impl LspByteSource for LspStdinSource {
 
 // Byte-buffered stdin cursor for the run loop: `buf` holds bytes read from
 // the peer that have not yet been consumed into a complete frame.
-record LspStdin {
+ref record LspStdin {
   src: LspStdinSource
   var buf: slice[Byte]
 }

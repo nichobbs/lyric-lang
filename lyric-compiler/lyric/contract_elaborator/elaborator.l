@@ -1862,7 +1862,7 @@ func exitCheckableInvariants(invs: in List[Expr], patNames: in List[String]): Li
   kept
 }
 
-record NameScan {
+ref record NameScan {
   var found: Bool
 }
 
@@ -1963,7 +1963,7 @@ func appendLoopWithExitCheck(
 }
 
 // Whether `markBreaksBlock` rewrote at least one `break`.
-record BreakScan {
+ref record BreakScan {
   var found: Bool
 }
 

@@ -834,7 +834,7 @@ pub record EHClause {
   catchToken: Int
 }
 
-pub record MethodBody {
+pub ref record MethodBody {
   insns: List[Insn]
   var maxStack: Int
   var localSig: Int
@@ -1488,7 +1488,10 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
         // to `n & 0xFF` and address a different slot (lyric-lang#7822).
         // Callers must go through the width-aware emitters instead.
         if n < 0 or n > 255 {
-          panic("Msil.Opcodes: short-form (VarS) opcode " + toString(op) + " given out-of-range slot index " + toString(n) + "; use the width-aware emitter")
+          panic(
+            "Msil.Opcodes: short-form (VarS) opcode " + toString(op) + " given out-of-range slot index " + toString(n) +
+              "; use the width-aware emitter"
+          )
         }
         bufU1(w, op)
         bufU1(w, n)

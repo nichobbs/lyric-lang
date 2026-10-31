@@ -133,7 +133,7 @@ pub func crc32(bytes: in slice[Byte]): Long {
 // ---- Inflate (RFC 1951) -----------------------------------------------------
 // Input bit stream, least significant bit first. `err` is set (and stays
 // set) when the stream ends early; readers check it after each symbol.
-record BitIn {
+ref record BitIn {
   data: slice[Byte]
   limit: Int
   var pos: Int
@@ -517,7 +517,7 @@ pub func inflate(data: in slice[Byte], maxOutput: in Int): Result[slice[Byte], Z
 
 // ---- Deflate ----------------------------------------------------------------
 // Output bit stream, least significant bit first.
-record BitOut {
+ref record BitOut {
   bytes: List[Byte]
   var bitBuf: Int
   var bitCnt: Int

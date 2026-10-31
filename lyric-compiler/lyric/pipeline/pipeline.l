@@ -838,7 +838,7 @@ pub func pipeCBindingsToFuncs(file: in SourceFile): SourceFile {
 }
 
 /// The next free suffix for a call's pinned-userdata locals.
-record CBindingTempCounter {
+ref record CBindingTempCounter {
   var next: Int
 }
 

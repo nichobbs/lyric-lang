@@ -556,7 +556,7 @@ pub record AsmExnHandler {
   catchType: Int
 }
 
-pub record MethodAssembler {
+pub ref record MethodAssembler {
   insns: List[AsmInsn]
   pool: Pool          // shared constant pool
   swDefaults: List[String]  // default label for each switch (indexed by swIdx)
