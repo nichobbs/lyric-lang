@@ -2591,6 +2591,29 @@ test "an alias of Result or Option has the datatype's sort (#8168)" {
   )
 }
 
+test "a generic alias of Result or Option is expanded at its use (#8631)" {
+  assertDischarged(
+    "alias R[T] = Result[T, String]\nfunc f(r: in R[Int]): Int\n  ensures: r.isOk or result == 0\n{\n  match r {\n    case Ok(v) -> v\n    case Err(_) -> 0\n  }\n}\n",
+    "generic-result-alias"
+  )
+  assertRefuted(
+    "alias R[T] = Result[T, String]\nfunc f(r: in R[Int]): Bool\n  ensures: result\n{\n  r.isOk\n}\n",
+    "generic-result-alias-refuted"
+  )
+  assertDischarged(
+    "alias Maybe[T] = Option[T]\nfunc f(o: in Maybe[Int]): Maybe[Int]\n  ensures: result.isSome == o.isSome\n{\n  o\n}\n",
+    "generic-option-alias"
+  )
+  assertDischarged(
+    "alias Failing[E, T] = Result[T, E]\nfunc f(r: in Failing[String, Int]): Result[Int, String]\n  ensures: result.isOk == r.isOk\n{\n  r\n}\n",
+    "generic-alias-parameter-order"
+  )
+  assertDischarged(
+    "alias R[T] = Result[T, String]\nfunc pass[U](r: in R[U]): R[U]\n  ensures: result.isOk == r.isOk\n{\n  r\n}\n",
+    "generic-alias-in-generic"
+  )
+}
+
 test "a union named Result is the user's own, never the standard library's (#8168)" {
   assertUnmodelledMatch(
     "union Result[T, E] {\n  case Ok(value: T)\n  case Err(error: E)\n}\n" +
