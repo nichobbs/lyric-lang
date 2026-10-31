@@ -575,7 +575,7 @@ func showFieldPart(
   }
 }
 
-func showIsRefRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
+func showIsRefRecord(tbl: in SymbolTable, tid: in SymbolId): Bool {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind { case DKRecord(_, rd) -> rd.isRef; case _ -> false }
     case None -> false

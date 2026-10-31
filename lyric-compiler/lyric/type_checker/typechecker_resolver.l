@@ -643,7 +643,7 @@ func resolveAliasPath(
   // resolution scope (current package > imports > any), so an alias target
   // sharing its name with a type from another package resolves to the
   // scope-closest declaration — mirroring `resolveTypePath`.  Only a concrete
-  // type symbol is taken here; an alias (no `TypeId`) falls through to the
+  // type symbol is taken here; an alias (no `SymbolId`) falls through to the
   // insertion-order scan below, which prefers concrete types so the lookup
   // cannot loop back on the alias being expanded.
   match symTableTryFindOne(tbl, last) {

@@ -13,7 +13,7 @@
 //! `Jvm.Codegen` (`lowerMethodCall`'s slice-receiver arm: the array, boxed
 //! first when primitive-element, is copied into a fresh `ArrayList`; #7662,
 //! #8323) and natively (`llvm_codegen.l`).  A `typechecker_exprs.l`
-//! `inferMemberBase` case resolves the real `List` `TypeId` so the result
+//! `inferMemberBase` case resolves the real `List` `SymbolId` so the result
 //! type-checks wherever a `List[T]` is expected.  Run via:
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/slice_to_list_self_test.l

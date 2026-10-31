@@ -800,7 +800,7 @@ func zeroArrayFill(tbl: in SymbolTable, t: in Type, el: in Type, sp: in Span, de
   }
 }
 
-func zeroUserType(tbl: in SymbolTable, t: in Type, tid: in TypeId, sp: in Span, depth: in Int): Option[Expr] {
+func zeroUserType(tbl: in SymbolTable, t: in Type, tid: in SymbolId, sp: in Span, depth: in Int): Option[Expr] {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind {
       case DKEnum(_, ed) -> {
@@ -870,7 +870,7 @@ func listOf1CallArg(a: in CallArg): List[CallArg] {
 }
 
 func zeroRecord(
-  tbl: in SymbolTable, t: in Type, tid: in TypeId, rd: in RecordDecl, sp: in Span, depth: in Int
+  tbl: in SymbolTable, t: in Type, tid: in SymbolId, rd: in RecordDecl, sp: in Span, depth: in Int
 ): Option[Expr] {
   match rd.generics {
     case Some(_) -> return None
@@ -1145,7 +1145,7 @@ func typeHoldsArrayOr(tbl: in SymbolTable, t: in Type, seen: in List[Int], float
   }
 }
 
-func recordFieldsHoldArray(tbl: in SymbolTable, tid: in TypeId, seen: in List[Int], floats: Bool): Bool {
+func recordFieldsHoldArray(tbl: in SymbolTable, tid: in SymbolId, seen: in List[Int], floats: Bool): Bool {
   for f in fieldsOfRecord(tbl, tid) {
     if typeHoldsArrayOr(tbl, f.ty, seen, floats) {
       return true
@@ -1330,7 +1330,7 @@ func buildUnionEqShape(
   tbl: in SymbolTable,
   span: in Span,
   u: in Type,
-  tid: in TypeId,
+  tid: in SymbolId,
   targs: in List[Type],
   sym: in Symbol,
   ud: in UnionDecl,
@@ -1355,7 +1355,7 @@ func buildUnionEqShape(
     // The case is written bare when the file reaches it that way, as `Some`
     // and `None` are, and qualified by its union otherwise.
     val bare = match symTableTryFindOne(tbl, uc.name) {
-      case Some(found) -> match found.kind { case DKUnionCase(pid, _) -> typeIdEq(pid, tid); case _ -> false }
+      case Some(found) -> match found.kind { case DKUnionCase(pid, _) -> symbolIdEq(pid, tid); case _ -> false }
       case None -> false
     }
     val head: List[String] = newList()

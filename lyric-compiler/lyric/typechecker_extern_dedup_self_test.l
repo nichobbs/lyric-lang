@@ -1,11 +1,11 @@
-//! typechecker_extern_dedup_self_test.l — #2426: the canonical TypeId for an
+//! typechecker_extern_dedup_self_test.l — #2426: the canonical SymbolId for an
 //! extern type must be consistent regardless of declaration order.
 //!
 //! Before the fix, two `IExternType` registrations with the same `clrName`
-//! in the same `SymbolTable` could receive distinct `TypeId`s depending on
+//! in the same `SymbolTable` could receive distinct `SymbolId`s depending on
 //! which one was registered first (T0060 false-positive when the second decl
 //! arrived).  `findExternTypeIdByClr` now scans the table before minting a
-//! fresh id, so the second registration re-uses the first's `TypeId`.  The
+//! fresh id, so the second registration re-uses the first's `SymbolId`.  The
 //! visible invariant: two `extern type` declarations pointing at the same CLR
 //! name in the same source file must not produce a T0060 diagnostic.
 //!

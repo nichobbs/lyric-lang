@@ -31,7 +31,7 @@ pub func isForeignRecordType(tbl: in SymbolTable, t: in Type): Bool {
 func isNativePtrType(tbl: in SymbolTable, t: in Type): Bool {
   match unrefine(t) {
     case TyUser(tid, _, _) -> match mapGet(tbl.nativeIntrinsicTypes, "NativePtr") {
-      case Some(pid) -> typeIdEq(pid, tid)
+      case Some(pid) -> symbolIdEq(pid, tid)
       case None -> false
     }
     case _ -> false

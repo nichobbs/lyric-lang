@@ -1607,9 +1607,9 @@ func projectFrontEnd(
   // skip adding in-bundle items for packages that are already fully
   // represented in `baseImportedPkgs`.  Without this guard, a stdlib self-build
   // (where `packages` and `stdlibSources` contain the same files) would
-  // register every Std.* type twice with distinct TypeIds, corrupting the
-  // type-variable resolution for subsequent packages and causing spurious
-  // T0033 diagnostics on `var i = 0; while i < n { … }` loops.  (#1435)
+  // register every Std.* declaration twice (#1435).  Both registrations of a
+  // type now share its SymbolId (docs/70 §4.2), but the duplicates would
+  // still double the symbol table.
   val baseNames: Map[String, Bool] = newMap()
   var bn = 0
   while bn < stdlibPkgs.count {
@@ -1869,17 +1869,11 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // represented in `baseItems` (i.e., the stdlib packages collected by
 // `collectStdlibPackages`).  Any in-bundle package whose name appears in
 // `baseNames` is skipped: its items are already in `baseItems`, and adding
-// them again via the in-bundle closure would register every type twice,
-// allocating a second distinct `TypeId` for each type.  The second
-// TypeId is never used by the codegen (`symTableTryFindOne` scans newest-to-oldest
-// and resolves the last-registered TypeId) but the duplicate `DKUnion`/`DKRecord`/...
-// symbols inflate the symbol table.  More critically, duplicate union-case
-// symbols (`Some`, `None`, `Ok`, `Err`) push extra `DKUnionCase` entries
-// whose `parentId` refers to the *second* (unused) TypeId; when the type
-// checker resolves a generic type variable for a subsequently analysed
-// function body it can end up with a stale `TyVar("")` binding instead of
-// the expected `TyPrim(PtInt)`, producing spurious T0033 diagnostics on
-// perfectly valid `var i = 0; while i < n { … }` loops.  (#1435)
+// them again via the in-bundle closure would register every declaration
+// twice.  Before types were identified by their DefPath (docs/70 §4.2) the
+// second registration got a second id, and union cases whose `parentId`
+// named it gave spurious T0033 diagnostics (#1435); the ids are shared now,
+// and the guard keeps the duplicates out of the symbol table.
 // Grouped analogue of the old flat `perPackageImportedItems`: returns the
 // imported items partitioned by their declaring package, so the scope-aware
 // type checker resolves each package's signatures against its own

@@ -162,6 +162,12 @@ only by `SymbolId`. Locals, parameters and pattern bindings get a
 counter, which let one package registered from two sources get two ids,
 36d2734) is replaced by `SymbolId`.
 
+The rendered DefPath joins the package and the path with `::`. A type is
+`Pkg::Name`. An extern type bound to a host type is `extern::<host name>`
+(`extern::System.Collections.Generic.List`1`), so every extern type naming
+one host type is one declaration wherever it is written. A declaration with
+no package (the checker's flat entry point) has no DefPath and a fresh id.
+
 ### 4.3 Visibility rules
 
 A bare name in file F of package P resolves, in order, to:
@@ -702,6 +708,13 @@ builder (I0002) rather than on the current checker.
   replace the text merge with a list of parsed files (docs/19 §4 is
   rewritten); per-file import scopes.
 - **2b** `DefPath`, `SymbolId`, `LocalId`; `TypeId` replaced.
+
+  Status: `SymbolId` has replaced `TypeId`, and a type's id is its
+  interned DefPath (`Pkg::Name`, or `extern::<host name>` for an extern type
+  with one), so every registration of one type in a compilation has one id
+  (D304). DefPaths for functions and values, whose overloads need a
+  discriminator, come with 2c, which is their first consumer; `LocalId`
+  comes with 3a, where TIR binds locals.
 - **2c** `Lyric.Resolve` with the rules of §4.3-§4.4, D141 change, folding
   in `AliasRewriter` and `TypeAliasResolve`; the checker consumes resolutions
   and its own lookups are deleted; source migration (`pub use`, imports)

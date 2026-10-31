@@ -15010,7 +15010,7 @@ func lowerExprOrBlockMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
 // build the matching concrete value instead.  Without this the two branches
 // arrive at the join with different stack types and ilverify/JIT reject the
 // merge (`StackUnexpected found object expected List`1<…>` / `Option`1<…>`,
-// #3943: `findGenericInPair`'s `if typeIdEq {a} else {newList()}`, and the
+// #3943: `findGenericInPair`'s `if symbolIdEq {a} else {newList()}`, and the
 // `if cond {Some(x)} else {None}` idioms).  Mirrors `lowerMatchExprMsil`'s
 // runningCanon / runningCollCanon arm hint-seeding.
 func lowerBranchWithSiblingHintMsil(
@@ -22656,7 +22656,7 @@ func lowerSliceSliceMsil(
 // `xs.toList()` (#2050 gotcha): a genuine `List[T]` holding a shallow copy of
 // `xs`'s elements, the round-trip shuttle back from `List[T].toArray()`
 // (typechecker_exprs.l's `inferMemberBase` gives this call a real `List`
-// `TypeId`, so the result binds wherever a `List[T]` is expected). Unlike
+// `SymbolId`, so the result binds wherever a `List[T]` is expected). Unlike
 // `.append`/`.concat`/`.slice` above, the destination is always a genuine
 // `MConcreteList(e)` — never the legacy erased `List<object>` fallback —
 // because the type checker already requires `List` to resolve to a concrete
