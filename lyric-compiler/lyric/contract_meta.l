@@ -1423,12 +1423,52 @@ func reprForEnum(decl: in EnumDecl): String {
   "pub enum " + decl.name + " { " + cases + " }"
 }
 
-// Protected types are opaque externally — represent them as opaque
-// types so a cross-package consumer's contract type-check can resolve
-// references to the name without exposing the locked internal state.
-// Mirrors the F# writer `ContractMeta.fs::declOfItem` (IProtected branch).
-func reprForProtected(decl: in ProtectedTypeDecl): String {
+// A package-private protected type is an opaque anchor: its name can appear
+// in a signature, but a consumer cannot construct it.
+func reprForProtectedAnchor(decl: in ProtectedTypeDecl): String {
   "pub opaque type " + decl.name + renderGenerics(decl.generics)
+}
+
+// A `pub` protected type is exported with its constructor shape (the fields,
+// with their types and defaults, in declaration order) and the signature of
+// every `entry` and `func`, as bodyless heads.  Barriers, the invariant and
+// the member bodies stay in the declaring package: the lock and the barrier
+// wait run inside the compiled member, which a consumer only calls (#8261).
+// A member's parameter default is carried as a call of the thunk the package
+// compiled it into, as a record method's is (#7827).
+func reprForProtected(decl: in ProtectedTypeDecl, dt: in DefaultThunks): String {
+  val owner = thunkOwner(DTProtectedMember, decl.name)
+  var body = ""
+  for m in decl.members {
+    match m {
+      case PMField(pf) -> {
+        val line = match pf {
+          case PFVar(name, ty, init, _, _, _) -> "var " + name + ": " + renderTypeExpr(ty) + renderFieldInit(init)
+          case PFLet(name, ty, init, _, _, _) -> "let " + name + ": " + renderTypeExpr(ty) + renderFieldInit(init)
+          case PFImmutable(f) -> (if f.isMutable { "var " } else { "" }) + f.name + ": " + renderTypeExpr(f.ty) +
+            renderFieldInit(f.dflt)
+        }
+        body = body + "\n  " + line
+      }
+      case PMEntry(ed) -> {
+        val params = renderParamsWithDefaults(ed.params, dt, owner, ed.name)
+        val retStr = match ed.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+        body = body + "\n  entry " + ed.name + "(" + params + ")" + retStr
+      }
+      case PMFunc(fn) -> {
+        body = body + "\n  " + reprForRecordMethod(fn, dt, owner)
+      }
+      case PMInvariant(_) -> ()
+    }
+  }
+  "pub protected type " + decl.name + renderGenerics(decl.generics) + " {" + body + "\n}"
+}
+
+func renderFieldInit(init: in Option[Expr]): String {
+  match init {
+    case Some(e) -> " = " + Fmt.exprInline(0, e)
+    case None -> ""
+  }
 }
 
 // Build the head-only `impl <Iface> for <Target> {}` repr for a restored
@@ -2064,7 +2104,11 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       // even when the type itself is package-private, so the synthesised
       // contract source must always declare the anchor.  Matches the F#
       // writer's `IExternType _ | IProtected _ -> true` visibility rule.
-      case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p), it.visibility))
+      case IProtected(p) -> if isPubVis(it.visibility) {
+        decls.add(basicDecl("protected", p.name, reprForProtected(p, thunks), it.visibility))
+      } else {
+        decls.add(basicDecl("opaque", p.name, reprForProtectedAnchor(p), it.visibility))
+      }
       case IExternType(et) -> {
         decls.add(basicDecl("extern_type", et.name, reprForExternType(et), it.visibility))
       }

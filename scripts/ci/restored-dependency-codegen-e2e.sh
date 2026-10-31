@@ -10,7 +10,10 @@
 #   - #8337: `?` (`Result` and `Option`) in a generic library function
 #     specialised in the consumer;
 #   - #8329: a bare reference to a library function inside a generic library
-#     body specialised in the consumer.
+#     body specialised in the consumer;
+#   - #8261: a `pub protected type` of the library constructed and called from
+#     the consumer (entries, funcs, `inout` and defaulted parameters, a
+#     barrier, a generic type, a type with a field that has no default).
 #
 #   bash scripts/ci/restored-dependency-codegen-e2e.sh [dotnet] [jvm]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -302,6 +305,105 @@ mkcase fnref FrLib FrApp
 runcase fnref "3"
 mksib fnref FrLib FrApp
 runsib fnref "3"
+
+# --- #8261: a pub protected type from a library ------------------------------
+cat > "$work/protected.lib" <<'L'
+package PrLib
+
+pub protected type Counter {
+  var total: Int = 0
+  var hits: Int = 0
+
+  entry bump(n: in Int): Int {
+    total = total + n
+    hits = hits + 1
+    return total
+  }
+
+  entry scaled(n: in Int, k: in Int = 3): Int {
+    total = total + n * k
+    return total
+  }
+
+  func peek(): Int {
+    return total
+  }
+
+  entry addOut(into: inout Int, n: in Int) {
+    total = total + n
+    into = into + total
+  }
+
+  entry take(): Int
+    when: total > 0
+  {
+    total = total - 1
+    return total
+  }
+}
+
+pub protected type Slot[T] {
+  var v: T
+  entry put(x: in T) {
+    v = x
+  }
+  func get(): T {
+    return v
+  }
+}
+
+pub protected type Named {
+  label: String
+  var n: Int = 0
+  func describe(): String {
+    return label + ":" + n.toString()
+  }
+  entry inc(): Unit {
+    n = n + 1
+  }
+}
+
+protected type Hidden {
+  var n: Int = 0
+  entry inc(): Unit {
+    n = n + 1
+  }
+  func get(): Int {
+    return n
+  }
+}
+
+pub func peekHidden(): Int {
+  val h = Hidden()
+  h.inc()
+  return h.get()
+}
+L
+cat > "$work/protected.app" <<'L'
+package PrApp
+
+import PrLib
+
+func main(): Unit {
+  val c = Counter()
+  val a = c.bump(5)
+  val b = c.bump(2)
+  var acc = 10
+  c.addOut(acc, 3)
+  val sc = c.scaled(1)
+  val sc2 = c.scaled(1, 2)
+  val seeded = Counter(total = 40)
+  val s = Slot(v = "x")
+  s.put("y")
+  val named = Named(label = "ab")
+  named.inc()
+  println("${a}|${b}|${c.peek()}|${acc}|${c.take()}|${sc}|${sc2}|${seeded.bump(2)}|${s.get()}|${named.describe()}|${peekHidden()}")
+}
+L
+mkcase protected PrLib PrApp
+runcase protected "5|7|15|20|14|13|15|42|y|ab:1|1"
+mksib protected PrLib PrApp
+runsib protected "5|7|15|20|14|13|15|42|y|ab:1|1"
 
 [ "$fail" = 0 ] || exit 1
 echo "restored-dependency codegen: erased member access, branch joins, \`?\` in generics, function values, on: ${targets[*]}"

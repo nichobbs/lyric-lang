@@ -49439,6 +49439,50 @@ func scanRestoredDll(dllPath: in String): RestoredDllScan {
   RestoredDllScan(dllPath = dllPath, image = image, instKind = instKind)
 }
 
+// A restored protected type's shape on the wire is a record's: the producer
+// compiles it to a class with one constructor taking every field in order
+// and one instance method per `entry` and `func` (`lowerProtectedMsil`), so
+// a consumer registers its constructor and members the way it does a
+// record's, from the bodyless heads the contract carries (#8261).
+func protectedAsRecordMsil(decl: in ProtectedTypeDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  for m in decl.members {
+    match m {
+      case PMField(pf) -> {
+        val f = match pf {
+          case PFImmutable(fd) -> fd
+          case PFVar(name, ty, init, docs, anns, sp) -> FieldDecl(
+            docComments = docs, annotations = anns, visibility = None, isMutable = true, name = name, ty = ty,
+            dflt = init, span = sp, trailingAnnotationCount = 0
+          )
+          case PFLet(name, ty, init, docs, anns, sp) -> FieldDecl(
+            docComments = docs, annotations = anns, visibility = None, isMutable = false, name = name, ty = ty,
+            dflt = init, span = sp, trailingAnnotationCount = 0
+          )
+        }
+        members.add(RMField(field = f))
+      }
+      case PMEntry(ed) -> {
+        val noGenerics: Option[GenericParams] = None
+        val noWhere: Option[WhereClause] = None
+        val noBody: Option[FunctionBody] = None
+        members.add(
+          RMFunc(
+            fn = FunctionDecl(
+              docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, isAsync = false,
+              name = ed.name, generics = noGenerics, params = ed.params, ret = ed.ret, whereClause = noWhere,
+              contracts = ed.contracts, body = noBody, span = ed.span
+            )
+          )
+        )
+      }
+      case PMFunc(fn) -> members.add(RMFunc(fn = fn))
+      case PMInvariant(_) -> ()
+    }
+  }
+  RecordDecl(name = decl.name, generics = decl.generics, whereClause = decl.whereClause, members = members, span = decl.span)
+}
+
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, scan: in RestoredDllScan): Unit {
   val instKind = scan.instKind
   // One metadata scan per artifact yields the set of host-class methods whose
@@ -49460,6 +49504,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
       // (#6533) wraps the same `RecordDecl` shape `IRecord` does, so
       // registration is identical to the plain-record arm.
       case IExposedRec(decl) -> registerRestoredRecordLikeType(cctx, art.packageName, decl)
+      case IProtected(decl) -> registerRestoredRecordLikeType(cctx, art.packageName, protectedAsRecordMsil(decl))
       case IFunc(decl) -> {
         registerRestoredFunc(cctx, art.packageName, decl, taskFuncs)
       }
@@ -50258,7 +50303,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]
       val k = decl.kind
-      if k == "record" or k == "union" or k == "enum" or k == "interface" or k == "opaque" or k == "distinct" {
+      if k == "record" or k == "union" or k == "enum" or k == "interface" or k == "opaque" or k == "protected" or k == "distinct" {
         registerRestoredTypeDecl(cctx, art.packageName, decl, asmRefRow)
       }
       di = di + 1

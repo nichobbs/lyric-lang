@@ -2226,6 +2226,8 @@ pub union DefaultThunkKind {
   case DTInterfaceMember
   /// An `impl` method: the owner is the target type, then the interface.
   case DTImplMethod
+  /// An `entry` or `func` of a protected type: the owner is the type.
+  case DTProtectedMember
 }
 
 /// The name of the thunk a package compiles the default of parameter
@@ -2258,6 +2260,7 @@ pub func defaultThunkName(
     case DTRecordMethod -> "m"
     case DTInterfaceMember -> "i"
     case DTImplMethod -> "p"
+    case DTProtectedMember -> "q"
   }
   var acc = defaultThunkPrefix() + kindKey + thunkNamesKey(owner) + thunkNamesKey(dottedSegments(callable)) +
     thunkCountKey(params.count)
