@@ -91,6 +91,10 @@ pub record Box[T] {
   value: T
 }
 
+pub interface Measured {
+  func size(): Int
+}
+
 pub func area(s: in Shape): Int {
   match s {
     case Circle(r) -> 3 * r * r
@@ -135,8 +139,10 @@ EOF
 # checks that a linked entry can call its `from` constructor and `toInt`
 # conversion, and `Bounded` that it checks a library record's invariant.
 # `squareOf` names `RunnerE2e.Shapes.Shape` unqualified through an import, and
-# `Tag` implements `Labelled`: on the JVM a restored package's own imports and
-# its head-only `impl` both have to reach the consumer (#8667).
+# `Tag` implements `Labelled` and `Plot` implements `Shapes.Measured`: on the
+# JVM a restored package's own imports and its head-only `impl`s, of an
+# interface of its own or of another package, have to reach the consumer
+# (#8667).
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
 
@@ -154,6 +160,14 @@ pub record Tag {
 
 impl Labelled for Tag {
   func label(): String = "tag:" + self.text
+}
+
+pub record Plot {
+  n: Int
+}
+
+impl Measured for Plot {
+  func size(): Int = self.n * 2
 }
 
 pub type Score = Int derives Add, Compare
@@ -232,6 +246,10 @@ test "a library signature naming another library package's type" {
 test "a method of a library record's interface impl, called on the record" {
   val t = Tag(text = "x")
   assertTrue(t.label() == "tag:x", "t.label()")
+}
+
+test "a method of an impl of another library package's interface, called on the record" {
+  assertEqualInt(Plot(n = 4).size(), 8, "Plot.size()")
 }
 
 test "distinct type constructed and converted" {

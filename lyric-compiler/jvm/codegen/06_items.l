@@ -4934,6 +4934,43 @@ pub func fileHasInferredModuleVal(file: in SourceFile): Bool {
   false
 }
 
+// The JVM class of the interface an `impl` names: a qualified path as
+// written, a bare name through the file's imported declared types
+// (`collectFileDeclaredTypeFqns`), else the file's own package.
+func implIfaceClassJvm(iface: in ConstraintRef, owner: in String, externTypes: in Map[String, String]): String {
+  val segs = iface.head.segments
+  if segs.count > 1 {
+    return segmentsToJvmPath(segs)
+  }
+  val name = if segs.count == 1 { segs[0] } else { "" }
+  match mapGet(externTypes, name) {
+    case Some(dotted) -> String.replace(dotted, ".", "/")
+    case None -> owner + "/" + name
+  }
+}
+
+// Each method registered under `ifClass` (`<ifClass>#<m>` and its arity
+// key), registered under `tgtClass` as an instance method of that class,
+// unless `tgtClass` already has one by that key.
+func copyIfaceSigsToClassJvm(into: in Map[String, JvmFuncSig], ifClass: in String, tgtClass: in String): Unit {
+  val prefix = ifClass + "#"
+  val keys: List[String] = newList()
+  for k in mapKeys(into) {
+    if k.startsWith(prefix) {
+      keys.add(k)
+    }
+  }
+  for k in keys {
+    val key = tgtClass + "#" + k.substring(prefix.length, k.length - prefix.length)
+    if not into.containsKey(key) {
+      match mapGet(into, k) {
+        case Some(sig) -> into.add(key, sig.copy(owner = tgtClass, isIface = false))
+        case None -> ()
+      }
+    }
+  }
+}
+
 // The interface an `impl` names, when `file` itself declares it.
 func implIfaceDeclJvm(file: in SourceFile, iface: in ConstraintRef): Option[InterfaceDecl] {
   val segs = iface.head.segments
@@ -5565,7 +5602,10 @@ pub func collectFileSigsSeeded(
                 }
               }
             }
-            case None -> ()
+            // An interface another package declares has its methods in the
+            // registry already, under its own class (`registerIfaceSig`):
+            // copy them onto R.
+            case None -> copyIfaceSigsToClassJvm(into, implIfaceClassJvm(decl.iface, owner, externTypes), tgtClass)
           }
         }
         var mi = 0
