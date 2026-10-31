@@ -385,7 +385,7 @@ pub record HttpContext {
 // Per-connection ownership flag. `taken` flips once, on the puller thread,
 // before it releases the context's `done` semaphore; the connection task reads
 // it after `semWait(done)`, so the semaphore orders the write before the read.
-pub record ConnHandoff {
+pub ref record ConnHandoff {
   var taken: Bool = false
 }
 
@@ -394,7 +394,7 @@ pub record ConnHandoff {
 // change (headers ready, chunk queued, body ended) and `wake` is the one signal
 // the connection task blocks on, shared with the reader task so the task wakes
 // for input or for handler output alike. `closed` is set once at teardown.
-pub record H2Link {
+pub ref record H2Link {
   var closed: Bool = false
   outbox: ConcurrentQueue[H2Notice]
   wake: Semaphore
@@ -424,7 +424,7 @@ record H2Inbound {
 // at `beginChunkedResponse` and queues chunks until `endChunkedResponse`.
 // `credit` bounds how many chunks may be queued ahead of the connection task.
 // `aborted` is set when the peer resets the stream or the connection closes.
-pub record H2Exchange {
+pub ref record H2Exchange {
   streamId: Int
   link: H2Link
   chunks: ConcurrentQueue[H2Chunk]
@@ -442,7 +442,7 @@ pub record H2Exchange {
 // The connection task's send state for a stream whose response has begun:
 // `cur` is the slice being framed (from `curOff`), `next` a slice already taken
 // off the queue by the END_STREAM look-ahead.
-record H2Out {
+ref record H2Out {
   exchange: H2Exchange
   var headersSent: Bool
   var hasCur: Bool
@@ -480,7 +480,7 @@ record H2RequestLine {
 // event loop and the response send path. `h2` is mutated in place by `feed`
 // (which returns the same connection object), so its identity is stable across
 // the connection's lifetime.
-record H2ConnState {
+ref record H2ConnState {
   conn: Conn
   var h2: H2.H2Connection
   accums: Map[Int, H2ReqAccum]

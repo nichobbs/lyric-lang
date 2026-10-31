@@ -563,7 +563,7 @@ pub func newContentLengthTransport(): ContentLengthTransport {
 /// appending a chunk of `n` bytes costs amortized O(n), and a full message
 /// costs O(message size) regardless of how many reads it arrived in.
 @stable(since = "0.2")
-pub record FrameBuffer {
+pub ref record FrameBuffer {
   var bytes: List[Byte]
   // Read cursor: bytes before `pos` belong to frames already returned.
   var pos: Int

@@ -649,7 +649,7 @@ pub union DeferEntryJvm {
   case DeferCloseIterJvm(itorSlot: Int)
 }
 
-pub record FuncCtx {
+pub ref record FuncCtx {
   pkgName: String            // JVM path, e.g. "com/example/Hello"
   className: String            // host class for static methods
   slots: Map[String, Int]  // variable name → local slot

@@ -786,7 +786,7 @@ val projectReadCapability: String = "Lyric.GeneratorSdk.ProjectRead"
 /// The plugin host a build's generators run in.  It starts at the first
 /// `@generate`, and each generator's process then serves every annotated
 /// type of the build until `stopGenerators`.
-pub record GeneratorRuntime {
+pub ref record GeneratorRuntime {
   var host: Option[Plugin.PluginHost]
   var projectRoot: String
   registered: Map[String, String]

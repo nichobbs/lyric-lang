@@ -4109,6 +4109,888 @@ pub func computeFieldLockSafetyForBuild(files: in List[SourceFile], into: in Map
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10e. V0038 — write through an `in` parameter to a value record (#8289, D303).
+//
+// A record not declared `ref` is a value (D157, D222).  `in` makes a value
+// read-only: the function may read it but not change it.  So these are V0038
+// when the written field belongs to a `var`-field record of this file that is
+// not `ref`, reached from an `in` parameter through value records only:
+//   * assigning the field, plain or compound (`a.n = 7`, `a.inner.n += 1`,
+//     `self.n = 7`, and the bare spelling `n = 7` of a field of `self: in T`);
+//   * passing the field to an `out`/`inout` parameter (`addTo(a.n, 1)`,
+//     `addTo(n, 1)`), because the callee assigns it in place (D183);
+//   * calling a method whose receiver is `self: inout` on a value-record field
+//     (`a.inner.reset()`).
+// A `ref record` is a handle to a mutable object: `in` forbids rebinding the
+// handle and the referent stays writable, so a path through a `ref record`
+// field or binding is never checked.  Assigning the `in` binding itself is
+// T0087, and passing it to `out`/`inout` or calling an `inout` method on it is
+// T0085/T0166, in the type checker.  Collection element writes and writes
+// through `val`/`let` bindings are not tracked (docs/01 §2.4, §5.2).
+//
+// Syntactic like V0015: it resolves only what one file declares, and skips a
+// call or type it cannot resolve rather than guessing.  A binder that re-uses
+// an `in` parameter's name (`val`, `let`, `var`, a pattern, a lambda
+// parameter, a `for` variable, a `catch` binding) ends that parameter's scope.
+// ─────────────────────────────────────────────────────────────────────────────
+record InWriteCtx {
+  diag: List[Diagnostic]
+  // Names bound in the current scope, with the simple name of their type
+  // ("" when unknown); `inNames` marks the ones that are `in` parameters.
+  types: Map[String, String]
+  inNames: Map[String, Bool]
+  selfIn: Bool
+  selfType: String
+  fieldTypes: Map[String, Map[String, String]]
+  // Records of this file that are not `ref`: record name -> field -> is `var`.
+  valueRecords: Map[String, Map[String, Bool]]
+  funcSigs: Map[String, FieldWriteFuncSig]
+  methodSigs: Map[String, FieldWriteFuncSig]
+}
+
+record InWriteRoot {
+  // Is the expression a place inside an `in` binding's value?
+  rooted: Bool
+  // Simple name of the expression's type, "" when unknown.
+  ty: String
+  // Field steps from the `in` binding (0 for the binding itself).
+  steps: Int
+  path: String
+  base: String
+}
+
+record InWriteSnap {
+  names: List[String]
+  types: List[String]
+  ins: List[Bool]
+}
+
+func inWriteSnapshot(ctx: in InWriteCtx): InWriteSnap {
+  val ns: List[String] = newList()
+  val ts: List[String] = newList()
+  val bs: List[Bool] = newList()
+  for k in mapKeys(ctx.types) {
+    ns.add(k)
+    match mapGet(ctx.types, k) {
+      case Some(v) -> ts.add(v)
+      case None -> ts.add("")
+    }
+    bs.add(ctx.inNames.containsKey(k))
+  }
+  InWriteSnap(names = ns, types = ts, ins = bs)
+}
+
+func inWriteClear(ctx: in InWriteCtx): Unit {
+  val ks: List[String] = newList()
+  for k in mapKeys(ctx.types) {
+    ks.add(k)
+  }
+  var i = 0
+  while i < ks.count {
+    ctx.types.remove(ks[i])
+    if ctx.inNames.containsKey(ks[i]) {
+      ctx.inNames.remove(ks[i])
+    }
+    i = i + 1
+  }
+}
+
+func inWriteRestore(ctx: in InWriteCtx, snap: in InWriteSnap): Unit {
+  inWriteClear(ctx)
+  var i = 0
+  while i < snap.names.count {
+    ctx.types.add(snap.names[i], snap.types[i])
+    if snap.ins[i] {
+      ctx.inNames.add(snap.names[i], true)
+    }
+    i = i + 1
+  }
+}
+
+// Bind `name` as an ordinary (not `in`) local of type `ty`, ending the scope
+// of any `in` parameter of the same name.
+func inWriteBind(ctx: in InWriteCtx, name: in String, ty: in String): Unit {
+  if ctx.types.containsKey(name) {
+    ctx.types.remove(name)
+  }
+  if ctx.inNames.containsKey(name) {
+    ctx.inNames.remove(name)
+  }
+  ctx.types.add(name, ty)
+}
+
+func inWriteBindParam(ctx: in InWriteCtx, p: in Param): Unit {
+  inWriteBind(ctx, p.name, fieldWriteSimpleTypeName(p.ty))
+  match p.mode {
+    case PMIn -> ctx.inNames.add(p.name, true)
+    case _ -> {
+    }
+  }
+}
+
+func inWriteBindPattern(ctx: in InWriteCtx, pat: in Pattern): Unit {
+  val names: List[String] = newList()
+  fieldWriteCollectPatternNames(pat, names)
+  var i = 0
+  while i < names.count {
+    inWriteBind(ctx, names[i], "")
+    i = i + 1
+  }
+}
+
+func inWriteLocalType(tyOpt: in Option[TypeExpr], initOpt: in Option[Expr]): String {
+  var tn = ""
+  match tyOpt {
+    case Some(te) -> {
+      tn = fieldWriteSimpleTypeName(te)
+    }
+    case None -> {
+    }
+  }
+  if tn == "" {
+    match initOpt {
+      case Some(e) -> {
+        tn = fieldWriteCtorTypeName(e)
+      }
+      case None -> {
+      }
+    }
+  }
+  tn
+}
+
+func inWriteFieldType(ctx: in InWriteCtx, recordName: in String, field: in String): String {
+  if recordName == "" {
+    return ""
+  }
+  match mapGet(ctx.fieldTypes, recordName) {
+    case Some(fm) -> match mapGet(fm, field) { case Some(t) -> t; case None -> "" }
+    case None -> ""
+  }
+}
+
+// Is `field` a `var` field of the not-`ref` record `recordName` of this file?
+func inWriteIsValueVarField(ctx: in InWriteCtx, recordName: in String, field: in String): Bool {
+  match mapGet(ctx.valueRecords, recordName) {
+    case Some(fm) -> match mapGet(fm, field) { case Some(isVar) -> isVar; case None -> false }
+    case None -> false
+  }
+}
+
+func inWriteHasField(ctx: in InWriteCtx, recordName: in String, field: in String): Bool {
+  match mapGet(ctx.valueRecords, recordName) {
+    case Some(fm) -> fm.containsKey(field)
+    case None -> false
+  }
+}
+
+func inWriteNoRoot(ty: in String): InWriteRoot {
+  InWriteRoot(rooted = false, ty = ty, steps = 0, path = "", base = "")
+}
+
+// Is `e` an `in` binding, or a field path hanging off one through value
+// records?  `ty` is the type of `e` itself whenever it can be told.
+func inWriteRootOf(ctx: in InWriteCtx, e: in Expr): InWriteRoot {
+  match e.kind {
+    case EParen(inner) -> inWriteRootOf(ctx, inner)
+    case ESelf -> if ctx.selfIn {
+      InWriteRoot(rooted = true, ty = ctx.selfType, steps = 0, path = "self", base = "self")
+    } else {
+      inWriteNoRoot(ctx.selfType)
+    }
+    case EPath(path) -> {
+      if path.segments.count != 1 {
+        return inWriteNoRoot("")
+      }
+      val n = path.segments[0]
+      match mapGet(ctx.types, n) {
+        case Some(t) -> {
+          if ctx.inNames.containsKey(n) {
+            InWriteRoot(rooted = true, ty = t, steps = 0, path = n, base = n)
+          } else {
+            inWriteNoRoot(t)
+          }
+        }
+        case None -> {
+          // Not bound here: a bare field of the receiver.
+          if ctx.selfIn and ctx.selfType != "" and ctx.valueRecords.containsKey(ctx.selfType) {
+            if inWriteHasField(ctx, ctx.selfType, n) {
+              InWriteRoot(rooted = true, ty = inWriteFieldType(ctx, ctx.selfType, n), steps = 1, path = "self." + n, base = "self")
+            } else {
+              inWriteNoRoot("")
+            }
+          } else {
+            inWriteNoRoot("")
+          }
+        }
+      }
+    }
+    case EMember(recv, f) -> {
+      val r = inWriteRootOf(ctx, recv)
+      val ft = inWriteFieldType(ctx, r.ty, f)
+      if r.rooted and ctx.valueRecords.containsKey(r.ty) {
+        InWriteRoot(rooted = true, ty = ft, steps = r.steps + 1, path = r.path + "." + f, base = r.base)
+      } else {
+        inWriteNoRoot(ft)
+      }
+    }
+    case _ -> inWriteNoRoot("")
+  }
+}
+
+func inWriteReport(ctx: in InWriteCtx, root: in InWriteRoot, what: in String, ownerType: in String, span: in Span): Unit {
+  ctx.diag.add(
+    errorDiagnostic(
+      "V0038",
+      what + ": '" + root.base + "' is an `in` parameter, which is read-only, and the record '" + ownerType +
+        "' is a value (it is not declared `ref`); declare '" +
+        root.base +
+        "' `inout` if the function is meant to change the caller's value, or declare '" +
+        ownerType +
+        "' `ref record` if it is a mutable object that `in` may hand over",
+      span
+    )
+  )
+}
+
+// The record type that owns the field `e` names, when `e` is a field of a
+// not-`ref` record reached from an `in` binding and that field is `var`.
+func inWriteOwnedVarField(ctx: in InWriteCtx, e: in Expr): InWriteRoot {
+  match e.kind {
+    case EParen(inner) -> inWriteOwnedVarField(ctx, inner)
+    case EMember(recv, f) -> {
+      val rr = inWriteRootOf(ctx, recv)
+      if rr.rooted and inWriteIsValueVarField(ctx, rr.ty, f) {
+        InWriteRoot(rooted = true, ty = rr.ty, steps = rr.steps + 1, path = rr.path + "." + f, base = rr.base)
+      } else {
+        inWriteNoRoot("")
+      }
+    }
+    case EPath(path) -> {
+      // A bare field of `self: in T`; the binding itself is T0087.
+      val r = inWriteRootOf(ctx, e)
+      if r.rooted and r.steps >= 1 and path.segments.count == 1 and inWriteIsValueVarField(ctx, ctx.selfType, path.segments[0]) {
+        InWriteRoot(rooted = true, ty = ctx.selfType, steps = r.steps, path = r.path, base = r.base)
+      } else {
+        inWriteNoRoot("")
+      }
+    }
+    case _ -> inWriteNoRoot("")
+  }
+}
+
+func inWriteCheckTarget(ctx: in InWriteCtx, t: in Expr): Unit {
+  val r = inWriteOwnedVarField(ctx, t)
+  if r.rooted {
+    inWriteReport(ctx, r, "cannot assign to '" + r.path + "'", r.ty, t.span)
+  }
+}
+
+func inWriteSigOfFunc(fn: in FunctionDecl): FieldWriteFuncSig {
+  val ms: List[ParamMode] = newList()
+  val ns: List[String] = newList()
+  var i = 0
+  while i < fn.params.count {
+    ms.add(fn.params[i].mode)
+    ns.add(fn.params[i].name)
+    i = i + 1
+  }
+  FieldWriteFuncSig(modes = ms, names = ns)
+}
+
+func inWriteIsByref(m: in ParamMode): Bool {
+  match m {
+    case PMOut -> true
+    case PMInout -> true
+    case PMIn -> false
+  }
+}
+
+func inWriteArgExpr(a: in CallArg): Expr {
+  match a {
+    case CAPositional(v) -> v
+    case CANamed(_, v, _) -> v
+  }
+}
+
+// The parameter index `a` binds in `sig`: positional `ai` shifted past the
+// receiver, or the named parameter; -1 when it cannot be told.
+func inWriteParamIndex(sig: in FieldWriteFuncSig, a: in CallArg, ai: in Int, offset: in Int): Int {
+  match a {
+    case CAPositional(_) -> {
+      val idx = ai + offset
+      if idx < sig.modes.count {
+        idx
+      } else {
+        -1
+      }
+    }
+    case CANamed(nm, _, _) -> {
+      var found = -1
+      var pi = 0
+      while pi < sig.names.count {
+        if sig.names[pi] == nm {
+          found = pi
+        }
+        pi = pi + 1
+      }
+      found
+    }
+  }
+}
+
+func inWriteCheckCall(ctx: in InWriteCtx, fn: in Expr, args: in List[CallArg]): Unit {
+  var sigOpt: Option[FieldWriteFuncSig] = None
+  // Index of the first parameter `args[0]` binds.
+  var offset = 0
+  // The receiver expression, when the call passes one by method syntax.
+  var recv: Option[Expr] = None
+  match fn.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        val name = p.segments[0]
+        var sibling = false
+        if ctx.selfType != "" and not ctx.types.containsKey(name) {
+          match mapGet(ctx.methodSigs, ctx.selfType + "." + name) {
+            case Some(s) -> {
+              // A bare call of a sibling method dispatches on `self`.
+              sigOpt = Some(value = s)
+              sibling = true
+              if s.names.count > 0 and s.names[0] == "self" {
+                offset = 1
+              }
+            }
+            case None -> {
+            }
+          }
+        }
+        if not sibling {
+          sigOpt = mapGet(ctx.funcSigs, name)
+        }
+      } else if p.segments.count == 2 {
+        val key = p.segments[0] + "." + p.segments[1]
+        sigOpt = mapGet(ctx.methodSigs, key)
+        if isNone(sigOpt) {
+          sigOpt = mapGet(ctx.funcSigs, key)
+        }
+      }
+    }
+    case EMember(r, m) -> {
+      val rr = inWriteRootOf(ctx, r)
+      if rr.ty != "" {
+        match mapGet(ctx.methodSigs, rr.ty + "." + m) {
+          case Some(s) -> {
+            if s.names.count > 0 and s.names[0] == "self" {
+              sigOpt = Some(value = s)
+              offset = 1
+              recv = Some(value = r)
+            }
+          }
+          case None -> {
+          }
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
+  match sigOpt {
+    case None -> {
+    }
+    case Some(sig) -> {
+      match recv {
+        case Some(r) -> {
+          if sig.modes.count > 0 and inWriteIsByref(sig.modes[0]) {
+            // `a.inner.reset()` changes `a.inner` when `inner` is a value
+            // record reached from the `in` binding.
+            val rr = inWriteRootOf(ctx, r)
+            if rr.rooted and rr.steps >= 1 and ctx.valueRecords.containsKey(rr.ty) {
+              inWriteReport(ctx, rr, "cannot call a method that takes `self: inout` on '" + rr.path + "'", rr.ty, r.span)
+            }
+          }
+        }
+        case None -> {
+        }
+      }
+      var ai = 0
+      while ai < args.count {
+        val idx = inWriteParamIndex(sig, args[ai], ai, offset)
+        if idx >= 0 and inWriteIsByref(sig.modes[idx]) {
+          val x = inWriteArgExpr(args[ai])
+          val xr = inWriteOwnedVarField(ctx, x)
+          if xr.rooted {
+            inWriteReport(
+              ctx,
+              xr,
+              "cannot pass '" + xr.path + "' to the `out`/`inout` parameter '" + sig.names[idx] + "'",
+              xr.ty,
+              x.span
+            )
+          }
+        }
+        ai = ai + 1
+      }
+    }
+  }
+}
+
+func inWriteWalkExpr(ctx: in InWriteCtx, e: in Expr): Unit {
+  match e.kind {
+    case EAssign(t, _, v) -> {
+      inWriteCheckTarget(ctx, t)
+      inWriteWalkExpr(ctx, t)
+      inWriteWalkExpr(ctx, v)
+    }
+    case EAwait(inner) -> inWriteWalkExpr(ctx, inner)
+    case EYield(inner) -> inWriteWalkExpr(ctx, inner)
+    case ESpawn(inner) -> inWriteWalkExpr(ctx, inner)
+    case ETry(inner) -> inWriteWalkExpr(ctx, inner)
+    case EOld(inner) -> inWriteWalkExpr(ctx, inner)
+    case EPropagate(inner) -> inWriteWalkExpr(ctx, inner)
+    case EParen(inner) -> inWriteWalkExpr(ctx, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        inWriteWalkExpr(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        inWriteWalkExpr(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      inWriteWalkExpr(ctx, cond)
+      inWriteWalkEob(ctx, thenB)
+      match elseOpt {
+        case Some(eb) -> inWriteWalkEob(ctx, eb)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      inWriteWalkExpr(ctx, scrutinee)
+      var ai = 0
+      while ai < arms.count {
+        val snap = inWriteSnapshot(ctx)
+        inWriteBindPattern(ctx, arms[ai].pattern)
+        match arms[ai].guard {
+          case Some(g) -> inWriteWalkExpr(ctx, g)
+          case None -> {
+          }
+        }
+        inWriteWalkEob(ctx, arms[ai].body)
+        inWriteRestore(ctx, snap)
+        ai = ai + 1
+      }
+    }
+    case EForall(_, _, _, _) -> {
+    }
+    case EExists(_, _, _, _) -> {
+    }
+    case ETypeApp(fn, _) -> inWriteWalkExpr(ctx, fn)
+    case EIndex(recv, indices) -> {
+      inWriteWalkExpr(ctx, recv)
+      var i = 0
+      while i < indices.count {
+        inWriteWalkExpr(ctx, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> inWriteWalkExpr(ctx, recv)
+    case EPrefix(_, x) -> inWriteWalkExpr(ctx, x)
+    case EBinop(_, l, r) -> {
+      inWriteWalkExpr(ctx, l)
+      inWriteWalkExpr(ctx, r)
+    }
+    case ECall(fn, args) -> {
+      inWriteCheckCall(ctx, fn, args)
+      inWriteWalkExpr(ctx, fn)
+      var ai = 0
+      while ai < args.count {
+        inWriteWalkExpr(ctx, inWriteArgExpr(args[ai]))
+        ai = ai + 1
+      }
+    }
+    case EBlock(blk) -> inWriteWalkBlock(ctx, blk, newList())
+    case EUnsafe(blk) -> inWriteWalkBlock(ctx, blk, newList())
+    case ELambda(lambdaParams, body) -> {
+      val names: List[String] = newList()
+      var li = 0
+      while li < lambdaParams.count {
+        names.add(lambdaParams[li].name)
+        li = li + 1
+      }
+      inWriteWalkBlock(ctx, body, names)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(x) -> inWriteWalkExpr(ctx, x)
+          case ISText(_, _) -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          inWriteWalkExpr(ctx, lo)
+          inWriteWalkExpr(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi, _) -> {
+          inWriteWalkExpr(ctx, lo)
+          inWriteWalkExpr(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> inWriteWalkExpr(ctx, hi)
+        case RBUpperOpen(lo) -> inWriteWalkExpr(ctx, lo)
+      }
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+func inWriteWalkEob(ctx: in InWriteCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> inWriteWalkExpr(ctx, e)
+    case EOBBlock(blk) -> inWriteWalkBlock(ctx, blk, newList())
+  }
+}
+
+func inWriteWalkStmt(ctx: in InWriteCtx, st: in Statement): Unit {
+  match st.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(pat, tyOpt, init) -> {
+          inWriteWalkExpr(ctx, init)
+          inWriteBindPattern(ctx, pat)
+          match pat.kind {
+            case PBinding(nm, _) -> inWriteBind(ctx, nm, inWriteLocalType(tyOpt, Some(value = init)))
+            case _ -> {
+            }
+          }
+        }
+        case LBLet(name, tyOpt, init) -> {
+          inWriteWalkExpr(ctx, init)
+          inWriteBind(ctx, name, inWriteLocalType(tyOpt, Some(value = init)))
+        }
+        case LBVar(name, tyOpt, initOpt) -> {
+          match initOpt {
+            case Some(init) -> inWriteWalkExpr(ctx, init)
+            case None -> {
+            }
+          }
+          inWriteBind(ctx, name, inWriteLocalType(tyOpt, initOpt))
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      inWriteCheckTarget(ctx, t)
+      inWriteWalkExpr(ctx, t)
+      inWriteWalkExpr(ctx, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> inWriteWalkExpr(ctx, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> inWriteWalkExpr(ctx, x)
+    case STry(body, catches, finally_) -> {
+      inWriteWalkBlock(ctx, body, newList())
+      var ci = 0
+      while ci < catches.count {
+        val names: List[String] = newList()
+        match catches[ci].bindName {
+          case Some(nm) -> names.add(nm)
+          case None -> {
+          }
+        }
+        inWriteWalkBlock(ctx, catches[ci].body, names)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> inWriteWalkBlock(ctx, fb, newList())
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> inWriteWalkBlock(ctx, body, newList())
+    case SScope(_, body) -> inWriteWalkBlock(ctx, body, newList())
+    case SFor(_, pat, iter, body) -> {
+      inWriteWalkExpr(ctx, iter)
+      val names: List[String] = newList()
+      fieldWriteCollectPatternNames(pat, names)
+      inWriteWalkBlock(ctx, body, names)
+    }
+    case SWhile(_, cond, body) -> {
+      inWriteWalkExpr(ctx, cond)
+      inWriteWalkBlock(ctx, body, newList())
+    }
+    case SLoop(_, body) -> inWriteWalkBlock(ctx, body, newList())
+    case SExpr(x) -> inWriteWalkExpr(ctx, x)
+    case SInvariant(_) -> {
+    }
+    case SRule(_, _) -> {
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+func inWriteWalkBlock(ctx: in InWriteCtx, blk: in Block, binders: in List[String]): Unit {
+  val snap = inWriteSnapshot(ctx)
+  var bi = 0
+  while bi < binders.count {
+    inWriteBind(ctx, binders[bi], "")
+    bi = bi + 1
+  }
+  var i = 0
+  while i < blk.statements.count {
+    inWriteWalkStmt(ctx, blk.statements[i])
+    i = i + 1
+  }
+  inWriteRestore(ctx, snap)
+}
+
+func inWriteCheckFunc(
+  diag: in List[Diagnostic],
+  fieldTypes: in Map[String, Map[String, String]],
+  valueRecords: in Map[String, Map[String, Bool]],
+  funcSigs: in Map[String, FieldWriteFuncSig],
+  methodSigs: in Map[String, FieldWriteFuncSig],
+  fn: in FunctionDecl,
+  selfType: in String,
+): Unit {
+  match fn.body {
+    case None -> {
+    }
+    case Some(body) -> {
+      var selfIn = false
+      var pi = 0
+      while pi < fn.params.count {
+        if fn.params[pi].name == "self" {
+          match fn.params[pi].mode {
+            case PMIn -> {
+              selfIn = true
+            }
+            case _ -> {
+            }
+          }
+        }
+        pi = pi + 1
+      }
+      val types: Map[String, String] = newMap()
+      val inNames: Map[String, Bool] = newMap()
+      val ctx = InWriteCtx(
+        diag = diag,
+        types = types,
+        inNames = inNames,
+        selfIn = selfIn,
+        selfType = selfType,
+        fieldTypes = fieldTypes,
+        valueRecords = valueRecords,
+        funcSigs = funcSigs,
+        methodSigs = methodSigs
+      )
+      var i = 0
+      while i < fn.params.count {
+        if fn.params[i].name != "self" {
+          inWriteBindParam(ctx, fn.params[i])
+        }
+        i = i + 1
+      }
+      match body {
+        case FBExpr(e) -> inWriteWalkExpr(ctx, e)
+        case FBBlock(blk) -> inWriteWalkBlock(ctx, blk, newList())
+      }
+    }
+  }
+}
+
+func inWriteFieldTypesOf(members: in List[RecordMember]): Map[String, String] {
+  val m: Map[String, String] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(field) -> {
+        if not m.containsKey(field.name) {
+          m.add(field.name, fieldWriteSimpleTypeName(field.ty))
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  m
+}
+
+func inWriteFieldMutabilityOf(members: in List[RecordMember]): Map[String, Bool] {
+  val m: Map[String, Bool] = newMap()
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(field) -> {
+        if not m.containsKey(field.name) {
+          m.add(field.name, field.isMutable)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  m
+}
+
+// A method registered twice under one `Type.name` key is dropped, so a call
+// is never checked against the wrong declaration.
+func inWriteRegisterMethod(
+  sigs: in Map[String, FieldWriteFuncSig],
+  ambiguous: in Map[String, Bool],
+  key: in String,
+  fn: in FunctionDecl,
+): Unit {
+  if ambiguous.containsKey(key) {
+    return
+  }
+  if sigs.containsKey(key) {
+    sigs.remove(key)
+    ambiguous.add(key, true)
+  } else {
+    sigs.add(key, inWriteSigOfFunc(fn))
+  }
+}
+
+func inWriteMarkNotValue(marks: in Map[String, Bool], name: in String): Unit {
+  if not marks.containsKey(name) {
+    marks.add(name, true)
+  }
+}
+
+func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  val fieldTypes: Map[String, Map[String, String]] = newMap()
+  val valueRecords: Map[String, Map[String, Bool]] = newMap()
+  // A name declared twice in a file (`ref` in one place, not in another) is
+  // dropped from `valueRecords`, so it is never judged by the wrong one.
+  val refOrAmbiguous: Map[String, Bool] = newMap()
+  val funcSigs: Map[String, FieldWriteFuncSig] = newMap()
+  val ambiguousFuncs: Map[String, Bool] = newMap()
+  val methodSigs: Map[String, FieldWriteFuncSig] = newMap()
+  val ambiguousMethods: Map[String, Bool] = newMap()
+  collectFuncSigsOfFile(file, funcSigs, ambiguousFuncs)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if fieldTypes.containsKey(decl.name) {
+          inWriteMarkNotValue(refOrAmbiguous, decl.name)
+        } else {
+          fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
+          if decl.isRef {
+            inWriteMarkNotValue(refOrAmbiguous, decl.name)
+          } else {
+            valueRecords.add(decl.name, inWriteFieldMutabilityOf(decl.members))
+          }
+        }
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> inWriteRegisterMethod(methodSigs, ambiguousMethods, decl.name + "." + fn.name, fn)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IExposedRec(decl) -> {
+        inWriteMarkNotValue(refOrAmbiguous, decl.name)
+        if not fieldTypes.containsKey(decl.name) {
+          fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
+        }
+      }
+      case IImpl(decl) -> {
+        val tn = fieldWriteSimpleTypeName(decl.target)
+        if tn != "" {
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case IMplFunc(fn) -> inWriteRegisterMethod(methodSigs, ambiguousMethods, tn + "." + fn.name, fn)
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  for k in mapKeys(refOrAmbiguous) {
+    if valueRecords.containsKey(k) {
+      valueRecords.remove(k)
+    }
+  }
+  if mapIsEmpty(valueRecords) {
+    return
+  }
+  var j = 0
+  while j < file.items.count {
+    match file.items[j].kind {
+      case IFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, "")
+      case IRecord(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, decl.name)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        val tn = fieldWriteSimpleTypeName(decl.target)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, tn)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    j = j + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §11. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
@@ -4118,6 +5000,7 @@ pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta
   checkSpawnConsumption(file, fileLevel, diag)
   checkNativeFfiBoundary(file, diag)
   checkImmutableFieldWrites(file, diag)
+  checkWritesThroughInParams(file, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }

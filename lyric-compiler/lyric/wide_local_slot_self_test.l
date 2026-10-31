@@ -26,7 +26,7 @@ import Std.Core
 import Std.Task
 import Std.Testing
 
-pub record Box {
+pub ref record Box {
   pub var v: String = ""
 }
 

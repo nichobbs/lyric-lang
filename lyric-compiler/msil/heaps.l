@@ -179,7 +179,7 @@ pub func serializeUs(h: in UsHeap, w: in ByteWriter): Unit {
 // ── #GUID heap (ECMA-335 §II.24.2.5) ─────────────────────────────────────────
 // Sequence of 16-byte GUIDs.  Index 0 means "no GUID".  The first GUID added
 // has index 1, the second has index 2, and so on.
-pub record GuidHeap {
+pub ref record GuidHeap {
   buf: ByteWriter
   var count: Int
 }

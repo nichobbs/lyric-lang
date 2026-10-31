@@ -331,7 +331,7 @@ pub union H2SendError {
 /// Reference semantics: a stream fetched from `H2Connection.streams` and
 /// mutated in place updates the tracked value.
 @experimental
-pub record H2Stream {
+pub ref record H2Stream {
   id: Int
   var state: H2StreamState
   var sendWindow: Int

@@ -1820,6 +1820,7 @@ At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request
 | `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
 | `V0035` | error | A `requires:` clause no argument can meet, given the parameters' types and the clauses before it: its value is never true, or a side condition in it (a callee's `requires:`, a non-zero divisor) always fails. Every proof of the function would hold vacuously, so `lyric prove` reports the clause |
 | `V0036` | warning | The solver could not decide whether some argument meets a `requires:` clause (V0035's check came back `unknown`), so vacuity could not be ruled out. The function's own goals keep their outcome; check the clause is satisfiable by hand, or simplify it |
+| `V0038` | error | (mode checker) A `var` field of a record that is not `ref` is written through an `in` parameter (assignment, compound assignment, passing it to `out`/`inout`, or calling a `self: inout` method on it). `in` makes a value record read-only; take it `inout`, or declare the record `ref record` if it is a mutable object (D303) |
 
 ### Multi-file package diagnostics (B001x)
 

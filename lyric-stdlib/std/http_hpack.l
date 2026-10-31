@@ -773,7 +773,7 @@ pub func encodeDynamicTableSizeUpdate(newSize: in Int): slice[Byte]
 /// ceiling `maxProtocolSize` (the negotiated `SETTINGS_HEADER_TABLE_SIZE`) that
 /// any Dynamic Table Size Update in a block must not exceed.
 @experimental
-pub record HpackDecoder {
+pub ref record HpackDecoder {
   var table: DynamicTable
   var maxProtocolSize: Int
   var sizeUpdateRequired: Bool
@@ -947,7 +947,7 @@ func decodeLiteralField(
 /// `maxProtocolSize` ceiling, the fixed `huffman` literal policy, and whether a
 /// size update is queued to be emitted at the head of the next block.
 @experimental
-pub record HpackEncoder {
+pub ref record HpackEncoder {
   var table: DynamicTable
   maxProtocolSize: Int
   huffman: Bool

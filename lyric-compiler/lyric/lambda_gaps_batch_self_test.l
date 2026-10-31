@@ -315,7 +315,7 @@ test "a capturing lambda passed to the Std.Iter functions" {
 }
 
 // ─── #7679 ──────────────────────────────────────────────────────────────────
-record ChunkSrc {
+ref record ChunkSrc {
   chunks: List[slice[Byte]]
   var next: Int
 }

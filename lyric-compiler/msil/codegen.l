@@ -6589,7 +6589,7 @@ pub record PhaseBCtx {
   dispatchTargets: List[Int]
 }
 
-pub record FuncCtx {
+pub ref record FuncCtx {
   pkgName: String
   className: String
   funcName: String

@@ -1331,3 +1331,90 @@ test "n0103 externAsObject is admitted at the extern boundary" {
   val fnLevel = "package P\nextern type Obj = \"System.Object\"\n@unsafe_ffi\nfunc f(x: in Obj): Obj = externAsObject(x)\n"
   assertTrue(not hasDiagCode(parseCheck(fnLevel), "N0103"), "function-level @unsafe_ffi: no N0103")
 }
+
+// ── V0038: write through an `in` parameter to a value record (#8289, D303) ────
+func inWriteSrc(body: in String): String {
+  "package P\nrecord Inner {\n  var n: Int\n  func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\nrecord Acc {\n  var n: Int\n  inner: Inner\n}\nref record Handle {\n  var n: Int\n  inner: Inner\n  func bump(self: in Handle): Unit {\n    n = n + 1\n    self.n = self.n + 1\n  }\n}\nfunc addTo(x: inout Int, d: in Int): Unit {\n  x = x + d\n}\n" +
+    body
+}
+
+test "v0038 field assignment through an in parameter" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  a.n = 7\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "a.n = 7: V0038")
+}
+
+test "v0038 compound assignment through an in parameter" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  a.n += 1\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "a.n += 1: V0038")
+}
+
+test "v0038 nested value-record path through an in parameter" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  a.inner.n = 7\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "a.inner.n = 7: V0038")
+}
+
+test "v0038 passing a field of an in parameter as inout" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  addTo(a.n, 1)\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "addTo(a.n, 1): V0038")
+}
+
+test "v0038 passing a field by name as inout" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  addTo(d = 1, x = a.n)\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "addTo(d = 1, x = a.n): V0038")
+}
+
+test "v0038 inout method on a value-record field of an in parameter" {
+  val r = parseCheck(inWriteSrc("func bump(a: in Acc): Unit {\n  a.inner.reset()\n}\n"))
+  assertTrue(hasDiagCode(r, "V0038"), "a.inner.reset(): V0038")
+}
+
+test "v0038 self in method: bare field passed as inout (the issue repro)" {
+  val src = "package P\nrecord Acc {\n  var n: Int\n  func bad(self: in Acc, d: in Int): Int {\n    addTo(n, d)\n    n\n  }\n}\nfunc addTo(x: inout Int, d: in Int): Unit {\n  x = x + d\n}\n"
+  val r = parseCheck(src)
+  assertTrue(hasDiagCode(r, "V0038"), "Acc.bad addTo(n, d): V0038")
+}
+
+test "v0038 self in method: self.n and bare n assignment" {
+  val src = "package P\nrecord Acc {\n  var n: Int\n  func a(self: in Acc): Unit {\n    self.n = 1\n  }\n  func b(self: in Acc): Unit {\n    n = 2\n  }\n}\n"
+  val r = parseCheck(src)
+  assertTrue(r.diagnostics.count == 2, "self.n = 1 and n = 2: two V0038")
+  assertTrue(hasDiagCode(r, "V0038"), "V0038")
+}
+
+test "v0038 not reported for inout, val-bound locals and ref records" {
+  val src = inWriteSrc(
+    "func viaInout(a: inout Acc): Unit {\n  a.n = 7\n  a.inner.n = 1\n  addTo(a.n, 1)\n  a.inner.reset()\n}\nfunc viaVar(): Unit {\n  var a = Acc(n = 1, inner = Inner(n = 1))\n  a.n = 7\n}\nfunc viaHandle(h: in Handle): Unit {\n  h.n = 7\n  h.inner.n = 1\n  addTo(h.n, 1)\n  h.inner.reset()\n}\n"
+  )
+  val r = parseCheck(src)
+  assertTrue(not hasDiagCode(r, "V0038"), "inout, var local and ref record handle: no V0038")
+}
+
+test "v0038 a path through a ref record field is not checked" {
+  val src = "package P\nref record Cell {\n  var n: Int\n}\nrecord Holder {\n  cell: Cell\n  var k: Int\n}\nfunc f(h: in Holder): Unit {\n  h.cell.n = 5\n}\nfunc g(h: in Holder): Unit {\n  h.k = 5\n}\n"
+  val r = parseCheck(src)
+  assertTrue(r.diagnostics.count == 1, "only h.k = 5 is V0038")
+  assertTrue(hasDiagCode(r, "V0038"), "V0038 for the value-record field")
+}
+
+test "v0038 a shadowing binder ends the in parameter's scope" {
+  val src = inWriteSrc(
+    "func f(a: in Acc): Unit {\n  var a = Acc(n = 1, inner = Inner(n = 1))\n  a.n = 7\n}\nfunc g(a: in Acc): Unit {\n  val xs = [Acc(n = 1, inner = Inner(n = 1))]\n  for a in xs {\n    a.n = 1\n  }\n}\nfunc h(a: in Acc): Unit {\n  val f = { a: Acc -> a.n = 3 }\n}\n"
+  )
+  val r = parseCheck(src)
+  assertTrue(not hasDiagCode(r, "V0038"), "shadowed names: no V0038")
+}
+
+test "v0038 non-var field is V0015 not V0038" {
+  val src = "package P\nrecord Box {\n  n: Int\n}\nfunc f(b: in Box): Unit {\n  b.n = 1\n}\n"
+  val r = parseCheck(src)
+  assertTrue(not hasDiagCode(r, "V0038"), "non-var field: no V0038")
+}
+
+test "v0038 a record name declared twice is skipped and does not crash" {
+  val twiceRef = "package P\nref record R {\n  var n: Int\n}\nref record R {\n  var n: Int\n}\nfunc f(r: in R): Unit {\n  r.n = 1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(twiceRef), "V0038"), "ref declared twice: no V0038")
+  val mixed = "package P\nrecord R {\n  var n: Int\n}\nref record R {\n  var n: Int\n}\nfunc f(r: in R): Unit {\n  r.n = 1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(mixed), "V0038"), "ref and plain of one name: no V0038")
+  val exposedSrc = "package P\nexposed record R {\n  n: Int\n}\nref record R {\n  var n: Int\n}\nfunc f(r: in R): Unit {\n  r.n = 1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(exposedSrc), "V0038"), "exposed and ref of one name: no V0038")
+}
