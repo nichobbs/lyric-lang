@@ -7278,44 +7278,7 @@ jobs:
       # jvm_server_smoke curl --http2 cross-check.
       - name: Std.HttpServer dotnet h2 curl smoke (dotnet_h2_smoke.l)
         working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping dotnet h2 curl smoke"
-            exit 1
-          fi
-          "$lyric_bin" build --target dotnet lyric-stdlib/tests/dotnet_h2_smoke.l -o /tmp/dotnet_h2_smoke.dll
-          dotnet /tmp/dotnet_h2_smoke.dll > /tmp/dotnet_h2_smoke.run.log 2>&1 &
-          smoke_pid=$!
-          up=0
-          for _ in $(seq 1 50); do
-            if curl -sk --http2 --max-time 1 -o /dev/null https://127.0.0.1:8443/hello 2>/dev/null; then up=1; break; fi
-            if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
-            sleep 0.2
-          done
-          if [ "$up" != "1" ]; then
-            echo "::error::dotnet_h2_smoke server did not come up"
-            cat /tmp/dotnet_h2_smoke.run.log || true
-            kill "$smoke_pid" 2>/dev/null || true
-            exit 1
-          fi
-          # -o /dev/null so `$curlh2` is only the -w output (`2:200`); without it the
-          # `/hello` response body ("hello h2 dotnet") is captured too and the
-          # `2:200` match fails.
-          curlh2="$(curl -sk -o /dev/null --http2 --max-time 4 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello || echo 'curl-failed')"
-          case "$curlh2" in
-            2:200) echo "dotnet Std.HttpServer h2 curl --http2 smoke passed ($curlh2)" >> "$GITHUB_STEP_SUMMARY" ;;
-            *) echo "::error::curl --http2 against the dotnet TLS listener returned '$curlh2', expected 2:200"; cat /tmp/dotnet_h2_smoke.run.log || true; kill "$smoke_pid" 2>/dev/null || true; exit 1 ;;
-          esac
-          # Send-scheduler cross-check with curl (#6107): concurrent streams,
-          # incremental chunked DATA, and stream-reset abort.
-          if ! bash scripts/ci/dotnet-h2-scheduler-smoke.sh https://127.0.0.1:8443 /tmp/dotnet_h2_smoke.run.log >> "$GITHUB_STEP_SUMMARY"; then
-            cat /tmp/dotnet_h2_smoke.run.log || true
-            kill "$smoke_pid" 2>/dev/null || true
-            exit 1
-          fi
-          kill "$smoke_pid" 2>/dev/null || true
+        run: bash scripts/ci/dotnet-h2-smoke.sh
 
       # Stdlib runtime suites on dotnet (#5604, expanded in D-progress-670 /
       # #5710): these `func main`-shaped suites (run via `lyric run`, not
