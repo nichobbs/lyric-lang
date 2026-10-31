@@ -2687,13 +2687,14 @@ func inferTypeAppValueTE(
 
 // If `name` is a same-package record, return its TypeExpr (with
 // `targs` supplied for the generic params).  Otherwise None.
-// A generic record constructed without type arguments from at least one
-// lambda (`Program(update = f)`, a desugared function value) is
-// `Program[A, B]` when unifying each field's declared type with its
-// argument's inferred type binds every type parameter (D-progress-963).
-// Limited to lambda arguments, the one case codegen cannot type itself: the
-// binding is then annotated with this type (`rewriteBinding`), so mono's
-// specialisations and codegen's construction agree.
+// A generic record constructed without type arguments (`Box(v = 0.5)`,
+// `Program(update = f)`) is `Box[Double]` / `Program[A, B]` when unifying
+// each field's declared type with its argument's inferred type binds every
+// type parameter (D-progress-963, #8440).  A binding built from a lambda is
+// also annotated with this type (`rewriteBinding`), so mono's
+// specialisations and codegen's construction agree; any other binding only
+// records it in `env`, so a generic call on `b.v` specialises instead of
+// staying erased.
 func inferGenericRecordCtorArgsTE(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -2707,21 +2708,6 @@ func inferGenericRecordCtorArgsTE(
     case Some(rd) -> {
       val tps = extractTypeParamNames(rd.generics)
       if tps.count == 0 {
-        return None
-      }
-      var anyLambda = false
-      var li = 0
-      while li < args.count {
-        val lae = match args[li] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
-        match lae.kind {
-          case ELambda(_, _) -> {
-            anyLambda = true
-          }
-          case _ -> ()
-        }
-        li = li + 1
-      }
-      if not anyLambda {
         return None
       }
       val fields: List[FieldDecl] = newList()

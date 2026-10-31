@@ -3201,6 +3201,53 @@ test "emitProject a direct import's function shadows a transitive one (MSIL)" {
   assertEqual(Str.trim(result.stdout), "direct\n1", "directcall MSIL: output")
 }
 
+// A specialised generic body resolves its bare callees in its declaring
+// package, so a same-named `pub` function in another package the consumer
+// imports neither shadows nor makes it ambiguous (#7917): `viewport`'s
+// `unchanged` is `EPSg.G`'s, not `EPSg.S`'s one of a different arity.
+func specialisedBodyScopePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.G",
+      "package EPSg.G\n" + "\n" + "pub func unchanged[Row](g: in Row): Int {\n" + "  1\n" + "}\n" + "\n" +
+        "pub func viewport[Row](g: in Row): Int {\n" +
+        "  return unchanged(g) + 10\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.S",
+      "package EPSg.S\n" + "\n" + "pub func unchanged[M, E](p: in M, s: in E, dropped: in Bool): Int {\n" +
+        "  100\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPSg.App",
+      "package EPSg.App\n" + "\n" + "import EPSg.G\n" + "import EPSg.S\n" + "\n" + "func main(): Unit {\n" +
+        "  println(toString(viewport(3)))\n" +
+        "  println(toString(unchanged(1, 2, true)))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a specialised generic body ignores a same-named function in the consumer's imports (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-specscope-jvm", specialisedBodyScopePkgs(), "EPSg")
+  assertEqualInt(result.exitCode, 0, "specscope JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "11\n100", "specscope JVM: output")
+}
+
+test "emitProject a specialised generic body ignores a same-named function in the consumer's imports (MSIL)" {
+  val result = runEmitProject("emitproj-specscope", specialisedBodyScopePkgs(), "EPSg")
+  assertEqualInt(result.exitCode, 0, "specscope MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "11\n100", "specscope MSIL: output")
+}
+
 // Another package's package-private function never answers a bare call
 // (#7568): `helper` is `EPPv.V`'s, not the private one in `EPPv.W`.
 func privateHelperPkgs(): List[Emitter.ProjectPackage] {
