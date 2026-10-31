@@ -279,6 +279,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/bitwise_self_test.l \
 	lyric-compiler/lyric/block_shadow_self_test.l \
 	lyric-compiler/lyric/union_shared_case_self_test.l \
+	lyric-compiler/lyric/list_tuple_elem_methods_self_test.l \
 	lyric-compiler/lyric/bounded_generic_ops_self_test.l \
 	lyric-compiler/lyric/generic_default_named_self_test.l \
 	lyric-compiler/lyric/open_alias_self_test.l \

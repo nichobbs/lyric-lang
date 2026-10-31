@@ -144,3 +144,5 @@ echo "restored generic bodies and erased values cross the package boundary intac
 # and shared union case names on the JVM (#8481).
 bash "$REPO_ROOT/scripts/ci/crosspackage-bounded-ops-unsigned.sh"
 "$lyric_bin" test --target jvm "$REPO_ROOT/lyric-compiler/lyric/union_shared_case_self_test.l"
+# List.indexOf/lastIndexOf/remove over a List of tuples (#8668).
+"$lyric_bin" test --target jvm "$REPO_ROOT/lyric-compiler/lyric/list_tuple_elem_methods_self_test.l"

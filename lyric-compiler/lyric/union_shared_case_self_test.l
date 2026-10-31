@@ -16,11 +16,13 @@ import Std.Testing
 union Left {
   case Both(n: Int)
   case OnlyLeft
+  case Idle
 }
 
 union Right {
   case Both(n: Int)
   case OnlyRight
+  case Idle
 }
 
 func leftBoth(): Left {
@@ -38,6 +40,7 @@ func leftValue(l: in Left): Int {
   match l {
     case Both(n) -> n
     case OnlyLeft -> 100
+    case Idle -> 101
   }
 }
 
@@ -45,6 +48,7 @@ func rightValue(r: in Right): Int {
   match r {
     case Both(n) -> n * 10
     case OnlyRight -> 1000
+    case Idle -> 1001
   }
 }
 
@@ -67,4 +71,36 @@ test "a binding with a declared type builds that type's case" {
   val l: Left = Both(n = 4)
   assertEqualInt(rightValue(r), 30, "val Right")
   assertEqualInt(leftValue(l), 4, "val Left")
+}
+
+func leftIdle(c: in Bool): Left {
+  if c {
+    return Idle
+  }
+  OnlyLeft
+}
+
+func rightIdle(): Right {
+  Idle
+}
+
+test "a bare nullary case in a return builds the declared return type's case (#8649)" {
+  assertEqualInt(leftValue(leftIdle(true)), 101, "Left.Idle")
+  assertEqualInt(leftValue(leftIdle(false)), 100, "Left.OnlyLeft")
+}
+
+test "a bare nullary case as a tail expression builds the declared return type's case (#8649)" {
+  assertEqualInt(rightValue(rightIdle()), 1001, "Right.Idle")
+}
+
+test "a bare nullary case argument builds the parameter type's case (#8649)" {
+  assertEqualInt(leftValue(Idle), 101, "Left.Idle argument")
+  assertEqualInt(rightValue(Idle), 1001, "Right.Idle argument")
+}
+
+test "a bare nullary case in a typed binding builds that type's case (#8649)" {
+  val l: Left = Idle
+  val r: Right = Idle
+  assertEqualInt(leftValue(l), 101, "val Left")
+  assertEqualInt(rightValue(r), 1001, "val Right")
 }

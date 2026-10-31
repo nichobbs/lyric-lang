@@ -86,5 +86,5 @@ test "a Self return narrows so the returned value's own members resolve, via an 
 test "a Self return narrows so the returned value's own members resolve, via the concrete receiver" {
   val a = Acc(n = 21)
   val f = a.fresh()
-  assertTrue(f.n == 21, "fresh() via the concrete receiver exposes n directly")
+  assertTrue(f.value() == 21, "fresh() via the concrete receiver returns a usable Acc")
 }

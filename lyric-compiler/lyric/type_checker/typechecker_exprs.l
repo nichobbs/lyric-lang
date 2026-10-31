@@ -16647,29 +16647,48 @@ func recordCasePatternUnion(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit
 // to.
 func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
   match unrefine(t) {
-    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
-      case Some(sym) -> {
-        val isClass = match sym.kind {
-          case DKRecord(_, _) -> true
-          case DKExposedRec(_, _) -> true
-          case DKUnion(_, _) -> true
-          case DKOpaque(_, _) -> true
-          case DKProtected(_, _) -> true
-          // A distinct value is a wrapper class on dotnet and the JVM
-          // (docs/01 §2.3), so an erased one narrows to it before `.value`.
-          case DKDistinctType(_, _) -> true
-          case _ -> false
-        }
-        if isClass and sym.originPackage.length > 0 {
-          val key = recordCopySiteKey(sp)
-          if not tbl.memberRecvClasses.containsKey(key) {
-            tbl.memberRecvClasses.add(key, sym.originPackage + "." + sym.name)
-          }
-        }
+    // #8668: the stdlib `List` a method is called on, under its own key
+    // prefix.  MSIL erases a `List` of tuples to `object`, so `indexOf`,
+    // `lastIndexOf` and `remove` could not tell it from a `String` or `Map`.
+    case TyUser(tid, _, _) -> if isStdCollectionsHostType(tbl, tid, "List") {
+      val lkey = stdListRecvKeyPrefix() + recordCopySiteKey(sp)
+      if not tbl.memberRecvClasses.containsKey(lkey) {
+        tbl.memberRecvClasses.add(lkey, "Std.CollectionsHost.List")
       }
-      case None -> ()
+    } else {
+      recordMemberRecvClassOfUser(tbl, sp, tid)
     }
     case _ -> ()
+  }
+}
+
+/// The `memberRecvClasses` key prefix of a receiver that is the stdlib `List`.
+pub func stdListRecvKeyPrefix(): String {
+  "stdlist|"
+}
+
+func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in TypeId): Unit {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> {
+      val isClass = match sym.kind {
+        case DKRecord(_, _) -> true
+        case DKExposedRec(_, _) -> true
+        case DKUnion(_, _) -> true
+        case DKOpaque(_, _) -> true
+        case DKProtected(_, _) -> true
+        // A distinct value is a wrapper class on dotnet and the JVM
+        // (docs/01 §2.3), so an erased one narrows to it before `.value`.
+        case DKDistinctType(_, _) -> true
+        case _ -> false
+      }
+      if isClass and sym.originPackage.length > 0 {
+        val key = recordCopySiteKey(sp)
+        if not tbl.memberRecvClasses.containsKey(key) {
+          tbl.memberRecvClasses.add(key, sym.originPackage + "." + sym.name)
+        }
+      }
+    }
+    case None -> ()
   }
 }
 
@@ -18135,6 +18154,7 @@ func inferExprCore(
         }
         case _ -> ()
       }
+      checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       val readTy = match memberTy {
         case TyError -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
@@ -19176,32 +19196,30 @@ func argIsWideningBuiltValue(tbl: in SymbolTable, e: in Expr): Bool {
 func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> argIsAmbiguousUnionCaseCtor(tbl, inner)
+    // A bare nullary case name (#8649), as `inferExprExpectedCore`'s `EPath`
+    // arm resolves it against the parameter type.
+    case EPath(p) -> p.segments.count == 1 and nameIsSharedUnionCase(tbl, p.segments[0])
     case ECall(fn, _) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 {
-        val candidates = symTableTryFindAll(tbl, p.segments[0])
-        if candidates.count < 2 {
-          false
-        } else {
-          var allUnionCase = true
-          var ci = 0
-          while ci < candidates.count {
-            match candidates[ci].kind {
-              case DKUnionCase(_, _) -> ()
-              case _ -> {
-                allUnionCase = false
-              }
-            }
-            ci = ci + 1
-          }
-          allUnionCase
-        }
-      } else {
-        false
-      }
+      case EPath(p) -> p.segments.count == 1 and nameIsSharedUnionCase(tbl, p.segments[0])
       case _ -> false
     }
     case _ -> false
   }
+}
+
+// True when `name` has two or more candidates and every one is a union case.
+func nameIsSharedUnionCase(tbl: in SymbolTable, name: in String): Bool {
+  val candidates = symTableTryFindAll(tbl, name)
+  if candidates.count < 2 {
+    return false
+  }
+  for cand in candidates {
+    match cand.kind {
+      case DKUnionCase(_, _) -> ()
+      case _ -> return false
+    }
+  }
+  true
 }
 
 // The argument types of a generic record construction checked where an
@@ -19408,6 +19426,78 @@ func inferMethodCallExpected(
   t
 }
 
+// T0221 (#8672): a protected type's state is reachable only through its
+// entries and functions (docs/01 §7.5), so a field read or write by name on a
+// value of a protected type is rejected outside that type's own members (an
+// `entry`, a `func`, an invariant, or an `impl` method, whose scope's
+// `selfType` is the type itself), or in a contract clause.  Both a read and the
+// target of an assignment reach here, since the target is inferred like any
+// member access.
+func checkProtectedFieldAccess(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvTy: in Type,
+  name: in String,
+  span: in Span,
+): Unit {
+  val tid = match typeIdOfType(recvTy) { case Some(t) -> t; case None -> return }
+  match findProtectedDeclByTypeId(tbl, tid) {
+    case Some(pd) -> {
+      var isField = false
+      for m in pd.members {
+        match m {
+          case PMField(pf) -> if protectedFieldAsFieldDecl(pf).name == name { isField = true }
+          case _ -> ()
+        }
+      }
+      if not isField {
+        return
+      }
+      val inOwnMember = sc.selfChecked and
+        match typeIdOfType(sc.selfType) { case Some(own) -> typeIdEq(own, tid); case None -> false }
+      // A contract clause is specification, not state access: `ensures:
+      // result.tokens == capacity` states what a construction produced.
+      if not inOwnMember and sc.contractDepth.count == 0 {
+        diag.add(
+          errorDiagnostic(
+            "T0221",
+            "field '" + name + "' of protected type '" + pd.name +
+              "' cannot be read or written from outside the type's own members; call an `entry` or `func` of '" +
+              pd.name +
+              "' instead (docs/01 §7.5)",
+            span
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
+}
+
+// #8649: the union case a bare name stands for when two or more visible union
+// cases share it and `expected` is a union declaring one of them; None when the
+// name is a local, is not shared, or the expected type does not pick one.
+func sharedBareCaseOfExpected(sc: in Scope, tbl: in SymbolTable, p: in ModulePath, expected: in Type): Option[Symbol] {
+  if p.segments.count != 1 or scopeHasName(sc, p.segments[0]) {
+    return None
+  }
+  val eid = match unrefine(expected) { case TyUser(id, _, _) -> id; case _ -> return None }
+  val candidates = symTableTryFindAllVisible(tbl, p.segments[0])
+  if candidates.count < 2 {
+    return None
+  }
+  var ci = candidates.count - 1
+  while ci >= 0 {
+    match candidates[ci].kind {
+      case DKUnionCase(parentId, _) -> if typeIdEq(parentId, eid) { return Some(value = candidates[ci]) }
+      case _ -> ()
+    }
+    ci = ci - 1
+  }
+  None
+}
+
 // A2: infer `e` under a contextual expected type.  The expectation is
 // consumed only by the shapes that need it — a lambda literal (its
 // unannotated params adopt the expected function type's parameter types), an
@@ -19537,6 +19627,22 @@ func inferExprExpectedCore(
     // `tailExpected` a function body's own tail chain already carries
     // (#7696).  With no expectation (`TyError`) this is exactly the plain
     // `inferExpr` dispatch.
+    // #8649: a bare nullary case name that two unions of one package share
+    // (`Idle` in `Left` and `Right`) means the case of the expected union, as
+    // a bare constructor call with fields does; `symTableTryFindOne` alone
+    // would pick the last declared.
+    case EPath(p) -> match sharedBareCaseOfExpected(sc, tbl, p, expected) {
+      case Some(caseSym) -> {
+        symTableNoteBareUse(tbl, caseSym, e.span)
+        adoptUnionCaseExpected(
+          tbl,
+          true,
+          inferUnionCaseConstruction(tbl, diag, caseSym, newList(), newList(), e.span, false),
+          expected
+        )
+      }
+      case None -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
       sc,
       tbl,

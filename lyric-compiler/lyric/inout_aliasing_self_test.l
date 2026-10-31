@@ -265,10 +265,11 @@ protected type Counter {
   func current(): Int = total
 }
 
-func addManyOutside(c: in Counter, n: in Int): Unit {
+func addManyWithLocal(c: in Counter, n: in Int): Unit {
   var i = 0
   while i < n {
-    c.addOut(c.total, 1)
+    var t = 0
+    c.addOut(t, 1)
     i = i + 1
   }
 }
@@ -292,10 +293,12 @@ test "a protected member passes its own field to a sibling member" {
   assertEqualInt(c.selfAlias(), 2, "selfAlias")
 }
 
-test "a protected field passed from outside to the protected member" {
+test "a caller's local passed to a protected member's inout parameter" {
   val c = Counter(total = 3)
-  c.addOut(c.total, 3)
-  assertEqualInt(c.current(), 9, "c.addOut(c.total, 3)")
+  var x = 3
+  c.addOut(x, 3)
+  assertEqualInt(c.current(), 6, "the total")
+  assertEqualInt(x, 6, "the caller's local")
 }
 
 test "a read through the parameter sees a write through another path" {
@@ -420,15 +423,14 @@ test "a spawned task passes the caller's place on" {
   assertEqualInt(x, 6, "the caller")
 }
 
-test "a protected field passed from outside, by concurrent callers" {
+test "a caller's local passed to a protected member, by concurrent callers" {
   val c = Counter()
   val sc = makeScope()
-  scopeSpawn(sc, { -> addManyOutside(c, 300) })
-  scopeSpawn(sc, { -> addManyOutside(c, 300) })
-  scopeSpawn(sc, { -> addManyOutside(c, 300) })
+  scopeSpawn(sc, { -> addManyWithLocal(c, 300) })
+  scopeSpawn(sc, { -> addManyWithLocal(c, 300) })
+  scopeSpawn(sc, { -> addManyWithLocal(c, 300) })
   val r = await awaitAll(sc)
-  // Each call adds 1 to the total and 1 through `x`, which is the total.
-  assertEqualInt(c.current(), 1800, "no lost update")
+  assertEqualInt(c.current(), 900, "no lost update")
 }
 
 test "a protected member passing its own field on, by concurrent callers" {

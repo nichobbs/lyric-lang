@@ -10315,9 +10315,19 @@ func lowerCollectionMethodCall(
       // `xs.contains(x)` / `xs.indexOf(x)` (#7429, #8167): a linear scan
       // comparing each element with `x` under the element type's `==`
       // (text for a `String`, structural for a union or value record).
-      if (name == "contains" or name == "indexOf") and args.count == 1 {
+      if name == "remove" and args.count == 1 {
         val needle = lowerCallArgExpecting(ctx, insns, args, 0, elem)
-        val scanFn = ensureListIndexOf(ctx, elem)
+        val rmFn = ensureListRemoveValue(ctx, elem)
+        val rArgs: List[NArg] = newList()
+        rArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
+        rArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, needle)))
+        val removed = freshTmp(ctx)
+        insns.add(NCall(dest = removed, retTy = NI1, fn = NGlobal(name = rmFn), args = rArgs))
+        return Some(value = NVal(ty = NI1, value = NLocal(name = removed)))
+      }
+      if (name == "contains" or name == "indexOf" or name == "lastIndexOf") and args.count == 1 {
+        val needle = lowerCallArgExpecting(ctx, insns, args, 0, elem)
+        val scanFn = if name == "lastIndexOf" { ensureListLastIndexOf(ctx, elem) } else { ensureListIndexOf(ctx, elem) }
         val sArgs: List[NArg] = newList()
         sArgs.add(NArg(ty = NPtr(pointee = NI8), value = recvP))
         sArgs.add(NArg(ty = NI64, value = slotOfVal(ctx, insns, needle)))
@@ -11038,6 +11048,9 @@ func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
   }
   val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts, byValue = false)
   ctx.recordDefs.add(nm, ri)
+  // A tuple is immutable, so it compares element by element (D172): `==`,
+  // `List.contains`/`indexOf`/`lastIndexOf`/`remove` use `Record.eq`, not identity (#8668).
+  ctx.heapValueRecords[nm] = true
   val defnFields: List[NType] = newList()
   addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(elemTys)
@@ -13564,7 +13577,12 @@ func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, wa
   if ctx.varTypes.containsKey(refName) {
     return None
   }
-  if not ctx.caseToGenericUnion.containsKey(refName) {
+  // A non-generic case is taken from the expected union only for a bare
+  // nullary name: two unions of one package may share it (`Idle`), and
+  // `caseRefs` holds the first declared (#8649).  Constructions with
+  // arguments resolve through `tryLowerConstruct` (#8481).
+  val bareNullary = match e.kind { case EPath(_) -> true; case _ -> false }
+  if not ctx.caseToGenericUnion.containsKey(refName) and not bareNullary {
     return None
   }
   val dotIdx = lastDotIndex(refName)
@@ -13772,20 +13790,90 @@ func ensureListIndexOf(ctx: in Ctx, elemTy: in NType): String {
   val fnName = "__list.indexof." + mangleNTypeArg(elemTy)
   if not ctx.unionEqFns.containsKey(fnName) {
     ctx.unionEqFns.add(fnName, true)
-    ctx.moduleFns.add(synthListIndexOf(ctx, elemTy, fnName))
+    ctx.moduleFns.add(synthListIndexOf(ctx, elemTy, fnName, false))
   }
   fnName
 }
 
-func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc {
+/// `i64 lastindexof(i8* list, i64 needle)`: the scan of `ensureListIndexOf`
+/// from the end, -1 when absent (#8668).
+func ensureListLastIndexOf(ctx: in Ctx, elemTy: in NType): String {
+  val fnName = "__list.lastindexof." + mangleNTypeArg(elemTy)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    ctx.moduleFns.add(synthListIndexOf(ctx, elemTy, fnName, true))
+  }
+  fnName
+}
+
+/// `i1 removevalue(i8* list, i64 needle)`: removes the first element equal to
+/// `needle` and says whether there was one (#8668).
+func ensureListRemoveValue(ctx: in Ctx, elemTy: in NType): String {
+  val fnName = "__list.removevalue." + mangleNTypeArg(elemTy)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    val scanFn = ensureListIndexOf(ctx, elemTy)
+    ctx.moduleFns.add(synthListRemoveValue(ctx, scanFn, fnName))
+  }
+  fnName
+}
+
+func synthListRemoveValue(mctx: in Ctx, scanFn: in String, fnName: in String): NFunc {
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI1)
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val p8 = NPtr(pointee = NI8)
+  val sArgs: List[NArg] = newList()
+  sArgs.add(NArg(ty = p8, value = NLocal(name = "list")))
+  sArgs.add(NArg(ty = NI64, value = NLocal(name = "needle")))
+  val found = freshTmp(ctx)
+  body.add(NCall(dest = found, retTy = NI64, fn = NGlobal(name = scanFn), args = sArgs))
+  val hit = freshTmp(ctx)
+  body.add(NICmp(dest = hit, pred = ISge, ty = NI64, a = NLocal(name = found), b = NLitInt(v = 0i64, ty = NI64)))
+  body.add(NCondBr(cond = NLocal(name = hit), thenLabel = "rm.hit", elseLabel = "rm.miss"))
+  body.add(NLabel(name = "rm.hit"))
+  callRuntime(ctx, body, "lyric_list_remove_at", NVoid, arg2(p8, NLocal(name = "list"), NI64, NLocal(name = found)))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 1i64, ty = NI1)))
+  body.add(NLabel(name = "rm.miss"))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "list", ty = p8))
+  params.add(NParam(name = "needle", ty = NI64))
+  val attrs: List[String] = newList()
+  val finalBody: List[NInsn] = newList()
+  finalBody.add(NLabel(name = "entry"))
+  appendInsns(finalBody, ctx.allocas)
+  var bi = 1
+  while bi < body.count {
+    finalBody.add(body[bi])
+    bi = bi + 1
+  }
+  NFunc(
+    name = fnName,
+    params = params,
+    retTy = NI1,
+    isPublic = false,
+    isExtern = false,
+    body = finalBody,
+    attributes = attrs
+  )
+}
+
+func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String, fromEnd: in Bool): NFunc {
   val ctx = freshFnCtx(mctx, mctx.mainPkg, NI64)
   val body: List[NInsn] = newList()
   body.add(NLabel(name = "entry"))
   val p8 = NPtr(pointee = NI8)
   val idxSlot = "scan.idx"
   ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))
-  body.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
   val lenV = callRuntime(ctx, body, "lyric_list_len", NI64, arg1(p8, NLocal(name = "list")))
+  if fromEnd {
+    val last = freshTmp(ctx)
+    body.add(NAdd(dest = last, ty = NI64, a = lenV.value, b = NLitInt(v = -1i64, ty = NI64)))
+    body.add(NStore(ty = NI64, value = NLocal(name = last), ptr = NLocal(name = idxSlot)))
+  } else {
+    body.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
+  }
   val needle = valOfSlot(ctx, body, NLocal(name = "needle"), elemTy)
   val condL = "scan.cond"
   val bodyL = "scan.body"
@@ -13797,7 +13885,11 @@ func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc 
   val cur = freshTmp(ctx)
   body.add(NLoad(dest = cur, ty = NI64, ptr = NLocal(name = idxSlot)))
   val inRange = freshTmp(ctx)
-  body.add(NICmp(dest = inRange, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = lenV.value))
+  if fromEnd {
+    body.add(NICmp(dest = inRange, pred = ISge, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = 0i64, ty = NI64)))
+  } else {
+    body.add(NICmp(dest = inRange, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = lenV.value))
+  }
   body.add(NCondBr(cond = NLocal(name = inRange), thenLabel = bodyL, elseLabel = missL))
   body.add(NLabel(name = bodyL))
   val slot = callRuntime(ctx, body, "lyric_list_get", NI64, arg2(p8, NLocal(name = "list"), NI64, NLocal(name = cur)))
@@ -13806,7 +13898,14 @@ func synthListIndexOf(mctx: in Ctx, elemTy: in NType, fnName: in String): NFunc 
   body.add(NCondBr(cond = NLocal(name = eq), thenLabel = foundL, elseLabel = nextL))
   body.add(NLabel(name = nextL))
   val bumped = freshTmp(ctx)
-  body.add(NAdd(dest = bumped, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI64)))
+  body.add(
+    NAdd(
+      dest = bumped,
+      ty = NI64,
+      a = NLocal(name = cur),
+      b = NLitInt(v = if fromEnd { -1i64 } else { 1i64 }, ty = NI64)
+    )
+  )
   body.add(NStore(ty = NI64, value = NLocal(name = bumped), ptr = NLocal(name = idxSlot)))
   body.add(NBr(label = condL))
   body.add(NLabel(name = foundL))
