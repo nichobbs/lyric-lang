@@ -4,8 +4,9 @@
 //! Before the fix, two `IExternType` registrations with the same `clrName`
 //! in the same `SymbolTable` could receive distinct `SymbolId`s depending on
 //! which one was registered first (T0060 false-positive when the second decl
-//! arrived).  `findExternTypeIdByClr` now scans the table before minting a
-//! fresh id, so the second registration re-uses the first's `SymbolId`.  The
+//! arrived).  An extern type's id is now interned from its host name
+//! (`externTypeDefPath`, D306), so every registration of one CLR name has one
+//! `SymbolId`.  The
 //! visible invariant: two `extern type` declarations pointing at the same CLR
 //! name in the same source file must not produce a T0060 diagnostic.
 //!

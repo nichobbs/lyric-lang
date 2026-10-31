@@ -633,7 +633,11 @@ outside this plan (§15, Q-TIR-005).
   unsolvable type argument.
 - **Cross-target agreement.** The check is target-independent, so the
   corpus asserts the same diagnostics for every target; a test that is
-  accepted on one target and rejected on another fails.
+  accepted on one target and rejected on another fails. Until the targets'
+  project builds check packages in one order, a case's `expect` line may
+  list alternatives (`T0211|T0010`) for an error the targets report at
+  different sites: `dependency_surface_unresolved` is reported in the
+  dependency itself on dotnet and against its consumer on the JVM (D306).
 - **Interface round trip** on every package the bootstrap builds (§9.3).
 - **Differential runs during each backend port.** The backend's self-test
   set runs on the old and new lowering in the porting PR; the old lowering

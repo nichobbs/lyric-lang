@@ -5891,6 +5891,16 @@ test "a type registered twice has one SymbolId, interned from its DefPath" {
   }
 }
 
+test "same-named types of different packages have different ids" {
+  val tbl = newSymbolTable()
+  val a = symTableTypeSymbolId(tbl, "PkgA", "Foo")
+  val b = symTableTypeSymbolId(tbl, "PkgB", "Foo")
+  val a2 = symTableTypeSymbolId(tbl, "PkgA", "Foo")
+  assertTrue(not symbolIdEq(a, b), "A::Foo and B::Foo are different types")
+  assertTrue(symbolIdEq(a, a2), "A::Foo is one type")
+  assertEqual(unwrapOr(symTableDefPathKeyOf(tbl, b), ""), "PkgB::Foo", "its key")
+}
+
 test "an extern type is identified by its host name" {
   val tbl = newSymbolTable()
   val a = symTableInternDefPath(tbl, externTypeDefPath("System.Collections.Generic.List`1"))
