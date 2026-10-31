@@ -2063,16 +2063,13 @@ test "unresolvable extern static member access panics with the spanned T0119 cod
   )
 }
 
-// #7099: a nonexistent String method (a typo, or a BCL method the language
-// never implemented — `toLowerInvariant` has no `Std.String` counterpart and
-// no MSIL codegen intrinsic entry) used to compile clean, degrading to a
-// runtime-throw stub, and only failed once the program actually ran. Every
-// String method name `lowerMethodCallMsil` actually implements is handled
-// earlier in the same cascading dispatch, so a String receiver reaching the
-// final "unrecognised method" fallback names a method that can never
-// resolve — `compileProjectToMsil` must now panic at build time instead of
-// silently emitting the stub, mirroring the coded-refusal tests above.
-test "unknown method call on a String receiver panics at build time, not silently (#7099)" {
+// #7099, #7204: an unknown method on a `String` receiver is rejected by the
+// type checker (T0113, the dotnet surface is closed) before codegen, so the
+// build reports the diagnostic and returns false instead of panicking in
+// `lowerMethodCallMsil` or emitting a stub that throws when run.  The
+// diagnostic text itself is pinned by `typechecker_self_test.l` and the
+// reject corpus.
+test "unknown method call on a String receiver is rejected at check time, not silently (#7099, #7204)" {
   val packages: List[ProjectPackagePayload] = newList()
   packages.add(
     mkPkg(
@@ -2086,23 +2083,17 @@ test "unknown method call on a String receiver panics at build time, not silentl
   val dllPath = Path.join(dir, "UnknownStringMethod.dll")
   val stdlibSources: List[String] = newList()
   var panicked = false
-  var panicMsg = ""
+  var built = true
   try {
-    compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
+    built = compileProjectToMsil(packages, "UnknownStringMethod", dllPath, stdlibSources)
   } catch Bug as b {
     panicked = true
-    panicMsg = b.message
   }
+  val wroteDll = File.fileExists(dllPath)
   cleanup(dir)
-  assertTrue(panicked, "unknown String method: compileProjectToMsil panics instead of returning (#7099)")
-  assertTrue(
-    Str.contains(panicMsg, "no method 'toLowerInvariant'"),
-    "unknown String method: panic names the unresolved method (got: " + panicMsg + ")"
-  )
-  assertTrue(
-    Str.contains(panicMsg, "on type 'String'"),
-    "unknown String method: panic names the receiver type (got: " + panicMsg + ")"
-  )
+  assertFalse(panicked, "unknown String method: the checker rejects it, codegen never panics")
+  assertFalse(built, "unknown String method: the build fails")
+  assertFalse(wroteDll, "unknown String method: no assembly is written")
 }
 
 // A real String method (handled by one of `lowerMethodCallMsil`'s
