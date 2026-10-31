@@ -1426,3 +1426,140 @@ pub func resolveExternTargetJvm(
     }
   }
 }
+
+// ── The iteration protocol of a host class (D302) ────────────────────────────
+//
+// What a `for` over an `extern type` binds depends on how the JVM class
+// reaches `java.lang.Iterable`: `Iterable<T>` through its generic `Signature`
+// (the elements are `T`, written over the class's own type parameters), or
+// only the erased interface (a raw use, or a class with no generic signature:
+// the elements are `Object`).  The walk substitutes the class's type
+// arguments through `Collection<E>`, `Set<E>`, the superclass chain and so
+// on, like the CLR walk in `Msil.MetadataReader.iterProtocolOfExtern`.
+pub record JvmIterSig {
+  // The class reaches `java.lang.Iterable`.
+  found: Bool
+  // It does so with a type argument; `elem` is that argument.
+  typed: Bool
+  elem: GenSig
+  // A class on the way could not be loaded, so "not found" is not a verdict.
+  unresolved: Bool
+}
+
+func jvmIterNotFound(): JvmIterSig {
+  JvmIterSig(found = false, typed = false, elem = GSWild, unresolved = false)
+}
+
+func jvmIterUnresolved(): JvmIterSig {
+  JvmIterSig(found = false, typed = false, elem = GSWild, unresolved = true)
+}
+
+func substGenSig(sig: in GenSig, names: in List[String], args: in List[GenSig]): GenSig {
+  match sig {
+    case GSVar(n) -> {
+      var i = 0
+      while i < names.count {
+        if names[i] == n and i < args.count {
+          return args[i]
+        }
+        i = i + 1
+      }
+      GSWild
+    }
+    case GSClass(n, a) -> {
+      val result: List[GenSig] = newList()
+      for x in a {
+        result.add(substGenSig(x, names, args))
+      }
+      GSClass(name = n, args = result)
+    }
+    case GSArray(e) -> GSArray(elem = substGenSig(e, names, args))
+    case GSWild -> GSWild
+  }
+}
+
+func jvmIterWalk(ctx: in AutoFfiCtx, binaryName: in String, args: in List[GenSig], depth: in Int): JvmIterSig {
+  if binaryName == "java/lang/Iterable" {
+    return if args.count == 1 {
+      JvmIterSig(found = true, typed = true, elem = args[0], unresolved = false)
+    } else {
+      JvmIterSig(found = true, typed = false, elem = GSWild, unresolved = false)
+    }
+  }
+  if depth > 16 {
+    return jvmIterUnresolved()
+  }
+  val ci = match loadClass(ctx, binaryName) { case Some(c) -> c; case None -> return jvmIterUnresolved() }
+  val supers: List[GenSig] = newList()
+  if ci.signature.length > 0 {
+    val cs = parseClassSignature(ci.signature)
+    val raw = args.count != cs.typeParams.count
+    for sup in cs.supers {
+      if raw {
+        match sup {
+          case GSClass(n, _) -> supers.add(GSClass(name = n, args = newList()))
+          case other -> supers.add(other)
+        }
+      } else {
+        supers.add(substGenSig(sup, cs.typeParams, args))
+      }
+    }
+  } else {
+    if ci.superName.length > 0 {
+      supers.add(GSClass(name = ci.superName, args = newList()))
+    }
+    for iface in ci.interfaces {
+      supers.add(GSClass(name = iface, args = newList()))
+    }
+  }
+  var best = jvmIterNotFound()
+  var anyUnresolved = false
+  for sup in supers {
+    match sup {
+      case GSClass(n, a) -> {
+        val step = jvmIterWalk(ctx, n, a, depth + 1)
+        if step.typed {
+          return step
+        }
+        if step.found {
+          best = step
+        }
+        if step.unresolved {
+          anyUnresolved = true
+        }
+      }
+      case _ -> ()
+    }
+  }
+  if not best.found and anyUnresolved {
+    return jvmIterUnresolved()
+  }
+  best
+}
+
+/// How the JVM class an `extern type` spells (`clrName`, a dotted or slashed
+/// binary name, with `arity` type parameters) iterates.  The element is
+/// written over `GSVar("#i")` for the i-th type parameter.  A class whose
+/// type parameter count differs from a non-zero `arity` is `unresolved`; an
+/// `arity` of 0 on a generic class is a raw use, whose elements are `Object`.
+pub func iterProtocolOfExternJvm(ctx: in AutoFfiCtx, clrName: in String, arity: in Int): JvmIterSig {
+  val root = match loadClass(ctx, clrName) { case Some(c) -> c; case None -> return jvmIterUnresolved() }
+  val names: List[String] = if root.signature.length > 0 {
+    parseClassSignature(root.signature).typeParams
+  } else {
+    newList()
+  }
+  val args: List[GenSig] = newList()
+  if names.count == arity {
+    var i = 0
+    while i < arity {
+      args.add(GSVar(name = "#" + toString(i)))
+      i = i + 1
+    }
+    jvmIterWalk(ctx, root.binaryName, args, 0)
+  } else if arity == 0 {
+    jvmIterWalk(ctx, root.binaryName, args, 0)
+  } else {
+    jvmIterUnresolved()
+  }
+}

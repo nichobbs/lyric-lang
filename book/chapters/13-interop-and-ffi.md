@@ -312,6 +312,29 @@ func collect(loader: in JClassLoader, items: inout List[JObject]): Unit {
 
 It converts to the host's root object only, never between two named extern types, and there is no downcast. It is available in a file or function annotated `@unsafe_ffi` (`N0103` elsewhere), so the upcast stays at the audited boundary.
 
+### §13.9.2 Iterating extern collections
+
+`for x in c` over an extern type asks the host: the compiler reads the .NET type's `IEnumerable<T>` or the JVM class's `Iterable<T>` and types `x` accordingly, so an error in the loop body that involves `x` is reported like any other.
+
+```lyric
+extern type Obj = "System.Object"
+extern type Queue = "System.Collections.Queue"
+extern type SortedKeys[K, V] = "System.Collections.Generic.SortedDictionary`2+KeyCollection"
+
+func total(q: in Queue, keys: in SortedKeys[String, Int]): Int {
+  var n = 0
+  for o in q {           // a non-generic collection: o is an Obj
+    n = n + o.ToString().length
+  }
+  for k in keys {        // IEnumerable<TKey>: k is a String
+    n = n + k.length
+  }
+  n
+}
+```
+
+A collection that is only the untyped protocol yields the host `Object`, so declare an `extern type` bound to it (here `Obj`) or the loop is `T0220`. When the element is another host type (`KeyValuePair<K, V>`), declare an `extern type` for it too. A host type that implements neither protocol, such as `StringBuilder`, is `T0126`.
+
 ## §13.10 Calling C libraries with `@library`
 
 Some libraries exist only as C: a native GUI toolkit, a codec, a system API. An `extern func` with `@library` calls one directly, on every target:

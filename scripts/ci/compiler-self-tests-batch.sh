@@ -61,6 +61,7 @@ for t in \
   lyric-compiler/lyric/self_join_self_test.l \
   lyric-compiler/lyric/method_generic_self_test.l \
   lyric-compiler/lyric/open_receiver_self_test.l \
+  lyric-compiler/lyric/extern_iter_self_test.l \
   lyric-compiler/lyric/generic_member_stdlib_native_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
   lyric-compiler/lyric/generic_member_calls_std_self_test.l \
