@@ -4234,7 +4234,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
         hasDefault = p.hasDefault,
         span = p.span,
         tyExpr = p.tyExpr,
-        defaultInert = p.defaultInert
+        defaultInert = p.defaultInert,
+        defaultUnavailable = p.defaultUnavailable
       )
     )
     i = i + 1
@@ -19751,12 +19752,45 @@ func reportUnpairedCallArgs(
   var k = 0
   while k < sig.params.count {
     if srcIdx[k] < 0 and not sig.params[k].hasDefault {
-      diag.add(
-        errorDiagnostic("T0042", "missing argument for parameter '" + sig.params[k].name + "', which has no default", span)
-      )
+      if sig.params[k].defaultUnavailable {
+        diag.add(unavailableDefaultDiagnostic(sig.params[k].name, span))
+      } else {
+        diag.add(
+          errorDiagnostic("T0042", "missing argument for parameter '" + sig.params[k].name + "', which has no default", span)
+        )
+      }
     }
     k = k + 1
   }
+}
+
+// T0218: a parameter of a restored package declares a default its contract
+// could not export, because the type names a type parameter or `Self`, which
+// a nullary compiled thunk cannot bind (D168 item 4, #8076).
+func unavailableDefaultDiagnostic(name: in String, span: in Span): Diagnostic {
+  errorDiagnostic(
+    "T0218",
+    "parameter '" + name +
+      "' has a default, but the declaring package cannot export it: its type names a type parameter or 'Self', so a compiled default cannot be used across a package boundary; pass the argument explicitly",
+    span
+  )
+}
+
+// Reports T0218 for each positional parameter from `supplied` on whose
+// default is unavailable; true when it reported any.
+func reportUnavailableDefaults(
+  diag: in List[Diagnostic], sig: in ResolvedSignature, supplied: in Int, span: in Span
+): Bool {
+  var reported = false
+  var k = supplied
+  while k < sig.params.count {
+    if sig.params[k].defaultUnavailable {
+      diag.add(unavailableDefaultDiagnostic(sig.params[k].name, span))
+      reported = true
+    }
+    k = k + 1
+  }
+  reported
 }
 
 // T0042 for each named argument that names no parameter.
@@ -19850,6 +19884,9 @@ func checkCallArgsAgainstSig(
     return
   }
   if args.count < minRequired or args.count > sig.params.count {
+    if args.count < sig.params.count and reportUnavailableDefaults(diag, sig, args.count, span) {
+      return
+    }
     val expectedMsg = if minRequired == sig.params.count {
       toString(sig.params.count) + " argument(s)"
     } else {

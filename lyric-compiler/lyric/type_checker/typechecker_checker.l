@@ -1223,10 +1223,11 @@ func resolveFunctionSig(
         name = p.name,
         ty = resolvedTy,
         mode = p.mode,
-        hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
+        hasDefault = match p.dflt { case None -> false; case Some(d) -> not isUnexportedDefaultCall(d) },
         span = p.span,
         tyExpr = Some(value = p.ty),
-        defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) }
+        defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) },
+        defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) }
       )
     )
     i = i + 1
@@ -1764,10 +1765,11 @@ func resolveMethodSigParts(
           name = p.name,
           ty = resolveType(tbl, ctx, scratch, p.ty),
           mode = p.mode,
-          hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
+          hasDefault = match p.dflt { case None -> false; case Some(d) -> not isUnexportedDefaultCall(d) },
           span = p.span,
           tyExpr = Some(value = p.ty),
-          defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) }
+          defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) },
+          defaultUnavailable = match p.dflt { case None -> false; case Some(d) -> isUnexportedDefaultCall(d) }
         )
       )
     }
@@ -2070,7 +2072,8 @@ func substitutesSelfParams(params: in List[ResolvedParam], selfTy: in Type): Lis
         hasDefault = rp.hasDefault,
         span = rp.span,
         tyExpr = rp.tyExpr,
-        defaultInert = rp.defaultInert
+        defaultInert = rp.defaultInert,
+        defaultUnavailable = rp.defaultUnavailable
       )
     )
     i = i + 1

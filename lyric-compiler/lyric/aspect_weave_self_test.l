@@ -509,3 +509,50 @@ test "aspect-woven async Unit function completes (#8287)" {
   await asyncWovenUnit()
   assertEqualInt(1, 1, "woven async Unit awaited")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A generic call in an aspect's contract (#7530): the weaver builds the
+// wrapper after mono, so `isSome(result)` was never specialised and codegen
+// found no function for it (T0123).
+// ─────────────────────────────────────────────────────────────────────────────
+aspect NeverNone {
+  matches: name in { findPositive, findLabel }
+  ensures: isSome(result)
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+func findPositive(x: Int): Option[Int] {
+  return Some(value = x + 1)
+}
+
+func findLabel(x: Int): Option[String] {
+  return Some(value = "n" + toString(x))
+}
+
+test "a generic call in an aspect's ensures: is specialised per woven function (#7530)" {
+  match findPositive(4) {
+    case Some(v) -> assertEqualInt(v, 5, "Option[Int] contract")
+    case None -> assertTrue(false, "findPositive returned None")
+  }
+  match findLabel(2) {
+    case Some(s) -> assertEqual(s, "n2", "Option[String] contract")
+    case None -> assertTrue(false, "findLabel returned None")
+  }
+}
+
+// Functions of one name and different arities in a woven file both survive the
+// second mono run that specialises aspect contracts (#8662).
+func twinArity(x: Int): Int {
+  return x + 1
+}
+
+func twinArity(x: Int, y: Int): Int {
+  return x + y
+}
+
+test "arity overloads in a woven file are kept (#8662)" {
+  assertEqualInt(twinArity(1), 2, "one argument")
+  assertEqualInt(twinArity(1, 2), 3, "two arguments")
+}
