@@ -1830,7 +1830,11 @@ pub func pipeCheckAndMono(
     monoIfaceDecls,
     monoRecordDecls,
     caseSites,
-    opts.contractsEnabled
+    opts.contractsEnabled,
+    InvariantBoundary(
+      foreign = invariantBoundaryTypes(tcRes.symbols, true),
+      local = invariantBoundaryTypes(tcRes.symbols, false)
+    )
   )
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).

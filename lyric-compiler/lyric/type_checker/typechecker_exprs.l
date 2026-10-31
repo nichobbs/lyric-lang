@@ -8803,6 +8803,20 @@ func isStringReceiver(recvTy: in Option[Type]): Bool {
 // type restored from a package built without checkers has none, and is
 // constructed unchecked rather than failing to compile.
 func recordInvariantCtorSite(tbl: in SymbolTable, sym: in Symbol, span: in Span): Unit {
+  match invariantCheckerPath(tbl, sym) {
+    case Some(path) -> {
+      val key = recordCopySiteKey(span)
+      if not tbl.invariantCtorSites.containsKey(key) {
+        tbl.invariantCtorSites.add(key, path)
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The dotted path of `sym`'s construction checker when `sym` is a type that
+// declares `invariant:` clauses and the checker is visible here.
+func invariantCheckerPath(tbl: in SymbolTable, sym: in Symbol): Option[String] {
   val hasInv = match sym.kind {
     case DKRecord(_, rd) -> recordDeclHasInvariant(rd.members)
     case DKExposedRec(_, rd) -> recordDeclHasInvariant(rd.members)
@@ -8810,7 +8824,7 @@ func recordInvariantCtorSite(tbl: in SymbolTable, sym: in Symbol, span: in Span)
     case _ -> false
   }
   if not hasInv {
-    return
+    return None
   }
   val checker = "__lyric_checked_" + sym.name
   var found = false
@@ -8824,13 +8838,54 @@ func recordInvariantCtorSite(tbl: in SymbolTable, sym: in Symbol, span: in Span)
     i = i + 1
   }
   if not found {
-    return
+    return None
   }
-  val path = if sym.isImported and sym.originPackage.length > 0 { sym.originPackage + "." + checker } else { checker }
-  val key = recordCopySiteKey(span)
-  if not tbl.invariantCtorSites.containsKey(key) {
-    tbl.invariantCtorSites.add(key, path)
+  Some(value = if sym.isImported and sym.originPackage.length > 0 { sym.originPackage + "." + checker } else { checker })
+}
+
+func symbolIsNonGenericInvariantType(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKRecord(_, rd) -> genericsAbsent(rd.generics)
+    case DKExposedRec(_, rd) -> genericsAbsent(rd.generics)
+    case DKOpaque(_, od) -> genericsAbsent(od.generics)
+    case _ -> false
   }
+}
+
+func genericsAbsent(g: in Option[GenericParams]): Bool {
+  match g {
+    case None -> true
+    case Some(_) -> false
+  }
+}
+
+/// The non-generic invariant-bearing types a public function's signature can
+/// name, keyed by the name a signature spells (`Url`, `Std.Http.Url`), valued
+/// by the dotted path of the type's checker.  `imported` selects the types
+/// declared in another package (the public-boundary parameter and result
+/// checks, docs/08 §7.1) or in this one (the `inout` re-check).  A local
+/// type shadows an imported one of the same name.
+pub func invariantBoundaryTypes(tbl: in SymbolTable, imported: in Bool): Map[String, String] {
+  val found: Map[String, String] = newMap()
+  var i = 0
+  while i < tbl.symbols.count {
+    val sym = tbl.symbols[i]
+    if sym.isImported == imported and symbolIsNonGenericInvariantType(sym) {
+      match invariantCheckerPath(tbl, sym) {
+        case Some(path) -> {
+          if not found.containsKey(sym.name) {
+            found.add(sym.name, path)
+          }
+          if imported and sym.originPackage.length > 0 {
+            found.add(sym.originPackage + "." + sym.name, path)
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+  found
 }
 
 func recordDeclHasInvariant(members: in List[RecordMember]): Bool {
