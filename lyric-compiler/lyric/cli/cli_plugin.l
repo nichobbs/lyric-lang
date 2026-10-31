@@ -14,6 +14,8 @@ import Std.JsonValue as Jv
 import Lyric.Manifest as Mf
 import Lyric.PluginManifest as Pm
 import Lyric.PluginSdk as Sdk
+import Lyric.PluginExpand as PluginExpand
+import Lyric.Parser
 import Std.PluginSign as Sign
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +34,7 @@ func pluginUsageText(): String {
     "                      jvm payloads themselves, and a native --shape plugin library; --sign-key signs\n" +
     "                      the artifact as `lyric plugin sign` does; --zip also writes <id>-<version>.zip, the\n" +
     "                      form catalogues serve)\n" +
-    "  lyric plugin check <dir>\n" +
+    "  lyric plugin check <dir> [--api <dir|file.l|lyric.toml>]\n" +
     "                     (validate a plugin artifact directory, and its plugin.sig when it has one;\n" +
     "                      prints each problem and exits 1)\n" +
     "  lyric plugin keygen -o <base>\n" +
@@ -99,18 +101,52 @@ func cmdPlugin(argv: in slice[String]): Int {
 
 // ── check ────────────────────────────────────────────────────────────────────
 func cmdPluginCheck(argv: in slice[String]): Int {
-  if argv.length != 3 or Str.startsWith(argv[2], "-") {
-    printErr("usage: lyric plugin check <dir>")
+  val usage = "usage: lyric plugin check <dir> [--api <dir|file.l|lyric.toml>]"
+  var dir = ""
+  var api = ""
+  var i = 2
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--api" {
+      if i + 1 >= argv.length {
+        printErr("plugin check: --api requires a value")
+        return 1
+      }
+      api = argv[i + 1]
+      i += 2
+    } else if Str.startsWith(arg, "-") or dir.length > 0 {
+      printErr(usage)
+      return 1
+    } else {
+      dir = arg
+      i += 1
+    }
+  }
+  if dir.length == 0 {
+    printErr(usage)
     return 1
   }
-  val dir = argv[2]
   val problems = Pm.checkArtifactDir(dir)
   val sigProblems = Sign.checkSignatureStructure(dir)
-  if problems.count == 0 and sigProblems.count == 0 {
-    return 0
-  }
   val manifestPath = Path.join(dir, "plugin.json")
   val reportPath = if File.fileExists(manifestPath) { manifestPath } else { dir }
+  val hashProblems: List[String] = newList()
+  if api.length > 0 and problems.count == 0 {
+    match interfaceHashProblems(manifestPath, api) {
+      case Ok(found) -> {
+        for h in found {
+          hashProblems.add(h)
+        }
+      }
+      case Err(msg) -> {
+        printErr("plugin check: " + msg)
+        return 1
+      }
+    }
+  }
+  if problems.count == 0 and sigProblems.count == 0 and hashProblems.count == 0 {
+    return 0
+  }
   for p in problems {
     printErr(reportPath + ": " + Pm.problemText(p))
   }
@@ -118,7 +154,78 @@ func cmdPluginCheck(argv: in slice[String]): Int {
   for p in sigProblems {
     printErr(sigPath + ": " + p)
   }
+  for h in hashProblems {
+    printErr(reportPath + ": " + h)
+  }
   1
+}
+
+// K0104 against the host's API package: each point and capability of the
+// manifest that carries an `interfaceHash` differing from the hash `api`'s
+// declaration of it has.  A name `api` does not declare is not this check's
+// business (the host may offer other API packages).
+func interfaceHashProblems(manifestPath: in String, api: in String): Result[List[String], String] {
+  val sources = match sdkSourcesOf(api) { case Ok(ss) -> ss; case Err(e) -> return Err(error = e) }
+  val files: List[SourceFile] = newList()
+  for src in sources {
+    files.add(parse(src.text).file)
+  }
+  val hostHashes = PluginExpand.interfaceHashes(files)
+  val text = match File.readText(manifestPath) {
+    case Ok(t) -> t
+    case Err(e) -> return Err(error = "cannot read " + manifestPath + ": " + IOError.message(e))
+  }
+  val manifest = match Jv.parseValue(text) {
+    case Ok(v) -> v
+    case Err(_) -> return Err(error = manifestPath + " is not JSON")
+  }
+  val found: List[String] = newList()
+  match Jv.getArray(manifest, "points") {
+    case Some(points) -> {
+      for p in points {
+        compareManifestHash(p, "point", "point", hostHashes, found)
+      }
+    }
+    case None -> ()
+  }
+  match Jv.getField(manifest, "capabilities") {
+    case Some(caps) -> {
+      for list in ["required", "optional"] {
+        match Jv.getArray(caps, list) {
+          case Some(items) -> {
+            for c in items {
+              compareManifestHash(c, "name", "capability", hostHashes, found)
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  Ok(value = found)
+}
+
+func compareManifestHash(
+  entry: in Jv.JsonValue,
+  nameKey: in String,
+  what: in String,
+  hostHashes: in Map[String, String],
+  found: in List[String],
+): Unit {
+  val name = match Jv.getString(entry, nameKey) { case Some(n) -> n; case None -> return }
+  val theirs = match Jv.getString(entry, "interfaceHash") { case Some(h) -> h; case None -> return }
+  match mapGet(hostHashes, name) {
+    case Some(mine) -> {
+      if mine != theirs {
+        found.add(
+          "K0104 the plugin was built against a different shape of " + what + " " + name +
+            " than the API package declares (a method, parameter or boundary type differs)"
+        )
+      }
+    }
+    case None -> ()
+  }
 }
 
 // ── sdk ──────────────────────────────────────────────────────────────────────

@@ -370,7 +370,7 @@ func usageText(): String {
     "Plugins:\n" +
     "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [-o <dir>]\n" +
     "                     (build each payload and write <dir>/<id>-<version>/plugin.json, D207)\n" +
-    "  lyric plugin check <dir>\n" +
+    "  lyric plugin check <dir> [--api <dir|file.l|lyric.toml>]\n" +
     "                     (validate a plugin artifact directory)\n" +
     "  lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>\n" +
     "                     (generate a plugin SDK in another language from a plugin API package)\n" +

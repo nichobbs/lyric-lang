@@ -346,6 +346,21 @@ pub func hostRenameResult(fromPath: in String, toPath: in String): Result[Unit, 
   }
 }
 
+/// `path` with every symbolic link resolved and no `.` or `..` segment.
+/// `File.getCanonicalPath` resolves links on the longest existing prefix, so
+/// a path that does not exist (a dangling link, a link loop) is refused first.
+pub func hostRealPathResult(path: in String): Result[String, IOError] {
+  val f = JFile.new(path)
+  if not f.exists() {
+    return Err(error = FileNotFound(path = path))
+  }
+  try {
+    Ok(value = f.getCanonicalPath())
+  } catch Bug as b {
+    Err(error = IoError(path = path, message = b.message))
+  }
+}
+
 /// Gives `path` mode 0755: readable and executable by everyone, writable by
 /// its owner only.
 pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {

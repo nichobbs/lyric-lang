@@ -548,7 +548,10 @@ What is enforced today:
   reads only files under the roots the generator requested, relative to the
   consuming project's directory; a path that is absolute, contains `.` or `..`
   segments, a backslash or a colon, or lies outside the roots is denied before the
-  read (`Denied`, JSON-RPC error -32040).
+  read (`Denied`, JSON-RPC error -32040). The check is also made on the resolved
+  path (`Std.File.realPath`): a symbolic link inside a root that leads outside it
+  (a file link, a linked directory on the way, a link cycle) is denied the same
+  way, and the file that is read is the resolved one.
 
 What is **not** enforced (tracked as Q-SG-005):
 
@@ -672,8 +675,8 @@ SDK version.
 
 ### Q-SG-004: IDE / LSP integration
 
-**Status:** Open. The language server does not run generators (or `Lyric.PluginExpand`)
-yet; the plugin form gives it a long-lived process to call.
+**Status:** Open. The language server runs `Lyric.PluginExpand` (D293) but does not run
+generators yet; the plugin form gives it a long-lived process to call.
 
 **Question:** Should the LSP server run generators eagerly (so autocompletion shows
 generated members) or lazily (only on explicit build)?

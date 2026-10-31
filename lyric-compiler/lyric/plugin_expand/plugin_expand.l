@@ -44,6 +44,8 @@ package Lyric.PluginExpand
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Hash
+import Std.Encoding
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
@@ -1147,6 +1149,8 @@ record IfaceModel {
   allows: List[NameAt]
   methods: List[MethodModel]
   line: Int
+  /// `interfaceHash` of the declaration (K0104).
+  hash: String
 }
 
 record HandleModel {
@@ -1819,9 +1823,212 @@ func ifaceModel(
       grant = grant,
       allows = allows,
       methods = methods,
-      line = it.span.startPos.line
+      line = it.span.startPos.line,
+      hash = interfaceHash(it, decl, a, kind, version, protocol, ctx)
     )
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K0104: the interface hash.
+// ─────────────────────────────────────────────────────────────────────────────
+// The text of an interface's shape, in a canonical form: the kind, qualified
+// name, version, protocol and contributions/grant types, each method as
+// `name(mode param: type, ...): ret` and each boundary type the declaration
+// reaches in its own package (records and exposed records by field, unions by
+// case, enums by case, distinct types and aliases by their right side), sorted,
+// with types spelled by the formatter.  Doc comments, layout, contracts,
+// annotations other than the boundary ones and field defaults' values do not
+// take part; a type from another package is its written name.
+func sortStrings(xs: in List[String]): List[String] {
+  var rest: List[String] = newList()
+  for x in xs {
+    rest.add(x)
+  }
+  val sorted: List[String] = newList()
+  while rest.count > 0 {
+    var minAt = 0
+    var i = 1
+    while i < rest.count {
+      if Str.compare(rest[i], rest[minAt]) < 0 {
+        minAt = i
+      }
+      i += 1
+    }
+    sorted.add(rest[minAt])
+    val next: List[String] = newList()
+    var j = 0
+    while j < rest.count {
+      if j != minAt {
+        next.add(rest[j])
+      }
+      j += 1
+    }
+    rest = next
+  }
+  sorted
+}
+
+func modeText(m: in ParamMode): String {
+  match m {
+    case PMIn -> "in"
+    case PMOut -> "sorted"
+    case PMInout -> "inout"
+  }
+}
+
+func sigText(name: in String, params: in List[Param], ret: in Option[TypeExpr], isAsync: in Bool): String {
+  var text = (if isAsync { "async " } else { "" }) + name + "("
+  var i = 0
+  for p in params {
+    if i > 0 {
+      text = text + ", "
+    }
+    text = text + modeText(p.mode) + " " + p.name + ": " + Fmt.typeStr(p.ty)
+    i += 1
+  }
+  text = text + ")"
+  match ret {
+    case Some(r) -> text + ": " + Fmt.typeStr(r)
+    case None -> text
+  }
+}
+
+func fieldText(f: in FieldDecl): String {
+  val dflt = match f.dflt { case Some(_) -> "="; case None -> "" }
+  f.name + dflt + ": " + Fmt.typeStr(f.ty)
+}
+
+func joinWith(parts: in List[String], sep: in String): String {
+  var joined = ""
+  var i = 0
+  for x in parts {
+    if i > 0 {
+      joined = joined + sep
+    }
+    joined = joined + x
+    i += 1
+  }
+  joined
+}
+
+func declShapeText(it: in Item): String {
+  match it.kind {
+    case IRecord(d) -> {
+      val fs: List[String] = newList()
+      for f in recordFields(d) {
+        fs.add(fieldText(f))
+      }
+      "record " + d.name + " {" + joinWith(sortStrings(fs), "; ") + "}"
+    }
+    case IExposedRec(d) -> {
+      val fs: List[String] = newList()
+      for f in recordFields(d) {
+        fs.add(fieldText(f))
+      }
+      "exposed " + d.name + " {" + joinWith(sortStrings(fs), "; ") + "}"
+    }
+    case IUnion(d) -> {
+      val cs: List[String] = newList()
+      for c in d.cases {
+        val fs: List[String] = newList()
+        for f in c.fields {
+          match f {
+            case UFNamed(n, t, _) -> fs.add(n + ": " + Fmt.typeStr(t))
+            case UFPos(t, _) -> fs.add(Fmt.typeStr(t))
+          }
+        }
+        cs.add(c.name + "(" + joinWith(fs, ", ") + ")")
+      }
+      "union " + d.name + " {" + joinWith(sortStrings(cs), "; ") + "}"
+    }
+    case IEnum(d) -> {
+      val cs: List[String] = newList()
+      for c in d.cases {
+        cs.add(c.name)
+      }
+      "enum " + d.name + " {" + joinWith(sortStrings(cs), "; ") + "}"
+    }
+    case IDistinctType(d) -> "distinct " + d.name + " = " + Fmt.typeStr(d.underlying)
+    case ITypeAlias(d) -> "alias " + d.name + " = " + Fmt.typeStr(d.rhs)
+    case _ -> ""
+  }
+}
+
+func interfaceHash(
+  it: in Item,
+  decl: in InterfaceDecl,
+  a: in Annotation,
+  kind: in String,
+  version: in String,
+  protocol: in String,
+  ctx: in Ctx,
+): String {
+  val lines: List[String] = newList()
+  lines.add("lyric-plugin-interface/1")
+  lines.add(kind + " " + ctx.pkg + "." + decl.name + " " + version + " " + protocol)
+  val roots: List[TypeExpr] = newList()
+  match annIdentValue(a, "contributions") {
+    case Some(c) -> {
+      lines.add("contributions " + c)
+      roots.add(identType(c, a.span))
+    }
+    case None -> ()
+  }
+  match annIdentValue(a, "grant") {
+    case Some(g) -> {
+      lines.add("grant " + g)
+      roots.add(identType(g, a.span))
+    }
+    case None -> ()
+  }
+  val methods: List[String] = newList()
+  for m in decl.members {
+    match m {
+      case IMSig(sig) -> {
+        methods.add(sigText(sig.name, sig.params, sig.ret, sig.isAsync))
+        for p in sig.params {
+          roots.add(p.ty)
+        }
+        match sig.ret {
+          case Some(r) -> roots.add(r)
+          case None -> ()
+        }
+      }
+      case IMFunc(fn) -> {
+        methods.add(sigText(fn.name, fn.params, fn.ret, fn.isAsync))
+        for p in fn.params {
+          roots.add(p.ty)
+        }
+        match fn.ret {
+          case Some(r) -> roots.add(r)
+          case None -> ()
+        }
+      }
+      case IMAssoc(_) -> ()
+    }
+  }
+  for line in sortStrings(methods) {
+    lines.add("method " + line)
+  }
+  val seen: Map[String, Bool] = newMap()
+  for te in roots {
+    walkLocal(te, ctx, seen)
+  }
+  val shapes: List[String] = newList()
+  for it2 in ctx.items {
+    val n = itemDeclName(it2)
+    if n != "" and seen.containsKey(n) {
+      val text = declShapeText(it2)
+      if text != "" {
+        shapes.add(text)
+      }
+    }
+  }
+  for line in sortStrings(shapes) {
+    lines.add("type " + line)
+  }
+  Std.Hash.sha256OfBytes(Std.Encoding.encodeUtf8(joinWith(lines, "\n")))
 }
 
 func isAnnotatedIface(it: in Item, which: in String): Bool {
@@ -3470,7 +3677,7 @@ func capabilityText(c: in IfaceModel, pkg: in String, g: in Gen): String {
   // Host side.
   l.add(pubFunc(g) + cl + "CapabilityInfo(): CapabilityInfo {")
   val hasGrant = match c.grant { case Some(_) -> "true"; case None -> "false" }
-  l.add("  CapabilityInfo(id = " + lit(id) + ", hasGrant = " + hasGrant + ")")
+  l.add("  CapabilityInfo(id = " + lit(id) + ", hasGrant = " + hasGrant + ", interfaceHash = " + lit(c.hash) + ")")
   l.add("}")
   l.add("")
   // A component is never a host: the rest serves capabilities to plugins.
@@ -3553,6 +3760,8 @@ func pointText(p: in IfaceModel, pkg: in String, ctx: in Ctx, st: in St, g: in G
       hasC +
       ", protocol = " +
       proto +
+      ", interfaceHash = " +
+      lit(p.hash) +
       ")"
   )
   l.add("}")
@@ -3671,6 +3880,10 @@ func describeBodyLines(pm: in PluginModel, g: in Gen): List[String] {
       case None -> "JsonValue.JNull"
     }
     l.add("__pf" + i.toString() + ".add(JsonField(name = \"contributions\", value = " + contrib + "))")
+    l.add(
+      "__pf" + i.toString() + ".add(JsonField(name = \"interfaceHash\", value = JsonValue.JString(value = " + info +
+        ".interfaceHash)))"
+    )
     l.add("points.add(JsonValue.JObject(fields = __pf" + i.toString() + "))")
     i = i + 1
   }
@@ -3692,6 +3905,11 @@ func describeBodyLines(pm: in PluginModel, g: in Gen): List[String] {
       case None -> "JsonValue.JNull"
     }
     l.add(cf + ".add(JsonField(name = \"grant\", value = " + grantExpr + "))")
+    l.add(
+      cf + ".add(JsonField(name = \"interfaceHash\", value = JsonValue.JString(value = " + c.qualifier +
+        lowerFirst(c.capName) +
+        "CapabilityInfo().interfaceHash)))"
+    )
     if c.optional {
       l.add("optional.add(JsonValue.JObject(fields = " + cf + "))")
     } else {
@@ -3784,7 +4002,10 @@ func pluginText(pm: in PluginModel, g: in Gen): String {
       case None -> ()
     }
     l.add(
-      "    acc.add(PluginPointMethods(point = " + info + ".id, version = " + info + ".version, methods = " + ms + "))"
+      "    acc.add(PluginPointMethods(point = " + info + ".id, version = " + info + ".version, methods = " + ms +
+        ", interfaceHash = " +
+        info +
+        ".interfaceHash))"
     )
     pi = pi + 1
   }
@@ -3960,6 +4181,61 @@ func strippedItem(it: in Item, component: in Bool): Item {
 /// package of the build (`collectPluginPackage`), this one included or not.
 pub func expandFile(file: in SourceFile, packages: in Map[String, PluginPackage]): PluginExpandResult {
   expandFileMode(file, packages, false)
+}
+
+/// The interface hash (K0104) of every plugin point, protocol point and
+/// capability the packages of `files` declare, keyed by qualified name
+/// (`<Pkg>.<Name>`).  A declaration the expansion would reject (K0001-K0012)
+/// has no entry.  For `lyric plugin check --api`, which compares them with a
+/// plugin manifest.
+pub func interfaceHashes(files: in List[SourceFile]): Map[String, String] {
+  val packages: Map[String, PluginPackage] = newMap()
+  val order: List[String] = newList()
+  for f in files {
+    collectPluginPackage(f, packages)
+    val name = modulePathJoin(f.packageDecl.path.segments)
+    if not order.contains(name) {
+      order.add(name)
+    }
+  }
+  val hashes: Map[String, String] = newMap()
+  val st = St(packages = packages, reachMemo = newMap(), diags = newList())
+  for name in order {
+    match mapGet(packages, name) {
+      case None -> ()
+      case Some(pp) -> {
+        val ctx = makeCtx(pp.pkgName, pp.imports, pp.items)
+        for it in pp.items {
+          match it.kind {
+            case IInterface(d) -> {
+              for a in it.annotations {
+                val n = annName(a)
+                val kind = if n == annPoint {
+                  "point"
+                } else if n == annProtocol {
+                  "protocol"
+                } else if n == annCapability {
+                  "capability"
+                } else {
+                  ""
+                }
+                if kind != "" {
+                  match ifaceModel(it, d, a, kind, ctx, st) {
+                    case Some(m) -> {
+                      hashes[name + "." + d.name] = m.hash
+                    }
+                    case None -> ()
+                  }
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+    }
+  }
+  hashes
 }
 
 /// `expandFile` for a `--shape component` build (docs/69 §9.3): a `@plugin`

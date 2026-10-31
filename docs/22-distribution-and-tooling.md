@@ -118,6 +118,16 @@ The binary path is preferred for installed builds; the source path is
 preferred for `lyric` running inside its own source tree.
 Discrimination is by which path resolves first.
 
+**Native target (#8454).** `--target native` compiles the stdlib from source and
+links the runtime archive, so a release archive also carries
+`lib/std/` (the contents of `lyric-stdlib/std/`, including `_kernel_native/`)
+and `lib/lyric_rt.a` (on Windows `lib/lyric_rt-x86_64-pc-windows-msvc.lib` and
+the DLL-CRT `lib/lyric_rt_md-x86_64-pc-windows-msvc.lib`).
+`Lyric.Emitter.installedStdlibSourceDir` checks `<binary dir>/lib/std` after
+`$LYRIC_STD_PATH` and before the walk-ups; `LlvmBridge.findLyricRtArchive`
+already looked at `<binary dir>/lib`. Only the native loader reads `lib/std`:
+the dotnet and JVM targets keep using the compiled bundle.
+
 ## 4. Locating the SDK
 
 When `lyric` is installed system-wide, the binary at

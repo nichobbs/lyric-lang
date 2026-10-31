@@ -271,6 +271,10 @@ pub record PluginPointInfo {
   allows: List[String]
   hasContributions: Bool
   protocol: Option[String]
+  /// The hash of the point's declaration (`Lyric.PluginExpand`'s
+  /// `interfaceHash`): method names, parameter and result types and the
+  /// boundary types they reach. Empty when unknown, which is never compared.
+  interfaceHash: String = ""
 }
 
 /// A capability the host provides: its qualified id and whether it is
@@ -279,6 +283,8 @@ pub record PluginPointInfo {
 pub record CapabilityInfo {
   id: String
   hasGrant: Bool
+  /// As `PluginPointInfo.interfaceHash`, for the capability's declaration.
+  interfaceHash: String = ""
 }
 
 /// The host's implementation of one capability. `serve` receives the method
@@ -405,6 +411,9 @@ pub record PluginPointDecl {
   point: String
   version: String
   contributions: Option[JsonValue]
+  /// The `interfaceHash` of the point the plugin was built against (K0104
+  /// when it differs from the host's). Empty when the manifest has none.
+  interfaceHash: String = ""
 }
 
 /// One requested capability and the grant value the plugin asks for.
@@ -412,6 +421,9 @@ pub record PluginPointDecl {
 pub record CapabilityRequest {
   name: String
   grant: Option[JsonValue]
+  /// The `interfaceHash` of the capability the plugin was built against
+  /// (K0104 when it differs from the host's). Empty when unknown.
+  interfaceHash: String = ""
 }
 
 /// A way to run the plugin (D207 Decision 5). Paths are relative to the
@@ -465,7 +477,7 @@ pub record PluginManifest {
 }
 
 /// Why a plugin was not loaded, or what is wrong with a loaded one. `K0101`,
-/// `K0102` and `K0103` are the docs/69 §18 load codes (`pluginIssueCode`).
+/// `K0102`, `K0103` and `K0104` are the docs/69 §18 load codes (`pluginIssueCode`).
 @experimental
 pub union PluginIssueKind {
   // `plugin.json` could not be read, or is not JSON.
@@ -478,6 +490,9 @@ pub union PluginIssueKind {
   case NoMatchingPoint
   // K0103: the plugin was built against another major version of a point.
   case MajorVersionMismatch
+  // K0104: the plugin was built against another shape of a point or
+  // capability than the host offers, though the versions agree.
+  case InterfaceHashMismatch
   // The plugin requests a capability none of its points allows.
   case CapabilityNotAllowed
   // The grant policy refused the plugin.
@@ -535,6 +550,7 @@ pub func pluginIssueCode(kind: in PluginIssueKind): String {
     case BadContributions -> "K0101"
     case GrantWider -> "K0102"
     case MajorVersionMismatch -> "K0103"
+    case InterfaceHashMismatch -> "K0104"
     case SignatureMissing -> "K0105"
     case SigningKeyUntrusted -> "K0106"
     case SignatureInvalid -> "K0107"
@@ -968,6 +984,17 @@ func plMemberArray(obj: in JsonValue, key: in String, ctx: in String): Result[Li
   }
 }
 
+// An optional string member: absent or null is `""`.
+func plOptionalString(obj: in JsonValue, key: in String, ctx: in String): Result[String, String] {
+  match plNonNull(getField(obj, key)) {
+    case None -> Ok(value = "")
+    case Some(v) -> match v {
+      case JString(s) -> Ok(value = s)
+      case _ -> Err(error = ctx + ": \"" + key + "\" must be a string")
+    }
+  }
+}
+
 func plParsePoint(v: in JsonValue, index: in Int): Result[PluginPointDecl, String] {
   val ctx = "points[" + index.toString() + "]"
   match v {
@@ -982,7 +1009,15 @@ func plParsePoint(v: in JsonValue, index: in Int): Result[PluginPointDecl, Strin
   if not isPointVersion(version) {
     return Err(error = ctx + ": version '" + version + "' of point '" + point + "' is not major.minor")
   }
-  Ok(value = PluginPointDecl(point = point, version = version, contributions = plNonNull(getField(v, "contributions"))))
+  val hash = match plOptionalString(v, "interfaceHash", ctx) { case Ok(h) -> h; case Err(e) -> return Err(error = e) }
+  Ok(
+    value = PluginPointDecl(
+      point = point,
+      version = version,
+      contributions = plNonNull(getField(v, "contributions")),
+      interfaceHash = hash
+    )
+  )
 }
 
 func plParseCapabilities(
@@ -1000,7 +1035,8 @@ func plParseCapabilities(
     if not isQualifiedName(name) {
       return Err(error = ctx + ": capability '" + name + "' is not a qualified name <Pkg>.<Capability>")
     }
-    into.add(CapabilityRequest(name = name, grant = plNonNull(getField(v, "grant"))))
+    val hash = match plOptionalString(v, "interfaceHash", ctx) { case Ok(h) -> h; case Err(e) -> return Err(error = e) }
+    into.add(CapabilityRequest(name = name, grant = plNonNull(getField(v, "grant")), interfaceHash = hash))
     i = i + 1
   }
   Ok(value = ())
@@ -1379,6 +1415,9 @@ func plCapabilityList(caps: in List[CapabilityRequest]): JsonValue {
       case Some(g) -> fields.add(plField("grant", g))
       case None -> ()
     }
+    if caps[i].interfaceHash.length > 0 {
+      fields.add(plField("interfaceHash", JString(value = caps[i].interfaceHash)))
+    }
     items.add(JObject(fields = fields))
     i = i + 1
   }
@@ -1403,6 +1442,9 @@ pub func pluginManifestToJson(m: in PluginManifest): JsonValue {
     match m.points[i].contributions {
       case Some(c) -> pf.add(plField("contributions", c))
       case None -> ()
+    }
+    if m.points[i].interfaceHash.length > 0 {
+      pf.add(plField("interfaceHash", JString(value = m.points[i].interfaceHash)))
     }
     points.add(JObject(fields = pf))
     i = i + 1
@@ -2202,6 +2244,15 @@ pub func registerPlugin(host: in PluginHost, manifest: in PluginManifest, dir: i
   plRegister(host, manifest, dir, true)
 }
 
+// The K0104 message: what shape disagrees.  The hashes are of the declaration
+// text, so they say only that the two sides differ.
+func plHashMismatchMessage(what: in String, name: in String, version: in String): String {
+  "the plugin was built against a different shape of " + what + " " + name +
+    " than this host offers, though both are version " +
+    version +
+    " (a method, parameter or boundary type differs); build both from the same API package"
+}
+
 // `registerPlugin`, with `allowTrusted` false for an unsigned discovered
 // plugin, which never runs in the host's process (D248 Decision 6).
 func plRegister(
@@ -2232,6 +2283,9 @@ func plRegister(
                 info.version
             )
           )
+        }
+        if decl.interfaceHash.length > 0 and info.interfaceHash.length > 0 and decl.interfaceHash != info.interfaceHash {
+          return Some(value = plIssue(InterfaceHashMismatch, dir, id, plHashMismatchMessage("point", decl.point, decl.version)))
         }
         offered.add(info)
       }
@@ -2378,8 +2432,8 @@ func plRegister(
         case Ok(_) -> ()
       }
     }
-    if isNone(plFindProvider(host.config.providers, granted.capability)) {
-      return Some(
+    match plFindProvider(host.config.providers, granted.capability) {
+      case None -> return Some(
         value = plIssue(
           MissingProvider,
           dir,
@@ -2387,6 +2441,17 @@ func plRegister(
           "capability '" + granted.capability + "' is granted but this host has no provider for it"
         )
       )
+      case Some(provider) -> match plFindRequest(manifest, granted.capability) {
+        case Some(req) -> {
+          val hostHash = provider.info().interfaceHash
+          if req.interfaceHash.length > 0 and hostHash.length > 0 and req.interfaceHash != hostHash {
+            return Some(
+              value = plIssue(InterfaceHashMismatch, dir, id, plHashMismatchMessage("capability", granted.capability, ""))
+            )
+          }
+        }
+        case None -> ()
+      }
     }
     grants.add(GrantedCapability(capability = granted.capability, grant = plNonNull(granted.grant)))
     g = g + 1
@@ -2853,6 +2918,14 @@ func plParseHello(st: in PluginProcessState, v: in JsonValue): Result[List[Plugi
         }
         if not isPointVersion(version) or plMajor(version) != plMajor(info.version) {
           return Err(error = "the plugin implements " + info.id + " " + version + " but this host offers " + info.version)
+        }
+        match getString(pointEntry, "interfaceHash") {
+          case Some(h) -> {
+            if h.length > 0 and info.interfaceHash.length > 0 and h != info.interfaceHash {
+              return Err(error = "K0104 " + plHashMismatchMessage("point", info.id, version))
+            }
+          }
+          case None -> ()
         }
         val names: List[String] = newList()
         match getField(pointEntry, "methods") {
@@ -4003,6 +4076,8 @@ pub record PluginPointMethods {
   point: String
   version: String
   methods: List[String]
+  /// The `interfaceHash` of the point the plugin was built against.
+  interfaceHash: String = ""
 }
 
 /// The plugin side of the protocol, implemented by the code
@@ -4065,6 +4140,9 @@ func plHelloAnswer(pluginId: in String, points: in List[PluginPointMethods]): Js
     val pointEntry: List[JsonField] = newList()
     pointEntry.add(plField("version", JString(value = points[i].version)))
     pointEntry.add(plField("methods", plStringArray(points[i].methods)))
+    if points[i].interfaceHash.length > 0 {
+      pointEntry.add(plField("interfaceHash", JString(value = points[i].interfaceHash)))
+    }
     pf.add(plField(points[i].point, JObject(fields = pointEntry)))
     i = i + 1
   }

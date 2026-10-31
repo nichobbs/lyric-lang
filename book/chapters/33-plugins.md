@@ -346,8 +346,11 @@ loads nothing it discovers. While developing, `trustKeysAllowingUnsigned`
 also loads directories with no `plugin.sig`, but never into the host's own
 process. A verified plugin's `PluginManifest.signer` tells the grant policy
 who signed it. A plugin that implements none of the host's points, was built
-against another major version of a point (`K0103`), or is refused by the
-policy is reported as a `PluginLoadIssue` and not loaded. Nothing starts until
+against another major version of a point (`K0103`), was built against a
+different shape of a point or capability whose version matches the host's
+(`K0104`: the generated code carries a hash of each declaration, so two builds
+of an API package that differ in a method or a boundary type cannot be mixed),
+or is refused by the policy is reported as a `PluginLoadIssue` and not loaded. Nothing starts until
 the first call: the host then launches the plugin, sends it the grants, and
 serves its capability calls while it waits for the answer, so `fetch` can call
 back into `NoteStore.load` from inside the plugin.
@@ -382,7 +385,9 @@ implements with their versions and contributions, the capabilities it requests,
 and one payload per target. A host picks the payload it can run: a `dotnet`
 host can run a `jvm` or native plugin and the other way round, as long as the
 runtime is installed. `lyric plugin check` validates a directory and prints
-each problem it finds.
+each problem it finds; with `--api <dir|file.l|lyric.toml>`, naming the host's
+API package, it also reports `K0104` for a point or capability whose recorded
+interface hash differs from the one the package declares.
 
 Each target needs its toolchain when packing: the .NET SDK, a JDK 21 or later,
 `clang` for native, the wasi-sdk plus `wasmtime` for wasm, and for a component
@@ -845,9 +850,6 @@ appendix B has the table. The ones you will meet first:
 - The in-process component runtime is not available on Windows hosts yet (#8542).
 - A `ULong` above 2^63 travels as a JSON floating-point number and can lose
   precision.
-- The language server does not run the plugin pass, so the generated names
-  (`StoreClient`, `noteToolRemotes`) are unknown in the editor even though the
-  build accepts them.
 - The C#, Java and TypeScript SDK runtimes ignore `$/cancelRequest` for a call
   that is already running.
 - On `--target native` a panic ends the process: a native plugin that panics is

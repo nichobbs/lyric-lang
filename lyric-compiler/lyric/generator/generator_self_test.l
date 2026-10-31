@@ -13,6 +13,10 @@ import Std.Testing
 import Std.JsonValue as Jv
 import Std.String as Str
 import Std.Errors
+import Std.File as File
+import Std.Process as Process
+import Std.Environment as Env
+import Std.JsonRpc as Rpc
 import Std.PluginSign as Sign
 import Lyric.Manifest
 import Lyric.Generator
@@ -347,6 +351,116 @@ test "project paths stay under the granted roots" {
   whole.add(".")
   assertTrue(projectPathWithin("src/a.l", whole), "the whole project")
   assertFalse(projectPathWithin("../x", whole), "but not above it")
+}
+
+func readTextReply(root: in String, path: in String, grantRoots: in String): Result[Jv.JsonValue, Rpc.RpcError] {
+  val params = match Jv.parseValue("{\"path\":\"" + path + "\"}") {
+    case Ok(v) -> v
+    case Err(_) -> panic("params parse")
+  }
+  val grant = match Jv.parseValue("{\"roots\":[" + grantRoots + "]}") {
+    case Ok(v) -> v
+    case Err(_) -> panic("grant parse")
+  }
+  serveProjectRead(root, "readText", Some(value = params), Some(value = grant))
+}
+
+func readTextOutcome(root: in String, path: in String, grantRoots: in String): String {
+  match readTextReply(root, path, grantRoots) {
+    case Ok(v) -> match Jv.getString(v, "ok") { case Some(text) -> "ok:" + text; case None -> "err" }
+    case Err(e) -> "denied:" + e.code.toString()
+  }
+}
+
+func projectLink(target: in String, link: in String): Unit {
+  val args: List[String] = newList()
+  args.add("-s")
+  args.add(target)
+  args.add(link)
+  match Process.run("ln", args) {
+    case Ok(code) -> assertEqualInt(code, 0, "ln -s " + link)
+    case Err(_) -> assertTrue(false, "ln could not run")
+  }
+}
+
+// #8468: a symbolic link inside a granted root must not lead out of it.
+test "ProjectRead refuses a symbolic link that leaves the granted root" {
+  if not Env.isWindows() {
+    val base = Env.getVarOrDefault("TMPDIR", "/tmp") + "/lyric_projectread_links"
+    val _ = File.deleteDirRecursive(base)
+    val project = base + "/project"
+    val _ = File.createDir(project + "/schemas/sub")
+    val _ = File.createDir(project + "/other")
+    val _ = File.createDir(base + "/outside")
+    val _ = File.writeText(project + "/schemas/ok.txt", "inside")
+    val _ = File.writeText(project + "/schemas/sub/deep.txt", "deep")
+    val _ = File.writeText(project + "/other/o.txt", "other")
+    val _ = File.writeText(base + "/outside/secret.txt", "secret")
+    projectLink("../../outside/secret.txt", project + "/schemas/escape.txt")
+    projectLink(base + "/outside/secret.txt", project + "/schemas/abs.txt")
+    projectLink("../../outside", project + "/schemas/outdir")
+    projectLink("ok.txt", project + "/schemas/same.txt")
+    projectLink("sub", project + "/schemas/subdir")
+    projectLink("../other/o.txt", project + "/schemas/sibling.txt")
+    projectLink("outdir/../ok.txt", project + "/schemas/dotdot.txt")
+    projectLink("loopb", project + "/schemas/loopa")
+    projectLink("loopa", project + "/schemas/loopb")
+    val granted = "\"schemas\""
+    assertEqual(readTextOutcome(project, "schemas/ok.txt", granted), "ok:inside", "a plain file")
+    assertEqual(readTextOutcome(project, "schemas/same.txt", granted), "ok:inside", "a link that stays inside")
+    assertEqual(
+      readTextOutcome(project, "schemas/subdir/deep.txt", granted),
+      "ok:deep",
+      "a directory link that stays inside"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/escape.txt", granted),
+      "denied:-32040",
+      "a link to a file outside the project"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/abs.txt", granted),
+      "denied:-32040",
+      "an absolute link outside the project"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/outdir/secret.txt", granted),
+      "denied:-32040",
+      "a symlinked parent directory"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/sibling.txt", granted),
+      "denied:-32040",
+      "a link into another project directory not granted"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/dotdot.txt", granted),
+      "err",
+      "a .. after a link in the link target resolves from the target, to a missing file"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/outdir/../ok.txt", granted),
+      "denied:-32040",
+      "a .. segment in the request"
+    )
+    assertEqual(readTextOutcome(project, "schemas/loopa", granted), "denied:-32040", "a link cycle")
+    assertEqual(
+      readTextOutcome(project, "schemas/sibling.txt", "\".\""),
+      "ok:other",
+      "the same link is fine when the whole project is granted"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/escape.txt", "\".\""),
+      "denied:-32040",
+      "but not out of the whole project"
+    )
+    assertEqual(
+      readTextOutcome(project, "schemas/missing.txt", granted),
+      "err",
+      "a missing file is an ordinary read error"
+    )
+    val _ = File.deleteDirRecursive(base)
+  }
 }
 
 test "scan directives keeps an annotation on a non-type, with its position" {

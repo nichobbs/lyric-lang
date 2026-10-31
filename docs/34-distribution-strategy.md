@@ -90,7 +90,16 @@ Platform-specific release assets:
 
 Each archive contains the same `lib/` and `stdlib/` layout as the NuGet tool,
 plus `lyric-resolver.jar` beside the binary (docs/44 M-7) so `--target jvm`
-`[maven]`-table resolution works with no extra install step.  The archive
+`[maven]`-table resolution works with no extra install step. For
+`--target native` (#8454) it also holds `lib/std/` (the stdlib sources, with
+the `_kernel_native/` twins) and the runtime built for the archive's own
+architecture: `lib/lyric_rt.a`, or on `win-x64`
+`lib/lyric_rt-x86_64-pc-windows-msvc.lib` and `lib/lyric_rt_md-x86_64-pc-windows-msvc.lib`.
+The release job unpacks each runnable archive outside the checkout and builds
+and runs a native hello-world from it with no `LYRIC_STD_PATH` or
+`LYRIC_RT_PATH` (`scripts/ci/release-native-smoke.sh`). The NuGet global tool
+ships neither: `--target native` from it still needs those two variables, or a
+GitHub-release archive.  The archive
 root contains a `lyric` (or `lyric.exe`) native binary — no `dotnet` command
 needed.
 

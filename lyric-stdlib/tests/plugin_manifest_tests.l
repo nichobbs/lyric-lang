@@ -538,11 +538,12 @@ impl GrantPolicy for FixedPolicy {
 
 pub record NullProvider {
   id: String
+  hash: String = ""
 }
 
 impl CapabilityProvider for NullProvider {
   func info(): CapabilityInfo {
-    CapabilityInfo(id = self.id, hasGrant = false)
+    CapabilityInfo(id = self.id, hasGrant = false, interfaceHash = self.hash)
   }
 
   func serve(method: in String, params: in Option[JsonValue], grant: in Option[JsonValue]): Result[JsonValue, RpcError] {
@@ -1235,4 +1236,89 @@ test "registerPlugin: a protocol plugin is never loaded in process" {
     case None -> ()
   }
   assertTrue(isNone(stateOf(host).trusted), "a protocol plugin's stdio carries its protocol")
+}
+
+func withPointHash(m: in PluginManifest, hash: in String): PluginManifest {
+  val d = m.points[0]
+  m.copy(
+    points = [
+      PluginPointDecl(
+        point = d.point,
+        version = d.version,
+        contributions = d.contributions,
+        interfaceHash = hash
+      )
+    ]
+  )
+}
+
+func pointWithHash(hash: in String): PluginPointInfo {
+  val p = editorPoint("1.2")
+  PluginPointInfo(
+    id = p.id,
+    version = p.version,
+    allows = p.allows,
+    hasContributions = p.hasContributions,
+    protocol = None,
+    interfaceHash = hash
+  )
+}
+
+test "registerPlugin: K0104, the same version with another interface hash" {
+  val good = parseGood()
+  val granted = allow([readGrant("[\"/a\"]")])
+  expectIssue(
+    hostWith([pointWithHash("aaaa")], granted),
+    withPointHash(good, "bbbb"),
+    "K0104",
+    "Editor.Api.EditorExtension",
+    "diverging hash"
+  )
+  expectIssue(
+    hostWith([pointWithHash("aaaa")], granted),
+    withPointHash(good, "bbbb"),
+    "K0104",
+    "build both from the same API package",
+    "advice"
+  )
+  assertTrue(
+    isNone(registerPlugin(hostWith([pointWithHash("aaaa")], granted), withPointHash(good, "aaaa"), "/plugins/acme")),
+    "equal hashes load"
+  )
+  assertTrue(
+    isNone(registerPlugin(hostWith([pointWithHash("aaaa")], granted), good, "/plugins/acme")),
+    "a manifest with no hash is not compared"
+  )
+  assertTrue(
+    isNone(registerPlugin(hostWith([editorPoint("1.2")], granted), withPointHash(good, "bbbb"), "/plugins/acme")),
+    "a host with no hash is not compared"
+  )
+}
+
+test "registerPlugin: K0104 for a capability built against another shape" {
+  val good = parseGood()
+  val req = good.required[0]
+  val changed = good.copy(required = [CapabilityRequest(name = req.name, grant = req.grant, interfaceHash = "old")])
+  val ps: List[CapabilityProvider] = newList()
+  ps.add(NullProvider(id = "Editor.Api.WorkspaceRead", hash = "new"))
+  ps.add(NullProvider(id = "Editor.Api.Notify"))
+  val host = newPluginHost(
+    PluginHostConfig(
+      points = [editorPoint("1.2")],
+      providers = ps,
+      policy = FixedPolicy(decision = allow([readGrant("[\"/a\"]")]))
+    )
+  )
+  expectIssue(host, changed, "K0104", "Editor.Api.WorkspaceRead", "capability hash")
+}
+
+test "the manifest JSON round-trips interface hashes and omits an empty one" {
+  val withHash = withPointHash(parseGood(), "abc123")
+  val text = writeValue(pluginManifestToJson(withHash))
+  assertTrue(text.contains("\"interfaceHash\":\"abc123\""), "written: " + text)
+  match parsePluginManifest(text) {
+    case Ok(m) -> assertEqual(m.points[0].interfaceHash, "abc123", "read back")
+    case Err(issue) -> assertTrue(false, pluginLoadIssueMessage(issue))
+  }
+  assertFalse(writeValue(pluginManifestToJson(parseGood())).contains("interfaceHash"), "no hash, no member")
 }

@@ -175,6 +175,22 @@ jobs:
           cp "$STAGE_DIR"/Lyric.Stdlib*.dll "$out/lib/"
           cp managed/lyric-resolver.jar "$out/lyric-resolver.jar"
 
+      # `--target native` compiles the stdlib from source and links the runtime
+      # archive, so the archive carries both (#8454): `lib/std/` and the
+      # static-CRT and DLL-CRT runtimes `lib/lyric_rt[_md]-<triple>.lib`.
+      - name: Stage native-target stdlib sources and lyric-rt beside the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=bootstrap/publish/win-x64
+          mkdir -p "$out/lib/std"
+          cp -R lyric-stdlib/std/. "$out/lib/std/"
+          rt_build="$(mktemp -d)/lyric-rt"
+          cmake -S lyric-rt -B "$rt_build" -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$rt_build"
+          cp "$rt_build/lyric_rt.lib" "$out/lib/lyric_rt-x86_64-pc-windows-msvc.lib"
+          cp "$rt_build/lyric_rt_md.lib" "$out/lib/lyric_rt_md-x86_64-pc-windows-msvc.lib"
+
       - name: Smoke test the published binary
         shell: bash
         run: |
@@ -273,6 +289,10 @@ jobs:
           lld-link --version
           cmake --version
           ninja --version
+
+      - name: Native build from the unpacked archive, no environment overrides
+        shell: bash
+        run: bash scripts/ci/release-native-smoke.sh "$(dirname "$(cygpath -u "$LYRIC_BIN")")" x86_64-pc-windows-msvc
 
       - name: Native suite (x86_64-pc-windows-msvc)
         shell: bash

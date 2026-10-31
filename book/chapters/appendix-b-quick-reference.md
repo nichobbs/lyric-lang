@@ -1348,7 +1348,7 @@ lyric plugin pack                      # build the plugin project for dotnet; wr
 lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm,component -o <dir>
 lyric plugin pack --targets dotnet,jvm,native --trusted   # also list trusted (in-process) payloads
                                        # one payload per target; every payload's manifest must agree
-lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
+lyric plugin check <dir> [--api <dir|file.l|lyric.toml>]  # validate a plugin artifact directory; --api also compares interface hashes (K0104); exit 1 on any problem
 lyric plugin keygen -o acme            # acme.key (secret, mode 0600) and acme.pub (D248)
 lyric plugin sign <dir> --key acme.key # write <dir>/plugin.sig; or set LYRIC_PLUGIN_SIGNING_KEY
 lyric plugin pack --sign-key acme.key  # pack and sign in one step
@@ -1784,7 +1784,7 @@ Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
 | `K0013` | Component builds: a name crossing the component boundary does not survive the WIT round trip (`customer_id`, `getURL`), or two names become one WIT name. |
 | `K0014` | Component builds: a boundary type or plugin a component cannot carry (`UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a multi-field union case, a recursive type, a protocol point). |
 
-At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request), `K0103` (a point major-version mismatch), or a signature code from `discoverPlugins` (D248): `K0105` (unsigned or unreadable `plugin.sig`), `K0106` (untrusted key), `K0107` (bad signature), `K0108` (files changed since signing), `K0109` (id, version or publisher mismatch), `K0110` (revoked key); `Std.PluginCatalogue` and `lyric plugin install` report `K0120` (a catalogue not signed by the current catalogue key), `K0121` (an expired catalogue), `K0122` (a catalogue older than the last one seen) and `K0123` (a download that does not match its catalogue entry), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request), `K0103` (a point major-version mismatch), `K0104` (same version, different interface hash), or a signature code from `discoverPlugins` (D248): `K0105` (unsigned or unreadable `plugin.sig`), `K0106` (untrusted key), `K0107` (bad signature), `K0108` (files changed since signing), `K0109` (id, version or publisher mismatch), `K0110` (revoked key); `Std.PluginCatalogue` and `lyric plugin install` report `K0120` (a catalogue not signed by the current catalogue key), `K0121` (an expired catalogue), `K0122` (a catalogue older than the last one seen) and `K0123` (a download that does not match its catalogue entry), and `TrustedLoadFailed` (no code) a trusted payload that could not be loaded in process (D231); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

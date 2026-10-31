@@ -371,3 +371,70 @@ test "setExecutable makes a file executable" {
   assertTrue(setExecutable(dir + "/nothing").isErr(), "a missing file is refused")
   val _ = deleteDirRecursive(dir)
 }
+
+func lnSymbolic(target: in String, link: in String): Unit {
+  val args: List[String] = newList()
+  args.add("-s")
+  args.add(target)
+  args.add(link)
+  match Std.Process.run("ln", args) {
+    case Ok(code) -> assertEqualInt(code, 0, "ln -s " + link)
+    case Err(e) -> panic("ln failed: " + IOError.message(e))
+  }
+}
+
+func realOrPanic(path: in String): String {
+  match realPath(path) {
+    case Ok(p) -> p
+    case Err(e) -> panic("realPath failed: " + IOError.message(e))
+  }
+}
+
+test "realPath resolves dots without links" {
+  val dir = scratchDir("real_plain")
+  val _ = deleteDirRecursive(dir)
+  val _ = createDir(dir + "/sub")
+  val _ = writeText(dir + "/sub/a.txt", "a")
+  val direct = realOrPanic(dir + "/sub/a.txt")
+  assertEqual(realOrPanic(dir + "/sub/../sub/./a.txt"), direct, "dot segments collapse")
+  assertTrue(realPath("").isErr(), "an empty path is refused")
+  assertTrue(realPath(dir + "/nothing").isErr(), "a missing path is refused")
+  val _ = deleteDirRecursive(dir)
+}
+
+test "realPath follows file and directory links and refuses broken ones" {
+  if not Std.Environment.isWindows() {
+    val dir = scratchDir("real_links")
+    val _ = deleteDirRecursive(dir)
+    val _ = createDir(dir + "/real/inner")
+    val _ = writeText(dir + "/real/inner/f.txt", "f")
+    lnSymbolic(dir + "/real", dir + "/dirlink")
+    lnSymbolic("real/inner/f.txt", dir + "/filelink")
+    lnSymbolic(dir + "/gone", dir + "/dangling")
+    lnSymbolic(dir + "/loopB", dir + "/loopA")
+    lnSymbolic(dir + "/loopA", dir + "/loopB")
+    val target = realOrPanic(dir + "/real/inner/f.txt")
+    assertEqual(realOrPanic(dir + "/filelink"), target, "a relative file link")
+    assertEqual(realOrPanic(dir + "/dirlink/inner/f.txt"), target, "a path through a directory link")
+    assertEqual(realOrPanic(dir + "/dirlink"), realOrPanic(dir + "/real"), "a directory link")
+    assertTrue(realPath(dir + "/dangling").isErr(), "a dangling link is refused")
+    assertTrue(realPath(dir + "/loopA").isErr(), "a link cycle is refused")
+    val _ = deleteDirRecursive(dir)
+  }
+}
+
+test "realPath applies .. after a link to the link's target" {
+  if not Std.Environment.isWindows() {
+    val dir = scratchDir("real_dotdot")
+    val _ = deleteDirRecursive(dir)
+    val _ = createDir(dir + "/a/deep")
+    val _ = createDir(dir + "/b")
+    lnSymbolic(dir + "/a/deep", dir + "/b/jump")
+    assertEqual(
+      realOrPanic(dir + "/b/jump/.."),
+      realOrPanic(dir + "/a"),
+      "the parent of the link's target, not of the link"
+    )
+    val _ = deleteDirRecursive(dir)
+  }
+}

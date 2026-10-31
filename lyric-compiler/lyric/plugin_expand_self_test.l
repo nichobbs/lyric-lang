@@ -1131,3 +1131,98 @@ test "K0014: a protocol point cannot be a component" {
     "impl Ls for X {\n}\n"
   expectComponentDiag(src, "K0014", "protocol point", "protocol point")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K0104: the interface hash (D288).
+// ─────────────────────────────────────────────────────────────────────────────
+func hashesOf(src: in String): Map[String, String] {
+  val files: List[SourceFile] = newList()
+  files.add(parse(src).file)
+  interfaceHashes(files)
+}
+
+func hashOf(src: in String, name: in String): String {
+  match mapGet(hashesOf(src), name) {
+    case Some(h) -> h
+    case None -> ""
+  }
+}
+
+val pointName: String = "Acme.Editor.EditorExtension"
+
+val capName: String = "Acme.Editor.WorkspaceRead"
+
+test "every point and capability has a hash" {
+  val hs = hashesOf(apiSource())
+  assertEqualInt(hs.count, 3, "the point and two capabilities")
+  assertTrue(hashOf(apiSource(), pointName).length == 64, "a SHA-256 in hex")
+  assertTrue(hashOf(apiSource(), capName).length == 64, "a capability's too")
+}
+
+test "the hash does not change with layout, comments or contracts" {
+  val base = hashOf(apiSource(), pointName)
+  val spaced = Str.replace(apiSource(), "  func onSave(", "\n\n      // reformatted\n  func   onSave  (")
+  assertEqual(hashOf(spaced, pointName), base, "layout and a comment")
+  val tail = Str.replace(apiSource(), "    requires: path.length > 0\n", "    requires: path.length > 1\n")
+  assertEqual(hashOf(tail, capName), hashOf(apiSource(), capName), "a contract clause is not part of the shape")
+}
+
+test "the hash does not depend on the order of methods or fields" {
+  val swapped = Str.replace(
+    apiSource(),
+    "  func onSave(doc: in DocId, text: in String): Result[List[Edit], String]\n  func inspect(note: in Note): Result[Option[Note], Severity]\n",
+    "  func inspect(note: in Note): Result[Option[Note], Severity]\n  func onSave(doc: in DocId, text: in String): Result[List[Edit], String]\n"
+  )
+  assertTrue(
+    Str.contains(swapped, "inspect(note: in Note): Result[Option[Note], Severity]\n  func onSave"),
+    "the fixture was reordered"
+  )
+  assertEqual(hashOf(swapped, pointName), hashOf(apiSource(), pointName), "method order")
+}
+
+test "the hash changes with any signature change" {
+  val base = hashOf(apiSource(), pointName)
+  val renamedMethod = Str.replace(apiSource(), "func inspect(", "func examine(")
+  val paramType = Str.replace(
+    apiSource(),
+    "func onSave(doc: in DocId, text: in String)",
+    "func onSave(doc: in DocId, text: in Int)"
+  )
+  val paramName = Str.replace(
+    apiSource(),
+    "func onSave(doc: in DocId, text: in String)",
+    "func onSave(doc: in DocId, body: in String)"
+  )
+  val result = Str.replace(apiSource(), "Result[Option[Note], Severity]", "Result[Option[Note], String]")
+  val extraMethod = Str.replace(
+    apiSource(),
+    "  func inspect(",
+    "  func close(doc: in DocId): Result[Unit, String]\n  func inspect("
+  )
+  val version = Str.replace(apiSource(), "version = \"1.2\"", "version = \"1.3\"")
+  assertTrue(hashOf(renamedMethod, pointName) != base, "a renamed method")
+  assertTrue(hashOf(paramType, pointName) != base, "a parameter type")
+  assertTrue(hashOf(paramName, pointName) != base, "a parameter name")
+  assertTrue(hashOf(result, pointName) != base, "a result type")
+  assertTrue(hashOf(extraMethod, pointName) != base, "an added method")
+  assertTrue(hashOf(version, pointName) != base, "the version")
+}
+
+test "the hash changes with a boundary type the declaration reaches" {
+  val base = hashOf(apiSource(), pointName)
+  val field = Str.replace(apiSource(), "  line: Int\n  col: Int\n", "  line: Int\n  col: Long\n")
+  val addedField = Str.replace(apiSource(), "  line: Int\n  col: Int\n", "  line: Int\n  col: Int\n  extra: Int\n")
+  val unionCase = Str.replace(apiSource(), "  case Clear\n", "  case Clear\n  case Replace(text: String)\n")
+  val enumCase = Str.replace(apiSource(), "  case Warning\n", "  case Warning\n  case Error\n")
+  assertTrue(hashOf(field, pointName) != base, "a field type, two types away (Position, through Edit, through Note)")
+  assertTrue(hashOf(addedField, pointName) != base, "an added field")
+  assertTrue(hashOf(unionCase, pointName) != base, "a union case")
+  assertTrue(hashOf(enumCase, pointName) != base, "an enum case")
+  assertEqual(hashOf(field, capName), hashOf(apiSource(), capName), "a type the capability does not reach")
+}
+
+test "a diverging declaration expands to a different PointInfo" {
+  val changed = Str.replace(apiSource(), "func inspect(", "func examine(")
+  expectClean(expandOne(changed), "changed api")
+  expectFunc(expandOne(changed), "editorExtensionPointInfo", "editorExtensionPointInfo(): PluginPointInfo")
+}
