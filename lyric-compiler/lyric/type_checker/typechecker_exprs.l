@@ -22015,7 +22015,7 @@ func reportAmbiguousDefaultCall(
   )
 }
 
-// W0032 for a bare callee `fn` (`f(...)`) bound to a function of `origin`
+// T0219 for a bare callee `fn` (`f(...)`) bound to a function of `origin`
 // that its file sees only through a sibling file's import (docs/70 §4.1).
 func noteBareCalleeFunc(tbl: in SymbolTable, fn: in Expr, origin: in String): Unit {
   match fn.kind {

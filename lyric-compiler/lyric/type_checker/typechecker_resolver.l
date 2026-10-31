@@ -1151,7 +1151,9 @@ pub func checkBareNameAmbiguity(tbl: in SymbolTable, diag: in List[Diagnostic], 
         "T0123",
         "'" + name + "' is ambiguous: it is declared by " + joinPackageNames(pkgs) +
           (
-            if symTableIsDirectImport(tbl, pkgs[0]) {
+            if not symTableFileImportsAll(tbl, pkgs, span) {
+              ", imported by the files of this package (a bare name means one declaration in every file of a package until #8690)"
+            } else if symTableIsDirectImport(tbl, pkgs[0]) {
               ", all imported here"
             } else {
               ", all reached through this file's imports"

@@ -694,10 +694,10 @@ pub record SymbolTable {
   /// The file whose scope is entered, boxed as a 0/1-element list; empty =
   /// the package union (`symTableEnterFile`).
   curFile: List[Int]
-  /// W0032: names a file sees only through a sibling file's import, keyed
-  /// `<fileId>|<name>` so each is reported once per file.
-  siblingImportWarnKeys: Map[String, Bool]
-  siblingImportWarnings: List[Diagnostic]
+  /// T0219: names a file uses that only a sibling file's import makes
+  /// visible, keyed `<fileId>|<name>` so each is reported once per file.
+  siblingImportKeys: Map[String, Bool]
+  siblingImportErrors: List[Diagnostic]
   /// Non-empty when the checked file is `@contract_source`: a restored
   /// dependency's metadata synthesised back into source, whose preamble copies
   /// sibling packages' types into the file's own package, so a qualified type
@@ -906,8 +906,8 @@ pub func newSymbolTable(): SymbolTable {
     importAliases = newMap(),
     fileRules = newList(),
     curFile = newList(),
-    siblingImportWarnKeys = newMap(),
-    siblingImportWarnings = newList(),
+    siblingImportKeys = newMap(),
+    siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap()
   )
 }
@@ -1569,7 +1569,7 @@ func hiddenImportHintPass(tbl: in SymbolTable, curPkg: in String, name: in Strin
 // ─────────────────────────────────────────────────────────────────────────────
 /// One file's own imports, as the rule for the names that file may use
 /// (docs/70 §4.1).  Each map pairs what an import makes visible with that
-/// import as written (`import P`, `import P.{X}`), which W0032 tells a file
+/// import as written (`import P`, `import P.{X}`), which T0219 tells a file
 /// to add when it relies on a sibling's.
 pub record FileImportRule {
   /// The file's path ("" when the caller has none).
@@ -1652,7 +1652,7 @@ pub func symTableEnterSpanFile(tbl: in SymbolTable, sp: in Span): Unit {
   }
 }
 
-// The file whose imports judge a name written at `sp`, when W0032 applies:
+// The file whose imports judge a name written at `sp`, when T0219 applies:
 // the file the span lies in, else the entered file; -1 when no per-file rule
 // applies (fewer than two files, a synthetic item, or a scope other than the
 // checked package's own).
@@ -1753,32 +1753,37 @@ func fileQualifiedVia(rule: in FileImportRule, curPkg: in String, pkg: in String
   None
 }
 
-// W0032 for the name `shown`, written in file `f`, that only file `other`'s
-// import `via` makes visible.  One warning per name and file.
-func warnSiblingImport(
+// T0219 for the name `shown`, written in file `f`, that only file `other`'s
+// import `via` makes visible.  One error per name and file.
+func reportSiblingImport(
   tbl: in SymbolTable, f: in Int, other: in Int, shown: in String, via: in String, sp: in Span
 ): Unit {
   val key = toString(f) + "|" + shown
-  if tbl.siblingImportWarnKeys.containsKey(key) {
+  if tbl.siblingImportKeys.containsKey(key) {
     return
   }
-  tbl.siblingImportWarnKeys.add(key, true)
+  tbl.siblingImportKeys.add(key, true)
   val otherPath = tbl.fileRules[other].path
   val location = if otherPath.length > 0 { otherPath } else { "another file of this package" }
-  tbl.siblingImportWarnings.add(
-    warningDiagnostic(
-      "W0032",
-      "'" + shown + "' is visible here only through `" + via + "` in " + location + "; add `" + via +
-        "` to this file (a file's imports are its own; this becomes an error in a later release)",
+  tbl.siblingImportErrors.add(
+    errorDiagnostic(
+      "T0219",
+      "'" + shown + "' is not imported by this file; only `" + via + "` in " + location +
+        " makes it visible, and a file's imports are its own: add `" +
+        via +
+        "` to this file",
       sp
     )
   )
 }
 
 /// Note a bare name, written at `sp`, that resolved to `sym` through the
-/// union of the package's imports: W0032 when the file it is written in does
-/// not make it visible and a sibling file's import does (docs/70 §4.1, phase
-/// 2a warning mode).
+/// union of the package's imports: T0219 when the file it is written in does
+/// not make it visible and a sibling file's import does (docs/70 §4.1).  The
+/// name still resolves, so the use is reported once rather than as an
+/// unknown name.  Candidates stay the union's, so a name two files import
+/// from different packages is T0123, as the backends still resolve bare
+/// names package-wide (#8690).
 pub func symTableNoteBareUse(tbl: in SymbolTable, sym: in Symbol, sp: in Span): Unit {
   val f = useFileForSiblingCheck(tbl, sp)
   if f < 0 {
@@ -1798,7 +1803,7 @@ pub func symTableNoteBareUse(tbl: in SymbolTable, sym: in Symbol, sp: in Span): 
   while j < tbl.fileRules.count {
     if j != f {
       match fileBareVia(tbl, tbl.fileRules[j], curPkg, sym) {
-        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, sym.name, via, sp); return }
+        case Some(via) -> if via.length > 0 { reportSiblingImport(tbl, f, j, sym.name, via, sp); return }
         case None -> ()
       }
     }
@@ -1827,7 +1832,7 @@ pub func symTableNoteBareFuncUse(tbl: in SymbolTable, origin: in String, name: i
   while j < tbl.fileRules.count {
     if j != f {
       match fileBareFuncVia(tbl.fileRules[j], curPkg, origin, name) {
-        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, name, via, sp); return }
+        case Some(via) -> if via.length > 0 { reportSiblingImport(tbl, f, j, name, via, sp); return }
         case None -> ()
       }
     }
@@ -1862,7 +1867,7 @@ pub func symTableNoteQualifiedUse(
   while j < tbl.fileRules.count {
     if j != f {
       match fileQualifiedVia(tbl.fileRules[j], curPkg, pkg, transitive) {
-        case Some(via) -> if via.length > 0 { warnSiblingImport(tbl, f, j, pkg + "." + member, via, sp); return }
+        case Some(via) -> if via.length > 0 { reportSiblingImport(tbl, f, j, pkg + "." + member, via, sp); return }
         case None -> ()
       }
     }
@@ -1870,9 +1875,26 @@ pub func symTableNoteQualifiedUse(
   }
 }
 
-/// The W0032 warnings noted while checking the package, in the order noted.
-pub func symTableSiblingImportWarnings(tbl: in SymbolTable): List[Diagnostic] {
-  tbl.siblingImportWarnings
+/// Whether the file a name written at `sp` is judged by imports, itself,
+/// every package of `pkgs`; true outside a package of several files.  A
+/// T0123 between packages that different files import says so.
+pub func symTableFileImportsAll(tbl: in SymbolTable, pkgs: in List[String], sp: in Span): Bool {
+  val f = useFileForSiblingCheck(tbl, sp)
+  if f < 0 {
+    return true
+  }
+  val rule = tbl.fileRules[f]
+  for p in pkgs {
+    if not rule.wholeVia.containsKey(p) and not rule.directVia.containsKey(p) {
+      return false
+    }
+  }
+  true
+}
+
+/// The T0219 errors noted while checking the package, in the order noted.
+pub func symTableSiblingImportErrors(tbl: in SymbolTable): List[Diagnostic] {
+  tbl.siblingImportErrors
 }
 
 // The interface a `where` constraint names: a bare name resolves in scope, a

@@ -1407,8 +1407,8 @@ test "multi-file project package (dotnet): a file that declares another package 
   )
 }
 
-// docs/70 §4.1, phase 2a step 4: a file using a name only its sibling file
-// imports still builds, with W0032 naming the sibling and the import to add.
+// docs/70 §4.1: a file using a name only its sibling file imports is T0219,
+// naming the sibling and the import to add.
 func siblingImportFirstFile(): String {
   "package Mf\n" + "import Std.String as Str\n" + "\n" + "func main(): Unit {\n" + "  println(Str.toUpper(shout()))\n" +
     "}\n"
@@ -1418,8 +1418,8 @@ func siblingImportSecondFile(): String {
   "package Mf\n" + "\n" + "pub func shout(): String {\n" + "  Str.toLower(\"Hi\")\n" + "}\n"
 }
 
-func checkSiblingImportWarning(target: in String, outName: in String): Unit {
-  val dir = freshTempDir("mf-w0032-" + target)
+func checkSiblingImportError(target: in String, outName: in String): Unit {
+  val dir = freshTempDir("mf-t0219-" + target)
   defer {
     cleanup(dir)
   }
@@ -1428,20 +1428,20 @@ func checkSiblingImportWarning(target: in String, outName: in String): Unit {
   val bPath = Path.join(Path.join(dir, "src"), "b.l")
   val result = buildManifest(mfPath, target, Path.join(dir, outName))
   val output = result.stdout + result.stderr
-  assertTrue(result.exitCode == 0, "a name a sibling imports still resolves in warning mode, got:\n" + output)
-  assertTrue(Str.contains(output, bPath + ": warning[W0032] 4:"), "expected W0032 at b.l's line 4, got:\n" + output)
+  assertTrue(result.exitCode != 0, "a name only a sibling imports fails the build, got:\n" + output)
+  assertTrue(Str.contains(output, bPath + ": error[T0219] 4:"), "expected T0219 at b.l's line 4, got:\n" + output)
   assertTrue(
-    Str.contains(output, "is visible here only through `import Std.String as Str` in " + aPath),
-    "expected the warning to name a.l and its import, got:\n" + output
+    Str.contains(output, "only `import Std.String as Str` in " + aPath + " makes it visible"),
+    "expected the error to name a.l and its import, got:\n" + output
   )
 }
 
-test "multi-file project package (dotnet): a name only the sibling file imports is W0032 naming that file and import" {
-  checkSiblingImportWarning("dotnet", "out.dll")
+test "multi-file project package (dotnet): a name only the sibling file imports is T0219 naming that file and import" {
+  checkSiblingImportError("dotnet", "out.dll")
 }
 
-test "multi-file project package (jvm): a name only the sibling file imports is W0032 naming that file and import" {
-  checkSiblingImportWarning("jvm", "out.jar")
+test "multi-file project package (jvm): a name only the sibling file imports is T0219 naming that file and import" {
+  checkSiblingImportError("jvm", "out.jar")
 }
 
 // Two packages of two files each, `Mf` (src/) listed before `Other`

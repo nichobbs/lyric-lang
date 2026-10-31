@@ -146,7 +146,8 @@ offset-keyed side tables the checker hands to later passes
 spans by offset keep their meaning without carrying the file; code that
 indexes a file's text subtracts the file's base. File-level annotations stay package-wide with the existing
 `B0014` agreement rule; `B0012` (one alias bound two ways across files) is
-no longer an error, because aliases are per file.
+no longer an error, because aliases are per file (once #8690 moves the
+last readers of the union's aliases to each file's own).
 
 ### 4.2 Symbol identity
 
@@ -714,14 +715,18 @@ builder (I0002) rather than on the current checker.
 Phase 2a status: positions name their file and packages assemble from
 separately parsed files (steps 1-2), and every build path compiles the
 assembled package, with the text merge and its line-origin table deleted
-(step 3, docs/19 §4). Step 4 gives each file its own import scope in
+(step 3, docs/19 §4). Step 4 gave each file its own import scope in
 warning mode: the checker builds one rule per file and checks each item in
 its file's scope, aliases and renames rewrite per file, and a name a file
-sees only through a sibling's import still resolves through the union but is
-the warning `W0032`, naming the sibling and the import to add; the compiler,
-stdlib, ecosystem and examples were fixed to build without it. Making
-`W0032` an error, which retires `B0012` and the cross-file `T0148`, is the
-remaining step.
+saw only through a sibling's import was the warning `W0032`; the compiler,
+stdlib, ecosystem and examples were fixed to build without it. Step 5
+(D300) makes it the error `T0219`. Candidates for a bare name are still
+the union's, so a name two files import from different packages stays
+`T0123`, and `B0012` and the cross-file `T0148` stay, until the passes that
+read the union of the files' imports (plugin expansion, component glue, the
+alias rewriter's synthesised items, MSIL and JVM lookups and the backends'
+bare-name resolution) read each file's own or receive resolved symbols
+(#8690, with 2c and 2d). Phase 2a is otherwise complete.
 
 ### Phase 3: TIR and the middle end
 
@@ -781,7 +786,7 @@ clause on MSIL, JVM and native.
 | T0211 | a dependency's interface names a declaration that cannot be resolved (corrupt or missing dependency) |
 | T0212 | a `pub` or `internal` signature names a less-visible type |
 | T0213 | a carried body, default or contract references a declaration that is neither public nor a hidden export |
-| W0032 | a name a file sees only through a sibling file's import (warning mode of §4.1; becomes an error) |
+| T0219 | a name a file sees only through a sibling file's import (§4.1; the warning `W0032` until D300) |
 | I0001 | internal: a `TyError` with no diagnostic reached the gate |
 | I0002 | internal: the TIR builder found a node the checker did not record |
 | I0003 | internal: a pass produced ill-formed TIR |
@@ -789,7 +794,7 @@ clause on MSIL, JVM and native.
 | I0005 | internal: an interface did not round-trip |
 
 Existing name codes (T0010, T0020, T0097, T0123, T0148) keep their meaning
-and move to the resolver. `B0012` is retired (§4.1).
+and move to the resolver. `B0012` is retired with #8690 (§4.1).
 
 ## 15. Open questions
 

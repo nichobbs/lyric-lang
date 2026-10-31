@@ -5992,7 +5992,7 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 // imports whole, widened to the packages those import whole (D141), the
 // `<package>|<name>` keys of its selectively imported names, its renamed
 // items, and its package aliases.  `wholeVia` and `namesVia`, parallel to
-// `whole` and `names`, hold the import that makes each one visible, as W0032
+// `whole` and `names`, hold the import that makes each one visible, as T0219
 // advises adding it.
 record ImportSets {
   whole: List[String]
@@ -6107,7 +6107,7 @@ func importKeyword(imp: in ImportDecl): String {
   }
 }
 
-// An import as written, for the advice of W0032.
+// An import as written, for the advice of T0219.
 func renderImportDecl(imp: in ImportDecl): String {
   var text = importKeyword(imp)
   if imp.isExtern {
@@ -6224,14 +6224,14 @@ func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in Im
 // visible bare, since they are reached as `Q.f`.
 //
 // Imports are per file (docs/70 §4.1).  Each file of `files` gets its own
-// rule, and its renames (T0148) and selective imports (T0210) are checked
-// against its own imports.  Names still resolve through the union of the
-// files' imports (`imports`) in this release: a name a file sees only through
-// a sibling file's import is the warning W0032 (`symTableNoteBareUse` and
-// kin), which the next step of docs/70 phase 2a makes an error.  Until then
-// a rename that collides with a name a sibling's import brings in stays
-// T0148, because resolving through the union would let one spelling mean two
-// things.  A package with no file table, or of one file, has only the union.
+// rule, a name is visible bare in a file only through that file's imports
+// (`symTableImportVisible`), and its renames (T0148) and selective imports
+// (T0210) are checked against its own imports.  A name a file sees only
+// through a sibling file's import is T0219 (`symTableNoteBareUse` and kin).
+// A rename that collides with a name a sibling's import brings in stays
+// T0148, and an alias bound two ways stays B0012, until the passes that
+// read the union's renames and aliases read each file's own (#8690).
+// A package with no file table, or of one file, has only the union.
 func installImportRule(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -6263,6 +6263,9 @@ func installImportRule(
       checkSelectiveImportsDeclared(diag, userPkg, h.imports, importedPackages)
       rules.add(buildFileImportRule(tbl, h, fs))
     }
+    // A rename whose new name a sibling file's import brings in is still
+    // T0148: the alias rewriter and the JVM backend read renames from the
+    // union of the files' imports (#8690).
     for d in fileDiag {
       diag.add(d)
     }
@@ -6280,7 +6283,7 @@ func installImportRule(
           errorDiagnostic(
             d.code,
             d.message +
-              " (through another file's import: the files of a package share their bare names until each file's imports are its own, docs/70 §12.2)",
+              " (through another file's import: within one package a renamed import must not collide with a name any file's imports bring in, #8690)",
             d.span
           )
         )
@@ -7314,7 +7317,7 @@ func checkWithImportedPackagesCore(
   reportUnspellableArrayCopies(tbl, diag)
   // A `?` operand whose success type nothing fixed (#8181).
   collectPropagateFallbacks(tbl)
-  for w in symTableSiblingImportWarnings(tbl) {
+  for w in symTableSiblingImportErrors(tbl) {
     diag.add(w)
   }
 
