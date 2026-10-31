@@ -7,9 +7,9 @@ flag and elaborate each member from a view without the elided clauses, then
 restore the source-level clauses, as `elaborateItem` does for a function.
 
 - Record methods and protected entries/funcs: `ensures:` elided, `requires:`
-  kept only for a `pub` member of a `pub` type.
-- `impl` methods: own clauses follow the member's `pub`; clauses inherited from
-  the interface keep `requires:` and lose `ensures:`.
+  kept only when the type is `pub` (members take their type's visibility).
+- `impl` methods: own and inherited `requires:` are kept (reached through the interface),
+  every `ensures:` is elided.
 - Protected-type `invariant:` clauses are always checked.
 
 Tests: `scripts/ci/release-contracts-e2e.sh` gains a program per member kind

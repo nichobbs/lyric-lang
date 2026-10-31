@@ -95,9 +95,9 @@ The runtime overhead of contract checking is real: evaluating Boolean expression
 - `ensures:` clauses are **elided by default** in release. They are expensive (they run on every return) and primarily useful during development. To keep them in a release build, pass `--release-contracts` to the compiler.
 - Range subtype checks — the bounds on types like `Nat range 0 ..= 100` — are **always checked** in all builds. These are structural properties of values; eliding them would produce values the type system claims cannot exist.
 
-The policy applies to methods as well as free functions. A method of a record, an `impl` block or a protected type is `pub` for this purpose when it is declared `pub` and, for a record or protected type, the type is `pub` too. Two points are specific to methods:
+The policy applies to methods as well as free functions. A method of a record or a protected type takes the visibility of its type: it is `pub` for this purpose when the type is. A method of an `impl` block is reached through its interface, so its own `requires:` is always kept. Two points are specific to methods:
 
-- A `requires:` that an `impl` method inherits from its interface is **kept**, because an interface method can be called from outside the package. An inherited `ensures:` is elided like any other.
+- A `requires:` that an `impl` method inherits from its interface is **kept**, because an interface method can be called from outside the package, and so is the method's own `requires:`. Every `ensures:` is elided.
 - A protected type's `invariant:` clauses are **always checked**, in entries and funcs alike; they are part of the type, not of the member.
 
 To opt into full contract checking in a release build for a specific package, annotate the package:

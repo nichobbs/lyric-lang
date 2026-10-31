@@ -3208,7 +3208,7 @@ func elaborateProtectedMember(
       // system-level and stay.  The source-level clauses are restored on the
       // result.
       val checkedClauses = if releaseElide {
-        releaseKeptClauseList(ed.contracts, typeIsPub and isPubVisibility(ed.visibility))
+        releaseKeptClauseList(ed.contracts, typeIsPub)
       } else {
         ed.contracts
       }
@@ -3270,8 +3270,7 @@ func elaborateProtectedMember(
       }
     }
     case PMFunc(fn) -> {
-      val isPub = typeIsPub and isPubVisibility(fn.visibility)
-      val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, isPub)) } else { fn }
+      val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, typeIsPub)) } else { fn }
       val done = elaborateMember(
         view,
         typeName + "." + fn.name,
@@ -3407,11 +3406,11 @@ func elaborateFunctionWith(
   selfScope: in SelfScope,
   releaseElide: in Bool = false,
 ): FunctionDecl {
-  // Under the release policy an impl method's own clauses follow the member's
-  // visibility and the clauses inherited from its interface keep only their
-  // `requires:`; the source-level clauses are restored afterwards, as for a
+  // Under the release policy an impl method is reached through its interface,
+  // a public boundary, so its own and inherited `requires:` stay and every
+  // `ensures:` goes; the source-level clauses are restored afterwards, as for a
   // free function.
-  val ownKept = if releaseElide { releaseKeptClauses(fn, isPubVisibility(fn.visibility)) } else { fn.contracts }
+  val ownKept = if releaseElide { releaseKeptClauses(fn, true) } else { fn.contracts }
   val extraKept = if releaseElide { releaseKeptInherited(extra) } else { extra }
   if extraKept.count == 0 {
     if not releaseElide {
@@ -3475,8 +3474,7 @@ func elaborateRecordDecl(
   while i < decl.members.count {
     match decl.members[i] {
       case RMFunc(fn) -> {
-        val isPub = typeIsPub and isPubVisibility(fn.visibility)
-        val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, isPub)) } else { fn }
+        val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, typeIsPub)) } else { fn }
         val done = elaborateMember(view, qualify(pkg, decl.name + "." + fn.name), contractsEnabled, selfScope)
         members.add(RMFunc(fn = if releaseElide { withContracts(done, fn.contracts) } else { done }))
       }
@@ -3610,8 +3608,12 @@ func releaseKeptClauses(fn: in FunctionDecl, isPub: in Bool): List[ContractClaus
 // The clauses an `impl` method inherits from its interface under the release
 // policy: an interface method is callable from outside the package, so its
 // `requires:` is part of a public boundary and stays; its `ensures:` goes.
+// (A record or protected-type member has no visibility of its own: it takes its
+// type's, so `typeIsPub` is the whole test.)
 func releaseKeptInherited(extra: in List[ContractClause]): List[ContractClause] =
   releaseKeptClauseList(extra, true)
+
+func itemIsPub(it: in Item): Bool = isPubVisibility(it.visibility)
 
 func elaborateItem(
   it: in Item,
@@ -3627,13 +3629,13 @@ func elaborateItem(
     case IRecord(decl) -> withKind(
       it,
       IRecord(
-        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, isPubVisibility(it.visibility))
+        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, itemIsPub(it))
       )
     )
     case IExposedRec(decl) -> withKind(
       it,
       IExposedRec(
-        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, isPubVisibility(it.visibility))
+        decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled, releaseElide, itemIsPub(it))
       )
     )
     case IImpl(decl) -> withKind(
@@ -3680,7 +3682,7 @@ func elaborateItem(
             qualify(pkg, decl.name),
             contractsEnabled,
             releaseElide,
-            isPubVisibility(it.visibility)
+            itemIsPub(it)
           )
         )
         mi = mi + 1

@@ -12,10 +12,12 @@ In a `release` build (and when neither `--release-contracts` nor
 book chapter 17 section 17.4 covers every function-like member:
 
 1. **Record methods and protected-type entries and funcs.** `ensures:` is not
-   checked. `requires:` is checked only when the member is declared `pub` and
-   its type is `pub` (a caller outside the package can reach no other member).
-2. **`impl` methods.** The method's own `ensures:` is not checked; its own
-   `requires:` follows the member's `pub`. The clauses it inherits from its
+   checked. These members have no visibility of their own, so they take their
+   type's: `requires:` is checked only when the type is `pub` (a caller outside
+   the package can reach no other member).
+2. **`impl` methods.** The method's own `ensures:` is not
+   checked; its own `requires:` is kept, as the method is reached through its
+   interface. The clauses it inherits from its
    interface (#7223) keep their `requires:` (an interface method is callable
    from outside the package, so its precondition is a public boundary) and
    lose their `ensures:`.

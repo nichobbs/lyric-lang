@@ -20,9 +20,11 @@
 #                              every contract is checked again.
 #
 # A second set of programs repeats the policy for methods (#8680): one each for
-# a record method, an `impl` method, a method inherited from an interface, and
-# a protected-type entry and func.  In each, the `ensures:` and the `requires:`
-# of a non-`pub` member are unchecked in a release build (the program prints
+# a record method (of a `pub` and of a private record), an `impl` method whose
+# interface method has a `requires:`, and
+# a protected-type entry and func.  A record or protected-type member takes its
+# type's visibility; an `impl` method is reached through its interface.  In
+# each, the `ensures:` and the `requires:` of a non-`pub` member are unchecked in a release build (the program prints
 # their results), while a `pub` member's `requires:` and an interface method's
 # `requires:` still panic.  A protected type keeps its `invariant:`.
 #
@@ -81,6 +83,16 @@ mk_member() {
 }
 
 mk_member record '
+record Local {
+  n: Int
+
+  func internalRequires(self: in Local): Int
+    requires: self.n > 1000
+  {
+    self.n
+  }
+}
+
 pub record Counter {
   n: Int
 
@@ -90,13 +102,7 @@ pub record Counter {
     self.n * 2
   }
 
-  func internalRequires(self: in Counter): Int
-    requires: self.n > 1000
-  {
-    self.n
-  }
-
-  pub func publicRequires(self: in Counter): Int
+  func publicRequires(self: in Counter): Int
     requires: self.n > 1000
   {
     self.n
@@ -106,14 +112,35 @@ pub record Counter {
 func main(): Int {
   val c = Counter(n = 3)
   println("ensures ${c.ensuresOnly()}")
-  println("internal requires ${c.internalRequires()}")
+  println("internal requires ${Local(n = 3).internalRequires()}")
   println("public requires ${c.publicRequires()}")
+  return 0
+}'
+
+mk_member protected_pub '
+pub protected type Gate {
+  var v: Int = 0
+
+  entry open(k: in Int): Int
+    requires: k > 1000
+  {
+    v = k
+    k
+  }
+}
+
+func main(): Int {
+  val g = Gate()
+  println("before")
+  println("open ${g.open(5)}")
   return 0
 }'
 
 mk_member impl '
 interface Gauge {
   func read(self: in Self): Int
+  func poke(self: in Self, k: in Int): Int
+    requires: k > 1000
 }
 
 record Dial {
@@ -122,34 +149,20 @@ record Dial {
 
 impl Gauge for Dial {
   func read(self: in Dial): Int
+    requires: self.n > 1000
     ensures: result > 1000
   {
     self.n
   }
-}
 
-record Knob {
-  n: Int
-}
-
-impl Knob {
-  func ownRequires(self: in Knob): Int
-    requires: self.n > 1000
-  {
-    self.n
-  }
-
-  pub func publicRequires(self: in Knob): Int
-    requires: self.n > 1000
-  {
-    self.n
+  func poke(self: in Dial, k: in Int): Int {
+    k
   }
 }
 
 func main(): Int {
-  println("ensures ${Dial(n = 3).read()}")
-  println("internal requires ${Knob(n = 4).ownRequires()}")
-  println("public requires ${Knob(n = 5).publicRequires()}")
+  println("read ${Dial(n = 3).read()}")
+  println("poke ${Dial(n = 3).poke(5)}")
   return 0
 }'
 
@@ -308,9 +321,10 @@ for target in "${targets[@]}"; do
   check "$target" record-release "$work/record.l" "publicRequires" $'ensures 6\ninternal requires 3' --release "${shape[@]}"
   check "$target" record-release-keep "$work/record.l" "ensuresOnly" "" --release --release-contracts "${shape[@]}"
   check "$target" impl-debug "$work/impl.l" "read" ""
-  check "$target" impl-release "$work/impl.l" "publicRequires" $'ensures 3\ninternal requires 4' --release "${shape[@]}"
+  check "$target" impl-release "$work/impl.l" "poke" $'read 3' --release "${shape[@]}"
   check "$target" inherited-debug "$work/inherited.l" "take" $'before 1'
   check "$target" inherited-release "$work/inherited.l" "take" $'before 1\nok 500' --release "${shape[@]}"
+  check "$target" protected-pub-release "$work/protected_pub.l" "open" $'before' --release "${shape[@]}"
   check "$target" protected-debug "$work/protected.l" "setAll" ""
   check "$target" protected-release "$work/protected.l" "nvariant" $'entry 5\nfunc 5' --release "${shape[@]}"
   check "$target" protected-invariant "$work/protected_invariant.l" "invariant" $'before' --release "${shape[@]}"
