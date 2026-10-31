@@ -32,6 +32,7 @@ import Lyric.PluginExpand as PluginExpand
 import Lyric.AliasRewriter as Aliases
 import Lyric.Pipeline
 import Msil.Lowering
+import Msil.MetadataReader as Mdr
 import Msil.Codegen
 import Msil.Tables
 import Msil.Heaps
@@ -308,6 +309,7 @@ pub func compileToMsilWithVersion(
   val singleFileTypeArgCallees: Map[String, Bool] = newMap()
   val singleFileGenericItems: List[Item] = newList()
   val singleFileOpts = MiddleEndOptions(
+    externIterResolver = msilIterResolver(newMsilHostIterIndex(newList())),
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
@@ -930,6 +932,14 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // flat item view, once rather than per package.
   val importedPkgs = perPackageImportedPackages(baseImportedPkgs, inBundleItems, inBundleImports, baseNames)
   val importedItems = flattenImportedItems(importedPkgs)
+  val hostIterDlls: List[String] = newList()
+  for ra in restoredArtifacts {
+    hostIterDlls.add(ra.dllPath)
+  }
+  for np in nugetAssemblyPaths {
+    hostIterDlls.add(np)
+  }
+  val hostIterIx = newMsilHostIterIndex(hostIterDlls)
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
@@ -950,6 +960,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     val projTypeArgCallees: Map[String, Bool] = newMap()
     val projGenericItems: List[Item] = newList()
     val projOpts = MiddleEndOptions(
+      externIterResolver = msilIterResolver(hostIterIx),
       tcFatal = true,
       tcReport = false,
       pkgLabel = pp.label,
@@ -1316,6 +1327,148 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   writeBytesAtomic(outputPath, bytes)
 }
 
+// ── Host iteration protocol of extern types (D296) ───────────────────────────
+//
+// A `for` over an `extern type` of no type parameters or of two or more binds
+// the element type the CLR type's `IEnumerable<T>` declares.  The checker is
+// target-agnostic and cannot read assemblies, so this reads the reference
+// pack (plus any restored or NuGet DLLs) through a resolver the check asks, and hands the
+// resolver in `MiddleEndOptions.externIterResolver`, asked only for the types a
+// `for` iterates.
+func iterElemOfSig(sig: in Mdr.SigType): ExternIterElem {
+  match sig {
+    case Mdr.STVar(i) -> EIEArg(index = i)
+    case Mdr.STPrim(b) -> {
+      if b == 0x02 {
+        EIEPrim(name = "Bool")
+      } else if b == 0x05 {
+        EIEPrim(name = "Byte")
+      } else if b == 0x08 {
+        EIEPrim(name = "Int")
+      } else if b == 0x0A {
+        EIEPrim(name = "Long")
+      } else if b == 0x0D {
+        EIEPrim(name = "Double")
+      } else if b == 0x0E {
+        EIEPrim(name = "String")
+      } else {
+        EIEHost(hostName = iterPrimHostName(b), args = newList())
+      }
+    }
+    case Mdr.STNamed(fqn, _) -> EIEHost(hostName = externHostBase(fqn), args = newList())
+    case Mdr.STNamedGenericInst(fqn, _, args) -> {
+      val conv: List[ExternIterElem] = newList()
+      for a in args {
+        conv.add(iterElemOfSig(a))
+      }
+      EIEHost(hostName = externHostBase(fqn), args = conv)
+    }
+    case _ -> EIEHost(hostName = "an array, pointer or by-reference type", args = newList())
+  }
+}
+
+func iterPrimHostName(b: in Int): String {
+  if b == 0x03 {
+    "System.Char"
+  } else if b == 0x04 {
+    "System.SByte"
+  } else if b == 0x06 {
+    "System.Int16"
+  } else if b == 0x07 {
+    "System.UInt16"
+  } else if b == 0x09 {
+    "System.UInt32"
+  } else if b == 0x0B {
+    "System.UInt64"
+  } else if b == 0x0C {
+    "System.Single"
+  } else if b == 0x18 {
+    "System.IntPtr"
+  } else if b == 0x19 {
+    "System.UIntPtr"
+  } else {
+    "System.Object"
+  }
+}
+
+/// The per-compilation assembly indexes the resolver reads: the
+/// type-to-assembly and assembly-to-path maps over the reference pack and the
+/// given restored DLLs, built on the first lookup, and the parsed images.
+pub record MsilHostIterIndex {
+  typeIndex: Map[String, String]
+  pathIndex: Map[String, String]
+  parsedPaths: List[String]
+  parsed: List[Mdr.MdrParsedAssembly]
+  extraDlls: List[String]
+  ready: List[Bool]
+  answered: Map[String, Bool]
+  known: Map[String, ExternIterInfo]
+}
+
+pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
+  MsilHostIterIndex(
+    typeIndex = newMap(),
+    pathIndex = newMap(),
+    parsedPaths = newList(),
+    parsed = newList(),
+    extraDlls = extraDlls,
+    ready = newList(),
+    answered = newMap(),
+    known = newMap()
+  )
+}
+
+func ensureMsilHostIterIndex(ix: in MsilHostIterIndex): Unit {
+  if ix.ready.count > 0 {
+    return
+  }
+  ix.ready.add(true)
+  match Mdr.refPackDir() {
+    case Some(dir) -> {
+      val asms = Mdr.enumRefAssemblies(dir)
+      var i = 0
+      while i < asms.count {
+        Mdr.addAssemblyToIndexes(ix.typeIndex, ix.pathIndex, asms[i])
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  var j = 0
+  while j < ix.extraDlls.count {
+    if ix.extraDlls[j].length > 0 {
+      Mdr.addAssemblyToIndexes(ix.typeIndex, ix.pathIndex, ix.extraDlls[j])
+    }
+    j = j + 1
+  }
+}
+
+impl ExternIterResolver for MsilHostIterIndex {
+  func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo] {
+    if not self.answered.containsKey(clrName) {
+      self.answered.add(clrName, true)
+      ensureMsilHostIterIndex(self)
+      val r = Mdr.iterProtocolOfExtern(self.parsedPaths, self.parsed, self.typeIndex, self.pathIndex, clrName, arity)
+      if r.typed {
+        self.known.add(clrName, EIIElem(elem = iterElemOfSig(r.elem)))
+      } else if r.found {
+        self.known.add(clrName, EIIObject)
+      } else if not r.unresolved {
+        self.known.add(clrName, EIINone)
+      }
+    }
+    mapGet(self.known, clrName)
+  }
+}
+
+/// The resolver a check reads the reference pack (and restored DLLs) through,
+/// as the one-element list `MiddleEndOptions.externIterResolver` takes.
+pub func msilIterResolver(ix: in MsilHostIterIndex): List[ExternIterResolver] {
+  val rs: List[ExternIterResolver] = newList()
+  rs.add(ix)
+  rs
+}
+
 /// What a dotnet build of one source file rejects it for, as
 /// `compileToMsilWithVersion` would reach it, without compiling anything:
 /// every diagnostic of the passes up to and including the mode check,
@@ -1361,10 +1514,12 @@ pub func checkSourceTypesForFeatures(
     case Some(f) -> f
     case None -> return located
   }
+  val checkedFile = resolveTypeAliasesMsil(rewritten)
+  val stdPkgs = stdlibImportedPackages(collectStdlibPackages(stdlibSources))
   val _ = pipeCheckFront(
-    resolveTypeAliasesMsil(rewritten),
-    stdlibImportedPackages(collectStdlibPackages(stdlibSources)),
-    checkOptions(path, noFiles, ""),
+    checkedFile,
+    stdPkgs,
+    checkOptions(path, noFiles, "", msilIterResolver(newMsilHostIterIndex(newList()))),
     collectDiagnostics(located)
   )
   located
@@ -1372,8 +1527,14 @@ pub func checkSourceTypesForFeatures(
 
 // The middle-end options a dotnet build checks a package with, as far as the
 // passes up to the mode check read them.
-func checkOptions(label: in String, files: in List[String], ioForbiddenReason: in String): MiddleEndOptions {
+func checkOptions(
+  label: in String,
+  files: in List[String],
+  ioForbiddenReason: in String,
+  externIter: in List[ExternIterResolver],
+): MiddleEndOptions {
   MiddleEndOptions(
+    externIterResolver = externIter,
     tcFatal = true,
     tcReport = false,
     pkgLabel = label,
@@ -1701,11 +1862,16 @@ pub func checkProjectTypes(
     case None -> ()
     case Some(fe) -> {
       val importedPkgs = perPackageImportedPackages(fe.baseImportedPkgs, fe.inBundleItems, fe.inBundleImports, fe.baseNames)
+      val hostIterDlls: List[String] = newList()
+      for ra in restoredArtifacts {
+        hostIterDlls.add(ra.dllPath)
+      }
+      val hostIterIx = newMsilHostIterIndex(hostIterDlls)
       for pp in fe.parsedPkgs {
         val _ = pipeCheckFront(
           pp.file,
           importedPkgs,
-          checkOptions(pp.label, pp.files, pp.ioForbiddenReason),
+          checkOptions(pp.label, pp.files, pp.ioForbiddenReason, msilIterResolver(hostIterIx)),
           collectDiagnostics(located)
         )
       }

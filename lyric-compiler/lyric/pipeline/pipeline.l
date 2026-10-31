@@ -117,6 +117,12 @@ pub record MiddleEndOptions {
   tcReport: Bool
   pkgLabel: String
   filePaths: List[String] = newList()
+  /// Answers how the host type behind an `extern type` iterates
+  /// (`SymbolTable.externIterResolver`, D296), asked only for the types a
+  /// `for` iterates: what such a loop binds.  The MSIL and JVM bridges pass
+  /// one over host metadata; empty when no references are available, which
+  /// leaves such a loop variable unchecked.
+  externIterResolver: List[ExternIterResolver] = newList()
   awaitInTryIsHazard: Bool
   /// Whether a list literal no collection type is expected of is bound to a
   /// local of its checked type (`SymbolTable.listLiteralTypeSites`, #7818).
@@ -1685,7 +1691,15 @@ pub func pipeCheckFront(
   opts: in MiddleEndOptions,
   sink: in DiagSink,
 ): Option[CheckFront] {
-  val tcRes = checkWithImportedPackagesForTarget(file0, importedPkgs, opts.nativeIntrinsics, opts.stringSurface)
+  val noIterElems: Map[String, ExternIterInfo] = newMap()
+  val tcRes = checkWithImportedPackagesForTargetIter(
+    file0,
+    importedPkgs,
+    opts.nativeIntrinsics,
+    opts.stringSurface,
+    noIterElems,
+    opts.externIterResolver
+  )
   if opts.tcFatal {
     if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None
@@ -5322,7 +5336,8 @@ pub func pipeDesugarChecked(
     tcRes.symbols.tuplePatternBindingSites,
     listLiteralSites,
     hoistOperandSites,
-    tcRes.symbols.argOrderSites
+    tcRes.symbols.argOrderSites,
+    tcRes.symbols.externHostLoopSites
   )
 }
 

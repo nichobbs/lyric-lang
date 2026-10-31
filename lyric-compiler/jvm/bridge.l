@@ -36,6 +36,7 @@ import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
+import Jvm.ClassReader as CR
 import Jvm.Codegen
 import Jvm.Driver
 
@@ -404,6 +405,7 @@ pub func compileToJar(
   val recvClasses: Map[String, String] = newMap()
   val callArities: Map[String, Int] = newMap()
   val opts = MiddleEndOptions(
+    externIterResolver = jvmIterResolver(newJvmHostIterIndex(buildAutoFfiCtx())),
     tcFatal = true,
     tcReport = false,
     pkgLabel = "",
@@ -506,6 +508,125 @@ func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
 }
 
+// ── Host iteration protocol of extern types (D296) ───────────────────────────
+//
+// A `for` over an `extern type` of no type parameters or of two or more binds
+// the element type the JVM class's `Iterable<T>` declares.  The checker is
+// target-agnostic and cannot read class files, so this reads them before the
+// check (JDK modules, `LYRIC_FFI_JARS`) and hands the answers over in
+// `MiddleEndOptions.externIterResolver`.
+func jvmIterElemOfSig(sig: in CR.GenSig): ExternIterElem {
+  match sig {
+    case CR.GSVar(n) -> {
+      if n.length > 1 and n.substring(0, 1) == "#" {
+        EIEArg(index = parseIntOr(n.substring(1, n.length - 1), 0))
+      } else {
+        EIEHost(hostName = "java.lang.Object", args = newList())
+      }
+    }
+    case CR.GSWild -> EIEHost(hostName = "java.lang.Object", args = newList())
+    case CR.GSArray(_) -> EIEHost(hostName = "an array type", args = newList())
+    case CR.GSClass(name, args) -> {
+      if name == "java/lang/Integer" {
+        EIEPrim(name = "Int")
+      } else if name == "java/lang/Long" {
+        EIEPrim(name = "Long")
+      } else if name == "java/lang/Boolean" {
+        EIEPrim(name = "Bool")
+      } else if name == "java/lang/Double" {
+        EIEPrim(name = "Double")
+      } else if name == "java/lang/String" {
+        EIEPrim(name = "String")
+      } else if name == "java/lang/Byte" {
+        EIEPrim(name = "Byte")
+      } else {
+        val conv: List[ExternIterElem] = newList()
+        for a in args {
+          conv.add(jvmIterElemOfSig(a))
+        }
+        EIEHost(hostName = externHostBase(name), args = conv)
+      }
+    }
+  }
+}
+
+func parseIntOr(s: in String, dflt: in Int): Int {
+  var n = 0
+  var i = 0
+  if s.length == 0 {
+    return dflt
+  }
+  while i < s.length {
+    val c = s.substring(i, 1)
+    if c < "0" or c > "9" {
+      return dflt
+    }
+    n = n * 10 +
+      (
+        if c == "0" {
+          0
+        } else if c == "1" {
+          1
+        } else if c == "2" {
+          2
+        } else if c == "3" {
+          3
+        } else if c == "4" {
+          4
+        } else if c == "5" {
+          5
+        } else if c == "6" {
+          6
+        } else if c == "7" {
+          7
+        } else if c == "8" {
+          8
+        } else {
+          9
+        }
+      )
+    i = i + 1
+  }
+  n
+}
+
+/// The per-compilation class loader and answer cache the resolver
+/// reads and fills.
+pub record JvmHostIterIndex {
+  ctx: AutoFfiCtx
+  answered: Map[String, Bool]
+  known: Map[String, ExternIterInfo]
+}
+
+pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
+  JvmHostIterIndex(ctx = ctx, answered = newMap(), known = newMap())
+}
+
+impl ExternIterResolver for JvmHostIterIndex {
+  func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo] {
+    if not self.answered.containsKey(clrName) {
+      self.answered.add(clrName, true)
+      val r = iterProtocolOfExternJvm(self.ctx, externHostBase(clrName), arity)
+      if r.typed {
+        self.known.add(clrName, EIIElem(elem = jvmIterElemOfSig(r.elem)))
+      } else if r.found {
+        self.known.add(clrName, EIIObject)
+      } else if not r.unresolved {
+        self.known.add(clrName, EIINone)
+      }
+    }
+    mapGet(self.known, clrName)
+  }
+}
+
+/// The resolver a check reads class files through, as the one-element list
+/// `MiddleEndOptions.externIterResolver` takes.
+pub func jvmIterResolver(ix: in JvmHostIterIndex): List[ExternIterResolver] {
+  val rs: List[ExternIterResolver] = newList()
+  rs.add(ix)
+  rs
+}
+
 // Run the middle-end (type check → mode check → contract elaborate →
 // `?`-propagation lower → derive → monomorphise → weave) on one parsed file.
 // Returns the post-weave file, or None if a fatal type-check (user-owned
@@ -563,6 +684,7 @@ func runMiddleEnd(
   contractsEnabled: in Bool = true,
   quietWarnings: in Bool = false,
   sink: in DiagSink = printDiagnostics(),
+  externIter: in List[ExternIterResolver] = newList(),
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   val opts = jvmMiddleEndOptions(
@@ -575,7 +697,8 @@ func runMiddleEnd(
     ioForbiddenReason,
     contractsEnabled,
     quietWarnings,
-    sink
+    sink,
+    externIter
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
@@ -598,9 +721,11 @@ func jvmMiddleEndOptions(
   contractsEnabled: in Bool,
   quietWarnings: in Bool,
   sink: in DiagSink = printDiagnostics(),
+  externIter: in List[ExternIterResolver] = newList(),
 ): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
   MiddleEndOptions(
+    externIterResolver = externIter,
     tcFatal = tcFatal,
     tcReport = false,
     pkgLabel = pkgLabel,
@@ -3198,6 +3323,7 @@ pub func checkProjectTypesJvm(
       checked.add(f)
     }
   }
+  val checkIterIx = newJvmHostIterIndex(buildAutoFfiCtx())
   for f in checked {
     val name = dottedPath(f.packageDecl.path)
     val label = match mapGet(fe.pkgPathByName, name) { case Some(p) -> p; case None -> name }
@@ -3211,7 +3337,8 @@ pub func checkProjectTypesJvm(
       newMap(),
       unwrapOr(mapGet(ioForbiddenByPkg, name), ""),
       contractsEnabled,
-      fe.depPkgNames.containsKey(name)
+      fe.depPkgNames.containsKey(name),
+      jvmIterResolver(checkIterIx)
     )
     val _ = pipeCheckFront(arrayTypedOrSelf(fe.arrayTypedByPkg, f), fe.importedPkgs, opts, sink)
   }
@@ -3855,6 +3982,7 @@ pub func compileProjectToJarBundledWithRestored(
   }
 
   val autoFfi = buildAutoFfiCtx()
+  val hostIterIx = newJvmHostIterIndex(autoFfi)
   val allClasses: List[BuiltClass] = newList()
   // Every PROJECT package's `Lyric.Contract.<Pkg>` JAR resource (#4994) —
   // stdlib/dependency packages merely bundled for their bytecode are NOT
@@ -4028,7 +4156,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
   val userCallArities: Map[String, Int] = newMap()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx)) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4195,7 +4323,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx)) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.

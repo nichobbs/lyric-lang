@@ -141,6 +141,14 @@ pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in SymbolId): Bool {
   false
 }
 
+// The `ExternTypeDecl` an extern type id names, or None.
+pub func symTableExternDeclOf(tbl: in SymbolTable, id: in TypeId): Option[ExternTypeDecl] {
+  match symTableTypeSymbolOf(tbl, id) {
+    case Some(sym) -> match sym.kind { case DKExternType(_, decl) -> Some(value = decl); case _ -> None }
+    case None -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +233,43 @@ pub union StringMethodSurface {
   /// The above, and every instance method of `java.lang.String` and its
   /// supertypes, named in `hostMethods`.
   case SMSOpen(hostMethods: List[String])
+}
+
+/// What a `for` loop over an extern type binds, as one element type the host
+/// declares for the type's iteration protocol, written in terms of the extern
+/// type's own type parameters and host types (docs/42 section 9, D296).  A
+/// bridge reads the host metadata (`Msil.MetadataReader`, `Jvm.AutoFfi`);
+/// `Lyric.TypeChecker` is target-agnostic and cannot.
+pub union ExternIterElem {
+  /// The extern type's own type argument at this position (`Dict[K, V]`'s `K`).
+  case EIEArg(index: Int)
+  /// A Lyric primitive the host element type maps to (`Int`, `String`, ...).
+  case EIEPrim(name: String)
+  /// A host class or interface, by its host name without the arity suffix
+  /// (`System.Collections.Generic.KeyValuePair`), applied to element types.
+  /// It types as the `extern type` bound to that host name in scope.
+  case EIEHost(hostName: String, args: List[ExternIterElem])
+}
+
+/// Answers, on demand, how the host type behind an `extern type` iterates.
+/// A backend bridge implements it over the host metadata it can read; the
+/// checker asks only for the types a `for` actually iterates, so a build does
+/// not read the metadata of every extern type it imports.  None means the
+/// bridge cannot say (a type it cannot locate): the loop variable is then left
+/// unchecked.
+pub interface ExternIterResolver {
+  func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo]
+}
+
+/// How a host type iterates: what a bridge found in its metadata.
+pub union ExternIterInfo {
+  /// Neither `IEnumerable` nor `Iterable`: not iterable (T0126).
+  case EIINone
+  /// Only the untyped protocol (`System.Collections.IEnumerable`, a raw
+  /// `Iterable`): the elements are the host's `Object`.
+  case EIIObject
+  /// The typed protocol: `IEnumerable<T>` / `Iterable<T>` with this `T`.
+  case EIIElem(elem: ExternIterElem)
 }
 
 @stable(since = "0.1")
@@ -509,6 +554,21 @@ pub record SymbolTable {
   /// type (#7771): a same-named method, type-associated function or local
   /// function value never counts.
   generatorCallSites: Map[String, Bool]
+  /// How each extern type's host type iterates, keyed by the `clrName` its
+  /// `extern type` spells (D296).  Filled by the backend bridge before the
+  /// check from host metadata; a `for` over an extern type of no type
+  /// parameters or of two or more consults it.  An absent key means the
+  /// bridge could not say (a check with no references): the loop variable is
+  /// then left unchecked rather than guessed.
+  externIterElems: Map[String, ExternIterInfo]
+  /// The bridge's lazy answer for an extern type `externIterElems` lacks: a
+  /// 0/1-element list holding the resolver (the `scopePkg` idiom).
+  externIterResolver: List[ExternIterResolver]
+  /// Span keys (`recordCopySiteKey`) of the `for` iterables whose extern type
+  /// the checker typed from `externIterElems`, each with the iterable's start
+  /// offset: `Lyric.Mono` marks the loop for the backends and binds its loop
+  /// variable through a local annotated with the element type (D296).
+  externHostLoopSites: Map[String, Int]
   /// One entry per enclosing lenient first pass of a deferred call argument
   /// (the scratch-diagnostics pass of `ECall`, A2 / #7865).  A call checked
   /// inside one skips its own lambda-argument second pass: the enclosing
@@ -865,6 +925,9 @@ pub func newSymbolTable(): SymbolTable {
     lambdaUnitSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
+    externIterElems = newMap(),
+    externIterResolver = newList(),
+    externHostLoopSites = newMap(),
     lenientArgDepth = newList(),
     emptyCollectionCtorSites = newMap(),
     asyncCallSites = newMap(),
@@ -1230,7 +1293,7 @@ pub func symTableSetScope(tbl: in SymbolTable, pkg: in String, imports: in List[
   }
 }
 
-func symTableScopePkg(tbl: in SymbolTable): String {
+pub func symTableScopePkg(tbl: in SymbolTable): String {
   if tbl.scopePkg.count > 0 {
     tbl.scopePkg[0]
   } else {
@@ -1238,7 +1301,7 @@ func symTableScopePkg(tbl: in SymbolTable): String {
   }
 }
 
-func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
+pub func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
   if pkg.length == 0 {
     return false
   }

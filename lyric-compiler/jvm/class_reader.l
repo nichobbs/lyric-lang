@@ -73,6 +73,11 @@ pub record ClassInfo {
   // interface-shaped client API — `RedisClient`/`SetArgs` are concrete
   // classes but `StatefulRedisConnection`/`RedisCommands` are interfaces).
   isInterface: Bool
+  // The class's generic `Signature` attribute (JVMS 4.7.9.1), e.g.
+  // `<E:Ljava/lang/Object;>Ljava/util/AbstractList<TE;>;Ljava/util/List<TE;>;`;
+  // "" for a class that is not generic and has no generic supertype.  The
+  // `interfaces` above are the erased names; this carries their type arguments.
+  signature: String = ""
 }
 
 // ── Constant pool helpers ─────────────────────────────────────────────────────
@@ -409,6 +414,23 @@ pub func parseClass(b: in slice[Byte]): Option[ClassInfo] {
     mi = mi + 1
   }
 
+  // Class attributes: only `Signature` (u2 index of a Utf8) is read.
+  var classSignature = ""
+  if pos + 2 <= b.length {
+    val classAttrCount = rdU16(b, pos)
+    pos = pos + 2
+    var cai = 0
+    while cai < classAttrCount and pos + 6 <= b.length {
+      val attrNameIdx = rdU16(b, pos)
+      val attrLen = rdU32(b, pos + 2)
+      if attrLen == 2 and pos + 8 <= b.length and getSStr(utf8Map, toString(attrNameIdx)) == "Signature" {
+        classSignature = getSStr(utf8Map, toString(rdU16(b, pos + 6)))
+      }
+      pos = pos + 6 + attrLen
+      cai = cai + 1
+    }
+  }
+
   Some(
     value = ClassInfo(
       binaryName = binaryName,
@@ -418,7 +440,136 @@ pub func parseClass(b: in slice[Byte]): Option[ClassInfo] {
       constructors = constructors,
       fields = fields,
       isAbstract = isAbstract,
-      isInterface = isInterface
+      isInterface = isInterface,
+      signature = classSignature
     )
   )
+}
+
+// ── Generic class signatures (JVMS 4.7.9.1) ──────────────────────────────────
+/// A reference type in a generic signature.  `GSClass` names a class by its
+/// binary name (`java/util/Map$Entry`) with its type arguments; `GSVar` is a
+/// type variable by name; `GSWild` is an unbounded or lower-bounded wildcard;
+/// `GSArray` is an array type.
+pub union GenSig {
+  case GSClass(name: String, args: List[GenSig])
+  case GSVar(name: String)
+  case GSWild
+  case GSArray(elem: GenSig)
+}
+
+/// A parsed class `Signature`: the class's type parameter names and its
+/// generic supertypes (the superclass first, then each interface).
+pub record ClassSig {
+  typeParams: List[String]
+  supers: List[GenSig]
+}
+
+record GenSigParse {
+  sig: GenSig
+  next: Int
+}
+
+func sigChar(s: in String, i: in Int): String {
+  if i < s.length {
+    s.substring(i, 1)
+  } else {
+    ""
+  }
+}
+
+func isSigIdentEnd(c: in String): Bool {
+  c == "<" or c == ";" or c == "." or c == ":" or c == ">" or c == ""
+}
+
+func parseSigIdent(s: in String, i: in Int): GenSigParse {
+  var j = i
+  while not isSigIdentEnd(sigChar(s, j)) {
+    j = j + 1
+  }
+  GenSigParse(sig = GSVar(name = s.substring(i, j - i)), next = j)
+}
+
+func parseTypeArgs(s: in String, start: in Int, acc: in List[GenSig]): Int {
+  var i = start + 1
+  while sigChar(s, i) != ">" and i < s.length {
+    val c = sigChar(s, i)
+    if c == "*" {
+      acc.add(GSWild)
+      i = i + 1
+    } else if c == "-" {
+      val r = parseRefSig(s, i + 1)
+      acc.add(GSWild)
+      i = r.next
+    } else {
+      val start2 = if c == "+" { i + 1 } else { i }
+      val r = parseRefSig(s, start2)
+      acc.add(r.sig)
+      i = r.next
+    }
+  }
+  i + 1
+}
+
+func parseRefSig(s: in String, i: in Int): GenSigParse {
+  val c = sigChar(s, i)
+  if c == "L" {
+    var name = ""
+    var args: List[GenSig] = newList()
+    var j = i + 1
+    var done = false
+    while not done and j < s.length {
+      val id = parseSigIdent(s, j)
+      val part = match id.sig { case GSVar(n) -> n; case _ -> "" }
+      name = if name.length == 0 { part } else { name + "$" + part }
+      j = id.next
+      args = newList()
+      if sigChar(s, j) == "<" {
+        j = parseTypeArgs(s, j, args)
+      }
+      if sigChar(s, j) == "." {
+        j = j + 1
+      } else {
+        done = true
+      }
+    }
+    GenSigParse(sig = GSClass(name = name, args = args), next = j + 1)
+  } else if c == "T" {
+    val id = parseSigIdent(s, i + 1)
+    val vn = match id.sig { case GSVar(n) -> n; case _ -> "" }
+    GenSigParse(sig = GSVar(name = vn), next = id.next + 1)
+  } else if c == "[" {
+    val inner = parseRefSig(s, i + 1)
+    GenSigParse(sig = GSArray(elem = inner.sig), next = inner.next)
+  } else {
+    GenSigParse(sig = GSClass(name = c, args = newList()), next = i + 1)
+  }
+}
+
+/// Parse a class `Signature` attribute value.
+pub func parseClassSignature(s: in String): ClassSig {
+  val params: List[String] = newList()
+  val supers: List[GenSig] = newList()
+  var i = 0
+  if sigChar(s, 0) == "<" {
+    i = 1
+    while sigChar(s, i) != ">" and i < s.length {
+      val id = parseSigIdent(s, i)
+      params.add(match id.sig { case GSVar(n) -> n; case _ -> "" })
+      i = id.next
+      while sigChar(s, i) == ":" {
+        i = i + 1
+        if sigChar(s, i) != ":" and sigChar(s, i) != ">" {
+          i = parseRefSig(s, i).next
+        }
+      }
+    }
+    i = i + 1
+  }
+  while i < s.length {
+    val r = parseRefSig(s, i)
+    supers.add(r.sig)
+    i = r.next
+  }
+  ClassSig(typeParams = params, supers = supers)
 }

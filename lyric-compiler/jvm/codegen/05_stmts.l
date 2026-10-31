@@ -1847,14 +1847,19 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // guessing index 1 here silently miscompiled `mapKeys`'s own
           // `for k in dictGetKeys(m)` loop. See `indexedElemTypeOverride`'s
           // own comment (`jvm/codegen/02_exprs.l`) for the full rationale.
-          val forElemOverride = indexedElemTypeOverride(ctx, iter, false)
+          // An `extern type` iterated through the host's `Iterable` (D296):
+          // `Lyric.Mono` wrapped the iterable in `__lyric_host_iter`, which
+          // only marks the loop; the typed loop-variable binding it made
+          // narrows the erased `next()` element.
+          val iterExpr = match hostIterInner(iter) { case Some(inner) -> inner; case None -> iter }
+          val forElemOverride = indexedElemTypeOverride(ctx, iterExpr, false)
           // A nested `slice[...]`/`List[...]` element (`Validation.all`'s
           // `slice[slice[ValidationError]]`, JVM nested-slice `for` bug —
           // see the tracking issue): resolved once here and consumed by
           // BOTH codegen branches below via `emitNormalizeErasedSlice`, so
           // they can't diverge on this case.
-          val forLoopNestedElemTe = forLoopNestedArrayElemTypeExpr(ctx, iter)
-          val iterTy = lowerExpr(ctx, insns, iter)
+          val forLoopNestedElemTe = forLoopNestedArrayElemTypeExpr(ctx, iterExpr)
+          val iterTy = lowerExpr(ctx, insns, iterExpr)
           match iterTy {
             case JArray(elemArr) -> {
               // Array: index-based loop.

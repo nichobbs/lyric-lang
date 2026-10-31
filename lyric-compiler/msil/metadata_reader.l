@@ -4672,3 +4672,267 @@ pub func readAssemblyVersion(asmPath: in String): Option[AssemblyVersion] {
     }
   }
 }
+
+// ── Layer 8: the iteration protocol of a host type (D296) ────────────────────
+//
+// What a `for` over an `extern type` binds depends on which collection
+// protocol the CLR type implements: `IEnumerable<T>` (the elements are `T`,
+// written here in terms of the type's own generic parameters, `STVar`) or
+// only the untyped `System.Collections.IEnumerable` (the elements are
+// `object`).  The interfaces come from the InterfaceImpl table (0x09) and the
+// base class from the TypeDef's Extends column; each is a TypeDefOrRef that
+// is a TypeSpec (a GENERICINST over the declaring type's own parameters) when
+// it is generic, so the walk substitutes the parameters as it descends
+// through `ICollection<T>`, `IDictionary<K, V>` (whose element is
+// `KeyValuePair<K, V>`), and the base classes, across assemblies.
+pub record IterProtocolSig {
+  // The type implements `IEnumerable` or `IEnumerable<T>`.
+  found: Bool
+  // It implements the generic `IEnumerable<T>`; `elem` is `T`.
+  typed: Bool
+  elem: SigType
+  // Some type on the way (the type itself or a supertype) could not be
+  // located in the assemblies given, so "not found" is not a verdict.
+  unresolved: Bool
+}
+
+func iterNotFound(): IterProtocolSig {
+  IterProtocolSig(found = false, typed = false, elem = STUnknown(elemByte = 0), unresolved = false)
+}
+
+func iterUnresolved(): IterProtocolSig {
+  IterProtocolSig(found = false, typed = false, elem = STUnknown(elemByte = 0), unresolved = true)
+}
+
+// The TypeDefOrRef-coded token `tok` as a type, written over the declaring
+// type's generic parameters: a plain TypeDef/TypeRef is `STNamed`, a TypeSpec
+// is its decoded signature (a GENERICINST), both with names resolved.
+func parentSigOfToken(img: in PeImage, layout: in TableLayout, th: in TablesHeader, tok: in Int): Option[SigType] {
+  val tag = tok % 4
+  val row = tok / 4
+  if row <= 0 {
+    return None
+  }
+  if tag == 2 {
+    if row > rowCountOf(th, 0x1B) {
+      return None
+    }
+    val o = layout.dataStart[0x1B] + (row - 1) * layout.rowSize[0x1B]
+    val blobI = rdIdx(img.bytes, o, layout.blobIdx)
+    val blob = blobAt(img, layout, blobI)
+    if blob.length == 0 {
+      return None
+    }
+    Some(value = resolveSigTypeFqn(img, layout, th, decodeType(blob, 0).ty))
+  } else {
+    val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+    if fqn.length == 0 {
+      None
+    } else {
+      Some(value = STNamed(fqn = fqn, valueType = false))
+    }
+  }
+}
+
+// Every direct supertype token of TypeDef `typeRow`: its base class (when it
+// has one) and each InterfaceImpl row naming it as the implementing class.
+func directSuperTokens(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeRow: in Int): List[Int] {
+  val toks: List[Int] = newList()
+  val ext = readTypeDef(img, layout, typeRow).extendsToken
+  if ext / 4 > 0 {
+    toks.add(ext)
+  }
+  val n = rowCountOf(th, 0x09)
+  var r = 1
+  while r <= n {
+    val o = layout.dataStart[0x09] + (r - 1) * layout.rowSize[0x09]
+    val cls = rdIdx(img.bytes, o, layout.typeDefIdx)
+    if cls == typeRow {
+      toks.add(rdIdx(img.bytes, o + layout.typeDefIdx, layout.typeDefOrRefIdx))
+    }
+    r = r + 1
+  }
+  toks
+}
+
+func iterWalk(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  fqn: in String,
+  args: in List[SigType],
+  depth: in Int,
+): IterProtocolSig {
+  if fqn == "System.Collections.Generic.IEnumerable`1" and args.count == 1 {
+    return IterProtocolSig(found = true, typed = true, elem = args[0], unresolved = false)
+  }
+  if fqn == "System.Collections.IEnumerable" {
+    return IterProtocolSig(found = true, typed = false, elem = STUnknown(elemByte = 0), unresolved = false)
+  }
+  if depth > 16 {
+    return iterUnresolved()
+  }
+  val asmName = match assemblyForType(typeIndex, fqn) { case Some(n) -> n; case None -> return iterUnresolved() }
+  val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return iterUnresolved() }
+  val parsed = match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+    case Some(pa) -> pa
+    case None -> return iterUnresolved()
+  }
+  val typeRow = findTypeDefByFqn(parsed.img, parsed.layout, parsed.th, fqn)
+  if typeRow < 0 {
+    return iterUnresolved()
+  }
+  var best = iterNotFound()
+  var anyUnresolved = false
+  val toks = directSuperTokens(parsed.img, parsed.layout, parsed.th, typeRow)
+  var i = 0
+  while i < toks.count {
+    match parentSigOfToken(parsed.img, parsed.layout, parsed.th, toks[i]) {
+      case None -> {
+      }
+      case Some(sig0) -> {
+        val sig = substituteVarsInSigType(sig0, args)
+        val noArgs: List[SigType] = newList()
+        val step = match sig {
+          case STNamed(f, _) -> iterWalk(cachePaths, cacheParsed, typeIndex, pathIndex, f, noArgs, depth + 1)
+          case STNamedGenericInst(f, _, a) -> iterWalk(
+            cachePaths,
+            cacheParsed,
+            typeIndex,
+            pathIndex,
+            f,
+            a,
+            depth + 1
+          )
+          case _ -> iterNotFound()
+        }
+        if step.typed {
+          return step
+        }
+        if step.found {
+          best = step
+        }
+        if step.unresolved {
+          anyUnresolved = true
+        }
+      }
+    }
+    i = i + 1
+  }
+  if not best.found and anyUnresolved {
+    return iterUnresolved()
+  }
+  best
+}
+
+func clrPrimSig(fqn: in String): Option[SigType] {
+  if fqn == "System.Boolean" {
+    Some(value = STPrim(elemByte = 0x02))
+  } else if fqn == "System.Byte" {
+    Some(value = STPrim(elemByte = 0x05))
+  } else if fqn == "System.Int32" {
+    Some(value = STPrim(elemByte = 0x08))
+  } else if fqn == "System.Int64" {
+    Some(value = STPrim(elemByte = 0x0A))
+  } else if fqn == "System.Double" {
+    Some(value = STPrim(elemByte = 0x0D))
+  } else if fqn == "System.String" {
+    Some(value = STPrim(elemByte = 0x0E))
+  } else {
+    None
+  }
+}
+
+// Split the inside of `[...]` at top-level commas.
+func splitTopLevelArgs(inner: in String): List[String] {
+  val parts: List[String] = newList()
+  var depth = 0
+  var start = 0
+  var i = 0
+  while i < inner.length {
+    val c = inner.substring(i, 1)
+    if c == "[" {
+      depth = depth + 1
+    } else if c == "]" {
+      depth = depth - 1
+    } else if c == "," and depth == 0 {
+      parts.add(Str.trim(inner.substring(start, i - start)))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  parts.add(Str.trim(inner.substring(start, inner.length - start)))
+  parts
+}
+
+// The index of the first `[` in `s`, or -1.
+func indexOfBracket(s: in String): Int {
+  var i = 0
+  while i < s.length {
+    if s.substring(i, 1) == "[" {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+// A type spelled as an `extern type` instantiation argument
+// (`System.Int32`, `Foo`1[System.String]`) as a signature type.
+func sigOfClrSpelling(spelling: in String): SigType {
+  val br = indexOfBracket(spelling)
+  if br < 0 {
+    match clrPrimSig(spelling) {
+      case Some(p) -> p
+      case None -> STNamed(fqn = spelling, valueType = false)
+    }
+  } else {
+    val head = spelling.substring(0, br)
+    val inner = spelling.substring(br + 1, spelling.length - br - 2)
+    val parts = splitTopLevelArgs(inner)
+    val args: List[SigType] = newList()
+    var i = 0
+    while i < parts.count {
+      args.add(sigOfClrSpelling(parts[i]))
+      i = i + 1
+    }
+    STNamedGenericInst(fqn = head, valueType = false, args = args)
+  }
+}
+
+// How the CLR type an `extern type` spells (`clrName`, with `arity` type
+// parameters) iterates.  A concrete instantiation spelled in the name
+// (`System.Collections.Generic.List`1[System.Int32]`) fixes the arguments; any
+// other generic type is analysed over its own parameters, so the element is
+// `STVar(i)` for the i-th parameter.  `typeIndex` / `pathIndex` locate the
+// declaring assembly of each type walked (the reference pack plus any
+// restored dependencies) and `cachePaths` / `cacheParsed` keep each assembly
+// parsed once.
+pub func iterProtocolOfExtern(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  clrName: in String,
+  arity: in Int,
+): IterProtocolSig {
+  val br = indexOfBracket(clrName)
+  val head = if br < 0 { clrName } else { clrName.substring(0, br) }
+  val args: List[SigType] = newList()
+  if br >= 0 {
+    val parts = splitTopLevelArgs(clrName.substring(br + 1, clrName.length - br - 2))
+    var i = 0
+    while i < parts.count {
+      args.add(sigOfClrSpelling(parts[i]))
+      i = i + 1
+    }
+  } else {
+    var i = 0
+    while i < arity {
+      args.add(STVar(index = i))
+      i = i + 1
+    }
+  }
+  iterWalk(cachePaths, cacheParsed, typeIndex, pathIndex, head, args, 0)
+}
