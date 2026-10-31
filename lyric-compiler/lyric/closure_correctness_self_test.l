@@ -232,10 +232,12 @@ test "a curried Unit-returning lambda called in place (#8317)" {
   assertEqual(log[0] + log[1], "ab", "each call kept its own captured tag")
 }
 
-// A captured parameter whose type has no verifiable narrowing from `object`
-// (a slice, which may be `List`-backed, or an in-bundle generic, which may be
-// an erased construction) is kept boxed in the closure field and read as the
-// parameter is (#8317).
+// A lambda parameter typed as a slice or an in-bundle generic arrives as
+// `object` under the uniform `Func` ABI.  A slice is converted to its array
+// type at each typed read (a `List`-backed one is copied); an in-bundle generic
+// instance is cast to its closed instantiation, so every consumer (a typed
+// local, a typed call argument, `==`, a capturing closure) sees verifiable IL
+// (#8317, #8349).
 record CurryBox[T] {
   v: T
 }
@@ -266,4 +268,34 @@ test "a generic record and union parameter captured (#8317)" {
   val l: CurryEither[Int, String] = CurryLeft(a = 3)
   val r: CurryEither[Int, String] = CurryRight(b = "r")
   assertEqual(show(l)() + show(r)(), "3r", "CurryEither[Int, String]")
+}
+
+func curryUnbox(b: in CurryBox[Int]): Int = b.v
+
+func curryShow(e: in CurryEither[Int, String]): String {
+  match e {
+    case CurryLeft(a) -> toString(a)
+    case CurryRight(b) -> b
+  }
+}
+
+func withBox(f: in (CurryBox[Int]) -> Int, b: in CurryBox[Int]): Int = f(b)
+
+func withEither(f: in (CurryEither[Int, String]) -> String, e: in CurryEither[Int, String]): String = f(e)
+
+test "a generic parameter reaching typed consumers (#8349)" {
+  assertEqualInt(withBox({ b: CurryBox[Int] -> curryUnbox(b) }, CurryBox(v = 5)), 5, "typed call argument")
+  val viaLocal = withBox({ b: CurryBox[Int] -> val c: CurryBox[Int] = b; c.v + 1 }, CurryBox(v = 6))
+  assertEqualInt(viaLocal, 7, "typed local")
+  assertEqualInt(withBox({ b: CurryBox[Int] -> if b == b { 1 } else { 0 } }, CurryBox(v = 9)), 1, "equality")
+  val l: CurryEither[Int, String] = CurryLeft(a = 3)
+  val r: CurryEither[Int, String] = CurryRight(b = "r")
+  assertEqual(
+    withEither({ e: CurryEither[Int, String] -> curryShow(e) }, l) +
+      withEither({ e: CurryEither[Int, String] -> curryShow(e) }, r),
+    "3r",
+    "union to a typed function"
+  )
+  val viaCapture = withBox({ b: CurryBox[Int] -> { -> curryUnbox(b) }() }, CurryBox(v = 8))
+  assertEqualInt(viaCapture, 8, "captured and passed on")
 }
