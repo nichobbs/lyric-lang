@@ -18,23 +18,6 @@ pub record CheckResult {
   symbols: SymbolTable
   sigs: Map[String, ResolvedSignature]
   diagnostics: List[Diagnostic]
-  // ─────────────────────────────────────────────────────────────────────────────
-  // §2. Monotonic type-id source (boxed via List length).
-  // ─────────────────────────────────────────────────────────────────────────────
-}
-
-pub record TypeIdCounter {
-  ticks: List[Int]
-}
-
-func newTypeIdCounter(): TypeIdCounter {
-  val ticks: List[Int] = newList()
-  TypeIdCounter(ticks = ticks)
-}
-
-func freshTypeId(ctr: in TypeIdCounter): TypeId {
-  ctr.ticks.add(0)
-  TypeId(id = ctr.ticks.count)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,14 +59,14 @@ func hasPriorUserSym(tbl: in SymbolTable, name: in String): Bool {
 // union/enum (same parentId).  Cases with the same name in *different* unions
 // or enums are distinct and must be allowed — they are distinguished at use
 // sites via qualified patterns (`Color.Same` vs `Shape.Same`, #3349).
-func caseNameExistsForParent(tbl: in SymbolTable, name: in String, parentId: in TypeId): Bool {
+func caseNameExistsForParent(tbl: in SymbolTable, name: in String, parentId: in SymbolId): Bool {
   var i = 0
   while i < tbl.symbols.count {
     val sym = tbl.symbols[i]
     if sym.name == name and not sym.isImported {
       val sameParent = match sym.kind {
-        case DKUnionCase(pid, _) -> typeIdEq(pid, parentId)
-        case DKEnumCase(pid, _) -> typeIdEq(pid, parentId)
+        case DKUnionCase(pid, _) -> symbolIdEq(pid, parentId)
+        case DKEnumCase(pid, _) -> symbolIdEq(pid, parentId)
         case _ -> false
       }
       if sameParent {
@@ -191,24 +174,6 @@ func extractDerives(anns: in List[Annotation]): List[String] {
   result
 }
 
-// The `TypeId` already assigned to an extern type with CLR target `clrName`,
-// if any — so repeat registrations of the same extern type share one canonical
-// id (see the `IExternType` arm of `registerItem`, #2394).
-// O(N) per extern-type registration — negligible while extern types are rare (dozens at most);
-// a clrNameToTypeId side-table could reduce this to O(1) if it becomes measurable.
-func findExternTypeIdByClr(tbl: in SymbolTable, clrName: in String): Option[TypeId] {
-  var i = 0
-  while i < tbl.symbols.count {
-    match tbl.symbols[i].kind {
-      case DKExternType(id, d) -> if d.clrName == clrName { return Some(value = id) }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  None
-}
-
 // The declared name of one `extern package { ... }` member, whatever kind
 // it is (#6361 — feeds `symTableAddExternBlockMember`).
 func externMemberDeclName(m: in ExternMember): String {
@@ -225,18 +190,13 @@ func externMemberDeclName(m: in ExternMember): String {
 }
 
 func registerItem(
-  tbl: in SymbolTable,
-  ctr: in TypeIdCounter,
-  diag: in List[Diagnostic],
-  isImported: in Bool,
-  originPkg: in String,
-  it: in Item,
+  tbl: in SymbolTable, diag: in List[Diagnostic], isImported: in Bool, originPkg: in String, it: in Item
 ): Unit {
   val vis = it.visibility
   val span = it.span
   match it.kind {
     case IRecord(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSymDerived(
         tbl,
         diag,
@@ -250,7 +210,7 @@ func registerItem(
       )
     }
     case IExposedRec(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSymDerived(
         tbl,
         diag,
@@ -264,7 +224,7 @@ func registerItem(
       )
     }
     case IUnion(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSymDerived(
         tbl,
         diag,
@@ -284,7 +244,7 @@ func registerItem(
       }
     }
     case IEnum(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKEnum(id = tid, decl = decl), vis, span)
       var i = 0
       while i < decl.cases.count {
@@ -294,40 +254,35 @@ func registerItem(
       }
     }
     case IOpaque(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKOpaque(id = tid, decl = decl), vis, span)
     }
     case IProtected(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKProtected(id = tid, decl = decl), vis, span)
     }
     case IDistinctType(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKDistinctType(id = tid, decl = decl), vis, span)
     }
     case ITypeAlias(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKTypeAlias(decl = decl), vis, span)
     }
     case IInterface(decl) -> {
-      val tid = freshTypeId(ctr)
+      val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKInterface(id = tid, decl = decl), vis, span)
     }
     case IExternType(decl) -> {
-      // Deduplicate extern types by their CLR target so the *same* extern type
-      // (e.g. `extern type List[T] = "System.Collections.Generic.List`1"`,
-      // threaded into many packages) always resolves to one canonical `TypeId`.
-      // Without this, each registration gets a fresh id, and type identity breaks
-      // when two references resolve to different registrations — e.g. `List[String]`
-      // resolving to `List#127` while `newList()`'s `List[T]` resolves to `List#4`
-      // produced a spurious `T0060` whose appearance depended on registration
-      // order (#2394).
+      // An extern type with a host name is identified by it
+      // (`externTypeDefPath`), so the *same* extern type (e.g. `extern type
+      // List[T] = "System.Collections.Generic.List`1"`, threaded into many
+      // packages) is one `SymbolId` wherever it is declared: two ids for one
+      // host type made `List[String]` and `newList()`'s `List[T]` different
+      // types, a spurious `T0060` that depended on registration order (#2394).
       val tid = if decl.clrName.length > 0 {
-        match findExternTypeIdByClr(tbl, decl.clrName) {
-          case Some(existing) -> existing
-          case None -> freshTypeId(ctr)
-        }
+        symTableInternDefPath(tbl, externTypeDefPath(decl.clrName))
       } else {
-        freshTypeId(ctr)
+        symTableTypeSymbolId(tbl, originPkg, decl.name)
       }
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExternType(id = tid, decl = decl), vis, span)
     }
@@ -519,9 +474,9 @@ func reportDependencySurfaceError(
   }
 }
 
-// Record each `impl Iface for Target` conformance keyed by resolved `TypeId`,
+// Record each `impl Iface for Target` conformance keyed by resolved `SymbolId`,
 // so the argument-position interface-subtyping check (#1488) can accept a
-// `Target` value where an `Iface` parameter is expected.  Keying on `TypeId`
+// `Target` value where an `Iface` parameter is expected.  Keying on `SymbolId`
 // (not simple name) keeps it sound across packages: a same-simple-name
 // interface in another package has a distinct id and can't satisfy the check
 // (#2303).  Must run with the table fully populated and under the items'
@@ -562,8 +517,8 @@ func mkTypeRef(path: in ModulePath, span: in Span): TypeExpr {
   TypeExpr(kind = TRef(path = path), span = span)
 }
 
-// The `TypeId` of a resolved user type, or `None` for non-`TyUser` types.
-func typeIdOfType(t: in Type): Option[TypeId] {
+// The `SymbolId` of a resolved user type, or `None` for non-`TyUser` types.
+func typeIdOfType(t: in Type): Option[SymbolId] {
   match unrefine(t) {
     case TyUser(id, _, _) -> Some(value = id)
     case _ -> None
@@ -4377,22 +4332,22 @@ func checkRecordMemberBodies(
 }
 
 // #6487: find the `RecordDecl` backing a resolved record/exposed-record
-// `TypeId`, reusing the same symbol-table walk `fieldsOfRecord` (exprs.l)
+// `SymbolId`, reusing the same symbol-table walk `fieldsOfRecord` (exprs.l)
 // does — needed here (rather than `fieldsOfRecord`'s already-`Type`-resolved
 // output) because `implTargetFieldLocals` must re-resolve each field through
 // `recordFieldLocals` to get `LocalBinding.isMutable`, which `FieldEntry`
 // does not carry.
-func findRecordDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[RecordDecl] {
+func findRecordDeclByTypeId(tbl: in SymbolTable, tid: in SymbolId): Option[RecordDecl] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
       case DKRecord(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           return Some(value = rd)
         }
       }
       case DKExposedRec(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           return Some(value = rd)
         }
       }
@@ -4404,12 +4359,12 @@ func findRecordDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[RecordD
   None
 }
 
-func findProtectedDeclByTypeId(tbl: in SymbolTable, tid: in TypeId): Option[ProtectedTypeDecl] {
+func findProtectedDeclByTypeId(tbl: in SymbolTable, tid: in SymbolId): Option[ProtectedTypeDecl] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
       case DKProtected(did, pd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           return Some(value = pd)
         }
       }
@@ -6876,16 +6831,12 @@ func topLevelItemName(it: in Item): Option[String] {
 // a symbol of kind `DKExternType` with a synthetic ExternTypeDecl carrying the
 // external FQN. This allows auto-FFI to resolve method calls on imported
 // external types just as it does for `extern type` declarations.
-// Deduplicates by external FQN so repeated imports of the same external type
-// share one canonical TypeId (matching the behavior of `extern type`).
+// Each is identified by its external FQN (`externTypeDefPath`), as an
+// `extern type` is, so repeated imports of one external type share one
+// SymbolId.
 // Public (`pub use extern`) and private (`import extern`) imports are both
 // supported with correct visibility semantics.
-pub func registerExternalImports(
-  tbl: in SymbolTable,
-  ctr: in TypeIdCounter,
-  diag: in List[Diagnostic],
-  imports: in List[ImportDecl],
-): Unit {
+pub func registerExternalImports(tbl: in SymbolTable, diag: in List[Diagnostic], imports: in List[ImportDecl]): Unit {
   var i = 0
   while i < imports.count {
     val imp = imports[i]
@@ -6899,10 +6850,7 @@ pub func registerExternalImports(
             val externalFqn = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
             val symbolName = match item.asAlias { case Some(aliasName) -> aliasName; case None -> item.name }
             // Deduplicate by external FQN like regular `extern type`.
-            val tid = match findExternTypeIdByClr(tbl, externalFqn) {
-              case Some(existing) -> existing
-              case None -> freshTypeId(ctr)
-            }
+            val tid = symTableInternDefPath(tbl, externTypeDefPath(externalFqn))
             // Create a synthetic ExternTypeDecl with no generics (external types
             // are monomorphic from the import perspective; generics are resolved
             // through auto-FFI metadata lookup).  `clrNameQuoted` is a formatter-
@@ -6926,10 +6874,7 @@ pub func registerExternalImports(
           val externalFqn = if baseNamespace.length > 0 { baseNamespace + "." + item.name } else { item.name }
           val symbolName = match item.asAlias { case Some(aliasName) -> aliasName; case None -> item.name }
           // Deduplicate by external FQN like regular `extern type`.
-          val tid = match findExternTypeIdByClr(tbl, externalFqn) {
-            case Some(existing) -> existing
-            case None -> freshTypeId(ctr)
-          }
+          val tid = symTableInternDefPath(tbl, externTypeDefPath(externalFqn))
           // Create a synthetic ExternTypeDecl.
           val syntheticDecl = ExternTypeDecl(
             name = symbolName,
@@ -6947,10 +6892,7 @@ pub func registerExternalImports(
           val typeName = imp.path.segments[imp.path.segments.count - 1]
           val symbolName = unwrapOr(imp.asAlias, typeName)
           // Deduplicate by external FQN like regular `extern type`.
-          val tid = match findExternTypeIdByClr(tbl, externalFqn) {
-            case Some(existing) -> existing
-            case None -> freshTypeId(ctr)
-          }
+          val tid = symTableInternDefPath(tbl, externTypeDefPath(externalFqn))
           // Create a synthetic ExternTypeDecl.
           val syntheticDecl = ExternTypeDecl(
             name = symbolName,
@@ -7035,11 +6977,11 @@ val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type 
 // sees them bare with no import, as codegen does.  They are registered
 // before any other package, so a type of the same name declared anywhere
 // else shadows them.  `native` adds the native-only `NativeWeak[T]`.
-func registerNativeIntrinsicTypes(tbl: in SymbolTable, ctr: in TypeIdCounter, native: in Bool): Unit {
+func registerNativeIntrinsicTypes(tbl: in SymbolTable, native: in Bool): Unit {
   val pr = parse(if native then nativeIntrinsicTypesSource else ffiIntrinsicTypesSource)
   val scratch: List[Diagnostic] = newList()
   for it in pr.file.items {
-    registerItem(tbl, ctr, scratch, true, "", it)
+    registerItem(tbl, scratch, true, "", it)
     match it.kind {
       case IExternType(decl) -> match symbolTypeIdOpt(tbl.symbols[tbl.symbols.count - 1]) {
         case Some(tid) -> tbl.nativeIntrinsicTypes.add(decl.name, tid)
@@ -7114,13 +7056,29 @@ func reportConflictingClassification(diag: in List[Diagnostic], file: in SourceF
   }
 }
 
+// `packages` without the package `own`.  A project build hands the checker
+// every project package as an import, the one being checked included
+// (#7583); a package is not its own import, and registering its declarations
+// a second time, as imported, would give each of its types a second symbol
+// with the same SymbolId (docs/70 §4.2) that first-match scans could pick.
+func withoutOwnPackage(packages: in List[ImportedPackage], own: in String): List[ImportedPackage] {
+  val kept: List[ImportedPackage] = newList()
+  for ip in packages {
+    if own.length == 0 or ip.name != own {
+      kept.add(ip)
+    }
+  }
+  kept
+}
+
 func checkWithImportedPackagesCore(
   file0: in SourceFile,
-  importedPackages: in List[ImportedPackage],
+  allImportedPackages: in List[ImportedPackage],
   validateDecls: in Bool,
   nativeIntrinsics: in Bool,
   stringSurface: in StringMethodSurface,
 ): CheckResult {
+  val importedPackages = withoutOwnPackage(allImportedPackages, dottedPackageName(file0.packageDecl.path))
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   tbl.stringSurface.add(stringSurface)
@@ -7129,8 +7087,7 @@ func checkWithImportedPackagesCore(
       tbl.contractSourceFile.add(true)
     }
   }
-  val ctr = newTypeIdCounter()
-  registerNativeIntrinsicTypes(tbl, ctr, nativeIntrinsics)
+  registerNativeIntrinsicTypes(tbl, nativeIntrinsics)
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
   // compile pipeline has already desugared the file it passes here (so its
@@ -7157,21 +7114,21 @@ func checkWithImportedPackagesCore(
     val ipItems = desugarModuleValItems(ip.items, ipDiag)
     var ii = 0
     while ii < ipItems.count {
-      registerItem(tbl, ctr, diag, true, ip.name, ipItems[ii])
+      registerItem(tbl, diag, true, ip.name, ipItems[ii])
       ii = ii + 1
     }
     p = p + 1
   }
   var j = 0
   while j < file.items.count {
-    registerItem(tbl, ctr, diag, false, userPkg, file.items[j])
+    registerItem(tbl, diag, false, userPkg, file.items[j])
     j = j + 1
   }
 
   // T1.5: register external imports from `import extern` declarations (D105, Phase 2a).
   // This must happen after T1 so regular Lyric types are already in scope for
   // shadowing, and before symTableSetScope so the scope is computed afterward.
-  registerExternalImports(tbl, ctr, diag, file.imports)
+  registerExternalImports(tbl, diag, file.imports)
 
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.

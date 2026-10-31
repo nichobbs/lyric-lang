@@ -583,7 +583,7 @@ func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
   // symbol table before the public files' re-export aliases
   // (`pub alias Random = Std.RandomHost.Random`, etc.).  The
   // self-hosted typechecker's `symTableTryFindOne` is last-registered-wins
-  // (scans backwards), and `DKTypeAlias` carries no `TypeId`, so registering
+  // (scans backwards), and `DKTypeAlias` carries no `SymbolId`, so registering
   // an alias before its target type makes every reference to the bare name
   // resolve to the alias and fail with T0013 '<name> is not a type'.
   if forJvm {

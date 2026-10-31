@@ -311,22 +311,22 @@ func hasDerive(tbl: in SymbolTable, marker: in String, t: in Type): Bool {
         val sym = tbl.symbols[i]
         match sym.kind {
           case DKDistinctType(did, dt) -> {
-            if typeIdEq(did, tid) {
+            if symbolIdEq(did, tid) {
               return listContainsStr(dt.derives, marker)
             }
           }
           case DKRecord(rid, _) -> {
-            if typeIdEq(rid, tid) {
+            if symbolIdEq(rid, tid) {
               return listContainsStr(sym.derives, marker)
             }
           }
           case DKExposedRec(rid, _) -> {
-            if typeIdEq(rid, tid) {
+            if symbolIdEq(rid, tid) {
               return listContainsStr(sym.derives, marker)
             }
           }
           case DKUnion(uid, _) -> {
-            if typeIdEq(uid, tid) {
+            if symbolIdEq(uid, tid) {
               return listContainsStr(sym.derives, marker)
             }
           }
@@ -366,7 +366,7 @@ func finiteCaseNames(tbl: in SymbolTable, t: in Type): Option[List[String]] {
       while i < tbl.symbols.count {
         match tbl.symbols[i].kind {
           case DKUnion(uid, decl) -> {
-            if typeIdEq(uid, id) {
+            if symbolIdEq(uid, id) {
               val names: List[String] = newList()
               var c = 0
               while c < decl.cases.count {
@@ -377,7 +377,7 @@ func finiteCaseNames(tbl: in SymbolTable, t: in Type): Option[List[String]] {
             }
           }
           case DKEnum(eid, decl) -> {
-            if typeIdEq(eid, id) {
+            if symbolIdEq(eid, id) {
               val names: List[String] = newList()
               var c = 0
               while c < decl.cases.count {
@@ -1892,7 +1892,7 @@ func nativeCallbackPinType(
 func nativeWeakUpgradeType(tbl: in SymbolTable, recvTy: in Type): Option[Type] {
   match mapGet(tbl.nativeIntrinsicTypes, "NativeWeak") {
     case Some(weakId) -> match unrefine(recvTy) {
-      case TyUser(tid, _, targs) -> if typeIdEq(tid, weakId) and targs.count == 1 {
+      case TyUser(tid, _, targs) -> if symbolIdEq(tid, weakId) and targs.count == 1 {
         // `Option` not resolvable from the item pool (a partial check):
         // defer to the general member path rather than fabricate a TyError
         // that would unify with anything and swallow a real mismatch.
@@ -1973,7 +1973,7 @@ func distinctUnderlyingOf(tbl: in SymbolTable, t: in Type): Option[Type] {
   while i < tbl.symbols.count {
     val sym = tbl.symbols[i]
     match sym.kind {
-      case DKDistinctType(did, dt) -> if typeIdEq(did, tid) {
+      case DKDistinctType(did, dt) -> if symbolIdEq(did, tid) {
         match dt.generics {
           case Some(_) -> return None
           case None -> ()
@@ -2001,7 +2001,7 @@ pub func distinctFromPath(tbl: in SymbolTable, t: in Type): Option[String] {
         val sym = tbl.symbols[i]
         match sym.kind {
           case DKDistinctType(did, _) -> {
-            if typeIdEq(did, tid) {
+            if symbolIdEq(did, tid) {
               return Some(value = sym.name + ".from")
             }
           }
@@ -2866,7 +2866,7 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
       // the stdlib `List`'s identity (#7737): a package's own `record
       // List[T]` has no `toArray`/`count`, and typing them here hid the
       // unknown-member diagnostic and reached codegen as invalid IL.
-      if targs.count == 1 and typeIdEq(tid, builtinBufferTypeId()) {
+      if targs.count == 1 and symbolIdEq(tid, builtinBufferTypeId()) {
         if name == "length" {
           return Some(value = TyPrim(pt = PtInt))
         }
@@ -2942,7 +2942,7 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
 // never from the `ECall` arm's own direct `inferMemberBase` call, so the
 // bare `.isOk` form (this fix) and the call form `.isOk()` (pre-existing)
 // both keep working.
-// Keyed by `TypeId` (not simple name) — the same #2303 soundness precedent
+// Keyed by `SymbolId` (not simple name) — the same #2303 soundness precedent
 // `SymbolTable.impls` documents: a same-simple-name `Result`/`Option`
 // union declared OUTSIDE `Std.Core` must never satisfy this check (#6630).
 // A plain `nm == "Result"` string test (the previous behaviour) would also
@@ -2950,9 +2950,9 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
 // it were the real `Std.Core.Result`, producing an incorrect isinst/
 // castclass/field-read against the wrong case classes instead of a clean
 // type error.
-func isStdCoreMonadType(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
+func isStdCoreMonadType(tbl: in SymbolTable, tid: in SymbolId, name: in String): Bool {
   match symTableTryFindInPackage(tbl, "Std.Core", name) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(realId) -> typeIdEq(tid, realId); case None -> false }
+    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(realId) -> symbolIdEq(tid, realId); case None -> false }
     case None -> false
   }
 }
@@ -3208,7 +3208,7 @@ func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
       // genuine `List<T>`/`ArrayList` `get_Item`/`get` or the
       // `Dictionary`/`HashMap` lookup, so a package's own `record List[T]` or
       // `record Map[K, V]` must not be typed as if it were one.
-      if targs.count == 1 and typeIdEq(tid, builtinBufferTypeId()) {
+      if targs.count == 1 and symbolIdEq(tid, builtinBufferTypeId()) {
         targs[0]
       } else if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
         targs[0]
@@ -3246,13 +3246,13 @@ func nonIndexableNativeKind(tbl: in SymbolTable, recvRaw: in Type): String {
   }
 }
 
-func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
+func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry] {
   val result: List[FieldEntry] = newList()
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
       case DKRecord(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           // Field types name the declaring package's own types, resolved in
           // its scope whatever the reading file imports (docs/01 §9.2).
           val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
@@ -3261,7 +3261,7 @@ func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
         }
       }
       case DKExposedRec(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           // Field types name the declaring package's own types, resolved in
           // its scope whatever the reading file imports (docs/01 §9.2).
           val saved = enterDeclaringScopeIfForeign(tbl, tbl.symbols[i])
@@ -3313,17 +3313,17 @@ func recordDeclGenericNames(rd: in RecordDecl): List[String] {
   names
 }
 
-func recordGenericNamesOf(tbl: in SymbolTable, tid: in TypeId): List[String] {
+func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
       case DKRecord(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           return recordDeclGenericNames(rd)
         }
       }
       case DKExposedRec(did, rd) -> {
-        if typeIdEq(did, tid) {
+        if symbolIdEq(did, tid) {
           return recordDeclGenericNames(rd)
         }
       }
@@ -3343,7 +3343,7 @@ func recordGenericNamesOf(tbl: in SymbolTable, tid: in TypeId): List[String] {
 // the lenient wildcard — so an under-instantiated receiver degrades to the
 // pre-instantiation behaviour instead of tripping false T0030-style
 // diagnostics on a raw `TyVar`.
-func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in TypeId, targs: in List[Type]): List[FieldEntry] {
+func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
   val raw = fieldsOfRecord(tbl, tid)
   val gnames = recordGenericNamesOf(tbl, tid)
   val result: List[FieldEntry] = newList()
@@ -3394,11 +3394,11 @@ func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, ge
 // the receiver's arguments: its representation is visible here, so a read
 // is typed like a record field's, `array[N, Int]` at the instance's length
 // included (#8149).  Outside its package the type has no readable fields.
-func ownOpaqueFieldType(tbl: in SymbolTable, tid: in TypeId, targs: in List[Type], name: in String): Option[Type] {
+func ownOpaqueFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type], name: in String): Option[Type] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKOpaque(did, od) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported {
+      case DKOpaque(did, od) -> if symbolIdEq(did, tid) and not tbl.symbols[i].isImported {
         return opaqueFieldTypeOf(tbl, od, targs, name)
       }
       case _ -> ()
@@ -3615,7 +3615,7 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
   match unrefine(a) {
     case TyUser(aid, an, aargs) -> match unrefine(b) {
       case TyUser(bid, _, bargs) -> {
-        if typeIdEq(aid, bid) and aargs.count == bargs.count {
+        if symbolIdEq(aid, bid) and aargs.count == bargs.count {
           val merged: List[Type] = newList()
           var allOk = true
           var i = 0
@@ -3779,7 +3779,7 @@ func adoptUnionCaseExpected(tbl: in SymbolTable, isCaseCtor: in Bool, actual: in
   }
   match unrefine(expected) {
     case TyUser(eid, _, eargs) -> match unrefine(actual) {
-      case TyUser(aid, _, aargs) -> if typeIdEq(eid, aid) and unionCaseArgsAdoptable(tbl, eargs, aargs) {
+      case TyUser(aid, _, aargs) -> if symbolIdEq(eid, aid) and unionCaseArgsAdoptable(tbl, eargs, aargs) {
         expected
       } else {
         actual
@@ -3898,7 +3898,7 @@ func stringIndexOfMember(tbl: in SymbolTable, name: in String): Option[Type] {
     }
     // Std.String is imported but `Option` is not resolvable from the item
     // pool (a contract-surface or otherwise partial check) — keep the
-    // historical leniency rather than fabricate a TypeId.
+    // historical leniency rather than fabricate a SymbolId.
     return None
   }
   Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtInt), isAsync = false))
@@ -3991,9 +3991,9 @@ func stringHostMethodType(name: in String): Option[Type] {
 // the resolution is independent of the current file's own imports or any
 // same-named local type.  The ids are memoised per symbol table
 // (`symTableStdCollectionsHostTypeId`, #7765).
-func isStdCollectionsHostType(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
+func isStdCollectionsHostType(tbl: in SymbolTable, tid: in SymbolId, name: in String): Bool {
   match symTableStdCollectionsHostTypeId(tbl, name) {
-    case Some(sid) -> typeIdEq(sid, tid)
+    case Some(sid) -> symbolIdEq(sid, tid)
     case None -> false
   }
 }
@@ -4032,10 +4032,10 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // the round-trip shuttle back from `List[T].toArray()`.  Its result
       // type is a genuine `List[elem]`, which — unlike `builtinMember`'s
       // other slice methods, deliberately typed via structural `TySlice` to
-      // sidestep exactly this — needs `List`'s real `TypeId` for the checker
+      // sidestep exactly this — needs `List`'s real `SymbolId` for the checker
       // to accept it where a `List[T]` is expected (a field, a `val`
       // annotation, a call argument).  `builtinMember` has no `tbl` to look
-      // that TypeId up with, so it is handled here instead.
+      // that SymbolId up with, so it is handled here instead.
       //
       // #7665: an earlier revision resolved `List` via a bare, shadowable
       // name lookup (`symTableTryFindOne(tbl, "List")`) — a package
@@ -4296,7 +4296,7 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
       val noTargs: List[Type] = newList()
       var pi = 0
       while pi < tbl.impls.count {
-        if typeIdEq(tbl.impls[pi].target, tid) {
+        if symbolIdEq(tbl.impls[pi].target, tid) {
           val ientries = symTableMethodSigs(tbl, tbl.impls[pi].iface, name)
           var q = 0
           while q < ientries.count {
@@ -4811,7 +4811,7 @@ func resolveMethodCallPick(
 // The record type a `.copy(...)` call on `recvTy` copies: a record or
 // exposed record (generic or not) that declares no `copy` method or
 // type-associated `copy` function of its own.
-func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recvTy: in Type): Option[TypeId] {
+func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recvTy: in Type): Option[SymbolId] {
   match unrefine(recvTy) {
     case TyUser(tid, tname, _) -> {
       if not typeIdIsRecord(tbl, tid) {
@@ -4826,19 +4826,19 @@ func recordCopyTarget(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignatur
   }
 }
 
-func typeIdIsRecord(tbl: in SymbolTable, tid: in TypeId): Bool {
+func typeIdIsRecord(tbl: in SymbolTable, tid: in SymbolId): Bool {
   match recordSymbolOfTid(tbl, tid) {
     case Some(_) -> true
     case None -> false
   }
 }
 
-func recordSymbolOfTid(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
+func recordSymbolOfTid(tbl: in SymbolTable, tid: in SymbolId): Option[Symbol] {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKRecord(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
-      case DKExposedRec(did, _) -> if typeIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
+      case DKRecord(did, _) -> if symbolIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
+      case DKExposedRec(did, _) -> if symbolIdEq(did, tid) { return Some(value = tbl.symbols[i]) }
       case _ -> ()
     }
     i = i + 1
@@ -4871,7 +4871,7 @@ func checkRecordCopy(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   e: in Expr,
-  tid: in TypeId,
+  tid: in SymbolId,
   recvTy: in Type,
   args: in List[CallArg],
 ): Type {
@@ -5116,7 +5116,7 @@ func maybeUnknownMemberDiag(
       }
       var pi = 0
       while pi < tbl.impls.count {
-        if typeIdEq(tbl.impls[pi].target, tid) {
+        if symbolIdEq(tbl.impls[pi].target, tid) {
           if symTableMethodSigs(tbl, tbl.impls[pi].iface, name).count > 0 {
             return
           }
@@ -5303,10 +5303,10 @@ func isPrimitiveBuiltinMethodName(name: in String): Bool {
 }
 
 // Whether `tid` is a distinct type with no generic parameters.
-func isNonGenericDistinct(tbl: in SymbolTable, tid: in TypeId): Bool {
+func isNonGenericDistinct(tbl: in SymbolTable, tid: in SymbolId): Bool {
   for sym in tbl.symbols {
     match sym.kind {
-      case DKDistinctType(did, dt) -> if typeIdEq(did, tid) {
+      case DKDistinctType(did, dt) -> if symbolIdEq(did, tid) {
         return match dt.generics { case Some(_) -> false; case None -> true }
       }
       case _ -> ()
@@ -5435,11 +5435,11 @@ func hiddenExtensionsHint(
 // or union; only the SAME-package accessor-body reading its OWN field needs
 // the exemption (review follow-up on #6362: #6382 found the unscoped-by-
 // package guard, #6383 found the unscoped-by-field-name guard).
-func isOpaqueOwnFieldName(tbl: in SymbolTable, tid: in TypeId, name: in String): Bool {
+func isOpaqueOwnFieldName(tbl: in SymbolTable, tid: in SymbolId, name: in String): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKOpaque(did, _) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported {
+      case DKOpaque(did, _) -> if symbolIdEq(did, tid) and not tbl.symbols[i].isImported {
         val fields = ctorAllFields(tbl.symbols[i])
         var j = 0
         while j < fields.count {
@@ -5747,7 +5747,7 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
         case None -> None
       }
     }
-    case TyUser(tid, nm, args) -> if typeIdEq(tid, builtinBufferTypeId()) and args.count == 1 {
+    case TyUser(tid, nm, args) -> if symbolIdEq(tid, builtinBufferTypeId()) and args.count == 1 {
       match typeExprForRefV(tbl, args[0], sp, vars) {
         case Some(ate) -> {
           val bsegs: List[String] = newList()
@@ -5773,7 +5773,7 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
 }
 
 func typeExprForUserType(
-  tbl: in SymbolTable, tid: in TypeId, args: in List[Type], sp: in Span, vars: in Bool
+  tbl: in SymbolTable, tid: in SymbolId, args: in List[Type], sp: in Span, vars: in Bool
 ): Option[TypeExpr] {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> {
@@ -5785,7 +5785,7 @@ func typeExprForUserType(
       // no other spelling, so it has none here (#7371).
       val bareOk = match symTableTryFindOne(tbl, sym.name) {
         case Some(found) -> match symbolTypeIdOpt(found) {
-          case Some(fid) -> typeIdEq(fid, tid)
+          case Some(fid) -> symbolIdEq(fid, tid)
           case None -> false
         }
         case None -> false
@@ -6209,7 +6209,7 @@ func widensOrEquals(target: in Type, src: in Type): Bool {
   match unrefine(target) {
     case TyTuple(tes) -> match unrefine(src) { case TyTuple(ses) -> typeListsWidenOrEqual(tes, ses); case _ -> false }
     case TyUser(tid, _, targs) -> match unrefine(src) {
-      case TyUser(sid, _, sargs) -> typeIdEq(tid, sid) and
+      case TyUser(sid, _, sargs) -> symbolIdEq(tid, sid) and
         typeListsWidenOrEqual(targs, sargs)
       case _ -> false
     }
@@ -7464,7 +7464,7 @@ func checkPropagateMonad(
             )
             return
           }
-          if oname == "Result" and typeIdEq(oid, rid) and oargs.count == 2 and rargs.count == 2 {
+          if oname == "Result" and symbolIdEq(oid, rid) and oargs.count == 2 and rargs.count == 2 {
             val ownErr = oargs[1]
             if typeIsClosedOver(ownErr, sc.genericNames) {
               if not argSatisfiesParam(tbl, rargs[1], ownErr) {
@@ -7622,7 +7622,7 @@ func propagateOperandContext(own: in Type, ret: in Type, succ: in Type): Type {
     case TyUser(oid, oname, oargs) -> match unrefine(ret) {
       case TyUser(rid, _, rargs) -> {
         val isMonad = (oname == "Result" and oargs.count == 2) or (oname == "Option" and oargs.count == 1)
-        if not isMonad or not typeIdEq(oid, rid) or rargs.count != oargs.count {
+        if not isMonad or not symbolIdEq(oid, rid) or rargs.count != oargs.count {
           return TyError
         }
         val args: List[Type] = newList()
@@ -8061,7 +8061,7 @@ func noteValueUnionCaseExpected(sc: in Scope, tbl: in SymbolTable, e: in Expr, a
     case Some(caseSym) -> if not noteValueUnionCtor(tbl, actual, e.span, true) {
       match caseSym.kind {
         case DKUnionCase(parentId, _) -> match unrefine(expected) {
-          case TyUser(eid, _, _) -> if typeIdEq(parentId, eid) {
+          case TyUser(eid, _, _) -> if symbolIdEq(parentId, eid) {
             val _ = noteValueUnionCtor(tbl, expected, e.span, true)
           }
           case _ -> ()
@@ -9072,7 +9072,7 @@ func inferConstructionExpected(
     val targs = inferGenericArgs(gnames, fieldTypes, orderedArgTypes)
     match unrefine(expected) {
       case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(sym) {
-        case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+        case Some(tid) -> if symbolIdEq(eid, tid) and eargs.count == gnames.count {
           var ei = 0
           while ei < gnames.count {
             val unbound = match targs[ei] { case TyError -> true; case _ -> false }
@@ -9669,7 +9669,7 @@ func unionCaseSymbolForScrutinee(
         while sci >= 0 {
           match scrCands[sci].kind {
             case DKUnionCase(scrParent, _) -> {
-              if typeIdEq(scrParent, sid) {
+              if symbolIdEq(scrParent, sid) {
                 if flatSegs.count >= 2 {
                   val quals: List[String] = newList()
                   var qi = 0
@@ -9752,7 +9752,7 @@ func unionCaseSymbolForScrutinee(
             // the scrutinee's own `TyUser` name (`sname`) instead of a
             // separate enum-decl lookup.
             case DKEnumCase(scrParent, _) -> {
-              if typeIdEq(scrParent, sid) {
+              if symbolIdEq(scrParent, sid) {
                 if flatSegs.count >= 2 {
                   val quals: List[String] = newList()
                   var qi = 0
@@ -9886,8 +9886,8 @@ func checkRecordPatternHead(
       var ci = cands.count - 1
       while ci >= 0 {
         val isRecordHit = match cands[ci].kind {
-          case DKRecord(did, _) -> typeIdEq(did, sid)
-          case DKExposedRec(did, _) -> typeIdEq(did, sid)
+          case DKRecord(did, _) -> symbolIdEq(did, sid)
+          case DKExposedRec(did, _) -> symbolIdEq(did, sid)
           case _ -> false
         }
         if isRecordHit {
@@ -10014,8 +10014,8 @@ func checkBareCasePatternScrutinee(
       var e = 0
       while e < cands.count {
         val own = match cands[e].kind {
-          case DKUnionCase(pid, _) -> typeIdEq(pid, sid)
-          case DKEnumCase(pid, _) -> typeIdEq(pid, sid)
+          case DKUnionCase(pid, _) -> symbolIdEq(pid, sid)
+          case DKEnumCase(pid, _) -> symbolIdEq(pid, sid)
           case _ -> false
         }
         if own {
@@ -10057,10 +10057,10 @@ func checkBareCasePatternScrutinee(
 
 // True unless the scrutinee is a concrete type that the case with parent
 // `pid` can never belong to (see `checkCasePatternScrutinee`).
-func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in TypeId, scrutineeTy: in Type): Bool {
+func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in SymbolId, scrutineeTy: in Type): Bool {
   match unrefine(scrutineeTy) {
     case TyUser(sid, _, _) -> {
-      if typeIdEq(sid, pid) {
+      if symbolIdEq(sid, pid) {
         true
       } else {
         match parentUnionDeclOf(tbl, sid) {
@@ -10078,7 +10078,7 @@ func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in TypeId, scrutineeTy
   }
 }
 
-func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
+func parentUnionDeclOf(tbl: in SymbolTable, parentId: in SymbolId): Option[UnionDecl] {
   val key = toString(parentId.id)
   if not tbl.unionDeclIndex.containsKey(key) {
     return None
@@ -10453,9 +10453,9 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
   match paramTy {
     case TyVar(nm) -> if nm == name { Some(value = argTy) } else { None }
     case TyUser(pid, _, pargs) -> {
-      // Guard by TypeId to avoid cross-constructor inference (e.g. Result vs Option).
+      // Guard by SymbolId to avoid cross-constructor inference (e.g. Result vs Option).
       val aargs = match unrefine(argTy) {
-        case TyUser(aid, _, a) -> if typeIdEq(pid, aid) { a } else { newList() }
+        case TyUser(aid, _, a) -> if symbolIdEq(pid, aid) { a } else { newList() }
         case _ -> newList()
       }
       findGenericInPairs(name, pargs, aargs)
@@ -10839,7 +10839,7 @@ func scrutineeHasCaseNamed(tbl: in SymbolTable, ty: in Type, name: in String): B
           case _ -> None
         }
         match parent {
-          case Some(pid) -> if typeIdEq(pid, sid) { return true }
+          case Some(pid) -> if symbolIdEq(pid, sid) { return true }
           case None -> ()
         }
         i = i + 1
@@ -11881,7 +11881,7 @@ func isStdMonadCaseCtor(tbl: in SymbolTable, fn: in Expr, t: in Type): Bool {
   match unionCaseSymbolOf(tbl, fn) {
     case Some(caseSym) -> match caseSym.kind {
       case DKUnionCase(parentId, _) -> match unrefine(t) {
-        case TyUser(tid, _, _) -> typeIdEq(parentId, tid) and
+        case TyUser(tid, _, _) -> symbolIdEq(parentId, tid) and
           (
             isStdCoreMonadType(
               tbl,
@@ -12264,7 +12264,7 @@ func bindOpenCasePatternAt(
       match unionCaseSymbolOf(tbl, fnExpr) {
         case Some(caseSym) -> match caseSym.kind {
           case DKUnionCase(parentId, uc) -> {
-            if not typeIdEq(parentId, siteTid) {
+            if not symbolIdEq(parentId, siteTid) {
               return
             }
             match parentUnionDeclOf(tbl, parentId) {
@@ -12625,7 +12625,7 @@ func noteOpenBindingType(
       }
       val sameCtor = match site.initTy {
         case TyUser(iid, _, iargs) -> match ut {
-          case TyUser(tid, _, targs) -> typeIdEq(iid, tid) and
+          case TyUser(tid, _, targs) -> symbolIdEq(iid, tid) and
             iargs.count == targs.count
           case _ -> false
         }
@@ -12716,7 +12716,7 @@ func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, name
     }
     case TyUser(aid, _, aargs) -> match e {
       case TyUser(eid, _, eargs) -> {
-        if not typeIdEq(aid, eid) or aargs.count != eargs.count {
+        if not symbolIdEq(aid, eid) or aargs.count != eargs.count {
           return false
         }
         var i = 0
@@ -12736,10 +12736,10 @@ func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, name
   }
 }
 
-func typeIdIsInterface(tbl: in SymbolTable, tid: in TypeId): Bool {
+func typeIdIsInterface(tbl: in SymbolTable, tid: in SymbolId): Bool {
   for sym in tbl.symbols {
     match sym.kind {
-      case DKInterface(iid, _) -> if typeIdEq(iid, tid) { return true }
+      case DKInterface(iid, _) -> if symbolIdEq(iid, tid) { return true }
       case _ -> ()
     }
   }
@@ -12943,7 +12943,7 @@ func ctorArgExpectedTypes(
     case TyUser(tid, _, targs) -> {
       match unionCaseSymbolOf(tbl, fn) {
         case Some(caseSym) -> match caseSym.kind {
-          case DKUnionCase(parentId, uc) -> if typeIdEq(parentId, tid) {
+          case DKUnionCase(parentId, uc) -> if symbolIdEq(parentId, tid) {
             match parentUnionDeclOf(tbl, parentId) {
               case Some(decl) -> {
                 val gnames = unionDeclGenericNames(decl)
@@ -12969,7 +12969,7 @@ func ctorArgExpectedTypes(
         }
         case None -> match constructorSymbolOf(tbl, fn) {
           case Some(sym) -> match symbolTypeIdOpt(sym) {
-            case Some(sid) -> if typeIdEq(sid, tid) {
+            case Some(sid) -> if symbolIdEq(sid, tid) {
               val gnames: List[String] = if ctorIsGeneric(sym) { ctorGenericNames(sym) } else { newList() }
               Some(value = argTypesAgainstFields(cargs, ctorFieldNames(sym), ctorFieldTypes(tbl, sym, gnames), gnames, targs))
             } else {
@@ -13652,7 +13652,7 @@ func joinOpenTypes(a: in Type, b: in Type): Type {
   }
   match a {
     case TyUser(aid, an, aargs) -> match b {
-      case TyUser(bid, _, bargs) -> if typeIdEq(aid, bid) and aargs.count == bargs.count {
+      case TyUser(bid, _, bargs) -> if symbolIdEq(aid, bid) and aargs.count == bargs.count {
         TyUser(id = aid, name = an, args = joinOpenTypeLists(aargs, bargs))
       } else {
         a
@@ -15679,7 +15679,7 @@ func receiverNeedsPlainDotCall(tbl: in SymbolTable, recvTy: in Option[Type]): Bo
   }
 }
 
-func isDistinctTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+func isDistinctTypeId(tbl: in SymbolTable, tid: in SymbolId): Bool {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind { case DKDistinctType(_, _) -> true; case _ -> false }
     case None -> false
@@ -15688,7 +15688,7 @@ func isDistinctTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
 
 // An enum is a bare tag on every backend: it has no methods to dispatch a
 // dot-named function to (#8254).
-func isEnumTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+func isEnumTypeId(tbl: in SymbolTable, tid: in SymbolId): Bool {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind { case DKEnum(_, _) -> true; case _ -> false }
     case None -> false
@@ -16568,7 +16568,7 @@ func distinctMemberType(
         val sym = tbl.symbols[i]
         match sym.kind {
           case DKDistinctType(did, dt) -> {
-            if typeIdEq(did, tid) {
+            if symbolIdEq(did, tid) {
               match dt.generics {
                 case Some(_) -> return None
                 case None -> ()
@@ -16689,7 +16689,7 @@ pub func stdListRecvKeyPrefix(): String {
   "stdlist|"
 }
 
-func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in TypeId): Unit {
+func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in SymbolId): Unit {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> {
       val isClass = match sym.kind {
@@ -19128,7 +19128,7 @@ func genericCtorArrayFieldTypes(
   val targs = inferGenericArgs(gnames, fieldTypes, argTypesInFieldOrder(args, argTypes, fieldNames))
   match unrefine(expected) {
     case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(ctorSym) {
-      case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+      case Some(tid) -> if symbolIdEq(eid, tid) and eargs.count == gnames.count {
         var ei = 0
         while ei < gnames.count {
           if typeIsHole(targs[ei]) {
@@ -19376,7 +19376,7 @@ func caseCtorArgsExpected(
   }
   match caseSym.kind {
     case DKUnionCase(parentId, uc) -> match unrefine(expected) {
-      case TyUser(eid, _, eargs) -> if typeIdEq(eid, parentId) {
+      case TyUser(eid, _, eargs) -> if symbolIdEq(eid, parentId) {
         match parentUnionDeclOf(tbl, parentId) {
           case Some(decl) -> {
             val gnames = unionDeclGenericNames(decl)
@@ -19410,7 +19410,7 @@ func expectsGenericRecordCtor(tbl: in SymbolTable, fn: in Expr, expected: in Typ
     } else {
       match unrefine(expected) {
         case TyUser(eid, _, _) -> match symbolTypeIdOpt(ctorSym) {
-          case Some(tid) -> typeIdEq(eid, tid)
+          case Some(tid) -> symbolIdEq(eid, tid)
           case None -> false
         }
         case _ -> false
@@ -19477,7 +19477,7 @@ func checkProtectedFieldAccess(
         return
       }
       val inOwnMember = sc.selfChecked and
-        match typeIdOfType(sc.selfType) { case Some(own) -> typeIdEq(own, tid); case None -> false }
+        match typeIdOfType(sc.selfType) { case Some(own) -> symbolIdEq(own, tid); case None -> false }
       // A contract clause is specification, not state access: `ensures:
       // result.tokens == capacity` states what a construction produced.
       if not inOwnMember and sc.contractDepth.count == 0 {
@@ -19512,7 +19512,7 @@ func sharedBareCaseOfExpected(sc: in Scope, tbl: in SymbolTable, p: in ModulePat
   var ci = candidates.count - 1
   while ci >= 0 {
     match candidates[ci].kind {
-      case DKUnionCase(parentId, _) -> if typeIdEq(parentId, eid) { return Some(value = candidates[ci]) }
+      case DKUnionCase(parentId, _) -> if symbolIdEq(parentId, eid) { return Some(value = candidates[ci]) }
       case _ -> ()
     }
     ci = ci - 1
@@ -20410,7 +20410,7 @@ func nonGenericRecordCtorOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 func isNativeBytePtrType(tbl: in SymbolTable, t: in Type): Bool {
   match mapGet(tbl.nativeIntrinsicTypes, "NativePtr") {
     case Some(ptrId) -> match unrefine(t) {
-      case TyUser(tid, _, targs) -> if typeIdEq(tid, ptrId) and targs.count == 1 {
+      case TyUser(tid, _, targs) -> if symbolIdEq(tid, ptrId) and targs.count == 1 {
         match unrefine(targs[0]) {
           case TyPrim(pt) -> match pt { case PtByte -> true; case _ -> false }
           case _ -> false
@@ -20455,7 +20455,7 @@ func externCallbackClosureType(tbl: in SymbolTable, paramTy: in Type): Option[Ty
 // docs/67 §4.8).  It is a `void*` like `NativePtr[Byte]`.
 func isNativeUserdataType(tbl: in SymbolTable, t: in Type): Bool {
   match mapGet(tbl.nativeIntrinsicTypes, "NativeUserdata") {
-    case Some(udId) -> match unrefine(t) { case TyUser(tid, _, _) -> typeIdEq(tid, udId); case _ -> false }
+    case Some(udId) -> match unrefine(t) { case TyUser(tid, _, _) -> symbolIdEq(tid, udId); case _ -> false }
     case None -> false
   }
 }
@@ -20791,7 +20791,7 @@ func sameNameTypesNote(tbl: in SymbolTable, expected: in Type, actual: in Type):
   match unrefine(expected) {
     case TyUser(eid, eName, _) -> match unrefine(actual) {
       case TyUser(aid, aName, _) -> {
-        if eName != aName or typeIdEq(eid, aid) {
+        if eName != aName or symbolIdEq(eid, aid) {
           return ""
         }
         val ePkg = match symTableTypeSymbolOf(tbl, eid) { case Some(sym) -> sym.originPackage; case None -> "" }
@@ -20879,7 +20879,7 @@ pub func ofTypeOrEmptyLiteral(t: in Type, e: in Expr): String {
 // True when an argument of type `argTy` is acceptable for a parameter of type
 // `paramTy` — either `typeEquiv` (the usual case), or interface subtyping
 // (#1488): `argTy` is a user type `T` and `paramTy` is an interface `I` with a
-// registered `impl I for T`.  Conformance is keyed by `TypeId`, so a
+// registered `impl I for T`.  Conformance is keyed by `SymbolId`, so a
 // same-simple-name interface from another package never satisfies the check
 // (#2303).  Used at argument-position checks so a concrete type that conforms
 // to an interface can be passed where the interface is expected
@@ -20890,7 +20890,7 @@ pub func ofTypeOrEmptyLiteral(t: in Type, e: in Expr): String {
 func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
   match unrefine(t) {
     case TyUser(id, _, args) -> {
-      if args.count != 0 or typeIdEq(id, builtinTaskTypeId()) {
+      if args.count != 0 or symbolIdEq(id, builtinTaskTypeId()) {
         return false
       }
       match symTableTypeSymbolOf(tbl, id) {
@@ -20929,7 +20929,7 @@ func pointeeIsUserType(tbl: in SymbolTable, targs: in List[Type]): Bool {
       var intrinsic = false
       for k in ["NativePtr", "NativeUserdata", "NativeWeak"] {
         match mapGet(tbl.nativeIntrinsicTypes, k) {
-          case Some(id) -> if typeIdEq(tid, id) { intrinsic = true }
+          case Some(id) -> if symbolIdEq(tid, id) { intrinsic = true }
           case None -> ()
         }
       }
@@ -20945,7 +20945,7 @@ func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in T
     case Some(ptrId) -> match unrefine(paramTy) {
       case TyUser(pid, _, pargs) -> match unrefine(argTy) {
         case TyUser(aid, _, aargs) -> {
-          if typeIdEq(pid, ptrId) and typeIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
+          if symbolIdEq(pid, ptrId) and symbolIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
             (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(tbl, aargs)) or isNativeBytePtrType(tbl, argTy)
           } else {
             false
@@ -21003,7 +21003,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // by `inferExprExpected`'s own `EList` arm, so it never reaches this
   // fallback either).
   //
-  // #7702: the parameter must be the stdlib `List` by TypeId
+  // #7702: the parameter must be the stdlib `List` by SymbolId
   // (`isStdCollectionsHostType`), not any type named `List`, for the same
   // reason as #7696's literal arms: codegen builds the genuine stdlib
   // collection for `[]`, so a package's own `record List[T]` must not
@@ -21090,7 +21090,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
 //   1. `typeEquiv` — exact match, or either side a wildcard (TyError/TyVar).
 //   2. Interface subsumption — `expected` is an interface `I` and `actual`
 //      is a concrete type `T` with a registered `impl I for T` (keyed by
-//      `TypeId`, so a same-named interface from another package never
+//      `SymbolId`, so a same-named interface from another package never
 //      matches).
 //   3. Same nominal generic head with covariantly-assignable type
 //      arguments — so `Result[NC, E]` satisfies `Result[Conn, E]` when
@@ -21112,7 +21112,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
     // Assumes covariance in all type args; revisit if invariant/contravariant parameters are added.
     case TyUser(eid, _, eargs) -> match unrefine(actual) {
       case TyUser(aid, _, aargs) -> {
-        if typeIdEq(eid, aid) {
+        if symbolIdEq(eid, aid) {
           if eargs.count != aargs.count {
             return false
           }
@@ -21157,7 +21157,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
 // `List` can be converted; a generic of any other kind stays invariant.
 // 1 for a union, 2 for a record that can be rebuilt, 3 for the stdlib `List`,
 // 0 for a type that cannot be converted.
-func covariantHeadKind(tbl: in SymbolTable, tid: in TypeId): Int {
+func covariantHeadKind(tbl: in SymbolTable, tid: in SymbolId): Int {
   if isStdCollectionsHostType(tbl, tid, "List") {
     return 3
   }
@@ -21192,7 +21192,7 @@ func covariantConversionNeeded(tbl: in SymbolTable, expected: in Type, actual: i
   match unrefine(expected) {
     case TyUser(eid, _, eargs) -> match unrefine(actual) {
       case TyUser(aid, _, aargs) -> {
-        if not typeIdEq(eid, aid) or eargs.count != aargs.count or eargs.count == 0 {
+        if not symbolIdEq(eid, aid) or eargs.count != aargs.count or eargs.count == 0 {
           return false
         }
         var i = 0
@@ -21219,7 +21219,7 @@ record CovCtor {
   fieldTypes: List[Type]
 }
 
-func covariantCtors(tbl: in SymbolTable, tid: in TypeId, args: in List[Type]): List[CovCtor] {
+func covariantCtors(tbl: in SymbolTable, tid: in SymbolId, args: in List[Type]): List[CovCtor] {
   val acc: List[CovCtor] = newList()
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind {
@@ -21275,7 +21275,7 @@ func covariantSupported(tbl: in SymbolTable, src: in Type, dst: in Type, visitin
   match d {
     case TyUser(did, _, dargs) -> match s {
       case TyUser(sid, _, sargs) -> {
-        if not typeIdEq(did, sid) or dargs.count != sargs.count {
+        if not symbolIdEq(did, sid) or dargs.count != sargs.count {
           return false
         }
         val kind = covariantHeadKind(tbl, did)

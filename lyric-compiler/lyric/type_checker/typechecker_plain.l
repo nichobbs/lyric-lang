@@ -71,7 +71,7 @@ func plainViolationAt(tbl: in SymbolTable, t: in Type, depth: in Int): Option[St
 func plainUserViolation(
   tbl: in SymbolTable,
   t: in Type,
-  tid: in TypeId,
+  tid: in SymbolId,
   name: in String,
   args: in List[Type],
   depth: in Int,
@@ -116,7 +116,7 @@ func plainUserViolation(
 
 func plainRecordViolation(
   tbl: in SymbolTable,
-  tid: in TypeId,
+  tid: in SymbolId,
   rd: in RecordDecl,
   name: in String,
   args: in List[Type],

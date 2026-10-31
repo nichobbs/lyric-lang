@@ -5664,7 +5664,7 @@ pub func pipeTypeOwnerIndex(pkgs: in List[ImportedPackage]): Weaver.TypeOwnerInd
 ///     sibling in-project package; without this the block was invisible to
 ///     every cross-package consumer, not just the type checker);
 ///   * `impl Iface for T` conformances (interface subsumption on
-///     cross-package calls; keyed by `TypeId`, ignored by
+///     cross-package calls; keyed by `SymbolId`, ignored by
 ///     `addSigsFromItems`, so carrying them is sound and additive);
 ///   * `pub func` free functions (#2704) and module-level `pub val`s
 ///     (#2195), or cross-package references abort with T0010/T0020.

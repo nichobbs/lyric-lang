@@ -69,7 +69,7 @@ func distinctRangeDeclOf(tbl: in SymbolTable, t: in Type): Option[DistinctTypeDe
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKDistinctType(did, dt) -> if typeIdEq(did, tid) {
+      case DKDistinctType(did, dt) -> if symbolIdEq(did, tid) {
         match dt.rangeClause {
           case Some(_) -> return Some(value = dt)
           case None -> return None
