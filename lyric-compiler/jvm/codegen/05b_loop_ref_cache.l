@@ -12,14 +12,14 @@
 //! writes in between become plain local loads and stores.  "Cannot reach the
 //! place" is decided on the loop's bytecode, not its source, so an overloaded
 //! operator or an inlined helper is seen for what it is.  The body may hold
-//! only local-slot loads and stores, constants, arithmetic and comparisons,
-//! conversions, array element access, casts and branches that stay inside the
-//! loop, and it may touch exactly one place reference.  A call, a field
-//! access, an allocation, a `return`, a `throw` or a jump out of the loop
-//! (which are how a second path to the place, an aliasing write or a closure
-//! would show up) leaves the loop as it was.  If the loop writes the place,
-//! an exception handler over the loop writes the value back before the
-//! exception propagates, so a write made before a panic stays made (D183).
+//! only local-slot loads and stores, constants, non-trapping arithmetic and
+//! comparisons, conversions and branches that stay inside the loop, and it
+//! may touch exactly one place reference.  A call, a field access, an
+//! allocation, an array access, a division, a cast, a `return`, a `throw` or
+//! a jump out of the loop leaves the loop as it was: the first group is how a
+//! second path to the place, an aliasing write or a closure would show up,
+//! and the rest can raise an exception, which would skip the write back and
+//! lose a write made before a panic (D183).
 
 package Jvm.Codegen
 
@@ -132,8 +132,6 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LIadd -> true
     case LIsub -> true
     case LImul -> true
-    case LIdiv -> true
-    case LIrem -> true
     case LIneg -> true
     case LIinc(_, _) -> true
     case LI2l -> true
@@ -142,7 +140,6 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LLadd -> true
     case LLsub -> true
     case LLmul -> true
-    case LLdiv -> true
     case LDadd -> true
     case LDsub -> true
     case LDmul -> true
@@ -160,7 +157,6 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LIshr -> true
     case LIushr -> true
     case LLneg -> true
-    case LLrem -> true
     case LLand -> true
     case LLor -> true
     case LLxor -> true
@@ -186,25 +182,7 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LD2i -> true
     case LD2l -> true
     case LD2f -> true
-    case LCheckcast(_) -> true
     case LInstanceof(_) -> true
-    case LArraylength -> true
-    case LIaload -> true
-    case LLaload -> true
-    case LFaload -> true
-    case LDaload -> true
-    case LAaload -> true
-    case LBaload -> true
-    case LCaload -> true
-    case LSaload -> true
-    case LIastore -> true
-    case LLastore -> true
-    case LFastore -> true
-    case LDastore -> true
-    case LAastore -> true
-    case LBastore -> true
-    case LCastore -> true
-    case LSastore -> true
     case _ -> false
   }
 }
@@ -265,10 +243,10 @@ func tryAppendCachedLoop(
               }
               case None -> {
                 match loopInsns[j] {
-                  case LIconst(_) -> j = j + 1
-                  case LIand -> j = j + 1
-                  case LCheckcast(_) -> j = j + 1
-                  case _ -> scanning = false
+                  case LIconst(_) -> { j = j + 1 }
+                  case LIand -> { j = j + 1 }
+                  case LCheckcast(_) -> { j = j + 1 }
+                  case _ -> { scanning = false }
                 }
               }
             }
@@ -319,7 +297,7 @@ func tryAppendCachedLoop(
           i = i + 1
         }
       }
-      case _ -> i = i + 1
+      case _ -> { i = i + 1 }
     }
   }
   if refSlot < 0 {
@@ -379,26 +357,11 @@ func tryAppendCachedLoop(
     a = a + 1
   }
   if flush.count > 0 {
-    val doneL = freshLabel(ctx)
-    val handlerL = freshLabel(ctx)
     var f = 0
     while f < flush.count {
       insns.add(flush[f])
       f = f + 1
     }
-    insns.add(LGoto(label = doneL))
-    insns.add(LLabel(name = handlerL))
-    val tmpSlot = allocSlot(ctx, "__loop_ref_ex_" + freshLabel(ctx), JRef(className = "java/lang/Throwable"))
-    insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
-    var g = 0
-    while g < flush.count {
-      insns.add(flush[g])
-      g = g + 1
-    }
-    insns.add(LAload(slot = tmpSlot))
-    insns.add(LAthrow)
-    insns.add(LLabel(name = doneL))
-    insns.add(LTryCatch(startLabel = loopL, endLabel = afterL, handlerLabel = handlerL, catchClass = ""))
   }
   true
 }

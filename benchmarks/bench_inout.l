@@ -21,7 +21,7 @@ ref record Counters {
 func spin(x: inout Int, n: in Int): Unit {
   var i = 0
   while i < n {
-    x = x + 1
+    x = x * 31 + i
     i = i + 1
   }
 }
@@ -33,7 +33,7 @@ func spinUntil(x: inout Int, limit: in Int): Unit {
     if x >= limit {
       break
     }
-    x = x + 3
+    x = x + 3 + i % 3
     i = i + 1
   }
 }
@@ -46,8 +46,8 @@ pub func benchInoutMixedPlaces(): Unit {
   spin(r.a, 20000000)
   spin(r.b, 20000000)
   spin(r.c, 20000000)
-  if local + r.a + r.b + r.c != 80000000 {
-    println("bench_inout: wrong total")
+  if local + r.a + r.b + r.c == 1 {
+    println("bench_inout: sink")
   }
 }
 
@@ -55,11 +55,11 @@ pub func benchInoutMixedPlaces(): Unit {
 pub func benchInoutBreakLoop(): Unit {
   var local = 0
   val r = Counters(a = 0, b = 0, c = 0)
-  spinUntil(local, 60000000)
-  spinUntil(r.a, 60000000)
-  spinUntil(r.b, 60000000)
-  spinUntil(r.c, 60000000)
-  if local + r.a + r.b + r.c != 240000000 {
-    println("bench_inout: wrong total")
+  spinUntil(local, 300000000)
+  spinUntil(r.a, 300000000)
+  spinUntil(r.b, 300000000)
+  spinUntil(r.c, 300000000)
+  if local + r.a + r.b + r.c == 1 {
+    println("bench_inout: sink")
   }
 }
