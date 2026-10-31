@@ -7064,13 +7064,29 @@ func reportConflictingClassification(diag: in List[Diagnostic], file: in SourceF
   }
 }
 
+// `packages` without the package `own`.  A project build hands the checker
+// every project package as an import, the one being checked included
+// (#7583); a package is not its own import, and registering its declarations
+// a second time, as imported, would give each of its types a second symbol
+// with the same SymbolId (docs/70 §4.2) that first-match scans could pick.
+func withoutOwnPackage(packages: in List[ImportedPackage], own: in String): List[ImportedPackage] {
+  val kept: List[ImportedPackage] = newList()
+  for ip in packages {
+    if own.length == 0 or ip.name != own {
+      kept.add(ip)
+    }
+  }
+  kept
+}
+
 func checkWithImportedPackagesCore(
   file0: in SourceFile,
-  importedPackages: in List[ImportedPackage],
+  allImportedPackages: in List[ImportedPackage],
   validateDecls: in Bool,
   nativeIntrinsics: in Bool,
   stringSurface: in StringMethodSurface,
 ): CheckResult {
+  val importedPackages = withoutOwnPackage(allImportedPackages, dottedPackageName(file0.packageDecl.path))
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   tbl.stringSurface.add(stringSurface)
