@@ -1152,7 +1152,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                   // invokespecial <init>()V`.  Without this the case lowered to null and
                   // any downstream `match` saw `instanceof Case == false` → "match not
                   // exhaustive" (#1675).
-                  match ctorClassFor(ctx, name) {
+                  // Two unions of a package may share the case name: the
+                  // directly-enclosing expectation names the union the checker
+                  // resolved (#8649).
+                  match ctorClassForExpecting(ctx, name) {
                     case Some(cls) -> {
                       val emptyArgs: List[CallArg] = newList()
                       lowerConstruction(ctx, insns, cls, emptyArgs)
