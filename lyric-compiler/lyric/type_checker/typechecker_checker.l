@@ -5472,6 +5472,12 @@ func checkWireInits(
   val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, TyError)
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
+  // A member spliced from a wire template carries references qualified for
+  // the template's own imports, which the including package's scope cannot
+  // always resolve (#6505): only a type mismatch is reported, never a name
+  // the including file cannot see.  An unresolved reference types as
+  // `TyError`, which matches anything.
+  val quiet: List[Diagnostic] = newList()
   for p in decl.params {
     scopeAdd(sc, LocalBinding(name = p.name, ty = resolveType(tbl, ctx, scratch, p.ty), isMutable = false))
   }
@@ -5481,27 +5487,39 @@ func checkWireInits(
     match decl.members[i] {
       case WMProvided(n, ty, _) -> scopeAdd(
         sc,
-        LocalBinding(name = n, ty = resolveType(tbl, ctx, diag, ty), isMutable = false)
+        LocalBinding(name = n, ty = resolveType(tbl, ctx, scratch, ty), isMutable = false)
       )
       case WMSingleton(n, ty, _, _) -> scopeAdd(
         sc,
-        LocalBinding(name = n, ty = resolveType(tbl, ctx, diag, ty), isMutable = false)
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
       )
       case WMScoped(_, n, ty, _, _) -> scopeAdd(
         sc,
-        LocalBinding(name = n, ty = resolveType(tbl, ctx, diag, ty), isMutable = false)
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
       )
       case WMBind(iface, _, _) -> scopeAdd(
         sc,
         LocalBinding(
           name = wireBindName(iface),
-          ty = resolveType(tbl, ctx, diag, iface),
+          ty = resolveType(tbl, ctx, scratch, iface),
           isMutable = false
         )
       )
       case WMLocal(n, Some(ty), _, _) -> scopeAdd(
         sc,
-        LocalBinding(name = n, ty = resolveType(tbl, ctx, diag, ty), isMutable = false)
+        LocalBinding(
+          name = n,
+          ty = resolveType(tbl, ctx, scratch, ty),
+          isMutable = false
+        )
       )
       case WMLocal(_, None, _, _) -> untyped.add(i)
       case _ -> {
@@ -5535,7 +5553,7 @@ func checkWireInits(
   for idx in pending {
     match decl.members[idx] {
       case WMLocal(n, _, init, _) -> {
-        val t = inferExpr(sc, tbl, sigs, diag, init)
+        val t = inferExpr(sc, tbl, sigs, quiet, init)
         scopeAdd(sc, LocalBinding(name = n, ty = t, isMutable = false))
       }
       case _ -> {
@@ -5549,7 +5567,7 @@ func checkWireInits(
         sc,
         tbl,
         sigs,
-        diag,
+        quiet,
         noGenerics,
         ty,
         init,
@@ -5561,7 +5579,7 @@ func checkWireInits(
         sc,
         tbl,
         sigs,
-        diag,
+        quiet,
         noGenerics,
         ty,
         init,
@@ -5573,7 +5591,7 @@ func checkWireInits(
         sc,
         tbl,
         sigs,
-        diag,
+        quiet,
         noGenerics,
         iface,
         provider,
@@ -5585,7 +5603,7 @@ func checkWireInits(
         sc,
         tbl,
         sigs,
-        diag,
+        quiet,
         noGenerics,
         ty,
         init,
@@ -5598,9 +5616,13 @@ func checkWireInits(
     }
     j = j + 1
   }
+  for d in quiet {
+    if d.code == "T0060" {
+      diag.add(d)
+    }
+  }
 }
 
-// Every declared initialiser `item` carries, checked by `checkDeclaredInit`.
 func checkItemDeclaredInits(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
