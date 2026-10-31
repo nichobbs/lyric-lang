@@ -3049,6 +3049,7 @@ func specMayRender(decl: in FunctionDecl): Bool {
   val items: List[Item] = newList()
   items.add(funcItem(decl))
   val f = SourceFile(
+    files = newList(),
     moduleDoc = noDocs,
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
@@ -4514,6 +4515,7 @@ func specMentionsUnsigned(decl: in FunctionDecl): Bool {
   val noAnns: List[Annotation] = newList()
   val noImports: List[ImportDecl] = newList()
   val f = SourceFile(
+    files = newList(),
     moduleDoc = noDocs,
     fileAnnotations = noAnns,
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
