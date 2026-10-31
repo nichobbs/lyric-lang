@@ -1444,7 +1444,10 @@ test "buildContractFromFile renders parameter defaults as calls to compiled thun
     Str.contains(g.repr, "n: in Int = P.__lyric_default__f0_1_1_g2_g1_6_Option1_tr1_1_Tr1_3_Int1_n()"),
     "g's Int default: " + g.repr
   )
-  assertTrue(Str.contains(g.repr, "o: in Option[T],"), "a T-typed default is not exported: " + g.repr)
+  assertTrue(
+    Str.contains(g.repr, "o: in Option[T] = P.__lyric_default__unexported(),"),
+    "a T-typed default is written as the unexported marker (#8076): " + g.repr
+  )
   assertTrue(
     not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f0_1_1_g2_g1_6_Option1_tr1_1_Tr1_3_Int1_o")),
     "no thunk for it"

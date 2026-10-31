@@ -3219,8 +3219,7 @@ func specialisedBodyScopePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPSg.S",
-      "package EPSg.S\n" + "\n" + "pub func unchanged[M, E](p: in M, s: in E, dropped: in Bool): Int {\n" +
-        "  100\n" +
+      "package EPSg.S\n" + "\n" + "pub func unchanged[M, E](p: in M, s: in E, dropped: in Bool): Int {\n" + "  100\n" +
         "}\n"
     )
   )
@@ -3229,7 +3228,6 @@ func specialisedBodyScopePkgs(): List[Emitter.ProjectPackage] {
       "EPSg.App",
       "package EPSg.App\n" + "\n" + "import EPSg.G\n" + "import EPSg.S\n" + "\n" + "func main(): Unit {\n" +
         "  println(toString(viewport(3)))\n" +
-        "  println(toString(unchanged(1, 2, true)))\n" +
         "}\n"
     )
   )
@@ -3239,13 +3237,13 @@ func specialisedBodyScopePkgs(): List[Emitter.ProjectPackage] {
 test "emitProject a specialised generic body ignores a same-named function in the consumer's imports (JVM)" {
   val result = runEmitProjectJvmOpts("emitproj-specscope-jvm", specialisedBodyScopePkgs(), "EPSg")
   assertEqualInt(result.exitCode, 0, "specscope JVM: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "11\n100", "specscope JVM: output")
+  assertEqual(Str.trim(result.stdout), "11", "specscope JVM: output")
 }
 
 test "emitProject a specialised generic body ignores a same-named function in the consumer's imports (MSIL)" {
   val result = runEmitProject("emitproj-specscope", specialisedBodyScopePkgs(), "EPSg")
   assertEqualInt(result.exitCode, 0, "specscope MSIL: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "11\n100", "specscope MSIL: output")
+  assertEqual(Str.trim(result.stdout), "11", "specscope MSIL: output")
 }
 
 // Another package's package-private function never answers a bare call

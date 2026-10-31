@@ -4911,14 +4911,16 @@ func specialiseWovenContracts(
     }
     items.add(it)
   }
-  Some(value = SourceFile(
-    fileAnnotations = res.file.fileAnnotations,
-    moduleDoc = res.file.moduleDoc,
-    packageDecl = res.file.packageDecl,
-    imports = res.file.imports,
-    items = items,
-    span = res.file.span
-  ))
+  Some(
+    value = SourceFile(
+      fileAnnotations = res.file.fileAnnotations,
+      moduleDoc = res.file.moduleDoc,
+      packageDecl = res.file.packageDecl,
+      imports = res.file.imports,
+      items = items,
+      span = res.file.span
+    )
+  )
 }
 
 // True when the weaver renamed a function to `<name>__aspect_target`.

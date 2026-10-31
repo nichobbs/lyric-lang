@@ -1011,7 +1011,16 @@ func renderParamsWithDefaults(
       case Some(thunk) -> {
         acc = acc + " = " + dt.pkg + "." + thunk + "()"
       }
-      case None -> ()
+      case None -> match params[i].dflt {
+        // A default with no thunk (its type names a type parameter or
+        // `Self`) is still written, so a consumer that leaves the argument
+        // out is told it cannot be used across the package boundary (#8076)
+        // rather than that the parameter has no default.
+        case Some(_) -> {
+          acc = acc + " = " + dt.pkg + "." + unexportedDefaultThunkName() + "()"
+        }
+        case None -> ()
+      }
     }
     i = i + 1
   }
