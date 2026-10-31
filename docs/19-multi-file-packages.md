@@ -5,7 +5,7 @@
 §4.1 phase 2a); §3 and §4 describe the shipped compiler, which differs from
 the original F#-era plan.
 **Decision-log entry:** D180 (`docs/decisions/D180-package-merge-from-parses.md`).
-**Superseded in part:** D267 (docs/70 §4.1) makes imports per file. Phase 2a has replaced the text merge with separately parsed files (§4) and given each file its own import scope (§4 step 2) in warning mode: a name a file sees only through a sibling's import is the warning `W0032`, and the files still share their imports for resolution until the next step makes it an error and retires `B0012`.
+**Superseded in part:** D267 (docs/70 §4.1) makes imports per file. Phase 2a (D300) has replaced the text merge with separately parsed files (§4) and given each file its own import scope (§4 step 2): a name a file sees only through a sibling's import is the error `T0219`. `B0012` stays until the passes that read aliases from the union of the files' imports read each file's own (#8690).
 
 ## 1. Motivation
 
@@ -80,22 +80,25 @@ calls it through `Lyric.Pipeline.pipeParsePackageTo` (docs/70 §4.1, phase 2a):
    and its renames and selective imports are checked against its own
    imports (`T0148`, `T0210`). An item is checked in the scope of the file
    it is written in (`Position.fileId`); a synthesised item with no source
-   position is checked against the union. The package also carries the
-   union of the files' imports (`SourceFile.imports`, an import written in
-   several files kept once), and in this release names still resolve
-   through it: the per-file rule is in **warning mode**. A name a file can
-   use only through a sibling file's import is `W0032 — 'X' is visible
-   here only through `import P` in <file>; add `import P` to this file`,
-   once per name and file; the warning comes first so the compiler,
-   stdlib, ecosystem and every user can add the missing imports (an
-   import a sibling already has is accepted by every compiler) before the
-   next step turns it into an error (docs/70 §12.2). Until then the
-   union's own rules stay: an alias that two files bind to different
-   packages (`import Std.Core as A` in one, `import Std.Math as A` in
-   another) is `B0012 — import alias A names Std.Math here but Std.Core
-   at <file>:<line>`, reported against the later file, and a rename that
-   collides with a name another file's import brings in is `T0148`. The
-   same alias for the same package in two files is one import.
+   position is checked against the union. A name a file can use only
+   through a sibling file's import is `T0219 — 'X' is not imported by this
+   file; only `import P` in <file> makes it visible, and a file's imports
+   are its own: add `import P` to this file`, once per name and file.
+   Later passes still read the union of the files' imports and the backends
+   resolve bare names across the package, so a bare name that two files
+   import from different packages is `T0123`, an alias that two files bind to
+   different packages (`import Std.Core as A` in one, `import Std.Math as
+   A` in another) is `B0012 — import alias A names Std.Math here but
+   Std.Core at <file>:<line>`, reported against the later file, and a
+   rename that collides with a name another file's import brings in is
+   `T0148`, all until #8690. The same alias for the same package in two files
+   is one import. The package also carries the union
+   of the files' imports (`SourceFile.imports`, an import written in
+   several files kept once), for synthesised items and the stages that
+   need the package's dependencies. Phase 2a step 4 (#8676) introduced the
+   rule as the warning `W0032` so the compiler, stdlib, ecosystem and users
+   could add the missing imports first (docs/70 §12.2); D300 made it the
+   error.
 3. **File-level annotations** are package-wide: the package carries the
    union of its files' file-level annotations, an annotation written in
    several files kept once, and a file that writes none takes the
@@ -197,7 +200,7 @@ early split: token types into `tokens.l`, keyword table into
 |---|---|---|
 | `B0010` | package matches both single-file and multi-file layout | Not raised: no build finds a package by file name (§3). Raised by the removed F# emitter (D-progress-095) |
 | `B0011` | duplicate declaration across files in same package | Not raised: the type checker's `T0001` reports it against the later file (§4 step 7). Raised by the removed F# emitter (D-progress-095) |
-| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180); retired when per-file imports leave warning mode (docs/70 §4.1) |
+| `B0012` | conflicting import alias across files in same package | Shipped (#8234, D180); retired when the passes that read the union's aliases read each file's own (#8690) |
 | `B0013` | a file of the package declares another package | Shipped (#8234, D180) |
 | `B0014` | files of the package disagree on a file-level annotation | Shipped (#8234, D180) |
 

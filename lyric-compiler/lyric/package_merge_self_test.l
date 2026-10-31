@@ -324,8 +324,8 @@ test "every file of a package gated off leaves an empty package" {
 }
 
 test "an import alias two files bind to different packages is B0012" {
-  // Review repro r1: the files of a package share one import scope until
-  // per-file scopes land (docs/70 §4.1).
+  // Review repro r1: passes that read aliases from the union of the files'
+  // imports pick one package per alias (#8690).
   val a = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
   val b = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
   val r = asm(a, b)

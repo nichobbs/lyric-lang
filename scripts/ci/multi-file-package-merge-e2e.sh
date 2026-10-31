@@ -15,9 +15,10 @@
 #   - a file with no `package` declaration is P0020, against its own path;
 #   - files that disagree on the verification level are B0014;
 #   - a file-level `@cfg(target = ...)` keeps each target's own file only;
-#   - an import alias two files bind to different packages is B0012;
-#   - a name only a sibling file imports builds, with W0032 naming the
-#     sibling and the import to add (imports are per file, docs/70 §4.1);
+#   - an import alias two files bind to different packages is B0012 (#8690);
+#   - imports are per file (docs/70 §4.1): a name only a sibling file
+#     imports is T0219 naming the sibling and the import to add, and a bare
+#     name two files import from different packages is T0123 (#8690);
 #   - a package of one file that declares another package is B0013;
 #   - a sub-package whose directory is inside its parent's builds as its own
 #     package, and a plain subdirectory's files stay in the parent;
@@ -241,17 +242,22 @@ EOF
   rejected "an alias bound to two packages" "$d" "$target" \
     "src/b_other\.l: error\[B0012\] 2:1: import alias X names Std\.Math here but Std\.String at .*a_main\.l:2"
 
-  # Imports are per file (docs/70 §4.1): a name only a sibling file imports
-  # still builds, as W0032 naming the sibling and the import to add.
+  # Two files import the same bare name from different packages
+  # (Std.String.join and Std.Path.join): T0123 until #8690, since the
+  # backends resolve a bare name across the package's files.
+  d="$(project samename)"
+  printf 'package Mf\nimport Std.String\n\nfunc main(): Unit {\n  val parts: slice[String] = ["x", "y"]\n  println(join(",", parts) + " " + joined())\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\nimport Std.Path\n\npub func joined(): String {\n  join("a", "b")\n}\n' > "$d/src/b_path.l"
+  rejected "a name two files import from different packages" "$d" "$target" \
+    "src/b_path\.l: error\[T0123\] 5:3: 'join' is ambiguous: it is declared by .*imported by the files of this package"
+
+  # A name only a sibling file imports is T0219 naming the sibling and the
+  # import to add.
   d="$(project sibling)"
   printf 'package Mf\nimport Std.String as Str\n\nfunc main(): Unit {\n  println(Str.toUpper(low()))\n}\n' > "$d/src/a_main.l"
   printf 'package Mf\n\nfunc low(): String {\n  Str.toLower("Hi")\n}\n' > "$d/src/b_low.l"
-  runs "a name only a sibling file imports" "$d" "$target" "HI"
-  if ! grep -Eq 'src/b_low\.l: warning\[W0032\] 4:3: .*through `import Std\.String as Str` in .*src/a_main\.l; add `import Std\.String as Str` to this file' "$work/log"; then
-    echo "FAIL [$target] a name only a sibling file imports: no W0032 naming a_main.l"; cat "$work/log"; fail=1
-  else
-    echo "PASS [$target] W0032 names the sibling file and its import"
-  fi
+  rejected "a name only a sibling file imports" "$d" "$target" \
+    'src/b_low\.l: error\[T0219\] 4:3: .*only `import Std\.String as Str` in .*src/a_main\.l makes it visible, and a file.s imports are its own: add `import Std\.String as Str` to this file'
 
   # A package of one file that declares another package.
   d="$(project single)"

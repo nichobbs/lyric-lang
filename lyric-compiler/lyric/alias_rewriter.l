@@ -143,59 +143,57 @@ func collectAliases(imports: in List[ImportDecl]): List[String] {
   entries
 }
 
+/// An alias or rename entry that another file of the package binds, with
+/// that import as written and that file's path.
+pub record SiblingEntry {
+  item: String
+  via: String
+  path: String
+}
+
+/// A rewrite through a `SiblingEntry`: the spelling rewritten, the entry's
+/// import and file, the package the rewrite names, and where it is written.
+pub record SiblingUse {
+  key: String
+  via: String
+  path: String
+  target: String
+  span: Span
+}
+
 /// The aliases and renames one item is rewritten with (docs/70 §4.1): the
-/// entries of the file the item is written in (`entries`) and, while the
-/// files of a package still share their imports, the entries only another
-/// file binds (`fallback`, with the import that binds each in `fallbackVia`
-/// and that file's path in `fallbackPath`, parallel).  A rewrite through a
-/// fallback entry is recorded in the `used*` lists, which every copy made by
-/// the scope filters shares, for W0032.
+/// entries of the file the item is written in (`entries`) and the entries
+/// only another file binds (`siblings`).  A file's imports are its own, so a
+/// rewrite through a sibling's entry is an error (T0219); it still rewrites,
+/// so the use is reported once and the type checker sees the package it
+/// names.  Each such rewrite is recorded in `used`, which every copy made by
+/// the scope filters shares.
 pub record AliasEnv {
   entries: List[String]
-  fallback: List[String]
-  fallbackVia: List[String]
-  fallbackPath: List[String]
-  usedKeys: List[String]
-  usedVia: List[String]
-  usedPath: List[String]
-  usedTargets: List[String]
-  usedSpans: List[Span]
+  siblings: List[SiblingEntry]
+  used: List[SiblingUse]
 }
 
-// An environment of `entries` alone, with no fallback.
+// An environment of `entries` alone, with no sibling entries.
 func aliasEnvOf(entries: in List[String]): AliasEnv {
-  AliasEnv(
-    entries = entries,
-    fallback = newList(),
-    fallbackVia = newList(),
-    fallbackPath = newList(),
-    usedKeys = newList(),
-    usedVia = newList(),
-    usedPath = newList(),
-    usedTargets = newList(),
-    usedSpans = newList()
-  )
+  AliasEnv(entries = entries, siblings = newList(), used = newList())
 }
 
-// `env` with `entries` and `fallback` replaced, sharing its use record.
-func aliasEnvWith(
-  env: in AliasEnv,
-  entries: in List[String],
-  fallback: in List[String],
-  fallbackVia: in List[String],
-  fallbackPath: in List[String],
-): AliasEnv {
-  AliasEnv(
-    entries = entries,
-    fallback = fallback,
-    fallbackVia = fallbackVia,
-    fallbackPath = fallbackPath,
-    usedKeys = env.usedKeys,
-    usedVia = env.usedVia,
-    usedPath = env.usedPath,
-    usedTargets = env.usedTargets,
-    usedSpans = env.usedSpans
-  )
+// `env` with `entries` and `siblings` replaced, sharing its use record.
+func aliasEnvWith(env: in AliasEnv, entries: in List[String], siblings: in List[SiblingEntry]): AliasEnv {
+  AliasEnv(entries = entries, siblings = siblings, used = env.used)
+}
+
+// The index of the first of `siblings` whose entry starts with `pfx`, or -1.
+func siblingIndex(siblings: in List[SiblingEntry], pfx: in String): Int {
+  var i = 0
+  while i < siblings.count {
+    if Str.startsWith(siblings[i].item, pfx) {
+      return i
+    }
+    i = i + 1
+  }
+  -1
 }
 
 // The index of the first of `entries` starting with `pfx`, or -1.
@@ -215,17 +213,14 @@ func entriesContain(entries: in List[String], name: in String): Bool {
 }
 
 func aliasContains(aliases: in AliasEnv, name: in String): Bool {
-  entriesContain(aliases.entries, name) or entriesContain(aliases.fallback, name)
+  entriesContain(aliases.entries, name) or siblingIndex(aliases.siblings, name + "=") >= 0
 }
 
-// Record that the fallback entry `idx` of `aliases` rewrote `key` at `sp`
+// Record that the sibling entry `idx` of `aliases` rewrote `key` at `sp`
 // into a reference to package `target`.
-func noteFallbackUse(aliases: in AliasEnv, idx: in Int, key: in String, target: in String, sp: in Span): Unit {
-  aliases.usedKeys.add(key)
-  aliases.usedVia.add(aliases.fallbackVia[idx])
-  aliases.usedPath.add(aliases.fallbackPath[idx])
-  aliases.usedTargets.add(target)
-  aliases.usedSpans.add(sp)
+func noteSiblingUse(aliases: in AliasEnv, idx: in Int, key: in String, target: in String, sp: in Span): Unit {
+  val e = aliases.siblings[idx]
+  aliases.used.add(SiblingUse(key = key, via = e.via, path = e.path, target = target, span = sp))
 }
 
 // The segments of the dotted value of `entry` (`k=A.B` gives `[A, B]`).
@@ -245,17 +240,18 @@ func entryValueSegs(entry: in String): List[String] {
 
 // The declaring-package segments for alias `name` (empty list if unknown),
 // a rewrite written at `sp`.  The item's own file's alias wins; another
-// file's is used, and recorded, only when the item's file binds none.
+// file's is used, and recorded for T0219, only when the item's file binds
+// none.
 func aliasPkgSegs(aliases: in AliasEnv, name: in String, sp: in Span): List[String] {
   val pfx = name + "="
   val own = entryIndex(aliases.entries, pfx)
   if own >= 0 {
     return entryValueSegs(aliases.entries[own])
   }
-  val other = entryIndex(aliases.fallback, pfx)
+  val other = siblingIndex(aliases.siblings, pfx)
   if other >= 0 {
-    val segs = entryValueSegs(aliases.fallback[other])
-    noteFallbackUse(aliases, other, name, modulePathJoin(segs), sp)
+    val segs = entryValueSegs(aliases.siblings[other].item)
+    noteSiblingUse(aliases, other, name, modulePathJoin(segs), sp)
     return segs
   }
   newList()
@@ -313,10 +309,10 @@ func renameTarget(aliases: in AliasEnv, name: in String, sp: in Span): Option[Li
   if own >= 0 {
     return Some(value = renameSegs(aliases.entries[own], pfx))
   }
-  val other = entryIndex(aliases.fallback, pfx)
+  val other = siblingIndex(aliases.siblings, pfx)
   if other >= 0 {
-    val segs = renameSegs(aliases.fallback[other], pfx)
-    noteFallbackUse(aliases, other, name, packageOfMember(modulePathJoin(segs)), sp)
+    val segs = renameSegs(aliases.siblings[other].item, pfx)
+    noteSiblingUse(aliases, other, name, packageOfMember(modulePathJoin(segs)), sp)
     return Some(value = segs)
   }
   None
@@ -343,7 +339,15 @@ func entriesHaveRenames(entries: in List[String]): Bool {
 }
 
 func hasRenames(aliases: in AliasEnv): Bool {
-  entriesHaveRenames(aliases.entries) or entriesHaveRenames(aliases.fallback)
+  if entriesHaveRenames(aliases.entries) {
+    return true
+  }
+  for e in aliases.siblings {
+    if isRenameEntry(e.item) {
+      return true
+    }
+  }
+  false
 }
 
 // `aliases` without the renames that `names` (bindings coming into scope)
@@ -359,20 +363,13 @@ func dropRenamesNamed(aliases: in AliasEnv, names: in List[String]): AliasEnv {
     }
     kept.add(entry)
   }
-  val keptFallback: List[String] = newList()
-  val keptVia: List[String] = newList()
-  val keptPath: List[String] = newList()
-  var i = 0
-  while i < aliases.fallback.count {
-    val entry = aliases.fallback[i]
-    if not (isRenameEntry(entry) and listHas(names, aliasKeyFirstSegment(entry))) {
-      keptFallback.add(entry)
-      keptVia.add(aliases.fallbackVia[i])
-      keptPath.add(aliases.fallbackPath[i])
+  val keptSiblings: List[SiblingEntry] = newList()
+  for e in aliases.siblings {
+    if not (isRenameEntry(e.item) and listHas(names, aliasKeyFirstSegment(e.item))) {
+      keptSiblings.add(e)
     }
-    i = i + 1
   }
-  aliasEnvWith(aliases, kept, keptFallback, keptVia, keptPath)
+  aliasEnvWith(aliases, kept, keptSiblings)
 }
 
 func listHas(xs: in List[String], x: in String): Bool {
@@ -1528,19 +1525,13 @@ func filterAliasesExcludingLocals(aliases: in AliasEnv, locals: in List[String])
       kept.add(entry)
     }
   }
-  val keptFallback: List[String] = newList()
-  val keptVia: List[String] = newList()
-  val keptPath: List[String] = newList()
-  var i = 0
-  while i < aliases.fallback.count {
-    if not aliasEntryShadowed(aliases.fallback[i], locals) {
-      keptFallback.add(aliases.fallback[i])
-      keptVia.add(aliases.fallbackVia[i])
-      keptPath.add(aliases.fallbackPath[i])
+  val keptSiblings: List[SiblingEntry] = newList()
+  for e in aliases.siblings {
+    if not aliasEntryShadowed(e.item, locals) {
+      keptSiblings.add(e)
     }
-    i = i + 1
   }
-  aliasEnvWith(aliases, kept, keptFallback, keptVia, keptPath)
+  aliasEnvWith(aliases, kept, keptSiblings)
 }
 
 // Whether a package alias `entry`'s first segment is one of `locals`; a
@@ -2543,12 +2534,12 @@ func rewriteItem(aliases: in AliasEnv, it: in Item): Item {
 // ─────────────────────────────────────────────────────────────────────────────
 /// Apply package-alias rewriting to every `Item` in `file`.  No-op when
 /// the file has no `import X as Y` declarations.  `rewriteFileReporting`
-/// with its warnings dropped.
+/// with its diagnostics dropped.
 pub func rewriteFile(file: in SourceFile): SourceFile {
   rewriteFileReporting(file).file
 }
 
-/// A package rewritten by `rewriteFileReporting`, with its W0032 warnings.
+/// A package rewritten by `rewriteFileReporting`, with its T0219 errors.
 pub record AliasRewriteResult {
   file: SourceFile
   diagnostics: List[Diagnostic]
@@ -2557,13 +2548,13 @@ pub record AliasRewriteResult {
 /// Apply package-alias rewriting to every `Item` in `file`.  Imports are
 /// per file (docs/70 §4.1): an item of a package of several files is
 /// rewritten with the aliases and renames of the file it is written in
-/// (`FileHeader.imports`, by the item's `Position.fileId`).  While the files
-/// of a package still share their imports, an alias or rename only another
-/// file binds still rewrites, and is reported as W0032 when the item's file
-/// imports the aliased package in another form (when it does not import it
-/// at all, the type checker reports the qualified reference the rewrite
-/// produced, naming the same import).  A synthesised item, and a package of
-/// one file, use the union of the imports.
+/// (`FileHeader.imports`, by the item's `Position.fileId`).  An alias or
+/// rename only another file binds is an error, T0219; it still rewrites, so
+/// that the use is reported once.  The rewriter reports it when the item's
+/// file imports the aliased package in another form; when the file does not
+/// import it at all, the type checker reports the qualified reference the
+/// rewrite produced, naming the same import.  A synthesised item, and a
+/// package of one file, use the union of the imports.
 pub func rewriteFileReporting(file: in SourceFile): AliasRewriteResult {
   val diags: List[Diagnostic] = newList()
   val aliases = collectAliases(file.imports)
@@ -2587,7 +2578,7 @@ pub func rewriteFileReporting(file: in SourceFile): AliasRewriteResult {
       f = f + 1
     }
   }
-  val warned: List[String] = newList()
+  val reported: List[String] = newList()
   val items: List[Item] = newList()
   var i = 0
   while i < file.items.count {
@@ -2598,7 +2589,7 @@ pub func rewriteFileReporting(file: in SourceFile): AliasRewriteResult {
     } else {
       val env = fileEnvs[fid]
       items.add(rewriteItem(env, it))
-      reportFallbackUses(env, file.files[fid], fid, warned, diags)
+      reportSiblingUses(env, file.files[fid], fid, reported, diags)
     }
     i = i + 1
   }
@@ -2630,7 +2621,7 @@ func itemFileOf(files: in List[FileHeader], it: in Item): Int {
 }
 
 // The aliases and renames of file `f` of `files`, with every other file's
-// entries that `f` does not bind as the fallback.
+// entries that `f` does not bind as its sibling entries.
 func fileAliasEnv(files: in List[FileHeader], f: in Int): AliasEnv {
   val own = collectAliases(files[f].imports)
   for r in collectRenames(files[f].imports) {
@@ -2649,10 +2640,8 @@ func fileAliasEnv(files: in List[FileHeader], f: in Int): AliasEnv {
         }
         for e in entries {
           val key = entryKey(e)
-          if not listHasKey(own, key) and not listHasKey(env.fallback, key) {
-            env.fallback.add(e)
-            env.fallbackVia.add(renderImport(imp))
-            env.fallbackPath.add(files[j].path)
+          if not listHasKey(own, key) and siblingIndex(env.siblings, key + "=") < 0 {
+            env.siblings.add(SiblingEntry(item = e, via = renderImport(imp), path = files[j].path))
           }
         }
       }
@@ -2678,7 +2667,7 @@ func listHasKey(entries: in List[String], key: in String): Bool {
   false
 }
 
-// An import as written, for the advice of W0032.
+// An import as written, for the advice of T0219.
 func renderImport(imp: in ImportDecl): String {
   var text = if imp.isPubUse { "pub use " } else { "import " }
   text = text + modulePathJoin(imp.path.segments)
@@ -2720,43 +2709,36 @@ func renderImport(imp: in ImportDecl): String {
   text
 }
 
-// W0032 for each rewrite of an item of file `fid` through another file's
+// T0219 for each rewrite of an item of file `fid` through another file's
 // alias or rename, once per spelling and file, when the file imports the
 // target package in some form; when it imports it in none, the type checker
 // reports the qualified reference instead.  Clears the use record.
-func reportFallbackUses(
+func reportSiblingUses(
   env: in AliasEnv,
   header: in FileHeader,
   fid: in Int,
-  warned: in List[String],
+  reported: in List[String],
   diags: in List[Diagnostic],
 ): Unit {
-  var u = 0
-  while u < env.usedKeys.count {
-    val key = env.usedKeys[u]
-    val pkg = env.usedTargets[u]
-    val tag = toString(fid) + "|" + key
-    if fileImportsPackage(header, pkg) and not listHas(warned, tag) {
-      warned.add(tag)
-      val via = env.usedVia[u]
-      val location = if env.usedPath[u].length > 0 { env.usedPath[u] } else { "another file of this package" }
+  for u in env.used {
+    val tag = toString(fid) + "|" + u.key
+    if fileImportsPackage(header, u.target) and not listHas(reported, tag) {
+      reported.add(tag)
+      val location = if u.path.length > 0 { u.path } else { "another file of this package" }
       diags.add(
-        warningDiagnostic(
-          "W0032",
-          "'" + key + "' is visible here only through `" + via + "` in " + location + "; add `" + via +
-            "` to this file (a file's imports are its own; this becomes an error in a later release)",
-          env.usedSpans[u]
+        errorDiagnostic(
+          "T0219",
+          "'" + u.key + "' is not imported by this file; only `" + u.via + "` in " + location +
+            " makes it visible, and a file's imports are its own: add `" +
+            u.via +
+            "` to this file",
+          u.span
         )
       )
     }
-    u = u + 1
   }
-  while env.usedKeys.count > 0 {
-    env.usedKeys.removeAt(env.usedKeys.count - 1)
-    env.usedVia.removeAt(env.usedVia.count - 1)
-    env.usedPath.removeAt(env.usedPath.count - 1)
-    env.usedTargets.removeAt(env.usedTargets.count - 1)
-    env.usedSpans.removeAt(env.usedSpans.count - 1)
+  while env.used.count > 0 {
+    env.used.removeAt(env.used.count - 1)
   }
 }
 
