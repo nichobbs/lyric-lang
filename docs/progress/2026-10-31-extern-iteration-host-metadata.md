@@ -7,7 +7,7 @@ metadata by each backend bridge and handed to the checker:
 
 - **Checker** (`Lyric.TypeChecker`): `SymbolTable.externIterElems`
   (`ExternIterInfo`/`ExternIterElem`), `forIterElemType`'s extern arm
-  (`externIterLoopElem`), the new **T0219** (host element type with no `extern
+  (`externIterLoopElem`), the new **T0220** (host element type with no `extern
   type` in scope) and **T0126** for a host type that is not enumerable.
 - **MSIL**: `Msil.MetadataReader.iterProtocolOfExtern` (InterfaceImpl/TypeSpec
   walk with generic substitution, across assemblies), `Msil.Bridge.
