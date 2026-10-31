@@ -195,7 +195,7 @@ They are separate from `--target`, and from each other.
 | Flag | Meaning |
 |---|---|
 | `--shape portable` *(default)* | framework-dependent; needs a runtime installed |
-| `--shape standalone` / `--standalone` | bundles a runtime (not implemented yet — [#6262]) |
+| `--shape standalone` / `--standalone` | bundles a runtime into a directory, still JIT-compiled (`-o <dir>`; host platform only) |
 | `--shape aot` / `--aot` | ahead-of-time compiled to a native binary |
 
 Any profile combines with any shape. `--release --shape portable` gives you an
@@ -248,7 +248,6 @@ identifier (default: your host), and `-o` overrides the output path.
 This is equivalent to setting `[build] shape = "aot"` in your `lyric.toml` and
 running `lyric build`.
 
-[#6262]: https://github.com/nichobbs/lyric-lang/issues/6262
 
 On the JVM target, `lyric build --release --aot --target jvm hello.l` does the same
 job through GraalVM **`native-image`**: it builds the ordinary bundled JAR, then

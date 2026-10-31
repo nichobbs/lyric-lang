@@ -298,9 +298,10 @@ func usageText(): String {
     "  lyric build   [--debug | --release] [--shape portable|standalone|aot]\n" +
     "                (two independent axes, both orthogonal to --target -- docs/63:\n" +
     "                 PROFILE  --debug (default) unoptimized, debug info kept\n" +
-    "                          --release        optimized, debug info stripped\n" +
+    "                          --release        optimized, debug info stripped; integer overflow wraps,\n" +
+    "                                           ensures:/internal requires: unchecked (--release-contracts keeps them)\n" +
     "                 SHAPE    --shape portable (default)  framework-dependent; needs a runtime\n" +
-    "                          --shape standalone          bundles a runtime -- not implemented (#6262)\n" +
+    "                          --shape standalone          bundles a runtime into a directory; still JIT/interpreted\n" +
     "                          --shape aot                 native binary; --aot is sugar for this\n" +
     "                 --standalone/--aot are sugar for the matching --shape)\n" +
     "  lyric build   --release --aot [<source.l>] [--manifest <lyric.toml>] [--rid <rid>] [-o <bin>]\n" +
@@ -845,38 +846,18 @@ func wasmShapeNeedsNativeError(shape: in BuildShape, target: in Emitter.CompileT
     " has no such shape"
 }
 
-/// `F0044` — the shape is valid for this target but its toolchain path is not
-/// implemented.  Fails loud rather than silently emitting the portable artifact
-/// a user did not ask for.
-///
-/// Today that is `standalone` on every target (no self-contained-publish or
-/// `jlink` path exists — issue #6262).  `aot` on `--target jvm` now ships via
-/// GraalVM `native-image` (D131), and `Lyric.Release` runs its own preflight
-/// for a missing driver or an unsupported host, so it is not rejected here.
-pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
-  match shape {
-    case SStandalone -> {
-      val msg = "error[F0044]: --shape standalone is not implemented yet (issue #6262). " +
-        "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
-        "self-contained native binary."
-      Some(value = msg)
-    }
-    case _ -> None
-  }
-}
-
 /// True when the resolved shape routes this build through a **packaging
-/// pipeline** — `Lyric.Release` (ILC / GraalVM) or a future self-contained
-/// publish — layered on top of the target's normal compile.  These are the
-/// paths that thread no `--define`s and are far too slow to `--watch`.
+/// pipeline** — `Lyric.Release` (ILC / GraalVM native-image for `aot`, the
+/// bundled runtime for `standalone`) — layered on top of the target's normal
+/// compile.  These are far too slow to `--watch`.
 ///
 /// `--target native` is the subtlety, and getting it wrong was a real
 /// regression (#6266): native's shape is always `aot`, but that is its *only
 /// and normal* path (Lyric -> LLVM IR -> clang), not a packaging hop bolted
-/// onto a managed build.  A native build therefore threads defines (#5977, a
-/// shipped feature) and is watchable exactly like a portable managed build.
+/// onto a managed build.  A native build is therefore watchable exactly like
+/// a portable managed build.
 ///
-/// Keying the gates on this predicate rather than on `shape != portable`
+/// Keying the `--watch` gate on this predicate rather than on `shape != portable`
 /// keeps "which shapes are slow packaging hops" in one place instead of
 /// duplicating the native carve-out at each call site.
 pub func usesPackagingPipeline(shape: in BuildShape, target: in Emitter.CompileTarget): Bool {

@@ -443,7 +443,10 @@ func eraseParsed(
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
   val arrayImports = if spellsArray { withArrayImports(biFile) } else { biFile }
-  CheckReadyFile(file = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)), diagnostics = diags)
+  CheckReadyFile(
+    file = hoistValueRecordMethods(markReleaseElide(markWrappingArith(arrayImports, definesWk), definesWk)),
+    diagnostics = diags
+  )
 }
 
 func appendDiagnostics(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit {
@@ -526,6 +529,57 @@ func markWrappingArith(file: in SourceFile, defines: in List[BD.Define]): Source
     items = file.items,
     span = file.span
   )
+}
+
+/// Release builds follow the contract policy of book chapter 17, section
+/// 17.4: `ensures:` clauses and the `requires:` clauses of non-`pub` functions
+/// are not checked, unless the build asked to keep them (`--release-contracts`,
+/// the `release_contracts=full` define) or the package says
+/// `@runtime_checked(release_contracts = full)`.  The standard library keeps
+/// every check, so a stdlib routine behaves the same in every program.
+func markReleaseElide(file: in SourceFile, defines: in List[BD.Define]): SourceFile {
+  val release = match BD.lookupDefine(defines, "build_profile") { case Some(p) -> p == "release"; case None -> false }
+  val keep = match BD.lookupDefine(defines, "release_contracts") { case Some(p) -> p == "full"; case None -> false }
+  val isStd = file.packageDecl.path.segments.count > 0 and file.packageDecl.path.segments[0] == "Std"
+  if not release or keep or isStd or packageKeepsReleaseContracts(file.fileAnnotations) {
+    return file
+  }
+  val anns: List[Annotation] = newList()
+  for a in file.fileAnnotations {
+    anns.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(releaseElideMarker())
+  val noArgs: List[AnnotationArg] = newList()
+  anns.add(Annotation(name = ModulePath(segments = segs, span = file.span), args = noArgs, span = file.span))
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    files = file.files,
+    fileAnnotations = anns,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = file.items,
+    span = file.span
+  )
+}
+
+// `@runtime_checked(release_contracts = full)` on the package.
+func packageKeepsReleaseContracts(anns: in List[Annotation]): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "runtime_checked" {
+      for arg in a.args {
+        match arg {
+          case AAName(n, AVIdent(v, _), _) -> {
+            if n == "release_contracts" and v == "full" {
+              return true
+            }
+          }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  false
 }
 
 /// Whether `file` carries `wrappingArithMarker()`.

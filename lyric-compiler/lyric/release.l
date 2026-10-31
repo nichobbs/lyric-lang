@@ -5,6 +5,14 @@
 //! Plain `lyric build` keeps emitting the fast framework-dependent DLL (the
 //! inner loop); `--release` is the deployable-artifact path.
 //!
+//! `--shape standalone` (DotnetStandalone, JvmStandalone) is the middle point
+//! of the deployment spectrum: the managed program is bundled with a runtime
+//! but is still JIT-compiled (.NET) or interpreted (JVM), so reflection and
+//! dynamic loading keep working and no trimming rules apply.  The .NET arm
+//! assembles a self-contained directory (patched apphost, the installed shared
+//! runtime, the program and its references); the JVM arm builds a `jlink`
+//! runtime image and a launcher script beside the program JARs.
+//!
 //! .NET target (DotnetAot): drives `ilc` (the .NET IL-to-native compiler) and
 //! the platform linker (`clang` on Unix) directly from Lyric — no generated C#,
 //! no `dotnet publish`.  The Lyric MSIL emitter already sets `EntryPointToken`
@@ -33,6 +41,8 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.ProcessCapture as PC
 import Std.Environment as Environment
+import Std.Encoding as Enc
+import Std.Zip as Zip
 import Jvm.NativeImage as NI
 import Lyric.PackageMerge as PM
 
@@ -42,6 +52,8 @@ import Lyric.PackageMerge as PM
 pub union ReleaseTarget {
   case DotnetAot
   case JvmNativeImage
+  case DotnetStandalone
+  case JvmStandalone
 }
 
 // Discovered paths to the ILC toolchain packages.
@@ -1524,6 +1536,686 @@ pub func buildReleaseJvm(
   0
 }
 
+// ─── Standalone shape (self-contained, still JIT / interpreted) ──────────────
+/// The placeholder the .NET apphost template embeds where the application
+/// DLL name goes (the SHA-256 of "foobar", as in the SDK's HostWriter).
+pub func apphostPlaceholder(): String = "c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"
+
+// The embedded name slot in the apphost template is this many bytes.
+val APPHOST_SLOT_BYTES: Int = 1024
+
+/// Index of `needle` in `hay`, or -1.
+pub func indexOfBytes(hay: in slice[Byte], needle: in slice[Byte]): Int {
+  if needle.length == 0 or hay.length < needle.length {
+    return -1
+  }
+  var i = 0
+  val last = hay.length - needle.length
+  while i <= last {
+    var j = 0
+    while j < needle.length and hay[i + j] == needle[j] {
+      j += 1
+    }
+    if j == needle.length {
+      return i
+    }
+    i += 1
+  }
+  -1
+}
+
+/// The apphost `host` with the application DLL name `appName` written over
+/// its placeholder, as `dotnet publish` does.  The name is zero-padded; the
+/// template reserves 1024 bytes for it.
+pub func patchApphost(host: in slice[Byte], appName: in String): Result[slice[Byte], String] {
+  val needle = Enc.encodeUtf8(apphostPlaceholder())
+  val name = Enc.encodeUtf8(appName)
+  if name.length == 0 or name.length >= APPHOST_SLOT_BYTES {
+    return Err(error = "application name '" + appName + "' must be 1 to 1023 bytes long")
+  }
+  val at = indexOfBytes(host, needle)
+  if at < 0 {
+    return Err(error = "the apphost template does not contain the application-name placeholder")
+  }
+  if at + APPHOST_SLOT_BYTES > host.length {
+    return Err(error = "the apphost template is truncated after the application-name placeholder")
+  }
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < host.length {
+    if i >= at and i < at + name.length {
+      acc.add(name[i - at])
+    } else if i >= at and i < at + needle.length {
+      acc.add((0).toByte())
+    } else {
+      acc.add(host[i])
+    }
+    i += 1
+  }
+  Ok(value = acc.toArray())
+}
+
+/// The `.runtimeconfig.json` of a self-contained program: the framework is
+/// included in the directory rather than named for the host to resolve.
+pub func standaloneRuntimeConfig(tfm: in String, frameworkVersion: in String): String {
+  "{\n  \"runtimeOptions\": {\n    \"tfm\": \"" + tfm +
+    "\",\n    \"includedFrameworks\": [\n      {\n        \"name\": \"Microsoft.NETCore.App\",\n        \"version\": \"" +
+    frameworkVersion +
+    "\"\n      }\n    ]\n  }\n}\n"
+}
+
+func versionCore(v: in String): String {
+  match Str.indexOf(v, "-") {
+    case Some(d) -> Str.substring(v, 0, d)
+    case None -> v
+  }
+}
+
+func versionPart(p: in String): Int {
+  match Parse.tryParseInt(p) {
+    case Ok(n) -> n
+    case Err(_) -> 0
+  }
+}
+
+/// Compare dotted numeric versions ("10.0.7" vs "10.0.12"); a pre-release
+/// suffix ("-rc.1") is ignored.  Negative, zero or positive like a comparator.
+pub func compareVersions(a: in String, b: in String): Int {
+  val pa = Str.split(versionCore(a), ".")
+  val pb = Str.split(versionCore(b), ".")
+  var i = 0
+  while i < pa.length or i < pb.length {
+    val x = if i < pa.length { versionPart(pa[i]) } else { 0 }
+    val y = if i < pb.length { versionPart(pb[i]) } else { 0 }
+    if x != y {
+      return if x < y { -1 } else { 1 }
+    }
+    i += 1
+  }
+  0
+}
+
+/// The highest of `names` (version-named directories) whose major version is
+/// `major`, or the highest of all when `major` is 0.
+pub func highestVersion(names: in List[String], major: in Int): Option[String] {
+  var best: Option[String] = None
+  for n in names {
+    if major == 0 or semverMajor(n) == major {
+      best = match best {
+        case None -> Some(value = n)
+        case Some(cur) -> if compareVersions(n, cur) > 0 { Some(value = n) } else { best }
+      }
+    }
+  }
+  best
+}
+
+/// Major version of a target framework moniker ("net10.0" -> 10), 0 if unknown.
+pub func tfmMajor(tfm: in String): Int {
+  if Str.startsWith(tfm, "net") {
+    semverMajor(Str.substring(tfm, 3, tfm.length - 3))
+  } else {
+    0
+  }
+}
+
+/// Why a `--shape standalone` .NET build cannot run on this host, or None.
+/// The runtime bundled is the one installed here, so the program can only be
+/// packaged for the host platform; the Windows and macOS layouts are not
+/// supported yet.
+pub func dotnetStandalonePreflightError(ridOpt: in Option[String], hostRid: in String): Option[String] {
+  if hostRid == "" {
+    return Some(value = "could not determine the host RID for the self-contained runtime")
+  }
+  match ridOpt {
+    case Some(r) -> {
+      if not isValidRid(r) {
+        return Some(
+          value = "invalid RID '" + r +
+            "': a .NET RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
+        )
+      }
+      if r != hostRid {
+        return Some(
+          value = "--shape standalone bundles the runtime installed on this machine, so it can only build for the host RID '" +
+            hostRid +
+            "' (requested '" +
+            r +
+            "'); build on a " +
+            r +
+            " machine"
+        )
+      }
+    }
+    case None -> ()
+  }
+  if ridOs(hostRid) != "linux" {
+    return Some(
+      value = "--shape standalone for --target dotnet is supported on Linux hosts only ('" + hostRid +
+        "'); use --shape portable, or --shape aot on macOS"
+    )
+  }
+  None
+}
+
+// The dotnet installation root: `$DOTNET_ROOT`, the root of the `dotnet`
+// on `$PATH`, the running runtime's root, then the conventional locations.
+func findDotnetRoot(os: in String): Option[String] {
+  val candidates: List[String] = newList()
+  val envRoot = Environment.getVarOrDefault("DOTNET_ROOT", "")
+  if envRoot != "" {
+    candidates.add(envRoot)
+  }
+  match findOnPath("dotnet", Environment.getVarOrDefault("PATH", ""), os) {
+    case Some(p) -> {
+      match File.realPath(p) {
+        case Ok(real) -> candidates.add(Path.dirname(real))
+        case Err(_) -> candidates.add(Path.dirname(p))
+      }
+    }
+    case None -> ()
+  }
+  val rt = Environment.runtimeDirectory()
+  if rt != "" {
+    candidates.add(Path.dirname(Path.dirname(Path.dirname(rt))))
+  }
+  candidates.add(Path.join(Environment.getVarOrDefault("HOME", ""), ".dotnet"))
+  candidates.add("/usr/share/dotnet")
+  candidates.add("/usr/lib/dotnet")
+  candidates.add("/usr/lib64/dotnet")
+  candidates.add("/opt/dotnet")
+  for c in candidates {
+    if c != "" and File.dirExists(Path.join(Path.join(c, "shared"), "Microsoft.NETCore.App")) {
+      return Some(value = c)
+    }
+  }
+  None
+}
+
+func subdirNames(dir: in String): List[String] {
+  val acc: List[String] = newList()
+  match File.listDirs(dir) {
+    case Ok(ds) -> {
+      for d in ds {
+        acc.add(Path.basename(d))
+      }
+    }
+    case Err(_) -> ()
+  }
+  acc
+}
+
+func ensureDir(dir: in String): Result[Unit, String] {
+  if File.dirExists(dir) {
+    return Ok(value = ())
+  }
+  match File.createDir(dir) {
+    case Ok(_) -> Ok(value = ())
+    case Err(e) -> Err(error = "could not create " + dir + ": " + IOError.message(e))
+  }
+}
+
+func copyFile(src: in String, dst: in String): Result[Unit, String] {
+  match ensureDir(Path.dirname(dst)) {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match File.readBytes(src) {
+    case Err(e) -> Err(error = "could not read " + src + ": " + IOError.message(e))
+    case Ok(bytes) -> match File.writeBytes(dst, bytes) {
+      case Ok(_) -> Ok(value = ())
+      case Err(e) -> Err(error = "could not write " + dst + ": " + IOError.message(e))
+    }
+  }
+}
+
+// Copy every file under `srcDir` into `dstDir`, keeping the relative layout.
+func copyTree(srcDir: in String, dstDir: in String): Result[Unit, String] {
+  val files = match File.listFilesRecursive(srcDir) {
+    case Ok(fs) -> fs
+    case Err(e) -> return Err(error = "could not list " + srcDir + ": " + IOError.message(e))
+  }
+  for f in files {
+    val rel = Str.substring(f, srcDir.length, f.length - srcDir.length)
+    val relClean = if Str.startsWith(rel, "/") { Str.substring(rel, 1, rel.length - 1) } else { rel }
+    match copyFile(f, Path.join(dstDir, relClean)) {
+      case Ok(_) -> ()
+      case Err(m) -> return Err(error = m)
+    }
+  }
+  Ok(value = ())
+}
+
+val STANDALONE_MARKER: String = ".lyric-standalone"
+
+/// Prepare an empty `outDir`.  A directory a previous standalone build wrote
+/// (it carries the marker) is replaced; anything else is never deleted.
+pub func prepareStandaloneOutDir(outDir: in String): Result[Unit, String] {
+  if File.fileExists(outDir) {
+    return Err(error = "output path '" + outDir + "' is a file; --shape standalone writes a directory")
+  }
+  if File.dirExists(outDir) {
+    if File.fileExists(Path.join(outDir, STANDALONE_MARKER)) {
+      match File.deleteDirRecursive(outDir) {
+        case Ok(_) -> ()
+        case Err(e) -> return Err(error = "could not clear " + outDir + ": " + IOError.message(e))
+      }
+    } else {
+      val entries = match File.listEntries(outDir) { case Ok(es) -> es.count; case Err(_) -> 1 }
+      if entries > 0 {
+        return Err(
+          error = "output directory '" + outDir +
+            "' already exists and was not written by a standalone build; remove it or pass a different -o"
+        )
+      }
+    }
+  }
+  match ensureDir(outDir) {
+    case Err(m) -> return Err(error = m)
+    case Ok(_) -> ()
+  }
+  match File.writeText(Path.join(outDir, STANDALONE_MARKER), "written by lyric build --shape standalone\n") {
+    case Ok(_) -> Ok(value = ())
+    case Err(e) -> Err(error = "could not write the marker in " + outDir + ": " + IOError.message(e))
+  }
+}
+
+// `Err(message)` after reporting it, so callers can `return 1`.
+func failWith(m: in String): Int {
+  releaseErr(m)
+  1
+}
+
+/// Package a built .NET program as a self-contained directory.
+///
+/// `programDll` is the portable build; its directory (the program, the
+/// stdlib and every reference the build staged beside it) and `extraRefs`
+/// are copied into
+/// `outDir` together with the installed shared runtime, `hostfxr` and an
+/// apphost patched to start the program, so the directory runs on a machine
+/// with no .NET installed.  `outDir/<exeName>` is the executable.
+pub func buildStandaloneDotnet(
+  programDll: in String,
+  extraRefs: in List[String],
+  ridOpt: in Option[String],
+  outDir: in String,
+  exeName: in String,
+): Int {
+  val hostRid = Environment.runtimeIdentifier()
+  match dotnetStandalonePreflightError(ridOpt, hostRid) {
+    case Some(msg) -> return failWith(msg)
+    case None -> ()
+  }
+  val absDll = absPath(programDll)
+  val stageDir = Path.dirname(absDll)
+  val dllName = Path.basename(absDll)
+  val root = match findDotnetRoot("linux") {
+    case Some(r) -> r
+    case None -> return failWith(
+      "no .NET installation found to bundle (looked at $DOTNET_ROOT, the dotnet on $PATH and the usual install directories)"
+    )
+  }
+  val runtimesDir = Path.join(Path.join(root, "shared"), "Microsoft.NETCore.App")
+  val configName = Str.substring(dllName, 0, dllName.length - 4) + ".runtimeconfig.json"
+  val configText = match File.readText(Path.join(stageDir, configName)) { case Ok(t) -> t; case Err(_) -> "" }
+  val tfm = match jsonStringField(configText, "tfm") { case Some(t) -> t; case None -> "net10.0" }
+  val wantMajor = tfmMajor(tfm)
+  val runtimeVer = match highestVersion(subdirNames(runtimesDir), wantMajor) {
+    case Some(v) -> v
+    case None -> return failWith(
+      "no Microsoft.NETCore.App " + (if wantMajor > 0 { toString(wantMajor) + ".x " } else { "" }) +
+        "runtime is installed under " +
+        runtimesDir
+    )
+  }
+  val fxrRoot = Path.join(Path.join(root, "host"), "fxr")
+  val fxrVer = match highestVersion(subdirNames(fxrRoot), wantMajor) {
+    case Some(v) -> v
+    case None -> return failWith("no hostfxr is installed under " + fxrRoot)
+  }
+  val hostPackRoot = Path.join(Path.join(root, "packs"), "Microsoft.NETCore.App.Host." + hostRid)
+  val hostPackVer = match highestVersion(subdirNames(hostPackRoot), wantMajor) {
+    case Some(v) -> v
+    case None -> return failWith(
+      "the apphost pack Microsoft.NETCore.App.Host." + hostRid + " is not installed under " + hostPackRoot +
+        " (it ships with the .NET SDK)"
+    )
+  }
+  val apphostPath = Path.join(
+    Path.join(
+      Path.join(Path.join(Path.join(hostPackRoot, hostPackVer), "runtimes"), hostRid),
+      "native"
+    ),
+    "apphost"
+  )
+  val apphost = match File.readBytes(apphostPath) {
+    case Ok(b) -> b
+    case Err(e) -> return failWith("could not read " + apphostPath + ": " + IOError.message(e))
+  }
+  val patched = match patchApphost(apphost, dllName) { case Ok(b) -> b; case Err(m) -> return failWith(m) }
+  val absOut = absPath(outDir)
+  match prepareStandaloneOutDir(absOut) {
+    case Ok(_) -> ()
+    case Err(m) -> return failWith(m)
+  }
+  Console.println("release: bundling .NET " + runtimeVer + " (" + hostRid + ") ...")
+  match copyTree(Path.join(runtimesDir, runtimeVer), absOut) {
+    case Ok(_) -> ()
+    case Err(m) -> return failWith(m)
+  }
+  match copyTree(Path.join(fxrRoot, fxrVer), absOut) {
+    case Ok(_) -> ()
+    case Err(m) -> return failWith(m)
+  }
+  match copyTree(stageDir, absOut) {
+    case Ok(_) -> ()
+    case Err(m) -> return failWith(m)
+  }
+  // References the build resolved outside the staging directory (workspace
+  // and restored packages, third-party assemblies).
+  for ref in extraRefs {
+    match copyFile(absPath(ref), Path.join(absOut, Path.basename(ref))) {
+      case Ok(_) -> ()
+      case Err(m) -> return failWith(m)
+    }
+  }
+  // The portable runtimeconfig names a shared framework; replace it.
+  match File.writeText(Path.join(absOut, configName), standaloneRuntimeConfig(tfm, runtimeVer)) {
+    case Ok(_) -> ()
+    case Err(e) -> return failWith("could not write the runtimeconfig: " + IOError.message(e))
+  }
+  val exePath = Path.join(absOut, exeName)
+  match File.writeBytes(exePath, patched) {
+    case Ok(_) -> ()
+    case Err(e) -> return failWith("could not write " + exePath + ": " + IOError.message(e))
+  }
+  match File.setExecutable(exePath) {
+    case Ok(_) -> ()
+    case Err(e) -> return failWith("could not mark " + exePath + " executable: " + IOError.message(e))
+  }
+  // `createdump` is an executable the runtime spawns on a crash.
+  val dump = Path.join(absOut, "createdump")
+  if File.fileExists(dump) {
+    val _ = File.setExecutable(dump)
+  }
+  Console.println("built standalone directory " + outDir + " (run " + Path.join(outDir, exeName) + ")")
+  0
+}
+
+// ─── Standalone, JVM: jlink runtime image + launcher ─────────────────────────
+/// Why a `--shape standalone` JVM build cannot run on this host, or None.
+/// The runtime image is built from the JDK that runs `jlink`, so it can only
+/// target the host; the launcher is a POSIX shell script.
+pub func jvmStandalonePreflightError(ridOpt: in Option[String], hostRid: in String): Option[String] {
+  if hostRid == "" {
+    return Some(value = "could not determine the host platform for the jlink runtime image")
+  }
+  match ridOpt {
+    case Some(r) -> {
+      if not isValidRid(r) {
+        return Some(
+          value = "invalid RID '" + r +
+            "': a RID must contain only lowercase letters, digits, dots, and hyphens (e.g. linux-x64)"
+        )
+      }
+      if not ridMatchesHost(r, hostRid) {
+        return Some(
+          value = "--shape standalone for --target jvm builds a jlink image of the JDK on this machine, so it can only build for the host RID '" +
+            hostRid +
+            "' (requested '" +
+            r +
+            "'); build on a " +
+            r +
+            " machine"
+        )
+      }
+    }
+    case None -> ()
+  }
+  val os = ridOs(hostRid)
+  if os != "linux" and os != "osx" {
+    return Some(value = "'" + hostRid + "' is not supported for --shape standalone --target jvm (Linux and macOS only)")
+  }
+  None
+}
+
+/// The launcher written beside the runtime image: resolves its own directory
+/// (following symlinks), then starts the bundled JVM on the program classes.
+pub func standaloneLauncherScript(mainClass: in String): String {
+  "#!/bin/sh\n" + "# Generated by lyric build --shape standalone.\n" + "self=\"$0\"\n" + "while [ -h \"$self\" ]; do\n" +
+    "  dir=$(cd \"$(dirname \"$self\")\" && pwd -P)\n" +
+    "  target=$(readlink \"$self\")\n" +
+    "  case \"$target\" in /*) self=\"$target\" ;; *) self=\"$dir/$target\" ;; esac\n" +
+    "done\n" +
+    "here=$(cd \"$(dirname \"$self\")\" && pwd -P)\n" +
+    "exec \"$here/runtime/bin/java\" --enable-native-access=ALL-UNNAMED -cp \"$here/lib/*\" " +
+    mainClass +
+    " \"$@\"\n"
+}
+
+/// `jlink` arguments for a runtime image holding `modules` at `imageDir`.
+pub func buildJlinkArgs(modules: in String, imageDir: in String): List[String] {
+  val a: List[String] = newList()
+  a.add("--add-modules")
+  a.add(modules)
+  a.add("--output")
+  a.add(imageDir)
+  a.add("--strip-debug")
+  a.add("--no-header-files")
+  a.add("--no-man-pages")
+  a
+}
+
+// "Proj.dll" -> "Proj".
+func jarStem(base: in String): String {
+  match Str.lastIndexOf(base, ".") {
+    case Some(d) -> if d > 0 { Str.substring(base, 0, d) } else { base }
+    case None -> base
+  }
+}
+
+func findJdkTool(name: in String, os: in String): Result[String, String] {
+  val home = Environment.getVarOrDefault("JAVA_HOME", "")
+  if home != "" {
+    val p = Path.join(Path.join(home, "bin"), name)
+    if File.fileExists(p) {
+      return Ok(value = p)
+    }
+  }
+  match findOnPath(name, Environment.getVarOrDefault("PATH", ""), os) {
+    case Some(p) -> Ok(value = p)
+    case None -> Err(
+      error = name +
+        " not found ($JAVA_HOME/bin and $PATH); --shape standalone --target jvm needs a full JDK 21 or later (with the jmods)"
+    )
+  }
+}
+
+/// The comma-separated module list for `jlink`: what `jdeps` reported plus
+/// `java.base` and the modules the runtime support classes reach without a
+/// static reference `jdeps` can follow (HTTP and TLS, the EC provider, zip
+/// file systems, logging, `sun.misc.Unsafe`).
+pub func jlinkModules(jdepsOutput: in String): String {
+  val seen: List[String] = newList()
+  seen.add("java.base")
+  for part in Str.split(Str.trim(jdepsOutput), ",") {
+    seen.add(Str.trim(part))
+  }
+  seen.add("java.net.http")
+  seen.add("jdk.crypto.ec")
+  seen.add("jdk.zipfs")
+  seen.add("java.logging")
+  seen.add("jdk.unsupported")
+  val uniq: List[String] = newList()
+  for m in seen {
+    if m != "" {
+      var dup = false
+      for u in uniq {
+        if u == m {
+          dup = true
+        }
+      }
+      if not dup {
+        uniq.add(m)
+      }
+    }
+  }
+  var acc = ""
+  for m in uniq {
+    acc = if acc == "" { m } else { acc + "," + m }
+  }
+  acc
+}
+
+/// The text of the JAR manifest with line continuations ("\n ") joined.
+pub func unfoldManifest(text: in String): String {
+  Str.replace(Str.replace(text, "\r\n", "\n"), "\n ", "")
+}
+
+/// The value of manifest attribute `key` in an unfolded manifest, or "".
+pub func manifestAttribute(unfolded: in String, key: in String): String {
+  for line in Str.split(unfolded, "\n") {
+    if Str.startsWith(line, key + ": ") {
+      return Str.trim(Str.substring(line, key.length + 2, line.length - key.length - 2))
+    }
+  }
+  ""
+}
+
+func readJarManifest(jar: in String): Result[String, String] {
+  val data = match File.readBytes(jar) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "could not read " + jar + ": " + IOError.message(e))
+  }
+  val entries = match Zip.readZipDirectory(data, Zip.defaultZipLimits()) {
+    case Ok(es) -> es
+    case Err(e) -> return Err(error = "could not read the entries of " + jar + ": " + Zip.zipErrorMessage(e))
+  }
+  for en in entries {
+    if en.name == "META-INF/MANIFEST.MF" {
+      return match Zip.readZipEntry(data, en) {
+        case Ok(b) -> match Enc.tryDecodeUtf8(b) {
+          case Some(t) -> Ok(value = unfoldManifest(t))
+          case None -> Err(error = "the manifest of " + jar + " is not UTF-8")
+        }
+        case Err(e) -> Err(error = "could not read the manifest of " + jar + ": " + Zip.zipErrorMessage(e))
+      }
+    }
+  }
+  Err(error = jar + " has no META-INF/MANIFEST.MF")
+}
+
+/// Package a built JVM program as a self-contained directory:
+/// `outDir/<exeName>` (launcher), `outDir/runtime/` (a `jlink` image) and
+/// `outDir/lib/` (the program JAR and the Maven jars it refers to).
+pub func buildStandaloneJvm(
+  jarPath: in String,
+  extraJars: in List[String],
+  ridOpt: in Option[String],
+  outDir: in String,
+  exeName: in String,
+): Int {
+  val absJar = absPath(jarPath)
+  if not File.fileExists(absJar) {
+    return failWith("JAR not found at " + absJar)
+  }
+  val hostRid = Environment.runtimeIdentifier()
+  match jvmStandalonePreflightError(ridOpt, hostRid) {
+    case Some(msg) -> return failWith(msg)
+    case None -> ()
+  }
+  val os = ridOs(hostRid)
+  val jlink = match findJdkTool("jlink", os) { case Ok(p) -> p; case Err(m) -> return failWith(m) }
+  val jdeps = match findJdkTool("jdeps", os) { case Ok(p) -> p; case Err(m) -> return failWith(m) }
+  val manifest = match readJarManifest(absJar) { case Ok(m) -> m; case Err(m) -> return failWith(m) }
+  val mainClass = manifestAttribute(manifest, "Main-Class")
+  if mainClass == "" {
+    return failWith(absJar + " has no Main-Class in its manifest")
+  }
+  // Jars the program refers to: the restored Maven jars named by the
+  // manifest's Class-Path, then the ones the caller passed.
+  val libJars: List[String] = newList()
+  libJars.add(absJar)
+  for tok in Str.split(manifestAttribute(manifest, "Class-Path"), " ") {
+    val t = if Str.startsWith(tok, "file:") { Str.substring(tok, 5, tok.length - 5) } else { tok }
+    if t != "" and File.fileExists(t) {
+      libJars.add(t)
+    }
+  }
+  for e in extraJars {
+    libJars.add(absPath(e))
+  }
+  val absOut = absPath(outDir)
+  match prepareStandaloneOutDir(absOut) {
+    case Ok(_) -> ()
+    case Err(m) -> return failWith(m)
+  }
+  // Stage the jars under `lib/` first: both `jdeps` and the `lib/*` classpath
+  // of the launcher need the `.jar` suffix, and the project path names its
+  // staging artifact after `output_assembly`, which is often `*.dll`.
+  val libDir = Path.join(absOut, "lib")
+  val staged: List[String] = newList()
+  for j in libJars {
+    val base = Path.basename(j)
+    val libName = if Str.endsWith(base, ".jar") { base } else { jarStem(base) + ".jar" }
+    val dst = Path.join(libDir, libName)
+    match copyFile(j, dst) {
+      case Ok(_) -> ()
+      case Err(m) -> return failWith(m)
+    }
+    staged.add(dst)
+  }
+  val depArgs: List[String] = newList()
+  depArgs.add("--print-module-deps")
+  depArgs.add("--ignore-missing-deps")
+  depArgs.add("--multi-release")
+  depArgs.add("base")
+  var cp = ""
+  for j in staged {
+    cp = if cp == "" { j } else { cp + classpathSeparator(os) + j }
+  }
+  depArgs.add("--class-path")
+  depArgs.add(cp)
+  depArgs.add(staged[0])
+  val deps = PC.runCaptureWithDiagnosticsTimeout(jdeps, depArgs, "", 300000)
+  if deps.exitCode != 0 or deps.timedOut {
+    if deps.stderr != "" {
+      Console.error(deps.stderr)
+    }
+    return failWith("jdeps could not analyse " + absJar + (if deps.timedOut { " (timed out)" } else { "" }))
+  }
+  val modules = jlinkModules(deps.stdout)
+  Console.println("release: building a jlink runtime image (" + modules + ") ...")
+  val link = PC.runCaptureWithDiagnosticsTimeout(
+    jlink,
+    buildJlinkArgs(modules, Path.join(absOut, "runtime")),
+    "",
+    600000
+  )
+  if link.stdout != "" {
+    Console.println(link.stdout)
+  }
+  if link.exitCode != 0 or link.timedOut {
+    if link.stderr != "" {
+      Console.error(link.stderr)
+    }
+    return failWith(
+      "jlink failed" + (if link.timedOut { " (timed out)" } else { " with exit code " + toString(link.exitCode) })
+    )
+  }
+  val exePath = Path.join(absOut, exeName)
+  match File.writeText(exePath, standaloneLauncherScript(mainClass)) {
+    case Ok(_) -> ()
+    case Err(e) -> return failWith("could not write " + exePath + ": " + IOError.message(e))
+  }
+  match File.setExecutable(exePath) {
+    case Ok(_) -> ()
+    case Err(e) -> return failWith("could not mark " + exePath + " executable: " + IOError.message(e))
+  }
+  Console.println("built standalone directory " + outDir + " (run " + Path.join(outDir, exeName) + ")")
+  0
+}
+
 /// Target-agnostic release entry point.  Dispatches to the .NET AOT path
 /// (`ilc` + platform linker) or the JVM path (GraalVM `native-image`).  Both
 /// arms produce a standalone binary or fail — neither falls back to a managed
@@ -1542,5 +2234,7 @@ pub func buildRelease(
   match target {
     case DotnetAot -> buildReleaseDotnet(programArtifact, extraRefs, ridOpt, outPath)
     case JvmNativeImage -> buildReleaseJvm(programArtifact, extraRefs, ridOpt, outPath)
+    case DotnetStandalone -> buildStandaloneDotnet(programArtifact, extraRefs, ridOpt, outPath, Path.basename(outPath))
+    case JvmStandalone -> buildStandaloneJvm(programArtifact, extraRefs, ridOpt, outPath, Path.basename(outPath))
   }
 }

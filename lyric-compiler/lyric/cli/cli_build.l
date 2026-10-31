@@ -158,8 +158,7 @@ func resolveShapeAxis(
 // Resolve the shape and profile axes with CLI-over-manifest-over-default
 // precedence (docs/63 §4.2 — the same precedence rule docs/60 uses for defines,
 // so the toolchain has one rule and not two), then run the compatibility checks
-// that depend on the resolved value: `F0043` (shape invalid for the target) and
-// `F0044` (shape valid but unimplemented).
+// that depend on the resolved value: `F0043` (shape invalid for the target).
 //
 // `cliShape`/`cliProfile` are `None` when the user named neither on the command
 // line, which is what lets a manifest value win over the default without the
@@ -209,10 +208,6 @@ func resolveAxesChecked(
     case Some(msg) -> return Err(error = msg)
     case None -> ()
   }
-  match shapeUnsupportedError(shape, target) {
-    case Some(msg) -> return Err(error = msg)
-    case None -> ()
-  }
   Ok(value = ResolvedAxes(shape = shape, profile = profile))
 }
 
@@ -254,73 +249,6 @@ pub func shouldPrintReleaseNote(sawReleaseFlag: in Bool, cliShapeNamed: in Bool,
     case SAot -> false
     case _ -> true
   }
-}
-
-// True iff the manifest at `mfPath` declares a non-empty `[build.define]` table
-// (docs/60 §3.1). Used by `cmdBuild`'s gate to reject up front — rather than
-// silently drop — manifest defines on a build shape that cannot consume them
-// (a non-`portable` shape routes into `buildReleaseProject`, which threads
-// no defines). A read/parse failure degrades to `false`: the real build below
-// surfaces the manifest error with full diagnostics.
-func manifestDeclaresBuildDefines(mfPath: in String): Bool {
-  match File.readText(mfPath) {
-    case Err(_) -> false
-    case Ok(mfText) -> {
-      match Mf.parseManifest(mfText, mfPath) {
-        case Err(_) -> false
-        case Ok(mf) -> manifestDeclaresBuildDefinesValue(mf)
-      }
-    }
-  }
-}
-
-// Manifest-value variant of `manifestDeclaresBuildDefines`: same predicate,
-// but against an already-parsed manifest instead of re-reading/re-parsing
-// `mfPath` (#6193).
-func manifestDeclaresBuildDefinesValue(manifest: in Mf.Manifest): Bool {
-  Mf.getManifestBuildDefines(manifest).count > 0
-}
-
-// The rejection message for a manifest `[build.define]` table on a build shape
-// that cannot consume it (docs/60 §3.1). `reason` names the specific shape.
-pub func manifestDefinesUnsupportedMsg(mfPath: in String, reason: in String): String {
-  "build: [build.define] in " + mfPath + " is not supported with " + reason +
-    "; manifest defines are threaded on portable-shape project builds (#5852/#5977)"
-}
-
-// Pure accept/reject predicate for a manifest `[build.define]` table on a
-// project build (docs/60 §3.1 / #6139). Returns `Some(message)` when the manifest
-// declares defines and the build *shape* cannot consume them, or `None` when the
-// defines can be applied.
-//
-// docs/63 band B0 re-scoped this from the `--release` flag to the shape axis.
-// The AOT-packaging path is what threads no defines; the optimization profile
-// has nothing to do with it. So `--release --shape portable` now correctly
-// accepts manifest defines, where before it was rejected for the wrong reason.
-//
-// `--target native` consumes defines (#5977: list literals + module-level `val`
-// inlining). `--watch` is intentionally absent: `buildProject` reapplies the
-// manifest defines on every rebuild, so it is not a silent-drop shape.
-// Pulled out of `cmdBuild` so the reject matrix is unit-testable without a build
-// (#6188), mirroring `defineBuildGateError`.
-pub func manifestDefineGateError(
-  mfHasDefines: in Bool,
-  shape: in BuildShape,
-  target: in Emitter.CompileTarget,
-  mfPath: in String,
-): Option[String] {
-  if not mfHasDefines {
-    return None
-  }
-  if not usesPackagingPipeline(shape, target) {
-    return None
-  }
-  Some(
-    value = manifestDefinesUnsupportedMsg(
-      mfPath,
-      "--shape " + shapeName(shape) + " (the packaging path threads no defines)"
-    )
-  )
 }
 
 // Resolve the `[native]` config for a `--target native` build (N6.4):
@@ -453,34 +381,17 @@ pub func releaseFromDllIgnoredArgsWarning(positional: in List[String]): String {
 }
 
 // Pure accept/reject predicate for `lyric build --define` (#5852 / #6139).
-// Returns `Some(message)` when `--define` is not supported for the given build
-// shape, or `None` when it is allowed. All three backends consume defines now
-// (dotnet/jvm #5852, native #5977), so `targetConsumable` is `true` for every
-// current target (the parameter stays for a future non-consumable target).
+// Returns `Some(message)` when `--define` is not supported, or `None` when it is
+// allowed. All three backends consume defines (dotnet/jvm #5852, native #5977),
+// so `targetConsumable` is `true` for every current target (the parameter stays
+// for a future non-consumable target).  The packaging shapes (`aot`,
+// `standalone`) compile their staging artifact through the ordinary build path
+// and thread defines into it, so the shape no longer matters here (#6262).
 //
-// docs/63 band B0 re-scoped this from the `--release` flag to the shape axis:
-// it is the AOT-packaging path that threads no defines, not the optimization
-// profile. `--release --shape portable --define K=V` is therefore accepted now,
-// where before it was rejected for a reason that did not apply.
-//
-// Every path that would otherwise drop the defines silently is still rejected
-// up front:
-//   - a non-consumable target (none today),
-//   - `--watch` (the rebuild action carries no defines), and
-//   - a non-portable shape (the packaging paths thread no defines).
-// Pulled out of `cmdBuild` so the accept/reject matrix is unit-testable without
-// a manifest round-trip (#6140). `shapeManifestPath` names the manifest that
-// *configured the shape*, and only that: pass "" whenever the shape came from a
-// CLI flag, even in project mode, or the advice tells the user to edit a
-// manifest key they never set (#6277).
-pub func defineBuildGateError(
-  hasDefines: in Bool,
-  targetConsumable: in Bool,
-  watch: in Bool,
-  shape: in BuildShape,
-  target: in Emitter.CompileTarget,
-  shapeManifestPath: in String,
-): Option[String] {
+// Still rejected up front, because they would drop the defines silently:
+//   - a non-consumable target (none today), and
+//   - `--watch` (the rebuild action carries no defines).
+pub func defineBuildGateError(hasDefines: in Bool, targetConsumable: in Bool, watch: in Bool): Option[String] {
   if not hasDefines {
     return None
   }
@@ -489,19 +400,7 @@ pub func defineBuildGateError(
       value = "build: --define is supported on single-file and project (--manifest / lyric.toml) --target dotnet/jvm/native builds; it is not supported with --watch"
     )
   }
-  if not usesPackagingPipeline(shape, target) {
-    return None
-  }
-  // The advice has to match how the shape was actually selected: telling a user
-  // to "build without --aot" is useless when the shape came from their manifest
-  // and no such flag was ever passed.
-  val fix = if shapeManifestPath.length > 0 {
-    " (configured in " + shapeManifestPath + ") — the packaging build path does not thread defines (#5852); " +
-      "drop --define, or set shape = \"portable\" in that manifest"
-  } else {
-    " — the packaging build path does not thread defines (#5852); drop --define, or build without --aot/--standalone"
-  }
-  Some(value = "build: --define is not supported with --shape " + shapeName(shape) + fix)
+  None
 }
 
 // Filter a `--extra-refs-dir` directory listing down to the extra references
@@ -1557,6 +1456,11 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--debug" {
       sawDebugFlag = true
       i += 1
+    } else if arg == "--release-contracts" {
+      // Keep every contract check in a release build (book chapter 17,
+      // section 17.4); the pipeline reads it as the `release_contracts` define.
+      cliDefines.add("release_contracts=full")
+      i += 1
     } else if arg == "--shape" {
       if i + 1 < argv.length {
         shapeArg = argv[i + 1]
@@ -1896,22 +1800,7 @@ func cmdBuild(argv: in slice[String]): Int {
     // single-file path this same PR fixes (review finding on #6899). A no-op
     // on Dotnet/Jvm or when `--opt`/`[native] opt_level` already supply one.
     val effOptArgProj = resolveNativeOptDefault(optArg, Some(value = mfPath), target, axes.profile)
-    // docs/60 §3.1: manifest `[build.define]` is threaded through `buildProject`.
-    // Reject up front (no silent drop, #6139) on any shape that cannot consume
-    // it. `--watch` is fine — `buildProject` reapplies the manifest defines on
-    // every rebuild. `manifestDefineGateError` is a pure predicate (unit-tested,
-    // #6188) so this reject matrix can't silently regress.
-    val mfHasDefines = match manifestValOpt { case Some(mv) -> manifestDeclaresBuildDefinesValue(mv); case None -> false }
-    match manifestDefineGateError(mfHasDefines, axes.shape, target, mfPath) {
-      case Some(msg) -> {
-        printErr(msg)
-        return 1
-      }
-      case None -> ()
-    }
-    // Only name the manifest when the shape actually came from it (#6277).
-    val shapeSrc = if cliShapeNamed { "" } else { mfPath }
-    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, shapeSrc) {
+    match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch) {
       case Some(msg) -> {
         printErr(msg)
         return 1
@@ -1953,7 +1842,9 @@ func cmdBuild(argv: in slice[String]): Int {
         allFeatures,
         noRestore,
         packageVersionArg,
-        axes.profile
+        axes.profile,
+        axes.shape,
+        cliDefines
       )
     }
     if shouldPrintReleaseNote(sawReleaseFlag, cliShapeNamed, axes.shape) {
@@ -2066,12 +1957,7 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
-  // Same contract as the project branch (#6277/#6278): name the manifest only
-  // when the shape actually came from it. A single-file build reads
-  // `[build] shape` from an explicitly-passed `--manifest`, so that path can be
-  // manifest-sourced too.
-  val sfShapeSrc = if cliShapeNamed { "" } else { match manifestArg { case Some(mp) -> mp; case None -> "" } }
-  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch, axes.shape, target, sfShapeSrc) {
+  match defineBuildGateError(cliDefines.count > 0, consumableTarget, watch) {
     case Some(msg) -> {
       printErr(msg)
       return 1
@@ -2104,7 +1990,9 @@ func cmdBuild(argv: in slice[String]): Int {
       axes.profile,
       cliFeatures,
       noDefaultFeatures,
-      allFeatures
+      allFeatures,
+      axes.shape,
+      cliDefines
     )
   }
 
@@ -2300,26 +2188,31 @@ pub func withProfileDefine(defines: in List[String], profile: in BuildProfile): 
   }
 }
 
+/// The `Lyric.Release` pipeline a managed target takes for `shape`:
+/// `standalone` bundles a runtime, anything else here is ahead-of-time.
+pub func releaseTargetFor(shape: in BuildShape, target: in Emitter.CompileTarget): Release.ReleaseTarget {
+  match shape {
+    case SStandalone -> match target { case Emitter.Jvm -> Release.JvmStandalone; case _ -> Release.DotnetStandalone }
+    case _ -> match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+  }
+}
+
+/// Why `releaseTarget` cannot be built on this host with `ridArg`, if it cannot.
+pub func releasePreflightError(
+  releaseTarget: in Release.ReleaseTarget, ridArg: in Option[String], hostRid: in String
+): Option[String] {
+  match releaseTarget {
+    case JvmNativeImage -> Release.jvmReleasePreflightError(ridArg, hostRid)
+    case DotnetStandalone -> Release.dotnetStandalonePreflightError(ridArg, hostRid)
+    case JvmStandalone -> Release.jvmStandalonePreflightError(ridArg, hostRid)
+    case DotnetAot -> None
+  }
+}
+
 // Single-file `lyric build --release <source.l>`: compile to a staging DLL,
 // then produce a self-contained native binary via Lyric.Release.  The default
 // output is the source stem with no extension (an executable), next to the
 // source unless `-o` overrides it.
-// The compiler-injected well-known `build_profile=release` define for a
-// staging compile (docs/60 §3.3), as the `"KEY=VALUE"` form the build path
-// threads. A normal build gets the `"debug"` fallback injected in
-// `pipeParseAndErase`; the packaging paths thread the RESOLVED profile so
-// last-wins reports it for `@build_const("build_profile")` /
-// `Std.BuildInfo.profile`.
-//
-// This takes the profile as a parameter rather than hardcoding `release`
-// (#6267): shape and profile are independent axes, so `--debug --aot` — the
-// debuggable-AOT combination band B0 exists to unlock — must report `debug`,
-// not `release`.
-func profileOnlyDefines(profile: in BuildProfile): List[String] {
-  val empty: List[String] = newList()
-  withProfileDefine(empty, profile)
-}
-
 func buildReleaseSingle(
   sourcePath: in String,
   explicitOut: in Option[String],
@@ -2330,6 +2223,8 @@ func buildReleaseSingle(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
+  shape: in BuildShape,
+  cliDefines: in List[String],
 ): Int {
   match singleFileManifestError("build", sourcePath, manifestArg, cliFeatures) {
     case Some(msg) -> {
@@ -2343,22 +2238,17 @@ func buildReleaseSingle(
   // function. It is NOT because the CLI rejects `--release --target native`:
   // that combination is valid and simply sets the profile (native is AOT by
   // construction). Do not re-add a rejection on that basis.
-  val releaseTarget = match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+  val releaseTarget = releaseTargetFor(shape, target)
 
-  // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
-  // unsupported host) BEFORE the managed build, so a bad flag costs nothing
-  // rather than a full compile.
-  match releaseTarget {
-    case JvmNativeImage -> {
-      match Release.jvmReleasePreflightError(ridArg, Environment.runtimeIdentifier()) {
-        case Some(msg) -> {
-          printErr("release: " + msg)
-          return 1
-        }
-        case None -> ()
-      }
+  // Reject an unbuildable request (bad/cross-target `--rid`, unsupported host)
+  // BEFORE the managed build, so a bad flag costs nothing rather than a full
+  // compile.
+  match releasePreflightError(releaseTarget, ridArg, Environment.runtimeIdentifier()) {
+    case Some(msg) -> {
+      printErr("release: " + msg)
+      return 1
     }
-    case DotnetAot -> ()
+    case None -> ()
   }
 
   val srcText = match File.readText(sourcePath) {
@@ -2403,7 +2293,7 @@ func buildReleaseSingle(
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
-    profileOnlyDefines(profile)
+    withProfileDefine(cliDefines, profile)
   )
   if buildExit != 0 {
     return buildExit
@@ -2437,28 +2327,25 @@ func buildReleaseProject(
   noRestore: in Bool,
   packageVersionOverride: in Option[String],
   profile: in BuildProfile,
+  shape: in BuildShape,
+  cliDefines: in List[String],
 ): Int {
   // Native is unreachable here because `usesPackagingPipeline` is false for
   // every native shape, so cmdBuild never routes a native build into this
   // function. It is NOT because the CLI rejects `--release --target native`:
   // that combination is valid and simply sets the profile (native is AOT by
   // construction). Do not re-add a rejection on that basis.
-  val releaseTarget = match target { case Emitter.Jvm -> Release.JvmNativeImage; case _ -> Release.DotnetAot }
+  val releaseTarget = releaseTargetFor(shape, target)
 
-  // Reject an unbuildable JVM release request (bad/cross-target `--rid`,
-  // unsupported host) BEFORE the managed build, so a bad flag costs nothing
-  // rather than a full compile.
-  match releaseTarget {
-    case JvmNativeImage -> {
-      match Release.jvmReleasePreflightError(ridArg, Environment.runtimeIdentifier()) {
-        case Some(msg) -> {
-          printErr("release: " + msg)
-          return 1
-        }
-        case None -> ()
-      }
+  // Reject an unbuildable request (bad/cross-target `--rid`, unsupported host)
+  // BEFORE the managed build, so a bad flag costs nothing rather than a full
+  // compile.
+  match releasePreflightError(releaseTarget, ridArg, Environment.runtimeIdentifier()) {
+    case Some(msg) -> {
+      printErr("release: " + msg)
+      return 1
     }
-    case DotnetAot -> ()
+    case None -> ()
   }
 
   val mfText = match File.readText(mfPath) {
@@ -2625,7 +2512,7 @@ func buildReleaseProject(
     noRestore,
     packageVersionOverride,
     Some(value = resolved),
-    profileOnlyDefines(profile)
+    withProfileDefine(cliDefines, profile)
   )
   if buildExit != 0 {
     return buildExit
@@ -2692,7 +2579,12 @@ func buildReleaseProject(
     case Emitter.Jvm -> ()
     case _ -> {
       if releaseExit == 0 {
-        copyNugetNativeAssetsBeside(outNative, resolved.nativeAssetPaths)
+        // A standalone build writes a directory with the executable inside it.
+        val besidePath = match shape {
+          case SStandalone -> Path.join(outNative, Path.basename(outNative))
+          case _ -> outNative
+        }
+        copyNugetNativeAssetsBeside(besidePath, resolved.nativeAssetPaths)
       }
     }
   }

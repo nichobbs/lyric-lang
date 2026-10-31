@@ -356,6 +356,20 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh dotnet jvm
   ran="$ran overflow-profile-e2e"
 fi
+# #6263: contract checking follows the build profile (book chapter 17, 17.4).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/release-contracts-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/release-contracts-e2e.sh dotnet jvm
+  ran="$ran release-contracts-e2e"
+fi
+# #6262: `--shape standalone` runs without a runtime installed, both targets.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/standalone-shape-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/standalone-shape-e2e.sh dotnet jvm
+  ran="$ran standalone-shape-e2e"
+fi
 # D167: an array index outside `0 ..< N` panics with the index and length,
 # both targets (Java 21, as above).
 idx=$((idx + 1))

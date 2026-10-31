@@ -971,12 +971,12 @@ lyric build --debug <file.l>           # unoptimized, debug info retained (the d
 lyric build --release <file.l>         # optimized, debug info stripped. On --target native, the
                                        # clang -O level defaults from this axis (2 vs. 0). Integer
                                        # overflow wraps instead of panicking (D163). dotnet/jvm
-                                       # perform no further optimization, and contract elision
-                                       # is not yet profile-driven (#6263).
+                                       # perform no further optimization. ensures: and internal
+                                       # requires: are not checked; --release-contracts keeps them.
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)
-lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
+lyric build --shape standalone <file.l> -o dist/app  # directory with a bundled runtime: dist/app/app runs with no .NET/JDK installed (host platform only)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
 lyric build --target native --shape plugin <file.l>  # trusted plugin library lib<stem>.so / .dylib (D231; Linux, macOS)
 lyric build --target native --triple wasm32-wasi --shape module <file.l>  # .wasm + .js glue + .d.ts for a JS host (--shape component builds a WebAssembly component, needs wasm-tools and $LYRIC_WASI_ADAPTER)

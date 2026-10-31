@@ -18,6 +18,7 @@ import Std.Collections
 import Std.String as Str
 import Std.Testing
 import Lyric.Release as Release
+import Std.Encoding as Enc
 
 func listContains(xs: in List[String], needle: in String): Bool {
   var i = 0
@@ -395,4 +396,121 @@ test "jvmReleasePreflightError: rejects an unsupported host platform" {
 test "jvmReleasePreflightError: rejects an undeterminable host" {
   val msg = unwrapOr(Release.jvmReleasePreflightError(None, ""), "")
   assertTrue(Str.contains(msg, "could not determine the host platform"), "empty host RID")
+}
+
+// ── standalone shape (#6262) ─────────────────────────────────────────────────
+func bytesOf(s: in String): slice[Byte] = Enc.encodeUtf8(s)
+
+test "patchApphost: writes the application name over the placeholder and zero-pads" {
+  val head = "HEAD"
+  val tail = "TAIL"
+  val slot = Release.apphostPlaceholder() + Str.repeat("\u{0000}", 1024 - 64)
+  val template = bytesOf(head + slot + tail)
+  match Release.patchApphost(template, "app.dll") {
+    case Err(m) -> assertTrue(false, "patch failed: " + m)
+    case Ok(res) -> {
+      assertEqualInt(res.length, template.length, "the file keeps its size")
+      assertEqualInt(Release.indexOfBytes(res, bytesOf(Release.apphostPlaceholder())), -1, "placeholder gone")
+      assertEqualInt(Release.indexOfBytes(res, bytesOf("HEADapp.dll")), 0, "name follows the head")
+      assertEqualInt(res[4 + 7].toInt(), 0, "padding after the name is zero")
+      assertEqualInt(Release.indexOfBytes(res, bytesOf("TAIL")), res.length - 4, "the tail is untouched")
+    }
+  }
+}
+
+test "patchApphost: a template without the placeholder is refused" {
+  match Release.patchApphost(bytesOf("not an apphost"), "app.dll") {
+    case Ok(_) -> assertTrue(false, "must refuse")
+    case Err(m) -> assertTrue(Str.contains(m, "placeholder"), "names the placeholder, got: " + m)
+  }
+}
+
+test "patchApphost: an over-long name is refused" {
+  match Release.patchApphost(bytesOf(Release.apphostPlaceholder()), Str.repeat("a", 1100)) {
+    case Ok(_) -> assertTrue(false, "must refuse")
+    case Err(m) -> assertTrue(Str.contains(m, "1023"), "names the limit, got: " + m)
+  }
+}
+
+test "standaloneRuntimeConfig: includes the framework instead of naming a shared one" {
+  val cfg = Release.standaloneRuntimeConfig("net10.0", "10.0.7")
+  assertTrue(Str.contains(cfg, "\"includedFrameworks\""), "self-contained marker")
+  assertTrue(Str.contains(cfg, "\"version\": \"10.0.7\""), "the bundled version")
+  assertFalse(Str.contains(cfg, "\"framework\""), "no shared framework reference")
+}
+
+test "compareVersions and highestVersion pick the newest patch of the wanted major" {
+  assertTrue(Release.compareVersions("10.0.12", "10.0.7") > 0, "12 > 7 numerically, not lexically")
+  assertTrue(Release.compareVersions("10.0.7", "10.0.7") == 0, "equal")
+  assertTrue(Release.compareVersions("9.0.100", "10.0.0") < 0, "major dominates")
+  assertTrue(Release.compareVersions("10.0.0-rc.1", "10.0.0") == 0, "pre-release suffix ignored")
+  val names: List[String] = newList()
+  names.add("9.0.9")
+  names.add("10.0.7")
+  names.add("10.0.12")
+  assertEqual(unwrapOr(Release.highestVersion(names, 10), ""), "10.0.12", "newest 10.x")
+  assertEqual(unwrapOr(Release.highestVersion(names, 0), ""), "10.0.12", "newest overall")
+  assertEqual(unwrapOr(Release.highestVersion(names, 9), ""), "9.0.9", "newest 9.x")
+  assertTrue(isNone(Release.highestVersion(names, 8)), "no 8.x installed")
+}
+
+test "tfmMajor: reads the major version from a target framework moniker" {
+  assertEqualInt(Release.tfmMajor("net10.0"), 10, "net10.0")
+  assertEqualInt(Release.tfmMajor("net8.0"), 8, "net8.0")
+  assertEqualInt(Release.tfmMajor("netstandard2.0"), 0, "not a net moniker version")
+}
+
+test "dotnetStandalonePreflightError: host RID rules" {
+  assertTrue(isNone(Release.dotnetStandalonePreflightError(None, "linux-x64")), "linux host with no --rid")
+  assertTrue(isNone(Release.dotnetStandalonePreflightError(Some(value = "linux-x64"), "linux-x64")), "matching --rid")
+  val cross = unwrapOr(Release.dotnetStandalonePreflightError(Some(value = "win-x64"), "linux-x64"), "")
+  assertTrue(Str.contains(cross, "host RID"), "cross-platform --rid refused, got: " + cross)
+  val mac = unwrapOr(Release.dotnetStandalonePreflightError(None, "osx-arm64"), "")
+  assertTrue(Str.contains(mac, "Linux hosts only"), "macOS host refused, got: " + mac)
+  val bad = unwrapOr(Release.dotnetStandalonePreflightError(Some(value = "Linux X64!"), "linux-x64"), "")
+  assertTrue(Str.contains(bad, "invalid RID"), "malformed --rid refused, got: " + bad)
+}
+
+test "jvmStandalonePreflightError: host RID rules" {
+  assertTrue(isNone(Release.jvmStandalonePreflightError(None, "linux-x64")), "linux host")
+  assertTrue(isNone(Release.jvmStandalonePreflightError(None, "osx-arm64")), "macOS host")
+  val win = unwrapOr(Release.jvmStandalonePreflightError(None, "win-x64"), "")
+  assertTrue(Str.contains(win, "Linux and macOS only"), "Windows refused, got: " + win)
+  val cross = unwrapOr(Release.jvmStandalonePreflightError(Some(value = "osx-arm64"), "linux-x64"), "")
+  assertTrue(Str.contains(cross, "host RID"), "cross-platform --rid refused, got: " + cross)
+}
+
+test "jlinkModules: java.base and the runtime-support modules, de-duplicated" {
+  val mods = Release.jlinkModules("java.logging,java.sql\n")
+  assertTrue(Str.startsWith(mods, "java.base,"), "java.base first, got: " + mods)
+  assertTrue(Str.contains(mods, "java.sql"), "jdeps module kept")
+  assertTrue(Str.contains(mods, "java.net.http"), "support module added")
+  assertEqualInt(Str.split(mods, "java.logging").length, 2, "java.logging appears once")
+  assertEqual(
+    Release.jlinkModules(""),
+    "java.base,java.net.http,jdk.crypto.ec,jdk.zipfs,java.logging,jdk.unsupported",
+    "empty jdeps output"
+  )
+}
+
+test "buildJlinkArgs: output directory and a stripped image" {
+  val a = Release.buildJlinkArgs("java.base", "/out/runtime")
+  assertTrue(listContains(a, "--output"), "--output")
+  assertTrue(listContains(a, "/out/runtime"), "image dir")
+  assertTrue(listContains(a, "--strip-debug"), "--strip-debug")
+}
+
+test "standaloneLauncherScript: execs the bundled java on the wildcard classpath" {
+  val sh = Release.standaloneLauncherScript("Hello")
+  assertTrue(Str.startsWith(sh, "#!/bin/sh\n"), "shebang")
+  assertTrue(Str.contains(sh, "\"$here/runtime/bin/java\""), "bundled java")
+  assertTrue(Str.contains(sh, "-cp \"$here/lib/*\" Hello \"$@\""), "classpath, main class and passthrough args")
+}
+
+test "manifestAttribute: unfolds continuation lines and finds attributes" {
+  val raw = "Manifest-Version: 1.0\r\nMain-Class: Hello\r\nClass-Path: /a/one.jar /a/tw\r\n o.jar\r\n\r\n"
+  val m = Release.unfoldManifest(raw)
+  assertEqual(Release.manifestAttribute(m, "Main-Class"), "Hello", "Main-Class")
+  assertEqual(Release.manifestAttribute(m, "Class-Path"), "/a/one.jar /a/two.jar", "folded Class-Path")
+  assertEqual(Release.manifestAttribute(m, "Missing"), "", "absent attribute")
 }
