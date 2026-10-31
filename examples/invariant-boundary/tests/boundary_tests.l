@@ -25,5 +25,10 @@ test "a public function returning a broken value panics" {
 
 test "an inout parameter written to a broken value panics on exit" {
   var c = newCounter(1)
-  assertPanicsWith("inout", "InvariantViolated: Inv.Api.breakInPlace parameter c", { -> breakInPlace(c) })
+  assertPanicsWith("inout", "InvariantViolated: Inv.Types.Counter invariant count >= 0", { -> breakInPlace(c) })
+}
+
+test "an inout parameter of the declaring package's own type is re-checked on exit" {
+  var c = newCounter(1)
+  assertPanicsWith("local inout", "InvariantViolated: Inv.Types.Counter invariant count >= 0", { -> breakLocal(c) })
 }
