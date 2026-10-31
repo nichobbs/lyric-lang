@@ -49477,12 +49477,26 @@ func protectedAsRecordMsil(decl: in ProtectedTypeDecl): RecordDecl {
         val f = match pf {
           case PFImmutable(fd) -> fd
           case PFVar(name, ty, init, docs, anns, sp) -> FieldDecl(
-            docComments = docs, annotations = anns, visibility = None, isMutable = true, name = name, ty = ty,
-            dflt = init, span = sp, trailingAnnotationCount = 0
+            docComments = docs,
+            annotations = anns,
+            visibility = None,
+            isMutable = true,
+            name = name,
+            ty = ty,
+            dflt = init,
+            span = sp,
+            trailingAnnotationCount = 0
           )
           case PFLet(name, ty, init, docs, anns, sp) -> FieldDecl(
-            docComments = docs, annotations = anns, visibility = None, isMutable = false, name = name, ty = ty,
-            dflt = init, span = sp, trailingAnnotationCount = 0
+            docComments = docs,
+            annotations = anns,
+            visibility = None,
+            isMutable = false,
+            name = name,
+            ty = ty,
+            dflt = init,
+            span = sp,
+            trailingAnnotationCount = 0
           )
         }
         members.add(RMField(field = f))
@@ -49494,9 +49508,18 @@ func protectedAsRecordMsil(decl: in ProtectedTypeDecl): RecordDecl {
         members.add(
           RMFunc(
             fn = FunctionDecl(
-              docComments = ed.docComments, annotations = ed.annotations, visibility = ed.visibility, isAsync = false,
-              name = ed.name, generics = noGenerics, params = ed.params, ret = ed.ret, whereClause = noWhere,
-              contracts = ed.contracts, body = noBody, span = ed.span
+              docComments = ed.docComments,
+              annotations = ed.annotations,
+              visibility = ed.visibility,
+              isAsync = false,
+              name = ed.name,
+              generics = noGenerics,
+              params = ed.params,
+              ret = ed.ret,
+              whereClause = noWhere,
+              contracts = ed.contracts,
+              body = noBody,
+              span = ed.span
             )
           )
         )
@@ -49505,7 +49528,13 @@ func protectedAsRecordMsil(decl: in ProtectedTypeDecl): RecordDecl {
       case PMInvariant(_) -> ()
     }
   }
-  RecordDecl(name = decl.name, generics = decl.generics, whereClause = decl.whereClause, members = members, span = decl.span)
+  RecordDecl(
+    name = decl.name,
+    generics = decl.generics,
+    whereClause = decl.whereClause,
+    members = members,
+    span = decl.span
+  )
 }
 
 func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, scan: in RestoredDllScan): Unit {
