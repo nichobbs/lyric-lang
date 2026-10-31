@@ -4264,10 +4264,7 @@ func inWriteFieldType(ctx: in InWriteCtx, recordName: in String, field: in Strin
     return ""
   }
   match mapGet(ctx.fieldTypes, recordName) {
-    case Some(fm) -> match mapGet(fm, field) {
-      case Some(t) -> t
-      case None -> ""
-    }
+    case Some(fm) -> match mapGet(fm, field) { case Some(t) -> t; case None -> "" }
     case None -> ""
   }
 }
@@ -4275,10 +4272,7 @@ func inWriteFieldType(ctx: in InWriteCtx, recordName: in String, field: in Strin
 // Is `field` a `var` field of the not-`ref` record `recordName` of this file?
 func inWriteIsValueVarField(ctx: in InWriteCtx, recordName: in String, field: in String): Bool {
   match mapGet(ctx.valueRecords, recordName) {
-    case Some(fm) -> match mapGet(fm, field) {
-      case Some(isVar) -> isVar
-      case None -> false
-    }
+    case Some(fm) -> match mapGet(fm, field) { case Some(isVar) -> isVar; case None -> false }
     case None -> false
   }
 }
@@ -4349,8 +4343,10 @@ func inWriteReport(ctx: in InWriteCtx, root: in InWriteRoot, what: in String, ow
     errorDiagnostic(
       "V0038",
       what + ": '" + root.base + "' is an `in` parameter, which is read-only, and the record '" + ownerType +
-        "' is a value (it is not declared `ref`); declare '" + root.base +
-        "' `inout` if the function is meant to change the caller's value, or declare '" + ownerType +
+        "' is a value (it is not declared `ref`); declare '" +
+        root.base +
+        "' `inout` if the function is meant to change the caller's value, or declare '" +
+        ownerType +
         "' `ref record` if it is a mutable object that `in` may hand over",
       span
     )
@@ -4423,7 +4419,11 @@ func inWriteParamIndex(sig: in FieldWriteFuncSig, a: in CallArg, ai: in Int, off
   match a {
     case CAPositional(_) -> {
       val idx = ai + offset
-      if idx < sig.modes.count { idx } else { -1 }
+      if idx < sig.modes.count {
+        idx
+      } else {
+        -1
+      }
     }
     case CANamed(nm, _, _) -> {
       var found = -1
@@ -4519,7 +4519,13 @@ func inWriteCheckCall(ctx: in InWriteCtx, fn: in Expr, args: in List[CallArg]): 
           val x = inWriteArgExpr(args[ai])
           val xr = inWriteOwnedVarField(ctx, x)
           if xr.rooted {
-            inWriteReport(ctx, xr, "cannot pass '" + xr.path + "' to the `out`/`inout` parameter '" + sig.names[idx] + "'", xr.ty, x.span)
+            inWriteReport(
+              ctx,
+              xr,
+              "cannot pass '" + xr.path + "' to the `out`/`inout` parameter '" + sig.names[idx] + "'",
+              xr.ty,
+              x.span
+            )
           }
         }
         ai = ai + 1
@@ -4876,6 +4882,12 @@ func inWriteRegisterMethod(
   }
 }
 
+func inWriteMarkNotValue(marks: in Map[String, Bool], name: in String): Unit {
+  if not marks.containsKey(name) {
+    marks.add(name, true)
+  }
+}
+
 func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]): Unit {
   val fieldTypes: Map[String, Map[String, String]] = newMap()
   val valueRecords: Map[String, Map[String, Bool]] = newMap()
@@ -4892,11 +4904,11 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
     match file.items[i].kind {
       case IRecord(decl) -> {
         if fieldTypes.containsKey(decl.name) {
-          refOrAmbiguous.add(decl.name, true)
+          inWriteMarkNotValue(refOrAmbiguous, decl.name)
         } else {
           fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
           if decl.isRef {
-            refOrAmbiguous.add(decl.name, true)
+            inWriteMarkNotValue(refOrAmbiguous, decl.name)
           } else {
             valueRecords.add(decl.name, inWriteFieldMutabilityOf(decl.members))
           }
@@ -4912,7 +4924,7 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
         }
       }
       case IExposedRec(decl) -> {
-        refOrAmbiguous.add(decl.name, true)
+        inWriteMarkNotValue(refOrAmbiguous, decl.name)
         if not fieldTypes.containsKey(decl.name) {
           fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
         }
