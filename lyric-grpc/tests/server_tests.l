@@ -1,5 +1,5 @@
 //! tests/server_tests.l — `Grpc.startHandleAt` / `stop` against the library's
-//! own client, on both targets (#8642, D284).
+//! own client, on both targets (#8642, D287).
 //!
 //! Every test registers real handlers, starts a server on an ephemeral
 //! loopback port, and calls it through `Grpc.callUnary` / `Grpc.openServerStream`.

@@ -1701,13 +1701,13 @@ test "compilerClosureDllPaths: a bundle that covers the whole closure is used, n
   )
 }
 
-// Merging a multi-file package removes only each file's header tokens
-// (file-level annotations, `package`, imports; the `//!` module docs are
-// re-emitted at the head of the unit, #8246); item bodies are carried
-// over verbatim, so a body line that merely starts with `import ` (here inside
-// a multi-line string) survives, and every merged body line still maps back
-// to its file and line (#8234).
-test "multi-file merge strips header lines only and keeps line origins" {
+// Assembling a multi-file package takes each file's header apart from its
+// items (file-level annotations, `package`, imports; the `//!` module docs
+// lead the package, #8246); an item keeps its own file and line, so a body
+// line that merely starts with `import ` (here inside a multi-line string)
+// is part of an item, never a header, and every item maps back to its file
+// and line (#8234, docs/19 §4).
+test "a multi-file package assembles from its files' headers and keeps each item's file and line" {
   val srcA = "//! doc\n@runtime_checked\npackage P\nimport Std.Core\n\n// note\nfunc a(): String {\n  \"\"\"\nimport not.a.decl\n\"\"\"\n}\n"
   val srcB = "package P\nimport Std.Core\nimport Std.String as Str\nfunc b(): Int { 1 }\n"
   val sources: List[String] = newList()
@@ -1717,47 +1717,18 @@ test "multi-file merge strips header lines only and keeps line origins" {
   paths.add("a.l")
   paths.add("b.l")
   val none: List[String] = newList()
-  val merged = PM.mergePackageFiles("P", sources, paths, none, none, "dotnet", true)
-  assertEqualInt(merged.diagnostics.count, 0, "two well-formed files merge cleanly")
-  val lines = Str.split(merged.source, "\n")
-  var coreImports = 0
-  var aliasImports = 0
-  var bodyImportLine = -1
-  var funcBLine = -1
-  var docLines = 0
-  var li = 0
-  while li < lines.length {
-    val line = lines[li]
-    if line == "import Std.Core" {
-      coreImports = coreImports + 1
-    }
-    if line == "import Std.String as Str" {
-      aliasImports = aliasImports + 1
-    }
-    if line == "import not.a.decl" {
-      bodyImportLine = li
-    }
-    if line == "func b(): Int { 1 }" {
-      funcBLine = li
-    }
-    if Str.startsWith(line, "//!") {
-      docLines = docLines + 1
-    }
-    li = li + 1
-  }
-  assertEqualInt(coreImports, 1, "duplicate header imports collapse into one")
-  assertEqualInt(aliasImports, 1, "the aliased import is kept")
-  assertEqualInt(docLines, 1, "the module-doc line is carried (#8246)")
-  assertEqual(lines[0], "//! doc", "module docs lead the merged unit")
-  assertEqual(merged.origins[0].path, "a.l", "module-doc line origin file")
-  assertEqualInt(merged.origins[0].originalLine, 1, "module-doc line origin line")
-  assertTrue(bodyImportLine >= 0, "an import-like line inside a body string is kept verbatim")
-  assertTrue(funcBLine >= 0, "the second file's body is present")
-  assertEqualInt(merged.origins.count, lines.length, "one origin per merged line")
-  assertEqual(merged.origins[bodyImportLine].path, "a.l", "string line origin file")
-  assertEqualInt(merged.origins[bodyImportLine].originalLine, 9, "string line origin line")
-  assertEqual(merged.origins[funcBLine].path, "b.l", "second body origin file")
-  assertEqualInt(merged.origins[funcBLine].originalLine, 4, "second body origin line")
+  val asm = PM.assemblePackageFiles("P", sources, paths, none, none, "dotnet")
+  assertEqualInt(asm.diagnostics.count, 0, "two well-formed files assemble cleanly")
+  assertEqualInt(asm.file.imports.count, 2, "duplicate header imports collapse into one, the aliased one is kept")
+  assertEqualInt(asm.file.moduleDoc.count, 1, "the module-doc line is carried (#8246)")
+  assertEqualInt(asm.file.moduleDoc[0].span.startPos.fileId, 0, "module-doc file")
+  assertEqualInt(asm.file.moduleDoc[0].span.startPos.line, 1, "module-doc line")
+  assertEqualInt(asm.file.items.count, 2, "the import-like string line belongs to `a`, not the header")
+  assertEqualInt(asm.file.items[0].span.startPos.fileId, 0, "a's file")
+  assertEqualInt(asm.file.items[0].span.startPos.line, 7, "a's line")
+  assertEqualInt(asm.file.items[1].span.startPos.fileId, 1, "b's file")
+  assertEqualInt(asm.file.items[1].span.startPos.line, 4, "b's line")
+  assertEqual(asm.file.files[1].path, "b.l", "b's path")
 }
 
 // Imported generics end to end, on both targets (D-progress-946/947/948/949):

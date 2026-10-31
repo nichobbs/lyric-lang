@@ -711,6 +711,12 @@ builder (I0002) rather than on the current checker.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 
+Phase 2a status: positions name their file and packages assemble from
+separately parsed files (steps 1-2), and every build path compiles the
+assembled package, with the text merge and its line-origin table deleted
+(step 3, docs/19 §4). Per-file import scopes, which retire `B0012`, are the
+remaining step.
+
 ### Phase 3: TIR and the middle end
 
 - **3a** the I0001 gate (moved from phase 1, D280); `Lyric.Tir` types, `Lyric.Tir.Verify`, `NodeId`s, the checker's

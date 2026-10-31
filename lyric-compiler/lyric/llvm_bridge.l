@@ -1340,13 +1340,13 @@ func pluginExpandForComponent(
   shape: in String,
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   sink: in DiagSink,
 ): Option[SourceFile] {
   if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
   }
-  pipePluginExpandForComponentTo(sink, file, plugins, label, origins)
+  pipePluginExpandForComponentTo(sink, file, plugins, label, files)
 }
 
 /// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
@@ -1426,7 +1426,7 @@ pub func compileToNativeWithFeatures(
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
-  val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noSingleFileFiles: List[String] = newList()
   // #7198, audited in #7201: native has no protected region for a suspend
   // to sit inside.  `try`/`catch`/`throw` are not lowered at all (D-N-003: a
   // panic aborts, nothing unwinds), so codegen rejects them with N0007
@@ -1438,7 +1438,7 @@ pub func compileToNativeWithFeatures(
   val optsCallArities: Map[String, Int] = newMap()
   val opts = nativeMiddleEndOptions(
     path,
-    noSingleFileOrigins,
+    noSingleFileFiles,
     optsCheckedOut,
     optsRecvOut,
     optsCallArities,
@@ -1611,22 +1611,19 @@ pub func compileToNativeWithFeatures(
 // dependency is compiled from source, and the CLI passes its packages in as
 // further `NativeSourcePackage` entries, each with its own features (#7833).
 // ─────────────────────────────────────────────────────────────────────────────
-/// One own-package's pre-merged source for a native project build.
-/// `Lyric.Emitter.emitNativeProject` merges a multi-file package's sources
-/// into one compilation unit (the same `Lyric.PackageMerge` step the
-/// MSIL/JVM project bridges use) before constructing these, so by the time a
-/// package reaches here it is always exactly one valid `package` unit.
-///
-/// `path` (#6824 item 1) is this package's real on-disk path when it is a
-/// single-file package (the MSIL/JVM `pkgPaths` parity field); "" for a
-/// genuinely multi-file package (no single on-disk path names the merged
-/// blob — see `originsByPkg` on `compileProjectToNativeWithFlags` for that
-/// case's per-line attribution) or a synthetic/ad-hoc source, matching
-/// `ProjectPackage.paths`' own "" convention for the identical case.
+/// One package of a native project build as its files: `sources` in the
+/// package's order, each parsed as its own file of the package
+/// (`Lyric.Pipeline.pipeParsePackageTo`, docs/19 §4, the step the MSIL/JVM
+/// project bridges share).  `paths[i]` (#6824 item 1) is file `i`'s on-disk
+/// path ("" or missing: unknown, a synthetic/ad-hoc source), which every
+/// diagnostic in that file names.
 pub record NativeSourcePackage {
   name: String
-  source: String
-  path: String
+  sources: List[String]
+  paths: List[String] = newList()
+  /// `name` is a manifest entry's, so even a package of one file is held to
+  /// it (B0013); otherwise a package of one file takes the name it declares.
+  nameFromManifest: Bool = false
   /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` for the package
   /// (`[layers]`, D149); "" when it may do I/O.
   ioForbiddenReason: String = ""
@@ -1666,27 +1663,19 @@ func fileHasTopLevelMain(file: in SourceFile): Bool {
   false
 }
 
-// #6824 item 1: resolve package `i`'s diagnostic label — its real on-disk
-// path when known (single-file package), else its bare name (multi-file, or
-// a synthetic/ad-hoc source) — matching the MSIL/JVM bridges' identical
-// "path when known, else name" fallback (`Msil.Bridge`'s `pp.label` /
-// `Jvm.Bridge`'s `pkgPathByName` lookups).
+// #6824 item 1: package `i`'s diagnostic label for a diagnostic whose file
+// is unknown — its path when it is one known file, else its bare name —
+// matching the MSIL/JVM bridges (`Lyric.Pipeline.pipePackageLabel`).
 func nativePkgLabelAt(packages: in List[NativeSourcePackage], i: in Int): String {
   val p = packages[i]
-  if p.path.length > 0 {
-    p.path
-  } else {
-    p.name
-  }
+  pipePackageLabel(p.name, p.sources, p.paths)
 }
 
-// Per-line provenance for package `i`, or empty when `originsByPkg` has no
-// entry for it (shorter than `packages`, or a single-file package with
-// nothing to translate) — mirrors `Jvm.Bridge`'s `originsByPkg[psi]`
-// bounds-checked lookup.
-func nativePkgOriginsAt(originsByPkg: in List[DiagUtil.PackageLineOrigins], i: in Int): List[DiagUtil.MergedLineOrigin] {
-  if i < originsByPkg.count {
-    originsByPkg[i].origins
+// Package `i`'s file paths by file id, which name the file of each of its
+// diagnostics; empty when `i` is past `packages`.
+func nativePkgFilesAt(packages: in List[NativeSourcePackage], i: in Int): List[String] {
+  if i < packages.count {
+    packages[i].paths
   } else {
     newList()
   }
@@ -1732,19 +1721,6 @@ pub func compileProjectToNativeWithFlags(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
-  // Per-merged-line provenance for a genuinely multi-file own package,
-  // parallel to `packages` by index (#6824 item 1; mirrors
-  // `Msil.Bridge`/`Jvm.Bridge`'s `originsByPkg`/`pkgOriginsByName`
-  // parameters). `originsByPkg[i]` is empty for a single-file package (its
-  // real path already survives via `packages[i].path`) and non-empty for a
-  // multi-file package, letting diagnostic rendering — across parse,
-  // typecheck, modecheck, elaborate, propagate, mono, AND weave (all folded
-  // into `pipeMiddleEnd` below, unlike the MSIL/JVM bridges' separate weave
-  // phase) — resolve the merged blob's line numbers back to their real
-  // on-disk file and line.  Shorter than `packages` (including empty) is
-  // valid; missing entries resolve to no translation, matching the JVM
-  // bridge's own out-of-range fallback.
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool = true,
 ): Bool {
   compileProjectToNativeWithShape(
@@ -1758,7 +1734,6 @@ pub func compileProjectToNativeWithFlags(
     activeFeatures,
     declaredFeatures,
     packageVersion,
-    originsByPkg,
     contractsEnabled,
     ""
   )
@@ -1777,23 +1752,10 @@ pub func compileProjectToNativeWithShape(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
-  // Per-merged-line provenance for a genuinely multi-file own package,
-  // parallel to `packages` by index (#6824 item 1; mirrors
-  // `Msil.Bridge`/`Jvm.Bridge`'s `originsByPkg`/`pkgOriginsByName`
-  // parameters). `originsByPkg[i]` is empty for a single-file package (its
-  // real path already survives via `packages[i].path`) and non-empty for a
-  // multi-file package, letting diagnostic rendering — across parse,
-  // typecheck, modecheck, elaborate, propagate, mono, AND weave (all folded
-  // into `pipeMiddleEnd` below, unlike the MSIL/JVM bridges' separate weave
-  // phase) — resolve the merged blob's line numbers back to their real
-  // on-disk file and line.  Shorter than `packages` (including empty) is
-  // valid; missing entries resolve to no translation, matching the JVM
-  // bridge's own out-of-range fallback.
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool,
   shape: in String,
 ): Bool {
-  val fe = match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, shape, printDiagnostics()) {
+  val fe = match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, shape, printDiagnostics()) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1818,7 +1780,7 @@ pub func compileProjectToNativeWithShape(
   val foreignRecords: List[ForeignValueRecord] = newList()
   var mei = 0
   while mei < ownFiles0.count {
-    // #6824 items 1/2: same label/origins attribution as the parse and
+    // #6824 items 1/2: same label/files attribution as the parse and
     // rewrite phases above — covers typecheck, modecheck, contract
     // elaboration, propagation, mono, AND weave in one place, since the
     // native bridge folds all of them into `pipeMiddleEnd` (docs/63 §9.6:
@@ -1832,7 +1794,7 @@ pub func compileProjectToNativeWithShape(
     val optsForeignRecords: List[ForeignValueRecord] = newList()
     val opts = nativeMiddleEndOptions(
       nativePkgLabelAt(packages, mei),
-      nativePkgOriginsAt(originsByPkg, mei),
+      nativePkgFilesAt(packages, mei),
       optsCheckedOut,
       optsRecvOut,
       optsCallArities,
@@ -2103,10 +2065,10 @@ func nativeSourceFrontEnd(
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
   // after parse, before anything indexes the items).
   val nativeDefines = BD.decodeDefines(defines)
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noFiles: List[String] = newList()
   val targetOs = nativeTargetOs(triple)
   val osActive = Cfg.withTargetOsFeature(activeFeatures, targetOs)
-  val cfgFile = match pipeParseAndEraseTo(sink, source, "native", osActive, declaredFeatures, nativeDefines, path, noOrigins) {
+  val cfgFile = match pipeParseAndEraseTo(sink, source, "native", osActive, declaredFeatures, nativeDefines, path, noFiles) {
     case Some(f) -> f
     case None -> return None
   }
@@ -2114,7 +2076,7 @@ func nativeSourceFrontEnd(
   val noPeers: List[SourceFile] = newList()
   val componentPlugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, componentPlugins)
-  val pluginFile = match pluginExpandForComponent(cfgFile, shape, componentPlugins, path, noOrigins, sink) {
+  val pluginFile = match pluginExpandForComponent(cfgFile, shape, componentPlugins, path, noFiles, sink) {
     case Some(f) -> f
     case None -> return None
   }
@@ -2139,7 +2101,7 @@ func nativeSourceFrontEnd(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(shimFile, plugins)
-  val userFile0 = match pipeExpandAndRewriteForTo(sink, "native", shimFile, noWires, noConfigs, plugins, path, noOrigins) {
+  val userFile0 = match pipeExpandAndRewriteForTo(sink, "native", shimFile, noWires, noConfigs, plugins, path, noFiles) {
     case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
     case None -> return None
   }
@@ -2175,7 +2137,6 @@ func nativeProjectFrontEnd(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   shape: in String,
   sink: in DiagSink,
 ): Option[NativeProjectFrontEnd] {
@@ -2213,11 +2174,8 @@ func nativeProjectFrontEnd(
   // on any target, same as the single-source path).
   val cfgFiles: List[SourceFile] = newList()
   val componentPkgs: List[ComponentPkg] = newList()
-  // #6824 item 1: label each own package's parse-phase diagnostics with its
-  // real on-disk path when known, and translate a multi-file package's
-  // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
-  // project bridges (previously always the bare package name, no per-line
-  // translation at all).
+  // #6824 item 1: every own package's diagnostics name the file they are in
+  // (its `paths`), parity with the MSIL/JVM project bridges.
   val targetOs = nativeTargetOs(triple)
   var ppi = 0
   while ppi < packages.count {
@@ -2226,7 +2184,8 @@ func nativeProjectFrontEnd(
       targetOs
     )
     val pkgDeclared = match packages[ppi].features { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    val cfgFile = match pipeParseAndEraseTo(sink, packages[ppi].source, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
+    val ppkg = packages[ppi]
+    val cfgFile = match pipeParsePackageTo(sink, pipeHeldPackageName(ppkg.name, ppkg.sources.count, ppkg.nameFromManifest), ppkg.sources, ppkg.paths, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi)) {
       case Some(f) -> f
       case None -> return None
     }
@@ -2253,7 +2212,7 @@ func nativeProjectFrontEnd(
   val parsedPeers: List[SourceFile] = newList()
   var cpi = 0
   while cpi < cfgFiles.count {
-    val pf = match pluginExpandForComponent(cfgFiles[cpi], shape, componentPlugins, nativePkgLabelAt(packages, cpi), nativePkgOriginsAt(originsByPkg, cpi), sink) {
+    val pf = match pluginExpandForComponent(cfgFiles[cpi], shape, componentPlugins, nativePkgLabelAt(packages, cpi), nativePkgFilesAt(packages, cpi), sink) {
       case Some(f) -> f
       case None -> return None
     }
@@ -2294,11 +2253,11 @@ func nativeProjectFrontEnd(
   val ownFiles0: List[SourceFile] = newList()
   var owi = 0
   while owi < cfgFiles.count {
-    // #6824 item 3: same label/origins attribution as the parse phase above
+    // #6824 item 3: same label/files attribution as the parse phase above
     // for this package's wire/config-template and impl-default-inheritance
-    // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
+    // diagnostics (`packages` is 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewriteForTo(sink, "native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewriteForTo(sink, "native", cfgFiles[owi], noWires, noConfigs, plugins, nativePkgLabelAt(packages, owi), nativePkgFilesAt(packages, owi)) {
       case Some(f) -> f
       case None -> return None
     }
@@ -2379,7 +2338,7 @@ func nativeProjectFrontEnd(
 // for the passes up to the mode check.
 func nativeMiddleEndOptions(
   pkgLabel: in String,
-  lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
   aritiesOut: in Map[String, Int],
@@ -2393,7 +2352,7 @@ func nativeMiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = pkgLabel,
-    lineOrigins = lineOrigins,
+    filePaths = files,
     awaitInTryIsHazard = true,
     bindListLiteralTypes = true,
     awaitAsyncCalls = false,
@@ -2415,13 +2374,13 @@ func nativeCheckFront(
   file: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   ioForbiddenReason: in String,
   sink: in DiagSink,
 ): Unit {
   val opts = nativeMiddleEndOptions(
     label,
-    origins,
+    files,
     newList(),
     newMap(),
     newMap(),
@@ -2456,8 +2415,8 @@ pub func checkSourceTypesNative(
   val sink = collectDiagnostics(located)
   match nativeSourceFrontEnd(source, stdlibFiles, triple, defines, path, "", activeFeatures, declaredFeatures, sink) {
     case Some(fe) -> {
-      val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-      nativeCheckFront(fe.file, fe.stdlib.importedPkgs, path, noOrigins, "", sink)
+      val noFiles: List[String] = newList()
+      nativeCheckFront(fe.file, fe.stdlib.importedPkgs, path, noFiles, "", sink)
     }
     case None -> ()
   }
@@ -2476,11 +2435,10 @@ pub func checkProjectTypesNative(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   packageVersion: in String,
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val sink = collectDiagnostics(located)
-  match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, "", sink) {
+  match nativeProjectFrontEnd(packages, stdlibFiles, triple, defines, activeFeatures, declaredFeatures, packageVersion, "", sink) {
     case Some(fe) -> {
       var i = 0
       while i < fe.ownFiles.count {
@@ -2488,7 +2446,7 @@ pub func checkProjectTypesNative(
           fe.ownFiles[i],
           fe.importedPkgs,
           nativePkgLabelAt(packages, i),
-          nativePkgOriginsAt(originsByPkg, i),
+          nativePkgFilesAt(packages, i),
           if i < packages.count { packages[i].ioForbiddenReason } else { "" },
           sink
         )

@@ -58,7 +58,6 @@ import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.LlvmBridge
 import Lyric.Emitter
-import Lyric.DiagnosticUtil as DiagUtil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_self_test_self_iface.l's ASan-capable variant).
@@ -120,8 +119,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", noFlags, newList(), noFeatures, noFeatures, "", true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -202,44 +200,47 @@ test "two packages with a same-named record and same-named impl method resolve i
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.A",
-      path = "",
-      source = "package Proj7.A\n" + "interface AIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
-        "  n: Int\n" +
-        "}\n" +
-        "impl AIfc for Widget {\n" +
-        "  func value(): Int {\n" +
-        "    self.n + 1\n" +
-        "  }\n" +
-        "}\n" +
-        "pub func run(): Int {\n" +
-        "  Widget(n = 10).value()\n" +
-        "}\n"
+      sources = [
+        "package Proj7.A\n" + "interface AIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
+          "  n: Int\n" +
+          "}\n" +
+          "impl AIfc for Widget {\n" +
+          "  func value(): Int {\n" +
+          "    self.n + 1\n" +
+          "  }\n" +
+          "}\n" +
+          "pub func run(): Int {\n" +
+          "  Widget(n = 10).value()\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.B",
-      path = "",
-      source = "package Proj7.B\n" + "interface BIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
-        "  n: Int\n" +
-        "}\n" +
-        "impl BIfc for Widget {\n" +
-        "  func value(): Int {\n" +
-        "    self.n + 2\n" +
-        "  }\n" +
-        "}\n" +
-        "pub func run(): Int {\n" +
-        "  Widget(n = 10).value()\n" +
-        "}\n"
+      sources = [
+        "package Proj7.B\n" + "interface BIfc {\n" + "  func value(): Int\n" + "}\n" + "pub record Widget {\n" +
+          "  n: Int\n" +
+          "}\n" +
+          "impl BIfc for Widget {\n" +
+          "  func value(): Int {\n" +
+          "    self.n + 2\n" +
+          "  }\n" +
+          "}\n" +
+          "pub func run(): Int {\n" +
+          "  Widget(n = 10).value()\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.App",
-      path = "",
-      source = "package Proj7.App\n" + "import Proj7.A\n" + "import Proj7.B\n" + "func main(): Int {\n" +
-        "  Proj7.A.run() + Proj7.B.run()\n" +
-        "}\n"
+      sources = [
+        "package Proj7.App\n" + "import Proj7.A\n" + "import Proj7.B\n" + "func main(): Int {\n" +
+          "  Proj7.A.run() + Proj7.B.run()\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)

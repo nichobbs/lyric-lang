@@ -4285,8 +4285,32 @@ func hasContractSourceAnnotation(anns: in List[Annotation]): Bool {
 
 pub func parse(source: in String): ParseResult = parseFile(source, 0, 0)
 
+/// The offset base of each file of a package whose files are `sources`, in
+/// order (docs/70 §4.1): file 0 starts at 0 and each later file one past the
+/// end of the file before it, `bases[i] = sum over j < i of (len_j + 1)`
+/// where `len_j` is the length of file `j`'s text after line-ending
+/// normalisation (`normaliseLineEndings`, the text its offsets count).  The
+/// gap of one keeps the end-of-file offset of one file (its `TEof` token's)
+/// distinct from the first offset of the next, so no two positions of a
+/// package share an offset.
+pub func fileOffsetBases(sources: in List[String]): List[Int] {
+  val bases: List[Int] = newList()
+  var base = 0
+  for s in sources {
+    bases.add(base)
+    base = base + normaliseLineEndings(s).length + 1
+  }
+  bases
+}
+
 /// `parse` for file `fileId` of a package, its offsets starting at
-/// `offsetBase` (docs/70 §4.1; see `Lyric.Lexer.Position`).
+/// `offsetBase` (docs/70 §4.1; see `Lyric.Lexer.Position`, and
+/// `fileOffsetBases` for the base of each file of a package).  Every span of
+/// the result, its `cst`'s token spans included, holds package offsets, while
+/// the result's `source` is the file's own normalised text: the text a span
+/// covers is `source` at `offset - offsetBase`.  `tokenSourceText` and
+/// `nodeSourceText` slice their source at the span offsets themselves, so
+/// they reconstruct a CST only of a parse at `offsetBase` 0 (as `parse` has).
 pub func parseFile(source: in String, fileId: in Int, offsetBase: in Int): ParseResult {
   val lexResult = lexFile(source, fileId, offsetBase)
   var st = makeParseState(lexResult.tokens, lexResult.diagnostics)

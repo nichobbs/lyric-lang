@@ -422,7 +422,7 @@ test "plugin server items" {
 // The expanded packages type-check.
 // ─────────────────────────────────────────────────────────────────────────────
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
-  ProjectPackagePayload(name = name, source = source)
+  ProjectPackagePayload(name = name, sources = [source])
 }
 
 func errorsOf(located: in List[DiagUtil.LocatedDiagnostic]): String {
@@ -437,27 +437,12 @@ func errorsOf(located: in List[DiagUtil.LocatedDiagnostic]): String {
 
 test "the expanded API and plugin packages type-check" {
   val packages: List[ProjectPackagePayload] = newList()
-  packages.add(mkPkg("Acme.Editor", apiSource()))
-  packages.add(mkPkg("Acme.GitTools", pluginSource()))
+  packages.add(ProjectPackagePayload(name = "Acme.Editor", sources = [apiSource()], paths = ["editor.l"]))
+  packages.add(ProjectPackagePayload(name = "Acme.GitTools", sources = [pluginSource()], paths = ["gittools.l"]))
   val none: List[String] = newList()
   val noArts: List[SynthesisedArtifact] = newList()
   val noDeps: List[ProjectPackagePayload] = newList()
-  val paths: List[String] = newList()
-  paths.add("editor.l")
-  paths.add("gittools.l")
-  val origins: List[DiagUtil.PackageLineOrigins] = newList()
-  val located = checkProjectTypes(
-    packages,
-    Emitter.findStdlibSources(),
-    none,
-    none,
-    noArts,
-    "0.1.0",
-    noDeps,
-    none,
-    paths,
-    origins
-  )
+  val located = checkProjectTypes(packages, Emitter.findStdlibSources(), none, none, noArts, "0.1.0", noDeps, none)
   assertEqual(errorsOf(located), "", "type errors in the expanded packages")
 }
 

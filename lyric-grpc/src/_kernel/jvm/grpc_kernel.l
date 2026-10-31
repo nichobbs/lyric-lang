@@ -11,7 +11,7 @@
 //! Server hosting (`serve` / `netStartHandle` / `netStopHandle`) is a grpc-java
 //! `Server` whose routes are `impl`s of `ServerCalls.UnaryMethod` /
 //! `ServerStreamingMethod` over the same pass-through marshaller; request
-//! metadata reaches handlers through a gRPC `Context` value (D284).
+//! metadata reaches handlers through a gRPC `Context` value (D287).
 //! `checkRateLimit` is the pure-Lyric token bucket from `Lyric.Resilience`
 //! (the same algorithm `Web.Kernel.Runtime` uses on this target).
 //!

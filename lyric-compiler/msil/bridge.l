@@ -167,21 +167,14 @@ func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
 
 // #6598/#6599, widened by #6824 item 2: project-path variant of
 // `abortOnCodegenDiagnosticsMsil` that attributes each F0021–F0027/F0034
-// codegen diagnostic to its real on-disk file and line via `origins` — the
-// same `PackageLineOrigins` table the parse/typecheck/modecheck/elaborate/
-// weave gates on this exact package already use (`ParsedUserPkg.origins`),
-// now also threaded to the codegen-phase gate, which previously routed
-// through the origin-blind `diagReportAndAbortInPkg` even on a multi-file
-// project package (several F002x messages carry no type/package name in the
-// message body at all, e.g. F0025, so the bare form is ambiguous once a
-// bundle compiles more than one file). `origins` empty (single-file
-// packages) reproduces the pre-#6824 bare-package-label behaviour exactly.
-func abortOnCodegenDiagnosticsMsilInPkgWithOrigins(
-  cctx: in CodegenCtx,
-  pkgName: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
-): Bool {
-  DiagUtil.diagReportAndAbortInPkgWithOrigins(pkgName, origins, cctx.diagnostics)
+// codegen diagnostic to the file it is in through `files` — the same file
+// table the parse/typecheck/modecheck/elaborate/weave gates on this exact
+// package already use (`ParsedUserPkg.files`); several F002x messages carry
+// no type/package name in the message body at all (e.g. F0025), so the bare
+// form is ambiguous once a bundle compiles more than one file.  A
+// diagnostic whose file is unknown is labelled `pkgName`.
+func abortOnCodegenDiagnosticsMsilInFiles(cctx: in CodegenCtx, pkgName: in String, files: in List[String]): Bool {
+  DiagUtil.diagReportAndAbortInFiles(pkgName, files, cctx.diagnostics)
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
@@ -208,8 +201,8 @@ pub func compileToMsilWithVersion(
   // no `[features]` table).
   val noCfgFeatures: List[String] = newList()
   val decodedDefines = BD.decodeDefines(defines)
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines, path, noOrigins) {
+  val noFiles: List[String] = newList()
+  val cfgFile = match pipeParseAndErase(source, "dotnet", noCfgFeatures, noCfgFeatures, decodedDefines, path, noFiles) {
     case Some(f) -> f
     case None -> return false
   }
@@ -251,7 +244,7 @@ pub func compileToMsilWithVersion(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
-  val file0pre = match pipeExpandAndRewriteFor("dotnet", cfgFile, weWires, weConfigs, plugins, path, noOrigins) {
+  val file0pre = match pipeExpandAndRewriteFor("dotnet", cfgFile, weWires, weConfigs, plugins, path, noFiles) {
     case Some(f) -> f
     case None -> return false
   }
@@ -300,7 +293,7 @@ pub func compileToMsilWithVersion(
   val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
   val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
   val noDeriveImports: List[Item] = newList()
-  val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noSingleFileFiles: List[String] = newList()
   // #7198: MSIL's async lowering genuinely suspends (Phase B state
   // machine), so F0045's protected-region hazard applies on this target.
   val singleFileOptsCheckedOut: List[SourceFile] = newList()
@@ -312,7 +305,7 @@ pub func compileToMsilWithVersion(
     tcFatal = true,
     tcReport = false,
     pkgLabel = path,
-    lineOrigins = noSingleFileOrigins,
+    filePaths = noSingleFileFiles,
     awaitInTryIsHazard = true,
     bindListLiteralTypes = true,
     awaitAsyncCalls = true,
@@ -400,14 +393,14 @@ pub func compileToMsilWithVersion(
   // other phase's attribution for a single-file build — a weave-time
   // diagnostic (A0042/A0043/A0044) previously printed with no file
   // attribution at all even on the single-file path.
-  val noWeaveOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noWeaveFiles: List[String] = newList()
   // #6702: `stdlibRecs` is the same cross-file record list already threaded
   // into `pipeCheckAndMono` above, reused here so an `impl` block targeting
   // a stdlib record resolves its target's own fields in the await-hoist.
   // #7496: the A0047 row-type check resolves type names against the same
   // stdlib packages the type checker saw.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs, singleFileTypeArgCallees, singleFileOpts.contractsEnabled, pipeWovenGenerics(allMonoFuncs, singleFileGenericItems)) {
+  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveFiles, stdlibRecs, singleFileTypeArgCallees, singleFileOpts.contractsEnabled, pipeWovenGenerics(allMonoFuncs, singleFileGenericItems)) {
     case Some(f) -> f
     case None -> return false
   }
@@ -493,13 +486,21 @@ pub func compileToMsilWithVersion(
   writeBytesAtomic(outputPath, bytes)
 }
 
-/// One package's per-source-file payload for `compileProjectToMsil`.
-/// `name` is the dotted package name (e.g. "Bug1140.Producer") and `source`
-/// is the combined source text for that package — multi-file packages should
-/// already be merged into a single string by the caller.
+/// One package for `compileProjectToMsil`: `name` is the dotted package name
+/// (e.g. "Bug1140.Producer") and `sources` its files' text, in the package's
+/// order, each parsed as its own file of the package
+/// (`Lyric.Pipeline.pipeParsePackageTo`, docs/19 §4).  `paths[i]` is file
+/// `i`'s on-disk path ("" or missing: unknown), which its diagnostics name.
 pub record ProjectPackagePayload {
   name: String
-  source: String
+  sources: List[String]
+  paths: List[String] = newList()
+  /// `name` is a manifest entry's, so even a package of one file is held to
+  /// it (B0013); otherwise a package of one file takes the name it declares.
+  nameFromManifest: Bool = false
+  /// The `@cfg` features a package compiled from a dependency's source is
+  /// erased with (its own manifest's, #7378); None for the build's.
+  features: Option[PackageFeatureSet] = None
   /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` for the package
   /// (`[layers]`, D149); "" when it may do I/O.
   ioForbiddenReason: String = ""
@@ -520,10 +521,9 @@ record ParsedUserPkg {
   name: String
   file: SourceFile
   label: String
-  // Per-merged-line provenance for a multi-file package (#6282), carried
-  // alongside `label` the same way and for the same reason — see the doc
-  // comment above. Empty for a single-file package (or when unknown).
-  origins: List[DiagUtil.MergedLineOrigin]
+  // The package's file paths by file id, carried alongside `label` the same
+  // way and for the same reason — see the doc comment above.
+  files: List[String]
   ioForbiddenReason: String
 }
 
@@ -622,8 +622,6 @@ pub func compileProjectToMsilWithFeaturesDiag(
   val emptyNugetPaths: List[String] = newList()
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val noDefines: List[String] = newList()
-  val noSourcePaths: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersionDiag(
     packages,
     assemblyName,
@@ -636,8 +634,6 @@ pub func compileProjectToMsilWithFeaturesDiag(
     "",
     noDepTemplatePkgs,
     noDefines,
-    noSourcePaths,
-    noOriginsByPkg,
     true,
     outDiagnostics
   )
@@ -659,8 +655,6 @@ pub func compileProjectToMsilWithRestored(
   // (legacy `0.0.0.0` Assembly row).
   val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
-  val noSourcePaths: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -673,8 +667,6 @@ pub func compileProjectToMsilWithRestored(
     "",
     noDepTemplatePkgs,
     newList(),
-    noSourcePaths,
-    noOriginsByPkg,
     true
   )
 }
@@ -684,16 +676,9 @@ pub func compileProjectToMsilWithRestored(
 /// `Lyric.Contract.<pkg>` resources.  Empty string → legacy `"0.0.0"`
 /// default (see #1364 for the threading plan).
 ///
-/// `paths`, when non-empty, is the on-disk source path for each entry of
-/// `packages`, parallel by index (#6610; mirrors `Jvm.Bridge
-/// .compileProjectToJarBundledWithFeatures`'s `pkgPaths`). "" (or the list
-/// being shorter than `packages`) means unknown for that entry — a
-/// synthetic/ad-hoc source, or a genuinely multi-file package whose merged
-/// blob has no single on-disk path (docs/63 §9.7).  Used to label
-/// parse-phase diagnostics with the real source file instead of the bare
-/// package name whenever the real path is known — this is the gap a
-/// single-file build has when a nearby `lyric.toml` routes it through this
-/// project path instead of `compileToMsilWithVersion`.
+/// Each package's `paths` name its files: every diagnostic names the file it
+/// is in, at that file's own line (#6610, #6282, docs/63 §9.7), and falls
+/// back to the package's name when the path is unknown.
 pub func compileProjectToMsilWithRestoredAndVersion(
   packages: in List[ProjectPackagePayload],
   assemblyName: in String,
@@ -706,8 +691,6 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
-  paths: in List[String],
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool = true,
 ): Bool {
   val noDiagOut: List[Diagnostic] = newList()
@@ -723,8 +706,6 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     packageVersion,
     depTemplatePkgs,
     defines,
-    paths,
-    originsByPkg,
     contractsEnabled,
     noDiagOut
   )
@@ -759,13 +740,6 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
-  paths: in List[String],
-  // Per-package merged-line provenance (#6282), parallel to `paths` by
-  // index: `originsByPkg[i]` translates package `i`'s merged-blob line
-  // numbers back to real on-disk files and lines. Empty (or an empty
-  // inner list) means no translation for that package — the pre-#6282
-  // behaviour (`paths[i]` labels every diagnostic verbatim).
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool = true,
   outDiagnostics: in List[Diagnostic],
 ): Bool {
@@ -792,7 +766,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
-  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, "dotnet", false, noLocated) {
+  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, "dotnet", false, noLocated) {
     case Some(f) -> f
     case None -> return false
   }
@@ -972,7 +946,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       tcFatal = true,
       tcReport = false,
       pkgLabel = pp.label,
-      lineOrigins = pp.origins,
+      filePaths = pp.files,
       awaitInTryIsHazard = true,
       bindListLiteralTypes = true,
       awaitAsyncCalls = true,
@@ -1154,7 +1128,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var dti = 0
   while dti < depTemplatePkgs.count {
     val dtPkg = depTemplatePkgs[dti]
-    val dtParseRes = parse(dtPkg.source)
+    val dtParsed = parseDepTemplate(dtPkg, "dotnet", activeFeatures)
     // #6351/#6504: the import-alias rewrite must run over a dependency's
     // template source before collection, exactly as it runs over every
     // in-bundle file (via `pipeExpandAndRewrite`).  A template body is
@@ -1167,7 +1141,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // "unsupported method" runtime-throw stub — a silent miscompile of
     // every cross-package aspect error path (caught when the T0115
     // ldnull backstop made the class loud).
-    val dtRewritten = Aliases.rewriteFile(dtParseRes.file)
+    val dtRewritten = Aliases.rewriteFile(dtParsed)
     Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
     Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
     dti = dti + 1
@@ -1190,18 +1164,18 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // cross-package `from`-instance aspects against the templates
     // collected above (#3414), and aborts on weave-time errors
     // (A0042 / A0043 / A0044).
-    // #6826: label with the SAME `parsedPkgs[li].label`/`.origins` the
+    // #6826: label with the SAME `parsedPkgs[li].label`/`.files` the
     // typecheck phase above already resolved (mirroring `#6643`'s
     // `pp.label` precedent) instead of a hardcoded `""`/empty pair — a
     // weave-time diagnostic (A0042/A0043/A0044) in a multi-file MSIL
     // project package must name the real file exactly like the JVM
     // bridge's equivalent already does (JVM routes weave through
     // `Lyric.Pipeline.pipeMiddleEnd`, which threads `opts.pkgLabel`/
-    // `opts.lineOrigins` unconditionally; this bundle's weave runs as a
+    // `opts.filePaths` unconditionally; this bundle's weave runs as a
     // separate phase 3 loop, split from `pipeCheckAndMono` above so
     // aspect templates from every package's post-mono file are collected
     // first — see the comment on this loop above — so it must re-supply
-    // the label/origins pair itself). `perPkgFiles[li]` and
+    // the label/files pair itself). `perPkgFiles[li]` and
     // `parsedPkgs[li]` are the SAME index by construction (the loop
     // building `perPkgFiles` above iterates `parsedPkgs` 1:1 with no
     // filtering).
@@ -1211,7 +1185,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled, pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li])) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled, pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li])) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1271,9 +1245,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // codegen proceeds to `lowerMImpl` the bad row anyway).  #6599: the
   // per-package gate labels every reported diagnostic with the real
   // on-disk path when known (falling back to the bare package name
-  // otherwise) via `abortOnCodegenDiagnosticsMsilInPkgWithOrigins`, which
-  // also resolves it to the real on-disk file and line for a multi-file
-  // project package (#6824 item 2, #7034 fix) — `parsedPkgs[ci]` is the
+  // otherwise) via `abortOnCodegenDiagnosticsMsilInFiles`, which also
+  // names the file it is in for a multi-file project package (#6824 item
+  // 2, #7034 fix) — `parsedPkgs[ci]` is the
   // SAME index as `liftedFiles[ci]`/`perPkgNames[ci]` (both built 1:1 from
   // `parsedPkgs` with no filtering; see the comment on the `li` loop
   // above), and `parsedPkgs[ci].label` is the SAME real-path-or-name field
@@ -1289,7 +1263,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     useMemberRecvClassesMsil(cctx, perPkgRecvClasses[ci])
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
-    if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, parsedPkgs[ci].label, parsedPkgs[ci].origins) {
+    if abortOnCodegenDiagnosticsMsilInFiles(cctx, parsedPkgs[ci].label, parsedPkgs[ci].files) {
       var cdi = 0
       while cdi < cctx.diagnostics.count {
         outDiagnostics.add(cctx.diagnostics[cdi])
@@ -1359,8 +1333,8 @@ pub func checkSourceTypesForFeatures(
   declaredFeatures: in List[String],
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match frontEndParse(true, "dotnet", source, activeFeatures, declaredFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
+  val noFiles: List[String] = newList()
+  val cfgFile = match frontEndParse(true, "dotnet", source, activeFeatures, declaredFeatures, BD.decodeDefines(defines), path, noFiles, located) {
     case Some(f) -> f
     case None -> return located
   }
@@ -1374,14 +1348,14 @@ pub func checkSourceTypesForFeatures(
   )
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
-  val rewritten = match frontEndExpand(true, "dotnet", cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
+  val rewritten = match frontEndExpand(true, "dotnet", cfgFile, weWires, weConfigs, plugins, path, noFiles, located) {
     case Some(f) -> f
     case None -> return located
   }
   val _ = pipeCheckFront(
     resolveTypeAliasesMsil(rewritten),
     stdlibImportedPackages(collectStdlibPackages(stdlibSources)),
-    checkOptions(path, noOrigins, ""),
+    checkOptions(path, noFiles, ""),
     collectDiagnostics(located)
   )
   located
@@ -1389,14 +1363,12 @@ pub func checkSourceTypesForFeatures(
 
 // The middle-end options a dotnet build checks a package with, as far as the
 // passes up to the mode check read them.
-func checkOptions(
-  label: in String, origins: in List[DiagUtil.MergedLineOrigin], ioForbiddenReason: in String
-): MiddleEndOptions {
+func checkOptions(label: in String, files: in List[String], ioForbiddenReason: in String): MiddleEndOptions {
   MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
     pkgLabel = label,
-    lineOrigins = origins,
+    filePaths = files,
     awaitInTryIsHazard = true,
     bindListLiteralTypes = true,
     awaitAsyncCalls = true,
@@ -1456,8 +1428,6 @@ func projectFrontEnd(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
-  paths: in List[String],
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   targetName: in String,
   collect: in Bool,
   located: in List[DiagUtil.LocatedDiagnostic],
@@ -1503,18 +1473,16 @@ func projectFrontEnd(
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-    // #6610: prefer the real on-disk source path for diagnostic
-    // attribution when the caller supplied one (a single-file build
-    // routed through this project path by a nearby `lyric.toml`, or any
-    // other single-path project package); fall back to the package name
-    // — the previous behaviour — when the path is unknown.
-    val pkgLabel = if pi < paths.count and paths[pi].length > 0 { paths[pi] } else { pkg.name }
-    val pkgOrigins: List[DiagUtil.MergedLineOrigin] = if pi < originsByPkg.count {
-      originsByPkg[pi].origins
-    } else {
-      newList()
-    }
-    val erased = match frontEndParse(collect, targetName, pkg.source, activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins, located) {
+    // #6610: every diagnostic names the file it is in through the
+    // package's `paths` (a single-file build routed through this project
+    // path by a nearby `lyric.toml`, a single-path project package, or each
+    // file of a multi-file one); the package name labels one whose file is
+    // unknown.
+    val pkgLabel = pipePackageLabel(pkg.name, pkg.sources, pkg.paths)
+    // A package compiled from a dependency's source keeps its own features.
+    val pkgActive = match pkg.features { case Some(f) -> f.active; case None -> activeFeatures }
+    val pkgDeclared = match pkg.features { case Some(f) -> f.declared; case None -> declaredFeatures }
+    val erased = match pipeParsePackageTo(frontEndSink(collect, located), pipeHeldPackageName(pkg.name, pkg.sources.count, pkg.nameFromManifest), pkg.sources, pkg.paths, targetName, pkgActive, pkgDeclared, projDefines, pkgLabel) {
       case Some(f) -> f
       case None -> return None
     }
@@ -1523,7 +1491,7 @@ func projectFrontEnd(
         name = pkg.name,
         file = erased,
         label = pkgLabel,
-        origins = pkgOrigins,
+        files = pkg.paths,
         ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
@@ -1583,15 +1551,15 @@ func projectFrontEnd(
   var wtd = 0
   while wtd < depTemplatePkgs.count {
     val wdtPkg = depTemplatePkgs[wtd]
-    val wdtParseRes = parse(wdtPkg.source)
-    WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtParseRes.file).items, wdtPkg.name, weWires, weConfigs)
-    PluginExpand.collectPluginPackage(wdtParseRes.file, plugins)
+    val wdtFile = parseDepTemplate(wdtPkg, targetName, activeFeatures)
+    WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtFile).items, wdtPkg.name, weWires, weConfigs)
+    PluginExpand.collectPluginPackage(wdtFile, plugins)
     wtd = wtd + 1
   }
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten0 = match frontEndExpand(collect, targetName, wep.file, weWires, weConfigs, plugins, wep.label, wep.origins, located) {
+    val rewritten0 = match frontEndExpand(collect, targetName, wep.file, weWires, weConfigs, plugins, wep.label, wep.files, located) {
       case Some(f) -> f
       case None -> return None
     }
@@ -1602,7 +1570,7 @@ func projectFrontEnd(
       name = wep.name,
       file = rewritten,
       label = wep.label,
-      origins = wep.origins,
+      files = wep.files,
       ioForbiddenReason = wep.ioForbiddenReason
     )
     wei = wei + 1
@@ -1663,7 +1631,7 @@ func frontEndParse(
   declaredFeatures: in List[String],
   defines: in List[BD.Define],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
   pipeParseAndEraseTo(
@@ -1674,7 +1642,7 @@ func frontEndParse(
     declaredFeatures,
     defines,
     label,
-    origins
+    files
   )
 }
 
@@ -1698,19 +1666,10 @@ func frontEndExpand(
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
-  pipeExpandAndRewriteForTo(
-    frontEndSink(collect, located),
-    targetName,
-    file,
-    weWires,
-    weConfigs,
-    plugins,
-    label,
-    origins
-  )
+  pipeExpandAndRewriteForTo(frontEndSink(collect, located), targetName, file, weWires, weConfigs, plugins, label, files)
 }
 
 /// What a dotnet build rejects a project for, up to and including the mode
@@ -1727,11 +1686,9 @@ pub func checkProjectTypes(
   packageVersion: in String,
   depTemplatePkgs: in List[ProjectPackagePayload],
   defines: in List[String],
-  paths: in List[String],
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, "dotnet", true, located) {
+  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, "dotnet", true, located) {
     case None -> ()
     case Some(fe) -> {
       val importedPkgs = perPackageImportedPackages(fe.baseImportedPkgs, fe.inBundleItems, fe.inBundleImports, fe.baseNames)
@@ -1739,13 +1696,28 @@ pub func checkProjectTypes(
         val _ = pipeCheckFront(
           pp.file,
           importedPkgs,
-          checkOptions(pp.label, pp.origins, pp.ioForbiddenReason),
+          checkOptions(pp.label, pp.files, pp.ioForbiddenReason),
           collectDiagnostics(located)
         )
       }
     }
   }
   located
+}
+
+/// A payload of one file, `source`, of package `name`, its path unknown.
+pub func oneFilePayload(name: in String, source: in String): ProjectPackagePayload {
+  val one: List[String] = newList()
+  one.add(source)
+  ProjectPackagePayload(name = name, sources = one)
+}
+
+// A dependency template package's files assembled for collecting its
+// templates (`Lyric.Pipeline.pipeParseDependencyPackage`), its file-level
+// `@cfg` decided by its own features when it carries them, else the build's.
+func parseDepTemplate(pkg: in ProjectPackagePayload, targetName: in String, buildActive: in List[String]): SourceFile {
+  val active = match pkg.features { case Some(f) -> f.active; case None -> buildActive }
+  pipeParseDependencyPackage(pkg.name, pkg.sources, pkg.paths, targetName, active)
 }
 
 /// Tab-encoded variant of `compileProjectToMsil` for reflection-based
@@ -1774,7 +1746,7 @@ pub func compileProjectToMsilEncoded(
     }
     val name = line.substring(0, tabPos)
     val src = line.substring(tabPos + 1, line.length - tabPos - 1)
-    packages.add(ProjectPackagePayload(name = name, source = src))
+    packages.add(oneFilePayload(name, src))
     i = i + 1
   }
   compileProjectToMsil(packages, assemblyName, outputPath, stdlibSources)
@@ -1813,7 +1785,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
     }
     val name = line.substring(0, tabPos)
     val src = line.substring(tabPos + 1, line.length - tabPos - 1)
-    packages.add(ProjectPackagePayload(name = name, source = src))
+    packages.add(oneFilePayload(name, src))
     i = i + 1
   }
 
@@ -1847,8 +1819,6 @@ pub func compileProjectToMsilWithRestoredEncoded(
   val declaredFeatures: List[String] = newList()
   val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
   val emptyNugetPaths: List[String] = newList()
-  val noSourcePathsEncoded: List[String] = newList()
-  val noOriginsByPkgEncoded: List[DiagUtil.PackageLineOrigins] = newList()
   compileProjectToMsilWithRestoredAndVersion(
     packages,
     assemblyName,
@@ -1861,8 +1831,6 @@ pub func compileProjectToMsilWithRestoredEncoded(
     packageVersion,
     noDepTemplatePkgsEncoded,
     newList(),
-    noSourcePathsEncoded,
-    noOriginsByPkgEncoded,
     true
   )
 }

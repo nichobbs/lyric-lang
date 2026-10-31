@@ -45,7 +45,6 @@ import Std.String as Str
 import Std.Uuid as Uuid
 import Lyric.Emitter
 import Lyric.LlvmBridge
-import Lyric.DiagnosticUtil as DiagUtil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness.
@@ -70,8 +69,7 @@ func compileAndRunProject(packages: in List[NativeSourcePackage]): RunOutcome {
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -99,8 +97,7 @@ func compileAndRunProjectWithFeatures(
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noDeclared: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "", noOriginsByPkg, true) {
+  if not compileProjectToNativeWithFlags(packages, stem, stdlib, "", "0", flags, newList(), activeFeatures, noDeclared, "", true) {
     return None
   }
   val noArgs: List[String] = newList()
@@ -118,19 +115,22 @@ test "two-package project: entry package first, imports a sibling function (ASan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.App",
-      path = "",
-      source = "package Proj.App\n" + "import Proj.Greeter\n" + "import Std.Console as Console\n" +
-        "func main(): Int {\n" +
-        "  Console.println(greet(\"native\"))\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Proj.App\n" + "import Proj.Greeter\n" + "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(greet(\"native\"))\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Greeter",
-      path = "",
-      source = "package Proj.Greeter\n" + "pub func greet(name: in String): String {\n" + "  \"hi \" + name\n" + "}\n"
+      sources = [
+        "package Proj.Greeter\n" + "pub func greet(name: in String): String {\n" + "  \"hi \" + name\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -147,26 +147,29 @@ test "pub generic calls a private generic of its own package from another packag
   pkgs.add(
     NativeSourcePackage(
       name = "Priv.App",
-      path = "",
-      source = "package Priv.App\n" + "import Priv.Lib\n" + "import Std.Console as Console\n" + "func main(): Int {\n" +
-        "  Console.println(\"run=\" + run(5, { v: Int -> v * 2 }).toString())\n" +
-        "  Console.println(\"viaLambda=\" + runViaLambda(7, { v: Int -> v + 1 }).toString())\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Priv.App\n" + "import Priv.Lib\n" + "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(\"run=\" + run(5, { v: Int -> v * 2 }).toString())\n" +
+          "  Console.println(\"viaLambda=\" + runViaLambda(7, { v: Int -> v + 1 }).toString())\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Priv.Lib",
-      path = "",
-      source = "package Priv.Lib\n" + "func twice[S](x: S, f: (S) -> Int): Int {\n" + "  f(x) + f(x)\n" + "}\n" +
-        "pub func run[S](x: S, f: (S) -> Int): Int {\n" +
-        "  twice(x, f)\n" +
-        "}\n" +
-        "pub func runViaLambda[S](x: S, f: (S) -> Int): Int {\n" +
-        "  val body: (Int) -> Int = { n: Int -> twice(x, f) + n }\n" +
-        "  body(1)\n" +
-        "}\n"
+      sources = [
+        "package Priv.Lib\n" + "func twice[S](x: S, f: (S) -> Int): Int {\n" + "  f(x) + f(x)\n" + "}\n" +
+          "pub func run[S](x: S, f: (S) -> Int): Int {\n" +
+          "  twice(x, f)\n" +
+          "}\n" +
+          "pub func runViaLambda[S](x: S, f: (S) -> Int): Int {\n" +
+          "  val body: (Int) -> Int = { n: Int -> twice(x, f) + n }\n" +
+          "  body(1)\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -183,46 +186,49 @@ test "bare case names of two enums in different packages resolve per scrutinee (
   pkgs.add(
     NativeSourcePackage(
       name = "Enum.App",
-      path = "",
-      source = "package Enum.App\n" + "import Enum.Widgets\n" + "import Enum.Forms\n" +
-        "import Std.Console as Console\n" +
-        "func main(): Int {\n" +
-        "  Console.println(\"widget=\" + widgetName(Widget(kind = WidgetKind.Select)))\n" +
-        "  Console.println(\"field=\" + fieldName(Field(kind = InputKind.Text)))\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Enum.App\n" + "import Enum.Widgets\n" + "import Enum.Forms\n" +
+          "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(\"widget=\" + widgetName(Widget(kind = WidgetKind.Select)))\n" +
+          "  Console.println(\"field=\" + fieldName(Field(kind = InputKind.Text)))\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Enum.Forms",
-      path = "",
-      source = "package Enum.Forms\n" + "pub enum InputKind {\n" + "  case Text\n" + "  case Select\n" + "}\n" +
-        "pub record Field {\n" +
-        "  kind: InputKind\n" +
-        "}\n" +
-        "pub func fieldName(f: in Field): String {\n" +
-        "  match f.kind {\n" +
-        "    case Text -> \"text\"\n" +
-        "    case Select -> \"select\"\n" +
-        "  }\n" +
-        "}\n"
+      sources = [
+        "package Enum.Forms\n" + "pub enum InputKind {\n" + "  case Text\n" + "  case Select\n" + "}\n" +
+          "pub record Field {\n" +
+          "  kind: InputKind\n" +
+          "}\n" +
+          "pub func fieldName(f: in Field): String {\n" +
+          "  match f.kind {\n" +
+          "    case Text -> \"text\"\n" +
+          "    case Select -> \"select\"\n" +
+          "  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Enum.Widgets",
-      path = "",
-      source = "package Enum.Widgets\n" + "pub enum WidgetKind {\n" + "  case Select\n" + "  case Text\n" + "}\n" +
-        "pub record Widget {\n" +
-        "  kind: WidgetKind\n" +
-        "}\n" +
-        "pub func widgetName(w: in Widget): String {\n" +
-        "  match w.kind {\n" +
-        "    case Select -> \"select\"\n" +
-        "    case Text -> \"text\"\n" +
-        "  }\n" +
-        "}\n"
+      sources = [
+        "package Enum.Widgets\n" + "pub enum WidgetKind {\n" + "  case Select\n" + "  case Text\n" + "}\n" +
+          "pub record Widget {\n" +
+          "  kind: WidgetKind\n" +
+          "}\n" +
+          "pub func widgetName(w: in Widget): String {\n" +
+          "  match w.kind {\n" +
+          "    case Select -> \"select\"\n" +
+          "    case Text -> \"text\"\n" +
+          "  }\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -247,53 +253,56 @@ test "module-level val with a non-literal initializer is a shared static global 
   pkgs.add(
     NativeSourcePackage(
       name = "Glob.App",
-      path = "",
-      source = "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" +
-        "import Std.Collections\n" +
-        "import Std.Console as Console\n" +
-        "record Counter {\n" +
-        "  var n: Int = 0\n" +
-        "  label: String = \"c\" + \"tr\"\n" +
-        "}\n" +
-        "val counter: Counter = Counter()\n" +
-        "val registry: Map[String, Counter] = newMap()\n" +
-        "val derived: Int = base() + 1\n" +
-        "func base(): Int {\n" +
-        "  counter.n + 41\n" +
-        "}\n" +
-        "func bump(): Unit {\n" +
-        "  counter.n = counter.n + 1\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  bump()\n" +
-        "  bump()\n" +
-        "  registry.add(\"a\", counter)\n" +
-        "  bump()\n" +
-        "  match mapGet(registry, \"a\") {\n" +
-        "    case Some(c) -> Console.println(c.label + \"=\" + c.n.toString())\n" +
-        "    case None -> Console.println(\"missing\")\n" +
-        "  }\n" +
-        "  Console.println(\"derived=\" + derived.toString())\n" +
-        "  Console.println(\"store=\" + storeCount().toString())\n" +
-        "  Console.println(Store.banner)\n" +
-        "  Console.println(pick(\"picked\"))\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" +
+          "import Std.Collections\n" +
+          "import Std.Console as Console\n" +
+          "record Counter {\n" +
+          "  var n: Int = 0\n" +
+          "  label: String = \"c\" + \"tr\"\n" +
+          "}\n" +
+          "val counter: Counter = Counter()\n" +
+          "val registry: Map[String, Counter] = newMap()\n" +
+          "val derived: Int = base() + 1\n" +
+          "func base(): Int {\n" +
+          "  counter.n + 41\n" +
+          "}\n" +
+          "func bump(): Unit {\n" +
+          "  counter.n = counter.n + 1\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  bump()\n" +
+          "  bump()\n" +
+          "  registry.add(\"a\", counter)\n" +
+          "  bump()\n" +
+          "  match mapGet(registry, \"a\") {\n" +
+          "    case Some(c) -> Console.println(c.label + \"=\" + c.n.toString())\n" +
+          "    case None -> Console.println(\"missing\")\n" +
+          "  }\n" +
+          "  Console.println(\"derived=\" + derived.toString())\n" +
+          "  Console.println(\"store=\" + storeCount().toString())\n" +
+          "  Console.println(Store.banner)\n" +
+          "  Console.println(pick(\"picked\"))\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Glob.Store",
-      path = "",
-      source = "package Glob.Store\n" + "record Box {\n" + "  var count: Int = 7\n" + "}\n" + "val box: Box = Box()\n" +
-        "pub val banner: String = \"store-banner\"\n" +
-        "pub func pick[T](x: in T): T {\n" +
-        "  x\n" +
-        "}\n" +
-        "pub func storeCount(): Int {\n" +
-        "  box.count = box.count + 1\n" +
-        "  box.count\n" +
-        "}\n"
+      sources = [
+        "package Glob.Store\n" + "record Box {\n" + "  var count: Int = 7\n" + "}\n" +
+          "val box: Box = Box()\n" +
+          "pub val banner: String = \"store-banner\"\n" +
+          "pub func pick[T](x: in T): T {\n" +
+          "  x\n" +
+          "}\n" +
+          "pub func storeCount(): Int {\n" +
+          "  box.count = box.count + 1\n" +
+          "  box.count\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -313,16 +322,16 @@ test "two-package project: qualified call to an internal sibling-package functio
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.App",
-      path = "",
-      source = "package Proj5.App\n" + "import Proj5.Lib\n" + "func main(): Int {\n" + "  Proj5.Lib.helper(40)\n" +
-        "}\n"
+      sources = [
+        "package Proj5.App\n" + "import Proj5.Lib\n" + "func main(): Int {\n" + "  Proj5.Lib.helper(40)\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj5.Lib",
-      path = "",
-      source = "package Proj5.Lib\n" + "internal func helper(n: in Int): Int {\n" + "  n + 2\n" + "}\n"
+      sources = ["package Proj5.Lib\n" + "internal func helper(n: in Int): Int {\n" + "  n + 2\n" + "}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -334,15 +343,13 @@ test "two-package project: entry package declared SECOND still becomes the binar
   pkgs.add(
     NativeSourcePackage(
       name = "Proj2.Helper",
-      path = "",
-      source = "package Proj2.Helper\n" + "pub func doubled(n: in Int): Int {\n" + "  n * 2\n" + "}\n"
+      sources = ["package Proj2.Helper\n" + "pub func doubled(n: in Int): Int {\n" + "  n * 2\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj2.App",
-      path = "",
-      source = "package Proj2.App\n" + "import Proj2.Helper\n" + "func main(): Int {\n" + "  doubled(21)\n" + "}\n"
+      sources = ["package Proj2.App\n" + "import Proj2.Helper\n" + "func main(): Int {\n" + "  doubled(21)\n" + "}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -354,27 +361,28 @@ test "three-package project: a sibling package references another sibling's reco
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.Model",
-      path = "",
-      source = "package Proj3.Model\n" + "pub record Point {\n" + "  x: Int\n" + "  y: Int\n" + "}\n"
+      sources = ["package Proj3.Model\n" + "pub record Point {\n" + "  x: Int\n" + "  y: Int\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.Geo",
-      path = "",
-      source = "package Proj3.Geo\n" + "import Proj3.Model\n" + "pub func sumCoords(p: in Point): Int {\n" +
-        "  p.x + p.y\n" +
-        "}\n"
+      sources = [
+        "package Proj3.Geo\n" + "import Proj3.Model\n" + "pub func sumCoords(p: in Point): Int {\n" +
+          "  p.x + p.y\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj3.App",
-      path = "",
-      source = "package Proj3.App\n" + "import Proj3.Model\n" + "import Proj3.Geo\n" + "func main(): Int {\n" +
-        "  val p = Point(x = 10, y = 32)\n" +
-        "  sumCoords(p)\n" +
-        "}\n"
+      sources = [
+        "package Proj3.App\n" + "import Proj3.Model\n" + "import Proj3.Geo\n" + "func main(): Int {\n" +
+          "  val p = Point(x = 10, y = 32)\n" +
+          "  sumCoords(p)\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -386,16 +394,17 @@ test "project build honors [features]/@cfg(feature = ...) gating on a sibling pa
   pkgs.add(
     NativeSourcePackage(
       name = "Proj4.Extra",
-      path = "",
-      source = "package Proj4.Extra\n" + "\n" + "@cfg(feature = \"extra\")\n" + "pub func value(): Int {\n" + "  42\n" +
-        "}\n"
+      sources = [
+        "package Proj4.Extra\n" + "\n" + "@cfg(feature = \"extra\")\n" + "pub func value(): Int {\n" +
+          "  42\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj4.App",
-      path = "",
-      source = "package Proj4.App\n" + "import Proj4.Extra\n" + "func main(): Int {\n" + "  value()\n" + "}\n"
+      sources = ["package Proj4.App\n" + "import Proj4.Extra\n" + "func main(): Int {\n" + "  value()\n" + "}\n"]
     )
   )
   // With "extra" inactive, `value` is erased, so the call to it is an
@@ -431,40 +440,43 @@ test "two-package project: same-bare-name interfaces from different packages pan
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.Shapes1",
-      path = "",
-      source = "package Proj6.Shapes1\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
-        "pub record Square {\n" +
-        "  side: Int\n" +
-        "}\n" +
-        "impl Shape for Square {\n" +
-        "  func area(self: in Self): Int {\n" +
-        "    self.side * self.side\n" +
-        "  }\n" +
-        "}\n"
+      sources = [
+        "package Proj6.Shapes1\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
+          "pub record Square {\n" +
+          "  side: Int\n" +
+          "}\n" +
+          "impl Shape for Square {\n" +
+          "  func area(self: in Self): Int {\n" +
+          "    self.side * self.side\n" +
+          "  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.Shapes2",
-      path = "",
-      source = "package Proj6.Shapes2\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
-        "pub record Circle {\n" +
-        "  radius: Int\n" +
-        "}\n" +
-        "impl Shape for Circle {\n" +
-        "  func area(self: in Self): Int {\n" +
-        "    self.radius\n" +
-        "  }\n" +
-        "}\n"
+      sources = [
+        "package Proj6.Shapes2\n" + "pub interface Shape {\n" + "  func area(self: in Self): Int\n" + "}\n" +
+          "pub record Circle {\n" +
+          "  radius: Int\n" +
+          "}\n" +
+          "impl Shape for Circle {\n" +
+          "  func area(self: in Self): Int {\n" +
+          "    self.radius\n" +
+          "  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.App",
-      path = "",
-      source = "package Proj6.App\n" + "import Proj6.Shapes1\n" + "import Proj6.Shapes2\n" + "func main(): Int {\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Proj6.App\n" + "import Proj6.Shapes1\n" + "import Proj6.Shapes2\n" + "func main(): Int {\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   assertPanicsWith(
@@ -485,21 +497,21 @@ test "a function value whose name has a local and an imported overload at differ
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.Lib",
-      path = "",
-      source = "package Proj7.Lib\n" + "pub func pick(a: in Int, b: in Int): Int {\n" + "  a + b\n" + "}\n"
+      sources = ["package Proj7.Lib\n" + "pub func pick(a: in Int, b: in Int): Int {\n" + "  a + b\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.App",
-      path = "",
-      source = "package Proj7.App\n" + "import Proj7.Lib\n" + "func pick(a: in Int): Int {\n" + "  a\n" + "}\n" +
-        "func apply(f: in (Int) -> Int, x: in Int): Int {\n" +
-        "  f(x)\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  apply(pick, 3)\n" +
-        "}\n"
+      sources = [
+        "package Proj7.App\n" + "import Proj7.Lib\n" + "func pick(a: in Int): Int {\n" + "  a\n" + "}\n" +
+          "func apply(f: in (Int) -> Int, x: in Int): Int {\n" +
+          "  f(x)\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  apply(pick, 3)\n" +
+          "}\n"
+      ]
     )
   )
   val stdlib = findStdlibSourcesNative()
@@ -507,8 +519,7 @@ test "a function value whose name has a local and an imported overload at differ
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
   }
   val noFeatures: List[String] = newList()
-  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  val diags = checkProjectTypesNative(pkgs, stdlib, "", newList(), noFeatures, noFeatures, "", noOrigins)
+  val diags = checkProjectTypesNative(pkgs, stdlib, "", newList(), noFeatures, noFeatures, "")
   var found = false
   for d in diags {
     if d.diagnostic.code == "T0123" and Str.contains(d.diagnostic.message, "'pick' names several functions") {
@@ -587,13 +598,14 @@ test "project build injects the manifest's [package].version as the well-known v
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6.App",
-      path = "",
-      source = "package Proj6.App\n" + "import Std.Console as Console\n" + "@build_const(\"version\")\n" +
-        "val VERSION: String = \"unset\"\n" +
-        "func main(): Int {\n" +
-        "  Console.println(VERSION)\n" +
-        "  0\n" +
-        "}\n"
+      sources = [
+        "package Proj6.App\n" + "import Std.Console as Console\n" + "@build_const(\"version\")\n" +
+          "val VERSION: String = \"unset\"\n" +
+          "func main(): Int {\n" +
+          "  Console.println(VERSION)\n" +
+          "  0\n" +
+          "}\n"
+      ]
     )
   )
   val stdlib = findStdlibSourcesNative()
@@ -606,7 +618,6 @@ test "project build injects the manifest's [package].version as the well-known v
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   val ok = compileProjectToNativeWithFlags(
     pkgs,
     stem,
@@ -618,7 +629,6 @@ test "project build injects the manifest's [package].version as the well-known v
     noFeatures,
     noFeatures,
     "1.2.3",
-    noOriginsByPkg,
     true
   )
   if not ok {
@@ -639,21 +649,21 @@ test "qualified record construction survives a local shadowing the head segment 
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.Sub",
-      path = "",
-      source = "package Proj7.Sub\n" + "pub record Rec {\n" + "  pub message: String\n" + "}\n"
+      sources = ["package Proj7.Sub\n" + "pub record Rec {\n" + "  pub message: String\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7.App",
-      path = "",
-      source = "package Proj7.App\n" + "import Proj7.Sub\n" + "func main(): Int {\n" + "  val Proj7 = 0\n" +
-        "  val e = Proj7.Sub.Rec(message = \"boom\")\n" +
-        "  if e.message == \"boom\" and Proj7 == 0 {\n" +
-        "    return 42\n" +
-        "  }\n" +
-        "  1\n" +
-        "}\n"
+      sources = [
+        "package Proj7.App\n" + "import Proj7.Sub\n" + "func main(): Int {\n" + "  val Proj7 = 0\n" +
+          "  val e = Proj7.Sub.Rec(message = \"boom\")\n" +
+          "  if e.message == \"boom\" and Proj7 == 0 {\n" +
+          "    return 42\n" +
+          "  }\n" +
+          "  1\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -669,21 +679,21 @@ test "qualified free function call survives a local shadowing the head segment (
   pkgs.add(
     NativeSourcePackage(
       name = "Proj8.Sub",
-      path = "",
-      source = "package Proj8.Sub\n" + "pub func qux(): Int {\n" + "  99\n" + "}\n"
+      sources = ["package Proj8.Sub\n" + "pub func qux(): Int {\n" + "  99\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj8.App",
-      path = "",
-      source = "package Proj8.App\n" + "import Proj8.Sub\n" + "func main(): Int {\n" + "  val Proj8 = 0\n" +
-        "  val v = Proj8.Sub.qux()\n" +
-        "  if v == 99 and Proj8 == 0 {\n" +
-        "    return 7\n" +
-        "  }\n" +
-        "  1\n" +
-        "}\n"
+      sources = [
+        "package Proj8.App\n" + "import Proj8.Sub\n" + "func main(): Int {\n" + "  val Proj8 = 0\n" +
+          "  val v = Proj8.Sub.qux()\n" +
+          "  if v == 99 and Proj8 == 0 {\n" +
+          "    return 7\n" +
+          "  }\n" +
+          "  1\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -704,29 +714,29 @@ test "a genuine local-value UFCS chain with no matching package member still res
   pkgs.add(
     NativeSourcePackage(
       name = "Proj9.Sub",
-      path = "",
-      source = "package Proj9.Sub\n" + "pub func other(): Int {\n" + "  1\n" + "}\n"
+      sources = ["package Proj9.Sub\n" + "pub func other(): Int {\n" + "  1\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj9.App",
-      path = "",
-      source = "package Proj9.App\n" + "import Proj9.Sub\n" + "pub record FbBox {\n" + "  pub tag: Int\n" + "}\n" +
-        "pub func FbBox.qux(self: in FbBox): Int {\n" +
-        "  55\n" +
-        "}\n" +
-        "pub record Proj9 {\n" +
-        "  pub Sub: FbBox\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  val Proj9 = Proj9(Sub = FbBox(tag = 1))\n" +
-        "  val v = Proj9.Sub.qux()\n" +
-        "  if v == 55 {\n" +
-        "    return 3\n" +
-        "  }\n" +
-        "  1\n" +
-        "}\n"
+      sources = [
+        "package Proj9.App\n" + "import Proj9.Sub\n" + "pub record FbBox {\n" + "  pub tag: Int\n" + "}\n" +
+          "pub func FbBox.qux(self: in FbBox): Int {\n" +
+          "  55\n" +
+          "}\n" +
+          "pub record Proj9 {\n" +
+          "  pub Sub: FbBox\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  val Proj9 = Proj9(Sub = FbBox(tag = 1))\n" +
+          "  val v = Proj9.Sub.qux()\n" +
+          "  if v == 55 {\n" +
+          "    return 3\n" +
+          "  }\n" +
+          "  1\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -741,7 +751,6 @@ test "project build with no packages fails loudly rather than compiling an empty
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
   val ok = compileProjectToNativeWithFlags(
     pkgs,
     stem,
@@ -753,7 +762,6 @@ test "project build with no packages fails loudly rather than compiling an empty
     noFeatures,
     noFeatures,
     "",
-    noOriginsByPkg,
     true
   )
   assertFalse(ok, "an empty package list must fail rather than silently produce an empty binary")
@@ -777,13 +785,14 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
   pkgs.add(
     NativeSourcePackage(
       name = "Proj6954.App",
-      path = "",
-      source = "package Proj6954.App\n" + "import Std.Core\n" + "import Fake.Native6954\n" + "func main(): Int {\n" +
-        "  match Fake.Native6954.outer(true) {\n" +
-        "    case Ok(v) -> v\n" +
-        "    case Err(_) -> -1\n" +
-        "  }\n" +
-        "}\n"
+      sources = [
+        "package Proj6954.App\n" + "import Std.Core\n" + "import Fake.Native6954\n" + "func main(): Int {\n" +
+          "  match Fake.Native6954.outer(true) {\n" +
+          "    case Ok(v) -> v\n" +
+          "    case Err(_) -> -1\n" +
+          "  }\n" +
+          "}\n"
+      ]
     )
   )
   val stdlib = findStdlibSourcesNative()
@@ -812,8 +821,7 @@ test "native project build: `?` used inside a bundled STDLIB-CLOSURE package (no
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOriginsByPkg, true) {
+  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()
@@ -847,31 +855,34 @@ test "two packages with a same-named record and different field layouts resolve 
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7B.A",
-      path = "",
-      source = "package Proj7B.A\n" + "pub record Rec {\n" + "  x: Int\n" + "}\n" + "pub func run(): Int {\n" +
-        "  val r = Rec(x = 5)\n" +
-        "  r.x\n" +
-        "}\n"
+      sources = [
+        "package Proj7B.A\n" + "pub record Rec {\n" + "  x: Int\n" + "}\n" + "pub func run(): Int {\n" +
+          "  val r = Rec(x = 5)\n" +
+          "  r.x\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7B.B",
-      path = "",
-      source = "package Proj7B.B\n" + "pub record Rec {\n" + "  x: Int\n" + "  y: Int\n" + "}\n" +
-        "pub func run(): Int {\n" +
-        "  val r = Rec(x = 100, y = 7)\n" +
-        "  r.x + r.y\n" +
-        "}\n"
+      sources = [
+        "package Proj7B.B\n" + "pub record Rec {\n" + "  x: Int\n" + "  y: Int\n" + "}\n" +
+          "pub func run(): Int {\n" +
+          "  val r = Rec(x = 100, y = 7)\n" +
+          "  r.x + r.y\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj7B.App",
-      path = "",
-      source = "package Proj7B.App\n" + "import Proj7B.A\n" + "import Proj7B.B\n" + "func main(): Int {\n" +
-        "  Proj7B.A.run() + Proj7B.B.run()\n" +
-        "}\n"
+      sources = [
+        "package Proj7B.App\n" + "import Proj7B.A\n" + "import Proj7B.B\n" + "func main(): Int {\n" +
+          "  Proj7B.A.run() + Proj7B.B.run()\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -903,79 +914,81 @@ test "same-named types across packages: imported union beats a bundle-first reco
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.App",
-      path = "",
-      source = "package Reg.App\n" + "import Reg.Routes.{Route, Home, Item}\n" + "import Reg.Gen.{Prog, apply}\n" +
-        "import Reg.A.Logic as AL\n" +
-        "import Reg.B.Logic as BL\n" +
-        "func code(r: in Route): Int {\n" +
-        "  match r {\n" +
-        "    case Home -> 1\n" +
-        "    case Item(id) -> id\n" +
-        "  }\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  val pa = Prog(step = AL.update)\n" +
-        "  val ma = apply(pa, AL.init(), 5)\n" +
-        "  val pb = Prog(step = BL.update)\n" +
-        "  val mb = apply(pb, BL.init(), 5)\n" +
-        "  code(Item(id = 3)) + AL.read(ma) + BL.read(mb)\n" +
-        "}\n"
+      sources = [
+        "package Reg.App\n" + "import Reg.Routes.{Route, Home, Item}\n" + "import Reg.Gen.{Prog, apply}\n" +
+          "import Reg.A.Logic as AL\n" +
+          "import Reg.B.Logic as BL\n" +
+          "func code(r: in Route): Int {\n" +
+          "  match r {\n" +
+          "    case Home -> 1\n" +
+          "    case Item(id) -> id\n" +
+          "  }\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  val pa = Prog(step = AL.update)\n" +
+          "  val ma = apply(pa, AL.init(), 5)\n" +
+          "  val pb = Prog(step = BL.update)\n" +
+          "  val mb = apply(pb, BL.init(), 5)\n" +
+          "  code(Item(id = 3)) + AL.read(ma) + BL.read(mb)\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.Web",
-      path = "",
-      source = "package Reg.Web\n" + "pub record Route {\n" + "  path: String\n" + "}\n"
+      sources = ["package Reg.Web\n" + "pub record Route {\n" + "  path: String\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.Routes",
-      path = "",
-      source = "package Reg.Routes\n" + "pub union Route {\n" + "  case Home\n" + "  case Item(id: Int)\n" + "}\n"
+      sources = ["package Reg.Routes\n" + "pub union Route {\n" + "  case Home\n" + "  case Item(id: Int)\n" + "}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.Gen",
-      path = "",
-      source = "package Reg.Gen\n" + "pub record Prog[M] {\n" + "  step: (M, Int) -> M\n" + "}\n" +
-        "pub func apply[M](p: in Prog[M], m: in M, d: in Int): M {\n" +
-        "  val f = p.step\n" +
-        "  f(m, d)\n" +
-        "}\n"
+      sources = [
+        "package Reg.Gen\n" + "pub record Prog[M] {\n" + "  step: (M, Int) -> M\n" + "}\n" +
+          "pub func apply[M](p: in Prog[M], m: in M, d: in Int): M {\n" +
+          "  val f = p.step\n" +
+          "  f(m, d)\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.A.Logic",
-      path = "",
-      source = "package Reg.A.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "}\n" + "pub func init(): Model {\n" +
-        "  Model(a = 1)\n" +
-        "}\n" +
-        "pub func update(m: in Model, d: in Int): Model {\n" +
-        "  Model(a = m.a + d)\n" +
-        "}\n" +
-        "pub func read(m: in Model): Int {\n" +
-        "  m.a\n" +
-        "}\n"
+      sources = [
+        "package Reg.A.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "}\n" + "pub func init(): Model {\n" +
+          "  Model(a = 1)\n" +
+          "}\n" +
+          "pub func update(m: in Model, d: in Int): Model {\n" +
+          "  Model(a = m.a + d)\n" +
+          "}\n" +
+          "pub func read(m: in Model): Int {\n" +
+          "  m.a\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Reg.B.Logic",
-      path = "",
-      source = "package Reg.B.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "  b: Int\n" + "}\n" +
-        "pub func init(): Model {\n" +
-        "  Model(a = 10, b = 20)\n" +
-        "}\n" +
-        "pub func update(m: in Model, d: in Int): Model {\n" +
-        "  Model(a = m.a + d, b = m.b)\n" +
-        "}\n" +
-        "pub func read(m: in Model): Int {\n" +
-        "  m.a + m.b\n" +
-        "}\n"
+      sources = [
+        "package Reg.B.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "  b: Int\n" + "}\n" +
+          "pub func init(): Model {\n" +
+          "  Model(a = 10, b = 20)\n" +
+          "}\n" +
+          "pub func update(m: in Model, d: in Int): Model {\n" +
+          "  Model(a = m.a + d, b = m.b)\n" +
+          "}\n" +
+          "pub func read(m: in Model): Int {\n" +
+          "  m.a + m.b\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -992,21 +1005,21 @@ test "cross-package generic call whose type parameter only a lambda's result bin
   pkgs.add(
     NativeSourcePackage(
       name = "Lam.App",
-      path = "",
-      source = "package Lam.App\n" + "import Lam.Lib.{wrap}\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
-        "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
-        "func main(): Int {\n" +
-        "  val a = wrap(20, { n: Int -> mk(n) })\n" +
-        "  val b = wrap(20, { n: Int -> name(n) })\n" +
-        "  a + b.length\n" +
-        "}\n"
+      sources = [
+        "package Lam.App\n" + "import Lam.Lib.{wrap}\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
+          "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
+          "func main(): Int {\n" +
+          "  val a = wrap(20, { n: Int -> mk(n) })\n" +
+          "  val b = wrap(20, { n: Int -> name(n) })\n" +
+          "  a + b.length\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Lam.Lib",
-      path = "",
-      source = "package Lam.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"
+      sources = ["package Lam.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1018,21 +1031,21 @@ test "cross-package generic call whose type parameter only a lambda's result bin
   pkgs.add(
     NativeSourcePackage(
       name = "Lam2.App",
-      path = "",
-      source = "package Lam2.App\n" + "import Lam2.Lib\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
-        "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
-        "func main(): Int {\n" +
-        "  val a = Lam2.Lib.wrap(20, { n: Int -> mk(n) })\n" +
-        "  val b = Lam2.Lib.wrap(20, { n: Int -> name(n) })\n" +
-        "  a + b.length\n" +
-        "}\n"
+      sources = [
+        "package Lam2.App\n" + "import Lam2.Lib\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
+          "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
+          "func main(): Int {\n" +
+          "  val a = Lam2.Lib.wrap(20, { n: Int -> mk(n) })\n" +
+          "  val b = Lam2.Lib.wrap(20, { n: Int -> name(n) })\n" +
+          "  a + b.length\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Lam2.Lib",
-      path = "",
-      source = "package Lam2.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"
+      sources = ["package Lam2.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1049,22 +1062,24 @@ test "generic function with an unannotated lambda local returning its type param
   pkgs.add(
     NativeSourcePackage(
       name = "Lam3.App",
-      path = "",
-      source = "package Lam3.App\n" + "import Lam3.Lib.{viaLocal}\n" + "func main(): Int {\n" +
-        "  val n = viaLocal({ s: String -> s.length }, \"abcd\")\n" +
-        "  val t = viaLocal({ s: String -> s + \"!\" }, \"ab\")\n" +
-        "  n + t.length\n" +
-        "}\n"
+      sources = [
+        "package Lam3.App\n" + "import Lam3.Lib.{viaLocal}\n" + "func main(): Int {\n" +
+          "  val n = viaLocal({ s: String -> s.length }, \"abcd\")\n" +
+          "  val t = viaLocal({ s: String -> s + \"!\" }, \"ab\")\n" +
+          "  n + t.length\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Lam3.Lib",
-      path = "",
-      source = "package Lam3.Lib\n" + "pub func viaLocal[M](f: in (String) -> M, s: in String): M {\n" +
-        "  val g = { t: String -> f(t) }\n" +
-        "  g(s)\n" +
-        "}\n"
+      sources = [
+        "package Lam3.Lib\n" + "pub func viaLocal[M](f: in (String) -> M, s: in String): M {\n" +
+          "  val g = { t: String -> f(t) }\n" +
+          "  g(s)\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1080,23 +1095,25 @@ test "a bare call to an imported generic is not captured by another package's sa
   pkgs.add(
     NativeSourcePackage(
       name = "Z.Html",
-      path = "",
-      source = "package Z.Html\n" + "func field(a: in Bool, b: in Bool, c: in Bool): Int {\n  1\n}\n" +
-        "pub func useField(): Int {\n  field(true, false, true)\n}\n"
+      sources = [
+        "package Z.Html\n" + "func field(a: in Bool, b: in Bool, c: in Bool): Int {\n  1\n}\n" +
+          "pub func useField(): Int {\n  field(true, false, true)\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Z.Widgets",
-      path = "",
-      source = "package Z.Widgets\n" + "pub func field[T](label: in String, n: in Int, v: in T): T {\n  v\n}\n"
+      sources = ["package Z.Widgets\n" + "pub func field[T](label: in String, n: in Int, v: in T): T {\n  v\n}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Z.App",
-      path = "",
-      source = "package Z.App\n" + "import Z.Widgets.{field}\n" + "func main(): Int {\n  field(\"a\", 1, 41) + 1\n}\n"
+      sources = [
+        "package Z.App\n" + "import Z.Widgets.{field}\n" +
+          "func main(): Int {\n  field(\"a\", 1, 41) + 1\n}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1113,31 +1130,34 @@ test "a nullary Type.Case resolves to the own package's same-named union (#8155)
   pkgs.add(
     NativeSourcePackage(
       name = "Y.A",
-      path = "",
-      source = "package Y.A\n" + "pub union Status {\n  case Loading\n  case Ready(n: Int)\n}\n" +
-        "pub func code(): Int {\n" +
-        "  val s = Status.Loading\n" +
-        "  match s {\n    case Loading -> 3\n    case Ready(n) -> n\n  }\n" +
-        "}\n"
+      sources = [
+        "package Y.A\n" + "pub union Status {\n  case Loading\n  case Ready(n: Int)\n}\n" +
+          "pub func code(): Int {\n" +
+          "  val s = Status.Loading\n" +
+          "  match s {\n    case Loading -> 3\n    case Ready(n) -> n\n  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Y.B",
-      path = "",
-      source = "package Y.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int, m: Int)\n}\n" +
-        "pub func code(): Int {\n" +
-        "  val s = Status.Loading\n" +
-        "  match s {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n, m) -> n + m\n  }\n" +
-        "}\n"
+      sources = [
+        "package Y.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int, m: Int)\n}\n" +
+          "pub func code(): Int {\n" +
+          "  val s = Status.Loading\n" +
+          "  match s {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n, m) -> n + m\n  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Y.App",
-      path = "",
-      source = "package Y.App\n" + "import Y.A\n" + "import Y.B\n" +
-        "func main(): Int {\n  Y.A.code() + Y.B.code()\n}\n"
+      sources = [
+        "package Y.App\n" + "import Y.A\n" + "import Y.B\n" +
+          "func main(): Int {\n  Y.A.code() + Y.B.code()\n}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1152,29 +1172,32 @@ test "record fields typed by a same-named union resolve in the declaring package
   pkgs.add(
     NativeSourcePackage(
       name = "W.A",
-      path = "",
-      source = "package W.A\n" + "pub union Status {\n  case Loading\n  case Ready\n}\n" +
-        "pub record Model {\n  status: Status\n}\n" +
-        "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
-        "pub func code(m: in Model): Int {\n  match m.status {\n    case Loading -> 3\n    case Ready -> 4\n  }\n}\n"
+      sources = [
+        "package W.A\n" + "pub union Status {\n  case Loading\n  case Ready\n}\n" +
+          "pub record Model {\n  status: Status\n}\n" +
+          "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
+          "pub func code(m: in Model): Int {\n  match m.status {\n    case Loading -> 3\n    case Ready -> 4\n  }\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "W.B",
-      path = "",
-      source = "package W.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int)\n}\n" +
-        "pub record Model {\n  status: Status\n}\n" +
-        "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
-        "pub func code(m: in Model): Int {\n  match m.status {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n) -> n\n  }\n}\n"
+      sources = [
+        "package W.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int)\n}\n" +
+          "pub record Model {\n  status: Status\n}\n" +
+          "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
+          "pub func code(m: in Model): Int {\n  match m.status {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n) -> n\n  }\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "W.App",
-      path = "",
-      source = "package W.App\n" + "import W.A\n" + "import W.B\n" +
-        "func main(): Int {\n  W.A.code(W.A.start()) + W.B.code(W.B.start())\n}\n"
+      sources = [
+        "package W.App\n" + "import W.A\n" + "import W.B\n" +
+          "func main(): Int {\n  W.A.code(W.A.start()) + W.B.code(W.B.start())\n}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1187,28 +1210,26 @@ test "record fields typed by a same-named union resolve in the declaring package
 test "a bare union case name resolves to the imported package's union (#8155)" {
   val pkgs: List[NativeSourcePackage] = newList()
   pkgs.add(
-    NativeSourcePackage(
-      name = "Q.B",
-      path = "",
-      source = "package Q.B\n" + "pub union Msg {\n  case Other\n  case Retry\n}\n"
-    )
+    NativeSourcePackage(name = "Q.B", sources = ["package Q.B\n" + "pub union Msg {\n  case Other\n  case Retry\n}\n"])
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Q.A",
-      path = "",
-      source = "package Q.A\n" + "pub union Msg {\n  case Retry\n  case Go(n: Int)\n}\n" +
-        "pub func pick[T](x: in T): T {\n  x\n}\n"
+      sources = [
+        "package Q.A\n" + "pub union Msg {\n  case Retry\n  case Go(n: Int)\n}\n" +
+          "pub func pick[T](x: in T): T {\n  x\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Q.App",
-      path = "",
-      source = "package Q.App\n" + "import Q.A.{Msg, Retry, Go, pick}\n" + "func main(): Int {\n" +
-        "  val m = pick(Retry)\n" +
-        "  match m {\n    case Retry -> 5\n    case Go(n) -> n\n  }\n" +
-        "}\n"
+      sources = [
+        "package Q.App\n" + "import Q.A.{Msg, Retry, Go, pick}\n" + "func main(): Int {\n" +
+          "  val m = pick(Retry)\n" +
+          "  match m {\n    case Retry -> 5\n    case Go(n) -> n\n  }\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1222,26 +1243,28 @@ test "a bare None argument takes its type from an earlier argument of the generi
   pkgs.add(
     NativeSourcePackage(
       name = "N.Lib",
-      path = "",
-      source = "package N.Lib\n" + "import Std.Core\n" + "import Std.Collections\n" +
-        "pub union View[M] {\n  case Leaf(label: String)\n  case Node(n: Int)\n}\n" +
-        "pub func row[M](cells: in List[View[M]], onClick: in Option[M]): View[M] {\n  Leaf(label = \"r\")\n}\n" +
-        "pub func keyed[M](k: in String, v: in View[M]): View[M] {\n  v\n}\n"
+      sources = [
+        "package N.Lib\n" + "import Std.Core\n" + "import Std.Collections\n" +
+          "pub union View[M] {\n  case Leaf(label: String)\n  case Node(n: Int)\n}\n" +
+          "pub func row[M](cells: in List[View[M]], onClick: in Option[M]): View[M] {\n  Leaf(label = \"r\")\n}\n" +
+          "pub func keyed[M](k: in String, v: in View[M]): View[M] {\n  v\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "N.App",
-      path = "",
-      source = "package N.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import N.Lib\n" +
-        "import N.Lib.{row}\n" +
-        "union Msg {\n  case Go\n}\n" +
-        "func build(): View[Msg] {\n" +
-        "  val cells: List[View[Msg]] = newList()\n" +
-        "  val first = row(cells, None)\n" +
-        "  N.Lib.keyed(\"b\", N.Lib.row(cells, None))\n" +
-        "}\n" +
-        "func main(): Int {\n  match build() {\n    case Leaf(l) -> 3\n    case Node(n) -> n\n  }\n}\n"
+      sources = [
+        "package N.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import N.Lib\n" +
+          "import N.Lib.{row}\n" +
+          "union Msg {\n  case Go\n}\n" +
+          "func build(): View[Msg] {\n" +
+          "  val cells: List[View[Msg]] = newList()\n" +
+          "  val first = row(cells, None)\n" +
+          "  N.Lib.keyed(\"b\", N.Lib.row(cells, None))\n" +
+          "}\n" +
+          "func main(): Int {\n  match build() {\n    case Leaf(l) -> 3\n    case Node(n) -> n\n  }\n}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1257,24 +1280,25 @@ test "when: barriers hand values between two threads, one slot at a time (ASan, 
   pkgs.add(
     NativeSourcePackage(
       name = "Bar.App",
-      path = "",
-      source = "package Bar.App\n" + "import Std.Core\n" + "import Std.Task\n" + "protected type Slot {\n" +
-        "  var full: Bool = false\n" +
-        "  var item: Int = 0\n" +
-        "  var sum: Int = 0\n" +
-        "  entry put(x: in Int): Unit\n    when: not full\n  {\n    item = x\n    full = true\n  }\n" +
-        "  entry take(): Int\n    when: full\n  {\n    full = false\n    item\n  }\n" +
-        "  entry add(x: in Int): Unit {\n    sum = sum + x\n  }\n" +
-        "  func total(): Int = sum\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  val s = Slot()\n" +
-        "  val sc = makeScope()\n" +
-        "  scopeSpawn(\n    sc,\n    { ->\n      var i = 1\n      while i <= 200 {\n        s.put(i)\n        i = i + 1\n      }\n    }\n  )\n" +
-        "  scopeSpawn(\n    sc,\n    { ->\n      var j = 0\n      while j < 200 {\n        s.add(s.take())\n        j = j + 1\n      }\n    }\n  )\n" +
-        "  val r = await awaitAll(sc)\n" +
-        "  s.total() - 20100 + 7\n" +
-        "}\n"
+      sources = [
+        "package Bar.App\n" + "import Std.Core\n" + "import Std.Task\n" + "protected type Slot {\n" +
+          "  var full: Bool = false\n" +
+          "  var item: Int = 0\n" +
+          "  var sum: Int = 0\n" +
+          "  entry put(x: in Int): Unit\n    when: not full\n  {\n    item = x\n    full = true\n  }\n" +
+          "  entry take(): Int\n    when: full\n  {\n    full = false\n    item\n  }\n" +
+          "  entry add(x: in Int): Unit {\n    sum = sum + x\n  }\n" +
+          "  func total(): Int = sum\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  val s = Slot()\n" +
+          "  val sc = makeScope()\n" +
+          "  scopeSpawn(\n    sc,\n    { ->\n      var i = 1\n      while i <= 200 {\n        s.put(i)\n        i = i + 1\n      }\n    }\n  )\n" +
+          "  scopeSpawn(\n    sc,\n    { ->\n      var j = 0\n      while j < 200 {\n        s.add(s.take())\n        j = j + 1\n      }\n    }\n  )\n" +
+          "  val r = await awaitAll(sc)\n" +
+          "  s.total() - 20100 + 7\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1286,29 +1310,30 @@ test "a func that opens a barrier wakes an entry and a func waiting on it (ASan,
   pkgs.add(
     NativeSourcePackage(
       name = "Gate.App",
-      path = "",
-      source = "package Gate.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Task\n" +
-        "import Std.Time\n" +
-        "protected type Gate {\n" +
-        "  var isOpen: Bool = false\n" +
-        "  var passed: Int = 0\n" +
-        "  entry pass(): Unit\n    when: isOpen\n  {\n    passed = passed + 1\n  }\n" +
-        "  func peekOpen(): Int\n    when: isOpen\n  {\n    7\n  }\n" +
-        "  func open(): Unit {\n    isOpen = true\n  }\n" +
-        "  func passedCount(): Int = passed\n" +
-        "  entry passTwice(): Unit {\n    pass()\n    pass()\n  }\n" +
-        "}\n" +
-        "func main(): Int {\n" +
-        "  val g = Gate()\n" +
-        "  val sc = makeScope()\n" +
-        "  val seen: List[Int] = newList()\n" +
-        "  scopeSpawn(sc, { -> g.passTwice() })\n" +
-        "  scopeSpawn(\n    sc,\n    { ->\n      val v = g.peekOpen()\n      seen.add(v)\n    }\n  )\n" +
-        "  sleepMillis(100)\n" +
-        "  g.open()\n" +
-        "  val r = await awaitAll(sc)\n" +
-        "  g.passedCount() * 10 + seen[0]\n" +
-        "}\n"
+      sources = [
+        "package Gate.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Task\n" +
+          "import Std.Time\n" +
+          "protected type Gate {\n" +
+          "  var isOpen: Bool = false\n" +
+          "  var passed: Int = 0\n" +
+          "  entry pass(): Unit\n    when: isOpen\n  {\n    passed = passed + 1\n  }\n" +
+          "  func peekOpen(): Int\n    when: isOpen\n  {\n    7\n  }\n" +
+          "  func open(): Unit {\n    isOpen = true\n  }\n" +
+          "  func passedCount(): Int = passed\n" +
+          "  entry passTwice(): Unit {\n    pass()\n    pass()\n  }\n" +
+          "}\n" +
+          "func main(): Int {\n" +
+          "  val g = Gate()\n" +
+          "  val sc = makeScope()\n" +
+          "  val seen: List[Int] = newList()\n" +
+          "  scopeSpawn(sc, { -> g.passTwice() })\n" +
+          "  scopeSpawn(\n    sc,\n    { ->\n      val v = g.peekOpen()\n      seen.add(v)\n    }\n  )\n" +
+          "  sleepMillis(100)\n" +
+          "  g.open()\n" +
+          "  val r = await awaitAll(sc)\n" +
+          "  g.passedCount() * 10 + seen[0]\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1323,17 +1348,17 @@ test "a function value is not an overload of a same-named function in an alias-i
   pkgs.add(
     NativeSourcePackage(
       name = "Fv.App",
-      path = "",
-      source = "package Fv.App\n" + "import Fv.Lib as L\n" + "func run(n: in Int): Int {\n  n + 40\n}\n" +
-        "func apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\n" +
-        "func main(): Int {\n  apply(run, 2) + L.run(0, 0)\n}\n"
+      sources = [
+        "package Fv.App\n" + "import Fv.Lib as L\n" + "func run(n: in Int): Int {\n  n + 40\n}\n" +
+          "func apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\n" +
+          "func main(): Int {\n  apply(run, 2) + L.run(0, 0)\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Fv.Lib",
-      path = "",
-      source = "package Fv.Lib\n" + "pub func run(a: in Int, b: in Int): Int {\n  a + b\n}\n"
+      sources = ["package Fv.Lib\n" + "pub func run(a: in Int, b: in Int): Int {\n  a + b\n}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1350,34 +1375,37 @@ test "same-named unions and enums across packages resolve per owning package, qu
   pkgs.add(
     NativeSourcePackage(
       name = "Q.A",
-      path = "",
-      source = "package Q.A\n" + "pub union Level {\n  case Lo(a: Int)\n  case Hi\n}\n" +
-        "pub enum Mode {\n  case Slow\n  case Fast\n}\n" +
-        "pub func makeLo(): Level {\n  Level.Lo(a = 5)\n}\n" +
-        "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a) -> a\n    case Hi -> 1000\n  }\n}\n" +
-        "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Slow -> 100\n    case Fast -> 7\n  }\n}\n"
+      sources = [
+        "package Q.A\n" + "pub union Level {\n  case Lo(a: Int)\n  case Hi\n}\n" +
+          "pub enum Mode {\n  case Slow\n  case Fast\n}\n" +
+          "pub func makeLo(): Level {\n  Level.Lo(a = 5)\n}\n" +
+          "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a) -> a\n    case Hi -> 1000\n  }\n}\n" +
+          "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Slow -> 100\n    case Fast -> 7\n  }\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Q.B",
-      path = "",
-      source = "package Q.B\n" + "pub union Level {\n  case Hi\n  case Lo(a: Int, b: Int)\n}\n" +
-        "pub enum Mode {\n  case Fast\n  case Slow\n  case Off\n}\n" +
-        "pub func makeLo(): Level {\n  Level.Lo(a = 20, b = 30)\n}\n" +
-        "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a, b) -> a + b\n    case Hi -> 2000\n  }\n}\n" +
-        "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Fast -> 3\n    case Slow -> 200\n    case Off -> 300\n  }\n}\n"
+      sources = [
+        "package Q.B\n" + "pub union Level {\n  case Hi\n  case Lo(a: Int, b: Int)\n}\n" +
+          "pub enum Mode {\n  case Fast\n  case Slow\n  case Off\n}\n" +
+          "pub func makeLo(): Level {\n  Level.Lo(a = 20, b = 30)\n}\n" +
+          "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a, b) -> a + b\n    case Hi -> 2000\n  }\n}\n" +
+          "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Fast -> 3\n    case Slow -> 200\n    case Off -> 300\n  }\n}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Q.App",
-      path = "",
-      source = "package Q.App\n" + "import Q.A\n" + "import Q.B\n" + "func main(): Int {\n" +
-        "  val la = Q.A.Level.Lo(a = 1)\n" +
-        "  val lb = Q.B.Level.Lo(a = 2, b = 4)\n" +
-        "  Q.A.lvl(la) + Q.B.lvl(lb) + Q.A.lvl(Q.A.makeLo()) + Q.B.lvl(Q.B.makeLo()) + Q.A.modeCode() + Q.B.modeCode()\n" +
-        "}\n"
+      sources = [
+        "package Q.App\n" + "import Q.A\n" + "import Q.B\n" + "func main(): Int {\n" +
+          "  val la = Q.A.Level.Lo(a = 1)\n" +
+          "  val lb = Q.B.Level.Lo(a = 2, b = 4)\n" +
+          "  Q.A.lvl(la) + Q.B.lvl(lb) + Q.A.lvl(Q.A.makeLo()) + Q.B.lvl(Q.B.makeLo()) + Q.A.modeCode() + Q.B.modeCode()\n" +
+          "}\n"
+      ]
     )
   )
   val outcome = compileAndRunProject(pkgs)
@@ -1392,21 +1420,21 @@ test "NativeWeak.upgrade resolves Std.Core.Option, not another package's Option 
   pkgs.add(
     NativeSourcePackage(
       name = "W7.App",
-      path = "",
-      source = "package W7.App\n" + "import Std.Core\n" + "import W7.Decoy as D\n" +
-        "record Node {\n  name: String\n}\n" +
-        "func main(): Int {\n" +
-        "  val strong = Node(name = \"alive\")\n" +
-        "  val w = NativeWeak(strong)\n" +
-        "  match w.upgrade() {\n    case Some(n) -> n.name.length\n    case None -> 0\n  }\n" +
-        "}\n"
+      sources = [
+        "package W7.App\n" + "import Std.Core\n" + "import W7.Decoy as D\n" +
+          "record Node {\n  name: String\n}\n" +
+          "func main(): Int {\n" +
+          "  val strong = Node(name = \"alive\")\n" +
+          "  val w = NativeWeak(strong)\n" +
+          "  match w.upgrade() {\n    case Some(n) -> n.name.length\n    case None -> 0\n  }\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "W7.Decoy",
-      path = "",
-      source = "package W7.Decoy\n" + "pub union Option[T] {\n  case Lone(v: T)\n  case Empty\n}\n"
+      sources = ["package W7.Decoy\n" + "pub union Option[T] {\n  case Lone(v: T)\n  case Empty\n}\n"]
     )
   )
   val outcome = compileAndRunProject(pkgs)

@@ -1,10 +1,11 @@
 # 19 — Multi-File Packages
 
 **Status:** Shipped. Approved 2026-05-05 (PR #122 review).
-**Implementation:** `Lyric.PackageMerge` (#8234); §3 and §4 describe the
-shipped compiler, which differs from the original F#-era plan.
+**Implementation:** `Lyric.PackageMerge.assemblePackageFiles` (#8234, docs/70
+§4.1 phase 2a); §3 and §4 describe the shipped compiler, which differs from
+the original F#-era plan.
 **Decision-log entry:** D180 (`docs/decisions/D180-package-merge-from-parses.md`).
-**Superseded in part:** D267 (docs/70 §4.1) makes imports per file and replaces the text merge with separately parsed files; §4 step 2, `B0012` and §8's "no per-file visibility scopes" no longer describe the target design and are rewritten when docs/70 phase 2 ships.
+**Superseded in part:** D267 (docs/70 §4.1) makes imports per file. Phase 2a has replaced the text merge with separately parsed files (§4); §4 step 2, `B0012` and §8's "no per-file visibility scopes" still describe the shipped compiler, and are rewritten when per-file import scopes land.
 
 ## 1. Motivation
 
@@ -35,7 +36,7 @@ directory. Each file:
   path and position, and stop the build.
 - May declare its own imports independently of its siblings.
 - Contributes its top-level declarations (types, funcs, consts, etc.)
-  to the merged package symbol table.
+  to the package's symbol table.
 - May carry file-level annotations, which are the package's (§4 step 4a).
 
 Subdirectories continue to be sub-packages: a subdirectory that is
@@ -43,8 +44,8 @@ another `[project.packages]` / `[project.tests]` entry's path is that
 entry's package, and the parent entry's directory leaves it out (as it
 leaves out a file another entry lists). A subdirectory that is no entry
 of its own holds more files of the parent package, which declare the
-parent's package (`B0013` otherwise); a build never merges another
-entry's files.
+parent's package (`B0013` otherwise); a build never assembles another
+entry's files into a package.
 
 ## 3. Finding a package's files
 
@@ -58,13 +59,18 @@ up by file name, so the single-file versus directory layout conflict the
 original plan reserved `B0010` for cannot arise, and `B0010` is not
 raised.
 
-## 4. Merging the files
+## 4. Assembling the files
 
-`Lyric.PackageMerge.mergePackageFiles` (`lyric-compiler/lyric/package_merge.l`)
-builds one compilation unit per package from the files' parses:
+`Lyric.PackageMerge.assemblePackageFiles` (`lyric-compiler/lyric/package_merge.l`)
+builds one package from its files' parses; every backend's project front end
+calls it through `Lyric.Pipeline.pipeParsePackageTo` (docs/70 §4.1, phase 2a):
 
-1. **Parse** every file on its own. A file's parse diagnostics are
-   reported against its own path and position and stop the build. Each
+1. **Parse** every file on its own, as file `i` of the package: every
+   position of file `i` carries `Position.fileId = i` and the file's own
+   line and column, and its offsets start at the file's offset base
+   (`Lyric.Parser.fileOffsetBases`: file 0 at 0, each later file one past
+   the normalised end of the file before it), so no two positions of the
+   package share an offset. A file's parse diagnostics stop the build. Each
    file must declare the package (§2, `B0013`).
 2. **Imports**: the union of the files' imports, an import written in
    several files kept once. An alias that two files bind to different
@@ -75,15 +81,15 @@ builds one compilation unit per package from the files' parses:
    package in two files is one import. A renamed selective import bound
    two ways (`import Std.Math.{absInt as f}` in one file,
    `{maxPairInt as f}` in another) is the type checker's `T0148`.
-3. **File-level annotations** are package-wide: the merged package
-   carries the union of its files' file-level annotations, an annotation
-   written in several files kept once, and a file that writes none takes
-   the package's. Two files that declare different verification levels
+3. **File-level annotations** are package-wide: the package carries the
+   union of its files' file-level annotations, an annotation written in
+   several files kept once, and a file that writes none takes the
+   package's. Two files that declare different verification levels
    (`@runtime_checked` / `@proof_required` / `@axiom`), or the same
    annotation with different arguments, raise `B0014`; `@pure` in one
    file against `@io` in another raises `Y0009` (the language
    reference's §9.4 rule).
-4. **Unit-mode annotations** change how the whole unit is parsed or
+4. **Unit-mode annotations** change how the whole package is parsed or
    compiled, so every file carries each of them or none does (`B0014`):
    `@contract_source` (block braces), the wrapping-arithmetic marker,
    `@test_module` and `@bench_module`.
@@ -93,38 +99,45 @@ builds one compilation unit per package from the files' parses:
    other file-level annotations still count, since they describe the
    package. A malformed or undeclared feature in it is `F0012` /
    `F0013`, as for an item's `@cfg`.
-6. **Items**: each file's text after its header, in file order. Each
-   file's header tokens (module docs, annotations, `package`, imports)
-   are removed by their parse spans, and comments in the header are kept
-   as comments, so a `/* ... */` whose delimiters share lines with
-   annotations still hides what it holds. A line that held only header
-   tokens (and white space or a line comment) is dropped; every other
-   line keeps its place. The merge records, for every merged line, the
-   file and line it came from, which diagnostics report instead of the
-   merged unit's own numbering.
+6. **Items**: each file's parsed items, in file order. The package keeps
+   each file's own header (`SourceFile.files`: its path, module docs,
+   annotations, `package` declaration, imports and offset base), so a
+   comment in a header is never an item, and a `/* ... */` whose
+   delimiters share lines with annotations still hides what it holds.
 7. **Type-check + codegen**: identical to the single-file path. A name
    declared in two files is the type checker's duplicate-declaration
-   error `T0001`, reported against the later file's own path and line;
-   the merge raises no separate `B0011`.
+   error `T0001`, reported against the later file; the assembly raises no
+   separate `B0011`.
 
-A package of one file is compiled as written (when a manifest entry
-names it, its header is still read for `B0013`). Every build path uses the merge: `lyric build` and
-`lyric test` on every target (`Lyric.Emitter.emitProject`,
-`emitNativeProject`; a dependency compiled from source is merged once
-and the weaver reads that unit), and the per-package builds of the stdlib
-and of the compiler itself (`--internal-perpackage-build`, the compiler
-bundle). `lyric prove` proves one file at a time and reads its siblings'
-type names from their own parses, so it needs no merged unit.
+Every diagnostic, in every phase, names the file it is in: its position's
+`fileId` indexes the package's file paths
+(`Lyric.DiagnosticUtil.diagFormatInFiles`), and it is printed as
+`<path>: <severity>[<code>] <line>:<col>: <message>` with that file's own
+line, or under the package's name when the file's path is unknown. The
+JVM `LineNumberTable`, the weaver's `<package>:<line>` call sites and the
+native backend's messages carry each file's own lines too.
+
+A package of one file is its own parse (file 0, offset base 0). When a
+manifest entry names it, it is still held to that name (`B0013`). Every
+build path assembles its packages this way: `lyric build` and `lyric test`
+on every target (`Lyric.Emitter.emitProject`, `emitNativeProject`; a
+dependency compiled from source is assembled with its own features and the
+weaver reads its templates from it), `lyric prove` on a project, and the
+per-package builds of the stdlib and of the compiler itself
+(`--internal-perpackage-build`, the compiler bundle). `lyric test
+--doctests` on a single file compiles the file and its doctests as one test
+module (`Lyric.TestSynth.withDoctests`: the doctests' imports join the
+file's `package` line, their tests follow its last line, so no line of the
+file moves); under a manifest a file's doctest module is one more file of
+its package and carries the file's own imports.
 
 ## 5. Doc-comment merging
 
 The module-level doc comments (`//!`) of every file in the package are
-concatenated, in the package's file order, with an empty `//!` line
-between files, into the merged unit's module doc (`SourceFile.moduleDoc`
-of the unit every backend compiles), so a package of several files has the
-module doc a package of one file has. Each line keeps its file and line in
-the merge's origins. `lyric doc` documents each file on its own and is
-unchanged. A file turned off by its
+joined, in the package's file order, into the package's module doc
+(`SourceFile.moduleDoc`), so a package of several files has the module doc a
+package of one file has; each keeps its own file and line. `lyric doc`
+documents each file on its own and is unchanged. A file turned off by its
 file-level `@cfg` contributes no docs (as it contributes no items or
 imports). A package of one file keeps its own docs as written (#8246).
 
@@ -160,8 +173,8 @@ early split: token types into `tokens.l`, keyword table into
 - Source-tree-relative import paths. Ruled out by the built-in-head /
   restored-package model.
 - Per-file visibility scopes. There is no "file-private" tier; the
-  merged symbol table makes file boundaries invisible at the package
-  level.
+  package's one symbol table makes file boundaries invisible at the
+  package level.
 
 ## 9. Diagnostic codes
 

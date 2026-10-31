@@ -20,7 +20,6 @@ import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.Parser as Parser
 import Lyric.Release as Release
-import Lyric.PackageMerge as PM
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.Coverage as Cov
@@ -669,8 +668,9 @@ func cmdTest(argv: in slice[String]): Int {
   // exactly this pattern and is run in CI via `lyric test --manifest`).
   val cfgActiveWithTarget = Cfg.withTargetFeature(cfgActive, targetFeatureName(cfgTestTarget))
   // `--doctests` (#678, D245): the file's ` ```lyric ` doc-comment blocks run
-  // as tests of the file's own package, so they are merged into it as one
-  // more file of the package.
+  // as tests of the file's own package, compiled with the file as one test
+  // module (`TestSynth.withDoctests`): the file's own lines keep their
+  // numbers, and the doctests see the file's imports.
   var source = coveredText
   if doctests {
     val dm = TestSynth.buildDoctestModule(fileText, sourcePath)
@@ -680,28 +680,7 @@ func cmdTest(argv: in slice[String]): Int {
         return 0
       }
     } else {
-      val pkgFiles: List[String] = newList()
-      pkgFiles.add(TestSynth.withTestModuleAnnotation(coveredText))
-      pkgFiles.add(dm.source)
-      val pkgPaths: List[String] = newList()
-      pkgPaths.add(sourcePath)
-      pkgPaths.add(sourcePath)
-      val merge = PM.mergePackageFiles(
-        Release.packageNameOf(fileText),
-        pkgFiles,
-        pkgPaths,
-        cfgActiveWithTarget,
-        cfgDeclared,
-        targetFeatureName(cfgTestTarget),
-        true
-      )
-      if PM.mergeHasErrors(merge) {
-        for d in merge.diagnostics.toArray() {
-          printErr(PM.mergeDiagnosticText(sourcePath, d))
-        }
-        return 1
-      }
-      source = merge.source
+      source = TestSynth.withDoctests(TestSynth.withTestModuleAnnotation(coveredText), dm)
     }
   }
   // #2364 Stage 5: a @test_module that imports `Lyric.*` compiler packages

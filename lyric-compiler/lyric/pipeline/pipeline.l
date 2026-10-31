@@ -74,6 +74,7 @@ import Lyric.Derives
 import Lyric.Weaver as Weaver
 import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
+import Lyric.PackageMerge as PM
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
 /// diagnostics (every target's own packages, and the native target's path
@@ -81,10 +82,11 @@ import Lyric.DiagnosticUtil as DiagUtil
 /// diagnostics are echoed at all (JVM bundled stdlib packages pass false);
 /// a reported advisory check still gates on T0080 (misplaced `old(...)`).
 /// `pkgLabel` prefixes every gating diagnostic with the owning package name
-/// for multi-package builds; "" prints the bare diagnostic.  `lineOrigins`
-/// (#6282) resolves a multi-file package's merged-blob line numbers back to
-/// their real on-disk file and line at every gate below; empty for every
-/// single-file build and for a project package whose provenance is unknown.
+/// for multi-package builds; "" prints the bare diagnostic.  `filePaths`
+/// names the package's files by `Position.fileId` (docs/70 §4.1;
+/// `Lyric.PackageMerge.packageFilePaths`), so every gate below prints a
+/// diagnostic against the file it is in, at that file's own line; empty
+/// when no path is known, and `pkgLabel` labels every diagnostic.
 /// `awaitInTryIsHazard` (#7198) — whether this target's async lowering has
 /// the CLR-verifier-style hazard `Lyric.Propagate`'s `F0045` diagnostic
 /// exists to prevent (a suspend/resume sequence physically inside a
@@ -114,7 +116,7 @@ pub record MiddleEndOptions {
   tcFatal: Bool
   tcReport: Bool
   pkgLabel: String
-  lineOrigins: List[DiagUtil.MergedLineOrigin]
+  filePaths: List[String] = newList()
   awaitInTryIsHazard: Bool
   /// Whether a list literal no collection type is expected of is bound to a
   /// local of its checked type (`SymbolTable.listLiteralTypeSites`, #7818).
@@ -210,17 +212,11 @@ pub record MiddleEndOptions {
   quietWarnings: Bool = false
 }
 
-// Report `diags` (package-labelled when `pkgLabel` is non-empty, further
-// resolved to a real per-line file/line via `origins` when non-empty — #6282)
-// and return true when any is error-severity.
-func gate(pkgLabel: in String, origins: in List[DiagUtil.MergedLineOrigin], diags: in List[Diagnostic]): Bool {
-  if pkgLabel.length == 0 {
-    DiagUtil.diagReportAndAbort(diags)
-  } else if origins.count == 0 {
-    DiagUtil.diagReportAndAbortInPkg(pkgLabel, diags)
-  } else {
-    DiagUtil.diagReportAndAbortInPkgWithOrigins(pkgLabel, origins, diags)
-  }
+// Report `diags`, each against the file it is in (`files`, by file id) or
+// else labelled `pkgLabel` ("" for no label), and return true when any is
+// error-severity.
+func gate(pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Bool {
+  DiagUtil.diagReportAndAbortInFiles(pkgLabel, files, diags)
 }
 
 /// Parse `source` and apply `@cfg` erasure with the target pseudo-feature
@@ -238,9 +234,9 @@ func gate(pkgLabel: in String, origins: in List[DiagUtil.MergedLineOrigin], diag
 /// a syntax error printed with no file attribution at all, even for a
 /// single-file build.
 ///
-/// `origins` (#6282) is a multi-file package's per-merged-line provenance
-/// table (`Lyric.PackageMerge.mergePackageFiles`); empty for every
-/// single-file build, resolving every diagnostic straight to `label`.
+/// `files` names the file by file id (`Lyric.DiagnosticUtil.diagFilePath`);
+/// empty labels every diagnostic `label`.  A package of several files is
+/// parsed by `pipeParsePackage` instead.
 pub func pipeParseAndErase(
   source: in String,
   targetName: in String,
@@ -248,10 +244,10 @@ pub func pipeParseAndErase(
   declaredFeatures: in List[String],
   defines: in List[BD.Define],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
-  if gate(label, origins, r.diagnostics) {
+  if gate(label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -273,6 +269,149 @@ pub func pipeParseAndEraseCollect(
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = parseResult.file, diagnostics = diags)
   }
+  eraseParsed(
+    parseResult.file,
+    Str.contains(source, "array["),
+    targetName,
+    activeFeatures,
+    declaredFeatures,
+    defines,
+    diags
+  )
+}
+
+/// The front of a build of one package of several files (docs/19 §4,
+/// docs/70 §4.1): `sources` parsed each as its own file of package
+/// `packageName` and assembled into one package
+/// (`Lyric.PackageMerge.assemblePackageFiles`), then build defines, `@cfg`
+/// erasure and the rest of `pipeParseAndErase`'s passes, which stop at the
+/// first that reports an error.  Every diagnostic's position names its file
+/// (`Position.fileId` indexes `paths`).  `packageName` "" holds a package of
+/// one file to the name it declares.  The diagnostics are returned, not
+/// printed; the file is meaningful only when none is an error.
+pub func pipeParsePackageCollect(
+  packageName: in String,
+  sources: in List[String],
+  paths: in List[String],
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+): CheckReadyFile {
+  val diags: List[Diagnostic] = newList()
+  val asm = PM.assemblePackageFiles(packageName, sources, paths, activeFeatures, declaredFeatures, targetName)
+  for d in asm.diagnostics {
+    diags.add(d.diag)
+  }
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = asm.file, diagnostics = diags)
+  }
+  var spellsArray = false
+  for src in sources {
+    if Str.contains(src, "array[") {
+      spellsArray = true
+    }
+  }
+  eraseParsed(asm.file, spellsArray, targetName, activeFeatures, declaredFeatures, defines, diags)
+}
+
+/// `pipeParsePackageCollect` with its diagnostics sent to `sink`, each
+/// against its own file (`paths`, by file id) or else labelled `label`.
+/// None after an error.
+pub func pipeParsePackageTo(
+  sink: in DiagSink,
+  packageName: in String,
+  sources: in List[String],
+  paths: in List[String],
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+  label: in String,
+): Option[SourceFile] {
+  val r = pipeParsePackageCollect(packageName, sources, paths, targetName, activeFeatures, declaredFeatures, defines)
+  if gateTo(sink, label, paths, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// The label a package's diagnostics fall back to when their file's path is
+/// unknown: the path of a package of one known file, else `name`.
+pub func pipePackageLabel(name: in String, sources: in List[String], paths: in List[String]): String {
+  if sources.count == 1 and paths.count > 0 and paths[0].length > 0 {
+    paths[0]
+  } else {
+    name
+  }
+}
+
+/// The name `pipeParsePackage` holds a package's files to: `name` for a
+/// package of several files or one whose name is a manifest entry's
+/// (`nameFromManifest`), "" (the name its one file declares) otherwise.
+pub func pipeHeldPackageName(name: in String, sourceCount: in Int, nameFromManifest: in Bool): String {
+  if sourceCount > 1 or nameFromManifest {
+    name
+  } else {
+    ""
+  }
+}
+
+/// A dependency package's files assembled for reading its declarations only
+/// (its aspect, wire and config templates and its plugins), its file-level
+/// `@cfg` decided by `activeFeatures` (the dependency's own) and
+/// `targetName`.  The dependency was checked when it was built, so the
+/// diagnostics are not reported.
+pub func pipeParseDependencyPackage(
+  name: in String,
+  sources: in List[String],
+  paths: in List[String],
+  targetName: in String,
+  activeFeatures: in List[String],
+): SourceFile {
+  val noDeclared: List[String] = newList()
+  PM.assemblePackageFiles(pipeHeldPackageName(name, sources.count, false), sources, paths, activeFeatures, noDeclared, targetName).file
+}
+
+/// One package of a build as its files, in the package's order: `sources[i]`
+/// is file `i`'s text and `paths[i]` its path ("" or missing: unknown).
+/// `nameFromManifest`: `name` is a manifest entry's, so even a package of
+/// one file is held to it (B0013); otherwise a package of one file takes
+/// the name it declares, and `name` may be "".
+pub record PackageFiles {
+  name: String
+  sources: List[String]
+  paths: List[String] = newList()
+  nameFromManifest: Bool = false
+}
+
+/// `sources` as packages of one file each, `paths[i]` naming file `i`
+/// ("" or missing: unknown), each taking the name it declares.
+pub func pipeOneFilePackages(sources: in List[String], paths: in List[String]): List[PackageFiles] {
+  val pkgs: List[PackageFiles] = newList()
+  var i = 0
+  while i < sources.count {
+    val one: List[String] = newList()
+    one.add(sources[i])
+    val onePath: List[String] = newList()
+    onePath.add(if i < paths.count { paths[i] } else { "" })
+    pkgs.add(PackageFiles(name = "", sources = one, paths = onePath))
+    i = i + 1
+  }
+  pkgs
+}
+
+// The passes of `pipeParseAndErase` after the parse, over `parsed`, appending
+// to `diags`.  `spellsArray` is whether the source spells an `array[` type.
+func eraseParsed(
+  parsed: in SourceFile,
+  spellsArray: in Bool,
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+  diags: in List[Diagnostic],
+): CheckReadyFile {
   // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
   // beneath the already-decoded user/manifest defines: `pipeParseAndErase` is
   // the one place that carries `targetName` on every backend and both the
@@ -288,7 +427,7 @@ pub func pipeParseAndEraseCollect(
   // define can never be read from an item cfg is about to erase, and cfg
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
-  val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
+  val bdRes = BD.applyBuildDefines(definesWk, parsed)
   appendDiagnostics(diags, bdRes.diagnostics)
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = bdRes.file, diagnostics = diags)
@@ -303,7 +442,7 @@ pub func pipeParseAndEraseCollect(
   // synthesized item is never itself erased. `activeFeatures` is the user's own
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
-  val arrayImports = withArrayImports(biFile, source)
+  val arrayImports = if spellsArray { withArrayImports(biFile) } else { biFile }
   CheckReadyFile(file = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)), diagnostics = diags)
 }
 
@@ -316,10 +455,7 @@ func appendDiagnostics(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit
 /// A file that spells an `array[N, T]` type may need `Std.Collections` after
 /// lowering (a `List` for `.toSlice()` and, on dotnet and the JVM, the array
 /// itself), so the import is added before anything resolves imports (D167).
-func withArrayImports(file: in SourceFile, source: in String): SourceFile {
-  if not Str.contains(source, "array[") {
-    return file
-  }
+func withArrayImports(file: in SourceFile): SourceFile {
   val segs0 = file.packageDecl.path.segments
   if segs0.count > 0 and segs0[0] == "Std" {
     return file
@@ -416,16 +552,10 @@ pub func hasWrappingArith(file: in SourceFile): Bool {
 /// gate fatally.  `weWires` / `weConfigs` carry the templates collected
 /// across the compilation (own file only for single-file builds).
 ///
-/// `label` / `origins` (#6824 item 3) attribute the two gates above to the
-/// real on-disk file exactly like `pipeParseAndErase`'s and `pipeWeave`'s
-/// own `label`/`origins` parameters do — before this, both gates hardcoded
-/// `gate("", noOrigins, …)`, so a wire/config-template or impl-default-
-/// inheritance diagnostic on a multi-file project package fell back to no
-/// attribution at all even when the caller had already resolved a real
-/// path-or-package-name label and a `MergedLineOrigin` table for this exact
-/// file (every bridge call site reaches this function AFTER the parse-phase
-/// `pp.label`/`pp.origins` resolution). "" / empty reproduces the prior
-/// behaviour unchanged.
+/// `label` / `files` (#6824 item 3) attribute the two gates above to the
+/// file each diagnostic is in, exactly as `pipeParseAndErase`'s and
+/// `pipeWeave`'s own `label`/`files` parameters do.  "" / empty prints the
+/// bare diagnostic.
 pub func pipeExpandAndRewrite(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
@@ -435,10 +565,10 @@ pub func pipeExpandAndRewrite(
   runStubbable: in Bool,
   injectWeave: in Bool,
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, runWireExpand, runStubbable, injectWeave)
-  if gate(label, origins, r.diagnostics) {
+  if gate(label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -495,10 +625,10 @@ pub func pipePluginExpandForComponent(
   file: in SourceFile,
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = PluginExpand.expandFileForComponent(file, plugins)
-  if gate(label, origins, r.diagnostics) {
+  if gate(label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -539,20 +669,10 @@ pub func pipeExpandAndRewriteFor(
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val p = pipeExpandProfile(targetName)
-  pipeExpandAndRewrite(
-    file,
-    weWires,
-    weConfigs,
-    plugins,
-    p.runWireExpand,
-    p.runStubbable,
-    p.injectWeave,
-    label,
-    origins
-  )
+  pipeExpandAndRewrite(file, weWires, weConfigs, plugins, p.runWireExpand, p.runStubbable, p.injectWeave, label, files)
 }
 
 /// `pipeExpandAndRewriteCollect` with the rewrites `targetName`'s build runs.
@@ -1397,29 +1517,19 @@ pub func collectDiagnostics(located: in List[DiagUtil.LocatedDiagnostic]): DiagS
 }
 
 // `gate` into `sink`: whether any of `diags` is an error.
-func gateTo(
-  sink: in DiagSink,
-  pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
-  diags: in List[Diagnostic],
-): Bool {
+func gateTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Bool {
   if sink.collect {
-    return DiagUtil.diagLocateAll(pkgLabel, origins, diags, sink.located)
+    return DiagUtil.diagLocateAll(pkgLabel, files, diags, sink.located)
   }
-  gate(pkgLabel, origins, diags)
+  gate(pkgLabel, files, diags)
 }
 
-/// Report `diags` into `sink`, labelled with `pkgLabel` and resolved through
-/// `origins`: whether any of them is an error.  For a bridge's own front-end
+/// Report `diags` into `sink`, each against the file it is in (`files`, by
+/// file id) or else labelled `pkgLabel`: whether any of them is an error.  For a bridge's own front-end
 /// diagnostics, so a build prints them and a check (`lyric prove`, #8311)
 /// collects the same ones.
-pub func pipeGateTo(
-  sink: in DiagSink,
-  pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
-  diags: in List[Diagnostic],
-): Bool {
-  gateTo(sink, pkgLabel, origins, diags)
+pub func pipeGateTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Bool {
+  gateTo(sink, pkgLabel, files, diags)
 }
 
 /// `pipeParseAndErase` with its diagnostics sent to `sink`.
@@ -1431,10 +1541,10 @@ pub func pipeParseAndEraseTo(
   declaredFeatures: in List[String],
   defines: in List[BD.Define],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
-  if gateTo(sink, label, origins, r.diagnostics) {
+  if gateTo(sink, label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -1449,10 +1559,10 @@ pub func pipeExpandAndRewriteForTo(
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = pipeExpandAndRewriteCollectFor(targetName, file, weWires, weConfigs, plugins)
-  if gateTo(sink, label, origins, r.diagnostics) {
+  if gateTo(sink, label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -1464,10 +1574,10 @@ pub func pipePluginExpandForComponentTo(
   file: in SourceFile,
   plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   val r = PluginExpand.expandFileForComponent(file, plugins)
-  if gateTo(sink, label, origins, r.diagnostics) {
+  if gateTo(sink, label, files, r.diagnostics) {
     return None
   }
   Some(value = r.file)
@@ -1489,14 +1599,9 @@ func withoutWarningsIf(quiet: in Bool, diags: in List[Diagnostic]): List[Diagnos
 }
 
 // Report `diags` into `sink` without their deciding anything.
-func reportTo(
-  sink: in DiagSink,
-  pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
-  diags: in List[Diagnostic],
-): Unit {
+func reportTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Unit {
   if sink.collect {
-    val _ = DiagUtil.diagLocateAll(pkgLabel, origins, diags, sink.located)
+    val _ = DiagUtil.diagLocateAll(pkgLabel, files, diags, sink.located)
   } else {
     DiagUtil.diagReport(diags)
   }
@@ -1527,7 +1632,7 @@ pub func pipeCheckFront(
     checkWithImportedPackages(file0, importedPkgs)
   }
   if opts.tcFatal {
-    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
+    if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None
     }
   } else if opts.tcReport {
@@ -1546,8 +1651,8 @@ pub func pipeCheckFront(
         advisory.add(d)
       }
     }
-    reportTo(sink, opts.pkgLabel, opts.lineOrigins, advisory)
-    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, gatingAdvisoryDiags) {
+    reportTo(sink, opts.pkgLabel, opts.filePaths, advisory)
+    if gateTo(sink, opts.pkgLabel, opts.filePaths, gatingAdvisoryDiags) {
       return None
     }
   }
@@ -1593,10 +1698,10 @@ pub func pipeCheckFront(
       tcRes.symbols.hoistOperandTypeSites
     }
   )
-  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
+  if gateTo(sink, opts.pkgLabel, opts.filePaths, copyRes.diagnostics) {
     return None
   }
-  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, effectDiagnostics(file0, tcRes.symbols, opts.ioForbiddenReason)) {
+  if gateTo(sink, opts.pkgLabel, opts.filePaths, effectDiagnostics(file0, tcRes.symbols, opts.ioForbiddenReason)) {
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
@@ -1670,7 +1775,7 @@ pub func pipeCheckFront(
   val checked = insertRangeSiteChecks(overflowChecked, tcRes.symbols.rangeCheckSites, tcRes.symbols.rangeCompoundSites)
 
   val mcRes = checkFile(checked)
-  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
+  if gateTo(sink, opts.pkgLabel, opts.filePaths, mcRes.diagnostics) {
     return None
   }
 
@@ -1678,7 +1783,7 @@ pub func pipeCheckFront(
   // In a `@proof_required` file a quantifier is an obligation for `lyric
   // prove`, so the warning would only repeat what the annotation says.
   if not vlIsProofRequired(mcRes.level) {
-    val _ = gateTo(sink, opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
+    val _ = gateTo(sink, opts.pkgLabel, opts.filePaths, runtimeQuantifierWarnings(checked))
   }
   Some(value = CheckFront(tcRes = tcRes, valueSites = valueSites, checked = checked))
 }
@@ -1859,7 +1964,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.propagateErrWidenings,
     tcRes.symbols.typeArgCalleeSites
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
+  if gate(opts.pkgLabel, opts.filePaths, propRes.diagnostics) {
     return None
   }
 
@@ -1922,7 +2027,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.lambdaParamTypeSites,
     noSpecSites
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, monoRes0.diagnostics) {
+  if gate(opts.pkgLabel, opts.filePaths, monoRes0.diagnostics) {
     return None
   }
   // The dot-named calls in another package's generic bodies that are
@@ -2017,7 +2122,7 @@ pub func pipeCheckAndMono(
     Some(value = tcRes.symbols),
     specArrays
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, recheckDiags) {
+  if gate(opts.pkgLabel, opts.filePaths, recheckDiags) {
     return None
   }
   val monoRes = monoFileWithLambdaTypes(
@@ -2032,7 +2137,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.lambdaParamTypeSites,
     specSites
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
+  if gate(opts.pkgLabel, opts.filePaths, monoRes.diagnostics) {
     return None
   }
   // A specialisation is lowered in the consuming file, so whether its
@@ -3060,7 +3165,6 @@ func specMayRender(decl: in FunctionDecl): Bool {
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
     items = items,
-    files = newList(),
     span = decl.span
   )
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
@@ -4460,7 +4564,7 @@ func finishValueRecords(
     diags,
     protectedOnly
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, diags) {
+  if gate(opts.pkgLabel, opts.filePaths, diags) {
     return None
   }
   Some(value = lowered)
@@ -4814,7 +4918,7 @@ pub func pipeWeave(
   templates: in Map[String, Weaver.CollectedTemplate],
   typeIndex: in Weaver.TypeOwnerIndex,
   pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   extraRecordDecls: in List[RecordDecl],
   typeArgCallees: in Map[String, Bool],
   contractsEnabled: in Bool = true,
@@ -4827,13 +4931,13 @@ pub func pipeWeave(
     contractsEnabled
   }
   val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, effectiveContractsEnabled)
-  if gate(pkgLabel, origins, weaveRes.diagnostics) {
+  if gate(pkgLabel, files, weaveRes.diagnostics) {
     return None
   }
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
-  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, origins) {
+  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files) {
     case Some(f) -> f
     case None -> return None
   }
@@ -4870,7 +4974,7 @@ func specialiseWovenContracts(
   generics: in List[FunctionDecl],
   extraRecordDecls: in List[RecordDecl],
   pkgLabel: in String,
-  origins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
 ): Option[SourceFile] {
   if generics.count == 0 or not fileHasWovenWrapper(woven) {
     return Some(value = woven)
@@ -4894,7 +4998,7 @@ func specialiseWovenContracts(
     noLambdaSites,
     noSpecSites
   )
-  if gate(pkgLabel, origins, res.diagnostics) {
+  if gate(pkgLabel, files, res.diagnostics) {
     return None
   }
   // A specialisation the first run already made has the same name and arity
@@ -5239,7 +5343,6 @@ func lowerShowSpec(
     packageDecl = converted.packageDecl,
     imports = converted.imports,
     items = items,
-    files = converted.files,
     span = converted.span
   )
 }
@@ -5421,7 +5524,7 @@ pub func pipeMiddleEnd(
       templates,
       match typeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) },
       opts.pkgLabel,
-      opts.lineOrigins,
+      opts.filePaths,
       monoRecordDecls,
       opts.typeArgCalleesOut,
       opts.contractsEnabled,

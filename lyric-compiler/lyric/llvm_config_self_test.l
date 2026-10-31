@@ -30,7 +30,6 @@ import Std.Uuid as Uuid
 import Std.String as Str
 import Lyric.Emitter
 import Lyric.LlvmBridge
-import Lyric.DiagnosticUtil as DiagUtil
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -281,18 +280,18 @@ test "a config block in a package of a project builds and reads its own var (#74
   pkgs.add(
     NativeSourcePackage(
       name = "CfgProj.Lib",
-      path = "",
-      source = "package CfgProj.Lib\n" + "config Knobs {\n" + "  scale: Int = 6\n" + "}\n" +
-        "pub func scaled(x: in Int): Int {\n" +
-        "  x * Knobs.scale\n" +
-        "}\n"
+      sources = [
+        "package CfgProj.Lib\n" + "config Knobs {\n" + "  scale: Int = 6\n" + "}\n" +
+          "pub func scaled(x: in Int): Int {\n" +
+          "  x * Knobs.scale\n" +
+          "}\n"
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "CfgProj.App",
-      path = "",
-      source = "package CfgProj.App\n" + "import CfgProj.Lib\n" + "func main(): Int {\n" + "  scaled(7)\n" + "}\n"
+      sources = ["package CfgProj.App\n" + "import CfgProj.Lib\n" + "func main(): Int {\n" + "  scaled(7)\n" + "}\n"]
     )
   )
   val stdlib = findStdlibSourcesNative()
@@ -305,8 +304,7 @@ test "a config block in a package of a project builds and reads its own var (#74
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
   val noFeatures: List[String] = newList()
-  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", noOrigins, true) {
+  if not compileProjectToNativeWithFlags(pkgs, stem, stdlib, "", "0", flags, newList(), noFeatures, noFeatures, "", true) {
     panic("native project compilation failed")
   }
   val noArgs: List[String] = newList()

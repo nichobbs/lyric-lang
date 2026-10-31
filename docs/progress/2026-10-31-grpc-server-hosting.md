@@ -1,4 +1,4 @@
-# lyric-grpc server hosting on dotnet and the JVM (D284; #8642)
+# lyric-grpc server hosting on dotnet and the JVM (D287; #8642)
 
 `Grpc.start`, `startHandle` and `stop` failed loudly on both targets after D281.
 They now serve unary and server-streaming methods over plaintext HTTP/2.

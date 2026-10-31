@@ -11,7 +11,7 @@ shipped independently of this sketch's code-first/spec-first layers: raw
 `slice[Byte]` unary and server-streaming calls with metadata, deadlines and
 `GrpcStatus` mapping on `--target dotnet` (`Grpc.Net.Client`) and
 `--target jvm` (grpc-java), tested end to end, and server hosting for unary
-and server-streaming methods (D284: handler-valued `ServiceRegistry`, a
+and server-streaming methods (D287: handler-valued `ServiceRegistry`, a
 pure-Lyric h2c server on dotnet, a grpc-java `Server` on the JVM). Everything
 in §§2-7 below, and client/bidirectional streaming, remain design.
 
