@@ -172,9 +172,12 @@ func abortOnCodegenDiagnosticsMsil(cctx: in CodegenCtx): Bool {
 // package already use (`ParsedUserPkg.files`); several F002x messages carry
 // no type/package name in the message body at all (e.g. F0025), so the bare
 // form is ambiguous once a bundle compiles more than one file.  A
-// diagnostic whose file is unknown is labelled `pkgName`.
-func abortOnCodegenDiagnosticsMsilInFiles(cctx: in CodegenCtx, pkgName: in String, files: in List[String]): Bool {
-  DiagUtil.diagReportAndAbortInFiles(pkgName, files, cctx.diagnostics)
+// diagnostic whose file is unknown is labelled `pkgName`.  They are reported
+// into `sink`, printed or collected as the build's other diagnostics are.
+func abortOnCodegenDiagnosticsMsilInFiles(
+  cctx: in CodegenCtx, pkgName: in String, files: in List[String], sink: in DiagSink
+): Bool {
+  pipeGateTo(sink, pkgName, files, cctx.diagnostics)
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
@@ -742,6 +745,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   defines: in List[String],
   contractsEnabled: in Bool = true,
   outDiagnostics: in List[Diagnostic],
+  sink: in DiagSink = printDiagnostics(),
 ): Bool {
   if packages.count == 0 {
     return false
@@ -765,8 +769,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // emit a real `call <memberref>` instruction instead of the
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
-  val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
-  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, "dotnet", false, noLocated) {
+  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, "dotnet", sink.collect, sink.located) {
     case Some(f) -> f
     case None -> return false
   }
@@ -959,7 +962,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       genericItemsOut = projGenericItems,
       foreignValueRecordsOut = newList(),
       arraysAsLists = true,
-      ioForbiddenReason = pp.ioForbiddenReason
+      ioForbiddenReason = pp.ioForbiddenReason,
+      sink = sink
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
@@ -1185,7 +1189,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled, pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li])) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled, pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li]), sink) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1263,7 +1267,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     useMemberRecvClassesMsil(cctx, perPkgRecvClasses[ci])
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
-    if abortOnCodegenDiagnosticsMsilInFiles(cctx, parsedPkgs[ci].label, parsedPkgs[ci].files) {
+    if abortOnCodegenDiagnosticsMsilInFiles(cctx, parsedPkgs[ci].label, parsedPkgs[ci].files, sink) {
       var cdi = 0
       while cdi < cctx.diagnostics.count {
         outDiagnostics.add(cctx.diagnostics[cdi])
