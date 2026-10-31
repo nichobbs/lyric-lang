@@ -134,8 +134,27 @@ EOF
 # in a comparison and in an annotated binding.  The distinct type `Score`
 # checks that a linked entry can call its `from` constructor and `toInt`
 # conversion, and `Bounded` that it checks a library record's invariant.
+# `squareOf` names `RunnerE2e.Shapes.Shape` unqualified through an import, and
+# `Tag` implements `Labelled`: on the JVM a restored package's own imports and
+# its head-only `impl` both have to reach the consumer (#8667).
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
+
+import RunnerE2e.Shapes
+
+pub func squareOf(side: in Int): Shape = Square(side = side)
+
+pub interface Labelled {
+  func label(): String
+}
+
+pub record Tag {
+  text: String
+}
+
+impl Labelled for Tag {
+  func label(): String = "tag:" + self.text
+}
 
 pub type Score = Int derives Add, Compare
 
@@ -169,6 +188,7 @@ package RunnerE2e.KindsTests
 import Std.Core
 import Std.Testing
 import RunnerE2e.Kinds
+import RunnerE2e.Shapes
 
 func describe(c: in Category): String {
   match c {
@@ -203,6 +223,15 @@ test "case stored in a library record and matched" {
 test "a library record's invariant is checked at construction" {
   assertPanics("n = 0", () -> { val b = Bounded(n = 0) })
   assertEqualInt(Bounded(n = 3).n, 3, "n = 3")
+}
+
+test "a library signature naming another library package's type" {
+  assertEqualInt(area(squareOf(3)), 9, "area(squareOf(3))")
+}
+
+test "a method of a library record's interface impl, called on the record" {
+  val t = Tag(text = "x")
+  assertTrue(t.label() == "tag:x", "t.label()")
 }
 
 test "distinct type constructed and converted" {

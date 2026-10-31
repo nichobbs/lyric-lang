@@ -902,6 +902,23 @@ func transitiveWantedPkgs(file: in SourceFile, pkgImportNames: in Map[String, Li
     }
     ii = ii + 1
   }
+  // A restored package's synthesised source keeps no imports; its contract's
+  // are recorded under its own name.  Without them its signatures resolved a
+  // bare imported type (`JsonValue` from `Std.JsonValue`, in a codec the
+  // plugin expander generated) to the package itself, a class the producer's
+  // JAR does not have (`NoSuchMethodError`, #8667).  For a project file the
+  // list is its own imports again.
+  match mapGet(pkgImportNames, dottedPath(file.packageDecl.path)) {
+    case Some(own) -> {
+      for dn in own {
+        if not wanted.containsKey(dn) {
+          wanted.add(dn, true)
+          queue.add(dn)
+        }
+      }
+    }
+    case None -> ()
+  }
   var qi = 0
   while qi < queue.count {
     match mapGet(pkgImportNames, queue[qi]) {
@@ -1047,7 +1064,19 @@ func externSeedForFileCached(
   pkgImportNames: in Map[String, List[String]],
   cache: in Map[String, Map[String, String]],
 ): Map[String, String] {
-  val key = importsCacheKey(file.imports)
+  // The seed also depends on the imports recorded for the file's package
+  // (`transitiveWantedPkgs`): every restored package's synthesised source
+  // has none of its own, so keying on `file.imports` alone gave them all the
+  // seed of whichever was computed first (#8667).
+  var key = importsCacheKey(file.imports) + "#"
+  match mapGet(pkgImportNames, dottedPath(file.packageDecl.path)) {
+    case Some(own) -> {
+      for dn in own {
+        key = key + dn + "|"
+      }
+    }
+    case None -> ()
+  }
   match mapGet(cache, key) {
     case Some(seed) -> seed
     case None -> {

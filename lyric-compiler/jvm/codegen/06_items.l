@@ -4934,6 +4934,22 @@ pub func fileHasInferredModuleVal(file: in SourceFile): Bool {
   false
 }
 
+// The interface an `impl` names, when `file` itself declares it.
+func implIfaceDeclJvm(file: in SourceFile, iface: in ConstraintRef): Option[InterfaceDecl] {
+  val segs = iface.head.segments
+  if segs.count == 0 {
+    return None
+  }
+  val name = segs[segs.count - 1]
+  for it in file.items {
+    match it.kind {
+      case IInterface(idecl) -> if idecl.name == name { return Some(value = idecl) }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 pub func collectFileSigsSeeded(
   file0: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -5512,6 +5528,46 @@ pub func collectFileSigsSeeded(
         // An impl for a generic target erases its type parameters like the
         // target's own methods do (#7704), matching `lowerImplMethod`.
         val implTps = genericParamNames(decl.generics)
+        // A restored `impl I for R {}` is head-only (its contract carries no
+        // members), so R's methods come from I, looked up among the same
+        // file's items as `Msil.Codegen.registerRestoredImpl` does (#1602).
+        // Without them a call on a value of the concrete record type had no
+        // signature and was emitted with an `Object` return the producer
+        // never declared (`NoSuchMethodError`, #8667).  An in-bundle impl is
+        // never empty here unless I has no methods: its defaults are
+        // expanded into it before codegen.
+        if decl.members.count == 0 and not isExternIfaceReg {
+          match implIfaceDeclJvm(file, decl.iface) {
+            case Some(idecl) -> {
+              for im in idecl.members {
+                match im {
+                  case IMSig(sig) -> registerInstanceSigErased(
+                    into,
+                    tgtClass,
+                    sig.name,
+                    sig.params,
+                    sig.ret,
+                    owner,
+                    withOwnGenericsJvm(implTps, sig.generics),
+                    externTypes
+                  )
+                  case IMFunc(fn) -> registerInstanceSigErased(
+                    into,
+                    tgtClass,
+                    fn.name,
+                    fn.params,
+                    fn.ret,
+                    owner,
+                    withOwnGenericsJvm(implTps, fn.generics),
+                    externTypes
+                  )
+                  case IMAssoc(_) -> ()
+                }
+              }
+            }
+            case None -> ()
+          }
+        }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
