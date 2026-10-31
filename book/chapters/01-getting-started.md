@@ -296,6 +296,11 @@ environment variables set. The NuGet global tool does not: with it, point
 `--opt 0|1|2|3|s` sets the clang optimisation level (default `2`).
 `lyric run --target native <file.l>` builds and runs in one step.
 
+A native build type-checks the standard library packages it bundles; the results
+are cached in `~/.lyric/cache/native-stdlib-check/` (`LYRIC_CACHE_DIR` relocates
+it, `LYRIC_CACHE_DIR=off` disables it), so only the first build after a compiler or
+stdlib change pays for the check. The directory is safe to delete.
+
 `--triple wasm32-wasi` produces a WebAssembly module instead of a host
 executable. It needs a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk)
 (`WASI_SDK_PATH`) and the wasm32 runtime (`make -C lyric-rt wasm32-wasi

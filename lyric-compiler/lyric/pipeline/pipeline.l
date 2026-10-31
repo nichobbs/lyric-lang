@@ -1850,6 +1850,24 @@ pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile 
   lowerRecordEq(lowerRecordArith(file, sym.recordArithSites), sym.recordEqSites, sym.arrayEqSites, sym.wrapEqSites)
 }
 
+/// True when `lowerRecordSites` and `lowerArraySites(.., false, false)` return
+/// their input unchanged for `sym`: the checker recorded none of the sites they
+/// read.  The native stdlib check cache (#7971) relies on this to hand back a
+/// parsed package as its lowered form, so it must list every map those two
+/// functions consume.
+pub func stdlibLoweringIsIdentity(sym: in SymbolTable): Bool {
+  sym.recordArithSites.count == 0 and sym.recordEqSites.count == 0 and sym.arrayEqSites.count == 0 and
+    sym.wrapEqSites.count == 0 and
+    sym.arrayIndexSites.count == 0 and
+    sym.arrayLenSites.count == 0 and
+    sym.arraySliceSites.count == 0 and
+    sym.arrayForSites.count == 0 and
+    sym.arrayCopySites.count == 0 and
+    sym.arrayZeroSites.count == 0 and
+    sym.arrayCtorZeroArgs.count == 0 and
+    sym.bufferPointerSites.count == 0
+}
+
 /// `array[N, T]` (D167) and `buffer[T]` pointer-closure sites recorded in
 /// `sym`, lowered to forms every backend handles.
 pub func lowerArraySites(
