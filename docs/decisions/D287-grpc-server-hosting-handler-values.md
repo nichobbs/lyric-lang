@@ -1,4 +1,4 @@
-# D284 — gRPC server hosting: handler values, a pure-Lyric h2c server on dotnet, grpc-java on the JVM (#8642)
+# D287 — gRPC server hosting: handler values, a pure-Lyric h2c server on dotnet, grpc-java on the JVM (#8642)
 
 **Status:** shipped
 

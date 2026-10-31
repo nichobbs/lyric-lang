@@ -1,4 +1,4 @@
-# D285 - Cross-package generic specialisations: the caller's types in scope, own unsigned operands, expected-type case constructors
+# D286 - Cross-package generic specialisations: the caller's types in scope, own unsigned operands, expected-type case constructors
 
 **Status:** accepted, implemented (#8530, #8019, #8481); supersedes item 4 of D224 (the M0008 restriction); follow-up to D273
 

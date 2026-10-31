@@ -25,7 +25,7 @@
 //! Server hosting (`serve` / `netStartHandle` / `netStopHandle` /
 //! `netServerPort`) delegates to `Grpc.Kernel.Net.Server`, a pure-Lyric h2c gRPC
 //! server: `Grpc.AspNetCore` registers an RPC through `BindableService` /
-//! `ServiceBinderBase`, abstract classes a Lyric record cannot extend (D284).
+//! `ServiceBinderBase`, abstract classes a Lyric record cannot extend (D287).
 //!
 //! JWT verification lives in Auth.Kernel.Net (lyric-auth).
 //!

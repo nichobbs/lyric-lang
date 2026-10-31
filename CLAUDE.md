@@ -1058,7 +1058,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   for protobuf encoding. Server hosting (`addUnary`/`addServerStreaming`,
   `start`/`startHandle`/`stop`) works on both targets, plaintext HTTP/2: a
   pure-Lyric h2c server on `Std.HttpEngine.H2Conn` on .NET, a grpc-java `Server`
-  on the JVM (D284).
+  on the JVM (D287).
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue

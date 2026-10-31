@@ -368,7 +368,7 @@ func main(): Unit {
 | Library | .NET | JVM | Status |
 |---|---|---|---|
 | lyric-proto | stable | planned (Phase 6) | D067 |
-| lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D284 |
+| lyric-grpc | client + server (unary, server streaming, metadata, deadlines) + rate limiting real | client + server + rate limiting real | D068, D281, D287 |
 | lyric-otel | recording + OTLP/HTTP export real | recording real; OTLP export not implemented | D055, D069 |
 | lyric-mq | only `inmemory` real, other brokers `NOT_IMPLEMENTED` | no working backend | D056, #6511 |
 | lyric-mail | `smtp`, `ses`, `sendgrid` real | `ses`/`sendgrid` real; `smtp` `NOT_IMPLEMENTED` (#7462) | D062 |

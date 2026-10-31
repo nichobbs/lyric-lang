@@ -20,7 +20,7 @@
 //! handler runs to completion and the client's deadline cancels the call from its
 //! end. No TLS and no reflection (`reflectionEnabled = true` panics).
 //!
-//! Only active when compiled with feature = "dotnet" (D284).
+//! Only active when compiled with feature = "dotnet" (D287).
 @cfg(feature = "dotnet")
 @io
 package Grpc.Kernel.Net.Server
