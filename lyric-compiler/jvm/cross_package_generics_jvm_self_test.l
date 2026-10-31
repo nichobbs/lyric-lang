@@ -523,3 +523,25 @@ test "a restored signature type is not captured by a same-named consumer type (j
   )
   cleanup(tmpDir)
 }
+
+test "a restored function naming a re-exported extern type links against its real JVM class (jvm, #8639)" {
+  val tmpDir = freshTempDir("cpuuid-extern-jvm")
+  val producerSrc = "package CpUuidJvm.Ext\n" + "\n" + "import Std.Uuid\n" + "\n" +
+    "pub func zero(): Uuid { nilUuid() }\n" +
+    "pub func show(u: in Uuid): String { uuidToString(u) }\n"
+  val producerJar = buildJar(tmpDir, "CpUuidJvm.Ext", producerSrc, "CpUuidJvm.Ext")
+  val consumerSrc = "package CpUuidJvm.ExtApp\n" + "\n" + "import CpUuidJvm.Ext\n" + "\n" + "func main(): Unit {\n" +
+    "  println(Ext.show(Ext.zero()))\n" +
+    "}\n"
+  val captured = buildAndRunConsumer(
+    tmpDir,
+    "CpUuidJvm.ExtApp",
+    consumerSrc,
+    "CpUuidJvm.ExtApp",
+    "CpUuidJvm.Ext",
+    producerJar
+  )
+  cleanup(tmpDir)
+  assertEqualInt(captured.exitCode, 0, "cpuuid_extern_jvm: exit 0 (stderr=" + captured.stderr + ")")
+  assertEqual(Str.trim(captured.stdout), "00000000-0000-0000-0000-000000000000", "cpuuid_extern_jvm: the nil uuid")
+}

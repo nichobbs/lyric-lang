@@ -207,3 +207,7 @@ echo "Native process_piped_bytes_tests.l (--target native) passed"
 # Two unions of one package sharing a case name build the expected union's case (#8481).
 "$lyric_bin" test --target native lyric-compiler/lyric/union_shared_case_self_test.l
 echo "Native union_shared_case_self_test.l (--target native) passed"
+
+# List.indexOf/lastIndexOf/remove over a List of tuples (#8668).
+"$lyric_bin" test --target native lyric-compiler/lyric/list_tuple_elem_methods_self_test.l
+echo "Native list_tuple_elem_methods_self_test.l (--target native) passed"

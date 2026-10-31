@@ -1,0 +1,8 @@
+[package]
+name = "reject-protected-field-imported"
+version = "0.1.0"
+[project]
+name = "RejectProtectedFieldImported"
+[project.packages]
+"Lib" = "lib"
+"App" = "app"

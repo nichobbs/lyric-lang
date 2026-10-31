@@ -1527,6 +1527,19 @@ test "aspect config before matches preserves source order" {
   assertTrue(cfgIdx < matchIdx, "aspect config-before-matches: config block precedes matches in output")
 }
 
+test "aspect with matches: before wraps: keeps that order (#8605)" {
+  val src = "package P\n\naspect Auth {\n  matches: name like \"handle*\"\n  wraps: Logging\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect matches-before-wraps: round-trips")
+  val once = format(parse(src))
+  assertEqual(once, format(parse(once)), "aspect matches-before-wraps: idempotent")
+  val matchIdx = match Str.indexOf(once, "matches:") { case Some(i) -> i; case None -> -1 }
+  val wrapsIdx = match Str.indexOf(once, "wraps:") { case Some(i) -> i; case None -> -1 }
+  assertTrue(matchIdx >= 0 and wrapsIdx > matchIdx, "matches: stays before wraps:")
+  val canon = "package P\n\naspect Auth {\n  wraps: Logging\n  matches: name like \"handle*\"\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(canon)), "aspect wraps-before-matches: still round-trips")
+}
+
 test "nested match trailing comment idempotent" {
   // A trailing comment on the LAST arm of a *nested* match (a match that is
   // itself the body of an enclosing match arm) must stay attached to that

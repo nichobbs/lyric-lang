@@ -3431,6 +3431,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
   var configSeen: Bool = false
   val contracts: List[ContractClause] = newList()
   val wraps: List[String] = newList()
+  var orderOffset: Int = -1
   val inside: List[String] = newList()
   var around: Option[AspectAround] = None
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
@@ -3473,6 +3474,9 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
           }
         } else if s == "wraps" {
           // §6 ordering: `wraps: A, B` — this aspect runs outside A and B.
+          if orderOffset < 0 {
+            orderOffset = peekSpan(st).startPos.offset
+          }
           val _ = advance(st)
           match tryEatPunct(st, Colon) {
             case Some(_) -> {
@@ -3504,6 +3508,9 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
           }
         } else if s == "inside" {
           // §6 ordering: `inside: A, B` — this aspect runs inside A and B.
+          if orderOffset < 0 {
+            orderOffset = peekSpan(st).startPos.offset
+          }
           val _ = advance(st)
           match tryEatPunct(st, Colon) {
             case Some(_) -> {
@@ -3597,6 +3604,7 @@ func parseAspectBody(st: inout ParseState): AspectDecl {
     contracts = contracts,
     wraps = wraps,
     inside = inside,
+    orderOffset = orderOffset,
     span = joinSpans(startTok.span, endSpan)
   )
 }

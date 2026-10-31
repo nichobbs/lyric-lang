@@ -1118,6 +1118,10 @@ pub record AspectDecl {
   // §6 ordering: this aspect wraps the named aspects
   inside: List[String]
   // §6 ordering: this aspect runs inside the named aspects
+  /// Source offset of the first `wraps:` / `inside:` clause, `-1` when the
+  /// aspect has neither.  Lets the formatter keep the clause's source
+  /// position relative to `matches:` (#8605).
+  orderOffset: Int = -1
   span: Span
   // D046 / D047 self-hosted parser dispatch + bodies are added in
   // `parser_items.l` alongside the AST shapes above.

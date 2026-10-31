@@ -1748,6 +1748,7 @@ func resolveAspectDecl(aliasTargets: in Map[String, TypeExpr], d: in AspectDecl)
     contracts = resolveContracts(aliasTargets, noGenerics, d.contracts),
     wraps = d.wraps,
     inside = d.inside,
+    orderOffset = d.orderOffset,
     span = d.span
   )
 }

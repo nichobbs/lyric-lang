@@ -5069,6 +5069,37 @@ func specialiseWovenContracts(
   if gateTo(sink, pkgLabel, files, res.diagnostics) {
     return None
   }
+  // `pipeCheckAndMono` re-checks a specialisation binding a type parameter to
+  // `UInt`/`ULong`, using `==` on a named type, or needing an operator bound
+  // (#7842, D172 item 4, M0008) before its second mono pass.  This run has
+  // none of those checks, so a woven contract that needs one would be
+  // specialised with the wrong operand semantics; it is refused instead of
+  // compiled silently wrong (#8665).
+  val needsRecheck: List[UnsignedSpecRequest] = newList()
+  for us in res.unsignedSpecs {
+    needsRecheck.add(us)
+  }
+  for ss in res.structSpecs {
+    if (ss.originPkg == "" and (specUsesEquality(ss.specDecl) or specMayRender(ss.specDecl))) or ss.opBound {
+      needsRecheck.add(ss)
+    }
+  }
+  if needsRecheck.count > 0 {
+    val diags: List[Diagnostic] = newList()
+    for nr in needsRecheck {
+      diags.add(
+        errorDiagnostic(
+          "M0009",
+          "cannot specialise '" + nr.specName +
+            "' in an aspect contract: its body needs the unsigned, equality or operator semantics of its type arguments, which are not applied to a specialisation made after weaving. Call a non-generic function from the contract, or move the check into the woven function's own contract",
+          nr.callSpan
+        )
+      )
+    }
+    if gateTo(sink, pkgLabel, files, diags) {
+      return None
+    }
+  }
   // A specialisation the first run already made has the same name and arity
   // as the one made again; same-named functions of other arities are
   // overloads and stay.  Each key admits as many items as `woven` held, so
