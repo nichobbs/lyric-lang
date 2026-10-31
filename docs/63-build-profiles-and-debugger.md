@@ -646,7 +646,14 @@ per-*item* file attribution — for that, a boundary table of
 `(itemStartIndex, path)` recorded at merge time is far smaller than adding a
 path field to every `Item`.
 
-**Shipped design deviates from the survey above, deliberately (D-progress-868).**
+**Historical: the line-origin table (D-progress-868), since replaced.** The
+next four paragraphs record the design that shipped first and was later
+deleted; today every position names its file (`Lyric.Lexer.Position.fileId`)
+and every gate reads the package's file table (`MiddleEndOptions.filePaths`,
+`Lyric.DiagnosticUtil.diagFormatInFiles`), see "Superseded by docs/70 phase
+2a step 3" below.
+
+**Shipped design deviated from the survey above, deliberately (D-progress-868).**
 The per-file-parse-then-merge-ASTs approach was re-evaluated once actually
 attempted: it removes the string-splicing helpers' *content* risk, but on its
 own gives no *file* attribution at all — a diagnostic raised while
@@ -657,11 +664,11 @@ weave, codegen) that touches `Diagnostic`s, none of which know about items or
 files today. That is a change to the shared `Lyric.Pipeline` gate on every
 target, not a merge-step change.
 
-The shipped fix instead keeps `mergePackageSources`'s textual-merge shape
-(so it stays a small, additive change) but has it also emit a **per-merged-line
-provenance table**: `Lyric.Emitter.mergePackageSourcesWithOrigins` returns,
-alongside the merged text, one `Lyric.DiagnosticUtil.MergedLineOrigin { path,
-originalLine }` per line of the merged blob (`""` for a line inside the
+The fix that shipped then kept `mergePackageSources`'s textual-merge shape
+(so it stayed a small, additive change) but had it also emit a **per-merged-line
+provenance table**: `Lyric.Emitter.mergePackageSourcesWithOrigins` (deleted)
+returned, alongside the merged text, one `Lyric.DiagnosticUtil.MergedLineOrigin { path,
+originalLine }` (deleted) per line of the merged blob (`""` for a line inside the
 synthesized `package`/import prelude, or a `"\n"`-join boundary after a
 `@cfg`-erased file — no single file owns those). This is exactly the "boundary
 table... far smaller than adding a path field to every `Item`" idea above,
@@ -688,13 +695,13 @@ that file id (`Lyric.DiagnosticUtil.diagFormatInFiles`,
 `PackageLineOrigins`, `diagFormatWithOrigin` and the bridges' `originsByPkg`
 parameters are deleted; the paragraphs below record the design they replaced.
 
-`Lyric.Pipeline.gate` (and `MiddleEndOptions.lineOrigins`, `pipeParseAndErase`'s
-`origins` parameter, `pipeWeave`'s `origins` parameter) thread this table
+In that design `Lyric.Pipeline.gate` (and `MiddleEndOptions.lineOrigins`, `pipeParseAndErase`'s
+`origins` parameter, `pipeWeave`'s `origins` parameter) threaded the table
 through every diagnostic-reporting call already made along the shared
 parse → typecheck → modecheck → elaborate → propagate → derive → mono → weave
-pipeline, so **every phase** benefits automatically — not just parse-phase
+pipeline, so **every phase** benefited — not just parse-phase
 diagnostics. `Lyric.DiagnosticUtil.diagFormatWithOrigin` /
-`diagReportAndAbortInPkgWithOrigins` consult the table when non-empty, falling
+`diagReportAndAbortInPkgWithOrigins` (both deleted) consulted the table when non-empty, falling
 back to the pre-#6282 package-label behaviour otherwise (single-file packages,
 and native project packages — see below).
 
@@ -721,7 +728,8 @@ on the *second* file of a two-file package, each asserting the real file
 **and** line).
 
 **#6824 (closed in D-progress-912) folds in the three surfaces above, plus a
-fourth found in review.** `NativeSourcePackage` now carries a `path: String`
+fourth found in review.** (Historical, see above: the origins tables it
+threaded are deleted.) `NativeSourcePackage` gained a `path: String`
 field and `compileProjectToNativeWithFlags` a trailing
 `originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter,
 resolved the same "real path when known, else bare name" / "origins entry,
@@ -991,15 +999,20 @@ and JVM project-build paths via §9.5's "Shipped design deviates from the
 survey above" note above (a per-merged-line provenance table, not the
 per-file-parse-then-merge-ASTs approach originally recommended) —
 `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion(Diag)` and
-`Jvm.Bridge.compileProjectToJarBundledWithRestored` both take an
-`originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter now,
-consulted by every `Lyric.Pipeline.gate` call along the shared middle end.
+`Jvm.Bridge.compileProjectToJarBundledWithRestored` both took an
+`originsByPkg: List[Lyric.DiagnosticUtil.PackageLineOrigins]` parameter then,
+consulted by every `Lyric.Pipeline.gate` call along the shared middle end
+(historical: docs/70 phase 2a step 3 deleted the line-origin table and those
+parameters; each package now carries its file table, `MiddleEndOptions.filePaths`,
+indexed by `Position.fileId`).
 The native project-build path and codegen-phase (F0xxx) diagnostics on a
 multi-file package were explicitly out of scope for this slice, closed by
 #6824/D-progress-912 (see the note at the end of §9.5): `NativeSourcePackage`
-now carries a real path and `compileProjectToNativeWithFlags` an
-`originsByPkg` parameter, and the MSIL codegen-phase gate now consults the
-same per-package origins table the earlier phases already resolved.
+gained a real path and `compileProjectToNativeWithFlags` an
+`originsByPkg` parameter, and the MSIL codegen-phase gate consulted the
+same per-package origins table the earlier phases already resolved (the
+origins parameters are gone since docs/70 phase 2a step 3; the file table
+indexed by `Position.fileId` serves every phase on every target).
 Slice 4 (MSIL/native path confirmation) is now fully satisfied for
 MSIL, JVM, and native — `compileToNativeWithFlags` takes a `path: in
 String` parameter and threads it into `pipeParseAndErase(source,

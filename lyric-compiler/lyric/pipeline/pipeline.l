@@ -306,13 +306,7 @@ pub func pipeParsePackageCollect(
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = asm.file, diagnostics = diags)
   }
-  var spellsArray = false
-  for src in sources {
-    if Str.contains(src, "array[") {
-      spellsArray = true
-    }
-  }
-  eraseParsed(asm.file, spellsArray, targetName, activeFeatures, declaredFeatures, defines, diags)
+  eraseParsed(asm.file, asm.spellsArray, targetName, activeFeatures, declaredFeatures, defines, diags)
 }
 
 /// `pipeParsePackageCollect` with its diagnostics sent to `sink`, each
@@ -1254,7 +1248,11 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   // this for the aliases its packages import (`canonicalAliasDotNamedAll`).
   val own: List[SourceFile] = newList()
   own.add(mvRes.file)
-  var f = Aliases.rewriteFile(hoistByRefReceiverMethods(canonicalAliasDotNamed(mvRes.file, own)))
+  val arRes = Aliases.rewriteFileReporting(hoistByRefReceiverMethods(canonicalAliasDotNamed(mvRes.file, own)))
+  for d in arRes.diagnostics {
+    diags.add(d)
+  }
+  var f = arRes.file
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
@@ -3165,8 +3163,7 @@ func specMayRender(decl: in FunctionDecl): Bool {
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
     items = items,
-    span = decl.span,
-    files = newList()
+    span = decl.span
   )
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
 }
@@ -5344,8 +5341,7 @@ func lowerShowSpec(
     packageDecl = converted.packageDecl,
     imports = converted.imports,
     items = items,
-    span = converted.span,
-    files = converted.files
+    span = converted.span
   )
 }
 

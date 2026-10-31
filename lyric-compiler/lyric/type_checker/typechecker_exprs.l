@@ -1181,6 +1181,7 @@ func checkUnimportedTypeReceiver(
       if not symbolIsType(sym) {
         return
       }
+      symTableNoteBareUse(tbl, sym, span)
       if sym.originPackage.length == 0 or sym.originPackage == "Std.Core" or sym.originPackage == curPkg {
         return
       }
@@ -1326,6 +1327,7 @@ func reportUnimportedQualifiedPackage(
     )
     return true
   }
+  symTableNoteQualifiedUse(tbl, pkg, member, span, true)
   false
 }
 
@@ -1459,6 +1461,7 @@ func checkQualifiedPackageRef(
     )
     return
   }
+  symTableNoteQualifiedUse(tbl, pkg, member, span, false)
   match symTableTryFindInPackage(tbl, pkg, member) {
     case Some(sym) -> {
       if symbolIsType(sym) and symbolIsPackagePrivateBinding(sym) {
@@ -6803,6 +6806,7 @@ func resolveExprPath(
   }
   match bareSig {
     case Some(sig) -> {
+      symTableNoteBareFuncUse(tbl, sig.originPackage, name, span)
       // #6652: `sigs`'s first-in-wins insertion policy for imported functions
       // (typechecker_checker.l, "Sig-map insertion policy") means a bare
       // function name reaching here can silently resolve to whichever
@@ -6908,6 +6912,7 @@ func resolveExprPath(
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
       checkImportedVisibility(tbl, sym, span, diag)
+      symTableNoteBareUse(tbl, sym, span)
       match sym.kind {
         case DKUnionCase(_, _) -> {
           // A bare constructor reference like `Some` without call args infers as the
@@ -8652,14 +8657,17 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   result
 }
 
-/// The caller's resolution scope, saved by `enterDeclaringScope`.
+/// The caller's resolution scope, saved by `enterDeclaringScope`: its
+/// package, that package's imports and the file entered (docs/70 §4.1).
 record SavedScope {
   pkg: String
   imports: List[String]
+  file: Int
 }
 
 // Switches `tbl` to the scope of the package that declares `sym` (#6689),
-// returning the caller's scope for `restoreScope`.
+// and to the file of that package `sym` is declared in, returning the
+// caller's scope for `restoreScope`.
 func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
   val savedImports: List[String] = newList()
   var sii = 0
@@ -8668,12 +8676,15 @@ func enterDeclaringScope(tbl: in SymbolTable, sym: in Symbol): SavedScope {
     sii = sii + 1
   }
   val savedPkg = if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+  val savedFile = symTableCurrentFile(tbl)
   symTableSetScope(tbl, sym.originPackage, symTablePackageImportsOf(tbl, sym.originPackage))
-  SavedScope(pkg = savedPkg, imports = savedImports)
+  symTableEnterSpanFile(tbl, sym.declSpan)
+  SavedScope(pkg = savedPkg, imports = savedImports, file = savedFile)
 }
 
 // `enterDeclaringScope` for a symbol declared in another package; for one
-// of the current package (or with no package context) the scope is kept.
+// of the current package (or with no package context) the package scope is
+// kept and the file `sym` is declared in is entered.
 func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedScope {
   val cur = symTableScopePkg(tbl)
   if sym.originPackage.length > 0 and sym.originPackage != cur {
@@ -8685,11 +8696,14 @@ func enterDeclaringScopeIfForeign(tbl: in SymbolTable, sym: in Symbol): SavedSco
     savedImports.add(tbl.scopeImports[i])
     i = i + 1
   }
-  SavedScope(pkg = cur, imports = savedImports)
+  val savedFile = symTableCurrentFile(tbl)
+  symTableEnterSpanFile(tbl, sym.declSpan)
+  SavedScope(pkg = cur, imports = savedImports, file = savedFile)
 }
 
 func restoreScope(tbl: in SymbolTable, saved: in SavedScope): Unit {
   symTableSetScope(tbl, saved.pkg, saved.imports)
+  symTableEnterFile(tbl, saved.file)
 }
 
 // #6739: shared missing-required-field check, used by both the generic and
@@ -10054,7 +10068,9 @@ func unionCaseFieldTypes(
     savedImports.add(tbl.scopeImports[sii])
     sii = sii + 1
   }
+  val savedFile = symTableCurrentFile(tbl)
   symTableSetScope(tbl, originPackage, symTablePackageImportsOf(tbl, originPackage))
+  symTableEnterSpanFile(tbl, uc.span)
   val result: List[Type] = newList()
   var i = 0
   while i < uc.fields.count {
@@ -10067,6 +10083,7 @@ func unionCaseFieldTypes(
   }
   val restorePkg = if savedPkg.count > 0 { savedPkg[0] } else { "" }
   symTableSetScope(tbl, restorePkg, savedImports)
+  symTableEnterFile(tbl, savedFile)
   result
 }
 
@@ -17187,6 +17204,10 @@ func inferExprCore(
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
+      match directSig {
+        case Some(ds) -> noteBareCalleeFunc(tbl, fn, ds.originPackage)
+        case None -> ()
+      }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
       // A4: method-space resolution for a member callee — consulted only when
@@ -17613,6 +17634,7 @@ func inferExprCore(
         }
         case None -> match unionCaseSymbolOf(tbl, fn) {
           case Some(caseSym) -> {
+            noteBareCalleeSym(tbl, fn, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
@@ -17621,6 +17643,7 @@ func inferExprCore(
           }
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> {
+              noteBareCalleeSym(tbl, fn, ctorSym)
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
@@ -21942,6 +21965,23 @@ func reportAmbiguousDefaultCall(
       span
     )
   )
+}
+
+// W0032 for a bare callee `fn` (`f(...)`) bound to a function of `origin`
+// that its file sees only through a sibling file's import (docs/70 §4.1).
+func noteBareCalleeFunc(tbl: in SymbolTable, fn: in Expr, origin: in String): Unit {
+  match fn.kind {
+    case EPath(path) -> if path.segments.count == 1 { symTableNoteBareFuncUse(tbl, origin, path.segments[0], fn.span) }
+    case _ -> ()
+  }
+}
+
+// `noteBareCalleeFunc` for a bare constructor or case callee bound to `sym`.
+func noteBareCalleeSym(tbl: in SymbolTable, fn: in Expr, sym: in Symbol): Unit {
+  match fn.kind {
+    case EPath(path) -> if path.segments.count == 1 { symTableNoteBareUse(tbl, sym, fn.span) }
+    case _ -> ()
+  }
 }
 
 func findDirectSig(

@@ -5,6 +5,7 @@ package Lyric.TypeChecker
 import Std.Core
 import Std.Collections
 import Lyric.Lexer
+import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Local binding — a single val/var/let or parameter in scope.

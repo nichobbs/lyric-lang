@@ -1406,3 +1406,118 @@ test "multi-file project package (dotnet): a file that declares another package 
     "expected b.l's own path and line 3 on the B0013 diagnostic, got:\n" + result.stderr
   )
 }
+
+// docs/70 §4.1, phase 2a step 4: a file using a name only its sibling file
+// imports still builds, with W0032 naming the sibling and the import to add.
+func siblingImportFirstFile(): String {
+  "package Mf\n" + "import Std.String as Str\n" + "\n" + "func main(): Unit {\n" + "  println(Str.toUpper(shout()))\n" +
+    "}\n"
+}
+
+func siblingImportSecondFile(): String {
+  "package Mf\n" + "\n" + "pub func shout(): String {\n" + "  Str.toLower(\"Hi\")\n" + "}\n"
+}
+
+func checkSiblingImportWarning(target: in String, outName: in String): Unit {
+  val dir = freshTempDir("mf-w0032-" + target)
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = writeTwoFileProject(dir, siblingImportFirstFile(), siblingImportSecondFile())
+  val aPath = Path.join(Path.join(dir, "src"), "a.l")
+  val bPath = Path.join(Path.join(dir, "src"), "b.l")
+  val result = buildManifest(mfPath, target, Path.join(dir, outName))
+  val output = result.stdout + result.stderr
+  assertTrue(result.exitCode == 0, "a name a sibling imports still resolves in warning mode, got:\n" + output)
+  assertTrue(Str.contains(output, bPath + ": warning[W0032] 4:"), "expected W0032 at b.l's line 4, got:\n" + output)
+  assertTrue(
+    Str.contains(output, "is visible here only through `import Std.String as Str` in " + aPath),
+    "expected the warning to name a.l and its import, got:\n" + output
+  )
+}
+
+test "multi-file project package (dotnet): a name only the sibling file imports is W0032 naming that file and import" {
+  checkSiblingImportWarning("dotnet", "out.dll")
+}
+
+test "multi-file project package (jvm): a name only the sibling file imports is W0032 naming that file and import" {
+  checkSiblingImportWarning("jvm", "out.jar")
+}
+
+// Two packages of two files each, `Mf` (src/) listed before `Other`
+// (other/), their files' sources in `files` in that order.
+func writeTwoPackageProject(dir: in String, files: in List[String]): String {
+  val names: List[String] = newList()
+  names.add("src/a.l")
+  names.add("src/b.l")
+  names.add("other/c.l")
+  names.add("other/d.l")
+  val subs: List[String] = newList()
+  subs.add("src")
+  subs.add("other")
+  for sub in subs {
+    match File.createDir(Path.join(dir, sub)) {
+      case Ok(_) -> ()
+      case Err(e) -> panic("cannot create " + sub + ": " + IOError.message(e))
+    }
+  }
+  var i = 0
+  while i < names.count {
+    match File.writeText(Path.join(dir, names[i]), files[i]) {
+      case Ok(_) -> ()
+      case Err(e) -> panic("cannot write " + names[i] + ": " + IOError.message(e))
+    }
+    i = i + 1
+  }
+  val manifest = "[package]\n" + "name = \"Mf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" + "name = \"Mf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"Mf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\"Other\" = [\"other/c.l\", \"other/d.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  mfPath
+}
+
+// The number of times `needle` occurs in `hay`.
+func occurrences(hay: in String, needle: in String): Int {
+  Str.split(hay, needle).length - 1
+}
+
+// #8660 follow-up: a project build stops at, and reports, the first package
+// whose files do not assemble; the next package's assembly errors are never
+// reached.
+func checkFirstAssemblyFailureStops(target: in String, outName: in String): Unit {
+  val dir = freshTempDir("mf-first-asm-" + target)
+  defer {
+    cleanup(dir)
+  }
+  val files: List[String] = newList()
+  files.add("package Mf\n\nfunc main(): Unit {\n  println(\"x\")\n}\n")
+  files.add("//! wrong package\n\npackage Elsewhere\nfunc g(): Int { 1 }\n")
+  files.add("package Other\n\npub func h(): Int { 2 }\n")
+  files.add("// no package line\npub func k(): Int {\n  3\n}\n")
+  val mfPath = writeTwoPackageProject(dir, files)
+  val bPath = Path.join(Path.join(dir, "src"), "b.l")
+  val dPath = Path.join(Path.join(dir, "other"), "d.l")
+  val result = buildManifest(mfPath, target, Path.join(dir, outName))
+  val output = result.stdout + result.stderr
+  assertTrue(result.exitCode != 0, "a package whose files do not assemble fails the build")
+  assertTrue(Str.contains(output, bPath + ": error[B0013] 3:"), "expected Mf's B0013 against b.l, got:\n" + output)
+  assertTrue(occurrences(output, "error[") == 1, "the build stops at Mf: one error, got:\n" + output)
+  assertTrue(not Str.contains(output, dPath), "Other's P0020 is never reached, got:\n" + output)
+}
+
+test "project build (dotnet): the build stops at the first package whose files do not assemble" {
+  checkFirstAssemblyFailureStops("dotnet", "out.dll")
+}
+
+test "project build (jvm): the build stops at the first package whose files do not assemble" {
+  checkFirstAssemblyFailureStops("jvm", "out.jar")
+}

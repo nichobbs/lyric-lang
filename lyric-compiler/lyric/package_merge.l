@@ -73,6 +73,9 @@ record HeaderPiece {
 pub record PackageAssembly {
   file: SourceFile
   diagnostics: List[MergeDiagnostic]
+  /// Whether some file spells an `array[` type (D167), scanned once per
+  /// file as it is parsed; the build lowers `array[N, T]` only then.
+  spellsArray: Bool
 }
 
 /// The files of package `packageName` (`sources`, in the package's order,
@@ -108,10 +111,14 @@ pub func assemblePackageFiles(
   val headers: List[FileHeader] = newList()
   val bases = fileOffsetBases(sources)
   var packageDecl: Option[PackageDecl] = None
+  var spellsArray = false
   var i = 0
   while i < sources.count {
     val path = if i < paths.count { paths[i] } else { "" }
     val text = normaliseLineEndings(sources[i])
+    if not spellsArray and Str.contains(text, "array[") {
+      spellsArray = true
+    }
     val fileBase = bases[i]
     val pr = parseFile(text, i, fileBase)
     var usable = true
@@ -237,7 +244,8 @@ pub func assemblePackageFiles(
       items = items,
       span = firstSpan
     ),
-    diagnostics = diags
+    diagnostics = diags,
+    spellsArray = spellsArray
   )
 }
 

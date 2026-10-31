@@ -24,7 +24,13 @@ The compiler builds such a package from each file's own parse, so each file has 
 
 - Every file parses by itself, and its errors are reported against that file's path and line.
 - Every file declares the package its manifest entry names. A file that declares another package is `B0013`, even when it is the package's only file; a file with no `package` line is `P0020`. A file holding only comments adds nothing. (A single file you build on its own is named by its own `package` declaration.)
-- The package's imports are the imports of all its files together, so one alias names one package: `import Std.Core as A` in one file and `import Std.Math as A` in another is `B0012`. One name bound by renamed selective imports to two different declarations (`import Std.Math.{absInt as f}` in one file, `{maxPairInt as f}` in another) is the type checker's `T0148`.
+- Imports belong to the file that writes them. A file sees the names its own imports bring in, plus every declaration of its package; an alias or a renamed import applies to its own file. If a file uses a name that only a sibling file imports, the build still works for now but warns (`W0032`), naming the sibling and the import to copy:
+
+  ```
+  src/report.l: warning[W0032] 12:15: 'joinList' is visible here only through `import Std.String as Str` in src/format.l; add `import Std.String as Str` to this file (a file's imports are its own; this becomes an error in a later release)
+  ```
+
+  Add the import and the warning goes away; a later release makes it an error. Until then the files of a package still share one set of names, so an alias two files bind to different packages (`import Std.Core as A` in one, `import Std.Math as A` in another) is `B0012`, and a renamed import whose new name another file's import also brings in is `T0148`.
 - File-level annotations such as `@runtime_checked`, `@proof_required`, `@io` or `@test_module` describe the whole package. Write them on one file or on several; files that write them must agree. Two different verification levels, or one annotation written with different arguments, is `B0014`; `@pure` in one file and `@io` in another is `Y0009`. `@test_module`, `@bench_module` and `@contract_source` change how the whole package is compiled, so every file carries them or none does (`B0014`).
 - `@cfg` is the exception: a file-level `@cfg` gates only its own file, for the build's features and target (`@cfg(target = "jvm")` keeps a file out of a dotnet build). A file it turns off adds no declarations or imports; its other file-level annotations still describe the package.
 - A name declared in two files is a duplicate (`T0001`), reported against the second file.
