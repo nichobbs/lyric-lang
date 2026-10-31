@@ -13,6 +13,15 @@
 //!   curl -sk --http2 -w '%{http_version}:%{http_code}' https://127.0.0.1:8443/hello
 //!   # -> 2:200
 //!
+//! Beyond the plain `/hello` body it serves three routes that probe the h2
+//! send scheduler (#6107) with the independent client: `/slow` answers after
+//! two seconds, `/fast` at once (a `curl --parallel` pair on one connection
+//! must see `/fast` finish first), `/stream` is a chunked response whose
+//! second chunk is held back (the first must reach the client early), and
+//! `/endless` streams until the client resets the stream, printing
+//! `DOTNET-H2-SMOKE-STREAM-ABORTED` when the write fails. Each request is
+//! handled on its own task.
+//!
 //! The fixture CA / server leaf (SAN localhost + 127.0.0.1) is the same
 //! self-signed pair used by `http_server_dotnet_tests.l` / `tcp_host_tls_tests.l`,
 //! valid 2026-07-18..2036-07-15.
@@ -22,6 +31,9 @@ import Std.Core
 import Std.Console
 import Std.Tls
 import Std.HttpServer
+import Std.Encoding
+import Std.Collections
+import Std.String
 
 val serverCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -83,6 +95,58 @@ func serverIdentity(): Identity {
   }
 }
 
+extern type Task = "System.Threading.Tasks.Task"
+
+@externStatic
+@externTarget("System.Threading.Tasks.Task.Run")
+func taskRun(work: in () -> Unit): Task = ()
+
+@externStatic
+@externTarget("System.Threading.Thread.Sleep")
+func threadSleep(ms: in Int): Unit = ()
+
+func streamTwoChunks(ctx: in HttpContext): Unit {
+  val headers: Map[String, String] = newMap()
+  val s = beginChunkedResponse(ctx, 200, "text/plain; charset=utf-8", headers)
+  val _1 = streamWriteChunk(s, encodeUtf8("first\n"), 0, 6)
+  threadSleep(1500)
+  val _2 = streamWriteChunk(s, encodeUtf8("second\n"), 0, 7)
+  endChunkedResponse(ctx, s)
+}
+
+func streamUntilAborted(ctx: in HttpContext): Unit {
+  val headers: Map[String, String] = newMap()
+  val s = beginChunkedResponse(ctx, 200, "application/octet-stream", headers)
+  val chunk = encodeUtf8(Std.String.repeat("0123456789", 1600))
+  var go = true
+  while go {
+    match streamWriteChunk(s, chunk, 0, 16000) {
+      case Ok(_) -> ()
+      case Err(_) -> {
+        println("DOTNET-H2-SMOKE-STREAM-ABORTED")
+        go = false
+      }
+    }
+  }
+  endChunkedResponse(ctx, s)
+}
+
+func handle(ctx: in HttpContext): Unit {
+  val path = requestPath(ctx)
+  if path == "/slow" {
+    threadSleep(2000)
+    respondText(ctx, 200, "slow")
+  } else if path == "/fast" {
+    respondText(ctx, 200, "fast")
+  } else if path == "/stream" {
+    streamTwoChunks(ctx)
+  } else if path == "/endless" {
+    streamUntilAborted(ctx)
+  } else {
+    respondText(ctx, 200, "hello h2 dotnet")
+  }
+}
+
 pub func main(): Int {
   val cfg = TlsServerConfig(identity = serverIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = false)
   match startListenerTls("127.0.0.1", 8443, cfg) {
@@ -98,7 +162,7 @@ pub func main(): Int {
       var i = 0
       while i < 100000 {
         val ctx = nextContext(listener)
-        respondText(ctx, 200, "hello h2 dotnet")
+        val _ = taskRun({ -> handle(ctx) })
         i = i + 1
       }
       stopListener(listener)

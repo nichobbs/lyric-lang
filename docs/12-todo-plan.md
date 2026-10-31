@@ -201,7 +201,7 @@ left is verification and release work, tracked in `docs/36`:
 - **FFI shapes:** `Span<T>`, `params T[]`, extension methods, `inout` struct
   receivers, value-type property set, out/ref null-to-Option convention.
 - **CST type-expression multi-line layout** in the formatter (unverified).
-- **TLS/HTTP2:** native h2 (#6808), dotnet h2 send pump (#6107), native TLS
+- **TLS/HTTP2:** native h2 (#6808), dotnet h2 send pump (#6107, done in D296), native TLS
   (#5890, #6106); epic #5874.
 - **ISO standardisation** and conformance programme (Phase 6+).
 

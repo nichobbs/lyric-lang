@@ -93,13 +93,35 @@
 //! Received-window credit is returned via `WINDOW_UPDATE` as DATA is consumed, so
 //! a large legal body flows past the initial 64 KiB window. If the response
 //! headers cannot be HPACK-encoded, the stream is reset with `RST_STREAM`
-//! (`INTERNAL_ERROR`) rather than left hanging. Per-stream serialization is strict
-//! (one in-flight request/response per connection at a time); multiplexed
-//! concurrent streams are processed in sequence (head-of-line at the server), and
-//! a response body larger than the peer's advertised send window is delivered as
-//! the peer grants `WINDOW_UPDATE` — the interleaved multi-stream send-pump and
-//! incremental (non-buffered) h2 chunked streaming are tracked as a follow-up
-//! (#6107), not implemented here.
+//! (`INTERNAL_ERROR`) rather than left hanging.
+//!
+//! ### h2 send scheduler (#6107)
+//!
+//! Each h2 connection has three parties, and the FSM state (HPACK encoder, flow
+//! windows, stream table) has exactly one owner, the **connection task**:
+//!
+//!   * a **reader task** that only moves socket bytes into an inbound queue
+//!     (bounded by `h2InboundCredits`) and signals the connection task;
+//!   * **handlers** (the puller side) that never touch the wire for h2: a
+//!     `respond*` call publishes the whole response, `beginChunkedResponse`
+//!     publishes the head, `streamWriteChunk` queues a chunk (blocking on a
+//!     per-stream credit of `h2StreamChunkCredits` chunks, which is the
+//!     backpressure against a slow peer) and `endChunkedResponse` ends the
+//!     stream, each followed by a wake signal;
+//!   * the **connection task**, which blocks on that one signal and then runs a
+//!     scheduling cycle: feed inbound bytes to the FSM, dispatch any completed
+//!     request without waiting for its response, and write at most one frame
+//!     per in-flight stream per pass (HEADERS first, then DATA bounded by the
+//!     connection and stream send windows), repeating until every stream is
+//!     idle or blocked on the peer's window. A peer `WINDOW_UPDATE` arrives as
+//!     input and the next cycle resumes the blocked streams.
+//!
+//! So a slow handler on one stream no longer delays the others, DATA frames of
+//! concurrent streams interleave, a response of any size is delivered as the
+//! peer grants window (no bounded pump that gives up), and chunked responses
+//! reach the wire per chunk. A stream the peer resets, or a connection that
+//! closes, aborts the response: a handler blocked on credit wakes and its next
+//! `streamWriteChunk` returns `Err`.
 @axiom("System.Threading.Tasks.Task.Run, System.Collections.Concurrent.ConcurrentQueue, and System.Threading.SemaphoreSlim operations conform to their documented .NET contracts")
 @io
 package Std.HttpServer
@@ -163,8 +185,8 @@ func taskRun(work: in () -> Unit): Task = ()
 // blocking-I/O starvation deadlock. Raising the pool's minimum thread count so
 // on-demand threads are created without the growth throttle keeps the pool from
 // starving. (A fully async transport would remove the per-connection blocking
-// thread entirely; that is a larger rework than this slice, tracked with the
-// other h2 transport follow-ups in #6107.)
+// threads entirely; an h2 connection holds two, its reader and its connection
+// task.)
 extern type ThreadPool = "System.Threading.ThreadPool"
 
 @externStatic
@@ -367,28 +389,73 @@ pub record ConnHandoff {
   var taken: Bool = false
 }
 
-// The response mailbox for one HTTP/2 request stream. The puller thread fills
-// `status` / `contentType` / `body` / `extra` via a `respond*` (or chunked)
-// helper and releases the context's `done` semaphore; the owning connection
-// task then HPACK-encodes the response headers and frames the body as
-// flow-controlled DATA on `streamId`. Kept free of any `H2Connection` reference
-// so the FSM state stays touched only by the connection task (no cross-thread
-// mutation of the shared hpack encoder / flow windows).
+// Per-connection state shared between the connection task and the handler
+// threads that answer its streams. `outbox` carries a notice per response
+// change (headers ready, chunk queued, body ended) and `wake` is the one signal
+// the connection task blocks on, shared with the reader task so the task wakes
+// for input or for handler output alike. `closed` is set once at teardown.
+pub record H2Link {
+  var closed: Bool = false
+  outbox: ConcurrentQueue[H2Notice]
+  wake: Semaphore
+}
+
+pub record H2Notice {
+  streamId: Int
+}
+
+pub record H2Chunk {
+  bytes: slice[Byte]
+}
+
+record H2Inbound {
+  bytes: slice[Byte]
+}
+
+// The response mailbox for one HTTP/2 request stream. The handler thread fills
+// `status` / `contentType` / `extra` and queues body slices on `chunks`, then
+// publishes the change with `h2Notify`; the owning connection task alone
+// HPACK-encodes the headers and frames the body as flow-controlled DATA on
+// `streamId`, interleaved with the other streams. Kept free of any
+// `H2Connection` reference so the FSM state stays touched only by the
+// connection task (no cross-thread mutation of the shared hpack encoder / flow
+// windows). A buffered response (`respond*`) sets `chunked = false` and
+// `bodyLength` and ends in one step; a chunked response sets `chunked = true`
+// at `beginChunkedResponse` and queues chunks until `endChunkedResponse`.
+// `credit` bounds how many chunks may be queued ahead of the connection task.
+// `aborted` is set when the peer resets the stream or the connection closes.
 pub record H2Exchange {
   streamId: Int
+  link: H2Link
+  chunks: ConcurrentQueue[H2Chunk]
+  credit: Semaphore
   var status: Int
   var contentType: String
-  // The response body as the slices the handler wrote, in order, framed as
-  // DATA directly at send time: no per-byte copy into a list and no copy
-  // back out into one array (#7269). `bodyLength` is their total length.
-  bodyChunks: List[slice[Byte]]
-  var bodyLength: Int
   extra: Map[String, String]
+  var bodyLength: Int
+  var chunked: Bool
+  var started: Bool
+  var ended: Bool
+  var aborted: Bool
+}
+
+// The connection task's send state for a stream whose response has begun:
+// `cur` is the slice being framed (from `curOff`), `next` a slice already taken
+// off the queue by the END_STREAM look-ahead.
+record H2Out {
+  exchange: H2Exchange
+  var headersSent: Bool
+  var hasCur: Bool
+  var cur: slice[Byte]
+  var curOff: Int
+  var hasNext: Bool
+  var next: slice[Byte]
+  var finished: Bool
 }
 
 func addH2BodyChunk(exchange: in H2Exchange, bytes: in slice[Byte]): Unit {
   if bytes.length > 0 {
-    exchange.bodyChunks.add(bytes)
+    cqEnqueue(exchange.chunks, H2Chunk(bytes = bytes))
     exchange.bodyLength = exchange.bodyLength + bytes.length
   }
 }
@@ -420,6 +487,17 @@ record H2ConnState {
   queue: ConcurrentQueue[HttpContext]
   available: Semaphore
   var open: Bool
+  link: H2Link
+  // Socket bytes the reader task has read, awaiting the connection task, and
+  // the credit that bounds how far the reader may run ahead.
+  inbound: ConcurrentQueue[H2Inbound]
+  inCredit: Semaphore
+  // Responses in flight, keyed by stream id; touched only by the connection
+  // task. `exchanges` holds every dispatched stream's mailbox, `outs` those
+  // whose response has begun, `order` the latter in arrival order.
+  exchanges: Map[Int, H2Exchange]
+  outs: Map[Int, H2Out]
+  var order: List[Int]
   // The same `EngineLimits` the HTTP/1.1 path enforces (`maxBodyBytes` in
   // particular): an h2 request body is capped identically, at parity.
   limits: EngineLimits
@@ -452,10 +530,11 @@ record H2ConnState {
 pub record HttpChunkedStream {
   conn: Conn
   done: Semaphore
-  // `Some` for a chunked response over HTTP/2: each `streamWriteChunk` appends
-  // to the exchange's buffered body and `endChunkedResponse` flushes it as one
-  // h2 response. `None` for HTTP/1.1, where chunks are written to the wire
-  // incrementally. (Incremental h2 DATA streaming is the #6107 follow-up.)
+  // `Some` for a chunked response over HTTP/2: each `streamWriteChunk` queues
+  // the chunk for the connection task, which frames it as DATA as soon as the
+  // peer's flow-control window allows, and `endChunkedResponse` ends the
+  // stream. `None` for HTTP/1.1, where chunks are written to the wire
+  // incrementally.
   h2: Option[H2Exchange]
 }
 
@@ -927,9 +1006,8 @@ func tlsAcceptLoop(
 // ordinary `HttpContext` onto the same pull queue the HTTP/1.1 path uses; the
 // puller's `respond*` helper fills the stream's `H2Exchange` mailbox and
 // releases `done`, then the connection task serializes the response back as
-// HEADERS + flow-controlled DATA frames. Request/response is strictly
-// serialized per connection (the task blocks on `done` between dispatch and
-// send); concurrent client streams are handled in sequence (#6107).
+// HEADERS + flow-controlled DATA frames by the connection task's send
+// scheduler, which interleaves concurrent streams (#6107, see the module header).
 // =====================================================================
 func minIntH2(a: in Int, b: in Int): Int {
   if a < b {
@@ -1146,114 +1224,6 @@ func h2Feed(state: in H2ConnState, bytes: in slice[Byte], work: in List[H2.H2Eve
   }
 }
 
-// Bounded read pump to obtain send-flow window for a stream mid-response: reads
-// more bytes and feeds them so a peer `WINDOW_UPDATE` is applied. Any request
-// events read here are appended to `work` (never dropped) and dispatched after
-// the current response finishes.
-func pumpForWindow(state: in H2ConnState, streamId: in Int, work: in List[H2.H2Event]): Unit {
-  var tries = 0
-  while H2.maxSendableOnStream(state.h2, streamId) <= 0 and tries < 256 and not H2.isFailed(state.h2) {
-    match hostRead(state.conn, 65536) {
-      case Err(_) -> {
-        return
-      }
-      case Ok(bytes) -> {
-        if bytes.length == 0 {
-          return
-        }
-        h2Feed(state, bytes, work)
-      }
-    }
-    tries = tries + 1
-  }
-}
-
-// Frame `body` as flow-controlled DATA on `streamId`, splitting into frames no
-// larger than the peer's max frame size and no larger than the currently
-// available send window (pumping for more window when exhausted). END_STREAM is
-// set on the final frame.
-func sendH2Body(
-  state: in H2ConnState,
-  streamId: in Int,
-  body: in slice[Byte],
-  endStream: in Bool,
-  work: in List[H2.H2Event],
-): Bool {
-  var off = 0
-  while off < body.length and not H2.isFailed(state.h2) {
-    var sendable = H2.maxSendableOnStream(state.h2, streamId)
-    if sendable <= 0 {
-      pumpForWindow(state, streamId, work)
-      sendable = H2.maxSendableOnStream(state.h2, streamId)
-      if sendable <= 0 {
-        // No window granted after a bounded pump (peer never sent WINDOW_UPDATE
-        // and did not close): stop. The connection's next read returns EOF/err
-        // and the loop tears it down — a loud incomplete response, never a
-        // silent truncation the peer can't detect.
-        return false
-      }
-    }
-    val frameCap = minIntH2(H2.peerMaxFrameSize(state.h2), sendable)
-    val chunkLen = minIntH2(frameCap, body.length - off)
-    val isLast = endStream and off + chunkLen == body.length
-    // A slice that fits one frame is framed as-is, without a sub-slice copy.
-    val chunk = if off == 0 and chunkLen == body.length { body } else { body.slice(off, off + chunkLen) }
-    match H2.sendData(state.h2, streamId, chunk, isLast) {
-      case Ok(bytes) -> {
-        val _ = hostWrite(state.conn, bytes)
-        off = off + chunkLen
-      }
-      case Err(_) -> {
-        return false
-      }
-    }
-  }
-  off == body.length
-}
-
-// Serialize the response the puller placed in `exchange` back onto the wire:
-// HPACK-encode the response headers (`:status` + lowercased fields, RFC 9113
-// §8.2 / §8.3.2), then frame the body as flow-controlled DATA.
-func sendH2Response(state: in H2ConnState, exchange: in H2Exchange, work: in List[H2.H2Event]): Unit {
-  if H2.isFailed(state.h2) {
-    return
-  }
-  val streamId = exchange.streamId
-  val headers: List[HeaderField] = newList()
-  headers.add(HeaderField(name = ":status", value = toString(exchange.status)))
-  if exchange.contentType.length > 0 and H2.isH2ResponseFieldSafe("content-type", exchange.contentType) {
-    headers.add(HeaderField(name = "content-type", value = exchange.contentType))
-  }
-  headers.add(HeaderField(name = "content-length", value = toString(exchange.bodyLength)))
-  appendH2ExtraHeaders(headers, exchange.extra)
-  val endOnHeaders = exchange.bodyLength == 0
-  match H2.encodeResponseHeaders(state.h2, streamId, headers, endOnHeaders) {
-    case Err(_) -> {
-      // The response headers could not be HPACK-encoded: rather than silently
-      // dropping the response and leaving the stream hanging, reset it with
-      // RST_STREAM(INTERNAL_ERROR) (RFC 9113 section 6.4) so the client sees a
-      // definite stream failure.
-      val rst = H2.sendRstStream(state.h2, streamId, H2InternalError)
-      if rst.length > 0 {
-        val _ = hostWrite(state.conn, rst);
-        ()
-      }
-    }
-    case Ok(headBytes) -> {
-      val _ = hostWrite(state.conn, headBytes)
-      // Each written slice is framed in turn; END_STREAM rides the final frame
-      // of the last one. A slice that could not be sent in full stops the rest.
-      var i = 0
-      var sending = true
-      while sending and i < exchange.bodyChunks.count {
-        val isLastChunk = i == exchange.bodyChunks.count - 1
-        sending = sendH2Body(state, streamId, exchange.bodyChunks[i], isLastChunk, work)
-        i = i + 1
-      }
-    }
-  }
-}
-
 // Copy caller-supplied response headers into the h2 header list: lowercase each
 // name (RFC 9113 §8.2 requires lowercase field names), drop connection-specific
 // and already-set content-* headers, and skip response-unsafe values.
@@ -1280,22 +1250,360 @@ func appendH2ExtraHeaders(headers: in List[HeaderField], extra: in Map[String, S
   }
 }
 
+// Size of the per-stream chunk credit: how many chunks a handler may have
+// queued (written but not yet taken by the connection task) on one stream
+// before `streamWriteChunk` blocks. This is the backpressure that keeps a fast
+// handler streaming to a slow peer from buffering without bound.
+val h2StreamChunkCredits: Int = 32
+
+// How many socket reads the reader task may have queued ahead of the
+// connection task. Bounds the memory a peer can force by sending faster than
+// the connection task processes; the peer's own flow control bounds request
+// bodies, this bounds control-frame floods.
+val h2InboundCredits: Int = 8
+
+// Wake the connection task for `x`: its response state changed (headers ready,
+// a chunk queued, or the body ended). The notice is enqueued before the wake
+// signal so the woken task always finds it. If the connection has already torn
+// down (checked after the enqueue, so a teardown that ran in between is seen),
+// the exchange is aborted here so no handler ever blocks on a dead connection.
+func h2Notify(x: in H2Exchange): Unit {
+  cqEnqueue(x.link.outbox, H2Notice(streamId = x.streamId))
+  val _ = semRelease(x.link.wake)
+  if x.link.closed {
+    h2Abort(x)
+  }
+}
+
+// Mark a stream's response dead (peer reset it, or the connection closed) and
+// wake a handler that may be blocked waiting for chunk credit; it observes
+// `aborted` and returns an error instead of writing.
+func h2Abort(x: in H2Exchange): Unit {
+  x.aborted = true
+  val _ = semRelease(x.credit)
+  val _2 = semRelease(x.credit);
+  ()
+}
+
+func h2ReleaseCredit(x: in H2Exchange): Unit {
+  val _ = semRelease(x.credit);
+  ()
+}
+
+// Forget a stream's server-side response state once its response has been fully
+// framed (or its stream died).
+func h2FinishStream(state: in H2ConnState, streamId: in Int): Unit {
+  val _ = state.outs.remove(streamId)
+  val _2 = state.exchanges.remove(streamId);
+  ()
+}
+
+// The peer reset the stream (or the FSM failed it): abort the handler's
+// response and drop the stream's send state.
+func h2DropStream(state: in H2ConnState, streamId: in Int): Unit {
+  match mapGet(state.exchanges, streamId) {
+    case Some(x) -> h2Abort(x)
+    case None -> ()
+  }
+  h2FinishStream(state, streamId)
+}
+
+// Connection teardown: refuse further responses and abort every in-flight
+// exchange. `closed` is set before the registered exchanges are aborted, and a
+// handler re-checks it after publishing (`h2Notify`), so no exchange is missed.
+func h2Teardown(state: in H2ConnState): Unit {
+  state.link.closed = true
+  val ids = mapKeys(state.exchanges).toArray()
+  var i = 0
+  while i < ids.length {
+    match mapGet(state.exchanges, ids[i]) {
+      case Some(x) -> h2Abort(x)
+      case None -> ()
+    }
+    i = i + 1
+  }
+  // Let a reader task parked on its credit wake up and observe the closed socket.
+  val _ = semRelease(state.inCredit);
+  ()
+}
+
+func h2WriteOrClose(state: in H2ConnState, bytes: in slice[Byte]): Unit {
+  if bytes.length > 0 {
+    match hostWrite(state.conn, bytes) {
+      case Ok(_) -> ()
+      case Err(_) -> {
+        state.open = false
+      }
+    }
+  }
+}
+
+// Send the response HEADERS for `so`, or reset the stream if they cannot be
+// encoded.
+func h2SendHeaders(state: in H2ConnState, so: in H2Out): Unit {
+  val x = so.exchange
+  val headers: List[HeaderField] = newList()
+  headers.add(HeaderField(name = ":status", value = toString(x.status)))
+  if x.contentType.length > 0 and H2.isH2ResponseFieldSafe("content-type", x.contentType) {
+    headers.add(HeaderField(name = "content-type", value = x.contentType))
+  }
+  // A chunked response has no length up front.
+  if not x.chunked {
+    headers.add(HeaderField(name = "content-length", value = toString(x.bodyLength)))
+  }
+  appendH2ExtraHeaders(headers, x.extra)
+  val endOnHeaders = (not x.chunked) and x.bodyLength == 0
+  match H2.encodeResponseHeaders(state.h2, x.streamId, headers, endOnHeaders) {
+    case Err(_) -> {
+      // The response headers could not be HPACK-encoded: reset the stream with
+      // RST_STREAM(INTERNAL_ERROR) (RFC 9113 section 6.4) so the client sees a
+      // definite stream failure rather than a hang.
+      h2WriteOrClose(state, H2.sendRstStream(state.h2, x.streamId, H2InternalError))
+      h2Abort(x)
+      so.finished = true
+    }
+    case Ok(headBytes) -> {
+      h2WriteOrClose(state, headBytes)
+      so.headersSent = true
+      if endOnHeaders {
+        so.finished = true
+      }
+    }
+  }
+}
+
+// Advance one stream by at most one frame. Returns true when it made progress
+// (wrote HEADERS or a DATA frame, or took a chunk); false when it is idle
+// (nothing queued) or blocked on the peer's flow-control window. The connection
+// task is the only caller, so the HPACK encoder and the flow windows are never
+// touched concurrently with the reader (which only moves bytes).
+func h2StepOut(state: in H2ConnState, so: in H2Out): Bool {
+  val x = so.exchange
+  if x.aborted {
+    so.finished = true
+    return false
+  }
+  if not so.headersSent {
+    if not x.started {
+      return false
+    }
+    h2SendHeaders(state, so)
+    return true
+  }
+  if not so.hasCur {
+    // `ended` is read before the dequeue: the handler enqueues every chunk
+    // before it sets `ended`, so a miss with `ended` already true is final.
+    val ended = x.ended
+    var c: H2Chunk = default()
+    if cqTryDequeue(x.chunks, c) {
+      so.cur = c.bytes
+      so.curOff = 0
+      so.hasCur = true
+      h2ReleaseCredit(x)
+    } else if ended {
+      match H2.sendData(state.h2, x.streamId, emptyBytes(), true) {
+        case Ok(bytes) -> h2WriteOrClose(state, bytes)
+        case Err(_) -> ()
+      }
+      so.finished = true
+      return true
+    } else {
+      return false
+    }
+  }
+  val sendable = H2.maxSendableOnStream(state.h2, x.streamId)
+  if sendable <= 0 {
+    return false
+  }
+  val remaining = so.cur.length - so.curOff
+  val frameLen = minIntH2(minIntH2(H2.peerMaxFrameSize(state.h2), sendable), remaining)
+  val exhausts = frameLen == remaining
+  var isLast = false
+  if exhausts {
+    // Look ahead so END_STREAM rides the final DATA frame when the body is
+    // already complete, as it always has for a buffered response.
+    val ended = x.ended
+    var nxt: H2Chunk = default()
+    if cqTryDequeue(x.chunks, nxt) {
+      so.hasNext = true
+      so.next = nxt.bytes
+      h2ReleaseCredit(x)
+    } else {
+      isLast = ended
+    }
+  }
+  // A slice that fits one frame is framed as-is, without a sub-slice copy.
+  val chunk = if so.curOff == 0 and frameLen == so.cur.length {
+    so.cur
+  } else {
+    so.cur.slice(so.curOff, so.curOff + frameLen)
+  }
+  match H2.sendData(state.h2, x.streamId, chunk, isLast) {
+    case Ok(bytes) -> h2WriteOrClose(state, bytes)
+    case Err(_) -> {
+      // The stream is no longer writable (reset or closed under us): stop.
+      h2Abort(x)
+      so.finished = true
+      return true
+    }
+  }
+  if exhausts {
+    if so.hasNext {
+      so.cur = so.next
+      so.curOff = 0
+      so.hasNext = false
+    } else {
+      so.hasCur = false
+      so.cur = emptyBytes()
+    }
+  } else {
+    so.curOff = so.curOff + frameLen
+  }
+  if isLast {
+    so.finished = true
+  }
+  true
+}
+
+// One scheduling pass over every stream that has a response in flight, in
+// arrival order, each advancing by at most one frame: this is what interleaves
+// the DATA of concurrent streams instead of finishing one before starting the
+// next. Returns whether any stream progressed.
+func h2SendPass(state: in H2ConnState): Bool {
+  var progress = false
+  val ids = state.order.toArray()
+  val keep: List[Int] = newList()
+  var i = 0
+  while i < ids.length {
+    val id = ids[i]
+    match mapGet(state.outs, id) {
+      case None -> ()
+      case Some(so) -> {
+        if state.open and not H2.isFailed(state.h2) {
+          if h2StepOut(state, so) {
+            progress = true
+          }
+        }
+        if so.finished {
+          h2FinishStream(state, id)
+        } else {
+          keep.add(id)
+        }
+      }
+    }
+    i = i + 1
+  }
+  state.order = keep
+  progress
+}
+
+// Register the streams handlers have published a response for.
+func h2DrainOutbox(state: in H2ConnState): Unit {
+  var n: H2Notice = default()
+  while cqTryDequeue(state.link.outbox, n) {
+    match mapGet(state.exchanges, n.streamId) {
+      case None -> ()
+      case Some(x) -> {
+        match mapGet(state.outs, n.streamId) {
+          case Some(_) -> ()
+          case None -> {
+            state.outs.add(
+              n.streamId,
+              H2Out(
+                exchange = x,
+                headersSent = false,
+                hasCur = false,
+                cur = emptyBytes(),
+                curOff = 0,
+                hasNext = false,
+                next = emptyBytes(),
+                finished = false
+              )
+            )
+            state.order.add(n.streamId)
+          }
+        }
+      }
+    }
+  }
+}
+
+// Feed everything the reader task has queued into the connection FSM. A
+// zero-length entry is the reader's end-of-input marker.
+func h2DrainInbound(state: in H2ConnState): Unit {
+  var ib: H2Inbound = default()
+  while state.open and cqTryDequeue(state.inbound, ib) {
+    val _ = semRelease(state.inCredit)
+    if ib.bytes.length == 0 {
+      state.open = false
+    } else {
+      processH2Batch(state, ib.bytes)
+    }
+  }
+}
+
+// One wake-up of the connection task: absorb input, register new responses, and
+// write frames until every stream is idle or blocked on the peer's window.
+func h2Cycle(state: in H2ConnState): Unit {
+  var again = true
+  while again and state.open and not H2.isFailed(state.h2) {
+    h2DrainInbound(state)
+    h2DrainOutbox(state)
+    again = h2SendPass(state)
+  }
+}
+
+// The per-connection reader: moves socket bytes into the inbound queue and
+// nothing else, so the connection task can wait on one signal for both input and
+// handler output. Each read is copied (the transport reuses its read buffer).
+func h2ReadLoop(conn: in Conn, inbound: in ConcurrentQueue[H2Inbound], wake: in Semaphore, inCredit: in Semaphore): Unit {
+  var go = true
+  while go {
+    semWait(inCredit)
+    match hostRead(conn, 65536) {
+      case Err(_) -> {
+        go = false
+      }
+      case Ok(bytes) -> {
+        if bytes.length == 0 {
+          go = false
+        } else {
+          cqEnqueue(inbound, H2Inbound(bytes = bytes.slice(0, bytes.length)))
+          val _ = semRelease(wake);
+          ()
+        }
+      }
+    }
+  }
+  cqEnqueue(inbound, H2Inbound(bytes = emptyBytes()))
+  val _ = semRelease(wake);
+  ()
+}
+
 // Dispatch a fully-received request stream: build an `HttpContext` (h2 mailbox
-// attached), hand it to the pull queue, block until the puller responds, then
-// serialize the response and forget the stream.
-func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2.H2Event]): Unit {
+// attached) and hand it to the pull queue. The connection task does not wait
+// for the response: the handler's `respond*` / chunked calls publish it, and
+// the scheduler frames it, so a slow handler never delays other streams.
+func dispatchH2Stream(state: in H2ConnState, streamId: in Int): Unit {
   match mapGet(state.accums, streamId) {
     case None -> ()
     case Some(accum) -> {
       val line = extractH2Request(accum.headers)
       val exchange = H2Exchange(
         streamId = streamId,
+        link = state.link,
+        chunks = newConcurrentQueue(),
+        credit = newSemaphore(h2StreamChunkCredits),
         status = 0,
         contentType = "",
-        bodyChunks = newList(),
+        extra = newMap(),
         bodyLength = 0,
-        extra = newMap()
+        chunked = false,
+        started = false,
+        ended = false,
+        aborted = false
       )
+      state.exchanges.add(streamId, exchange)
       val someH2: Option[H2Exchange] = Some(value = exchange)
       val done: Semaphore = newSemaphore(0)
       val ctx = HttpContext(
@@ -1311,22 +1619,15 @@ func dispatchH2Stream(state: in H2ConnState, streamId: in Int, work: in List[H2.
         handoff = ConnHandoff(),
         trailingInput = false
       )
-      cqEnqueue(state.queue, ctx)
-      val _ = semRelease(state.available)
-      semWait(done)
-      sendH2Response(state, exchange, work)
       removeAccum(state, streamId)
+      cqEnqueue(state.queue, ctx)
+      val _ = semRelease(state.available);
+      ()
     }
   }
 }
 
-func onH2Headers(
-  state: in H2ConnState,
-  streamId: in Int,
-  headers: in List[HeaderField],
-  endStream: in Bool,
-  work: in List[H2.H2Event],
-): Unit {
+func onH2Headers(state: in H2ConnState, streamId: in Int, headers: in List[HeaderField], endStream: in Bool): Unit {
   if isRejectedStream(state, streamId) {
     // Terminal rejection (over `maxBodyBytes`, #6144): a trailer HEADERS block
     // must NOT re-dispatch the already-413'd request, and acting on it must not
@@ -1345,7 +1646,7 @@ func onH2Headers(
   // A second HEADERS on an open stream is trailers (§8.1); the request line and
   // fields are already captured, so only its END_STREAM matters.
   if endStream {
-    dispatchH2Stream(state, streamId, work)
+    dispatchH2Stream(state, streamId)
   }
 }
 
@@ -1407,13 +1708,7 @@ func sendH2Reject413(state: in H2ConnState, streamId: in Int): Unit {
   }
 }
 
-func onH2Data(
-  state: in H2ConnState,
-  streamId: in Int,
-  data: in slice[Byte],
-  endStream: in Bool,
-  work: in List[H2.H2Event],
-): Unit {
+func onH2Data(state: in H2ConnState, streamId: in Int, data: in slice[Byte], endStream: in Bool): Unit {
   if isRejectedStream(state, streamId) {
     // Dropped bytes still give back connection-level window so the other
     // streams on the connection never stall.
@@ -1445,11 +1740,11 @@ func onH2Data(
   // the stream: no further DATA can arrive on it).
   topUpReceiveWindows(state, streamId, not endStream)
   if endStream {
-    dispatchH2Stream(state, streamId, work)
+    dispatchH2Stream(state, streamId)
   }
 }
 
-func processH2Event(state: in H2ConnState, ev: in H2.H2Event, work: in List[H2.H2Event]): Unit {
+func processH2Event(state: in H2ConnState, ev: in H2.H2Event): Unit {
   match ev {
     case H2NeedMore -> ()
     case H2SettingsReceived(_) -> ()
@@ -1461,18 +1756,20 @@ func processH2Event(state: in H2ConnState, ev: in H2.H2Event, work: in List[H2.H
     case H2PeerReset(streamId, _) -> {
       removeAccum(state, streamId)
       forgetRejectedStream(state, streamId)
+      h2DropStream(state, streamId)
     }
     case H2StreamErr(streamId, _, _) -> {
       removeAccum(state, streamId)
       forgetRejectedStream(state, streamId)
+      h2DropStream(state, streamId)
     }
     case H2ConnError(_, _) -> {
       // The FSM already queued a GOAWAY in the feed's outbound bytes and poisoned
       // the connection; stop reading.
       state.open = false
     }
-    case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream, work)
-    case H2RequestData(streamId, data, endStream, _) -> onH2Data(state, streamId, data, endStream, work)
+    case H2RequestHeaders(streamId, headers, endStream) -> onH2Headers(state, streamId, headers, endStream)
+    case H2RequestData(streamId, data, endStream, _) -> onH2Data(state, streamId, data, endStream)
   }
 }
 
@@ -1481,7 +1778,7 @@ func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
   h2Feed(state, bytes, work)
   var i = 0
   while i < work.count and state.open and not H2.isFailed(state.h2) {
-    processH2Event(state, work[i], work)
+    processH2Event(state, work[i])
     i = i + 1
   }
   // Once per batch, mirroring `H2.feed`'s own `pruneClosedStreams` cadence
@@ -1492,8 +1789,12 @@ func processH2Batch(state: in H2ConnState, bytes: in slice[Byte]): Unit {
   }
 }
 
-// The per-connection h2 loop: send the server's initial SETTINGS, then read →
-// feed → process until the connection closes or fails.
+// The per-connection h2 connection task: send the server's initial SETTINGS,
+// start the reader task, then loop on the wake signal, running one scheduling
+// cycle (`h2Cycle`) per wake until the connection closes or fails. This task
+// alone feeds the FSM, encodes HPACK and writes frames; the reader only moves
+// socket bytes and handlers only publish response values, so the FSM state has
+// a single owner.
 func processH2Connection(
   conn: in Conn,
   queue: in ConcurrentQueue[HttpContext],
@@ -1511,6 +1812,10 @@ func processH2Connection(
   }
   val h2 = H2.newServerConnection(H2.h2DefaultServerSettings())
   val _ = hostWrite(conn, H2.serverInitialFrame(h2))
+  val wake = newSemaphore(0)
+  val inCredit = newSemaphore(h2InboundCredits)
+  val inbound: ConcurrentQueue[H2Inbound] = newConcurrentQueue()
+  val link = H2Link(closed = false, outbox = newConcurrentQueue(), wake = wake)
   val state = H2ConnState(
     conn = conn,
     h2 = h2,
@@ -1518,25 +1823,25 @@ func processH2Connection(
     queue = queue,
     available = available,
     open = true,
+    link = link,
+    inbound = inbound,
+    inCredit = inCredit,
+    exchanges = newMap(),
+    outs = newMap(),
+    order = newList(),
     limits = limits,
     rejectedStreams = newMap()
   )
+  val _reader = taskRun({ -> h2ReadLoop(conn, inbound, wake, inCredit) })
+  // Teardown runs however the loop ends (peer close, FSM failure, a throw), so
+  // no handler stays blocked on a connection that is gone.
+  defer {
+    h2Teardown(state)
+  }
   while state.open and not H2.isFailed(state.h2) {
-    match hostRead(conn, 65536) {
-      case Err(_) -> {
-        state.open = false
-      }
-      case Ok(bytes) -> {
-        if bytes.length == 0 {
-          state.open = false
-        } else {
-          processH2Batch(state, bytes)
-        }
-      }
-    }
+    semWait(wake)
+    h2Cycle(state)
   };
-  // `hostClose(conn)` + `semRelease(connLimit)` run via the `defer` above so
-  // they still fire if the initial write or `processH2Batch` throws (#6221).
   ()
 }
 
@@ -1881,6 +2186,10 @@ func respondBytesWith(
       // this call returns, so it must not alias a buffer the handler may reuse.
       addH2BodyChunk(exchange, body.slice(0, body.length))
       mapPutAll(exchange.extra, extra)
+      exchange.chunked = false
+      exchange.ended = true
+      exchange.started = true
+      h2Notify(exchange)
       signalDone(c)
     }
     case None -> {
@@ -1975,14 +2284,16 @@ pub func beginChunkedResponse(
   match c.h2 {
     case Some(exchange) -> {
       // HTTP/2 has no chunked transfer-encoding; the response is a HEADERS
-      // frame followed by DATA frames. This slice buffers the chunks into the
-      // exchange body and flushes them as one h2 response at `endChunkedResponse`
-      // (incremental h2 DATA streaming is the #6107 follow-up). Record the
-      // status/content-type/extra now; the body accumulates via
-      // `streamWriteChunk`.
+      // frame followed by DATA frames. Publish the head now so the connection
+      // task sends HEADERS immediately; each `streamWriteChunk` then queues a
+      // chunk that is framed as DATA as soon as the peer's window allows, and
+      // `endChunkedResponse` ends the stream.
       exchange.status = status
       exchange.contentType = contentType
       mapPutAll(exchange.extra, headers)
+      exchange.chunked = true
+      exchange.started = true
+      h2Notify(exchange)
       val someH2: Option[H2Exchange] = Some(value = exchange)
       HttpChunkedStream(conn = c.conn, done = c.done, h2 = someH2)
     }
@@ -2012,9 +2323,18 @@ pub func streamWriteChunk(
   val payload = bytes.slice(offset, offset + count)
   match s.h2 {
     case Some(exchange) -> {
-      // HTTP/2: keep the chunk (already a fresh copy); it is framed as DATA at
-      // endChunkedResponse.
+      // HTTP/2: queue the chunk (already a fresh copy) for the connection task.
+      // Blocks while `h2StreamChunkCredits` chunks are already waiting (a slow
+      // peer), and fails once the stream was reset or the connection closed.
+      if exchange.aborted {
+        return Err(error = "the HTTP/2 stream was closed")
+      }
+      semWait(exchange.credit)
+      if exchange.aborted {
+        return Err(error = "the HTTP/2 stream was closed")
+      }
       addH2BodyChunk(exchange, payload)
+      h2Notify(exchange)
       Ok(value = ())
     }
     case None -> match hostWrite(s.conn, serializeChunk(payload)) {
@@ -2029,10 +2349,11 @@ pub func streamWriteChunk(
 /// must not crash the accept loop).
 pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
   match s.h2 {
-    case Some(_) -> {
-      // HTTP/2: the body is buffered in the exchange; releasing `done` hands off
-      // to the connection task, which serializes HEADERS + DATA (END_STREAM on
-      // the final DATA frame).
+    case Some(exchange) -> {
+      // HTTP/2: mark the body complete so the connection task ends the stream
+      // (END_STREAM on the final DATA frame) once the queued chunks are sent.
+      exchange.ended = true
+      h2Notify(exchange)
       val _ = semRelease(s.done);
       ()
     }

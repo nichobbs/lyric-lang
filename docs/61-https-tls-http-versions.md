@@ -388,12 +388,18 @@ FSM on `hostAlpn` — `"h2"` drives `Std.HttpEngine.H2Conn`, otherwise HTTP/1.1.
 An h2 request stream is dispatched as an ordinary `HttpContext` onto the same
 pull surface and its response is HPACK-encoded + framed as flow-controlled DATA
 through the H2Conn send path, so `lyric-web` and every server consumer serve h2
-with no source change. All socket I/O and h2 FSM mutation stay on the single
+with no source change. All h2 FSM mutation and frame writing stay on the single
 per-connection task (race-free); the puller only fills a per-stream response
-mailbox. v1 serializes streams per connection and delivers response bodies within
-the peer's granted flow-control window (the interleaved multi-stream send-pump +
-incremental h2 chunked streaming are tracked as #6107). JVM h2 is Undertow's own
-path (phase 2.2, #5881); native is phase 5 (#5890).
+mailbox. **Send scheduler (D296, #6107):** a per-connection reader task moves
+socket bytes to the connection task, which wakes on input or on a handler
+publishing response state, dispatches completed requests without waiting for
+their responses, and writes at most one frame per in-flight stream per pass
+(HEADERS, then DATA bounded by the connection and stream send windows). Streams
+therefore interleave, a slow handler no longer delays other streams, a response
+of any size is delivered as the peer grants window, and chunked responses reach
+the wire per chunk (`streamWriteChunk` blocks on a 32-chunk per-stream credit,
+and returns `Err` once the peer resets the stream or the connection closes). JVM
+h2 is Undertow's own path (phase 2.2, #5881); native is phase 5 (#5890).
 
 ### 6.5 JVM convergence criteria (decision 6)
 
@@ -811,10 +817,13 @@ items marked ∥ are independent and can proceed in parallel.
     own .NET-backed HTTPS client and the pure-Lyric h2 server verifying each
     other — plus a `curl --http2` CI smoke (`dotnet_h2_smoke.l`) as the
     independent nghttp2 cross-check (`%{http_version}` 2, `%{http_code}` 200).
-    v1 bounded characteristics (per-connection stream serialization; response
-    body bounded by the peer's granted flow-control window; buffered — not
-    incrementally streamed — h2 chunked responses) are tracked as #6107. TLS-only
-    per decision 7._
+    The v1 bounded characteristics (per-connection stream serialization; response
+    body bounded by the peer's granted flow-control window; buffered h2 chunked
+    responses) were removed by the send scheduler (D296, #6107), verified by
+    `http_server_dotnet_tests.l` (slow handler vs fast stream, concurrent large
+    bodies, 3.2 MB chunked backpressure) and the curl scheduler smoke
+    (`scripts/ci/dotnet-h2-scheduler-smoke.sh`: concurrency, incremental chunks,
+    reset abort). TLS-only per decision 7._
 
 **Phase 5 — native (opens when native HTTP work starts)**
 15. `lyric_tls_*` OpenSSL seam in `lyric-rt` + socket transport + client;
