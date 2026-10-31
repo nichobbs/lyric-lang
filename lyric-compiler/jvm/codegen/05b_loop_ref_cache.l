@@ -20,7 +20,6 @@
 //! second path to the place, an aliasing write or a closure would show up,
 //! and the rest can raise an exception, which would skip the write back and
 //! lose a write made before a panic (D183).
-
 package Jvm.Codegen
 
 import Std.Core
@@ -243,10 +242,18 @@ func tryAppendCachedLoop(
               }
               case None -> {
                 match loopInsns[j] {
-                  case LIconst(_) -> { j = j + 1 }
-                  case LIand -> { j = j + 1 }
-                  case LCheckcast(_) -> { j = j + 1 }
-                  case _ -> { scanning = false }
+                  case LIconst(_) -> {
+                    j = j + 1
+                  }
+                  case LIand -> {
+                    j = j + 1
+                  }
+                  case LCheckcast(_) -> {
+                    j = j + 1
+                  }
+                  case _ -> {
+                    scanning = false
+                  }
                 }
               }
             }
@@ -273,10 +280,7 @@ func tryAppendCachedLoop(
           i = j + 1
         } else if i + 2 < n and loopCacheIsRefCall(loopInsns[i + 2], "set") {
           // aload ref; <load value slot>; invokeinterface set
-          val valueSlot = match loopCacheLoadSlot(loopInsns[i + 1]) {
-            case Some(v) -> v
-            case None -> -1
-          }
+          val valueSlot = match loopCacheLoadSlot(loopInsns[i + 1]) { case Some(v) -> v; case None -> -1 }
           if valueSlot < 0 or not loopCacheIsBinding(ctx, valueSlot, s) {
             return false
           }
@@ -297,7 +301,9 @@ func tryAppendCachedLoop(
           i = i + 1
         }
       }
-      case _ -> { i = i + 1 }
+      case _ -> {
+        i = i + 1
+      }
     }
   }
   if refSlot < 0 {

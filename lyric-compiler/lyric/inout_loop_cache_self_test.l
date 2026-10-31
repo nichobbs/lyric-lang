@@ -7,11 +7,13 @@
 //! exception.  The cases pin that the result is the same as reading the place
 //! at every use: plain counting loops over a local and over fields, a `break`,
 //! a nested loop, and loops that reach the
-//! place through a field, a second argument or a closure.
+//! place through a field, or a second argument.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/inout_loop_cache_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/inout_loop_cache_self_test.l
-//!   lyric test --target native lyric-compiler/lyric/inout_loop_cache_self_test.l
+//!
+//! The closure shape is in `inout_aliasing_closure_self_test.l` (native
+//! closures capture values, #7891).
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
 @test_module
@@ -121,15 +123,6 @@ func twoPlaces(x: inout Int, y: inout Int, n: in Int): Unit {
   }
 }
 
-func closureInLoop(x: inout Int, k: in () -> Unit, n: in Int): Unit {
-  var i = 0
-  while i < n {
-    x = x + 1
-    k()
-    i = i + 1
-  }
-}
-
 test "a counting loop over a local" {
   var x = 5
   spin(x, 1000)
@@ -202,10 +195,4 @@ test "two places are read and written in place" {
   var z = 1
   twoPlaces(z, z, 3)
   assertEqualInt(z, 22, "one place passed twice: (z + 1) * 2 three times")
-}
-
-test "a closure the loop calls sees and makes writes to the place" {
-  var x = 0
-  closureInLoop(x, { -> x = x + 100 }, 3)
-  assertEqualInt(x, 303, "x")
 }

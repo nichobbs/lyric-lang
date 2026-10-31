@@ -168,6 +168,7 @@ for t in \
   lyric-compiler/lyric/protected_byref_self_test.l \
   lyric-compiler/lyric/inout_aliasing_self_test.l \
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l \
+  lyric-compiler/lyric/inout_loop_cache_self_test.l \
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/literal_arg_shape_self_test.l \
   lyric-compiler/lyric/inout_array_element_try_self_test.l \

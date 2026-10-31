@@ -264,6 +264,7 @@ The `benchmarks/` directory in the repository contains these ready-to-run suites
 | `bench_string.l` | Repeated concatenation, `toString`, `.length`, `Str.contains`, `Str.replace` |
 | `bench_json.l` | JSON decoding |
 | `bench_vec3.l` | `Vec3` addition, subtraction, scaling and dot product; an inline array of positions |
+| `bench_inout.l` | Hot loops in an `inout` callee called with a local and with record fields (`--target jvm`) |
 
 Run them all as a baseline when you start performance work:
 
