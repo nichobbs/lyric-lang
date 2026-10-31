@@ -2480,6 +2480,27 @@ pub func typeCheckSourceForFeatures(
 }
 
 func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
+  emitProjectInProcessTo(req, Pipe.printDiagnostics())
+}
+
+/// `emitProject` for `--target dotnet` with the build's diagnostics collected
+/// into `located` instead of printed, each attributed to its file, as
+/// `typeCheckProject` reports them: for a caller that decides what to show,
+/// such as `lyric test`, whose linked attempt at an entry is discarded when it
+/// fails (#8667).  The result's own `diagnostics` (a bridge failure without
+/// located diagnostics, a contained codegen panic) are returned as
+/// `emitProject` returns them.  Other targets are refused with a B0001.
+pub func emitProjectCollecting(req: in EmitProjectRequest, located: in List[DiagUtil.LocatedDiagnostic]): EmitResult {
+  match req.target {
+    case Dotnet -> emitProjectInProcessTo(req, Pipe.collectDiagnostics(located))
+    case _ -> failResult(
+      "Emitter.emitProjectCollecting supports --target dotnet only; use Emitter.emitProject for " +
+        compileTargetName(req.target)
+    )
+  }
+}
+
+func emitProjectInProcessTo(req: in EmitProjectRequest, sink: in Pipe.DiagSink): EmitResult {
   // #6610: each payload carries its files' on-disk paths, so every
   // diagnostic names the file it is in (#6282).
   val payloads = msilPayloads(req.packages, req.packageFeatures)
@@ -2498,8 +2519,11 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   val depTemplatePkgs = msilPayloads(req.depTemplateSrcs, req.packageFeatures)
 
   val panicDiags: List[Diagnostic] = newList()
+  // Codegen's own diagnostics reach `sink` with the rest; this copy the
+  // bridge also fills on a codegen failure is not reported again.
+  val codegenDiags: List[Diagnostic] = newList()
   val ok = try {
-    MsilBridge.compileProjectToMsilWithRestoredAndVersion(
+    MsilBridge.compileProjectToMsilWithRestoredAndVersionDiag(
       payloads,
       req.assemblyName,
       req.outputPath,
@@ -2511,10 +2535,16 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
       req.packageVersion,
       depTemplatePkgs,
       req.defines,
-      req.contractsEnabled
+      req.contractsEnabled,
+      codegenDiags,
+      sink
     )
   } catch Bug as b {
-    panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    if sink.collect {
+      sink.located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = msilBridgePanicDiagnosticQuiet(b.message)))
+    } else {
+      panicDiags.add(msilBridgePanicDiagnostic(b.message))
+    }
     false
   }
   if ok {
@@ -2681,18 +2711,23 @@ func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
 // message with no embedded location (e.g. T0115, or an uncoded panic
 // wrapped under T0120).
 func msilBridgePanicDiagnostic(message: in String): Diagnostic {
+  val d = msilBridgePanicDiagnosticQuiet(message)
+  Console.error(d.message)
+  d
+}
+
+// `msilBridgePanicDiagnostic` without printing it, for a build whose
+// diagnostics are collected (`emitProjectCollecting`).
+func msilBridgePanicDiagnosticQuiet(message: in String): Diagnostic {
   val sp = spanForPanicMessage(message)
   if message.startsWith("error[T0") {
-    Console.error(message)
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "T0120" }
       case None -> "T0120"
     }
     errorDiagnostic(code, message, sp)
   } else {
-    val text = "error[T0120]: MSIL codegen failed: " + message
-    Console.error(text)
-    errorDiagnostic("T0120", text, sp)
+    errorDiagnostic("T0120", "error[T0120]: MSIL codegen failed: " + message, sp)
   }
 }
 

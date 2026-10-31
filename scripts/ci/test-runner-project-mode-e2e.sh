@@ -346,6 +346,7 @@ if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
 elif [ "$(count '== building the [project.packages] library once')" != 1 ]; then fail "$label" "library not built exactly once"
 elif [ ! -f "$proj/.lyric-test/LyricTestLibrary.dll" ]; then fail "$label" "no shared library assembly"
 elif [ "$(count 'note: ')" != 2 ]; then fail "$label" "expected a fallback note for each non-literal pub val entry"
+elif grep -q 'error\[' "$out"; then fail "$label" "a discarded linked attempt's errors were printed"
 elif ! grep -q "^== summary: 7 passed, 0 failed$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 

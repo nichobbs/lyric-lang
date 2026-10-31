@@ -1142,3 +1142,96 @@ test "jvm: distinct key-tier prefixes prevent a package name from aliasing anoth
       "for a CROSS-tier collision -- EnumTierX and EnumTierX.Y never register the SAME tier twice"
   )
 }
+
+// ─── #8648/#8667: a bare case of a RESTORED enum, colliding with another
+// restored enum registered first ─────────────────────────────────────────────
+// `CollX.Mood` (`Calm`, `Error`: `Error` is 1) is registered before
+// `CollY.Sev` (`Error`, `Warning`: `Error` is 0), the order a bundle meets the
+// stdlib's enums before a restored dependency's.  The app imports only
+// `CollY`, so its bare `Error` names `Sev.Error` through the import:
+//   - as a call argument: `registerRestoredFunc` records `nameOf`'s parameter
+//     enum type, as an in-bundle function does;
+//   - constructing a restored record's enum field, matched on that field (no
+//     scrutinee enum type is known for it), and compared: the expression and
+//     the pattern both resolve the bare case by scope
+//     (`resolveBareEnumCaseOrdinalByScope`), the imported package's enum before
+//     registration order.
+// Before #8648 the call argument read `Mood.Error`'s ordinal (1), and after
+// its first half the construction and the match disagreed.
+func collXSource(): String {
+  "package CollX\n" + "\n" + "pub enum Mood {\n" + "  case Calm\n" + "  case Error\n" + "}\n"
+}
+
+func collYSource(): String {
+  "package CollY\n" + "\n" + "pub enum Sev {\n" + "  case Error\n" + "  case Warning\n" + "}\n" + "\n" +
+    "pub record Diag {\n" +
+    "  severity: Sev\n" +
+    "}\n" +
+    "\n" +
+    "pub func nameOf(s: in Sev): String {\n" +
+    "  match s {\n" +
+    "    case Error -> \"error\"\n" +
+    "    case Warning -> \"warning\"\n" +
+    "  }\n" +
+    "}\n"
+}
+
+func collAppSource(): String {
+  "package CollApp\n" + "\n" + "import CollY\n" + "\n" + "func main(): Int {\n" + "  println(nameOf(Error))\n" +
+    "  val d = Diag(severity = Error)\n" +
+    "  val matched = match d.severity {\n" +
+    "    case Error -> \"error\"\n" +
+    "    case _ -> \"other\"\n" +
+    "  }\n" +
+    "  println(matched)\n" +
+    "  println(toString(d.severity == Error))\n" +
+    "  0\n" +
+    "}\n"
+}
+
+test "dotnet: a bare case of a restored enum resolves through the import, not registration order (#8648)" {
+  val artX = buildDupRestoredArtifact("collx", collXSource(), "CollX")
+  val artY = buildDupRestoredArtifact("colly", collYSource(), "CollY")
+  val appDir = freshTempDir("coll-app")
+  val appDllPath = Path.join(appDir, "CollApp.dll")
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("CollApp", collAppSource()))
+  val noStdlib: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val artifacts: List[SynthesisedArtifact] = newList()
+  artifacts.add(artX)
+  artifacts.add(artY)
+  val ok = compileProjectToMsilWithRestored(
+    packages,
+    "CollApp",
+    appDllPath,
+    noStdlib,
+    noFeatures,
+    noFeatures,
+    artifacts
+  )
+  val dirX = Path.dirname(artX.dllPath)
+  val dirY = Path.dirname(artY.dllPath)
+  if not ok {
+    cleanup(appDir)
+    cleanup(dirX)
+    cleanup(dirY)
+    panic("coll: compileProjectToMsilWithRestored (consumer) returned false")
+  }
+  copyFileDup(artX.dllPath, Path.join(appDir, Path.basename(artX.dllPath)))
+  copyFileDup(artY.dllPath, Path.join(appDir, Path.basename(artY.dllPath)))
+  writeRuntimeConfig(appDllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(appDllPath)
+  val result = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(appDir)
+  cleanup(dirX)
+  cleanup(dirY)
+  assertEqualInt(result.exitCode, 0, "coll: exit 0 expected (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "error\nerror\ntrue",
+    "coll: the call argument, the field match and the comparison all read Sev.Error"
+  )
+}

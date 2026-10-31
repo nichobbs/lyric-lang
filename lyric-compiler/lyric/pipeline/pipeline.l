@@ -183,6 +183,10 @@ pub record MiddleEndOptions {
   /// function (Y0003) or a protected type's `entry` (Y0008), nor hold
   /// shared mutable state in a module-level `val` (Y0007).
   ioForbiddenReason: String = ""
+  /// Where `pipeCheckAndMono` reports its diagnostics: printed by default, or
+  /// collected for a caller that decides what to show (`lyric test`'s linked
+  /// attempt, #8667).
+  sink: DiagSink = printDiagnostics()
   /// Whether the file is checked for `--target native`, the one target
   /// that lowers the FFI intrinsics of docs/01 §11.6 (`NativePtr[T]`,
   /// `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`); elsewhere they are
@@ -1968,10 +1972,7 @@ pub func pipeCheckAndMono(
   monoRecordDecls: in List[RecordDecl],
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
-  val front = match pipeCheckFront(file0, importedPkgs, opts, printDiagnostics()) {
-    case Some(f) -> f
-    case None -> return None
-  }
+  val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
   val valueSites = front.valueSites
   val checked = front.checked
@@ -2016,7 +2017,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.propagateErrWidenings,
     tcRes.symbols.typeArgCalleeSites
   )
-  if gate(opts.pkgLabel, opts.filePaths, propRes.diagnostics) {
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, propRes.diagnostics) {
     return None
   }
 
@@ -2079,7 +2080,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.lambdaParamTypeSites,
     noSpecSites
   )
-  if gate(opts.pkgLabel, opts.filePaths, monoRes0.diagnostics) {
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, monoRes0.diagnostics) {
     return None
   }
   // The dot-named calls in another package's generic bodies that are
@@ -2174,7 +2175,7 @@ pub func pipeCheckAndMono(
     Some(value = tcRes.symbols),
     specArrays
   )
-  if gate(opts.pkgLabel, opts.filePaths, recheckDiags) {
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, recheckDiags) {
     return None
   }
   val monoRes = monoFileWithLambdaTypes(
@@ -2189,7 +2190,7 @@ pub func pipeCheckAndMono(
     tcRes.symbols.lambdaParamTypeSites,
     specSites
   )
-  if gate(opts.pkgLabel, opts.filePaths, monoRes.diagnostics) {
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, monoRes.diagnostics) {
     return None
   }
   // A specialisation is lowered in the consuming file, so whether its
@@ -4616,7 +4617,7 @@ func finishValueRecords(
     diags,
     protectedOnly
   )
-  if gate(opts.pkgLabel, opts.filePaths, diags) {
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, diags) {
     return None
   }
   Some(value = lowered)
@@ -4975,6 +4976,7 @@ pub func pipeWeave(
   typeArgCallees: in Map[String, Bool],
   contractsEnabled: in Bool = true,
   wovenGenerics: in List[FunctionDecl] = newList(),
+  sink: in DiagSink = printDiagnostics(),
 ): Option[SourceFile] {
   // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
   val effectiveContractsEnabled = if ContractElaborator.isProofRequired(file.fileAnnotations) {
@@ -4983,13 +4985,13 @@ pub func pipeWeave(
     contractsEnabled
   }
   val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, effectiveContractsEnabled)
-  if gate(pkgLabel, files, weaveRes.diagnostics) {
+  if gateTo(sink, pkgLabel, files, weaveRes.diagnostics) {
     return None
   }
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
-  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files) {
+  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files, sink) {
     case Some(f) -> f
     case None -> return None
   }
@@ -5027,6 +5029,7 @@ func specialiseWovenContracts(
   extraRecordDecls: in List[RecordDecl],
   pkgLabel: in String,
   files: in List[String],
+  sink: in DiagSink,
 ): Option[SourceFile] {
   if generics.count == 0 or not fileHasWovenWrapper(woven) {
     return Some(value = woven)
@@ -5050,7 +5053,7 @@ func specialiseWovenContracts(
     noLambdaSites,
     noSpecSites
   )
-  if gate(pkgLabel, files, res.diagnostics) {
+  if gateTo(sink, pkgLabel, files, res.diagnostics) {
     return None
   }
   // A specialisation the first run already made has the same name and arity
