@@ -146,6 +146,8 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LFadd -> true
     case LFsub -> true
     case LFmul -> true
+    // Floating-point division and remainder do not trap (they yield NaN or
+    // an infinity), unlike the integer forms left out above.
     case LFdiv -> true
     case LFrem -> true
     case LFneg -> true
@@ -181,6 +183,7 @@ func loopCacheSafeInsn(i: in LInsn): Bool {
     case LD2i -> true
     case LD2l -> true
     case LD2f -> true
+    // Cannot trap: a type test never throws.
     case LInstanceof(_) -> true
     case _ -> false
   }
@@ -224,6 +227,7 @@ func tryAppendCachedLoop(
   var refSlot = -1
   val refresh: List[LInsn] = newList()
   val flush: List[LInsn] = newList()
+  var flushValueSlot = -1
   var i = 0
   while i < n {
     match loopInsns[i] {
@@ -288,7 +292,11 @@ func tryAppendCachedLoop(
             return false
           }
           refSlot = s
+          // Every `get` and `set` in the body is dropped, and the binding
+          // check above ties each to the one reference slot, so the first
+          // sequence of each kind stands for all of them.
           if flush.count == 0 {
+            flushValueSlot = valueSlot
             flush.add(loopInsns[i])
             flush.add(loopInsns[i + 1])
             flush.add(loopInsns[i + 2])
@@ -351,6 +359,15 @@ func tryAppendCachedLoop(
   }
   if not exitReached or not loopCacheHasLabel(labels, loopL) {
     return false
+  }
+  // A loop that writes the place without reading it still needs the place's
+  // current value in the slot: the slot was last read at the function's entry,
+  // and the flush after the loop writes it back even if the loop wrote nothing.
+  if flush.count > 0 and refresh.count == 0 {
+    val elemTy = match mapGet(ctx.refParamElemType, flushValueSlot) { case Some(t) -> t; case None -> JInt }
+    refresh.add(LAload(slot = refSlot))
+    emitRefGet(ctx, refresh, elemTy)
+    emitStore(refresh, flushValueSlot, elemTy)
   }
   var e = 0
   while e < refresh.count {

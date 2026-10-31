@@ -81,6 +81,17 @@ func writeOnly(x: out Int, n: in Int): Unit {
   }
 }
 
+func aliasThenWrite(x: out Int, c: in Counters, n: in Int): Unit {
+  c.a = 5
+  var i = 0
+  while i < n {
+    if i == 100 {
+      x = 1
+    }
+    i = i + 1
+  }
+}
+
 func spinLong(x: inout Long, n: in Int): Unit {
   var i = 0
   while i < n {
@@ -195,4 +206,14 @@ test "two places are read and written in place" {
   var z = 1
   twoPlaces(z, z, 3)
   assertEqualInt(z, 22, "one place passed twice: (z + 1) * 2 three times")
+}
+
+test "a write-only loop does not write back a stale value over an earlier alias write" {
+  val c = Counters(a = 0, b = 0)
+  aliasThenWrite(c.a, c, 0)
+  assertEqualInt(c.a, 5, "no iteration")
+  aliasThenWrite(c.a, c, 10)
+  assertEqualInt(c.a, 5, "no iteration reaches the write")
+  aliasThenWrite(c.a, c, 101)
+  assertEqualInt(c.a, 1, "the conditional write")
 }
