@@ -414,6 +414,24 @@ test "a package of one file is its own parse" {
   assertEqualInt(r.file.files[0].offsetBase, 0, "file 0's base")
 }
 
+test "a one-file package whose file-level @cfg is off keeps its annotations but no item or import" {
+  val src = "@cfg(feature = \"extra\")\n@io\npackage P\nimport Std.Math\n\npub func f(): Int { 1 }\n"
+  val only: List[String] = newList()
+  only.add(src)
+  val paths: List[String] = newList()
+  paths.add("a.l")
+  val declared: List[String] = newList()
+  declared.add("extra")
+  val off = PM.assemblePackageFiles("P", only, paths, none(), declared, "dotnet")
+  assertEqual(diagSummary(off), "", "no diagnostics")
+  assertEqual(itemPlaces(off.file.items), "", "no item")
+  assertEqual(importNames(off.file), "", "no import, as for a gated-off file of a larger package")
+  assertEqual(annotationNames(off.file), "io", "its annotation still describes the package")
+  assertEqualInt(off.file.files.count, 1, "its header is kept")
+  val on = PM.assemblePackageFiles("P", only, paths, declared, declared, "dotnet")
+  assertEqual(importNames(on.file), "Std.Math", "with the feature on, its import")
+}
+
 test "scanHeader reads the package and imports past comments and annotation strings" {
   val src = "//! doc\n/* package Fake\n /* nested */ import Not.Real */\n@cfg(feature = \"a)b\")\n@io\npackage A.B\n" +
     "// c\nimport Std.Core\nimport Std.String as Str\nimport extern System.{Math as M}\n\nfunc f(): Int { 1 }\n"
