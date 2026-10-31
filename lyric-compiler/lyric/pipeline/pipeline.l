@@ -5097,6 +5097,7 @@ func lowerShowSpec(
     }
   }
   SourceFile(
+    files = converted.files,
     moduleDoc = converted.moduleDoc,
     fileAnnotations = converted.fileAnnotations,
     packageDecl = converted.packageDecl,
