@@ -268,15 +268,38 @@ func walkFunction(w: in Walk, fn: in FunctionDecl): Unit {
   }
 }
 
+func isKeywordStmt(st: in Statement): Bool {
+  match st.kind {
+    case SReturn(_) -> true
+    case SThrow(_) -> true
+    case SBreak(_) -> true
+    case SContinue(_) -> true
+    case STry(_, _, _) -> true
+    case _ -> false
+  }
+}
+
 func walkBlock(w: in Walk, block: in Block): Unit {
+  // A block the source wrote without braces (the parser wraps `case X -> return e`
+  // and `-> throw e` in a one-statement block) starts where its statement does.
+  // A hit placed there would sit where the arm's expression belongs, so the
+  // statement is braced to keep the rewritten source parsing (#8666).
+  val bare = block.statements.count == 1 and isKeywordStmt(block.statements[0]) and
+    block.span.startPos.offset == block.statements[0].span.startPos.offset
   for st in block.statements {
+    var braced = false
     if countable(st) {
       val id = w.nextId[0]
       w.nextId[0] = id + 1
-      w.insertions.add(Insertion(offset = st.span.startPos.offset, text = "__lyric_cov.hit(" + toString(id) + "); "))
+      val open = if bare { "{ " } else { "" }
+      braced = bare
+      w.insertions.add(Insertion(offset = st.span.startPos.offset, text = open + "__lyric_cov.hit(" + toString(id) + "); "))
       w.points.add(CoverPoint(id = id, line = st.span.startPos.line))
     }
     walkStatement(w, st)
+    if braced {
+      w.insertions.add(Insertion(offset = st.span.endPos.offset, text = " }"))
+    }
   }
 }
 

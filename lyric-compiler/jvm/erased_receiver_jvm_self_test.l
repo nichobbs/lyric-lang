@@ -25,6 +25,10 @@
 //!    field through the bundle-wide by-name fallback; distinct types are now
 //!    recorded receiver classes too (#7439).
 //!
+//! 5. A call qualified with the current package's own name
+//!    (`P.f()` inside `package P`) resolves the callee's signature as the
+//!    bare call does, so its return type is kept (#8634).
+//!
 //! Cross-package forms of the same bugs (a constructor resolved through a
 //! selective import, a dependency's own `@cfg` features) are covered by
 //! `emitter_project_self_test.l`.
@@ -152,4 +156,19 @@ test "value of a distinct type held in a generic record reads the underlying rec
   val b: Box[Tagged] = Box(item = Tagged.from(Entry(owner = "lin", hits = 7)))
   assertEqual(b.item.value.owner, "lin", "b.item.value.owner")
   assertEqualInt(b.item.value.hits, 7, "b.item.value.hits")
+}
+
+record QualErr {
+  code: String
+}
+
+func qualifiedFailure(): Result[Int, QualErr] {
+  return Err(error = QualErr(code = "Y"))
+}
+
+test "a call qualified with the current package's own name keeps its return type (#8634)" {
+  match Lyric.ErasedReceiverJvmSelfTest.qualifiedFailure() {
+    case Err(e) -> assertEqual(e.code, "Y", "the error payload's field is readable")
+    case Ok(_) -> assertTrue(false, "expected Err")
+  }
 }

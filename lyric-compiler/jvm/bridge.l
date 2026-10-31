@@ -918,6 +918,46 @@ func transitiveWantedPkgs(file: in SourceFile, pkgImportNames: in Map[String, Li
   wanted
 }
 
+// `file` with an import declaration for each dotted package name in `names`
+// that it does not already import.
+func withRestoredImports(file: in SourceFile, names: in List[String]): SourceFile {
+  val imports: List[ImportDecl] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for imp in file.imports {
+    imports.add(imp)
+    seen.add(dottedPath(imp.path), true)
+  }
+  for n in names {
+    if seen.containsKey(n) {
+      continue
+    }
+    seen.add(n, true)
+    val segs: List[String] = newList()
+    for seg in Str.split(n, ".") {
+      segs.add(seg)
+    }
+    imports.add(
+      ImportDecl(
+        path = ModulePath(segments = segs, span = file.span),
+        selector = None,
+        asAlias = None,
+        isPubUse = false,
+        isExtern = false,
+        span = file.span
+      )
+    )
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    files = file.files,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = imports,
+    items = file.items,
+    span = file.span
+  )
+}
+
 // The origin-scope markers `collectOriginScopeMarkers` records from a source
 // file's imports, from a restored package's recorded import lists instead:
 // `~import~<Pkg>` for each import, `~wimport~<Pkg>` for each whole one, and
@@ -3496,7 +3536,11 @@ pub func compileProjectToJarBundledWithRestored(
   var rai = 0
   while rai < restoredArtifacts.count {
     val synArt = restoredArtifacts[rai]
-    val rf = synArt.source
+    // The synthesised source keeps no imports, so a bare type name in a
+    // signature (`Uuid`, imported by the producer from `Std.Uuid`) would find
+    // no extern seed and descriptors would name the producer package as its
+    // owner (#8639).  The contract's import list stands in for them.
+    val rf = withRestoredImports(synArt.source, pipeRestoredImportNames(synArt.source, synArt.contract.imports))
     // #6668: seed through the SAME `extPkgNames`/`extPkgMaps` pair (now
     // including every restored artifact, registered above) that userFile
     // and every stdlib file use — an empty seed here left the restored
