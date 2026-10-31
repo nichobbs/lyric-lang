@@ -18135,6 +18135,7 @@ func inferExprCore(
         }
         case _ -> ()
       }
+      checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       val readTy = match memberTy {
         case TyError -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
@@ -19408,6 +19409,81 @@ func inferMethodCallExpected(
   t
 }
 
+// T0221 (#8672): a protected type's state is reachable only through its
+// entries and functions (docs/01 §7.5), so a field read or write by name on a
+// value of a protected type is rejected outside that type's own members (an
+// `entry`, a `func`, an invariant, or an `impl` method, whose scope's
+// `selfType` is the type itself).  Both a read and the target of an
+// assignment reach here, since the target is inferred like any member access.
+func checkProtectedFieldAccess(
+  sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], recvTy: in Type, name: in String, span: in Span
+): Unit {
+  val tid = match typeIdOfType(recvTy) {
+    case Some(t) -> t
+    case None -> return
+  }
+  match findProtectedDeclByTypeId(tbl, tid) {
+    case Some(pd) -> {
+      var isField = false
+      for m in pd.members {
+        match m {
+          case PMField(pf) -> if protectedFieldAsFieldDecl(pf).name == name {
+            isField = true
+          }
+          case _ -> ()
+        }
+      }
+      if not isField {
+        return
+      }
+      val inOwnMember = sc.selfChecked and match typeIdOfType(sc.selfType) {
+        case Some(own) -> typeIdEq(own, tid)
+        case None -> false
+      }
+      if not inOwnMember {
+        diag.add(
+          errorDiagnostic(
+            "T0221",
+            "field '" + name + "' of protected type '" + pd.name +
+              "' cannot be read or written from outside the type's own members; call an `entry` or `func` of '" + pd.name +
+              "' instead (docs/01 §7.5)",
+            span
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
+}
+
+// #8649: the union case a bare name stands for when two or more visible union
+// cases share it and `expected` is a union declaring one of them; None when the
+// name is a local, is not shared, or the expected type does not pick one.
+func sharedBareCaseOfExpected(sc: in Scope, tbl: in SymbolTable, p: in ModulePath, expected: in Type): Option[Symbol] {
+  if p.segments.count != 1 or scopeHasName(sc, p.segments[0]) {
+    return None
+  }
+  val eid = match unrefine(expected) {
+    case TyUser(id, _, _) -> id
+    case _ -> return None
+  }
+  val candidates = symTableTryFindAllVisible(tbl, p.segments[0])
+  if candidates.count < 2 {
+    return None
+  }
+  var ci = candidates.count - 1
+  while ci >= 0 {
+    match candidates[ci].kind {
+      case DKUnionCase(parentId, _) -> if typeIdEq(parentId, eid) {
+        return Some(value = candidates[ci])
+      }
+      case _ -> ()
+    }
+    ci = ci - 1
+  }
+  None
+}
+
 // A2: infer `e` under a contextual expected type.  The expectation is
 // consumed only by the shapes that need it — a lambda literal (its
 // unannotated params adopt the expected function type's parameter types), an
@@ -19537,6 +19613,17 @@ func inferExprExpectedCore(
     // `tailExpected` a function body's own tail chain already carries
     // (#7696).  With no expectation (`TyError`) this is exactly the plain
     // `inferExpr` dispatch.
+    // #8649: a bare nullary case name that two unions of one package share
+    // (`Idle` in `Left` and `Right`) means the case of the expected union, as
+    // a bare constructor call with fields does; `symTableTryFindOne` alone
+    // would pick the last declared.
+    case EPath(p) -> match sharedBareCaseOfExpected(sc, tbl, p, expected) {
+      case Some(caseSym) -> {
+        symTableNoteBareUse(tbl, caseSym, e.span)
+        adoptUnionCaseExpected(tbl, true, inferUnionCaseConstruction(tbl, diag, caseSym, newList(), newList(), e.span, false), expected)
+      }
+      case None -> inferExpr(sc, tbl, sigs, diag, e)
+    }
     case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
       sc,
       tbl,
