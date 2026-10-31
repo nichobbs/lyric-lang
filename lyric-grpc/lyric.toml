@@ -54,6 +54,8 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.Aspects"    = "src/aspects.l"
 # .NET kernel: Grpc.Net.Client / Grpc.Core.Api client.
 "Grpc.Kernel.Net" = "src/_kernel/net/grpc_kernel.l"
+# .NET server: pure-Lyric h2c gRPC server over Std.TcpHost + Std.HttpEngine.H2Conn.
+"Grpc.Kernel.Net.Server" = "src/_kernel/net/grpc_server.l"
 # JVM kernel: grpc-java client.
 "Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
 
@@ -64,6 +66,8 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.ChannelLifecycleTests" = "tests/channel_lifecycle_tests.l"
 "Grpc.ClientDotnetTests" = "tests/client_dotnet_tests.l"
 "Grpc.ClientJvmTests" = "tests/client_jvm_tests.l"
+"Grpc.ServerTests" = "tests/server_tests.l"
+"Grpc.ServerDotnetTests" = "tests/server_dotnet_tests.l"
 "Grpc.RateLimitJvmTests" = "tests/rate_limit_jvm_tests.l"
 
 [dependencies]

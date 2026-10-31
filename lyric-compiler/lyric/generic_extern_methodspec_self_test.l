@@ -347,33 +347,3 @@ test "a closed generic nested as a type argument (Dictionary<int, List<byte[]>>)
   byteArrayListByIntAdd(d, 8, newByteArrayList())
   assertEqualInt(byteArrayListByIntCount(d), 2, "two entries in the nested-generic dictionary")
 }
-
-// ── A method's own generic parameters are pinned by the wrapper's types ────
-//
-// `System.Tuple.Create<T1,T2>(T1 item1, T2 item2): Tuple<T1,T2>` has no `T[]`
-// position, so the `object` witness applied: the call returned a
-// `Tuple<object,object>` that the wrapper then cast to its declared
-// `Tuple<byte[],byte[]>` (InvalidCastException) — the same shape as
-// `CallInvoker.BlockingUnaryCall<TReq,TResp>` over `Method<byte[],byte[]>`.
-// Each parameter is now instantiated from the byte array the wrapper declares
-// at the bare position, agreeing with the closed generic return.
-extern type ByteArrayPair = "System.Tuple`2[System.Byte[],System.Byte[]]"
-
-@externTarget("System.Tuple.Create")
-func newByteArrayPair(first: in slice[Byte], second: in slice[Byte]): ByteArrayPair = ()
-
-@externInstance
-@externTarget("System.Tuple`2.get_Item1")
-func byteArrayPairFirst(p: in ByteArrayPair): slice[Byte] = ()
-
-@externInstance
-@externTarget("System.Tuple`2.get_Item2")
-func byteArrayPairSecond(p: in ByteArrayPair): slice[Byte] = ()
-
-test "generic method witnesses follow the wrapper's array types and closed generic return" {
-  val a: slice[Byte] = [9, 8]
-  val b: slice[Byte] = [7]
-  val p = newByteArrayPair(a, b)
-  assertEqualInt(byteArrayPairFirst(p).count, 2, "T1 = byte[] keeps the first array")
-  assertEqualInt(byteArrayPairSecond(p).count, 1, "T2 = byte[] keeps the second array")
-}

@@ -1,7 +1,7 @@
 //! ProductCatalog.Main — gRPC server entry point.
 //!
-//! Registers all five ProductService methods and starts the Kestrel-backed
-//! gRPC server.  The server address and port are controlled by env vars:
+//! Registers all five ProductService methods and starts the pure-Lyric
+//! h2c gRPC server.  The server address and port are controlled by env vars:
 //!   LYRIC_CONFIG_GRPC_SERVER_HOST — default 0.0.0.0
 //!   LYRIC_CONFIG_GRPC_SERVER_PORT — default 50051
 //!   LYRIC_CONFIG_GRPC_SERVER_REFLECTIONENABLED — default false
@@ -18,16 +18,10 @@ package ProductCatalog.Main
 
 import Std.Core
 import Grpc
+import ProductCatalog.Wire
 
 pub func main(): Int {
-  val service = "ProductCatalog.ProductService"
-
-  var registry = Grpc.create()
-  registry = Grpc.addMethod(registry, service, "GetProduct", "ProductCatalog.Catalog.getProduct")
-  registry = Grpc.addMethod(registry, service, "ListProducts", "ProductCatalog.Catalog.listProducts")
-  registry = Grpc.addMethod(registry, service, "CreateProduct", "ProductCatalog.Catalog.createProduct")
-  registry = Grpc.addMethod(registry, service, "UpdateProduct", "ProductCatalog.Catalog.updateProduct")
-  registry = Grpc.addMethod(registry, service, "DeleteProduct", "ProductCatalog.Catalog.deleteProduct")
+  val registry = registerProductService(Grpc.create())
 
   Grpc.start(registry)
   return 0

@@ -2,20 +2,21 @@
 
 General-purpose gRPC client for [Lyric](https://github.com/nichobbs/lyric-lang). Ships low-level RPC invocation, message framing, and protocol handling for calling gRPC services from Lyric applications.
 
-> **Status**: @experimental. The **client** is real on both targets and covered by end-to-end tests against an in-process gRPC server: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`start`, `startHandle`, `stop`) is not implemented on either target and fails loudly; it needs a handler value in `ServiceRegistry` (a string `handlerName` has no dispatch mechanism) and a way to host an RPC route, tracked in #8642. The aspect templates in `Grpc.Aspects` are `dotnet` only.
+> **Status**: @experimental. The **client** is real on both targets and covered by end-to-end tests against an in-process gRPC server: `openChannel`/`closeChannel`, `callUnary`, `openServerStream`/`nextMessage`/`closeStream`, call metadata, deadlines, status mapping, and `checkRateLimit`. **Server hosting** (`addUnary`, `addServerStreaming`, `start`, `startHandle`, `stop`) works on both targets for unary and server-streaming methods, plaintext HTTP/2, and is covered by `tests/server_tests.l`. The aspect templates in `Grpc.Aspects` are `dotnet` only.
 
 ## Platform parity
 
 | Feature flag | Backend | Client | Server hosting | Tests |
 |---|---|---|---|---|
-| `dotnet` | `Grpc.Net.Client` / `Grpc.Core.Api` via `Grpc.Kernel.Net` | unary, server streaming, metadata, deadlines, `checkRateLimit` | not implemented (#8642) | `tests/client_dotnet_tests.l` (pure-Lyric h2c test peer on `Std.HttpEngine.H2Conn`), `tests/rate_limit_tests.l`, `tests/channel_lifecycle_tests.l` |
-| `jvm` | `io.grpc:grpc-netty-shaded` / `grpc-stub` via `Grpc.Kernel.Jvm` | unary, server streaming, metadata, deadlines, `checkRateLimit` | not implemented (#8642) | `tests/client_jvm_tests.l` (grpc-java `Server` test peer), `tests/rate_limit_jvm_tests.l` |
+| `dotnet` | `Grpc.Net.Client` / `Grpc.Core.Api` via `Grpc.Kernel.Net` | unary, server streaming, metadata, deadlines, `checkRateLimit` | unary, server streaming | `tests/server_tests.l`, `tests/client_dotnet_tests.l` (pure-Lyric h2c test peer on `Std.HttpEngine.H2Conn`), `tests/rate_limit_tests.l`, `tests/channel_lifecycle_tests.l` |
+| `jvm` | `io.grpc:grpc-netty-shaded` / `grpc-stub` via `Grpc.Kernel.Jvm` | unary, server streaming, metadata, deadlines, `checkRateLimit` | unary, server streaming | `tests/server_tests.l`, `tests/client_jvm_tests.l` (grpc-java `Server` test peer), `tests/rate_limit_jvm_tests.l` |
 
 Differences to know about:
 
 - **Addresses.** `.NET` accepts any absolute `http(s)` URI `GrpcChannel.ForAddress` accepts. The JVM accepts `http://host[:port]` (plaintext) or `https://host[:port]` (TLS) with no path, query or whitespace (`Grpc.Types.parseAddress`), because a grpc-java target carries none.
 - **Rate limiting.** `.NET` composes a 60 s sliding window at `requestsPerMinute` with a 1 s window at `burstSize`. The JVM uses the `Lyric.Resilience` token bucket: `requestsPerMinute + burstSize` permits, refilled at `requestsPerMinute` a minute. Both return `false` when the method's budget is spent; the margins differ.
 - **Errors.** A failed call is `Err(GrpcStatus)` with the server's code and message (`Grpc.Types.statusFromException` reads grpc-dotnet's `Status(StatusCode="...", Detail="...")` and grpc-java's `CODE: description`). A closed channel is `FailedPrecondition`; no server is `Unavailable`; an expired `withTimeout` is `DeadlineExceeded`. Server-streaming failures arrive from `nextMessage`, not from `openServerStream`, because a call that has not started reading has not failed yet.
+- **Handles.** A `GrpcStream` that is dropped without `closeStream` keeps its call alive until the call's deadline or the server ends it: always close streams, as with channels.
 - **Payloads** are raw `slice[Byte]` (protobuf bytes) on both targets: compose with `lyric-proto`.
 
 ## Packages
@@ -387,26 +388,46 @@ All RPC calls return `Result[T, GrpcStatus]`. Common errors:
 
 ## Server API
 
-> **Status**: @experimental — same caveat as the client API above: this
-> compiles and the routing logic has unit-level coverage, but the
-> client + server pair has not been exercised end-to-end against a real
-> gRPC client in CI.
-
-Build a `ServiceRegistry` mapping proto `(service, method)` pairs to Lyric
-handler functions, then start the server.
+Build a `ServiceRegistry` of handlers per `(service, method)`, then start the
+server. Handlers are Lyric values (functions or lambdas), not names.
 
 ```lyric
 import Grpc
+import Grpc.Types
+import Std.Core
 
-// Register RPC methods: proto service name, proto method name, and the
-// qualified Lyric function name the kernel dispatches to.
+func echo(req: in slice[Byte], meta: in slice[GrpcMetadataEntry]): Result[slice[Byte], GrpcStatus] {
+  Ok(req)
+}
+
+func countTo(
+  req: in slice[Byte],
+  meta: in slice[GrpcMetadataEntry],
+  emit: in (slice[Byte]) -> Bool,
+): Result[Unit, GrpcStatus] {
+  var i = 0
+  while i < req[0].toInt() {
+    if not emit([i.toByte()]) {
+      return Ok(())   // the client went away: stop producing
+    }
+    i = i + 1
+  }
+  Ok(())
+}
+
 var registry = Grpc.create()
-registry = Grpc.addMethod(registry, "pkg.MyService", "MyMethod", "MyPackage.handleMyMethod")
-registry = Grpc.addMethod(registry, "pkg.MyService", "MyOtherMethod", "MyPackage.handleMyOtherMethod")
+registry = Grpc.addUnary(registry, "pkg.MyService", "Echo", echo)
+registry = Grpc.addServerStreaming(registry, "pkg.MyService", "Count", countTo)
 
-// Blocking start: runs until SIGTERM / SIGINT.
+// Blocking start: serves until the process exits.
 Grpc.start(registry)
 ```
+
+A handler receives the request message (raw protobuf bytes) and the request
+metadata (lowercase keys; pseudo-headers, `content-type`, `te`, `user-agent`,
+`grpc-*` and `-bin` keys are left out). It returns the response or the status to
+fail the call with. A handler that panics fails its call with `Internal` and no
+detail, and never takes the server down.
 
 ### Configuration
 
@@ -422,84 +443,61 @@ config GrpcServer {
 }
 ```
 
-### Non-blocking start and graceful shutdown
+`reflectionEnabled = true` panics at start: server reflection is not supported.
+`maxConnectionIdleMs` closes a connection with no calls in flight that stays
+silent that long. The server is plaintext HTTP/2 (`http://` clients); there is no
+TLS yet.
 
-Use `startHandle` instead of `start` to run the server in the background
-and retain a handle for graceful shutdown:
+### Non-blocking start and graceful shutdown
 
 ```lyric
 import Grpc
 
 val handle = Grpc.startHandle(registry)
-
 // ... application continues running ...
-
-// Drain in-flight RPCs (up to 5s) before forcibly closing connections.
+// Stop accepting calls, wait up to 5 s for the ones in flight, then close.
 Grpc.stop(handle, 5000)
 ```
 
+`Grpc.startHandleAt(registry, "127.0.0.1", 0)` binds an explicit address (port
+`0` = ephemeral) and `Grpc.serverPort(handle)` reports the port, which is what
+the tests use. Binding a taken port panics rather than returning a dead handle.
+
 ### Server API reference
 
-#### `create`
-
-Create an empty service registry.
-
-```lyric
-pub func create(): ServiceRegistry
-```
-
-#### `addMethod`
-
-Register a single RPC method against a handler function.
-
-```lyric
-pub func addMethod(
-  registry: in ServiceRegistry,
-  service: in String,
-  method: in String,
-  handlerName: in String
-): ServiceRegistry
-```
-
-| Parameter | Description |
+| Function | Description |
 |---|---|
-| `service` | Fully-qualified proto service name: `"pkg.MyService"` |
-| `method` | Unqualified RPC method name: `"MyMethod"` |
-| `handlerName` | Qualified Lyric function name the kernel dispatches to (`"MyPackage.handleMyMethod"`) |
+| `create(): ServiceRegistry` | An empty registry |
+| `addUnary(registry, service, method, handler)` | Register a unary method; registering the same `(service, method)` twice violates its contract |
+| `addServerStreaming(registry, service, method, handler)` | Register a server-streaming method; `emit` returns `false` once the client has gone |
+| `start(registry): Unit` | Serve on the `GrpcServer` config address, blocking until the process exits |
+| `startHandle(registry): GrpcServerHandle` | `start` without blocking |
+| `startHandleAt(registry, host, port): GrpcServerHandle` | `startHandle` on an explicit address |
+| `serverPort(handle): Int` | The bound port (`0` once stopped) |
+| `stop(handle, drainTimeoutMs): Unit` | Stop accepting, drain, then close; a second stop is a no-op |
 
-#### `start`
+### Server limits and differences
 
-Start the gRPC server. Blocks the calling thread until SIGTERM / SIGINT.
-
-```lyric
-pub func start(registry: in ServiceRegistry): Unit
-```
-
-#### `startHandle`
-
-Start the gRPC server without blocking; the server runs in the
-background. Returns a `GrpcServerHandle` for use with `stop`.
-
-```lyric
-pub func startHandle(registry: in ServiceRegistry): GrpcServerHandle
-```
-
-#### `stop`
-
-Stop a server started with `startHandle`, waiting up to
-`drainTimeoutMs` milliseconds for in-flight RPCs to complete before
-forcibly closing connections.
-
-```lyric
-pub func stop(handle: in GrpcServerHandle, drainTimeoutMs: in Int): Unit
-```
+- **Messages.** Unary and server-streaming only (no client or bidirectional
+  streaming). One uncompressed request message of at most 4 MiB; compression
+  (`grpc-encoding`) is answered `Unimplemented`.
+- **Deadlines.** `grpc-timeout` is not enforced on the server: a handler runs to
+  completion and the client's deadline cancels the call from its side.
+- **dotnet.** A pure-Lyric server on `Std.HttpEngine.H2Conn` and `Std.TcpHost`
+  (`Grpc.AspNetCore` needs a `BindableService` subclass, which a Lyric record
+  cannot be). Each call's handler runs on its own task; a call that does not
+  fit the peer's flow-control window waits up to 30 s for it to open.
+- **JVM.** A grpc-java `Server` on the Netty transport; request metadata reaches
+  the handler through a gRPC `Context` value.
+- **Aspects** (`Grpc.Aspects`) are dotnet only.
 
 ### Server types
 
 | Type | Description |
 |---|---|
-| `ServiceRegistry` | Immutable registry of `GrpcRoute`s; built with `addMethod`, passed to `start` / `startHandle` |
-| `GrpcRoute` | Single RPC method registration: proto service name, proto method name, and the dispatched-to handler name |
+| `ServiceRegistry` | Immutable registry of `GrpcRoute`s |
+| `GrpcRoute` | One registered method: service, method, and its `GrpcHandler` |
+| `GrpcHandler` | `Unary(handle)` or `ServerStreaming(handle)` |
 | `GrpcServerHandle` | Opaque handle to a running server, created by `startHandle`, passed to `stop` |
 
 ## Package layout
@@ -515,6 +513,7 @@ lyric-grpc/
     _kernel/
       net/
         grpc_kernel.l         Grpc.Kernel.Net  (.NET extern boundary)
+        grpc_server.l         Grpc.Kernel.Net.Server  (.NET h2c gRPC server)
       jvm/
         grpc_kernel.l         Grpc.Kernel.Jvm  (JVM extern boundary)
   tests/

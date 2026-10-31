@@ -1055,8 +1055,10 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `extern type` + auto-FFI (no `extern package`). Unary and server-streaming
   calls, metadata, deadlines, `GrpcStatus` mapping and `checkRateLimit`;
   accepts and returns raw `slice[Byte]` payloads, so compose with lyric-proto
-  for protobuf encoding. Server hosting (`start`/`startHandle`/`stop`) is not
-  implemented on either target (#8642).
+  for protobuf encoding. Server hosting (`addUnary`/`addServerStreaming`,
+  `start`/`startHandle`/`stop`) works on both targets, plaintext HTTP/2: a
+  pure-Lyric h2c server on `Std.HttpEngine.H2Conn` on .NET, a grpc-java `Server`
+  on the JVM (D284).
 - `lyric-web/` — `lyric-web` library: HTTP server framework
   (`Lyric.Web`) built on `Std.Http` (D-progress-223 / D057).
 - `lyric-mq/` — `lyric-mq` library: transport-agnostic message queue
