@@ -8867,9 +8867,21 @@ func genericsAbsent(g: in Option[GenericParams]): Bool {
 /// type shadows an imported one of the same name.
 pub func invariantBoundaryTypes(tbl: in SymbolTable, imported: in Bool): Map[String, String] {
   val found: Map[String, String] = newMap()
+  val localNames: Map[String, Bool] = newMap()
+  var li = 0
+  while li < tbl.symbols.count {
+    if not tbl.symbols[li].isImported and not localNames.containsKey(tbl.symbols[li].name) {
+      localNames.add(tbl.symbols[li].name, true)
+    }
+    li = li + 1
+  }
   var i = 0
   while i < tbl.symbols.count {
     val sym = tbl.symbols[i]
+    if imported and localNames.containsKey(sym.name) {
+      i = i + 1
+      continue
+    }
     if sym.isImported == imported and symbolIsNonGenericInvariantType(sym) {
       match invariantCheckerPath(tbl, sym) {
         case Some(path) -> {

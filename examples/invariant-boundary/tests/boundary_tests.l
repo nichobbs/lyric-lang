@@ -24,6 +24,6 @@ test "a public function returning a broken value panics" {
 }
 
 test "an inout parameter written to a broken value panics on exit" {
-  val c = newCounter(1)
+  var c = newCounter(1)
   assertPanicsWith("inout", "InvariantViolated: Inv.Api.breakInPlace parameter c", { -> breakInPlace(c) })
 }

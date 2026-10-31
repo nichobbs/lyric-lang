@@ -2967,8 +2967,10 @@ func elaborateMember(
     case Some(FBExpr(e)) -> functionHasRangeRefinement(fn.params, fn.ret, wrapExprBody(e))
     case None -> false
   }
-  val entryInv = boundaryEntryChecks(fn.params, boundary)
-  val exitInv = boundaryExitChecks(fn.params, fn.ret, boundary, owner, fn.span)
+  // A construction checker is the check itself, never subject to one.
+  val checked = if Str.startsWith(fn.name, "__lyric_checked_") { emptyInvariantBoundary() } else { boundary }
+  val entryInv = boundaryEntryChecks(fn.params, checked)
+  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span)
   val hasBoundary = entryInv.count > 0 or exitInv.count > 0
   if not hasReq and not hasEns and not hasInv and not hasRange and not hasBoundary {
     return fn
