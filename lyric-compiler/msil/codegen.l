@@ -38886,10 +38886,11 @@ func emitListKeyHashMsil(
 
 // The runtime representation of a tuple: a `List<object>` whose `Equals` and
 // `GetHashCode` compare element by element, so a bare tuple works as a
-// `Map`/`Set` key (#8170, D286).  Each assembly carries its own copy and
+// `Map`/`Set` key (#8170, D289).  Each assembly carries its own copy and
 // `Equals` tests `IList`, not this class, so tuples built by different
 // assemblies compare equal.
 val tupleClassNamespaceMsil: String = "Lyric.Internal"
+
 val tupleClassFqnMsil: String = "Lyric.Internal.LyricTuple"
 
 // MethodDef rows the class occupies (its `.ctor`, then `tupleMethod*Msil`
@@ -38906,8 +38907,11 @@ func tupleClassMethodRowsMsil(): List[Int] {
 }
 
 val tupleMethodElemEqRowMsil: Int = 4
+
 val tupleMethodListEqRowMsil: Int = 5
+
 val tupleMethodElemHashRowMsil: Int = 6
+
 val tupleMethodListHashRowMsil: Int = 7
 
 // Methods, in MethodDef row order after the `.ctor`:
@@ -38959,7 +38963,15 @@ func buildTupleClassMsil(cctx: in CodegenCtx): MRecord {
   hc.add(MCall(methodToken = 0x06000000 + tupleMethodListHashRowMsil))
   hc.add(MRet)
   methods.add(
-    MFunc(flags = virtFlags, name = "GetHashCode", params = noParams, ret = MInt, insns = hc, maxStack = 4, locals = noLocals)
+    MFunc(
+      flags = virtFlags,
+      name = "GetHashCode",
+      params = noParams,
+      ret = MInt,
+      insns = hc,
+      maxStack = 4,
+      locals = noLocals
+    )
   )
 
   // ElemEq(object a, object b)
@@ -39048,7 +39060,15 @@ func buildTupleClassMsil(cctx: in CodegenCtx): MRecord {
   eh.add(MCallvirt(methodToken = cctx.tokEqComparerHash))
   eh.add(MRet)
   methods.add(
-    MFunc(flags = instFlags, name = "ElemHash", params = oneObj, ret = MInt, insns = eh, maxStack = 4, locals = noLocals)
+    MFunc(
+      flags = instFlags,
+      name = "ElemHash",
+      params = oneObj,
+      ret = MInt,
+      insns = eh,
+      maxStack = 4,
+      locals = noLocals
+    )
   )
 
   // ListHash(object o)
@@ -39088,7 +39108,15 @@ func buildTupleClassMsil(cctx: in CodegenCtx): MRecord {
   lh.add(MLdloc(slot = 1))
   lh.add(MRet)
   methods.add(
-    MFunc(flags = instFlags, name = "ListHash", params = oneObj, ret = MInt, insns = lh, maxStack = 6, locals = lhLocals)
+    MFunc(
+      flags = instFlags,
+      name = "ListHash",
+      params = oneObj,
+      ret = MInt,
+      insns = lh,
+      maxStack = 6,
+      locals = lhLocals
+    )
   )
 
   MRecord(

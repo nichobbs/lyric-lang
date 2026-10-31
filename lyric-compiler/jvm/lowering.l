@@ -1075,7 +1075,7 @@ pub record LRecord {
   fields: List[LField]
   methods: List[LFunc]
   implementsIfaces: List[String]
-  // The superclass; a tuple is an `ArrayList` subclass (D286).
+  // The superclass; a tuple is an `ArrayList` subclass (D289).
   superClass: String = "java/lang/Object"
   // ── Type helpers (no OR patterns) ────────────────────────────────────────────
   // Emit the appropriate load instruction for parameter slot `slot` of type `t`.
@@ -2879,7 +2879,7 @@ pub func tupleClassHelperName(): String = "__lyricTuple"
 
 // The class of a tuple value in package `pkg`: an `ArrayList` whose `equals`
 // and `hashCode` use D172's structural relation, so a bare tuple works as a
-// `Map`/`Set` key (#8170, D286).  Both go through the package's
+// `Map`/`Set` key (#8170, D289).  Both go through the package's
 // `__lyricKeyEq`/`__lyricKeyHash`, which compare an `ArrayList` element by
 // element, so this class's own `equals` is not re-entered.
 pub func tupleClassName(pkg: in String): String = pkg + "/__LyricTuple"
@@ -2903,10 +2903,26 @@ pub func buildTupleClassRecord(pkg: in String): LRecord {
   hashInsns.add(LIreturn)
   val methods: List[LFunc] = newList()
   methods.add(
-    LFunc(flags = ACC_PUBLIC, name = "equals", params = onePs, ret = JBoolean, insns = eqInsns, maxStack = 2, maxLocals = 2)
+    LFunc(
+      flags = ACC_PUBLIC,
+      name = "equals",
+      params = onePs,
+      ret = JBoolean,
+      insns = eqInsns,
+      maxStack = 2,
+      maxLocals = 2
+    )
   )
   methods.add(
-    LFunc(flags = ACC_PUBLIC, name = "hashCode", params = newList(), ret = JInt, insns = hashInsns, maxStack = 1, maxLocals = 1)
+    LFunc(
+      flags = ACC_PUBLIC,
+      name = "hashCode",
+      params = newList(),
+      ret = JInt,
+      insns = hashInsns,
+      maxStack = 1,
+      maxLocals = 1
+    )
   )
   LRecord(
     className = tupleClassName(pkg),
