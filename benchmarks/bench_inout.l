@@ -42,11 +42,11 @@ func spinUntil(x: inout Int, limit: in Int): Unit {
 pub func benchInoutMixedPlaces(): Unit {
   var local = 0
   val r = Counters(a = 0, b = 0, c = 0)
-  spin(local, 2000000)
-  spin(r.a, 2000000)
-  spin(r.b, 2000000)
-  spin(r.c, 2000000)
-  if local + r.a + r.b + r.c != 8000000 {
+  spin(local, 20000000)
+  spin(r.a, 20000000)
+  spin(r.b, 20000000)
+  spin(r.c, 20000000)
+  if local + r.a + r.b + r.c != 80000000 {
     println("bench_inout: wrong total")
   }
 }
@@ -55,11 +55,11 @@ pub func benchInoutMixedPlaces(): Unit {
 pub func benchInoutBreakLoop(): Unit {
   var local = 0
   val r = Counters(a = 0, b = 0, c = 0)
-  spinUntil(local, 6000000)
-  spinUntil(r.a, 6000000)
-  spinUntil(r.b, 6000000)
-  spinUntil(r.c, 6000000)
-  if local + r.a + r.b + r.c != 24000000 {
+  spinUntil(local, 60000000)
+  spinUntil(r.a, 60000000)
+  spinUntil(r.b, 60000000)
+  spinUntil(r.c, 60000000)
+  if local + r.a + r.b + r.c != 240000000 {
     println("bench_inout: wrong total")
   }
 }

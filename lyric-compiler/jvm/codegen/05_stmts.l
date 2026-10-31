@@ -1788,19 +1788,23 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SWhile(label, cond, body) -> {
       val loopL = freshLabel(ctx)
       val afterL = freshLabel(ctx)
-      insns.add(LLabel(name = loopL))
-      lowerBoolCond(ctx, insns, cond, afterL)
+      val loopBuf: List[LInsn] = newList()
+      loopBuf.add(LLabel(name = loopL))
+      lowerBoolCond(ctx, loopBuf, cond, afterL)
       val savedLabel1 = enterLoopLabelJvm(ctx, label)
       ctx.loopBreak.add(afterL)
       ctx.loopCont.add(loopL)
       ctx.loopDeferDepth.add(ctx.deferStack.count)
-      lowerBlock(ctx, insns, body)
+      lowerBlock(ctx, loopBuf, body)
       exitLoopLabelJvm(ctx, label, savedLabel1)
       ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
-      insns.add(LGoto(label = loopL))
-      insns.add(LLabel(name = afterL))
+      loopBuf.add(LGoto(label = loopL))
+      loopBuf.add(LLabel(name = afterL))
+      // #8371: keep an `out`/`inout` place in its value slot across the loop
+      // when nothing in the loop can reach it by another path.
+      appendLoopWithRefCache(ctx, insns, loopBuf, loopL, afterL)
     }
 
     // ── For loop (over array) ──────────────────────────────────────────────
@@ -2028,7 +2032,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     case SLoop(label, body) -> {
       val loopL3 = freshLabel(ctx)
       val afterL3 = freshLabel(ctx)
-      insns.add(LLabel(name = loopL3))
+      val loopBuf3: List[LInsn] = newList()
+      loopBuf3.add(LLabel(name = loopL3))
       // #2854: register this loop's own break/continue targets (an unconditional
       // `loop` exits only via `break`/`return`) and the defer depth at entry, so
       // a `defer` declared in the body replays on `break`/`continue` and the jump
@@ -2037,13 +2042,14 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       ctx.loopBreak.add(afterL3)
       ctx.loopCont.add(loopL3)
       ctx.loopDeferDepth.add(ctx.deferStack.count)
-      lowerBlock(ctx, insns, body)
+      lowerBlock(ctx, loopBuf3, body)
       exitLoopLabelJvm(ctx, label, savedLabel3)
       ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
-      insns.add(LGoto(label = loopL3))
-      insns.add(LLabel(name = afterL3))
+      loopBuf3.add(LGoto(label = loopL3))
+      loopBuf3.add(LLabel(name = afterL3))
+      appendLoopWithRefCache(ctx, insns, loopBuf3, loopL3, afterL3)
     }
 
     // ── Assignment statement ───────────────────────────────────────────────
