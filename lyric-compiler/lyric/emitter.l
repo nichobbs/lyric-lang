@@ -2390,6 +2390,17 @@ func collectCaseNames(repr: in String): List[String] {
   names
 }
 
+// The package names of every restored artifact other than `selfPkg`.
+func siblingPackageNames(arts: in List[RP.RestoredArtifact], selfPkg: in String): List[String] {
+  val names: List[String] = newList()
+  for art in arts {
+    if art.packageName != selfPkg and not names.contains(art.packageName) {
+      names.add(art.packageName)
+    }
+  }
+  names
+}
+
 func siblingTypeDecls(arts: in List[RP.RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
   val acc: List[Meta.ContractDecl] = newList()
   val seen: List[String] = newList()
@@ -2513,7 +2524,7 @@ func loadRestoredArtifacts(restoredDllPaths: in List[String]): Result[List[RP.Sy
   val restoredArtifacts: List[RP.SynthesisedArtifact] = newList()
   for art in allArts {
     val preamble = siblingTypeDecls(allArts, art.packageName)
-    match RP.synthesiseArtifact(art, preamble) {
+    match RP.synthesiseArtifactAmong(art, preamble, siblingPackageNames(allArts, art.packageName)) {
       case Err(e) -> return Err(error = "restored dep '" + art.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
       case Ok(syn) -> restoredArtifacts.add(syn)
     }
@@ -3086,7 +3097,7 @@ func loadRestoredArtifactsJvm(restoredJarPaths: in List[String]): Result[List[RP
   val restored: List[RP.SynthesisedArtifact] = newList()
   for jArt in allArtsJvm {
     val jPreamble = siblingTypeDecls(allArtsJvm, jArt.packageName)
-    match RP.synthesiseArtifact(jArt, jPreamble) {
+    match RP.synthesiseArtifactAmong(jArt, jPreamble, siblingPackageNames(allArtsJvm, jArt.packageName)) {
       case Err(e) -> return Err(error = "restored JVM dep '" + jArt.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
       case Ok(syn) -> restored.add(syn)
     }

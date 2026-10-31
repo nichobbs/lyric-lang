@@ -617,12 +617,35 @@ func isErrorDiag(d: in Diagnostic): Bool {
 // anchors.  Warnings are dropped — the bridge only cares whether a
 // real (non-whitelisted) error fired; warning-only sets count as
 // "synthesise succeeded" (#1264).
-func filterRealErrors(diags: in List[Diagnostic], contract: in Meta.Contract): List[Diagnostic] {
+// True iff `d` is a T0014 "unknown qualified type 'P.Q.T' (...)" whose
+// package `P.Q` is another package of the same restored set (`siblings`).
+// The standalone recheck sees a sibling's types only through the flattened,
+// unqualified preamble (and leaves out a sibling type this package declares a
+// name for), so a signature or alias that names one by its qualified path,
+// e.g. `pub alias TenantScope = CloudAgents.Scope.TenantScope`, cannot
+// resolve here (#8648).  Sound for the reason `isWhitelistedStdQualified` is:
+// the DLL compiled cleanly, so the type exists, and each consumer re-resolves
+// it against the sibling artifact's items in its own full type check.
+func isQualifiedSiblingType(d: in Diagnostic, siblings: in List[String]): Bool {
+  if d.code != "T0014" {
+    return false
+  }
+  val name = extractT0010Name(d.message)
+  val dot = Str.lastIndexOfRaw(name, ".")
+  if dot <= 0 {
+    return false
+  }
+  siblings.contains(name.substring(0, dot))
+}
+
+func filterRealErrors(
+  diags: in List[Diagnostic], contract: in Meta.Contract, siblings: in List[String]
+): List[Diagnostic] {
   val kept: List[Diagnostic] = newList()
   var i = 0
   while i < diags.count {
     val d = diags[i]
-    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isResolvedByStdImport(d, contract) and not isWhitelistedStdQualified(d) and not isSynthesizedBodyDiag(d) {
+    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isResolvedByStdImport(d, contract) and not isWhitelistedStdQualified(d) and not isQualifiedSiblingType(d, siblings) and not isSynthesizedBodyDiag(d) {
       kept.add(d)
     }
     i = i + 1
@@ -645,6 +668,18 @@ func filterRealErrors(diags: in List[Diagnostic], contract: in Meta.Contract): L
 pub func synthesiseArtifact(
   art: in RestoredArtifact, preamble: in List[Meta.ContractDecl]
 ): Result[SynthesisedArtifact, RestoredLoadError] {
+  val noSiblings: List[String] = newList()
+  synthesiseArtifactAmong(art, preamble, noSiblings)
+}
+
+/// As `synthesiseArtifact`, for an artifact restored together with the
+/// packages named in `siblings` (every other package of the restored set):
+/// a type this package's contract names by its qualified path in one of
+/// them is left to the consumer's full type check, which sees the sibling's
+/// items (`isQualifiedSiblingType`, #8648).
+pub func synthesiseArtifactAmong(
+  art: in RestoredArtifact, preamble: in List[Meta.ContractDecl], siblings: in List[String]
+): Result[SynthesisedArtifact, RestoredLoadError] {
   // Validation source includes the sibling-type `preamble` so the
   // standalone re-typecheck resolves cross-package references in this
   // package's signatures (e.g. `originX(p: Point)` where `Point` is
@@ -654,7 +689,7 @@ pub func synthesiseArtifact(
 
   // Parse errors are always real — contract Repr should be valid
   // Lyric source by construction.
-  val parseErrors = filterRealErrors(pr.diagnostics, art.contract)
+  val parseErrors = filterRealErrors(pr.diagnostics, art.contract, siblings)
   if parseErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = parseErrors))
   }
@@ -663,7 +698,7 @@ pub func synthesiseArtifact(
   // (#1228) because the sibling-type preamble is deliberately partial —
   // see `Lyric.TypeChecker.checkContractSurface`.
   val cr = checkContractSurface(pr.file)
-  val checkErrors = filterRealErrors(cr.diagnostics, art.contract)
+  val checkErrors = filterRealErrors(cr.diagnostics, art.contract, siblings)
   if checkErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
   }
