@@ -6991,7 +6991,7 @@ pub func flattenImportedItems(pkgs: in List[ImportedPackage]): List[Item] {
 // last-registered symbol of a given simple name wins every reference —
 // including references inside other packages' signatures.
 pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in List[ImportedPackage]): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, false)
+  checkWithImportedPackagesCore(file, importedPackages, true, false, SMSUnchecked)
 }
 
 /// `checkWithImportedPackages` for a `--target native` build: the file may
@@ -7002,7 +7002,20 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
 pub func checkWithImportedPackagesForNative(
   file: in SourceFile, importedPackages: in List[ImportedPackage]
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, true)
+  checkWithImportedPackagesCore(file, importedPackages, true, true, SMSUnchecked)
+}
+
+/// `checkWithImportedPackages` / `checkWithImportedPackagesForNative` for a
+/// target whose `String` method surface is known (#7204): a method call on a
+/// `String` that the target cannot lower is T0113 at check time instead of a
+/// codegen panic or a runtime failure.
+pub func checkWithImportedPackagesForTarget(
+  file: in SourceFile,
+  importedPackages: in List[ImportedPackage],
+  nativeIntrinsics: in Bool,
+  stringSurface: in StringMethodSurface,
+): CheckResult {
+  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface)
 }
 
 // The FFI intrinsic types.  Every backend lowers them by name, so they are
@@ -7045,7 +7058,7 @@ func registerNativeIntrinsicTypes(tbl: in SymbolTable, ctr: in TypeIdCounter, na
 // this entry point skips the T4 decl pass while keeping every other check.
 pub func checkContractSurface(file: in SourceFile): CheckResult {
   val empty: List[ImportedPackage] = newList()
-  checkWithImportedPackagesCore(file, empty, false, false)
+  checkWithImportedPackagesCore(file, empty, false, false, SMSUnchecked)
 }
 
 // T0199: a string-literal template of `format1`-`format4` is checked against
@@ -7103,9 +7116,11 @@ func checkWithImportedPackagesCore(
   importedPackages: in List[ImportedPackage],
   validateDecls: in Bool,
   nativeIntrinsics: in Bool,
+  stringSurface: in StringMethodSurface,
 ): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
+  tbl.stringSurface.add(stringSurface)
   for fa in file0.fileAnnotations {
     if fa.name.segments.count == 1 and fa.name.segments[0] == contractSourceAnnotationName() {
       tbl.contractSourceFile.add(true)

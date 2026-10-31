@@ -4999,6 +4999,52 @@ func stringListContains(xs: in List[String], x: in String): Bool {
   false
 }
 
+// #7204: is `name` a method the target being checked for cannot give a
+// `String`?  The check consults, in order: the universal methods, the
+// built-in surface (`stringHostMethodType`, `indexOf`/`lastIndexOf`,
+// `length`/`isEmpty`), a plain function the file can call bare, and, on the JVM, the methods of `java.lang.String`
+// and its supertypes.  The caller has already ruled out a dot-named
+// function and an extension the imports reach.  A target that does not say
+// (`SMSUnchecked`) reports nothing.
+func stringMethodIsUnknown(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  pt: in PrimType,
+  name: in String,
+): Bool {
+  match pt {
+    case PtString -> ()
+    case _ -> return false
+  }
+  if tbl.stringSurface.count == 0 {
+    return false
+  }
+  if isUniversalMethodName(name) or name == "indexOf" or name == "lastIndexOf" or name == "length" or name == "isEmpty" {
+    return false
+  }
+  match stringHostMethodType(name) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  // A plain function of that name the file can call bare binds by method
+  // syntax to its first argument (`s.shout()`, `s.isNotEmpty()`).
+  if visibleBareFuncSigs(tbl, sigs, name, -1).count > 0 {
+    return false
+  }
+  match tbl.stringSurface[0] {
+    case SMSUnchecked -> false
+    case SMSClosed -> true
+    case SMSOpen(hostMethods) -> not hostMethods.contains(name)
+  }
+}
+
+func stringSurfaceNote(tbl: in SymbolTable): String {
+  match tbl.stringSurface[0] {
+    case SMSOpen(_) -> " (it is not a Std.String function or a method of java.lang.String)"
+    case _ -> " (a String has only the built-in methods and the Std.String functions on this target)"
+  }
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface,
 // local or imported (`symTableIsMemberComplete`; a restored contract's record
@@ -5094,6 +5140,8 @@ func maybeUnknownMemberDiag(
     case TyPrim(pt) -> match hiddenExtensionsHint(tbl, sigs, recv, primName(pt) + "." + name) {
       case Some(h) -> if isCall and (h.length > 0 or not (isPrimitiveBuiltinMethodName(name) or (match pt { case PtString -> true; case _ -> false }))) {
         diag.add(errorDiagnostic("T0113", "no method '" + name + "' on type '" + primName(pt) + "'" + h, span))
+      } else if isCall and stringMethodIsUnknown(tbl, sigs, pt, name) {
+        diag.add(errorDiagnostic("T0113", "no method '" + name + "' on type 'String'" + h + stringSurfaceNote(tbl), span))
       }
       case None -> ()
     }

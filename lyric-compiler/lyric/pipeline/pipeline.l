@@ -214,6 +214,9 @@ pub record MiddleEndOptions {
   /// from source into a consumer's build was already reported when the
   /// dependency itself was built.
   quietWarnings: Bool = false
+  /// The target's `String` method surface (#7204): `SMSClosed` for dotnet,
+  /// `SMSOpen(names)` for the JVM, `SMSUnchecked` where it is not known.
+  stringSurface: StringMethodSurface = SMSUnchecked
 }
 
 // Report `diags`, each against the file it is in (`files`, by file id) or
@@ -1682,11 +1685,7 @@ pub func pipeCheckFront(
   opts: in MiddleEndOptions,
   sink: in DiagSink,
 ): Option[CheckFront] {
-  val tcRes = if opts.nativeIntrinsics {
-    checkWithImportedPackagesForNative(file0, importedPkgs)
-  } else {
-    checkWithImportedPackages(file0, importedPkgs)
-  }
+  val tcRes = checkWithImportedPackagesForTarget(file0, importedPkgs, opts.nativeIntrinsics, opts.stringSurface)
   if opts.tcFatal {
     if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None
@@ -4446,11 +4445,7 @@ func lowerValueRecordSpecs(
       }
     }
     val checkFile = file0.copy(items = items)
-    val res = if opts.nativeIntrinsics {
-      checkWithImportedPackagesForNative(checkFile, importedPkgs)
-    } else {
-      checkWithImportedPackages(checkFile, importedPkgs)
-    }
+    val res = checkWithImportedPackagesForTarget(checkFile, importedPkgs, opts.nativeIntrinsics, opts.stringSurface)
     for vs in round {
       match mapGet(rawSpecItems, vs.spec) {
         case Some(rawSpecItem) -> {

@@ -208,6 +208,25 @@ pub record OpenPropagateOperand {
   typeParams: List[String]
 }
 
+/// Which methods a `String` receiver has on the target being checked for
+/// (#7204, docs/01 §12.1).  The two backends do not share a surface: the
+/// `--target dotnet` lowering is a closed cascade, so a name outside it
+/// can never be lowered, while `--target jvm` falls back to the JDK's own
+/// `java.lang.String` by auto-FFI, so any method the JDK has is valid.
+pub union StringMethodSurface {
+  /// The target is unknown (the language server, the contract checks, a
+  /// direct `check`) or does not say: no method call on a `String` is
+  /// reported as unknown.
+  case SMSUnchecked
+  /// Only the built-in methods (`stringHostMethodType`, `indexOf`,
+  /// `lastIndexOf`, `length`, `isEmpty`, the universal methods), the
+  /// dot-named `String` functions and the extensions the imports reach.
+  case SMSClosed
+  /// The above, and every instance method of `java.lang.String` and its
+  /// supertypes, named in `hostMethods`.
+  case SMSOpen(hostMethods: List[String])
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -684,6 +703,9 @@ pub record SymbolTable {
   /// sibling packages' types into the file's own package, so a qualified type
   /// there may resolve to the copy (docs/70 phase 5 removes the synthesis).
   contractSourceFile: List[Bool]
+  /// The `String` method surface of the target being checked for (one slot,
+  /// empty while unset, which is `SMSUnchecked`).
+  stringSurface: List[StringMethodSurface]
   /// The native target's FFI intrinsic types (`NativePtr`, `NativeWeak`,
   /// docs/01 §11.6), by name, when the file is checked for `--target
   /// native`; empty for every other target, which has no representation for
@@ -785,6 +807,7 @@ pub func newSymbolTable(): SymbolTable {
   SymbolTable(
     symbols = newList(),
     contractSourceFile = newList(),
+    stringSurface = newList(),
     scopePkg = newList(),
     scopeImports = newList(),
     impls = newList(),

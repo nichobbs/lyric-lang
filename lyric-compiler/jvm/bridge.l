@@ -420,7 +420,8 @@ pub func compileToJar(
     foreignValueRecordsOut = newList(),
     arraysAsLists = true,
     primitiveArrays = true,
-    foreignRecvClasses = true
+    foreignRecvClasses = true,
+    stringSurface = jvmStringSurface()
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -615,8 +616,21 @@ func jvmMiddleEndOptions(
     primitiveArrays = true,
     foreignRecvClasses = true,
     ioForbiddenReason = ioForbiddenReason,
-    quietWarnings = quietWarnings
+    quietWarnings = quietWarnings,
+    stringSurface = jvmStringSurface()
   )
+}
+
+// The `String` method surface of `--target jvm` (#7204): the lowering's own
+// intrinsics plus every method auto-FFI can resolve against `java.lang.String`.
+// The JDK's method names are read once per process.
+val jvmStringSurfaceCell: List[StringMethodSurface] = newList()
+
+func jvmStringSurface(): StringMethodSurface {
+  if jvmStringSurfaceCell.count == 0 {
+    jvmStringSurfaceCell.add(SMSOpen(hostMethods = instanceMethodNames(buildAutoFfiCtx(), "java.lang.String")))
+  }
+  jvmStringSurfaceCell[0]
 }
 
 // #6404: resolve `alias X = ...` references in `file` to their underlying
