@@ -2167,6 +2167,7 @@ func cmdTestManifest(
   val sharedLibPath = Path.join(testOutDir, sharedLibStem + testExt)
   var sharedLibAttempted = false
   var sharedLibOk = false
+  var sharedLibUnbuildable = false
 
   var ti = 0
   while ti < jobNames.count {
@@ -2284,32 +2285,59 @@ func cmdTestManifest(
     // reaches its package's non-`pub` items, so it still compiles the library
     // with the entry.  On the JVM the library build also carries the path
     // dependencies' packages, which a JVM build compiles from source (#6750).
-    val linkSharedLibrary = mergeIdx < 0 and libPkgs.count > 0
-    if linkSharedLibrary and not sharedLibAttempted {
+    val wantSharedLibrary = mergeIdx < 0 and libPkgs.count > 0
+    if wantSharedLibrary and not sharedLibAttempted {
       sharedLibAttempted = true
       Console.println("== building the [project.packages] library once for the test entries")
-      val libResult = Emitter.emitProject(
-        testBuildRequest(
-          buildSettings,
-          libPkgs,
-          sharedLibStem,
-          sharedLibPath,
-          restoredDlls,
-          depTemplatePkgsList
-        )
+      val libRequest = testBuildRequest(
+        buildSettings,
+        libPkgs,
+        sharedLibStem,
+        sharedLibPath,
+        restoredDlls,
+        depTemplatePkgsList
       )
-      var libFailed = false
-      for d in libResult.diagnostics.toArray() {
-        match d.severity {
-          case DiagError -> {
-            libFailed = true
+      if targetJvm {
+        // On the JVM a library may build only with a consumer: generics are
+        // erased, so a library generic that calls another package's generic
+        // needs a concrete instantiation one of the entries supplies (M0004).
+        // A library that does not build on its own is therefore compiled with
+        // each entry, as before (#8667); its diagnostics are collected and
+        // only the first error is named.
+        val located: List[DiagUtil.LocatedDiagnostic] = newList()
+        val libResult = Emitter.emitProjectCollecting(libRequest, located)
+        val reason = linkedBuildFallbackReason(libResult, located, sharedLibPath)
+        if reason.length == 0 {
+          for ld in located {
+            printErr(DiagUtil.diagFormatLocated(ld))
           }
-          case DiagWarning -> ()
+          for d in libResult.diagnostics.toArray() {
+            printDiag(d)
+          }
+          sharedLibOk = true
+        } else {
+          Console.println(
+            "note: the [project.packages] library does not build on its own on the JVM (" + reason +
+              "); compiling each entry with it"
+          )
+          sharedLibUnbuildable = true
         }
-        printDiag(d)
+      } else {
+        val libResult = Emitter.emitProject(libRequest)
+        var libFailed = false
+        for d in libResult.diagnostics.toArray() {
+          match d.severity {
+            case DiagError -> {
+              libFailed = true
+            }
+            case DiagWarning -> ()
+          }
+          printDiag(d)
+        }
+        sharedLibOk = not libFailed
       }
-      sharedLibOk = not libFailed
     }
+    val linkSharedLibrary = wantSharedLibrary and not sharedLibUnbuildable
     if linkSharedLibrary and not sharedLibOk {
       printErr(abs + ": test build failed: the [project.packages] library does not compile (errors above)")
       totalFailed += 1
