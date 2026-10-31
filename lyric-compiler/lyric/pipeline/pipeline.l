@@ -4932,7 +4932,8 @@ func specialiseWovenContracts(
       packageDecl = res.file.packageDecl,
       imports = res.file.imports,
       items = items,
-      span = res.file.span
+      span = res.file.span,
+      files = res.file.files
     )
   )
 }
