@@ -247,6 +247,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/protected_byref_self_test.l
   lyric-compiler/lyric/inout_aliasing_self_test.l
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l
+  lyric-compiler/lyric/inout_loop_cache_self_test.l
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l
   lyric-compiler/lyric/unit_value_self_test.l
   lyric-compiler/lyric/member_local_shadow_self_test.l

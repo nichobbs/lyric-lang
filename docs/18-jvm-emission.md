@@ -886,12 +886,14 @@ Cost: every read is an `invokeinterface get` and every write an
 the caller passed, so a callee reached from callers passing different kinds
 of place (a field reference, a local's cell, a converting wrapper) has a
 megamorphic call site the JIT does not inline: a tight read-modify-write loop
-over an `inout Int` runs about 3-5x slower than with the old holder array.
-Callers that all pass one kind of place keep it monomorphic and inlined.  The
-backend does not cache the place in a local, since a write through another
-path (a call, a field write, another argument) can intervene and it cannot
-yet prove none does; code with such a hot loop reads the parameter into a
-`var`, works on that, and assigns the parameter once at the end (D183).
+over an `inout Int` ran 3-5x slower than with the old holder array.  D298
+removes that cost for loops that cannot reach the place by another path:
+`appendLoopWithRefCache` (`jvm/codegen/05b_loop_ref_cache.l`) keeps the place
+in the parameter's value slot across such a `while`/`loop`, with one `get`
+before it and one `set` after it.  A loop that calls, accesses a field,
+allocates, indexes an array, divides, casts or jumps out still reads the
+place at every use; read the parameter into a `var` in such a loop and
+assign it once at the end.
 
 An earlier design passed a single-element array `T[]` pre-filled with the
 place's value and copied element 0 back after the call (#1763).  It could

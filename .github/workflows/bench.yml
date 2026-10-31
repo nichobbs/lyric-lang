@@ -144,6 +144,13 @@ jobs:
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_vec3.txt
 
+      - name: bench — inout callee loops
+        continue-on-error: true
+        run: |
+          "$LYRIC_BIN" bench benchmarks/bench_inout.l --target jvm \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee bench-results/bench_inout.txt
+
       # ── Generate HTML report ─────────────────────────────────────────────────
 
       - name: Generate HTML report
