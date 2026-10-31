@@ -49666,7 +49666,15 @@ func registerRestoredImpl(
   // (`impl Measured for Plot` where another package declares `Measured`,
   // #8667), each resolved in the package that declares the interface.
   match restoredIfaceDeclIn(art.source.items, ifaceSimple) {
-    case Some(ix) -> registerRestoredImplMethods(cctx, idecl, ix, art.packageName, targetName, recordTypeRefRow, implGenerics)
+    case Some(ix) -> registerRestoredImplMethods(
+      cctx,
+      idecl,
+      ix,
+      art.packageName,
+      targetName,
+      recordTypeRefRow,
+      implGenerics
+    )
     case None -> {
       for other in cctx.restoredArtifacts {
         if other.packageName != art.packageName {
@@ -49686,9 +49694,7 @@ func registerRestoredImpl(
 func restoredIfaceDeclIn(items: in List[Item], name: in String): Option[InterfaceDecl] {
   for it in items {
     match it.kind {
-      case IInterface(ix) -> if ix.name == name {
-        return Some(value = ix)
-      }
+      case IInterface(ix) -> if ix.name == name { return Some(value = ix) }
       case _ -> ()
     }
   }

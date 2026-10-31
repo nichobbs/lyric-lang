@@ -56,6 +56,19 @@ for any consumer of a published Lyric JAR. Both failed only at run time, with
   (#1602) did the same for an interface of R's own package only; it now
   finds one another restored package declares too.
 
+A JVM library may build only with a consumer: generics are erased, so a
+library generic calling another package's generic can need an instantiation
+only an entry supplies (lyric-ui's `host.l`, `M0004`; a standalone
+`lyric build --target jvm` of it fails the same way). The JVM library build
+is therefore compiled with its diagnostics collected, and when it does not
+build, one `note:` names the first error and each entry is compiled with the
+library as before. On dotnet a library that does not build still fails its
+entries, its errors printed once.
+
+The shared JAR carries the packages reachable from the library, so an entry
+that imports a path dependency's package the library itself never imports
+(`Ui.Testing` in examples/ui-customers) still falls back.
+
 `withLibraryTemplates` no longer adds a library package that is already a
 template source: on the JVM the library packages include the path
 dependencies' packages, which are.

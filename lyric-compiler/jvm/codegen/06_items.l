@@ -4942,7 +4942,11 @@ pub func fileHasInferredModuleVal(file: in SourceFile): Bool {
 // I declared in `file` registers from its declaration; I declared elsewhere
 // has its methods in `into` already, under its own class, and they are
 // copied, so this runs after every file of the bundle is collected.
-pub func registerHeadOnlyImplsJvm(file0: in SourceFile, into: in Map[String, JvmFuncSig], externSeed: in Map[String, String]): Unit {
+pub func registerHeadOnlyImplsJvm(
+  file0: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+): Unit {
   val file = pipeCBindingsToFuncs(file0)
   val owner = segmentsToJvmPath(file.packageDecl.path.segments)
   val externTypes = ownAwareExternTypes(file, externSeed)
