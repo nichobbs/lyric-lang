@@ -24253,7 +24253,8 @@ func lowerMethodCallMsil(
         // a runtime throw rather than a compile-time abort keeps programs whose
         // unreachable paths mention such a call compilable, while any path that
         // actually executes it fails loudly and located.  #1481 item 4.
-        val msg = "unsupported method '" + memberName + "' on the receiver type at this call site (no matching user method, " +
+        val msg = unresolvedCallStubPrefix() + memberName +
+          "' on the receiver type at this call site (no matching user method, " +
           "extern binding, or built-in intrinsic)"
         insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
         insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
@@ -24262,6 +24263,13 @@ func lowerMethodCallMsil(
       }
     }
   }
+}
+
+// The start of the message the unresolved-call stub above throws.  `lyric test`
+// looks for it in a linked entry's assembly to decide whether to compile the
+// entry again with its library, so the two share this definition.
+pub func unresolvedCallStubPrefix(): String {
+  "unsupported method '"
 }
 
 // A `List`/`Map`/`Set` receiver reaching the unknown-method fallback names a

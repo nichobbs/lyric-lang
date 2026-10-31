@@ -132,7 +132,7 @@ EOF
 # ordinal as a call argument, in a match (also on a field of a library record),
 # in a comparison and in an annotated binding.  The distinct type `Score`
 # checks that a linked entry can call its `from` constructor and `toInt`
-# conversion.
+# conversion, and `Bounded` that it checks a library record's invariant.
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
 
@@ -147,6 +147,11 @@ pub enum Category {
 
 pub record Tagged {
   category: Category
+}
+
+pub record Bounded {
+  n: Int
+  invariant: n >= 1
 }
 
 pub func categoryName(c: in Category): String {
@@ -192,6 +197,11 @@ test "case stored in a library record and matched" {
     case _ -> "not other"
   }
   assertTrue(name == "other", "match on t.category")
+}
+
+test "a library record's invariant is checked at construction" {
+  assertPanics("n = 0", () -> { val b = Bounded(n = 0) })
+  assertEqualInt(Bounded(n = 3).n, 3, "n = 3")
 }
 
 test "distinct type constructed and converted" {

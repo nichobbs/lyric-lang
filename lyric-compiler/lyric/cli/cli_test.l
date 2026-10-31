@@ -24,6 +24,7 @@ import Lyric.PackageMerge as PM
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.Coverage as Cov
+import Msil.Codegen as MsilCodegen
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11b. Repl command
@@ -1125,14 +1126,14 @@ func hasErrorDiagnostic(diags: in List[Diagnostic]): Bool {
 }
 
 // Whether the assembly at `path` contains the codegen's unresolved-call stub,
-// found by its message in the user-string heap (UTF-16LE).  Code generation
-// lowers a call it cannot bind to a throw of exactly this message instead of
-// failing the build (#1481 item 4).  A linked entry can reach it where the
-// compile with the library binds the call, so a linked entry that contains it
-// is compiled again with the library.
+// found by its message prefix (`unresolvedCallStubPrefix`) in the user-string
+// heap (UTF-16LE).  Code generation lowers a call it cannot bind to a throw
+// of that message instead of failing the build (#1481 item 4).  A linked entry
+// can reach it where the compile with the library binds the call, so a linked
+// entry that contains it is compiled again with the library.
 func hasUnresolvedCallStub(path: in String): Bool {
   val bytes = match File.readBytes(path) { case Ok(b) -> b; case Err(_) -> return false }
-  val marker = "unsupported method '"
+  val marker = MsilCodegen.unresolvedCallStubPrefix()
   val n = bytes.length
   val m = marker.length * 2
   var i = 0
