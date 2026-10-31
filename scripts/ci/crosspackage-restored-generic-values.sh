@@ -139,3 +139,8 @@ for target in dotnet jvm; do
   "$lyric_bin" test --target "$target" --manifest "$work/app/lyric.toml"
 done
 echo "restored generic bodies and erased values cross the package boundary intact on both targets"
+
+# Bounded operators and unsigned operands in another package's generic (#8530, #8019),
+# and shared union case names on the JVM (#8481).
+bash "$REPO_ROOT/scripts/ci/crosspackage-bounded-ops-unsigned.sh"
+"$lyric_bin" test --target jvm "$REPO_ROOT/lyric-compiler/lyric/union_shared_case_self_test.l"
