@@ -43,6 +43,10 @@ different ordinals, the one registered first not imported, and the app's bare
 `Error` used as a call argument, in a restored record's field, in a match on
 that field and in a comparison.
 
+On nichobbs/cloud-agents, four entries run with `--suite` took 11, 9 and 10
+seconds each after the first, against about 20 s each before; the first
+includes the one library build (97 s for both).
+
 Verified by `scripts/ci/test-runner-project-mode-e2e.sh` (which now also fails
 if a run that passes prints an `error[` line), the enum self-test, and
 `lyric test` in lyric-forms/derive, lyric-health, lyric-testing,
