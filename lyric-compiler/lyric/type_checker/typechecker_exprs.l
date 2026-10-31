@@ -11172,7 +11172,16 @@ func bindPatternTyped(
               )
             )
           }
-          case _ -> ()
+          case t -> if not localValShapeUnknown(t) {
+            diag.add(
+              errorDiagnostic(
+                "T0198",
+                "a " + toString(patterns.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) +
+                  ", which is not a tuple",
+                pat.span
+              )
+            )
+          }
         }
       }
       var i = 0

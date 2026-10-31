@@ -12681,6 +12681,42 @@ test "a tuple pattern in a match arm needs the scrutinee's arity (#7804)" {
   assertEqualInt(diagCount(parseCheck(ok)), 0, "the right arity is clean")
 }
 
+test "a tuple pattern needs a tuple to match, in a match arm and in a for binding (#7804)" {
+  val over = "package P\nfunc f(n: in Int): Int {\n  match n {\n    case (a, b) -> a\n    case _ -> 0\n  }\n}\n"
+  val overCr = parseCheck(over)
+  assertEqualInt(
+    countDiagCode(overCr, "T0198"),
+    1,
+    "a match arm tuple pattern over an Int (" + diagCodesOf(overCr) + ")"
+  )
+  val head = "package P\nfunc f(ps: in slice[(Int, Int)]): Int {\n  var s = 0\n  "
+  val tail = " {\n    s = s + a\n  }\n  s\n}\n"
+  val wrong = parseCheck(head + "for (a, b, c) in ps" + tail)
+  assertEqualInt(countDiagCode(wrong, "T0198"), 1, "a 3-element for pattern over pairs (" + diagCodesOf(wrong) + ")")
+  val ok = parseCheck(head + "for (a, b) in ps" + tail)
+  assertEqualInt(diagCount(ok), 0, "the right arity is clean (" + diagCodesOf(ok) + ")")
+  val nested = parseCheck(
+    "package P\nfunc f(ps: in slice[(Int, (Int, Int))]): Int {\n  var s = 0\n  for (a, (b, c, d)) in ps {\n    s = s + a\n  }\n  s\n}\n"
+  )
+  assertEqualInt(countDiagCode(nested, "T0198"), 1, "a nested wrong arity (" + diagCodesOf(nested) + ")")
+  val scalar = parseCheck(
+    "package P\nfunc f(xs: in slice[Int]): Int {\n  var s = 0\n  for (a, b) in xs {\n    s = s + a\n  }\n  s\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(scalar, "T0198"),
+    1,
+    "a tuple for pattern over Int elements (" + diagCodesOf(scalar) + ")"
+  )
+  val genericCr = parseCheck(
+    "package P\nfunc f[T](xs: in slice[T]): Int {\n  var s = 0\n  for (a, b) in xs {\n    s = s + 1\n  }\n  s\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(genericCr, "T0198"),
+    0,
+    "an element of unknown type stays lenient (" + diagCodesOf(genericCr) + ")"
+  )
+}
+
 test "a local val's constructor pattern gets a match arm's head checks, and a non-record head is named (#7810)" {
   val bogus = "package P\nrecord R { n: Int }\nfunc f(r: in R): Int {\n  val Bogus { n } = r\n  n\n}\n"
   val bogusCr = parseCheck(bogus)
