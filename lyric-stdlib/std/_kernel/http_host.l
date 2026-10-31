@@ -75,9 +75,7 @@ extern type NetworkStream = "System.Net.Sockets.NetworkStream"
 
 extern type SocketsHttpConnectionContext = "System.Net.Http.SocketsHttpConnectionContext"
 
-extern type TaskOfResponse = "System.Threading.Tasks.Task`1[System.Net.Http.HttpResponseMessage]"
-
-extern type TaskOfTask = "System.Threading.Tasks.Task`1[System.Threading.Tasks.Task]"
+extern type BclTask = "System.Threading.Tasks.Task"
 
 extern type ValueTaskOfStream = "System.Threading.Tasks.ValueTask`1[System.IO.Stream]"
 
@@ -292,52 +290,81 @@ func connectUnixSocket(socketPath: in String): NetworkStream {
   }
 }
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.SendAsync")
-async func clientSendAsync(client: in HttpClientHandle, request: in HttpRequestMessage): HttpResponseMessage = ()
+// ---------------------------------------------------------------------------
+// Real task-returning primitives (#5608).
+//
+// An `@externTarget async func` is unwrapped with a blocking `get_Result()` in
+// its wrapper, so awaiting one never suspends the caller's state machine: the
+// thread sits in the wrapper until the I/O finishes and two requests from one
+// thread run back to back.  These helpers return the live `Task<T>` instead
+// (auto-FFI leaves it opaque outside an `async func`), and the `host*Safe`
+// functions below `await` it for real.
+//
+// An awaited faulted task rethrows at the await, and V0012 forbids an `await`
+// inside a `try`.  So each wrapper awaits `settle`, a `Task.WhenAny(t, t)`
+// that completes when `t` does and never faults, and only then reads the
+// outcome with a plain, non-suspending `try` around `Task<T>.Result`.
+// ---------------------------------------------------------------------------
+func clientSendTask(client: in HttpClientHandle, request: in HttpRequestMessage): Task[HttpResponseMessage] {
+  client.SendAsync(request)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.SendAsync")
-async func clientSendAsyncCancel(
-  client: in HttpClientHandle,
-  request: in HttpRequestMessage,
-  token: in CancellationToken,
-): HttpResponseMessage = ()
+func clientSendTaskCancel(
+  client: in HttpClientHandle, request: in HttpRequestMessage, token: in CancellationToken
+): Task[HttpResponseMessage] {
+  client.SendAsync(request, token)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsync(client: in HttpClientHandle, url: in String): HttpResponseMessage = ()
+func clientGetTask(client: in HttpClientHandle, url: in String): Task[HttpResponseMessage] {
+  client.GetAsync(url)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.GetAsync")
-async func clientGetAsyncCancel(
+func clientGetTaskCancel(
   client: in HttpClientHandle, url: in String, token: in CancellationToken
-): HttpResponseMessage = ()
+): Task[HttpResponseMessage] {
+  client.GetAsync(url, token)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.PostAsync")
-async func clientPostAsync(client: in HttpClientHandle, url: in String, content: in StringContent): HttpResponseMessage = ()
+func clientPostTask(client: in HttpClientHandle, url: in String, content: in StringContent): Task[HttpResponseMessage] {
+  client.PostAsync(url, content)
+}
 
-@externInstance
-@externTarget("System.Net.Http.HttpClient.PostAsync")
-async func clientPostAsyncCancel(
+func clientPostTaskCancel(
   client: in HttpClientHandle,
   url: in String,
   content: in StringContent,
   token: in CancellationToken,
-): HttpResponseMessage = ()
-
-func clientGetTask(client: in HttpClientHandle, url: in String): TaskOfResponse {
-  client.GetAsync(url)
+): Task[HttpResponseMessage] {
+  client.PostAsync(url, content, token)
 }
 
-func settleResponse(t: in TaskOfResponse): TaskOfTask {
-  Task.WhenAny(t, t)
+func contentTextTask(c: in HttpContent): Task[String] {
+  c.ReadAsStringAsync()
 }
 
-func responseTaskOutcome(t: in TaskOfResponse): Result[HttpResponseMessage, String] {
+func contentTextTaskCancel(c: in HttpContent, token: in CancellationToken): Task[String] {
+  c.ReadAsStringAsync(token)
+}
+
+func contentBytesTask(c: in HttpContent): Task[slice[Byte]] {
+  c.ReadAsByteArrayAsync()
+}
+
+@externStatic
+@externTarget("System.Threading.Tasks.Task.WhenAny")
+func whenAnyTask(a: in BclTask, b: in BclTask): Task[BclTask] = ()
+
+func settle[T](t: in Task[T]): Task[BclTask] {
+  whenAnyTask(t, t)
+}
+
+@externInstance
+@externTarget("System.Threading.Tasks.Task`1.get_Result")
+func taskResultOf[T](t: in Task[T]): T = ()
+
+func taskOutcome[T](t: in Task[T]): Result[T, String] {
   return try {
-    Ok(value = t.Result)
+    Ok(value = taskResultOf(t))
   } catch Bug as b {
     Err(error = b.message)
   }
@@ -350,22 +377,6 @@ func responseStatusInt(response: in HttpResponseMessage): Int {
 func responseContent(response: in HttpResponseMessage): HttpContent {
   response.Content
 }
-
-@externInstance
-@externTarget("System.Net.Http.HttpContent.ReadAsStringAsync")
-async func contentReadAsString(c: in HttpContent): String = ()
-
-@externInstance
-@externTarget("System.Net.Http.HttpContent.ReadAsStringAsync")
-async func contentReadAsStringCancel(c: in HttpContent, token: in CancellationToken): String = ()
-
-@externInstance
-@externTarget("System.Net.Http.HttpContent.ReadAsByteArrayAsync")
-async func contentReadAsBytes(c: in HttpContent): slice[Byte] = ()
-
-@externInstance
-@externTarget("System.Net.Http.HttpContent.ReadAsByteArrayAsync")
-async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationToken): slice[Byte] = ()
 
 // =====================================================================
 // Public host helpers — the names `Std.Http` resolves through
@@ -1086,54 +1097,44 @@ pub func hostResponseVersionMajor(response: in HttpResponseMessage): Int {
 // protected region (#2737).  Std.Http keeps its awaits OUTSIDE try blocks
 // for exactly this reason.
 //
-// The wrappers below are safe despite using await-in-try because every
-// awaited callee (`clientSendAsync`, `clientGetAsync`, etc.) is declared
-// `@externTarget async func` with return type T (not Task<T>).  The MSIL
-// emitter's `isTaskTypeMsil` check therefore returns false for every EAwait
-// in these bodies: Phase A counts zero SM resume points, Phase B emits no
-// SM resume labels, and the `try` block compiles as ordinary (non-SM) IL
-// — no label ever lands inside a CLR protected region.
+// Each wrapper below awaits a real `Task` (see "Real task-returning
+// primitives" above) with no `try` around the await: it awaits `settle(t)`,
+// which never faults, then converts a faulted or cancelled task to `Err` in
+// `taskOutcome`, a non-suspending `try`.  The message is the one the old
+// blocking `get_Result()` produced.
 // ---------------------------------------------------------------------------
 pub async func hostSendSafe(
   client: in HttpClientHandle, request: in HttpRequestMessage
 ): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientSendAsync(client, request))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientSendTask(client, request)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostGetSafe(client: in HttpClientHandle, url: in String): Result[HttpResponseMessage, String] {
   val pending = clientGetTask(client, url)
-  val settled = await settleResponse(pending)
-  return responseTaskOutcome(pending)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostPostStringSafe(
   client: in HttpClientHandle, url: in String, body: in String, contentType: in String
 ): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientPostAsync(client, url, newStringContent(body, utf8(), contentType)))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientPostTask(client, url, newStringContent(body, utf8(), contentType))
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostReadBodyTextSafe(response: in HttpResponseMessage): Result[String, String] {
-  return try {
-    Ok(value = await contentReadAsString(responseContent(response)))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = contentTextTask(responseContent(response))
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostReadBodyBytesSafe(response: in HttpResponseMessage): Result[slice[Byte], String] {
-  return try {
-    Ok(value = await contentReadAsBytes(responseContent(response)))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = contentBytesTask(responseContent(response))
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostSendWithCancelSafe(
@@ -1141,21 +1142,17 @@ pub async func hostSendWithCancelSafe(
   request: in HttpRequestMessage,
   token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientSendAsyncCancel(client, request, token))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientSendTaskCancel(client, request, token)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostGetWithCancelSafe(
   client: in HttpClientHandle, url: in String, token: in CancellationToken
 ): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientGetAsyncCancel(client, url, token))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientGetTaskCancel(client, url, token)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostPostStringWithCancelSafe(
@@ -1165,19 +1162,15 @@ pub async func hostPostStringWithCancelSafe(
   contentType: in String,
   token: in CancellationToken,
 ): Result[HttpResponseMessage, String] {
-  return try {
-    Ok(value = await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = clientPostTaskCancel(client, url, newStringContent(body, utf8(), contentType), token)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }
 
 pub async func hostReadBodyTextWithCancelSafe(
   response: in HttpResponseMessage, token: in CancellationToken
 ): Result[String, String] {
-  return try {
-    Ok(value = await contentReadAsStringCancel(responseContent(response), token))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  val pending = contentTextTaskCancel(responseContent(response), token)
+  val settled = await settle(pending)
+  return taskOutcome(pending)
 }

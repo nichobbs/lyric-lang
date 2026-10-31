@@ -15,17 +15,11 @@
 //!     never assignable), so the connection fails fast and deterministically
 //!     with `Err(ConnectionFailed ...)` — which is sufficient to pin the
 //!     regression, because the pre-fix failure threw before connecting.
-//!   * A LIVE `Std.HttpServer` round trip through the interface is not
-//!     expressible in a single-threaded stdlib test today: the impl-method
-//!     bodies resolve their kernel awaits synchronously (an `async func`
-//!     kickoff completes before returning on `--target dotnet`), `spawn`
-//!     is degenerate-synchronous on MSIL, and `Std.Task.scopeSpawn` never
-//!     invokes its closure (#5329) — so the client call and the blocking
-//!     `Server.nextContext` accept loop cannot overlap in one process.
-//!     The live Ok-path for the SAME kernel/impl bodies is covered by
-//!     `lyric-compiler/lyric/http_roundtrip_self_test.l` (child-process
-//!     listener harness); free `getAsync` / `HttpClientImpl.get` differ
-//!     only in dispatch, which is exactly what THIS file exercises.
+//!   * Live round trips against a real `Std.HttpServer` listener, including
+//!     overlapping requests from one thread, are in
+//!     `http_async_concurrency_tests.l` (#5608) and
+//!     `lyric-compiler/lyric/http_roundtrip_self_test.l`.  THIS file pins the
+//!     interface dispatch itself, which is what the pre-#5564 failure broke.
 //!
 //! NOT yet wired into CI — the orchestrator should add it alongside the
 //! other `lyric-stdlib/tests/*_tests.l` steps (dotnet target).

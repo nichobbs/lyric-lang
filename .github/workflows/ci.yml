@@ -7473,6 +7473,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_async_tests.l
 
+      # Std.Http free async functions are truly asynchronous on dotnet (#5608):
+      # two slow requests started from one thread overlap, a GET and a POST in
+      # flight together overlap, and cancelling a token ends one early.  Live
+      # loopback server on Task.Run threads, generous timing margins.
+      - name: Std.Http async concurrency test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/http_async_concurrency_tests.l
+
       # Real HTTP round-trips through the PUBLIC Std.Http API against a live
       # Std.HttpServer listener (#5560/#5561): GET, POST, and
       # sendAsync-with-header, each asserting status and the server-side
