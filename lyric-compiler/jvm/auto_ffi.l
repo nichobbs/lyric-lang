@@ -1160,6 +1160,49 @@ func scoreInterfacesRec(
   }
 }
 
+/// The name of every public instance method of `javaFqn`, its superclasses and
+/// its interfaces, transitively (the set `findBestInstanceMethod` can resolve
+/// a call on a receiver of that class against).  The type checker uses it to
+/// tell a `String` method call that names no `java.lang.String` method from
+/// one auto-FFI resolves (#7204).
+pub func instanceMethodNames(ctx: in AutoFfiCtx, javaFqn: in String): List[String] {
+  val names: List[String] = newList()
+  val seen: List[String] = newList()
+  val pending: List[String] = newList()
+  pending.add(javaFqn.replace(".", "/"))
+  var next = 0
+  while next < pending.count {
+    val bin = pending[next]
+    next = next + 1
+    if not seen.contains(bin) {
+      seen.add(bin)
+      match loadClass(ctx, bin.replace("/", ".")) {
+        case Some(ci) -> {
+          var mi = 0
+          while mi < ci.methods.count {
+            val m = ci.methods[mi]
+            if not m.isStatic and not names.contains(m.name) {
+              names.add(m.name)
+            }
+            mi = mi + 1
+          }
+          if ci.superName != "" {
+            pending.add(ci.superName)
+          }
+          var ii = 0
+          while ii < ci.interfaces.count {
+            pending.add(ci.interfaces[ii])
+            ii = ii + 1
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+  }
+  names
+}
+
 /// Find the best-matching instance method in `ci`, walking up the superclass
 /// chain when the method is declared in a superclass (e.g. `length()` on
 /// `StringBuilder` is declared in `AbstractStringBuilder`), and recursively

@@ -3146,6 +3146,8 @@ form with the import in scope call the explicit
 | `s.isNormalized()` | `Bool` | Unicode NFC normalization check (dotnet/JVM only — see native coverage note below) |
 | `s.normalize()` | `String` | converts to Unicode Normalization Form C (dotnet/JVM only — see native coverage note below) |
 
+A method call on a `String` that names none of these (and no `Std.String` function or extension the imports reach, or a method every value has such as `toString`) is **T0113** (#7204, D299), but what counts as "none of these" depends on the target. `--target dotnet` lowers `String` methods through a closed set, so any other name is rejected at check time (it was a codegen failure). `--target jvm` falls back to the JDK: any public instance method of `java.lang.String` and its supertypes (`s.getBytes()`, `s.chars()`, `s.codePointAt(i)`) is valid, resolved against the JDK's own metadata, and only a name the JDK does not have is T0113. `--target native` and tools that check without a target (the language server) do not report an unknown `String` method.
+
 Search and prefix/suffix tests compare code units exactly (ordinal) on every
 target; the process culture never affects them, and case conversion never
 applies locale tailoring such as Turkish dotless I (#7260, #7261).

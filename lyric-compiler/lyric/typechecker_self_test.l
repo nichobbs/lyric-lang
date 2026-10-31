@@ -13681,4 +13681,56 @@ func diagMessages(ds: in List[Diagnostic]): String {
     acc = acc + d.code + " " + d.message + "\n"
   }
   acc
+
+// ── T0113 for a `String` method, per target (#7204, D299) ─────────────────────
+func checkForSurface(src: in String, surface: in StringMethodSurface): CheckResult {
+  val pr = parse(src)
+  val noPkgs: List[ImportedPackage] = newList()
+  checkWithImportedPackagesForTarget(pr.file, noPkgs, false, surface)
+}
+
+func jdkStringNames(): List[String] {
+  val names: List[String] = newList()
+  names.add("getBytes")
+  names.add("chars")
+  names.add("codePointAt")
+  names
+}
+
+test "an unknown String method is T0113 on the closed dotnet surface (#7204)" {
+  val src = "package P\nfunc f(s: in String): String = s.toLowerInvariant()\n"
+  assertTrue(hasDiagCode(checkForSurface(src, SMSClosed), "T0113"), "closed surface rejects an unknown name")
+}
+
+test "a name the JDK has is valid on the open JVM surface and a typo is T0113 (#7204)" {
+  val ok = "package P\nfunc f(s: in String): Int = s.getBytes().length\n"
+  assertFalse(
+    hasDiagCode(checkForSurface(ok, SMSOpen(hostMethods = jdkStringNames())), "T0113"),
+    "getBytes is a java.lang.String method"
+  )
+  val typo = "package P\nfunc f(s: in String): String = s.toLowerInvariant()\n"
+  assertTrue(
+    hasDiagCode(checkForSurface(typo, SMSOpen(hostMethods = jdkStringNames())), "T0113"),
+    "a typo is not a JDK method"
+  )
+}
+
+test "the String intrinsics, universal methods and length stay valid on every surface (#7204)" {
+  val src = "package P\nfunc f(s: in String): Int {\n  val a = s.trim().toLower().toUpper().substring(1)\n  val b = s.replace(\"a\", \"b\").contains(\"x\")\n  val c = s.startsWith(\"a\") and s.endsWith(\"z\") and s.isEmpty\n  val d = s.indexOf(\"a\") + s.lastIndexOf(\"a\") + s.codeUnitAt(0)\n  val e = s.split(\",\").length\n  val g = s.toString().normalize().isNormalized()\n  s.length + a.length + e\n}\n"
+  assertFalse(hasDiagCode(checkForSurface(src, SMSClosed), "T0113"), "closed surface keeps the intrinsics")
+  assertFalse(
+    hasDiagCode(checkForSurface(src, SMSOpen(hostMethods = jdkStringNames())), "T0113"),
+    "open surface keeps the intrinsics"
+  )
+}
+
+test "a visible function called by method syntax stays valid on the closed surface (#7204)" {
+  val src = "package P\nfunc shout(s: in String): String = s + \"!\"\nfunc f(s: in String): String = s.shout()\n"
+  assertFalse(hasDiagCode(checkForSurface(src, SMSClosed), "T0113"), "a visible function binds by method syntax")
+}
+
+test "an unchecked surface reports no String method (#7204)" {
+  val src = "package P\nfunc f(s: in String): String = s.toLowerInvariant()\n"
+  assertFalse(hasDiagCode(checkForSurface(src, SMSUnchecked), "T0113"), "no target, no report")
+  assertFalse(hasDiagCode(parseCheck(src), "T0113"), "the target-less entry points keep the old leniency")
 }
