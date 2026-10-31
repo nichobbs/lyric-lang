@@ -376,7 +376,7 @@ union Result[T, E] {
 }
 ```
 
-A tuple pattern in a `match` arm must have as many elements as the tuple it matches (**T0198**). A `match` arm that no value can reach is an error (**T0196**): one that follows an unguarded catch-all arm (`case _`, a bare binding), or that names a union or enum case the earlier unguarded arms already match whole (a literal sub-pattern, `case B(1)`, does not match the case whole).
+A tuple pattern in a `match` arm must have as many elements as the tuple it matches (**T0198**), and a tuple pattern over a scrutinee of known non-tuple type (`case (a, b)` over an `Int`) is T0198 too. A `match` arm that no value can reach is an error (**T0196**): one that follows an unguarded catch-all arm (`case _`, a bare binding), or that names a union or enum case the earlier unguarded arms already match whole (a literal sub-pattern, `case B(1)`, does not match the case whole).
 
 Pattern matching is exhaustive. The compiler refuses to compile a `match` that doesn't cover all cases or include a wildcard (**T0016**); a guarded arm (`case … if …`) does not count toward coverage because its guard may fail. For union and enum scrutinees every case must be matched (or a `_`/binding catch-all supplied); a `Bool` match must cover both `true` and `false`; a match on an unbounded scalar (`Int`, `String`, `Char`, …) requires a `_` arm:
 
@@ -1233,7 +1233,9 @@ of those (parentheses allowed). A refutable pattern (a constructor pattern such
 as `Some(v)`, a record pattern, a literal, or a range) is a compile error
 (**T0112**), because a `for` loop has no failure path for a non-matching
 element. Destructure refutable shapes with a `match` inside the loop body
-instead.
+instead. A tuple pattern must have as many elements as the element it binds,
+at every nesting depth, and a tuple pattern over an element that is not a
+tuple is rejected too (**T0198**, #7804).
 
 The iterated expression's type must be recognized as iterable: `slice[T]`,
 `array[N, T]`, `List[T]`, `Map[K, V]`'s key/value collections, a range, a

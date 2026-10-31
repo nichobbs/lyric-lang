@@ -776,6 +776,7 @@ pub func checkStatement(
           )
         )
       }
+      checkForTuplePattern(diag, pat, elemType)
       scopePush(sc)
       // Erase unresolved type variables (a `List[T]` / `slice[T]` element inside
       // a generic function) to the lenient wildcard: `TyVar` passes `typeEquiv`
@@ -2221,6 +2222,48 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
 // in the loop body.  An iterator whose own inference already failed
 // (`TyError`), a type parameter and `Self` stay lenient: whether they are
 // iterable is not decidable here.
+// A tuple pattern in a `for` binding must have the element's arity (T0198,
+// #7804), at every nesting depth; an element of unknown type stays lenient.
+func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+  match pat.kind {
+    case PParen(inner) -> checkForTuplePattern(diag, inner, ty)
+    case PTuple(ps) -> {
+      val t = unrefine(ty)
+      if localValShapeUnknown(t) {
+        return
+      }
+      match t {
+        case TyTuple(es) -> if es.count != ps.count {
+          diag.add(
+            errorDiagnostic(
+              "T0198",
+              "a " + toString(ps.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) + ", a " +
+                toString(es.count) +
+                "-element tuple",
+              pat.span
+            )
+          )
+        } else {
+          var i = 0
+          while i < ps.count {
+            checkForTuplePattern(diag, ps[i], es[i])
+            i = i + 1
+          }
+        }
+        case _ -> diag.add(
+          errorDiagnostic(
+            "T0198",
+            "a " + toString(ps.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) +
+              ", which is not a tuple",
+            pat.span
+          )
+        )
+      }
+    }
+    case _ -> ()
+  }
+}
+
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
     case TyError -> TyError
