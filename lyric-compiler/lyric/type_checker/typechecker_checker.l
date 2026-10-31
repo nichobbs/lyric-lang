@@ -5444,7 +5444,6 @@ func checkFieldDefault(
   }
 }
 
-// Every declared initialiser `item` carries, checked by `checkDeclaredInit`.
 // The name a `bind` member is reachable under: its interface's simple name.
 func wireBindName(iface: in TypeExpr): String {
   match iface.kind {
@@ -5601,6 +5600,7 @@ func checkWireInits(
   }
 }
 
+// Every declared initialiser `item` carries, checked by `checkDeclaredInit`.
 func checkItemDeclaredInits(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],

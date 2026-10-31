@@ -274,10 +274,22 @@ test "nativeDtor: an opaque type frees its raw handle when the last reference dr
   assertEqualInt(r.exitCode, 0, "handle freed on release, string field released after it (ASan)")
 }
 
-test "nativeDtor: without the annotation the same program leaks, so the case above has teeth" {
-  val src = cstrPrelude("") + cstrLoopMain()
-  val r = compileAndRunAsan(src)
-  assertTrue(r.exitCode != 0, "the unannotated type leaks its handle and LeakSanitizer fails the run")
+func lowerToIr(src: in String): String {
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "the source itself parses")
+  lowerNativePackage(codegenNativePackage(pr.file, nativeHostCodegenTriple()))
+}
+
+// LeakSanitizer is not available on every host (Windows AddressSanitizer has
+// none), so the control inspects the emitted IR instead of waiting for a leak.
+test "nativeDtor: the destructor calls the symbol only when the annotation is present" {
+  val withDtor = lowerToIr(cstrPrelude("@nativeDtor(\"lyric_cstring_free\")") + cstrLoopMain())
+  assertTrue(
+    Str.contains(withDtor, "call void @lyric_cstring_free"),
+    "the annotated type's destructor frees its handle"
+  )
+  val without = lowerToIr(cstrPrelude("") + cstrLoopMain())
+  assertTrue(not Str.contains(without, "call void @lyric_cstring_free"), "the unannotated type never calls it")
 }
 
 test "nativeDtor: a shared opaque value frees its handle exactly once" {
