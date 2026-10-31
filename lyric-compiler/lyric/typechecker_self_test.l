@@ -13681,6 +13681,7 @@ func diagMessages(ds: in List[Diagnostic]): String {
     acc = acc + d.code + " " + d.message + "\n"
   }
   acc
+}
 
 // ── T0113 for a `String` method, per target (#7204, D299) ─────────────────────
 func checkForSurface(src: in String, surface: in StringMethodSurface): CheckResult {
