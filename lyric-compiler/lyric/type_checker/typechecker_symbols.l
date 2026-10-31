@@ -965,18 +965,22 @@ pub func symTableTypeSymbolId(tbl: in SymbolTable, pkg: in String, name: in Stri
   }
 }
 
-/// The first symbol that declares the type with id `tid`. Symbols appended
-/// since the last lookup are indexed first, so a lookup costs amortised
-/// constant time rather than a scan of the whole table.
+/// The newest symbol that declares the type with id `tid`: when a type is
+/// registered more than once (one DefPath, docs/70 §4.2), the registration
+/// every name lookup picks (`symTableTryFindOne`, `symTableTryFindInPackage`
+/// scan newest-first).  Symbols appended since the last lookup are indexed
+/// first, so a lookup costs amortised constant time rather than a scan of
+/// the whole table.
 pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in SymbolId): Option[Symbol] {
   while tbl.typeSymbolsIndexed.count < tbl.symbols.count {
     val sym = tbl.symbols[tbl.typeSymbolsIndexed.count]
     match symbolTypeIdOpt(sym) {
       case Some(sid) -> {
         val key = toString(sid.id)
-        if not tbl.typeSymbolsById.containsKey(key) {
-          tbl.typeSymbolsById.add(key, sym)
+        if tbl.typeSymbolsById.containsKey(key) {
+          tbl.typeSymbolsById.remove(key)
         }
+        tbl.typeSymbolsById.add(key, sym)
       }
       case None -> ()
     }
