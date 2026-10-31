@@ -2203,25 +2203,6 @@ func checkLocalValPattern(tbl: in SymbolTable, diag: in List[Diagnostic], pat: i
   true
 }
 
-// The element type a `for` binds when it iterates a value of `iterType` (a
-// range or a generator call is typed by the caller), or `TyError` after
-// reporting T0126 when the value is not iterable (#7781).  The iterable types
-// are the ones both backends lower: a slice or array, the stdlib `List[T]`
-// and `Map[K, V]`'s key/value collections -- recognised by identity, never
-// by their bare names (#7737) -- and extern types, whose iteration the host
-// collection protocol (`IEnumerable` / `java.lang.Iterable`) decides at
-// codegen; a single-type-parameter extern type iterates its type argument
-// (the phantom-type-param idiom, e.g.
-// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565).
-// Every other type -- a record, union, enum, opaque, protected, distinct or
-// interface type of any arity, a primitive, a tuple, a function, a nullable
-// value, the stdlib `Map` itself -- has no iteration lowering: codegen's
-// fallback index-loop protocol casts it to a list and fails at runtime.
-// Only a single-parameter one was rejected before (#6720); the others typed
-// the loop variable `TyError`, which silenced every diagnostic involving it
-// in the loop body.  An iterator whose own inference already failed
-// (`TyError`), a type parameter and `Self` stay lenient: whether they are
-// iterable is not decidable here.
 // A tuple pattern in a `for` binding must have the element's arity (T0198,
 // #7804), at every nesting depth; an element of unknown type stays lenient.
 func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
@@ -2264,6 +2245,25 @@ func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Typ
   }
 }
 
+// The element type a `for` binds when it iterates a value of `iterType` (a
+// range or a generator call is typed by the caller), or `TyError` after
+// reporting T0126 when the value is not iterable (#7781).  The iterable types
+// are the ones both backends lower: a slice or array, the stdlib `List[T]`
+// and `Map[K, V]`'s key/value collections -- recognised by identity, never
+// by their bare names (#7737) -- and extern types, whose iteration the host
+// collection protocol (`IEnumerable` / `java.lang.Iterable`) decides at
+// codegen; a single-type-parameter extern type iterates its type argument
+// (the phantom-type-param idiom, e.g.
+// `extern type JHttpStringCollection[T] = "java.util.Collection"`, #6565).
+// Every other type -- a record, union, enum, opaque, protected, distinct or
+// interface type of any arity, a primitive, a tuple, a function, a nullable
+// value, the stdlib `Map` itself -- has no iteration lowering: codegen's
+// fallback index-loop protocol casts it to a list and fails at runtime.
+// Only a single-parameter one was rejected before (#6720); the others typed
+// the loop variable `TyError`, which silenced every diagnostic involving it
+// in the loop body.  An iterator whose own inference already failed
+// (`TyError`), a type parameter and `Self` stay lenient: whether they are
+// iterable is not decidable here.
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
     case TyError -> TyError

@@ -12707,6 +12707,14 @@ test "a tuple pattern needs a tuple to match, in a match arm and in a for bindin
     1,
     "a tuple for pattern over Int elements (" + diagCodesOf(scalar) + ")"
   )
+  val genericCr = parseCheck(
+    "package P\nfunc f[T](xs: in slice[T]): Int {\n  var s = 0\n  for (a, b) in xs {\n    s = s + 1\n  }\n  s\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(genericCr, "T0198"),
+    0,
+    "an element of unknown type stays lenient (" + diagCodesOf(genericCr) + ")"
+  )
 }
 
 test "a local val's constructor pattern gets a match arm's head checks, and a non-record head is named (#7810)" {
