@@ -40683,6 +40683,15 @@ func lowerProtectedMsil(
                 }
                 emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
                 entryInsns.add(MLeave(label = afterL))
+              } else {
+                // The body ended in `return`, so nothing follows it.  A
+                // `defer` region the elaborator wrapped around the body (the
+                // notify of a `when:` barrier) exits through a `leave` to the
+                // label after it, which would then sit on the first byte of
+                // the lock's `finally` handler: not a legal `leave` target.
+                // The stack is empty here, so an unreachable `leave` gives
+                // that label an instruction inside the try (#8261).
+                entryInsns.add(MLeave(label = afterL))
               }
               val finallyStartL = freshLabelMsil(entryFctx)
               val finallyEndL = freshLabelMsil(entryFctx)
