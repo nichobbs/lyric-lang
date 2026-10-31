@@ -4139,7 +4139,7 @@ val host = newPluginHost(
 ```
 
 Loading reads each `<dir>/<id>-<version>/plugin.json`, matches the plugin's
-points (a different major version is `K0103`), asks the policy for grants,
+points (a different major version is `K0103`, and the same version with another interface hash `K0104`), asks the policy for grants,
 and checks each grant against the request: a list-valued grant field must be a
 subset of the requested list and any other field must equal the request (a
 wider grant is `K0102`). A plugin that cannot be loaded is a
@@ -4284,7 +4284,7 @@ where it is missing. The runtime is not available on Windows hosts yet (#8542).
 ```
 lyric plugin pack   [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted]
                     [--sign-key <secret-key-file>] [--zip] [-o <dir>]
-lyric plugin check  <dir>
+lyric plugin check  <dir> [--api <dir|file.l|lyric.toml>]
 lyric plugin sdk    --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
 lyric plugin keygen -o <base>
 lyric plugin sign   <dir> [--key <secret-key-file>]
@@ -4387,7 +4387,9 @@ point. `Lyric.GeneratorSdk` is its API package: the point
 `SourceGenerator` (version 3.0) with one method,
 `generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]`,
 and the capability `ProjectRead` (`readText(path)`), granted as
-`ProjectReadGrant { roots }` and guarded by `projectPathWithin`. A generator is
+`ProjectReadGrant { roots }` and guarded by `projectPathWithin`; the compiler
+also resolves symbolic links and refuses a path that resolves outside a granted
+root (`Denied`, -32040). A generator is
 a `kind = "source-generator"` package with a `@plugin` record implementing
 `SourceGenerator`:
 
@@ -4430,8 +4432,8 @@ Compile-time, reported by `Lyric.PluginExpand`:
 | `K0013` | Component builds only: a name that crosses the component boundary (a record, field, union or enum case, parameter, method, point, capability or generated export) does not survive the WIT round trip, `camel(witName(n)) == n` (Pascal case for types and cases), as `customer_id`, `getURL` and `HTTPError` do not; or two names become one WIT name in one interface |
 | `K0014` | Component builds only: a boundary type or plugin a component cannot carry: `UInt`, `ULong`, `Char`, `slice[T]`, `JsonValue`, a union case with more than one field, a record without fields, a recursive type or one nested more than 8 deep, a `Unit` parameter, field or tuple element, a point or capability whose source is not in the build, or a protocol point |
 
-Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request)
-and `K0103` (a point major-version mismatch), and `TrustedLoadFailed` (no
+Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request),
+`K0103` (a point major-version mismatch), `K0104` (the same version, another interface hash), and `TrustedLoadFailed` (no
 code) reports a trusted payload that could not be loaded in process; the generated
 `<p>ContributionIssues(host)` returns one carrying `K0101` for each loaded
 plugin whose contributions do not decode as the point's contributions type.
@@ -4440,9 +4442,6 @@ plugin whose contributions do not decode as the point's contributions type.
 
 - A `ULong` above 2^63 crosses the boundary as a JSON floating-point number,
   so values that a `Double` cannot represent exactly lose precision.
-- The LSP does not run `Lyric.PluginExpand`, so the generated items (clients,
-  `<P>Remote`, `pluginEncode<T>`) are unknown names in the editor although the
-  build accepts them.
 - The SDK runtimes (C#, Java, TypeScript) accept `$/cancelRequest` but do not
   interrupt a call already running.
 - `--target native` has no unwinding: a panic in a native plugin's method ends

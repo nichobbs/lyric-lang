@@ -319,6 +319,8 @@ Binary files use `readBytes(path): Result[slice[Byte], IOError]` and `writeBytes
 
 Every operation that can fail returns `Result`. `fileExists` is the exception: it returns `Bool` directly, because a check that says "the file was there when I asked" is already racy, and wrapping it in `Result` would invite code that treats `Err` as "the file doesn't exist" when `Err` actually means "the OS refused to answer."
 
+`realPath(path): Result[String, IOError]` returns the canonical absolute path, with every symbolic link resolved and no `.` or `..` left. It fails with `FileNotFound` for a missing path or a dangling link and with `IoError` for a link cycle. To check that a path really lies under a directory, resolve both with `realPath` and compare the results: a lexical test such as `Std.Path.joinWithin` cannot see a link inside the directory that points outside it.
+
 Path strings are unchecked at compile time. The compiler does not know whether `/tmp/output.txt` is a valid path on the target system. If you are constructing paths from user input, validate them before passing them in.
 
 ::: note

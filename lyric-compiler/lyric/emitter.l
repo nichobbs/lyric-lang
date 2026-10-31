@@ -430,6 +430,23 @@ pub func copyStdlibDllsBeside(dllPath: in String, libDir: in String): Unit {
 // `lyric-stdlib/std/` exists.  Returns "" if no such ancestor is found
 // within 32 hops.  Used by `findStdlibSources` to try multiple anchor
 // points (app-base directory first, then CWD).
+/// The stdlib sources a release archive ships beside the binary, for the native
+/// backend, which compiles them from source: `<binary dir>/lib/std/`, holding
+/// the contents of `lyric-stdlib/std/` (public modules, `_kernel/`,
+/// `_kernel_native/`, `_kernel_wasm_module/`).  "" when this install has none,
+/// as a dotnet-only install or a dev tree does not.
+pub func installedStdlibSourceDir(appBase: in String): String {
+  if appBase.length == 0 {
+    return ""
+  }
+  val dir = Path.join(Path.join(appBase, "lib"), "std")
+  if File.dirExists(Path.join(dir, "_kernel_native")) {
+    dir
+  } else {
+    ""
+  }
+}
+
 func walkUpForStdlib(start: in String): String {
   if start.length == 0 {
     return ""
@@ -680,6 +697,9 @@ pub func findStdlibSourcesNativeForShape(shape: in String): List[LlvmBridge.Nati
   val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
   if envOverride.length > 0 and File.dirExists(envOverride) {
     stdlibDir = envOverride
+  }
+  if stdlibDir.length == 0 {
+    stdlibDir = installedStdlibSourceDir(Environment.appBaseDirectory())
   }
   if stdlibDir.length == 0 {
     stdlibDir = walkUpForStdlib(Environment.appBaseDirectory())

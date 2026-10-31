@@ -100,6 +100,12 @@ extern func rtRename(fromPath: NativePtr[Byte], toPath: NativePtr[Byte]): Int = 
 
 extern func rtSetExecutable(path: NativePtr[Byte]): Int = "lyric_file_set_executable"
 
+// realpath(3) on Unix, GetFinalPathNameByHandleW on Windows: sets `*outp` only
+// when it returns 0; -1 when the path (or a link along it) names nothing, -2
+// for any other failure (a link loop, permissions).
+@axiom("lyric_path_real_ok (lyric-rt/src/lyric_fs.c, lyric_fs_win32.c) sets *out only when it returns 0")
+extern func rtPathRealOk(path: NativePtr[Byte], outp: NativePtr[String]): Int = "lyric_path_real_ok"
+
 @unsafe_ffi
 pub func hostFileExists(path: in String): Bool {
   val c = toC(path)
@@ -358,6 +364,22 @@ pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
     Ok(value = ())
   } else {
     Err(error = IoError(path = path, message = "cannot make the file executable"))
+  }
+}
+
+/// `path` with every symbolic link resolved and no `.` or `..` segment.
+@unsafe_ffi
+pub func hostRealPathResult(path: in String): Result[String, IOError] {
+  var resolved: String = ""
+  val c = toC(path)
+  val rc = rtPathRealOk(c, nativeAddrOf(resolved))
+  freeC(c)
+  if rc == 0 {
+    Ok(value = resolved)
+  } else if rc == -1 {
+    Err(error = FileNotFound(path = path))
+  } else {
+    Err(error = IoError(path = path, message = "cannot resolve the path (a link loop or permission denied)"))
   }
 }
 

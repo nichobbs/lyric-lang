@@ -331,6 +331,34 @@ jobs:
           cp resolver/target/lyric-resolver.jar \
              bootstrap/publish/${{ matrix.rid }}/lyric-resolver.jar
 
+      # ── Bundle what `--target native` needs beside the binary (#8454) ─────
+      # The native backend compiles the stdlib from source (preferring the
+      # `_kernel_native/` twins) and links the runtime archive, so an installed
+      # `lyric` needs `lib/std/` and `lib/lyric_rt.a` in its own archive: its
+      # walk-ups from the binary and the working directory find no checkout.
+      # `Lyric.Emitter.installedStdlibSourceDir` and
+      # `LlvmBridge.findLyricRtArchive` look at exactly these two paths.
+      - name: Stage stdlib sources into lib/std/
+        shell: bash
+        run: |
+          mkdir -p bootstrap/publish/${{ matrix.rid }}/lib/std
+          cp -R lyric-stdlib/std/. bootstrap/publish/${{ matrix.rid }}/lib/std/
+
+      # lyric_rt.a is native code, so it is built for the archive's own
+      # architecture: the cross compiler for linux-arm64, `-arch x86_64` for
+      # osx-x64 (built on an arm64 runner).
+      - name: Build lyric-rt for ${{ matrix.rid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rt_build="$RUNNER_TEMP/lyric-rt-${{ matrix.rid }}"
+          case "${{ matrix.rid }}" in
+            linux-arm64) make -C lyric-rt BUILD="$rt_build" CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar ;;
+            osx-x64)     make -C lyric-rt BUILD="$rt_build" CC="clang -arch x86_64" ;;
+            *)           make -C lyric-rt BUILD="$rt_build" ;;
+          esac
+          cp "$rt_build/lyric_rt.a" bootstrap/publish/${{ matrix.rid }}/lib/lyric_rt.a
+
       # ── Package archive ───────────────────────────────────────────────────
       - name: Package tar.gz archive (Linux / macOS)
         if: matrix.archive_suffix == 'tar.gz'
@@ -340,6 +368,18 @@ jobs:
           ARCHIVE="lyric-${VERSION}-${{ matrix.rid }}.tar.gz"
           tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      # From an empty directory outside the checkout, with no LYRIC_STD_PATH or
+      # LYRIC_RT_PATH, the unpacked archive builds and runs a native program.
+      # linux-arm64 is built on an x86-64 runner and cannot run its own output.
+      - name: Smoke-test native builds from the unpacked archive
+        if: matrix.rid != 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unpacked="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$unpacked"
+          bash scripts/ci/release-native-smoke.sh "$unpacked"
 
       # ── macOS: submit for notarization after archive is ready ─────────────
       - name: Notarize macOS archive

@@ -472,7 +472,8 @@ stopAllPlugins(host)
 - **Loading** a discovered directory first verifies its `plugin.sig` (§12,
   `K0105`-`K0110`) and records the signer on `PluginManifest.signer`; it then
   validates the manifest, matches its points against the host's
-  (a different major version is `K0103`; no matching point, a capability no
+  (a different major version is `K0103`, and the same version with another
+  interface hash is `K0104`; no matching point, a capability no
   point allows, or a duplicate id are load issues), asks the `GrantPolicy`
   for a `GrantDecision`, checks each grant against the request (Q-PLG-004: a
   list-valued grant field must be a subset of the requested list, any other
@@ -907,9 +908,26 @@ process or wasm mode.
   (`K0103`). A host can offer several major versions of a point at once by
   declaring each (`EditorExtensionV1`, `EditorExtensionV2`) and adapting
   between them in its own code.
+- **Interface hash (`K0104`).** `Lyric.PluginExpand` computes a SHA-256 for each
+  point and capability from a canonical text of its declaration: kind,
+  qualified name, version, protocol, contributions and grant types, each method
+  as `name(mode param: type, ...): result`, and every boundary type the
+  declaration reaches in its own package (records and exposed records by field,
+  unions and enums by case, distinct types and aliases by right side), sorted
+  and spelled by the formatter. Layout, comments and contracts do not change it;
+  any method, parameter, result or reached-type change does. A type from
+  another package takes part by its written name only. The hash is in
+  `<p>PointInfo().interfaceHash` and `<c>CapabilityInfo().interfaceHash`, in the
+  generated manifest (`interfaceHash` on each point and capability request), and
+  in the point's entry in the `plugin/hello` answer. When the versions agree
+  but the hashes differ, `registerPlugin` refuses the plugin with
+  `InterfaceHashMismatch` (`K0104`, naming the point or capability), and a
+  plugin whose manifest carried no hash is refused at `plugin/hello` instead.
+  A side with no hash (a manifest written by hand or by an SDK runtime) is not
+  compared.
 - **Not in v1:** `lyric public-api-diff` classifying point changes and
-  `lyric publish` enforcing the version bump, and an interface hash refused at
-  handshake (`K0104`). The version is the author's promise until they exist.
+  `lyric publish` enforcing the version bump. The version is the author's
+  promise until they exist; the hash catches a broken promise at load.
 
 ## 12. Distribution and trust
 
@@ -1067,7 +1085,7 @@ What changed relative to the pre-D207 docs/40:
   the whole build, and one call per annotated type is a request on an open
   connection, not a process start.
 - **Q-SG-004 (LSP)** gets a long-lived generator the language server can call;
-  the language server does not run generators yet.
+  the language server runs the plugin pass (D289) but does not run generators yet.
 - **Q-SG-005 (sandboxing)** is not answered yet. Generators are built for
   dotnet (D150) and run as process payloads with ambient I/O (`preferWasm` is
   off and a crashed generator is not restarted). Building them as wasm
@@ -1236,6 +1254,7 @@ docs/69 codes (`pluginIssueCode`):
 | K0101 | (load) A plugin's contributions do not decode as the point's contributions type; the generated `<p>ContributionIssues(host)` reports it and `<p>Contributions` leaves the plugin out |
 | K0102 | (load) A grant policy returned a grant wider than the request |
 | K0103 | (load) Major version mismatch between plugin and host |
+| K0104 | (load) The plugin was built against a different shape of a point or capability than the host offers, though the versions agree (interface hash) |
 
 A trusted payload that the policy chose but that cannot be loaded into the host's
 process is the load issue `TrustedLoadFailed` (no code).
@@ -1256,5 +1275,5 @@ Reported since P7 (`K0105`-`K0110`, D248) and P8 (`K0120`-`K0123`,
 | K0122 | (catalogue) Serial rollback, or the same serial with different contents |
 | K0123 | (catalogue) A downloaded artifact does not match its catalogue entry |
 
-`K0104` (interface hash) is reserved and not checked in v1. `lyric plugin check`
-reports manifest problems as text, without codes.
+`lyric plugin check` reports manifest problems as text, without codes. It does
+not compare interface hashes: it sees the plugin's manifest and not a host.

@@ -266,6 +266,140 @@ pub func hostSetExecutableResult(path: in String): Result[Unit, IOError] {
   }
 }
 
+// The most links `hostRealPathResult` follows before it reports a loop,
+// matching the common POSIX limit (`SYMLOOP_MAX`).
+val maxSymlinkHops: Int = 40
+
+// The non-empty segments of `p`, split on `/` (and on `\` on Windows).
+func realPathParts(p: in String, windows: in Bool): List[String] {
+  val parts: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i <= p.length {
+    val atEnd = i == p.length
+    val ch = if atEnd { "/" } else { p.substring(i, 1) }
+    if atEnd or ch == "/" or (windows and ch == "\\") {
+      if i > start {
+        parts.add(p.substring(start, i - start))
+      }
+      start = i + 1
+    }
+    i += 1
+  }
+  parts
+}
+
+func realPathIsAbsolute(p: in String, windows: in Bool): Bool {
+  if p.length == 0 {
+    return false
+  }
+  val first = p.substring(0, 1)
+  first == "/" or (windows and (first == "\\" or (p.length > 1 and p.substring(1, 1) == ":")))
+}
+
+func realPathJoin(root: in String, done: in List[String], sep: in String): String {
+  var joined = root
+  var i = 0
+  while i < done.count {
+    if i > 0 {
+      joined = joined + sep
+    }
+    joined = joined + done[i]
+    i += 1
+  }
+  joined
+}
+
+// `done` without its last `drop` segments.
+func realPathUp(done: in List[String], drop: in Int): List[String] {
+  val kept: List[String] = newList()
+  var k = 0
+  while k < done.count - drop {
+    kept.add(done[k])
+    k += 1
+  }
+  kept
+}
+
+/// `path` with every symbolic link resolved and no `.` or `..` segment.
+/// Resolved one segment at a time, as `realpath(3)` does, so a `..` after a
+/// link steps up from the link's target and not from the link's own parent.
+/// A link is read with `FileSystemInfo.LinkTarget`; a link loop, a dangling
+/// link and a missing segment are all refused.
+@unsafe_ffi
+pub func hostRealPathResult(path: in String): Result[String, IOError] {
+  val windows = NetOs.IsWindows()
+  val sep = if windows { "\\" } else { "/" }
+  var rootStr = if windows { "" } else { "/" }
+  var done: List[String] = newList()
+  var todo = realPathParts(path, windows)
+  if not realPathIsAbsolute(path, windows) {
+    todo = realPathParts(DirectoryInfo.new(".").FullName, windows)
+    val rel = realPathParts(path, windows)
+    var r = 0
+    while r < rel.count {
+      todo.add(rel[r])
+      r += 1
+    }
+  }
+  var ti = 0
+  if windows and todo.count > 0 and todo[0].length > 1 and todo[0].substring(1, 1) == ":" {
+    rootStr = todo[0] + sep
+    ti = 1
+  }
+  var hops = 0
+  while ti < todo.count {
+    val comp = todo[ti]
+    ti += 1
+    if comp == ".." {
+      done = realPathUp(done, 1)
+    } else if comp != "." {
+      done.add(comp)
+      val candidate = realPathJoin(rootStr, done, sep)
+      val kind = hostPathKindNoFollow(candidate)
+      if kind == 0 {
+        return Err(error = FileNotFound(path = path))
+      }
+      if kind == 3 {
+        hops += 1
+        if hops > maxSymlinkHops {
+          return Err(error = IoError(path = path, message = "too many levels of symbolic links"))
+        }
+        val target = DirectoryInfo.new(candidate).LinkTarget ?? ""
+        if target.length == 0 {
+          return Err(error = IoError(path = path, message = "cannot read the symbolic link"))
+        }
+        done = realPathUp(done, 1)
+        val next = realPathParts(target, windows)
+        var from = 0
+        if realPathIsAbsolute(target, windows) {
+          done = newList()
+          if windows and next.count > 0 and next[0].length > 1 and next[0].substring(1, 1) == ":" {
+            rootStr = next[0] + sep
+            from = 1
+          } else if windows {
+            rootStr = ""
+          }
+        }
+        val spliced: List[String] = newList()
+        var n = from
+        while n < next.count {
+          spliced.add(next[n])
+          n += 1
+        }
+        var j = ti
+        while j < todo.count {
+          spliced.add(todo[j])
+          j += 1
+        }
+        todo = spliced
+        ti = 0
+      }
+    }
+  }
+  Ok(value = realPathJoin(rootStr, done, sep))
+}
+
 // The runtime's own `lstat(2)` shim (dotnet/runtime
 // `src/native/libs/System.Native/pal_io.h`), present wherever .NET runs on
 // Unix and linked statically into a NativeAOT executable. It fills a

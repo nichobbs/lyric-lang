@@ -737,3 +737,99 @@ test "the editor does not prove a document with a type error (#8304)" {
   assertTrue(Str.contains(broken, "T00"), "the type error is reported: " + broken)
   assertFalse(Str.contains(broken, "\"code\":\"V0"), "nothing is proved of a document the build rejects: " + broken)
 }
+
+// #8488: the server runs `Lyric.PluginExpand`, so the items it generates
+// resolve in the editor and its K-diagnostics are published.
+func pluginApiSource(): String {
+  "package Fx.Api\n" + "import Std.Core\n" + "import Std.Plugin\n" + "\n" + "pub exposed record Note {\n" +
+    "  text: String\n" +
+    "}\n" +
+    "\n" +
+    "@capability\n" +
+    "pub interface Notes {\n" +
+    "  func add(n: in Note): Result[Bool, String]\n" +
+    "}\n" +
+    "\n" +
+    "@plugin_point(version = \"1.0\", allows(Notes))\n" +
+    "pub interface Greeter {\n" +
+    "  func greet(name: in String): Result[String, String]\n" +
+    "}\n"
+}
+
+func pluginWorkspace(label: in String): String {
+  val dir = Path.join(tempBase(), "lyric-lsp-plugin-" + label + "-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  writeOrPanic(Path.join(dir, "api.l"), pluginApiSource())
+  dir
+}
+
+test "generated plugin items resolve in the editor (#8488)" {
+  val dir = pluginWorkspace("host")
+  val state = lspInit()
+  state.wsIndex.add("Fx.Api", Path.join(dir, "api.l"))
+  val host = "package App\nimport Std.Core\nimport Std.Plugin\nimport Fx.Api\nfunc f(h: in PluginHost): Int {\n" +
+    "  val rs = greeterRemotes(h)\n  rs.count\n}\n"
+  val msgs = openDocMessages(state, "file:///lsp_self_test_plugin_host.l", host)
+  val client = openDocMessages(
+    state,
+    "file:///lsp_self_test_plugin_client.l",
+    "package App2\nimport Std.Core\nimport Std.Plugin\nimport Fx.Api\nfunc g(c: in PluginConnection): Int {\n" +
+      "  val n = NotesClient(conn = c)\n  0\n}\n"
+  )
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
+  assertFalse(Str.contains(msgs, "T0020"), "greeterRemotes is a known name: " + msgs)
+  assertFalse(Str.contains(client, "T0020"), "NotesClient is a known name: " + client)
+}
+
+test "the plugin pass reports its K-diagnostics in the editor (#8488)" {
+  val state = lspInit()
+  val msgs = openDocMessages(
+    state,
+    "file:///lsp_self_test_plugin_k0005.l",
+    "package Bad.Api\nimport Std.Core\nimport Std.Plugin\n@plugin_point(version = \"1.0\")\ninterface Hidden {\n" +
+      "  func ping(): Result[Bool, String]\n}\n"
+  )
+  assertTrue(Str.contains(msgs, "K0005"), "a plugin point that is not pub: " + msgs)
+}
+
+test "go to definition on a generated plugin name finds the declaration it comes from (#8488)" {
+  val dir = pluginWorkspace("def")
+  val state = lspInit()
+  state.wsIndex.add("Fx.Api", Path.join(dir, "api.l"))
+  state.wsRoot[0] = dir
+  val uri = "file:///lsp_self_test_plugin_def.l"
+  openDoc(
+    state,
+    uri,
+    "package App\nimport Std.Core\nimport Std.Plugin\nimport Fx.Api\nfunc f(h: in PluginHost): Int {\n" +
+      "  val rs = greeterRemotes(h)\n  rs.count\n}\n"
+  )
+  val def = definitionAt(state, uri, 5, 12)
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Str.contains(def, "api.l"), "points into the API package: " + def)
+  assertTrue(
+    Str.contains(def, "\"line\":13") or Str.contains(def, "\"line\":14"),
+    "at the annotated declaration: " + def
+  )
+}
+
+test "hover resolves a plugin item generated in the same package (#8488)" {
+  val state = lspInit()
+  val uri = "file:///lsp_self_test_plugin_hover.l"
+  openDoc(
+    state,
+    uri,
+    "package Fx.Own\nimport Std.Core\nimport Std.Plugin\n@plugin_point(version = \"1.0\")\npub interface Greeter {\n" +
+      "  func greet(name: in String): Result[String, String]\n}\n" +
+      "func f(): String {\n  greeterPointInfo().id\n}\n"
+  )
+  val hover = hoverAt(state, uri, 8, 4)
+  assertTrue(Str.contains(hover, "greeterPointInfo"), "hover names the generated function: " + hover)
+}

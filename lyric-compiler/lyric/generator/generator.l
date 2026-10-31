@@ -824,7 +824,7 @@ impl Plugin.CapabilityProvider for ProjectReadProvider {
   }
 }
 
-func serveProjectRead(
+pub func serveProjectRead(
   root: in String,
   method: in String,
   params: in Option[Jv.JsonValue],
@@ -865,11 +865,76 @@ func serveProjectRead(
     )
   }
   val fields: List[Jv.JsonField] = newList()
-  match File.readText(Path.join(root, path)) {
+  val full = Path.join(root, path)
+  // The lexical check cannot see a symbolic link, so the read goes to the
+  // resolved path, and only when that lies under a granted root as resolved
+  // itself.  A path that does not exist falls through to the read, which
+  // reports it; any other resolution failure (a link loop) is refused.
+  var readPath = full
+  match File.realPath(full) {
+    case Ok(real) -> {
+      if not realPathUnderGrantedRoot(root, path, roots, real) {
+        return Err(
+          error = Rpc.RpcError(
+            code = 0 - 32040,
+            message = "'" + path + "' is outside the granted project roots",
+            data = None
+          )
+        )
+      }
+      readPath = real
+    }
+    case Err(FileNotFound(_)) -> ()
+    case Err(_) -> {
+      return Err(
+        error = Rpc.RpcError(
+          code = 0 - 32040,
+          message = "'" + path + "' cannot be resolved inside the granted project roots",
+          data = None
+        )
+      )
+    }
+  }
+  match File.readText(readPath) {
     case Ok(text) -> fields.add(Jv.JsonField(name = "ok", value = Jv.JString(value = text)))
     case Err(e) -> fields.add(Jv.JsonField(name = "err", value = Jv.JString(value = projectReadError(path, e))))
   }
   Ok(value = Jv.JObject(fields = fields))
+}
+
+// True when `real`, the resolved form of project path `path`, lies at or under
+// the resolved form of a granted root that lexically covers `path`.  A root
+// that cannot be resolved grants nothing.
+func realPathUnderGrantedRoot(projectRoot: in String, path: in String, roots: in List[String], real: in String): Bool {
+  for rt in roots {
+    val one: List[String] = newList()
+    one.add(rt)
+    if projectPathWithin(path, one) {
+      val rootPath = if rt == "." { projectRoot } else { Path.join(projectRoot, rt) }
+      match File.realPath(rootPath) {
+        case Ok(realRoot) -> {
+          if pathIsWithin(real, realRoot) {
+            return true
+          }
+        }
+        case Err(_) -> ()
+      }
+    }
+  }
+  false
+}
+
+// True when `real` is `base` or lies below it, compared on whole segments
+// (`/a/bc` is not under `/a/b`); both are resolved, absolute paths.
+func pathIsWithin(real: in String, base: in String): Bool {
+  if real == base {
+    return true
+  }
+  var prefix = base
+  if not (Str.endsWith(prefix, "/") or Str.endsWith(prefix, "\\")) {
+    prefix = prefix + (if Str.contains(base, "\\") { "\\" } else { "/" })
+  }
+  Str.startsWith(real, prefix)
 }
 
 /// The `ProjectRead.readText` error for a failed read of the project path

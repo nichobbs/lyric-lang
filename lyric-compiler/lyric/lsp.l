@@ -36,6 +36,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.Pipeline
+import Lyric.PluginExpand as PluginExpand
 import Lyric.ModeChecker
 import Lyric.Verifier
 import Lyric.Discovery as Disc
@@ -661,14 +662,115 @@ func collectDiags(src: in List[Diagnostic], dst: in List[Diagnostic]): Unit {
   }
 }
 
+// The plugin packages (`PluginExpand.collectPluginPackage`) of `file` and of
+// every workspace package it imports, directly or not, read from disk like the
+// imported packages are: what `Lyric.PluginExpand` needs to resolve a point,
+// capability or boundary type that another package declares (D207, #8488).
+func lspPluginPackages(state: in LspState, file: in SourceFile): Map[String, PluginExpand.PluginPackage] {
+  val packages: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(file, packages)
+  val seen: Map[String, Bool] = newMap()
+  seen[dottedPackageName(file)] = true
+  val pending: List[String] = newList()
+  for imp in file.imports {
+    pending.add(importedPackageName(imp))
+  }
+  var i = 0
+  while i < pending.count {
+    val pkg = pending[i]
+    i += 1
+    if not seen.containsKey(pkg) {
+      seen[pkg] = true
+      match mapGet(state.wsIndex, pkg) {
+        case None -> ()
+        case Some(fp) -> {
+          if hostFileExists(fp) {
+            val impFile = parse(hostReadAllText(fp)).file
+            PluginExpand.collectPluginPackage(impFile, packages)
+            for imp in impFile.imports {
+              pending.add(importedPackageName(imp))
+            }
+          }
+        }
+      }
+    }
+  }
+  packages
+}
+
+// Where a definition lands: `item`'s own span, or, for an item the plugin pass
+// generated (the written file has no item of that name), the span of the
+// annotated declaration it comes from: the plugin item of the written file
+// whose name the generated name contains, ignoring case (`greeterRemotes`
+// comes from `Greeter`), the longest such name winning.
+func lspDeclarationSpan(written: in SourceFile, item: in Item, name: in String): Span {
+  for w in written.items {
+    match itemName(w) {
+      case Some(n) -> {
+        if n == name {
+          return item.span
+        }
+      }
+      case None -> ()
+    }
+  }
+  var best = item.span
+  var bestLen = 0
+  val lowered = name.toLower()
+  for w in written.items {
+    if lspMentionsPluginAnnotation(w) {
+      match itemName(w) {
+        case Some(n) -> {
+          if n.length > bestLen and Str.contains(lowered, n.toLower()) {
+            best = w.span
+            bestLen = n.length
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  best
+}
+
+func lspMentionsPluginAnnotation(item: in Item): Bool {
+  for a in item.annotations {
+    val n = modulePathJoin(a.name.segments)
+    if n == "plugin" or n == "plugin_point" or n == "protocol_point" or n == "capability" or n == "plugin_handle" {
+      return true
+    }
+  }
+  false
+}
+
+// Whether `text` can declare plugin items, so that expanding it is worth the
+// cost of collecting the workspace's plugin packages.
+func lspMentionsPlugins(text: in String): Bool {
+  Str.contains(text, "@plugin") or Str.contains(text, "@capability") or Str.contains(text, "@protocol_point")
+}
+
+// `file` with the items `Lyric.PluginExpand` generates, as the build has them;
+// the file unchanged when it declares no plugin items or the pass reports an
+// error (the document's own expansion reports those, at their source spans).
+func lspPluginExpanded(file: in SourceFile, plugins: in Map[String, PluginExpand.PluginPackage]): SourceFile {
+  val res = PluginExpand.expandFile(file, plugins)
+  if hasErrorDiagnostic(res.diagnostics) {
+    file
+  } else {
+    res.file
+  }
+}
+
 // The packages a document is checked against: the standard library, as
 // `lyric build` checks against it, and the workspace packages it imports.
-func checkImportedPackages(state: in LspState, file: in SourceFile): List[ImportedPackage] {
+func checkImportedPackages(
+  state: in LspState, file: in SourceFile, plugins: in Map[String, PluginExpand.PluginPackage]
+): List[ImportedPackage] {
   if state.stdlibPackages.count == 0 {
     state.stdlibPackages.add(MsilBridge.stdlibImportedPackagesFromSources(Emitter.findStdlibSources()))
   }
   val packages: List[ImportedPackage] = newList()
-  for wp in buildImportedWorkspacePackages(state, file) {
+  for wp in buildImportedWorkspacePackages(state, file, plugins) {
     packages.add(wp)
   }
   for sp in state.stdlibPackages[0] {
@@ -680,7 +782,11 @@ func checkImportedPackages(state: in LspState, file: in SourceFile): List[Import
 // Each workspace package the document imports, parsed from its indexed file
 // and named as the build names it, so a qualified reference into it resolves
 // in its own package (and one into a package the workspace lacks is reported).
-func buildImportedWorkspacePackages(state: in LspState, file: in SourceFile): List[ImportedPackage] {
+func buildImportedWorkspacePackages(
+  state: in LspState,
+  file: in SourceFile,
+  plugins: in Map[String, PluginExpand.PluginPackage],
+): List[ImportedPackage] {
   val packages: List[ImportedPackage] = newList()
   val seen: List[String] = newList()
   for imp in file.imports {
@@ -691,7 +797,7 @@ func buildImportedWorkspacePackages(state: in LspState, file: in SourceFile): Li
         case None -> ()
         case Some(fp) -> {
           if hostFileExists(fp) {
-            val impFile = parse(hostReadAllText(fp)).file
+            val impFile = lspPluginExpanded(parse(hostReadAllText(fp)).file, plugins)
             packages.add(
               ImportedPackage(
                 name = pkg,
@@ -752,10 +858,16 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   // `lyric prove` refuses it: its check would be of a build no command
   // makes, so it is not reported (it still runs, for hover and navigation).
   val checkedBuilds: List[ProveBuildConfig] = if ctx.buildsKnown { ctx.builds } else { newList() }
+  // D207 plugin desugaring runs after `@cfg` erasure and before the type
+  // check, as in `lyric build`, so the generated clients, `<P>Remote`s and
+  // codecs resolve in the editor and the K-diagnostics are reported (#8488).
+  val plugins = lspPluginPackages(state, parsedFile)
   for b in checkedBuilds {
     val erasedFile = Cfg.applyCfgErasure(Cfg.withTargetFeature(b.activeFeatures, b.targetName), b.declaredFeatures, parsedFile).file
-    val bPrep = pipePrepareForCheck(erasedFile, false)
-    val bCheck = checkWithImportedPackages(bPrep.file, checkImportedPackages(state, bPrep.file))
+    val peRes = PluginExpand.expandFile(erasedFile, plugins)
+    val peFailed = hasErrorDiagnostic(peRes.diagnostics)
+    val bPrep = pipePrepareForCheck(if peFailed { erasedFile } else { peRes.file }, false)
+    val bCheck = checkWithImportedPackages(bPrep.file, checkImportedPackages(state, bPrep.file, plugins))
     if not isSome(firstCheck) {
       firstCheck = Some(value = bCheck)
       firstPrep = Some(value = bPrep)
@@ -763,18 +875,22 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
     // After a failed rewrite the build stops before type checking; so does
     // the report here (the check still runs, for hover and navigation).
     val bDiags: List[Diagnostic] = newList()
+    collectDiags(peRes.diagnostics, bDiags)
     collectDiags(bPrep.diagnostics, bDiags)
-    if not hasErrorDiagnostic(bPrep.diagnostics) {
+    if not peFailed and not hasErrorDiagnostic(bPrep.diagnostics) {
       collectDiags(bCheck.diagnostics, bDiags)
     }
     for d in bDiags {
       addDiagOnce(checkDiags, d)
     }
   }
-  val prep = match firstPrep { case Some(fp) -> fp; case None -> pipePrepareForCheck(parsedFile, false) }
+  val prep = match firstPrep {
+    case Some(fp) -> fp
+    case None -> pipePrepareForCheck(lspPluginExpanded(parsedFile, plugins), false)
+  }
   val cr = match firstCheck {
     case Some(fc) -> fc
-    case None -> checkWithImportedPackages(prep.file, checkImportedPackages(state, prep.file))
+    case None -> checkWithImportedPackages(prep.file, checkImportedPackages(state, prep.file, plugins))
   }
 
   // Update rev-deps: for each import in this file, register uri as a consumer.
@@ -2081,8 +2197,13 @@ func handleDefinition(state: in LspState, params: in String): String {
               val fp = files[fi]
               val fUri = pathToUri(fp)
               if fUri != uri and hostFileExists(fp) {
-                val impParsed = parse(hostReadAllText(fp))
-                val impFile = impParsed.file
+                val impText = hostReadAllText(fp)
+                val impParsed = parse(impText)
+                val impFile = if lspMentionsPlugins(impText) {
+                  lspPluginExpanded(impParsed.file, lspPluginPackages(state, impParsed.file))
+                } else {
+                  impParsed.file
+                }
                 val impItems = impFile.items
                 var ki = 0
                 var fileDone = false
@@ -2090,7 +2211,7 @@ func handleDefinition(state: in LspState, params: in String): String {
                   match itemName(impItems[ki]) {
                     case Some(n) -> {
                       if n == ident {
-                        foundSpan = Some(value = impItems[ki].span)
+                        foundSpan = Some(value = lspDeclarationSpan(impParsed.file, impItems[ki], n))
                         foundUri = fUri
                         fileDone = true
                         wsDone = true

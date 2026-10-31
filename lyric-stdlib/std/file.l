@@ -342,6 +342,25 @@ pub func rename(fromPath: in String, toPath: in String): Result[Unit, IOError] {
   hostRenameResult(fromPath, toPath)
 }
 
+/// The canonical absolute form of `path`: every symbolic link along it
+/// resolved, and no `.` or `..` segment left. A relative `path` is taken
+/// against the current directory.
+///
+/// For checking that a path really lies under a directory, which a lexical
+/// test (`Std.Path.joinWithin`) cannot: resolve both with `realPath` and
+/// compare the results, since a link inside the directory may point outside.
+///
+/// Returns `Err(InvalidPath)` for an empty path, `Err(FileNotFound)` when the
+/// path, or a link along it, names nothing (a dangling link included), and
+/// `Err(IoError)` for any other failure, such as a link loop.
+@experimental
+pub func realPath(path: in String): Result[String, IOError] {
+  if path.length == 0 {
+    return Err(error = InvalidPath(path = path, reason = "path must not be empty"))
+  }
+  hostRealPathResult(path)
+}
+
 /// Give the regular file `path` mode 0755: readable and executable by
 /// everyone, writable by its owner. On Windows, which has no execute bit, it
 /// only checks that the file exists.

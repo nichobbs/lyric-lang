@@ -288,6 +288,11 @@ lyric build --target native hello.l
 
 `clang` must be on `PATH`; the binary links against the `lyric_rt` runtime
 library (ARC intrinsics, strings, POSIX helpers), `libm`, and `libpthread`.
+A release archive carries both the stdlib sources (`lib/std/`) and the runtime
+(`lib/lyric_rt.a`), so an installed `lyric` builds native programs with no
+environment variables set. The NuGet global tool does not: with it, point
+`LYRIC_STD_PATH` at a checkout's `lyric-stdlib/std` and `LYRIC_RT_PATH` at a
+`lyric_rt.a` (`make -C lyric-rt`).
 `--triple <llvm-triple>` cross-compiles (default: the host triple) and
 `--opt 0|1|2|3|s` sets the clang optimisation level (default `2`).
 `lyric run --target native <file.l>` builds and runs in one step.
@@ -482,7 +487,7 @@ Core commands you will use constantly:
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
 | `lyric bindgen` | Generate native FFI bindings (`extern func`, `foreign record`, constants) from a C header with clang |
 | `lyric plugin pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm,component] [--trusted] [-o <dir>]` | Build a plugin for each target and write its artifact directory `<dir>/<id>-<version>/`; `component` builds a WIT-typed component a host runs in process, `--trusted` adds payloads a trusted host may load into its own process (Chapter 33) |
-| `lyric plugin check <dir>` | Validate a plugin artifact directory, and its `plugin.sig` when it has one |
+| `lyric plugin check <dir> [--api <dir\|file.l\|lyric.toml>]` | Validate a plugin artifact directory, and its `plugin.sig` when it has one; with `--api`, compare its interface hashes with the host's API package (K0104) |
 | `lyric plugin keygen -o <base>` | Generate an Ed25519 publisher key: `<base>.key` (secret, owner-only) and `<base>.pub` |
 | `lyric plugin sign <dir> [--key <file>]` | Write the artifact's `plugin.sig` (the key can come from `LYRIC_PLUGIN_SIGNING_KEY` instead); `pack --sign-key <file>` signs while packing |
 | `lyric plugin verify <dir\|zip> --key <pub>... [--publisher <name>]` | Verify an artifact's signature as a host does at load (or against a catalogue with `--catalogue <dir\|url> --catalogue-key <pub>`) |
