@@ -32,5 +32,5 @@ tuple with a record and a list, a key built in a generic function plus
 Also: `Lyric.Pipeline` did not build on main (two `SourceFile` constructions
 gave `files` twice, T0104); the duplicate fields are removed.
 
-Open, separate: `List.indexOf`/`remove` on a `List` of tuples return -1/false on
+Open, separate (#8668): `List.indexOf`/`remove` on a `List` of tuples return -1/false on
 dotnet even for the identical reference (reproduces on the previous compiler).

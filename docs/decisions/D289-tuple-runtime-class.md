@@ -57,4 +57,4 @@ tuple object.
 - Every dotnet assembly grows by one small class.
 - `List.indexOf`/`remove` on a list whose element type is a tuple still
   misbehave on dotnet (they miss even the identical reference); that predates
-  this decision and is tracked separately.
+  this decision and is tracked in #8668.
