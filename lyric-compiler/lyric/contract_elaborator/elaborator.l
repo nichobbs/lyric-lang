@@ -3613,15 +3613,6 @@ func releaseKeptClauses(fn: in FunctionDecl, isPub: in Bool): List[ContractClaus
 func releaseKeptInherited(extra: in List[ContractClause]): List[ContractClause] =
   releaseKeptClauseList(extra, true)
 
-// A member is on the package's public boundary when both it and the type that
-// declares it are `pub`.
-func isPubVisibility(v: in Option[Visibility]): Bool {
-  match v {
-    case Some(VisPub(_)) -> true
-    case _ -> false
-  }
-}
-
 func elaborateItem(
   it: in Item,
   ifaces: in Map[String, InterfaceDecl],
