@@ -1075,6 +1075,8 @@ pub record LRecord {
   fields: List[LField]
   methods: List[LFunc]
   implementsIfaces: List[String]
+  // The superclass; a tuple is an `ArrayList` subclass (D289).
+  superClass: String = "java/lang/Object"
   // ── Type helpers (no OR patterns) ────────────────────────────────────────────
   // Emit the appropriate load instruction for parameter slot `slot` of type `t`.
 }
@@ -2800,7 +2802,7 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   // aload_0; invokespecial java/lang/Object.<init>:()V
   lowerInsn(LAload(slot = 0), ctorAsm)
   val objInitPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objInitPs, ret = JVoid), ctorAsm)
+  lowerInsn(LInvokespecial(owner = r.superClass, name = "<init>", params = objInitPs, ret = JVoid), ctorAsm)
 
   // For each field: aload_0; load param at slot; putfield
   var slot = 1
@@ -2851,11 +2853,84 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
     cfFields.add(makeFieldInfo(fld.flags, fld.name, typeDescriptor(fld.fieldType), fa))
   }
 
-  if r.implementsIfaces.count > 0 {
+  val cf = if r.implementsIfaces.count > 0 {
     makeClassFullWithInterfaces(r.className, r.implementsIfaces, cfFields, methods)
   } else {
     makeClassFull(r.className, cfFields, methods)
   }
+  if r.superClass == "java/lang/Object" {
+    cf
+  } else {
+    ClassFile(
+      minorVersion = cf.minorVersion,
+      majorVersion = cf.majorVersion,
+      flags = cf.flags,
+      thisClass = cf.thisClass,
+      superClass = r.superClass,
+      interfaces = cf.interfaces,
+      fields = cf.fields,
+      methods = cf.methods,
+      attrs = cf.attrs
+    )
+  }
+}
+
+pub func tupleClassHelperName(): String = "__lyricTuple"
+
+// The class of a tuple value in package `pkg`: an `ArrayList` whose `equals`
+// and `hashCode` use D172's structural relation, so a bare tuple works as a
+// `Map`/`Set` key (#8170, D289).  Both go through the package's
+// `__lyricKeyEq`/`__lyricKeyHash`, which compare an `ArrayList` element by
+// element, so this class's own `equals` is not re-entered.
+pub func tupleClassName(pkg: in String): String = pkg + "/__LyricTuple"
+
+pub func buildTupleClassRecord(pkg: in String): LRecord {
+  val owner = pkg
+  val objT = JRef(className = "java/lang/Object")
+  val objPs: List[JvmType] = newList()
+  objPs.add(objT)
+  objPs.add(objT)
+  val onePs: List[JvmType] = newList()
+  onePs.add(objT)
+  val eqInsns: List[LInsn] = newList()
+  eqInsns.add(LAload(slot = 0))
+  eqInsns.add(LAload(slot = 1))
+  eqInsns.add(LInvokestatic(owner = owner, name = keyEqHelperName(), params = objPs, ret = JBoolean))
+  eqInsns.add(LIreturn)
+  val hashInsns: List[LInsn] = newList()
+  hashInsns.add(LAload(slot = 0))
+  hashInsns.add(LInvokestatic(owner = owner, name = keyHashHelperName(), params = onePs, ret = JInt))
+  hashInsns.add(LIreturn)
+  val methods: List[LFunc] = newList()
+  methods.add(
+    LFunc(
+      flags = ACC_PUBLIC,
+      name = "equals",
+      params = onePs,
+      ret = JBoolean,
+      insns = eqInsns,
+      maxStack = 2,
+      maxLocals = 2
+    )
+  )
+  methods.add(
+    LFunc(
+      flags = ACC_PUBLIC,
+      name = "hashCode",
+      params = newList(),
+      ret = JInt,
+      insns = hashInsns,
+      maxStack = 1,
+      maxLocals = 1
+    )
+  )
+  LRecord(
+    className = tupleClassName(pkg),
+    fields = newList(),
+    methods = methods,
+    implementsIfaces = newList(),
+    superClass = "java/util/ArrayList"
+  )
 }
 
 // ── B6: Protected types and wire blocks ──────────────────────────────────────

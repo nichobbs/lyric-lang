@@ -694,6 +694,10 @@ pub record CodegenCtx {
   // pending a proper `var` field landing (#1186).
   nextMethodDefRow: List[Int]
   nextFieldDefRow: List[Int]
+  // One element once the bundle's `Lyric.Internal.LyricTuple` class (the runtime
+  // representation of a tuple, structural `Equals`/`GetHashCode`) has been queued
+  // as the first item of the first package.
+  tupleClassQueued: List[Bool]
   // Bundle-wide entry point.  When `addPackageTokens` walks a package and
   // encounters a top-level `func main()`, it records the MethodDef token
   // here.  At most one element — the first package whose `main()` is seen
@@ -2531,8 +2535,9 @@ pub func newCodegenCtx(
     memberRecvClasses = newMap(),
     restoredFuncParamTypes = newMap(),
     implEntries = newList(),
-    nextMethodDefRow = newList(),
+    nextMethodDefRow = tupleClassMethodRowsMsil(),
     nextFieldDefRow = newList(),
+    tupleClassQueued = newList(),
     mainEntryToken = newList(),
     pkgImports = newMap(),
     pkgBareImports = newMap(),
@@ -12900,7 +12905,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // ── Tuple ──────────────────────────────────────────────────────────────────
     // Tuples are represented at runtime as List<object> with each element boxed.
     case ETuple(exprs) -> {
-      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      insns.add(MNewobjByName(className = tupleClassFqnMsil))
       // Runtime representation is `List<object>` (each element boxed).  The
       // element types are collected and returned as MTuple so a downstream
       // destructuring can narrow each element to its concrete type even when the
@@ -16308,7 +16313,7 @@ func lowerTupleCollectingHolesMsil(
   path: in List[Int],
   holes: in List[TupleHoleMsil],
 ): MsilType {
-  insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+  insns.add(MNewobjByName(className = tupleClassFqnMsil))
   val elemTys: List[MsilType] = newList()
   var i = 0
   while i < exprs.count {
@@ -38935,6 +38940,254 @@ func emitListKeyHashMsil(
   insns.add(MLdloc(slot = lh))
 }
 
+// The runtime representation of a tuple: a `List<object>` whose `Equals` and
+// `GetHashCode` compare element by element, so a bare tuple works as a
+// `Map`/`Set` key (#8170, D289).  Each assembly carries its own copy and
+// `Equals` tests `IList`, not this class, so tuples built by different
+// assemblies compare equal.
+val tupleClassNamespaceMsil: String = "Lyric.Internal"
+
+val tupleClassFqnMsil: String = "Lyric.Internal.LyricTuple"
+
+// MethodDef rows the class occupies (its `.ctor`, then `tupleMethod*Msil`
+// below).  It is the first TypeDef of the assembly, so these are rows 1..7 and
+// every package's predicted rows start after them.
+func tupleClassMethodRowsMsil(): List[Int] {
+  val rows: List[Int] = newList()
+  var i = 0
+  while i < 7 {
+    rows.add(0)
+    i = i + 1
+  }
+  rows
+}
+
+val tupleMethodElemEqRowMsil: Int = 4
+
+val tupleMethodListEqRowMsil: Int = 5
+
+val tupleMethodElemHashRowMsil: Int = 6
+
+val tupleMethodListHashRowMsil: Int = 7
+
+// Methods, in MethodDef row order after the `.ctor`:
+//   Equals(object): bool          override
+//   GetHashCode(): int            override
+//   ElemEq(object, object): bool  one element: nested lists go element by
+//                                 element, everything else through
+//                                 StructuralEqualityComparer (boxed doubles
+//                                 equal 0.0/-0.0 and NaN/NaN, records use their
+//                                 own overrides)
+//   ListEq(object, object): bool  two IList values, same length, ElemEq each
+//   ElemHash(object): int         consistent with ElemEq
+//   ListHash(object): int         h = h*31 + ElemHash from 1
+func buildTupleClassMsil(cctx: in CodegenCtx): MRecord {
+  val listTy = iListLocalTypeMsil(cctx)
+  val methods: List[MFunc] = newList()
+  val instFlags = MDA_PUBLIC + MDA_HIDE_BY_SIG
+  val virtFlags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG
+  val noLocals: List[MsilType] = newList()
+
+  val oneObj: List[MsilType] = newList()
+  oneObj.add(MObject)
+  val twoObj: List[MsilType] = newList()
+  twoObj.add(MObject)
+  twoObj.add(MObject)
+  val noParams: List[MsilType] = newList()
+
+  // Equals(object other)
+  val eq: List[MInsn] = newList()
+  eq.add(MLdarg(slot = 1))
+  eq.add(MIsinst(typeToken = cctx.tokIListCast))
+  eq.add(MBrFalse(label = 0))
+  eq.add(MLdarg(slot = 0))
+  eq.add(MLdarg(slot = 0))
+  eq.add(MLdarg(slot = 1))
+  eq.add(MCall(methodToken = 0x06000000 + tupleMethodListEqRowMsil))
+  eq.add(MRet)
+  eq.add(MLabel(id = 0))
+  eq.add(MLdcI4(v = 0))
+  eq.add(MRet)
+  methods.add(
+    MFunc(flags = virtFlags, name = "Equals", params = oneObj, ret = MBool, insns = eq, maxStack = 4, locals = noLocals)
+  )
+
+  // GetHashCode()
+  val hc: List[MInsn] = newList()
+  hc.add(MLdarg(slot = 0))
+  hc.add(MLdarg(slot = 0))
+  hc.add(MCall(methodToken = 0x06000000 + tupleMethodListHashRowMsil))
+  hc.add(MRet)
+  methods.add(
+    MFunc(
+      flags = virtFlags,
+      name = "GetHashCode",
+      params = noParams,
+      ret = MInt,
+      insns = hc,
+      maxStack = 4,
+      locals = noLocals
+    )
+  )
+
+  // ElemEq(object a, object b)
+  val ee: List[MInsn] = newList()
+  ee.add(MLdarg(slot = 1))
+  ee.add(MIsinst(typeToken = cctx.tokIListCast))
+  ee.add(MBrFalse(label = 0))
+  ee.add(MLdarg(slot = 2))
+  ee.add(MIsinst(typeToken = cctx.tokIListCast))
+  ee.add(MBrFalse(label = 0))
+  ee.add(MLdarg(slot = 0))
+  ee.add(MLdarg(slot = 1))
+  ee.add(MLdarg(slot = 2))
+  ee.add(MCall(methodToken = 0x06000000 + tupleMethodListEqRowMsil))
+  ee.add(MRet)
+  ee.add(MLabel(id = 0))
+  ee.add(MCall(methodToken = cctx.tokStructEqComparer))
+  ee.add(MLdarg(slot = 1))
+  ee.add(MLdarg(slot = 2))
+  ee.add(MCallvirt(methodToken = cctx.tokEqComparerEquals))
+  ee.add(MRet)
+  methods.add(
+    MFunc(flags = instFlags, name = "ElemEq", params = twoObj, ret = MBool, insns = ee, maxStack = 4, locals = noLocals)
+  )
+
+  // ListEq(object a, object b)
+  val le: List[MInsn] = newList()
+  val leLocals: List[MsilType] = newList()
+  leLocals.add(listTy)
+  leLocals.add(listTy)
+  leLocals.add(MInt)
+  le.add(MLdarg(slot = 1))
+  le.add(MCastclass(typeToken = cctx.tokIListCast))
+  le.add(MStloc(slot = 0))
+  le.add(MLdarg(slot = 2))
+  le.add(MCastclass(typeToken = cctx.tokIListCast))
+  le.add(MStloc(slot = 1))
+  le.add(MLdloc(slot = 0))
+  le.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  le.add(MLdloc(slot = 1))
+  le.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  le.add(MBrNe(label = 1))
+  le.add(MLdcI4(v = 0))
+  le.add(MStloc(slot = 2))
+  le.add(MLabel(id = 2))
+  le.add(MLdloc(slot = 2))
+  le.add(MLdloc(slot = 0))
+  le.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  le.add(MBrGe(label = 3))
+  le.add(MLdarg(slot = 0))
+  le.add(MLdloc(slot = 0))
+  le.add(MLdloc(slot = 2))
+  le.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+  le.add(MLdloc(slot = 1))
+  le.add(MLdloc(slot = 2))
+  le.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+  le.add(MCall(methodToken = 0x06000000 + tupleMethodElemEqRowMsil))
+  le.add(MBrFalse(label = 1))
+  le.add(MLdloc(slot = 2))
+  le.add(MLdcI4(v = 1))
+  le.add(MAdd)
+  le.add(MStloc(slot = 2))
+  le.add(MBr(label = 2))
+  le.add(MLabel(id = 3))
+  le.add(MLdcI4(v = 1))
+  le.add(MRet)
+  le.add(MLabel(id = 1))
+  le.add(MLdcI4(v = 0))
+  le.add(MRet)
+  methods.add(
+    MFunc(flags = instFlags, name = "ListEq", params = twoObj, ret = MBool, insns = le, maxStack = 6, locals = leLocals)
+  )
+
+  // ElemHash(object o)
+  val eh: List[MInsn] = newList()
+  eh.add(MLdarg(slot = 1))
+  eh.add(MIsinst(typeToken = cctx.tokIListCast))
+  eh.add(MBrFalse(label = 0))
+  eh.add(MLdarg(slot = 0))
+  eh.add(MLdarg(slot = 1))
+  eh.add(MCall(methodToken = 0x06000000 + tupleMethodListHashRowMsil))
+  eh.add(MRet)
+  eh.add(MLabel(id = 0))
+  eh.add(MCall(methodToken = cctx.tokStructEqComparer))
+  eh.add(MLdarg(slot = 1))
+  eh.add(MCallvirt(methodToken = cctx.tokEqComparerHash))
+  eh.add(MRet)
+  methods.add(
+    MFunc(
+      flags = instFlags,
+      name = "ElemHash",
+      params = oneObj,
+      ret = MInt,
+      insns = eh,
+      maxStack = 4,
+      locals = noLocals
+    )
+  )
+
+  // ListHash(object o)
+  val lh: List[MInsn] = newList()
+  val lhLocals: List[MsilType] = newList()
+  lhLocals.add(listTy)
+  lhLocals.add(MInt)
+  lhLocals.add(MInt)
+  lh.add(MLdarg(slot = 1))
+  lh.add(MCastclass(typeToken = cctx.tokIListCast))
+  lh.add(MStloc(slot = 0))
+  lh.add(MLdcI4(v = 1))
+  lh.add(MStloc(slot = 1))
+  lh.add(MLdcI4(v = 0))
+  lh.add(MStloc(slot = 2))
+  lh.add(MLabel(id = 0))
+  lh.add(MLdloc(slot = 2))
+  lh.add(MLdloc(slot = 0))
+  lh.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  lh.add(MBrGe(label = 1))
+  lh.add(MLdloc(slot = 1))
+  lh.add(MLdcI4(v = 31))
+  lh.add(MMul)
+  lh.add(MLdarg(slot = 0))
+  lh.add(MLdloc(slot = 0))
+  lh.add(MLdloc(slot = 2))
+  lh.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+  lh.add(MCall(methodToken = 0x06000000 + tupleMethodElemHashRowMsil))
+  lh.add(MAdd)
+  lh.add(MStloc(slot = 1))
+  lh.add(MLdloc(slot = 2))
+  lh.add(MLdcI4(v = 1))
+  lh.add(MAdd)
+  lh.add(MStloc(slot = 2))
+  lh.add(MBr(label = 0))
+  lh.add(MLabel(id = 1))
+  lh.add(MLdloc(slot = 1))
+  lh.add(MRet)
+  methods.add(
+    MFunc(
+      flags = instFlags,
+      name = "ListHash",
+      params = oneObj,
+      ret = MInt,
+      insns = lh,
+      maxStack = 6,
+      locals = lhLocals
+    )
+  )
+
+  MRecord(
+    className = tupleClassFqnMsil,
+    namespace = tupleClassNamespaceMsil,
+    baseClass = "System.Object",
+    fields = newList(),
+    methods = methods,
+    useDefaultCtor = true,
+    generics = newList(),
+    extendsToken = tdrTypeSpec(cctx.tokListObjTypeSpec - 0x1B000000),
+    baseCtorToken = cctx.tokListObjCtor
+  )
+}
+
 // A field `Equals` compares with `ceq`: an integer, `Bool` or `Char`.
 func isCeqFieldMsil(t: in MsilType): Bool {
   match t {
@@ -47016,6 +47269,10 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
   val staticFields: List[MStaticField] = newList()
   val items: List[MPackageItem] = newList()
   var hasMain = false
+  if cctx.tupleClassQueued.count == 0 {
+    cctx.tupleClassQueued.add(true)
+    items.add(MPRecord(rec = buildTupleClassMsil(cctx)))
+  }
 
   // #5955: ONE shared FuncCtx for every IConst/IVal field initializer, so
   // slot numbers accumulate across the whole `.cctor` (matching how the

@@ -1044,6 +1044,11 @@ pub record MRecord {
   // (table 0x2A) for this TypeDef, lowers `T`-typed fields to `MTypeVar`, and
   // switches the TypeDef to AutoLayout.
   generics: List[String]
+  // A TypeDefOrRef coded token for a base class that is not an in-bundle
+  // TypeDef (a TypeSpec such as `List<object>`), and the `.ctor` token the
+  // synthesised no-arg ctor calls on it.  0 = unused (the base is `baseClass`).
+  extendsToken: Int = 0
+  baseCtorToken: Int = 0
 }
 
 // ── MUnion — sealed class hierarchy ─────────────────────────────────────────
@@ -3396,7 +3401,9 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   } else {
     0
   }
-  val recExtendsToken = if baseOpenTsRow > 0 {
+  val recExtendsToken = if r.extendsToken != 0 {
+    r.extendsToken
+  } else if baseOpenTsRow > 0 {
     tdrTypeSpec(baseOpenTsRow)
   } else if recBaseRow > 0 {
     tdrTypeDef(recBaseRow)
@@ -3410,7 +3417,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // A generic TypeDef with a type-variable field (`value: T` → VAR(0)) cannot
   // use SequentialLayout — the CLR rejects it at load with a TypeLoadException —
   // so a generic record (non-empty `r.generics`) uses AutoLayout too (#2362).
-  val recFlags = if recBaseRow > 0 or r.generics.count > 0 {
+  val recFlags = if recBaseRow > 0 or r.generics.count > 0 or r.extendsToken != 0 {
     TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT
   } else {
     TDF_PUBLIC + TDF_SEALED + TDF_SEQUENTIAL_LAYOUT + TDF_BEFORE_FIELD_INIT
@@ -3470,7 +3477,9 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // Otherwise emit the standard .ctor(field1, field2, ...) that takes all
   // fields as parameters (the existing record constructor pattern).
   val sCtor = internString(sh, ".ctor")
-  val recBaseCtorTok2 = if baseOpenTsRow > 0 {
+  val recBaseCtorTok2 = if r.baseCtorToken != 0 {
+    r.baseCtorToken
+  } else if baseOpenTsRow > 0 {
     // Generic case: chain through `Maybe`1<!0>::.ctor()` via a TypeSpec MemberRef.
     val mrRow = ctxAddMemberRefForTypeSpec(
       ctx,

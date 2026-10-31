@@ -153,3 +153,61 @@ test "a tuple field compares element by element" {
   assertTrue(m.containsKey(Keyed(t = (1, -0.0))), "negative zero in a tuple field")
   assertFalse(m.containsKey(Keyed(t = (2, 0.0))), "a different tuple")
 }
+
+test "a bare tuple is found as a Map key" {
+  val m: Map[(Int, Int), String] = newMap()
+  m.add((1, 2), "a")
+  assertTrue(m.containsKey((1, 2)), "a separately built tuple key")
+  assertFalse(m.containsKey((2, 1)), "a different tuple")
+  m.add((1, 2), "b")
+  assertEqualInt(m.count, 1, "adding an equal key replaces")
+}
+
+test "a bare tuple is a Set member" {
+  val s: Set[(String, Int)] = newSet()
+  s.add(("a", 1))
+  s.add(("a", 1))
+  s.add(("b", 1))
+  assertEqualInt(s.count, 2, "two distinct members")
+  assertTrue(s.contains(("b", 1)), "a separately built member")
+}
+
+test "tuple keys follow D172 for Double elements" {
+  val m: Map[(Int, Double), Int] = newMap()
+  m.add((1, 0.0), 1)
+  assertTrue(m.containsKey((1, -0.0)), "negative zero finds zero")
+  m.add((1, -0.0), 2)
+  assertEqualInt(m.count, 1, "0.0 and -0.0 are one key")
+  m.add((2, nanOf(0.0)), 3)
+  assertTrue(m.containsKey((2, nanOf(0.0))), "a NaN element")
+}
+
+test "nested tuples, records and lists inside a tuple key" {
+  val m: Map[((Int, Int), P, List[Int]), Int] = newMap()
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  m.add(((1, 2), P(x = 3, y = 4), xs), 9)
+  val ys: List[Int] = newList()
+  ys.add(1)
+  ys.add(2)
+  assertTrue(m.containsKey(((1, 2), P(x = 3, y = 4), ys)), "nested tuple, record and list")
+  ys.add(3)
+  assertFalse(m.containsKey(((1, 2), P(x = 3, y = 4), ys)), "a longer list")
+}
+
+func pairKey[A, B](a: in A, b: in B): (A, B) = (a, b)
+
+func setOfPairs(): Set[(Int, Int)] {
+  val s: Set[(Int, Int)] = newSet()
+  s.add(pairKey(1, 2))
+  s
+}
+
+test "a tuple built in a generic function is a key" {
+  val s = setOfPairs()
+  assertTrue(s.contains((1, 2)), "key from a generic helper")
+  val l: List[(Int, Int)] = newList()
+  l.add((5, 6))
+  assertTrue(l.contains((5, 6)), "List.contains")
+}

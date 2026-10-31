@@ -10706,6 +10706,9 @@ pub func codegenPackageWithSigsSeeded(
   // always present.
   fns.add(makeAwaitHelperFunc())
 
+  if runtimeHelperUsed(usedRuntimeHelpers, tupleClassHelperName()) {
+    items.add(LPRecord(rec = buildTupleClassRecord(funcsClass)))
+  }
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 
   // J2b closures (#2665): drain the accumulated lambda closures into package
