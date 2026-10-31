@@ -375,6 +375,15 @@ int64_t   lyric_map_cap(LyricMap* map);
  * calling in a hot loop over a map that grew large and then shrank. */
 LyricList* lyric_map_keys(LyricMap* map);
 LyricList* lyric_map_values(LyricMap* map);
+/* Structural equality (D172): equal sizes, and every key of `a` is present in
+ * `b` with a value `val_eq` accepts. `val_eq` compares two 64-bit value slots;
+ * the compiler synthesises it per value type. */
+/* Hashes consistent with the equalities above: a map's entries fold
+ * order-independently, a list's elements in order. `key_hash`/`val_hash`/
+ * `elem_hash` hash one 64-bit slot. */
+uint64_t  lyric_map_hash(LyricMap* m, uint64_t (*key_hash)(int64_t), uint64_t (*val_hash)(int64_t));
+uint64_t  lyric_list_hash(LyricList* l, uint64_t (*elem_hash)(int64_t));
+int32_t   lyric_map_equal(LyricMap* a, LyricMap* b, int32_t (*val_eq)(int64_t, int64_t));
 void      lyric_map_dtor(void* obj);
 
 /* ── Console (lyric_posix.c) ───────────────────────────────────────── */

@@ -529,7 +529,8 @@ func mapStmt(s: in Statement, m: in AstMapper): Statement {
 
 /// True when `p` holds for some expression `mapExprsInFile` would visit in
 /// `file` (the same reach, contract clauses excluded), stopping at the first
-/// one.  Nothing is rebuilt.
+/// one.  Nothing is rebuilt.  A statement-level assignment is also offered to
+/// `p` as an `EAssign` expression.
 pub func anyExprInFile(file: in SourceFile, p: in (Expr) -> Bool): Bool {
   for it in file.items {
     if anyInItem(it, p) {
@@ -737,7 +738,11 @@ func anyInStmt(s: in Statement, p: in (Expr) -> Bool): Bool {
       case LBLet(_, _, init) -> anyInExpr(init, p)
       case LBVar(_, _, init) -> anyInExprOpt(init, p)
     }
-    case SAssign(t, _, v) -> anyInExpr(t, p) or anyInExpr(v, p)
+    // A statement-level assignment is offered to `p` as the `EAssign` it would
+    // be in expression position, so a predicate on assignment operators (`s += x`
+    // as a statement, #8652) sees it.
+    case SAssign(t, op, v) -> p(Expr(kind = EAssign(target = t, op = op, value = v), span = s.span)) or anyInExpr(t, p) or
+      anyInExpr(v, p)
     case SReturn(v) -> anyInExprOpt(v, p)
     case SThrow(x) -> anyInExpr(x, p)
     case STry(body, catches, fin) -> {

@@ -124,6 +124,13 @@ test "enum: the case name" {
   assertEqual(toString(g), "Green", "enum")
 }
 
+// #8652: a bare case with no expected type is a value of its enum.
+test "enum: a bare case with no expected type renders by name" {
+  assertEqual(toString(Green), "Green", "bare case")
+  val c = Red
+  assertEqual("" + c, "Red", "bare case bound by val")
+}
+
 test "Option and Result are ordinary unions" {
   val s: Option[Int] = Some(value = 3)
   val n: Option[Int] = None
