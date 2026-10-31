@@ -1456,9 +1456,9 @@ A `@projectable opaque type` is refused with a clear `N0101` diagnostic
 rather than silently compiled with lost projection semantics (#6239) — a
 custom-destructor hook for an opaque type wrapping a raw resource (the
 `lyric_tls_*`/`lyric_sock_*` handle this section's ARC-managed-lifetime note
-above refers to) is a separate, still-open gap (#6234 part 2) — this fix
-only makes an opaque type's ordinary ARC-managed fields release correctly,
-not a raw-resource cleanup hook. **This item now closes end to end**: #6235
+above refers to) was the separate gap #6234 part 2, closed by
+`@nativeDtor("symbol")` (D283): the part 1 fix alone only made an opaque
+type's ordinary ARC-managed fields release correctly. **This item now closes end to end**: #6235
 shipped the stdlib native kernel ports this paragraph originally called
 un-shipped (`_kernel_native/tls_host.l`, `_kernel_native/tcp_host.l`,
 `_kernel_native/encoding_host.l`), and with both the compiler-side blocker

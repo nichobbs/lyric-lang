@@ -183,10 +183,13 @@ func bindModuleVal(
     case PBinding(name, None) -> dest.add(namedVal(orig, name, ty, init, p.span))
     case PWildcard -> {
       // Nothing to evaluate for a bare literal; anything else still runs
-      // (and an annotation is still checked) like any module `val`.
+      // (and a type annotation is still checked) like any module `val`.  A
+      // literal that carries annotations or docs is kept too, as a discarded
+      // temporary that keeps them, so they are not silently lost (#7780).
       val annotated = match ty { case Some(_) -> true; case None -> false }
-      if not isLiteralExpr(init) or annotated {
-        val _ = tempVal(orig, init, ty, ctr, dest)
+      val hasMeta = orig.annotations.count > 0 or orig.docComments.count > 0
+      if not isLiteralExpr(init) or annotated or hasMeta {
+        val _ = tempValWith(orig, init, ty, ctr, dest, orig.docComments, orig.annotations)
       }
     }
     case PTuple(ps) -> {
@@ -250,14 +253,27 @@ func projectFromTemp(
 }
 
 func tempVal(orig: in Item, init: in Expr, ty: in Option[TypeExpr], ctr: in ModValCounter, dest: in List[Item]): String {
-  val name = "__lyric_modval_" + toString(ctr.next)
-  ctr.next = ctr.next + 1
   val noDocs: List[DocComment] = newList()
   val noAnns: List[Annotation] = newList()
+  tempValWith(orig, init, ty, ctr, dest, noDocs, noAnns)
+}
+
+// A discarded temporary carrying the given docs and annotations.
+func tempValWith(
+  orig: in Item,
+  init: in Expr,
+  ty: in Option[TypeExpr],
+  ctr: in ModValCounter,
+  dest: in List[Item],
+  docs: in List[DocComment],
+  anns: in List[Annotation],
+): String {
+  val name = "__lyric_modval_" + toString(ctr.next)
+  ctr.next = ctr.next + 1
   dest.add(
     Item(
-      docComments = noDocs,
-      annotations = noAnns,
+      docComments = docs,
+      annotations = anns,
       visibility = orig.visibility,
       kind = IVal(decl = ValDecl(pattern = bindingPattern(name, orig.span), ty = ty, init = init, span = orig.span)),
       span = orig.span

@@ -150,6 +150,10 @@ pub record CodegenUnit {
   // its lock/unlock wrappers would call member bodies that are not in the
   // bundle.
   deadProtecteds: List[String] = newList()
+  // `opaque type` name -> the C symbol its `@nativeDtor("symbol")` names
+  // (#6234 part 2): the destructor calls it with the type's first field
+  // before releasing the ref-typed fields.
+  nativeDtors: Map[String, String] = newMap()
 }
 
 /// A module-level `val`/`const` binding. A literal initializer is inlined at
@@ -210,6 +214,9 @@ record NRecInfo {
   // field index, so a construction stores the closure's trampoline there.  Empty
   // for every other record.
   fieldCallbackTys: List[Option[TypeExpr]] = newList()
+  // The C symbol a `@nativeDtor` opaque type's destructor calls with field 0
+  // before releasing the ref-typed fields (#6234 part 2); "" for every other record.
+  customDtor: String = ""
 }
 
 record NUnionCaseInfo {
@@ -555,6 +562,9 @@ record Ctx {
   // interface box holds a heap object, docs/67 §4.2; boxing a value record at
   // the upcast is #8010).
   heapOnlyRecs: Map[String, Bool]
+  // Package-qualified record name -> the C symbol its `@nativeDtor` names
+  // (`CodegenUnit.nativeDtors`, #6234 part 2).
+  nativeDtors: Map[String, String]
   // By-value record boxes (`__box<R>`) already defined: a by-value record
   // stored in a List/Map/Task slot lives in a refcounted box.
   byValueBoxes: Map[String, Bool]
@@ -7814,6 +7824,14 @@ func registerHeapTypes(
   ctx: in Ctx, units: in List[CodegenUnit], typeDefs: in List[NTypeDefn], fns: in List[NFunc]
 ): Unit {
   fillHeapOnlyRecs(ctx.heapOnlyRecs, units)
+  for u in units {
+    for k in mapKeys(u.nativeDtors) {
+      match mapGet(u.nativeDtors, k) {
+        case Some(sym) -> ctx.nativeDtors.add(u.pkgName + "." + k, sym)
+        case None -> ()
+      }
+    }
+  }
   val byValState = classifyByValueRecords(ctx.heapOnlyRecs, units, typeDefs)
   val byVal = byValState.results
   val byValU = byValState.uresults
@@ -8207,6 +8225,9 @@ func recDtorName(ri: in NRecInfo): String {
 }
 
 func recHasRefFields(ri: in NRecInfo): Bool {
+  if ri.customDtor.length > 0 {
+    return true
+  }
   var i = 0
   while i < ri.fieldTys.count {
     if isRefNType(ri.fieldTys[i]) {
@@ -8286,7 +8307,16 @@ func registerRecordLayout(
     dflts.add(fields[i].dflt)
     i = i + 1
   }
-  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = false)
+  val customDtor = match mapGet(ctx.nativeDtors, irName) { case Some(sym) -> sym; case None -> "" }
+  checkNativeDtorField(rd.name, customDtor, tys)
+  val ri = NRecInfo(
+    irName = irName,
+    fieldNames = names,
+    fieldTys = tys,
+    fieldDefaults = dflts,
+    byValue = false,
+    customDtor = customDtor
+  )
   replaceRecKey(ctx, pkg + "." + rd.name, ri)
   replaceRecKey(ctx, rd.name, ri)
   val defnFields: List[NType] = newList()
@@ -13529,6 +13559,16 @@ func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, wa
   Some(value = lowerUnionConstruct(ctx, insns, ui, caseIdx, callArgs))
 }
 
+/// Add the `declare` `decl` unless `fns` already declares that symbol.
+func declareExternOnce(fns: in List[NFunc], decl: in NFunc): Unit {
+  for f in fns {
+    if f.isExtern and f.name == decl.name {
+      return
+    }
+  }
+  fns.add(decl)
+}
+
 /// `define internal void @<T>.dtor(i8*)`: release each ref-typed field
 /// (ARC Rule 7).  `lyric_release` frees the object afterwards.
 func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
@@ -13537,6 +13577,19 @@ func synthRecordDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   body.add(NBitcast(dest = "obj", fromTy = NPtr(pointee = NI8), value = NLocal(name = "raw"), toTy = objTy))
+  if ri.customDtor.length > 0 {
+    // The raw resource is released first, while every field is still valid
+    // (ARC Rule 7); the ref-typed fields follow.
+    val handlePtr = freshTmp(ctx)
+    val handleIdx: List[NArg] = newList()
+    handleIdx.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+    handleIdx.add(NArg(ty = NI32, value = NLitInt(v = arcHeaderSlots.toLong(), ty = NI32)))
+    body.add(NGEP(dest = handlePtr, ty = structTy, ptr = NLocal(name = "obj"), indices = handleIdx))
+    val handleVal = freshTmp(ctx)
+    body.add(NLoad(dest = handleVal, ty = ri.fieldTys[0], ptr = NLocal(name = handlePtr)))
+    body.add(NCallVoid(fn = NGlobal(name = ri.customDtor), args = arg1(ri.fieldTys[0], NLocal(name = handleVal))))
+    declareExternOnce(ctx.moduleFns, mkDecl1(ri.customDtor, NVoid, ri.fieldTys[0]))
+  }
   var i = 0
   while i < ri.fieldTys.count {
     if isRefNType(ri.fieldTys[i]) {
@@ -16741,6 +16794,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     implDirectMethods = mod.implDirectMethods,
     protectedRecNames = mod.protectedRecNames,
     heapOnlyRecs = mod.heapOnlyRecs,
+    nativeDtors = mod.nativeDtors,
     byValueBoxes = mod.byValueBoxes,
     inlineAddrs = newMap(),
     scopeRefs = newList(),
@@ -17799,6 +17853,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     implDirectMethods = newMap(),
     protectedRecNames = newMap(),
     heapOnlyRecs = newMap(),
+    nativeDtors = newMap(),
     byValueBoxes = newMap(),
     inlineAddrs = newMap(),
     scopeRefs = newList(),
@@ -17835,11 +17890,24 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
   val declaredExterns: Map[String, Bool] = newMap()
+  // A `@nativeDtor` symbol is declared when its destructor is synthesised; an
+  // `extern func` naming the same symbol must not declare it a second time.
+  var dti = fns.count - 1
+  while dti >= 0 {
+    if fns[dti].isExtern {
+      externDecls.add(fns[dti])
+      declaredExterns.add(fns[dti].name, true)
+      fns.removeAt(dti)
+    }
+    dti = dti - 1
+  }
   var di = 0
   val rtDecls = runtimeDecls()
   while di < rtDecls.count {
-    externDecls.add(rtDecls[di])
-    declaredExterns.add(rtDecls[di].name, true)
+    if not declaredExterns.containsKey(rtDecls[di].name) {
+      externDecls.add(rtDecls[di])
+      declaredExterns.add(rtDecls[di].name, true)
+    }
     di = di + 1
   }
   var mainRet = NVoid
@@ -17993,6 +18061,75 @@ func hasAnnotationNative(anns: in List[Annotation], headName: in String): Bool {
   false
 }
 
+/// The C symbol an `opaque type`'s `@nativeDtor("symbol")` names, or "" when
+/// it has none (#6234 part 2).  The destructor calls `void symbol(<field 0>)`
+/// when the last reference drops, before releasing the ref-typed fields, so a
+/// type wrapping a raw OS handle gets ARC-driven cleanup.  The symbol must be
+/// a C identifier (it lands in the emitted IR) and the type must be
+/// non-generic; anything else is `N0104`, a panic led by the code like
+/// `N0101` above.
+pub func nativeDtorOf(od: in OpaqueTypeDecl): String {
+  for a in od.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "nativeDtor" {
+      var sym = ""
+      if a.args.count == 1 {
+        match a.args[0] {
+          case ALiteral(value, _) -> match value { case AVString(v, _) -> { sym = v }; case _ -> () }
+          case _ -> ()
+        }
+      }
+      if not isCIdentifier(sym) {
+        panic(
+          "N0104: @nativeDtor on opaque type '" + od.name + "' needs exactly one string argument naming a C function, " +
+            "for example @nativeDtor(\"lyric_cstring_free\")"
+        )
+      }
+      match od.generics {
+        case Some(_) -> panic(
+          "N0104: @nativeDtor is not supported on the generic opaque type '" + od.name +
+            "' (the destructor symbol " +
+            "takes one concrete field type)"
+        )
+        case None -> ()
+      }
+      return sym
+    }
+  }
+  ""
+}
+
+func isCIdentifier(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    val letter = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
+    val digit = c >= '0' and c <= '9'
+    if not letter and not (digit and i > 0) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// `N0104` when a `@nativeDtor` type cannot hand its first field to the C
+/// symbol: it needs one, and it must be a scalar or a raw pointer, not an
+/// ARC-managed value.
+func checkNativeDtorField(typeName: in String, sym: in String, tys: in List[NType]): Unit {
+  if sym.length == 0 {
+    return
+  }
+  if tys.count == 0 or isRefNType(tys[0]) or isVoidNType(tys[0]) {
+    panic(
+      "N0104: @nativeDtor(\"" + sym + "\") on opaque type '" + typeName +
+        "' needs a first field holding the raw handle (an Int/Long or NativePtr value) to pass to the C function"
+    )
+  }
+}
+
 /// #6239 (review follow-up to #6234 part 1): `opaqueToRecordDecl` only
 /// carries over an opaque type's fields — `RecordDecl` has no
 /// `annotations` field, so EVERY annotation on the source
@@ -18122,6 +18259,7 @@ pub func unitOfFile(pkgName: in String, file0: in SourceFile): CodegenUnit {
   val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
+  val nativeDtors: Map[String, String] = newMap()
   val eqByFields: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
@@ -18189,6 +18327,10 @@ pub func unitOfFile(pkgName: in String, file0: in SourceFile): CodegenUnit {
         if decl.hasBody {
           records.add(opaqueToRecordDecl(decl))
           opaqueNames.add(decl.name)
+          val dtorSym = nativeDtorOf(decl)
+          if dtorSym.length > 0 {
+            nativeDtors.add(decl.name, dtorSym)
+          }
         }
       }
       case ITypeAlias(_) -> {
@@ -18209,6 +18351,7 @@ pub func unitOfFile(pkgName: in String, file0: in SourceFile): CodegenUnit {
     wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
+    nativeDtors = nativeDtors,
     eqByFields = eqByFields,
     unions = unions,
     enums = enums,

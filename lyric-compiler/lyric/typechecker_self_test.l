@@ -17,6 +17,7 @@ import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
 import Lyric.Weaver as Weaver
 import Lyric.BuildDefines as BD
+import Lyric.WireExpand as WE
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -24,6 +25,19 @@ import Lyric.BuildDefines as BD
 func parseCheck(src: in String): CheckResult {
   val pr = parse(src)
   check(pr.file)
+}
+
+// Checks `src` after docs/58 wire expansion, the order the pipeline runs them.
+func parseExpandCheck(src: in String): CheckResult {
+  val pr = parse(src)
+  val wires: Map[String, WE.CollectedWireTemplate] = newMap()
+  val configs: Map[String, WE.CollectedConfigTemplate] = newMap()
+  var path = ""
+  for seg in pr.file.packageDecl.path.segments {
+    path = if path.length == 0 { seg } else { path + "." + seg }
+  }
+  WE.collectWireTemplates(pr.file.items, path, wires, configs)
+  check(WE.expandFile(pr.file, wires, configs).file)
 }
 
 func diagCount(cr: in CheckResult): Int {
@@ -9858,6 +9872,51 @@ test "desugaring splits a tuple literal and projects anything else through one p
   assertTrue(itemIsPub(call.file.items[3]), "b keeps pub")
   val again = desugarModuleValPatterns(call.file)
   assertEqualInt(again.file.items.count, 4, "idempotent")
+}
+
+// ─── Wire member initialisers (#8539) ─────────────────────────────────────────
+// Wire expansion runs before checking, so the checker sees the expanded
+// members: every `singleton`/`bind`/local initialiser, and the entries and
+// collections `contributes` turns into typed locals, is checked against its
+// declared type.
+test "a wire singleton initialiser is checked against its type (#8539)" {
+  val bad = parseExpandCheck("package P\nwire W {\n  singleton x: Int = \"s\"\n  expose x\n}\n")
+  assertEqualInt(countDiagCode(bad, "T0060"), 1, "a String initialiser for an Int member")
+  assertTrue(diagMessagesContain(bad, "wire member 'x'"), "names the member")
+  val ok = parseExpandCheck("package P\nwire W {\n  singleton x: Int = 4\n  expose x\n}\n")
+  assertEqualInt(diagCount(ok), 0, "a matching initialiser is clean")
+}
+
+test "wire members read one another in any order (#8539)" {
+  val src = "package P\nwire W {\n  @provided base: Int\n  singleton later: Int = early + 1\n" +
+    "  singleton early: Int = base * 2\n  val inferred = later + 1\n  singleton top: Int = inferred\n  expose top\n}\n"
+  assertEqualInt(diagCount(parseExpandCheck(src)), 0, "forward references, @provided and unannotated locals resolve")
+  val bad = parseExpandCheck(
+    "package P\nwire W {\n  singleton a: Int = b\n  singleton b: String = \"s\"\n  expose a\n}\n"
+  )
+  assertEqualInt(countDiagCode(bad, "T0060"), 1, "a sibling of the wrong type is a mismatch")
+}
+
+test "a wire bind provider is checked against its interface (#8539)" {
+  val src = "package P\ninterface Greeter { func hi(): String }\nrecord En { x: Int }\nimpl Greeter for En { func hi(): String { \"hi\" } }\n" +
+    "wire W {\n  bind Greeter -> En(x = 1)\n  expose Greeter\n}\n"
+  assertEqualInt(diagCount(parseExpandCheck(src)), 0, "an implementing record is accepted")
+  val bad = "package P\ninterface Greeter { func hi(): String }\nrecord En { x: Int }\nimpl Greeter for En { func hi(): String { \"hi\" } }\n" +
+    "wire W {\n  bind Greeter -> 42\n  expose Greeter\n}\n"
+  assertTrue(countDiagCode(parseExpandCheck(bad), "T0060") >= 1, "an Int is not a Greeter")
+}
+
+test "a wildcard module val of a literal keeps its annotations and docs (#7780)" {
+  val bare = desugarModuleValPatterns(parse("package P\nval _ = 3\n").file)
+  assertEqualInt(bare.file.items.count, 0, "an unannotated literal wildcard is dropped")
+  val annotated = desugarModuleValPatterns(parse("package P\n@deprecated\nval _ = 3\n").file)
+  assertEqualInt(annotated.file.items.count, 1, "an annotated literal wildcard is kept")
+  assertEqualInt(annotated.file.items[0].annotations.count, 1, "the annotation survives on the temporary")
+  val documented = desugarModuleValPatterns(parse("package P\n/// note\nval _ = 3\n").file)
+  assertEqualInt(documented.file.items.count, 1, "a documented literal wildcard is kept")
+  assertEqualInt(documented.file.items[0].docComments.count, 1, "the doc comment survives")
+  val call = desugarModuleValPatterns(parse("package P\nfunc five(): Int { 5 }\n@deprecated\nval _ = five()\n").file)
+  assertEqualInt(call.file.items[1].annotations.count, 1, "a non-literal wildcard keeps its annotation too")
 }
 
 test "a module val tuple pattern its initializer's type cannot match is T0144 (#7763)" {

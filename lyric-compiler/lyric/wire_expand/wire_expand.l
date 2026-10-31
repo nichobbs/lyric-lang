@@ -369,7 +369,31 @@ func substExpr(ctx: in SubstCtx, e: in Expr): Expr {
           case None -> EPath(path = path)
         }
       } else {
-        EPath(path = path)
+        // A dotted path such as `Mw.count` reads a member of its head
+        // segment; the head follows the same rename as a bare reference so
+        // an aliased include's isolated collection is the one read (#8540).
+        match mapGet(ctx.renames, path.segments[0]) {
+          case Some(repl) -> {
+            match repl.kind {
+              case EPath(rp) -> {
+                if rp.segments.count == 1 {
+                  val segs: List[String] = newList()
+                  segs.add(rp.segments[0])
+                  var si = 1
+                  while si < path.segments.count {
+                    segs.add(path.segments[si])
+                    si = si + 1
+                  }
+                  EPath(path = ModulePath(segments = segs, span = path.span))
+                } else {
+                  EPath(path = path)
+                }
+              }
+              case _ -> EPath(path = path)
+            }
+          }
+          case None -> EPath(path = path)
+        }
       }
     }
     case EMember(receiver, memberName) -> {
