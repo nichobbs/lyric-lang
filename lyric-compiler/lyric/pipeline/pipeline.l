@@ -3061,7 +3061,8 @@ func specMayRender(decl: in FunctionDecl): Bool {
     packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
     imports = noImports,
     items = items,
-    span = decl.span
+    span = decl.span,
+    files = newList()
   )
   anyExprInFile(f, { e: Expr -> mayRenderStructure(e) })
 }
@@ -5240,7 +5241,8 @@ func lowerShowSpec(
     packageDecl = converted.packageDecl,
     imports = converted.imports,
     items = items,
-    span = converted.span
+    span = converted.span,
+    files = converted.files
   )
 }
 
