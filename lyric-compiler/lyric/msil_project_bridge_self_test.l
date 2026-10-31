@@ -79,7 +79,7 @@ func cleanup(dir: in String): Unit {
 }
 
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
-  ProjectPackagePayload(name = name, source = source)
+  ProjectPackagePayload(name = name, sources = [source])
 }
 
 func compileAndRun(

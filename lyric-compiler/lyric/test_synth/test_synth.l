@@ -999,10 +999,14 @@ pub record DocSnippet {
 }
 
 /// The doctests of one source file as a `@test_module` of the file's package:
-/// `source` is empty when the file has none.
+/// `source` is empty when the file has none.  `imports` are the module's
+/// import lines and `tests` its `test` blocks, the two parts of `source`
+/// after its header (`withDoctests`).
 pub record DoctestModule {
   source: String
   count: Int
+  imports: List[String] = newList()
+  tests: String = ""
 }
 
 // Whether a fence's info string selects a runnable Lyric block: the word
@@ -1117,9 +1121,11 @@ func importLinePath(line: in String): String {
 
 /// The doctests of `rawSource` (read from `path`) as a `@test_module` of the
 /// file's own package, one `test` per block titled `doctest <path>:<line>`.
-/// A block's leading `import` lines are hoisted to the module (an import of
-/// the file's own package is dropped: its names are in scope, because the
-/// module is merged into that package); the rest is the test's body.
+/// The module imports what the file imports (its `import` declarations, as
+/// written), so a doctest sees the names the documented code sees, and each
+/// block's leading `import` lines are hoisted to it (an import of the file's
+/// own package is dropped: its names are in scope, because the module is a
+/// file of that package); the rest of a block is its test's body.
 pub func buildDoctestModule(rawSource: in String, path: in String): DoctestModule {
   val pf = parse(rawSource)
   val pkg = importPathText(pf.file.packageDecl.path)
@@ -1129,6 +1135,14 @@ pub func buildDoctestModule(rawSource: in String, path: in String): DoctestModul
   }
   val imports: List[String] = newList()
   imports.add("import Std.Testing")
+  for imp in pf.file.imports {
+    if not imp.isPubUse {
+      val text = Str.trim(spanSourceText(pf.source, imp.span))
+      if text.length > 0 and not stringInList(imports, text) {
+        imports.add(text)
+      }
+    }
+  }
   val tests: List[String] = newList()
   for sn in snippets {
     val lines = Str.split(sn.code, "\n")
@@ -1154,8 +1168,50 @@ pub func buildDoctestModule(rawSource: in String, path: in String): DoctestModul
         "\n}\n"
     )
   }
-  val src = "@test_module\npackage " + pkg + "\n\n" + Str.joinList("\n", imports) + "\n\n" + Str.joinList("\n", tests)
-  DoctestModule(source = src, count = tests.count)
+  val testsText = Str.joinList("\n", tests)
+  val src = "@test_module\npackage " + pkg + "\n\n" + Str.joinList("\n", imports) + "\n\n" + testsText
+  DoctestModule(source = src, count = tests.count, imports = imports, tests = testsText)
+}
+
+// The text `sp` covers in `source`, a file parsed at offset base 0.
+func spanSourceText(source: in String, sp: in Span): String {
+  val start = sp.startPos.offset
+  val stop = sp.endPos.offset
+  if start < 0 or stop > source.length or stop <= start {
+    return ""
+  }
+  Str.substring(source, start, stop - start)
+}
+
+/// `testSource`, a test module of a file's package (the file itself made a
+/// `@test_module`), with the doctests of `dm` (`buildDoctestModule` of that
+/// file) as its own tests: the imports `dm` needs that `testSource` lacks
+/// join its `package` declaration's line, so no line of `testSource` moves,
+/// and the `test` blocks follow its last line.  For `lyric test --doctests`
+/// on a single file, which compiles the file and its doctests as one test
+/// module.  `testSource` itself when it does not parse or `dm` has no
+/// doctests.
+pub func withDoctests(testSource: in String, dm: in DoctestModule): String {
+  if dm.count == 0 {
+    return testSource
+  }
+  val pf = parse(testSource)
+  if parseErrors(pf.diagnostics).count > 0 or pf.file.packageDecl.path.segments.count == 0 {
+    return testSource
+  }
+  val have: List[String] = newList()
+  for imp in pf.file.imports {
+    have.add(Str.trim(spanSourceText(pf.source, imp.span)))
+  }
+  var added = ""
+  for line in dm.imports {
+    if not stringInList(have, line) {
+      added = added + "; " + line
+    }
+  }
+  val src = pf.source
+  val at = pf.file.packageDecl.span.endPos.offset
+  src.substring(0, at) + added + src.substring(at, src.length - at) + "\n" + dm.tests
 }
 
 func stringInList(xs: in List[String], x: in String): Bool {

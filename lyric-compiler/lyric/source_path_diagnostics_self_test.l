@@ -426,13 +426,12 @@ test "single-file dotnet build routed through the project path (nearby [features
 // parsing, so `Position.line` was relative to that blob, not to any file on
 // disk — the diagnostic named a line number that did not exist in `b.l` at
 // all (the issue's own repro: a 6-line file reported as "line 18") and
-// never named a file, only the bare package name. The merge now parses each
-// file on its own first (`Lyric.PackageMerge`, #8234), so a file that does not
-// parse is reported against its own path and position, and it records, for
-// every line of the merged unit, which on-disk file and original line it came
-// from (`Lyric.DiagnosticUtil.diagFormatWithOrigin` consults that table for
-// the later phases), so this asserts the actual file AND the actual line —
-// not just the package label.
+// never named a file, only the bare package name. Every file is now parsed on its own as
+// a file of the package (`Lyric.PackageMerge.assemblePackageFiles`, docs/19
+// §4), so every position names its file and carries that file's own line,
+// and every phase's diagnostic names the file it is in
+// (`Lyric.DiagnosticUtil.diagFormatInFiles`) — this asserts the actual file
+// AND the actual line, not just the package label.
 test "multi-file project package: a parse error in the second file names that file and its real line (#6282)" {
   val dir = freshTempDir("mf")
   defer {
@@ -510,8 +509,8 @@ test "multi-file project package: a parse error in the second file names that fi
 // second file of a multi-file package, exactly the shape the issue's
 // "Observed" section reports as `Mf: error[T0070] 18:1: …` when the real
 // error is on `src/b.l:5`. Unlike the parse-phase test above, this exercises
-// `pipeCheckAndMono`'s `MiddleEndOptions.lineOrigins` path (via
-// `ParsedUserPkg.origins`), not just `pipeParseAndErase`'s.
+// `pipeCheckAndMono`'s `MiddleEndOptions.filePaths` path (via
+// `ParsedUserPkg.files`), not just the parse's.
 test "multi-file project package: a type error in the second file names that file and its real line (#6282 exact repro)" {
   val dir = freshTempDir("mf-tc")
   defer {
@@ -589,9 +588,8 @@ test "multi-file project package: a type error in the second file names that fil
 }
 
 // #6282's "Acceptance" bullet: single-file packages must be entirely
-// unaffected by the multi-file origin machinery — `Lyric.PackageMerge.mergePackageFiles`
-// returns early with an empty origins list at `sources.count == 1`, so this
-// asserts the plain single-file project-routed case still reports the real
+// unaffected by multi-file assembly — a package of one file is its own parse
+// (file 0, offset base 0), so this asserts the plain single-file project-routed case still reports the real
 // path with no behaviour change (mirrors the #6610 test above, but through
 // a genuine `[project.packages]` single-file entry rather than the
 // nearby-manifest auto-routing shape).
@@ -711,14 +709,14 @@ test "lyric test: a compile error names the real line despite a multi-line modul
 // loop (`Msil.Bridge`'s Phase 3, split from `pipeCheckAndMono` so aspect
 // templates from every package's post-mono file are collected before any
 // package weaves) hardcoded `pipeWeave(perPkgFiles[li], allTemplates, "",
-// noBundleWeaveOrigins)` — an empty label AND an empty origins table —
-// even though `parsedPkgs[li].label` / `.origins` (the SAME pair the
+// noBundleWeaveFiles)` — an empty label AND an empty file table —
+// even though `parsedPkgs[li].label` / `.files` (the SAME pair the
 // typecheck phase a few lines earlier already resolved and used) were in
 // scope. A weave-time diagnostic (A0042/A0043/A0044) on a multi-file MSIL
 // project package therefore printed with NO file attribution at all,
 // unlike every other phase (#6282's own fix) and unlike the identical JVM
 // build (which routes weave through `Lyric.Pipeline.pipeMiddleEnd`,
-// threading `opts.pkgLabel`/`opts.lineOrigins` unconditionally). This
+// threading `opts.pkgLabel`/`opts.filePaths` unconditionally). This
 // fixture's aspect config field has no default, mirroring
 // `weaver_ci_test.l`'s `testConfigNoDefaultEmitsA0044` fixture exactly
 // (A0044 is a WEAVE-phase diagnostic, not parse/typecheck/modecheck, so it
@@ -802,7 +800,7 @@ test "multi-file project package (dotnet): a weave-time error (A0044) in the sec
 // #6824 item 1: native project-package diagnostics get the SAME real-path
 // attribution the MSIL/JVM project bridges already had — before this fix,
 // `Lyric.LlvmBridge.NativeSourcePackage` had no `path` field at all and
-// `compileProjectToNativeWithFlags` had no `origins` parameter, so a
+// `compileProjectToNativeWithFlags` had no per-file attribution, so a
 // multi-file `[project.packages]` entry (routed through `--target native`)
 // reported diagnostics under the bare package name only, with a merged-blob-
 // relative line number — the exact #6282 symptom, but never fixed for native
@@ -874,7 +872,7 @@ test "multi-file project package (native): a parse error in the second file name
 }
 
 // #6824 item 2: codegen-phase (F0xxx) diagnostics on a multi-file MSIL
-// project package resolve through the SAME `PackageLineOrigins` table the
+// project package resolve through the SAME file table the
 // parse/typecheck/modecheck/elaborate/weave gates already use, instead of
 // falling back to the bare package name. `Msil.Bridge`'s F0025 (try-catch
 // expression with a Unit-yielding, non-diverging catch arm beside a
@@ -882,7 +880,7 @@ test "multi-file project package (native): a parse error in the second file name
 // repro) never routes through `Lyric.Pipeline.gate` (codegen diagnostics
 // accumulate on `CodegenCtx.diagnostics` directly), so #6282/#6824's earlier
 // items never touched it. `wrap[T]`'s bad try/catch and its `main()` caller
-// both live in the SECOND file so the origin table (not just the label) is
+// both live in the SECOND file so the file table (not just the label) is
 // exercised.
 test "multi-file project package (dotnet): a codegen-phase error (F0025) in the second file names that file and its real line (#6824)" {
   val dir = freshTempDir("mf-codegen")
@@ -966,13 +964,13 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
 }
 
 // #7034: the multi-file F0025 case above only exercises a package whose
-// `origins` table is populated (`origins.count > 0`), which never hits
-// `DiagUtil.resolveLineOrigin`'s empty-`origins` fallback branch — the one
+// file table names every file, which never hits
+// `DiagUtil.diagFilePath`'s unknown-file fallback branch — the one
 // that uses whatever label string was passed in verbatim. A single-file
 // entry in `[project.packages]` (the #6282-unaffected-by-fix-guard shape
-// from the parse-phase test above) has an empty `origins` table, so it's
+// from the parse-phase test above) is labelled with its one path, so it's
 // the one case that actually exercises the fallback label
-// `abortOnCodegenDiagnosticsMsilInPkgWithOrigins` is given — and the
+// `abortOnCodegenDiagnosticsMsilInFiles` is given — and the
 // codegen-phase call site was passing the bare `perPkgNames[ci]` package
 // name there instead of `parsedPkgs[ci].label` (the real-path-or-name field
 // the middle-end gate a few lines above already uses for the same index),
@@ -990,7 +988,7 @@ test "single-file project package (one entry in [project.packages]): a codegen-p
   }
   // Same F0025 shape as the multi-file case above (`wrap[T]`'s try body
   // yields `T` while its catch arm yields `Unit`), but as a single file so
-  // this package's `origins` table is empty and the fallback label path is
+  // the package's label is its one file's path and the fallback label path is
   // actually exercised. No blank line before `func wrap`, so `catch` lands
   // on line 6, column 5, matching `msil_codegen_diag_self_test.l`'s own
   // single-file fixture.
@@ -1043,10 +1041,10 @@ test "single-file project package (one entry in [project.packages]): a codegen-p
 
 // #6824 item 3: `pipeExpandAndRewrite`'s two gates (docs/58 wire/config-
 // template expansion, and same-file interface-default-method inheritance)
-// previously hardcoded `gate("", noOrigins, …)` unconditionally, even though
+// previously hardcoded `gate("", noFiles, …)` unconditionally, even though
 // every bridge call site reaches this function AFTER already resolving a
-// real label/origins pair for the exact same package (`ParsedUserPkg.label`/
-// `.origins` on the MSIL side). `Lyric.ImplDefaults.inheritDefaultsFile`'s
+// real label/files pair for the exact same package (`ParsedUserPkg.label`/
+// `.files` on the MSIL side). `Lyric.ImplDefaults.inheritDefaultsFile`'s
 // T0117 (an unresolved diamond default-method conflict — two interfaces
 // defaulting the same method name onto one target, no override) is the
 // smallest available trigger for this specific gate: unlike A0044 above
@@ -1131,7 +1129,7 @@ test "multi-file project package (dotnet): an impl-default diamond conflict (T01
 // `Msil.Bridge`'s call sites into `pipeExpandAndRewrite`. The native path
 // (`Lyric.LlvmBridge.compileProjectToNativeWithFlags`) reaches the exact same
 // unconditional `ImplDefaults.inheritDefaultsFile` gate via its own
-// `nativePkgLabelAt`/`nativePkgOriginsAt`-resolved call — `pipeExpandAndRewrite`
+// `nativePkgLabelAt`/`nativePkgFilesAt`-resolved call — `pipeExpandAndRewrite`
 // itself has no per-target branch — but that plumbing had no test of its own,
 // only the parse-phase P0050 case above (#6824 item 1) and manual code
 // inspection. Identical `ImplDiamondMf`-shaped fixture, routed through
@@ -1212,14 +1210,14 @@ test "multi-file project package (native): an impl-default diamond conflict (T01
 }
 
 // #6824 item 4: the `--target jvm` sibling of the dotnet test above.
-// `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s `pkgOriginsByName`
+// `Jvm.Bridge.compileProjectToJarBundledWithRestored`'s `pkgFilesByName`
 // plumbing was manually verified working during #6825's own review response,
 // but had no automated regression coverage — unlike this repo's usual
 // convention of dual-target self-tests for cross-target changes (e.g.
 // `bitwise_self_test.l --target jvm`). Identical fixture to the dotnet case
 // above (a weave-time A0044 on the second file of a two-file project
 // package), just routed through `--target jvm`, so a real JVM regression in
-// `pkgOriginsByName`'s per-package lookup (keyed by package name, resolved
+// `pkgFilesByName`'s per-package lookup (keyed by package name, resolved
 // during the JVM bridge's own parse loop) fails CI instead of relying on a
 // one-off manual check.
 test "multi-file project package (jvm): a weave-time error (A0044) in the second file names that file and its real line (#6824)" {
@@ -1295,5 +1293,116 @@ test "multi-file project package (jvm): a weave-time error (A0044) in the second
   assertTrue(
     Str.contains(result.stderr, "] 7:"),
     "expected the diagnostic to name b.l's own line 7 ('val v = config.undefaulted'), got:\n" + result.stderr
+  )
+}
+
+// A two-file `[project.packages]` entry `Mf` (src/a.l, src/b.l) under a fresh
+// temporary directory: the manifest's path.
+func writeTwoFileProject(dir: in String, aSrc: in String, bSrc: in String): String {
+  val srcDir = Path.join(dir, "src")
+  match File.createDir(srcDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(srcDir, "a.l"), aSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write a.l: " + IOError.message(e))
+  }
+  match File.writeText(Path.join(srcDir, "b.l"), bSrc) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write b.l: " + IOError.message(e))
+  }
+  val manifest = "[package]\n" + "name = \"Mf\"\n" + "version = \"0.0.1\"\n" + "\n" + "[project]\n" + "name = \"Mf\"\n" +
+    "\n" +
+    "[project.packages]\n" +
+    "\"Mf\" = [\"src/a.l\", \"src/b.l\"]\n" +
+    "\n" +
+    "[dependencies]\n" +
+    "Std = \"*\"\n"
+  val mfPath = Path.join(dir, "lyric.toml")
+  match File.writeText(mfPath, manifest) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write lyric.toml: " + IOError.message(e))
+  }
+  mfPath
+}
+
+// `lyric build --manifest <mfPath> --target <target> -o <outPath>`.
+func buildManifest(mfPath: in String, target: in String, outPath: in String): Capture.CaptureResult {
+  val args: List[String] = newList()
+  args.add("build")
+  args.add("--manifest")
+  args.add(mfPath)
+  args.add("--target")
+  args.add(target)
+  args.add("-o")
+  args.add(outPath)
+  runLyric(args)
+}
+
+// A type error on line 4 of the second file of a two-file package, and a
+// first file whose own lines are many more than the second's: with the
+// files assembled from their own parses (docs/19 §4) the diagnostic names
+// b.l and b.l's own line 4, never a line counted across both files.
+func typeErrorFirstFile(): String {
+  "package Mf\n" + "import Std.Core\n" + "\n" + "func helperA(): Int {\n" + "  1\n" + "}\n" + "func helperB(): Int {\n" +
+    "  2\n" +
+    "}\n" +
+    "func helperC(): Int {\n" +
+    "  3\n" +
+    "}\n" +
+    "func main(): Unit {}\n"
+}
+
+func typeErrorSecondFile(): String {
+  "package Mf\n" + "import Std.Core\n" + "\n" + "func gamma(): Int {\n" + "  \"not an Int\"\n" + "}\n"
+}
+
+test "multi-file project package (jvm): a type error in the second file names that file and its own line (docs/19 §4)" {
+  val dir = freshTempDir("mf-tc-jvm")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = writeTwoFileProject(dir, typeErrorFirstFile(), typeErrorSecondFile())
+  val bPath = Path.join(Path.join(dir, "src"), "b.l")
+  val result = buildManifest(mfPath, "jvm", Path.join(dir, "out.jar"))
+  assertTrue(result.exitCode != 0, "a trailing-expression type mismatch must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[T0070] 4:"),
+    "expected b.l's own path and line 4 on the T0070 diagnostic, got:\n" + result.stderr
+  )
+}
+
+test "multi-file project package (native): a type error in the second file names that file and its own line (docs/19 §4)" {
+  val dir = freshTempDir("mf-tc-native")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = writeTwoFileProject(dir, typeErrorFirstFile(), typeErrorSecondFile())
+  val bPath = Path.join(Path.join(dir, "src"), "b.l")
+  val result = buildManifest(mfPath, "native", Path.join(dir, "out"))
+  assertTrue(result.exitCode != 0, "a trailing-expression type mismatch must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[T0070] 4:"),
+    "expected b.l's own path and line 4 on the T0070 diagnostic, got:\n" + result.stderr
+  )
+}
+
+test "multi-file project package (dotnet): a file that declares another package is B0013 against that file's own line" {
+  val dir = freshTempDir("mf-b0013")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = writeTwoFileProject(
+    dir,
+    typeErrorFirstFile(),
+    "//! elsewhere\n\npackage Elsewhere\nfunc g(): Int { 1 }\n"
+  )
+  val bPath = Path.join(Path.join(dir, "src"), "b.l")
+  val result = buildManifest(mfPath, "dotnet", Path.join(dir, "out.dll"))
+  assertTrue(result.exitCode != 0, "a file of another package must fail the build")
+  assertTrue(
+    Str.contains(result.stderr, bPath + ": error[B0013] 3:"),
+    "expected b.l's own path and line 3 on the B0013 diagnostic, got:\n" + result.stderr
   )
 }

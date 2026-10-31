@@ -27,7 +27,6 @@ import Std.Uuid as Uuid
 import Std.Parse as Parse
 import Lyric.Emitter
 import Lyric.LlvmBridge
-import Lyric.DiagnosticUtil as DiagUtil
 
 func envOrPanic(name: in String): String {
   val v = Environment.getVarOrDefault(name, "")
@@ -576,20 +575,17 @@ test "wasm32 component: two exporting packages in one project each get an interf
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Math",
-      path = "",
-      source = "package Proj.Math\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n"
+      sources = ["package Proj.Math\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n"]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Text",
-      path = "",
-      source = "package Proj.Text\npub func shout(s: String): String {\n  s + \"!\"\n}\n"
+      sources = ["package Proj.Text\npub func shout(s: String): String {\n  s + \"!\"\n}\n"]
     )
   )
   val flags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
   val ok = compileProjectToNativeWithShape(
     pkgs,
     Path.join(dir, "prog.wasm"),
@@ -601,7 +597,6 @@ test "wasm32 component: two exporting packages in one project each get an interf
     noFeatures,
     noFeatures,
     "",
-    noOrigins,
     true,
     "component"
   )
@@ -1831,7 +1826,6 @@ func projectComponent(pkgs: in List[NativeSourcePackage]): String {
   val _d = File.createDir(dir)
   val flags: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
   val ok = compileProjectToNativeWithShape(
     pkgs,
     Path.join(dir, "prog.wasm"),
@@ -1843,7 +1837,6 @@ func projectComponent(pkgs: in List[NativeSourcePackage]): String {
     noFeatures,
     noFeatures,
     "",
-    noOrigins,
     true,
     "component"
   )
@@ -1858,8 +1851,8 @@ test "wasm32 component: an export may name a type another package of the project
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Model",
-      path = "",
-      source = r"package Proj.Model
+      sources = [
+        r"package Proj.Model
 
 import Std.Collections
 
@@ -1886,13 +1879,14 @@ pub record Invoice {
   status: Status
 }
 "
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Api",
-      path = "",
-      source = r#"package Proj.Api
+      sources = [
+        r#"package Proj.Api
 
 import Std.Collections
 
@@ -1924,13 +1918,14 @@ pub func flip(c: Currency): Currency {
   }
 }
 "#
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Reports",
-      path = "",
-      source = r#"package Proj.Reports
+      sources = [
+        r#"package Proj.Reports
 
 import Std.Collections
 
@@ -1955,13 +1950,14 @@ pub func currencies(): List[M.Currency] {
   acc
 }
 "#
+      ]
     )
   )
   pkgs.add(
     NativeSourcePackage(
       name = "Proj.Lines",
-      path = "",
-      source = r"package Proj.Lines
+      sources = [
+        r"package Proj.Lines
 
 import Std.Collections
 
@@ -1979,6 +1975,7 @@ pub func first(ls: List[L]): Option[L] {
   }
 }
 "
+      ]
     )
   )
   val dir = projectComponent(pkgs)

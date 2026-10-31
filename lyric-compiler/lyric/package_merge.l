@@ -1,37 +1,34 @@
-//! package_merge.l — merge the files of a multi-file package into one
-//! compilation unit (docs/19, #8234).
+//! package_merge.l — assemble the files of a multi-file package into one
+//! package (docs/19 §4, docs/70 §4.1, #8234).
 //!
-//! Every backend compiles one source per package, so a package that spans
-//! several files is merged first.  The merge works from each file's own
-//! parse, never from its text alone: every file must parse on its own, must
-//! declare the package it is a file of (B0013), and contributes exactly its
-//! parsed items.  The merged unit is
+//! Every file of a package is parsed on its own, as file `i` of the package
+//! (`Lyric.Lexer.Position.fileId = i`) at its own offset base
+//! (`Lyric.Parser.fileOffsetBases`), so every position names its file and
+//! carries that file's own line and column, and no two positions of the
+//! package share an offset.  Every file must parse, must declare the package
+//! it is a file of (B0013), and contributes exactly its parsed items.  The
+//! assembled `SourceFile` holds
 //!
-//!     <the files' `//!` module docs, in file order, blank `//!` between>
-//!     <the union of the files' file-level annotations, @cfg excepted>
-//!     package <name>
-//!     <the union of the files' imports>
-//!     <file 1's items> ... <file N's items>
+//!     the files' `//!` module docs, in file order
+//!     the union of the files' file-level annotations, @cfg excepted
+//!     the package declaration (the first file's)
+//!     the union of the files' imports
+//!     file 1's items ... file N's items
 //!
-//! where each file's items are its own text after its header, so they keep
-//! their trivia and the lines they had.  The header tokens of each file
-//! (module docs, file-level annotations, `package`, imports) are removed
-//! token by token from the parse's spans; comments in the header are kept
-//! as comments, so a `/* ... */` that hides declarations stays a comment.
+//! and `files`, one `FileHeader` per file (its path, its own header and its
+//! offset base), so a diagnostic names its file through its position.
 //!
 //! A file whose file-level `@cfg` is false for the active features
 //! contributes no item and no import; the build's target decides its
 //! `target = "X"` atoms.
 //! The files' other file-level annotations are package-wide, whatever their
-//! `@cfg`: they are united, a repeated one is kept once, and two files that
-//! disagree are an error (B0014; Y0009 for `@pure` against `@io`).
+//! `@cfg`: they are united, one written by two files is kept once, and two
+//! files that disagree are an error (B0014; Y0009 for `@pure` against `@io`).
+//! The files share one import scope, so an alias two files bind to different
+//! packages is an error (B0012).
 //!
 //! A malformed file-level `@cfg` is F0012 and one naming a feature the
 //! manifest does not declare is F0013, as for the items of a file.
-//!
-//! `mergePackageFiles` also returns, for every line of the merged unit, the
-//! file and line it came from, so a diagnostic in the merged unit names the
-//! real file (`Lyric.DiagnosticUtil.diagFormatWithOrigin`).
 @runtime_checked
 package Lyric.PackageMerge
 
@@ -51,17 +48,6 @@ pub record MergeDiagnostic {
   diag: Diagnostic
 }
 
-/// A merged package.  `origins[n - 1]` names the file and line merged line `n`
-/// came from (`path = ""` for the synthesised `package` line, and for every
-/// line when the caller asked for no origins).  `diagnostics` holds the parse
-/// diagnostics of every file that does not parse, and every package mismatch
-/// or annotation conflict; when it holds an error, `source` is not usable.
-pub record PackageMergeResult {
-  source: String
-  origins: List[DiagUtil.MergedLineOrigin]
-  diagnostics: List[MergeDiagnostic]
-}
-
 // A file-level annotation or an import, as written in one file.
 record HeaderPiece {
   name: String
@@ -77,71 +63,28 @@ record HeaderPiece {
   column: Int
 }
 
-// One file's contribution to the merge: its items' text with one origin per
-// line (when origins were asked for).
-record FileBody {
-  text: String
-  origins: List[DiagUtil.MergedLineOrigin]
-}
-
-// A half-open range of offsets into a file's text.
-record OffsetRange {
-  start: Int
-  stop: Int
-}
-
-/// Merge the files of package `packageName`.  `sources` holds the files' text
-/// in the package's order and `paths` their paths, parallel by index (a
-/// missing or "" path is unknown).  `activeFeatures` and `targetName` (the
-/// build's target, `dotnet` / `jvm` / `native`) decide each file's file-level
-/// `@cfg`.  `declaredFeatures` is the manifest's `[features]`, for F0013
-/// (none: no F0013).  A package of one file is returned as written: its own
-/// parse in the backend reports on it with exact positions.  When
-/// `nameFromManifest` (the name is a manifest entry's, not read from the
-/// source), its header is still read, so a file that declares another
-/// package is B0013 here too.  A package of several files always comes from
-/// a manifest entry or a tree's package grouping, so its files are always
-/// held to `packageName`.
-pub func mergePackageFiles(
-  packageName: in String,
-  sources: in List[String],
-  paths: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
-  targetName: in String,
-  nameFromManifest: in Bool,
-): PackageMergeResult {
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val diags: List[MergeDiagnostic] = newList()
-  if sources.count == 0 {
-    return PackageMergeResult(source = "", origins = noOrigins, diagnostics = diags)
-  }
-  if sources.count == 1 {
-    val declared = if nameFromManifest { scanHeader(sources[0]).packageName } else { "" }
-    if declared.length > 0 and declared != packageName {
-      val path = if paths.count > 0 { paths[0] } else { "" }
-      val lexed = lexedPackage(normaliseNewlines(sources[0]))
-      diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declared, packageName, lexed.span)))
-    }
-    return PackageMergeResult(source = sources[0], origins = noOrigins, diagnostics = diags)
-  }
-  mergeFiles(packageName, sources, paths, activeFeatures, declaredFeatures, targetName, true)
-}
-
 /// A package assembled from its separately parsed files (docs/70 §4.1).
 /// `file.items` holds every kept file's items in file order, `file.files`
 /// one header per source (index = `fileId`), and the package-level header
-/// fields the union `mergePackageFiles` would have written.  `diagnostics`
-/// is what `mergePackageFiles` reports for the same files; when it holds an
-/// error, `file` is not usable.
+/// fields the union of the files' (see the module doc).  `diagnostics`
+/// holds every file's parse diagnostics and every package mismatch, header
+/// conflict and file-level `@cfg` diagnostic; when it holds an error,
+/// `file` is not usable.
 pub record PackageAssembly {
   file: SourceFile
   diagnostics: List[MergeDiagnostic]
 }
 
-/// The files of package `packageName` (`sources`, with `paths` naming them),
-/// each parsed on its own at its own offset base, held to the rules of
-/// `mergePackageFiles`, and joined as one `SourceFile`.
+/// The files of package `packageName` (`sources`, in the package's order,
+/// with `paths` naming them, parallel by index; a missing or "" path is
+/// unknown), each parsed on its own at its own offset base and joined as one
+/// `SourceFile`.  `activeFeatures` and `targetName` (the build's target,
+/// `dotnet` / `jvm` / `native`) decide each file's file-level `@cfg`;
+/// `declaredFeatures` is the manifest's `[features]`, for F0013 (none: no
+/// F0013).  `packageName` "" holds the files to no name: for a package of
+/// one file whose name the caller took from the file itself.  A package of
+/// several files always has a name (a manifest entry's, or a source tree's
+/// package grouping), and its files are held to it.
 pub func assemblePackageFiles(
   packageName: in String,
   sources: in List[String],
@@ -151,6 +94,8 @@ pub func assemblePackageFiles(
   targetName: in String,
 ): PackageAssembly {
   val diags: List[MergeDiagnostic] = newList()
+  // Per file that declares the package: its path, its package span, and the
+  // unit-mode annotations it carries (for the agreement check below).
   val modePaths: List[String] = newList()
   val modeSpans: List[Span] = newList()
   val modeNames: List[String] = newList()
@@ -161,35 +106,34 @@ pub func assemblePackageFiles(
   val docs: List[DocComment] = newList()
   val items: List[Item] = newList()
   val headers: List[FileHeader] = newList()
+  val bases = fileOffsetBases(sources)
   var packageDecl: Option[PackageDecl] = None
-  var base = 0
   var i = 0
   while i < sources.count {
     val path = if i < paths.count { paths[i] } else { "" }
-    val text = normaliseNewlines(sources[i])
-    val fileBase = base
+    val text = normaliseLineEndings(sources[i])
+    val fileBase = bases[i]
     val pr = parseFile(text, i, fileBase)
-    base = base + text.length + 1
     var usable = true
     for d in pr.diagnostics {
+      diags.add(MergeDiagnostic(path = path, diag = d))
       if d.severity == DiagError {
         usable = false
       }
     }
-    if not usable {
-      for d in pr.diagnostics {
-        diags.add(MergeDiagnostic(path = path, diag = d))
-      }
-    }
+    // A file whose header does not parse may still name its package: the
+    // first `package` declaration among its tokens says which.
     val declaredPkg = if pr.file.packageDecl.path.segments.count > 0 or usable {
       DeclaredPackage(name = modulePathJoin(pr.file.packageDecl.path.segments), span = pr.file.packageDecl.path.span)
     } else {
-      lexedPackage(text)
+      lexedPackage(text, i, fileBase)
     }
-    if declaredPkg.name.length > 0 and declaredPkg.name != packageName {
+    if packageName.length > 0 and declaredPkg.name.length > 0 and declaredPkg.name != packageName {
       usable = false
       diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declaredPkg.name, packageName, declaredPkg.span)))
     }
+    // Annotations or imports with no package declaration after them: the
+    // parser reports P0020 only when items follow.
     if usable and declaredPkg.name.length == 0 and (pr.file.fileAnnotations.count > 0 or pr.file.imports.count > 0) {
       usable = false
       val at = if pr.file.fileAnnotations.count > 0 { pr.file.fileAnnotations[0].span } else { pr.file.imports[0].span }
@@ -222,6 +166,8 @@ pub func assemblePackageFiles(
       for d in Cfg.fileCfgDiagnostics(declaredFeatures, pr.file.fileAnnotations) {
         diags.add(MergeDiagnostic(path = path, diag = d))
       }
+      // A file's file-level annotations describe the package, so they count
+      // whether or not its `@cfg` keeps its items.
       for a in pr.file.fileAnnotations {
         if not isCfg(a) {
           val before = annotationPieces.count
@@ -273,8 +219,10 @@ pub func assemblePackageFiles(
     case Some(d) -> d
     case None -> {
       val segs: List[String] = newList()
-      for seg in Str.split(packageName, ".") {
-        segs.add(seg)
+      if packageName.length > 0 {
+        for seg in Str.split(packageName, ".") {
+          segs.add(seg)
+        }
       }
       PackageDecl(path = ModulePath(segments = segs, span = firstSpan), span = firstSpan)
     }
@@ -293,18 +241,15 @@ pub func assemblePackageFiles(
   )
 }
 
-/// `mergePackageFiles` for the packages the compiler discovers in its own
-/// source trees (the stdlib and the compiler, `Lyric.Emitter`'s per-package
-/// builds): a package of one file is rebuilt in the merged shape too, and no
-/// origins are computed.
-pub func mergeDiscoveredPackage(
-  packageName: in String,
-  sources: in List[String],
-  paths: in List[String],
-  targetName: in String,
-): PackageMergeResult {
-  val noFeatures: List[String] = newList()
-  mergeFiles(packageName, sources, paths, noFeatures, noFeatures, targetName, false)
+/// The path of each file of `file` (an assembled package, or one file's
+/// parse), by file id: the table `Lyric.DiagnosticUtil.diagFormatInFiles`
+/// names a diagnostic's file through.
+pub func packageFilePaths(file: in SourceFile): List[String] {
+  val paths: List[String] = newList()
+  for h in file.files {
+    paths.add(h.path)
+  }
+  paths
 }
 
 func packageMismatch(declared: in String, packageName: in String, sp: in Span): Diagnostic {
@@ -323,11 +268,11 @@ func fileGatedOut(anns: in List[Annotation], activeFeatures: in List[String], ta
   Cfg.isFileCfgGatedOut(Cfg.withTargetFeature(activeFeatures, targetName), noDeclared, anns)
 }
 
-/// The file-level annotations that change how the whole merged unit is
-/// parsed or compiled, so every file of a package must agree on each of
-/// them (B0014): `@contract_source` (block braces, `Lyric.Parser`), the
+/// The file-level annotations that change how the whole package is parsed
+/// or compiled, so every file of a package must agree on each of them
+/// (B0014): `@contract_source` (block braces, `Lyric.Parser`), the
 /// wrapping-arithmetic marker (`Lyric.Pipeline.wrappingArithMarker`),
-/// `@test_module` and `@bench_module` (the unit is a test or benchmark
+/// `@test_module` and `@bench_module` (the package is a test or benchmark
 /// module).
 pub func unitModeAnnotations(): List[String] {
   val xs: List[String] = newList()
@@ -338,9 +283,9 @@ pub func unitModeAnnotations(): List[String] {
   xs
 }
 
-/// Whether `r` holds an error: its `source` must then not be compiled.
-pub func mergeHasErrors(r: in PackageMergeResult): Bool {
-  for d in r.diagnostics {
+/// Whether `a` holds an error: its `file` must then not be compiled.
+pub func assemblyHasErrors(a: in PackageAssembly): Bool {
+  for d in a.diagnostics {
     if d.diag.severity == DiagError {
       return true
     }
@@ -353,177 +298,10 @@ pub func mergeHasErrors(r: in PackageMergeResult): Bool {
 /// path.
 pub func mergeDiagnosticText(packageLabel: in String, d: in MergeDiagnostic): String {
   val label = if d.path.length > 0 { d.path } else { packageLabel }
-  label + ": " + DiagUtil.diagFormat(d.diag)
-}
-
-func mergeFiles(
-  packageName: in String,
-  sources: in List[String],
-  paths: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
-  targetName: in String,
-  withOrigins: Bool,
-): PackageMergeResult {
-  val diags: List[MergeDiagnostic] = newList()
-  // Per file that declares the package: its path, its package span, and the
-  // unit-mode annotations it carries (for the agreement check below).
-  val modePaths: List[String] = newList()
-  val modeSpans: List[Span] = newList()
-  val modeNames: List[String] = newList()
-  val annotations: List[HeaderPiece] = newList()
-  val imports: List[HeaderPiece] = newList()
-  val docLines: List[String] = newList()
-  val docOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  var bodies = ""
-  val bodyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  var i = 0
-  while i < sources.count {
-    val path = if i < paths.count { paths[i] } else { "" }
-    val text = normaliseNewlines(sources[i])
-    val pr = parse(text)
-    var usable = true
-    for d in pr.diagnostics {
-      if d.severity == DiagError {
-        usable = false
-      }
-    }
-    if not usable {
-      for d in pr.diagnostics {
-        diags.add(MergeDiagnostic(path = path, diag = d))
-      }
-    }
-    // A file whose header does not parse may still name its package: the
-    // first `package` declaration among its tokens says which.
-    val declaredPkg = if pr.file.packageDecl.path.segments.count > 0 or usable {
-      DeclaredPackage(name = modulePathJoin(pr.file.packageDecl.path.segments), span = pr.file.packageDecl.path.span)
-    } else {
-      lexedPackage(text)
-    }
-    if declaredPkg.name.length > 0 and declaredPkg.name != packageName {
-      usable = false
-      diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declaredPkg.name, packageName, declaredPkg.span)))
-    }
-    // Annotations or imports with no package declaration after them: the
-    // parser reports P0020 only when items follow.
-    if usable and declaredPkg.name.length == 0 and (pr.file.fileAnnotations.count > 0 or pr.file.imports.count > 0) {
-      usable = false
-      val at = if pr.file.fileAnnotations.count > 0 { pr.file.fileAnnotations[0].span } else { pr.file.imports[0].span }
-      diags.add(
-        MergeDiagnostic(
-          path = path,
-          diag = errorDiagnostic("P0020", "expected 'package' declaration at the head of the file", at)
-        )
-      )
-    }
-    if usable and declaredPkg.name.length > 0 {
-      var names = ""
-      for a in pr.file.fileAnnotations {
-        val n = annotationName(a)
-        if unitModeAnnotations().contains(n) and not Str.contains(names, "|" + n + "|") {
-          names = names + "|" + n + "|"
-        }
-      }
-      modePaths.add(path)
-      modeSpans.add(pr.file.packageDecl.span)
-      modeNames.add(names)
-    }
-    if usable {
-      for d in Cfg.fileCfgDiagnostics(declaredFeatures, pr.file.fileAnnotations) {
-        diags.add(MergeDiagnostic(path = path, diag = d))
-      }
-    }
-    // A file's file-level annotations describe the package, so they count
-    // whether or not its `@cfg` keeps its items.
-    if usable {
-      for a in pr.file.fileAnnotations {
-        if not isCfg(a) {
-          addAnnotation(
-            annotations,
-            pieceOf(text, 0, annotationName(a), annotationKey(a), "", "", a.span, i, path),
-            packageName,
-            diags
-          )
-        }
-      }
-    }
-    if usable and not fileGatedOut(pr.file.fileAnnotations, activeFeatures, targetName) {
-      for d in pr.file.imports {
-        val aliasName = match d.asAlias { case Some(al) -> al; case None -> "" }
-        val aliasTarget = (if d.isExtern { "extern " } else { "" }) + modulePathJoin(d.path.segments)
-        addImport(imports, pieceOf(text, 0, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
-      }
-      addModuleDocs(docLines, docOrigins, text, pr.file, path)
-      val body = fileBody(text, pr.file, path, withOrigins)
-      // A file whose items are empty adds no line of its own unless an earlier
-      // file's items precede it: the join below is what makes the line.
-      if bodies.length == 0 {
-        bodies = body.text
-        while bodyOrigins.count > 0 {
-          bodyOrigins.removeAt(bodyOrigins.count - 1)
-        }
-        if body.text.length > 0 {
-          appendOrigins(bodyOrigins, body.origins)
-        }
-      } else {
-        bodies = bodies + "\n" + body.text
-        if body.origins.count == 0 {
-          bodyOrigins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-        }
-        appendOrigins(bodyOrigins, body.origins)
-      }
-    }
-    i = i + 1
-  }
-
-  checkUnitModes(modePaths, modeSpans, modeNames, diags)
-
-  val preambleLines: List[String] = newList()
-  val origins: List[DiagUtil.MergedLineOrigin] = newList()
-  for l in docLines {
-    preambleLines.add(l)
-  }
-  appendOrigins(origins, docOrigins)
-  addPieceLines(annotations, true, preambleLines, origins)
-  preambleLines.add("package " + packageName)
-  origins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-  val importLines: List[String] = newList()
-  addPieceLines(imports, false, importLines, origins)
-  if importLines.count == 0 {
-    // The empty line `joinList` of no imports leaves before the items.
-    origins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-  }
-  val preamble = Str.joinList("\n", preambleLines) + "\n" + Str.joinList("\n", importLines) + "\n"
-  appendOrigins(origins, bodyOrigins)
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  PackageMergeResult(
-    source = preamble + bodies,
-    origins = if withOrigins { origins } else { noOrigins },
-    diagnostics = diags
-  )
-}
-
-// Append `file`'s `//!` module docs, each line as written, to the package's:
-// the files' docs are joined in file order with an empty `//!` line between
-// them (docs/19 §5), so the merged unit's module doc reads as one.
-func addModuleDocs(
-  lines: in List[String],
-  origins: in List[DiagUtil.MergedLineOrigin],
-  text: in String,
-  file: in SourceFile,
-  path: in String,
-): Unit {
-  if file.moduleDoc.count == 0 {
-    return
-  }
-  if lines.count > 0 {
-    lines.add("//!")
-    origins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-  }
-  for d in file.moduleDoc {
-    val raw = text.substring(d.span.startPos.offset, d.span.endPos.offset - d.span.startPos.offset)
-    lines.add(Str.trimEnd(raw))
-    origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = d.span.startPos.line))
+  if label.length > 0 {
+    label + ": " + DiagUtil.diagFormat(d.diag)
+  } else {
+    DiagUtil.diagFormat(d.diag)
   }
 }
 
@@ -533,10 +311,11 @@ record DeclaredPackage {
   span: Span
 }
 
-// The path of the first `package` declaration among `text`'s tokens ("" when
-// there is none), for a file whose parse did not reach it.
-func lexedPackage(text: in String): DeclaredPackage {
-  val toks = lex(text).tokens
+// The path of the first `package` declaration among the tokens of `text`,
+// file `fileId` of its package lexed at `offsetBase` ("" when there is
+// none), for a file whose parse did not reach it.
+func lexedPackage(text: in String, fileId: in Int, offsetBase: in Int): DeclaredPackage {
+  val toks = lexFile(text, fileId, offsetBase).tokens
   var i = 0
   while i < toks.count {
     if isKw(toks[i].token, KwPackage) {
@@ -565,16 +344,9 @@ func lexedPackage(text: in String): DeclaredPackage {
   DeclaredPackage(name = "", span = pointSpan(initialPosition()))
 }
 
-func appendOrigins(acc: in List[DiagUtil.MergedLineOrigin], more: in List[DiagUtil.MergedLineOrigin]): Unit {
-  for o in more {
-    acc.add(o)
-  }
-}
-
-// The lexer's own newline normalisation: every offset in a parse is into the
-// normalised text.
+// The lexer's own newline normalisation, for the header scan below.
 func normaliseNewlines(s: in String): String {
-  s.replace("\r\n", "\n").replace("\r", "\n")
+  normaliseLineEndings(s)
 }
 
 func isCfg(a: in Annotation): Bool {
@@ -585,6 +357,9 @@ func annotationName(a: in Annotation): String {
   modulePathJoin(a.name.segments)
 }
 
+// A header piece of file `fileIndex`, whose normalised text is `text` and
+// whose offsets start at `base`: the piece's text is `text` at the span's
+// offsets less `base`.
 func pieceOf(
   text: in String,
   base: in Int,
@@ -627,9 +402,10 @@ func whereWritten(p: in HeaderPiece): String {
   file + ":" + toString(p.line)
 }
 
-// Add `p` to the package's annotations unless an equal one is already there.
-// A file that disagrees with an earlier file is reported; disagreement inside
-// one file is left to the checks that read the merged unit (V0010, Y0009).
+// Add `p` to the package's annotations unless another file wrote an equal
+// one.  A file that disagrees with an earlier file is reported; within one
+// file the annotations are kept as written and disagreement is left to the
+// checks that read the package (V0010, Y0009).
 func addAnnotation(
   acc: in List[HeaderPiece], p: in HeaderPiece, packageName: in String, diags: in List[MergeDiagnostic]
 ): Unit {
@@ -678,16 +454,16 @@ func addAnnotation(
         return
       }
     }
-    if q.key == p.key {
+    if q.key == p.key and q.fileIndex != p.fileIndex {
       return
     }
   }
   acc.add(p)
 }
 
-// Add `p` to the package's imports unless an equal one is already there.  An
-// alias another file binds to a different package is B0012: the merged unit
-// has one scope for both files.
+// Add `p` to the package's imports unless another file wrote an equal one.
+// An alias another file binds to a different package is B0012: the files of
+// a package share one import scope.
 func addImport(acc: in List[HeaderPiece], p: in HeaderPiece, diags: in List[MergeDiagnostic]): Unit {
   for q in acc {
     if p.aliasName.length > 0 and q.aliasName == p.aliasName and q.aliasTarget != p.aliasTarget and q.fileIndex != p.fileIndex {
@@ -705,7 +481,7 @@ func addImport(acc: in List[HeaderPiece], p: in HeaderPiece, diags: in List[Merg
       )
       return
     }
-    if q.key == p.key {
+    if q.key == p.key and q.fileIndex != p.fileIndex {
       return
     }
   }
@@ -757,61 +533,6 @@ func checkUnitModes(
 func spanAt(p: in HeaderPiece): Span {
   val start = Position(offset = 0, line = p.line, column = p.column, fileId = p.fileIndex)
   Span(startPos = start, endPos = start)
-}
-
-// Lay the pieces out one per line, each at the column it had, so a diagnostic
-// on one points at the right column of its file.  Annotations that shared a
-// line in their file share one here, as written.
-func addPieceLines(
-  pieces: in List[HeaderPiece],
-  joinSameLine: in Bool,
-  lines: in List[String],
-  origins: in List[DiagUtil.MergedLineOrigin],
-): Unit {
-  var cur = ""
-  var curFile = -1
-  var curLine = 0
-  var curPath = ""
-  for p in pieces {
-    if joinSameLine and curFile == p.fileIndex and curLine == p.line {
-      val lastNl = lastNewline(cur)
-      val used = cur.length - lastNl - 1
-      val pad = p.column - 1 - used
-      cur = cur + Str.repeat(" ", if pad > 0 { pad } else { 1 }) + p.text
-    } else {
-      if curFile >= 0 {
-        flushPiece(cur, curPath, curLine, lines, origins)
-      }
-      cur = Str.repeat(" ", if p.column > 1 { p.column - 1 } else { 0 }) + p.text
-      curFile = p.fileIndex
-      curLine = p.line
-      curPath = p.path
-    }
-  }
-  if curFile >= 0 {
-    flushPiece(cur, curPath, curLine, lines, origins)
-  }
-}
-
-func lastNewline(s: in String): Int {
-  Str.lastIndexOfRaw(s, "\n")
-}
-
-// A piece written across several lines keeps them, each with its own origin.
-func flushPiece(
-  text: in String,
-  path: in String,
-  line: in Int,
-  lines: in List[String],
-  origins: in List[DiagUtil.MergedLineOrigin],
-): Unit {
-  val parts = Str.split(text, "\n")
-  var j = 0
-  while j < parts.length {
-    lines.add(parts[j])
-    origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = line + j))
-    j = j + 1
-  }
 }
 
 // An annotation's identity: two annotations with the same key say the same
@@ -882,190 +603,13 @@ func importKey(d: in ImportDecl): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// One file's items
-// ─────────────────────────────────────────────────────────────────────────────
-// The text of `file`'s items: `text` with its header tokens removed.  A line
-// that holds a header token is dropped when nothing but white space and line
-// comments is left on it; otherwise (it also holds a piece of a block
-// comment, or the start of an item) it is kept with the token blanked to
-// spaces, so every comment stays a comment and every item keeps its line and
-// column.  Lines with no header token are kept as written; everything after
-// the header is kept as one piece.
-func fileBody(text: in String, file: in SourceFile, path: in String, withOrigins: in Bool): FileBody {
-  val tokens = headerRanges(file)
-  var headerEnd = 0
-  for r in tokens {
-    if r.stop > headerEnd {
-      headerEnd = r.stop
-    }
-  }
-  val blocks = blockCommentsBetween(text, tokens, headerEnd)
-  val kept: List[String] = newList()
-  val origins: List[DiagUtil.MergedLineOrigin] = newList()
-  var lineStart = 0
-  var lineNo = 1
-  var hasRest = true
-  while hasRest and lineStart < headerEnd {
-    val nl = Str.indexOfFromRaw(text, "\n", lineStart)
-    val lineStop = if nl < 0 { text.length } else { nl }
-    if overlapsAny(tokens, lineStart, lineStop) {
-      val headStop = if lineStop < headerEnd { lineStop } else { headerEnd }
-      val tail = if lineStop > headerEnd { text.substring(headerEnd, lineStop - headerEnd) } else { "" }
-      if not overlapsAny(blocks, lineStart, headStop) and tailDroppable(tail) {
-        ()
-      } else {
-        kept.add(blankRanges(text, lineStart, headStop, tokens) + tail)
-        if withOrigins {
-          origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-        }
-      }
-    } else {
-      kept.add(text.substring(lineStart, lineStop - lineStart))
-      if withOrigins {
-        origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-      }
-    }
-    if nl < 0 {
-      hasRest = false
-    } else {
-      lineStart = nl + 1
-      lineNo = lineNo + 1
-    }
-  }
-  if hasRest {
-    val rest = text.substring(lineStart, text.length - lineStart)
-    kept.add(rest)
-    if withOrigins {
-      origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-      var searchFrom = 0
-      var more = true
-      while more {
-        val nlAt = Str.indexOfFromRaw(rest, "\n", searchFrom)
-        if nlAt < 0 {
-          more = false
-        } else {
-          lineNo = lineNo + 1
-          origins.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-          searchFrom = nlAt + 1
-        }
-      }
-    }
-  }
-  FileBody(text = Str.joinList("\n", kept), origins = origins)
-}
-
-// What the rest of the header's last line may hold for the line to be dropped:
-// nothing, or a plain line comment (a `///` is the first item's doc comment).
-func tailDroppable(tail: in String): Bool {
-  val t = Str.trim(tail)
-  t.length == 0 or (Str.startsWith(t, "//") and not Str.startsWith(t, "///"))
-}
-
-// The offsets every header token of `file` covers, in order: module doc
-// comments, file-level annotations, the package declaration and the imports.
-func headerRanges(file: in SourceFile): List[OffsetRange] {
-  val rs: List[OffsetRange] = newList()
-  for d in file.moduleDoc {
-    rs.add(rangeOf(d.span))
-  }
-  for a in file.fileAnnotations {
-    rs.add(rangeOf(a.span))
-  }
-  if file.packageDecl.path.segments.count > 0 {
-    rs.add(rangeOf(file.packageDecl.span))
-  }
-  for d in file.imports {
-    rs.add(rangeOf(d.span))
-  }
-  rs
-}
-
-func rangeOf(sp: in Span): OffsetRange {
-  OffsetRange(start = sp.startPos.offset, stop = sp.endPos.offset)
-}
-
-func overlapsAny(rs: in List[OffsetRange], start: in Int, stop: in Int): Bool {
-  for r in rs {
-    if r.start < stop and r.stop > start {
-      return true
-    }
-  }
-  false
-}
-
-// `text[start, stop)` with every offset inside one of `tokens` replaced by a
-// space.
-func blankRanges(text: in String, start: in Int, stop: in Int, tokens: in List[OffsetRange]): String {
-  var blanked = ""
-  var pos = start
-  for r in tokens {
-    if r.stop > pos and r.start < stop {
-      val blankFrom = if r.start > pos { r.start } else { pos }
-      val blankTo = if r.stop < stop { r.stop } else { stop }
-      blanked = blanked + text.substring(pos, blankFrom - pos) + Str.repeat(" ", blankTo - blankFrom)
-      pos = blankTo
-    }
-  }
-  blanked + text.substring(pos, stop - pos)
-}
-
-// The block comments in the header's trivia: the text between consecutive
-// header tokens (and before the first) holds only white space and comments,
-// since the parse made every other character part of a token, so a plain scan
-// of it finds them.  Block comments nest, as in the lexer.
-func blockCommentsBetween(text: in String, tokens: in List[OffsetRange], headerEnd: in Int): List[OffsetRange] {
-  val blocks: List[OffsetRange] = newList()
-  var gapStart = 0
-  for r in tokens {
-    scanTrivia(text, gapStart, r.start, blocks)
-    if r.stop > gapStart {
-      gapStart = r.stop
-    }
-  }
-  if gapStart < headerEnd {
-    scanTrivia(text, gapStart, headerEnd, blocks)
-  }
-  blocks
-}
-
-func scanTrivia(text: in String, start: in Int, stop: in Int, blocks: in List[OffsetRange]): Unit {
-  var i = start
-  while i < stop {
-    val two = if i + 1 < stop { text.substring(i, 2) } else { "" }
-    if two == "//" {
-      val nl = Str.indexOfFromRaw(text, "\n", i)
-      i = if nl < 0 or nl > stop { stop } else { nl }
-    } else if two == "/*" {
-      var depth = 1
-      var j = i + 2
-      while j < stop and depth > 0 {
-        val pair = if j + 1 < stop { text.substring(j, 2) } else { "" }
-        if pair == "/*" {
-          depth = depth + 1
-          j = j + 2
-        } else if pair == "*/" {
-          depth = depth - 1
-          j = j + 2
-        } else {
-          j = j + 1
-        }
-      }
-      blocks.add(OffsetRange(start = i, stop = j))
-      i = j
-    } else {
-      i = i + 1
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Header scan without a parse
 // ─────────────────────────────────────────────────────────────────────────────
 /// The package a file declares and the imports it writes, read from its header
 /// alone: module docs, comments (block comments nest), file-level annotations
 /// (their argument strings included), `package` and the `import` / `pub use`
 /// declarations after it.  For finding a package's files and its import
-/// closure in a whole source tree without parsing every file; the merge
+/// closure in a whole source tree without parsing every file; assembly
 /// parses the files it keeps and holds them to what they declare.  Each
 /// import is its text from its keyword to its end.  `packageName` is ""
 /// when the header does not reach a `package` declaration.

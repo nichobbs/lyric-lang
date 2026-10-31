@@ -1,11 +1,13 @@
-//! package_merge_self_test.l — the multi-file package merge
-//! (`Lyric.PackageMerge`, docs/19, #8234).
+//! package_merge_self_test.l — assembling a multi-file package from its
+//! separately parsed files (`Lyric.PackageMerge.assemblePackageFiles`,
+//! docs/19 §4, docs/70 §4.1, #8234).
 //!
-//! A merged package is exactly the union of its files' own parses: a comment
-//! in a file's header stays a comment, a file that does not parse or that
-//! declares another package is reported against its own path and line, the
-//! files' file-level annotations are united (and must agree), and every merged
-//! line maps back to its file and line.
+//! An assembled package is exactly the union of its files' own parses: every
+//! position names its file (`Position.fileId`) and keeps that file's own line
+//! and column, a comment in a file's header stays a comment, a file that does
+//! not parse or that declares another package is reported against its own
+//! path and line, and the files' file-level annotations are united (and must
+//! agree).
 //!
 //!   lyric test lyric-compiler/lyric/package_merge_self_test.l
 @test_module
@@ -17,7 +19,7 @@ import Std.String as Str
 import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser as Parser
-import Lyric.Parser.{Item, IFunc, IRecord, modulePathJoin}
+import Lyric.Parser.{Item, IFunc, IRecord, SourceFile, modulePathJoin}
 import Lyric.PackageMerge as PM
 import Std.Errors
 import Std.File as File
@@ -38,16 +40,20 @@ func none(): List[String] {
   newList()
 }
 
-func merge(a: in String, b: in String): PM.PackageMergeResult {
-  mergeFor(a, b, "dotnet")
+func asm(a: in String, b: in String): PM.PackageAssembly {
+  asmFor(a, b, "dotnet")
 }
 
-func mergeFor(a: in String, b: in String, target: in String): PM.PackageMergeResult {
-  PM.mergePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), none(), target, true)
+func asmFor(a: in String, b: in String, target: in String): PM.PackageAssembly {
+  PM.assemblePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), none(), target)
+}
+
+func asmFiles(srcs: in List[String], paths: in List[String], target: in String): PM.PackageAssembly {
+  PM.assemblePackageFiles("P", srcs, paths, none(), none(), target)
 }
 
 // Every diagnostic as `path:CODE:line`, comma-separated, for exact checks.
-func diagSummary(r: in PM.PackageMergeResult): String {
+func diagSummary(r: in PM.PackageAssembly): String {
   val parts: List[String] = newList()
   for d in r.diagnostics {
     parts.add(d.path + ":" + d.diag.code + ":" + toString(d.diag.span.startPos.line))
@@ -55,91 +61,116 @@ func diagSummary(r: in PM.PackageMergeResult): String {
   Str.joinList(",", parts)
 }
 
-func itemCount(source: in String): Int {
-  Parser.parse(source).file.items.count
+func itemNames(items: in List[Item]): String {
+  val names: List[String] = newList()
+  for it in items {
+    match it.kind {
+      case IFunc(fd) -> names.add(fd.name)
+      case IRecord(rd) -> names.add(rd.name)
+      case _ -> names.add("?")
+    }
+  }
+  Str.joinList(",", names)
 }
 
-func parsesCleanly(source: in String): Bool {
-  Parser.parse(source).diagnostics.count == 0
+// Each item as `name@file:line`.
+func itemPlaces(items: in List[Item]): String {
+  val names: List[String] = newList()
+  for it in items {
+    val at = "@" + toString(it.span.startPos.fileId) + ":" + toString(it.span.startPos.line)
+    match it.kind {
+      case IFunc(fd) -> names.add(fd.name + at)
+      case IRecord(rd) -> names.add(rd.name + at)
+      case _ -> names.add("?" + at)
+    }
+  }
+  Str.joinList(",", names)
 }
 
-test "two well-formed files merge to their header union and their items, line for line" {
+// The package's imports as `path` or `path as alias`, comma-separated.
+func importNames(file: in SourceFile): String {
+  val names: List[String] = newList()
+  for imp in file.imports {
+    val p = modulePathJoin(imp.path.segments)
+    names.add(match imp.asAlias { case Some(al) -> p + " as " + al; case None -> p })
+  }
+  Str.joinList(",", names)
+}
+
+// The package's file-level annotations by name, comma-separated.
+func annotationNames(file: in SourceFile): String {
+  val names: List[String] = newList()
+  for a in file.fileAnnotations {
+    names.add(modulePathJoin(a.name.segments))
+  }
+  Str.joinList(",", names)
+}
+
+test "two well-formed files assemble to their header union and their items, each at its own line" {
   val a = "//! A doc\n@runtime_checked\npackage P\n\nimport Std.Core\nimport Std.String as Str\n\n// helper\npub func a(): Int { 1 }\n"
   val b = "// B header comment\n@runtime_checked\npackage P\nimport Std.Core\n\npub func b(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  val expected = "//! A doc\n@runtime_checked\npackage P\nimport Std.Core\nimport Std.String as Str\n" +
-    "\n\n// helper\npub func a(): Int { 1 }\n" +
-    "\n" +
-    "// B header comment\n\npub func b(): Int { 2 }\n"
-  assertEqual(r.source, expected, "merged unit")
-  assertEqualInt(r.origins.count, Str.split(r.source, "\n").length, "one origin per merged line")
-  // `pub func a` is line 9 of a.l; `// B header comment` line 1 of b.l.
-  val lines = Str.split(r.source, "\n")
-  var li = 0
-  while li < lines.length {
-    if lines[li] == "pub func a(): Int { 1 }" {
-      assertEqual(r.origins[li].path, "a.l", "a's item file")
-      assertEqualInt(r.origins[li].originalLine, 9, "a's item line")
-    }
-    if lines[li] == "// B header comment" {
-      assertEqual(r.origins[li].path, "b.l", "b's comment file")
-      assertEqualInt(r.origins[li].originalLine, 1, "b's comment line")
-    }
-    if lines[li] == "@runtime_checked" {
-      assertEqual(r.origins[li].path, "a.l", "annotation file")
-      assertEqualInt(r.origins[li].originalLine, 2, "annotation line")
-    }
-    li = li + 1
-  }
+  assertEqual(itemPlaces(r.file.items), "a@0:9,b@1:6", "each item in its own file, at its own line")
+  assertEqual(importNames(r.file), "Std.Core,Std.String as Str", "the imports, the one both write once")
+  assertEqual(annotationNames(r.file), "runtime_checked", "the annotation both write once")
+  assertEqualInt(r.file.fileAnnotations[0].span.startPos.fileId, 0, "the first file's annotation")
+  assertEqualInt(r.file.moduleDoc.count, 1, "a's module doc")
+  assertEqual(modulePathJoin(r.file.packageDecl.path.segments), "P", "the package")
+  assertEqualInt(r.file.files.count, 2, "one header per file")
+  assertEqual(r.file.files[1].path, "b.l", "file 1's path")
+  assertEqualInt(r.file.files[1].imports.count, 1, "b.l's own import")
+  assertEqual(Str.joinList("|", PM.packageFilePaths(r.file)), "a.l|b.l", "the file table")
 }
 
-test "every file's module docs reach the merged unit, in file order, one empty doc line apart" {
+test "every file's module docs reach the package, in file order" {
   val a = "//! First file.\n//!\n//! More of the first.\n@runtime_checked\npackage P\n\npub func a(): Int { 1 }\n"
   val b = "//! Second file.\n@runtime_checked\npackage P\n\npub func b(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(
-    Str.startsWith(
-      r.source,
-      "//! First file.\n//!\n//! More of the first.\n//!\n//! Second file.\n@runtime_checked\npackage P\n"
-    ),
-    r.source
-  )
-  val parsed = Parser.parse(r.source)
-  assertEqualInt(parsed.diagnostics.count, 0, "the merged unit parses")
-  assertEqualInt(parsed.file.moduleDoc.count, 5, "five module doc lines")
-  assertEqualInt(r.origins.count, Str.split(r.source, "\n").length, "one origin per merged line")
-  assertEqual(r.origins[4].path, "b.l", "b's doc line file")
-  assertEqualInt(r.origins[4].originalLine, 1, "b's doc line")
-  assertEqual(r.origins[3].path, "", "the separator belongs to no file")
+  assertEqualInt(r.file.moduleDoc.count, 4, "three lines of a's, one of b's")
+  assertTrue(Str.contains(r.file.moduleDoc[3].text, "Second file."), r.file.moduleDoc[3].text)
+  assertEqualInt(r.file.moduleDoc[3].span.startPos.fileId, 1, "b's doc names b")
+  assertEqualInt(r.file.moduleDoc[3].span.startPos.line, 1, "at b's own line")
 }
 
-test "module docs keep non-ASCII text, including after it, and CRLF files" {
+test "module docs keep non-ASCII text, and CRLF files get bases from their normalised length" {
   val a = "//! Résumé ✓ 😀 done\r\n//! after\r\n@runtime_checked\r\npackage P\r\n\r\npub func a(): Int { 1 }\r\n"
   val b = "//! Zweite Datei: ñ\r\npackage P\r\npub func b(): Int { 2 }\r\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(
-    Str.startsWith(r.source, "//! Résumé ✓ 😀 done\n//! after\n//!\n//! Zweite Datei: ñ\n@runtime_checked\npackage P\n"),
-    r.source
-  )
-  assertTrue(not Str.contains(r.source, "\r"), "newlines are normalised")
-  val parsed = Parser.parse(r.source)
-  assertEqualInt(parsed.diagnostics.count, 0, "the merged unit parses")
-  assertEqualInt(parsed.file.items.count, 2, "both functions survive")
+  assertEqual(itemPlaces(r.file.items), "a@0:6,b@1:3", "both functions, at their own lines")
+  assertEqualInt(r.file.moduleDoc.count, 3, "three doc lines")
+  assertTrue(Str.contains(r.file.moduleDoc[0].text, "Résumé ✓ 😀 done"), r.file.moduleDoc[0].text)
+  assertTrue(Str.contains(r.file.moduleDoc[2].text, "Zweite Datei: ñ"), r.file.moduleDoc[2].text)
+  val normalisedA = a.replace("\r\n", "\n")
+  assertEqualInt(r.file.files[1].offsetBase, normalisedA.length + 1, "b's base counts no \\r")
 }
 
-test "a file with no module doc adds no separator, and a gated-out file contributes no doc" {
+test "fileOffsetBases puts each file one past the normalised end of the one before" {
+  val srcs = two("ab\r\nc", "x")
+  srcs.add("")
+  srcs.add("yz")
+  val bases = Parser.fileOffsetBases(srcs)
+  assertEqualInt(bases.count, 4, "one base per file")
+  assertEqualInt(bases[0], 0, "the first file starts at 0")
+  assertEqualInt(bases[1], 5, "\"ab\\nc\" is 4 long, plus the gap")
+  assertEqualInt(bases[2], 7, "\"x\" is 1 long, plus the gap")
+  assertEqualInt(bases[3], 8, "an empty file still takes the gap")
+}
+
+test "a file with no module doc adds none, and a gated-out file contributes no doc" {
   val a = "package P\n\npub func a(): Int { 1 }\n"
   val b = "//! Only b.\npackage P\n\npub func b(): Int { 2 }\n"
-  val r = merge(a, b)
-  assertTrue(Str.startsWith(r.source, "//! Only b.\npackage P\n"), r.source)
+  val r = asm(a, b)
+  assertEqualInt(r.file.moduleDoc.count, 1, "b's doc only")
   val g = "//! Gated.\n@cfg(target = \"jvm\")\npackage P\n\npub func g(): Int { 3 }\n"
-  val r2 = mergeFor(g, b, "dotnet")
+  val r2 = asmFor(g, b, "dotnet")
   assertEqual(diagSummary(r2), "", "no diagnostics")
-  assertTrue(not Str.contains(r2.source, "Gated."), "a gated-out file's docs are not carried: " + r2.source)
-  assertTrue(Str.startsWith(r2.source, "//! Only b.\n"), r2.source)
+  assertEqualInt(r2.file.moduleDoc.count, 1, "a gated-out file's docs are not carried")
+  assertTrue(Str.contains(r2.file.moduleDoc[0].text, "Only b."), r2.file.moduleDoc[0].text)
+  assertEqual(itemNames(r2.file.items), "b", "nor its items")
+  assertEqualInt(r2.file.files[0].moduleDoc.count, 1, "its own header keeps its doc")
 }
 
 test "a block comment that an annotation line opens and closes stays a comment" {
@@ -147,39 +178,39 @@ test "a block comment that an annotation line opens and closes stays a comment" 
   // delimiter; the declarations between them are commented out.
   val a = "@runtime_checked\npackage P\n\npub func f(): Bool { true }\n"
   val b = "@runtime_checked /*\npub union Option[T] {\n  case Some(value: T)\n  case Other\n}\n@runtime_checked */\npackage P\n\npub record Filler {\n  n: Int\n}\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(parsesCleanly(r.source), "the merged unit parses: " + r.source)
-  assertEqualInt(itemCount(r.source), 2, "only `f` and `Filler`: the union stays commented out")
-  assertTrue(Str.contains(r.source, "/*\npub union Option[T]"), "the comment opener is kept")
-  assertTrue(Str.contains(r.source, "@runtime_checked */"), "the comment's own text is kept, closer included")
+  assertEqual(itemPlaces(r.file.items), "f@0:4,Filler@1:9", "only `f` and `Filler`: the union stays commented out")
 }
 
 test "files that disagree on the verification level are B0014" {
   val a = "@proof_required\npackage P\n\npub func f(): Bool { true }\n"
   val b = "@runtime_checked\npackage P\n\npub func g(): Bool { true }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "b.l:B0014:1", "B0014 on b.l's annotation")
-  assertTrue(PM.mergeHasErrors(r), "an error")
+  assertTrue(PM.assemblyHasErrors(r), "an error")
   assertTrue(Str.contains(r.diagnostics[0].diag.message, "a.l:1 is @proof_required"), r.diagnostics[0].diag.message)
+  assertEqualInt(r.diagnostics[0].diag.span.startPos.fileId, 1, "the diagnostic's position names b.l")
 }
 
 test "a file that declares another package is B0013" {
   val a = "package P\n\npub func f(): Int { 1 }\n"
   val b = "//! elsewhere\n\npackage Elsewhere\n\npub func g(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "b.l:B0013:3", "B0013 at b.l's package line")
   assertTrue(Str.contains(r.diagnostics[0].diag.message, "declares package Elsewhere"), r.diagnostics[0].diag.message)
+  assertEqualInt(r.diagnostics[0].diag.span.startPos.fileId, 1, "the diagnostic's position names b.l")
 }
 
 test "a file that does not parse is reported against its own path and line" {
   // #8234's `otherpkg`: a broken annotation, and another package.
   val a = "@proof_required\npackage P\n\npub func f(): Int { 1 }\n"
   val b = "@runtime_checked(((\npackage Elsewhere\n\npub func g(): Int { 2 }\n"
-  val r = merge(a, b)
-  assertTrue(PM.mergeHasErrors(r), "an error")
+  val r = asm(a, b)
+  assertTrue(PM.assemblyHasErrors(r), "an error")
   for d in r.diagnostics {
     assertEqual(d.path, "b.l", "every diagnostic is b.l's: " + diagSummary(r))
+    assertEqualInt(d.diag.span.startPos.fileId, 1, "and its position names b.l: " + diagSummary(r))
   }
   assertTrue(Str.startsWith(r.diagnostics[0].diag.code, "P"), "a parse diagnostic first: " + diagSummary(r))
   assertTrue(Str.contains(diagSummary(r), "b.l:B0013:2"), "and the package it names is not P: " + diagSummary(r))
@@ -188,34 +219,30 @@ test "a file that does not parse is reported against its own path and line" {
 test "a file without a package declaration is P0020" {
   val a = "package P\n\npub func f(): Int { 1 }\n"
   val b = "// no header\npub func g(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "b.l:P0020:2", "P0020 where b.l's package declaration belongs")
 }
 
-test "a file of comments only adds its comments and nothing else" {
+test "a file of comments only adds no item" {
   val a = "package P\n\npub func f(): Int { 1 }\n"
   val b = "// notes for the package\n/* more */\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(parsesCleanly(r.source), "parses")
-  assertEqualInt(itemCount(r.source), 1, "one item")
-  assertTrue(Str.contains(r.source, "// notes for the package"), "the comment is kept")
+  assertEqual(itemNames(r.file.items), "f", "one item")
+  assertEqualInt(r.file.files.count, 2, "both files have a header")
 }
 
 test "header text inside a comment is not header" {
   val a = "/* package Fake\nimport Not.Real\n@proof_required\n*/\npackage P\n// import Also.Not\nimport Std.Core // why\n\npub func f(): Int { 1 }\n"
   val b = "package P\n\npub func g(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(parsesCleanly(r.source), "parses: " + r.source)
-  assertEqualInt(itemCount(r.source), 2, "two items")
-  val preamble = Str.substring(r.source, 0, Str.indexOfRaw(r.source, "/* package Fake"))
-  assertEqual(preamble, "package P\nimport Std.Core\n", "only the real import, and no annotation")
-  assertTrue(not Str.contains(r.source, "// why"), "the import's own line goes with it")
-  assertTrue(Str.contains(r.source, "// import Also.Not"), "a comment line between imports stays")
+  assertEqual(itemPlaces(r.file.items), "f@0:9,g@1:3", "two items")
+  assertEqual(importNames(r.file), "Std.Core", "only the real import")
+  assertEqual(annotationNames(r.file), "", "and no annotation")
 }
 
-test "file-level annotations are united, kept once, and keep their line" {
+test "file-level annotations are united and kept once, from the file that first writes them" {
   val a = "package P\n\npub func f(): Int { 1 }\n"
   val b = "@runtime_checked @io\npackage P\n\npub func g(): Int { 2 }\n"
   val c = "@io\npackage P\n\npub func h(): Int { 3 }\n"
@@ -223,19 +250,20 @@ test "file-level annotations are united, kept once, and keep their line" {
   srcs.add(c)
   val paths = two("a.l", "b.l")
   paths.add("c.l")
-  val r = PM.mergePackageFiles("P", srcs, paths, none(), none(), "dotnet", true)
+  val r = asmFiles(srcs, paths, "dotnet")
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(Str.startsWith(r.source, "@runtime_checked @io\npackage P\n"), "b's annotations, as written: " + r.source)
-  assertEqual(r.origins[0].path, "b.l", "annotation origin")
+  assertEqual(annotationNames(r.file), "runtime_checked,io", "b's annotations, c's @io once")
+  assertEqualInt(r.file.fileAnnotations[1].span.startPos.fileId, 1, "the @io kept is b's")
+  assertEqualInt(r.file.files[2].fileAnnotations.count, 1, "c's header keeps its own")
 }
 
 test "an annotation written two ways is B0014, @pure against @io is Y0009" {
   val a = "@proof_required\npackage P\n\npub func f(): Int { 1 }\n"
   val b = "@proof_required(unsafe_blocks_allowed)\npackage P\n\npub func g(): Int { 2 }\n"
-  assertEqual(diagSummary(merge(a, b)), "b.l:B0014:1", "same annotation, other arguments")
+  assertEqual(diagSummary(asm(a, b)), "b.l:B0014:1", "same annotation, other arguments")
   val c = "@pure\npackage P\n\npub func f(): Int { 1 }\n"
   val d = "@io\npackage P\n\npub func g(): Int { 2 }\n"
-  assertEqual(diagSummary(merge(c, d)), "b.l:Y0009:1", "a package is @pure or @io")
+  assertEqual(diagSummary(asm(c, d)), "b.l:Y0009:1", "a package is @pure or @io")
 }
 
 test "a file whose file-level @cfg is off contributes no item or import" {
@@ -243,14 +271,15 @@ test "a file whose file-level @cfg is off contributes no item or import" {
   val b = "@cfg(feature = \"extra\")\n@proof_required\npackage P\nimport Std.Math\n\npub func pick(): Int { 999 }\n"
   val declared: List[String] = newList()
   declared.add("extra")
-  val off = PM.mergePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), declared, "dotnet", true)
+  val off = PM.assemblePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), declared, "dotnet")
   assertEqual(diagSummary(off), "", "no diagnostics")
-  assertEqualInt(itemCount(off.source), 1, "b's item is gone")
-  assertTrue(not Str.contains(off.source, "Std.Math"), "and so is its import")
-  assertTrue(Str.startsWith(off.source, "@proof_required\npackage P\n"), "its annotation still describes the package")
-  val on = PM.mergePackageFiles("P", two(a, b), two("a.l", "b.l"), declared, declared, "dotnet", true)
-  assertEqualInt(itemCount(on.source), 2, "with the feature on, both items")
-  assertTrue(not Str.contains(on.source, "@cfg"), "a file-level @cfg is per file, never the package's")
+  assertEqual(itemPlaces(off.file.items), "pick@0:3", "b's item is gone")
+  assertEqual(importNames(off.file), "", "and so is its import")
+  assertEqual(annotationNames(off.file), "proof_required", "its annotation still describes the package")
+  val on = PM.assemblePackageFiles("P", two(a, b), two("a.l", "b.l"), declared, declared, "dotnet")
+  assertEqual(itemPlaces(on.file.items), "pick@0:3,pick@1:6", "with the feature on, both items")
+  assertEqual(importNames(on.file), "Std.Math", "and b's import")
+  assertEqual(annotationNames(on.file), "proof_required", "a file-level @cfg is per file, never the package's")
 }
 
 test "a malformed or undeclared file-level @cfg is F0012 or F0013" {
@@ -258,12 +287,12 @@ test "a malformed or undeclared file-level @cfg is F0012 or F0013" {
   val bad = "@cfg(feture = \"x\")\npackage P\n\npub func g(): Int { 2 }\n"
   val declared: List[String] = newList()
   declared.add("extra")
-  val r1 = PM.mergePackageFiles("P", two(a, bad), two("a.l", "b.l"), none(), declared, "dotnet", true)
+  val r1 = PM.assemblePackageFiles("P", two(a, bad), two("a.l", "b.l"), none(), declared, "dotnet")
   assertEqual(diagSummary(r1), "b.l:F0012:1", "malformed")
   val typo = "@cfg(feature = \"exrta\")\npackage P\n\npub func g(): Int { 2 }\n"
-  val r2 = PM.mergePackageFiles("P", two(a, typo), two("a.l", "b.l"), none(), declared, "dotnet", true)
+  val r2 = PM.assemblePackageFiles("P", two(a, typo), two("a.l", "b.l"), none(), declared, "dotnet")
   assertEqual(diagSummary(r2), "b.l:F0013:1", "undeclared feature")
-  assertTrue(not PM.mergeHasErrors(r2), "F0013 is a warning")
+  assertTrue(not PM.assemblyHasErrors(r2), "F0013 is a warning")
 }
 
 test "a file-level @cfg(target) is decided against the build's target" {
@@ -275,62 +304,76 @@ test "a file-level @cfg(target) is decided against the build's target" {
   srcs.add(onDotnet)
   val paths = two("a.l", "b.l")
   paths.add("c.l")
-  val dn = PM.mergePackageFiles("P", srcs, paths, none(), none(), "dotnet", true)
-  assertEqual(diagSummary(dn), "", "dotnet merges")
-  assertEqualInt(itemCount(dn.source), 2, "dotnet: main and one which")
-  assertTrue(Str.contains(dn.source, "{ 2 }") and not Str.contains(dn.source, "{ 1 }"), "dotnet keeps c.l")
-  val jv = PM.mergePackageFiles("P", srcs, paths, none(), none(), "jvm", true)
-  assertTrue(Str.contains(jv.source, "{ 1 }") and not Str.contains(jv.source, "{ 2 }"), "jvm keeps b.l")
-  val nt = PM.mergePackageFiles("P", srcs, paths, none(), none(), "native", true)
-  assertEqualInt(itemCount(nt.source), 1, "native keeps neither")
+  val dn = asmFiles(srcs, paths, "dotnet")
+  assertEqual(diagSummary(dn), "", "dotnet assembles")
+  assertEqual(itemPlaces(dn.file.items), "main@0:3,which@2:3", "dotnet keeps c.l")
+  assertEqual(itemPlaces(asmFiles(srcs, paths, "jvm").file.items), "main@0:3,which@1:3", "jvm keeps b.l")
+  assertEqual(itemNames(asmFiles(srcs, paths, "native").file.items), "main", "native keeps neither")
 }
 
 test "every file of a package gated off leaves an empty package" {
   // #1124: the package still exists, with one `package` declaration.
   val a = "@cfg(feature = \"redis\")\npackage P\nimport Std.Core\npub func a(): Int { 1 }\n"
   val b = "@cfg(feature = \"redis\")\n@io\npackage P\npub func b(): Int { 2 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(parsesCleanly(r.source), "parses: " + r.source)
-  assertEqualInt(itemCount(r.source), 0, "no items")
-  assertEqual(r.source, "@io\npackage P\n\n", "one package declaration, the package's annotation")
+  assertEqualInt(r.file.items.count, 0, "no items")
+  assertEqual(importNames(r.file), "", "no imports")
+  assertEqual(modulePathJoin(r.file.packageDecl.path.segments), "P", "one package declaration")
+  assertEqual(annotationNames(r.file), "io", "the package's annotation")
 }
 
 test "an import alias two files bind to different packages is B0012" {
-  // Review repro r1.
+  // Review repro r1: the files of a package share one import scope until
+  // per-file scopes land (docs/70 §4.1).
   val a = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
   val b = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "b.l:B0012:2", "B0012 on b.l's import")
   assertTrue(
     Str.contains(r.diagnostics[0].diag.message, "names Std.Math here but Std.String at a.l:2"),
     r.diagnostics[0].diag.message
   )
-  val same = merge(a, "package P\nimport Std.String as X\n\nfunc other(): Int { 1 }\n")
+  assertEqualInt(r.diagnostics[0].diag.span.startPos.fileId, 1, "the diagnostic's position names b.l")
+  assertEqual(itemPlaces(r.file.items), "main@0:4,other@1:4", "both files' items")
+  assertEqual(importNames(r.file), "Std.String as X", "the package binds X once, to a.l's package")
+  assertEqualInt(r.file.files.count, 2, "both headers")
+  assertEqual(modulePathJoin(r.file.files[1].imports[0].path.segments), "Std.Math", "b.l's header keeps its own")
+  val same = asm(a, "package P\nimport Std.String as X\n\nfunc other(): Int { 1 }\n")
   assertEqual(diagSummary(same), "", "the same alias for the same package is one import")
+  assertEqual(importNames(same.file), "Std.String as X", "kept once")
 }
 
 test "a unit-mode annotation only some files carry is B0014" {
   // Review repro r5: `@contract_source` would make `{ 42 }` a block in b.l.
   val a = "@contract_source\npackage P\n\nfunc f(): Int { 1 }\n"
   val b = "package P\nfunc main(): Unit {\n  val g = { 42 }\n  println(toString(g()))\n}\n"
-  val r = merge(a, b)
+  val r = asm(a, b)
   assertEqual(diagSummary(r), "b.l:B0014:1", "b.l is not @contract_source")
   assertTrue(Str.contains(r.diagnostics[0].diag.message, "@contract_source"), r.diagnostics[0].diag.message)
-  val t = merge("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n")
+  val t = asm("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n")
   assertEqual(diagSummary(t), "b.l:B0014:1", "@test_module on one file only")
-  val both = merge("@test_module\npackage P\n", "@test_module\npackage P\npub func h(): Int { 1 }\n")
+  val both = asm("@test_module\npackage P\n", "@test_module\npackage P\npub func h(): Int { 1 }\n")
   assertEqual(diagSummary(both), "", "on every file, it is the package's")
 }
 
 test "annotations or imports with no package declaration are P0020" {
   // Review repro r4.
   val a = "package P\n\nfunc main(): Unit { }\n"
-  assertEqual(diagSummary(merge(a, "// stray\n@axiom\n")), "b.l:P0020:2", "annotation only")
-  assertEqual(diagSummary(merge(a, "import Std.Core\n")), "b.l:P0020:1", "import only")
+  val annOnly = asm(a, "// stray\n@axiom\n")
+  assertEqual(diagSummary(annOnly), "b.l:P0020:2", "annotation only")
+  assertEqual(itemPlaces(annOnly.file.items), "main@0:3", "a.l's item")
+  assertEqual(annotationNames(annOnly.file), "", "b.l's annotation is not the package's")
+  assertEqualInt(annOnly.file.files.count, 2, "both headers")
+  assertEqualInt(annOnly.file.files[1].packageDecl.path.segments.count, 0, "b.l declares no package")
+  assertEqualInt(annOnly.file.files[1].fileAnnotations.count, 1, "b.l's header keeps its annotation")
+  val impOnly = asm(a, "import Std.Core\n")
+  assertEqual(diagSummary(impOnly), "b.l:P0020:1", "import only")
+  assertEqual(importNames(impOnly.file), "", "b.l's import is not the package's")
+  assertEqualInt(impOnly.file.files[1].imports.count, 1, "b.l's header keeps its import")
 }
 
-test "CRLF files and one-line headers merge with their lines" {
+test "CRLF files and one-line headers keep their lines and columns" {
   val a = "@runtime_checked\r\npackage P\r\nimport Std.Core\r\n\r\nfunc main(): Unit {\r\n  println(toString(two()))\r\n}\r\n"
   val b = "package P; import Std.Core; func two(): Int { 2 }\n"
   val c = "/* hdr\n*/ @runtime_checked /* x\n y */ package P /*\n*/ import Std.Core /* q\n */ func three(): Int {\n\t3\n}\n"
@@ -338,26 +381,11 @@ test "CRLF files and one-line headers merge with their lines" {
   srcs.add(c)
   val paths = two("a.l", "b.l")
   paths.add("c.l")
-  val r = PM.mergePackageFiles("P", srcs, paths, none(), none(), "dotnet", true)
+  val r = asmFiles(srcs, paths, "dotnet")
   assertEqual(diagSummary(r), "", "no diagnostics")
-  assertTrue(parsesCleanly(r.source), "parses: " + r.source)
-  assertEqualInt(itemCount(r.source), 3, "three items")
-  assertTrue(not Str.contains(r.source, "\r"), "newlines normalised")
-  val lines = Str.split(r.source, "\n")
-  assertEqualInt(r.origins.count, lines.length, "one origin per line")
-  var li = 0
-  while li < lines.length {
-    if Str.contains(lines[li], "func two()") {
-      assertEqual(r.origins[li].path, "b.l", "two's file")
-      assertEqualInt(r.origins[li].originalLine, 1, "two's line")
-      assertEqualInt(Str.indexOfRaw(lines[li], "func two()"), 28, "b.l's header blanked in place: " + lines[li])
-    }
-    if Str.contains(lines[li], "func three()") {
-      assertEqual(r.origins[li].path, "c.l", "three's file")
-      assertEqualInt(r.origins[li].originalLine, 5, "three's line")
-    }
-    li = li + 1
-  }
+  assertEqual(itemPlaces(r.file.items), "main@0:5,two@1:1,three@2:5", "three items, at their own lines")
+  assertEqualInt(r.file.items[1].span.startPos.column, 29, "b.l's item at its own column")
+  assertEqual(importNames(r.file), "Std.Core", "one import")
 }
 
 test "a package of one file that declares another package is B0013" {
@@ -366,27 +394,24 @@ test "a package of one file that declares another package is B0013" {
   only.add("//! doc\npackage Elsewhere\nfunc main(): Unit { }\n")
   val paths: List[String] = newList()
   paths.add("a.l")
-  val r = PM.mergePackageFiles("P", only, paths, none(), none(), "dotnet", true)
+  val r = PM.assemblePackageFiles("P", only, paths, none(), none(), "dotnet")
   assertEqual(diagSummary(r), "a.l:B0013:2", "B0013 at the package name")
 }
 
-test "a package of one file is returned as written" {
+test "a package of one file is its own parse" {
+  val src = "//! doc\n@io\npackage P\n\nimport Std.Core\n\npub func f(): Int { 1 }\nrecord R {\n  n: Int\n}\n"
   val only: List[String] = newList()
-  only.add("// as written\npackage P\nimport Std.Core\n")
+  only.add(src)
   val paths: List[String] = newList()
   paths.add("a.l")
-  val r = PM.mergePackageFiles("P", only, paths, none(), none(), "dotnet", true)
-  assertEqual(r.source, "// as written\npackage P\nimport Std.Core\n", "verbatim")
-  assertEqualInt(r.origins.count, 0, "no origins")
-}
-
-test "a discovered package of one file is rebuilt in the merged shape" {
-  val only: List[String] = newList()
-  only.add("//! doc\n@io\npackage Std.X\n\nimport Std.Core\n\npub func f(): Int { 1 }\n")
-  val paths: List[String] = newList()
-  paths.add("x.l")
-  val r = PM.mergeDiscoveredPackage("Std.X", only, paths, "dotnet")
-  assertEqual(r.source, "//! doc\n@io\npackage Std.X\nimport Std.Core\n\n\npub func f(): Int { 1 }\n", "rebuilt")
+  val r = PM.assemblePackageFiles("P", only, paths, none(), none(), "dotnet")
+  val parsed = Parser.parse(src).file
+  assertEqual(diagSummary(r), "", "no diagnostics")
+  assertEqual(itemPlaces(r.file.items), itemPlaces(parsed.items), "the parse's items")
+  assertEqual(importNames(r.file), importNames(parsed), "its imports")
+  assertEqual(annotationNames(r.file), annotationNames(parsed), "its annotations")
+  assertEqualInt(r.file.items[0].span.startPos.offset, parsed.items[0].span.startPos.offset, "at base 0")
+  assertEqualInt(r.file.files[0].offsetBase, 0, "file 0's base")
 }
 
 test "scanHeader reads the package and imports past comments and annotation strings" {
@@ -403,14 +428,15 @@ test "scanHeader reads the package and imports past comments and annotation stri
   assertEqual(PM.scanHeader("/* never closed\npackage A\n").packageName, "", "unterminated comment")
 }
 
-test "a one-file package named from its own source is not held to the name" {
+test "a one-file package named from its own source is not held to a name" {
   // Review repro sf: a single-file build names its package from the source.
   val only: List[String] = newList()
   only.add("/*\npackage Old\n*/\npackage Mf\nfunc main(): Unit { }\n")
   val paths: List[String] = newList()
   paths.add("a.l")
-  val r = PM.mergePackageFiles("Old", only, paths, none(), none(), "dotnet", false)
+  val r = PM.assemblePackageFiles("", only, paths, none(), none(), "dotnet")
   assertEqual(diagSummary(r), "", "no B0013")
+  assertEqual(modulePathJoin(r.file.packageDecl.path.segments), "Mf", "the package it declares")
   assertEqual(PM.scanHeader(only[0]).packageName, "Mf", "the commented-out package line is not the declaration")
   assertEqual(PM.scanHeader("package Mf; func main(): Unit { }\n").packageName, "Mf", "one-line header")
   assertEqual(
@@ -472,99 +498,11 @@ test "a directory entry leaves out a sub-package entry nested in it" {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// docs/70 §4.1: a package assembled from its separately parsed files has the
-// diagnostics, items and header the merge gives the same files.
-// ─────────────────────────────────────────────────────────────────────────────
-func assembleSummary(r: in PM.PackageAssembly): String {
-  val parts: List[String] = newList()
-  for d in r.diagnostics {
-    parts.add(d.path + ":" + d.diag.code + ":" + toString(d.diag.span.startPos.line))
-  }
-  Str.joinList(",", parts)
-}
-
-func itemNames(items: in List[Item]): String {
-  val names: List[String] = newList()
-  for it in items {
-    match it.kind {
-      case IFunc(fd) -> names.add(fd.name)
-      case IRecord(rd) -> names.add(rd.name)
-      case _ -> names.add("?")
-    }
-  }
-  Str.joinList(",", names)
-}
-
-// The assembly of `srcs` agrees with their merge: the same diagnostics and,
-// when those leave the package usable, the same items, imports, file-level
-// annotations and module-doc lines.
-func assertAssemblyMatchesMerge(
-  srcs: in List[String],
-  paths: in List[String],
-  active: in List[String],
-  declared: in List[String],
-  target: in String,
-  what: in String,
-): Unit {
-  val merged = PM.mergePackageFiles("P", srcs, paths, active, declared, target, true)
-  val assembled = PM.assemblePackageFiles("P", srcs, paths, active, declared, target)
-  assertEqual(assembleSummary(assembled), diagSummary(merged), what + ": diagnostics")
-  if not PM.mergeHasErrors(merged) {
-    val mf = Parser.parse(merged.source).file
-    assertEqual(itemNames(assembled.file.items), itemNames(mf.items), what + ": items")
-    assertEqualInt(assembled.file.imports.count, mf.imports.count, what + ": imports")
-    assertEqualInt(assembled.file.fileAnnotations.count, mf.fileAnnotations.count, what + ": file-level annotations")
-    assertEqualInt(assembled.file.files.count, srcs.count, what + ": one header per file")
-  }
-}
-
-test "an assembled package matches the merge of the same files" {
-  val a = "//! A doc\n@runtime_checked\npackage P\n\nimport Std.Core\nimport Std.String as Str\n\npub func a(): Int { 1 }\n"
-  val b = "@runtime_checked\npackage P\nimport Std.Core\n\npub func b(): Int { 2 }\nrecord R {\n  n: Int\n}\n"
-  assertAssemblyMatchesMerge(two(a, b), two("a.l", "b.l"), none(), none(), "dotnet", "two files")
-  val declared: List[String] = newList()
-  declared.add("extra")
-  val gated = "@cfg(feature = \"extra\")\n@proof_required\npackage P\nimport Std.Math\n\npub func pick(): Int { 999 }\n"
-  assertAssemblyMatchesMerge(two(a, gated), two("a.l", "b.l"), none(), declared, "dotnet", "a gated-off file")
-  assertAssemblyMatchesMerge(two(a, gated), two("a.l", "b.l"), declared, declared, "dotnet", "a gated-on file")
-  val levels = "@proof_required\npackage P\npub func c(): Int { 3 }\n"
-  assertAssemblyMatchesMerge(two(a, levels), two("a.l", "b.l"), none(), none(), "dotnet", "B0014")
-  assertAssemblyMatchesMerge(
-    two(a, "package Q\npub func c(): Int { 3 }\n"),
-    two("a.l", "b.l"),
-    none(),
-    none(),
-    "dotnet",
-    "B0013"
-  )
-  assertAssemblyMatchesMerge(two(a, "// stray\n@axiom\n"), two("a.l", "b.l"), none(), none(), "dotnet", "P0020")
-  val aliasA = "package P\nimport Std.String as X\n\nfunc main(): Unit { }\n"
-  val aliasB = "package P\nimport Std.Math as X\n\nfunc other(): Int { 1 }\n"
-  assertAssemblyMatchesMerge(two(aliasA, aliasB), two("a.l", "b.l"), none(), none(), "dotnet", "B0012")
-  assertAssemblyMatchesMerge(
-    two("@test_module\npackage P\n", "package P\npub func h(): Int { 1 }\n"),
-    two("a.l", "b.l"),
-    none(),
-    none(),
-    "dotnet",
-    "unit mode"
-  )
-  assertAssemblyMatchesMerge(
-    two(a, "package P\npub func broken( {\n"),
-    two("a.l", "b.l"),
-    none(),
-    none(),
-    "dotnet",
-    "a file that does not parse"
-  )
-}
-
 test "each file of an assembled package keeps its own header, lines and offsets" {
   val a = "package P\nimport Std.String as Str\n\npub func a(): Int { 1 }\n"
   val b = "package P\nimport Std.Math\n\n\npub func b(): Int { 2 }\n"
   val r = PM.assemblePackageFiles("P", two(a, b), two("a.l", "b.l"), none(), none(), "dotnet")
-  assertEqual(assembleSummary(r), "", "no diagnostics")
+  assertEqual(diagSummary(r), "", "no diagnostics")
   assertEqualInt(r.file.items.count, 2, "both items")
   val ia = r.file.items[0].span.startPos
   val ib = r.file.items[1].span.startPos

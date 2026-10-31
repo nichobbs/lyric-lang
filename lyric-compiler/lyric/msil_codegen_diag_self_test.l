@@ -61,7 +61,7 @@ import Std.File as File
 import Msil.Bridge
 
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
-  ProjectPackagePayload(name = name, source = source)
+  ProjectPackagePayload(name = name, sources = [source])
 }
 
 // Mirrors `msil_project_bridge_self_test.l`'s `tempBase()` — honour

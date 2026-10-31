@@ -270,8 +270,8 @@ pub func compileToJar(
   // off, matching a manifest with no `[features]` table).
   val noFeatures: List[String] = newList()
   val jvmDefines = BD.decodeDefines(newList())
-  val noLegacyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines, "", noLegacyOrigins) {
+  val noLegacyFiles: List[String] = newList()
+  val cfgFile = match pipeParseAndErase(source, "jvm", noFeatures, noFeatures, jvmDefines, "", noLegacyFiles) {
     case Some(f) -> f
     case None -> return false
   }
@@ -347,7 +347,7 @@ pub func compileToJar(
   val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   PluginExpand.collectPluginPackage(cfgFile, plugins)
   val file0 = resolveTypeAliases(
-    match pipeExpandAndRewriteFor("jvm", cfgFile, weWires, weConfigs, plugins, "", noLegacyOrigins) {
+    match pipeExpandAndRewriteFor("jvm", cfgFile, weWires, weConfigs, plugins, "", noLegacyFiles) {
       case Some(f) -> f
       case None -> return false
     }
@@ -396,7 +396,7 @@ pub func compileToJar(
   val importedItems = flattenImportedItems(importedPkgs)
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noFiles: List[String] = newList()
   // #7198: JVM's `async func` lowering is a synchronous stub with no
   // suspend point — F0045's CLR-verifier-suspend-in-protected-region
   // hazard does not apply here, so it must never fire on this target.
@@ -407,7 +407,7 @@ pub func compileToJar(
     tcFatal = true,
     tcReport = false,
     pkgLabel = "",
-    lineOrigins = noOrigins,
+    filePaths = noFiles,
     awaitInTryIsHazard = false,
     bindListLiteralTypes = false,
     awaitAsyncCalls = false,
@@ -553,7 +553,7 @@ func runMiddleEnd(
   templates: in Map[String, Weaver.CollectedTemplate],
   tcFatalUserPkg: in Bool,
   pkgLabel: in String,
-  lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
   aritiesOut: in Map[String, Int],
@@ -566,7 +566,7 @@ func runMiddleEnd(
   val opts = jvmMiddleEndOptions(
     tcFatalUserPkg,
     pkgLabel,
-    lineOrigins,
+    files,
     checkedOut,
     recvClassesOut,
     aritiesOut,
@@ -587,7 +587,7 @@ func runMiddleEnd(
 func jvmMiddleEndOptions(
   tcFatal: in Bool,
   pkgLabel: in String,
-  lineOrigins: in List[DiagUtil.MergedLineOrigin],
+  files: in List[String],
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
   aritiesOut: in Map[String, Int],
@@ -600,7 +600,7 @@ func jvmMiddleEndOptions(
     tcFatal = tcFatal,
     tcReport = false,
     pkgLabel = pkgLabel,
-    lineOrigins = lineOrigins,
+    filePaths = files,
     awaitInTryIsHazard = false,
     bindListLiteralTypes = false,
     awaitAsyncCalls = false,
@@ -2354,7 +2354,7 @@ pub func compileToJarBundledWithFeatures(
   contractsEnabled: in Bool = true,
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val noFiles: List[String] = newList()
   compileToJarBundledWithRestored(
     source,
     outputPath,
@@ -2367,7 +2367,6 @@ pub func compileToJarBundledWithFeatures(
     packageVersion,
     noRestored,
     path,
-    noOrigins,
     contractsEnabled
   )
 }
@@ -2395,31 +2394,24 @@ pub func compileToJarBundledWithRestored(
   packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
   path: in String,
-  // Per-merged-line provenance for a multi-file package merged into
-  // `source` (#6282); empty when `source` is a single file (or its
-  // provenance is unknown).
-  origins: in List[DiagUtil.MergedLineOrigin],
   contractsEnabled: in Bool = true,
 ): Bool {
   val one: List[String] = newList()
   one.add(source)
   val onePaths: List[String] = newList()
   onePaths.add(path)
-  val oneOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  oneOrigins.add(DiagUtil.PackageLineOrigins(origins = origins))
+  val noDepPaths: List[String] = newList()
   compileProjectToJarBundledWithRestored(
-    one,
+    pipeOneFilePackages(one, onePaths),
     outputPath,
     packageName,
     stdlibSources,
     activeFeatures,
     declaredFeatures,
-    depTemplateSrcs,
+    pipeOneFilePackages(depTemplateSrcs, noDepPaths),
     defines,
     packageVersion,
     restoredArtifacts,
-    onePaths,
-    oneOrigins,
     noPackageFeatureSets(),
     newMap(),
     contractsEnabled
@@ -2454,6 +2446,27 @@ func fileHasConfigBlock(file: in SourceFile): Bool {
   false
 }
 
+// A dependency template package's files assembled for collecting its
+// templates (`Lyric.Pipeline.pipeParseDependencyPackage`): its file-level
+// `@cfg` is decided by the features of the project package of the same name
+// (a JVM dependency is one of the project's packages too), else the build's.
+func parseJvmDepTemplate(
+  dep: in PackageFiles,
+  pkgs: in List[PackageFiles],
+  pkgFeatures: in List[PackageFeatureSet],
+  buildActive: in List[String],
+): SourceFile {
+  var active = buildActive
+  var i = 0
+  while i < pkgs.count and i < pkgFeatures.count {
+    if dep.name.length > 0 and pkgs[i].name == dep.name {
+      active = pkgFeatures[i].active
+    }
+    i = i + 1
+  }
+  pipeParseDependencyPackage(dep.name, dep.sources, dep.paths, "jvm", active)
+}
+
 // No per-package feature overrides: every package uses the build's features.
 func noPackageFeatureSets(): List[PackageFeatureSet] {
   val none: List[PackageFeatureSet] = newList()
@@ -2480,9 +2493,11 @@ func fileHasTopLevelMain(file: in SourceFile): Bool {
 
 /// Multi-package JVM project build (the manifest path, #2669 J6): compiles
 /// every project package plus the transitive stdlib-import closure into one
-/// runnable JAR, in process.  `pkgSrcs` carries one merged source per
-/// project package; the entry package is the one declaring a top-level
-/// `func main` (first package when none does — `lyric test` synthesises its
+/// runnable JAR, in process.  `pkgSrcs` carries one source per project
+/// package (each a package of one file; a package of several files goes
+/// through `compileProjectToJarBundledWithRestored`); the entry package is
+/// the one declaring a top-level `func main` (first package when none does
+/// — `lyric test` synthesises its
 /// runner main into the test package).  Sibling packages ride the same
 /// bundling machinery as stdlib packages — same registries, call-graph
 /// reachability, middle end, and codegen — with two deliberate differences:
@@ -2507,28 +2522,24 @@ pub func compileProjectToJarBundledWithFeatures(
   defines: in List[String],
   packageVersion: in String,
   // On-disk source path for each entry of `pkgSrcs`, parallel by index
-  // (docs/63 §9.7). "" means unknown (a synthetic/ad-hoc source, or a
-  // multi-file package pre-#6282's per-file merge). Used to label
-  // parse-phase diagnostics with the real file and to emit a JVM
-  // `SourceFile` attribute for single-file packages (`Jvm.Codegen`
-  // never had a path to attach one with before).
+  // (docs/63 §9.7). "" means unknown (a synthetic/ad-hoc source). Used to
+  // label diagnostics with the real file and to emit a JVM `SourceFile`
+  // attribute for single-file packages.
   pkgPaths: in List[String],
 ): Bool {
   val noRestored: List[SynthesisedArtifact] = newList()
-  val noOriginsByPkg: List[DiagUtil.PackageLineOrigins] = newList()
+  val noDepPaths: List[String] = newList()
   compileProjectToJarBundledWithRestored(
-    pkgSrcs,
+    pipeOneFilePackages(pkgSrcs, pkgPaths),
     outputPath,
     packageName,
     stdlibSources,
     activeFeatures,
     declaredFeatures,
-    depTemplateSrcs,
+    pipeOneFilePackages(depTemplateSrcs, noDepPaths),
     defines,
     packageVersion,
     noRestored,
-    pkgPaths,
-    noOriginsByPkg,
     noPackageFeatureSets(),
     newMap(),
     true
@@ -2550,8 +2561,9 @@ record JvmProjectFrontEnd {
   userEntryPkgName: String
   /// Package name -> its on-disk path, for a package of one known file.
   pkgPathByName: Map[String, String]
-  /// Package name -> its merged-line provenance (#6282).
-  pkgOriginsByName: Map[String, List[DiagUtil.MergedLineOrigin]]
+  /// Package name -> its file paths by file id, for a package with a known
+  /// path.
+  pkgFilesByName: Map[String, List[String]]
   /// The packages of path dependencies compiled from source.
   depPkgNames: Map[String, Bool]
   /// Package name -> the package with `array[N, T]` kept an array, which the
@@ -2572,19 +2584,17 @@ record JvmProjectFrontEnd {
 
 // The project front end, its diagnostics sent to `sink`.  None after an error.
 func jvmProjectFrontEnd(
-  pkgSrcs: in List[String],
+  pkgs: in List[PackageFiles],
   stdlibSources: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
-  depTemplateSrcs: in List[String],
+  depTemplates: in List[PackageFiles],
   defines: in List[String],
   restoredArtifacts: in List[SynthesisedArtifact],
-  pkgPaths: in List[String],
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   pkgFeatures: in List[PackageFeatureSet],
   sink: in DiagSink,
 ): Option[JvmProjectFrontEnd] {
-  if pkgSrcs.count == 0 {
+  if pkgs.count == 0 {
     jvmFrontEndError(sink, "", None, "JVM project build received no packages", "")
     return None
   }
@@ -2607,22 +2617,23 @@ func jvmProjectFrontEnd(
   // Package name -> on-disk path, keyed once every project package has
   // parsed far enough to know its own `package` declaration. Empty for a
   // package whose path is unknown (synthetic source) or that spans more
-  // than one file — see `pkgOriginsByName` for that case's attribution.
+  // than one file — see `pkgFilesByName` for that case's attribution.
   val pkgPathByName: Map[String, String] = newMap()
-  // Package name -> per-merged-line provenance table (#6282), keyed the
-  // same way and for the same reason as `pkgPathByName`.
-  val pkgOriginsByName: Map[String, List[DiagUtil.MergedLineOrigin]] = newMap()
+  // Package name -> its file paths by file id, keyed the same way.
+  val pkgFilesByName: Map[String, List[String]] = newMap()
   var psi = 0
-  while psi < pkgSrcs.count {
-    val psiPath = if psi < pkgPaths.count { pkgPaths[psi] } else { "" }
-    val psiOrigins: List[DiagUtil.MergedLineOrigin] = if psi < originsByPkg.count {
-      originsByPkg[psi].origins
-    } else {
-      newList()
+  while psi < pkgs.count {
+    val psiPkg = pkgs[psi]
+    val psiPath = if psiPkg.sources.count == 1 and psiPkg.paths.count > 0 { psiPkg.paths[0] } else { "" }
+    var psiKnown = false
+    for pth in psiPkg.paths {
+      if pth.length > 0 {
+        psiKnown = true
+      }
     }
     val psiActive = if psi < pkgFeatures.count { pkgFeatures[psi].active } else { activeFeatures }
     val psiDeclared = if psi < pkgFeatures.count { pkgFeatures[psi].declared } else { declaredFeatures }
-    val uf = match pipeParseAndEraseTo(sink, pkgSrcs[psi], "jvm", psiActive, psiDeclared, jvmProjDefines, psiPath, psiOrigins) {
+    val uf = match pipeParsePackageTo(sink, pipeHeldPackageName(psiPkg.name, psiPkg.sources.count, psiPkg.nameFromManifest), psiPkg.sources, psiPkg.paths, "jvm", psiActive, psiDeclared, jvmProjDefines, pipePackageLabel(psiPkg.name, psiPkg.sources, psiPkg.paths)) {
       case Some(f) -> f
       case None -> return None
     }
@@ -2632,14 +2643,14 @@ func jvmProjectFrontEnd(
       mainIdx = psi
       sawMain = true
     }
-    if psiPath.length > 0 or psiOrigins.count > 0 {
+    if psiKnown {
       val psiPkgName = dottedPath(uf.packageDecl.path)
       if psiPkgName.length > 0 {
         if psiPath.length > 0 and not pkgPathByName.containsKey(psiPkgName) {
           pkgPathByName.add(psiPkgName, psiPath)
         }
-        if psiOrigins.count > 0 and not pkgOriginsByName.containsKey(psiPkgName) {
-          pkgOriginsByName.add(psiPkgName, psiOrigins)
+        if not pkgFilesByName.containsKey(psiPkgName) {
+          pkgFilesByName.add(psiPkgName, psiPkg.paths)
         }
       }
     }
@@ -2689,16 +2700,16 @@ func jvmProjectFrontEnd(
   // warnings were reported when each was built on its own.
   val depPkgNames: Map[String, Bool] = newMap()
   var wtd = 0
-  while wtd < depTemplateSrcs.count {
-    val wdtPr = parse(depTemplateSrcs[wtd])
-    PluginExpand.collectPluginPackage(wdtPr.file, plugins)
-    val depName = dottedPath(wdtPr.file.packageDecl.path)
+  while wtd < depTemplates.count {
+    val wdtFile = parseJvmDepTemplate(depTemplates[wtd], pkgs, pkgFeatures, activeFeatures)
+    PluginExpand.collectPluginPackage(wdtFile, plugins)
+    val depName = dottedPath(wdtFile.packageDecl.path)
     if not depPkgNames.containsKey(depName) {
       depPkgNames.add(depName, true)
     }
     WireExpand.collectWireTemplates(
-      Aliases.rewriteFile(wdtPr.file).items,
-      dottedPath(wdtPr.file.packageDecl.path),
+      Aliases.rewriteFile(wdtFile).items,
+      dottedPath(wdtFile.packageDecl.path),
       weWires,
       weConfigs
     )
@@ -2715,16 +2726,13 @@ func jvmProjectFrontEnd(
   while wei < userFiles.count {
     // #6824 item 3: label/attribute this package's wire/config-template and
     // impl-default-inheritance diagnostics exactly like its parse-phase
-    // diagnostics already are (`pkgPathByName`/`pkgOriginsByName`, resolved
+    // diagnostics already are (`pkgPathByName`/`pkgFilesByName`, resolved
     // per-package during the parse loop above) instead of the unconditional
     // `""`/empty this call used to hardcode.
     val weiPkgName = dottedPath(userFiles[wei].packageDecl.path)
     val weiPkgLabel = match mapGet(pkgPathByName, weiPkgName) { case Some(p) -> p; case None -> weiPkgName }
-    val weiPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, weiPkgName) {
-      case Some(o) -> o
-      case None -> newList()
-    }
-    val rewritten = match pipeExpandAndRewriteForTo(sink, "jvm", userFiles[wei], weWires, weConfigs, plugins, weiPkgLabel, weiPkgOrigins) {
+    val weiPkgFiles: List[String] = match mapGet(pkgFilesByName, weiPkgName) { case Some(o) -> o; case None -> newList() }
+    val rewritten = match pipeExpandAndRewriteForTo(sink, "jvm", userFiles[wei], weWires, weConfigs, plugins, weiPkgLabel, weiPkgFiles) {
       case Some(f) -> f
       case None -> return None
     }
@@ -2760,7 +2768,7 @@ func jvmProjectFrontEnd(
   // Type items grouped by declaring package (see `compileToJar` for the
   // RegexError collision this scope-aware grouping fixes).
   val importedPkgs: List[ImportedPackage] = newList()
-  // #6024: the entry package (`userFile`, `pkgSrcs[0]`) must ALSO contribute
+  // #6024: the entry package (`userFile`, `pkgs[0]`) must ALSO contribute
   // its own cross-package items here, exactly like every stdlib file (below)
   // and every non-entry sibling package (further below) already does.
   // Before this, a sibling package importing the entry package's types
@@ -2830,8 +2838,8 @@ func jvmProjectFrontEnd(
     val reservedDiags = reservedKeywordDiags(pr.diagnostics)
     if reservedDiags.count > 0 {
       val stdPkgLabel = dottedPath(prInv.packageDecl.path)
-      val noStdOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-      val _ = pipeGateTo(sink, stdPkgLabel, noStdOrigins, reservedDiags)
+      val noStdFiles: List[String] = newList()
+      val _ = pipeGateTo(sink, stdPkgLabel, noStdFiles, reservedDiags)
       return None
     }
     //
@@ -2997,7 +3005,7 @@ func jvmProjectFrontEnd(
       userFile = userFile,
       userEntryPkgName = userEntryPkgName,
       pkgPathByName = pkgPathByName,
-      pkgOriginsByName = pkgOriginsByName,
+      pkgFilesByName = pkgFilesByName,
       depPkgNames = depPkgNames,
       arrayTypedByPkg = arrayTypedByPkg,
       importedPkgs = importedPkgs,
@@ -3052,22 +3060,20 @@ func mainDeclSpan(file: in SourceFile): Option[Span] {
 /// `compileProjectToJarBundledWithRestored`'s.  The bundled standard-library
 /// packages are the compiler's, so they are not checked here.
 pub func checkProjectTypesJvm(
-  pkgSrcs: in List[String],
+  pkgs: in List[PackageFiles],
   stdlibSources: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
-  depTemplateSrcs: in List[String],
+  depTemplates: in List[PackageFiles],
   defines: in List[String],
   restoredArtifacts: in List[SynthesisedArtifact],
-  pkgPaths: in List[String],
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
   pkgFeatures: in List[PackageFeatureSet],
   ioForbiddenByPkg: in Map[String, String],
   contractsEnabled: in Bool,
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val sink = collectDiagnostics(located)
-  val fe = match jvmProjectFrontEnd(pkgSrcs, stdlibSources, activeFeatures, declaredFeatures, depTemplateSrcs, defines, restoredArtifacts, pkgPaths, originsByPkg, pkgFeatures, sink) {
+  val fe = match jvmProjectFrontEnd(pkgs, stdlibSources, activeFeatures, declaredFeatures, depTemplates, defines, restoredArtifacts, pkgFeatures, sink) {
     case Some(f) -> f
     case None -> return located
   }
@@ -3081,14 +3087,11 @@ pub func checkProjectTypesJvm(
   for f in checked {
     val name = dottedPath(f.packageDecl.path)
     val label = match mapGet(fe.pkgPathByName, name) { case Some(p) -> p; case None -> name }
-    val origins: List[DiagUtil.MergedLineOrigin] = match mapGet(fe.pkgOriginsByName, name) {
-      case Some(o) -> o
-      case None -> newList()
-    }
+    val files: List[String] = match mapGet(fe.pkgFilesByName, name) { case Some(o) -> o; case None -> newList() }
     val opts = jvmMiddleEndOptions(
       true,
       label,
-      origins,
+      files,
       newList(),
       newMap(),
       newMap(),
@@ -3243,26 +3246,22 @@ func jvmBundleClosure(fe: in JvmProjectFrontEnd, restoredArtifacts: in List[Synt
 /// mechanism `autoFfi.jarPaths` already uses for Maven/non-JDK JARs) so the
 /// JVM classloader can actually find those classes at runtime.
 pub func compileProjectToJarBundledWithRestored(
-  pkgSrcs: in List[String],
+  // The project's packages, each as its files (docs/19 §4): every
+  // diagnostic names the file it is in, through the package's `paths`
+  // (docs/63 §9.7), and a package of one known file gets a JVM
+  // `SourceFile` attribute.
+  pkgs: in List[PackageFiles],
   outputPath: in String,
   packageName: in String,
   stdlibSources: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
-  depTemplateSrcs: in List[String],
+  // The path dependencies' packages whose templates the build reads.
+  depTemplates: in List[PackageFiles],
   defines: in List[String],
   packageVersion: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
-  // On-disk source path for each entry of `pkgSrcs`, parallel by index
-  // (docs/63 §9.7); see `compileProjectToJarBundledWithFeatures`'s own
-  // `pkgPaths` doc comment.
-  pkgPaths: in List[String],
-  // Per-merged-line provenance for a multi-file package, parallel to
-  // `pkgSrcs` by index (#6282): `originsByPkg[i]` translates `pkgSrcs[i]`'s
-  // merged-blob line numbers back to their real on-disk file and line.
-  // Empty (or an empty inner list) means no translation for that package.
-  originsByPkg: in List[DiagUtil.PackageLineOrigins],
-  // The `@cfg` features each package is erased with, parallel to `pkgSrcs`
+  // The `@cfg` features each package is erased with, parallel to `pkgs`
   // by index; a package past the end uses `activeFeatures` /
   // `declaredFeatures` (see `PackageFeatureSet`).
   pkgFeatures: in List[PackageFeatureSet],
@@ -3272,7 +3271,7 @@ pub func compileProjectToJarBundledWithRestored(
   ioForbiddenByPkg: in Map[String, String],
   contractsEnabled: in Bool = true,
 ): Bool {
-  val fe = match jvmProjectFrontEnd(pkgSrcs, stdlibSources, activeFeatures, declaredFeatures, depTemplateSrcs, defines, restoredArtifacts, pkgPaths, originsByPkg, pkgFeatures, printDiagnostics()) {
+  val fe = match jvmProjectFrontEnd(pkgs, stdlibSources, activeFeatures, declaredFeatures, depTemplates, defines, restoredArtifacts, pkgFeatures, printDiagnostics()) {
     case Some(f) -> f
     case None -> return false
   }
@@ -3280,7 +3279,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userFile = fe.userFile
   val userEntryPkgName = fe.userEntryPkgName
   val pkgPathByName = fe.pkgPathByName
-  val pkgOriginsByName = fe.pkgOriginsByName
+  val pkgFilesByName = fe.pkgFilesByName
   val depPkgNames = fe.depPkgNames
   val arrayTypedByPkg = fe.arrayTypedByPkg
   val importedPkgs = fe.importedPkgs
@@ -3827,7 +3826,7 @@ pub func compileProjectToJarBundledWithRestored(
   // rebuilding an identical index from `importedPkgs` on each call — see
   // `pipeMiddleEnd`'s doc comment (mirrors `Msil.Bridge`'s `weaveTypeIndex`).
   // The one thing `importedPkgs` does NOT carry that `Msil.Bridge` also
-  // indexes: path-dependency template sources (`depTemplateSrcs`, below) —
+  // indexes: path-dependency template sources (`depTemplates`, below) —
   // added the same way MSIL adds its `depTemplatePkgs`.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
   var ati = 0
@@ -3841,15 +3840,15 @@ pub func compileProjectToJarBundledWithRestored(
   // JVM builds (emitJvmInProcess) this list is empty; JVM project builds that
   // route through the self-hosted bridge will populate it when that path lands.
   var dti = 0
-  while dti < depTemplateSrcs.count {
-    val dtPr = parse(depTemplateSrcs[dti])
+  while dti < depTemplates.count {
+    val dtFile = parseJvmDepTemplate(depTemplates[dti], pkgs, pkgFeatures, activeFeatures)
     // #6351/#6504: collapse import aliases (explicit `as` and implicit
     // tail-segment) to full package FQNs before collecting, so template
     // bodies spliced into consumer packages resolve without the
     // dependency's own imports — parity with the MSIL bridge's
     // depTemplatePkgs loop and with every in-bundle file (rewritten via
     // `pipeExpandAndRewrite` before collection).
-    val dtRewritten = Aliases.rewriteFile(dtPr.file)
+    val dtRewritten = Aliases.rewriteFile(dtFile)
     Weaver.collectAspectTemplates(
       dtRewritten.items,
       dottedPath(dtRewritten.packageDecl.path),
@@ -3889,7 +3888,7 @@ pub func compileProjectToJarBundledWithRestored(
   // all, even though `--target dotnet` on the identical file already named
   // the real path.
   val userPkgLabel = match mapGet(pkgPathByName, userEntryPkgName) { case Some(p) -> p; case None -> userEntryPkgName }
-  val userPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, userEntryPkgName) {
+  val userPkgFiles: List[String] = match mapGet(pkgFilesByName, userEntryPkgName) {
     case Some(o) -> o
     case None -> newList()
   }
@@ -3898,7 +3897,7 @@ pub func compileProjectToJarBundledWithRestored(
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
   val userCallArities: Map[String, Int] = newMap()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4053,7 +4052,7 @@ pub func compileProjectToJarBundledWithRestored(
     // the `SourceFile` attribute, and the same "path when known, else
     // name" fallback `Msil.Bridge` uses (#6610/#6643).
     val siblingPkgLabel = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> pkgName }
-    val siblingPkgOrigins: List[DiagUtil.MergedLineOrigin] = match mapGet(pkgOriginsByName, pkgName) {
+    val siblingPkgFiles: List[String] = match mapGet(pkgFilesByName, pkgName) {
       case Some(o) -> o
       case None -> newList()
     }
@@ -4065,7 +4064,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.

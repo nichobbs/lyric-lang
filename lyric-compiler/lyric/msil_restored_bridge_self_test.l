@@ -146,7 +146,7 @@ func compileAndRunAgainstRestored(
   val appDir = freshTempDir(label + "-app")
   val appDllPath = Path.join(appDir, consumerName + ".dll")
   val packages: List[ProjectPackagePayload] = newList()
-  packages.add(ProjectPackagePayload(name = consumerName, source = consumerSource))
+  packages.add(ProjectPackagePayload(name = consumerName, sources = [consumerSource]))
   val noStdlib: List[String] = newList()
   val noFeatures: List[String] = newList()
   val artifacts: List[SynthesisedArtifact] = newList()

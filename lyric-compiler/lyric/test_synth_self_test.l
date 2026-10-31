@@ -746,3 +746,34 @@ test "a file without doctests has an empty module (#678)" {
 test "@test_module annotation add/remove keeps positions (#678)" {
   testTestModuleAnnotationRoundTrip()
 }
+
+// A doctest module carries the documented file's own imports, and a file
+// compiled with its doctests keeps every one of its lines (`withDoctests`).
+func importingDoctestSource(): String {
+  "package Shape\nimport Std.String as Str\n\n/// ```lyric\n/// import Std.Math\n/// assertEqualInt(Str.length(\"ab\"), 2, \"len\")\n/// ```\npub func double(x: in Int): Int { x * 2 }\n"
+}
+
+func testDoctestsKeepTheFileLinesAndImports(): Unit {
+  val src = importingDoctestSource()
+  val dm = buildDoctestModule(src, "shape.l")
+  assertEqualInt(dm.count, 1, "one doctest")
+  assertTrue(Str.contains(dm.source, "import Std.String as Str"), "the file's own import: " + dm.source)
+  assertTrue(Str.contains(dm.source, "import Std.Math"), "the block's import")
+  val combined = withDoctests(withTestModuleAnnotation(src), dm)
+  val lines = Str.split(combined, "\n")
+  assertEqual(
+    lines[1],
+    "package Shape; import Std.Testing; import Std.Math",
+    "the missing imports join the package line"
+  )
+  assertEqual(lines[2], "import Std.String as Str", "the file's own import is not repeated")
+  assertEqual(lines[8], "pub func double(x: in Int): Int { x * 2 }", "the file's lines do not move")
+  match synthesizeFor(combined, None, false, false, propertyRunConfigFromOverrides(None, None), emptyFeatureList(), emptyFeatureList()) {
+    case Synthesised(_, n, _) -> assertEqualInt(n, 1, "the doctest is a test of the module")
+    case _ -> panic("expected the file with its doctests to synthesise:\n" + combined)
+  }
+}
+
+test "a file compiled with its doctests keeps its lines and lends them its imports (docs/19 §4)" {
+  testDoctestsKeepTheFileLinesAndImports()
+}

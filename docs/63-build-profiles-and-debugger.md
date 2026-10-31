@@ -678,6 +678,16 @@ line-prefix stripping): the per-merged-line provenance table above is kept,
 built from each file's parse spans rather than a line loop, and now also
 covers the merged header's annotation and import lines.
 
+**Superseded by docs/70 phase 2a step 3.** There is no merged text any more:
+each file of a package is parsed on its own as file `i` of the package
+(`Lyric.Lexer.Position.fileId`), assembled into one `SourceFile`
+(`Lyric.PackageMerge.assemblePackageFiles`, docs/19 §4), and every gate below
+names a diagnostic's file through the package's file-path table indexed by
+that file id (`Lyric.DiagnosticUtil.diagFormatInFiles`,
+`MiddleEndOptions.filePaths`), at the file's own line. `MergedLineOrigin`,
+`PackageLineOrigins`, `diagFormatWithOrigin` and the bridges' `originsByPkg`
+parameters are deleted; the paragraphs below record the design they replaced.
+
 `Lyric.Pipeline.gate` (and `MiddleEndOptions.lineOrigins`, `pipeParseAndErase`'s
 `origins` parameter, `pipeWeave`'s `origins` parameter) thread this table
 through every diagnostic-reporting call already made along the shared

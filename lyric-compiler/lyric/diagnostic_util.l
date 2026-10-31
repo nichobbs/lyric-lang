@@ -82,136 +82,73 @@ pub func diagReport(diags: in List[Diagnostic]): Unit {
   }
 }
 
-/// Per-merged-line provenance for a multi-file package (#6282/#6284).
-/// `Lyric.PackageMerge.mergePackageFiles` returns one entry per
-/// line of its merged blob: `origins[n - 1]` describes 1-based merged line
-/// `n`.  A line that belongs to the synthesized `package`/`import` prelude
-/// (no single file owns it) carries `path = ""`.  Every merged multi-file
-/// package's own lines carry the real on-disk path and the 1-based line
-/// number within THAT file — unlike the merged blob's own line numbering,
-/// which is meaningless outside the merge.
-pub record MergedLineOrigin {
-  path: String
-  originalLine: Int
-}
-
-/// One package's `MergedLineOrigin` table, wrapped so a per-package list of
-/// these (`List[PackageLineOrigins]`) never needs a doubly-nested
-/// `List[List[MergedLineOrigin]]` at a cross-package call site — the
-/// self-hosted MSIL generic-specialization path degrades a nested
-/// `List[List[<cross-package-record>]]` instantiation (confirmed via
-/// `ArrayTypeMismatchException` in `List<T>.AddWithResize` building the
-/// stdlib bundle's own multi-package project build), matching the several
-/// other `Std.Core.Result`2`-class W0005 degrade-to-`object` warnings
-/// already documented elsewhere in this tree.  A single level of list
-/// nesting (this record's own `origins` field, and `List[PackageLineOrigins]`
-/// itself) is the same shape as every other working `List[List[X]]` site in
-/// the compiler tree, all same-package.
-pub record PackageLineOrigins {
-  origins: List[MergedLineOrigin]
-}
-
-/// Resolve `d`'s real `(path, line)` via `origins` (see `MergedLineOrigin`),
-/// falling back to `(pkgLabel, d`'s own merged line`)` when `origins` is
-/// empty, out of range, or the resolved entry has no path (a diagnostic
-/// anchored inside the synthesized prelude — rare, but possible for a
-/// malformed first line).
-func resolveLineOrigin(pkgLabel: in String, origins: in List[MergedLineOrigin], d: in Diagnostic): MergedLineOrigin {
-  val ln = d.span.startPos.line
-  if ln >= 1 and ln <= origins.count {
-    val o = origins[ln - 1]
-    if o.path.length > 0 {
-      return o
-    }
-  }
-  MergedLineOrigin(path = pkgLabel, originalLine = ln)
-}
-
-/// Like `diagFormat`, but resolves the real on-disk file and original line
-/// via `origins` before formatting (#6282) — a multi-file package's merged
-/// blob has its own internal line numbering, meaningless to a reader.
-/// `pkgLabel` is the fallback label (matching `diagReportAndAbortInPkg`)
-/// for a line `origins` cannot attribute to a single file.
-@stable(since = "0.1")
-pub func diagFormatWithOrigin(pkgLabel: in String, origins: in List[MergedLineOrigin], d: in Diagnostic): String {
-  val o = resolveLineOrigin(pkgLabel, origins, d)
-  val sev = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
-  val body = sev + "[" + d.code + "] " + o.originalLine.toString() + ":" + d.span.startPos.column.toString() + ": " +
-    d.message
-  if o.path.length > 0 {
-    o.path + ": " + body
+/// The file `d` is in: `files[d.span.startPos.fileId]`, the path of the
+/// package file its position names (`Lyric.Lexer.Position.fileId`, docs/70
+/// §4.1), when that is known; `pkgLabel` (the package's name, or "" for
+/// none) otherwise.  `files` holds a package's file paths by file id, ""
+/// where a path is unknown, and is empty when none is known.
+pub func diagFilePath(pkgLabel: in String, files: in List[String], d: in Diagnostic): String {
+  val fid = d.span.startPos.fileId
+  if fid >= 0 and fid < files.count and files[fid].length > 0 {
+    files[fid]
   } else {
-    body
+    pkgLabel
   }
 }
 
-/// Like `diagReportAndAbortInPkg`, but attributes each diagnostic to its
-/// real on-disk file and original line via `origins` (#6282) instead of
-/// the bare merged-blob line number under the package name.  `origins`
-/// empty is the exact `diagReportAndAbortInPkg` behaviour (single-file
-/// packages and every pre-#6282 caller).
-@stable(since = "0.1")
-pub func diagReportAndAbortInPkgWithOrigins(
-  pkgName: in String,
-  origins: in List[MergedLineOrigin],
-  diags: in List[Diagnostic],
-): Bool {
+/// `d` as `path: severity[code] line:col: message`, where `path` is the
+/// file `d` is in (`diagFilePath`) and the line is that file's own; without
+/// the `path: ` prefix when neither a path nor `pkgLabel` is known.
+pub func diagFormatInFiles(pkgLabel: in String, files: in List[String], d: in Diagnostic): String {
+  val path = diagFilePath(pkgLabel, files, d)
+  if path.length > 0 {
+    path + ": " + diagFormat(d)
+  } else {
+    diagFormat(d)
+  }
+}
+
+/// Print every diagnostic in `diags` to stderr against the file it is in
+/// (`diagFormatInFiles`) and return true when any is error-severity.  With
+/// `files` empty every diagnostic is labelled `pkgLabel`, as
+/// `diagReportAndAbortInPkg` labels it.
+pub func diagReportAndAbortInFiles(pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Bool {
   var hasErrors = false
-  var i = 0
-  while i < diags.count {
-    val d = diags[i]
-    Console.error(diagFormatWithOrigin(pkgName, origins, d))
+  for d in diags {
+    Console.error(diagFormatInFiles(pkgLabel, files, d))
     if d.severity == DiagError {
       hasErrors = true
     }
-    i = i + 1
   }
   hasErrors
 }
 
 /// A diagnostic attributed to the file it is in: `path` is the on-disk file
-/// (or the package label where no single file owns the line, "" when
-/// unknown) and `diagnostic`'s line is that file's own, not a merged
-/// package's.  For a caller that reports diagnostics itself rather than
-/// letting a pass print them (`lyric prove`, #8227).
+/// (or the package label when the file's path is unknown, "" when neither
+/// is known) and `diagnostic`'s line is that file's own.  For a caller that
+/// reports diagnostics itself rather than letting a pass print them
+/// (`lyric prove`, #8227).
 pub record LocatedDiagnostic {
   path: String
   diagnostic: Diagnostic
 }
 
-/// `d` attributed through `origins` (see `MergedLineOrigin`), falling back
-/// to `pkgLabel` and `d`'s own line.
-pub func diagLocate(pkgLabel: in String, origins: in List[MergedLineOrigin], d: in Diagnostic): LocatedDiagnostic {
-  val o = resolveLineOrigin(pkgLabel, origins, d)
-  val sp = d.span
-  val start = sp.startPos
-  val shift = o.originalLine - start.line
-  val stop = sp.endPos
-  LocatedDiagnostic(
-    path = o.path,
-    diagnostic = Diagnostic(
-      code = d.code,
-      severity = d.severity,
-      message = d.message,
-      span = Span(
-        startPos = Position(line = o.originalLine, column = start.column, offset = start.offset),
-        endPos = Position(line = stop.line + shift, column = stop.column, offset = stop.offset)
-      )
-    )
-  )
+/// `d` attributed to the file it is in (`diagFilePath`).
+pub func diagLocate(pkgLabel: in String, files: in List[String], d: in Diagnostic): LocatedDiagnostic {
+  LocatedDiagnostic(path = diagFilePath(pkgLabel, files, d), diagnostic = d)
 }
 
 /// Every diagnostic of `diags`, attributed by `diagLocate`, appended to `dst`.
 /// Returns true when any is error-severity.
 pub func diagLocateAll(
   pkgLabel: in String,
-  origins: in List[MergedLineOrigin],
+  files: in List[String],
   diags: in List[Diagnostic],
   dst: in List[LocatedDiagnostic],
 ): Bool {
   var hasErrors = false
   for d in diags {
-    dst.add(diagLocate(pkgLabel, origins, d))
+    dst.add(diagLocate(pkgLabel, files, d))
     if d.severity == DiagError {
       hasErrors = true
     }
