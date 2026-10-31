@@ -36,6 +36,7 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.NativeStdlibCache as NativeStdlibCache
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
@@ -767,6 +768,14 @@ record NativeStdlib {
   importedPkgs: List[ImportedPackage]
   byPkg: Map[String, SourceFile]
   pathByPkg: Map[String, String]
+  /// Per package, the hash of the source of every file declaring it, the key
+  /// material of the check cache (`Lyric.NativeStdlibCache`, #7971).
+  hashByPkg: Map[String, String]
+  /// Where check-cache entries live ("" = cache off), the compiler fingerprint
+  /// ("" = unknown, so off) and the target the checker saw.
+  cacheDir: String
+  compilerId: String
+  cacheTarget: String
 }
 
 func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in String): NativeStdlib {
@@ -775,6 +784,7 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
   val importedPkgs: List[ImportedPackage] = newList()
   val byPkg: Map[String, SourceFile] = newMap()
   val pathByPkg: Map[String, String] = newMap()
+  val hashByPkg: Map[String, String] = newMap()
   for sf in stdlibFiles {
     val pr = parse(sf.source)
     // Stdlib parse diagnostics are advisory (self-hosted parser gaps
@@ -802,8 +812,27 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
       byPkg.add(pn, stdFile)
       pathByPkg.add(pn, sf.path)
     }
+    val fileHash = NativeStdlibCache.sourceHash(sf.source)
+    match mapGet(hashByPkg, pn) {
+      case Some(known) -> hashByPkg.add(pn, known + fileHash)
+      case None -> hashByPkg.add(pn, fileHash)
+    }
   }
-  NativeStdlib(importedPkgs = importedPkgs, byPkg = byPkg, pathByPkg = pathByPkg)
+  val cacheDir = NativeStdlibCache.cacheDir()
+  val compilerId = if cacheDir.length > 0 {
+    NativeStdlibCache.compilerFingerprint(Environment.appBaseDirectory())
+  } else {
+    ""
+  }
+  NativeStdlib(
+    importedPkgs = importedPkgs,
+    byPkg = byPkg,
+    pathByPkg = pathByPkg,
+    hashByPkg = hashByPkg,
+    cacheDir = cacheDir,
+    compilerId = compilerId,
+    cacheTarget = "native:" + targetOs
+  )
 }
 
 /// Type-check bundled stdlib package `pkg` (#7933), the counterpart of the
@@ -820,6 +849,11 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
 /// `m.m[i]` would otherwise reach codegen as an operator on a record.
 func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in NativeStdlib): Option[SourceFile] {
   val visible = stdlibImportClosure(pkg, stdlib)
+  val key = stdlibCheckCacheKey(pkg, visible, stdlib)
+  if NativeStdlibCache.lookup(stdlib.cacheDir, key) {
+    traceStdlibCheckCache("hit", pkg)
+    return Some(value = file)
+  }
   val tcRes = checkWithImportedPackagesForNative(file, visible)
   val errors: List[Diagnostic] = newList()
   for d in tcRes.diagnostics {
@@ -828,10 +862,47 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
     }
   }
   if errors.count == 0 {
+    if stdlibLoweringIsIdentity(tcRes.symbols) {
+      val stored = NativeStdlibCache.store(stdlib.cacheDir, key)
+      traceStdlibCheckCache(if stored { "miss-stored" } else { "miss" }, pkg)
+      return Some(value = file)
+    }
+    traceStdlibCheckCache("uncacheable", pkg)
     return Some(value = lowerArraySites(lowerRecordSites(file, tcRes.symbols), tcRes.symbols, false, false))
   }
   DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), errors)
   None
+}
+
+/// The check-cache key of `pkg` checked against `visible` (its import
+/// closure, in load order); "" when the cache is off.  Covers every input the
+/// check reads: see `Lyric.NativeStdlibCache`.
+func stdlibCheckCacheKey(pkg: in String, visible: in List[ImportedPackage], stdlib: in NativeStdlib): String {
+  if stdlib.cacheDir.length == 0 {
+    return ""
+  }
+  val parts: List[NativeStdlibCache.KeyPart] = newList()
+  parts.add(NativeStdlibCache.KeyPart(name = pkg, sourceHash = stdlibPkgHash(stdlib, pkg)))
+  for ip in visible {
+    parts.add(NativeStdlibCache.KeyPart(name = ip.name, sourceHash = stdlibPkgHash(stdlib, ip.name)))
+  }
+  NativeStdlibCache.entryKey(stdlib.compilerId, stdlib.cacheTarget, pkg, parts)
+}
+
+func stdlibPkgHash(stdlib: in NativeStdlib, pkg: in String): String {
+  match mapGet(stdlib.hashByPkg, pkg) {
+    case Some(h) -> h
+    case None -> ""
+  }
+}
+
+/// `LYRIC_TRACE_STDLIB_CHECK_CACHE=1` reports each package's cache outcome on
+/// stderr (`hit`, `miss`, `miss-stored`, `uncacheable`), for diagnosing build
+/// time and for the cache's tests.
+func traceStdlibCheckCache(outcome: in String, pkg: in String) {
+  if Environment.getVarOrDefault("LYRIC_TRACE_STDLIB_CHECK_CACHE", "") == "1" {
+    Console.error("stdlib-check-cache: " + outcome + " " + pkg)
+  }
 }
 
 /// True when an import of `pkg` should have been satisfied by the bundled

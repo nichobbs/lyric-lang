@@ -221,6 +221,8 @@ bash scripts/ci/ui-widget-plugins-e2e.sh "$lyric_bin" dotnet native
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/text-examples-e2e.sh
+# #7971: the bundled-stdlib check cache (hit, invalidation, corrupt-entry fallback, IR identity).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/native-stdlib-cache-e2e.sh
 # docs/67 G8: Std.Parallel and the lyric-rt worker pool (ThreadSanitizer, scaling).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/parallel-e2e.sh
 # docs/67 G8 (D217): the multi-threaded coroutine scheduler (unit tests, ThreadSanitizer, AddressSanitizer).

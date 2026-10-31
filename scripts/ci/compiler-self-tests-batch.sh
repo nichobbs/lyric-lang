@@ -76,6 +76,7 @@ for t in \
   lyric-compiler/lyric/package_merge_self_test.l \
   lyric-compiler/lyric/lint_self_test.l \
   lyric-compiler/lyric/build_defines_self_test.l \
+  lyric-compiler/lyric/native_stdlib_cache_self_test.l \
   lyric-compiler/lyric/derives_self_test.l \
   lyric-compiler/lyric/mono_self_test.l \
   lyric-compiler/lyric/result_generic_specialization_self_test.l \
