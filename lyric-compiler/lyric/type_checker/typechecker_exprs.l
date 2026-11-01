@@ -1261,14 +1261,11 @@ func symbolIsPackagePrivateBinding(sym: in Symbol): Bool {
   }
 }
 
-// #7548: is `pkg` nameable from `curPkg` — either a direct import
-// (`symTableScopeAllows`) or transitively reachable through the imported
-// packages' own imports (`symTableImportReachable`, #7345's kernel/host
-// re-export walk)? Shared by every package-qualified reachability check
-// (expression paths, type paths, pattern heads) so the two-clause OR isn't
-// re-typed at each call site.
-// A qualified reference names a package the file imports itself, in any
-// form (docs/70 §4.3, D311): one an import merely imports cannot be named.
+// #7548: is `pkg` nameable from `curPkg`?  A qualified reference names a
+// package the file imports itself, in any form (docs/70 §4.3, D311): one an
+// import merely imports, or re-exports, cannot be named.  Shared by every
+// package-qualified reachability check (expression paths, type paths,
+// pattern heads).
 func qualifiedPkgReachable(tbl: in SymbolTable, curPkg: in String, pkg: in String): Bool {
   symTableScopeAllows(tbl, pkg)
 }
