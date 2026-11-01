@@ -739,10 +739,11 @@ builder (I0002) rather than on the current checker.
   every declaration kind (a function's path carries its parameter types as
   written, the overload discriminator), a per-file import scope, and the
   §4.3 lookup (`resolveBare`, `resolvePath`) with the tier rule of #8709, a
-  name ranked by how the file sees it. The checker does not consume it yet.
-  Next: the resolver's body walk and a differential mode against the
-  checker, then the checker consuming resolutions with its lookups deleted
-  and `AliasRewriter` and `TypeAliasResolve` folded in.
+  name ranked by how the file sees it. Step 4 (D314) makes the checker take
+  bare-name answers from the resolver for the checked package (fixing
+  #8709), keeping its scan for dependency scopes, built-ins and the
+  sibling-file cases. Next: delete the lookups that became redundant and
+  fold `AliasRewriter` and `TypeAliasResolve` in.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.

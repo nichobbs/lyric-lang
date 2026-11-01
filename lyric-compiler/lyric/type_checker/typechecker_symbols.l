@@ -2353,6 +2353,20 @@ func symIsCrossPackageVisible(sym: in Symbol): Bool {
 // ambiguous with anything.
 pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): List[String] {
   val pkgs: List[String] = newList()
+  // The resolver decides whether the file's imports make the name ambiguous
+  // (D314).  A package of several files is still judged by the union of its
+  // files' imports, as the backends resolve a bare name package-wide (#8690).
+  match resolverFileFor(tbl) {
+    case Some(fid) -> {
+      if tbl.fileRules.count < 2 {
+        match resolutionOf(tbl, fid, name) {
+          case RUnresolved(code, _) -> if code != "T0123" { return pkgs }
+          case _ -> return pkgs
+        }
+      }
+    }
+    case None -> ()
+  }
   if tbl.scopeImports.count == 0 {
     return pkgs
   }
