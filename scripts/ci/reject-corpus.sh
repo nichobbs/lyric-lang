@@ -3,7 +3,10 @@
 #
 # Each directory under lyric-compiler/lyric/testdata/reject/ is a project that
 # must NOT compile.  Its `expect` file lists, one per line, the diagnostic codes
-# the build must report.  Every case is checked on every target `lyric check`
+# the build must report.  A line may list alternatives separated by `|`
+# (`T0211|T0010`): any one of them satisfies it, for a program whose first
+# error is reported at a different site depending on the order a target's
+# project build checks its packages in.  Every case is checked on every target `lyric check`
 # supports, and a case passes only when the check fails AND reports every
 # expected code on each target, so a program accepted on one target and
 # rejected on another fails the corpus.
@@ -63,10 +66,17 @@ for c in "${cases[@]}"; do
       continue
     fi
     missing=""
-    while IFS= read -r code; do
-      [ -z "$code" ] && continue
-      if ! grep -qw -- "$code" <<< "$out"; then
-        missing="$missing $code"
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      found=0
+      IFS='|' read -ra alts <<< "$line"
+      for code in "${alts[@]}"; do
+        if grep -qw -- "$code" <<< "$out"; then
+          found=1
+        fi
+      done
+      if [ $found -eq 0 ]; then
+        missing="$missing $line"
       fi
     done < "$src/expect"
     if [ -n "$missing" ]; then

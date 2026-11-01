@@ -1111,7 +1111,7 @@ test "unknown name" {
 // A `pub alias X = Y` type-alias re-export used in type position must
 // resolve to its target (the stdlib's `pub alias Random =
 // Std.RandomHost.Random` re-export pattern).  Before the resolver
-// followed aliases, the alias symbol carried no TypeId and produced a
+// followed aliases, the alias symbol carried no SymbolId and produced a
 // spurious T0013 "'X' is not a type".
 test "type alias resolves" {
   val src = "package P\nrecord Foo { x: Int }\nalias Bar = Foo\nfunc f(b: in Bar): Int { b.x }\n"
@@ -1274,7 +1274,7 @@ test "interface subtyping rejects non impl" {
   )
 }
 
-// #2303 soundness: conformance is keyed by `TypeId`, not simple name.  `PkgA`
+// #2303 soundness: conformance is keyed by `SymbolId`, not simple name.  `PkgA`
 // and `PkgB` both declare a `Greeter` interface (distinct ids).  `Hello` impls
 // `PkgA.Greeter` (the user imports `PkgA`), so passing it to `PkgB.wantB`, whose
 // parameter is `PkgB.Greeter`, MUST still be rejected — a simple-name key would
@@ -2035,7 +2035,7 @@ test "match union guard does not cover" {
 
 test "match generic union exhaustive" {
   // Generic-union scrutinees (`Option[Int]`) should resolve to the union
-  // declaration via `typeIdEq` regardless of type arguments.
+  // declaration via `symbolIdEq` regardless of type arguments.
   val ok = "package P\nunion Option[T] { case Some(value: T); case None }\n" + "func f(o: in Option[Int]): Int {\n" +
     "  match o { case Some(x) -> x; case None -> 0 }\n" +
     "}\n"
@@ -2888,7 +2888,7 @@ test "imported package signature prefers its declared import" {
 // A concrete record with `impl Iface for Record` in package A must satisfy an
 // `Iface` *parameter* of a free function imported from A when called from a
 // consumer package B (the lyric-cache `Cache.get(Cache.inProcess(), …)` shape).
-// Same-package this works (registerImplsFromItems keys the relation by TypeId);
+// Same-package this works (registerImplsFromItems keys the relation by SymbolId);
 // cross-package it regressed because the impl relation was keyed off TypeIds
 // that the consumer's scope re-resolved differently.
 test "cross package impl satisfies interface at argument position" {
@@ -3679,7 +3679,7 @@ test "long in int ctor field rejected" {
 }
 
 test "slice literal in list ctor field ok" {
-  // #7696: the literal-typed-as-List rule now keys on `List`'s TypeId
+  // #7696: the literal-typed-as-List rule now keys on `List`'s SymbolId
   // (`isStdCollectionsHostType`), not its bare name — so this needs the
   // GENUINE `Std.CollectionsHost.List` in scope (`stdCollectionsHostPackages`)
   // rather than a locally-declared same-named record. See the "user record
@@ -5828,8 +5828,8 @@ test "correctly-spelled qualified name on a known package has no T0020 (#6361 re
 }
 
 // `Lib.Build` registered twice in one check, as a package reached both as a
-// restored dependency and from source is: each `Choice` registration is the
-// same declaration but carries its own TypeId.
+// restored dependency and from source is.  Both registrations are the same
+// declaration, so they intern to one SymbolId (docs/70 §4.2).
 func twiceRegisteredLibBuild(): List[ImportedPackage] {
   val libSrc = "package Lib.Build\npub record Choice { value: String }\npub func label(c: in Choice): String { c.value }\n"
   val packages: List[ImportedPackage] = newList()
@@ -5859,6 +5859,60 @@ test "an alias-qualified type and constructor name the same type when its packag
     0,
     "the annotated value fits the parameter: " + diagMessageFor(cr, "T0043")
   )
+}
+
+test "a type registered twice has one SymbolId, interned from its DefPath" {
+  val src = "package App\nimport Lib.Build\nrecord Local { n: Int }\nfunc f(c: in Choice): String { label(c) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, twiceRegisteredLibBuild())
+  val ids: List[Int] = newList()
+  for sym in cr.symbols.symbols {
+    if sym.name == "Choice" and sym.originPackage == "Lib.Build" {
+      match symbolTypeIdOpt(sym) {
+        case Some(id) -> ids.add(id.id)
+        case None -> ()
+      }
+    }
+  }
+  assertEqualInt(ids.count, 2, "both registrations are in the table")
+  assertEqualInt(ids[0], ids[1], "and share one id")
+  match symTableDefPathKeyOf(cr.symbols, SymbolId(id = ids[0])) {
+    case Some(key) -> assertEqual(key, "Lib.Build::Choice", "the id's DefPath")
+    case None -> assertTrue(false, "the id has a DefPath")
+  }
+  match symTableTryFindInPackage(cr.symbols, "App", "Local") {
+    case Some(local) -> match symbolTypeIdOpt(local) {
+      case Some(lid) -> {
+        assertTrue(lid.id != ids[0], "another type has another id")
+        assertEqual(unwrapOr(symTableDefPathKeyOf(cr.symbols, lid), ""), "App::Local", "the user type's DefPath")
+      }
+      case None -> assertTrue(false, "Local is a type")
+    }
+    case None -> assertTrue(false, "Local is registered")
+  }
+}
+
+test "same-named types of different packages have different ids" {
+  val tbl = newSymbolTable()
+  val a = symTableTypeSymbolId(tbl, "PkgA", "Foo")
+  val b = symTableTypeSymbolId(tbl, "PkgB", "Foo")
+  val a2 = symTableTypeSymbolId(tbl, "PkgA", "Foo")
+  assertTrue(not symbolIdEq(a, b), "A::Foo and B::Foo are different types")
+  assertTrue(symbolIdEq(a, a2), "A::Foo is one type")
+  assertEqual(unwrapOr(symTableDefPathKeyOf(tbl, b), ""), "PkgB::Foo", "its key")
+}
+
+test "an extern type is identified by its host name" {
+  val tbl = newSymbolTable()
+  val a = symTableInternDefPath(tbl, externTypeDefPath("System.Collections.Generic.List`1"))
+  val b = symTableInternDefPath(tbl, externTypeDefPath("System.Collections.Generic.List`1"))
+  val c = symTableInternDefPath(tbl, typeDefPath("Std.CollectionsHost", "List"))
+  assertTrue(symbolIdEq(a, b), "one host name is one id")
+  assertTrue(not symbolIdEq(a, c), "a Lyric type of the same short name is another")
+  assertEqual(unwrapOr(symTableDefPathKeyOf(tbl, a), ""), "extern::System.Collections.Generic.List`1", "its key")
+  val f1 = symTableFreshSymbolId(tbl)
+  val f2 = symTableFreshSymbolId(tbl)
+  assertTrue(not symbolIdEq(f1, f2), "fresh ids are distinct")
+  assertTrue(not isSome(symTableDefPathKeyOf(tbl, f1)), "and name no DefPath")
 }
 
 // A qualified call into an `extern package { ... }` block member, addressed

@@ -26,34 +26,72 @@ pub union PrimType {
   case PtUnit
   case PtNever
   // ─────────────────────────────────────────────────────────────────────────────
-  // §2. Type identifier (stable identity for user-defined types).
+  // §2. Symbol identity (docs/70 §4.2).
   // ─────────────────────────────────────────────────────────────────────────────
 }
 
+/// A declaration's identity within one compilation: its `DefPath`
+/// (`defPathKey`) interned by `symTableInternDefPath`, dense from 1.  Two
+/// registrations of one declaration (a package reached both as a restored
+/// dependency and from source) intern to the same id.  A declaration with no
+/// package, and the built-in types below, take ids no DefPath names.
 @stable(since = "0.1")
-pub record TypeId {
+pub record SymbolId {
   id: Int
 }
 
-pub func typeIdEq(a: in TypeId, b: in TypeId): Bool {
+/// The stable path of a declaration (docs/70 §4.2): its declaring package
+/// and its path inside it.  A type is `Pkg::Name`; an extern type with a host
+/// name is the host name under the `extern` root, so every extern type naming
+/// one host type is one declaration.  The key is what an interface artifact
+/// will record.
+pub record DefPath {
+  pkg: String
+  segments: List[String]
+}
+
+/// `Pkg::A::B`: the rendered form of `p`, and the key it is interned under.
+pub func defPathKey(p: in DefPath): String {
+  var key = p.pkg
+  for s in p.segments {
+    key = key + "::" + s
+  }
+  key
+}
+
+/// The DefPath of the type `name` that package `pkg` declares.
+pub func typeDefPath(pkg: in String, name: in String): DefPath {
+  val segs: List[String] = newList()
+  segs.add(name)
+  DefPath(pkg = pkg, segments = segs)
+}
+
+/// The DefPath of an extern type bound to the host type `hostName`.
+pub func externTypeDefPath(hostName: in String): DefPath {
+  val segs: List[String] = newList()
+  segs.add(hostName)
+  DefPath(pkg = "extern", segments = segs)
+}
+
+pub func symbolIdEq(a: in SymbolId, b: in SymbolId): Bool {
   a.id == b.id
 }
 
 // The built-in `Task[T]` (docs/68 §3): the handle `spawn f(x)` returns, with
 // `T` the callee's result.  It has no declaring symbol, so it takes a reserved
-// id (`freshTypeId` starts at 1) and never reaches `symTableTypeSymbolOf`,
+// id (interned ids start at 1) and never reaches `symTableTypeSymbolOf`,
 // which keeps it out of every table that turns a checked type back into a
 // source type: no backend knows a source spelling for it.
-pub func builtinTaskTypeId(): TypeId {
-  TypeId(id = -1)
+pub func builtinTaskTypeId(): SymbolId {
+  SymbolId(id = -1)
 }
 
 // The built-in `buffer[T]` (D185, docs/67 §4.4): a contiguous, runtime-length
 // sequence of `Plain` elements with value semantics.  Like `Task[T]` it has no
 // declaring symbol, so it takes a reserved id and never reaches
 // `symTableTypeSymbolOf`.
-pub func builtinBufferTypeId(): TypeId {
-  TypeId(id = -2)
+pub func builtinBufferTypeId(): SymbolId {
+  SymbolId(id = -2)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,7 +115,7 @@ pub union Type {
   /// surface human-readable type names (#425 item 6).  Empty string
   /// means "name lookup unavailable" — keeps the `<#id>` fallback for
   /// callers that synthesise a `TyUser` outside the resolver.
-  case TyUser(id: TypeId, name: String, args: List[Type])
+  case TyUser(id: SymbolId, name: String, args: List[Type])
   /// A refined (range-constrained) view of an underlying numeric type,
   /// e.g. the inline form `Int range 0 ..= 9`.  `lo` / `hi` carry the
   /// integer-literal endpoints when they are statically extractable
@@ -128,7 +166,7 @@ pub func bufferType(element: in Type): Type {
 // The element type `T` of a `buffer[T]`; None for any other type.
 pub func bufferElementType(t: in Type): Option[Type] {
   match unrefine(t) {
-    case TyUser(id, _, args) -> if typeIdEq(id, builtinBufferTypeId()) and args.count == 1 {
+    case TyUser(id, _, args) -> if symbolIdEq(id, builtinBufferTypeId()) and args.count == 1 {
       Some(value = args[0])
     } else {
       None
@@ -147,7 +185,7 @@ pub func isBufferType(t: in Type): Bool {
 // The result type `R` of a `Task[R]`; None for any other type.
 pub func taskResultType(t: in Type): Option[Type] {
   match unrefine(t) {
-    case TyUser(id, _, args) -> if typeIdEq(id, builtinTaskTypeId()) and args.count == 1 {
+    case TyUser(id, _, args) -> if symbolIdEq(id, builtinTaskTypeId()) and args.count == 1 {
       Some(value = args[0])
     } else {
       None
@@ -288,7 +326,7 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
     }
     case TySlice(e1) -> match b { case TySlice(e2) -> typeEquiv(e1, e2); case _ -> false }
     case TyUser(id1, _, args1) -> match b {
-      case TyUser(id2, _, args2) -> if not typeIdEq(id1, id2) {
+      case TyUser(id2, _, args2) -> if not symbolIdEq(id1, id2) {
         false
       } else if args1.count != args2.count {
         false

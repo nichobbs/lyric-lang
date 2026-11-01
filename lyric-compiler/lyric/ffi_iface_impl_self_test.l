@@ -11,7 +11,7 @@
 //! Phase 3 (this file's extension): a Lyric record value may be widened
 //! to an extern-interface-typed `val` / `var` binding or function
 //! parameter, and a method call on the widened binding dispatches via
-//! the interface's CLR MemberRef.  Conformance is keyed on `TypeId`,
+//! the interface's CLR MemberRef.  Conformance is keyed on `SymbolId`,
 //! which `registerImplsFromItems` already records for `extern type`
 //! targets, so the existing `argSatisfiesParam` path accepts the
 //! widening without a type-checker patch.

@@ -2498,6 +2498,50 @@ test "emitProject constructs another package's protected type (JVM)" {
   assertEqual(Str.trim(result.stdout), "42", "protected ctor JVM: output")
 }
 
+// A record copied inside the package that declares it, when another project
+// package imports that package.  A project build hands the checker every
+// project package as an import, the one being checked included; registered a
+// second time, as imported, `Rd` shared its SymbolId with that registration
+// (docs/70 §4.2, D306), and the copy was lowered to the qualified
+// `EPRc.Lib.Rd(...)` constructor, invalid IL on MSIL.
+func recordCopyInImportedPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPRc.App",
+      "package EPRc.App\n" + "\n" + "import EPRc.Lib\n" + "\n" + "func main(): Unit {\n" + "  val r = mk()\n" +
+        "  println(r.name + \" \" + toString(r.span) + \" \" + toString(r.isRef))\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPRc.Lib",
+      "package EPRc.Lib\n" + "\n" + "pub record Rd {\n" + "  name: String\n" + "  span: Int\n" +
+        "  isRef: Bool = false\n" +
+        "}\n" +
+        "\n" +
+        "pub func mk(): Rd {\n" +
+        "  val rd = Rd(name = \"a\", span = 1)\n" +
+        "  rd.copy(span = rd.span + 1, isRef = true)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a record copy in a package another project package imports (MSIL)" {
+  val result = runEmitProject("emitproj-reccopy", recordCopyInImportedPkgs(), "EPRc")
+  assertEqualInt(result.exitCode, 0, "record copy MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 2 true", "record copy MSIL: output")
+}
+
+test "emitProject a record copy in a package another project package imports (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-reccopy-jvm", recordCopyInImportedPkgs(), "EPRc")
+  assertEqualInt(result.exitCode, 0, "record copy JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "a 2 true", "record copy JVM: output")
+}
+
 // A generic record's type parameter named like a type of the constructing
 // package (`Msg`): each constructor argument must be checked against the
 // field type with the record's own parameters in scope (D-progress-980).

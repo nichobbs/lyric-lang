@@ -1,4 +1,4 @@
-# D305 — Release contract policy applies to impl, record and protected-type methods (#8680)
+# D307 — Release contract policy applies to impl, record and protected-type methods (#8680)
 
 **Status:** accepted, implemented
 

@@ -13,16 +13,16 @@ import Lyric.Parser
 @stable(since = "0.1")
 pub union DeclKind {
   // Type-level declarations.
-  case DKRecord(id: TypeId, decl: RecordDecl)
-  case DKExposedRec(id: TypeId, decl: RecordDecl)
-  case DKUnion(id: TypeId, decl: UnionDecl)
-  case DKEnum(id: TypeId, decl: EnumDecl)
-  case DKOpaque(id: TypeId, decl: OpaqueTypeDecl)
-  case DKProtected(id: TypeId, decl: ProtectedTypeDecl)
-  case DKDistinctType(id: TypeId, decl: DistinctTypeDecl)
+  case DKRecord(id: SymbolId, decl: RecordDecl)
+  case DKExposedRec(id: SymbolId, decl: RecordDecl)
+  case DKUnion(id: SymbolId, decl: UnionDecl)
+  case DKEnum(id: SymbolId, decl: EnumDecl)
+  case DKOpaque(id: SymbolId, decl: OpaqueTypeDecl)
+  case DKProtected(id: SymbolId, decl: ProtectedTypeDecl)
+  case DKDistinctType(id: SymbolId, decl: DistinctTypeDecl)
   case DKTypeAlias(decl: TypeAliasDecl)
-  case DKInterface(id: TypeId, decl: InterfaceDecl)
-  case DKExternType(id: TypeId, decl: ExternTypeDecl)
+  case DKInterface(id: SymbolId, decl: InterfaceDecl)
+  case DKExternType(id: SymbolId, decl: ExternTypeDecl)
   // Term-level declarations.
   case DKConst(decl: ConstDecl)
   case DKVal(decl: ValDecl)
@@ -44,8 +44,8 @@ pub union DeclKind {
   /// (deferred slice) walks the AST directly.
   case DKAspect(decl: AspectDecl)
   // Union / enum variant cases.
-  case DKUnionCase(parentId: TypeId, uc: UnionCase)
-  case DKEnumCase(parentId: TypeId, ec: EnumCase)
+  case DKUnionCase(parentId: SymbolId, uc: UnionCase)
+  case DKEnumCase(parentId: SymbolId, ec: EnumCase)
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Symbol — one entry in the symbol table.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ pub func symbolIsType(s: in Symbol): Bool {
   }
 }
 
-pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
+pub func symbolTypeIdOpt(s: in Symbol): Option[SymbolId] {
   match s.kind {
     case DKRecord(id, _) -> Some(value = id)
     case DKExposedRec(id, _) -> Some(value = id)
@@ -112,14 +112,14 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 // alongside `importedOpaqueNames`/`unionDeclIndex` (#2027, #2178) — this
 // function is called from `argSatisfiesParam` for every `TyUser`-typed call
 // argument, so a full symbol scan per call does not scale (#3903).
-pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool {
+pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in SymbolId): Bool {
   match mapGet(tbl.externDelegateFlags, toString(id.id)) {
     case Some(v) -> v
     case None -> false
   }
 }
 
-// #6720: is `id` the TypeId of a `DKExternType` (an `extern type` binding,
+// #6720: is `id` the SymbolId of a `DKExternType` (an `extern type` binding,
 // e.g. `Set[T]`/`JHttpStringCollection[T]`)?  Used by `SFor`'s single-type-
 // param generic element-typing fallback (D-progress-818) to distinguish a
 // genuine extern collection (the phantom-type-param FFI idiom this fallback
@@ -128,11 +128,11 @@ pub func symTableIsExternDelegateType(tbl: in SymbolTable, id: in TypeId): Bool 
 // linear scan — called once per `for` statement, not per element access —
 // so no side index is warranted (contrast `externDelegateFlags`, consulted
 // per call argument).
-pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in TypeId): Bool {
+pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in SymbolId): Bool {
   var i = 0
   while i < tbl.symbols.count {
     match tbl.symbols[i].kind {
-      case DKExternType(tid, _) -> if typeIdEq(tid, id) { return true }
+      case DKExternType(tid, _) -> if symbolIdEq(tid, id) { return true }
       case _ -> {
       }
     }
@@ -231,21 +231,21 @@ pub union StringMethodSurface {
 pub record SymbolTable {
   symbols: List[Symbol]
   /// Preferred-package marker, boxed as a 0/1-element list (the
-  /// `TypeIdCounter.ticks` idiom); empty = no scope = last-registered-wins.
+  /// list-boxing idiom); empty = no scope = last-registered-wins.
   scopePkg: List[String]
   /// Dotted names the current scope imports (second-tier resolution preference).
   scopeImports: List[String]
   /// Interface-conformance relations from `impl I for T` declarations, used
   /// for interface subtyping at argument positions (#1488): an arg of type `T`
   /// is accepted where the parameter is interface `I` when `(T, I)` is present.
-  /// Keyed by `TypeId` (not simple name) so a same-simple-name interface in a
+  /// Keyed by `SymbolId` (not simple name) so a same-simple-name interface in a
   /// different package can never satisfy the check (#2303 soundness).
   impls: List[ImplPair]
-  /// `toString(TypeId.id)` → declared name of an *imported* opaque type.
+  /// `toString(SymbolId.id)` → declared name of an *imported* opaque type.
   /// Side index populated by `symTableAdd` so `importedOpaqueName` (called
   /// once per `EMatch`) is O(1) instead of a full symbol scan (#2027).
   importedOpaqueNames: Map[String, String]
-  /// `toString(TypeId.id)` → index into `unionDeclList`.  Side index populated
+  /// `toString(SymbolId.id)` → index into `unionDeclList`.  Side index populated
   /// by `symTableAdd` so `parentUnionDeclOf` (called at least twice per
   /// union-constructor call) is O(1) instead of a full symbol scan (#2178).
   /// The decl itself lives in the parallel `unionDeclList` because the stage-0
@@ -254,7 +254,7 @@ pub record SymbolTable {
   /// `List` read is the established safe pattern.
   unionDeclIndex: Map[String, Int]
   unionDeclList: List[UnionDecl]
-  /// `toString(TypeId.id)` → whether the `DKExternType` with that id is a
+  /// `toString(SymbolId.id)` → whether the `DKExternType` with that id is a
   /// `System.Func`/`System.Action` delegate.  Side index populated by
   /// `symTableAdd` so `symTableIsExternDelegateType` (called on every
   /// `TyUser`-typed call argument in `argSatisfiesParam`) is O(1) instead of
@@ -268,7 +268,7 @@ pub record SymbolTable {
   /// established safe pattern (see `unionDeclIndex`).
   methodSigs: List[MethodEntry]
   methodSigIndex: Map[String, Int]
-  /// `toString(TypeId.id)` present ⇒ the type is declared in the file being
+  /// `toString(SymbolId.id)` present ⇒ the type is declared in the file being
   /// checked (not imported) AND its full member surface is known to the
   /// checker (records, exposed records, interfaces).  Unknown-member
   /// diagnostics (docs/59 A5) fire only for these types: imported records
@@ -314,7 +314,7 @@ pub record SymbolTable {
   /// so a qualified call through it is not subject to the import-reachability
   /// check (#7934).
   externPathPackages: Map[String, Bool]
-  // One `impl Iface for Target` conformance, by resolved `TypeId`.
+  // One `impl Iface for Target` conformance, by resolved `SymbolId`.
   /// `<originPackage>` -> the dotted import names that package's own file
   /// declared (#6689).  Populated once, per package, during signature
   /// collection (mirroring `symTableSetScope`'s `ip2.name`/`ip2.imports`
@@ -561,13 +561,13 @@ pub record SymbolTable {
   /// by `symTableTypeSymbolOf` as symbols are appended.
   typeSymbolsById: Map[String, Symbol]
   /// One entry per symbol already folded into `typeSymbolsById` (its count is
-  /// the index cursor, the `TypeIdCounter` idiom).
+  /// the index cursor).
   typeSymbolsIndexed: List[Int]
-  /// The `TypeId` of each type `Std.CollectionsHost` declares (`List`, `Map`,
+  /// The `SymbolId` of each type `Std.CollectionsHost` declares (`List`, `Map`,
   /// `MapKeyCollection`, `MapValueCollection`, ...), keyed by name, filled
   /// lazily by `symTableStdCollectionsHostTypeId` as symbols are appended
   /// (#7765).
-  stdCollectionsHostTypeIds: Map[String, TypeId]
+  stdCollectionsHostTypeIds: Map[String, SymbolId]
   /// A one-element cursor: how many of `symbols` have been folded into
   /// `stdCollectionsHostTypeIds`.
   stdCollectionsHostIndexed: List[Int]
@@ -710,7 +710,11 @@ pub record SymbolTable {
   /// docs/01 §11.6), by name, when the file is checked for `--target
   /// native`; empty for every other target, which has no representation for
   /// them.
-  nativeIntrinsicTypes: Map[String, TypeId]
+  nativeIntrinsicTypes: Map[String, SymbolId]
+  /// SymbolId interning (docs/70 §4.2): DefPath key -> id, and by id - 1
+  /// the key of each id ("" for one no DefPath names).
+  defPathIds: Map[String, Int]
+  defPathKeys: List[String]
 }
 
 /// An unannotated local binding whose initializer builds an empty
@@ -781,8 +785,8 @@ pub record OpenBindingSite {
 }
 
 pub record ImplPair {
-  target: TypeId
-  iface: TypeId
+  target: SymbolId
+  iface: SymbolId
 }
 
 /// One method signature attached to a nominal type — a record-body method
@@ -792,7 +796,7 @@ pub record ImplPair {
 /// receiver, so a call site validates `x.m(a, b)`'s two arguments directly
 /// against `sig.params` (docs/59 A4).
 pub record MethodEntry {
-  owner: TypeId
+  owner: SymbolId
   ownerName: String
   /// The owning type's generic parameter names (`Box[T]` → `["T"]`), so a
   /// call site can substitute the receiver's type args into `sig`.
@@ -908,22 +912,75 @@ pub func newSymbolTable(): SymbolTable {
     curFile = newList(),
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
-    nativeIntrinsicTypes = newMap()
+    nativeIntrinsicTypes = newMap(),
+    defPathIds = newMap(),
+    defPathKeys = newList()
   )
 }
 
-/// The first symbol that declares the type with id `tid`. Symbols appended
-/// since the last lookup are indexed first, so a lookup costs amortised
-/// constant time rather than a scan of the whole table.
-pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in TypeId): Option[Symbol] {
+/// The `SymbolId` of the declaration at `path`: the same id for every
+/// registration of it in this compilation (docs/70 §4.2).
+pub func symTableInternDefPath(tbl: in SymbolTable, path: in DefPath): SymbolId {
+  val key = defPathKey(path)
+  match mapGet(tbl.defPathIds, key) {
+    case Some(id) -> SymbolId(id = id)
+    case None -> {
+      tbl.defPathKeys.add(key)
+      val id = tbl.defPathKeys.count
+      tbl.defPathIds.add(key, id)
+      SymbolId(id = id)
+    }
+  }
+}
+
+/// A fresh `SymbolId` for a declaration with no DefPath: one registered with
+/// no package (the flat `checkWithImports` form), whose identity is its
+/// registration.
+pub func symTableFreshSymbolId(tbl: in SymbolTable): SymbolId {
+  tbl.defPathKeys.add("")
+  SymbolId(id = tbl.defPathKeys.count)
+}
+
+/// The DefPath key `id` was interned from, or `None` for an id no DefPath
+/// names (a fresh id, or a built-in type's).
+pub func symTableDefPathKeyOf(tbl: in SymbolTable, id: in SymbolId): Option[String] {
+  if id.id < 1 or id.id > tbl.defPathKeys.count {
+    return None
+  }
+  val key = tbl.defPathKeys[id.id - 1]
+  if key.length == 0 {
+    None
+  } else {
+    Some(value = key)
+  }
+}
+
+/// The `SymbolId` of the type `name` that package `pkg` declares: interned
+/// from its DefPath, or fresh when `pkg` is "" (no package context).
+pub func symTableTypeSymbolId(tbl: in SymbolTable, pkg: in String, name: in String): SymbolId {
+  if pkg.length == 0 {
+    symTableFreshSymbolId(tbl)
+  } else {
+    symTableInternDefPath(tbl, typeDefPath(pkg, name))
+  }
+}
+
+/// The newest symbol that declares the type with id `tid`: when a type is
+/// registered more than once (one DefPath, docs/70 §4.2), the registration
+/// every name lookup picks (`symTableTryFindOne`, `symTableTryFindInPackage`
+/// scan newest-first).  Symbols appended since the last lookup are indexed
+/// first, so a lookup costs amortised constant time rather than a scan of
+/// the whole table.
+pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in SymbolId): Option[Symbol] {
   while tbl.typeSymbolsIndexed.count < tbl.symbols.count {
     val sym = tbl.symbols[tbl.typeSymbolsIndexed.count]
     match symbolTypeIdOpt(sym) {
       case Some(sid) -> {
         val key = toString(sid.id)
-        if not tbl.typeSymbolsById.containsKey(key) {
-          tbl.typeSymbolsById.add(key, sym)
+        if tbl.typeSymbolsById.containsKey(key) {
+          tbl.typeSymbolsById.remove(key)
         }
+        tbl.typeSymbolsById.add(key, sym)
       }
       case None -> ()
     }
@@ -932,7 +989,7 @@ pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in TypeId): Option[Symbo
   mapGet(tbl.typeSymbolsById, toString(tid.id))
 }
 
-/// The `TypeId` of the type named `name` that the stdlib's
+/// The `SymbolId` of the type named `name` that the stdlib's
 /// `Std.CollectionsHost` package declares, or `None` when no such type is
 /// registered.  Equivalent to `symTableTryFindInPackage(tbl,
 /// "Std.CollectionsHost", name)` followed by `symbolTypeIdOpt` -- the most
@@ -941,7 +998,7 @@ pub func symTableTypeSymbolOf(tbl: in SymbolTable, tid: in TypeId): Option[Symbo
 /// (`isStdCollectionsHostType`) run on every iterated, indexed or
 /// bracket-literal-typed collection, and a linear scan of the whole table at
 /// each of them dominated large files (#7765).
-pub func symTableStdCollectionsHostTypeId(tbl: in SymbolTable, name: in String): Option[TypeId] {
+pub func symTableStdCollectionsHostTypeId(tbl: in SymbolTable, name: in String): Option[SymbolId] {
   var cursor = tbl.stdCollectionsHostIndexed[0]
   while cursor < tbl.symbols.count {
     val sym = tbl.symbols[cursor]
@@ -1037,7 +1094,7 @@ pub func symTableAddMethodSig(tbl: in SymbolTable, entry: in MethodEntry): Unit 
 }
 
 // Every method entry registered for (`owner`, `name`), in registration order.
-pub func symTableMethodSigs(tbl: in SymbolTable, owner: in TypeId, name: in String): List[MethodEntry] {
+pub func symTableMethodSigs(tbl: in SymbolTable, owner: in SymbolId, name: in String): List[MethodEntry] {
   val acc: List[MethodEntry] = newList()
   val base = toString(owner.id) + "#" + name + "@"
   var i = 0
@@ -1061,16 +1118,16 @@ pub func symTableMethodSigs(tbl: in SymbolTable, owner: in TypeId, name: in Stri
 // is declared in the file being checked or imported.  Imported types were once
 // exempt because contract reprs dropped record-body methods; the repr carries
 // them since #6440, so the exemption only hid typos (#7575).
-pub func symTableIsMemberComplete(tbl: in SymbolTable, tid: in TypeId): Bool {
+pub func symTableIsMemberComplete(tbl: in SymbolTable, tid: in SymbolId): Bool {
   tbl.memberCompleteTypes.containsKey(toString(tid.id))
 }
 
 // Record that the type with id `target` implements the interface with id
 // `iface` (idempotent).
-pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Unit {
+pub func symTableAddImpl(tbl: in SymbolTable, target: in SymbolId, iface: in SymbolId): Unit {
   var i = 0
   while i < tbl.impls.count {
-    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) {
+    if symbolIdEq(tbl.impls[i].target, target) and symbolIdEq(tbl.impls[i].iface, iface) {
       return
     }
     i = i + 1
@@ -1079,10 +1136,10 @@ pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeI
 }
 
 // True when some `impl iface for target` was registered.
-pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Bool {
+pub func symTableTypeImplements(tbl: in SymbolTable, target: in SymbolId, iface: in SymbolId): Bool {
   var i = 0
   while i < tbl.impls.count {
-    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) {
+    if symbolIdEq(tbl.impls[i].target, target) and symbolIdEq(tbl.impls[i].iface, iface) {
       return true
     }
     i = i + 1
@@ -1091,8 +1148,8 @@ pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: i
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
-  // Maintain the TypeId-keyed side indexes (#2027, #2178, #3903).  Each
-  // registration gets a fresh TypeId, so first-in-wins guards only against
+  // Maintain the SymbolId-keyed side indexes (#2027, #2178, #3903).  Each
+  // registration gets a fresh SymbolId, so first-in-wins guards only against
   // pathological double-adds of the same symbol.
   match sym.kind {
     case DKOpaque(oid, _) -> {
@@ -1397,7 +1454,7 @@ func caseParentName(tbl: in SymbolTable, sym: in Symbol): String {
   }
 }
 
-func typeNameOfId(tbl: in SymbolTable, tid: in TypeId): String {
+func typeNameOfId(tbl: in SymbolTable, tid: in SymbolId): String {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(parent) -> parent.name
     case None -> ""

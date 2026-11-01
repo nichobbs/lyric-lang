@@ -2067,11 +2067,11 @@ func localValNamesAnyRecord(tbl: in SymbolTable, headName: in String): Bool {
 // (its declared or exposed record symbol); the head's qualifier, privacy and
 // reachability are `checkLocalValRecordHeads`'s to report once the pattern's
 // shape is known to fit.
-func localValRecordHeadNames(tbl: in SymbolTable, headName: in String, tid: in TypeId): Bool {
+func localValRecordHeadNames(tbl: in SymbolTable, headName: in String, tid: in SymbolId): Bool {
   for cand in symTableTryFindAll(tbl, headName) {
     val hit = match cand.kind {
-      case DKRecord(did, _) -> typeIdEq(did, tid)
-      case DKExposedRec(did, _) -> typeIdEq(did, tid)
+      case DKRecord(did, _) -> symbolIdEq(did, tid)
+      case DKExposedRec(did, _) -> symbolIdEq(did, tid)
       case _ -> false
     }
     if hit {
@@ -2272,7 +2272,7 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e
     case TyUser(iterId, _, iterArgs) -> {
-      if iterArgs.count == 1 and typeIdEq(iterId, builtinBufferTypeId()) {
+      if iterArgs.count == 1 and symbolIdEq(iterId, builtinBufferTypeId()) {
         iterArgs[0]
       } else if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
         iterArgs[0]
@@ -2337,7 +2337,7 @@ func reportNotIterable(diag: in List[Diagnostic], iter: in Expr, message: in Str
 
 // A note for T0126 on a distinct type: its value is a wrapper, not the
 // underlying collection, so the loop has to name the underlying value.
-func distinctIterNote(tbl: in SymbolTable, tid: in TypeId): String {
+func distinctIterNote(tbl: in SymbolTable, tid: in SymbolId): String {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind {
       case DKDistinctType(_, _) -> " (a distinct type is not its underlying type: iterate its `.value`)"

@@ -1,4 +1,4 @@
-# Release contract policy for impl, record and protected-type methods (#8680, D305)
+# Release contract policy for impl, record and protected-type methods (#8680, D307)
 
 `Lyric.ContractElaborator` applied the release policy (D297) to free functions
 only. `elaborateRecordDecl`, `elaborateImplDecl` (through
@@ -14,4 +14,4 @@ restore the source-level clauses, as `elaborateItem` does for a function.
 
 Tests: `scripts/ci/release-contracts-e2e.sh` gains a program per member kind
 (debug and release, dotnet/jvm/native). Docs: language reference "Contracts in
-`--release`", book chapter 17 section 17.4, D305.
+`--release`", book chapter 17 section 17.4, D307.
