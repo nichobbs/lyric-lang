@@ -23,7 +23,8 @@
 # extern_upcast_jvm_self_test.l and jvm-stdlib-type-check-gate.sh, D212;
 # match_return_defer_jvm_self_test.l, #7541;
 # nested_generic_result_jvm_self_test.l, #8242, #8528;
-# lyric-stdlib/tests/http_client_wire_tests.l, #8560),
+# lyric-stdlib/tests/http_client_wire_tests.l, #8560;
+# for_loop_dispose_extern_jvm_self_test.l, #7770, #8604),
 # through one
 # `lyric test`
 # invocation per file.
@@ -148,6 +149,7 @@ for t in \
   lyric-compiler/lyric/generator_control_flow_self_test.l \
   lyric-compiler/lyric/generator_dispose_self_test.l \
   lyric-compiler/lyric/for_loop_dispose_enumerable_self_test.l \
+  lyric-compiler/lyric/for_loop_dispose_extern_jvm_self_test.l \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
