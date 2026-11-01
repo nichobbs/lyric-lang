@@ -3338,7 +3338,7 @@ pub func checkProjectTypesJvm(
       unwrapOr(mapGet(ioForbiddenByPkg, name), ""),
       contractsEnabled,
       fe.depPkgNames.containsKey(name),
-      jvmIterResolver(checkIterIx)
+      externIter = jvmIterResolver(checkIterIx)
     )
     val _ = pipeCheckFront(arrayTypedOrSelf(fe.arrayTypedByPkg, f), fe.importedPkgs, opts, sink)
   }
