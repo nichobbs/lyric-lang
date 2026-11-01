@@ -923,8 +923,8 @@ test "String.replace on native (ASan) (#6888)" {
 // end (#7840), so native formats exactly as dotnet and the JVM do
 // (`format_builtin_self_test.l` covers those two).  The program imports
 // neither Std.String nor anything that does: the bridge must bundle it.
-// `UInt`/`ULong` arguments are not covered here because native does not
-// lower those types at all yet (N0007).
+// A `UInt` or `ULong` argument renders as its unsigned value, as on the other
+// targets (#8637).
 test "format1-format4 on native (ASan) (#7840)" {
   val src = "package T\n" + "func main(): Int {\n" + "  println(format1(\"a={0}\", 42))\n" +
     "  println(format2(\"{1}{0}{1}\", \"a\", \"b\"))\n" +
@@ -933,11 +933,18 @@ test "format1-format4 on native (ASan) (#7840)" {
     "  println(format1(\"{{{0}}} {{0}} }}{{\", 7))\n" +
     "  println(format2(\"{1}\", \"unused\", \"used\"))\n" +
     "  println(format1(\"caf\\u{E9} {0}\", \"ok\"))\n" +
+    "  val u: UInt = 4000000000u32\n" +
+    "  val w: ULong = 18446744073709551615u64\n" +
+    "  println(format2(\"{0}/{1}\", u, w))\n" +
     "  0\n" +
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 0, "exit code")
-  assertEqual(r.stdout, "a=42\nbab\n1-true-x\n4321\n{7} {0} }{\nused\ncafé ok\n", "formatted output")
+  assertEqual(
+    r.stdout,
+    "a=42\nbab\n1-true-x\n4321\n{7} {0} }{\nused\ncafé ok\n4000000000/18446744073709551615\n",
+    "formatted output"
+  )
 }
 
 test "Std.Math IEEE 754 bit casts on native, NaN payloads kept (ASan)" {
@@ -2071,4 +2078,241 @@ func main(): Int {
 "#
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 9, "5 from the user's Option plus 4 from the prelude's Result")
+}
+
+// #8637: `ULong` and `UInt` lower to `i64` / `i32` like `Long` / `Int`; the
+// operations whose result depends on signedness take it from the identity
+// `.toULong()` / `.toUInt()` the type checker spells on each unsigned operand.
+// Each program prints a bitmask of the failed checks (an exit code keeps only
+// eight bits).
+test "Native: ULong comparison, division, remainder and shifts are unsigned (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val max: ULong = 18446744073709551615u64
+  val half: ULong = 9223372036854775808u64
+  val one: ULong = 1u64
+  var bad = 0
+  if not (max > half) { bad = bad + 1 }
+  if not (half >= half) { bad = bad + 2 }
+  if max < half { bad = bad + 4 }
+  if not (one < half) { bad = bad + 8 }
+  if not (half <= max) { bad = bad + 16 }
+  if max / 2u64 != 9223372036854775807u64 { bad = bad + 32 }
+  if max % 10u64 != 5u64 { bad = bad + 64 }
+  if half / 3u64 != 3074457345618258602u64 { bad = bad + 128 }
+  if half % 3u64 != 2u64 { bad = bad + 256 }
+  if max.shr(63) != 1u64 { bad = bad + 512 }
+  if half.shr(1) != 4611686018427387904u64 { bad = bad + 1024 }
+  var q = max
+  q /= 10u64
+  if q != 1844674407370955161u64 { bad = bad + 2048 }
+  var r = max
+  r %= 1000u64
+  if r != 615u64 { bad = bad + 4096 }
+  if (max - one) + one != max { bad = bad + 8192 }
+  if (max - one) / 2u64 != 9223372036854775807u64 { bad = bad + 16384 }
+  println(bad)
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(r.stdout, "0\n", "no ULong check failed")
+}
+
+test "Native: UInt comparison, division, remainder and shifts are unsigned (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val u: UInt = 4000000000u32
+  val v: UInt = 2500000000u32
+  var bad = 0
+  if not (u > v) { bad = bad + 1 }
+  if not (v < u) { bad = bad + 2 }
+  if not (u >= u) { bad = bad + 4 }
+  if u <= v { bad = bad + 8 }
+  if u / 3u32 != 1333333333u32 { bad = bad + 16 }
+  if u % 7u32 != 3u32 { bad = bad + 32 }
+  if u.shr(4) != 250000000u32 { bad = bad + 64 }
+  var q = u
+  q /= 1000u32
+  if q != 4000000u32 { bad = bad + 128 }
+  var r = u
+  r %= 1000000u32
+  if r != 0u32 { bad = bad + 256 }
+  if (u - v) / 5u32 != 300000000u32 { bad = bad + 512 }
+  println(bad)
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(r.stdout, "0\n", "no UInt check failed")
+}
+
+test "Native: UInt and ULong stringify as unsigned values (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+record Pair {
+  a: UInt
+  b: ULong
+}
+
+func main(): Int {
+  val max: ULong = 18446744073709551615u64
+  val half: ULong = 9223372036854775808u64
+  val u: UInt = 4294967295u32
+  println(max)
+  println(u)
+  println(half.toString())
+  println(toString(u))
+  println("m=" + max.toString())
+  println("u=" + u)
+  println(max + " is ULong max")
+  println("i=${max} ${u} ${half}")
+  val p = Pair(a = 3000000000u32, b = half)
+  println(p.a)
+  println(p.b)
+  println(0u64)
+  println(0u32)
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(
+    r.stdout,
+    "18446744073709551615\n4294967295\n9223372036854775808\n4294967295\nm=18446744073709551615\nu=4294967295\n" +
+      "18446744073709551615 is ULong max\ni=18446744073709551615 4294967295 9223372036854775808\n3000000000\n" +
+      "9223372036854775808\n0\n0\n",
+    "unsigned values print without a sign"
+  )
+}
+
+// D278 on native: `toLong` is checked, `toDouble` / `toFloat` convert the
+// unsigned value, and a `UInt` converts by value.
+test "Native: ULong toLong, toDouble and toFloat, UInt toLong and toDouble (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val maxLong: ULong = 9223372036854775807u64
+  val half: ULong = 9223372036854775808u64
+  val max: ULong = 18446744073709551615u64
+  val u: UInt = 4000000000u32
+  val zero: ULong = 0u64
+  val ok = maxLong.toLong() == 9223372036854775807i64 and
+    zero.toLong() == 0i64 and
+    half.toDouble() == 9223372036854775808.0 and
+    max.toDouble() == 18446744073709551616.0 and
+    maxLong.toDouble() == 9223372036854775808.0 and
+    half.toFloat() == 9223372036854775808.0.toFloat() and
+    max.toFloat() == 18446744073709551616.0.toFloat() and
+    u.toLong() == 4000000000i64 and
+    u.toDouble() == 4000000000.0 and
+    u.toFloat() == 4000000000.0.toFloat() and
+    u.toULong() == 4000000000u64 and
+    u.toULong() + max.shr(1) == 9223372040854775807u64
+  if ok { 42 } else { 1 }
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "every conversion produced the unsigned value")
+}
+
+test "Native: ULong.toLong panics above Long.MaxValue (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val w: ULong = 9223372036854775808u64
+  val n = w.toLong()
+  println(n)
+  42
+}
+"#
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a ULong above Long.MaxValue must not convert")
+  assertTrue(
+    Str.contains(r.stderr, "ULong value is above Long.MaxValue and does not fit in a Long"),
+    "the panic names the conversion"
+  )
+}
+
+test "Native: ULong and UInt through functions, records, lists and range patterns (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Collections
+
+record Counter {
+  var n: ULong
+  limit: UInt
+}
+
+func widest(a: ULong, b: ULong): ULong {
+  if a > b { a } else { b }
+}
+
+func bucket(u: UInt): Int {
+  match u {
+    case 0 ..= 999 -> 1
+    case 1000 ..= 2999999999 -> 2
+    case 3000000000 ..= 4294967295 -> 3
+    case _ -> 4
+  }
+}
+
+func main(): Int {
+  val xs: List[ULong] = [1u64, 18446744073709551615u64, 9223372036854775808u64]
+  var best: ULong = 0u64
+  for x in xs {
+    best = widest(best, x)
+  }
+  var bad = 0
+  if best != 18446744073709551615u64 { bad = bad + 1 }
+  if not (xs[1] > xs[2]) { bad = bad + 2 }
+  var c = Counter(n = 9223372036854775807u64, limit = 4000000000u32)
+  c.n += 1u64
+  if not (c.n > 9223372036854775807u64) { bad = bad + 4 }
+  c.n /= 2u64
+  if c.n != 4611686018427387904u64 { bad = bad + 8 }
+  if c.limit / 4u32 != 1000000000u32 { bad = bad + 16 }
+  if bucket(5u32) != 1 { bad = bad + 32 }
+  if bucket(2500000000u32) != 2 { bad = bad + 64 }
+  if bucket(3000000000u32) != 3 { bad = bad + 128 }
+  if bucket(4294967295u32) != 3 { bad = bad + 256 }
+  val m: Map[UInt, ULong] = newMap()
+  m.add(4000000000u32, 18446744073709551615u64)
+  match mapGet(m, 4000000000u32) {
+    case Some(v) -> if v / 5u64 != 3689348814741910323u64 { bad = bad + 512 }
+    case None -> { bad = bad + 1024 }
+  }
+  println(bad)
+  0
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(r.stdout, "0\n", "no unsigned check failed")
+}
+
+test "Native: ULong addition overflow panics in a debug build (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val max: ULong = 18446744073709551615u64
+  val one: ULong = 1u64
+  val s = max + one
+  println(s)
+  42
+}
+"#
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "an overflowing ULong sum must not return")
+  assertTrue(Str.contains(r.stderr, "overflow"), "the panic names the overflow")
 }

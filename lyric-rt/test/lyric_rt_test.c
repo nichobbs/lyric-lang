@@ -268,6 +268,17 @@ static void test_strings(void) {
     CHECK(lyric_string_len(i) == 3);
     CHECK(memcmp(LYRIC_STRING_DATA(i), "-42", 3) == 0);
 
+    /* Unsigned: the top bit is a digit, not a sign. */
+    LyricString* umax = lyric_string_from_uint(UINT64_MAX);
+    CHECK(lyric_string_len(umax) == 20);
+    CHECK(memcmp(LYRIC_STRING_DATA(umax), "18446744073709551615", 20) == 0);
+    LyricString* uhalf = lyric_string_from_uint((uint64_t)1 << 63);
+    CHECK(lyric_string_len(uhalf) == 19);
+    CHECK(memcmp(LYRIC_STRING_DATA(uhalf), "9223372036854775808", 19) == 0);
+    LyricString* uzero = lyric_string_from_uint(0);
+    CHECK(lyric_string_len(uzero) == 1);
+    CHECK(memcmp(LYRIC_STRING_DATA(uzero), "0", 1) == 0);
+
     LyricString* f = lyric_string_from_float(2.5);
     CHECK(lyric_string_len(f) == 3);
     CHECK(memcmp(LYRIC_STRING_DATA(f), "2.5", 3) == 0);

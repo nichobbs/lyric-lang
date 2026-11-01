@@ -755,6 +755,32 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
   }
 }
 
+/// True when `e` is a `UInt` or `ULong` operand, which `UInt`/`ULong` sharing
+/// `Int`'s and `Long`'s lowering can no longer tell from the value's IR type.
+/// The type checker spells such an operand wherever the result depends on
+/// signedness (`<`, `<=`, `>`, `>=`, `/`, `%`, `.shr`, a range pattern's
+/// bounds, and a stringified value, `recordUnsignedOperand`) as the identity
+/// `e.toUInt()` / `e.toULong()`, which `Lyric.Mono.desugarCheckedFile` applies
+/// before this backend runs; the conversions themselves also yield an
+/// unsigned value.  A `u16`, `u32` or `u64` literal is unsigned by its suffix.
+func isUnsignedExpr(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(_, suffix, _) -> match suffix {
+        case U16 -> true
+        case U32 -> true
+        case U64 -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case EParen(inner) -> isUnsignedExpr(inner)
+    case ECall(fn, args) -> args.count == 0 and
+      (match fn.kind { case EMember(_, m) -> m == "toULong" or m == "toUInt"; case _ -> false })
+    case _ -> false
+  }
+}
+
 /// The IR type of a local, `self`, or a chain of record field reads off one
 /// (`a.b.c`), read from what the function already bound; `None` for any other
 /// expression.
@@ -935,6 +961,17 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       }
       if n == "Long" {
         return NI64
+      }
+      // `ULong` and `UInt` share `Long`'s and `Int`'s lowering, as on MSIL and
+      // the JVM: layout, ARC, the C ABI and collections are the signed ones,
+      // and the operations whose result depends on signedness read it from
+      // the identity `.toULong()` / `.toUInt()` the type checker spells on
+      // each such operand (`isUnsignedExpr`).
+      if n == "ULong" {
+        return NI64
+      }
+      if n == "UInt" {
+        return NI32
       }
       // `Nat` is a non-negative `Long` (language reference, numeric types).
       if n == "Nat" {
@@ -1198,10 +1235,10 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
         case None -> {
         }
       }
-      if n == "Int" or n == "Char" {
+      if n == "Int" or n == "Char" or n == "UInt" {
         return Some(value = NI32)
       }
-      if n == "Long" {
+      if n == "Long" or n == "ULong" {
         return Some(value = NI64)
       }
       if n == "Double" {
@@ -3055,14 +3092,27 @@ func arg2(ty1: in NType, v1: in NValue, ty2: in NType, v2: in NValue): List[NArg
 }
 
 /// `.toString()` lowering for every scalar (and identity on String).
-func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+/// `unsigned` (`isUnsignedExpr` of the value's expression) renders a `UInt` or
+/// `ULong` as its unsigned value: a `UInt` zero-extends to a non-negative
+/// `i64`, a `ULong` goes through `lyric_string_from_uint`.
+func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal, unsigned: in Bool): NVal {
   match v.ty {
     case NI32 -> {
       val wide = freshTmp(ctx)
-      insns.add(NSExt(dest = wide, fromTy = NI32, value = v.value, toTy = NI64))
+      if unsigned {
+        insns.add(NZExt(dest = wide, fromTy = NI32, value = v.value, toTy = NI64))
+      } else {
+        insns.add(NSExt(dest = wide, fromTy = NI32, value = v.value, toTy = NI64))
+      }
       callRuntime(ctx, insns, "lyric_string_from_int", lyricStringNType(), arg1(NI64, NLocal(name = wide)))
     }
-    case NI64 -> callRuntime(ctx, insns, "lyric_string_from_int", lyricStringNType(), arg1(NI64, v.value))
+    case NI64 -> callRuntime(
+      ctx,
+      insns,
+      if unsigned { "lyric_string_from_uint" } else { "lyric_string_from_int" },
+      lyricStringNType(),
+      arg1(NI64, v.value)
+    )
     case NI8 -> {
       val wide = freshTmp(ctx)
       insns.add(NZExt(dest = wide, fromTy = NI8, value = v.value, toTy = NI64))
@@ -3321,7 +3371,14 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
 func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
   match lit {
     case LInt(v, suffix, _) -> {
-      val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> v < -2147483648i64 or v > 2147483647i64 }
+      // A `u16` / `u32` literal is a `UInt`, an `i32` whatever its magnitude
+      // (the lexer admits up to 4294967295).
+      val isUInt = match suffix { case U16 -> true; case U32 -> true; case _ -> false }
+      val isLong = match suffix {
+        case I64 -> true
+        case U64 -> true
+        case _ -> not isUInt and (v < -2147483648i64 or v > 2147483647i64)
+      }
       // A `u8` literal is a `Byte` wherever no expected type narrows it: an
       // `Int` here made `val b = 200u8` an Int binding, so `b + 100u8` was
       // 300 rather than wrapping to 44, and `Box(value = 255u8)` was
@@ -3331,6 +3388,9 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
         NVal(ty = NI8, value = NLitInt(v = v, ty = NI8))
       } else if isLong {
         NVal(ty = NI64, value = NLitInt(v = v, ty = NI64))
+      } else if isUInt and v > 2147483647i64 {
+        // The `i32` bit pattern of a `UInt` above `Int.MaxValue`.
+        NVal(ty = NI32, value = NLitInt(v = v - 4294967296i64, ty = NI32))
       } else {
         NVal(ty = NI32, value = NLitInt(v = v, ty = NI32))
       }
@@ -3366,7 +3426,7 @@ func interpolatedPiece(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
     }
     case _ -> ()
   }
-  emitToString(ctx, insns, v)
+  emitToString(ctx, insns, v, isUnsignedExpr(ex))
 }
 
 func lowerInterpolated(ctx: in Ctx, insns: in List[NInsn], segments: in List[InterpolatedSegment]): NVal {
@@ -3423,37 +3483,42 @@ func lowerPrefix(ctx: in Ctx, insns: in List[NInsn], op: in PrefixOp, operand: i
   }
 }
 
+/// `unsigned` is true for a `UInt` or `ULong` operand (`isUnsignedExpr`): like
+/// `Byte` it divides and takes remainders unsigned, so only the zero check
+/// applies (no `MIN / -1` overflow exists).
 func binIntOp(
-  ctx: in Ctx, insns: in List[NInsn], op: in BinOp, ty: in NType, a: in NValue, b: in NValue, line: in Int
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  op: in BinOp,
+  ty: in NType,
+  a: in NValue,
+  b: in NValue,
+  line: in Int,
+  unsigned: in Bool,
 ): NVal {
   val dest = freshTmp(ctx)
+  val unsignedTy = unsigned or (match ty { case NI8 -> true; case _ -> false })
   match op {
     case BAdd -> insns.add(NAdd(dest = dest, ty = ty, a = a, b = b))
     case BSub -> insns.add(NSub(dest = dest, ty = ty, a = a, b = b))
     case BMul -> insns.add(NMul(dest = dest, ty = ty, a = a, b = b))
     case BDiv -> {
       // Byte is unsigned: udiv, and only the zero check applies (#4628).
-      match ty {
-        case NI8 -> {
-          emitDivZeroGuard(ctx, insns, ty, b, line)
-          insns.add(NUDiv(dest = dest, ty = ty, a = a, b = b))
-        }
-        case _ -> {
-          emitDivGuard(ctx, insns, ty, a, b, line)
-          insns.add(NSDiv(dest = dest, ty = ty, a = a, b = b))
-        }
+      if unsignedTy {
+        emitDivZeroGuard(ctx, insns, ty, b, line)
+        insns.add(NUDiv(dest = dest, ty = ty, a = a, b = b))
+      } else {
+        emitDivGuard(ctx, insns, ty, a, b, line)
+        insns.add(NSDiv(dest = dest, ty = ty, a = a, b = b))
       }
     }
     case BMod -> {
-      match ty {
-        case NI8 -> {
-          emitDivZeroGuard(ctx, insns, ty, b, line)
-          insns.add(NURem(dest = dest, ty = ty, a = a, b = b))
-        }
-        case _ -> {
-          emitDivGuard(ctx, insns, ty, a, b, line)
-          insns.add(NSRem(dest = dest, ty = ty, a = a, b = b))
-        }
+      if unsignedTy {
+        emitDivZeroGuard(ctx, insns, ty, b, line)
+        insns.add(NURem(dest = dest, ty = ty, a = a, b = b))
+      } else {
+        emitDivGuard(ctx, insns, ty, a, b, line)
+        insns.add(NSRem(dest = dest, ty = ty, a = a, b = b))
       }
     }
     case _ -> panic("Lyric.LlvmCodegen: unexpected integer binop")
@@ -3604,11 +3669,13 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       // unsigned. An `NI32` operand is left to `lowerStringBinop`'s
       // rejection: it may be a `Char` the best-effort tracking above did not
       // recognise, which would print its code point instead of the glyph.
-      if isConcatStringifiableNType(a2.ty) {
-        a2 = emitToString(ctx, insns, a2)
+      // A `UInt` is an `NI32` like `Int` and `Char`, but the type checker
+      // marks it (`isUnsignedExpr`), so it stringifies here too.
+      if isConcatStringifiableNType(a2.ty) or (isUnsignedExpr(lhs) and not isStringNType(a2.ty)) {
+        a2 = emitToString(ctx, insns, a2, isUnsignedExpr(lhs))
       }
-      if isConcatStringifiableNType(b2.ty) {
-        b2 = emitToString(ctx, insns, b2)
+      if isConcatStringifiableNType(b2.ty) or (isUnsignedExpr(rhs) and not isStringNType(b2.ty)) {
+        b2 = emitToString(ctx, insns, b2, isUnsignedExpr(rhs))
       }
     }
     return lowerStringBinop(ctx, insns, op, a2, b2, line)
@@ -3642,6 +3709,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
     return NVal(ty = NI1, value = NLocal(name = ne))
   }
   val w = widenOperands(ctx, insns, a, b)
+  val unsigned = isUnsignedExpr(lhs) or isUnsignedExpr(rhs)
   if isComparisonOp(op) {
     match w.ty {
       case NDouble | NFloat -> {
@@ -3656,7 +3724,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       }
       case ty -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = icmpPredFor(op), ty = ty, a = w.a.value, b = w.b.value))
+        insns.add(NICmp(dest = dest, pred = if unsigned { icmpPredForUnsigned(op) } else { icmpPredFor(op) }, ty = ty, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
     }
@@ -3672,7 +3740,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   }
   match w.ty {
     case NDouble | NFloat -> binFloatOp(ctx, insns, op, w.ty, w.a.value, w.b.value)
-    case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line)
+    case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line, unsigned)
   }
 }
 
@@ -4226,7 +4294,8 @@ func lowerScalarMethodCall(
     if isChar {
       return Some(value = callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, v.value)))
     }
-    return Some(value = emitToString(ctx, insns, v))
+    val isUnsigned = match recvExpr { case Some(e) -> isUnsignedExpr(e); case None -> false }
+    return Some(value = emitToString(ctx, insns, v, isUnsigned))
   }
   // A `Float` receiver of any conversion but `toFloat` converts as the
   // `Double` it widens to exactly (D155).
@@ -4395,6 +4464,30 @@ func lowerScalarMethodCall(
       }
     }
   }
+  // The lossless widenings of the unsigned chain `Byte < UInt < ULong`
+  // (#7805), and the identity the type checker spells on an unsigned operand
+  // (`isUnsignedExpr`): they zero-extend, so a `UInt` above `Int.MaxValue`
+  // stays positive.  A `Long`-lowered receiver of `toUInt` is an unsuffixed
+  // literal that adopted `UInt`, whose low 32 bits are the value.
+  if (name == "toULong" or name == "toUInt") and args.count == 0 {
+    val target = if name == "toULong" { NI64 } else { NI32 }
+    if nTypeToIrString(v.ty) == nTypeToIrString(target) {
+      return Some(value = v)
+    }
+    match v.ty {
+      case NI8 | NI32 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NZExt(dest = dest, fromTy = v.ty, value = v.value, toTy = target))
+        return Some(value = NVal(ty = target, value = NLocal(name = dest)))
+      }
+      case NI64 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NTrunc(dest = dest, fromTy = NI64, value = v.value, toTy = NI32))
+        return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+      }
+      case _ -> ()
+    }
+  }
   if name == "toNat" and args.count == 0 {
     // Checked conversion (#8366): `Nat` is the non-negative `Long` it lowers
     // to, so a negative source (or NaN) panics with the message the MSIL
@@ -4448,11 +4541,17 @@ func lowerScalarMethodCall(
     } else if name == "shl" {
       insns.add(NShl(dest = dest, ty = ty, a = v.value, b = bv))
     } else {
-      // Byte is unsigned (its widenings zero-extend), so its right shift
-      // is logical; the signed widths shift arithmetically (#4628).
+      // Byte, UInt and ULong are unsigned (their widenings zero-extend), so
+      // their right shift is logical; the signed widths shift
+      // arithmetically (#4628, docs/01 §5).
+      val unsignedRecv = match recvExpr { case Some(re) -> isUnsignedExpr(re); case None -> false }
       match ty {
         case NI8 -> insns.add(NLShr(dest = dest, ty = ty, a = v.value, b = bv))
-        case _ -> insns.add(NAShr(dest = dest, ty = ty, a = v.value, b = bv))
+        case _ -> if unsignedRecv {
+          insns.add(NLShr(dest = dest, ty = ty, a = v.value, b = bv))
+        } else {
+          insns.add(NAShr(dest = dest, ty = ty, a = v.value, b = bv))
+        }
       }
     }
     return Some(value = NVal(ty = ty, value = NLocal(name = dest)))
@@ -6635,9 +6734,9 @@ func classifyByValueFieldEnv(
       if st.heapNames.containsKey("i:" + joined) or st.heapNames.containsKey("i:" + bare) {
         return res
       }
-      if bare == "Int" or bare == "Char" {
+      if bare == "Int" or bare == "Char" or bare == "UInt" {
         res.add(NI32)
-      } else if bare == "Long" {
+      } else if bare == "Long" or bare == "ULong" {
         res.add(NI64)
       } else if bare == "Double" {
         res.add(NDouble)
@@ -7622,7 +7721,7 @@ func lowerArrayElemAssign(
           val curDest = freshTmp(ctx)
           insns.add(NLoad(dest = curDest, ty = el, ptr = ptr.value))
           val cur = NVal(ty = el, value = NLocal(name = curDest))
-          combineIndexedAssignValue(ctx, insns, op, el, cur, rhs, line)
+          combineIndexedAssignValue(ctx, insns, op, el, cur, rhs, line, isUnsignedExpr(value))
         }
       }
       insns.add(NStore(ty = el, value = newVal.value, ptr = ptr.value))
@@ -15288,11 +15387,12 @@ func emitPatternTest(
         insns.add(NFCmp(dest = geLo, pred = FOge, ty = sv.ty, a = sv.value, b = loV.value))
         insns.add(NFCmp(dest = leHi, pred = if inclusive { FOle } else { FOlt }, ty = sv.ty, a = sv.value, b = hiV.value))
       } else {
-        // A `Byte` (`i8`) orders unsigned, as its comparisons do (#4628,
-        // #7842).
-        val isByte = match sv.ty { case NI8 -> true; case _ -> false }
-        insns.add(NICmp(dest = geLo, pred = if isByte { IUge } else { ISge }, ty = sv.ty, a = sv.value, b = loV.value))
-        val hiPred = if inclusive { if isByte { IUle } else { ISle } } else { if isByte { IUlt } else { ISlt } }
+        // A `Byte` (`i8`), `UInt` or `ULong` orders unsigned, as its
+        // comparisons do (#4628, #7842); the type checker spells a `UInt` or
+        // `ULong` bound as an unsigned operand (`isUnsignedExpr`).
+        val unsignedOrder = match sv.ty { case NI8 -> true; case _ -> isUnsignedExpr(lo) or isUnsignedExpr(hi) }
+        insns.add(NICmp(dest = geLo, pred = if unsignedOrder { IUge } else { ISge }, ty = sv.ty, a = sv.value, b = loV.value))
+        val hiPred = if inclusive { if unsignedOrder { IUle } else { ISle } } else { if unsignedOrder { IUlt } else { ISlt } }
         insns.add(NICmp(dest = leHi, pred = hiPred, ty = sv.ty, a = sv.value, b = hiV.value))
       }
       val both = freshTmp(ctx)
@@ -16395,6 +16495,7 @@ func combineIndexedAssignValue(
   cur: in NVal,
   rhs: in NVal,
   line: in Int,
+  unsigned: in Bool,
 ): NVal {
   val binOp = match op {
     case AssPlus -> BAdd
@@ -16410,7 +16511,7 @@ func combineIndexedAssignValue(
     val rhsC = coerceTo(ctx, insns, rhs, ty)
     match ty {
       case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, ty, cur.value, rhsC.value)
-      case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line)
+      case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line, unsigned)
     }
   }
 }
@@ -16547,7 +16648,7 @@ func lowerBufferArrayElemAssign(
             case _ -> {
               val curDest = freshTmp(ctx)
               insns.add(NLoad(dest = curDest, ty = el, ptr = ptr.value))
-              combineIndexedAssignValue(ctx, insns, op, el, NVal(ty = el, value = NLocal(name = curDest)), rhs, line)
+              combineIndexedAssignValue(ctx, insns, op, el, NVal(ty = el, value = NLocal(name = curDest)), rhs, line, isUnsignedExpr(value))
             }
           }
           insns.add(NStore(ty = el, value = newVal.value, ptr = ptr.value))
@@ -16595,7 +16696,7 @@ func lowerBufferElemAssign(
       // list element (`combineIndexedAssignValue`).
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = elem, ptr = ptr.value))
-      combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line)
+      combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line, isUnsignedExpr(value))
     }
   }
   insns.add(NStore(ty = elem, value = newVal.value, ptr = ptr.value))
@@ -16647,7 +16748,7 @@ func lowerIndexAssign(
           gArgs.add(NArg(ty = NI64, value = idx.value))
           val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
           val cur = valOfSlot(ctx, insns, slot.value, elem)
-          combineIndexedAssignValue(ctx, insns, op, elem, cur, rhs, line)
+          combineIndexedAssignValue(ctx, insns, op, elem, cur, rhs, line, isUnsignedExpr(value))
         }
       }
       val sArgs: List[NArg] = newList()
@@ -16693,7 +16794,7 @@ func lowerIndexAssign(
           val raw = freshTmp(ctx)
           insns.add(NLoad(dest = raw, ty = NI64, ptr = NLocal(name = outSlot)))
           val cur = valOfSlot(ctx, insns, NLocal(name = raw), vTy)
-          combineIndexedAssignValue(ctx, insns, op, vTy, cur, rhs, line)
+          combineIndexedAssignValue(ctx, insns, op, vTy, cur, rhs, line, isUnsignedExpr(value))
         }
       }
       val sArgs: List[NArg] = newList()
@@ -16759,7 +16860,7 @@ func lowerAssign(
         val rhsC = coerceTo(ctx, insns, rhs, ty)
         match ty {
           case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, ty, cur.value, rhsC.value)
-          case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line)
+          case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line, isUnsignedExpr(value))
         }
       }
     }
@@ -16855,7 +16956,7 @@ func lowerFieldAssign(
         val rhsC = coerceTo(ctx, insns, rhs, fieldTy)
         match fieldTy {
           case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, fieldTy, cur.value, rhsC.value)
-          case _ -> binIntOp(ctx, insns, binOp, fieldTy, cur.value, rhsC.value, line)
+          case _ -> binIntOp(ctx, insns, binOp, fieldTy, cur.value, rhsC.value, line, isUnsignedExpr(value))
         }
       }
     }
@@ -17613,6 +17714,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_console_write", NVoid, NI32, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
+  decls.add(mkDecl1("lyric_string_from_uint", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))
   decls.add(mkDecl1("lyric_string_from_float32", sTy, NFloat))
   decls.add(mkDecl1("lyric_string_from_bool", sTy, NI32))
