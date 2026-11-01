@@ -1,7 +1,7 @@
 //! resolve_driver.l - assembling a resolver context (docs/70 §4.4, D313).
 //!
 //! The context is what the resolver reads for one package: the declarations of
-//! the package and of every dependency it can name, and one import scope per
+//! the package and of every dependency it can name, and one import fsc per
 //! file of the package.
 package Lyric.Resolve
 
@@ -29,25 +29,22 @@ pub record ResolverContext {
 func isWholeImport(imp: in ImportDecl): Bool {
   match imp.selector {
     case Some(_) -> false
-    case None -> match imp.asAlias {
-      case Some(_) -> false
-      case None -> true
-    }
+    case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
   }
 }
 
 /// The packages `imports` re-exports whole (`pub use P`).
 pub func reexportsOf(imports: in List[ImportDecl]): List[String] {
-  val out: List[String] = newList()
+  val acc: List[String] = newList()
   for imp in imports {
     if imp.isPubUse and not imp.isExtern and isWholeImport(imp) {
       val name = modulePathJoin(imp.path.segments)
-      if not out.contains(name) {
-        out.add(name)
+      if not acc.contains(name) {
+        acc.add(name)
       }
     }
   }
-  out
+  acc
 }
 
 /// Build the context for `file`, a package assembled from its files
@@ -84,7 +81,7 @@ pub func buildResolverContext(
   ResolverContext(tbl = tbl, pkg = pkg, scopes = scopes)
 }
 
-/// The scope of the file `fileId` of the package; the first file's when the
+/// The fsc of the file `fileId` of the package; the first file's when the
 /// id names none (a synthesised node carries no file).
 pub func scopeOfFile(ctx: in ResolverContext, fileId: in Int): FileScope {
   if fileId >= 0 and fileId < ctx.scopes.count {

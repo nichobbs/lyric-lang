@@ -51,10 +51,7 @@ pub func renderTypeExprKey(te: in TypeExpr): String {
     case TRef(path) -> renderPath(path)
     case TGenericApp(head, args) -> renderPath(head) + renderTypeArgs(args)
     case TArray(size, element) -> {
-      val sz = match size {
-        case TAType(t) -> renderTypeExprKey(t)
-        case TAValue(_) -> "_"
-      }
+      val sz = match size { case TAType(t) -> renderTypeExprKey(t); case TAValue(_) -> "_" }
       "array[" + sz + "," + renderTypeExprKey(element) + "]"
     }
     case TSlice(element) -> "slice[" + renderTypeExprKey(element) + "]"
@@ -104,10 +101,7 @@ pub func methodDefPath(owner: in DefPath, name: in String, params: in List[Param
 
 pub func declVisOf(v: in Option[Visibility]): DeclVis {
   match v {
-    case Some(vis) -> match vis {
-      case VisPub(_) -> DVPublic
-      case VisInternal(_) -> DVInternal
-    }
+    case Some(vis) -> match vis { case VisPub(_) -> DVPublic; case VisInternal(_) -> DVInternal }
     case None -> DVPrivate
   }
 }
@@ -141,7 +135,19 @@ func addDecl(
 ): SymbolId {
   val id = internDefPath(tbl.interner, path)
   val ix = tbl.decls.count
-  tbl.decls.add(Decl(id = id, path = path, name = name, kind = kind, vis = vis, pkg = pkg, parent = parent, bare = bare, span = span))
+  tbl.decls.add(
+    Decl(
+      id = id,
+      path = path,
+      name = name,
+      kind = kind,
+      vis = vis,
+      pkg = pkg,
+      parent = parent,
+      bare = bare,
+      span = span
+    )
+  )
   if tbl.byId.containsKey(toString(id.id)) {
     tbl.byId.remove(toString(id.id))
   }
@@ -170,15 +176,11 @@ func dotIndex(s: in String): Int {
   -1
 }
 
-func addMethod(
-  tbl: in DeclTable, pkg: in String, owner: in DefPath, fn: in FunctionDecl, vis: in DeclVis
-): Unit {
+func addMethod(tbl: in DeclTable, pkg: in String, owner: in DefPath, fn: in FunctionDecl, vis: in DeclVis): Unit {
   val _ = addDecl(tbl, pkg, methodDefPath(owner, fn.name, fn.params), fn.name, SKMethod, vis, None, false, fn.span)
 }
 
-func addSigMethod(
-  tbl: in DeclTable, pkg: in String, owner: in DefPath, sig: in FunctionSig, vis: in DeclVis
-): Unit {
+func addSigMethod(tbl: in DeclTable, pkg: in String, owner: in DefPath, sig: in FunctionSig, vis: in DeclVis): Unit {
   val _ = addDecl(tbl, pkg, methodDefPath(owner, sig.name, sig.params), sig.name, SKMethod, vis, None, false, sig.span)
 }
 
@@ -251,11 +253,7 @@ func registerItem(tbl: in DeclTable, pkg: in String, it: in Item): Unit {
       }
     }
     case IExternType(decl) -> {
-      val path = if decl.clrName.length > 0 {
-        externTypeDefPath(decl.clrName)
-      } else {
-        typeDefPath(pkg, decl.name)
-      }
+      val path = if decl.clrName.length > 0 { externTypeDefPath(decl.clrName) } else { typeDefPath(pkg, decl.name) }
       val _ = addDecl(tbl, pkg, path, decl.name, SKExternType, vis, None, true, span)
     }
     case IFunc(decl) -> registerFunc(tbl, pkg, decl, vis)

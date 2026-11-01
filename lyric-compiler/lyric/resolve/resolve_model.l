@@ -3,7 +3,7 @@
 //! The resolver binds every name occurrence of a package, per file, to a
 //! declaration identified by `SymbolId`.  This file holds what it produces
 //! and what it reads: the declaration table (every declaration of every loaded
-//! package, each with its DefPath), a file's import scope, and the outcome of
+//! package, each with its DefPath), a file's import fsc, and the outcome of
 //! one lookup.
 package Lyric.Resolve
 
@@ -169,7 +169,7 @@ pub record NameBinding {
   renamed: Bool
 }
 
-/// One file's import scope (docs/70 §4.1, §4.3): what that file may name bare,
+/// One file's import fsc (docs/70 §4.1, §4.3): what that file may name bare,
 /// and which packages it may name qualified.
 pub record FileScope {
   pkg: String

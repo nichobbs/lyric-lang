@@ -44,10 +44,7 @@ func bareType(ctx: in ResolverContext, name: in String): Resolution {
 
 func pathKeyOf(ctx: in ResolverContext, r: in Resolution): String {
   match r {
-    case RSymbol(id) -> match defPathKeyOf(ctx.tbl.interner, id) {
-      case Some(k) -> k
-      case None -> "<no path>"
-    }
+    case RSymbol(id) -> match defPathKeyOf(ctx.tbl.interner, id) { case Some(k) -> k; case None -> "<no path>" }
     case ROverloads(ids) -> "overloads:" + toString(ids.count)
     case RPackage(p) -> "package:" + p
     case RDeferred -> "deferred"
@@ -226,7 +223,11 @@ test "an aliased import makes no name visible bare" {
   val r = bare(ctx, "Amount")
   assertEqual(codeOf(r), "T0020", "alias hides bare names")
   assertTrue(messageOf(r).contains("imported as M; write M.Amount"), "hint: " + messageOf(r))
-  assertEqual(pathKeyOf(ctx, pathResolve(ctx, segs2("M", "Amount")).res), "Money::Amount", "qualified through the alias")
+  assertEqual(
+    pathKeyOf(ctx, pathResolve(ctx, segs2("M", "Amount")).res),
+    "Money::Amount",
+    "qualified through the alias"
+  )
 }
 
 test "two packages that declare a name are T0123 when both are imported" {

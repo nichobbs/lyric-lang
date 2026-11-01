@@ -1,7 +1,7 @@
 //! resolve_lookup.l - the §4.3 lookup (docs/70, D313).
 //!
 //! The functions here are the resolver's only reads of the declaration table.
-//! Each takes the scope of the file the name is written in.
+//! Each takes the fsc of the file the name is written in.
 package Lyric.Resolve
 
 import Std.Core
@@ -10,8 +10,8 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
 
-func useAccepts(use: in NameUse, kind: in SymKind): Bool {
-  match use {
+func useAccepts(nameUse: in NameUse, kind: in SymKind): Bool {
+  match nameUse {
     case UseType -> symKindIsType(kind)
     case _ -> true
   }
@@ -20,8 +20,8 @@ func useAccepts(use: in NameUse, kind: in SymKind): Bool {
 // The newest registration of each declaration named `name`, in registration
 // order: a package registered twice (as a source and as a dependency) is one
 // DefPath, so one candidate.
-func namedDecls(tbl: in DeclTable, name: in String, use: in NameUse): List[Decl] {
-  val out: List[Decl] = newList()
+func namedDecls(tbl: in DeclTable, name: in String, nameUse: in NameUse): List[Decl] {
+  val acc: List[Decl] = newList()
   match mapGet(tbl.byName, name) {
     case None -> ()
     case Some(ixs) -> {
@@ -29,8 +29,8 @@ func namedDecls(tbl: in DeclTable, name: in String, use: in NameUse): List[Decl]
         val d = tbl.decls[ix]
         match mapGet(tbl.byId, toString(d.id.id)) {
           case Some(last) -> {
-            if last == ix and useAccepts(use, d.kind) {
-              out.add(d)
+            if last == ix and useAccepts(nameUse, d.kind) {
+              acc.add(d)
             }
           }
           case None -> ()
@@ -38,28 +38,28 @@ func namedDecls(tbl: in DeclTable, name: in String, use: in NameUse): List[Decl]
       }
     }
   }
-  out
+  acc
 }
 
 func declsOfPackageNamed(tbl: in DeclTable, pkg: in String, name: in String): List[Decl] {
-  val out: List[Decl] = newList()
+  val acc: List[Decl] = newList()
   for d in namedDecls(tbl, name, UseValue) {
     if d.pkg == pkg {
-      out.add(d)
+      acc.add(d)
     }
   }
-  out
+  acc
 }
 
 // The cases of the union or enum with id `owner`.
 func casesOf(tbl: in DeclTable, owner: in SymbolId): List[Decl] {
-  val out: List[Decl] = newList()
+  val acc: List[Decl] = newList()
   for d in tbl.decls {
     match d.parent {
       case Some(pid) -> {
         if pid.id == owner.id and symKindIsCase(d.kind) {
           match mapGet(tbl.byId, toString(d.id.id)) {
-            case Some(_) -> out.add(d)
+            case Some(_) -> acc.add(d)
             case None -> ()
           }
         }
@@ -67,7 +67,7 @@ func casesOf(tbl: in DeclTable, owner: in SymbolId): List[Decl] {
       case None -> ()
     }
   }
-  out
+  acc
 }
 
 func isPreludeName(name: in String): Bool {
@@ -82,10 +82,7 @@ func inPrelude(tbl: in DeclTable, d: in Decl): Bool {
     return true
   }
   match d.parent {
-    case Some(pid) -> match declOfId(tbl, pid) {
-      case Some(p) -> isPreludeName(p.name)
-      case None -> false
-    }
+    case Some(pid) -> match declOfId(tbl, pid) { case Some(p) -> isPreludeName(p.name); case None -> false }
     case None -> false
   }
 }
@@ -107,18 +104,18 @@ record Candidate {
   via: String
 }
 
-func addCandidate(out: in List[Candidate], seen: in Map[String, Int], d: in Decl, direct: in Bool, via: in String): Unit {
+func addCandidate(acc: in List[Candidate], seen: in Map[String, Int], d: in Decl, direct: in Bool, via: in String): Unit {
   val key = toString(d.id.id)
   match mapGet(seen, key) {
     case Some(ix) -> {
       // A direct reach beats a re-export reach of the same declaration.
-      if direct and not out[ix].direct {
-        out[ix] = Candidate(decl = d, direct = true, via = via)
+      if direct and not acc[ix].direct {
+        acc[ix] = Candidate(decl = d, direct = true, via = via)
       }
     }
     case None -> {
-      seen.add(key, out.count)
-      out.add(Candidate(decl = d, direct = direct, via = via))
+      seen.add(key, acc.count)
+      acc.add(Candidate(decl = d, direct = direct, via = via))
     }
   }
 }
@@ -146,15 +143,15 @@ func packagesOf(cands: in List[Candidate]): List[String] {
   pkgs
 }
 
-func unknownNameCode(use: in NameUse): String {
-  match use {
+func unknownNameCode(nameUse: in NameUse): String {
+  match nameUse {
     case UseType -> "T0010"
     case _ -> "T0020"
   }
 }
 
-func unknownNameMessage(use: in NameUse, name: in String): String {
-  match use {
+func unknownNameMessage(nameUse: in NameUse, name: in String): String {
+  match nameUse {
     case UseType -> "unknown type name '" + name + "'"
     case _ -> "unknown name '" + name + "'"
   }
@@ -168,7 +165,11 @@ func resolveCandidates(cands: in List[Candidate], name: in String, how: in Strin
     return RUnresolved(
       code = "T0123",
       message = "'" + name + "' is ambiguous: it is declared by " + joinQuoted(pkgs) + ", all " + how +
-        " - qualify the reference (e.g. '" + pkgs[0] + "." + name + "')"
+        " - qualify the reference (e.g. '" +
+        pkgs[0] +
+        "." +
+        name +
+        "')"
     )
   }
   val ids: List[SymbolId] = newList()
@@ -191,12 +192,12 @@ func resolveCandidates(cands: in List[Candidate], name: in String, how: in Strin
 // The hint that says how to import a name a loaded package declares: the
 // newest declaration of `name` in another package, `pub` or `internal` ones
 // first.
-func hiddenImportHint(tbl: in DeclTable, scope: in FileScope, name: in String, use: in NameUse): String {
+func hiddenImportHint(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): String {
   var pass = 0
   while pass < 2 {
-    for d in reverseOf(namedDecls(tbl, name, use)) {
-      if d.pkg != scope.pkg and d.pkg.length > 0 and (pass == 1 or declCrossPackageVisible(d)) {
-        return importHintFor(tbl, scope, d, name)
+    for d in reverseOf(namedDecls(tbl, name, nameUse)) {
+      if d.pkg != fsc.pkg and d.pkg.length > 0 and (pass == 1 or declCrossPackageVisible(d)) {
+        return importHintFor(tbl, fsc, d, name)
       }
     }
     pass = pass + 1
@@ -205,21 +206,18 @@ func hiddenImportHint(tbl: in DeclTable, scope: in FileScope, name: in String, u
 }
 
 func reverseOf(ds: in List[Decl]): List[Decl] {
-  val out: List[Decl] = newList()
+  val acc: List[Decl] = newList()
   var i = ds.count - 1
   while i >= 0 {
-    out.add(ds[i])
+    acc.add(ds[i])
     i = i - 1
   }
-  out
+  acc
 }
 
 func parentNameOf(tbl: in DeclTable, d: in Decl): String {
   match d.parent {
-    case Some(pid) -> match declOfId(tbl, pid) {
-      case Some(p) -> p.name
-      case None -> ""
-    }
+    case Some(pid) -> match declOfId(tbl, pid) { case Some(p) -> p.name; case None -> "" }
     case None -> ""
   }
 }
@@ -237,10 +235,10 @@ func publicPackageOf(tbl: in DeclTable, pkg: in String): String {
   }
 }
 
-func importHintFor(tbl: in DeclTable, scope: in FileScope, d: in Decl, name: in String): String {
+func importHintFor(tbl: in DeclTable, fsc: in FileScope, d: in Decl, name: in String): String {
   val origin = d.pkg
-  for alias in mapKeys(scope.aliases) {
-    if scope.aliases[alias] == origin {
+  for alias in mapKeys(fsc.aliases) {
+    if fsc.aliases[alias] == origin {
       return " (declared in " + origin + ", imported as " + alias + "; write " + alias + "." + name + ")"
     }
   }
@@ -253,14 +251,14 @@ func importHintFor(tbl: in DeclTable, scope: in FileScope, d: in Decl, name: in 
   " (declared in " + origin + "; add import " + origin + " or import " + origin + ".{" + shown + "})"
 }
 
-/// Resolve the bare name `name`, written in the file `scope` belongs to, at
+/// Resolve the bare name `name`, written in the file `fsc` belongs to, at
 /// steps 2-4 of §4.3.  The caller answers step 1 (locals) first.
-pub func resolveBare(tbl: in DeclTable, scope: in FileScope, name: in String, use: in NameUse): Resolution {
+pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): Resolution {
   // Step 2: the file's own package, any file.
   val own: List[Candidate] = newList()
   val ownSeen: Map[String, Int] = newMap()
-  for d in namedDecls(tbl, name, use) {
-    if d.pkg == scope.pkg {
+  for d in namedDecls(tbl, name, nameUse) {
+    if d.pkg == fsc.pkg {
       addCandidate(own, ownSeen, d, true, "")
     }
   }
@@ -271,17 +269,11 @@ pub func resolveBare(tbl: in DeclTable, scope: in FileScope, name: in String, us
   val reached: List[Candidate] = newList()
   val seen: Map[String, Int] = newMap()
   val hidden: List[Decl] = newList()
-  for d in namedDecls(tbl, name, use) {
-    if d.pkg != scope.pkg and scope.whole.containsKey(d.pkg) {
-      val r = scope.whole[d.pkg]
-      val direct = match r {
-        case ReachDirect(_) -> true
-        case ReachReexport(_) -> false
-      }
-      val via = match r {
-        case ReachDirect(v) -> v
-        case ReachReexport(v) -> v
-      }
+  for d in namedDecls(tbl, name, nameUse) {
+    if d.pkg != fsc.pkg and fsc.whole.containsKey(d.pkg) {
+      val r = fsc.whole[d.pkg]
+      val direct = match r { case ReachDirect(_) -> true; case ReachReexport(_) -> false }
+      val via = match r { case ReachDirect(v) -> v; case ReachReexport(v) -> v }
       if declCrossPackageVisible(d) {
         addCandidate(reached, seen, d, direct, via)
       } else {
@@ -289,21 +281,21 @@ pub func resolveBare(tbl: in DeclTable, scope: in FileScope, name: in String, us
       }
     }
   }
-  match mapGet(scope.names, name) {
+  match mapGet(fsc.names, name) {
     case Some(bindings) -> {
       for b in bindings {
         if b.pkg == "extern" {
           val extId = internDefPath(tbl.interner, externTypeDefPath(b.origName))
           match declOfId(tbl, extId) {
             case Some(d) -> {
-              if useAccepts(use, d.kind) {
+              if useAccepts(nameUse, d.kind) {
                 addCandidate(reached, seen, d, true, b.via)
               }
             }
             case None -> ()
           }
         } else {
-          for d in namedDecls(tbl, b.origName, use) {
+          for d in namedDecls(tbl, b.origName, nameUse) {
             if bindingCovers(tbl, b, d) {
               if declCrossPackageVisible(d) {
                 addCandidate(reached, seen, d, true, b.via)
@@ -335,7 +327,7 @@ pub func resolveBare(tbl: in DeclTable, scope: in FileScope, name: in String, us
   // Step 4: the prelude.
   val prelude: List[Candidate] = newList()
   val preludeSeen: Map[String, Int] = newMap()
-  for d in namedDecls(tbl, name, use) {
+  for d in namedDecls(tbl, name, nameUse) {
     if inPrelude(tbl, d) {
       addCandidate(prelude, preludeSeen, d, true, "")
     }
@@ -351,8 +343,8 @@ pub func resolveBare(tbl: in DeclTable, scope: in FileScope, name: in String, us
     )
   }
   RUnresolved(
-    code = unknownNameCode(use),
-    message = unknownNameMessage(use, name) + hiddenImportHint(tbl, scope, name, use)
+    code = unknownNameCode(nameUse),
+    message = unknownNameMessage(nameUse, name) + hiddenImportHint(tbl, fsc, name, nameUse)
   )
 }
 
@@ -366,7 +358,7 @@ pub record PathResolution {
 // `name` as package `pkg` declares it, or re-exports it; a declaration of the
 // package itself wins over a re-exported one (docs/01 §9.3).
 func resolveInPackage(
-  tbl: in DeclTable, scope: in FileScope, pkg: in String, name: in String, use: in NameUse
+  tbl: in DeclTable, fsc: in FileScope, pkg: in String, name: in String, nameUse: in NameUse
 ): Resolution {
   val pkgs: List[String] = newList()
   pkgs.add(pkg)
@@ -377,9 +369,9 @@ func resolveInPackage(
     val cands: List[Candidate] = newList()
     val seen: Map[String, Int] = newMap()
     var sawPrivate = false
-    for d in namedDecls(tbl, name, use) {
+    for d in namedDecls(tbl, name, nameUse) {
       if d.pkg == p {
-        if p == scope.pkg or declCrossPackageVisible(d) {
+        if p == fsc.pkg or declCrossPackageVisible(d) {
           addCandidate(cands, seen, d, true, "")
         } else {
           sawPrivate = true
@@ -397,10 +389,7 @@ func resolveInPackage(
       )
     }
   }
-  RUnresolved(
-    code = unknownNameCode(use),
-    message = unknownNameMessage(use, pkg + "." + name)
-  )
+  RUnresolved(code = unknownNameCode(nameUse), message = unknownNameMessage(nameUse, pkg + "." + name))
 }
 
 func joinSegments(segs: in List[String], count: in Int): String {
@@ -419,14 +408,14 @@ func joinSegments(segs: in List[String], count: in Int): String {
 // The package a leading run of `segs` names in this file: an alias, the file's
 // own package, or the full path of a package the file imports in any form.
 // Returns the segment count it used, or 0.
-func leadingPackage(scope: in FileScope, segs: in List[String]): Option[PackagePrefix] {
+func leadingPackage(fsc: in FileScope, segs: in List[String]): Option[PackagePrefix] {
   var k = segs.count
   while k >= 1 {
     val text = joinSegments(segs, k)
-    if k == 1 and scope.aliases.containsKey(text) {
-      return Some(value = PackagePrefix(pkg = scope.aliases[text], count = k))
+    if k == 1 and fsc.aliases.containsKey(text) {
+      return Some(value = PackagePrefix(pkg = fsc.aliases[text], count = k))
     }
-    if text == scope.pkg or scope.directPkgs.containsKey(text) {
+    if text == fsc.pkg or fsc.directPkgs.containsKey(text) {
       return Some(value = PackagePrefix(pkg = text, count = k))
     }
     k = k - 1
@@ -453,26 +442,26 @@ func unimportedPackagePrefix(tbl: in DeclTable, segs: in List[String]): String {
   ""
 }
 
-/// Resolve a dotted path `segs` written in the file `scope` belongs to: a
+/// Resolve a dotted path `segs` written in the file `fsc` belongs to: a
 /// qualified reference through a package the file names (an alias, the full
 /// path of a package it imports, or its own package), or a bare name followed
 /// by members.  A package the file does not import cannot be named, even when
 /// an imported package imports it (§4.3).
-pub func resolvePath(tbl: in DeclTable, scope: in FileScope, segs: in List[String], use: in NameUse): PathResolution {
+pub func resolvePath(tbl: in DeclTable, fsc: in FileScope, segs: in List[String], nameUse: in NameUse): PathResolution {
   if segs.count == 0 {
     return PathResolution(res = RUnresolved(code = "T0020", message = "empty path"), consumed = 0)
   }
-  match leadingPackage(scope, segs) {
+  match leadingPackage(fsc, segs) {
     case Some(prefix) -> {
       if prefix.count == segs.count {
         return PathResolution(res = RPackage(pkg = prefix.pkg), consumed = prefix.count)
       }
-      val res = resolveInPackage(tbl, scope, prefix.pkg, segs[prefix.count], use)
+      val res = resolveInPackage(tbl, fsc, prefix.pkg, segs[prefix.count], nameUse)
       return PathResolution(res = res, consumed = prefix.count + 1)
     }
     case None -> ()
   }
-  val first = resolveBare(tbl, scope, segs[0], if segs.count == 1 { use } else { UseValue })
+  val first = resolveBare(tbl, fsc, segs[0], if segs.count == 1 { nameUse } else { UseValue })
   match first {
     case RUnresolved(_, _) -> {
       if segs.count > 1 {
@@ -480,9 +469,11 @@ pub func resolvePath(tbl: in DeclTable, scope: in FileScope, segs: in List[Strin
         if unimported.length > 0 {
           return PathResolution(
             res = RUnresolved(
-              code = unknownNameCode(use),
+              code = unknownNameCode(nameUse),
               message = "unknown name '" + joinSegments(segs, segs.count) + "' (package " + unimported +
-                " is not imported; add import " + unimported + ")"
+                " is not imported; add import " +
+                unimported +
+                ")"
             ),
             consumed = 0
           )
