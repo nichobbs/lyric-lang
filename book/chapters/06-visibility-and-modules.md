@@ -111,10 +111,10 @@ import Std.Collections as Coll         // alias the entire package
 
 Each form decides which names you can write bare:
 
-- `import Money` brings every public name of `Money` into scope, along with the names of each package `Money` itself imports whole (the pattern the standard library's kernel modules use: `Std.Collections` imports `Std.CollectionsHost`, which declares `List`). What `Money` imports selectively or through an alias stays `Money`'s business.
+- `import Money` brings every public name of `Money` into scope, along with the names of each package `Money` re-exports with `pub use` (the pattern the standard library's kernel modules use: `Std.Collections` re-exports `Std.CollectionsHost`, which declares `List`). What `Money` merely imports stays `Money`'s business. For now a package `Money` imports whole without re-exporting is still reachable, with warning `W0033` naming the import to add; a later release removes that reach.
 - `import Money.{Amount, Cents}` brings only `Amount` and `Cents`. Naming a union or enum type brings its cases too, so `case Square(n) ->` works after `import Shapes.{Shape}`. A listed name can be renamed: after `import Money.{Amount as Amt}` you write `Amt(cents = 5)` and `val a: Amt`, and `Amount` itself is not in scope. A local variable named `Amt` hides the rename only where the variable is in scope. Picking a name that something else already uses (your own declaration, another import, a package alias) is error T0148.
 - `import Std.Collections as Coll` brings nothing bare; you write `Coll.newList()`.
-  A package's qualified names include what it re-exports from its own imports, so `Coll.newList()` works although `newList` lives in `Std.CollectionsHost`. Writing `Std.CollectionsHost.newList()` yourself needs `import Std.CollectionsHost` (T0020 otherwise).
+  A package's qualified names include what it re-exports, so `Coll.newList()` works although `newList` lives in `Std.CollectionsHost`. Writing `Std.CollectionsHost.newList()` yourself needs `import Std.CollectionsHost` (T0020 otherwise).
 
 Any package you import can also be named by its full path, `Money.Amount`, whatever the form. That includes constructors: `Money.Amount(cents = 100)` and, after `import Money as M`, `M.Amount(cents = 100)` build `Money`'s `Amount` even when your own package declares an `Amount` too, and a union case can be qualified by its union, `Shapes.Shape.Circle(r = 1)`. A dotted path always names a package, so `import Time.Instant` imports a package called `Time.Instant`; to pick `Instant` out of `Time`, write `import Time.{Instant}`.
 
@@ -140,7 +140,7 @@ Re-exports let a package surface names from its dependencies as part of its own 
 pub use Money.Amount    // re-exports Amount as part of this package's surface
 ```
 
-Callers of your package can then import `Amount` from you rather than having to know it originates in `Money`. This is useful for facade packages that present a unified surface over several implementation packages.
+Callers of your package can then import `Amount` from you rather than having to know it originates in `Money`. This is useful for facade packages that present a unified surface over several implementation packages. `pub use Money` re-exports the whole package: it imports `Money` for your own code, and a file that imports your package whole sees `Money`'s names too, as does a selective import of one of them (`import Facade.{Amount}`).
 
 The formatter enforces alphabetical ordering of import blocks. This is not just style: alphabetical ordering makes it possible to scan the import section and find a name in O(log n) with your eyes. When you are doing a refactoring and want to know where `Amount` is imported from, you look at the `A` section.
 

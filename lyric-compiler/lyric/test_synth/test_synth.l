@@ -1135,12 +1135,17 @@ pub func buildDoctestModule(rawSource: in String, path: in String): DoctestModul
   }
   val imports: List[String] = newList()
   imports.add("import Std.Testing")
+  // A re-export (`pub use P`) is the module's import of P too, so the
+  // doctest module imports P.
   for imp in pf.file.imports {
-    if not imp.isPubUse {
-      val text = Str.trim(spanSourceText(pf.source, imp.span))
-      if text.length > 0 and not stringInList(imports, text) {
-        imports.add(text)
-      }
+    val written = Str.trim(spanSourceText(pf.source, imp.span))
+    val text = if imp.isPubUse and Str.startsWith(written, "pub use ") {
+      "import " + written.substring(8)
+    } else {
+      written
+    }
+    if text.length > 0 and not stringInList(imports, text) {
+      imports.add(text)
     }
   }
   val tests: List[String] = newList()

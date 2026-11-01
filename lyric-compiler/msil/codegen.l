@@ -5338,7 +5338,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
             kfRetArgs.add(bareRetTy)
             MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = kfRetArgs)
           }
-        } else if startsWith(decl.name, "__lambda_") {
+        } else if String.startsWith(decl.name, "__lambda_") {
           // For synthetic lambdas: `collectLambdasBfsExpr` (lambda lifting)
           // unconditionally sets `decl.ret = Some(Object)` for every lambda (the
           // Uniform Func ABI, #1877) — the `case None -> MVoid` arm below is
@@ -9399,9 +9399,9 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in St
                 // PublicKeyToken=b03f5f7f11d50a3a), which is wrong for a Lyric DLL.
                 // Fall through to MClass for these — MClass is the correct encoding for
                 // in-bundle and cross-Lyric-package types.
-                if startsWith(clrFqn, "Lyric.") {
+                if String.startsWith(clrFqn, "Lyric.") {
                   MClass(className = resolveTypeFqn(cctx, pkgName, seg))
-                } else if contains(clrFqn, "[") {
+                } else if String.contains(clrFqn, "[") {
                   // A closed generic-instantiation FQN (`Task`1[System.String]`)
                   // has no flat TypeRef identity — `internFfiTypeRefNested` would
                   // mint a TypeRef literally named `Task`1[System.String]`, which
@@ -16877,8 +16877,8 @@ func lowerMatchExprMsil(
         // correctly-typed arm is not.
         val k1w = msilTypeKey(firstFallTy)
         val k2w = msilTypeKey(armTys[av])
-        val erased1w = k1w == "O" or contains(k1w, "<O,") or contains(k1w, "[O]")
-        val erased2w = k2w == "O" or contains(k2w, "<O,") or contains(k2w, "[O]")
+        val erased1w = k1w == "O" or String.contains(k1w, "<O,") or String.contains(k1w, "[O]")
+        val erased2w = k2w == "O" or String.contains(k2w, "<O,") or String.contains(k2w, "[O]")
         val classJoin = match firstFallTy {
           case MClass(_) -> match armTys[av] { case MClass(_) -> true; case _ -> false }
           case _ -> false
@@ -17081,7 +17081,7 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   val prefix1 = currentPkg + "."
   var i = 0
   while i < candidates.count {
-    if startsWith(candidates[i], prefix1) {
+    if String.startsWith(candidates[i], prefix1) {
       return candidates[i]
     }
     i = i + 1
@@ -17093,7 +17093,7 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
         val prefix2 = imps[ii] + "."
         var j = 0
         while j < candidates.count {
-          if startsWith(candidates[j], prefix2) {
+          if String.startsWith(candidates[j], prefix2) {
             val unionName = match mapGet(cctx.caseParentUnion, candidates[j]) {
               case Some(parentFqn) -> lastDottedSegmentMsil(parentFqn)
               case None -> ""
@@ -17210,7 +17210,7 @@ func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: i
 func caseSimpleNameMsil(caseFqn: in String, unionName: in String): String {
   val last = lastDottedSegmentMsil(caseFqn)
   val pfx = unionName + "_"
-  if unionName.length > 0 and startsWith(last, pfx) {
+  if unionName.length > 0 and String.startsWith(last, pfx) {
     last.substring(pfx.length, last.length - pfx.length)
   } else {
     last
@@ -21345,7 +21345,7 @@ func lowerBuiltinOrStaticCallMsil(
     insns.add(MLdcI4(v = 0))
     insns.add(MLabel(id = endLTgv))
     MBool
-  } else if (not hasQualifiedOverride) and (funcName == "dictGetKeys" or startsWith(funcName, "dictGetKeys__")) {
+  } else if (not hasQualifiedOverride) and (funcName == "dictGetKeys" or String.startsWith(funcName, "dictGetKeys__")) {
     // `dictGetKeys(m)` — emit `m.get_Keys()` inline and return `MExternEnumerable(keyTy)`
     // so the surrounding `for k in ...` loop uses the IEnumerator protocol (#3511).
     // This special case fires both for direct calls and for monomorphized specializations
@@ -21361,7 +21361,7 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
-  } else if (not hasQualifiedOverride) and (funcName == "dictGetValues" or startsWith(funcName, "dictGetValues__")) {
+  } else if (not hasQualifiedOverride) and (funcName == "dictGetValues" or String.startsWith(funcName, "dictGetValues__")) {
     // `dictGetValues(m)` — emit `m.get_Values()` inline and return `MExternEnumerable(valTy)`.
     if args.count >= 1 {
       val mArgTyGv = lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -23059,7 +23059,7 @@ func lowerMethodCallMsil(
       // `realPkg + "." + memberName` (built above); split it and drop the
       // trailing memberName segment to recover realPkg's segments without a
       // second pkgImportAliases lookup.
-      val aliasParts = split(aliasResolvedFqn, ".")
+      val aliasParts = String.split(aliasResolvedFqn, ".")
       val realSegs: List[String] = newList()
       var pi = 0
       while pi < aliasParts.length - 1 {
@@ -23106,7 +23106,7 @@ func lowerMethodCallMsil(
       // `path.segments` as a real `List<String>`). This explicit copy loop
       // is a required slice[String] -> List[String] conversion — do not
       // remove it.
-      val samePkgSegs = split(samePkgFqn, ".")
+      val samePkgSegs = String.split(samePkgFqn, ".")
       val samePkgPathSegs: List[String] = newList()
       var spi = 0
       while spi < samePkgSegs.length {
@@ -23130,7 +23130,7 @@ func lowerMethodCallMsil(
     val recvTypeName = if recvDot > 0 { callFqn.substring(0, recvDot) } else { callFqn }
     val importedQualFqn = findImportedFqn(cctx, bareImportListForNameMsil(cctx, fctx.pkgName, recvTypeName), callFqn)
     if importedQualFqn.length > 0 {
-      val impSegs = split(importedQualFqn, ".")
+      val impSegs = String.split(importedQualFqn, ".")
       val impPathSegs: List[String] = newList()
       var ipi = 0
       while ipi < impSegs.length {
@@ -27983,7 +27983,7 @@ func buildValueTaskGenericMsilTypeFromClrFqn(cctx: in CodegenCtx, declaredClrFqn
 func resolveValueTaskGenericMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): Option[MsilType] {
   val declaredClrFqn = lookupDeclaredClrFqnForTypeExpr(cctx, te, pkgName)
   val prefix = "System.Threading.Tasks.ValueTask`1["
-  if declaredClrFqn.length > 0 and startsWith(declaredClrFqn, prefix) and endsWith(declaredClrFqn, "]") {
+  if declaredClrFqn.length > 0 and String.startsWith(declaredClrFqn, prefix) and String.endsWith(declaredClrFqn, "]") {
     Some(value = buildValueTaskGenericMsilTypeFromClrFqn(cctx, declaredClrFqn))
   } else {
     None
@@ -28054,7 +28054,7 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
   } else {
     match mapGet(cctx.externTypeNames, simple) {
       case Some(fqn) -> fqn
-      case None -> if startsWith(className, "System.") { className } else { "" }
+      case None -> if String.startsWith(className, "System.") { className } else { "" }
     }
   }
   if clrFqn == "" {
@@ -28062,7 +28062,7 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
   }
   // Nested types (ResolutionScope = enclosing TypeRef, not AssemblyRef) need
   // a different encoding than `internFfiTypeRef` provides; skip them safely.
-  if contains(clrFqn, "+") {
+  if String.contains(clrFqn, "+") {
     return 0 - 1
   }
   val sp = splitTypeFqn(clrFqn)
@@ -28583,7 +28583,7 @@ func externTargetBracketGenericInstMsil(
       }
       match mapGet(cctx.externTypeNames, seg) {
         case Some(clrFqn) -> {
-          if startsWith(clrFqn, "Lyric.") or not isClosedGenericInstFqn(clrFqn) {
+          if String.startsWith(clrFqn, "Lyric.") or not isClosedGenericInstFqn(clrFqn) {
             None
           } else {
             ensureMetadataIndex(cctx)
@@ -29473,7 +29473,7 @@ func substObjectForTypeVarsMsil(tys: in List[MsilType]): List[MsilType] {
 }
 
 func isFuncOrActionFqnMsil(fqn: in String): Bool {
-  fqn == "System.Action" or startsWith(fqn, "System.Action`") or startsWith(fqn, "System.Func`")
+  fqn == "System.Action" or String.startsWith(fqn, "System.Action`") or String.startsWith(fqn, "System.Func`")
 }
 
 // Resolve the delegate slot for `decl.params[idx]`, or None when this is not a
@@ -29677,9 +29677,9 @@ func delegateParamFitsMsil(cctx: in CodegenCtx, pt: in Mdr.SigType, nparams: in 
     case Mdr.STNamedGenericInst(fqn, vt, args) -> {
       if vt {
         false
-      } else if startsWith(fqn, "System.Func`") {
+      } else if String.startsWith(fqn, "System.Func`") {
         args.count == nparams + 1
-      } else if startsWith(fqn, "System.Action`") {
+      } else if String.startsWith(fqn, "System.Action`") {
         args.count == nparams
       } else {
         match delegateInvokeMethodMsil(cctx, fqn) {
@@ -30363,7 +30363,7 @@ func emitGenericMethodExternCall(
     val defArgTy = externWrapperDefParamTyMsil(cctx, decl, li, pkgNameG, declGenericsG)
     if isInstance and li == 0 {
       // A generic declaring type's open TypeRef is no cast target.
-      if not contains(r.typeName, "`") {
+      if not String.contains(r.typeName, "`") {
         castErasedExternArgMsil(cctx, insns, defArgTy, MClassRef(typeRefCode = tdrTypeRef(parentRow), clrFqn = r.typeName))
       }
     } else {
@@ -30939,7 +30939,7 @@ func emitExternTargetBody(
       // arguments to `<object,…>` (matching how `typeExprToMsilCtx` already
       // erases the Lyric `ConcurrentDict[K,V]` value to `MObject`) and marshals
       // `out`/value-type arguments across the erasure boundary (#3392).
-      if isKnownFqn and contains(r.typeName, "`") {
+      if isKnownFqn and String.contains(r.typeName, "`") {
         if emitGenericExternMember(cctx, fctx, insns, decl, r, resolvedFqn, paramTypes, retTy) {
           insns.add(MRet)
           return true
@@ -30957,7 +30957,7 @@ func emitExternTargetBody(
       // A nested declaring type (`@externTarget("JsonElement+ArrayEnumerator.
       // MoveNext")`) needs a nested TypeRef (ResolutionScope = the enclosing
       // type), not a flat one whose "+"-bearing name faults at load (#3943).
-      val tRefRow = if contains(resolvedFqn, "+") {
+      val tRefRow = if String.contains(resolvedFqn, "+") {
         internFfiTypeRefNested(cctx, resolvedFqn)
       } else {
         internFfiTypeRef(cctx, asmName, r.namespaceStr, r.typeName)
@@ -31489,7 +31489,7 @@ func emitExternTargetBody(
             }
           } else if li == 0 {
             // A generic declaring type's open TypeRef is no cast target.
-            if not contains(resolvedFqn, "`") {
+            if not String.contains(resolvedFqn, "`") {
               castErasedExternArgMsil(
                 cctx,
                 insns,
@@ -36121,7 +36121,7 @@ func lambdaBodyEndsInUnitMsil(body: in Block): Bool {
 func actionSlotArityMsil(slotTy: in MsilType): Int {
   match slotTy {
     case MClass(n) -> if n == "System.Action" { 0 } else { -1 }
-    case MGenericInstByName(h, targs) -> if startsWith(h, "System.Action`") { targs.count } else { -1 }
+    case MGenericInstByName(h, targs) -> if String.startsWith(h, "System.Action`") { targs.count } else { -1 }
     case _ -> -1
   }
 }
@@ -36685,7 +36685,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // bare-`T` parameter, return, and local must use the erased List-backed
   // representation (see typeExprToMsilGenBody / typeExprToMsilGenSig) instead of
   // a bogus `MClass(pkg + ".T")` that names no real CLR type.
-  val fnGenerics = if startsWith(decl.name, "__lambda_") {
+  val fnGenerics = if String.startsWith(decl.name, "__lambda_") {
     match mapGet(cctx.lambdaGenerics, pkgName + "." + decl.name) {
       case Some(g) -> g
       case None -> newList()
@@ -36693,7 +36693,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   } else {
     genericNamesOf(decl.generics)
   }
-  val retTy = if startsWith(decl.name, "__lambda_") {
+  val retTy = if String.startsWith(decl.name, "__lambda_") {
     // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
     // value, or `null` for a void body — coerced in the return path below).
     // liftLambdasMsil sets decl.ret to Object, and the funcRetTypes mirror
@@ -36829,7 +36829,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
-  val isLambdaFn = startsWith(decl.name, "__lambda_")
+  val isLambdaFn = String.startsWith(decl.name, "__lambda_")
   // Reserve slot 0 for `__caps`, the closure-class instance carrying this
   // lambda's captures (#1479, #1877 Phase 2). Register each captured name's
   // field index + logical type so EPath reads resolve correctly.
@@ -44415,9 +44415,9 @@ func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
   ensureMetadataIndex(cctx)
   match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
     case Some(asm) -> asm
-    case None -> if startsWith(clrFqn, "Lyric.Emitter") {
+    case None -> if String.startsWith(clrFqn, "Lyric.Emitter") {
       "Lyric.Emitter"
-    } else if startsWith(clrFqn, "Std.") {
+    } else if String.startsWith(clrFqn, "Std.") {
       "Lyric.Stdlib"
     } else {
       "System.Runtime"
@@ -44433,7 +44433,7 @@ func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
   // TypeRef builder so the ResolutionScope is the enclosing type.  Without this
   // a nested return/param type fails to resolve here, the metadata-direct extern
   // resolver bails, and an instance method is mis-emitted as static (#3943).
-  if contains(fqn, "+") {
+  if String.contains(fqn, "+") {
     val refRow = internFfiTypeRefNested(cctx, fqn)
     return Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
   }
@@ -44455,7 +44455,7 @@ func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
 func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
   // Nested reference type: route through the nested TypeRef builder (see
   // `internValueTypeRef`) so the ResolutionScope is the enclosing type (#3943).
-  if contains(fqn, "+") {
+  if String.contains(fqn, "+") {
     val refRow = internFfiTypeRefNested(cctx, fqn)
     return Some(value = MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
   }
@@ -45670,7 +45670,7 @@ func emitResolvedInstanceAutoFfi(
 // (`Enclosing+Nested`) through the nested builder so the ResolutionScope is
 // the enclosing type (#3943).
 func internExternTypeRefMsil(cctx: in CodegenCtx, asmName: in String, clrFqn: in String): Int {
-  if contains(clrFqn, "+") {
+  if String.contains(clrFqn, "+") {
     internFfiTypeRefNested(cctx, clrFqn)
   } else {
     val sp = splitTypeFqn(clrFqn)
@@ -46577,7 +46577,7 @@ func implIfaceIsExternalClr(cctx: in CodegenCtx, decl: in ImplDecl, pkgName: in 
     return false
   }
   match mapGet(cctx.externTypeNames, segs[0]) {
-    case Some(clrFqn) -> not startsWith(clrFqn, "Lyric.")
+    case Some(clrFqn) -> not String.startsWith(clrFqn, "Lyric.")
     case None -> false
   }
 }
@@ -49734,7 +49734,7 @@ func registerRestoredImpl(
 ): Unit {
   val targetName = implTargetNameMsil(idecl, art.packageName)
   // implTargetNameMsil returns "<pkg>.<Name>" or a "__impl_target" sentinel.
-  if endsWith(targetName, ".__impl_target") {
+  if String.endsWith(targetName, ".__impl_target") {
     return
   }
   val recordTypeRefRow = lookupRestoredTypeRefRowByFqn(cctx, art.packageName, targetName)
@@ -50451,7 +50451,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   var ai = 0
   while ai < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ai]
-    if startsWith(art.packageName, "Std.") {
+    if String.startsWith(art.packageName, "Std.") {
       ai = ai + 1
       continue
     }
@@ -50502,7 +50502,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   var ae = 0
   while ae < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ae]
-    if not startsWith(art.packageName, "Std.") {
+    if not String.startsWith(art.packageName, "Std.") {
       for it in art.source.items {
         match it.kind {
           case IEnum(decl) -> registerEnumDeclMsil(cctx, art.packageName, decl)
@@ -50520,7 +50520,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   var aj = 0
   while aj < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[aj]
-    if startsWith(art.packageName, "Std.") {
+    if String.startsWith(art.packageName, "Std.") {
       aj = aj + 1
       continue
     }
@@ -50613,6 +50613,8 @@ pub record StdlibPkg {
   imports: List[String]
   /// The subset of `imports` the package imports whole (docs/01 §9.2).
   wholeImports: List[String]
+  /// The packages it re-exports whole (`pub use P`, docs/01 §9.3).
+  reexports: List[String] = newList()
   /// `<package>::<name>` for each name the package imports selectively.
   selectedImports: List[String]
   /// Private (non-`pub`) generic funcs with a body, kept separate from
@@ -50783,7 +50785,7 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
 // is the package's own interface or one from its imports.
 func registerStdlibImplMsil(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], pkg: in StdlibPkg, idecl: in ImplDecl): Unit {
   val targetName = implTargetNameMsil(idecl, pkg.name)
-  if endsWith(targetName, ".__impl_target") {
+  if String.endsWith(targetName, ".__impl_target") {
     return
   }
   val recordTypeRefRow = match mapGet(cctx.ffiTypeRefs, pkg.name + "/" + targetName) {

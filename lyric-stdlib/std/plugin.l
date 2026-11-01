@@ -77,6 +77,7 @@ import Std.Path as Path
 import Std.File as File
 import Std.Environment as Env
 import Std.Console as Console
+import Std.Console.{StdinReader, openStdinReader, readStdin, readStdinWithin}
 
 // ── Constants ──────────────────────────────────────────────────────────────
 /// The `schema` value of a `plugin.json` this runtime reads.

@@ -19,6 +19,7 @@
 package Forms.Parse
 
 import Std.Core
+import Std.Collections
 import Std.String
 import Std.Parse as P
 import Forms.{FieldError, FieldPath, Required, Invalid, OutOfRange, TooLong}

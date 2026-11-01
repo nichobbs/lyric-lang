@@ -18,6 +18,7 @@ import Lyric.Discovery as Disc
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.BuildDefines as BD
 import Lyric.Emitter as Emitter
+import Std.Errors.{IOError}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Prove command

@@ -17,6 +17,7 @@
 package Ui.Testing
 
 import Std.Core
+import Std.Collections
 import Std.String
 import Ui.Core.{View, Element, Text, Empty, Handler, WidgetKind, kindName, eventName, fire, lookupProp, viewOf, accepts}
 

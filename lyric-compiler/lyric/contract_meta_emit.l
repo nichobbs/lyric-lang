@@ -193,6 +193,13 @@ func emitContractJson(contract: in Meta.Contract, contractHash: in String): Stri
       wholeItems.add(jsonString(imp))
     }
     fields.add(("wholeImports", jsonArray(wholeItems)))
+    if contract.reexports.count > 0 {
+      val reexportItems: List[String] = newList()
+      for r in contract.reexports.toArray() {
+        reexportItems.add(jsonString(r))
+      }
+      fields.add(("reexports", jsonArray(reexportItems)))
+    }
     if contract.selectedImports.count > 0 {
       val selectedItems: List[String] = newList()
       for sel in contract.selectedImports.toArray() {

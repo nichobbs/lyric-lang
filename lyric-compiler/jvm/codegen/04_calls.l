@@ -12,6 +12,8 @@ import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
+import Jvm.ClassReader.{ClassInfo, ClassMethod}
+import Lyric.Lexer.{Span}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5h. Std.Jvm.catch intrinsic.

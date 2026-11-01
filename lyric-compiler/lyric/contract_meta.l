@@ -375,6 +375,10 @@ pub record Contract {
   /// (docs/01 §9.2, D141).  A contract written before the key existed reads
   /// it as `imports`, the rule's behaviour before it told the forms apart.
   wholeImports: List[String]
+  /// The packages the package re-exports whole (`pub use P`, docs/01 §9.3),
+  /// a subset of `wholeImports`.  Absent in a contract written before the
+  /// key existed, which reads it as empty.
+  reexports: List[String] = newList()
   /// The names the package imports selectively, one `<package>::<name>`
   /// entry per listed name (`import P.{f, T}` gives `P::f` and `P::T`).
   selectedImports: List[String]
@@ -570,6 +574,7 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
         case None -> getStrArray(root, "imports")
       },
       selectedImports = getStrArray(root, "selectedImports"),
+      reexports = getStrArray(root, "reexports"),
       contractHash = getStr(root, "contractHash", "")
     )
   )
@@ -777,6 +782,9 @@ pub func contractToJson(c: in Contract): String {
   if c.imports.count > 0 {
     sb = sb + "  \"imports\": " + renderStringArray(c.imports) + ",\n"
     sb = sb + "  \"wholeImports\": " + renderStringArray(c.wholeImports) + ",\n"
+    if c.reexports.count > 0 {
+      sb = sb + "  \"reexports\": " + renderStringArray(c.reexports) + ",\n"
+    }
     if c.selectedImports.count > 0 {
       sb = sb + "  \"selectedImports\": " + renderStringArray(c.selectedImports) + ",\n"
     }
@@ -2131,9 +2139,25 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     dependencies = newList(),
     imports = contractImportsOf(file),
     wholeImports = contractWholeImportsOf(file),
+    reexports = contractReexportsOf(file),
     selectedImports = contractSelectedImportsOf(file),
     contractHash = ""
   )
+}
+
+// The dotted paths of the packages `file` re-exports whole (`pub use P`).
+func contractReexportsOf(file: in SourceFile): List[String] {
+  val acc: List[String] = newList()
+  for imp in file.imports {
+    val whole = match imp.selector {
+      case Some(_) -> false
+      case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
+    }
+    if imp.isPubUse and not imp.isExtern and whole {
+      acc.add(joinDots(imp.path.segments))
+    }
+  }
+  acc
 }
 
 // The dotted paths of the packages `file` imports whole.

@@ -13,6 +13,7 @@ import Lyric.Parser
 // span helpers, and an unqualified import would let a future name defined in
 // both resolve by registration order with no ambiguity diagnostic (#6286).
 import Lyric.Lexer as Lex
+import Lyric.Lexer.{Span}
 import Lyric.BareFuncRef as BareFuncRef
 import Jvm.Classfile
 import Jvm.Lowering

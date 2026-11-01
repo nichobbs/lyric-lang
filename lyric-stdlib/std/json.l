@@ -18,7 +18,7 @@
 package Std.Json
 
 import Std.Core
-import Std.JsonHost
+pub use Std.JsonHost
 
 // brings `JsonDoc`, `JsonElement`, and `host*` fns into scope
 // =====================================================================

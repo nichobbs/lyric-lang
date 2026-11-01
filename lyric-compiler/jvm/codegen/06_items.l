@@ -16,6 +16,7 @@ import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
+import Jvm.ClassReader.{ClassMethod}
 
 // A module-level `val NAME = init` lowered once, up front (#2853).  The init is
 // lowered with the shared `<clinit>` ctx so the field's JVM type is the *exact*

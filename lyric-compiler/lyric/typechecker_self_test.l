@@ -45,6 +45,20 @@ func diagCount(cr: in CheckResult): Int {
   cr.diagnostics.count
 }
 
+// The error diagnostics of `cr` (warnings left out).
+func errorCount(cr: in CheckResult): Int {
+  var n = 0
+  for d in cr.diagnostics {
+    match d.severity {
+      case DiagError -> {
+        n = n + 1
+      }
+      case DiagWarning -> ()
+    }
+  }
+  n
+}
+
 // The symbols the checked source declares: the FFI intrinsic types the
 // checker registers itself (`NativePtr`, D158) are not counted.
 func symCount(cr: in CheckResult): Int {
@@ -7108,11 +7122,13 @@ test "bare name reachable only via a transitive import still resolves (kernel/ho
     )
   )
   val src = "package App\nimport PkgWrap\nfunc f(): Int { hostFn() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
   assertEqualInt(
-    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    errorCount(cr),
     0,
     "hostFn (PkgHost) resolves transitively through PkgWrap's own import of PkgHost, even though App never imports PkgHost directly"
   )
+  assertEqualInt(countDiagCode(cr, "W0033"), 1, "as W0033: PkgWrap does not re-export PkgHost (docs/70 §4.3)")
 }
 
 func rulePkg(name: in String, src: in String): ImportedPackage {
@@ -13528,7 +13544,8 @@ func importedPkg(name: in String, src: in String): ImportedPackage {
     name = name,
     items = pr.file.items,
     imports = collectImportNames(pr.file.imports),
-    wholeImports = collectWholeImportNames(pr.file.imports)
+    wholeImports = collectWholeImportNames(pr.file.imports),
+    reexports = collectReexportNames(pr.file.imports)
   )
 }
 
@@ -13571,17 +13588,23 @@ test "an aliased facade import resolves a re-exported function qualified" {
   val packages: List[ImportedPackage] = newList()
   packages.add(importedPkg("Host.Impl", "package Host.Impl\npub func make(): Int { 4 }\n"))
   packages.add(importedPkg("Host.Facade", "package Host.Facade\nimport Host.Impl\npub func other(): Int { 1 }\n"))
+  // Through an import the facade does not re-export it still resolves, as
+  // W0033 (docs/70 §4.3); through a re-export (`pub use`) it is clean.
   val aliased = "package App\nimport Host.Facade as F\nfunc g(): Int {\n  F.make()\n}\n"
-  assertEqualInt(
-    diagCount(checkWithImportedPackages(rewriteFile(parse(aliased).file), packages)),
-    0,
-    "F.make() resolves through the facade's import"
-  )
+  val ca = checkWithImportedPackages(rewriteFile(parse(aliased).file), packages)
+  assertEqualInt(errorCount(ca), 0, "F.make() resolves through the facade's import")
+  assertEqualInt(countDiagCode(ca, "W0033"), 1, "and is W0033: the facade does not re-export Host.Impl")
   val full = "package App\nimport Host.Facade\nfunc g(): Int {\n  Host.Facade.make()\n}\n"
+  val cf = checkWithImportedPackages(rewriteFile(parse(full).file), packages)
+  assertEqualInt(errorCount(cf), 0, "Host.Facade.make() resolves through the facade's import")
+  assertEqualInt(countDiagCode(cf, "W0033"), 1, diagMessageFor(cf, "W0033"))
+  val reexporting: List[ImportedPackage] = newList()
+  reexporting.add(importedPkg("Host.Impl", "package Host.Impl\npub func make(): Int { 4 }\n"))
+  reexporting.add(importedPkg("Host.Facade", "package Host.Facade\npub use Host.Impl\npub func other(): Int { 1 }\n"))
   assertEqualInt(
-    diagCount(checkWithImportedPackages(rewriteFile(parse(full).file), packages)),
+    diagCount(checkWithImportedPackages(rewriteFile(parse(aliased).file), reexporting)),
     0,
-    "Host.Facade.make() resolves through the facade's import"
+    "F.make() through a re-export needs nothing"
   )
   val missing = "package App\nimport Host.Facade as F\nfunc g(): Int {\n  F.absent()\n}\n"
   assertTrue(
@@ -13991,6 +14014,119 @@ test "per-file imports: a synthesised item is checked against the union" {
     span = file.span
   )
   assertEqualInt(checkPerFile(withSynth).count, 0, diagMessages(checkPerFile(withSynth)))
+}
+
+// docs/70 §4.3, phase 2c step 1: D141's transitive reach is narrowed to
+// re-exports (`pub use`) in warning mode.  PkgFacade imports PkgHost; a
+// variant re-exports it.
+func reachPackage(src: in String): ImportedPackage {
+  val pr = parse(src)
+  ImportedPackage(
+    name = modulePathJoin(pr.file.packageDecl.path.segments),
+    items = pr.file.items,
+    imports = collectImportNames(pr.file.imports),
+    wholeImports = collectWholeImportNames(pr.file.imports),
+    reexports = collectReexportNames(pr.file.imports)
+  )
+}
+
+func reachPackages(reexport: in Bool): List[ImportedPackage] {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgHost\npub record Item {\n  n: Int\n}\npub func hostMake(): Int { 3 }\n"))
+  val head = if reexport { "pub use PkgHost" } else { "import PkgHost" }
+  packages.add(reachPackage("package PkgFacade\n" + head + "\npub func facade(): Int { hostMake() }\n"))
+  packages
+}
+
+test "D141 reach: a bare name through a whole import that does not re-export it is W0033" {
+  val src = "package App\nimport PkgFacade\nfunc f(): Int { hostMake() + facade() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, reachPackages(false))
+  assertEqualInt(countDiagCode(cr, "W0033"), 1, "hostMake is reached through PkgFacade's import")
+  assertTrue(
+    diagMessageFor(cr, "W0033").contains("'hostMake' is visible here only because PkgFacade imports PkgHost"),
+    diagMessageFor(cr, "W0033")
+  )
+  assertTrue(diagMessageFor(cr, "W0033").contains("`pub use PkgHost`"), diagMessageFor(cr, "W0033"))
+  assertEqualInt(countDiagCode(cr, "T0020"), 0, "it still resolves in warning mode")
+  val typed = "package App\nimport PkgFacade\nfunc g(i: in Item): Int { i.n }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(typed).file, reachPackages(false)), "W0033"),
+    1,
+    "a type name too"
+  )
+}
+
+test "D141 reach: a re-export, a direct import or a selective import needs no W0033" {
+  val src = "package App\nimport PkgFacade\nfunc f(i: in Item): Int { hostMake() + i.n }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(src).file, reachPackages(true)), "W0033"),
+    0,
+    "PkgFacade re-exports PkgHost"
+  )
+  val direct = "package App\nimport PkgFacade\nimport PkgHost\nfunc f(): Int { hostMake() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(direct).file, reachPackages(false)), "W0033"),
+    0,
+    "the file imports PkgHost itself"
+  )
+  val selected = "package App\nimport PkgFacade\nimport PkgHost.{hostMake}\nfunc f(): Int { hostMake() }\n"
+  assertEqualInt(
+    countDiagCode(checkWithImportedPackages(parse(selected).file, reachPackages(false)), "W0033"),
+    0,
+    "the file imports hostMake by name"
+  )
+}
+
+test "D141 reach: W0033 names the first import on the chain that is not a re-export" {
+  // App imports PkgMid, which imports PkgFacade (not re-exported); PkgFacade
+  // re-exports PkgHost.  The missing link is PkgMid's import of PkgFacade.
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgHost\npub func hostMake(): Int { 3 }\n"))
+  packages.add(reachPackage("package PkgFacade\npub use PkgHost\npub func facade(): Int { 1 }\n"))
+  packages.add(reachPackage("package PkgMid\nimport PkgFacade\npub func mid(): Int { 2 }\n"))
+  val src = "package App\nimport PkgMid\nfunc f(): Int { hostMake() + mid() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(countDiagCode(cr, "W0033"), 1, diagMessageFor(cr, "W0033"))
+  assertTrue(
+    diagMessageFor(cr, "W0033").contains("only because PkgMid imports PkgFacade, which PkgMid does not re-export"),
+    diagMessageFor(cr, "W0033")
+  )
+  assertTrue(diagMessageFor(cr, "W0033").contains("add `import PkgHost`"), diagMessageFor(cr, "W0033"))
+}
+
+test "D141 reach: a selective import of a name its package re-exports makes it visible" {
+  // PkgFacade re-exports PkgHost, so `import PkgFacade.{hostMake}` lists the
+  // `hostMake` PkgHost declares.
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgHost\npub func hostMake(): Int { 3 }\n"))
+  packages.add(reachPackage("package PkgFacade\npub use PkgHost\npub func facade(): Int { 1 }\n"))
+  val src = "package App\nimport PkgFacade.{hostMake}\nfunc f(): Int { hostMake() }\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(diagCount(cr), 0, diagMessageFor(cr, "W0033") + diagMessageFor(cr, "T0020"))
+}
+
+test "D141 reach: a case of a union the file imports by name needs no W0033" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgHost\npub union Suffix {\n  case I32\n  case I64\n}\n"))
+  packages.add(reachPackage("package PkgFacade\nimport PkgHost\npub func facade(): Int { 1 }\n"))
+  val src = "package App\nimport PkgFacade\nimport PkgHost.{Suffix}\nfunc f(): Suffix { I32 }\nfunc g(s: in Suffix): Int {\n  match s {\n    case I64 -> 1\n    case _ -> 0\n  }\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(countDiagCode(cr, "W0033"), 0, diagMessageFor(cr, "W0033"))
+  assertEqualInt(errorCount(cr), 0, "it resolves")
+}
+
+test "D141 reach: a qualified call through a package that does not re-export the callee is W0033" {
+  val src = "package App\nimport PkgFacade\nfunc f(): Int { PkgFacade.hostMake() }\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), reachPackages(false))
+  assertEqualInt(countDiagCode(cr, "W0033"), 1, diagMessageFor(cr, "W0033"))
+  assertTrue(
+    diagMessageFor(cr, "W0033").contains(
+      "'PkgFacade.hostMake' names PkgHost.hostMake, which PkgFacade imports but does not re-export"
+    ),
+    diagMessageFor(cr, "W0033")
+  )
+  val re = checkWithImportedPackages(rewriteFile(parse(src).file), reachPackages(true))
+  assertEqualInt(countDiagCode(re, "W0033"), 0, "re-exported: " + diagMessageFor(re, "W0033"))
 }
 
 func diagMessages(ds: in List[Diagnostic]): String {

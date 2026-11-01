@@ -133,6 +133,7 @@ package Lyric.TypeAliasResolve
 import Std.Core
 import Std.Collections
 import Lyric.Parser
+import Lyric.Lexer.{IntSuffix}
 import Lyric.BareFuncRef as BFR
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -803,7 +803,8 @@ func buildImportedWorkspacePackages(
                 name = pkg,
                 items = impFile.items,
                 imports = collectImportNames(impFile.imports),
-                wholeImports = collectWholeImportNames(impFile.imports)
+                wholeImports = collectWholeImportNames(impFile.imports),
+                reexports = collectReexportNames(impFile.imports)
               )
             )
           }

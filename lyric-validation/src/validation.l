@@ -432,7 +432,7 @@ pub func rangeValue(value: in Int, field: in String, min: in Int, max: in Int): 
 /// Concatenate two error lists.  The result is valid iff both inputs are empty.
 @stable(since = "0.1")
 pub func combine(a: in slice[ValidationError], b: in slice[ValidationError]): slice[ValidationError] {
-  val acc = newList()
+  val acc = Collections.newList()
   for e in a {
     acc.add(e)
   }
@@ -451,7 +451,7 @@ pub func combine(a: in slice[ValidationError], b: in slice[ValidationError]): sl
 ///   ])
 @stable(since = "0.1")
 pub func all(errors: in slice[slice[ValidationError]]): slice[ValidationError] {
-  val acc = newList()
+  val acc = Collections.newList()
   for errs in errors {
     for e in errs {
       acc.add(e)
