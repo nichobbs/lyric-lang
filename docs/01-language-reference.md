@@ -1267,8 +1267,19 @@ yields the host `Object`, which needs an `extern type` bound to
 `extern type` in scope the loop is **T0220**, never an unchecked variable. A host
 type that implements neither protocol (`System.Text.StringBuilder`) is
 **T0126**. Only a check with no host references (no reference pack or class
-path) leaves the loop variable unchecked, as before. Iterating
-any other type is a compile error (**T0126**), not a silent runtime failure:
+path) leaves the loop variable unchecked, as before.
+
+A value the checker has no `extern type` for (the result of an auto-FFI call
+such as `File.ReadLines(path)`, or of an instance method or property of an
+`import extern` type) iterates through the same host protocol (#8604, D308). On
+`--target dotnet` the lowered host type decides: a reference-pack class or closed
+generic class that implements `IEnumerable<T>` yields `T` (so
+`for line in File.ReadLines(path)` binds a `String`), one that only implements
+`IEnumerable` yields `object`, and the enumerator is disposed on every exit of
+the loop (D143). `--target jvm` iterates any `Iterable` result and closes an
+`AutoCloseable` iterator the same way. A host collection need not be an `IList`.
+
+Iterating any other type is a compile error (**T0126**), not a silent runtime failure:
 a record, union, enum, opaque, protected, distinct or interface type of any
 arity (`Option[T]`, #6720; `record Pair[A, B]`, #7781), a primitive, a tuple,
 a function value, or the stdlib `Map[K, V]` itself (iterate

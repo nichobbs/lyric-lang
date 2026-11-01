@@ -8,12 +8,20 @@
 //! iterates through the host's enumerator, so a type that is not an `IList`
 //! (a `Queue`, a `SortedDictionary` key view) works as well as one that is.
 //!
+//! A value the checker cannot type (the result of an auto-FFI call such as
+//! `File.ReadLines(path)`, or of an instance method of an `import extern` type)
+//! lowers through the same enumerator: its lowered host type names the class,
+//! and the reference pack says how that class iterates and what it yields
+//! (#8604).
+//!
 //!   lyric test lyric-compiler/lyric/extern_iter_self_test.l
 @test_module
 package Lyric.ExternIterSelfTest
 
 import Std.Core
 import Std.Testing
+import extern System.IO.{File, Path}
+import extern System.Text.RegularExpressions.{Regex}
 
 extern type Obj = "System.Object"
 
@@ -97,4 +105,41 @@ test "an arity-2 extern yields the element of its key view" {
     sum = sum + v
   }
   assertEqualInt(sum, 6, "the value view yields V")
+}
+
+test "for over an auto-FFI call returning IEnumerable<string> visits each element" {
+  val path = Path.GetTempFileName()
+  File.WriteAllText(path, "alpha\nbe\ngamma")
+  var joined = ""
+  var count = 0
+  for line in File.ReadLines(path) {
+    joined = joined + line + "|"
+    count = count + 1
+  }
+  File.Delete(path)
+  assertEqualInt(count, 3, "one iteration per line")
+  assertEqual(joined, "alpha|be|gamma|", "the loop variable is a String")
+}
+
+test "for over an auto-FFI call returning IEnumerable<string>: break stops the enumeration" {
+  val path = Path.GetTempFileName()
+  File.WriteAllText(path, "a\nb\nc")
+  var count = 0
+  for line in File.ReadLines(path) {
+    count = count + 1
+    if line == "b" {
+      break
+    }
+  }
+  File.Delete(path)
+  assertEqualInt(count, 2, "stopped at the second line")
+}
+
+test "for over an instance method returning a non-generic collection visits each element" {
+  val re = Regex.new("a+")
+  var count = 0
+  for m in re.Matches("a aa aaa") {
+    count = count + 1
+  }
+  assertEqualInt(count, 3, "one iteration per match")
 }

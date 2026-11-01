@@ -330,6 +330,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/ffi_iface_impl_self_test.l \
 	lyric-compiler/lyric/float32_self_test.l \
 	lyric-compiler/lyric/fmt_self_test.l \
+	lyric-compiler/lyric/for_loop_dispose_extern_self_test.l \
 	lyric-compiler/lyric/for_loop_slice_self_test.l \
 	lyric-compiler/lyric/func_default_args_self_test.l \
 	lyric-compiler/lyric/generator/generator_self_test.l \

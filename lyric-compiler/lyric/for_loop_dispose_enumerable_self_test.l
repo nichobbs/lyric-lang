@@ -22,11 +22,9 @@
 //! and `await` in the loop body of an `async func`.
 //!
 //! Disposal of a user-visible enumerator (an extern `IEnumerable<T>` whose
-//! enumerator counts `Dispose`, a JDK `AutoCloseable` iterator) is not covered
-//! here: a `for` over an extern collection type does not reach the
-//! non-generic protocol today, so there is no enumerator whose disposal a test
-//! could count. The follow-up is tracked in the pull request that added this
-//! file.
+//! enumerator counts `Dispose`, an `AutoCloseable` iterator) is counted in
+//! `for_loop_dispose_extern_self_test.l` and
+//! `for_loop_dispose_extern_jvm_self_test.l` (#7770, #8604).
 //!
 //! Run via `lyric test`, compiled in-process on both targets:
 //!

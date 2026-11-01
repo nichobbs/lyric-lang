@@ -7,6 +7,9 @@
 //! iterates `Path`, a `ConcurrentHashMap.KeySetView<K, V>` iterates its first
 //! type argument, and a raw `ArrayList` iterates `Object`.
 //!
+//! A call result the checker cannot type (`Collections.unmodifiableList(xs)`)
+//! iterates through `Iterable` as well (#8604).
+//!
 //!   lyric test --target jvm lyric-compiler/lyric/extern_iter_jvm_self_test.l
 @test_module
 package Lyric.ExternIterJvmSelfTest
@@ -21,6 +24,8 @@ extern type JArrayList = "java.util.ArrayList"
 extern type JFile = "java.io.File"
 
 extern type JPath = "java.nio.file.Path"
+
+extern type JCollections = "java.util.Collections"
 
 extern type KeySet[K, V] = "java.util.concurrent.ConcurrentHashMap$KeySetView"
 
@@ -55,4 +60,15 @@ test "an arity-2 collection yields the element its type argument names" {
     total = total + k.length
   }
   assertEqualInt(total, 1, "the loop variable is the first type argument, a String")
+}
+
+test "a call result that returns an Iterable is iterated" {
+  val a = JArrayList.new()
+  val _ = a.add("p")
+  val _2 = a.add("qq")
+  var total = 0
+  for s in JCollections.unmodifiableList(a) {
+    total = total + s.toString().length
+  }
+  assertEqualInt(total, 3, "each element of the returned list")
 }

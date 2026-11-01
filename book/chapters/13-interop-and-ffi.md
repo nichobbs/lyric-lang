@@ -314,7 +314,7 @@ It converts to the host's root object only, never between two named extern types
 
 ### §13.9.2 Iterating extern collections
 
-`for x in c` over an extern type asks the host: the compiler reads the .NET type's `IEnumerable<T>` or the JVM class's `Iterable<T>` and types `x` accordingly, so an error in the loop body that involves `x` is reported like any other.
+`for x in c` over an extern type asks the host: the compiler reads the .NET type's `IEnumerable<T>` or the JVM class's `Iterable<T>` and types `x` accordingly, so an error in the loop body that involves `x` is reported like any other. The same holds for a value you did not declare a type for: `for line in File.ReadLines(path)` (with `import extern System.IO.{ File }`) iterates the .NET enumerator and binds each `line` as a `String`, and the enumerator is disposed on every way out of the loop (`break`, `return`, `?`, a panic).
 
 ```lyric
 extern type Obj = "System.Object"

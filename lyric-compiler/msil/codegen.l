@@ -10491,6 +10491,12 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
         case MString -> insns.add(MCastclassByName(className = "System.String"))
         case MClass(c) -> insns.add(MCastclassByName(className = c))
         case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+        // A host class read back out of `object` (an element of a non-generic
+        // `IEnumerator.Current`, #8604).  `System.Object` needs no cast, and a
+        // delegate keeps the uniform-ABI handling below.
+        case MClassRef(code, fqn) -> if fqn != "System.Object" and not fqn.startsWith("System.Func`") and not fqn.startsWith("System.Action") and fqn != "System.Delegate" and fqn != "System.MulticastDelegate" {
+          insns.add(MCastclass(typeToken = tdrCodeToTokenMsil(code)))
+        }
         // A `Func`/`Action` delegate — a function-typed value read back out
         // of an `object` slot (a lambda parameter's signature slot, #7755; a
         // container or tuple element, #8299).  Every non-Unit lambda is built
@@ -25028,6 +25034,53 @@ func emitIEnumerableProtocolForMsil(
   checkForAwaitFieldsMsil(ForIEnumerableMsil, keep, kept)
 }
 
+// The element type of a `for` over a value whose lowered type is a host
+// (reference-pack) class or closed generic class that implements
+// `IEnumerable` / `IEnumerable<T>`, read from the assembly metadata; None for
+// everything else (Lyric's own collections, value types, a type the pack does
+// not know), which the caller lowers as before (#8604).  The element of the
+// typed protocol is the metadata's `T` with the type's own arguments
+// substituted; the untyped protocol yields `object`.
+func hostIterElemOfMsilType(cctx: in CodegenCtx, iterTy: in MsilType): Option[MsilType] {
+  var head = ""
+  var targs: List[MsilType] = newList()
+  match iterTy {
+    case MGenericInst(_, headFqn, typeArgs) -> {
+      head = headFqn
+      targs = typeArgs
+    }
+    case MClassRef(_, clrFqn) -> {
+      head = clrFqn
+    }
+    case _ -> ()
+  }
+  if head.length == 0 or head == "System.String" {
+    return None
+  }
+  ensureMetadataIndex(cctx)
+  val r = Mdr.iterProtocolOfExtern(
+    cctx.metadataParsedPaths,
+    cctx.metadataParsedAssemblies,
+    cctx.metadataTypeIndex,
+    cctx.metadataPathIndex,
+    head,
+    targs.count
+  )
+  if r.typed {
+    match Mdr.sigVarIndex(r.elem) {
+      case Some(i) -> if i < targs.count { Some(value = targs[i]) } else { Some(value = MObject) }
+      case None -> match resolvedSigToMsil(cctx, r.elem) {
+        case Some(t) -> Some(value = substituteTypeVarsMsil(t, targs))
+        case None -> Some(value = MObject)
+      }
+    }
+  } else if r.found {
+    Some(value = MObject)
+  } else {
+    None
+  }
+}
+
 // Emit an index-based loop for `for <pat> in <collection>`, modelling the
 // collection as `List<object>` (the bootstrap representation shared with the
 // `EIndex` read path).  When the iterator expression's type is
@@ -25264,6 +25317,18 @@ func emitCollectionForMsil(
       emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, eeElemTy)
     }
     case _ -> {
+      // A host type the checker could not type (the result of an auto-FFI
+      // call, a property or an instance method of an `import extern` type,
+      // #8604): its lowered type names the host class, so the reference pack
+      // says how it iterates.  Anything that is not a host iterable keeps the
+      // index loop below.
+      match hostIterElemOfMsilType(cctx, iterTy) {
+        case Some(hostElemTy) -> {
+          emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, hostElemTy)
+          return
+        }
+        case None -> ()
+      }
       // ── List<object> / Array index-loop protocol (existing path) ─────────────
       // Narrow only reference (`MClass`) elements — user records / unions, the
       // affected case.  Value-type and unknown elements keep the existing
