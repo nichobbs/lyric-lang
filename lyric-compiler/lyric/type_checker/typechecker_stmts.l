@@ -2488,7 +2488,7 @@ func externIterLoopElem(
   diag: in List[Diagnostic],
   iter: in Expr,
   iterType: in Type,
-  iterId: in TypeId,
+  iterId: in SymbolId,
   iterArgs: in List[Type],
 ): Type {
   match symTableExternDeclOf(tbl, iterId) {

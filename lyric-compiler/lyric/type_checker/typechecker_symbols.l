@@ -142,7 +142,7 @@ pub func symTableIsExternTypeId(tbl: in SymbolTable, id: in SymbolId): Bool {
 }
 
 // The `ExternTypeDecl` an extern type id names, or None.
-pub func symTableExternDeclOf(tbl: in SymbolTable, id: in TypeId): Option[ExternTypeDecl] {
+pub func symTableExternDeclOf(tbl: in SymbolTable, id: in SymbolId): Option[ExternTypeDecl] {
   match symTableTypeSymbolOf(tbl, id) {
     case Some(sym) -> match sym.kind { case DKExternType(_, decl) -> Some(value = decl); case _ -> None }
     case None -> None
