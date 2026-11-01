@@ -16,7 +16,6 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages
 import Lyric.Parser
 import Lyric.AliasRewriter
-import Std.RegexSafe
 
 func selfDllPath(): String {
   Path.join(Environment.appBaseDirectory(), "restored_packages_self_test.dll")

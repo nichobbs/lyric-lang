@@ -28,7 +28,6 @@ package Msil.KernelSelfTest
 import Msil.Kernel
 import Std.Core
 import Std.Collections
-import Std.Stream
 
 func check(label: in String, ok: in Bool): Unit {
   if ok {

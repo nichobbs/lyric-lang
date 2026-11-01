@@ -46,7 +46,6 @@ import Std.Environment as Environment
 import Msil.Bridge
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
-import Std.RegexSafe
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 func tempBase(): String {

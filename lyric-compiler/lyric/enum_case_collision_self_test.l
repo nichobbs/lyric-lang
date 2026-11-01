@@ -182,7 +182,6 @@ import Lyric.Parser
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Lyric.Emitter as Emitter
-import Std.RegexSafe
 
 // ─── Shared fixture sources ─────────────────────────────────────────────────
 // `HttpVersion.Http11` is ordinal 1 (Http10 is 0); `ConnState.Http11` is

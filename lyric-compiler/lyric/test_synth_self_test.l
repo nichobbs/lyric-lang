@@ -11,7 +11,6 @@ import Std.Collections
 import Std.Testing
 import Std.String as Str
 import Lyric.TestSynth
-import Std.File
 
 func passingSource(): String {
   "@test_module\npackage P\n\nimport Std.Testing\n\ntest \"a\" { assertTrue(true, \"x\") }\ntest \"b\" { assertTrue(true, \"y\") }\n"
