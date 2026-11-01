@@ -2086,7 +2086,7 @@ func main(): Int {
 // Each program prints a bitmask of the failed checks (an exit code keeps only
 // eight bits).
 test "Native: ULong comparison, division, remainder and shifts are unsigned (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 
 func main(): Int {
@@ -2116,14 +2116,14 @@ func main(): Int {
   println(bad)
   0
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 0, "exit code")
   assertEqual(r.stdout, "0\n", "no ULong check failed")
 }
 
 test "Native: UInt comparison, division, remainder and shifts are unsigned (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 
 func main(): Int {
@@ -2147,7 +2147,7 @@ func main(): Int {
   println(bad)
   0
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 0, "exit code")
   assertEqual(r.stdout, "0\n", "no UInt check failed")
@@ -2172,7 +2172,6 @@ func main(): Int {
   println(toString(u))
   println("m=" + max.toString())
   println("u=" + u)
-  println(max + " is ULong max")
   println("i=${max} ${u} ${half}")
   val p = Pair(a = 3000000000u32, b = half)
   println(p.a)
@@ -2187,7 +2186,7 @@ func main(): Int {
   assertEqual(
     r.stdout,
     "18446744073709551615\n4294967295\n9223372036854775808\n4294967295\nm=18446744073709551615\nu=4294967295\n" +
-      "18446744073709551615 is ULong max\ni=18446744073709551615 4294967295 9223372036854775808\n3000000000\n" +
+      "i=18446744073709551615 4294967295 9223372036854775808\n3000000000\n" +
       "9223372036854775808\n0\n0\n",
     "unsigned values print without a sign"
   )
@@ -2196,7 +2195,7 @@ func main(): Int {
 // D278 on native: `toLong` is checked, `toDouble` / `toFloat` convert the
 // unsigned value, and a `UInt` converts by value.
 test "Native: ULong toLong, toDouble and toFloat, UInt toLong and toDouble (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 
 func main(): Int {
@@ -2219,13 +2218,13 @@ func main(): Int {
     u.toULong() + max.shr(1) == 9223372040854775807u64
   if ok { 42 } else { 1 }
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "every conversion produced the unsigned value")
 }
 
 test "Native: ULong.toLong panics above Long.MaxValue (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 
 func main(): Int {
@@ -2234,7 +2233,7 @@ func main(): Int {
   println(n)
   42
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "a ULong above Long.MaxValue must not convert")
   assertTrue(
@@ -2244,7 +2243,7 @@ func main(): Int {
 }
 
 test "Native: ULong and UInt through functions, records, lists and range patterns (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 import Std.Collections
 
@@ -2294,14 +2293,14 @@ func main(): Int {
   println(bad)
   0
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 0, "exit code")
   assertEqual(r.stdout, "0\n", "no unsigned check failed")
 }
 
 test "Native: ULong addition overflow panics in a debug build (ASan)" {
-  val src = r#"package T
+  val src = r"package T
 import Std.Core
 
 func main(): Int {
@@ -2311,7 +2310,7 @@ func main(): Int {
   println(s)
   42
 }
-"#
+"
   val r = compileAndRunNative(src)
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "an overflowing ULong sum must not return")
   assertTrue(Str.contains(r.stderr, "overflow"), "the panic names the overflow")

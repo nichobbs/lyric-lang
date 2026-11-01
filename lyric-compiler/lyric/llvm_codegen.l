@@ -3724,7 +3724,15 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       }
       case ty -> {
         val dest = freshTmp(ctx)
-        insns.add(NICmp(dest = dest, pred = if unsigned { icmpPredForUnsigned(op) } else { icmpPredFor(op) }, ty = ty, a = w.a.value, b = w.b.value))
+        insns.add(
+          NICmp(
+            dest = dest,
+            pred = if unsigned { icmpPredForUnsigned(op) } else { icmpPredFor(op) },
+            ty = ty,
+            a = w.a.value,
+            b = w.b.value
+          )
+        )
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
     }
@@ -16648,7 +16656,16 @@ func lowerBufferArrayElemAssign(
             case _ -> {
               val curDest = freshTmp(ctx)
               insns.add(NLoad(dest = curDest, ty = el, ptr = ptr.value))
-              combineIndexedAssignValue(ctx, insns, op, el, NVal(ty = el, value = NLocal(name = curDest)), rhs, line, isUnsignedExpr(value))
+              combineIndexedAssignValue(
+                ctx,
+                insns,
+                op,
+                el,
+                NVal(ty = el, value = NLocal(name = curDest)),
+                rhs,
+                line,
+                isUnsignedExpr(value)
+              )
             }
           }
           insns.add(NStore(ty = el, value = newVal.value, ptr = ptr.value))
@@ -16696,7 +16713,16 @@ func lowerBufferElemAssign(
       // list element (`combineIndexedAssignValue`).
       val curDest = freshTmp(ctx)
       insns.add(NLoad(dest = curDest, ty = elem, ptr = ptr.value))
-      combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line, isUnsignedExpr(value))
+      combineIndexedAssignValue(
+        ctx,
+        insns,
+        op,
+        elem,
+        NVal(ty = elem, value = NLocal(name = curDest)),
+        rhs,
+        line,
+        isUnsignedExpr(value)
+      )
     }
   }
   insns.add(NStore(ty = elem, value = newVal.value, ptr = ptr.value))
