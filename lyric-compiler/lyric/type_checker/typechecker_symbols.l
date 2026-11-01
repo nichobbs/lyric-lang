@@ -7,6 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
+import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -779,6 +780,12 @@ pub record SymbolTable {
   /// the key of each id ("" for one no DefPath names).
   /// The DefPath interner, shared with the resolver (docs/70 §4.2).
   interner: DefPathInterner
+  /// The resolver's context while `LYRIC_RESOLVE_DIFF` is set (docs/70 phase 2c,
+  /// D313): every bare lookup is also put to `Lyric.Resolve`, and a
+  /// disagreement is an `R0001` warning in `diffLog`.
+  diffCtx: List[ResolverContext]
+  diffSeen: Map[String, Bool]
+  diffLog: List[Diagnostic]
 }
 
 /// An unannotated local binding whose initializer builds an empty
@@ -981,7 +988,10 @@ pub func newSymbolTable(): SymbolTable {
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap(),
-    interner = newDefPathInterner()
+    interner = newDefPathInterner(),
+    diffCtx = newList(),
+    diffSeen = newMap(),
+    diffLog = newList()
   )
 }
 
@@ -1403,6 +1413,75 @@ pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[S
 // (#7463, #6703).  Internal lookups outside that scope (an imported
 // package's own signatures) stay unrestricted.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  val found = tryFindOneCore(tbl, name)
+  if tbl.diffCtx.count > 0 {
+    diffCompareBare(tbl, name, found)
+  }
+  found
+}
+
+// Put a bare lookup the checker answered to the resolver and note a
+// disagreement.  Only lookups under the checked package's own import rule are
+// comparable: an imported package's signatures resolve in that package's scope.
+func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symbol]): Unit {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return
+  }
+  val cur = symTableCurrentFile(tbl)
+  if cur == -2 {
+    return
+  }
+  val fid = if cur < 0 { 0 } else { cur }
+  val ctx = tbl.diffCtx[0]
+  val res = resolveBare(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue)
+  val theirs = match found {
+    case Some(s) -> s.originPackage
+    case None -> "<none>"
+  }
+  val ours = match res {
+    case RSymbol(id) -> declPkgOf(ctx, id)
+    case ROverloads(ids) -> declPkgOf(ctx, ids[0])
+    case RUnresolved(code, _) -> code
+    case _ -> "?"
+  }
+  var agree = theirs == ours
+  match res {
+    case RUnresolved(code, _) -> {
+      if code == "T0123" and symTableAmbiguousImportPackages(tbl, name).count >= 2 {
+        agree = true
+      }
+      if theirs == "<none>" and (code == "T0020" or code == "T0010") {
+        agree = true
+      }
+    }
+    case _ -> ()
+  }
+  if agree {
+    return
+  }
+  val key = toString(fid) + "|" + name + "|" + theirs + "|" + ours
+  if tbl.diffSeen.containsKey(key) {
+    return
+  }
+  tbl.diffSeen.add(key, true)
+  tbl.diffLog.add(
+    warningDiagnostic(
+      "R0001",
+      "resolver disagrees on '" + name + "' (file " + toString(fid) + "): checker " + theirs + ", resolver " + ours,
+      makeSpan(initialPosition(), initialPosition())
+    )
+  )
+}
+
+func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
+  match declOfId(ctx.tbl, id) {
+    case Some(d) -> d.pkg
+    case None -> "?"
+  }
+}
+
+func tryFindOneCore(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val hasScope = curPkg.length > 0
   val hasImports = tbl.scopeImports.count > 0
