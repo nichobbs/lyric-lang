@@ -1593,10 +1593,7 @@ func resolverPackagesFor(tbl: in SymbolTable, name: in String): Option[List[Stri
 // disagreement.  Only lookups under the checked package's own import rule are
 // comparable: an imported package's signatures resolve in that package's scope.
 func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symbol]): Unit {
-  val fid = match resolverFileFor(tbl) {
-    case Some(f) -> f
-    case None -> return
-  }
+  val fid = match resolverFileFor(tbl) { case Some(f) -> f; case None -> return }
   // A symbol with no package is a built-in or an `import extern` binding, which
   // the resolver reaches through its own scope entries.
   match found {
@@ -1609,10 +1606,7 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
   }
   val ctx = tbl.resolveCtx[0]
   val res = resolutionOf(tbl, fid, name)
-  val theirs = match found {
-    case Some(s) -> s.originPackage
-    case None -> "no declaration"
-  }
+  val theirs = match found { case Some(s) -> s.originPackage; case None -> "no declaration" }
   val ours = match res {
     case RSymbol(id) -> declPkgOf(ctx, id)
     case ROverloads(ids) -> declPkgOf(ctx, ids[0])
