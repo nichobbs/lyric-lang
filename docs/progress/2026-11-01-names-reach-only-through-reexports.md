@@ -9,6 +9,10 @@ D311.
   `qualifiedPkgReachable` accepts only a package the file imports.
 - **Deleted:** W0033 and its bookkeeping (`transitiveOnly`,
   `transitiveFrom`, `noteTransitiveBare` and kin).
+- **`Grpc` re-exports `Grpc.Types`** (`pub use`): its calls return
+  `GrpcStatus`, which `examples/product-catalog` names through `import
+  Grpc`. The step-1 census missed it because that example needs restored
+  gRPC packages the census environment lacks.
 - **The last W0033:** `stdListRecvKeyPrefix` (`Lyric.TypeChecker`) is
   replaced by `stdListRecvSiteKey` (`Lyric.Parser`), used by the checker
   and the MSIL backend.
