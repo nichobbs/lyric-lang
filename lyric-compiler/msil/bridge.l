@@ -1567,7 +1567,13 @@ func stdlibImportedPackages(stdlibPkgs: in List[StdlibPkg]): List[ImportedPackag
   val importedPkgs: List[ImportedPackage] = newList()
   for sp in stdlibPkgs {
     importedPkgs.add(
-      ImportedPackage(name = sp.name, items = sp.items, imports = sp.imports, wholeImports = sp.wholeImports)
+      ImportedPackage(
+        name = sp.name,
+        items = sp.items,
+        imports = sp.imports,
+        wholeImports = sp.wholeImports,
+        reexports = sp.reexports
+      )
     )
   }
   importedPkgs
@@ -1620,7 +1626,8 @@ func projectFrontEnd(
         wholeImports = pipeRestoredWholeImportNames(
           restoredArtifacts[ri0].source,
           restoredArtifacts[ri0].contract.wholeImports
-        )
+        ),
+        reexports = pipeRestoredReexportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.reexports)
       )
     )
     ri0 = ri0 + 1
@@ -2076,6 +2083,7 @@ func perPackageImportedPackages(
       // resolve through tier 2 (#2282), and its whole imports (D141).
       val depNames: List[String] = newList()
       var wholeNames: List[String] = newList()
+      var reexportNames: List[String] = newList()
       match mapGet(inBundleImports, pkgName) {
         case Some(deps) -> {
           var di = 0
@@ -2084,12 +2092,19 @@ func perPackageImportedPackages(
             di = di + 1
           }
           wholeNames = collectWholeImportNames(deps)
+          reexportNames = collectReexportNames(deps)
         }
         case None -> ()
       }
       match mapGet(inBundleItems, pkgName) {
         case Some(items) -> result.add(
-          ImportedPackage(name = pkgName, items = items, imports = depNames, wholeImports = wholeNames)
+          ImportedPackage(
+            name = pkgName,
+            items = items,
+            imports = depNames,
+            wholeImports = wholeNames,
+            reexports = reexportNames
+          )
         )
         case None -> ()
       }
@@ -2207,6 +2222,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         items = items,
         imports = collectImportNames(stdPrInv.imports),
         wholeImports = collectWholeImportNames(stdPrInv.imports),
+        reexports = collectReexportNames(stdPrInv.imports),
         selectedImports = collectSelectedImportNames(stdPrInv.imports),
         privateGenericItems = privateGenericItems
       )

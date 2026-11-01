@@ -11,6 +11,7 @@ import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Lint as Lint
 import Lyric.Discovery as Disc
+import Std.Errors.{IOError}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Lint command

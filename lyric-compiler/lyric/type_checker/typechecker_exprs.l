@@ -6665,6 +6665,9 @@ func resolveQualifiedFuncValue(
     for rc in reexported {
       funcs.add(rc)
     }
+    if reexported.count > 0 {
+      symTableNoteQualifiedReexport(tbl, pkg, reexported[0].originPackage, name, sp)
+    }
   }
   if funcs.count == 0 {
     return None
@@ -22333,7 +22336,14 @@ func findDirectSigPick(
           }
         }
         if pkgCands.count > 0 {
-          return pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
+          val picked = pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
+          match picked {
+            case Some(ps) -> if not pkgMatchesQualifier(ps.originPackage, wantPkg) {
+              symTableNoteQualifiedReexport(tbl, wantPkg, ps.originPackage, name, fn.span)
+            }
+            case None -> ()
+          }
+          return picked
         }
         // A qualifier naming a package the file imports but no dependency
         // provides never falls back to a bare-name lookup: the qualified

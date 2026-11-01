@@ -5,7 +5,7 @@ package OverrideMain
 
 import Std.Core
 import Std.Console
-import Std.Collections.{newMap}
+import Std.Collections.{Map, newMap}
 import OverrideLib
 import OverrideLib.{newList}
 

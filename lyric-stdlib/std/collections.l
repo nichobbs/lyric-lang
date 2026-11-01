@@ -2,7 +2,7 @@
 //!
 //! `List[T]` and `Map[K, V]` are extern aliases over the BCL generic
 //! collections, declared in `_kernel/collections_host.l`
-//! (`Std.CollectionsHost`) and re-imported here so users see the
+//! (`Std.CollectionsHost`) and re-exported here (`pub use`) so users see the
 //! idiomatic `Std.Collections` surface.  BCL method dispatch works
 //! directly on the extern types: `xs.add(item)`, `xs[i]`, `xs.count`,
 //! `m.containsKey(k)`, `m.add(k, v)`, etc.
@@ -27,7 +27,7 @@
 package Std.Collections
 
 import Std.Core
-import Std.CollectionsHost
+pub use Std.CollectionsHost
 
 /// Lookup `key` in `m`.  Returns `Some(value)` if present, `None` if
 /// missing.  Lyric-side wrapper around `tryGetValue` so callers see

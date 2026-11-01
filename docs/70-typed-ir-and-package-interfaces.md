@@ -723,6 +723,16 @@ builder (I0002) rather than on the current checker.
   in `AliasRewriter` and `TypeAliasResolve`; the checker consumes resolutions
   and its own lookups are deleted; source migration (`pub use`, imports)
   first, rule second (§12.2).
+
+  Status: step 1 (D309) gives `pub use P` its re-export meaning (whole
+  package; recorded in contract metadata) and puts the D141 change in
+  warning mode: a name reached only through a whole import that is not
+  re-exported, and a qualified reference to a package reached only through
+  imports' imports, are `W0033`. The stdlib facades `Std.Collections` and
+  `Std.Json` re-export their hosts, and the compiler, stdlib, ecosystem and
+  examples were migrated; one W0033 remains in `msil/codegen.l`, blocked by
+  the bare-name tier rule (#8709). Next: W0033 as an error, then
+  `Lyric.Resolve`.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.
@@ -803,6 +813,7 @@ clause on MSIL, JVM and native.
 | T0211 | a dependency's interface names a declaration that cannot be resolved (corrupt or missing dependency) |
 | T0212 | a `pub` or `internal` signature names a less-visible type |
 | T0213 | a carried body, default or contract references a declaration that is neither public nor a hidden export |
+| W0033 | a name reached only through a whole import of a package that is not re-exported (warning mode of §4.3's D141 change; becomes an error) |
 | T0219 | a name a file sees only through a sibling file's import (§4.1; the warning `W0032` until D300) |
 | I0001 | internal: a `TyError` with no diagnostic reached the gate |
 | I0002 | internal: the TIR builder found a node the checker did not record |

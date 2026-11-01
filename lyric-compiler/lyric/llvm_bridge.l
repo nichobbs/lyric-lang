@@ -62,6 +62,7 @@ import Lyric.ComponentGlue
 import Lyric.Version as Ver
 import Std.Hash as Hash
 import Std.Encoding as Enc
+import Std.Errors.{IOError}
 
 func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
@@ -805,7 +806,8 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
         name = pn,
         items = pkgItems,
         imports = collectImportNames(stdFile.imports),
-        wholeImports = collectWholeImportNames(stdFile.imports)
+        wholeImports = collectWholeImportNames(stdFile.imports),
+        reexports = collectReexportNames(stdFile.imports)
       )
     )
     if pn.length > 0 and not byPkg.containsKey(pn) {
@@ -2388,7 +2390,8 @@ func nativeProjectFrontEnd(
         name = pn,
         items = pkgItems,
         imports = collectImportNames(f.imports),
-        wholeImports = collectWholeImportNames(f.imports)
+        wholeImports = collectWholeImportNames(f.imports),
+        reexports = collectReexportNames(f.imports)
       )
     )
     oipi = oipi + 1

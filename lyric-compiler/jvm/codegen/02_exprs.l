@@ -15,6 +15,7 @@ import Lyric.Parser
 // both resolve by registration order with no ambiguity diagnostic (#6286;
 // mirrors `05_stmts.l`'s identical import).
 import Lyric.Lexer as Lex
+import Lyric.Lexer.{Span}
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi

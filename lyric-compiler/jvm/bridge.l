@@ -330,7 +330,8 @@ pub func compileToJar(
         name = dottedPath(stdPrInv.packageDecl.path),
         items = pkgItems,
         imports = collectImportNames(stdPrInv.imports),
-        wholeImports = collectWholeImportNames(stdPrInv.imports)
+        wholeImports = collectWholeImportNames(stdPrInv.imports),
+        reexports = collectReexportNames(stdPrInv.imports)
       )
     )
     stdlibFiles.add(stdPrInv)
@@ -3021,7 +3022,8 @@ func jvmProjectFrontEnd(
       name = userEntryPkgName,
       items = userEntryItems,
       imports = collectImportNames(userFile.imports),
-      wholeImports = collectWholeImportNames(userFile.imports)
+      wholeImports = collectWholeImportNames(userFile.imports),
+      reexports = collectReexportNames(userFile.imports)
     )
   )
   val stdlibFiles: List[SourceFile] = newList()
@@ -3078,7 +3080,8 @@ func jvmProjectFrontEnd(
         name = pn,
         items = pkgItems,
         imports = collectImportNames(prFile.imports),
-        wholeImports = collectWholeImportNames(prFile.imports)
+        wholeImports = collectWholeImportNames(prFile.imports),
+        reexports = collectReexportNames(prFile.imports)
       )
     )
     stdlibFiles.add(prFile)
@@ -3174,7 +3177,8 @@ func jvmProjectFrontEnd(
           name = spn,
           items = sItems,
           imports = collectImportNames(sf.imports),
-          wholeImports = collectWholeImportNames(sf.imports)
+          wholeImports = collectWholeImportNames(sf.imports),
+          reexports = collectReexportNames(sf.imports)
         )
       )
       stdlibFiles.add(sf)
@@ -3207,7 +3211,8 @@ func jvmProjectFrontEnd(
         name = synArt.packageName,
         items = rPkgItems,
         imports = pipeRestoredImportNames(rf, synArt.contract.imports),
-        wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports)
+        wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports),
+        reexports = pipeRestoredReexportNames(rf, synArt.contract.reexports)
       )
     )
   }

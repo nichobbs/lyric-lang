@@ -5846,6 +5846,12 @@ pub func pipeRestoredWholeImportNames(source: in SourceFile, contractWholeImport
   mergeImportNames(collectWholeImportNames(source.imports), contractWholeImports)
 }
 
+/// The packages a restored dependency re-exports whole (`pub use P`), from
+/// its synthesised source and its contract (`Contract.reexports`).
+pub func pipeRestoredReexportNames(source: in SourceFile, contractReexports: in List[String]): List[String] {
+  mergeImportNames(collectReexportNames(source.imports), contractReexports)
+}
+
 func mergeImportNames(names: in List[String], contractImports: in List[String]): List[String] {
   var i = 0
   while i < contractImports.count {

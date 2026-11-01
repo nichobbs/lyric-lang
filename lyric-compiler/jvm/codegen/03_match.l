@@ -9,6 +9,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Lyric.Lexer as Lex
+import Lyric.Lexer.{FloatSuffix}
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi

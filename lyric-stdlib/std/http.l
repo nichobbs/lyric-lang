@@ -9,6 +9,7 @@ package Std.Http
 
 import Std.Console
 import Std.Core
+import Std.Collections
 import Std.Environment
 import Std.Errors
 import Std.HttpHost as HostHttp

@@ -5867,6 +5867,11 @@ pub record ImportedPackage {
   /// these packages' names bare too (docs/01 §9.2, D141); the others it
   /// does not.
   wholeImports: List[String]
+  /// The packages this package re-exports whole (`pub use P`, docs/01
+  /// §9.3): the subset of `wholeImports` a file importing this package may
+  /// reach through it.  D141's reach through the other whole imports is
+  /// W0033 (docs/70 §4.3), removed in a later release.
+  reexports: List[String] = newList()
 }
 
 func dottedPackageName(path: in ModulePath): String {
@@ -5903,6 +5908,20 @@ pub func collectWholeImportNames(imports: in List[ImportDecl]): List[String] {
       }
     }
     i = i + 1
+  }
+  names
+}
+
+// The dotted names of the packages `imports` re-exports whole (`pub use P`).
+pub func collectReexportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  for imp in imports {
+    if imp.isPubUse and not imp.isExtern and isWholeImportForm(imp) {
+      val pkg = dottedPackageName(imp.path)
+      if not names.contains(pkg) {
+        names.add(pkg)
+      }
+    }
   }
   names
 }
@@ -5952,6 +5971,12 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 record ImportSets {
   whole: List[String]
   wholeVia: List[String]
+  /// The packages of `whole` reached only through a whole import that does
+  /// not re-export them (D141 without `pub use`), each with the first import
+  /// on its chain that is not a re-export, as `<parent>|<child>`
+  /// (`transitiveFrom`, parallel): W0033 (docs/70 §4.3).
+  transitiveOnly: List[String]
+  transitiveFrom: List[String]
   names: List[String]
   namesVia: List[String]
   renames: List[RenamedImport]
@@ -6022,6 +6047,36 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     i = i + 1
   }
+  // A name listed from a package that re-exports others (`pub use Q`) may be
+  // declared by them: `import Std.Collections.{newMap}` lists the `newMap`
+  // `Std.CollectionsHost` declares.  The listing makes it visible from each
+  // re-exported package too.
+  val listedCount = names.count
+  var li = 0
+  while li < listedCount {
+    var bar = -1
+    var ci = 0
+    while ci < names[li].length and bar < 0 {
+      if names[li].substring(ci, 1) == "|" {
+        bar = ci
+      }
+      ci = ci + 1
+    }
+    if bar > 0 {
+      val listedPkg = names[li].substring(0, bar)
+      val listedName = names[li].substring(bar + 1)
+      for q in reexportClosure(listedPkg, importedPackages) {
+        val key = q + "|" + listedName
+        if not names.contains(key) {
+          names.add(key)
+          namesVia.add(namesVia[li])
+        }
+      }
+    }
+    li = li + 1
+  }
+  val directCount = whole.count
+  val parentOf: Map[String, String] = newMap()
   var w = 0
   while w < whole.count {
     var p = 0
@@ -6034,6 +6089,7 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
             seen.add(deps[d], true)
             whole.add(deps[d])
             wholeVia.add(wholeVia[w])
+            parentOf.add(deps[d], whole[w])
           }
           d = d + 1
         }
@@ -6042,15 +6098,86 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     w = w + 1
   }
+  // A package is reached properly when the file imports it whole, or a
+  // package reached properly re-exports it (`pub use`).
+  val proper: Map[String, Bool] = newMap()
+  val queue: List[String] = newList()
+  var di = 0
+  while di < directCount {
+    proper.add(whole[di], true)
+    queue.add(whole[di])
+    di = di + 1
+  }
+  var qi = 0
+  while qi < queue.count {
+    for ip in importedPackages {
+      if ip.name == queue[qi] {
+        for r in ip.reexports {
+          if not proper.containsKey(r) {
+            proper.add(r, true)
+            queue.add(r)
+          }
+        }
+      }
+    }
+    qi = qi + 1
+  }
+  val transitiveOnly: List[String] = newList()
+  val transitiveFrom: List[String] = newList()
+  // Each is reported against the first import on its chain that is not a
+  // re-export: `Std.String` imports `Std.Collections` (not re-exported), which
+  // re-exports `Std.CollectionsHost`, is "Std.String imports Std.Collections".
+  for pkg in whole {
+    if not proper.containsKey(pkg) {
+      var child = pkg
+      var guard = 0
+      var going = true
+      while going and guard < whole.count {
+        match mapGet(parentOf, child) {
+          case Some(par) -> if proper.containsKey(par) { going = false } else { child = par }
+          case None -> {
+            going = false
+          }
+        }
+        guard = guard + 1
+      }
+      transitiveOnly.add(pkg)
+      transitiveFrom.add(match mapGet(parentOf, child) { case Some(par) -> par + "|" + child; case None -> "|" + child })
+    }
+  }
   ImportSets(
     whole = whole,
     wholeVia = wholeVia,
+    transitiveOnly = transitiveOnly,
+    transitiveFrom = transitiveFrom,
     names = names,
     namesVia = namesVia,
     renames = renames,
     aliasPkgs = aliasPkgs,
     aliasNames = aliasNames
   )
+}
+
+// The packages `pkg` re-exports, directly or through their own re-exports.
+func reexportClosure(pkg: in String, importedPackages: in List[ImportedPackage]): List[String] {
+  val acc: List[String] = newList()
+  val queue: List[String] = newList()
+  queue.add(pkg)
+  var qi = 0
+  while qi < queue.count {
+    for ip in importedPackages {
+      if ip.name == queue[qi] {
+        for r in ip.reexports {
+          if r != pkg and not acc.contains(r) {
+            acc.add(r)
+            queue.add(r)
+          }
+        }
+      }
+    }
+    qi = qi + 1
+  }
+  acc
 }
 
 // `import ` or, for a re-export, `pub use `.
@@ -6098,6 +6225,19 @@ func renderImportDecl(imp: in ImportDecl): String {
     case None -> ()
   }
   text
+}
+
+// `sets.transitiveOnly` -> the package that imports each (W0033).
+func transitiveFromMap(sets: in ImportSets): Map[String, String] {
+  val m: Map[String, String] = newMap()
+  var i = 0
+  while i < sets.transitiveOnly.count {
+    if not m.containsKey(sets.transitiveOnly[i]) {
+      m.add(sets.transitiveOnly[i], sets.transitiveFrom[i])
+    }
+    i = i + 1
+  }
+  m
 }
 
 // One file's import rule (docs/70 §4.1): what its own imports make visible,
@@ -6167,7 +6307,8 @@ func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in Im
     namesVia = namesVia,
     directVia = directVia,
     reachVia = reachVia,
-    externVia = externVia
+    externVia = externVia,
+    transitiveFrom = transitiveFromMap(sets)
   )
 }
 
@@ -6247,6 +6388,7 @@ func installImportRule(
     symTableSetFileRules(tbl, rules)
   }
   symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
+  symTableSetTransitiveOnly(tbl, transitiveFromMap(u))
 }
 
 // Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
@@ -7150,6 +7292,7 @@ func checkWithImportedPackagesCore(
   var p = 0
   while p < importedPackages.count {
     val ip = importedPackages[p]
+    symTableRegisterPackageReexports(tbl, ip.name, ip.reexports)
     // T0144 in another package is that package's own build error.
     val ipDiag: List[Diagnostic] = newList()
     val ipItems = desugarModuleValItems(ip.items, ipDiag)
@@ -7316,6 +7459,9 @@ func checkWithImportedPackagesCore(
   // A `?` operand whose success type nothing fixed (#8181).
   collectPropagateFallbacks(tbl)
   for w in symTableSiblingImportErrors(tbl) {
+    diag.add(w)
+  }
+  for w in symTableTransitiveWarnings(tbl) {
     diag.add(w)
   }
 

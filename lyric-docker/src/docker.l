@@ -24,6 +24,7 @@ import Std.Collections
 import Std.Core
 import Std.Encoding
 import Std.Environment
+import Std.Errors
 import Std.Format
 import Std.Http
 import Std.Parse
