@@ -21,7 +21,7 @@
 package Mcp.McpStdioProcessTests
 
 import Std.Core
-import Std.Errors
+import Std.Errors.{IOError}
 import Std.Collections
 import Std.Testing
 import Std.Process

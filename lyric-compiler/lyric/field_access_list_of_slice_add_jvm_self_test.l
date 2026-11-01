@@ -50,7 +50,7 @@ import Std.Uuid
 import Std.Environment as Environment
 import Jvm.Bridge
 import Lyric.Emitter as Emitter
-import Std.Errors
+import Std.Errors.{IOError}
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))

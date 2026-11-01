@@ -22,7 +22,7 @@ import Std.FileHost
 import Std.ProcessCapture
 import Std.Testing
 import Std.Uuid
-import Std.Errors
+import Std.Errors.{IOError}
 
 func scratchDir(): String {
   val base = match getVar("TMPDIR") { case Ok(dir) -> if dir.length > 0 { dir } else { "/tmp" }; case Err(_) -> "/tmp" }
