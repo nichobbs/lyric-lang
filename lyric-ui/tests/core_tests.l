@@ -4,6 +4,7 @@
 package Ui.CoreTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Forms
 import Forms.{FieldError, FormSchema, FieldSpec, InputKind}

@@ -4,6 +4,7 @@
 package Ui.SessionTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Ui.Core.{View, Step, UiEffect, Navigate, Confirm, Notify, ToastLevel, stay, step1}
 import Ui.Widgets.{button, column, field, heading, inputOpts, keyed, row, text, textInput}

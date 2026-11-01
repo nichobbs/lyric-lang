@@ -14109,6 +14109,14 @@ test "re-exports: a chain of re-exports reaches; an import on the chain does not
   )
 }
 
+test "re-exports: a cycle of re-exports terminates and reaches both packages" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgCa\npub use PkgCb\npub func ca(): Int { 1 }\n"))
+  packages.add(reachPackage("package PkgCb\npub use PkgCa\npub func cb(): Int { 2 }\n"))
+  val src = "package App\nimport PkgCa\nfunc f(): Int { ca() + cb() }\n"
+  assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "both names are visible")
+}
+
 test "re-exports: a selective import of a name its package re-exports makes it visible" {
   // PkgFacade re-exports PkgHost, so `import PkgFacade.{hostMake}` lists the
   // `hostMake` PkgHost declares.

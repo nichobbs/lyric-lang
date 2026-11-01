@@ -13,6 +13,10 @@ D311.
   `GrpcStatus`, which `examples/product-catalog` names through `import
   Grpc`. The step-1 census missed it because that example needs restored
   gRPC packages the census environment lacks.
+- **Test files:** `lyric check` does not build a manifest's `tests/`, so a
+  second census ran `lyric test` on every manifest with tests. Seven test
+  files in `lyric-forms`, `lyric-mcp`, `lyric-otel` and `lyric-ui`, and the
+  `builtin_name_override` fixture, gain the imports they rely on.
 - **The last W0033:** `stdListRecvKeyPrefix` (`Lyric.TypeChecker`) is
   replaced by `stdListRecvSiteKey` (`Lyric.Parser`), used by the checker
   and the MSIL backend.
