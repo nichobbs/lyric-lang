@@ -408,7 +408,7 @@ test "an import extern binds the host type under its DefPath" {
 }
 
 test "an extern type declared in source and imported by name is one declaration" {
-  val src = "package P\nextern type Builder = \"System.Text.StringBuilder\"\nimport extern System.Text.StringBuilder\n"
+  val src = "package P\nimport extern System.Text.StringBuilder\nextern type Builder = \"System.Text.StringBuilder\"\n"
   val ctx = ctxOf(newList(), src)
   val a = bareType(ctx, "Builder")
   val b = bareType(ctx, "StringBuilder")

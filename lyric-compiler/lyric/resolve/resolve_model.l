@@ -64,6 +64,13 @@ pub func symKindIsType(k: in SymKind): Bool {
   }
 }
 
+pub func symKindIsExternType(k: in SymKind): Bool {
+  match k {
+    case SKExternType -> true
+    case _ -> false
+  }
+}
+
 pub func symKindIsFunc(k: in SymKind): Bool {
   match k {
     case SKFunc -> true

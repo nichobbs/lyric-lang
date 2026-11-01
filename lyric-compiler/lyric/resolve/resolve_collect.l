@@ -33,6 +33,9 @@ func renderPath(p: in ModulePath): String {
 }
 
 func renderTypeArgs(args: in List[TypeArg]): String {
+  if args.count == 0 {
+    return ""
+  }
   val parts: List[String] = newList()
   for a in args {
     match a {
@@ -108,6 +111,12 @@ pub func declVisOf(v: in Option[Visibility]): DeclVis {
 
 /// Whether a declaration can be named from another package.
 pub func declCrossPackageVisible(d: in Decl): Bool {
+  // Extern types are host bindings with no `pub` modifier; the visibility
+  // tiers do not apply to them (the collection types are referenced from every
+  // package).
+  if symKindIsExternType(d.kind) {
+    return true
+  }
   match d.vis {
     case DVPrivate -> false
     case _ -> true
