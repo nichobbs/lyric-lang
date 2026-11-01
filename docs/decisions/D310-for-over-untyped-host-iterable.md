@@ -1,4 +1,4 @@
-# D308 - A `for` over an untyped host iterable lowers through the enumerator protocol (#8604, #7770)
+# D310 - A `for` over an untyped host iterable lowers through the enumerator protocol (#8604, #7770)
 
 **Status:** shipped
 

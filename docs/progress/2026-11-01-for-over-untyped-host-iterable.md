@@ -1,4 +1,4 @@
-# `for` over an auto-FFI call result iterates through the host enumerator (#8604, #7770, D308)
+# `for` over an auto-FFI call result iterates through the host enumerator (#8604, #7770, D310)
 
 `for line in File.ReadLines(path)` (with `import extern System.IO.{ File }`)
 compiled on `--target dotnet` and failed with `InvalidCastException:

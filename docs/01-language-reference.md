@@ -1271,7 +1271,7 @@ path) leaves the loop variable unchecked, as before.
 
 A value the checker has no `extern type` for (the result of an auto-FFI call
 such as `File.ReadLines(path)`, or of an instance method or property of an
-`import extern` type) iterates through the same host protocol (#8604, D308). On
+`import extern` type) iterates through the same host protocol (#8604, D310). On
 `--target dotnet` the lowered host type decides: a reference-pack class or closed
 generic class that implements `IEnumerable<T>` yields `T` (so
 `for line in File.ReadLines(path)` binds a `String`), one that only implements
