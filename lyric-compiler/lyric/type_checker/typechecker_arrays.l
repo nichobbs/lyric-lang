@@ -8,6 +8,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 pub func arrayLengthOf(t: in Type): Option[Int] {
   match unrefine(t) {

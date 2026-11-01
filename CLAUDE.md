@@ -877,6 +877,15 @@ need direction and have nothing else productive to do**.  Specifically:
     any stub is synthesised, so `StubCounter` / `makeStubCounter()` /
     `stubCounterIncrement` are always in scope without requiring the user to add
     the import.  Generic interfaces, `Self`-bearing and async methods are skipped.
+  - `symbols/symbols.l` — `Lyric.Symbols` (D313): `SymbolId`, `DefPath` and the
+    `DefPathInterner` shared by the resolver and the type checker (the checker
+    re-exports it).
+  - `resolve/` — `Lyric.Resolve` (docs/70 §4.3-§4.4, D313): the declaration
+    table with a DefPath for every declaration kind (`resolve_collect.l`), a
+    file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
+    `resolvePath` (`resolve_lookup.l`) and `buildResolverContext`
+    (`resolve_driver.l`).  `resolve_self_test.l` covers it.  The checker does not
+    consume it yet.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
     Replaces each aspect-matched IFunc with a renamed

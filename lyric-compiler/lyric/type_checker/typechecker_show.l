@@ -17,6 +17,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 // How a type is rendered: 0 by the host (a scalar, `String`, an extern,
 // opaque, distinct or protected type, a function), else the synthesised form.

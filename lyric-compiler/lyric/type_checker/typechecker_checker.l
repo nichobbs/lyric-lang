@@ -7,6 +7,7 @@ import Std.Collections
 import Std.String
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────

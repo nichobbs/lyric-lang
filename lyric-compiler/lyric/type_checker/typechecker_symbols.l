@@ -6,6 +6,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -776,8 +777,8 @@ pub record SymbolTable {
   nativeIntrinsicTypes: Map[String, SymbolId]
   /// SymbolId interning (docs/70 §4.2): DefPath key -> id, and by id - 1
   /// the key of each id ("" for one no DefPath names).
-  defPathIds: Map[String, Int]
-  defPathKeys: List[String]
+  /// The DefPath interner, shared with the resolver (docs/70 §4.2).
+  interner: DefPathInterner
 }
 
 /// An unannotated local binding whose initializer builds an empty
@@ -980,46 +981,27 @@ pub func newSymbolTable(): SymbolTable {
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap(),
-    defPathIds = newMap(),
-    defPathKeys = newList()
+    interner = newDefPathInterner()
   )
 }
 
 /// The `SymbolId` of the declaration at `path`: the same id for every
 /// registration of it in this compilation (docs/70 §4.2).
 pub func symTableInternDefPath(tbl: in SymbolTable, path: in DefPath): SymbolId {
-  val key = defPathKey(path)
-  match mapGet(tbl.defPathIds, key) {
-    case Some(id) -> SymbolId(id = id)
-    case None -> {
-      tbl.defPathKeys.add(key)
-      val id = tbl.defPathKeys.count
-      tbl.defPathIds.add(key, id)
-      SymbolId(id = id)
-    }
-  }
+  internDefPath(tbl.interner, path)
 }
 
 /// A fresh `SymbolId` for a declaration with no DefPath: one registered with
-/// no package (the flat `checkWithImports` form), whose identity is its
-/// registration.
+/// no package (the checker's flat `checkWithImports` form), whose identity is
+/// its registration.
 pub func symTableFreshSymbolId(tbl: in SymbolTable): SymbolId {
-  tbl.defPathKeys.add("")
-  SymbolId(id = tbl.defPathKeys.count)
+  freshSymbolId(tbl.interner)
 }
 
 /// The DefPath key `id` was interned from, or `None` for an id no DefPath
 /// names (a fresh id, or a built-in type's).
 pub func symTableDefPathKeyOf(tbl: in SymbolTable, id: in SymbolId): Option[String] {
-  if id.id < 1 or id.id > tbl.defPathKeys.count {
-    return None
-  }
-  val key = tbl.defPathKeys[id.id - 1]
-  if key.length == 0 {
-    None
-  } else {
-    Some(value = key)
-  }
+  defPathKeyOf(tbl.interner, id)
 }
 
 /// The `SymbolId` of the type `name` that package `pkg` declares: interned
