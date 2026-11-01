@@ -709,6 +709,23 @@ runtime gap.
 
 ---
 
+### §5.10  Iteration protocol (#7809, D302)
+
+The same metadata gives the element type of a `for` over an extern type of no
+type parameters or of two or more. `Msil.MetadataReader.iterProtocolOfExtern`
+walks the TypeDef's Extends column and InterfaceImpl rows (table 0x09),
+decoding each TypeSpec (table 0x1B) and substituting the type's own generic
+parameters (`substituteVarsInSigType`) down to `System.Collections.Generic.
+IEnumerable`1` (typed, element `T`) or `System.Collections.IEnumerable`
+(untyped, element `object`), across assemblies through the type and path
+indexes. `Jvm.AutoFfi.iterProtocolOfExternJvm` does the same over the class
+`Signature` attribute (`Jvm.ClassReader.parseClassSignature`) to
+`java.lang.Iterable`. Each bridge hands the checker an `ExternIterInfo` per
+`clrName` (`MiddleEndOptions.externIterElems`, `SymbolTable.externIterElems`);
+`forIterElemType` types the loop variable from it (element, the host `Object`,
+or T0126 when the type is not enumerable) and reports T0220 when the element
+has no `extern type` in scope. See D302.
+
 ## §6  Diagnostics
 
 User-visible, production-quality (no placeholder dumps):

@@ -6936,7 +6936,23 @@ pub func flattenImportedItems(pkgs: in List[ImportedPackage]): List[Item] {
 // last-registered symbol of a given simple name wins every reference —
 // including references inside other packages' signatures.
 pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in List[ImportedPackage]): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, false, SMSUnchecked)
+  checkWithImportedPackagesCore(file, importedPackages, true, false, SMSUnchecked, newMap(), newList())
+}
+
+/// `checkWithImportedPackages` for a build whose backend bridge can say how the
+/// host types behind the `extern type`s iterate (D302): `externIter` maps an
+/// `extern type`'s `clrName` to the element type its host protocol yields and
+/// `resolver` (zero or one) answers for the types it lacks, which a `for` over
+/// one needs to type its loop variable.  `native` is
+/// `checkWithImportedPackagesForNative`'s flag.
+pub func checkWithImportedPackagesExternIter(
+  file: in SourceFile,
+  importedPackages: in List[ImportedPackage],
+  native: in Bool,
+  externIter: in Map[String, ExternIterInfo],
+  resolver: in List[ExternIterResolver],
+): CheckResult {
+  checkWithImportedPackagesCore(file, importedPackages, true, native, SMSUnchecked, externIter, resolver)
 }
 
 /// `checkWithImportedPackages` for a `--target native` build: the file may
@@ -6947,7 +6963,7 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
 pub func checkWithImportedPackagesForNative(
   file: in SourceFile, importedPackages: in List[ImportedPackage]
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, true, SMSUnchecked)
+  checkWithImportedPackagesCore(file, importedPackages, true, true, SMSUnchecked, newMap(), newList())
 }
 
 /// `checkWithImportedPackages` / `checkWithImportedPackagesForNative` for a
@@ -6960,7 +6976,21 @@ pub func checkWithImportedPackagesForTarget(
   nativeIntrinsics: in Bool,
   stringSurface: in StringMethodSurface,
 ): CheckResult {
-  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface)
+  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface, newMap(), newList())
+}
+
+/// `checkWithImportedPackagesForTarget` for a backend bridge that can say how
+/// the host types behind `extern type`s iterate (D302): `externIter` and
+/// `resolver` are `checkWithImportedPackagesExternIter`'s.
+pub func checkWithImportedPackagesForTargetIter(
+  file: in SourceFile,
+  importedPackages: in List[ImportedPackage],
+  nativeIntrinsics: in Bool,
+  stringSurface: in StringMethodSurface,
+  externIter: in Map[String, ExternIterInfo],
+  resolver: in List[ExternIterResolver],
+): CheckResult {
+  checkWithImportedPackagesCore(file, importedPackages, true, nativeIntrinsics, stringSurface, externIter, resolver)
 }
 
 // The FFI intrinsic types.  Every backend lowers them by name, so they are
@@ -7003,7 +7033,7 @@ func registerNativeIntrinsicTypes(tbl: in SymbolTable, native: in Bool): Unit {
 // this entry point skips the T4 decl pass while keeping every other check.
 pub func checkContractSurface(file: in SourceFile): CheckResult {
   val empty: List[ImportedPackage] = newList()
-  checkWithImportedPackagesCore(file, empty, false, false, SMSUnchecked)
+  checkWithImportedPackagesCore(file, empty, false, false, SMSUnchecked, newMap(), newList())
 }
 
 // T0199: a string-literal template of `format1`-`format4` is checked against
@@ -7077,11 +7107,22 @@ func checkWithImportedPackagesCore(
   validateDecls: in Bool,
   nativeIntrinsics: in Bool,
   stringSurface: in StringMethodSurface,
+  externIter: in Map[String, ExternIterInfo],
+  resolver: in List[ExternIterResolver],
 ): CheckResult {
   val importedPackages = withoutOwnPackage(allImportedPackages, dottedPackageName(file0.packageDecl.path))
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   tbl.stringSurface.add(stringSurface)
+  for r in resolver {
+    tbl.externIterResolver.add(r)
+  }
+  for iterKey in mapKeys(externIter) {
+    match mapGet(externIter, iterKey) {
+      case Some(info) -> tbl.externIterElems.add(iterKey, info)
+      case None -> ()
+    }
+  }
   for fa in file0.fileAnnotations {
     if fa.name.segments.count == 1 and fa.name.segments[0] == contractSourceAnnotationName() {
       tbl.contractSourceFile.add(true)

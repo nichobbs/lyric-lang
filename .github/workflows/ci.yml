@@ -4963,6 +4963,7 @@ jobs:
           set -euo pipefail
           fixture_jar="$(bash scripts/ci/build-auto-ffi-fixture.sh)"
           LYRIC_FFI_JARS="$fixture_jar" bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/extern_iter_jvm_self_test.l
       # Generic-declaring-type @externTarget member self-test — the JVM analog
       # of generic_extern_self_test.l (#3432).  Unlike MSIL's closed-GENERICINST
       # emitGenericExternMember, JVM erasure means the generic extern-type alias

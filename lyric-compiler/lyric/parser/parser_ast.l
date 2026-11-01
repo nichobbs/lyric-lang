@@ -2587,3 +2587,30 @@ pub func argsWithParamDefaults(
   }
   argsWithDefaults(callee, names, defaults, skip, args)
 }
+
+/// The reserved name of the call `Lyric.Mono` wraps the iterable of a `for`
+/// over an extern type's host collection protocol in (D302).  A backend
+/// lowers `for p in __lyric_host_iter(xs)` as the host's own enumerator loop
+/// over `xs`.
+pub func hostIterCallName(): String {
+  "__lyric_host_iter"
+}
+
+/// The iterable inside `__lyric_host_iter(<iterable>)`, or None when `e` is
+/// any other expression.
+pub func hostIterInner(e: in Expr): Option[Expr] {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(path) -> if path.segments.count == 1 and path.segments[0] == hostIterCallName() and args.count == 1 {
+        match args[0] {
+          case CAPositional(inner) -> Some(value = inner)
+          case _ -> None
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}

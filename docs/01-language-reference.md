@@ -1249,7 +1249,25 @@ The iterated expression's type must be recognized as iterable: `slice[T]`,
 generator call (an async generator, §7.2), or an `extern type`, whose iteration the host
 collection protocol decides — a single-type-parameter one iterates its type
 argument (the phantom-type-param idiom for a foreign collection, e.g.
-`extern type JHttpStringCollection[T] = "java.util.Collection"`). Iterating
+`extern type JHttpStringCollection[T] = "java.util.Collection"`).
+
+An extern type of no type parameters, or of two or more, takes its loop
+variable's type from the host type's own metadata (#7809, D302): the compiler
+reads the CLR type's `IEnumerable<T>` (or the JVM class's `Iterable<T>`, through
+its generic `Signature`), substituting the extern type's type arguments, so
+`extern type Keys[K, V] = "java.util.concurrent.ConcurrentHashMap$KeySetView"`
+iterates `K`, and `extern type Words = "System.Collections.Generic.List`1[System.String]"`
+iterates `String`. The element is typed as the `extern type` in scope bound to
+the host element type (`KeyValuePair<K, V>` needs an `extern type Pair[K, V] =
+"System.Collections.Generic.KeyValuePair`2"`); one host primitive maps to
+`Int`, `Long`, `Bool`, `Double`, `String` or `Byte`. A host type that is only
+the untyped protocol (`System.Collections.IEnumerable`, a raw `Iterable`)
+yields the host `Object`, which needs an `extern type` bound to
+`System.Object` / `java.lang.Object` in scope. If the host element type has no
+`extern type` in scope the loop is **T0220**, never an unchecked variable. A host
+type that implements neither protocol (`System.Text.StringBuilder`) is
+**T0126**. Only a check with no host references (no reference pack or class
+path) leaves the loop variable unchecked, as before. Iterating
 any other type is a compile error (**T0126**), not a silent runtime failure:
 a record, union, enum, opaque, protected, distinct or interface type of any
 arity (`Option[T]`, #6720; `record Pair[A, B]`, #7781), a primitive, a tuple,

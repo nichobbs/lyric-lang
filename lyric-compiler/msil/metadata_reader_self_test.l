@@ -403,3 +403,96 @@ test "resolveExtern: File.OpenHandle(string) synthesizes enum and Long numeric E
     }
   }
 }
+
+// ── Host iteration protocol of an extern type (#7809, D302) ──────────────────
+//
+// `iterProtocolOfExtern` walks the base class and InterfaceImpl rows of a
+// reference-pack type, substituting the type's own generic parameters through
+// `ICollection<T>`, `IDictionary<K, V>` and the like, to the `IEnumerable<T>`
+// (or only the untyped `IEnumerable`) it implements.
+func iterProtocolOf(clrName: in String, arity: in Int): Option[IterProtocolSig] {
+  match refPackDir() {
+    case None -> None
+    case Some(dir) -> {
+      val asms = enumRefAssemblies(dir)
+      val typeIndex: Map[String, String] = newMap()
+      val pathIndex: Map[String, String] = newMap()
+      var i = 0
+      while i < asms.count {
+        addAssemblyToIndexes(typeIndex, pathIndex, asms[i])
+        i = i + 1
+      }
+      val cachePaths: List[String] = newList()
+      val cacheParsed: List[MdrParsedAssembly] = newList()
+      Some(value = iterProtocolOfExtern(cachePaths, cacheParsed, typeIndex, pathIndex, clrName, arity))
+    }
+  }
+}
+
+test "a generic list iterates its own type parameter" {
+  match iterProtocolOf("System.Collections.Generic.List`1", 1) {
+    case None -> ()
+    case Some(r) -> {
+      assertTrue(r.typed, "List<T> implements IEnumerable<T>")
+      assertEqualInt(unwrapOr(sigVarIndex(r.elem), -1), 0, "the element is the type's first parameter")
+    }
+  }
+}
+
+test "a dictionary iterates KeyValuePair of its two parameters" {
+  match iterProtocolOf("System.Collections.Concurrent.ConcurrentDictionary`2", 2) {
+    case None -> ()
+    case Some(r) -> {
+      assertTrue(r.typed, "ConcurrentDictionary<K, V> implements IEnumerable<KeyValuePair<K, V>>")
+      match sigNamedGenericInstParts(r.elem) {
+        case None -> assertTrue(false, "the element is a generic instantiation")
+        case Some(parts) -> {
+          assertEqual(parts.fqn, "System.Collections.Generic.KeyValuePair`2", "the element type")
+          assertEqualInt(parts.args.count, 2, "over both parameters")
+          assertEqualInt(unwrapOr(sigVarIndex(parts.args[0]), -1), 0, "K")
+          assertEqualInt(unwrapOr(sigVarIndex(parts.args[1]), -1), 1, "V")
+        }
+      }
+    }
+  }
+}
+
+test "a non-generic collection is only the untyped protocol" {
+  match iterProtocolOf("System.Collections.ArrayList", 0) {
+    case None -> ()
+    case Some(r) -> {
+      assertTrue(r.found, "ArrayList is IEnumerable")
+      assertFalse(r.typed, "but not IEnumerable<T>")
+    }
+  }
+}
+
+test "a type that is not enumerable is neither" {
+  match iterProtocolOf("System.Text.StringBuilder", 0) {
+    case None -> ()
+    case Some(r) -> {
+      assertFalse(r.found, "StringBuilder is not enumerable")
+      assertFalse(r.unresolved, "and every type on the way was located")
+    }
+  }
+}
+
+test "an instantiation spelled in the name fixes the element" {
+  match iterProtocolOf("System.Collections.Generic.List`1[System.String]", 0) {
+    case None -> ()
+    case Some(r) -> {
+      assertTrue(r.typed, "List<string> implements IEnumerable<string>")
+      assertEqualInt(sigPrimByte(r.elem), 0x0E, "the element is String")
+    }
+  }
+}
+
+test "a nested key collection iterates the enclosing type's first parameter" {
+  match iterProtocolOf("System.Collections.Generic.SortedDictionary`2+KeyCollection", 2) {
+    case None -> ()
+    case Some(r) -> {
+      assertTrue(r.typed, "KeyCollection implements IEnumerable<TKey>")
+      assertEqualInt(unwrapOr(sigVarIndex(r.elem), -1), 0, "TKey")
+    }
+  }
+}

@@ -697,3 +697,73 @@ test "an argument with no verified supertype relation still falls back to the Ob
     "String is neither a Collection nor an Iterable"
   )
 }
+
+// ─── #7809 / D302: the iteration protocol of a JVM class ─────────────────────
+//
+// `parseClassSignature` reads a class `Signature` attribute; the walk in
+// `iterProtocolOfExternJvm` substitutes a class's type arguments through
+// `Collection<E>` / `Set<E>` / its superclasses to `Iterable<T>`.
+func genSigText(s: in GenSig): String {
+  match s {
+    case GSClass(n, args) -> {
+      var inner = ""
+      for a in args {
+        inner = (if inner.length == 0 { "" } else { inner + "," }) + genSigText(a)
+      }
+      if args.count == 0 {
+        n
+      } else {
+        n + "<" + inner + ">"
+      }
+    }
+    case GSVar(n) -> "T:" + n
+    case GSWild -> "*"
+    case GSArray(e) -> genSigText(e) + "[]"
+  }
+}
+
+test "a class signature names its type parameters and generic supertypes" {
+  val cs = parseClassSignature("<E:Ljava/lang/Object;>Ljava/util/AbstractList<TE;>;Ljava/util/List<TE;>;")
+  assertEqualInt(cs.typeParams.count, 1, "one type parameter")
+  assertEqual(cs.typeParams[0], "E", "named E")
+  assertEqualInt(cs.supers.count, 2, "superclass and one interface")
+  assertEqual(genSigText(cs.supers[0]), "java/util/AbstractList<T:E>", "the superclass over E")
+  assertEqual(genSigText(cs.supers[1]), "java/util/List<T:E>", "the interface over E")
+}
+
+test "a class signature reads two parameters, an interface bound, wildcards and a nested class" {
+  val cs = parseClassSignature(
+    "<K:Ljava/lang/Object;V::Ljava/lang/Comparable<-TV;>;>Ljava/util/concurrent/ConcurrentHashMap$CollectionView<TK;TV;TK;>;Ljava/util/Set<+TK;>;Ljava/util/Map<*TV;>.Entry<TK;>;"
+  )
+  assertEqualInt(cs.typeParams.count, 2, "two type parameters despite the interface bound")
+  assertEqual(cs.typeParams[1], "V", "the second is V")
+  assertEqual(
+    genSigText(cs.supers[0]),
+    "java/util/concurrent/ConcurrentHashMap$CollectionView<T:K,T:V,T:K>",
+    "a nested class keeps its binary name"
+  )
+  assertEqual(genSigText(cs.supers[1]), "java/util/Set<T:K>", "an upper-bounded wildcard is its bound")
+  assertEqual(genSigText(cs.supers[2]), "java/util/Map$Entry<T:K>", "an inner class of a parameterised class")
+}
+
+test "a JDK class is read for the type argument it iterates" {
+  val ctx = buildAutoFfiCtx()
+  if ctx.jmodsDir.length == 0 {
+    return
+  }
+  val list = iterProtocolOfExternJvm(ctx, "java.util.ArrayList", 1)
+  assertTrue(list.typed, "ArrayList<E> is Iterable<E>")
+  assertEqual(genSigText(list.elem), "T:#0", "over its own first parameter")
+  val raw = iterProtocolOfExternJvm(ctx, "java.util.ArrayList", 0)
+  assertTrue(raw.found, "a raw ArrayList is Iterable")
+  assertFalse(raw.typed, "but of Object")
+  val keys = iterProtocolOfExternJvm(ctx, "java.util.concurrent.ConcurrentHashMap$KeySetView", 2)
+  assertTrue(keys.typed, "KeySetView<K, V> is a Set<K>")
+  assertEqual(genSigText(keys.elem), "T:#0", "its elements are K")
+  val path = iterProtocolOfExternJvm(ctx, "java.nio.file.Path", 0)
+  assertTrue(path.typed, "Path is Iterable<Path>")
+  assertEqual(genSigText(path.elem), "java/nio/file/Path", "with no type parameters")
+  val sb = iterProtocolOfExternJvm(ctx, "java.lang.StringBuilder", 0)
+  assertFalse(sb.found, "StringBuilder is not Iterable")
+  assertFalse(sb.unresolved, "and every class on the way was found")
+}

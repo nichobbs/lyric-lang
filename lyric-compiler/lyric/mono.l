@@ -348,6 +348,13 @@ record MonoState {
   /// the binding's span; `renameTuplePatternBindingsMono` binds it through a
   /// local annotated with the element type (#7728).
   tuplePatternBindingSites: Map[String, TuplePatternBindingSite]
+  /// Each `for` iterable the type checker typed from an extern type's host
+  /// collection protocol (`SymbolTable.externHostLoopSites`, D302), keyed by
+  /// `recordCopySiteKey` of the iterable's span; the loop is rewritten to
+  /// iterate `__lyric_host_iter(<iterable>)`, which the backends lower
+  /// through the host's `IEnumerable` / `Iterable` instead of guessing the
+  /// protocol from the erased runtime type.
+  externHostLoopSites: Map[String, Int]
   /// Each list literal the type checker typed with no collection type
   /// expected of it (`SymbolTable.listLiteralTypeSites`), keyed by
   /// `recordCopySiteKey` of the literal's span; `listLiteralTypedMono` binds
@@ -452,6 +459,7 @@ func newMonoState(
     localBindingTypeSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
+    externHostLoopSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
     argOrderSites = newMap(),
@@ -4997,9 +5005,10 @@ pub func desugarCheckedFile(
   listLiteralTypeSites: in Map[String, ListLiteralTypeSite],
   hoistOperandTypeSites: in Map[String, HoistOperandTypeSite],
   argOrderSites: in Map[String, ArgOrderSite],
+  externHostLoopSites: in Map[String, Int] = newMap(),
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 and argOrderSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 and argOrderSites.count == 0 and externHostLoopSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(
       file = file,
@@ -5094,6 +5103,15 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     vi = vi + 1
+  }
+  for hk in mapKeys(externHostLoopSites) {
+    match mapGet(externHostLoopSites, hk) {
+      case Some(startOffset) -> {
+        state.externHostLoopSites.add(hk, startOffset)
+        offsets.add(startOffset)
+      }
+      case None -> ()
+    }
   }
   val tupleKeys = mapKeys(tuplePatternBindingSites)
   var ti = 0
@@ -6172,6 +6190,19 @@ func renameTuplePatternBindingsMono(state: in MonoState, pat: in Pattern, binds:
     )
     case _ -> pat
   }
+}
+
+// `iter` as the iterable of a `for` over an extern type's host collection
+// protocol (D302): `__lyric_host_iter(iter)`.  The backends lower the call
+// as the host enumerator loop (`IEnumerable` on .NET, `Iterable` on the
+// JVM) rather than infer the protocol from the iterable's erased runtime
+// type, which is `object` for most generic externs.
+func hostIterWrapMono(iter: in Expr): Expr {
+  val callee = Expr(
+    kind = EPath(path = ModulePath(segments = [hostIterCallName()], span = iter.span)),
+    span = iter.span
+  )
+  Expr(kind = ECall(fn = callee, args = [CAPositional(expr = iter)]), span = iter.span)
 }
 
 // `binds` followed by the statements of `blk`.
@@ -8943,7 +8974,12 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
       // Infer off the ORIGINAL (pre-rewrite) `iter` expression, then rewrite
       // it separately, matching `EMatch`'s own infer-before-rewrite order.
       val elemTe = inferIndexTE(state, env, iter)
-      val newIter = rewriteExpr(state, env, iter)
+      val rewrittenIter = rewriteExpr(state, env, iter)
+      val newIter = if state.externHostLoopSites.count > 0 and checkerSitesApplyMono(state) and state.externHostLoopSites.containsKey(recordCopySiteKey(iter.span)) {
+        hostIterWrapMono(rewrittenIter)
+      } else {
+        rewrittenIter
+      }
       val snap = snapshotEnv(env)
       bindPatternEnvMono(state, env, pat, elemTe)
       val newBody = rewriteBlock(state, env, body)

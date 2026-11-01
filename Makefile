@@ -325,6 +325,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/enum_msil_self_test.l \
 	lyric-compiler/lyric/equality_self_test.l \
 	lyric-compiler/lyric/extern_enum_flags_self_test.l \
+	lyric-compiler/lyric/extern_iter_self_test.l \
 	lyric-compiler/lyric/extern_option_self_test.l \
 	lyric-compiler/lyric/ffi_iface_impl_self_test.l \
 	lyric-compiler/lyric/float32_self_test.l \

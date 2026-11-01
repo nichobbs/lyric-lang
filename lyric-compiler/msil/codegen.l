@@ -25041,6 +25041,22 @@ func emitCollectionForMsil(
   iter: in Expr,
   body: in Block,
 ): Unit {
+  // An `extern type` the host iterates through its own protocol (D302):
+  // `Lyric.Mono` wrapped the iterable in `__lyric_host_iter`.  An arity-0
+  // type such as `System.Collections.ArrayList`, or a generic one such as
+  // `SortedDictionary<K, V>.KeyCollection`, is not necessarily an `IList`,
+  // and its runtime type is erased to `object` here, so the protocol cannot
+  // be read off the lowered type.  The checker typed the loop variable from
+  // the host's `IEnumerable<T>`; the untyped enumerator hands over `object`,
+  // which the typed binding `Lyric.Mono` made narrows.
+  match hostIterInner(iter) {
+    case Some(inner) -> {
+      val _ = lowerExprMsil(cctx, fctx, insns, inner)
+      emitIEnumerableProtocolForMsil(cctx, fctx, insns, pat, body, MObject)
+      return
+    }
+    case None -> ()
+  }
   // list := <collection>.  Keep the iterable's tracked type so the loop
   // variable can be bound with its real element type rather than erased
   // `object` (#2126): a `for x in xs.toArray()` element bound as `MObject` made

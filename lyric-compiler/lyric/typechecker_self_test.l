@@ -5195,6 +5195,190 @@ test "for over a non-iterable Lyric-native single-param generic emits T0126" {
   assertTrue(hasDiagCode(parseCheck(src), "T0126"), "for over Box[T] (non-iterable union): T0126")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// `for` over an extern type of no type parameters or of two or more (#7809,
+// D302).  The element type is what the backend bridge read out of the host
+// type's metadata and passed in `externIterElems`.
+// ─────────────────────────────────────────────────────────────────────────────
+func parseCheckIter(src: in String, iter: in Map[String, ExternIterInfo]): CheckResult {
+  val pr = parse(src)
+  val noPkgs: List[ImportedPackage] = newList()
+  val noResolver: List[ExternIterResolver] = newList()
+  checkWithImportedPackagesExternIter(pr.file, noPkgs, false, iter, noResolver)
+}
+
+func iterInfoOf(clrName: in String, info: in ExternIterInfo): Map[String, ExternIterInfo] {
+  val m: Map[String, ExternIterInfo] = newMap()
+  m.add(clrName, info)
+  m
+}
+
+val bagSrc: String = "extern type Bag = \"System.Collections.ArrayList\"\n"
+
+test "for over an arity-0 extern typed by IEnumerable<string> binds a String (#7809)" {
+  val iter = iterInfoOf("System.Collections.ArrayList", EIIElem(elem = EIEPrim(name = "String")))
+  val ok = parseCheckIter(
+    "package P\n" + bagSrc +
+      "func f(b: in Bag): Int {\n  var n = 0\n  for s in b {\n    val t: String = s\n    n = n + 1\n  }\n  n\n}\n",
+    iter
+  )
+  assertEqualInt(diagCount(ok), 0, "a String loop variable binds to a String")
+  val bad = parseCheckIter(
+    "package P\n" + bagSrc + "func f(b: in Bag): Int {\n  for s in b {\n    val n: Int = s\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(
+    countDiagCode(bad, "T0060"),
+    1,
+    "an error on the loop variable in the body is reported, not suppressed"
+  )
+}
+
+test "for over an arity-2 extern binds the element its host protocol yields (#7809)" {
+  val iter = iterInfoOf("java.util.concurrent.ConcurrentHashMap$KeySetView`2", EIIElem(elem = EIEArg(index = 0)))
+  val decl = "extern type Keys[K, V] = \"java.util.concurrent.ConcurrentHashMap$KeySetView\"\n"
+  val ok = parseCheckIter(
+    "package P\n" + decl +
+      "func f(b: in Keys[String, Int]): Int {\n  for k in b {\n    val s: String = k\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(diagCount(ok), 0, "the first type argument is the element")
+  val bad = parseCheckIter(
+    "package P\n" + decl +
+      "func f(b: in Keys[String, Int]): Int {\n  for k in b {\n    val n: Int = k\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(countDiagCode(bad, "T0060"), 1, "the element is String, not the second type argument")
+}
+
+test "for over an arity-2 extern whose elements are a host struct binds its extern type (#7809)" {
+  val clr = "System.Collections.Concurrent.ConcurrentDictionary`2"
+  val elem = EIEHost(
+    hostName = "System.Collections.Generic.KeyValuePair",
+    args = [EIEArg(index = 0), EIEArg(index = 1)]
+  )
+  val iter = iterInfoOf(clr, EIIElem(elem = elem))
+  val decls = "extern type Dict[K, V] = \"" + clr +
+    "\"\nextern type Pair[K, V] = \"System.Collections.Generic.KeyValuePair`2\"\n"
+  val ok = parseCheckIter(
+    "package P\n" + decls +
+      "func f(d: in Dict[String, Int]): Int {\n  for kv in d {\n    val p: Pair[String, Int] = kv\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(diagCount(ok), 0, "the loop variable is Pair[String, Int]")
+  val bad = parseCheckIter(
+    "package P\n" + decls +
+      "func f(d: in Dict[String, Int]): Int {\n  for kv in d {\n    val p: Pair[Int, Int] = kv\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(countDiagCode(bad, "T0060"), 1, "the loop variable is not Pair[Int, Int]")
+}
+
+test "for over an extern whose host element has no extern type in scope emits T0220 (#7809)" {
+  val clr = "System.Collections.Concurrent.ConcurrentDictionary`2"
+  val elem = EIEHost(
+    hostName = "System.Collections.Generic.KeyValuePair",
+    args = [EIEArg(index = 0), EIEArg(index = 1)]
+  )
+  val iter = iterInfoOf(clr, EIIElem(elem = elem))
+  val cr = parseCheckIter(
+    "package P\nextern type Dict[K, V] = \"" + clr +
+      "\"\nfunc f(d: in Dict[String, Int]): Int {\n  for kv in d {\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(countDiagCode(cr, "T0220"), 1, "the host element type needs an extern type")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0220"), "System.Collections.Generic.KeyValuePair"),
+    "T0220 names the host type"
+  )
+}
+
+test "for over a non-generically enumerable extern binds the extern Object (#7809)" {
+  val iter = iterInfoOf("System.Collections.ArrayList", EIIObject)
+  val src = "package P\n" + bagSrc +
+    "extern type Obj = \"System.Object\"\nfunc f(b: in Bag): Int {\n  for o in b {\n    val p: Obj = o\n  }\n  0\n}\n"
+  assertEqualInt(diagCount(parseCheckIter(src, iter)), 0, "the elements are Obj")
+  val noObj = parseCheckIter("package P\n" + bagSrc + "func f(b: in Bag): Int {\n  for o in b {\n  }\n  0\n}\n", iter)
+  assertEqualInt(countDiagCode(noObj, "T0220"), 1, "no extern Object in scope is T0220, not an untyped variable")
+}
+
+test "for over an extern whose host type is not enumerable emits T0126 (#7809)" {
+  val iter = iterInfoOf("System.Text.StringBuilder", EIINone)
+  val cr = parseCheckIter(
+    "package P\nextern type Sb = \"System.Text.StringBuilder\"\nfunc f(b: in Sb): Int {\n  for c in b {\n  }\n  0\n}\n",
+    iter
+  )
+  assertEqualInt(countDiagCode(cr, "T0126"), 1, "StringBuilder is not iterable")
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0126"), "implements neither IEnumerable nor Iterable"),
+    "the message says why"
+  )
+}
+
+// The first `for` in function `f`, its iterable wrapped as the middle end
+// leaves it for the backends (D302).
+func firstForIterWrapped(file: in SourceFile): Bool {
+  for it in file.items {
+    match it.kind {
+      case IFunc(d) -> if d.name == "f" {
+        match d.body {
+          case Some(FBBlock(blk)) -> {
+            for st in blk.statements {
+              match st.kind {
+                case SFor(_, _, iter, _) -> {
+                  return match hostIterInner(iter) { case Some(_) -> true; case None -> false }
+                }
+                case _ -> ()
+              }
+            }
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+test "the middle end marks a checker-typed host loop and leaves other loops alone (#7809)" {
+  val iter = iterInfoOf("System.Collections.ArrayList", EIIObject)
+  val hostSrc = "package P\n" + bagSrc +
+    "extern type Obj = \"System.Object\"\nfunc f(b: in Bag): Int {\n  for o in b {\n  }\n  0\n}\n"
+  val pr = parse(hostSrc)
+  val noPkgs: List[ImportedPackage] = newList()
+  val noResolver: List[ExternIterResolver] = newList()
+  val cr = checkWithImportedPackagesExternIter(pr.file, noPkgs, false, iter, noResolver)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  val desugared = pipeDesugarChecked(
+    pr.file,
+    cr,
+    funcValueSites(cr.symbols),
+    cr.symbols.listLiteralTypeSites,
+    cr.symbols.hoistOperandTypeSites
+  )
+  assertTrue(firstForIterWrapped(desugared.file), "an extern host loop iterates __lyric_host_iter(b)")
+  val slicePr = parse("package P\nfunc f(xs: in slice[Int]): Int {\n  for x in xs {\n  }\n  0\n}\n")
+  val sliceCr = check(slicePr.file)
+  val sliceDesugared = pipeDesugarChecked(
+    slicePr.file,
+    sliceCr,
+    funcValueSites(sliceCr.symbols),
+    sliceCr.symbols.listLiteralTypeSites,
+    sliceCr.symbols.hoistOperandTypeSites
+  )
+  assertFalse(firstForIterWrapped(sliceDesugared.file), "a slice loop is not marked")
+}
+
+test "for over an extern the bridge has no answer for leaves the variable unchecked (#7809)" {
+  val none: Map[String, ExternIterInfo] = newMap()
+  val cr = parseCheckIter(
+    "package P\n" + bagSrc + "func f(b: in Bag): Int {\n  for s in b {\n    val n: Int = s\n  }\n  0\n}\n",
+    none
+  )
+  assertEqualInt(diagCount(cr), 0, "a check with no host references stays lenient")
+}
+
 test "for over a non-iterable Lyric-native single-param generic record emits T0126" {
   val src = "package P\nrecord Wrap[T] {\n  value: T\n}\nfunc f(w: in Wrap[Int]): Unit {\n  for x in w {\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0126"), "for over Wrap[T] (non-iterable record): T0126")
