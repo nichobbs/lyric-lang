@@ -49732,83 +49732,48 @@ func registerRestoredImpl(
 
   // The interface name the impl satisfies (last segment of the constraint head).
   val ifaceSimple = lastSegmentMsil(idecl.iface.head)
-  // Find the implemented interface to recover its method signatures: among
-  // the artifact's own items, else among the other restored packages'
-  // (`impl Measured for Plot` where another package declares `Measured`,
-  // #8667), each resolved in the package that declares the interface.
-  match restoredIfaceDeclIn(art.source.items, ifaceSimple) {
-    case Some(ix) -> registerRestoredImplMethods(
-      cctx,
-      idecl,
-      ix,
-      art.packageName,
-      targetName,
-      recordTypeRefRow,
-      implGenerics
-    )
-    case None -> {
-      for other in cctx.restoredArtifacts {
-        if other.packageName != art.packageName {
-          match restoredIfaceDeclIn(other.source.items, ifaceSimple) {
-            case Some(ix) -> {
-              registerRestoredImplMethods(cctx, idecl, ix, other.packageName, targetName, recordTypeRefRow, implGenerics)
-              return
+  // Find the implemented interface among the artifact's items to recover its
+  // method signatures.
+  val items = art.source.items
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IInterface(ix) -> {
+        if ix.name == ifaceSimple {
+          var mi = 0
+          while mi < ix.members.count {
+            match ix.members[mi] {
+              case IMSig(sig) -> registerRestoredRecordMethod(
+                cctx,
+                targetName,
+                recordTypeRefRow,
+                art.packageName,
+                sig.name,
+                restoredImplMethodParams(idecl, sig.name, sig.params),
+                sig.ret,
+                implGenerics,
+                genericNamesOf(sig.generics)
+              )
+              case IMFunc(fn) -> registerRestoredRecordMethod(
+                cctx,
+                targetName,
+                recordTypeRefRow,
+                art.packageName,
+                fn.name,
+                restoredImplMethodParams(idecl, fn.name, fn.params),
+                fn.ret,
+                implGenerics,
+                genericNamesOf(fn.generics)
+              )
+              case IMAssoc(_) -> ()
             }
-            case None -> ()
+            mi = mi + 1
           }
         }
       }
-    }
-  }
-}
-
-func restoredIfaceDeclIn(items: in List[Item], name: in String): Option[InterfaceDecl] {
-  for it in items {
-    match it.kind {
-      case IInterface(ix) -> if ix.name == name { return Some(value = ix) }
       case _ -> ()
     }
-  }
-  None
-}
-
-// Each method of `ix` registered on the restored record `targetName`, its
-// types resolved in `ifacePkg`, the package that declares `ix`.
-func registerRestoredImplMethods(
-  cctx: in CodegenCtx,
-  idecl: in ImplDecl,
-  ix: in InterfaceDecl,
-  ifacePkg: in String,
-  targetName: in String,
-  recordTypeRefRow: in Int,
-  implGenerics: in List[String],
-): Unit {
-  for m in ix.members {
-    match m {
-      case IMSig(sig) -> registerRestoredRecordMethod(
-        cctx,
-        targetName,
-        recordTypeRefRow,
-        ifacePkg,
-        sig.name,
-        restoredImplMethodParams(idecl, sig.name, sig.params),
-        sig.ret,
-        implGenerics,
-        genericNamesOf(sig.generics)
-      )
-      case IMFunc(fn) -> registerRestoredRecordMethod(
-        cctx,
-        targetName,
-        recordTypeRefRow,
-        ifacePkg,
-        fn.name,
-        restoredImplMethodParams(idecl, fn.name, fn.params),
-        fn.ret,
-        implGenerics,
-        genericNamesOf(fn.generics)
-      )
-      case IMAssoc(_) -> ()
-    }
+    i = i + 1
   }
 }
 

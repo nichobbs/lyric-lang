@@ -11,8 +11,8 @@
 #   - `--filter` that selects no test in an entry skips that entry's compile
 #     ("not compiled") and the summary counts it as "not run"; single-file
 #     mode does the same.
-#   - The [project.packages] library is built once and linked by every entry
-#     that does not merge into a library package; an entry the
+#   - On dotnet the [project.packages] library is built once and linked by
+#     every entry that does not merge into a library package; an entry the
 #     linked build cannot serve (a non-literal `pub val`, #6133, read bare or
 #     qualified) is compiled with the library instead, with a note; a merged
 #     entry still reaches non-`pub` items; a package-private extern type in a
@@ -20,8 +20,7 @@
 #     a stdlib one (`Other`) keeps the restored enum's ordinal.
 #   - A library that does not compile fails every linking entry, with its
 #     errors printed once.
-#   - On JVM the same: the library is one JAR, linked as a restored JAR and
-#     put on each linked entry's classpath (#8667).
+#   - On JVM every entry still compiles with the library (no shared build).
 # Invoked from `compiler-self-tests-batch.sh` (whose CI job has Java 21).
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -91,10 +90,6 @@ pub record Box[T] {
   value: T
 }
 
-pub interface Measured {
-  func size(): Int
-}
-
 pub func area(s: in Shape): Int {
   match s {
     case Circle(r) -> 3 * r * r
@@ -138,37 +133,8 @@ EOF
 # in a comparison and in an annotated binding.  The distinct type `Score`
 # checks that a linked entry can call its `from` constructor and `toInt`
 # conversion, and `Bounded` that it checks a library record's invariant.
-# `squareOf` names `RunnerE2e.Shapes.Shape` unqualified through an import, and
-# `Tag` implements `Labelled` and `Plot` implements `Shapes.Measured`: on the
-# JVM a restored package's own imports and its head-only `impl`s, of an
-# interface of its own or of another package, have to reach the consumer
-# (#8667).
 cat > "$proj/src/kinds.l" <<'EOF'
 package RunnerE2e.Kinds
-
-import RunnerE2e.Shapes
-
-pub func squareOf(side: in Int): Shape = Square(side = side)
-
-pub interface Labelled {
-  func label(): String
-}
-
-pub record Tag {
-  text: String
-}
-
-impl Labelled for Tag {
-  func label(): String = "tag:" + self.text
-}
-
-pub record Plot {
-  n: Int
-}
-
-impl Measured for Plot {
-  func size(): Int = self.n * 2
-}
 
 pub type Score = Int derives Add, Compare
 
@@ -202,7 +168,6 @@ package RunnerE2e.KindsTests
 import Std.Core
 import Std.Testing
 import RunnerE2e.Kinds
-import RunnerE2e.Shapes
 
 func describe(c: in Category): String {
   match c {
@@ -237,19 +202,6 @@ test "case stored in a library record and matched" {
 test "a library record's invariant is checked at construction" {
   assertPanics("n = 0", () -> { val b = Bounded(n = 0) })
   assertEqualInt(Bounded(n = 3).n, 3, "n = 3")
-}
-
-test "a library signature naming another library package's type" {
-  assertEqualInt(area(squareOf(3)), 9, "area(squareOf(3))")
-}
-
-test "a method of a library record's interface impl, called on the record" {
-  val t = Tag(text = "x")
-  assertTrue(t.label() == "tag:x", "t.label()")
-}
-
-test "a method of an impl of another library package's interface, called on the record" {
-  assertEqualInt(Plot(n = 4).size(), 8, "Plot.size()")
 }
 
 test "distinct type constructed and converted" {
@@ -436,14 +388,11 @@ elif [ "$(count 'the [project.packages] library does not compile')" != 2 ]; then
 elif [ "$(grep -c 'src/lib.l: error' "$out")" != 1 ]; then fail "$label" "library errors should print once"
 else echo "ok   [$label]"; fi
 
-label="jvm links the shared library build"
-run --manifest "$m" --target jvm
+label="jvm compiles each entry with the library"
+run --manifest "$m" --target jvm --suite RunnerE2e.MathTests --suite RunnerE2e.BareValTests
 if [ "$rc" -ne 0 ]; then fail "$label" "exit $rc"
-elif [ "$(count '== building the [project.packages] library once')" != 1 ]; then fail "$label" "library not built exactly once"
-elif [ ! -f "$proj/.lyric-test/LyricTestLibrary.jar" ]; then fail "$label" "no shared library JAR"
-elif [ "$(count 'note: ')" != 2 ]; then fail "$label" "expected a fallback note for each non-literal pub val entry"
-elif grep -q 'error\[' "$out"; then fail "$label" "a discarded linked attempt's errors were printed"
-elif ! grep -q "^== summary: 6 passed, 0 failed$" "$out"; then fail "$label" "summary"
+elif [ "$(count 'library once')" != 0 ]; then fail "$label" "no shared build on jvm"
+elif ! grep -q "^== summary: 2 passed, 0 failed$" "$out"; then fail "$label" "summary"
 else echo "ok   [$label]"; fi
 
 if [ "$failures" -ne 0 ]; then

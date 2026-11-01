@@ -2487,16 +2487,14 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
 /// into `located` instead of printed, each attributed to its file, as
 /// `typeCheckProject` reports them: for a caller that decides what to show,
 /// such as `lyric test`, whose linked attempt at an entry is discarded when it
-/// fails (#8667).  A contained codegen panic is collected too; the result's
-/// own `diagnostics` carry the rest (a bridge failure without located
-/// diagnostics, the JVM's W0006).  `--target dotnet` and `--target jvm`;
-/// native is refused with a B0001.
+/// fails (#8667).  The result's own `diagnostics` (a bridge failure without
+/// located diagnostics, a contained codegen panic) are returned as
+/// `emitProject` returns them.  Other targets are refused with a B0001.
 pub func emitProjectCollecting(req: in EmitProjectRequest, located: in List[DiagUtil.LocatedDiagnostic]): EmitResult {
   match req.target {
     case Dotnet -> emitProjectInProcessTo(req, Pipe.collectDiagnostics(located))
-    case Jvm -> emitProjectJvmInProcessTo(req, Pipe.collectDiagnostics(located))
     case _ -> failResult(
-      "Emitter.emitProjectCollecting supports --target dotnet and jvm; use Emitter.emitProject for " +
+      "Emitter.emitProjectCollecting supports --target dotnet only; use Emitter.emitProject for " +
         compileTargetName(req.target)
     )
   }
@@ -2684,23 +2682,18 @@ func spanForPanicMessage(message: in String): Span {
 // contained J-code from the result (the previous Bool-returning
 // `jvmBridgePanicToStderr` only printed).
 func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
-  val d = jvmBridgePanicDiagnosticQuiet(message)
-  Console.error(d.message)
-  d
-}
-
-// `jvmBridgePanicDiagnostic` without printing it, for a build whose
-// diagnostics are collected (`emitProjectCollecting`).
-func jvmBridgePanicDiagnosticQuiet(message: in String): Diagnostic {
   val sp = spanForPanicMessage(message)
   if message.startsWith("error[J0") {
+    Console.error(message)
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "J008" }
       case None -> "J008"
     }
     errorDiagnostic(code, message, sp)
   } else {
-    errorDiagnostic("J008", "error[J008]: JVM codegen failed: " + message, sp)
+    val text = "error[J008]: JVM codegen failed: " + message
+    Console.error(text)
+    errorDiagnostic("J008", text, sp)
   }
 }
 
@@ -2872,10 +2865,6 @@ func loadRestoredArtifactsJvm(restoredJarPaths: in List[String]): Result[List[RP
 }
 
 func emitProjectJvmInProcess(req: in EmitProjectRequest): EmitResult {
-  emitProjectJvmInProcessTo(req, Pipe.printDiagnostics())
-}
-
-func emitProjectJvmInProcessTo(req: in EmitProjectRequest, sink: in Pipe.DiagSink): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
   }
@@ -2906,15 +2895,10 @@ func emitProjectJvmInProcessTo(req: in EmitProjectRequest, sink: in Pipe.DiagSin
       inputs.restored,
       inputs.pkgFeatures,
       inputs.ioForbiddenByPkg,
-      req.contractsEnabled,
-      sink
+      req.contractsEnabled
     )
   } catch Bug as b {
-    if sink.collect {
-      sink.located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = jvmBridgePanicDiagnosticQuiet(b.message)))
-    } else {
-      diags.add(jvmBridgePanicDiagnostic(b.message))
-    }
+    diags.add(jvmBridgePanicDiagnostic(b.message))
     false
   }
   if ok {
