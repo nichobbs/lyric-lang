@@ -11,6 +11,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Verifier
+import Lyric.ModeChecker.{VerificationLevel}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.

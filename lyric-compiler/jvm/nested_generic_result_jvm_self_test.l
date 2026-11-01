@@ -6,6 +6,7 @@ package Jvm.NestedGenericResultSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 extern type JNrBytesIn = "java.io.ByteArrayInputStream"
 

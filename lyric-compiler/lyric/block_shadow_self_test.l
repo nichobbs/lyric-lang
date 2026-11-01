@@ -31,6 +31,7 @@ package Lyric.BlockShadowSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // A runtime-evaluated condition the codegen cannot fold away, so the shadowed
 // branch is really emitted.

@@ -3,6 +3,7 @@
 package Forms.FormsTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Forms
 import Forms.Parse

@@ -47,6 +47,8 @@ import Std.Core
 import Std.Tls
 import Std.HttpServer
 import Std.Testing
+import Std.Collections
+import Std.Encoding
 
 extern type JCertificateFactory = "java.security.cert.CertificateFactory"
 
@@ -413,15 +415,17 @@ test "startListenerTls (Tls12 floor) rejects a TLSv1.1-only client handshake" {
   // A rejected handshake never reaches `createContext`'s handler, so
   // `nextContext` below blocks forever on `queue.take()` — this thread is
   // daemonized so it can't hang the test process at JVM exit.
-  val serverThread = JThread.new({ ->
-    try {
-      val ctx = nextContext(listener)
-      respondText(ctx, 200, "should-not-be-reached")
-      ()
-    } catch Bug as _ {
-      ()
+  val serverThread = JThread.new(
+    { ->
+      try {
+        val ctx = nextContext(listener)
+        respondText(ctx, 200, "should-not-be-reached");
+        ()
+      } catch Bug as _ {
+        ()
+      }
     }
-  })
+  )
   serverThread.setDaemon(true)
   serverThread.start()
   JThread.sleep(300i64)
@@ -499,7 +503,12 @@ test "startListenerTls rejects requireClientCert as Unsupported" {
   val tls = TlsServerConfig(identity = freshIdentity(), minVersion = Tls12, clientCa = None, requireClientCert = true)
   match startListenerTls("127.0.0.1", 8503, tls) {
     case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for requireClientCert = true")
-    case Err(e) -> match e { case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS") }
+    case Err(e) -> match e {
+      case NotSupportedOnTarget(message) -> assertTrue(
+        message.contains("mutual TLS"),
+        "NotSupportedOnTarget names mutual TLS"
+      )
+    }
   }
 }
 
@@ -516,7 +525,12 @@ test "startListenerTls rejects a clientCa request as Unsupported" {
   )
   match startListenerTls("127.0.0.1", 8504, tls) {
     case Ok(_) -> panic("expected Err(NotSupportedOnTarget) for a clientCa request")
-    case Err(e) -> match e { case NotSupportedOnTarget(message) -> assertTrue(message.contains("mutual TLS"), "NotSupportedOnTarget names mutual TLS") }
+    case Err(e) -> match e {
+      case NotSupportedOnTarget(message) -> assertTrue(
+        message.contains("mutual TLS"),
+        "NotSupportedOnTarget names mutual TLS"
+      )
+    }
   }
 }
 

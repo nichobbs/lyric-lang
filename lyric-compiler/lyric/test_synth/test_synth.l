@@ -416,6 +416,23 @@ func hasImportOfPath(imports: in List[ImportDecl], dottedPath: in String): Bool 
   false
 }
 
+// Whether `imports` has `import <dottedPath>` with no selector and no alias,
+// the form that makes every name of the package visible bare.
+func hasWholeUnaliasedImport(imports: in List[ImportDecl], dottedPath: in String): Bool {
+  for imp in imports {
+    if importPathText(imp.path) == dottedPath and not imp.isExtern {
+      val whole = match imp.selector {
+        case Some(_) -> false
+        case None -> match imp.asAlias { case Some(_) -> false; case None -> true }
+      }
+      if whole {
+        return true
+      }
+    }
+  }
+  false
+}
+
 // Builds the pair of synthesised functions (`__lyric_prop_body_<idx>` /
 // `__lyric_prop_<idx>`) for one `property` declaration, or `Err(reason)`
 // naming the first unsupported `forall` binder type encountered — the
@@ -798,6 +815,11 @@ pub func synthesizeFor(
     }
     if not hasImportOfPath(pf.file.imports, "Std.Testing.Property") {
       sb = sb + "\nimport Std.Testing.Property"
+    }
+    // The drivers name `List` and `newList` bare, which only an unaliased
+    // whole import of Std.Collections makes visible (D311).
+    if not hasWholeUnaliasedImport(pf.file.imports, "Std.Collections") {
+      sb = sb + "\nimport Std.Collections"
     }
   }
   // #6687: the header fix above (#6642) reproduces everything through the

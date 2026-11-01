@@ -297,14 +297,18 @@ pub func synthesiseSourceWithImports(contract: in Meta.Contract, preamble: in Li
   synthesiseSourceFull(contract, preamble, true, true)
 }
 
-// `import` lines for `contract`'s recorded whole and selective imports.
+// `import` lines for `contract`'s recorded whole and selective imports; a
+// re-exported package is rendered `pub use`, so the reconstructed source
+// passes on what the original did (D311).
 // Selective entries are `<package>::<name>`, grouped per package in first-
 // seen order; a package also imported whole needs no selective line.
 func renderContractImports(contract: in Meta.Contract): String {
   var sb = ""
   var wi = 0
   while wi < contract.wholeImports.count {
-    sb = sb + "import " + contract.wholeImports[wi] + "\n"
+    val pkg = contract.wholeImports[wi]
+    val head = if contract.reexports.contains(pkg) { "pub use " } else { "import " }
+    sb = sb + head + pkg + "\n"
     wi = wi + 1
   }
   val selPkgs: List[String] = newList()

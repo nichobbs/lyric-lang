@@ -8,6 +8,7 @@ package Jvm.MatchReturnDeferSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 protected type Counter {
   var count: Int

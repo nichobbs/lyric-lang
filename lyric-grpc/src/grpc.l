@@ -38,7 +38,7 @@
 @io
 package Grpc
 
-import Grpc.Types
+pub use Grpc.Types
 import Grpc.Kernel.Net
 import Grpc.Kernel.Jvm
 import Std.Core

@@ -361,7 +361,9 @@ test "Std.Tls native PEM loading (real public API): cert/identity ok, malformed 
 // wrapper above. Same PEM fixtures and same four assertions; this is the
 // kernel boundary one layer below the real API.
 test "Std.TlsHost native PEM loading (kernel boundary): cert/identity ok, malformed key rejected" {
-  val src = "package T\n" + "import Std.Core\n" + "import Std.TlsHost\n" + "func main(): Int {\n" + "  val certPem = \"" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TlsHost\n" +
+    "func main(): Int {\n" +
+    "  val certPem = \"" +
     luQuote(certPemLines) +
     "\"\n" +
     "  val keyPem = \"" +

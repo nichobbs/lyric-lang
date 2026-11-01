@@ -26,6 +26,7 @@ import Std.Collections
 import Jvm.Classfile
 import Jvm.Bytecode
 import Jvm.Lowering
+import Jvm.Kernel.{Pool}
 
 func makeVoidNoop(): LFunc {
   val insns: List[LInsn] = newList()

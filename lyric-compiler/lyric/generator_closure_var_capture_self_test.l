@@ -42,6 +42,7 @@ package Lyric.GeneratorClosureVarCaptureSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 async func genAssignedByClosure(v: in Int): Int {
   var x = 0

@@ -39,6 +39,7 @@ package ExternDelegateValueDotnetSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 extern type Task = "System.Threading.Tasks.Task"
 

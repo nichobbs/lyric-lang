@@ -7,7 +7,7 @@ package OverrideTests
 
 import Std.Core
 import Std.Testing
-import Std.Collections.{newMap}
+import Std.Collections.{Map, newMap}
 import OverrideLib
 import OverrideLib.{newList}
 

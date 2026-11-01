@@ -2,7 +2,7 @@
 
 Two follow-ups in one change.
 
-**T0222 (D309, #8667).** A bare enum case that two or more enums declare, with
+**T0222 (D312, #8667).** A bare enum case that two or more enums declare, with
 none of them in the current package, an imported package or the expected type,
 fell back to the first registered enum on MSIL, the JVM and native, and so could
 read another enum's ordinal. The survey recorded in #8667 found the MSIL fallback

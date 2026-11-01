@@ -26,6 +26,7 @@
 package OTel.OtlpCodecTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Std.Encoding
 import OTel.Types

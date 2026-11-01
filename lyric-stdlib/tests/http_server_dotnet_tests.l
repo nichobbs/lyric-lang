@@ -42,6 +42,7 @@
 @test_module
 package Std.HttpServer.DotnetTests
 
+import Std.Errors
 import Std.Core
 import Std.Collections
 import Std.Encoding

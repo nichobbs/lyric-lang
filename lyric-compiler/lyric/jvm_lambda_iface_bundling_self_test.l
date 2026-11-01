@@ -57,6 +57,7 @@ import Std.Uuid
 import Std.Environment as Environment
 import Jvm.Bridge
 import Std.Zip as Zip
+import Std.Errors.{IOError}
 
 // Shared functional-interface binary name (`Jvm.Codegen.lambdaIfaceName`),
 // duplicated here as a literal since the self-hosted `Jvm.Codegen` package

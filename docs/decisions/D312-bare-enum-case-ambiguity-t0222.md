@@ -1,4 +1,4 @@
-# D309 — A bare enum case no visible package declares is T0222 on every backend (#8667)
+# D312 — A bare enum case no visible package declares is T0222 on every backend (#8667)
 
 **Status:** shipped
 

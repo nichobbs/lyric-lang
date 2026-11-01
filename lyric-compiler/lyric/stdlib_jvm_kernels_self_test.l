@@ -79,6 +79,7 @@ import Std.Http
 import Std.HttpServer as HttpSrv
 import Std.Task
 import Std.Time
+import Std.Errors
 
 // Concrete unchecked Exception subclass used to exercise the
 // Std.JvmExceptionHost accessors without an FFI boundary crossing.

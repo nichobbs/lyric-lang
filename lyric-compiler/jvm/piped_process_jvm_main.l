@@ -31,6 +31,7 @@ import Std.Core
 import Std.Collections
 import Std.Console
 import Std.Process
+import Std.Errors.{IOError}
 
 func main(): Int {
   var failures = 0

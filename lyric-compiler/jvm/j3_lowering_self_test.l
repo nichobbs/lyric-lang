@@ -27,6 +27,7 @@ package Jvm.J3LoweringSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // ── m-2: module-level val ─────────────────────────────────────────────────────
 val theAnswer: Int = 42

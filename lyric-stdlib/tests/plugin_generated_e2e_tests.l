@@ -27,6 +27,7 @@ import Std.Plugin
 import Std.PluginSign
 import Std.Ed25519
 import Std.Encoding
+import Std.Errors.{IOError}
 
 pub record Note {
   title: String

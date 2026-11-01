@@ -74,6 +74,7 @@ import Std.Environment as Environment
 import Jvm.Bridge
 import Jvm.Codegen as Cg
 import Lyric.Parser as Prs
+import Std.Errors.{IOError}
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -225,7 +226,7 @@ test "extern-typed function return does not collide with an unrelated package's 
 // function's own declared signature is registered with `collectFileSigsSeeded`
 // before any caller resolves it; its `recordRetClass` side-channel has to name
 // the record declared in a DIFFERENT package, from the bundle-wide ctor registry.
-func registerMakerSig(withCtors: in Bool): Option[JvmFuncSig] {
+func registerMakerSig(withCtors: in Bool): Option[Cg.JvmFuncSig] {
   val entryFile = Prs.parse("package EntryPkg4\n\npub record Entry[K, V] {\n  key: K\n  value: V\n}\n").file
   val makerFile = Prs.parse("package MakerPkg4\n" + "\n" + "import EntryPkg4\n" + "\n" + "pub func makeEntry[K, V](k: K, v: V): EntryPkg4.Entry[K, V] {\n" + "  EntryPkg4.Entry(key = k, value = v)\n" + "}\n").file
   val ctorReg: Map[String, String] = newMap()
@@ -233,7 +234,7 @@ func registerMakerSig(withCtors: in Bool): Option[JvmFuncSig] {
     Cg.collectFileCtors(entryFile, ctorReg)
     Cg.collectFileCtors(makerFile, ctorReg)
   }
-  val sigs: Map[String, JvmFuncSig] = newMap()
+  val sigs: Map[String, Cg.JvmFuncSig] = newMap()
   val externSeed: Map[String, String] = newMap()
   Cg.collectFileSigsSeeded(makerFile, sigs, externSeed, ctorReg)
   mapGet(sigs, "makeEntry")

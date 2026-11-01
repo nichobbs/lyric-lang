@@ -4,6 +4,7 @@
 package Ui.ProtocolTests
 
 import Std.Core
+import Std.Collections
 import Std.String
 import Std.Testing
 import Ui.Core.{View}

@@ -38,6 +38,7 @@ package ClosureCorrectnessTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // ─── #1479 multi-level closure capture ──────────────────────────────────────
 test "two-level immutable capture" {

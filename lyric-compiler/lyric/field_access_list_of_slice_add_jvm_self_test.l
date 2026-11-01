@@ -50,6 +50,7 @@ import Std.Uuid
 import Std.Environment as Environment
 import Jvm.Bridge
 import Lyric.Emitter as Emitter
+import Std.Errors.{IOError}
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
@@ -103,7 +104,9 @@ func compileAndRunSingle(label: in String, stem: in String, source: in String): 
 }
 
 test "a bare slice literal added via a field-access receiver round-trips as a real array (#6957)" {
-  val source = "package FieldSliceAdd\n" + "\n" + "import Std.String\n" + "import Std.Core\n" + "\n" +
+  val source = "package FieldSliceAdd\n" + "\n" + "import Std.String\n" + "import Std.Core\n" +
+    "import Std.Collections\n" +
+    "\n" +
     "record Container {\n" +
     "  rows: List[slice[Int]]\n" +
     "}\n" +
@@ -142,7 +145,9 @@ test "a bare slice literal added via a field-access receiver round-trips as a re
 }
 
 test "a bare slice literal added via self.field from an instance method round-trips as a real array (#6957)" {
-  val source = "package FieldSliceAddSelf\n" + "\n" + "import Std.String\n" + "import Std.Core\n" + "\n" +
+  val source = "package FieldSliceAddSelf\n" + "\n" + "import Std.String\n" + "import Std.Core\n" +
+    "import Std.Collections\n" +
+    "\n" +
     "record RowAccumulator {\n" +
     "  rows: List[slice[Int]]\n" +
     "  func addRow(self: in RowAccumulator, vals: slice[Int]): Unit {\n" +
@@ -182,7 +187,9 @@ test "a bare slice literal added via self.field from an instance method round-tr
 // `Jvm.Codegen.recordParamClassOf` (#6691) narrows `b`'s class to the real
 // `Box`, so `b.items[0]` reaches `scrutineeGenericArgs`'s `EMember` arm.
 test "a generic record field typed as the record's OWN type parameter does not leak a bogus checkcast (#7176)" {
-  val source = "package OwnTypeParamField\n" + "\n" + "import Std.String\n" + "import Std.Core\n" + "\n" +
+  val source = "package OwnTypeParamField\n" + "\n" + "import Std.String\n" + "import Std.Core\n" +
+    "import Std.Collections\n" +
+    "\n" +
     "record Box[T] {\n" +
     "  items: List[T]\n" +
     "}\n" +

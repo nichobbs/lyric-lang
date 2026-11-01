@@ -34,7 +34,7 @@ import Std.Testing
 // Test infrastructure.
 // ---------------------------------------------------------------------------
 func hexNibble(c: in Char): Int {
-  val v = toInt(c)
+  val v = Char.toInt(c)
   if v >= 48 and v <= 57 {
     v - 48
   } else if v >= 97 and v <= 102 {

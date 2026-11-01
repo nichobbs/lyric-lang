@@ -597,7 +597,7 @@ test "qualified call to an internal cross-package function resolves (JVM, #6580)
 // visibility-blind first-wins race) declares a package-private `func helper`
 // returning -999; `XPriv.Sub` declares the legitimate `pub func helper`
 // returning its argument; the entry package imports only the facade that
-// imports `Sub`, and calls `helper` bare. The private declarer must be
+// re-exports `Sub` (`pub use`, D311), and calls `helper` bare. The private declarer must be
 // excluded from the bundle-wide bare keys at registration time, leaving
 // `Sub.helper` the only candidate.
 test "bundle-wide bare-call fallback never selects a package-private function (JVM, #6853)" {
@@ -606,7 +606,7 @@ test "bundle-wide bare-call fallback never selects a package-private function (J
   pkgSrcs.add("package XPriv.Priv\n" + "\n" + "func helper(x: in Int): Int {\n" + "  0 - 999\n" + "}\n")
   pkgSrcs.add("package XPriv.Sub\n" + "\n" + "pub func helper(x: in Int): Int {\n" + "  x\n" + "}\n")
   pkgSrcs.add(
-    "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" + "pub func facadeFn(): Int {\n" +
+    "package XPriv.Facade\n" + "\n" + "pub use XPriv.Sub\n" + "\n" + "pub func facadeFn(): Int {\n" +
       "  XPriv.Sub.helper(x = 0)\n" +
       "}\n"
   )

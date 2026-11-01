@@ -4,6 +4,7 @@
 package Ui.DiffTests
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Ui.Core.{View, Prop}
 import Ui.Widgets.{button, column, heading, inputOpts, keyed, paragraph, primaryButton, spinner, textInput}

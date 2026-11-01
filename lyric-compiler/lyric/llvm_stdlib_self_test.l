@@ -1450,7 +1450,8 @@ test "toArray snapshot + listFilesRecursive on native (ASan)" {
 }
 
 test "recursive delete does not traverse a directory symlink (#4833, ASan)" {
-  val src = "package T\n" + "\n" + "import Std.Core\n" + "import Std.Errors\n" + "import Std.File\n" +
+  val src = "package T\n" + "\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Errors\n" +
+    "import Std.File\n" +
     "import Std.Process\n" +
     "\n" +
     "func main(): Int {\n" +
@@ -1528,7 +1529,8 @@ test "recursive delete does not traverse a directory symlink (#4833, ASan)" {
 }
 
 test "Std.Char native kernel: code-point bridge, ASCII classification, case conversion, and Hpack Huffman round-trip (ASan) (#6811)" {
-  val src = "package T\n" + "import Std.Core\n" + "import Std.Char\n" + "import Std.HttpEngine.Hpack\n" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Char\n" +
+    "import Std.HttpEngine.Hpack\n" +
     "func main(): Int {\n" +
     "  if toInt('A') != 65 {\n    return 1\n  }\n" +
     "  if fromInt(97) != 'a' {\n    return 2\n  }\n" +

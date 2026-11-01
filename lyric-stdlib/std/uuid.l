@@ -26,7 +26,7 @@ package Std.Uuid
 
 import Std.Core
 import Std.String
-import Std.UuidHost
+pub use Std.UuidHost
 
 // =====================================================================
 // Construction.

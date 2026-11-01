@@ -33,6 +33,7 @@ package Lyric.InbundleGenericsSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // A generic record with a single type-parameter field: `value: T` lowers to
 // `FIELD VAR(0)` and the TypeDef carries one GenericParam row.

@@ -11,6 +11,7 @@ package RecordFunctionFieldSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 enum AccessCode {
   case Granted

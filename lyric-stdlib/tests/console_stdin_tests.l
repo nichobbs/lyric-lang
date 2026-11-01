@@ -16,6 +16,7 @@
 //! check (see `checkNegativeTimeoutRejected`).
 package Std.Console.StdinTests
 
+import Std.Errors.{IOError}
 import Std.Core
 import Std.Console
 import Std.Encoding
