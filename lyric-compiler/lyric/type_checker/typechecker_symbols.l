@@ -7,7 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved}
+import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, funcDefPath, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -783,9 +783,23 @@ pub record SymbolTable {
   /// The resolver's context while `LYRIC_RESOLVE_DIFF` is set (docs/70 phase 2c,
   /// D313): every bare lookup is also put to `Lyric.Resolve`, and a
   /// disagreement is an `R0001` warning in `diffLog`.
-  diffCtx: List[ResolverContext]
+  resolveCtx: List[ResolverContext]
   diffSeen: Map[String, Bool]
   diffLog: List[Diagnostic]
+  /// Non-empty while `LYRIC_RESOLVE_DIFF` is set: every bare lookup is also
+  /// answered by the checker's own scan and a difference is an `R0001`.
+  diffOn: List[Bool]
+  /// The span of the item being checked, for a diagnostic with no node of its own.
+  curItemSpan: List[Span]
+  /// Symbols indexed by the DefPath id the resolver gives their declaration
+  /// (`toString(SymbolId.id)`), newest registration winning; `defIdIndexed`
+  /// counts the symbols already indexed.
+  symByDefId: Map[String, Symbol]
+  defIdIndexed: List[Int]
+  /// Resolutions of a bare name per file (`<file>|<name>`): an index into
+  /// `resolutionList`.
+  resolutionIndex: Map[String, Int]
+  resolutionList: List[Resolution]
 }
 
 /// An unannotated local binding whose initializer builds an empty
@@ -989,9 +1003,15 @@ pub func newSymbolTable(): SymbolTable {
     siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap(),
     interner = newDefPathInterner(),
-    diffCtx = newList(),
+    resolveCtx = newList(),
     diffSeen = newMap(),
-    diffLog = newList()
+    diffLog = newList(),
+    diffOn = newList(),
+    curItemSpan = newList(),
+    symByDefId = newMap(),
+    defIdIndexed = newList(),
+    resolutionIndex = newMap(),
+    resolutionList = newList()
   )
 }
 
@@ -1413,24 +1433,169 @@ pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[S
 // (#7463, #6703).  Internal lookups outside that scope (an imported
 // package's own signatures) stay unrestricted.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  val found = tryFindOneCore(tbl, name)
-  if tbl.diffCtx.count > 0 {
-    diffCompareBare(tbl, name, found)
+  val resolved = resolverPick(tbl, name)
+  if tbl.diffOn.count > 0 {
+    diffCompareBare(tbl, name, tryFindOneCore(tbl, name))
   }
-  found
+  match resolved {
+    case Some(_) -> resolved
+    case None -> tryFindOneCore(tbl, name)
+  }
 }
 
-// Put a bare lookup the checker answered to the resolver and note a
-// disagreement.  Only lookups under the checked package's own import rule are
-// comparable: an imported package's signatures resolve in that package's scope.
-func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symbol]): Unit {
+// The resolver's context when a bare name written in the file being checked is
+// answered by it (docs/70 §4.4, D314): the checked package's own scope under
+// its import rule.  `None` for a dependency's signature scope, a synthesised
+// item of a package of several files (judged by the union of the files'
+// imports), or when no context was built.
+func resolverFileFor(tbl: in SymbolTable): Option[Int] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
   val curPkg = symTableScopePkg(tbl)
   if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
-    return
+    return None
   }
   val cur = symTableCurrentFile(tbl)
   if cur == -2 {
-    return
+    return None
+  }
+  if cur >= 0 {
+    Some(value = cur)
+  } else if tbl.fileRules.count < 2 {
+    Some(value = 0)
+  } else {
+    None
+  }
+}
+
+// What the resolver says `name` means in file `fid`, cached per file and name.
+func resolutionOf(tbl: in SymbolTable, fid: in Int, name: in String): Resolution {
+  val key = toString(fid) + "|" + name
+  match mapGet(tbl.resolutionIndex, key) {
+    case Some(ix) -> return tbl.resolutionList[ix]
+    case None -> ()
+  }
+  val ctx = tbl.resolveCtx[0]
+  val res = resolveBare(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue)
+  tbl.resolutionIndex.add(key, tbl.resolutionList.count)
+  tbl.resolutionList.add(res)
+  res
+}
+
+// The `SymbolId` the resolver gives the declaration `sym` registers, when it
+// has one (docs/70 §4.2).
+func symbolDefId(tbl: in SymbolTable, sym: in Symbol): Option[SymbolId] {
+  match sym.kind {
+    case DKRecord(id, _) -> return Some(value = id)
+    case DKExposedRec(id, _) -> return Some(value = id)
+    case DKUnion(id, _) -> return Some(value = id)
+    case DKEnum(id, _) -> return Some(value = id)
+    case DKOpaque(id, _) -> return Some(value = id)
+    case DKProtected(id, _) -> return Some(value = id)
+    case DKDistinctType(id, _) -> return Some(value = id)
+    case DKInterface(id, _) -> return Some(value = id)
+    case DKExternType(id, _) -> return Some(value = id)
+    case DKUnionCase(pid, uc) -> return caseDefId(tbl, pid, uc.name)
+    case DKEnumCase(pid, ec) -> return caseDefId(tbl, pid, ec.name)
+    case DKFunc(decl) -> {
+      return symbolIdOfKey(tbl.interner, defPathKey(funcDefPath(sym.originPackage, sym.name, decl.params)))
+    }
+    case _ -> ()
+  }
+  if sym.originPackage.length == 0 {
+    return None
+  }
+  symbolIdOfKey(tbl.interner, defPathKey(topDefPath(sym.originPackage, sym.name)))
+}
+
+func caseDefId(tbl: in SymbolTable, parent: in SymbolId, caseName: in String): Option[SymbolId] {
+  match defPathKeyOf(tbl.interner, parent) {
+    case Some(pk) -> symbolIdOfKey(tbl.interner, pk + "::" + caseName)
+    case None -> None
+  }
+}
+
+// The newest symbol that registers the declaration with resolver id `id`.
+// Symbols registered since the last call are indexed first.
+func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
+  while tbl.defIdIndexed.count < tbl.symbols.count {
+    val sym = tbl.symbols[tbl.defIdIndexed.count]
+    match symbolDefId(tbl, sym) {
+      case Some(did) -> {
+        val key = toString(did.id)
+        if tbl.symByDefId.containsKey(key) {
+          tbl.symByDefId.remove(key)
+        }
+        tbl.symByDefId.add(key, sym)
+      }
+      case None -> ()
+    }
+    tbl.defIdIndexed.add(0)
+  }
+  mapGet(tbl.symByDefId, toString(id.id))
+}
+
+// The symbol the resolver binds a bare `name` to in the file being checked, or
+// `None` when it does not answer: no context, an unresolved name (a built-in,
+// a name only a sibling file imports, a diagnostic the caller reports), or a
+// declaration with no symbol.  An overload set answers with its newest
+// function; the overload pick is the caller's.
+func resolverPick(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  match resolverFileFor(tbl) {
+    case None -> None
+    case Some(fid) -> match resolutionOf(tbl, fid, name) {
+      case RSymbol(id) -> symbolOfDefId(tbl, id)
+      case ROverloads(ids) -> {
+        var i = ids.count - 1
+        while i >= 0 {
+          match symbolOfDefId(tbl, ids[i]) {
+            case Some(s) -> return Some(value = s)
+            case None -> ()
+          }
+          i = i - 1
+        }
+        None
+      }
+      case _ -> None
+    }
+  }
+}
+
+// The packages declaring what the resolver binds `name` to in the file being
+// checked; `None` when it does not answer.
+func resolverPackagesFor(tbl: in SymbolTable, name: in String): Option[List[String]] {
+  match resolverFileFor(tbl) {
+    case None -> None
+    case Some(fid) -> {
+      val ctx = tbl.resolveCtx[0]
+      val pkgs: List[String] = newList()
+      match resolutionOf(tbl, fid, name) {
+        case RSymbol(id) -> {
+          pkgs.add(declPkgOf(ctx, id))
+        }
+        case ROverloads(ids) -> {
+          for id in ids {
+            val p = declPkgOf(ctx, id)
+            if not pkgs.contains(p) {
+              pkgs.add(p)
+            }
+          }
+        }
+        case _ -> return None
+      }
+      Some(value = pkgs)
+    }
+  }
+}
+
+// Put a bare lookup the checker's own scan answered to the resolver and note a
+// disagreement.  Only lookups under the checked package's own import rule are
+// comparable: an imported package's signatures resolve in that package's scope.
+func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symbol]): Unit {
+  val fid = match resolverFileFor(tbl) {
+    case Some(f) -> f
+    case None -> return
   }
   // A symbol with no package is a built-in or an `import extern` binding, which
   // the resolver reaches through its own scope entries.
@@ -1442,18 +1607,18 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
     }
     case None -> ()
   }
-  val fid = if cur < 0 { 0 } else { cur }
-  val ctx = tbl.diffCtx[0]
-  val res = resolveBare(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue)
+  val ctx = tbl.resolveCtx[0]
+  val res = resolutionOf(tbl, fid, name)
   val theirs = match found {
     case Some(s) -> s.originPackage
-    case None -> "<none>"
+    case None -> "no declaration"
   }
   val ours = match res {
     case RSymbol(id) -> declPkgOf(ctx, id)
     case ROverloads(ids) -> declPkgOf(ctx, ids[0])
     case RUnresolved(code, _) -> code
-    case _ -> "?"
+    case RPackage(p) -> "package " + p
+    case RDeferred -> "a member"
   }
   var agree = theirs == ours
   match res {
@@ -1461,7 +1626,7 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
       if code == "T0123" and symTableAmbiguousImportPackages(tbl, name).count >= 2 {
         agree = true
       }
-      if theirs == "<none>" and (code == "T0020" or code == "T0010") {
+      if theirs == "no declaration" and (code == "T0020" or code == "T0010") {
         agree = true
       }
     }
@@ -1475,11 +1640,12 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
     return
   }
   tbl.diffSeen.add(key, true)
+  val at = if tbl.curItemSpan.count > 0 { tbl.curItemSpan[0] } else { makeSpan(initialPosition(), initialPosition()) }
   tbl.diffLog.add(
     warningDiagnostic(
       "R0001",
       "resolver disagrees on '" + name + "' (file " + toString(fid) + "): checker " + theirs + ", resolver " + ours,
-      makeSpan(initialPosition(), initialPosition())
+      at
     )
   )
 }
@@ -1487,7 +1653,7 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
 func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
   match declOfId(ctx.tbl, id) {
     case Some(d) -> d.pkg
-    case None -> "?"
+    case None -> "unknown declaration"
   }
 }
 
@@ -1678,6 +1844,12 @@ pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: i
 // import, 2 for a package reached only transitively or the prelude, and -1
 // when the import rule hides it.  A lower tier shadows a higher one.
 pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in String): Int {
+  // The resolver's answer is the lowest tier that declares the name; a
+  // function of any other package is shadowed or hidden (D314).
+  match resolverPackagesFor(tbl, name) {
+    case Some(pkgs) -> return if origin.length == 0 or pkgs.contains(origin) { 0 } else { -1 }
+    case None -> ()
+  }
   val curPkg = symTableScopePkg(tbl)
   if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) or origin.length == 0 or origin == curPkg {
     return 0
@@ -1879,6 +2051,10 @@ pub func symTableFileOfSpan(tbl: in SymbolTable, sp: in Span): Int {
 /// Enter the file `sp` lies in: the file an item is checked in.  A
 /// synthesised item (no source position) enters the package union (-2).
 pub func symTableEnterSpanFile(tbl: in SymbolTable, sp: in Span): Unit {
+  while tbl.curItemSpan.count > 0 {
+    tbl.curItemSpan.removeAt(tbl.curItemSpan.count - 1)
+  }
+  tbl.curItemSpan.add(sp)
   val f = symTableFileOfSpan(tbl, sp)
   if f < 0 and tbl.fileRules.count > 0 {
     symTableEnterFile(tbl, -2)
