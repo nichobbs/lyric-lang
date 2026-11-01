@@ -59,6 +59,7 @@ import Std.Testing
 import Std.Environment as Environment
 import Std.File as File
 import Msil.Bridge
+import Lyric.Lexer.{Diagnostic}
 
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
   ProjectPackagePayload(name = name, sources = [source])
