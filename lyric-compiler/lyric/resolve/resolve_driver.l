@@ -33,6 +33,46 @@ func isWholeImport(imp: in ImportDecl): Bool {
   }
 }
 
+// An import's identity for comparing two lists of imports: its form and text.
+func importKey(imp: in ImportDecl): String {
+  var key = modulePathJoin(imp.path.segments)
+  if imp.isExtern {
+    key = "extern " + key
+  }
+  if imp.isPubUse {
+    key = "pub " + key
+  }
+  match imp.asAlias {
+    case Some(a) -> {
+      key = key + " as " + a
+    }
+    case None -> ()
+  }
+  match imp.selector {
+    case Some(sel) -> {
+      val items: List[ImportItem] = match sel {
+        case ISGroup(g) -> g
+        case ISSingle(one) -> {
+          val l: List[ImportItem] = newList()
+          l.add(one)
+          l
+        }
+      }
+      for it in items {
+        key = key + "|" + it.name
+        match it.asAlias {
+          case Some(a) -> {
+            key = key + " as " + a
+          }
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  key
+}
+
 /// The packages `imports` re-exports whole (`pub use P`).
 pub func reexportsOf(imports: in List[ImportDecl]): List[String] {
   val acc: List[String] = newList()
@@ -71,10 +111,33 @@ pub func buildResolverContext(
   if file.files.count == 0 {
     scopes.add(buildFileScope(tbl, pkg, 0, "", file.imports))
   } else {
+    // An import a pass added to the package (the plugin expansion's) is in
+    // `file.imports` but in no file's header: it serves the declarations the
+    // pass synthesised, so every file's scope carries it, as the checker judges
+    // a synthesised item by the union of the files' imports.
+    val headerKeys: Map[String, Bool] = newMap()
+    for h in file.files {
+      for imp in h.imports {
+        headerKeys.add(importKey(imp), true)
+      }
+    }
+    val added: List[ImportDecl] = newList()
+    for imp in file.imports {
+      if not headerKeys.containsKey(importKey(imp)) {
+        added.add(imp)
+      }
+    }
     var i = 0
     while i < file.files.count {
       val h = file.files[i]
-      scopes.add(buildFileScope(tbl, pkg, i, h.path, h.imports))
+      val all: List[ImportDecl] = newList()
+      for imp in h.imports {
+        all.add(imp)
+      }
+      for imp in added {
+        all.add(imp)
+      }
+      scopes.add(buildFileScope(tbl, pkg, i, h.path, all))
       i = i + 1
     }
   }

@@ -1432,6 +1432,16 @@ func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symb
   if cur == -2 {
     return
   }
+  // A symbol with no package is a built-in or an `import extern` binding, which
+  // the resolver reaches through its own scope entries.
+  match found {
+    case Some(s) -> {
+      if s.originPackage.length == 0 {
+        return
+      }
+    }
+    case None -> ()
+  }
   val fid = if cur < 0 { 0 } else { cur }
   val ctx = tbl.diffCtx[0]
   val res = resolveBare(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue)
