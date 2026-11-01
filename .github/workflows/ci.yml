@@ -1441,6 +1441,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
+      # A user union case named `Unit` (#8652).  The JVM backend resolved the
+      # `Unit` return type through the constructor registry before the reserved
+      # type keywords, so any `Unit` call failed with J008.  Run via native
+      # `lyric test` (imports only `Std.*`).
+      - name: Union case named Unit self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/union_case_named_unit_self_test.l
+
       # Name-resolution self-test (#8350, #7799, #8562): function-typed vals
       # hiding imports in call position, aliased facade imports, explicit
       # alias type arguments.
@@ -2943,6 +2953,7 @@ jobs:
             lyric-compiler/msil/msil_self_test_m88.l \
             lyric-compiler/msil/msil_bracket_arg_self_test.l \
             lyric-compiler/msil/msil_operand_guard_self_test.l \
+            lyric-compiler/msil/msil_bare_enum_case_guard_self_test.l \
             lyric-compiler/msil/lowering_token_self_test.l \
             lyric-compiler/msil/metadata_reader_self_test.l ; do
             echo "=== $t ==="
@@ -4172,6 +4183,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
+
+      # JVM half of the union-case-named-Unit self-test (#8652) - the half that
+      # failed with J008 before the fix.
+      - name: Union case named Unit self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/union_case_named_unit_self_test.l
 
       # JVM half of the name-resolution self-test (#8350, #7799, #8562).
       - name: Name-resolution self-test on JVM (native lyric test --target jvm)

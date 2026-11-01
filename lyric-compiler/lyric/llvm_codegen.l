@@ -3222,7 +3222,7 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       // union case sharing the exact same bare name — pick the same
       // winner MSIL/dotnet does for identical unqualified source, rather
       // than an arbitrary native-only choice.
-      match mapGet(ctx.enumDefs, joined) {
+      match enumCaseIdx(ctx, path.segments.count, joined) {
         case Some(idx) -> {
           if not Str.endsWith(joined, ".__enum") {
             return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
@@ -3853,7 +3853,7 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
   if isPackagePathExpr(ctx, receiver) or memberRecvSegs.count > 0 {
     val rsegs = match receiver.kind { case EPath(rpath) -> rpath.segments; case _ -> memberRecvSegs }
     val joined = modulePathJoin(rsegs) + "." + memberName
-    match mapGet(ctx.enumDefs, joined) {
+    match enumCaseIdx(ctx, 2, joined) {
       case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
       case None -> {
       }
@@ -5934,6 +5934,102 @@ func lowerConstructCall(
     "Lyric.LlvmCodegen: cannot resolve call target '" + key +
       "' for --target native (the callee may be outside the bundled import closure)"
   )
+}
+
+/// Marker key in `Ctx.enumDefs` for a bare case name (`Other.__bareambiguous`):
+/// present when two or more different enums declare that bare case name.
+pub func bareEnumCaseAmbiguousKey(name: in String): String {
+  name + ".__bareambiguous"
+}
+
+/// What a bare enum case name resolves to (`resolveBareEnumCase`).
+pub union BareEnumCase {
+  case BareCaseFound(ordinal: Int)
+  case BareCaseUnknown
+  case BareCaseAmbiguous(declaring: String)
+}
+
+/// The ordinal of a bare enum case `name` (no qualifying prefix, no expected
+/// enum type): the current package's own enum with that case, else one
+/// declared by a package it imports, else the bundle's only declarer.  When
+/// several enums declare the case and none is visible, `BareCaseAmbiguous`
+/// lists them: the bare key holds whichever enum registered first, an order
+/// that differs between a bundle and its dependencies, so using it reads
+/// another enum's ordinal (T0222, as on MSIL and the JVM).
+pub func resolveBareEnumCase(
+  enumDefs: in Map[String, Int],
+  pkgImports: in Map[String, List[String]],
+  curPkg: in String,
+  name: in String,
+): BareEnumCase {
+  if not enumDefs.containsKey(bareEnumCaseAmbiguousKey(name)) {
+    return match mapGet(enumDefs, name) { case Some(idx) -> BareCaseFound(ordinal = idx); case None -> BareCaseUnknown }
+  }
+  if curPkg.length > 0 {
+    match mapGet(enumDefs, curPkg + "." + name) {
+      case Some(idx) -> return BareCaseFound(ordinal = idx)
+      case None -> {
+      }
+    }
+    match mapGet(pkgImports, curPkg) {
+      case Some(imps) -> {
+        for p in imps {
+          match mapGet(enumDefs, p + "." + name) {
+            case Some(idx) -> return BareCaseFound(ordinal = idx)
+            case None -> {
+            }
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+  var declaring = ""
+  for k in mapKeys(enumDefs) {
+    if Str.endsWith(k, ".__enum") {
+      val enumFqn = Str.substring(k, 0, k.length - 7)
+      if Str.contains(enumFqn, ".") and enumDefs.containsKey(enumFqn + "." + name) {
+        if declaring.length > 0 {
+          declaring = declaring + ", "
+        }
+        declaring = declaring + enumFqn
+      }
+    }
+  }
+  BareCaseAmbiguous(declaring = declaring)
+}
+
+pub func ambiguousBareEnumCaseMessage(name: in String, curPkg: in String, declaring: in String): String {
+  "error[T0222]: ambiguous enum case '" + name + "' in package '" + curPkg + "': it is declared by " + declaring +
+    ", and none of those enums is declared in this package, imported by it, or named by an expected type, " +
+    "so the compiler cannot tell which one is meant (it would otherwise pick by registration order and read the " +
+    "wrong ordinal).  Qualify the case with its enum (`Enum." +
+    name +
+    "`) or import the package that declares " +
+    "the enum you mean."
+}
+
+/// The ordinal of the enum case a path names: a bare case by scope
+/// (`resolveBareEnumCase`), a `Type.Case` or package-qualified path in the
+/// current package first, then a package it imports, then the bundle's first
+/// registration (`curPkgQualifiedGet`), so a bare case and a type-qualified
+/// one in the same package always agree.
+func enumCaseIdx(ctx: in Ctx, segmentCount: in Int, joined: in String): Option[Int] {
+  if segmentCount == 1 {
+    bareEnumCaseIdx(ctx, joined)
+  } else {
+    curPkgQualifiedGet(ctx, ctx.enumDefs, joined)
+  }
+}
+
+func bareEnumCaseIdx(ctx: in Ctx, name: in String): Option[Int] {
+  val curPkg = if ctx.curPkg.count > 0 { ctx.curPkg[0] } else { "" }
+  match resolveBareEnumCase(ctx.enumDefs, ctx.pkgImports, curPkg, name) {
+    case BareCaseFound(idx) -> Some(value = idx)
+    case BareCaseUnknown -> None
+    case BareCaseAmbiguous(declaring) -> panic(ambiguousBareEnumCaseMessage(name, curPkg, declaring))
+  }
 }
 
 /// Registry lookup shared by `lowerConstructCall` (the `ctx.sigs`-miss
@@ -8107,7 +8203,8 @@ func registerHeapTypes(
           ctx.enumDefs.add(caseKey, eci)
         }
         val qKey = u.pkgName + "." + caseKey
-        if not ctx.enumDefs.containsKey(qKey) {
+        val enumSeenBefore = ctx.enumDefs.containsKey(qKey)
+        if not enumSeenBefore {
           ctx.enumDefs.add(qKey, eci)
         }
         // Bare case name (#6589): a reference with no qualifying prefix
@@ -8126,6 +8223,13 @@ func registerHeapTypes(
         val bareKey = ed.cases[eci].name
         if not ctx.enumDefs.containsKey(bareKey) {
           ctx.enumDefs.add(bareKey, eci)
+        } else if not enumSeenBefore {
+          // A second, different enum declaring this bare case name: the bare
+          // key keeps the first one, so a bare reference is only sound where
+          // the referencing package sees a declarer (`bareEnumCaseIdx`).
+          if not ctx.enumDefs.containsKey(bareEnumCaseAmbiguousKey(bareKey)) {
+            ctx.enumDefs.add(bareEnumCaseAmbiguousKey(bareKey), 1)
+          }
         }
         // Package-qualified case name (#8579): `File.RegularFile` under
         // `import Std.File as File` reaches codegen as
@@ -15557,7 +15661,7 @@ func emitConstructorTest(
   // union-case check below.
   match sv0.ty {
     case NI32 -> {
-      match mapGet(ctx.enumDefs, joined) {
+      match enumCaseIdx(ctx, head.segments.count, joined) {
         case Some(idx) -> {
           val cmp = freshTmp(ctx)
           insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv0.value, b = NLitInt(v = idx.toLong(), ty = NI32)))

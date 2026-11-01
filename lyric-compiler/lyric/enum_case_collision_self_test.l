@@ -177,6 +177,7 @@ import Std.Environment as Environment
 import Msil.Bridge
 import Jvm.Bridge
 import Jvm.Codegen
+import Lyric.LlvmCodegen
 import Lyric.Parser
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
@@ -1234,4 +1235,121 @@ test "dotnet: a bare case of a restored enum resolves through the import, not re
     "error\nerror\ntrue",
     "coll: the call argument, the field match and the comparison all read Sev.Error"
   )
+}
+
+// ─── T0222 (#8667): a bare case no visible package declares ─────────────────
+// `GuardA.Mood { Calm, Error }` and `GuardB.Sev { Error, Warning }` both
+// declare `Error`.  A file in a package that is neither, importing neither,
+// has no way to say which one a bare `Error` means; the bare key would hold
+// whichever enum registered first, an order that differs between a bundle and
+// its restored dependencies.  The type checker rejects such a reference
+// before codegen, so no program reaches the backstop; these tests drive the
+// JVM and native resolvers over registries built the way the real passes
+// build them.  The MSIL twin is `msil_bare_enum_case_guard_self_test.l`.
+func guardASource(): String {
+  "package GuardA\n" + "\n" + "pub enum Mood {\n" + "  case Calm\n" + "  case Error\n" + "}\n"
+}
+
+func guardBSource(): String {
+  "package GuardB\n" + "\n" + "pub enum Sev {\n" + "  case Error\n" + "  case Warning\n" + "}\n"
+}
+
+func guardAppSource(imports: in String): String {
+  "package GuardApp\n" + "\n" + imports + "pub func probe(): Int {\n" + "  0\n" + "}\n"
+}
+
+func guardJvmRegistry(): Map[String, JvmFuncSig] {
+  val into: Map[String, JvmFuncSig] = newMap()
+  collectFileSigs(Parser.parse(guardASource()).file, into)
+  collectFileSigs(Parser.parse(guardBSource()).file, into)
+  into
+}
+
+func guardJvmOverlay(pkgFile: in String): Map[String, JvmFuncSig] {
+  val seed: Map[String, String] = newMap()
+  importAwareRegistry(Parser.parse(pkgFile).file, guardJvmRegistry(), seed)
+}
+
+test "jvm: a bare case no visible package declares is T0222, naming every declaring enum" {
+  val overlay = guardJvmOverlay(guardAppSource(""))
+  match ambiguousBareEnumCaseJvm(overlay, "GuardApp", "Error") {
+    case Some(msg) -> {
+      assertTrue(Str.startsWith(msg, "error[T0222]: "), "carries the T0222 code")
+      assertTrue(Str.contains(msg, "GuardA.Mood"), "names the first declaring enum")
+      assertTrue(Str.contains(msg, "GuardB.Sev"), "names the second declaring enum")
+      assertTrue(Str.contains(msg, "'GuardApp'"), "names the referencing package")
+    }
+    case None -> assertTrue(false, "expected T0222 for a bare Error no declarer of which is visible")
+  }
+}
+
+test "jvm: an imported package's enum, or the package's own, makes the bare case visible" {
+  val viaImport = guardJvmOverlay(guardAppSource("import GuardB\n\n"))
+  assertTrue(isNone(ambiguousBareEnumCaseJvm(viaImport, "GuardApp", "Error")), "imported GuardB declares Error")
+  val own = importAwareRegistry(Parser.parse(guardBSource()).file, guardJvmRegistry(), newMap())
+  assertTrue(isNone(ambiguousBareEnumCaseJvm(own, "GuardB", "Error")), "GuardB declares Error itself")
+}
+
+test "jvm: a case only one enum declares is never ambiguous" {
+  val overlay = guardJvmOverlay(guardAppSource(""))
+  assertTrue(isNone(ambiguousBareEnumCaseJvm(overlay, "GuardApp", "Calm")), "Calm is Mood's alone")
+  assertTrue(isNone(ambiguousBareEnumCaseJvm(overlay, "GuardApp", "Warning")), "Warning is Sev's alone")
+}
+
+func guardNativeDefs(): Map[String, Int] {
+  val defs: Map[String, Int] = newMap()
+  defs.add("GuardA.Mood.__enum", 0)
+  defs.add("GuardA.Mood.Calm", 0)
+  defs.add("GuardA.Mood.Error", 1)
+  defs.add("GuardA.Error", 1)
+  defs.add("Calm", 0)
+  defs.add("Error", 1)
+  defs.add("GuardB.Sev.__enum", 0)
+  defs.add("GuardB.Sev.Error", 0)
+  defs.add("GuardB.Sev.Warning", 1)
+  defs.add("GuardB.Error", 0)
+  defs.add("Warning", 1)
+  defs.add(bareEnumCaseAmbiguousKey("Error"), 1)
+  defs
+}
+
+func guardNativeImports(): Map[String, List[String]] {
+  val imports: Map[String, List[String]] = newMap()
+  imports.add("GuardViaImport", ["GuardB"])
+  imports.add("GuardApp", newList())
+  imports
+}
+
+test "native: a bare case no visible package declares is ambiguous, listing every declaring enum" {
+  match resolveBareEnumCase(guardNativeDefs(), guardNativeImports(), "GuardApp", "Error") {
+    case BareCaseAmbiguous(declaring) -> {
+      assertTrue(Str.contains(declaring, "GuardA.Mood"), "names the first declaring enum")
+      assertTrue(Str.contains(declaring, "GuardB.Sev"), "names the second declaring enum")
+      val msg = ambiguousBareEnumCaseMessage("Error", "GuardApp", declaring)
+      assertTrue(Str.startsWith(msg, "error[T0222]: "), "carries the T0222 code")
+    }
+    case _ -> assertTrue(false, "expected BareCaseAmbiguous")
+  }
+}
+
+test "native: the current package's enum, or an imported package's, wins over the first registered" {
+  match resolveBareEnumCase(guardNativeDefs(), guardNativeImports(), "GuardB", "Error") {
+    case BareCaseFound(o) -> assertEqualInt(o, 0, "GuardB's own Sev.Error")
+    case _ -> assertTrue(false, "expected BareCaseFound for the own package")
+  }
+  match resolveBareEnumCase(guardNativeDefs(), guardNativeImports(), "GuardViaImport", "Error") {
+    case BareCaseFound(o) -> assertEqualInt(o, 0, "Sev.Error through the import, though Mood registered first")
+    case _ -> assertTrue(false, "expected BareCaseFound through the import")
+  }
+}
+
+test "native: an unambiguous or unknown bare case resolves as before" {
+  match resolveBareEnumCase(guardNativeDefs(), guardNativeImports(), "GuardApp", "Warning") {
+    case BareCaseFound(o) -> assertEqualInt(o, 1, "Sev.Warning is declared once")
+    case _ -> assertTrue(false, "expected BareCaseFound")
+  }
+  match resolveBareEnumCase(guardNativeDefs(), guardNativeImports(), "GuardApp", "Nope") {
+    case BareCaseUnknown -> assertTrue(true, "unknown")
+    case _ -> assertTrue(false, "expected BareCaseUnknown")
+  }
 }

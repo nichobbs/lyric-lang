@@ -995,6 +995,44 @@ test "same-named types across packages: imported union beats a bundle-first reco
   assertEqualInt(outcome.exitCode, 44, "3 (Reg.Routes.Item) + 6 (Reg.A.Logic: 1+5) + 35 (Reg.B.Logic: 15+20) = 44")
 }
 
+// A bare enum case two packages declare (`Error` in `Bare.A.Mood` and
+// `Bare.B.Sev`, ordinals 1 and 0): the case resolves to the enum of the
+// package the reference sits in or imports, not the one registered first
+// (T0222 covers the case where none is visible, `bare_enum_case_t0222_self_test`).
+// `Bare.B.ord` maps `Sev.Error` to 10 and `Sev.Warning` to 20, so the first
+// registered enum's ordinal (1) would read as `Warning` and answer 20.
+test "a bare enum case resolves to the imported package's enum, not the first registered one" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Bare.App",
+      sources = ["package Bare.App\n" + "import Bare.B\n" + "func main(): Int {\n" + "  ord(Error)\n" + "}\n"]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Bare.A",
+      sources = ["package Bare.A\n" + "pub enum Mood {\n" + "  case Calm\n" + "  case Error\n" + "}\n"]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Bare.B",
+      sources = [
+        "package Bare.B\n" + "pub enum Sev {\n" + "  case Error\n" + "  case Warning\n" + "}\n" +
+          "pub func ord(s: in Sev): Int {\n" +
+          "  match s {\n" +
+          "    case Error -> 10\n" +
+          "    case Warning -> 20\n" +
+          "  }\n" +
+          "}\n"
+      ]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 10, "Sev.Error through the import (ordinal 0), not Mood.Error (ordinal 1)")
+}
+
 // A type parameter only a lambda argument's result determines (`wrap[M]`'s
 // `M`, bound by `f: (Int) -> M`) is inferred: the checker's inferred type
 // arguments are written onto the call before native codegen, so neither the

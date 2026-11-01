@@ -1469,7 +1469,7 @@ func enumPatternClass(ctx: in FuncCtx, scrutTy: in JvmType, caseName: in String)
   match scrutTy {
     case JRef(cls) -> {
       if cls == "java/lang/Object" {
-        enumCaseClassBare(ctx, caseName)
+        enumCaseClassBareScoped(ctx, caseName)
       } else {
         match enumVariantClassByFullClass(ctx, cls.replace("/", "."), caseName) {
           case Some(fcls) -> Some(value = fcls)

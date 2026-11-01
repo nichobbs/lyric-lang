@@ -5912,8 +5912,23 @@ pub func collectFileSigsSeeded(
             case None -> into.add(epkey, esig)
           }
           val ebkey = "enumcase:" + ecn
-          if not into.containsKey(ebkey) {
-            into.add(ebkey, esig)
+          match mapGet(into, ebkey) {
+            case Some(firstSig) -> {
+              // A second, different enum declaring this bare case name: the
+              // bare key keeps the first-registered enum, which is only a
+              // sound answer where the file sees the first one.  Record the
+              // collision (its `owner` lists every declaring enum class,
+              // comma-separated) so a bare reference with no visible declarer
+              // is T0222, not a pick by registration order
+              // (`enumCaseClassBareScoped`).
+              val ambigBareKey = "enumcaseambig:" + ecn
+              val declaring = match mapGet(into, ambigBareKey) { case Some(prior) -> prior.owner; case None -> firstSig.owner }
+              if not listContainsStr(split(declaring, ",").toList(), enumCls) {
+                into.remove(ambigBareKey)
+                into.add(ambigBareKey, esig.copy(owner = declaring + "," + enumCls))
+              }
+            }
+            case None -> into.add(ebkey, esig)
           }
           val eqkey = owner + "/enumcase:" + ecn
           if not into.containsKey(eqkey) {
