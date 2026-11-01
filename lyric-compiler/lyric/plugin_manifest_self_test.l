@@ -17,6 +17,7 @@ import Std.String as Str
 import Std.Uuid as Uuid
 import Std.JsonValue as Jv
 import Lyric.PluginManifest
+import Std.Plugin
 
 func probeText(): String {
   "{\"schema\":1,\"id\":\"acme.git-tools\",\"version\":\"0.4.1\",\"publisher\":\"acme\"," +

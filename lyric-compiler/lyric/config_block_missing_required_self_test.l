@@ -49,6 +49,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Env
 import Lyric.Emitter as Emitter
+import Std.Errors
 
 func tempBase(): String {
   Env.getVarOrDefault("TMPDIR", Env.getVarOrDefault("TEMP", Env.getVarOrDefault("TMP", "/tmp")))

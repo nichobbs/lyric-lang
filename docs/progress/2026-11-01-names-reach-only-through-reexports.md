@@ -17,6 +17,11 @@ D311.
   second census ran `lyric test` on every manifest with tests. Seven test
   files in `lyric-forms`, `lyric-mcp`, `lyric-otel` and `lyric-ui`, and the
   `builtin_name_override` fixture, gain the imports they rely on.
+- **Legacy metadata:** a contract without a `reexports` key (written
+  before D309) reads its whole imports as re-exports. Contracts now always
+  record the key. The stdlib rebuilt from `Lyric.Stdlib.dll`'s metadata
+  renders re-exports as `pub use`. Without this, the stage-1 stdlib, which
+  the pre-D309 seed builds, lost `Std.Collections`' reach to `List`.
 - **The last W0033:** `stdListRecvKeyPrefix` (`Lyric.TypeChecker`) is
   replaced by `stdListRecvSiteKey` (`Lyric.Parser`), used by the checker
   and the MSIL backend.

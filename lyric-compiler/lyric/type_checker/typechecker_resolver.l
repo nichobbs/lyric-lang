@@ -998,6 +998,19 @@ func resolveTypePath(
       }
       qi = qi - 1
     }
+    // D311: `Owner.Name` also names a type of a package `Owner` re-exports
+    // (`Std.Collections.List`, declared in `Std.CollectionsHost`), whether or
+    // not the file sees `Name` bare (an aliased import does not).
+    val reexported = symTableReexportClosure(tbl, ownerPkg)
+    if reexported.count > 0 {
+      var ri = qualifiedCands.count - 1
+      while ri >= 0 {
+        if symbolIsType(qualifiedCands[ri]) and reexported.contains(qualifiedCands[ri].originPackage) {
+          return symbolToType(tbl, ctx, diag, qualifiedCands[ri], args, span)
+        }
+        ri = ri - 1
+      }
+    }
   }
   match defaultPick {
     case Some(sym) -> {

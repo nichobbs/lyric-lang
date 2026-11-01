@@ -59,6 +59,7 @@ package Lyric.GenericParamFieldReadJvmSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 record Box[T] {
   value: T

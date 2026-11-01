@@ -14117,6 +14117,30 @@ test "re-exports: a cycle of re-exports terminates and reaches both packages" {
   assertEqualInt(diagCount(checkWithImportedPackages(parse(src).file, packages)), 0, "both names are visible")
 }
 
+test "re-exports: a qualified type through an alias of a re-exporting package resolves" {
+  // `Fac.Widget`, rewritten to `PkgFacade.Widget`, names PkgHost's Widget,
+  // which PkgFacade re-exports; the aliased import shows no name bare.
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    reachPackage("package PkgHost\npub record Widget { n: Int }\npub func hostMake(): Widget { Widget(n = 3) }\n")
+  )
+  packages.add(reachPackage("package PkgFacade\npub use PkgHost\npub func facade(): Int { 1 }\n"))
+  val src = "package App\nimport PkgFacade as Fac\nfunc f(w: in Fac.Widget): Int { w.n }\nfunc g(): Int { f(Fac.hostMake()) }\n"
+  val cr = checkWithImportedPackages(rewriteFile(parse(src).file), packages)
+  assertEqualInt(errorCount(cr), 0, diagMessageFor(cr, "T0014"))
+}
+
+test "re-exports: a qualified type through a package that only imports it is not found" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(reachPackage("package PkgHost\npub record Widget { n: Int }\n"))
+  packages.add(reachPackage("package PkgFacade\nimport PkgHost\npub func facade(): Int { 1 }\n"))
+  val src = "package App\nimport PkgFacade as Fac\nfunc f(w: in Fac.Widget): Int { 1 }\n"
+  assertTrue(
+    errorCount(checkWithImportedPackages(rewriteFile(parse(src).file), packages)) > 0,
+    "PkgFacade does not re-export PkgHost"
+  )
+}
+
 test "re-exports: a selective import of a name its package re-exports makes it visible" {
   // PkgFacade re-exports PkgHost, so `import PkgFacade.{hostMake}` lists the
   // `hostMake` PkgHost declares.

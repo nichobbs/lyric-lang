@@ -37,6 +37,7 @@ import Std.Plugin.Trusted
 import Std.PluginSign
 import Std.Ed25519
 import Std.Encoding
+import Std.Errors
 
 pub record Note {
   title: String

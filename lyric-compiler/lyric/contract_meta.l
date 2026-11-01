@@ -376,8 +376,9 @@ pub record Contract {
   /// it as `imports`, the rule's behaviour before it told the forms apart.
   wholeImports: List[String]
   /// The packages the package re-exports whole (`pub use P`, docs/01 §9.3),
-  /// a subset of `wholeImports`.  Absent in a contract written before the
-  /// key existed, which reads it as empty.
+  /// a subset of `wholeImports`.  A contract written before the key existed
+  /// (D309) was built under D141, where every whole import reached its
+  /// consumers, so it reads the key as its whole imports (D311).
   reexports: List[String] = newList()
   /// The names the package imports selectively, one `<package>::<name>`
   /// entry per listed name (`import P.{f, T}` gives `P::f` and `P::T`).
@@ -450,6 +451,15 @@ func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
 // Non-string elements coerce to "" — matches the F# `safeStr
 // (inner.GetString()) ""` so format-1/2 round-trips stay byte-stable
 // across the F# and self-hosted implementations.
+// A contract with no `reexports` key predates D309; under D141 its whole
+// imports reached its consumers, so they stand in for its re-exports.
+func legacyReexports(root: in JsonElement): List[String] {
+  match tryGetProperty(root, "wholeImports") {
+    case Some(_) -> getStrArray(root, "wholeImports")
+    case None -> getStrArray(root, "imports")
+  }
+}
+
 func getStrArray(elem: in JsonElement, name: in String): List[String] {
   val result: List[String] = newList()
   match tryGetProperty(elem, name) {
@@ -574,7 +584,10 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
         case None -> getStrArray(root, "imports")
       },
       selectedImports = getStrArray(root, "selectedImports"),
-      reexports = getStrArray(root, "reexports"),
+      reexports = match tryGetProperty(root, "reexports") {
+        case Some(_) -> getStrArray(root, "reexports")
+        case None -> legacyReexports(root)
+      },
       contractHash = getStr(root, "contractHash", "")
     )
   )
@@ -782,9 +795,7 @@ pub func contractToJson(c: in Contract): String {
   if c.imports.count > 0 {
     sb = sb + "  \"imports\": " + renderStringArray(c.imports) + ",\n"
     sb = sb + "  \"wholeImports\": " + renderStringArray(c.wholeImports) + ",\n"
-    if c.reexports.count > 0 {
-      sb = sb + "  \"reexports\": " + renderStringArray(c.reexports) + ",\n"
-    }
+    sb = sb + "  \"reexports\": " + renderStringArray(c.reexports) + ",\n"
     if c.selectedImports.count > 0 {
       sb = sb + "  \"selectedImports\": " + renderStringArray(c.selectedImports) + ",\n"
     }

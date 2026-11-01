@@ -19,6 +19,7 @@ package Lyric.SliceFuncElemSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 func boundCall(fs: in slice[(Int) -> Int], x: in Int): Int {
   val f = fs[0]

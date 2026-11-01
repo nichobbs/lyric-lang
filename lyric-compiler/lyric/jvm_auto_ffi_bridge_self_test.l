@@ -65,6 +65,7 @@ import Jvm.ClassReader
 import Jvm.Bridge
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
+import Std.Errors
 
 // ─── m-7 / #2214: splitPathListOn separator handling ─────────────────────────
 test "splitPathListOn splits on ':' only when the host is not Windows" {

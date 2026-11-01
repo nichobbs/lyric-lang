@@ -33,9 +33,15 @@ D141 change on after the step-1 migration (D309).
 - Code that relied on D141's reach fails to compile. The census in D309
   migrated everything in the repository. The step-2 census shows the same
   manifests failing as before, all for reasons unrelated to imports.
-- A restored dependency built before D309 has no `reexports` in its
-  contract metadata, so a consumer reaches nothing through it beyond its
-  own declarations.
+- **Legacy metadata.** A contract with no `reexports` key was written
+  before D309, when D141 let every whole import reach consumers. It reads
+  its whole imports as its re-exports, so a dependency built then, or a
+  stdlib built by a seed that predates D309, keeps the reach it was built
+  with. The emitters now always write the key, an empty list included, so
+  a current contract is never read this way. When the stdlib is rebuilt
+  from `Lyric.Stdlib.dll`'s metadata (an install with no source tree), a
+  re-exported package renders as `pub use`, so the rebuilt `Std.Collections`
+  still re-exports `Std.CollectionsHost`.
 - The seed accepts the migrated sources. It reads `pub use` as an import
   and still applies D141, so no release is needed between the two steps.
 
@@ -46,5 +52,8 @@ D141 change on after the step-1 migration (D309).
   re-exported name, union cases, a qualified call, a qualified type;
 - #7556's ambiguity, #7345's type receiver and #7371's T0128 restated over
   re-exports, with the import-only forms as T0020.
+
+`contract_meta_self_test`: a contract without the key reads its whole
+imports as re-exports; an empty list round-trips empty.
 
 Also the compiler build and stage-2 bootstrap, and the census.

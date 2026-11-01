@@ -231,8 +231,8 @@ test "cross-package qualified call" {
 }
 
 // Issue #6849: a bare (unqualified) call to a `pub func` reachable only
-// TRANSITIVELY through a facade package's own imports — the App package
-// imports ONLY the Facade package, which itself imports (and uses) the Sub
+// TRANSITIVELY through a facade package — the App package imports ONLY the
+// Facade package, which re-exports (`pub use`, D311) and uses the Sub
 // package, but never re-declares `helper`. Codegen's bare-call resolver
 // previously consulted only the current package's own FQN + its DIRECT
 // imports (`App` never directly imports `Sub`), so this hit an unresolved-
@@ -245,7 +245,7 @@ test "bare call to a facade-transitive function resolves bundle-wide" {
   packages.add(
     mkPkg(
       "XFacade.Facade",
-      "package XFacade.Facade\n" + "\n" + "import XFacade.Sub\n" + "\n" +
+      "package XFacade.Facade\n" + "\n" + "pub use XFacade.Sub\n" + "\n" +
         "pub func facadeFn(): Int { XFacade.Sub.helper(0) }\n"
     )
   )
@@ -271,8 +271,8 @@ test "bare call to a facade-transitive function resolves bundle-wide" {
 }
 
 // Two packages the app reaches only transitively (through `XMulti.Facade`'s
-// whole imports) both declare a `pub helper`: a bare `helper(...)` is
-// ambiguous, T0123, like two direct imports (docs/01 §9.2, D141, #7556).
+// re-exports) both declare a `pub helper`: a bare `helper(...)` is
+// ambiguous, T0123, like two direct imports (docs/01 §9.2, D311, #7556).
 // Before that rule the call compiled and codegen picked a declarer by
 // registration order.
 test "bare call with two transitively reached declarers is T0123" {
@@ -282,7 +282,7 @@ test "bare call with two transitively reached declarers is T0123" {
   packages.add(
     mkPkg(
       "XMulti.Facade",
-      "package XMulti.Facade\n" + "\n" + "import XMulti.SubA\n" + "import XMulti.SubB\n" + "\n" +
+      "package XMulti.Facade\n" + "\n" + "pub use XMulti.SubA\n" + "pub use XMulti.SubB\n" + "\n" +
         "pub func facadeFn(): Int { XMulti.SubA.helper(0) + XMulti.SubB.helper(0) }\n"
     )
   )
@@ -305,7 +305,7 @@ test "bare call with two transitively reached declarers is T0123" {
 // function in an unrelated, unimported package. `XPriv.Priv` (registered
 // FIRST) declares a package-private `func helper` returning -999; `XPriv.Sub`
 // declares the legitimate `pub func helper` returning its argument; the app
-// imports only the facade that imports `Sub`, and calls `helper` bare. The
+// imports only the facade that re-exports `Sub`, and calls `helper` bare. The
 // package-private declarer is not `pub`/`internal`, so it must be excluded
 // from `bundleFuncFqnByName` at seeding — leaving `Sub.helper` the only
 // candidate, so the call resolves to it (stdout 42), never to the private
@@ -323,7 +323,7 @@ test "bundle-wide fallback never selects a package-private function (#6851)" {
   packages.add(
     mkPkg(
       "XPriv.Facade",
-      "package XPriv.Facade\n" + "\n" + "import XPriv.Sub\n" + "\n" +
+      "package XPriv.Facade\n" + "\n" + "pub use XPriv.Sub\n" + "\n" +
         "pub func facadeFn(): Int { XPriv.Sub.helper(0) }\n"
     )
   )
@@ -346,9 +346,9 @@ test "bundle-wide fallback never selects a package-private function (#6851)" {
 // (`XNest.App`) — a DIFFERENT package whose name merely starts with
 // `XNest.App.`. It declares a `pub helper` returning -999; `XNest.Deep`
 // declares the intended `pub helper` returning its argument and is registered
-// FIRST (so it is `candidates[0]`). `App` imports only `Facade`, which imports
-// `Deep` whole and `Inner` through an alias, so `helper` is `Deep`'s for the
-// type checker (docs/01 §9.2); neither declarer is App's own package or a
+// FIRST (so it is `candidates[0]`). `App` imports only `Facade`, which
+// re-exports `Deep` and imports `Inner` through an alias, so `helper` is
+// `Deep`'s for the type checker (docs/01 §9.2, D311); neither declarer is App's own package or a
 // direct import, so the call reaches `findBundleFqnByName` with both
 // candidates. A prefix-based
 // tier-1 test (`startsWith(cand, "XNest.App.")`) would wrongly classify
@@ -366,7 +366,7 @@ test "bundle-wide tie-break keys on exact package identity, not a name prefix (#
   packages.add(
     mkPkg(
       "XNest.Facade",
-      "package XNest.Facade\n" + "import XNest.Deep\n" + "import XNest.App.Inner as Inner\n" + "\n" +
+      "package XNest.Facade\n" + "pub use XNest.Deep\n" + "import XNest.App.Inner as Inner\n" + "\n" +
         "pub func facadeFn(): Int { XNest.Deep.helper(0) + Inner.helper(0) }\n"
     )
   )
@@ -570,7 +570,7 @@ test "async func awaiting a call into a LATER package does not corrupt an unrela
 // (`resolveQualifiedFreeCallRetTypePB`, consumed by `countSmFieldsMsil` via
 // `collectAwaitTypesExprPB`/`inferCallReturnTypePB`) was never given the
 // bundle-wide facade-transitive fallback the real emission resolver got in
-// #6850. `App` imports ONLY `Facade`, which imports (and uses) `Sub`; `App`
+// #6850. `App` imports ONLY `Facade`, which re-exports (`pub use`, D311) and uses `Sub`; `App`
 // never imports `Sub` directly, yet its async `caller` awaits `Sub`'s
 // `computeMiddle` BARE. Before the fix, the pre-scan sees an unresolved
 // (`MObject`) return for that await, `isTaskTypeMsil` rejects it, and
@@ -592,7 +592,7 @@ test "async facade-transitive bare await does not corrupt a later await in the s
   packages.add(
     mkPkg(
       "XAsyncFacade.Facade",
-      "package XAsyncFacade.Facade\n" + "import Std.Core\n" + "import XAsyncFacade.Sub\n" + "\n" +
+      "package XAsyncFacade.Facade\n" + "import Std.Core\n" + "pub use XAsyncFacade.Sub\n" + "\n" +
         "pub async func facadeFn(): Int {\n" +
         "  await XAsyncFacade.Sub.computeMiddle(0)\n" +
         "}\n"
@@ -2642,7 +2642,9 @@ test "qualified generic type argument in a record field resolves to the exact pa
   packages.add(
     mkPkg(
       "Main6689B",
-      "package Main6689B\n" + "import Pkg6689D\n" + "import Pkg6689Wrapper\n" + "import Pkg6689C\n" + "\n" +
+      "package Main6689B\n" + "import Std.Collections\n" + "import Pkg6689D\n" + "import Pkg6689Wrapper\n" +
+        "import Pkg6689C\n" +
+        "\n" +
         "func mkList(): List[Pkg6689C.Item] {\n" +
         "  val xs: List[Pkg6689C.Item] = newList()\n" +
         "  xs.add(Pkg6689C.mkA(1))\n" +

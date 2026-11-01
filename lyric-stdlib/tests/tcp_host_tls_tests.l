@@ -47,6 +47,8 @@ import Std.Tls
 import Std.TcpHost
 import Std.Http
 import Std.Testing
+import Std.Collections
+import Std.Errors
 
 val caCertPem = """
 -----BEGIN CERTIFICATE-----
@@ -289,7 +291,10 @@ test "TcpError.message renders every case" {
 test "hostListen rejects a malformed address as BindFailed" {
   match hostListen("not-an-ip", 18921) {
     case Ok(_) -> panic("expected BindFailed for a malformed address")
-    case Err(e) -> match e { case BindFailed(_) -> assertTrue(true, "malformed address rejected"); case _ -> panic("expected BindFailed, got " + TcpError.message(e)) }
+    case Err(e) -> match e {
+      case BindFailed(_) -> assertTrue(true, "malformed address rejected")
+      case _ -> panic("expected BindFailed, got " + TcpError.message(e))
+    }
   }
 }
 
@@ -438,7 +443,10 @@ test "mTLS config with requireClientCert but no clientCa is rejected as invalid"
   hostStopListener(listener)
   match result {
     case Ok(_) -> panic("expected TlsConfigInvalid for requireClientCert without clientCa")
-    case Err(e) -> match e { case TlsConfigInvalid(_) -> assertTrue(true, "mTLS misconfiguration rejected before any accept"); case _ -> panic("expected TlsConfigInvalid, got " + TcpError.message(e)) }
+    case Err(e) -> match e {
+      case TlsConfigInvalid(_) -> assertTrue(true, "mTLS misconfiguration rejected before any accept")
+      case _ -> panic("expected TlsConfigInvalid, got " + TcpError.message(e))
+    }
   }
 }
 

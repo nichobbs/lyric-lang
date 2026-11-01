@@ -17,6 +17,7 @@ package Lyric.InvariantSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 record Range {
   lo: Int

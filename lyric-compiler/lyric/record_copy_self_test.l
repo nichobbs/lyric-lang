@@ -13,6 +13,7 @@ package RecordCopySelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 record Point {
   x: Int

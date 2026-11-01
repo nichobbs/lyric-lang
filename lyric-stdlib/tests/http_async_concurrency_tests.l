@@ -24,6 +24,7 @@
 @test_module
 package Std.Http.AsyncConcurrencyTests
 
+import Std.Errors
 import Std.Core
 import Std.Collections
 import Std.String

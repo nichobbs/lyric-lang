@@ -16,7 +16,7 @@
 package Std.Time
 
 import Std.Core
-import Std.TimeHost
+pub use Std.TimeHost
 
 // brings `Instant`, `Duration`, … and `host*` fns into scope
 // =====================================================================

@@ -2971,7 +2971,8 @@ func selectiveVsTransitivePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPSt.W",
-      "package EPSt.W\n" + "\n" + "pub use EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" + "}\n"
+      "package EPSt.W\n" + "\n" + "pub use EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" +
+        "}\n"
     )
   )
   pkgs.add(

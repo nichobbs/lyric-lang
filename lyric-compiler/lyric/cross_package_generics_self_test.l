@@ -856,7 +856,8 @@ test "qualified restored calls widen Int arguments and type generics from their 
     "  }\n" +
     "}\n"
   val producerDll = buildDll(tmpDir, "CpLong.Parse", producerSrc, "CpLong.Parse")
-  val consumerSrc = "package CpLong.App\n" + "\n" + "import CpLong.Parse\n" + "\n" + "func main(): Unit {\n" +
+  val consumerSrc = "package CpLong.App\n" + "\n" + "import Std.Collections\n" + "import CpLong.Parse\n" + "\n" +
+    "func main(): Unit {\n" +
     "  val errs: List[String] = newList()\n" +
     "  val big = Parse.collect(errs, Parse.longOr(\"big\"), 0)\n" +
     "  val dflt = Parse.collect(errs, Parse.longOr(\"x\"), 7)\n" +
@@ -1007,7 +1008,8 @@ test "generic call over a restored package's record field chain infers its type 
     "  return Outer(inner = Inner(m = m))\n" +
     "}\n"
   val producerDll = buildDll(tmpDir, "CPGenFieldChain.Lib", producerSrc, "CPGenFieldChain.Lib")
-  val consumerSrc = "package CPGenFieldChain.App\n" + "\n" + "import CPGenFieldChain.Lib\n" + "\n" +
+  val consumerSrc = "package CPGenFieldChain.App\n" + "\n" + "import Std.Collections\n" + "import CPGenFieldChain.Lib\n" +
+    "\n" +
     "func main(): Unit {\n" +
     "  val o = make()\n" +
     "  var total = 0\n" +

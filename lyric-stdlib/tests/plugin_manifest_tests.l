@@ -19,6 +19,7 @@ import Std.Plugin
 import Std.Environment as Env
 import Std.File as File
 import Std.Path as Path
+import Std.Errors
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 val goodManifest: String = "{\"schema\":1,\"id\":\"acme.git-tools\",\"version\":\"0.4.1\",\"publisher\":\"acme\"," + "\"points\":[{\"point\":\"Editor.Api.EditorExtension\",\"version\":\"1.2\",\"contributions\":{\"commands\":[\"git.blame\"]}}]," + "\"capabilities\":{\"required\":[{\"name\":\"Editor.Api.WorkspaceRead\",\"grant\":{\"roots\":[\"/a\",\"/b\"],\"mode\":\"ro\"}}]," + "\"optional\":[{\"name\":\"Editor.Api.Notify\"}]}," + "\"payloads\":[{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}," + "{\"mode\":\"process\",\"os\":\"linux\",\"arch\":\"x86_64\",\"command\":[\"bin/git-tools\",\"--serve\"]}," + "{\"mode\":\"process\",\"runtime\":\"dotnet\",\"command\":[\"dotnet\",\"exec\",\"lib/GitTools.dll\"]}," + "{\"mode\":\"process\",\"runtime\":\"jvm\",\"command\":[\"java\",\"-jar\",\"lib/git-tools.jar\"]}]," + "\"future\":\"ignored\"}"

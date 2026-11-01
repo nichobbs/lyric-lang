@@ -27,6 +27,7 @@ package Lyric.AsyncGeneratorSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // ── Basic: zero-param generator with three yields ─────────────────────────────
 async func genThree(): Int {

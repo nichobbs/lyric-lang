@@ -60,6 +60,7 @@ package Lyric.BareFuncRefSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 alias Handler = (Int) -> Int
 

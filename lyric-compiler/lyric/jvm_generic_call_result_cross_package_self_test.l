@@ -74,6 +74,7 @@ import Std.Environment as Environment
 import Jvm.Bridge
 import Jvm.Codegen as Cg
 import Lyric.Parser as Prs
+import Std.Errors
 
 func tempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))

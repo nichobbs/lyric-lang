@@ -21,6 +21,7 @@ package Lyric.ReturnInTrySelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // `return` from inside a `try { ... } finally { ... }` — the finally must run,
 // and the value must survive it.

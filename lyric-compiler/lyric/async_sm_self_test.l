@@ -25,6 +25,7 @@ import Std.Core
 import Std.Rest
 import Std.Task
 import Std.Testing
+import Std.Collections
 
 // ── Phase B.0: no awaits in body ─────────────────────────────────────────────
 // Returns an Int.  No awaits in the body.

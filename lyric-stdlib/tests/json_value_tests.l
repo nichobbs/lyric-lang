@@ -8,6 +8,7 @@
 @test_module
 package Std.JsonValue.Tests
 
+import Std.Collections
 import Std.Core
 import Std.Testing
 import Std.JsonValue

@@ -22,6 +22,7 @@ cat > "$work/c3.l" <<'LYR'
 @test_module
 package C3
 import Std.Testing
+import Std.Collections
 record IntSeq { vals: List[Int] }
 func makeSeq(): IntSeq { IntSeq(vals = [10, 20, 30]) }
 func sumSeq(seq: in IntSeq): Int {

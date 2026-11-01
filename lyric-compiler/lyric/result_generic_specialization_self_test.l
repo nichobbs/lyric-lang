@@ -4,6 +4,7 @@ package Lyric.ResultGenericSpecializationSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 interface StorageBucket {
   func list(prefix: in String): List[String]

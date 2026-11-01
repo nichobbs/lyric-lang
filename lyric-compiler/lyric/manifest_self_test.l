@@ -11,6 +11,7 @@ import Std.Collections
 import Std.String as Str
 import Std.Testing
 import Lyric.Manifest
+import Std.Errors
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers

@@ -1299,6 +1299,30 @@ test "a contract without wholeImports reads its imports as whole" {
   assertEqualInt(parsed.selectedImports.count, 0, "no selective imports recorded")
 }
 
+// D311: a contract written before re-exports existed (D309) was built under
+// D141, so its whole imports stand in for its re-exports; a current one
+// always records the key, so an empty list stays empty.
+test "a contract without reexports reads its whole imports as re-exports" {
+  val json = "{\"packageName\": \"Old\", \"version\": \"1.0.0\", \"imports\": [\"A\", \"B\"], " +
+    "\"wholeImports\": [\"A\"], \"decls\": []}"
+  val parsed = unwrapOrFail(parseFromJson(json), "legacy reexports")
+  assertEqualInt(parsed.reexports.count, 1, "the whole import counts as a re-export")
+  assertEqual(parsed.reexports[0], "A", "A is re-exported")
+}
+
+test "a contract records an empty reexports list and reads it back empty" {
+  val src = "package P\n\nimport Q\npub use R\n\npub func g(): Int { 1 }\n"
+  val c = buildContractFromFile(parse(src).file, "1.0.0")
+  assertEqualInt(c.reexports.count, 1, "R is re-exported")
+  val parsed = unwrapOrFail(parseFromJson(contractToJson(c)), "reexports")
+  assertEqualInt(parsed.reexports.count, 1, "reexports round-trips")
+  assertEqual(parsed.reexports[0], "R", "reexports[0] round-trips")
+  val src2 = "package P\n\nimport Q\n\npub func g(): Int { 1 }\n"
+  val c2 = buildContractFromFile(parse(src2).file, "1.0.0")
+  val parsed2 = unwrapOrFail(parseFromJson(contractToJson(c2)), "no reexports")
+  assertEqualInt(parsed2.reexports.count, 0, "no re-exports read back as none")
+}
+
 test "contractToJson omits defaults" {
   testContractToJsonOmitsDefaults()
 }
