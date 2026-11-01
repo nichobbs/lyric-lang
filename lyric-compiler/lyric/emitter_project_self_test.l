@@ -2956,7 +2956,7 @@ test "emitProject enum case ordinals follow an aliased import's declared type (M
 
 // A selective import admits only its listed names (#7539): `EPSt.A` is
 // imported for `foo` alone, so the bare `Widget` is `EPSt.H`'s, reached
-// transitively through the whole import of `EPSt.W`.
+// through `EPSt.W`'s re-export (`pub use`, D311).
 func selectiveVsTransitivePkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
@@ -2971,7 +2971,7 @@ func selectiveVsTransitivePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPSt.W",
-      "package EPSt.W\n" + "\n" + "import EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" + "}\n"
+      "package EPSt.W\n" + "\n" + "pub use EPSt.H\n" + "\n" + "pub func idOf(w: in Widget): Int {\n" + "  w.id\n" + "}\n"
     )
   )
   pkgs.add(
@@ -3303,7 +3303,7 @@ test "emitProject a bare call never binds another package's private function (MS
 
 // A bare call inside a specialised copy of another package's generic
 // resolves as in that package (#7569): `EPOg.Origin` imports `EPOg.P` only
-// for `g`, so `f` there is `EPOg.H`'s, reached through `EPOg.W`.
+// for `g`, so `f` there is `EPOg.H`'s, reached through `EPOg.W`'s re-export.
 func originScopedCallPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
@@ -3317,7 +3317,7 @@ func originScopedCallPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPOg.W",
-      "package EPOg.W\n" + "\n" + "import EPOg.H\n" + "\n" + "pub func w(): Int {\n" + "  0\n" + "}\n"
+      "package EPOg.W\n" + "\n" + "pub use EPOg.H\n" + "\n" + "pub func w(): Int {\n" + "  0\n" + "}\n"
     )
   )
   pkgs.add(
@@ -3352,7 +3352,7 @@ test "emitProject a specialised generic's bare call honours its package's select
 }
 
 // The entry package registers first, before the packages it reaches (#7571):
-// `f` is found through `EPEo.Mid`'s whole import of `EPEo.Base`.
+// `f` is found through `EPEo.Mid`'s re-export of `EPEo.Base`.
 func entryFirstChainPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
@@ -3365,7 +3365,7 @@ func entryFirstChainPkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPEo.Mid",
-      "package EPEo.Mid\n" + "\n" + "import EPEo.Base\n" + "\n" + "pub func mid(): Int {\n" + "  f() * 10\n" + "}\n"
+      "package EPEo.Mid\n" + "\n" + "pub use EPEo.Base\n" + "\n" + "pub func mid(): Int {\n" + "  f() * 10\n" + "}\n"
     )
   )
   pkgs.add(mkProjectPkg("EPEo.Base", "package EPEo.Base\n" + "\n" + "pub func f(): Int {\n" + "  4\n" + "}\n"))
@@ -3472,7 +3472,7 @@ test "emitProject a private overload hides only its own arity (MSIL)" {
   assertEqual(Str.trim(result.stdout), "1\n2", "privoverload MSIL: output")
 }
 
-// A type reached through a chain of whole imports resolves in the package
+// A type reached through a chain of re-exports resolves in the package
 // the chain reaches even when the entry package registers first and an
 // unrelated package declaring the same name registers last (#7582).
 func entryFirstTypePkgs(): List[Emitter.ProjectPackage] {
@@ -3491,7 +3491,7 @@ func entryFirstTypePkgs(): List[Emitter.ProjectPackage] {
   pkgs.add(
     mkProjectPkg(
       "EPEt.B",
-      "package EPEt.B\n" + "\n" + "import EPEt.C\n" + "\n" + "pub func b(): Int {\n" + "  0\n" + "}\n"
+      "package EPEt.B\n" + "\n" + "pub use EPEt.C\n" + "\n" + "pub func b(): Int {\n" + "  0\n" + "}\n"
     )
   )
   pkgs.add(mkProjectPkg("EPEt.C", "package EPEt.C\n" + "\n" + "pub record Item {\n" + "  label: String\n" + "}\n"))
