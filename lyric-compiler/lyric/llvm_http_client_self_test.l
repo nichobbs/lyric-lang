@@ -167,7 +167,8 @@ val keyPemLines: String = "-----BEGIN PRIVATE KEY-----\n" + "MIGHAgEAMBMGByqGSM4
 // Test.
 // ─────────────────────────────────────────────────────────────────────────────
 test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked body (item E)" {
-  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Tls\n" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.Tls\n" +
     "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
     "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
@@ -589,7 +590,8 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
   // `hostAccept` for the second (the client reconnects in cleartext after
   // the downgrade) — since a TCP listen socket doesn't care which accept
   // function a given incoming connection is handled with.
-  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Tls\n" +
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.Tls\n" +
     "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
     "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
