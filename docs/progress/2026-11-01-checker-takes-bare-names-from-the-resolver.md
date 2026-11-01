@@ -9,7 +9,7 @@ D314.
   resolver for a single-file package.
 - The resolver context is always built. `LYRIC_RESOLVE_DIFF=1` compares the two
   answers; `R0001` has the item's span and labelled sides.
-- `scripts/ci/resolve-diff.sh` and a CI step run the census.
+- `scripts/ci/resolve-diff.sh` runs the census (CI runs it through `front-end-gates.sh`).
 - Tests: a `typechecker_self_test.l` case for #8709.
 - Next: delete the lookups that became redundant, then fold `AliasRewriter` and
   `TypeAliasResolve` into the resolver.
