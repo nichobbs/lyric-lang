@@ -88,6 +88,17 @@ LyricString* lyric_string_from_int(int64_t v) {
     return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
 }
 
+/* A `ULong` (and, zero-extended, a `UInt`) renders as its unsigned value:
+ * the 64-bit pattern is the same as the signed `Long` one (docs/67 unsigned
+ * integers share the signed lowering), so the sign is the caller's to name. */
+LyricString* lyric_string_from_uint(uint64_t v) {
+    char buf[24];
+    int n = snprintf(buf, sizeof buf, "%" PRIu64, v);
+    if (n < 0) n = 0;
+    if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+    return lyric_string_from_literal((const uint8_t*)buf, (int64_t)n);
+}
+
 /* Whether the decimal m * 10^e10 parses back to v at the target width. */
 static int round_trips(unsigned long long m, int e10, double v, int is_single) {
     char buf[40];

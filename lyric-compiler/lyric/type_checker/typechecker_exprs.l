@@ -17121,6 +17121,12 @@ func inferExprCore(
                 )
               )
             }
+            // `UInt` and `ULong` shift right logically (docs/01 §5): the
+            // receiver is spelled as an unsigned operand for the backends
+            // that lower from the IR type (`--target native`).
+            if bName == "shr" {
+              recordUnsignedOperand(tbl, bt, bRecv)
+            }
             return unrefine(bt)
           }
         }
