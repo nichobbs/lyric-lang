@@ -374,11 +374,6 @@ pub record SymbolTable {
   /// Each package's whole re-exports (`pub use P`), as registered with
   /// `symTableRegisterPackageReexports`.
   packageReexports: Map[String, List[String]]
-  /// The union's `FileImportRule.transitiveFrom`, for a package of one file.
-  transitiveOnlyFrom: Map[String, String]
-  /// W0033 reported, keyed `<fileId>|<name>`.
-  transitiveKeys: Map[String, Bool]
-  transitiveWarnings: List[Diagnostic]
   /// `<pkg>|<name>` -> whether `pkg` exports a function `name` to other
   /// packages (`symTablePackageExportsFunc`), filled on first use.
   funcExportCache: Map[String, Bool]
@@ -897,9 +892,6 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
     packageReexports = newMap(),
-    transitiveOnlyFrom = newMap(),
-    transitiveKeys = newMap(),
-    transitiveWarnings = newList(),
     funcExportCache = newMap(),
     recordCopySites = newMap(),
     invariantCtorSites = newMap(),
@@ -1119,6 +1111,30 @@ pub func symTableRegisterPackageReexports(tbl: in SymbolTable, pkg: in String, r
   if not tbl.packageReexports.containsKey(pkg) {
     tbl.packageReexports.add(pkg, reexports)
   }
+}
+
+/// The packages `pkg` re-exports, directly or through their own re-exports
+/// (`pub use`).
+pub func symTableReexportClosure(tbl: in SymbolTable, pkg: in String): List[String] {
+  val acc: List[String] = newList()
+  val queue: List[String] = newList()
+  queue.add(pkg)
+  var qi = 0
+  while qi < queue.count {
+    match mapGet(tbl.packageReexports, queue[qi]) {
+      case Some(rs) -> {
+        for r in rs {
+          if r != pkg and not acc.contains(r) {
+            acc.add(r)
+            queue.add(r)
+          }
+        }
+      }
+      case None -> ()
+    }
+    qi = qi + 1
+  }
+  acc
 }
 
 /// Whether package `pkg` re-exports package `dep` whole.
@@ -1735,9 +1751,6 @@ pub record FileImportRule {
   reachVia: Map[String, String]
   /// The local name an `import extern` binds -> that import.
   externVia: Map[String, String]
-  /// Package -> `<parent>|<child>`, the first import on the file's only
-  /// chain to it that is not a re-export (W0033).
-  transitiveFrom: Map[String, String]
 }
 
 /// Install one rule per file of the package being checked, indexed by
@@ -1928,194 +1941,6 @@ func reportSiblingImport(
   )
 }
 
-/// Install the union's transitive-only packages (`FileImportRule.
-/// transitiveFrom` for the package as a whole).
-pub func symTableSetTransitiveOnly(tbl: in SymbolTable, m: in Map[String, String]): Unit {
-  for k in mapKeys(tbl.transitiveOnlyFrom) {
-    tbl.transitiveOnlyFrom.remove(k)
-  }
-  for k in mapKeys(m) {
-    match mapGet(m, k) {
-      case Some(v) -> tbl.transitiveOnlyFrom.add(k, v)
-      case None -> ()
-    }
-  }
-}
-
-// W0033 once per name and file (or package, `f` -1).
-func warnTransitive(tbl: in SymbolTable, f: in Int, shown: in String, msg: in String, sp: in Span): Unit {
-  val key = toString(f) + "|" + shown
-  if tbl.transitiveKeys.containsKey(key) {
-    return
-  }
-  tbl.transitiveKeys.add(key, true)
-  tbl.transitiveWarnings.add(warningDiagnostic("W0033", msg, sp))
-}
-
-// The file that judges a name written at `sp` for W0033: its file in a
-// package of several files, -1 for a package of one file, or -2 when no
-// import rule applies (another package's scope, a synthesised item).
-func transitiveJudge(tbl: in SymbolTable, sp: in Span): Int {
-  val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
-    return -2
-  }
-  if tbl.fileRules.count < 2 {
-    return -1
-  }
-  val cur = symTableCurrentFile(tbl)
-  if cur == -2 {
-    return -2
-  }
-  val f = symTableFileOfSpan(tbl, sp)
-  if f >= 0 {
-    f
-  } else if cur >= 0 {
-    cur
-  } else {
-    -2
-  }
-}
-
-// D141 without `pub use` (docs/70 §4.3): W0033 when the bare `name` of
-// package `origin` is visible to the file written at `sp` only through a
-// whole import that does not re-export `origin`.  `parent` is the union or
-// enum of a case ("" otherwise): importing the type selectively makes its
-// cases visible.
-func noteTransitiveBare(tbl: in SymbolTable, origin: in String, name: in String, parent: in String, sp: in Span): Unit {
-  if origin.length == 0 or origin == "Std.Core" or origin == symTableScopePkg(tbl) {
-    return
-  }
-  val f = transitiveJudge(tbl, sp)
-  if f == -2 {
-    return
-  }
-  val from = if f >= 0 {
-    mapGet(tbl.fileRules[f].transitiveFrom, origin)
-  } else {
-    mapGet(tbl.transitiveOnlyFrom, origin)
-  }
-  // A case reached as a function (a constructor) names no parent here.
-  val caseParent = if parent.length > 0 {
-    parent
-  } else {
-    match symTableTryFindInPackage(tbl, origin, name) {
-      case Some(cs) -> caseParentName(tbl, cs)
-      case None -> ""
-    }
-  }
-  match from {
-    case Some(edge) -> {
-      // `edge` is `<parent>|<child>`: the first import on the chain that is
-      // not a re-export.
-      var bar = -1
-      var ci = 0
-      while ci < edge.length and bar < 0 {
-        if edge.substring(ci, 1) == "|" {
-          bar = ci
-        }
-        ci = ci + 1
-      }
-      val via = if bar >= 0 { edge.substring(0, bar) } else { edge }
-      val hop = if bar >= 0 { edge.substring(bar + 1) } else { origin }
-      val names = if f >= 0 { tbl.fileRules[f].namesVia } else { newMap() }
-      val selected = if f >= 0 {
-        names.containsKey(origin + "|" + name) or (caseParent.length > 0 and names.containsKey(origin + "|" + caseParent))
-      } else {
-        tbl.importVisibleNames.containsKey(origin + "|" + name) or
-          (caseParent.length > 0 and tbl.importVisibleNames.containsKey(origin + "|" + caseParent))
-      }
-      if selected {
-        return
-      }
-      warnTransitive(
-        tbl,
-        f,
-        name,
-        "'" + name + "' is visible here only because " + via + " imports " + hop + ", which " + via +
-          " does not re-export; add `import " +
-          origin +
-          "` to this file, or re-export it from " +
-          via +
-          " with `pub use " +
-          hop +
-          "` (a later release requires one, docs/70 §4.3)",
-        sp
-      )
-    }
-    case None -> ()
-  }
-}
-
-/// `X.member` written at `sp` that resolved to a declaration of `origin`, a
-/// package `X` imports (#7799): W0033 unless `X` re-exports `origin`
-/// (`pub use`, docs/70 §4.3).
-pub func symTableNoteQualifiedReexport(
-  tbl: in SymbolTable,
-  qualifier: in String,
-  origin: in String,
-  member: in String,
-  sp: in Span,
-): Unit {
-  if origin.length == 0 or origin == qualifier or symTablePackageReexports(tbl, qualifier, origin) {
-    return
-  }
-  val f = transitiveJudge(tbl, sp)
-  if f == -2 {
-    return
-  }
-  warnTransitive(
-    tbl,
-    f,
-    qualifier + "." + member,
-    "'" + qualifier + "." + member + "' names " + origin + "." + member + ", which " + qualifier +
-      " imports but does not re-export; write `" +
-      origin +
-      "." +
-      member +
-      "` with `import " +
-      origin +
-      "`, or re-export it from " +
-      qualifier +
-      " with `pub use " +
-      origin +
-      "` (a later release requires one, docs/70 §4.3)",
-    sp
-  )
-}
-
-// A qualified `pkg.member` that names a package the file reaches only
-// through its imports' imports (docs/70 §4.3 removes that reach): W0033.
-func noteTransitiveQualified(tbl: in SymbolTable, pkg: in String, member: in String, sp: in Span): Unit {
-  val curPkg = symTableScopePkg(tbl)
-  if pkg.length == 0 or pkg == curPkg or pkg == "Std.Core" {
-    return
-  }
-  val f = transitiveJudge(tbl, sp)
-  if f == -2 {
-    return
-  }
-  val direct = if f >= 0 { tbl.fileRules[f].directVia.containsKey(pkg) } else { symTableScopeAllows(tbl, pkg) }
-  if direct {
-    return
-  }
-  warnTransitive(
-    tbl,
-    f,
-    pkg + "." + member,
-    "package " + pkg + " is not imported here; '" + pkg + "." + member +
-      "' resolves only because an imported package imports it; add `import " +
-      pkg +
-      "` (a later release requires it, docs/70 §4.3)",
-    sp
-  )
-}
-
-/// The W0033 warnings noted while checking the package.
-pub func symTableTransitiveWarnings(tbl: in SymbolTable): List[Diagnostic] {
-  tbl.transitiveWarnings
-}
-
 /// Note a bare name, written at `sp`, that resolved to `sym` through the
 /// union of the package's imports: T0219 when the file it is written in does
 /// not make it visible and a sibling file's import does (docs/70 §4.1).  The
@@ -2124,7 +1949,6 @@ pub func symTableTransitiveWarnings(tbl: in SymbolTable): List[Diagnostic] {
 /// from different packages is T0123, as the backends still resolve bare
 /// names package-wide (#8690).
 pub func symTableNoteBareUse(tbl: in SymbolTable, sym: in Symbol, sp: in Span): Unit {
-  noteTransitiveBare(tbl, sym.originPackage, sym.name, caseParentName(tbl, sym), sp)
   val f = useFileForSiblingCheck(tbl, sp)
   if f < 0 {
     return
@@ -2154,7 +1978,6 @@ pub func symTableNoteBareUse(tbl: in SymbolTable, sym: in Symbol, sp: in Span): 
 /// `symTableNoteBareUse` for a bare call or function value `name` bound to a
 /// function of `origin`.
 pub func symTableNoteBareFuncUse(tbl: in SymbolTable, origin: in String, name: in String, sp: in Span): Unit {
-  noteTransitiveBare(tbl, origin, name, "", sp)
   val f = useFileForSiblingCheck(tbl, sp)
   if f < 0 {
     return
@@ -2193,9 +2016,6 @@ pub func symTableNoteQualifiedUse(
   sp: in Span,
   transitive: in Bool,
 ): Unit {
-  if transitive {
-    noteTransitiveQualified(tbl, pkg, member, sp)
-  }
   val f = useFileForSiblingCheck(tbl, sp)
   if f < 0 {
     return

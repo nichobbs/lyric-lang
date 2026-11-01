@@ -1104,36 +1104,14 @@ func isPlainLong(t: in Type): Bool {
   }
 }
 
-// #7345: is `target` reachable from `pkg` by following declared `import`s
-// transitively? Starting the walk from the CURRENT file's own package (whose
-// registered import list already includes every package it directly
-// imports) and following each visited package's own declared imports in turn
-// closes the exact gap #6287's writeup flagged as blocking a broader
-// unimported-name rejection: the stdlib's kernel/host re-export idiom
-// (`Std.Collections` importing `Std.CollectionsHost`, which is where
-// `List`/`Map` are actually declared) is reachable through this walk even
-// though the file itself never names `Std.CollectionsHost`. Bounded by the
-// total package count in the build (a `visited` map), so it terminates even
-// if the import graph were ever cyclic.
+// #7345: is `target` reachable from `startPkg`: one of its own imports, or
+// a package one of them re-exports (`pub use`), transitively?  A package an
+// import merely imports is not reachable (docs/70 §4.3, D311): the kernel/host
+// idiom (`Std.Collections` and `Std.CollectionsHost`) is a re-export.
 func symTableImportReachable(tbl: in SymbolTable, startPkg: in String, target: in String): Bool {
-  val visited: Map[String, Bool] = newMap()
-  val queue: List[String] = newList()
-  queue.add(startPkg)
-  var head = 0
-  while head < queue.count {
-    val p = queue[head]
-    head = head + 1
-    if p == target {
+  for imp in symTablePackageImportsOf(tbl, startPkg) {
+    if imp == target or symTableReexportClosure(tbl, imp).contains(target) {
       return true
-    }
-    if not visited.containsKey(p) {
-      visited.add(p, true)
-      val imps = symTablePackageImportsOf(tbl, p)
-      var i = 0
-      while i < imps.count {
-        queue.add(imps[i])
-        i = i + 1
-      }
     }
   }
   false
@@ -1289,8 +1267,10 @@ func symbolIsPackagePrivateBinding(sym: in Symbol): Bool {
 // re-export walk)? Shared by every package-qualified reachability check
 // (expression paths, type paths, pattern heads) so the two-clause OR isn't
 // re-typed at each call site.
+// A qualified reference names a package the file imports itself, in any
+// form (docs/70 §4.3, D311): one an import merely imports cannot be named.
 func qualifiedPkgReachable(tbl: in SymbolTable, curPkg: in String, pkg: in String): Bool {
-  symTableScopeAllows(tbl, pkg) or symTableImportReachable(tbl, curPkg, pkg)
+  symTableScopeAllows(tbl, pkg)
 }
 
 // #7548: T0020 reporter for a qualified reference whose ACTUAL declaring
@@ -6665,9 +6645,6 @@ func resolveQualifiedFuncValue(
     for rc in reexported {
       funcs.add(rc)
     }
-    if reexported.count > 0 {
-      symTableNoteQualifiedReexport(tbl, pkg, reexported[0].originPackage, name, sp)
-    }
   }
   if funcs.count == 0 {
     return None
@@ -6746,11 +6723,10 @@ func anyPackageEndsWithQualifier(tbl: in SymbolTable, qualifier: in String): Boo
   false
 }
 
-// #7799: does a package `pkg` imports declare `name`, so that `pkg` re-exports
-// it to the file that imports `pkg` (the kernel/host idiom)?
+// #7799: does a package `pkg` re-exports declare `name`?
 func packageReexportsMember(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
-  for imp in symTablePackageImportsOf(tbl, pkg) {
-    if symTablePackageHasMember(tbl, imp, name) {
+  for q in symTableReexportClosure(tbl, pkg) {
+    if symTablePackageHasMember(tbl, q, name) {
       return true
     }
   }
@@ -16676,7 +16652,7 @@ func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
     // prefix.  MSIL erases a `List` of tuples to `object`, so `indexOf`,
     // `lastIndexOf` and `remove` could not tell it from a `String` or `Map`.
     case TyUser(tid, _, _) -> if isStdCollectionsHostType(tbl, tid, "List") {
-      val lkey = stdListRecvKeyPrefix() + recordCopySiteKey(sp)
+      val lkey = stdListRecvSiteKey(sp)
       if not tbl.memberRecvClasses.containsKey(lkey) {
         tbl.memberRecvClasses.add(lkey, "Std.CollectionsHost.List")
       }
@@ -16685,11 +16661,6 @@ func recordMemberRecvClass(tbl: in SymbolTable, sp: in Span, t: in Type): Unit {
     }
     case _ -> ()
   }
-}
-
-/// The `memberRecvClasses` key prefix of a receiver that is the stdlib `List`.
-pub func stdListRecvKeyPrefix(): String {
-  "stdlist|"
 }
 
 func recordMemberRecvClassOfUser(tbl: in SymbolTable, sp: in Span, tid: in SymbolId): Unit {
@@ -21695,27 +21666,14 @@ func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
   pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
 }
 
-// #7799: `origin` is a package the qualifier's package re-exports, in the
-// kernel/host idiom of bare names (`Std.Collections` imports
-// `Std.CollectionsHost`, where `newList` is declared, so `import
-// Std.Collections` makes the bare `newList()` visible): the qualified spelling
-// `Coll.newList()` through that package or an alias of it finds the same
-// function.
+// #7799: `origin` is a package the qualifier's package re-exports (`pub use`,
+// directly or through its re-exports): `Std.Collections` re-exports
+// `Std.CollectionsHost`, where `newList` is declared, so the qualified
+// spelling `Coll.newList()` through it or an alias of it finds the function
+// the bare `newList()` does.  A package it only imports is not reached
+// (docs/70 §4.3, D311).
 func pkgReexportsFrom(tbl: in SymbolTable, qualifier: in String, origin: in String): Bool {
-  if origin.length == 0 {
-    return false
-  }
-  match mapGet(tbl.packageImports, qualifier) {
-    case Some(imps) -> {
-      for imp in imps {
-        if imp == origin {
-          return true
-        }
-      }
-      false
-    }
-    case None -> false
-  }
+  origin.length > 0 and symTableReexportClosure(tbl, qualifier).contains(origin)
 }
 
 // Every function named `name` that a call writing `args` fits, from every
@@ -22342,14 +22300,7 @@ func findDirectSigPick(
           }
         }
         if pkgCands.count > 0 {
-          val picked = pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
-          match picked {
-            case Some(ps) -> if not pkgMatchesQualifier(ps.originPackage, wantPkg) {
-              symTableNoteQualifiedReexport(tbl, wantPkg, ps.originPackage, name, fn.span)
-            }
-            case None -> ()
-          }
-          return picked
+          return pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
         }
         // A qualifier naming a package the file imports but no dependency
         // provides never falls back to a bare-name lookup: the qualified

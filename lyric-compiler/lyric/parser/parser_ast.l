@@ -1899,6 +1899,11 @@ pub record LambdaParamTypesSite {
 /// The key of a record-copy call site: its span's start and end offsets.
 pub func recordCopySiteKey(sp: in Span): String = spanKey(sp)
 
+/// The `SymbolTable.memberRecvClasses` key of a method call whose receiver,
+/// at `sp`, is the stdlib `List` (#8668): its own prefix keeps it apart from
+/// the receiver-class entry of the same span.
+pub func stdListRecvSiteKey(sp: in Span): String = "stdlist|" + spanKey(sp)
+
 /// The key of a method call site in `SymbolTable.methodCallArities`: the
 /// span of its callee with any parentheses or explicit type arguments
 /// removed (`o.m`, or `m` for a bare call to a sibling method), and the

@@ -11373,7 +11373,7 @@ func erasedRecvIsStdListMsil(cctx: in CodegenCtx, fctx: in FuncCtx, recvTy: in M
     case MObject -> ()
     case _ -> return false
   }
-  val siteKey = stdListRecvKeyPrefix() + recordCopySiteKey(recv.span)
+  val siteKey = stdListRecvSiteKey(recv.span)
   val key = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
     fctx.originPkg + "|" + siteKey
   } else {

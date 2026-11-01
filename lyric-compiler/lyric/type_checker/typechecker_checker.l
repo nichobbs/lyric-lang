@@ -5863,14 +5863,11 @@ pub record ImportedPackage {
   /// to the one THIS package imports instead of last-registered-wins (#2282).
   imports: List[String]
   /// The subset of `imports` this package imports whole (`import P`, not
-  /// selective or aliased).  A file that imports this package whole sees
-  /// these packages' names bare too (docs/01 §9.2, D141); the others it
-  /// does not.
+  /// selective or aliased).
   wholeImports: List[String]
   /// The packages this package re-exports whole (`pub use P`, docs/01
-  /// §9.3): the subset of `wholeImports` a file importing this package may
-  /// reach through it.  D141's reach through the other whole imports is
-  /// W0033 (docs/70 §4.3), removed in a later release.
+  /// §9.3): the subset of `wholeImports` a file importing this package
+  /// whole sees bare, transitively (docs/70 §4.3, D311).
   reexports: List[String] = newList()
 }
 
@@ -5963,7 +5960,7 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 }
 
 // What one list of imports makes visible (docs/01 §9.2): the packages it
-// imports whole, widened to the packages those import whole (D141), the
+// imports whole, widened to the packages those re-export (`pub use`, D311), the
 // `<package>|<name>` keys of its selectively imported names, its renamed
 // items, and its package aliases.  `wholeVia` and `namesVia`, parallel to
 // `whole` and `names`, hold the import that makes each one visible, as T0219
@@ -5971,12 +5968,6 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 record ImportSets {
   whole: List[String]
   wholeVia: List[String]
-  /// The packages of `whole` reached only through a whole import that does
-  /// not re-export them (D141 without `pub use`), each with the first import
-  /// on its chain that is not a re-export, as `<parent>|<child>`
-  /// (`transitiveFrom`, parallel): W0033 (docs/70 §4.3).
-  transitiveOnly: List[String]
-  transitiveFrom: List[String]
   names: List[String]
   namesVia: List[String]
   renames: List[RenamedImport]
@@ -6075,21 +6066,20 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     li = li + 1
   }
-  val directCount = whole.count
-  val parentOf: Map[String, String] = newMap()
   var w = 0
   while w < whole.count {
     var p = 0
     while p < importedPackages.count {
       if importedPackages[p].name == whole[w] {
-        val deps = importedPackages[p].wholeImports
+        // A whole import reaches what the package re-exports (`pub use`),
+        // transitively; its other imports are its own (docs/70 §4.3, D311).
+        val deps = importedPackages[p].reexports
         var d = 0
         while d < deps.count {
           if not seen.containsKey(deps[d]) {
             seen.add(deps[d], true)
             whole.add(deps[d])
             wholeVia.add(wholeVia[w])
-            parentOf.add(deps[d], whole[w])
           }
           d = d + 1
         }
@@ -6098,58 +6088,9 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     w = w + 1
   }
-  // A package is reached properly when the file imports it whole, or a
-  // package reached properly re-exports it (`pub use`).
-  val proper: Map[String, Bool] = newMap()
-  val queue: List[String] = newList()
-  var di = 0
-  while di < directCount {
-    proper.add(whole[di], true)
-    queue.add(whole[di])
-    di = di + 1
-  }
-  var qi = 0
-  while qi < queue.count {
-    for ip in importedPackages {
-      if ip.name == queue[qi] {
-        for r in ip.reexports {
-          if not proper.containsKey(r) {
-            proper.add(r, true)
-            queue.add(r)
-          }
-        }
-      }
-    }
-    qi = qi + 1
-  }
-  val transitiveOnly: List[String] = newList()
-  val transitiveFrom: List[String] = newList()
-  // Each is reported against the first import on its chain that is not a
-  // re-export: `Std.String` imports `Std.Collections` (not re-exported), which
-  // re-exports `Std.CollectionsHost`, is "Std.String imports Std.Collections".
-  for pkg in whole {
-    if not proper.containsKey(pkg) {
-      var child = pkg
-      var guard = 0
-      var going = true
-      while going and guard < whole.count {
-        match mapGet(parentOf, child) {
-          case Some(par) -> if proper.containsKey(par) { going = false } else { child = par }
-          case None -> {
-            going = false
-          }
-        }
-        guard = guard + 1
-      }
-      transitiveOnly.add(pkg)
-      transitiveFrom.add(match mapGet(parentOf, child) { case Some(par) -> par + "|" + child; case None -> "|" + child })
-    }
-  }
   ImportSets(
     whole = whole,
     wholeVia = wholeVia,
-    transitiveOnly = transitiveOnly,
-    transitiveFrom = transitiveFrom,
     names = names,
     namesVia = namesVia,
     renames = renames,
@@ -6227,19 +6168,6 @@ func renderImportDecl(imp: in ImportDecl): String {
   text
 }
 
-// `sets.transitiveOnly` -> the package that imports each (W0033).
-func transitiveFromMap(sets: in ImportSets): Map[String, String] {
-  val m: Map[String, String] = newMap()
-  var i = 0
-  while i < sets.transitiveOnly.count {
-    if not m.containsKey(sets.transitiveOnly[i]) {
-      m.add(sets.transitiveOnly[i], sets.transitiveFrom[i])
-    }
-    i = i + 1
-  }
-  m
-}
-
 // One file's import rule (docs/70 §4.1): what its own imports make visible,
 // each with the import that does it.
 func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in ImportSets): FileImportRule {
@@ -6307,8 +6235,7 @@ func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in Im
     namesVia = namesVia,
     directVia = directVia,
     reachVia = reachVia,
-    externVia = externVia,
-    transitiveFrom = transitiveFromMap(sets)
+    externVia = externVia
   )
 }
 
@@ -6388,7 +6315,6 @@ func installImportRule(
     symTableSetFileRules(tbl, rules)
   }
   symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
-  symTableSetTransitiveOnly(tbl, transitiveFromMap(u))
 }
 
 // Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
@@ -7459,9 +7385,6 @@ func checkWithImportedPackagesCore(
   // A `?` operand whose success type nothing fixed (#8181).
   collectPropagateFallbacks(tbl)
   for w in symTableSiblingImportErrors(tbl) {
-    diag.add(w)
-  }
-  for w in symTableTransitiveWarnings(tbl) {
     diag.add(w)
   }
 
