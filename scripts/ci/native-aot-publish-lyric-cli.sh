@@ -120,6 +120,12 @@ if [ "$dep_out" != "42" ]; then
   exit 1
 fi
 
+# The compiler's recursion over a deep expression tree must not depend on the
+# process's main-thread stack (1 MB on Windows): the CLI runs it on a thread
+# with its own stack (bootstrap/src/Lyric.Cli.Aot/Program.cs).  Run the
+# published binary with a 1 MB main-thread limit against deep expressions.
+LYRIC_BIN="$native_cli" bash scripts/ci/small-stack-compile.sh
+
 size_kb=$(du -k "$native_cli" | cut -f1)
 echo "OK: Native AOT lyric CLI published (${size_kb} KB), built+ran an example and a restored-dependency build end-to-end." >> "$GITHUB_STEP_SUMMARY"
 

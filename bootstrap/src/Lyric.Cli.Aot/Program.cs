@@ -24,9 +24,36 @@ public static class Program
     // an env var (rather than a new argv flag) keeps this file a pure
     // trampoline per the #1082 contract: no path-discovery or domain logic,
     // just relaying build metadata the self-hosted CLI can't otherwise see.
+    //
+    // The compiler is recursive over the syntax tree (the type checker, the
+    // lowering passes and the emitters each descend one frame group per nesting
+    // level), so the stack it needs grows with the depth of the user's
+    // expressions: a 160-term `a + b + ...` chain is a 160-deep tree.  A
+    // process's main-thread stack is whatever the platform gives it (1 MB on
+    // Windows, `ulimit -s` elsewhere, 8 MB typically), which a legitimate
+    // program can exceed, so the CLI runs on a thread whose stack is sized for
+    // the compiler instead.  The size is address space reserved up front;
+    // pages are committed as they are touched.
+    const int CompilerStackBytes = 512 * 1024 * 1024;
+
     public static int Main(string[] args)
     {
         System.Environment.SetEnvironmentVariable("LYRIC_BUILD_VERSION", LyricBuildVersion.Value);
-        return Lyric.Cli.Program.main(args);
+        int exitCode = 0;
+        var worker = new System.Threading.Thread(
+            () => { exitCode = Lyric.Cli.Program.main(args); },
+            CompilerStackBytes);
+        try
+        {
+            worker.Start();
+        }
+        catch (System.OutOfMemoryException)
+        {
+            // The address space (`ulimit -v`, a container limit) cannot hold
+            // the reservation: run on the main thread's own stack instead.
+            return Lyric.Cli.Program.main(args);
+        }
+        worker.Join();
+        return exitCode;
     }
 }
