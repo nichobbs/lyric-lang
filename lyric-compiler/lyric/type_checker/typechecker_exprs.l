@@ -6,6 +6,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 import Lyric.HoistEngine as HoistEngine
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary

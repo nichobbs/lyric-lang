@@ -21,6 +21,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 record DaCtx {
   name: String

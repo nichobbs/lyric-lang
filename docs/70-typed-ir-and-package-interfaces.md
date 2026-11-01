@@ -733,8 +733,16 @@ builder (I0002) rather than on the current checker.
   examples were migrated. Step 2 (D311) makes it the rule: a whole import
   reaches only what the imported package re-exports, a qualified reference
   through a package resolves only to what it re-exports, and a package the
-  file does not import cannot be named; `W0033` is retired. Next:
-  `Lyric.Resolve`.
+  file does not import cannot be named; `W0033` is retired. Step 3 (D313)
+  adds `Lyric.Symbols` (`SymbolId`, `DefPath` and the interner, moved out of
+  the checker) and `Lyric.Resolve`: the declaration table with a DefPath for
+  every declaration kind (a function's path carries its parameter types as
+  written, the overload discriminator), a per-file import scope, and the
+  §4.3 lookup (`resolveBare`, `resolvePath`) with the tier rule of #8709, a
+  name ranked by how the file sees it. The checker does not consume it yet.
+  Next: the resolver's body walk and a differential mode against the
+  checker, then the checker consuming resolutions with its lookups deleted
+  and `AliasRewriter` and `TypeAliasResolve` folded in.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.

@@ -14,6 +14,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 pub func isPlainMarker(name: in String): Bool = name == "Plain"
 

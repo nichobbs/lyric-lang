@@ -6,6 +6,11 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+pub use Lyric.Symbols
+
+// The identity types live in `Lyric.Symbols` (docs/70 §4.2) so the resolver
+// can name them before the checker runs; the checker re-exports them for the
+// packages that name a `SymbolId` through it.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Primitive types.
@@ -25,56 +30,6 @@ pub union PrimType {
   case PtString
   case PtUnit
   case PtNever
-  // ─────────────────────────────────────────────────────────────────────────────
-  // §2. Symbol identity (docs/70 §4.2).
-  // ─────────────────────────────────────────────────────────────────────────────
-}
-
-/// A declaration's identity within one compilation: its `DefPath`
-/// (`defPathKey`) interned by `symTableInternDefPath`, dense from 1.  Two
-/// registrations of one declaration (a package reached both as a restored
-/// dependency and from source) intern to the same id.  A declaration with no
-/// package, and the built-in types below, take ids no DefPath names.
-@stable(since = "0.1")
-pub record SymbolId {
-  id: Int
-}
-
-/// The stable path of a declaration (docs/70 §4.2): its declaring package
-/// and its path inside it.  A type is `Pkg::Name`; an extern type with a host
-/// name is the host name under the `extern` root, so every extern type naming
-/// one host type is one declaration.  The key is what an interface artifact
-/// will record.
-pub record DefPath {
-  pkg: String
-  segments: List[String]
-}
-
-/// `Pkg::A::B`: the rendered form of `p`, and the key it is interned under.
-pub func defPathKey(p: in DefPath): String {
-  var key = p.pkg
-  for s in p.segments {
-    key = key + "::" + s
-  }
-  key
-}
-
-/// The DefPath of the type `name` that package `pkg` declares.
-pub func typeDefPath(pkg: in String, name: in String): DefPath {
-  val segs: List[String] = newList()
-  segs.add(name)
-  DefPath(pkg = pkg, segments = segs)
-}
-
-/// The DefPath of an extern type bound to the host type `hostName`.
-pub func externTypeDefPath(hostName: in String): DefPath {
-  val segs: List[String] = newList()
-  segs.add(hostName)
-  DefPath(pkg = "extern", segments = segs)
-}
-
-pub func symbolIdEq(a: in SymbolId, b: in SymbolId): Bool {
-  a.id == b.id
 }
 
 // The built-in `Task[T]` (docs/68 §3): the handle `spawn f(x)` returns, with

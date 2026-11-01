@@ -7,6 +7,9 @@ import Std.Collections
 import Std.String
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
+import Lyric.Resolve.{DepPackage, buildResolverContext}
+import Std.Environment.{getVarOrDefault}
 import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7243,6 +7246,13 @@ func checkWithImportedPackagesCore(
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
   symTableSetScope(tbl, userPkg, userImports)
+  if getVarOrDefault("LYRIC_RESOLVE_DIFF", "") == "1" {
+    val deps: List[DepPackage] = newList()
+    for ip in importedPackages {
+      deps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
+    }
+    tbl.diffCtx.add(buildResolverContext(deps, file, tbl.interner))
+  }
 
   // T2.5: validate range subtypes.
   var k = 0
@@ -7388,6 +7398,9 @@ func checkWithImportedPackagesCore(
     diag.add(w)
   }
 
+  for dd in tbl.diffLog {
+    diag.add(dd)
+  }
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }
 

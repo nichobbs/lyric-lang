@@ -13,6 +13,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Symbols
 
 /// Whether `t` is a declared `foreign record`.
 pub func isForeignRecordType(tbl: in SymbolTable, t: in Type): Bool {
