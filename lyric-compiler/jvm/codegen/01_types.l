@@ -1750,7 +1750,12 @@ func recordRetClassOfBundleTe(
     // both so a mono-specialised copy of a cross-package generic function
     // (#6929) resolves the same way its unspecialised original does.
     case TRef(path) -> {
-      if path.segments.count == 1 and externTypes.containsKey(path.segments[0]) {
+      // A reserved type keyword (`Unit`, `Int`, `String`, ...) always names the
+      // built-in type, never a constructor that shares its spelling: a union
+      // case `Unit` registers the bare ctor key `Unit`, and resolving the
+      // `Unit` return type through it made the call site `checkcast` a void
+      // result to the case class (J008 stackmap underflow).
+      if path.segments.count == 1 and (isPrimitiveTypeKeyword(path.segments[0]) or externTypes.containsKey(path.segments[0])) {
         None
       } else {
         recordRetClassOfBundleHead(path, owner, ctorReg)
@@ -2620,6 +2625,54 @@ pub func enumCaseClassForExpecting(ctx: in FuncCtx, caseName: in String): Option
         case None -> ()
       }
     }
+  }
+  enumCaseClassBareScoped(ctx, caseName)
+}
+
+// The T0222 message for a bare enum case `caseName` that several enums declare
+// (`enumcaseambig:`, written by `collectFileSigsSeeded`) where the file's own
+// package and its imports declare none of them (`enumcasevis:`, written by
+// `importAwareRegistry`); None when the case is not ambiguous here.  The bare
+// key then holds whichever enum registered first, and that order differs
+// between a bundle and its restored dependencies, so picking it reads another
+// enum's variant.  Same diagnostic as MSIL and native.
+pub func ambiguousBareEnumCaseJvm(
+  funcSigs: in Map[String, JvmFuncSig], pkgName: in String, caseName: in String
+): Option[String] {
+  match mapGet(funcSigs, "enumcaseambig:" + caseName) {
+    case Some(ambig) -> {
+      if funcSigs.containsKey("enumcasevis:" + caseName) {
+        return None
+      }
+      var names = ""
+      for cls in split(ambig.owner, ",") {
+        if names.length > 0 {
+          names = names + ", "
+        }
+        names = names + cls.replace("/", ".").replace("$", ".")
+      }
+      Some(
+        value = "error[T0222]: ambiguous enum case '" + caseName + "' in package '" + pkgName.replace("/", ".") +
+          "': it is declared by " +
+          names +
+          ", and none of those enums is declared in this package, imported by it, or named by an expected type, " +
+          "so the compiler cannot tell which one is meant (it would otherwise pick by registration order and read the " +
+          "wrong variant).  Qualify the case with its enum (`Enum." +
+          caseName +
+          "`) or import the package that declares " +
+          "the enum you mean."
+      )
+    }
+    case None -> None
+  }
+}
+
+// `enumCaseClassBare`, refusing the one answer it cannot give soundly (T0222,
+// see `ambiguousBareEnumCaseJvm`).
+pub func enumCaseClassBareScoped(ctx: in FuncCtx, caseName: in String): Option[String] {
+  match ambiguousBareEnumCaseJvm(ctx.funcSigs, ctx.pkgName, caseName) {
+    case Some(msg) -> panic(msg)
+    case None -> ()
   }
   enumCaseClassBare(ctx, caseName)
 }

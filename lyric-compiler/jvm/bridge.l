@@ -1260,8 +1260,10 @@ func externSeedForFileCached(
 // unqualified call in every file to whichever package registered first —
 // the #2535 collision class.  Qualified (`owner/name`) and instance
 // (`class#method`) keys are copied unchanged.
-func importAwareRegistry(
-  file: in SourceFile, registry: in Map[String, JvmFuncSig], externSeed: in Map[String, String]
+pub func importAwareRegistry(
+  file: in SourceFile,
+  registry: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
 ): Map[String, JvmFuncSig] {
   // The bare names the file may use, in the checker's order (docs/01 §9.2,
   // D141), lowest priority first so a later pass wins: the packages its
@@ -1390,6 +1392,15 @@ func overlayOwnerNamesJvm(
             if not onlySelected or selectedBareKeyJvm(owner, bare, sig2, selectedNames) {
               overlay.remove(bare)
               overlay.add(bare, sig2)
+              // A bare enum case re-pointed at a package this file sees: the
+              // case is not ambiguous HERE even if other packages declare it
+              // too (`enumCaseClassBareScoped`).
+              if Str.startsWith(bare, "enumcase:") {
+                val visKey = "enumcasevis:" + bare.substring(9, bare.length - 9)
+                if not overlay.containsKey(visKey) {
+                  overlay.add(visKey, sig2)
+                }
+              }
             }
           }
           case None -> ()

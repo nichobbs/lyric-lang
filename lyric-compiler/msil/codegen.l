@@ -2963,14 +2963,39 @@ pub func registerEnumDeclMsil(cctx: in CodegenCtx, pkgName: in String, decl: in 
   }
 }
 
+// The diagnostic for a bare enum case that several enums declare and none of
+// them is visible from the referencing package (T0222; the JVM and native
+// backends carry the same text in their own packages, which cannot import this
+// one).  Reported as a positioned `Diagnostic` on `cctx.diagnostics`, which
+// `Msil.Bridge` turns into a failed build right after codegen.  `declarers` are the
+// `<pkg>::<Enum>` entries in registration order.
+func ambiguousBareEnumCaseMessageMsil(caseName: in String, currentPkg: in String, declarers: in List[String]): String {
+  var names = ""
+  for d in declarers {
+    if names.length > 0 {
+      names = names + ", "
+    }
+    names = names + d.replace("::", ".")
+  }
+  "ambiguous enum case '" + caseName + "' in package '" + currentPkg + "': it is declared by " + names +
+    ", and none of those enums is declared in this package, imported by it, or named by an expected type, " +
+    "so the compiler cannot tell which one is meant (it would otherwise pick by registration order and read the " +
+    "wrong ordinal).  Qualify the case with its enum (`Enum." +
+    caseName +
+    "`) or import the package that declares " +
+    "the enum you mean."
+}
+
 // The ordinal of a bare enum case `caseName` with no expected enum type in
 // scope: the current package's own enum with that case, else one declared by
-// a package whose import makes the case visible bare, else the first
-// registered (the previous behaviour).  Registration order differs between a
-// bundle and its restored dependencies (stdlib enums register before a
-// restored package's), so first-registered alone read
+// a package whose import makes the case visible bare.  When several enums
+// declare the case and none of them is visible, it is T0222: registration
+// order differs between a bundle and its restored dependencies (stdlib enums
+// register before a restored package's), so picking the first registered read
 // `Std.File.EntryKind.Other` for a restored `Category.Other` (#8648).
-func resolveBareEnumCaseOrdinalByScope(cctx: in CodegenCtx, fctx: in FuncCtx, caseName: in String): Option[Int] {
+pub func resolveBareEnumCaseOrdinalByScope(
+  cctx: in CodegenCtx, fctx: in FuncCtx, caseName: in String, span: in Span
+): Option[Int] {
   match mapGet(cctx.enumCaseDeclarers, caseName) {
     case None -> mapGet(cctx.enumCaseOrdinals, caseName)
     case Some(declarers) -> {
@@ -2990,6 +3015,9 @@ func resolveBareEnumCaseOrdinalByScope(cctx: in CodegenCtx, fctx: in FuncCtx, ca
           }
         }
       }
+      cctx.diagnostics.add(
+        errorDiagnostic("T0222", ambiguousBareEnumCaseMessageMsil(caseName, currentPkg, declarers), span)
+      )
       mapGet(cctx.enumCaseOrdinals, caseName)
     }
   }
@@ -12147,7 +12175,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 case Some(o) -> Some(value = o)
                 case None -> match qualifiedOrdHit {
                   case Some(o) -> Some(value = o)
-                  case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, name)
+                  case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, name, expr.span)
                 }
               }
               match ordHit {
@@ -17808,7 +17836,7 @@ func lowerPatternTestMsil(
           }
           val ordHit = match hintedOrd {
             case Some(o) -> Some(value = o)
-            case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, pBindName)
+            case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, pBindName, pat.span)
           }
           match ordHit {
             case Some(ordv) -> {
@@ -18061,7 +18089,7 @@ func lowerPatternTestMsil(
         // fall back to the bare name for robustness.
         val scopedOrd = match resolveEnumCaseOrdinalByScope(cctx, fctx, enumPenult, caseName) {
           case Some(o) -> Some(value = o)
-          case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, caseName)
+          case None -> resolveBareEnumCaseOrdinalByScope(cctx, fctx, caseName, pat.span)
         }
         match scopedOrd {
           case Some(ordv) -> {
@@ -27102,7 +27130,7 @@ func lowerStmtsFromMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 // Create a fresh FuncCtx.  Parameters are added to `slots` and `types` but
 // NOT to `locals` (they are accessed via MLdarg, not MLdloc).
-func makeFuncCtxMsil(
+pub func makeFuncCtxMsil(
   pkgName: in String,
   className: in String,
   funcName: in String,

@@ -2693,7 +2693,7 @@ func jvmBridgePanicDiagnostic(message: in String): Diagnostic {
 // diagnostics are collected (`emitProjectCollecting`).
 func jvmBridgePanicDiagnosticQuiet(message: in String): Diagnostic {
   val sp = spanForPanicMessage(message)
-  if message.startsWith("error[J0") {
+  if message.startsWith("error[J0") or message.startsWith("error[T0") {
     val code = match Str.indexOf(message, "]") {
       case Some(closeIdx) -> if closeIdx > 6 { Str.substring(message, 6, closeIdx - 6) } else { "J008" }
       case None -> "J008"
