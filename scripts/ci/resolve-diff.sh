@@ -7,6 +7,9 @@
 # produce none: a difference is either a resolver bug or a rule change that
 # needs a census and a migration first (docs/70 §12.2).
 #
+# A project that exits non-zero shows no R0001 either, so it is reported as not
+# covered (see the end of the script).
+#
 # Usage: scripts/ci/resolve-diff.sh [path/to/lyric] [manifest ...]
 # With no manifests, every lyric.toml under the repository is checked except
 # those under hidden directories, testdata/ and node_modules/.  The binary
@@ -36,11 +39,13 @@ if [ ${#manifests[@]} -eq 0 ]; then
 fi
 
 disagreements=0
+failures=0
 checked=0
 for m in "${manifests[@]}"; do
   path="$m"
   case "$path" in /*) ;; *) path="$repo/$path" ;; esac
-  out="$(LYRIC_RESOLVE_DIFF=1 "$lyric_bin" check --manifest "$path" --target dotnet 2>&1)" || true
+  rc=0
+  out="$(LYRIC_RESOLVE_DIFF=1 "$lyric_bin" check --manifest "$path" --target dotnet 2>&1)" || rc=$?
   checked=$((checked + 1))
   hits="$(printf '%s\n' "$out" | grep 'R0001' || true)"
   if [ -n "$hits" ]; then
@@ -48,7 +53,20 @@ for m in "${manifests[@]}"; do
     printf '%s\n' "$hits"
     disagreements=$((disagreements + 1))
   fi
+  # A project that does not check cleanly shows no R0001 either, so the census
+  # would pass vacuously over it.
+  if [ "$rc" -ne 0 ]; then
+    echo "::warning::lyric check exited $rc in $m, so the census does not cover it"
+    printf '%s\n' "$out" | tail -5
+    failures=$((failures + 1))
+  fi
 done
 
-echo "resolve-diff: $checked project(s) checked, $disagreements with disagreements"
+echo "resolve-diff: $checked project(s) checked, $disagreements with disagreements, $failures failing to check"
+# A project that does not check here (an unbuilt local dependency, a package
+# that needs a restore, a native-only library) is reported, not failed, unless
+# RESOLVE_DIFF_STRICT=1 asks for full coverage.
+if [ "${RESOLVE_DIFF_STRICT:-0}" = "1" ] && [ "$failures" -ne 0 ]; then
+  exit 1
+fi
 [ "$disagreements" -eq 0 ]
