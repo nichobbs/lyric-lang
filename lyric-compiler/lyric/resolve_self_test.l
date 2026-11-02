@@ -415,3 +415,44 @@ test "an extern type declared in source and imported by name is one declaration"
   assertEqual(pathKeyOf(ctx, a), "extern::System.Text.StringBuilder", "declared")
   assertEqual(pathKeyOf(ctx, b), "extern::System.Text.StringBuilder", "imported")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// visibleDecls: every meaning of a name the file can reach.
+// ─────────────────────────────────────────────────────────────────────────────
+func visibleKeys(ctx: in ResolverContext, name: in String): List[String] {
+  val keys: List[String] = newList()
+  for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, 0), name, UseValue) {
+    match defPathKeyOf(ctx.tbl.interner, d.id) {
+      case Some(k) -> keys.add(k)
+      case None -> ()
+    }
+  }
+  keys
+}
+
+test "visibleDecls lists every tier the file reaches the name at, and no other" {
+  val a = "package A\npub record Row { v: Int }\n"
+  val b = "package B\npub record Row { w: Int }\n"
+  val c = "package C\npub record Row { x: Int }\n"
+  val deps: List[String] = newList()
+  deps.add(a)
+  deps.add(b)
+  deps.add(c)
+  val ctx = ctxOf(deps, "package P\nimport A\nimport B.{Row}\nrecord Row { own: Int }\n")
+  val keys = visibleKeys(ctx, "Row")
+  assertEqualInt(keys.count, 3, "own, A whole import, B selective import")
+  assertTrue(keys.contains("P::Row"), "own")
+  assertTrue(keys.contains("A::Row"), "whole import")
+  assertTrue(keys.contains("B::Row"), "selective import")
+  assertTrue(not keys.contains("C::Row"), "C is not imported")
+}
+
+test "visibleDecls follows a rename and leaves an unlisted name of a selective import out" {
+  val a = "package A\npub func f(): Int = 1\npub func g(): Int = 2\n"
+  val deps: List[String] = newList()
+  deps.add(a)
+  val ctx = ctxOf(deps, "package P\nimport A.{f as h}\n")
+  assertEqualInt(visibleKeys(ctx, "h").count, 1, "the renamed function")
+  assertEqualInt(visibleKeys(ctx, "f").count, 0, "the original name is not bound")
+  assertEqualInt(visibleKeys(ctx, "g").count, 0, "g is not listed")
+}

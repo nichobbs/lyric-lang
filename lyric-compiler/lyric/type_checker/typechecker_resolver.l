@@ -991,7 +991,7 @@ func resolveTypePath(
   // `val c: B.Choice = B.Choice(...)` is a mismatch between two types named
   // `Choice`.
   if not defaultPickMatchesOwner {
-    val qualifiedCands = symTableTryFindAll(tbl, last)
+    val qualifiedCands = symTableTryFindAllNamed(tbl, last)
     var qi = qualifiedCands.count - 1
     while qi >= 0 {
       if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
@@ -1020,7 +1020,7 @@ func resolveTypePath(
       }
       // Same type-symbol preference as the single-segment arm: a non-type
       // symbol shadowing a same-named type must not hide it in type position.
-      val all = symTableTryFindAll(tbl, last)
+      val all = symTableTryFindAllNamed(tbl, last)
       var ti = 0
       while ti < all.count {
         if symbolIsType(all[ti]) and qualifiedTypeOwnerAccepts(tbl, ownerPkg, all[ti]) {

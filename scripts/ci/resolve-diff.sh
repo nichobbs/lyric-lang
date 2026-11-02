@@ -3,7 +3,8 @@
 #
 # With LYRIC_RESOLVE_DIFF=1 the type checker answers every bare name lookup
 # twice, once through Lyric.Resolve and once through its own scan, and reports
-# a difference as an R0001 warning.  Every project in the repository must
+# a difference as an R0001 warning (the one meaning of a name) or an R0002 warning
+# (the set of meanings a name can have in the file).  Every project in the repository must
 # produce none: a difference is either a resolver bug or a rule change that
 # needs a census and a migration first (docs/70 §12.2).
 #
@@ -47,7 +48,7 @@ for m in "${manifests[@]}"; do
   rc=0
   out="$(LYRIC_RESOLVE_DIFF=1 "$lyric_bin" check --manifest "$path" --target dotnet 2>&1)" || rc=$?
   checked=$((checked + 1))
-  hits="$(printf '%s\n' "$out" | grep 'R0001' || true)"
+  hits="$(printf '%s\n' "$out" | grep -E 'R000[12]' || true)"
   if [ -n "$hits" ]; then
     echo "::error::resolver disagrees with the checker in $m"
     printf '%s\n' "$hits"
@@ -62,7 +63,7 @@ for m in "${manifests[@]}"; do
   fi
 done
 
-echo "resolve-diff: $checked project(s) checked, $disagreements with disagreements, $failures failing to check"
+echo "resolve-diff: $((checked - failures)) of $checked project(s) covered, $disagreements with disagreements, $failures not covered (#8720)"
 # A project that does not check here (an unbuilt local dependency, a package
 # that needs a restore, a native-only library) is reported, not failed, unless
 # RESOLVE_DIFF_STRICT=1 asks for full coverage.

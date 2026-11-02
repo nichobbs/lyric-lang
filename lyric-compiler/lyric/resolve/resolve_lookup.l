@@ -348,6 +348,56 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
   )
 }
 
+/// Every declaration named `name` that the file may reach bare, whatever the
+/// tier it is reached at or its visibility: those of its own package, of the
+/// packages it imports whole (and what they re-export), the names its selective
+/// and `import extern` imports bind, and the prelude, in registration order.
+/// Unlike `resolveBare` it does not pick: it is for a pass that must see every
+/// reachable meaning of a name (the cases that share one, the arities of an
+/// overload set a local function shadows).  It takes the file's scope, so it
+/// is not an unfiltered lookup.
+pub func visibleDecls(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): List[Decl] {
+  val acc: List[Decl] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for d in namedDecls(tbl, name, nameUse) {
+    if d.pkg == fsc.pkg or fsc.whole.containsKey(d.pkg) or inPrelude(tbl, d) {
+      seen.add(toString(d.id.id), true)
+      acc.add(d)
+    }
+  }
+  match mapGet(fsc.names, name) {
+    case Some(bindings) -> {
+      for b in bindings {
+        if b.pkg == "extern" {
+          val extId = internDefPath(tbl.interner, externTypeDefPath(b.origName))
+          match declOfId(tbl, extId) {
+            case Some(d) -> if useAccepts(nameUse, d.kind) and not seen.containsKey(toString(d.id.id)) {
+              seen.add(toString(d.id.id), true)
+              acc.add(d)
+            }
+            case None -> ()
+          }
+        } else {
+          for d in namedDecls(tbl, b.origName, nameUse) {
+            if bindingCovers(tbl, b, d) and not seen.containsKey(toString(d.id.id)) {
+              seen.add(toString(d.id.id), true)
+              acc.add(d)
+            }
+          }
+        }
+      }
+    }
+    case None -> ()
+  }
+  acc
+}
+
+/// The text after a name's `unknown name` message that says how to import it,
+/// with a leading space; "" when no loaded package declares the name.
+pub func importHint(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): String {
+  hiddenImportHint(tbl, fsc, name, nameUse)
+}
+
 /// What a path resolved to and how many of its segments that used.  The rest
 /// are members, left to the checker (§4.5).
 pub record PathResolution {

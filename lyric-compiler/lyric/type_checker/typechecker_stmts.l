@@ -2064,7 +2064,7 @@ func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in Lis
 
 // True when `headName` names some record (declared or exposed) in scope.
 func localValNamesAnyRecord(tbl: in SymbolTable, headName: in String): Bool {
-  for cand in symTableTryFindAll(tbl, headName) {
+  for cand in symTableTryFindAllVisible(tbl, headName) {
     val hit = match cand.kind { case DKRecord(_, _) -> true; case DKExposedRec(_, _) -> true; case _ -> false }
     if hit {
       return true
@@ -2078,7 +2078,7 @@ func localValNamesAnyRecord(tbl: in SymbolTable, headName: in String): Bool {
 // reachability are `checkLocalValRecordHeads`'s to report once the pattern's
 // shape is known to fit.
 func localValRecordHeadNames(tbl: in SymbolTable, headName: in String, tid: in SymbolId): Bool {
-  for cand in symTableTryFindAll(tbl, headName) {
+  for cand in symTableTryFindAllVisible(tbl, headName) {
     val hit = match cand.kind {
       case DKRecord(did, _) -> symbolIdEq(did, tid)
       case DKExposedRec(did, _) -> symbolIdEq(did, tid)

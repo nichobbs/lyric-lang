@@ -742,8 +742,11 @@ builder (I0002) rather than on the current checker.
   name ranked by how the file sees it. Step 4 (D314) makes the checker take
   bare-name answers from the resolver for the checked package (fixing
   #8709), keeping its scan for dependency scopes, built-ins and the
-  sibling-file cases. Next: delete the lookups that became redundant and
-  fold `AliasRewriter` and `TypeAliasResolve` in.
+  sibling-file cases. Step 5 (D315) adds `visibleDecls` and answers "what a
+  bare name can mean" from it; the unfiltered name scan is renamed
+  `symTableTryFindAllNamed` and left to callers that narrow by a qualifier or
+  an owner id. Next: dependency scopes in the resolver, deleting the scan, and
+  folding `AliasRewriter` and `TypeAliasResolve` in.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.

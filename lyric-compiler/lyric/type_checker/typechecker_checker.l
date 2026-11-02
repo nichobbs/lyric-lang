@@ -1595,7 +1595,7 @@ func canonicalDotNamedName(
 // Whether `name`, the owner of a dot-named function, names a type alias in
 // the current scope.
 func dotOwnerIsAlias(tbl: in SymbolTable, name: in String): Bool {
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllVisible(tbl, name) {
     match sym.kind {
       case DKTypeAlias(_) -> return true
       case _ -> ()
