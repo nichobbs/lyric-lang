@@ -780,9 +780,10 @@ pub record SymbolTable {
   /// the key of each id ("" for one no DefPath names).
   /// The DefPath interner, shared with the resolver (docs/70 §4.2).
   interner: DefPathInterner
-  /// The resolver's context while `LYRIC_RESOLVE_DIFF` is set (docs/70 phase 2c,
-  /// D313): every bare lookup is also put to `Lyric.Resolve`, and a
-  /// disagreement is an `R0001` warning in `diffLog`.
+  /// The resolver's context for the checked package (docs/70 phase 2c, D314),
+  /// always built: bare names are answered from it.  While `LYRIC_RESOLVE_DIFF`
+  /// is set (`diffOn`) every lookup is also answered by the checker's own scan
+  /// and a difference is an `R0001` warning in `diffLog`.
   resolveCtx: List[ResolverContext]
   diffSeen: Map[String, Bool]
   diffLog: List[Diagnostic]
