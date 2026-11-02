@@ -745,8 +745,10 @@ builder (I0002) rather than on the current checker.
   sibling-file cases. Step 5 (D315) adds `visibleDecls` and answers "what a
   bare name can mean" from it; the unfiltered name scan is renamed
   `symTableTryFindAllNamed` and left to callers that narrow by a qualifier or
-  an owner id. Next: dependency scopes in the resolver, deleting the scan, and
-  folding `AliasRewriter` and `TypeAliasResolve` in.
+  an owner id. Step 6 (D316) takes the bare-function tier, the import hint and bare-name
+  ambiguity from the resolver and deletes the checker's versions. Next: the
+  single lookup and T0219 from the resolver, dependency scopes, and folding
+  `AliasRewriter` and `TypeAliasResolve` in.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.
