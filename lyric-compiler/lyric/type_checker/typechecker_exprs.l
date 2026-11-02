@@ -6963,7 +6963,9 @@ func resolveExprPath(
         // expected type, which this site cannot see.
         case DKEnumCase(pid, _) -> {
           var unshared = true
-          for other in symTableTryFindAllVisible(tbl, name) {
+          // Program-wide, not what the file can see: a case name another package's
+          // enum also declares is told apart by the callee's parameter type (#6688).
+          for other in symTableTryFindAllNamed(tbl, name) {
             match other.kind {
               case DKEnumCase(opid, _) -> if not (symbolIdEq(opid, pid) or (other.originPackage == sym.originPackage and typeNameOfId(tbl, opid) == typeNameOfId(tbl, pid))) {
                 unshared = false
@@ -7010,7 +7012,8 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
     // packages declaring an enum `Mode`, the backends and the checker's
     // sites would have to agree on which one a bare `Mode.Fast` names.
     val candidates: List[Symbol] = newList()
-    for cand in symTableTryFindAllVisible(tbl, typeName) {
+    // Program-wide, as the comment above says (#6688, #8652).
+    for cand in symTableTryFindAllNamed(tbl, typeName) {
       match cand.kind {
         case DKEnum(_, _) -> candidates.add(cand)
         case _ -> ()
