@@ -64,10 +64,22 @@ test "function types compare modes, results and asyncness" {
   pl.add(ps)
   val pl2: List[TParamTy] = newList()
   pl2.add(TParamTy(mode = TMInout, ty = tyInt()))
-  assertTrue(tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyBool(), isAsync = false)), "same")
-  assertFalse(tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl2, ret = tyBool(), isAsync = false)), "mode")
-  assertFalse(tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyInt(), isAsync = false)), "result")
-  assertFalse(tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyBool(), isAsync = true)), "async")
+  assertTrue(
+    tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyBool(), isAsync = false)),
+    "same"
+  )
+  assertFalse(
+    tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl2, ret = tyBool(), isAsync = false)),
+    "mode"
+  )
+  assertFalse(
+    tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyInt(), isAsync = false)),
+    "result"
+  )
+  assertFalse(
+    tyEq(TFunc(params = pl, ret = tyBool(), isAsync = false), TFunc(params = pl, ret = tyBool(), isAsync = true)),
+    "async"
+  )
 }
 
 test "arrays, slices, tuples, nullables and host types" {
@@ -75,7 +87,10 @@ test "arrays, slices, tuples, nullables and host types" {
   assertFalse(tyEq(TArray(len = ALKnown(3), element = tyInt()), TArray(len = ALKnown(4), element = tyInt())), "length")
   assertFalse(tyEq(TArray(len = ALKnown(3), element = tyInt()), TArray(len = ALUnsized, element = tyInt())), "unsized")
   assertTrue(
-    tyEq(TArray(len = ALParam(owner = sym(2), index = 1), element = tyInt()), TArray(len = ALParam(owner = sym(2), index = 1), element = tyInt())),
+    tyEq(
+      TArray(len = ALParam(owner = sym(2), index = 1), element = tyInt()),
+      TArray(len = ALParam(owner = sym(2), index = 1), element = tyInt())
+    ),
     "value parameter length"
   )
   assertFalse(tyEq(TSlice(element = tyInt()), TArray(len = ALUnsized, element = tyInt())), "slice vs array")

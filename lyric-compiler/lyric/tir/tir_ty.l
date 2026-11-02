@@ -184,10 +184,7 @@ func optLongEq(a: in Option[Long], b: in Option[Long]): Bool {
 pub func arrayLenEq(a: in ArrayLen, b: in ArrayLen): Bool {
   match a {
     case ALKnown(n) -> match b { case ALKnown(m) -> n == m; case _ -> false }
-    case ALParam(o1, i1) -> match b {
-      case ALParam(o2, i2) -> symbolIdEq(o1, o2) and i1 == i2
-      case _ -> false
-    }
+    case ALParam(o1, i1) -> match b { case ALParam(o2, i2) -> symbolIdEq(o1, o2) and i1 == i2; case _ -> false }
     case ALUnsized -> match b { case ALUnsized -> true; case _ -> false }
   }
 }
@@ -235,21 +232,14 @@ pub func tyEq(a: in Ty, b: in Ty): Bool {
       case TFunc(p2, r2, a2) -> a1 == a2 and paramTysEq(p1, p2) and tyEq(r1, r2)
       case _ -> false
     }
-    case TArray(l1, e1) -> match b {
-      case TArray(l2, e2) -> arrayLenEq(l1, l2) and tyEq(e1, e2)
-      case _ -> false
-    }
+    case TArray(l1, e1) -> match b { case TArray(l2, e2) -> arrayLenEq(l1, l2) and tyEq(e1, e2); case _ -> false }
     case TSlice(e1) -> match b { case TSlice(e2) -> tyEq(e1, e2); case _ -> false }
-    case TNamed(s1, a1) -> match b {
-      case TNamed(s2, a2) -> symbolIdEq(s1, s2) and tyListEq(a1, a2)
-      case _ -> false
-    }
-    case TParam(o1, i1) -> match b {
-      case TParam(o2, i2) -> symbolIdEq(o1, o2) and i1 == i2
-      case _ -> false
-    }
+    case TNamed(s1, a1) -> match b { case TNamed(s2, a2) -> symbolIdEq(s1, s2) and tyListEq(a1, a2); case _ -> false }
+    case TParam(o1, i1) -> match b { case TParam(o2, i2) -> symbolIdEq(o1, o2) and i1 == i2; case _ -> false }
     case TRefined(u1, lo1, hi1, inc1) -> match b {
-      case TRefined(u2, lo2, hi2, inc2) -> tyEq(u1, u2) and optLongEq(lo1, lo2) and optLongEq(hi1, hi2) and inc1 == inc2
+      case TRefined(u2, lo2, hi2, inc2) -> tyEq(u1, u2) and optLongEq(lo1, lo2) and
+        optLongEq(hi1, hi2) and
+        inc1 == inc2
       case _ -> false
     }
     case TLen(n) -> match b { case TLen(m) -> n == m; case _ -> false }
@@ -303,7 +293,8 @@ pub func renderTy(t: in Ty): String {
     }
     case TArray(len, e) -> match len {
       case ALKnown(n) -> "array[" + toString(n) + ", " + renderTy(e) + "]"
-      case ALParam(o, i) -> "array[#" + toString(o.id) + "." + toString(i) + ", " + renderTy(e) + "]"
+      case ALParam(o, i) -> "array[#" + toString(o.id) + "." + toString(i) + ", " + renderTy(e) +
+        "]"
       case ALUnsized -> "array[_, " + renderTy(e) + "]"
     }
     case TSlice(e) -> "slice[" + renderTy(e) + "]"
@@ -313,7 +304,9 @@ pub func renderTy(t: in Ty): String {
       "#" + toString(s.id) + "[" + renderTyList(args) + "]"
     }
     case TParam(o, i) -> "param(#" + toString(o.id) + ", " + toString(i) + ")"
-    case TRefined(u, lo, hi, inc) -> renderTy(u) + " range " + renderOptLong(lo, "MIN") + (if inc { " ..= " } else { " .. " }) + renderOptLong(hi, "MAX")
+    case TRefined(u, lo, hi, inc) -> renderTy(u) + " range " + renderOptLong(lo, "MIN") +
+      (if inc { " ..= " } else { " .. " }) +
+      renderOptLong(hi, "MAX")
     case TLen(n) -> toString(n)
     case TNever -> "Never"
     case TException -> "Exception"
