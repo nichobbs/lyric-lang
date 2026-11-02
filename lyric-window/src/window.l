@@ -258,21 +258,22 @@ pub func quit(): Unit {
   SDL_Quit()
 }
 
+// Metal windows need SDL's Cocoa video driver: the offscreen and dummy drivers cannot make one, even on macOS.
 @unsafe_ffi
-func onMacOs(): Bool {
-  match Ffi.tryFromCString(SDL_GetPlatform()) {
-    case Some(name) -> name == "macOS"
+func usesCocoa(): Bool {
+  match Ffi.tryFromCString(SDL_GetCurrentVideoDriver()) {
+    case Some(name) -> name == "cocoa"
     case None -> false
   }
 }
 
 /// A window of `width` by `height` units.  It is hidden until `show`, so an application can
-/// set up before anything appears.  On macOS the window is created Metal-capable and carries a
+/// set up before anything appears.  On the Cocoa video driver (macOS) the window is created Metal-capable and carries a
 /// `CAMetalLayer`-backed view (see `metalLayer`) that lives until `destroyWindow`.
 @unsafe_ffi
 pub func createWindow(title: String, width: Int, height: Int, resizable: Bool): Result[Window, String] {
   val name = Ffi.toCString(title)
-  val metal = onMacOs()
+  val metal = usesCocoa()
   val flags = windowHidden + windowHighPixelDensity + (if resizable then windowResizable else 0) +
     (if metal then windowMetal else 0)
   val handle = SDL_CreateWindow(name, width, height, flags)
@@ -304,8 +305,8 @@ pub func destroyWindow(w: Window): Unit {
 
 /// The window's `CAMetalLayer*`, which `Gpu.createMetalSurface` presents to.  It belongs to the
 /// window's Metal view and stays valid until `destroyWindow`; the layer tracks the view's size,
-/// so a resize needs only `Gpu.configureSurface` with the new `pixelSize`.  Only macOS windows
-/// have one; elsewhere this is an error.
+/// so a resize needs only `Gpu.configureSurface` with the new `pixelSize`.  Only Cocoa windows
+/// have one; elsewhere (including the offscreen driver on macOS) this is an error.
 @unsafe_ffi
 pub func metalLayer(w: Window): Result[Long, String] {
   if w.metalView == 0 {

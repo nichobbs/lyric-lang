@@ -5,7 +5,8 @@
 ## Decision
 
 1. **A macOS `lyric-window` window owns a Metal view.** `Window.createWindow` asks for `SDL_WINDOW_METAL` when
-   `SDL_GetPlatform()` is `macOS`, creates the `SDL_Metal_CreateView` view straight away, and `Window.destroyWindow`
+   the video driver (`SDL_GetCurrentVideoDriver()`) is `cocoa` (the offscreen and dummy drivers cannot make Metal windows,
+   even on macOS, and the macOS CI demo runs on them), creates the `SDL_Metal_CreateView` view straight away, and `Window.destroyWindow`
    destroys that view before the window. `Window` gains a `metalView` field (0 off macOS). Tying the view to the window
    record, not to a lazily created handle, gives it exactly the window's lifetime without a second thing to release.
 2. **`Window.metalLayer(w): Result[Long, String]`** returns the view's `CAMetalLayer*`. `Window.nativeWindow` still

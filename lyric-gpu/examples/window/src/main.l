@@ -110,24 +110,14 @@ func drawFrames(d: Gpu.Device, win: Window.Window, surface: Gpu.Surface, frames:
 }
 
 func run(win: Window.Window, frames: Int): Int {
+  val pixels = Window.pixelSize(win)
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
     match GpuWindow.surfaceFor(d, win) {
       case Err(message) -> fail(message)
-      case Ok(created) -> match Gpu.configureSurface(d, created, Window.pixelSize(win).width, Window.pixelSize(win).height) {
+      case Ok(created) -> match Gpu.configureSurface(d, created, pixels.width, pixels.height) {
         case Err(message) -> fail(message)
         case Ok(surface) -> {
-          val ps = Window.pixelSize(win)
-          val ws = Window.windowSize(win)
-          Console.println(
-            "surface format " + surface.format.toString() + " px " + ps.width.toString() + "x" + ps.height.toString() + " win " +
-              ws.width.toString() +
-              "x" +
-              ws.height.toString() +
-              " scale " +
-              Window.displayScale(win).toString() +
-              " cfg " +
-              surface.width.toString()
-          )
+          Console.println("surface format " + surface.format.toString())
           val outcome = drawFrames(d, win, surface, frames)
           Gpu.releaseSurface(surface)
           match outcome {
