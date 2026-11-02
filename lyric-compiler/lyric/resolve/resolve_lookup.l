@@ -433,6 +433,71 @@ pub func visibleDecls(tbl: in DeclTable, fsc: in FileScope, name: in String, nam
   acc
 }
 
+/// How the file `fsc` lets a declaration named `name` of package `origin` be
+/// written bare: `Some("")` when no import is needed (the file's own package,
+/// the prelude), `Some(import)` with the import as written that brings it in,
+/// `None` when the file does not reach it.  For T0219: a name a file uses that
+/// only a sibling file's import makes visible.
+pub func bareVia(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse, origin: in String): Option[String] {
+  if origin == fsc.pkg {
+    return Some(value = "")
+  }
+  for d in namedDecls(tbl, name, nameUse) {
+    if d.pkg == origin and inPrelude(tbl, d) {
+      return Some(value = "")
+    }
+  }
+  match mapGet(fsc.whole, origin) {
+    case Some(r) -> {
+      return match r {
+        case ReachDirect(v) -> Some(value = v)
+        case ReachReexport(v) -> Some(value = v)
+      }
+    }
+    case None -> ()
+  }
+  match mapGet(fsc.names, name) {
+    case Some(bindings) -> {
+      for b in bindings {
+        if b.pkg != "extern" {
+          for d in namedDecls(tbl, b.origName, nameUse) {
+            if d.pkg == origin and bindingCovers(tbl, b, d) {
+              return Some(value = b.via)
+            }
+          }
+        }
+      }
+    }
+    case None -> ()
+  }
+  None
+}
+
+/// The `import extern` that binds `name` in the file `fsc` belongs to, as
+/// written, or `None`.
+pub func externVia(fsc: in FileScope, name: in String): Option[String] {
+  match mapGet(fsc.names, name) {
+    case Some(bindings) -> {
+      for b in bindings {
+        if b.pkg == "extern" {
+          return Some(value = b.via)
+        }
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
+/// How the file `fsc` lets a qualified reference name the package `pkg`: an
+/// import of it in any form (`Some(import)`), or `None`.
+pub func qualifiedVia(fsc: in FileScope, pkg: in String): Option[String] {
+  if pkg == fsc.pkg or pkg == "Std.Core" {
+    return Some(value = "")
+  }
+  mapGet(fsc.directPkgs, pkg)
+}
+
 /// The text after a name's `unknown name` message that says how to import it,
 /// with a leading space; "" when no loaded package declares the name.
 pub func importHint(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): String {

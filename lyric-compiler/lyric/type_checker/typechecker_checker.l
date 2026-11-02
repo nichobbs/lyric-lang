@@ -6171,77 +6171,6 @@ func renderImportDecl(imp: in ImportDecl): String {
   text
 }
 
-// One file's import rule (docs/70 §4.1): what its own imports make visible,
-// each with the import that does it.
-func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in ImportSets): FileImportRule {
-  val wholeVia: Map[String, String] = newMap()
-  var w = 0
-  while w < sets.whole.count {
-    if not wholeVia.containsKey(sets.whole[w]) {
-      wholeVia.add(sets.whole[w], sets.wholeVia[w])
-    }
-    w = w + 1
-  }
-  val namesVia: Map[String, String] = newMap()
-  var n = 0
-  while n < sets.names.count {
-    if not namesVia.containsKey(sets.names[n]) {
-      namesVia.add(sets.names[n], sets.namesVia[n])
-    }
-    n = n + 1
-  }
-  val directVia: Map[String, String] = newMap()
-  val reachVia: Map[String, String] = newMap()
-  val externVia: Map[String, String] = newMap()
-  val pending: List[String] = newList()
-  val pendingVia: List[String] = newList()
-  for imp in header.imports {
-    val text = renderImportDecl(imp)
-    if imp.isExtern {
-      match imp.selector {
-        case Some(sel) -> {
-          for item in importSelectorItems(sel) {
-            val local = match item.asAlias { case Some(a) -> a; case None -> item.name }
-            if not externVia.containsKey(local) {
-              externVia.add(local, text)
-            }
-          }
-        }
-        case None -> ()
-      }
-    } else {
-      val pkg = dottedPackageName(imp.path)
-      if not directVia.containsKey(pkg) {
-        directVia.add(pkg, text)
-        pending.add(pkg)
-        pendingVia.add(text)
-      }
-    }
-  }
-  // The packages the direct imports' own imports reach, for the qualified
-  // references that accept one (`qualifiedPkgReachable`).
-  var r = 0
-  while r < pending.count {
-    val cur = pending[r]
-    if not reachVia.containsKey(cur) {
-      reachVia.add(cur, pendingVia[r])
-      for dep in symTablePackageImportsOf(tbl, cur) {
-        pending.add(dep)
-        pendingVia.add(pendingVia[r])
-      }
-    }
-    r = r + 1
-  }
-  FileImportRule(
-    path = header.path,
-    wholeVia = wholeVia,
-    namesVia = namesVia,
-    directVia = directVia,
-    reachVia = reachVia,
-    externVia = externVia
-  )
-}
-
 // Install the docs/01 §9.2 import rule for the package being checked (#7463):
 // a whole import (`import P`) makes every name of `P` visible bare, and so,
 // transitively, do the packages `P` itself imports whole (the kernel/host
@@ -6272,7 +6201,6 @@ func installImportRule(
     checkRenamedImports(diag, u.renames, u.names, u.whole, u.aliasPkgs, u.aliasNames, importedPackages, fileItems)
     checkSelectiveImportsDeclared(diag, userPkg, imports, importedPackages)
   } else {
-    val rules: List[FileImportRule] = newList()
     val fileDiag: List[Diagnostic] = newList()
     for h in files {
       val fs = collectImportSets(h.imports, importedPackages)
@@ -6287,7 +6215,6 @@ func installImportRule(
         fileItems
       )
       checkSelectiveImportsDeclared(diag, userPkg, h.imports, importedPackages)
-      rules.add(buildFileImportRule(tbl, h, fs))
     }
     // A rename whose new name a sibling file's import brings in is still
     // T0148: the alias rewriter and the JVM backend read renames from the
@@ -6315,7 +6242,6 @@ func installImportRule(
         )
       }
     }
-    symTableSetFileRules(tbl, rules)
   }
   symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
 }
