@@ -26,12 +26,10 @@
 //! and continues to work for a `List`-backed slice value (any element type
 //! whose literal can't build a real array, e.g. a record) exactly as before.
 //!
-//! Cases below cover a value-element type (`Int`, the reported repro),
-//! a second value-element type with distinct storage width (`Long`, `Byte`,
-//! to prove the fix isn't special-cased to `Int`), and a reference-element
-//! type (`String`) to prove the `IList.set_Item(int32, object)` boxing path
-//! (the `case _ -> boxIfNeededMsil` branch is skipped for reference types)
-//! works too.
+//! A slice is never written in place (docs/01 §2.7, T0157), so the swaps
+//! below rebind the `inout` parameter to a new slice; the caller must see the
+//! new slice after the call, for a value element of three widths (`Int`,
+//! `Long`, `Byte`) and a reference element (`String`).
 //!
 //! Run by the native `lyric test` on BOTH targets (like `block_shadow_self_test.l`):
 //!   lyric test --target dotnet lyric-compiler/lyric/inout_slice_self_test.l
@@ -44,41 +42,50 @@
 package Lyric.InoutSliceSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `inout slice[T]` callees: an index-swap, so the callee both READS and
-// WRITES through the byref slice parameter — the caller must observe the
-// mutation after the call returns (the round-trip the bug broke).
+// `inout slice[T]` callees: each reads the caller's slice and rebinds the
+// parameter to a new one with two elements exchanged, so the caller must
+// observe the rebinding after the call returns.
 // ─────────────────────────────────────────────────────────────────────────────
+func swapped[T](xs: in slice[T], i: Int, j: Int): slice[T] {
+  val acc: List[T] = newList()
+  var k = 0
+  while k < xs.length {
+    if k == i {
+      acc.add(xs[j])
+    } else if k == j {
+      acc.add(xs[i])
+    } else {
+      acc.add(xs[k])
+    }
+    k += 1
+  }
+  acc.toArray()
+}
+
 func swapIntSlice(xs: inout slice[Int], i: Int, j: Int) {
-  val tmp = xs[i]
-  xs[i] = xs[j]
-  xs[j] = tmp
+  xs = swapped(xs, i, j)
 }
 
 func swapLongSlice(xs: inout slice[Long], i: Int, j: Int) {
-  val tmp = xs[i]
-  xs[i] = xs[j]
-  xs[j] = tmp
+  xs = swapped(xs, i, j)
 }
 
 func swapByteSlice(xs: inout slice[Byte], i: Int, j: Int) {
-  val tmp = xs[i]
-  xs[i] = xs[j]
-  xs[j] = tmp
+  xs = swapped(xs, i, j)
 }
 
 func swapStringSlice(xs: inout slice[String], i: Int, j: Int) {
-  val tmp = xs[i]
-  xs[i] = xs[j]
-  xs[j] = tmp
+  xs = swapped(xs, i, j)
 }
 
 // #5842's exact repro shape: a bare, unannotated `var` list literal of `Int`
 // (the codegen path that materializes the CLI array `int32[]`, #5620) passed
 // to an `inout slice[Int]` parameter.
-test "inout slice[Int] swap mutates the caller's array (#5842)" {
+test "inout slice[Int] swap rebinds the caller's slice (#5842)" {
   var xs = [10, 20, 30]
   swapIntSlice(xs, 0, 2)
   assertEqualInt(xs[0], 30, "xs[0] after swap")
@@ -89,7 +96,7 @@ test "inout slice[Int] swap mutates the caller's array (#5842)" {
 // A second value-element width, explicitly annotated so the local's tracked
 // MSIL type is unambiguously `MArray(MLong)` — proves the fix is not
 // special-cased to `Int`.
-test "inout slice[Long] swap mutates the caller's array" {
+test "inout slice[Long] swap rebinds the caller's slice" {
   var xs: slice[Long] = [100i64, 200i64, 300i64]
   swapLongSlice(xs, 0, 2)
   assertEqualLong(xs[0], 300i64, "xs[0] after swap")
@@ -100,7 +107,7 @@ test "inout slice[Long] swap mutates the caller's array" {
 // `Byte` elements are the narrowest value-typed representation (unsigned
 // 0..255, `docs/59` §4.3) and round through `.toByte()`/`.toInt()` — another
 // distinct element width from `Int`/`Long`.
-test "inout slice[Byte] swap mutates the caller's array" {
+test "inout slice[Byte] swap rebinds the caller's slice" {
   var xs: slice[Byte] = [10.toByte(), 20.toByte(), 30.toByte()]
   swapByteSlice(xs, 0, 2)
   assertEqualInt(xs[0].toInt(), 30, "xs[0] after swap")
@@ -112,7 +119,7 @@ test "inout slice[Byte] swap mutates the caller's array" {
 // refs, not just value types): `String` is a genuine CLR reference type, and
 // a homogeneous `String` slice literal also materializes as a real
 // `System.String[]` array.
-test "inout slice[String] (reference element) swap mutates the caller's array" {
+test "inout slice[String] (reference element) swap rebinds the caller's slice" {
   var xs = ["alpha", "beta", "gamma"]
   swapStringSlice(xs, 0, 2)
   assertEqual(xs[0], "gamma", "xs[0] after swap")

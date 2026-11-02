@@ -104,11 +104,17 @@ test "nested-generic Map lookup feeding Ok(Some)/Ok(None) construction (#1707)" 
   val hit = lookupF(store, "k")
   val miss = lookupF(store, "absent")
   match hit {
-    case Ok(opt) -> match opt { case Some(v) -> assertEqual(v, "v", "present key yields Ok(Some(value))"); case None -> assertTrue(false, "present key must not yield None") }
+    case Ok(opt) -> match opt {
+      case Some(v) -> assertEqual(v, "v", "present key yields Ok(Some(value))")
+      case None -> assertTrue(false, "present key must not yield None")
+    }
     case Err(_) -> assertTrue(false, "must not be Err")
   }
   match miss {
-    case Ok(opt) -> match opt { case Some(_) -> assertTrue(false, "absent key must not yield Some"); case None -> assertTrue(true, "absent key yields Ok(None)") }
+    case Ok(opt) -> match opt {
+      case Some(_) -> assertTrue(false, "absent key must not yield Some")
+      case None -> assertTrue(true, "absent key yields Ok(None)")
+    }
     case Err(_) -> assertTrue(false, "must not be Err")
   }
 }
@@ -234,10 +240,10 @@ test "map subscript plain assignment widens an Int RHS to the declared Long valu
   assertEqualLong(m["k"], 5i64, "Map[String, Long] value write boxes an Int RHS as Long, not Integer")
 }
 
-test "slice subscript plain assignment widens an Int RHS to the declared Long element type (#6741)" {
-  var xs: slice[Long] = [1i64, 2i64, 3i64]
+test "array subscript plain assignment widens an Int RHS to the declared Long element type (#6741)" {
+  var xs: array[3, Long] = [1i64, 2i64, 3i64]
   xs[0] = 5
-  assertEqualLong(xs[0], 5i64, "slice[Long] element write boxes an Int RHS as Long, not Integer")
+  assertEqualLong(xs[0], 5i64, "array[3, Long] element write boxes an Int RHS as Long, not Integer")
 }
 
 test "list subscript plain assignment widens a Byte RHS to the declared Long element type (#6741)" {
@@ -254,8 +260,8 @@ test "map subscript plain assignment widens a Float RHS to the declared Double v
   assertTrue(m["k"] == 5.0, "Map[String, Double] value write boxes a Float RHS as Double, not Float")
 }
 
-test "slice subscript plain assignment widens a Float RHS to the declared Double element type (#6741)" {
-  var xs: slice[Double] = [1.5, 2.5, 3.5]
+test "array subscript plain assignment widens a Float RHS to the declared Double element type (#6741)" {
+  var xs: array[3, Double] = [1.5, 2.5, 3.5]
   xs[0] = 5.0f32
-  assertTrue(xs[0] == 5.0, "slice[Double] element write boxes a Float RHS as Double, not Float")
+  assertTrue(xs[0] == 5.0, "array[3, Double] element write boxes a Float RHS as Double, not Float")
 }

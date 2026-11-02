@@ -442,7 +442,7 @@ val i: Slot = Slot.from(7)
 val v = xs[i]                      // no runtime bounds check; proof discharged
 ```
 
-`slice[T]` supports three non-mutating operations, each returning a new slice — there is no in-place mutation (see §5.2 on reference-immutability):
+`slice[T]` supports three non-mutating operations, each returning a new slice — there is no in-place mutation (see §5.2 on reference-immutability). An element write `xs[i] = v` or `xs[i] op= v` to a slice is **T0157**: every binding of a slice shares its storage, so a write through one would be seen through all of them. Use an `array[N, T]` or a `buffer[T]` (below) for data written in place, or build a new slice:
 
 ```
 val ys = xs.append(v)              // new slice, v appended at the end

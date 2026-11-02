@@ -194,11 +194,11 @@ test "field and element stores zero-extend a UInt" {
   assertTrue(h.v == 4000000000u64, "field =")
   h.v += u
   assertTrue(h.v == 8000000000u64, "field +=")
-  var xs: slice[ULong] = [0u64, 0u64]
+  var xs: array[2, ULong] = [0u64, 0u64]
   xs[0] = u
   xs[1] += u
-  assertTrue(xs[0] == 4000000000u64, "slice element =")
-  assertTrue(xs[1] == 4000000000u64, "slice element +=")
+  assertTrue(xs[0] == 4000000000u64, "array element =")
+  assertTrue(xs[1] == 4000000000u64, "array element +=")
   val ls: List[ULong] = newList()
   ls.add(u)
   assertTrue(ls[0] == 4000000000u64, "List.add")

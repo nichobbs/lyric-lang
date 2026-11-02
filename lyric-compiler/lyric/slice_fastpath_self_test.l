@@ -2,9 +2,9 @@
 //! the same results whichever runtime representation a slice has (#7259).
 //!
 //! On MSIL a `slice[T]` value is either a genuine CLI `T[]` or a
-//! `List`-backed slice (#2539). Index reads, index writes, `for` iteration
-//! and slice copies test the representation once and use
-//! `ldelem`/`stelem`/`Array.Copy` for a real array, keeping the boxing `IList`
+//! `List`-backed slice (#2539). Index reads, `for` iteration and slice
+//! copies test the representation once and use `ldelem`/`Array.Copy` for a
+//! real array, keeping the boxing `IList`
 //! path for anything else. Every source this module can build (literals,
 //! `.slice`/`.concat`/`.append`, `List.toArray()`, generic helpers, BCL
 //! arrays from `encodeUtf8` and `String.Split`) is a real array under the
@@ -86,19 +86,6 @@ test "Int reads agree for a literal, a copy, a sub-slice and a List-built slice"
   assertEqualInt(sumByFor(lit.append(10)), 25, "append by for")
 }
 
-test "Int writes land in the slice that was written" {
-  var xs: slice[Int] = [0, 0, 0, 0]
-  xs[0] = 7
-  xs[3] = 9
-  assertEqualInt(xs[0], 7, "first write")
-  assertEqualInt(xs[3], 9, "last write")
-  assertEqualInt(sumByFor(xs), 16, "writes seen by for")
-  var ys = intList(4).toArray()
-  ys[1] = 20
-  assertEqualInt(ys[1], 20, "write into toArray result")
-  assertEqualInt(sumByIndex(ys), 28, "toArray write seen by index")
-}
-
 test "Byte reads and copies agree for encoder output, sub-slices and concatenation" {
   val bytes = encodeUtf8("ABCDE")
   assertEqualInt(byteSum(bytes), 2 * (65 + 66 + 67 + 68 + 69), "encodeUtf8 output")
@@ -111,10 +98,8 @@ test "Byte reads and copies agree for encoder output, sub-slices and concatenati
   assertEqualInt(both[3].toInt(), 65, "concat tail byte")
   val lit: slice[Byte] = [1u8, 2u8, 255u8]
   assertEqualInt(byteSum(lit), 2 * 258, "byte literal")
-  var w = bytes.slice(0, 2)
-  w[1] = 0u8
-  assertEqualInt(w[1].toInt(), 0, "byte write")
-  assertEqualInt(bytes[1].toInt(), 66, "sub-slice is a copy")
+  val w = bytes.slice(0, 2)
+  assertEqualInt(w[1].toInt(), 66, "sub-slice read")
 }
 
 test "String reads agree for a BCL array, a literal and a copy" {
@@ -123,24 +108,27 @@ test "String reads agree for a BCL array, a literal and a copy" {
   assertEqual(parts[2], "c", "split output by index")
   val lit: slice[String] = ["x", "y"]
   assertEqual(joinFor(lit.concat(parts.slice(0, 1))), "x;y;a;", "concat of literal and split")
-  var ws = lit.slice(0, 2)
-  ws[0] = "z"
-  assertEqual(ws[0], "z", "string write")
-  assertEqual(lit[0], "x", "copy leaves the source untouched")
+  val ws = lit.slice(1, 2)
+  assertEqual(ws[0], "y", "string sub-slice read")
 }
 
-test "Char, Bool, Long and Double slices read and write through both paths" {
-  var cs: slice[Char] = ['a', 'b', 'c']
+// A slice is never written in place (docs/01 §2.7); the element writes below
+// are to arrays, read back through a slice copy.
+test "Char, Bool, Long and Double array writes read back through a slice copy" {
+  var cs: array[3, Char] = ['a', 'b', 'c']
   cs[1] = 'z'
   assertTrue(cs[1] == 'z', "char write")
-  assertTrue(cs.slice(1, 3)[1] == 'c', "char sub-slice read")
-  var bs: slice[Bool] = [false, false]
+  assertTrue(cs.toSlice().slice(1, 3)[1] == 'c', "char sub-slice read")
+  // An unannotated local keeps the element type of the slice `toSlice` builds.
+  val chars = cs.toSlice()
+  assertTrue(chars[2] == 'c', "char toSlice bound to a local")
+  var bs: array[2, Bool] = [false, false]
   bs[1] = true
   assertTrue(bs[1] and not bs[0], "bool write")
-  var ls: slice[Long] = [1i64, 2i64]
+  var ls: array[2, Long] = [1i64, 2i64]
   ls[0] = 9000000000i64
-  assertTrue(ls.concat(ls)[2] == 9000000000i64, "long concat read")
-  var ds: slice[Double] = [0.5, 1.5]
+  assertTrue(ls.toSlice().concat(ls.toSlice())[2] == 9000000000i64, "long concat read")
+  var ds: array[2, Double] = [0.5, 1.5]
   ds[1] = 2.25
   var dsum = 0.0
   for d in ds {
@@ -149,8 +137,8 @@ test "Char, Bool, Long and Double slices read and write through both paths" {
   assertTrue(dsum == 2.75, "double write and for")
 }
 
-test "an Int written into a slice[Long] is widened, not truncated or garbled (#7341)" {
-  var ls: slice[Long] = [0i64, 0i64]
+test "an Int written into an array[2, Long] is widened, not truncated or garbled (#7341)" {
+  var ls: array[2, Long] = [0i64, 0i64]
   ls[0] = 4
   ls[1] = 0 - 7
   assertTrue(ls[0] == 4i64, "positive Int widened")
@@ -162,31 +150,28 @@ test "an Int written into a slice[Long] is widened, not truncated or garbled (#7
   assertTrue(total == 0i64 - 3i64, "widened values read back by for")
 }
 
-test "compound assignment on slice elements updates in place (#7343)" {
-  var xs: slice[Int] = [1, 2, 3]
+test "compound assignment on array elements updates in place (#7343)" {
+  var xs: array[3, Int] = [1, 2, 3]
   xs[1] += 40
   xs[2] *= 5
   xs[0] -= 11
   assertEqualInt(xs[0], 0 - 10, "Int -=")
   assertEqualInt(xs[1], 42, "Int +=")
   assertEqualInt(xs[2], 15, "Int *=")
-  val bl: List[Byte] = newList()
-  bl.add(240u8)
-  bl.add(7u8)
-  var bs: slice[Byte] = bl.toArray()
+  var bs: array[2, Byte] = [240u8, 7u8]
   bs[0] += 10.toByte()
   bs[1] /= 2.toByte()
   assertEqualInt(bs[0].toInt(), 250, "Byte += stays unsigned")
   assertEqualInt(bs[1].toInt(), 3, "Byte /=")
-  var ls: slice[Long] = [9000000000i64, 1i64]
+  var ls: array[2, Long] = [9000000000i64, 1i64]
   ls[0] += 3
   ls[1] -= 8
   assertTrue(ls[0] == 9000000003i64, "Long += widened Int rhs")
   assertTrue(ls[1] == 0i64 - 7i64, "Long -= sign-extended Int rhs")
-  var ds: slice[Double] = [1.5]
+  var ds: array[1, Double] = [1.5]
   ds[0] *= 3.0
   assertTrue(ds[0] == 4.5, "Double *=")
-  var ss: slice[String] = ["a", "b"]
+  var ss: array[2, String] = ["a", "b"]
   ss[1] += "c"
   assertEqual(ss[1], "bc", "String += String")
 }
@@ -196,9 +181,9 @@ func countedIndex(calls: in List[Int], i: in Int): Int {
   i
 }
 
-test "slice compound assignment evaluates its index once" {
+test "array compound assignment evaluates its index once" {
   val calls: List[Int] = newList()
-  var xs: slice[Int] = [10, 20]
+  var xs: array[2, Int] = [10, 20]
   xs[countedIndex(calls, 1)] += 5
   assertEqualInt(calls.count, 1, "index evaluated once")
   assertEqualInt(xs[1], 25, "element updated")

@@ -1,7 +1,7 @@
-// book_ch04_tests.l — Chapter 4: Functions and Parameter Modes
-//
-// Verifies: expression-bodied and block-bodied functions, in/out/inout modes,
-// tuple returns, closures, lambdas, first-class functions, and control flow.
+//! book_ch04_tests.l — Chapter 4: Functions and Parameter Modes
+//!
+//! Verifies: expression-bodied and block-bodied functions, in/out/inout modes,
+//! tuple returns, closures, lambdas, first-class functions, and control flow.
 package Book.Ch04.Tests
 
 import Std.Core
@@ -12,7 +12,6 @@ import Std.Testing
 // ---------------------------------------------------------------------------
 // §4.1 Basic function declarations
 // ---------------------------------------------------------------------------
-
 func add(x: Int, y: Int): Int = x + y
 
 func greet(name: String): String {
@@ -33,7 +32,6 @@ func testBasicFunctions(): Unit {
 // ---------------------------------------------------------------------------
 // §4.2 Parameter modes
 // ---------------------------------------------------------------------------
-
 func divmod(n: Int, d: Int, q: out Int, r: out Int) {
   q = n / d
   r = n % d
@@ -43,7 +41,7 @@ func increment(x: inout Int) {
   x = x + 1
 }
 
-func swap(xs: inout slice[Int], i: Int, j: Int) {
+func swap[N: Nat](xs: inout array[N, Int], i: Int, j: Int) {
   val tmp = xs[i]
   xs[i] = xs[j]
   xs[j] = tmp
@@ -65,8 +63,8 @@ func testInoutParameters(): Unit {
   assertEqualInt(counter, 2, "increment twice")
 }
 
-func testInoutSlice(): Unit {
-  var xs = [10, 20, 30]
+func testInoutArray(): Unit {
+  var xs: array[3, Int] = [10, 20, 30]
   swap(xs, 0, 2)
   assertEqualInt(xs[0], 30, "swap xs[0]")
   assertEqualInt(xs[2], 10, "swap xs[2]")
@@ -75,13 +73,16 @@ func testInoutSlice(): Unit {
 // ---------------------------------------------------------------------------
 // §4.3 Return values and multiple returns
 // ---------------------------------------------------------------------------
-
 func minMax(xs: in slice[Int]): (Int, Int) {
   var lo = xs[0]
   var hi = xs[0]
   for x in xs {
-    if x < lo { lo = x }
-    if x > hi { hi = x }
+    if x < lo {
+      lo = x
+    }
+    if x > hi {
+      hi = x
+    }
   }
   return (lo, hi)
 }
@@ -96,7 +97,6 @@ func testTupleReturn(): Unit {
 // ---------------------------------------------------------------------------
 // §4.4 Closures and lambdas
 // ---------------------------------------------------------------------------
-
 func testClosures(): Unit {
   val double = { x: Int -> x * 2 }
   assertEqualInt(double(21), 42, "closure double(21)")
@@ -115,22 +115,21 @@ func testClosureCapture(): Unit {
   // Closures can use their own parameters and call other functions
   val square = { x: Int -> x * x }
   assertEqualInt(square(5), 25, "closure square(5)")
-  assertEqualInt(square(3), 9,  "closure square(3)")
+  assertEqualInt(square(3), 9, "closure square(3)")
 }
 
 func testFirstClassClosures(): Unit {
   val addOne: (Int) -> Int = { x: Int -> x + 1 }
   val doubler: (Int) -> Int = { x: Int -> x * 2 }
-  val sub3:   (Int) -> Int = { x: Int -> x - 3 }
+  val sub3: (Int) -> Int = { x: Int -> x - 3 }
   assertEqualInt(addOne(10), 11, "addOne(10) = 11")
   assertEqualInt(doubler(10), 20, "doubler(10) = 20")
-  assertEqualInt(sub3(10),    7,  "sub3(10) = 7")
+  assertEqualInt(sub3(10), 7, "sub3(10) = 7")
 }
 
 // ---------------------------------------------------------------------------
 // §4.5 Control flow
 // ---------------------------------------------------------------------------
-
 func testIfExpression(): Unit {
   val score = 75
   val label = if score >= 60 then "pass" else "fail"
@@ -174,10 +173,11 @@ func testBreakContinue(): Unit {
 // ---------------------------------------------------------------------------
 // §4.6 Error propagation
 // ---------------------------------------------------------------------------
-
 func parseAndDouble(raw: String): Result[Int, Int] {
   val parsed = tryParseInt(raw)
-  if isErr(parsed) { return Err(error = -1) }
+  if isErr(parsed) {
+    return Err(error = -1)
+  }
   return Ok(value = unwrapResult(parsed) * 2)
 }
 
@@ -195,7 +195,7 @@ func main(): Unit {
   testTupleReturn()
   testOutParameters()
   testInoutParameters()
-  testInoutSlice()
+  testInoutArray()
   testClosures()
   testClosureCapture()
   testFirstClassClosures()

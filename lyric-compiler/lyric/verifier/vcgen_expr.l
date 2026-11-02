@@ -959,10 +959,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
         )
         sc.add(mkAnd(inRange))
-        // A slice's element is a value of its own at each read: an element
-        // write through another binding of the same slice, even in a
-        // callee, is visible through this one on every target, so two reads
-        // need not agree (#8394).  Its length does not change.
+        // A slice's element is a value of its own at each read: every
+        // binding of a slice shares its storage, and a kernel extern may fill
+        // it in place (`streamReadInto`), so two reads need not agree
+        // (#8394).  Its length does not change.
         val elemTerm = match recvSort {
           case SArray(_) -> TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
           case _ -> freshVar(env, "elem", elemSort)

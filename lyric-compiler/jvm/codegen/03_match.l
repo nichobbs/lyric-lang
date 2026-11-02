@@ -1011,8 +1011,23 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
     return newList()
   }
   val tail = match blk.statements[n - 1].kind { case SExpr(e) -> e; case _ -> return newList() }
+  // A tail that is an element-preserving slice intrinsic on a block local
+  // (`out.toArray()`, how the middle end ends `a.toSlice()`, D167) has that
+  // local's element type; the local is out of scope by the time the
+  // receiver would be looked up, so its binding is read here too.
   val local = match tail.kind {
     case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case ECall(fn, callArgs) -> match fn.kind {
+      case EMember(recv, memberName) -> {
+        val preserving = (memberName == "toArray" and callArgs.count == 0) or memberName == "append" or memberName == "concat" or
+          memberName == "slice"
+        match recv.kind {
+          case EPath(rpath) -> if preserving and rpath.segments.count == 1 { rpath.segments[0] } else { "" }
+          case _ -> ""
+        }
+      }
+      case _ -> ""
+    }
     case _ -> ""
   }
   if local == "" {

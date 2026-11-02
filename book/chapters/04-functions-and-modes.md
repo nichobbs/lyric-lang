@@ -128,10 +128,10 @@ A lambda that uses an `out` or `inout` parameter of its enclosing function gets 
 
 The index is evaluated once, in its turn among the arguments. Unlike every other place, the element is passed by copy in and copy out: it is read into a temporary once every argument has been evaluated, the function works on the temporary, and the temporary is stored back into the element when the call returns. The array itself is never copied. An element of a `List`, a `Map` or a slice is not a place you can pass this way (`T0085`): copy it into a `var`, pass that, and store it back.
 
-A practical example — sorting a slice in place:
+A practical example: swapping two elements of an array in place. A slice is never written in place (chapter 3), so this takes an `array[N, Int]`, whose length `N` the call fills in:
 
 ```lyric
-func swap(xs: inout slice[Int], i: Int, j: Int) {
+func swap[N: Nat](xs: inout array[N, Int], i: Int, j: Int) {
   val tmp = xs[i]
   xs[i] = xs[j]
   xs[j] = tmp
