@@ -48,10 +48,10 @@ test "a named type equals its symbol at the same arguments" {
 }
 
 test "a refinement is not its underlying type" {
-  val r09 = TRefined(underlying = tyInt(), lo = Some(0L), hi = Some(9L), hiInclusive = true)
-  val r09b = TRefined(underlying = tyInt(), lo = Some(0L), hi = Some(9L), hiInclusive = true)
-  val r010 = TRefined(underlying = tyInt(), lo = Some(0L), hi = Some(10L), hiInclusive = true)
-  val r09x = TRefined(underlying = tyInt(), lo = Some(0L), hi = Some(9L), hiInclusive = false)
+  val r09 = TRefined(underlying = tyInt(), lo = Some(0i64), hi = Some(9i64), hiInclusive = true)
+  val r09b = TRefined(underlying = tyInt(), lo = Some(0i64), hi = Some(9i64), hiInclusive = true)
+  val r010 = TRefined(underlying = tyInt(), lo = Some(0i64), hi = Some(10i64), hiInclusive = true)
+  val r09x = TRefined(underlying = tyInt(), lo = Some(0i64), hi = Some(9i64), hiInclusive = false)
   assertTrue(tyEq(r09, r09b), "same bounds")
   assertFalse(tyEq(r09, r010), "different upper bound")
   assertFalse(tyEq(r09, r09x), "different inclusivity")
@@ -91,10 +91,10 @@ test "arrays, slices, tuples, nullables and host types" {
 }
 
 test "Self of an interface is a parameter of that interface" {
-  val self = tySelfOf(sym(5))
-  assertTrue(tyEq(self, TParam(owner = sym(5), index = selfParamIndex())), "self param")
-  assertFalse(tyEq(self, tySelfOf(sym(6))), "another interface")
-  assertFalse(tyEq(self, TParam(owner = sym(5), index = 0)), "not the first generic parameter")
+  val selfTy = tySelfOf(sym(5))
+  assertTrue(tyEq(selfTy, TParam(owner = sym(5), index = selfParamIndex())), "self param")
+  assertFalse(tyEq(selfTy, tySelfOf(sym(6))), "another interface")
+  assertFalse(tyEq(selfTy, TParam(owner = sym(5), index = 0)), "not the first generic parameter")
 }
 
 test "types render for diagnostics" {
@@ -105,7 +105,7 @@ test "types render for diagnostics" {
   assertEqual(renderTy(TArray(len = ALKnown(3), element = tyInt())), "array[3, Int]", "array")
   assertEqual(renderTy(TNever), "Never", "never")
   assertEqual(
-    renderTy(TRefined(underlying = tyInt(), lo = Some(0L), hi = None, hiInclusive = true)),
+    renderTy(TRefined(underlying = tyInt(), lo = Some(0i64), hi = None, hiInclusive = true)),
     "Int range 0 ..= MAX",
     "refined"
   )
@@ -126,8 +126,8 @@ test "a generic identity function is expressible with every type explicit" {
     params = params,
     ret = tp,
     isAsync = false,
-    requires = newList(),
-    ensures = newList(),
+    preconds = newList(),
+    postconds = newList(),
     body = Some(body),
     span = noSourceSpan()
   )
@@ -141,7 +141,7 @@ test "a generic identity function is expressible with every type explicit" {
 
 test "a call carries its callee, instantiation and moded arguments" {
   val g = sym(11)
-  val one = expr(3, tyInt(), XLit(lit = TLInt(value = 1L)))
+  val one = expr(3, tyInt(), XLit(lit = TLInt(value = 1i64)))
   val args: List[TArg] = newList()
   args.add(TArgIn(value = one))
   val call = expr(4, tyInt(), XCall(callee = Direct(sym = g, typeArgs = tys(tyInt())), args = args))

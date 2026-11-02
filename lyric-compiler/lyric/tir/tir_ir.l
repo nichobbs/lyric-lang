@@ -305,8 +305,8 @@ pub record TFnDecl {
   params: List[TParamDecl]
   ret: Ty
   isAsync: Bool
-  requires: List[TExpr]
-  ensures: List[TExpr]
+  preconds: List[TExpr]
+  postconds: List[TExpr]
   body: Option[TExpr]
   span: Span
 }
