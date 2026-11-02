@@ -747,7 +747,7 @@ builder (I0002) rather than on the current checker.
   `symTableTryFindAllNamed` and left to callers that narrow by a qualifier or
   an owner id. Step 6 (D316) takes the bare-function tier, the import hint and bare-name
   ambiguity from the resolver and deletes the checker's versions. Next: the
-  Step 7 (D317) takes the single lookup and T0219 from the resolver's per-file
+  Step 7 (D318) takes the single lookup and T0219 from the resolver's per-file
   scopes and deletes the checker's import-rule tables and the differential
   mode. Next: dependency scopes, and folding `AliasRewriter` and
   `TypeAliasResolve` in.

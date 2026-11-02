@@ -1,6 +1,6 @@
 # The single lookup and T0219 come from `Lyric.Resolve`, docs/70 phase 2c step 7 (#8612)
 
-D317.
+D318.
 
 - `symTableTryFindOne` walks the package's file scopes nearest first; the
   checker's scan serves dependency signature scopes only.

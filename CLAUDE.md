@@ -885,7 +885,7 @@ need direction and have nothing else productive to do**.  Specifically:
     file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
     `resolvePath` (`resolve_lookup.l`) and `buildResolverContext`
     (`resolve_driver.l`).  `resolve_self_test.l` covers it.  The checker takes every bare-name
-    answer for the checked package from it (D314-D317); only a dependency's
+    answer for the checked package from it (D314-D318); only a dependency's
     signature scope still uses the checker's own scan.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.

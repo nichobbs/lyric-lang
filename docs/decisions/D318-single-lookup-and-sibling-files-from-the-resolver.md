@@ -1,4 +1,4 @@
-# D317 - The single bare-name lookup and T0219 come from `Lyric.Resolve`; the checker's import-rule tables are deleted (docs/70 phase 2c, #8612)
+# D318 - The single bare-name lookup and T0219 come from `Lyric.Resolve`; the checker's import-rule tables are deleted (docs/70 phase 2c, #8612)
 
 **Status:** shipped for the checked package's own scope. Step 7 of docs/70 §13
 phase 2c, after D316.
