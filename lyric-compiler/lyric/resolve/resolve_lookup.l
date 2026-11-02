@@ -369,6 +369,19 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
   )
 }
 
+/// The package-private declaration of `name` that a file reaches through an
+/// import but may not use, when nothing visible matches: the declaration whose
+/// use is T0097.  The checker reports that at the use, so it needs the
+/// declaration.
+pub func hiddenDecl(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): Option[Decl] {
+  val step = winningStep(tbl, fsc, name, nameUse)
+  if step.cands.count > 0 or step.hidden.count == 0 {
+    None
+  } else {
+    Some(value = step.hidden[step.hidden.count - 1])
+  }
+}
+
 /// The packages that collide on `name` in the file `fsc` belongs to: the
 /// declaring packages of the step that decides it when it has candidates from
 /// two or more packages (the T0123 case), else none.

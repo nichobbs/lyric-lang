@@ -7168,6 +7168,18 @@ func rulePkg(name: in String, src: in String): ImportedPackage {
   )
 }
 
+// A package-private function reached through a selective or a whole import is
+// T0097 at its use, not an unknown name: the resolver finds it hidden and the
+// checker reports where it is used.
+test "a package-private name reached through an import is T0097, not unknown" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(rulePkg("Lib", "package Lib\nfunc secret(): Int { 1 }\npub func open(): Int { 2 }\n"))
+  val selective = "package App\nimport Lib.{secret}\nfunc f(): Int { secret() }\n"
+  val whole = "package App\nimport Lib\nfunc f(): Int { secret() }\n"
+  assertTrue(hasDiagCode(checkWithImportedPackages(parse(selective).file, packages), "T0097"), "selective import")
+  assertTrue(hasDiagCode(checkWithImportedPackages(parse(whole).file, packages), "T0097"), "whole import")
+}
+
 // #8219: a dot-named function another package declares for a type (an
 // extension) is a candidate for a method call only where the file's imports
 // reach that package, the nearest import level winning; two packages at that

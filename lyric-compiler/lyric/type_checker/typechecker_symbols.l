@@ -7,7 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -1603,6 +1603,19 @@ func resolverPickIn(tbl: in SymbolTable, fid: in Int, name: in String): Option[S
         i = i - 1
       }
       None
+    }
+    case RUnresolved(code, _) -> {
+      // A package-private declaration the file reached through an import: the
+      // symbol is returned so its use is reported as T0097 where it is used.
+      if code == "T0097" {
+        val ctx = tbl.resolveCtx[0]
+        match hiddenDecl(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
+          case Some(d) -> symbolOfDefIdNamed(tbl, d.id, name)
+          case None -> None
+        }
+      } else {
+        None
+      }
     }
     case _ -> None
   }
