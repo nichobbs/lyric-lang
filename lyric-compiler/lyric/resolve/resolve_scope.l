@@ -129,11 +129,45 @@ func bindExtern(tbl: in DeclTable, fsc: in FileScope, local: in String, fqn: in 
   addBinding(fsc, NameBinding(local = local, pkg = "extern", origName = fqn, via = via, renamed = false))
 }
 
+// An import as written (`import P.{A, B as C}`, `import P as Q`), the advice a
+// file that relies on a sibling's import is given (T0219).
+func renderImport(imp: in ImportDecl): String {
+  var text = importWord(imp) + modulePathJoin(imp.path.segments)
+  match imp.selector {
+    case Some(sel) -> {
+      text = text + ".{"
+      var first = true
+      for item in importItems(sel) {
+        if not first {
+          text = text + ", "
+        }
+        first = false
+        text = text + item.name
+        match item.asAlias {
+          case Some(a) -> {
+            text = text + " as " + a
+          }
+          case None -> ()
+        }
+      }
+      text = text + "}"
+    }
+    case None -> ()
+  }
+  match imp.asAlias {
+    case Some(a) -> {
+      text = text + " as " + a
+    }
+    case None -> ()
+  }
+  text
+}
+
 func addLyricImport(tbl: in DeclTable, fsc: in FileScope, imp: in ImportDecl): Unit {
   val target = modulePathJoin(imp.path.segments)
   val text = importWord(imp) + target
   if not fsc.directPkgs.containsKey(target) {
-    fsc.directPkgs.add(target, text)
+    fsc.directPkgs.add(target, renderImport(imp))
   }
   match imp.selector {
     case Some(sel) -> {

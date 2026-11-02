@@ -5965,14 +5965,10 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 // What one list of imports makes visible (docs/01 §9.2): the packages it
 // imports whole, widened to the packages those re-export (`pub use`, D311), the
 // `<package>|<name>` keys of its selectively imported names, its renamed
-// items, and its package aliases.  `wholeVia` and `namesVia`, parallel to
-// `whole` and `names`, hold the import that makes each one visible, as T0219
-// advises adding it.
+// items, and its package aliases.
 record ImportSets {
   whole: List[String]
-  wholeVia: List[String]
   names: List[String]
-  namesVia: List[String]
   renames: List[RenamedImport]
   aliasPkgs: List[String]
   aliasNames: List[String]
@@ -5991,10 +5987,8 @@ func importSelectorItems(sel: in ImportSelector): List[ImportItem] {
 
 func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[ImportedPackage]): ImportSets {
   val whole: List[String] = newList()
-  val wholeVia: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   val names: List[String] = newList()
-  val namesVia: List[String] = newList()
   val renames: List[RenamedImport] = newList()
   val aliasPkgs: List[String] = newList()
   val aliasNames: List[String] = newList()
@@ -6018,7 +6012,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
               )
               case None -> {
                 names.add(pkg + "|" + items[k].name)
-                namesVia.add(importKeyword(imp) + pkg + ".{" + items[k].name + "}")
               }
             }
             k = k + 1
@@ -6033,7 +6026,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
             if not seen.containsKey(pkg) {
               seen.add(pkg, true)
               whole.add(pkg)
-              wholeVia.add(importKeyword(imp) + pkg)
             }
           }
         }
@@ -6063,7 +6055,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
         val key = q + "|" + listedName
         if not names.contains(key) {
           names.add(key)
-          namesVia.add(namesVia[li])
         }
       }
     }
@@ -6082,7 +6073,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
           if not seen.containsKey(deps[d]) {
             seen.add(deps[d], true)
             whole.add(deps[d])
-            wholeVia.add(wholeVia[w])
           }
           d = d + 1
         }
@@ -6091,15 +6081,7 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     w = w + 1
   }
-  ImportSets(
-    whole = whole,
-    wholeVia = wholeVia,
-    names = names,
-    namesVia = namesVia,
-    renames = renames,
-    aliasPkgs = aliasPkgs,
-    aliasNames = aliasNames
-  )
+  ImportSets(whole = whole, names = names, renames = renames, aliasPkgs = aliasPkgs, aliasNames = aliasNames)
 }
 
 // The packages `pkg` re-exports, directly or through their own re-exports.
@@ -6122,124 +6104,6 @@ func reexportClosure(pkg: in String, importedPackages: in List[ImportedPackage])
     qi = qi + 1
   }
   acc
-}
-
-// `import ` or, for a re-export, `pub use `.
-func importKeyword(imp: in ImportDecl): String {
-  if imp.isPubUse {
-    "pub use "
-  } else {
-    "import "
-  }
-}
-
-// An import as written, for the advice of T0219.
-func renderImportDecl(imp: in ImportDecl): String {
-  var text = importKeyword(imp)
-  if imp.isExtern {
-    text = text + "extern "
-  }
-  text = text + dottedPackageName(imp.path)
-  match imp.selector {
-    case Some(sel) -> {
-      val items = importSelectorItems(sel)
-      text = text + ".{"
-      var k = 0
-      while k < items.count {
-        if k > 0 {
-          text = text + ", "
-        }
-        text = text + items[k].name
-        match items[k].asAlias {
-          case Some(a) -> {
-            text = text + " as " + a
-          }
-          case None -> ()
-        }
-        k = k + 1
-      }
-      text = text + "}"
-    }
-    case None -> ()
-  }
-  match imp.asAlias {
-    case Some(a) -> {
-      text = text + " as " + a
-    }
-    case None -> ()
-  }
-  text
-}
-
-// One file's import rule (docs/70 §4.1): what its own imports make visible,
-// each with the import that does it.
-func buildFileImportRule(tbl: in SymbolTable, header: in FileHeader, sets: in ImportSets): FileImportRule {
-  val wholeVia: Map[String, String] = newMap()
-  var w = 0
-  while w < sets.whole.count {
-    if not wholeVia.containsKey(sets.whole[w]) {
-      wholeVia.add(sets.whole[w], sets.wholeVia[w])
-    }
-    w = w + 1
-  }
-  val namesVia: Map[String, String] = newMap()
-  var n = 0
-  while n < sets.names.count {
-    if not namesVia.containsKey(sets.names[n]) {
-      namesVia.add(sets.names[n], sets.namesVia[n])
-    }
-    n = n + 1
-  }
-  val directVia: Map[String, String] = newMap()
-  val reachVia: Map[String, String] = newMap()
-  val externVia: Map[String, String] = newMap()
-  val pending: List[String] = newList()
-  val pendingVia: List[String] = newList()
-  for imp in header.imports {
-    val text = renderImportDecl(imp)
-    if imp.isExtern {
-      match imp.selector {
-        case Some(sel) -> {
-          for item in importSelectorItems(sel) {
-            val local = match item.asAlias { case Some(a) -> a; case None -> item.name }
-            if not externVia.containsKey(local) {
-              externVia.add(local, text)
-            }
-          }
-        }
-        case None -> ()
-      }
-    } else {
-      val pkg = dottedPackageName(imp.path)
-      if not directVia.containsKey(pkg) {
-        directVia.add(pkg, text)
-        pending.add(pkg)
-        pendingVia.add(text)
-      }
-    }
-  }
-  // The packages the direct imports' own imports reach, for the qualified
-  // references that accept one (`qualifiedPkgReachable`).
-  var r = 0
-  while r < pending.count {
-    val cur = pending[r]
-    if not reachVia.containsKey(cur) {
-      reachVia.add(cur, pendingVia[r])
-      for dep in symTablePackageImportsOf(tbl, cur) {
-        pending.add(dep)
-        pendingVia.add(pendingVia[r])
-      }
-    }
-    r = r + 1
-  }
-  FileImportRule(
-    path = header.path,
-    wholeVia = wholeVia,
-    namesVia = namesVia,
-    directVia = directVia,
-    reachVia = reachVia,
-    externVia = externVia
-  )
 }
 
 // Install the docs/01 §9.2 import rule for the package being checked (#7463):
@@ -6272,7 +6136,6 @@ func installImportRule(
     checkRenamedImports(diag, u.renames, u.names, u.whole, u.aliasPkgs, u.aliasNames, importedPackages, fileItems)
     checkSelectiveImportsDeclared(diag, userPkg, imports, importedPackages)
   } else {
-    val rules: List[FileImportRule] = newList()
     val fileDiag: List[Diagnostic] = newList()
     for h in files {
       val fs = collectImportSets(h.imports, importedPackages)
@@ -6287,7 +6150,6 @@ func installImportRule(
         fileItems
       )
       checkSelectiveImportsDeclared(diag, userPkg, h.imports, importedPackages)
-      rules.add(buildFileImportRule(tbl, h, fs))
     }
     // A rename whose new name a sibling file's import brings in is still
     // T0148: the alias rewriter and the JVM backend read renames from the
@@ -6315,9 +6177,8 @@ func installImportRule(
         )
       }
     }
-    symTableSetFileRules(tbl, rules)
   }
-  symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
+  symTableSetImportRule(tbl, userPkg)
 }
 
 // Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
@@ -7218,6 +7079,9 @@ func checkWithImportedPackagesCore(
 
   // T1: register imported items first (shadow without error), tagging each
   // symbol with its declaring package so scoped resolution can prefer it.
+  // What the resolver is given for each dependency: the items the checker
+  // registers, with a destructuring module-level `val` already split.
+  val resolveDeps: List[DepPackage] = newList()
   var p = 0
   while p < importedPackages.count {
     val ip = importedPackages[p]
@@ -7225,6 +7089,7 @@ func checkWithImportedPackagesCore(
     // T0144 in another package is that package's own build error.
     val ipDiag: List[Diagnostic] = newList()
     val ipItems = desugarModuleValItems(ip.items, ipDiag)
+    resolveDeps.add(DepPackage(name = ip.name, items = ipItems, reexports = ip.reexports))
     var ii = 0
     while ii < ipItems.count {
       registerItem(tbl, diag, true, ip.name, ipItems[ii])
@@ -7246,14 +7111,7 @@ func checkWithImportedPackagesCore(
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
   symTableSetScope(tbl, userPkg, userImports)
-  val resolveDeps: List[DepPackage] = newList()
-  for ip in importedPackages {
-    resolveDeps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
-  }
   tbl.resolveCtx.add(buildResolverContext(resolveDeps, file, tbl.interner))
-  if getVarOrDefault("LYRIC_RESOLVE_DIFF", "") == "1" {
-    tbl.diffOn.add(true)
-  }
 
   // T2.5: validate range subtypes.
   var k = 0
@@ -7399,9 +7257,6 @@ func checkWithImportedPackagesCore(
     diag.add(w)
   }
 
-  for dd in tbl.diffLog {
-    diag.add(dd)
-  }
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }
 

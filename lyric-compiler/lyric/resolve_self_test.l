@@ -456,3 +456,48 @@ test "visibleDecls follows a rename and leaves an unlisted name of a selective i
   assertEqualInt(visibleKeys(ctx, "f").count, 0, "the original name is not bound")
   assertEqualInt(visibleKeys(ctx, "g").count, 0, "g is not listed")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bareVia, externVia, qualifiedVia: how a file reaches a name (T0219).
+// ─────────────────────────────────────────────────────────────────────────────
+func viaText(o: in Option[String]): String {
+  match o {
+    case Some(v) -> "some:" + v
+    case None -> "none"
+  }
+}
+
+test "bareVia names the import that brings a declaration in, and is empty for the package itself" {
+  val a = "package A\npub record Row { v: Int }\n"
+  val b = "package B\npub func g(): Int = 1\npub func h(): Int = 2\n"
+  val deps: List[String] = newList()
+  deps.add(a)
+  deps.add(b)
+  val ctx = ctxOf(deps, "package P\nimport A\nimport B.{g}\nrecord Own { n: Int }\n")
+  val fsc = scopeOfFile(ctx, 0)
+  assertEqual(viaText(bareVia(ctx.tbl, fsc, "Row", UseValue, "A")), "some:import A", "whole import")
+  assertEqual(viaText(bareVia(ctx.tbl, fsc, "g", UseValue, "B")), "some:import B.{g}", "selective import")
+  assertEqual(viaText(bareVia(ctx.tbl, fsc, "h", UseValue, "B")), "none", "unlisted name")
+  assertEqual(viaText(bareVia(ctx.tbl, fsc, "Own", UseValue, "P")), "some:", "own package")
+}
+
+test "qualifiedVia is the import as written, in any form" {
+  val a = "package A\npub func f(): Int = 1\n"
+  val b = "package B\npub func g(): Int = 1\n"
+  val deps: List[String] = newList()
+  deps.add(a)
+  deps.add(b)
+  val ctx = ctxOf(deps, "package P\nimport A as X\nimport B.{g as k}\n")
+  val fsc = scopeOfFile(ctx, 0)
+  assertEqual(viaText(qualifiedVia(fsc, "A")), "some:import A as X", "aliased")
+  assertEqual(viaText(qualifiedVia(fsc, "B")), "some:import B.{g as k}", "selective with a rename")
+  assertEqual(viaText(qualifiedVia(fsc, "P")), "some:", "own package")
+  assertEqual(viaText(qualifiedVia(fsc, "C")), "none", "not imported")
+}
+
+test "externVia names the import extern that binds a local name" {
+  val ctx = ctxOf(newList(), "package P\nimport extern System.Text.{StringBuilder as SB}\n")
+  val fsc = scopeOfFile(ctx, 0)
+  assertEqual(viaText(externVia(fsc, "SB")), "some:import extern System.Text", "the extern import")
+  assertEqual(viaText(externVia(fsc, "Other")), "none", "an unbound name")
+}

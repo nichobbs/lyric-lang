@@ -1236,12 +1236,7 @@ func receiverNamesPackageOrParam(tbl: in SymbolTable, sc: in Scope, name: in Str
       return true
     }
   }
-  for alias in mapValues(tbl.importAliases) {
-    if alias == name {
-      return true
-    }
-  }
-  false
+  symTableIsImportAlias(tbl, name)
 }
 
 // #7499: a symbol whose cross-package use `checkImportedVisibility` rejects
@@ -4523,13 +4518,7 @@ func dotNamedExtensionTier(tbl: in SymbolTable, origin: in String): Int {
   if origin.length == 0 or origin == curPkg or curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
     return 0
   }
-  if not tbl.importVisiblePkgs.containsKey(origin) {
-    -1
-  } else if symTableScopeAllows(tbl, origin) {
-    1
-  } else {
-    2
-  }
+  symTableWholeImportTier(tbl, origin)
 }
 
 // The packages whose extensions `T.m` a method call `recv.m(<argc
@@ -5360,7 +5349,7 @@ func hiddenExtensionsHint(
   // file, so its extension is called through it (#8219).
   val via: List[String] = newList()
   for pkg in hiddenIn {
-    match mapGet(tbl.importAliases, pkg) {
+    match symTableAliasOfPackage(tbl, pkg) {
       case Some(alias) -> via.add("'" + alias + "." + dotted + "(...)' (" + pkg + " is imported as " + alias + ")")
       case None -> if symTableScopeAllows(tbl, pkg) {
         via.add("'" + pkg + "." + dotted + "(...)' (" + pkg + " is imported selectively)")
@@ -6577,7 +6566,7 @@ func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
             localArities.add(fd.params.count)
           }
           // An import under an alias is named `Alias.name`, never bare (#8155).
-        } else if all[i].originPackage.length > 0 and symTableScopeAllows(tbl, all[i].originPackage) and not tbl.importAliases.containsKey(all[i].originPackage) {
+        } else if all[i].originPackage.length > 0 and symTableScopeAllows(tbl, all[i].originPackage) and not isSome(symTableAliasOfPackage(tbl, all[i].originPackage)) {
           if not intListHas(importedArities, fd.params.count) {
             importedArities.add(fd.params.count)
           }

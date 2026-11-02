@@ -118,11 +118,22 @@ pub record DeclTable {
   decls: List[Decl]
   byName: Map[String, List[Int]]
   byId: Map[String, Int]
+  /// `<id>|<package>|<name>` -> the newest registration of that declaration: an
+  /// extern type two packages declare under two names is one identity (D306) and
+  /// two declarations.
+  byDecl: Map[String, Int]
   packages: Map[String, PackageInfo]
 }
 
 pub func newDeclTable(interner: in DefPathInterner): DeclTable {
-  DeclTable(interner = interner, decls = newList(), byName = newMap(), byId = newMap(), packages = newMap())
+  DeclTable(
+    interner = interner,
+    decls = newList(),
+    byName = newMap(),
+    byId = newMap(),
+    byDecl = newMap(),
+    packages = newMap()
+  )
 }
 
 /// The declaration with id `id`, newest registration, or `None`.

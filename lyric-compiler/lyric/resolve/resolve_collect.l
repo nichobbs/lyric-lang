@@ -161,6 +161,11 @@ func addDecl(
     tbl.byId.remove(toString(id.id))
   }
   tbl.byId.add(toString(id.id), ix)
+  val declKey = toString(id.id) + "|" + pkg + "|" + name
+  if tbl.byDecl.containsKey(declKey) {
+    tbl.byDecl.remove(declKey)
+  }
+  tbl.byDecl.add(declKey, ix)
   if bare {
     match mapGet(tbl.byName, name) {
       case Some(ixs) -> ixs.add(ix)
