@@ -913,9 +913,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
     }
 
     // `xs[i]` panics unless `0 <= i < xs.length`, so a read is an obligation
-    // (#8157).  An array's or slice's element is `select` of its elements
-    // (#8394), a value of the element type when the receiver's type is
-    // known; a `String`'s is a fresh value.
+    // (#8157).  An array's element is `select` of its elements (#8394); a
+    // slice's and a `String`'s is a fresh value.  An array's or slice's
+    // element is a value of the element type when the receiver's type is
+    // known.
     case EIndex(receiver, indices) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
       val diags: List[Diagnostic] = newList()
@@ -958,20 +959,24 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
         )
         sc.add(mkAnd(inRange))
-        val elemTerm = if isElementSequenceSort(recvSort) {
-          val sel = TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
+        // A slice's element is a value of its own at each read: an element
+        // write through another binding of the same slice, even in a
+        // callee, is visible through this one on every target, so two reads
+        // need not agree (#8394).  Its length does not change.
+        val elemTerm = match recvSort {
+          case SArray(_) -> TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
+          case _ -> freshVar(env, "elem", elemSort)
+        }
+        if isElementSequenceSort(recvSort) {
           match receiverSortInfo(env, receiver) {
             case Some(rInfo) -> {
-              val facts = valueFactsForTerm(sel, elementSortInfo(rInfo))
+              val facts = valueFactsForTerm(elemTerm, elementSortInfo(rInfo))
               if facts.count > 0 {
                 asList.add(mkImplies(mkAnd(inRange), mkAnd(facts)))
               }
             }
             case None -> ()
           }
-          sel
-        } else {
-          freshVar(env, "elem", elemSort)
         }
         val idxTR = TranslateResult(term = elemTerm, sideConds = sc, assumed = asList)
         val idxPair: (TranslateResult, List[Diagnostic]) = (idxTR, diags)

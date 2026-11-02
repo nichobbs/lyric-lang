@@ -4202,15 +4202,26 @@ test "an array's or slice's length is part of its value, not a function of its e
   )
 }
 
-test "an element read is select of the sequence's elements (#8394)" {
+test "an element read is select of an array's elements, a slice's is a value of its own (#8394)" {
   assertDischarged("func f(a: in array[3, Int]): Bool\n  ensures: result\n{\n  a[0] == a[0]\n}\n", "same-element-twice")
   assertDischarged(
     "func first(a: in array[3, Int]): Int\n  requires: a[0] > 0\n  ensures: result > 0\n{\n  a[0]\n}\n",
     "element-in-a-contract"
   )
-  assertDischarged(
+  // A slice's element is a value of its own at each read: a write through
+  // another binding of the slice is seen through this one.
+  assertRefuted(
     "func at(xs: in slice[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.length and xs[i] == 4\n  ensures: result == 4\n{\n  xs[i]\n}\n",
-    "slice-element-in-a-contract"
+    "slice-element-not-a-value"
+  )
+  assertRefuted(
+    "func g(xs: in slice[Int]): Unit {\n  var s = xs\n  s[0] = 99\n}\nfunc f(xs: in slice[Int]): Bool\n  requires: xs.length > 0\n" +
+      "  ensures: result\n{\n  val before = xs[0]\n  g(xs)\n  before == xs[0]\n}\n",
+    "slice-written-through-an-alias"
+  )
+  assertDischarged(
+    "type Small = Int range 0 ..= 10\nfunc f(xs: in slice[Small]): Bool\n  requires: xs.length > 0\n  ensures: result\n{\n  xs[0] <= 10\n}\n",
+    "slice-element-range"
   )
   assertRefuted("func f(a: in array[3, Int]): Bool\n  ensures: result\n{\n  a[0] == a[1]\n}\n", "different-elements")
   // An element has its type's range and width.
