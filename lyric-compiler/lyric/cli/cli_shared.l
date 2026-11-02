@@ -363,6 +363,8 @@ func usageText(): String {
     "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
     "                (no source: generates docs/ for all project source files)\n" +
     "  lyric public-api-diff <old.dll> <new.dll>\n" +
+    "  lyric interface dump <file.lyri>\n" +
+    "                 (print a package interface as text, with its hash; docs/70 §9.6)\n" +
     "\n" +
     "\n" +
     "Codegen:\n" +
