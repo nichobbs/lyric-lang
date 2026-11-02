@@ -1523,11 +1523,11 @@ func symbolEntries(syms: in List[Symbol]): List[String] {
 }
 
 func joinEntries(entries: in List[String]): String {
-  var out = ""
+  var joined = ""
   for e in entries {
-    out = out + e + " "
+    joined = joined + e + " "
   }
-  out
+  joined
 }
 
 func symbolKindTag(s: in Symbol): String {
