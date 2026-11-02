@@ -22,6 +22,7 @@ import Window.Kernel.Sdl
 pub record Window {
   handle: Long
   id: Int
+  metalView: Long
 }
 
 /// A window's size in the window system's units or in pixels.
@@ -48,7 +49,8 @@ pub union Event {
   case Other(kind: Int)
 }
 
-/// The handles a GPU surface is created from (`lyric-gpu`), per window system.
+/// The handles a GPU surface is created from (`lyric-gpu`), per window system.  `Cocoa` is the
+/// `NSWindow*`; the surface itself is made from the window's `metalLayer`.
 pub union NativeWindow {
   case X11(display: Long, window: Long)
   case Wayland(display: Long, surface: Long)
@@ -76,6 +78,8 @@ val windowResizable: Long = 32
 val windowHidden: Long = 8
 
 val windowHighPixelDensity: Long = 8192
+
+val windowMetal: Long = 536870912
 
 val defaultPlaybackDevice: Int = 0 - 1
 
@@ -254,29 +258,77 @@ pub func quit(): Unit {
   SDL_Quit()
 }
 
-/// A window of `width` by `height` units.  It is hidden until `show`, so an application can
-/// set up before anything appears.
 @unsafe_ffi
-pub func createWindow(title: String, width: Int, height: Int, resizable: Bool): Result[Window, String] {
-  val name = Ffi.toCString(title)
-  val flags = windowHidden + windowHighPixelDensity + (if resizable then windowResizable else 0)
-  val handle = SDL_CreateWindow(name, width, height, flags)
-  Ffi.release(name)
-  if ptrToLong(handle) == 0 {
-    Err(error = "SDL_CreateWindow failed: " + lastError())
-  } else {
-    Ok(value = Window(handle = ptrToLong(handle), id = SDL_GetWindowID(handle)))
+func onMacOs(): Bool {
+  match Ffi.tryFromCString(SDL_GetPlatform()) {
+    case Some(name) -> name == "macOS"
+    case None -> false
   }
 }
 
+/// A window of `width` by `height` units.  It is hidden until `show`, so an application can
+/// set up before anything appears.  On macOS the window is created Metal-capable and carries a
+/// `CAMetalLayer`-backed view (see `metalLayer`) that lives until `destroyWindow`.
+@unsafe_ffi
+pub func createWindow(title: String, width: Int, height: Int, resizable: Bool): Result[Window, String] {
+  val name = Ffi.toCString(title)
+  val metal = onMacOs()
+  val flags = windowHidden + windowHighPixelDensity + (if resizable then windowResizable else 0) +
+    (if metal then windowMetal else 0)
+  val handle = SDL_CreateWindow(name, width, height, flags)
+  Ffi.release(name)
+  if ptrToLong(handle) == 0 {
+    return Err(error = "SDL_CreateWindow failed: " + lastError())
+  }
+  var view: Long = 0
+  if metal {
+    view = ptrToLong(SDL_Metal_CreateView(handle))
+    if view == 0 {
+      val message = lastError()
+      SDL_DestroyWindow(handle)
+      return Err(error = "SDL_Metal_CreateView failed: " + message)
+    }
+  }
+  Ok(value = Window(handle = ptrToLong(handle), id = SDL_GetWindowID(handle), metalView = view))
+}
+
+/// Destroys the window and, on macOS, its Metal view.  A `Gpu.Surface` made from the window must
+/// be released first.
 @unsafe_ffi
 pub func destroyWindow(w: Window): Unit {
+  if w.metalView != 0 {
+    SDL_Metal_DestroyView(longToPtr(w.metalView))
+  }
   SDL_DestroyWindow(longToPtr(w.handle))
+}
+
+/// The window's `CAMetalLayer*`, which `Gpu.createMetalSurface` presents to.  It belongs to the
+/// window's Metal view and stays valid until `destroyWindow`; the layer tracks the view's size,
+/// so a resize needs only `Gpu.configureSurface` with the new `pixelSize`.  Only macOS windows
+/// have one; elsewhere this is an error.
+@unsafe_ffi
+pub func metalLayer(w: Window): Result[Long, String] {
+  if w.metalView == 0 {
+    return Err(error = "this window has no Metal layer (not a macOS window)")
+  }
+  val layer = ptrToLong(SDL_Metal_GetLayer(longToPtr(w.metalView)))
+  if layer == 0 {
+    Err(error = "SDL_Metal_GetLayer failed: " + lastError())
+  } else {
+    Ok(value = layer)
+  }
 }
 
 @unsafe_ffi
 pub func show(w: Window): Unit {
   val _ = SDL_ShowWindow(longToPtr(w.handle))
+}
+
+/// Asks the window system to put the window in front of the others and give it input focus.  A
+/// window behind other windows is occluded, and a GPU surface presents nothing to it.
+@unsafe_ffi
+pub func raise(w: Window): Unit {
+  val _ = SDL_RaiseWindow(longToPtr(w.handle))
 }
 
 @unsafe_ffi

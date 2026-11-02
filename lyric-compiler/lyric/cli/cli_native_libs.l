@@ -195,19 +195,33 @@ func runToolOrError(tool: in String, args: in List[String]): Option[String] {
 /// A copy of the dylib `path` whose install name is `@rpath/<file name>`, in
 /// `stageDir`, so that a program linking it finds the copy bundled with the
 /// executable by run path.  A dylib that already names itself with `@rpath/`
-/// (SDL3, wgpu-native) is used as it is.  The copy is signed ad hoc again, since
-/// rewriting the install name invalidates the signature arm64 macOS demands.
+/// (SDL3, wgpu-native) keeps that name, and is copied under it when its file is
+/// named otherwise (wgpu-native's `libwgpu_native-release.dylib` names itself
+/// `@rpath/libwgpu_native.dylib`), because the executable records the install
+/// name and a bundle must hold a file of that name.  A copy whose install name
+/// is rewritten is signed ad hoc again, since the rewrite invalidates the
+/// signature arm64 macOS demands.
 func stageDarwinDylib(path: in String, stageDir: in String): Result[String, String] {
   val id = darwinInstallName(path)
   if id.length == 0 {
     return Err(error = "cannot read the install name of " + path + " (otool -D)")
   }
-  if Str.startsWith(id, "@rpath/") {
+  if Str.startsWith(id, "@rpath/") and Str.substring(id, 7) == fileNameOf(path) {
     return Ok(value = path)
   }
   match Dir.createRecursive(stageDir) {
     case Ok(_) -> ()
     case Err(_) -> return Err(error = "cannot create " + stageDir)
+  }
+  if Str.startsWith(id, "@rpath/") {
+    val named = Path.join(stageDir, Str.substring(id, 7))
+    match File.readBytes(path) {
+      case Err(_) -> return Err(error = "cannot read " + path)
+      case Ok(bytes) -> match File.writeBytes(named, bytes) {
+        case Ok(_) -> return Ok(value = named)
+        case Err(_) -> return Err(error = "cannot write " + named)
+      }
+    }
   }
   val dest = Path.join(stageDir, fileNameOf(path))
   match File.readBytes(path) {

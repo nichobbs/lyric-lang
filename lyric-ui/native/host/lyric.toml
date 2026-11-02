@@ -26,6 +26,7 @@ output_assembly = "Lyric.Ui.Native.dll"
 "Lyric.Ui"             = { path = "../.." }
 "Lyric.Ui.Native.Core" = { path = ".." }
 "Lyric.Window"         = { path = "../../../lyric-window" }
+"Lyric.GpuWindow" = { path = "../../../lyric-gpu-window" }
 "Lyric.Gpu"            = { path = "../../../lyric-gpu" }
 "Lyric.Draw"           = { path = "../../../lyric-draw" }
 "Lyric.Text"           = { path = "../../../lyric-text" }

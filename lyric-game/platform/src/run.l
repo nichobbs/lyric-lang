@@ -23,6 +23,7 @@ import Std.File as File
 import Std.Errors
 import Window
 import Gpu
+import GpuWindow
 import Draw
 import Game.Input
 import Game.Clock
@@ -122,15 +123,6 @@ func translate(e: Window.Event, v: Viewport, pxScaleX: Float, pxScaleY: Float): 
   }
 }
 
-func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
-  match Window.nativeWindow(w) {
-    case X11(display, window) -> Gpu.createXlibSurface(d, display, window)
-    case Wayland(display, surface) -> Gpu.createWaylandSurface(d, display, surface)
-    case Win32(hwnd, instance) -> Gpu.createWindowsSurface(d, instance, hwnd)
-    case _ -> Err(error = "this window system has no GPU surface support yet")
-  }
-}
-
 // Plays the cues a step asked for.
 func playCues(mixer: Mixer, sounds: List[Sound], cues: List[Int]): Unit {
   for c in cues {
@@ -152,7 +144,8 @@ func topUpAudio(audio: Option[Window.Audio], mixer: Mixer): Unit {
   }
 }
 
-// One rendered frame: acquire, draw, present.  An unavailable frame means reconfigure and retry.
+// One rendered frame: acquire, draw, present.  An occluded window skips the frame; an unavailable
+// surface means reconfigure and retry.
 func drawFrame[S](
   d: Gpu.Device,
   surface: Gpu.Surface,
@@ -162,8 +155,12 @@ func drawFrame[S](
   prev: S,
   cur: S,
   alpha: Float,
-): Result[Unit, String] {
-  val target = match Gpu.acquireFrame(d, surface) { case Ok(t) -> t; case Err(m) -> return Err(error = m) }
+): Result[Bool, String] {
+  val target = match Gpu.tryAcquireFrame(d, surface) {
+    case Ok(Some(t)) -> t
+    case Ok(None) -> return Ok(value = false)
+    case Err(m) -> return Err(error = m)
+  }
   val v = fitViewport(target.width, target.height, config.viewWidth, config.viewHeight)
   Draw.beginFrame(painter, target.width, target.height)
   game.render(prev, cur, alpha, painter, v)
@@ -172,7 +169,10 @@ func drawFrame[S](
       Gpu.discardFrame(target)
       Err(error = m)
     }
-    case Ok(_) -> Gpu.presentFrame(surface, target)
+    case Ok(_) -> match Gpu.presentFrame(surface, target) {
+      case Ok(_) -> Ok(value = true)
+      case Err(m) -> Err(error = m)
+    }
   }
 }
 
@@ -262,8 +262,8 @@ func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, conf
     }
     topUpAudio(audio, mixer)
     match drawFrame(d, surface, painter, config, game, prev, cur, ticks.alpha) {
-      case Ok(_) -> {
-        if not announced {
+      case Ok(shown) -> {
+        if shown and not announced {
           announced = true
           Console.println("presented")
         }
@@ -315,8 +315,9 @@ pub func run[S](config: Config, game: Game[S]): Int {
     case Err(m) -> return fail(m)
   }
   Window.show(win)
+  Window.raise(win)
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match surfaceFor(d, win) {
+    match GpuWindow.surfaceFor(d, win) {
       case Err(m) -> fail(m)
       case Ok(created) -> {
         val px = Window.pixelSize(win)

@@ -12,3 +12,7 @@ name = "Lyric.Draw.Examples.Scene"
 
 [dependencies]
 "Lyric.Draw" = { path = "../.." }
+
+# A macOS build also writes a .app bundle that carries the wgpu-native dylib (docs/67 G9, D233).
+[native.app]
+identifier = "org.lyric.examples.scene"

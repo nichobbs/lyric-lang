@@ -22,3 +22,7 @@ name = "Lyric.Breakout.App"
 "Lyric.Game.Platform" = { path = "../../../platform" }
 "Lyric.Draw"          = { path = "../../../../lyric-draw" }
 "Lyric.Text"          = { path = "../../../../lyric-text" }
+
+# A macOS build also writes a .app bundle that carries the wgpu-native dylib (docs/67 G9, D233).
+[native.app]
+identifier = "org.lyric.examples.breakout"
