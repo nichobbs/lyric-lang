@@ -6081,13 +6081,7 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
     }
     w = w + 1
   }
-  ImportSets(
-    whole = whole,
-    names = names,
-    renames = renames,
-    aliasPkgs = aliasPkgs,
-    aliasNames = aliasNames
-  )
+  ImportSets(whole = whole, names = names, renames = renames, aliasPkgs = aliasPkgs, aliasNames = aliasNames)
 }
 
 // The packages `pkg` re-exports, directly or through their own re-exports.

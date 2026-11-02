@@ -438,7 +438,9 @@ pub func visibleDecls(tbl: in DeclTable, fsc: in FileScope, name: in String, nam
 /// the prelude), `Some(import)` with the import as written that brings it in,
 /// `None` when the file does not reach it.  For T0219: a name a file uses that
 /// only a sibling file's import makes visible.
-pub func bareVia(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse, origin: in String): Option[String] {
+pub func bareVia(
+  tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse, origin: in String
+): Option[String] {
   if origin == fsc.pkg {
     return Some(value = "")
   }
@@ -449,10 +451,7 @@ pub func bareVia(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse:
   }
   match mapGet(fsc.whole, origin) {
     case Some(r) -> {
-      return match r {
-        case ReachDirect(v) -> Some(value = v)
-        case ReachReexport(v) -> Some(value = v)
-      }
+      return match r { case ReachDirect(v) -> Some(value = v); case ReachReexport(v) -> Some(value = v) }
     }
     case None -> ()
   }

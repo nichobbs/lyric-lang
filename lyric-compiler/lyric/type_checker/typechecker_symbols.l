@@ -1392,26 +1392,18 @@ pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[S
   }
 }
 
-
-
 // What the resolver says the file can reach under `name`, as symbols: the
 // current file's, or the union of the package's files for a synthesised item or
 // a package of one file.  `None` outside the checked package's own scope.
 func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]] {
-  val files = match resolverVisibleFiles(tbl) {
-    case Some(f) -> f
-    case None -> return None
-  }
+  val files = match resolverVisibleFiles(tbl) { case Some(f) -> f; case None -> return None }
   val ctx = tbl.resolveCtx[0]
   val found: List[Symbol] = newList()
   val seen: Map[String, Bool] = newMap()
   for fid in files {
     for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
       match symbolOfDefIdNamed(tbl, d.id, d.name) {
-        case Some(s) -> if not seen.containsKey(toString(d.id.id)) {
-          seen.add(toString(d.id.id), true)
-          found.add(s)
-        }
+        case Some(s) -> if not seen.containsKey(toString(d.id.id)) { seen.add(toString(d.id.id), true); found.add(s) }
         case None -> ()
       }
     }
@@ -1438,11 +1430,6 @@ func packagelessSymbols(tbl: in SymbolTable, name: in String): List[Symbol] {
   acc
 }
 
-
-
-
-
-
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
   match resolverFileOrder(tbl) {
     case None -> tryFindOneCore(tbl, name)
@@ -1463,7 +1450,6 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
     }
   }
 }
-
 
 func resolverFileFor(tbl: in SymbolTable): Option[Int] {
   match resolverFileOrder(tbl) {
@@ -1514,7 +1500,6 @@ func resolverVisibleFiles(tbl: in SymbolTable): Option[List[Int]] {
     }
   }
 }
-
 
 // What the resolver says `name` means in file `fid`, cached per file and name.
 func resolutionOf(tbl: in SymbolTable, fid: in Int, name: in String): Resolution {
@@ -1623,9 +1608,6 @@ func resolverPickIn(tbl: in SymbolTable, fid: in Int, name: in String): Option[S
   }
 }
 
-
-
-
 func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
   match declOfId(ctx.tbl, id) {
     case Some(d) -> d.pkg
@@ -1729,15 +1711,12 @@ func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {
   tbl.importRulePkg.count > 0 and tbl.importRulePkg[0] == pkg
 }
 
-
-
 func typeNameOfId(tbl: in SymbolTable, tid: in SymbolId): String {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(parent) -> parent.name
     case None -> ""
   }
 }
-
 
 // The files of the checked package whose scopes judge a bare name, when the
 // resolver answers: all of them.  A package of several files is judged by the
@@ -2235,12 +2214,7 @@ pub func symTableWholeImportTier(tbl: in SymbolTable, pkg: in String): Int {
   var tier = -1
   for fsc in tbl.resolveCtx[0].scopes {
     match mapGet(fsc.whole, pkg) {
-      case Some(r) -> match r {
-        case ReachDirect(_) -> return 1
-        case ReachReexport(_) -> {
-          tier = 2
-        }
-      }
+      case Some(r) -> match r { case ReachDirect(_) -> return 1; case ReachReexport(_) -> { tier = 2 } }
       case None -> ()
     }
   }

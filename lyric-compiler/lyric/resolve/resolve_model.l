@@ -126,7 +126,14 @@ pub record DeclTable {
 }
 
 pub func newDeclTable(interner: in DefPathInterner): DeclTable {
-  DeclTable(interner = interner, decls = newList(), byName = newMap(), byId = newMap(), byDecl = newMap(), packages = newMap())
+  DeclTable(
+    interner = interner,
+    decls = newList(),
+    byName = newMap(),
+    byId = newMap(),
+    byDecl = newMap(),
+    packages = newMap()
+  )
 }
 
 /// The declaration with id `id`, newest registration, or `None`.
