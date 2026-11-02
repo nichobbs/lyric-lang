@@ -1473,10 +1473,7 @@ func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]]
 // Note a difference between the sets the scan and the resolver give for `name`
 // (differential mode).
 func diffCompareVisible(tbl: in SymbolTable, name: in String, scan: in List[Symbol], res: in Option[List[Symbol]]): Unit {
-  val theirs = match res {
-    case Some(r) -> r
-    case None -> return
-  }
+  val theirs = match res { case Some(r) -> r; case None -> return }
   val ae = symbolEntries(scan)
   val be = symbolEntries(theirs)
   var same = ae.count == be.count
@@ -1490,10 +1487,7 @@ func diffCompareVisible(tbl: in SymbolTable, name: in String, scan: in List[Symb
   }
   val a = joinEntries(ae)
   val b = joinEntries(be)
-  val fid = match resolverFileFor(tbl) {
-    case Some(f) -> f
-    case None -> 0
-  }
+  val fid = match resolverFileFor(tbl) { case Some(f) -> f; case None -> 0 }
   val key = "v|" + toString(fid) + "|" + name + "|" + a + "|" + b
   if tbl.diffSeen.containsKey(key) {
     return
@@ -1503,7 +1497,8 @@ func diffCompareVisible(tbl: in SymbolTable, name: in String, scan: in List[Symb
   tbl.diffLog.add(
     warningDiagnostic(
       "R0002",
-      "resolver disagrees on what '" + name + "' can mean (file " + toString(fid) + "): checker " + a + ", resolver " + b,
+      "resolver disagrees on what '" + name + "' can mean (file " + toString(fid) + "): checker " + a + ", resolver " +
+        b,
       at
     )
   )
