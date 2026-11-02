@@ -880,6 +880,10 @@ need direction and have nothing else productive to do**.  Specifically:
   - `symbols/symbols.l` — `Lyric.Symbols` (D313): `SymbolId`, `DefPath` and the
     `DefPathInterner` shared by the resolver and the type checker (the checker
     re-exports it).
+  - `tir/` — `Lyric.Tir` (docs/70 §6.2, D319): the typed IR data model. `Ty`
+    (no error and no inference case; `tyEq` has no wildcard), `TExpr` and its
+    kinds, `Callee`, `ConvKind`, typed patterns and the declaration records,
+    over `SymbolId`s from `Lyric.Symbols`. `tir_self_test.l` covers it.
   - `resolve/` — `Lyric.Resolve` (docs/70 §4.3-§4.4, D313): the declaration
     table with a DefPath for every declaration kind (`resolve_collect.l`), a
     file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
