@@ -492,6 +492,17 @@ func havocVarsLinked(env: in VEnv, names: in List[String], tag: in String, linke
         }
         envH = envBindTerm(vname, t, vinfo, envH)
         appendTermList(hyps, valueFactsForTerm(t, vinfo))
+        // An array's length is part of its type, so no change to the
+        // variable changes it (#8394); a slice's can.
+        match sortOf(t) {
+          case SArray(_) -> match envLookup(vname, env) {
+            case Some(prev) -> if sortEq(sortOf(prev), sortOf(t)) {
+              hyps.add(TBuiltin(op = BOpEq, args = termList2(lengthTerm(t), lengthTerm(prev))))
+            }
+            case None -> ()
+          }
+          case _ -> ()
+        }
       }
       // A name with no binding here is declared inside the code itself.
       case None -> ()

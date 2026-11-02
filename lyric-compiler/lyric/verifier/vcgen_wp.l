@@ -576,6 +576,30 @@ func wpLocal(
   }
 }
 
+// What an unannotated binding knows of its value: its initializer's sort and
+// width, and, for a copy of an array or slice variable, that variable's
+// length and element type (#8394).
+func inferredSortInfo(env: in VEnv, init: in Expr, sort: in Sort): SortInfo {
+  val base = SortInfo(sort = sort, range = RBKNone, intBits = intBitsOfExpr(env, init))
+  if not isElementSequenceSort(sort) {
+    return base
+  }
+  match receiverSortInfo(env, init) {
+    case Some(src) -> if sortEq(src.sort, sort) {
+      SortInfo(
+        sort = sort,
+        range = RBKNone,
+        fixedLen = src.fixedLen,
+        elemRange = src.elemRange,
+        elemIntBits = src.elemIntBits
+      )
+    } else {
+      base
+    }
+    case None -> base
+  }
+}
+
 // The name a `val` pattern binds when it binds the whole value to one.
 func simpleBindingName(pat: in Pattern): Option[String] {
   match pat.kind {
@@ -617,7 +641,7 @@ func wpBindInit(
   // unannotated binding takes its initializer's sort and width.
   val info = match ty {
     case Some(t) -> sortOfTypeExprE(env, t)
-    case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone, intBits = intBitsOfExpr(env, init))
+    case None -> inferredSortInfo(env, init, sortOf(initR.term))
   }
   val boundTerm = match ty {
     case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)

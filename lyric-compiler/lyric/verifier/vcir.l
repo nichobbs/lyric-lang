@@ -119,9 +119,11 @@ pub union Builtin {
   case BOpGte
   // Real-number division (SMT `/`).  Used for Float32/Float64 operands.
   case BOpRealDiv
-  // Slice helpers
+  // Sequences: an array or slice is a length and its elements (`Lyric!Seq`,
+  // #8394).  `BOpSliceStore(a, i, v)` is `a` with element `i` replaced by `v`.
   case BOpSliceLength
   case BOpSliceIndex
+  case BOpSliceStore
   // If-then-else
   case BOpIte
   // Bitvector widening along the lossless unsigned chain `Byte < UInt <
@@ -155,6 +157,7 @@ pub func builtinDisplay(b: in Builtin): String {
     case BOpRealDiv -> "/"
     case BOpSliceLength -> "slice.length"
     case BOpSliceIndex -> "slice.select"
+    case BOpSliceStore -> "slice.store"
     case BOpIte -> "ite"
     case BOpZeroExtend(bits) -> "zero_extend[" + intToString(bits) + "]"
     case BOpBvToNat -> "bv2nat"
@@ -323,6 +326,13 @@ func builtinResultSort(b: in Builtin, args: in List[Term]): Sort {
       }
     }
     case BOpSliceLength -> SInt
+    case BOpSliceStore -> {
+      if args.count > 0 {
+        sortOf(args[0])
+      } else {
+        SInt
+      }
+    }
     case BOpZeroExtend(bits) -> {
       if args.count > 0 {
         match sortOf(args[0]) {
@@ -635,6 +645,12 @@ func builtinEq(a: in Builtin, b: in Builtin): Bool {
     case BOpSliceIndex -> {
       match b {
         case BOpSliceIndex -> true
+        case _ -> false
+      }
+    }
+    case BOpSliceStore -> {
+      match b {
+        case BOpSliceStore -> true
         case _ -> false
       }
     }

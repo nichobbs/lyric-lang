@@ -186,6 +186,11 @@ func intBitsOfExprWith(env: in VEnv, e: in Expr, unknownWins: in Bool): Int {
       }
       case _ -> 0
     }
+    // An array's or slice's element has its element type's width (#8394).
+    case EIndex(receiver, _) -> match receiverSortInfo(env, receiver) {
+      case Some(si) -> if isElementSequenceSort(si.sort) { si.elemIntBits } else { 0 }
+      case None -> 0
+    }
     case EMember(receiver, memberName) -> {
       val recName = recordNameOfExpr(env, receiver)
       if recName.length > 0 {

@@ -913,7 +913,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
     }
 
     // `xs[i]` panics unless `0 <= i < xs.length`, so a read is an obligation
-    // (#8157).  Its value is not modelled: a fresh value of the element sort.
+    // (#8157).  An array's or slice's element is `select` of its elements
+    // (#8394), a value of the element type when the receiver's type is
+    // known; a `String`'s is a fresh value.
     case EIndex(receiver, indices) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
       val diags: List[Diagnostic] = newList()
@@ -956,7 +958,22 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
         )
         sc.add(mkAnd(inRange))
-        val idxTR = TranslateResult(term = freshVar(env, "elem", elemSort), sideConds = sc, assumed = asList)
+        val elemTerm = if isElementSequenceSort(recvSort) {
+          val sel = TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
+          match receiverSortInfo(env, receiver) {
+            case Some(rInfo) -> {
+              val facts = valueFactsForTerm(sel, elementSortInfo(rInfo))
+              if facts.count > 0 {
+                asList.add(mkImplies(mkAnd(inRange), mkAnd(facts)))
+              }
+            }
+            case None -> ()
+          }
+          sel
+        } else {
+          freshVar(env, "elem", elemSort)
+        }
+        val idxTR = TranslateResult(term = elemTerm, sideConds = sc, assumed = asList)
         val idxPair: (TranslateResult, List[Diagnostic]) = (idxTR, diags)
         return idxPair
       }
@@ -1303,6 +1320,16 @@ func translateLambda(
   )
   val lambdaPair: (TranslateResult, List[Diagnostic]) = (lambdaTR, bodyDiags)
   lambdaPair
+}
+
+// The declared type of an index's receiver, where the verifier tracks it: a
+// variable or parameter.
+func receiverSortInfo(env: in VEnv, receiver: in Expr): Option[SortInfo] {
+  match receiver.kind {
+    case EParen(inner) -> receiverSortInfo(env, inner)
+    case EPath(path) -> if path.segments.count == 1 { envLookupSort(path.segments[0], env) } else { None }
+    case _ -> None
+  }
 }
 
 // The subexpressions a construct the verifier does not model evaluates
