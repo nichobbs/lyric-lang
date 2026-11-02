@@ -775,6 +775,7 @@ pub record SymbolTable {
   /// (`toString(SymbolId.id)`), newest registration winning; `defIdIndexed`
   /// counts the symbols already indexed.
   symByDefId: Map[String, Symbol]
+  symByDefIdName: Map[String, Symbol]
   defIdIndexed: List[Int]
   /// Resolutions of a bare name per file (`<file>|<name>`): an index into
   /// `resolutionList`.
@@ -981,6 +982,7 @@ pub func newSymbolTable(): SymbolTable {
     resolveCtx = newList(),
     curItemSpan = newList(),
     symByDefId = newMap(),
+    symByDefIdName = newMap(),
     defIdIndexed = newList(),
     resolutionIndex = newMap(),
     resolutionList = newList()
@@ -1405,7 +1407,7 @@ func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]]
   val seen: Map[String, Bool] = newMap()
   for fid in files {
     for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
-      match symbolOfDefId(tbl, d.id) {
+      match symbolOfDefIdNamed(tbl, d.id, d.name) {
         case Some(s) -> if not seen.containsKey(toString(d.id.id)) {
           seen.add(toString(d.id.id), true)
           found.add(s)
@@ -1564,6 +1566,24 @@ func caseDefId(tbl: in SymbolTable, parent: in SymbolId, caseName: in String): O
 // The newest symbol that registers the declaration with resolver id `id`.
 // Symbols registered since the last call are indexed first.
 func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
+  indexDefIds(tbl)
+  mapGet(tbl.symByDefId, toString(id.id))
+}
+
+// `symbolOfDefId` for the declaration named `name`: an extern type two packages
+// declare under two names is one id and two symbols, and a lookup of one name
+// must not return the other's.
+func symbolOfDefIdNamed(tbl: in SymbolTable, id: in SymbolId, name: in String): Option[Symbol] {
+  indexDefIds(tbl)
+  match mapGet(tbl.symByDefIdName, toString(id.id) + "|" + name) {
+    case Some(s) -> Some(value = s)
+    case None -> mapGet(tbl.symByDefId, toString(id.id))
+  }
+}
+
+// Index the symbols registered since the last call by the id the resolver
+// gives their declaration, newest registration winning.
+func indexDefIds(tbl: in SymbolTable): Unit {
   while tbl.defIdIndexed.count < tbl.symbols.count {
     val sym = tbl.symbols[tbl.defIdIndexed.count]
     match symbolDefId(tbl, sym) {
@@ -1573,21 +1593,25 @@ func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
           tbl.symByDefId.remove(key)
         }
         tbl.symByDefId.add(key, sym)
+        val nkey = key + "|" + sym.name
+        if tbl.symByDefIdName.containsKey(nkey) {
+          tbl.symByDefIdName.remove(nkey)
+        }
+        tbl.symByDefIdName.add(nkey, sym)
       }
       case None -> ()
     }
     tbl.defIdIndexed.add(0)
   }
-  mapGet(tbl.symByDefId, toString(id.id))
 }
 
 func resolverPickIn(tbl: in SymbolTable, fid: in Int, name: in String): Option[Symbol] {
   match resolutionOf(tbl, fid, name) {
-    case RSymbol(id) -> symbolOfDefId(tbl, id)
+    case RSymbol(id) -> symbolOfDefIdNamed(tbl, id, name)
     case ROverloads(ids) -> {
       var i = ids.count - 1
       while i >= 0 {
-        match symbolOfDefId(tbl, ids[i]) {
+        match symbolOfDefIdNamed(tbl, ids[i], name) {
           case Some(s) -> return Some(value = s)
           case None -> ()
         }

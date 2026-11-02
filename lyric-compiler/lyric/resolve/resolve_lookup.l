@@ -27,7 +27,7 @@ func namedDecls(tbl: in DeclTable, name: in String, nameUse: in NameUse): List[D
     case Some(ixs) -> {
       for ix in ixs {
         val d = tbl.decls[ix]
-        match mapGet(tbl.byId, toString(d.id.id)) {
+        match mapGet(tbl.byDecl, toString(d.id.id) + "|" + d.pkg + "|" + d.name) {
           case Some(last) -> {
             if last == ix and useAccepts(nameUse, d.kind) {
               acc.add(d)
