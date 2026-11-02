@@ -1580,9 +1580,9 @@ test "Std.Char native kernel: code-point bridge, ASCII classification, case conv
   )
 }
 
-test "Native List/Map/slice indexed assignment: AssEq and all compound forms (#6811/#6951)" {
+test "Native List/Map/array indexed assignment: AssEq and all compound forms (#6811/#6951)" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "func main(): Int {\n" +
-    "  val xs: slice[Int] = [10, 20, 30]\n" +
+    "  var xs: array[3, Int] = [10, 20, 30]\n" +
     "  xs[1] = 99\n" +
     "  if xs[1] != 99 {\n    return 1\n  }\n" +
     "  val ys: List[Int] = newList()\n" +
@@ -1629,7 +1629,7 @@ test "Native List/Map/slice indexed assignment: AssEq and all compound forms (#6
   assertEqualInt(
     r.exitCode,
     42,
-    "slice[Int]/List[Int]/List[String]/Map[String, Int]/Map[String, String] all support AssEq and every compound AssignOp form on --target native"
+    "array[3, Int]/List[Int]/List[String]/Map[String, Int]/Map[String, String] all support AssEq and every compound AssignOp form on --target native"
   )
 }
 
