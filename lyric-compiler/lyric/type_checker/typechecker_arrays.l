@@ -1469,7 +1469,7 @@ pub func valueGenericCallee(tbl: in SymbolTable, fn: in Expr, argCount: in Int):
     return None
   }
   val explicitCount = explicitGenericArgs(fn).count
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllVisible(tbl, name) {
     match sym.kind {
       case DKFunc(decl) -> if decl.params.count >= argCount and valueGenericNames(decl.generics).count > 0 {
         if explicitCount == 0 or explicitCount == genericParamCount(decl.generics) {

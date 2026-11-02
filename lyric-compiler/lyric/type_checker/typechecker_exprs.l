@@ -1188,7 +1188,7 @@ func checkUnimportedTypeReceiver(
     case None -> {
       // Hidden by the file's import rule (docs/01 §9.2).  A package-private
       // type stays T0097 (#7499): no import would make it nameable.
-      for cand in symTableTryFindAll(tbl, name) {
+      for cand in symTableTryFindAllNamed(tbl, name) {
         if symbolIsType(cand) and cand.originPackage != curPkg and symbolIsPackagePrivateBinding(cand) {
           checkImportedVisibility(tbl, cand, span, diag)
           return
@@ -6543,7 +6543,7 @@ func funcValueType(sig: in ResolvedSignature): Type {
 // are T0123, since a value reference cannot pick an overload.
 // How many functions named `name` package `pkg` declares.
 func pkgFuncCount(tbl: in SymbolTable, pkg: in String, name: in String): Int {
-  val all = symTableTryFindAll(tbl, name)
+  val all = symTableTryFindAllNamed(tbl, name)
   var n = 0
   var i = 0
   while i < all.count {
@@ -6562,7 +6562,7 @@ func pkgFuncCount(tbl: in SymbolTable, pkg: in String, name: in String): Int {
 // shadows an import only at its own arity, #7527).
 func localShadowsImportedArity(tbl: in SymbolTable, name: in String): Bool {
   val scopePkg = symTableScopePkg(tbl)
-  val all = symTableTryFindAll(tbl, name)
+  val all = symTableTryFindAllVisible(tbl, name)
   val localArities: List[Int] = newList()
   val importedArities: List[Int] = newList()
   var i = 0
@@ -6622,7 +6622,7 @@ func resolveQualifiedFuncValue(
   if tbl.funcRefCallees.containsKey(recordCopySiteKey(sp)) {
     return None
   }
-  val all = symTableTryFindAll(tbl, name)
+  val all = symTableTryFindAllNamed(tbl, name)
   val funcs: List[Symbol] = newList()
   val reexported: List[Symbol] = newList()
   var i = 0
@@ -6963,7 +6963,7 @@ func resolveExprPath(
         // expected type, which this site cannot see.
         case DKEnumCase(pid, _) -> {
           var unshared = true
-          for other in symTableTryFindAll(tbl, name) {
+          for other in symTableTryFindAllVisible(tbl, name) {
             match other.kind {
               case DKEnumCase(opid, _) -> if not (symbolIdEq(opid, pid) or (other.originPackage == sym.originPackage and typeNameOfId(tbl, opid) == typeNameOfId(tbl, pid))) {
                 unshared = false
@@ -7010,7 +7010,7 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
     // packages declaring an enum `Mode`, the backends and the checker's
     // sites would have to agree on which one a bare `Mode.Fast` names.
     val candidates: List[Symbol] = newList()
-    for cand in symTableTryFindAll(tbl, typeName) {
+    for cand in symTableTryFindAllVisible(tbl, typeName) {
       match cand.kind {
         case DKEnum(_, _) -> candidates.add(cand)
         case _ -> ()
@@ -9587,7 +9587,7 @@ func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
       pj = pj + 1
     }
     val pkgPrefix = modulePathJoin(pkgSegs)
-    val candidates = symTableTryFindAll(tbl, caseName)
+    val candidates = symTableTryFindAllNamed(tbl, caseName)
     var ci = candidates.count - 1
     while ci >= 0 {
       val cand = candidates[ci]
@@ -9641,7 +9641,7 @@ func unionCaseSymbolForScrutinee(
       val hasSegs = flattenCalleePathSegs(fn, flatSegs) and flatSegs.count > 0
       val scrCaseName = if hasSegs { flatSegs[flatSegs.count - 1] } else { "" }
       if scrCaseName.length > 0 {
-        val scrCands = symTableTryFindAll(tbl, scrCaseName)
+        val scrCands = symTableTryFindAllNamed(tbl, scrCaseName)
         var sci = scrCands.count - 1
         while sci >= 0 {
           match scrCands[sci].kind {
@@ -9859,7 +9859,7 @@ func checkRecordPatternHead(
         return
       }
       val recName = segs[segs.count - 1]
-      val cands = symTableTryFindAll(tbl, recName)
+      val cands = symTableTryFindAllNamed(tbl, recName)
       var ci = cands.count - 1
       while ci >= 0 {
         val isRecordHit = match cands[ci].kind {
@@ -9976,7 +9976,7 @@ func checkBareCasePatternScrutinee(
   scrutineeTy: in Type,
   span: in Span,
 ): Unit {
-  val cands = symTableTryFindAll(tbl, name)
+  val cands = symTableTryFindAllNamed(tbl, name)
   // #7591: a bare nullary-case pattern (`case Active ->`, no parens) is a
   // `PBinding` disambiguated to a case constructor here, entirely outside
   // `unionCaseSymbolForScrutinee`'s `PConstructor` path, so it needs its own
@@ -10807,7 +10807,7 @@ func caseFieldTypesInstantiated(
 func scrutineeHasCaseNamed(tbl: in SymbolTable, ty: in Type, name: in String): Bool {
   match unrefine(ty) {
     case TyUser(sid, _, _) -> {
-      val cands = symTableTryFindAll(tbl, name)
+      val cands = symTableTryFindAllNamed(tbl, name)
       var i = 0
       while i < cands.count {
         val parent = match cands[i].kind {
@@ -15245,7 +15245,7 @@ func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
       i = i + 1
     }
     val qual = modulePathJoin(prefix)
-    for sym in symTableTryFindAll(tbl, name) {
+    for sym in symTableTryFindAllNamed(tbl, name) {
       if sym.originPackage == qual {
         return Some(value = sym)
       }
@@ -15478,7 +15478,7 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
   if name.length == 0 {
     return None
   }
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllVisible(tbl, name) {
     match sym.kind {
       case DKFunc(_) -> {
         val segs: List[String] = newList()
@@ -15497,7 +15497,7 @@ func dottedFuncCallee(tbl: in SymbolTable, fn: in Expr): Bool {
   if name.length == 0 {
     return false
   }
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllVisible(tbl, name) {
     match sym.kind {
       case DKFunc(_) -> return true
       case _ -> ()
@@ -16491,7 +16491,7 @@ func moduleValSymbolOfSegs(sc: in Scope, tbl: in SymbolTable, segs: in List[Stri
   val qual = modulePathJoin(qualSegs)
   val scopePkg = symTableScopePkg(tbl)
   var fallback: Option[Symbol] = None
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllNamed(tbl, name) {
     match sym.kind {
       case DKVal(_) -> if pkgMatchesQualifier(sym.originPackage, qual) {
         if sym.originPackage == scopePkg or symTableScopeAllows(tbl, sym.originPackage) {
@@ -19209,7 +19209,7 @@ func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
 
 // True when `name` has two or more candidates and every one is a union case.
 func nameIsSharedUnionCase(tbl: in SymbolTable, name: in String): Bool {
-  val candidates = symTableTryFindAll(tbl, name)
+  val candidates = symTableTryFindAllVisible(tbl, name)
   if candidates.count < 2 {
     return false
   }
@@ -21988,7 +21988,7 @@ func ownDotNamedDeclared(
 // `alias Num = Int`, through chains), `name` itself otherwise (#8217).
 func canonicalOwnerName(tbl: in SymbolTable, name: in String): String {
   var isAlias = false
-  for sym in symTableTryFindAll(tbl, name) {
+  for sym in symTableTryFindAllVisible(tbl, name) {
     match sym.kind {
       case DKTypeAlias(_) -> {
         isAlias = true

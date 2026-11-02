@@ -7,7 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, funcDefPath, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -1390,7 +1390,12 @@ pub func symTableTryFindInPackage(tbl: in SymbolTable, pkg: in String, name: in 
   None
 }
 
-pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] {
+/// Every symbol named `name`, whatever file or package it is reached from.
+/// For a caller that narrows the answer itself by something the declaration is
+/// known by: a package qualifier the file was already allowed to write, the
+/// `SymbolId` of an owner type, a declaring package.  A caller that means "what
+/// the name means here" uses `symTableTryFindAllVisible`.
+pub func symTableTryFindAllNamed(tbl: in SymbolTable, name: in String): List[Symbol] {
   val result: List[Symbol] = newList()
   var i = 0
   while i < tbl.symbols.count {
@@ -1402,10 +1407,26 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   result
 }
 
-// `symTableTryFindAll` narrowed to the symbols a bare `name` may mean under
-// the current scope's import rule (docs/01 §9.2); every match when no rule
-// applies.
+// Every symbol a bare `name` may mean in the file being checked (docs/70 §4.3):
+// under the checked package's import rule, what the resolver says the file can
+// reach (D314), with the symbols that name no package (built-ins, `import
+// extern` bindings); in a dependency's signature scope, every symbol of the
+// name.  The checker's own scan answers a name the resolver has no declaration
+// for.
 pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
+  val fromResolver = resolverVisible(tbl, name)
+  if tbl.diffOn.count > 0 {
+    diffCompareVisible(tbl, name, scanVisible(tbl, name), fromResolver)
+  }
+  match fromResolver {
+    case Some(found) -> found
+    case None -> scanVisible(tbl, name)
+  }
+}
+
+// The checker's scan of the symbols the current scope's import rule lets a
+// bare `name` mean; every match when no rule applies.
+func scanVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
   val result: List[Symbol] = newList()
@@ -1418,6 +1439,106 @@ pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[S
     i = i + 1
   }
   result
+}
+
+// What the resolver says the file can reach under `name`, as symbols in
+// registration order.  `None` when the resolver does not answer the scope.
+func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]] {
+  match resolverFileFor(tbl) {
+    case None -> None
+    case Some(fid) -> {
+      val ctx = tbl.resolveCtx[0]
+      val found: List[Symbol] = newList()
+      for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
+        match symbolOfDefId(tbl, d.id) {
+          case Some(s) -> found.add(s)
+          case None -> ()
+        }
+      }
+      // A symbol that names no package is a built-in or an `import extern`
+      // binding; the resolver has no declaration for those it did not bind.
+      var i = 0
+      while i < tbl.symbols.count {
+        val s = tbl.symbols[i]
+        if s.name == name and s.originPackage.length == 0 {
+          found.add(s)
+        }
+        i = i + 1
+      }
+      Some(value = found)
+    }
+  }
+}
+
+// Note a difference between the sets the scan and the resolver give for `name`
+// (differential mode).
+func diffCompareVisible(tbl: in SymbolTable, name: in String, scan: in List[Symbol], res: in Option[List[Symbol]]): Unit {
+  val theirs = match res {
+    case Some(r) -> r
+    case None -> return
+  }
+  val ae = symbolEntries(scan)
+  val be = symbolEntries(theirs)
+  var same = ae.count == be.count
+  for e in ae {
+    if not be.contains(e) {
+      same = false
+    }
+  }
+  if same {
+    return
+  }
+  val a = joinEntries(ae)
+  val b = joinEntries(be)
+  val fid = match resolverFileFor(tbl) {
+    case Some(f) -> f
+    case None -> 0
+  }
+  val key = "v|" + toString(fid) + "|" + name + "|" + a + "|" + b
+  if tbl.diffSeen.containsKey(key) {
+    return
+  }
+  tbl.diffSeen.add(key, true)
+  val at = if tbl.curItemSpan.count > 0 { tbl.curItemSpan[0] } else { makeSpan(initialPosition(), initialPosition()) }
+  tbl.diffLog.add(
+    warningDiagnostic(
+      "R0002",
+      "resolver disagrees on what '" + name + "' can mean (file " + toString(fid) + "): checker " + a + ", resolver " + b,
+      at
+    )
+  )
+}
+
+// The distinct `<package>:<kind>` entries of `syms`, to compare two sets.
+func symbolEntries(syms: in List[Symbol]): List[String] {
+  val entries: List[String] = newList()
+  for s in syms {
+    val tag = if s.originPackage.length == 0 { "(none)" } else { s.originPackage }
+    val entry = tag + ":" + symbolKindTag(s)
+    if not entries.contains(entry) {
+      entries.add(entry)
+    }
+  }
+  entries
+}
+
+func joinEntries(entries: in List[String]): String {
+  var out = ""
+  for e in entries {
+    out = out + e + " "
+  }
+  out
+}
+
+func symbolKindTag(s: in Symbol): String {
+  match s.kind {
+    case DKFunc(_) -> "func"
+    case DKUnionCase(_, _) -> "case"
+    case DKEnumCase(_, _) -> "case"
+    case DKVal(_) -> "val"
+    case DKConst(_) -> "val"
+    case _ -> if symbolIsType(s) { "type" } else { "other" }
+  }
 }
 
 // Resolve `name` to a single symbol, honouring the current resolution scope.
