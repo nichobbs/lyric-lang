@@ -1961,10 +1961,7 @@ func resolverAllFiles(tbl: in SymbolTable): Option[List[Int]] {
 // of that name in `origin`, at any tier.  True outside the checked package's
 // own scope.
 pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: in String): Bool {
-  val files = match resolverAllFiles(tbl) {
-    case Some(f) -> f
-    case None -> return true
-  }
+  val files = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return true }
   if origin.length == 0 or origin == symTableScopePkg(tbl) {
     return true
   }
@@ -1984,10 +1981,7 @@ pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: i
 // that decides it), -1 when it is shadowed by a nearer step or hidden.  Always
 // 0 outside the checked package's own scope.
 pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in String): Int {
-  val files = match resolverAllFiles(tbl) {
-    case Some(f) -> f
-    case None -> return 0
-  }
+  val files = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return 0 }
   if origin.length == 0 {
     return 0
   }
@@ -2004,10 +1998,7 @@ pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in S
 // it, the hint that says how to import it (with a leading space); otherwise
 // "".  Used by the unknown-name diagnostics.
 pub func symTableHiddenImportHint(tbl: in SymbolTable, name: in String): String {
-  val files = match resolverAllFiles(tbl) {
-    case Some(f) -> f
-    case None -> return ""
-  }
+  val files = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return "" }
   val ctx = tbl.resolveCtx[0]
   val cur = symTableCurrentFile(tbl)
   if cur >= 0 and cur < files.count {
@@ -2396,10 +2387,7 @@ func symIsCrossPackageVisible(sym: in Symbol): Bool {
 // package itself wins its step outright and is never ambiguous.
 pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): List[String] {
   val pkgs: List[String] = newList()
-  val files = match resolverAllFiles(tbl) {
-    case Some(f) -> f
-    case None -> return pkgs
-  }
+  val files = match resolverAllFiles(tbl) { case Some(f) -> f; case None -> return pkgs }
   val ctx = tbl.resolveCtx[0]
   val perFile: List[String] = newList()
   for fid in files {
