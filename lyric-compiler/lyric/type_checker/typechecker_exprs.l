@@ -15467,6 +15467,9 @@ func scopeHasName(sc: in Scope, name: in String): Bool {
   }
 }
 
+// A dot-named function (`func Bag.extra`) is a method of its type: the
+// resolver reaches it through the type, not by name, so these two lookups
+// match the name itself, which already carries the type.
 // `Box.get(b)`: a two-segment path naming a generic dot-named function
 // (#8173), as the single-segment path `Box.get` the function is declared and
 // specialised under, at the same span.
@@ -15478,7 +15481,7 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
   if name.length == 0 {
     return None
   }
-  for sym in symTableTryFindAllVisible(tbl, name) {
+  for sym in symTableTryFindAllNamed(tbl, name) {
     match sym.kind {
       case DKFunc(_) -> {
         val segs: List[String] = newList()
@@ -15497,7 +15500,7 @@ func dottedFuncCallee(tbl: in SymbolTable, fn: in Expr): Bool {
   if name.length == 0 {
     return false
   }
-  for sym in symTableTryFindAllVisible(tbl, name) {
+  for sym in symTableTryFindAllNamed(tbl, name) {
     match sym.kind {
       case DKFunc(_) -> return true
       case _ -> ()
