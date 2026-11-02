@@ -54,3 +54,4 @@ SDL_Metal_CreateView
 SDL_Metal_GetLayer
 SDL_Metal_DestroyView
 SDL_RaiseWindow
+SDL_GetCurrentVideoDriver

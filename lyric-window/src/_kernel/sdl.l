@@ -90,6 +90,9 @@ pub extern func SDL_GetClipboardText(): NativePtr[Byte] = "SDL_GetClipboardText"
 pub extern func SDL_HasClipboardText(): Byte = "SDL_HasClipboardText"
 
 @library("SDL3")
+pub extern func SDL_GetCurrentVideoDriver(): NativePtr[Byte] = "SDL_GetCurrentVideoDriver"
+
+@library("SDL3")
 pub extern func SDL_GetWindowDisplayScale(window: NativePtr[Byte]): Float = "SDL_GetWindowDisplayScale"
 
 @library("SDL3")
