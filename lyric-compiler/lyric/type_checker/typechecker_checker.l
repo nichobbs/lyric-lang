@@ -5965,14 +5965,10 @@ func isWholeImportForm(imp: in ImportDecl): Bool {
 // What one list of imports makes visible (docs/01 §9.2): the packages it
 // imports whole, widened to the packages those re-export (`pub use`, D311), the
 // `<package>|<name>` keys of its selectively imported names, its renamed
-// items, and its package aliases.  `wholeVia` and `namesVia`, parallel to
-// `whole` and `names`, hold the import that makes each one visible, as T0219
-// advises adding it.
+// items, and its package aliases.
 record ImportSets {
   whole: List[String]
-  wholeVia: List[String]
   names: List[String]
-  namesVia: List[String]
   renames: List[RenamedImport]
   aliasPkgs: List[String]
   aliasNames: List[String]
@@ -5991,10 +5987,8 @@ func importSelectorItems(sel: in ImportSelector): List[ImportItem] {
 
 func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[ImportedPackage]): ImportSets {
   val whole: List[String] = newList()
-  val wholeVia: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
   val names: List[String] = newList()
-  val namesVia: List[String] = newList()
   val renames: List[RenamedImport] = newList()
   val aliasPkgs: List[String] = newList()
   val aliasNames: List[String] = newList()
@@ -6018,7 +6012,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
               )
               case None -> {
                 names.add(pkg + "|" + items[k].name)
-                namesVia.add(importKeyword(imp) + pkg + ".{" + items[k].name + "}")
               }
             }
             k = k + 1
@@ -6033,7 +6026,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
             if not seen.containsKey(pkg) {
               seen.add(pkg, true)
               whole.add(pkg)
-              wholeVia.add(importKeyword(imp) + pkg)
             }
           }
         }
@@ -6063,7 +6055,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
         val key = q + "|" + listedName
         if not names.contains(key) {
           names.add(key)
-          namesVia.add(namesVia[li])
         }
       }
     }
@@ -6082,7 +6073,6 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
           if not seen.containsKey(deps[d]) {
             seen.add(deps[d], true)
             whole.add(deps[d])
-            wholeVia.add(wholeVia[w])
           }
           d = d + 1
         }
@@ -6093,9 +6083,7 @@ func collectImportSets(imports: in List[ImportDecl], importedPackages: in List[I
   }
   ImportSets(
     whole = whole,
-    wholeVia = wholeVia,
     names = names,
-    namesVia = namesVia,
     renames = renames,
     aliasPkgs = aliasPkgs,
     aliasNames = aliasNames
@@ -6122,53 +6110,6 @@ func reexportClosure(pkg: in String, importedPackages: in List[ImportedPackage])
     qi = qi + 1
   }
   acc
-}
-
-// `import ` or, for a re-export, `pub use `.
-func importKeyword(imp: in ImportDecl): String {
-  if imp.isPubUse {
-    "pub use "
-  } else {
-    "import "
-  }
-}
-
-// An import as written, for the advice of T0219.
-func renderImportDecl(imp: in ImportDecl): String {
-  var text = importKeyword(imp)
-  if imp.isExtern {
-    text = text + "extern "
-  }
-  text = text + dottedPackageName(imp.path)
-  match imp.selector {
-    case Some(sel) -> {
-      val items = importSelectorItems(sel)
-      text = text + ".{"
-      var k = 0
-      while k < items.count {
-        if k > 0 {
-          text = text + ", "
-        }
-        text = text + items[k].name
-        match items[k].asAlias {
-          case Some(a) -> {
-            text = text + " as " + a
-          }
-          case None -> ()
-        }
-        k = k + 1
-      }
-      text = text + "}"
-    }
-    case None -> ()
-  }
-  match imp.asAlias {
-    case Some(a) -> {
-      text = text + " as " + a
-    }
-    case None -> ()
-  }
-  text
 }
 
 // Install the docs/01 §9.2 import rule for the package being checked (#7463):
@@ -6243,7 +6184,7 @@ func installImportRule(
       }
     }
   }
-  symTableSetImportRule(tbl, userPkg, u.whole, u.names, u.aliasPkgs, u.aliasNames)
+  symTableSetImportRule(tbl, userPkg)
 }
 
 // Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
@@ -7177,9 +7118,6 @@ func checkWithImportedPackagesCore(
     resolveDeps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
   }
   tbl.resolveCtx.add(buildResolverContext(resolveDeps, file, tbl.interner))
-  if getVarOrDefault("LYRIC_RESOLVE_DIFF", "") == "1" {
-    tbl.diffOn.add(true)
-  }
 
   // T2.5: validate range subtypes.
   var k = 0
@@ -7325,9 +7263,6 @@ func checkWithImportedPackagesCore(
     diag.add(w)
   }
 
-  for dd in tbl.diffLog {
-    diag.add(dd)
-  }
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }
 

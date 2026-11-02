@@ -7,7 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -742,14 +742,6 @@ pub record SymbolTable {
   /// package's signatures were checked under the same rule when that
   /// package was itself compiled.
   importRulePkg: List[String]
-  /// Packages whose every name is visible bare under `importRulePkg`: its
-  /// whole imports (no selector, no alias) and, transitively, each reached
-  /// package's own imports.
-  importVisiblePkgs: Map[String, Bool]
-  /// `<package>|<name>` for each name a selective import lists.
-  importVisibleNames: Map[String, Bool]
-  /// `<package>` -> the alias an `import P as Q` gives it.
-  importAliases: Map[String, String]
   /// The file whose scope is entered, boxed as a 0/1-element list; empty =
   /// the package union (`symTableEnterFile`).
   curFile: List[Int]
@@ -774,16 +766,9 @@ pub record SymbolTable {
   /// the key of each id ("" for one no DefPath names).
   /// The DefPath interner, shared with the resolver (docs/70 §4.2).
   interner: DefPathInterner
-  /// The resolver's context for the checked package (docs/70 phase 2c, D314),
-  /// always built: bare names are answered from it.  While `LYRIC_RESOLVE_DIFF`
-  /// is set (`diffOn`) every lookup is also answered by the checker's own scan
-  /// and a difference is an `R0001` warning in `diffLog`.
+  /// The resolver's context for the checked package (docs/70 phase 2c, D314):
+  /// bare names are answered from it.
   resolveCtx: List[ResolverContext]
-  diffSeen: Map[String, Bool]
-  diffLog: List[Diagnostic]
-  /// Non-empty while `LYRIC_RESOLVE_DIFF` is set: every bare lookup is also
-  /// answered by the checker's own scan and a difference is an `R0001`.
-  diffOn: List[Bool]
   /// The span of the item being checked, for a diagnostic with no node of its own.
   curItemSpan: List[Span]
   /// Symbols indexed by the DefPath id the resolver gives their declaration
@@ -988,18 +973,12 @@ pub func newSymbolTable(): SymbolTable {
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),
-    importVisiblePkgs = newMap(),
-    importVisibleNames = newMap(),
-    importAliases = newMap(),
     curFile = newList(),
     siblingImportKeys = newMap(),
     siblingImportErrors = newList(),
     nativeIntrinsicTypes = newMap(),
     interner = newDefPathInterner(),
     resolveCtx = newList(),
-    diffSeen = newMap(),
-    diffLog = newList(),
-    diffOn = newList(),
     curItemSpan = newList(),
     symByDefId = newMap(),
     defIdIndexed = newList(),
@@ -1401,182 +1380,139 @@ pub func symTableTryFindAllNamed(tbl: in SymbolTable, name: in String): List[Sym
 
 // Every symbol a bare `name` may mean in the file being checked (docs/70 §4.3):
 // under the checked package's import rule, what the resolver says the file can
-// reach (D314), with the symbols that name no package (built-ins, `import
+// reach (D314, D315), with the symbols that name no package (built-ins, `import
 // extern` bindings); in a dependency's signature scope, every symbol of the
-// name.  The checker's own scan answers a name the resolver has no declaration
-// for.
+// name.
 pub func symTableTryFindAllVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
-  val fromResolver = resolverVisible(tbl, name)
-  if tbl.diffOn.count > 0 {
-    diffCompareVisible(tbl, name, scanVisible(tbl, name), fromResolver)
-  }
-  match fromResolver {
+  match resolverVisible(tbl, name) {
     case Some(found) -> found
-    case None -> scanVisible(tbl, name)
+    case None -> symTableTryFindAllNamed(tbl, name)
   }
 }
 
-// The checker's scan of the symbols the current scope's import rule lets a
-// bare `name` mean; every match when no rule applies.
-func scanVisible(tbl: in SymbolTable, name: in String): List[Symbol] {
-  val curPkg = symTableScopePkg(tbl)
-  val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
-  val result: List[Symbol] = newList()
+
+
+// What the resolver says the file can reach under `name`, as symbols: the
+// current file's, or the union of the package's files for a synthesised item or
+// a package of one file.  `None` outside the checked package's own scope.
+func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]] {
+  val files = match resolverVisibleFiles(tbl) {
+    case Some(f) -> f
+    case None -> return None
+  }
+  val ctx = tbl.resolveCtx[0]
+  val found: List[Symbol] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for fid in files {
+    for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
+      match symbolOfDefId(tbl, d.id) {
+        case Some(s) -> if not seen.containsKey(toString(d.id.id)) {
+          seen.add(toString(d.id.id), true)
+          found.add(s)
+        }
+        case None -> ()
+      }
+    }
+  }
+  // A symbol that names no package is a built-in or an `import extern`
+  // binding; the resolver has no declaration for those it did not bind.
+  for b in packagelessSymbols(tbl, name) {
+    found.add(b)
+  }
+  Some(value = found)
+}
+
+// The symbols named `name` that name no package, oldest first.
+func packagelessSymbols(tbl: in SymbolTable, name: in String): List[Symbol] {
+  val acc: List[Symbol] = newList()
   var i = 0
   while i < tbl.symbols.count {
     val s = tbl.symbols[i]
-    if s.name == name and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
-      result.add(s)
+    if s.name == name and s.originPackage.length == 0 {
+      acc.add(s)
     }
     i = i + 1
   }
-  result
+  acc
 }
 
-// What the resolver says the file can reach under `name`, as symbols in
-// registration order.  `None` when the resolver does not answer the scope.
-func resolverVisible(tbl: in SymbolTable, name: in String): Option[List[Symbol]] {
-  match resolverFileFor(tbl) {
-    case None -> None
-    case Some(fid) -> {
-      val ctx = tbl.resolveCtx[0]
-      val found: List[Symbol] = newList()
-      for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
-        match symbolOfDefId(tbl, d.id) {
-          case Some(s) -> found.add(s)
+
+
+
+
+
+pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  match resolverFileOrder(tbl) {
+    case None -> tryFindOneCore(tbl, name)
+    case Some(order) -> {
+      for fid in order {
+        match resolverPickIn(tbl, fid, name) {
+          case Some(s) -> return Some(value = s)
           case None -> ()
         }
       }
-      // A symbol that names no package is a built-in or an `import extern`
-      // binding; the resolver has no declaration for those it did not bind.
-      var i = 0
-      while i < tbl.symbols.count {
-        val s = tbl.symbols[i]
-        if s.name == name and s.originPackage.length == 0 {
-          found.add(s)
-        }
-        i = i + 1
+      // A built-in or an `import extern` binding names no package.
+      val bare = packagelessSymbols(tbl, name)
+      if bare.count > 0 {
+        Some(value = bare[bare.count - 1])
+      } else {
+        None
       }
-      Some(value = found)
     }
   }
 }
 
-// Note a difference between the sets the scan and the resolver give for `name`
-// (differential mode).
-func diffCompareVisible(tbl: in SymbolTable, name: in String, scan: in List[Symbol], res: in Option[List[Symbol]]): Unit {
-  val theirs = match res { case Some(r) -> r; case None -> return }
-  val ae = symbolEntries(scan)
-  val be = symbolEntries(theirs)
-  var same = ae.count == be.count
-  for e in ae {
-    if not be.contains(e) {
-      same = false
-    }
-  }
-  if same {
-    return
-  }
-  val a = joinEntries(ae)
-  val b = joinEntries(be)
-  val fid = match resolverFileFor(tbl) { case Some(f) -> f; case None -> 0 }
-  val key = "v|" + toString(fid) + "|" + name + "|" + a + "|" + b
-  if tbl.diffSeen.containsKey(key) {
-    return
-  }
-  tbl.diffSeen.add(key, true)
-  val at = if tbl.curItemSpan.count > 0 { tbl.curItemSpan[0] } else { makeSpan(initialPosition(), initialPosition()) }
-  tbl.diffLog.add(
-    warningDiagnostic(
-      "R0002",
-      "resolver disagrees on what '" + name + "' can mean (file " + toString(fid) + "): checker " + a + ", resolver " +
-        b,
-      at
-    )
-  )
-}
 
-// The distinct `<package>:<kind>` entries of `syms`, to compare two sets.
-func symbolEntries(syms: in List[Symbol]): List[String] {
-  val entries: List[String] = newList()
-  for s in syms {
-    val tag = if s.originPackage.length == 0 { "(none)" } else { s.originPackage }
-    val entry = tag + ":" + symbolKindTag(s)
-    if not entries.contains(entry) {
-      entries.add(entry)
-    }
-  }
-  entries
-}
-
-func joinEntries(entries: in List[String]): String {
-  var joined = ""
-  for e in entries {
-    joined = joined + e + " "
-  }
-  joined
-}
-
-func symbolKindTag(s: in Symbol): String {
-  match s.kind {
-    case DKFunc(_) -> "func"
-    case DKUnionCase(_, _) -> "case"
-    case DKEnumCase(_, _) -> "case"
-    case DKVal(_) -> "val"
-    case DKConst(_) -> "val"
-    case _ -> if symbolIsType(s) { "type" } else { "other" }
-  }
-}
-
-// Resolve `name` to a single symbol, honouring the current resolution scope.
-// Preference, highest first: (1) current package, (2) an imported package,
-// (3) any match (last-registered-wins).  A single newest-to-oldest pass keeps
-// the newest candidate in each tier, returning early on a tier-1 hit.  With no
-// scope set every symbol's `originPackage` is empty, so only tier 3 fires —
-// byte-for-byte the historical behaviour.
-//
-// Under the import rule of the file being checked (`symTableSetImportRule`,
-// docs/01 §9.2, D141) a candidate from another package counts only when the
-// file's imports make it visible bare, so tiers 2 and 3 never reach a name
-// that is unimported, behind an alias, or left out of a selective import
-// (#7463, #6703).  Internal lookups outside that scope (an imported
-// package's own signatures) stay unrestricted.
-pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  val resolved = resolverPick(tbl, name)
-  if tbl.diffOn.count > 0 {
-    diffCompareBare(tbl, name, tryFindOneCore(tbl, name))
-  }
-  match resolved {
-    case Some(_) -> resolved
-    case None -> tryFindOneCore(tbl, name)
-  }
-}
-
-// The resolver's context when a bare name written in the file being checked is
-// answered by it (docs/70 §4.4, D314): the checked package's own scope under
-// its import rule.  `None` for a dependency's signature scope, a synthesised
-// item of a package of several files (judged by the union of the files'
-// imports), or when no context was built.
 func resolverFileFor(tbl: in SymbolTable): Option[Int] {
-  if tbl.resolveCtx.count == 0 {
-    return None
-  }
-  val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
-    return None
-  }
-  val cur = symTableCurrentFile(tbl)
-  if cur == -2 {
-    return None
-  }
-  if cur >= 0 {
-    Some(value = cur)
-  } else if fileTableSize(tbl) < 2 {
-    Some(value = 0)
-  } else {
-    None
+  match resolverFileOrder(tbl) {
+    case Some(order) -> Some(value = order[0])
+    case None -> None
   }
 }
+
+// The files whose scopes judge a bare name, nearest first, when the resolver
+// answers: the file being checked, then its siblings (a name only a sibling
+// imports still resolves, and T0219 says to import it); every file for a
+// synthesised item.  `None` outside the checked package's own scope.
+func resolverFileOrder(tbl: in SymbolTable): Option[List[Int]] {
+  match resolverAllFiles(tbl) {
+    case None -> None
+    case Some(all) -> {
+      val cur = symTableCurrentFile(tbl)
+      if cur >= 0 and cur < all.count {
+        val order: List[Int] = newList()
+        order.add(cur)
+        for f in all {
+          if f != cur {
+            order.add(f)
+          }
+        }
+        Some(value = order)
+      } else {
+        Some(value = all)
+      }
+    }
+  }
+}
+
+// The files whose reachable names a lookup collects: the file being checked,
+// or every file for a synthesised item and a package of one file.
+func resolverVisibleFiles(tbl: in SymbolTable): Option[List[Int]] {
+  match resolverAllFiles(tbl) {
+    case None -> None
+    case Some(all) -> {
+      val cur = symTableCurrentFile(tbl)
+      if cur >= 0 and cur < all.count {
+        val one: List[Int] = newList()
+        one.add(cur)
+        Some(value = one)
+      } else {
+        Some(value = all)
+      }
+    }
+  }
+}
+
 
 // What the resolver says `name` means in file `fid`, cached per file and name.
 func resolutionOf(tbl: in SymbolTable, fid: in Int, name: in String): Resolution {
@@ -1645,113 +1581,26 @@ func symbolOfDefId(tbl: in SymbolTable, id: in SymbolId): Option[Symbol] {
   mapGet(tbl.symByDefId, toString(id.id))
 }
 
-// The symbol the resolver binds a bare `name` to in the file being checked, or
-// `None` when it does not answer: no context, an unresolved name (a built-in,
-// a name only a sibling file imports, a diagnostic the caller reports), or a
-// declaration with no symbol.  An overload set answers with its newest
-// function; the overload pick is the caller's.
-func resolverPick(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  match resolverFileFor(tbl) {
-    case None -> None
-    case Some(fid) -> match resolutionOf(tbl, fid, name) {
-      case RSymbol(id) -> symbolOfDefId(tbl, id)
-      case ROverloads(ids) -> {
-        var i = ids.count - 1
-        while i >= 0 {
-          match symbolOfDefId(tbl, ids[i]) {
-            case Some(s) -> return Some(value = s)
-            case None -> ()
-          }
-          i = i - 1
+func resolverPickIn(tbl: in SymbolTable, fid: in Int, name: in String): Option[Symbol] {
+  match resolutionOf(tbl, fid, name) {
+    case RSymbol(id) -> symbolOfDefId(tbl, id)
+    case ROverloads(ids) -> {
+      var i = ids.count - 1
+      while i >= 0 {
+        match symbolOfDefId(tbl, ids[i]) {
+          case Some(s) -> return Some(value = s)
+          case None -> ()
         }
-        None
+        i = i - 1
       }
-      case _ -> None
+      None
     }
+    case _ -> None
   }
 }
 
-// The packages declaring what the resolver binds `name` to in the file being
-// checked; `None` when it does not answer.
-func resolverPackagesFor(tbl: in SymbolTable, name: in String): Option[List[String]] {
-  match resolverFileFor(tbl) {
-    case None -> None
-    case Some(fid) -> {
-      val ctx = tbl.resolveCtx[0]
-      val pkgs: List[String] = newList()
-      match resolutionOf(tbl, fid, name) {
-        case RSymbol(id) -> {
-          pkgs.add(declPkgOf(ctx, id))
-        }
-        case ROverloads(ids) -> {
-          for id in ids {
-            val p = declPkgOf(ctx, id)
-            if not pkgs.contains(p) {
-              pkgs.add(p)
-            }
-          }
-        }
-        case _ -> return None
-      }
-      Some(value = pkgs)
-    }
-  }
-}
 
-// Put a bare lookup the checker's own scan answered to the resolver and note a
-// disagreement.  Only lookups under the checked package's own import rule are
-// comparable: an imported package's signatures resolve in that package's scope.
-func diffCompareBare(tbl: in SymbolTable, name: in String, found: in Option[Symbol]): Unit {
-  val fid = match resolverFileFor(tbl) { case Some(f) -> f; case None -> return }
-  // A symbol with no package is a built-in or an `import extern` binding, which
-  // the resolver reaches through its own scope entries.
-  match found {
-    case Some(s) -> {
-      if s.originPackage.length == 0 {
-        return
-      }
-    }
-    case None -> ()
-  }
-  val ctx = tbl.resolveCtx[0]
-  val res = resolutionOf(tbl, fid, name)
-  val theirs = match found { case Some(s) -> s.originPackage; case None -> "no declaration" }
-  val ours = match res {
-    case RSymbol(id) -> declPkgOf(ctx, id)
-    case ROverloads(ids) -> declPkgOf(ctx, ids[0])
-    case RUnresolved(code, _) -> code
-    case RPackage(p) -> "package " + p
-    case RDeferred -> "a member"
-  }
-  var agree = theirs == ours
-  match res {
-    case RUnresolved(code, _) -> {
-      if code == "T0123" and symTableAmbiguousImportPackages(tbl, name).count >= 2 {
-        agree = true
-      }
-      if theirs == "no declaration" and (code == "T0020" or code == "T0010") {
-        agree = true
-      }
-    }
-    case _ -> ()
-  }
-  if agree {
-    return
-  }
-  val key = toString(fid) + "|" + name + "|" + theirs + "|" + ours
-  if tbl.diffSeen.containsKey(key) {
-    return
-  }
-  tbl.diffSeen.add(key, true)
-  val at = if tbl.curItemSpan.count > 0 { tbl.curItemSpan[0] } else { makeSpan(initialPosition(), initialPosition()) }
-  tbl.diffLog.add(
-    warningDiagnostic(
-      "R0001",
-      "resolver disagrees on '" + name + "' (file " + toString(fid) + "): checker " + theirs + ", resolver " + ours,
-      at
-    )
-  )
-}
+
 
 func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
   match declOfId(ctx.tbl, id) {
@@ -1764,7 +1613,6 @@ func tryFindOneCore(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
   val hasScope = curPkg.length > 0
   val hasImports = tbl.scopeImports.count > 0
-  val ruled = hasScope and symTableImportRuleApplies(tbl, curPkg)
   var best2: Option[Symbol] = None
   var best2b: Option[Symbol] = None
   var has2b = false
@@ -1773,7 +1621,7 @@ func tryFindOneCore(tbl: in SymbolTable, name: in String): Option[Symbol] {
   var i = tbl.symbols.count - 1
   while i >= 0 {
     val s = tbl.symbols[i]
-    if s.name == name and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
+    if s.name == name {
       if hasScope and s.originPackage == curPkg {
         return Some(value = s)
       }
@@ -1790,9 +1638,9 @@ func tryFindOneCore(tbl: in SymbolTable, name: in String): Option[Symbol] {
       // it imports declare (the kernel re-export idiom: `Std.Uuid` imports
       // the `Uuid` type from its host package), ahead of an unrelated
       // same-named declaration of whichever package is being checked
-      // (#7372).  The user package's own bare lookups are bound by the
-      // import rule above instead.
-      if hasImports and not ruled and hasScope and not has2b and reachableOnce(tbl, reach, s.originPackage) {
+      // (#7372).  The checked package's own bare lookups go through the
+      // resolver instead.
+      if hasImports and hasScope and not has2b and reachableOnce(tbl, reach, s.originPackage) {
         best2b = Some(value = s)
         has2b = true
       }
@@ -1843,63 +1691,21 @@ func reachableOnce(tbl: in SymbolTable, reach: in Map[String, Bool], pkg: in Str
 // ─────────────────────────────────────────────────────────────────────────────
 // §4b. Import visibility (docs/01 §9.2, #7463).
 // ─────────────────────────────────────────────────────────────────────────────
-// Record the import rule for `pkg`: `whole` are its whole imports, already
-// widened to their transitive closure; `names` are `<package>|<name>` keys of
-// selectively imported names; `aliases` pairs each aliased package with its
-// alias.  From here on a bare lookup under `pkg`'s scope sees only these.
-pub func symTableSetImportRule(
-  tbl: in SymbolTable,
-  pkg: in String,
-  whole: in List[String],
-  names: in List[String],
-  aliasPkgs: in List[String],
-  aliasNames: in List[String],
-): Unit {
+// Record that bare names written in `pkg`, the package being checked, are
+// answered by its files' import scopes (`Lyric.Resolve`) rather than by the
+// scope-priority scan.
+pub func symTableSetImportRule(tbl: in SymbolTable, pkg: in String): Unit {
   while tbl.importRulePkg.count > 0 {
     tbl.importRulePkg.removeAt(tbl.importRulePkg.count - 1)
   }
   tbl.importRulePkg.add(pkg)
-  var i = 0
-  while i < whole.count {
-    if not tbl.importVisiblePkgs.containsKey(whole[i]) {
-      tbl.importVisiblePkgs.add(whole[i], true)
-    }
-    i = i + 1
-  }
-  var j = 0
-  while j < names.count {
-    if not tbl.importVisibleNames.containsKey(names[j]) {
-      tbl.importVisibleNames.add(names[j], true)
-    }
-    j = j + 1
-  }
-  var k = 0
-  while k < aliasPkgs.count and k < aliasNames.count {
-    if not tbl.importAliases.containsKey(aliasPkgs[k]) {
-      tbl.importAliases.add(aliasPkgs[k], aliasNames[k])
-    }
-    k = k + 1
-  }
 }
 
 func symTableImportRuleApplies(tbl: in SymbolTable, pkg: in String): Bool {
   tbl.importRulePkg.count > 0 and tbl.importRulePkg[0] == pkg
 }
 
-// The implicit prelude: `Option` and `Result` from `Std.Core`, with their cases.
-func isPreludeName(name: in String): Bool {
-  name == "Option" or name == "Result"
-}
 
-// The name of the type a union or enum case belongs to, for a case symbol;
-// "" for any other symbol.
-func caseParentName(tbl: in SymbolTable, sym: in Symbol): String {
-  match sym.kind {
-    case DKUnionCase(pid, _) -> typeNameOfId(tbl, pid)
-    case DKEnumCase(pid, _) -> typeNameOfId(tbl, pid)
-    case _ -> ""
-  }
-}
 
 func typeNameOfId(tbl: in SymbolTable, tid: in SymbolId): String {
   match symTableTypeSymbolOf(tbl, tid) {
@@ -1908,26 +1714,6 @@ func typeNameOfId(tbl: in SymbolTable, tid: in SymbolId): String {
   }
 }
 
-// Whether `sym` may be named bare from package `curPkg` under its import
-// rule.  A case is visible when its type is: `import P.{Color}` makes
-// `case Red ->` resolve.
-func symTableImportVisible(tbl: in SymbolTable, curPkg: in String, sym: in Symbol): Bool {
-  val origin = sym.originPackage
-  if origin.length == 0 or origin == curPkg or tbl.importVisiblePkgs.containsKey(origin) {
-    return true
-  }
-  if tbl.importVisibleNames.containsKey(origin + "|" + sym.name) {
-    return true
-  }
-  val parent = caseParentName(tbl, sym)
-  if origin == "Std.Core" {
-    val preludeName = if parent.length > 0 { parent } else { sym.name }
-    if isPreludeName(preludeName) {
-      return true
-    }
-  }
-  parent.length > 0 and tbl.importVisibleNames.containsKey(origin + "|" + parent)
-}
 
 // The files of the checked package whose scopes judge a bare name, when the
 // resolver answers: all of them.  A package of several files is judged by the
@@ -2383,4 +2169,56 @@ pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): 
 // a package it reaches through a whole import's own imports.
 pub func symTableIsDirectImport(tbl: in SymbolTable, pkg: in String): Bool {
   symTableScopeAllows(tbl, pkg)
+}
+
+// The alias the checked package's files give the package `pkg` (`import P as
+// Q`), when any file does.
+pub func symTableAliasOfPackage(tbl: in SymbolTable, pkg: in String): Option[String] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  for fsc in tbl.resolveCtx[0].scopes {
+    for alias in mapKeys(fsc.aliases) {
+      if fsc.aliases[alias] == pkg {
+        return Some(value = alias)
+      }
+    }
+  }
+  None
+}
+
+// Whether any file of the checked package binds `name` as the alias of an
+// aliased import.
+pub func symTableIsImportAlias(tbl: in SymbolTable, name: in String): Bool {
+  if tbl.resolveCtx.count == 0 {
+    return false
+  }
+  for fsc in tbl.resolveCtx[0].scopes {
+    if fsc.aliases.containsKey(name) {
+      return true
+    }
+  }
+  false
+}
+
+// How near a package imported whole is to the checked package: 1 when a file
+// imports it whole, 2 when it is reached only through the re-export of one a
+// file imports whole, -1 when no file imports it whole.
+pub func symTableWholeImportTier(tbl: in SymbolTable, pkg: in String): Int {
+  if tbl.resolveCtx.count == 0 {
+    return -1
+  }
+  var tier = -1
+  for fsc in tbl.resolveCtx[0].scopes {
+    match mapGet(fsc.whole, pkg) {
+      case Some(r) -> match r {
+        case ReachDirect(_) -> return 1
+        case ReachReexport(_) -> {
+          tier = 2
+        }
+      }
+      case None -> ()
+    }
+  }
+  tier
 }
