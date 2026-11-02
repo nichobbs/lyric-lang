@@ -884,8 +884,9 @@ need direction and have nothing else productive to do**.  Specifically:
     table with a DefPath for every declaration kind (`resolve_collect.l`), a
     file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
     `resolvePath` (`resolve_lookup.l`) and `buildResolverContext`
-    (`resolve_driver.l`).  `resolve_self_test.l` covers it.  The checker does not
-    consume it yet.
+    (`resolve_driver.l`).  `resolve_self_test.l` covers it.  The checker takes its
+    bare-name answers from it for the checked package (D314); the
+    differential check is `LYRIC_RESOLVE_DIFF=1` and `scripts/ci/resolve-diff.sh`.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
     Replaces each aspect-matched IFunc with a renamed

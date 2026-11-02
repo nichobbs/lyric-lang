@@ -7246,12 +7246,13 @@ func checkWithImportedPackagesCore(
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
   symTableSetScope(tbl, userPkg, userImports)
+  val resolveDeps: List[DepPackage] = newList()
+  for ip in importedPackages {
+    resolveDeps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
+  }
+  tbl.resolveCtx.add(buildResolverContext(resolveDeps, file, tbl.interner))
   if getVarOrDefault("LYRIC_RESOLVE_DIFF", "") == "1" {
-    val deps: List[DepPackage] = newList()
-    for ip in importedPackages {
-      deps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
-    }
-    tbl.diffCtx.add(buildResolverContext(deps, file, tbl.interner))
+    tbl.diffOn.add(true)
   }
 
   // T2.5: validate range subtypes.

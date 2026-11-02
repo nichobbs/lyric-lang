@@ -1324,6 +1324,34 @@ test "interface subtyping cross package sound" {
   )
 }
 
+// #8709: a selective import of one name of a package does not make its other
+// names as near as a whole import of another package.  `Facade.{Cell}` lists
+// only `Cell`, so the bare `Row` means `Host.Row` and is not ambiguous.
+test "a selective import does not make the package's other names direct (#8709)" {
+  val host = parse("package Host\npub record Row { v: Int }\n")
+  val facade = parse("package Facade\npub record Cell { w: Int }\npub record Row { w: Int }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Host",
+      items = host.file.items,
+      imports = collectImportNames(host.file.imports),
+      wholeImports = collectWholeImportNames(host.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Facade",
+      items = facade.file.items,
+      imports = collectImportNames(facade.file.imports),
+      wholeImports = collectWholeImportNames(facade.file.imports)
+    )
+  )
+  val src = "package App\nimport Facade.{Cell}\nimport Host\nfunc f(c: in Cell): Int {\n  val r = Row(v = 1)\n  r.v + c.w\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertEqualInt(diagCount(cr), 0, "Row is Host's: no T0123, and v is Host.Row's field")
+}
+
 // A qualified call reaches a generic function of the named package.  The
 // arity-keyed overload slots hold non-generic signatures only, so
 // `Ui.Testing.findAll(...)` used to bind to another package's non-generic
