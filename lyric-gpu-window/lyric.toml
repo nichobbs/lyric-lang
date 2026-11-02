@@ -1,0 +1,21 @@
+# lyric-gpu-window - the one place a lyric-window window becomes a lyric-gpu surface, for
+# --target native.  lyric-gpu does not depend on lyric-window, so the bridge is its own package.
+
+[package]
+name        = "Lyric.GpuWindow"
+version     = "0.1.0"
+description = "Creates a lyric-gpu surface for a lyric-window window on every window system."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.GpuWindow"
+output          = "single"
+output_assembly = "Lyric.GpuWindow.dll"
+
+[project.packages]
+"GpuWindow"  = "src/gpu_window.l"
+
+[dependencies]
+"Lyric.Gpu"    = { path = "../lyric-gpu" }
+"Lyric.Window" = { path = "../lyric-window" }

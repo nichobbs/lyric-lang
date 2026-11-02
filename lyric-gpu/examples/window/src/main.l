@@ -10,6 +10,7 @@ import Std.Console as Console
 import Std.Environment as Environment
 import Std.Parse
 import Gpu
+import GpuWindow
 import Window
 
 val size: Int = 256
@@ -48,15 +49,6 @@ func closeRequested(): Bool {
   closed
 }
 
-func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
-  match Window.nativeWindow(w) {
-    case X11(display, window) -> Gpu.createXlibSurface(d, display, window)
-    case Wayland(display, surface) -> Gpu.createWaylandSurface(d, display, surface)
-    case Win32(hwnd, instance) -> Gpu.createWindowsSurface(d, instance, hwnd)
-    case _ -> Err(error = "this window system has no surface support yet")
-  }
-}
-
 func drawTo(
   d: Gpu.Device, surface: Gpu.Surface, pipeline: Gpu.RenderPipeline, target: Gpu.RenderTarget
 ): Result[Unit, String] {
@@ -83,7 +75,7 @@ func drawTo(
 
 // An unavailable frame (the window was resized or minimized) is answered by reconfiguring the
 // surface and trying again on the next iteration; any other failure ends the loop.
-func drawFrames(d: Gpu.Device, surface: Gpu.Surface, frames: Int): Result[Unit, String] {
+func drawFrames(d: Gpu.Device, win: Window.Window, surface: Gpu.Surface, frames: Int): Result[Unit, String] {
   val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, surface.format, false) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
@@ -91,21 +83,23 @@ func drawFrames(d: Gpu.Device, surface: Gpu.Surface, frames: Int): Result[Unit, 
   var failed = false
   var reason = ""
   var frame = 0
+  var shown = false
   while frame < frames and not failed and not closeRequested() {
-    match Gpu.acquireFrame(d, surface) {
-      case Err(_) -> match Gpu.configureSurface(d, surface, size, size) {
+    match Gpu.tryAcquireFrame(d, surface) {
+      case Err(_) -> match Gpu.configureSurface(d, surface, Window.pixelSize(win).width, Window.pixelSize(win).height) {
         case Err(message) -> {
           failed = true
           reason = message
         }
         case Ok(_) -> ()
       }
-      case Ok(target) -> match drawTo(d, surface, pipeline, target) {
+      case Ok(None) -> ()
+      case Ok(Some(target)) -> match drawTo(d, surface, pipeline, target) {
         case Err(message) -> {
           failed = true
           reason = message
         }
-        case Ok(_) -> if frame == 0 { Console.println("presented") }
+        case Ok(_) -> if not shown { shown = true; Console.println("presented") }
       }
     }
     Window.delayNanos(16000000)
@@ -117,13 +111,24 @@ func drawFrames(d: Gpu.Device, surface: Gpu.Surface, frames: Int): Result[Unit, 
 
 func run(win: Window.Window, frames: Int): Int {
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match surfaceFor(d, win) {
+    match GpuWindow.surfaceFor(d, win) {
       case Err(message) -> fail(message)
-      case Ok(created) -> match Gpu.configureSurface(d, created, size, size) {
+      case Ok(created) -> match Gpu.configureSurface(d, created, Window.pixelSize(win).width, Window.pixelSize(win).height) {
         case Err(message) -> fail(message)
         case Ok(surface) -> {
-          Console.println("surface format " + surface.format.toString())
-          val outcome = drawFrames(d, surface, frames)
+          val ps = Window.pixelSize(win)
+          val ws = Window.windowSize(win)
+          Console.println(
+            "surface format " + surface.format.toString() + " px " + ps.width.toString() + "x" + ps.height.toString() + " win " +
+              ws.width.toString() +
+              "x" +
+              ws.height.toString() +
+              " scale " +
+              Window.displayScale(win).toString() +
+              " cfg " +
+              surface.width.toString()
+          )
+          val outcome = drawFrames(d, win, surface, frames)
           Gpu.releaseSurface(surface)
           match outcome {
             case Ok(_) -> 0
@@ -159,6 +164,7 @@ func main(): Int {
     case Err(message) -> return fail(message)
   }
   Window.show(win)
+  Window.raise(win)
   val rc = run(win, seconds * 60)
   Window.destroyWindow(win)
   Window.quit()

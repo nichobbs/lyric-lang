@@ -40,3 +40,7 @@ name = "Lyric.Ui.Native.Examples.Customers"
 "Lyric.Web"            = { path = "../../../../../lyric-web" }
 "Lyric.Ws"             = { path = "../../../../../lyric-ws" }
 "Lyric.Auth"           = { path = "../../../../../lyric-auth" }
+
+# A macOS build also writes a .app bundle that carries the wgpu-native dylib (docs/67 G9, D233).
+[native.app]
+identifier = "org.lyric.examples.customers"

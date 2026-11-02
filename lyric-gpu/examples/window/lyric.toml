@@ -11,5 +11,10 @@ name = "Lyric.Gpu.Examples.Window"
 "Gpu.Examples.Window" = "src/main.l"
 
 [dependencies]
+"Lyric.GpuWindow" = { path = "../../../lyric-gpu-window" }
 "Lyric.Gpu"    = { path = "../.." }
 "Lyric.Window" = { path = "../../../lyric-window" }
+
+# A macOS build also writes a .app bundle that carries the wgpu-native dylib (docs/67 G9, D233).
+[native.app]
+identifier = "org.lyric.examples.window"

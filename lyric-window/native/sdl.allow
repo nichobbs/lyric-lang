@@ -49,3 +49,8 @@ SDL_FlushAudioStream
 SDL_GetAudioStreamQueued
 SDL_ResumeAudioDevice
 SDL_AUDIO_*
+SDL_GetPlatform
+SDL_Metal_CreateView
+SDL_Metal_GetLayer
+SDL_Metal_DestroyView
+SDL_RaiseWindow

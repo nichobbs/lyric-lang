@@ -33,6 +33,7 @@ import Std.File as File
 import Std.Time as Time
 import Window
 import Gpu
+import GpuWindow
 import Draw
 import Text
 import Ui.Host.{Instance, Outbox}
@@ -1200,15 +1201,6 @@ pub func caretArea(h: Host): Option[Ui.Native.Layout.Box] {
 }
 
 // ─── The window ───────────────────────────────────────────────────────────────
-func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
-  match Window.nativeWindow(w) {
-    case X11(display, window) -> Gpu.createXlibSurface(d, display, window)
-    case Wayland(display, surface) -> Gpu.createWaylandSurface(d, display, surface)
-    case Win32(hwnd, instance) -> Gpu.createWindowsSurface(d, instance, hwnd)
-    case _ -> Err(error = "this window system has no GPU surface support yet")
-  }
-}
-
 func fail(message: String): Int {
   Console.println("FAIL: " + message)
   1
@@ -1263,7 +1255,7 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
       }
     }
     pump(h)
-    match Gpu.acquireFrame(d, surface) {
+    match Gpu.tryAcquireFrame(d, surface) {
       case Err(_) -> {
         val px = Window.pixelSize(win)
         match Gpu.configureSurface(d, surface, px.width, px.height) {
@@ -1276,7 +1268,10 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
         }
         Window.delayNanos(16000000)
       }
-      case Ok(target) -> {
+      case Ok(None) -> {
+        Window.delayNanos(16000000)
+      }
+      case Ok(Some(target)) -> {
         Draw.beginFrame(painter, target.width, target.height)
         renderFrame(h, painter)
         match caretArea(h) {
@@ -1320,6 +1315,7 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
     case Err(m) -> return fail(m)
   }
   Window.show(win)
+  Window.raise(win)
   val lib = match Text.initText() { case Ok(l) -> l; case Err(m) -> return fail(m) }
   val scale = scaleOf(win)
   val fonts = match openFonts(lib, cfg, scale) { case Ok(f) -> f; case Err(m) -> return fail(m) }
@@ -1329,7 +1325,7 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
     return fail("the application has no screen for " + cfg.startPath)
   }
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match surfaceFor(d, win) {
+    match GpuWindow.surfaceFor(d, win) {
       case Err(m) -> fail(m)
       case Ok(created) -> {
         val px = Window.pixelSize(win)

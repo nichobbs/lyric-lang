@@ -12,7 +12,7 @@ managed form (D226, #8389) and the JVM `spawn` argument copy (#8391) are impleme
 implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
 triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
 buffers, textures, samplers and the textured-quad example; D197: X11 and Wayland
-surfaces and presentation, tested under Xvfb). Cocoa and Win32 surfaces remain.
+surfaces and presentation, tested under Xvfb; D317: Cocoa windows present through a Metal layer, `Gpu.createMetalSurface`, verified on Apple Silicon; Win32 surfaces shipped with G9, D219).
 G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
 in CI; macOS is not yet in CI). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`Vec3`/`Vec4`,
 `Quat`, `Mat3`, `Mat4`, `Rgba8`, on all three targets), `lyric-text` (D199: FreeType and HarfBuzz
@@ -22,7 +22,7 @@ signed-distance quads, shadows, images, clips and text, with a golden scene and 
 frame budget on lavapipe; no run on real hardware yet). G7 is implemented on Linux (D201: `lyric-game`
 deterministic core with PNG and WAV decoding, a native frame loop with input recording and replay,
 and a Breakout sample whose recorded session is replayed headless, in a window under Xvfb, and in
-`lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
+`lyric test`; D317 adds the macOS Cocoa/Metal surface, and the replay check and the window loop run on Apple Silicon). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
 clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
 tasks has an opt-in multi-threaded mode (D217: `LYRIC_ASYNC_THREADS=N`, a shared run queue, `spawn` started
@@ -593,7 +593,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa surface; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D268; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 gained its Cocoa surface in D317; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D268; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

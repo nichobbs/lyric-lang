@@ -148,10 +148,26 @@ func check(art: Art, recordingPath: String, digestText: String, goldenArgs: slic
   if differing > pixelBudget then 1 else 0
 }
 
+// DejaVu Sans where it is installed (Linux, or a Homebrew font on macOS), else a face every Mac ships.
+func defaultFont(): String {
+  val home = Environment.getVarOrDefault("HOME", "")
+  val candidates = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    home + "/Library/Fonts/DejaVuSans.ttf",
+    "/Library/Fonts/DejaVuSans.ttf"
+  ]
+  for c in candidates {
+    if File.fileExists(c) {
+      return c
+    }
+  }
+  "/System/Library/Fonts/Supplemental/Arial.ttf"
+}
+
 func main(): Int {
   val args = Environment.args()
   val assets = Environment.getVarOrDefault("LYRIC_GAME_ASSETS", "lyric-game/examples/breakout/assets")
-  val font = Environment.getVarOrDefault("LYRIC_TEXT_FONT_LATIN", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+  val font = Environment.getVarOrDefault("LYRIC_TEXT_FONT_LATIN", defaultFont())
   val art = newArt(assets, font)
   var rc = 0
   if args.length >= 5 and args[1] == "--check" {

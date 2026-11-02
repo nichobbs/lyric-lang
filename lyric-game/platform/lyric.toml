@@ -23,5 +23,6 @@ output_assembly = "Lyric.Game.Platform.dll"
 [dependencies]
 "Lyric.Game"   = { path = ".." }
 "Lyric.Window" = { path = "../../lyric-window" }
+"Lyric.GpuWindow" = { path = "../../lyric-gpu-window" }
 "Lyric.Gpu"    = { path = "../../lyric-gpu" }
 "Lyric.Draw"   = { path = "../../lyric-draw" }

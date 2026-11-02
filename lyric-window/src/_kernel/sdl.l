@@ -126,6 +126,9 @@ pub extern func SDL_ShowWindow(window: NativePtr[Byte]): Byte = "SDL_ShowWindow"
 pub extern func SDL_HideWindow(window: NativePtr[Byte]): Byte = "SDL_HideWindow"
 
 @library("SDL3")
+pub extern func SDL_RaiseWindow(window: NativePtr[Byte]): Byte = "SDL_RaiseWindow"
+
+@library("SDL3")
 pub extern func SDL_DestroyWindow(window: NativePtr[Byte]): Unit = "SDL_DestroyWindow"
 
 @library("SDL3")
@@ -160,6 +163,18 @@ pub extern func SDL_QuitSubSystem(flags: Int): Unit = "SDL_QuitSubSystem"
 
 @library("SDL3")
 pub extern func SDL_Quit(): Unit = "SDL_Quit"
+
+@library("SDL3")
+pub extern func SDL_Metal_CreateView(window: NativePtr[Byte]): NativePtr[Byte] = "SDL_Metal_CreateView"
+
+@library("SDL3")
+pub extern func SDL_Metal_DestroyView(view: NativePtr[Byte]): Unit = "SDL_Metal_DestroyView"
+
+@library("SDL3")
+pub extern func SDL_Metal_GetLayer(view: NativePtr[Byte]): NativePtr[Byte] = "SDL_Metal_GetLayer"
+
+@library("SDL3")
+pub extern func SDL_GetPlatform(): NativePtr[Byte] = "SDL_GetPlatform"
 
 @library("SDL3")
 pub extern func SDL_GetTicksNS(): Long = "SDL_GetTicksNS"

@@ -1118,6 +1118,19 @@ pub func createWindowsSurface(d: Device, instance: Long, hwnd: Long): Result[Sur
   finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
 }
 
+/// A surface for a macOS window: `layer` is the `CAMetalLayer*`, as `Window.metalLayer` returns it.
+/// The layer must outlive the surface.
+@unsafe_ffi
+pub func createMetalSurface(d: Device, layer: Long): Result[Surface, String] {
+  var source = WGPUSurfaceSourceMetalLayer(
+    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceMetalLayer),
+    layer = longToPtr(layer)
+  )
+  val head: NativePtr[Byte] = nativeAddrOf(source)
+  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+}
+
 /// Sets the surface's size in pixels (call it again when the window is resized) and picks its
 /// format: RGBA8 when the surface offers it, else BGRA8, else its first format.  The two unorm formats are preferred over their sRGB twins so that colours written by a shader appear as written, as they do in an offscreen `formatRgba8` target.  Presentation is vsynced.
 @unsafe_ffi
@@ -1176,9 +1189,45 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
   }
 }
 
+/// wgpu-native's own extension of `WGPUSurfaceGetCurrentTextureStatus` (`wgpu.h`), checked against the header by `native/wgpu_layout_check.c`.
+val surfaceStatusOccluded: Int = 196609
+
+@unsafe_ffi
+func frameFrom(s: Surface, current: WGPUSurfaceTexture): RenderTarget {
+  val view = wgpuTextureCreateView(current.texture, nativeNullPtr())
+  RenderTarget(
+    texture = ptrToLong(current.texture),
+    view = ptrToLong(view),
+    width = s.width,
+    height = s.height,
+    format = s.format
+  )
+}
+
+/// The surface's next frame as a render target, or `None` when no frame can be shown right now
+/// and the caller should skip this iteration without touching the surface: the window is
+/// occluded, minimized or not on screen yet (on macOS the first frames after `Window.show`), or the
+/// compositor timed out.  Draw into the target with `render`, then `presentFrame`.  An `Err`
+/// (the surface is outdated or lost, as after a resize) means reconfigure the surface and try
+/// again next frame.
+@unsafe_ffi
+pub func tryAcquireFrame(d: Device, s: Surface): Result[Option[RenderTarget], String] {
+  var current = WGPUSurfaceTexture(nextInChain = nativeNullPtr(), texture = nativeNullPtr(), status = 0)
+  wgpuSurfaceGetCurrentTexture(longToPtr(s.raw), nativeAddrOf(current))
+  val status = current.status
+  if status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal or status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal {
+    return Ok(value = Some(value = frameFrom(s, current)))
+  }
+  if status == WGPUSurfaceGetCurrentTextureStatus_Timeout or status == surfaceStatusOccluded {
+    return Ok(value = None)
+  }
+  Err(error = "no surface frame is available (status " + status.toString() + "); reconfigure the surface")
+}
+
 /// The surface's next frame as a render target.  Draw into it with `render`, then `presentFrame`.
-/// An `Err` here (the window was resized, minimized or lost) means reconfigure the surface and
-/// try again next frame.
+/// An `Err` here (the window was resized, minimized, occluded or lost) means reconfigure the
+/// surface and try again next frame; a loop that must tell an occluded window from a resize uses
+/// `tryAcquireFrame`.
 @unsafe_ffi
 pub func acquireFrame(d: Device, s: Surface): Result[RenderTarget, String] {
   var current = WGPUSurfaceTexture(nextInChain = nativeNullPtr(), texture = nativeNullPtr(), status = 0)
@@ -1188,16 +1237,7 @@ pub func acquireFrame(d: Device, s: Surface): Result[RenderTarget, String] {
       error = "no surface frame is available (status " + current.status.toString() + "); reconfigure the surface"
     )
   }
-  val view = wgpuTextureCreateView(current.texture, nativeNullPtr())
-  Ok(
-    value = RenderTarget(
-      texture = ptrToLong(current.texture),
-      view = ptrToLong(view),
-      width = s.width,
-      height = s.height,
-      format = s.format
-    )
-  )
+  Ok(value = frameFrom(s, current))
 }
 
 /// Shows the frame on the window and releases it; use `discardFrame` instead when drawing failed.

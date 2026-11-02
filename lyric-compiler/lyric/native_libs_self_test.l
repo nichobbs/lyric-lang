@@ -354,6 +354,48 @@ test "a native build of a [native.app] project on macOS is a runnable .app bundl
   assertEqual(Str.trim(run.stdout), "5,10", "it finds its library through @executable_path/../Frameworks")
 }
 
+test "a bundled dylib whose file name differs from its install name is staged under the install name" {
+  if not hostIsDarwin() {
+    return
+  }
+  val root = freshTempDir("installname")
+  defer {
+    cleanup(root)
+  }
+  val binding = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\nlink = \"cdep-release\"\n")
+  // wgpu-native ships `libwgpu_native-release.dylib` naming itself `@rpath/libwgpu_native.dylib`.
+  val nativeDir = Path.join(binding, "native")
+  val renamed = Path.join(nativeDir, "libcdep-release.dylib")
+  val mvArgs: List[String] = newList()
+  mvArgs.add(Path.join(nativeDir, "libcdep.dylib"))
+  mvArgs.add(renamed)
+  val _mv = toolOutput("mv", mvArgs)
+  val idArgs: List[String] = newList()
+  idArgs.add("-id")
+  idArgs.add("@rpath/libcdep.dylib")
+  idArgs.add(renamed)
+  val _id = toolOutput("install_name_tool", idArgs)
+  val signArgs: List[String] = newList()
+  signArgs.add("--force")
+  signArgs.add("-s")
+  signArgs.add("-")
+  signArgs.add(renamed)
+  val _sign = toolOutput("codesign", signArgs)
+  val appDir = writeApp(root)
+  appendToFile(Path.join(appDir, "lyric.toml"), "\n[native.app]\nidentifier = \"id.example.cdep\"\n")
+  val outDir = Path.join(appDir, "out")
+  mkdirOrPanic(outDir)
+  val outPath = Path.join(outDir, "cdepapp")
+  assertEqualInt(buildNative(Path.join(appDir, "lyric.toml"), outPath), 0, "the native build succeeds")
+  val frameworks = Path.join(Path.join(Path.join(outDir, "cdepapp.app"), "Contents"), "Frameworks")
+  assertTrue(File.fileExists(Path.join(frameworks, "libcdep.dylib")), "the library is bundled under its install name")
+  cleanup(nativeDir)
+  cleanup(Path.join(binding, ".lyric"))
+  val run = runBinary(Path.join(Path.join(Path.join(Path.join(outDir, "cdepapp.app"), "Contents"), "MacOS"), "cdepapp"))
+  assertEqualInt(run.exitCode, 0, "the bundled executable runs (stderr=" + run.stderr + ")")
+  assertEqual(Str.trim(run.stdout), "5,10", "it finds the library by its install name")
+}
+
 test "a library whose directory is missing fails the build with the library's name" {
   val root = freshTempDir("missing")
   defer {

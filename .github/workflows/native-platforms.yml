@@ -23,6 +23,12 @@ on:
       - 'lyric-compiler/lyric/cli/**'
       - 'lyric-stdlib/std/_kernel_native/**'
       - 'scripts/ci/native-platform-tests.sh'
+      - 'scripts/ci/macos-graphics-e2e.sh'
+      - 'lyric-gpu/**'
+      - 'lyric-gpu-window/**'
+      - 'lyric-window/**'
+      - 'lyric-game/**'
+      - 'lyric-ui/native/**'
 
 permissions:
   contents: read
@@ -165,6 +171,35 @@ jobs:
           sdl3_prefix="$RUNNER_TEMP/sdl3"
           bash scripts/ci/build-sdl3.sh "$sdl3_prefix"
           LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
+
+      # docs/67 G5 and G7 on macOS (D317).  A hosted macOS VM may expose no Metal
+      # adapter, so the probe runs first and reports which it is; the steps after
+      # it run only when it found one, and say so when it did not.
+      - name: Install graphics dependencies (FreeType, HarfBuzz, DejaVu)
+        if: always()
+        run: |
+          brew install freetype harfbuzz pkgconf
+          brew install --cask font-dejavu
+
+      - name: Metal adapter probe
+        id: metal
+        if: always()
+        shell: bash
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/macos-graphics-e2e.sh probe
+
+      - name: No Metal adapter on this runner
+        if: always() && steps.metal.outputs.metal != 'true'
+        run: echo "::warning::this macOS runner exposes no Metal adapter, so the GPU, window, Breakout and UI examples did not run here (see the probe step; #8563)"
+
+      - name: lyric-gpu, Breakout and lyric-ui on Metal (arm64-apple-darwin)
+        if: always() && steps.metal.outputs.metal == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdl3_prefix="$RUNNER_TEMP/sdl3"
+          export PKG_CONFIG_PATH="$sdl3_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export DYLD_LIBRARY_PATH="$sdl3_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/macos-graphics-e2e.sh run
 
   linux-arm64:
     needs: [managed]

@@ -27,6 +27,7 @@ pub ref record Art {
   var ball: Option[Draw.Image]
   var lib: Option[Text.TextLib]
   var fonts: List[Text.Font]
+  var fontSize: Int
 }
 
 pub func newArt(assetDir: String, fontPath: String): Art {
@@ -37,9 +38,13 @@ pub func newArt(assetDir: String, fontPath: String): Art {
     bricks = None,
     ball = None,
     lib = None,
-    fonts = newList()
+    fonts = newList(),
+    fontSize = baseFontSize
   )
 }
+
+// The text size in pixels at a viewport scale of 1, the size of the game's 320 by 240 field.
+val baseFontSize: Int = 14
 
 val brickSheet: Sheet = Sheet(cellWidth = 28, cellHeight = 10, columns = 5, rows = 1)
 
@@ -67,11 +72,37 @@ func ensureLoaded(art: Art, p: Draw.Painter): Unit {
     case Err(_) -> ()
     case Ok(bytes) -> match Text.initText() {
       case Err(_) -> ()
-      case Ok(lib) -> match Text.openFont(lib, 1, bytes, 0, 14) {
+      case Ok(lib) -> match Text.openFont(lib, baseFontSize, bytes, 0, baseFontSize) {
         case Err(_) -> ()
         case Ok(f) -> {
           art.lib = Some(value = lib)
           art.fonts.add(f)
+        }
+      }
+    }
+  }
+}
+
+// Reopens the font at the size the viewport scale asks for, so text grows with the field.
+func fitFont(art: Art, scale: Float): Unit {
+  val scaled = (baseFontSize.toFloat() * scale + 0.5f32).toInt()
+  val size = if scaled > baseFontSize { scaled } else { baseFontSize }
+  if size == art.fontSize {
+    return
+  }
+  match art.lib {
+    case None -> ()
+    case Some(lib) -> match File.readBytes(art.fontPath) {
+      case Err(_) -> ()
+      case Ok(bytes) -> match Text.openFont(lib, size, bytes, 0, size) {
+        case Err(_) -> ()
+        case Ok(f) -> {
+          for prior in art.fonts {
+            Text.closeFont(prior)
+          }
+          art.fonts = newList()
+          art.fonts.add(f)
+          art.fontSize = size
         }
       }
     }
@@ -104,6 +135,7 @@ func say(art: Art, p: Draw.Painter, vp: Viewport, text: String, x: Float, y: Flo
 
 pub func drawState(art: Art, prev: State, cur: State, alpha: Float, p: Draw.Painter, vp: Viewport): Unit {
   ensureLoaded(art, p)
+  fitFont(art, vp.scale)
   val white = Draw.rgb(1.0f32, 1.0f32, 1.0f32)
   Draw.fillRect(p, rect(vp, 0.0f32, 0.0f32, fieldWidth, fieldHeight), Draw.rgb(0.07f32, 0.08f32, 0.14f32))
   Draw.strokeRoundedRect(
