@@ -7085,6 +7085,9 @@ func checkWithImportedPackagesCore(
 
   // T1: register imported items first (shadow without error), tagging each
   // symbol with its declaring package so scoped resolution can prefer it.
+  // What the resolver is given for each dependency: the items the checker
+  // registers, with a destructuring module-level `val` already split.
+  val resolveDeps: List[DepPackage] = newList()
   var p = 0
   while p < importedPackages.count {
     val ip = importedPackages[p]
@@ -7092,6 +7095,7 @@ func checkWithImportedPackagesCore(
     // T0144 in another package is that package's own build error.
     val ipDiag: List[Diagnostic] = newList()
     val ipItems = desugarModuleValItems(ip.items, ipDiag)
+    resolveDeps.add(DepPackage(name = ip.name, items = ipItems, reexports = ip.reexports))
     var ii = 0
     while ii < ipItems.count {
       registerItem(tbl, diag, true, ip.name, ipItems[ii])
@@ -7113,10 +7117,6 @@ func checkWithImportedPackagesCore(
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
   symTableSetScope(tbl, userPkg, userImports)
-  val resolveDeps: List[DepPackage] = newList()
-  for ip in importedPackages {
-    resolveDeps.add(DepPackage(name = ip.name, items = ip.items, reexports = ip.reexports))
-  }
   tbl.resolveCtx.add(buildResolverContext(resolveDeps, file, tbl.interner))
 
   // T2.5: validate range subtypes.
