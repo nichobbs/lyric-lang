@@ -1014,7 +1014,10 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
   // A tail that is an element-preserving slice intrinsic on a block local
   // (`out.toArray()`, how the middle end ends `a.toSlice()`, D167) has that
   // local's element type; the local is out of scope by the time the
-  // receiver would be looked up, so its binding is read here too.
+  // receiver would be looked up, so its binding is read here too.  Only a
+  // local declared as a `List`, slice or array qualifies: a method of the
+  // same name on any other type is the user's own.
+  var viaIntrinsic = false
   val local = match tail.kind {
     case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
     case ECall(fn, callArgs) -> match fn.kind {
@@ -1022,7 +1025,12 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
         val preserving = (memberName == "toArray" and callArgs.count == 0) or memberName == "append" or memberName == "concat" or
           memberName == "slice"
         match recv.kind {
-          case EPath(rpath) -> if preserving and rpath.segments.count == 1 { rpath.segments[0] } else { "" }
+          case EPath(rpath) -> if preserving and rpath.segments.count == 1 {
+            viaIntrinsic = true
+            rpath.segments[0]
+          } else {
+            ""
+          }
           case _ -> ""
         }
       }
@@ -1039,6 +1047,16 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
       case SLocal(binding) -> match binding {
         case LBVal(pat, tyOpt, init) -> match pat.kind {
           case PBinding(nm, _) -> if nm == local {
+            if viaIntrinsic {
+              return match tyOpt {
+                case Some(te) -> if isSequenceAnnotation(te) {
+                  eagerlyResolveGenericArgs(withoutTypeParams(elementTypeArgs(te), ctx.typeParams), ctx.pkgName, ctx.externTypes)
+                } else {
+                  scrutineeGenericArgs(ctx, tail)
+                }
+                case None -> scrutineeGenericArgs(ctx, tail)
+              }
+            }
             val fromInit = scrutineeGenericArgs(ctx, init)
             if fromInit.count > 0 {
               return fromInit
@@ -1062,6 +1080,18 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
     i = i - 1
   }
   scrutineeGenericArgs(ctx, tail)
+}
+
+// A `List[E]`, `slice[E]` or `array[N, E]` annotation: a type whose
+// `toArray`/`append`/`concat`/`slice` are the element-preserving intrinsics.
+func isSequenceAnnotation(te: in TypeExpr): Bool {
+  match te.kind {
+    case TParen(inner) -> isSequenceAnnotation(inner)
+    case TSlice(_) -> true
+    case TArray(_, _) -> true
+    case TGenericApp(head, args) -> head.segments.count == 1 and head.segments[0] == "List" and args.count == 1
+    case _ -> false
+  }
 }
 
 // The (possibly parenthesised) type arguments of an explicit `TGenericApp`
@@ -1096,7 +1126,12 @@ func annotationGenericArgs(te: in TypeExpr): List[TypeExpr] {
 // time it runs. Bails to `newList()` (leaving the payload erased-`Object`,
 // the safe fallback) when ANY recovered arg mentions one of `typeParams`.
 func annotationGenericArgsFiltered(te: in TypeExpr, typeParams: in List[String]): List[TypeExpr] {
-  val raw = annotationGenericArgs(te)
+  withoutTypeParams(annotationGenericArgs(te), typeParams)
+}
+
+// `raw`, or none when one of them names an enclosing type parameter, whose
+// instantiation is not known here.
+func withoutTypeParams(raw: in List[TypeExpr], typeParams: in List[String]): List[TypeExpr] {
   if typeParams.count == 0 {
     return raw
   }
