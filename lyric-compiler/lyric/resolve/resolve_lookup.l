@@ -251,9 +251,20 @@ func importHintFor(tbl: in DeclTable, fsc: in FileScope, d: in Decl, name: in St
   " (declared in " + origin + "; add import " + origin + " or import " + origin + ".{" + shown + "})"
 }
 
-/// Resolve the bare name `name`, written in the file `fsc` belongs to, at
-/// steps 2-4 of §4.3.  The caller answers step 1 (locals) first.
-pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): Resolution {
+// The declarations at the step of §4.3 that decides a name, how the file
+// reaches them, and the package-private ones a file could not use.
+record Step {
+  cands: List[Candidate]
+  how: String
+  hidden: List[Decl]
+}
+
+func stepOf(cands: in List[Candidate], how: in String, hidden: in List[Decl]): Step {
+  Step(cands = cands, how = how, hidden = hidden)
+}
+
+// Steps 2-4 of §4.3: the first step that has a candidate.
+func winningStep(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): Step {
   // Step 2: the file's own package, any file.
   val own: List[Candidate] = newList()
   val ownSeen: Map[String, Int] = newMap()
@@ -262,13 +273,13 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
       addCandidate(own, ownSeen, d, true, "")
     }
   }
+  val hidden: List[Decl] = newList()
   if own.count > 0 {
-    return resolveCandidates(own, name, "declared by this package")
+    return stepOf(own, "declared by this package", hidden)
   }
   // Step 3: what the file imports.
   val reached: List[Candidate] = newList()
   val seen: Map[String, Int] = newMap()
-  val hidden: List[Decl] = newList()
   for d in namedDecls(tbl, name, nameUse) {
     if d.pkg != fsc.pkg and fsc.whole.containsKey(d.pkg) {
       val r = fsc.whole[d.pkg]
@@ -319,10 +330,10 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
     }
   }
   if direct.count > 0 {
-    return resolveCandidates(direct, name, "imported by this file")
+    return stepOf(direct, "imported by this file", hidden)
   }
   if reexported.count > 0 {
-    return resolveCandidates(reexported, name, "reached through this file's imports")
+    return stepOf(reexported, "reached through this file's imports", hidden)
   }
   // Step 4: the prelude.
   val prelude: List[Candidate] = newList()
@@ -333,9 +344,19 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
     }
   }
   if prelude.count > 0 {
-    return resolveCandidates(prelude, name, "in the prelude")
+    return stepOf(prelude, "in the prelude", hidden)
   }
-  if hidden.count > 0 {
+  stepOf(prelude, "", hidden)
+}
+
+/// Resolve the bare name `name`, written in the file `fsc` belongs to, at
+/// steps 2-4 of §4.3.  The caller answers step 1 (locals) first.
+pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): Resolution {
+  val step = winningStep(tbl, fsc, name, nameUse)
+  if step.cands.count > 0 {
+    return resolveCandidates(step.cands, name, step.how)
+  }
+  if step.hidden.count > 0 {
     return RUnresolved(
       code = "T0097",
       message = "'" + name + "' is package-private and cannot be referenced from another package " +
@@ -346,6 +367,26 @@ pub func resolveBare(tbl: in DeclTable, fsc: in FileScope, name: in String, name
     code = unknownNameCode(nameUse),
     message = unknownNameMessage(nameUse, name) + hiddenImportHint(tbl, fsc, name, nameUse)
   )
+}
+
+/// The packages that collide on `name` in the file `fsc` belongs to: the
+/// declaring packages of the step that decides it when it has candidates from
+/// two or more packages (the T0123 case), else none.
+pub func ambiguousPackages(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): List[String] {
+  val step = winningStep(tbl, fsc, name, nameUse)
+  val pkgs = packagesOf(step.cands)
+  if pkgs.count > 1 {
+    pkgs
+  } else {
+    val none: List[String] = newList()
+    none
+  }
+}
+
+/// The packages declaring what `name` means in the file `fsc` belongs to: the
+/// winning step's, so a function of any other package is shadowed or hidden.
+pub func winningPackages(tbl: in DeclTable, fsc: in FileScope, name: in String, nameUse: in NameUse): List[String] {
+  packagesOf(winningStep(tbl, fsc, name, nameUse).cands)
 }
 
 /// Every declaration named `name` that the file may reach bare, whatever the

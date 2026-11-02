@@ -7,7 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{ResolverContext, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -376,9 +376,6 @@ pub record SymbolTable {
   /// Each package's whole re-exports (`pub use P`), as registered with
   /// `symTableRegisterPackageReexports`.
   packageReexports: Map[String, List[String]]
-  /// `<pkg>|<name>` -> whether `pkg` exports a function `name` to other
-  /// packages (`symTablePackageExportsFunc`), filled on first use.
-  funcExportCache: Map[String, Bool]
   /// Every validated record `.copy(...)` call, keyed by `recordCopySiteKey`
   /// of the call expression's span (see `Lyric.Parser.RecordCopySite`).
   recordCopySites: Map[String, RecordCopySite]
@@ -915,7 +912,6 @@ pub func newSymbolTable(): SymbolTable {
     symbolPackageMembers = newMap(),
     packageImports = newMap(),
     packageReexports = newMap(),
-    funcExportCache = newMap(),
     recordCopySites = newMap(),
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
@@ -1937,149 +1933,87 @@ func symTableImportVisible(tbl: in SymbolTable, curPkg: in String, sym: in Symbo
   parent.length > 0 and tbl.importVisibleNames.containsKey(origin + "|" + parent)
 }
 
-// Whether a function `name` declared in `origin` may be called bare under
-// the current scope's import rule (functions resolve through the signature
-// map, not a `Symbol`, so this is the by-name form of the rule).
-pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: in String): Bool {
+// The files of the checked package whose scopes judge a bare name, when the
+// resolver answers: all of them.  A package of several files is judged by the
+// union of its files' imports, as the backends resolve a bare name
+// package-wide (#8690); T0219 then tells a file to add a sibling's import.
+// `None` outside the checked package's own scope (a dependency's signatures).
+func resolverAllFiles(tbl: in SymbolTable): Option[List[Int]] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
   val curPkg = symTableScopePkg(tbl)
   if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return None
+  }
+  val files: List[Int] = newList()
+  val n = tbl.resolveCtx[0].scopes.count
+  var i = 0
+  while i < n {
+    files.add(i)
+    i = i + 1
+  }
+  Some(value = files)
+}
+
+// Whether a function `name` declared in `origin` may be called bare under the
+// current scope's import rule: some file of the package reaches a declaration
+// of that name in `origin`, at any tier.  True outside the checked package's
+// own scope.
+pub func symTableBareFuncVisible(tbl: in SymbolTable, origin: in String, name: in String): Bool {
+  val files = match resolverAllFiles(tbl) {
+    case Some(f) -> f
+    case None -> return true
+  }
+  if origin.length == 0 or origin == symTableScopePkg(tbl) {
     return true
   }
-  origin.length == 0 or origin == curPkg or tbl.importVisiblePkgs.containsKey(origin) or
-    tbl.importVisibleNames.containsKey(origin + "|" + name)
+  val ctx = tbl.resolveCtx[0]
+  for fid in files {
+    for d in visibleDecls(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue) {
+      if d.pkg == origin {
+        return true
+      }
+    }
+  }
+  false
 }
 
 // The resolution tier of a function `name` declared in `origin` for a bare
-// reference under the current scope, as `symTableTryFindOne` orders other
-// names: 0 for the current package (or no import rule), 1 for a direct
-// import, 2 for a package reached only transitively or the prelude, and -1
-// when the import rule hides it.  A lower tier shadows a higher one.
+// reference: 0 when `origin` declares what the name means (the step of §4.3
+// that decides it), -1 when it is shadowed by a nearer step or hidden.  Always
+// 0 outside the checked package's own scope.
 pub func symTableBareFuncTier(tbl: in SymbolTable, origin: in String, name: in String): Int {
-  // The resolver's answer is the lowest tier that declares the name; a
-  // function of any other package is shadowed or hidden (D314).
-  match resolverPackagesFor(tbl, name) {
-    case Some(pkgs) -> return if origin.length == 0 or pkgs.contains(origin) { 0 } else { -1 }
-    case None -> ()
+  val files = match resolverAllFiles(tbl) {
+    case Some(f) -> f
+    case None -> return 0
   }
-  val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) or origin.length == 0 or origin == curPkg {
+  if origin.length == 0 {
     return 0
   }
-  if not symTableBareFuncVisible(tbl, origin, name) or not symTablePackageExportsFunc(tbl, origin, name) {
-    return -1
-  }
-  if symTableScopeAllows(tbl, origin) {
-    1
-  } else {
-    2
-  }
-}
-
-// Whether package `pkg`'s functions named `name` include one another package
-// may call (`pub` or `internal`); a name whose declarations there are all
-// package-private is never a bare-call candidate outside the package.  A
-// signature with no function symbol behind it (a synthesised one) counts.
-func symTablePackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
-  val key = pkg + "|" + name
-  match mapGet(tbl.funcExportCache, key) {
-    case Some(known) -> return known
-    case None -> ()
-  }
-  val exported = scanPackageExportsFunc(tbl, pkg, name)
-  tbl.funcExportCache.add(key, exported)
-  exported
-}
-
-func scanPackageExportsFunc(tbl: in SymbolTable, pkg: in String, name: in String): Bool {
-  var sawFunc = false
-  var i = 0
-  while i < tbl.symbols.count {
-    val s = tbl.symbols[i]
-    if s.name == name and s.originPackage == pkg {
-      match s.kind {
-        case DKFunc(_) -> {
-          if symIsCrossPackageVisible(s) {
-            return true
-          }
-          sawFunc = true
-        }
-        case _ -> ()
-      }
+  val ctx = tbl.resolveCtx[0]
+  for fid in files {
+    if winningPackages(ctx.tbl, scopeOfFile(ctx, fid), name, UseValue).contains(origin) {
+      return 0
     }
-    i = i + 1
   }
-  not sawFunc
+  -1
 }
 
-// When a bare `name` failed to resolve only because the import rule hides
+// When a bare `name` failed to resolve only because the file's imports hide
 // it, the hint that says how to import it (with a leading space); otherwise
 // "".  Used by the unknown-name diagnostics.
 pub func symTableHiddenImportHint(tbl: in SymbolTable, name: in String): String {
-  val curPkg = symTableScopePkg(tbl)
-  if curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
-    return ""
+  val files = match resolverAllFiles(tbl) {
+    case Some(f) -> f
+    case None -> return ""
   }
-  // Extern types carry no visibility, so the second pass accepts any
-  // declaration from another package.
-  var pass = 0
-  while pass < 2 {
-    val hint = hiddenImportHintPass(tbl, curPkg, name, pass == 0)
-    if hint.length > 0 {
-      return hint
-    }
-    pass = pass + 1
+  val ctx = tbl.resolveCtx[0]
+  val cur = symTableCurrentFile(tbl)
+  if cur >= 0 and cur < files.count {
+    return importHint(ctx.tbl, scopeOfFile(ctx, cur), name, UseValue)
   }
-  ""
-}
-
-// The package a file imports to reach `pkg`: for the kernel host naming
-// convention (`Std.XHost` behind `Std.X`) the public package when it is
-// loaded and imports the host, otherwise `pkg` itself.
-func publicPackageOf(tbl: in SymbolTable, pkg: in String): String {
-  if not pkg.endsWith("Host") {
-    return pkg
-  }
-  val home = pkg.substring(0, pkg.length - 4)
-  match mapGet(tbl.packageImports, home) {
-    case Some(imports) -> {
-      var i = 0
-      while i < imports.count {
-        if imports[i] == pkg {
-          return home
-        }
-        i = i + 1
-      }
-      pkg
-    }
-    case None -> pkg
-  }
-}
-
-func hiddenImportHintPass(tbl: in SymbolTable, curPkg: in String, name: in String, visibleOnly: Bool): String {
-  var i = tbl.symbols.count - 1
-  while i >= 0 {
-    val s = tbl.symbols[i]
-    if s.name == name and s.originPackage.length > 0 and s.originPackage != curPkg and (not visibleOnly or symIsCrossPackageVisible(s)) and not symTableImportVisible(tbl, curPkg, s) {
-      val origin = s.originPackage
-      match mapGet(tbl.importAliases, origin) {
-        case Some(alias) -> {
-          return " (declared in " + origin + ", imported as " + alias + "; write " + alias + "." + name + ")"
-        }
-        case None -> ()
-      }
-      val parentName = caseParentName(tbl, s)
-      val shown = if parentName.length > 0 { parentName } else { name }
-      // A kernel host package (`Std.CollectionsHost`) is imported through
-      // its public package (`Std.Collections`), whose whole import reaches it.
-      val home = publicPackageOf(tbl, origin)
-      if home != origin {
-        return " (declared in " + origin + "; add import " + home + ")"
-      }
-      return " (declared in " + origin + "; add import " + origin + " or import " + origin + ".{" + shown + "})"
-    }
-    i = i - 1
-  }
-  ""
+  importHint(ctx.tbl, scopeOfFile(ctx, 0), name, UseValue)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2454,74 +2388,39 @@ func symIsCrossPackageVisible(sym: in Symbol): Bool {
   }
 }
 
-// The distinct imported packages (in encounter order, each listed once) that
-// each contribute a cross-package-visible symbol named `name` under the
-// CURRENT resolution scope (#6287 — bare-name ambiguity).  Length 0 or 1
-// means `name` is not ambiguous; 2+ means a bare reference to `name` cannot
-// tell which package's declaration is meant and must be qualified.  Only
-// examines tier-2 candidates (an imported package match) — the current
-// package's own declaration (tier 1) always wins outright and is never
-// ambiguous with anything.
+// The distinct packages, in encounter order, whose declarations a bare `name`
+// collides between in the checked package (#6287): the packages the resolver
+// finds at the step that decides the name, in any file.  Length 0 or 1 means
+// `name` is not ambiguous; 2+ means a bare reference cannot tell which
+// package's declaration is meant and must be qualified.  A declaration of the
+// package itself wins its step outright and is never ambiguous.
 pub func symTableAmbiguousImportPackages(tbl: in SymbolTable, name: in String): List[String] {
   val pkgs: List[String] = newList()
-  // The resolver decides whether the file's imports make the name ambiguous
-  // (D314).  A package of several files is still judged by the union of its
-  // files' imports, as the backends resolve a bare name package-wide (#8690).
-  match resolverFileFor(tbl) {
-    case Some(fid) -> {
-      if tbl.fileRules.count < 2 {
-        match resolutionOf(tbl, fid, name) {
-          case RUnresolved(code, _) -> if code != "T0123" { return pkgs }
-          case _ -> return pkgs
-        }
+  val files = match resolverAllFiles(tbl) {
+    case Some(f) -> f
+    case None -> return pkgs
+  }
+  val ctx = tbl.resolveCtx[0]
+  val perFile: List[String] = newList()
+  for fid in files {
+    val fsc = scopeOfFile(ctx, fid)
+    val colliding = ambiguousPackages(ctx.tbl, fsc, name, UseValue)
+    for p in colliding {
+      if not pkgs.contains(p) {
+        pkgs.add(p)
       }
     }
-    case None -> ()
-  }
-  if tbl.scopeImports.count == 0 {
-    return pkgs
-  }
-  val curPkg = symTableScopePkg(tbl)
-  // Tier 1 (current package) always wins outright over any import, so a
-  // same-named declaration in the CURRENT package makes any cross-import
-  // collision moot — it is never reachable via bare-name resolution.
-  if curPkg.length > 0 {
-    var ci = 0
-    while ci < tbl.symbols.count {
-      if tbl.symbols[ci].name == name and tbl.symbols[ci].originPackage == curPkg {
-        return pkgs
-      }
-      ci = ci + 1
-    }
-  }
-  // A candidate the import rule hides cannot be meant by a bare reference.
-  // Under the rule a package reached only through a whole import's own
-  // imports is as visible as a direct one, so two such packages collide too;
-  // a directly imported candidate still shadows every transitive one, as it
-  // does in `symTableTryFindOne`.
-  val ruled = curPkg.length > 0 and symTableImportRuleApplies(tbl, curPkg)
-  val transitive: List[String] = newList()
-  val seen: Map[String, Bool] = newMap()
-  var i = 0
-  while i < tbl.symbols.count {
-    val s = tbl.symbols[i]
-    if s.name == name and s.originPackage != curPkg and symIsCrossPackageVisible(s) and (not ruled or symTableImportVisible(tbl, curPkg, s)) {
-      if not seen.containsKey(s.originPackage) {
-        if symTableScopeAllows(tbl, s.originPackage) {
-          seen.add(s.originPackage, true)
-          pkgs.add(s.originPackage)
-        } else if ruled and s.originPackage.length > 0 {
-          seen.add(s.originPackage, true)
-          transitive.add(s.originPackage)
-        }
+    for p in winningPackages(ctx.tbl, fsc, name, UseValue) {
+      if not perFile.contains(p) {
+        perFile.add(p)
       }
     }
-    i = i + 1
   }
-  if pkgs.count > 0 {
-    return pkgs
+  // Two files that each reach a different package for the name collide too.
+  if pkgs.count == 0 and perFile.count >= 2 {
+    return perFile
   }
-  transitive
+  pkgs
 }
 
 // Whether `pkg` is one of the current scope's direct imports, as opposed to
