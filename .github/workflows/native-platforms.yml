@@ -29,6 +29,21 @@ on:
       - 'lyric-window/**'
       - 'lyric-game/**'
       - 'lyric-ui/native/**'
+      - 'lyric-text/**'
+      - 'lyric-draw/**'
+      - 'benchmarks/**'
+      - 'scripts/ci/build-sdl3.sh'
+      - 'scripts/ci/text-examples-e2e.sh'
+      - 'scripts/ci/draw-examples-e2e.sh'
+      - 'scripts/ci/gpu-examples-e2e.sh'
+      - 'scripts/ci/gpu-window-e2e.sh'
+      - 'scripts/ci/window-examples-e2e.sh'
+      - 'scripts/ci/game-examples-e2e.sh'
+      - 'scripts/ci/ui-native-e2e.sh'
+      - 'scripts/ci/parallel-e2e.sh'
+      - 'scripts/ci/async-mt-e2e.sh'
+      - 'scripts/ci/plugin-e2e.sh'
+      - 'scripts/ci/bench-vec3-alloc.sh'
 
 permissions:
   contents: read
@@ -201,10 +216,32 @@ jobs:
           export DYLD_LIBRARY_PATH="$sdl3_prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
           LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/macos-graphics-e2e.sh run
 
+      # #8563 item 4 and 5: the ThreadSanitizer and AddressSanitizer runs (Apple clang ships
+      # both), a native Std.Plugin host driving a native plugin, and the Vec3 allocation bench.
+      - name: Std.Parallel under ThreadSanitizer (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/parallel-e2e.sh
+
+      - name: Multi-threaded async scheduler under ThreadSanitizer and AddressSanitizer (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-mt-e2e.sh
+
+      - name: Native plugin host and plugin (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: bash scripts/ci/plugin-e2e.sh "$LYRIC_BIN" native native
+
+      - name: Vec3 does not allocate (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/bench-vec3-alloc.sh
+
   linux-arm64:
     needs: [managed]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -257,3 +294,87 @@ jobs:
       - name: Native suite (aarch64-unknown-linux-gnu)
         shell: bash
         run: bash scripts/ci/native-platform-tests.sh
+
+      # #8563: the graphics examples, as on Linux x86-64 (native-backend-self-tests.sh): wgpu-native's
+      # pinned aarch64 prebuilt over lavapipe (mesa-vulkan-drivers), SDL3 built with its X11 driver for
+      # the Xvfb window checks, FreeType/HarfBuzz and the DejaVu and WenQuanYi Zen Hei fonts.
+      - name: Install graphics dependencies
+        if: always()
+        run: |
+          set -euo pipefail
+          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq cmake ninja-build pkgconf mesa-vulkan-drivers \
+            libfreetype-dev libharfbuzz-dev fonts-dejavu-core fonts-wqy-zenhei \
+            libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev libxrender-dev libxtst-dev \
+            xvfb x11-apps imagemagick xdotool
+
+      - name: Cache SDL3
+        if: always()
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3
+          key: sdl3-linux-arm64-x11-${{ hashFiles('scripts/ci/build-sdl3.sh') }}
+
+      - name: Build SDL3 (X11 driver)
+        if: always()
+        run: bash scripts/ci/build-sdl3.sh --x11 "$RUNNER_TEMP/sdl3"
+
+      - name: lyric-text on FreeType and HarfBuzz
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/text-examples-e2e.sh
+
+      - name: lyric-gpu on wgpu-native over lavapipe
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/gpu-examples-e2e.sh
+
+      - name: lyric-draw scene
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/draw-examples-e2e.sh
+
+      - name: lyric-window on SDL3
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/window-examples-e2e.sh
+
+      - name: lyric-gpu window under Xvfb
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/gpu-window-e2e.sh
+
+      - name: Breakout (replay and X11 window)
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/game-examples-e2e.sh
+
+      - name: Native lyric-ui host
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/ui-native-e2e.sh
+
+      # #8563 items 4 and 5.  ThreadSanitizer maps shadow memory at fixed addresses, which a high
+      # ASLR entropy setting can collide with; the step prints the value it found and lowers it.
+      - name: ThreadSanitizer prerequisites
+        if: always()
+        run: |
+          set -euo pipefail
+          clang --version
+          echo "int main(void){return 0;}" > "$RUNNER_TEMP/tsan_preflight.c"
+          if ! clang -fsanitize=thread "$RUNNER_TEMP/tsan_preflight.c" -o "$RUNNER_TEMP/tsan_preflight"; then
+            sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq "libclang-rt-$(clang -dumpversion | cut -d. -f1)-dev"
+            clang -fsanitize=thread "$RUNNER_TEMP/tsan_preflight.c" -o "$RUNNER_TEMP/tsan_preflight"
+          fi
+          echo "vm.mmap_rnd_bits=$(cat /proc/sys/vm/mmap_rnd_bits)"
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          "$RUNNER_TEMP/tsan_preflight"
+
+      - name: Std.Parallel under ThreadSanitizer
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/parallel-e2e.sh
+
+      - name: Multi-threaded async scheduler under ThreadSanitizer and AddressSanitizer
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-mt-e2e.sh
+
+      - name: Native plugin host and plugin
+        if: always()
+        run: bash scripts/ci/plugin-e2e.sh "$LYRIC_BIN" native native
+
+      - name: Vec3 does not allocate
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/bench-vec3-alloc.sh
