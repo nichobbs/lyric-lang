@@ -34,7 +34,7 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 
-PLAYWRIGHT_VERSION="1.56.1"
+PLAYWRIGHT_VERSION="1.64.1"
 (
   cd lyric-ui/runtime
   if ! node --input-type=module -e "await import('playwright')" 2>/dev/null; then
