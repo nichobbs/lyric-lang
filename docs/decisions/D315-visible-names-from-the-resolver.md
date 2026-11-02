@@ -29,8 +29,20 @@ resolver has no unfiltered lookup (§4.4), so neither could be deleted.
    qualifier the file was already allowed to write, the `SymbolId` of an owner
    type, a declaring package, the type-qualified name of a dot-named function
    (a method, which the resolver reaches through its type and does not index by
-   name). Every bare "what does this name mean here" caller moved to
-   `symTableTryFindAllVisible`.
+   name). The bare "what does this name mean here" callers moved to
+   `symTableTryFindAllVisible`, except three that are program-wide by design
+   and stay on the unfiltered lookup:
+   - the checks that a case or enum name is shared with another package's
+     (`nameIsSharedUnionCase`, the enum-case and enum-name checks in
+     `inferExpr`): a bare case that two packages declare is told apart by the
+     callee's parameter type or the expected type, whatever the caller imports
+     (#6688). Narrowing them to the visible set made `B.log(Debug)` bind to the
+     caller's own `Level`; `enum_case_collision_self_test` pins it. Tightening
+     `nameIsSharedUnionCase` is #8722 (`regex_tests.l` constructs `TimedOut`
+     through a package imported only under an alias);
+   - the value-generic callee and the two dot-named-callee checks, whose names
+     (`Shape.size`) are methods of a type that the resolver reaches through
+     the type, not by name.
 4. **Differential mode compares the sets** (`R0002`: the declaring packages and
    kinds the scan and the resolver give), beside `R0001`.
 
