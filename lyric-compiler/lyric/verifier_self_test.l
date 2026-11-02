@@ -88,7 +88,8 @@ func testSmtSortDatatype(): Unit {
 }
 
 func testSmtSortSlice(): Unit {
-  assertEqual(smtRenderSort(SSlice(element = SInt)), "(Array Int Int)", "sort-slice-int")
+  assertEqual(smtRenderSort(SSlice(element = SInt)), "(Lyric!Seq Int)", "sort-slice-int")
+  assertEqual(smtRenderSort(SArray(element = SBool)), "(Lyric!Seq Bool)", "sort-array-bool")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4185,6 +4186,122 @@ test "an index read is a bounds obligation (#8157)" {
   assertUntranslatable(
     "func at(xs: in List[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.count\n  ensures: true\n{\n  xs[i]\n}\n",
     "list-index"
+  )
+}
+
+test "an array's or slice's length is part of its value, not a function of its elements (#8394)" {
+  // Every SMT array over a one-valued element sort is the same array, so a
+  // length computed from the elements would make these contradictory.
+  assertRefuted(
+    "func f(a: in array[2, Unit], b: in array[3, Unit]): Bool\n  ensures: result\n{\n  false\n}\n",
+    "unit-arrays-of-different-lengths"
+  )
+  assertRefuted(
+    "func f(xs: in slice[Unit], ys: in slice[Unit]): Bool\n  requires: xs.length == 1 and ys.length == 2\n  ensures: result\n{\n  false\n}\n",
+    "unit-slices-of-different-lengths"
+  )
+}
+
+test "an element read is select of the sequence's elements (#8394)" {
+  assertDischarged("func f(a: in array[3, Int]): Bool\n  ensures: result\n{\n  a[0] == a[0]\n}\n", "same-element-twice")
+  assertDischarged(
+    "func first(a: in array[3, Int]): Int\n  requires: a[0] > 0\n  ensures: result > 0\n{\n  a[0]\n}\n",
+    "element-in-a-contract"
+  )
+  assertDischarged(
+    "func at(xs: in slice[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.length and xs[i] == 4\n  ensures: result == 4\n{\n  xs[i]\n}\n",
+    "slice-element-in-a-contract"
+  )
+  assertRefuted("func f(a: in array[3, Int]): Bool\n  ensures: result\n{\n  a[0] == a[1]\n}\n", "different-elements")
+  // An element has its type's range and width.
+  assertDischarged(
+    "type Small = Int range 0 ..= 10\nfunc f(a: in array[2, Small]): Bool\n  ensures: result\n{\n  a[1] <= 10\n}\n",
+    "element-range"
+  )
+  assertDischarged(
+    "func f(a: in array[2, Int]): Bool\n  ensures: result\n{\n  a[0] <= 2147483647\n}\n",
+    "element-width"
+  )
+}
+
+test "an element write stores into the array the variable holds (#8394)" {
+  val sig = "func f(x: in array[3, Int]): Int\n"
+  assertDischarged(sig + "  ensures: result == 7\n{\n  var a = x\n  a[1] = 7\n  a[1]\n}\n", "write-then-read")
+  assertDischarged(
+    sig + "  ensures: result == x[0]\n{\n  var a = x\n  a[1] = 7\n  a[0]\n}\n",
+    "other-element-unchanged"
+  )
+  // An array is a value: the copy it was made from does not change.
+  assertDischarged(sig + "  ensures: result == x[1]\n{\n  var a = x\n  a[1] = 7\n  x[1]\n}\n", "copy-unchanged")
+  assertRefuted(sig + "  ensures: result == 7\n{\n  var a = x\n  a[1] = 7\n  x[1]\n}\n", "copy-not-written")
+  assertDischarged(sig + "  ensures: result == 3\n{\n  var a = x\n  a[1] = 7\n  a.length\n}\n", "length-unchanged")
+  assertRefuted(sig + "  ensures: true\n{\n  var a = x\n  a[3] = 7\n  0\n}\n", "write-out-of-bounds")
+  val idx = "func f(x: in array[3, Int], i: in Int): Int\n"
+  assertRefuted(idx + "  ensures: true\n{\n  var a = x\n  a[i] = 1\n  0\n}\n", "write-no-bounds-facts")
+  assertDischarged(
+    idx + "  requires: i >= 0 and i < 3\n  ensures: result == 1\n{\n  var a = x\n  a[i] = 1\n  a[i]\n}\n",
+    "write-under-bounds"
+  )
+  assertDischarged(
+    sig +
+      "  requires: x[0] > -1000 and x[0] < 1000\n  ensures: result == x[0] + 1\n{\n  var a = x\n  a[0] += 1\n  a[0]\n}\n",
+    "compound-element-write"
+  )
+  // A compound write overflows its element's width like any other.
+  assertCheckedRefuted(sig + "{\n  var a = x\n  a[0] += 1\n  0\n}\n", "compound-element-overflow")
+  assertCheckedDischarged(
+    sig + "  requires: x[0] < 2147483647\n{\n  var a = x\n  a[0] += 1\n  0\n}\n",
+    "compound-element-below-max"
+  )
+  // A `Long` element is checked at 64 bits: past `Int.MaxValue` is fine.
+  assertCheckedDischarged(
+    "func f(x: in array[3, Long]): Long\n  requires: x[0] == 2147483647i64\n{\n  var a = x\n  a[0] += 1i64\n  0i64\n}\n",
+    "long-element-width"
+  )
+}
+
+test "a loop writing an array keeps its length (#8394)" {
+  assertDischarged(
+    "func zero(x: in array[3, Int]): Int\n  ensures: true\n{\n  var a = x\n  var i = 0\n  while i < 3\n" +
+      "    invariant: i >= 0 and i <= 3\n  {\n    a[i] = 0\n    i = i + 1\n  }\n  a[2]\n}\n",
+    "loop-writes-in-bounds"
+  )
+  // A slice's length can change: a loop that reassigns one keeps no length.
+  assertNotProved(
+    "func grow(xs: in slice[Int], n: in Int): Bool\n  ensures: result\n{\n  var s = xs\n  var i = 0\n  while i < n\n" +
+      "    invariant: i >= 0\n  {\n    s = s.append(1)\n    i = i + 1\n  }\n  s.length == xs.length\n}\n",
+    "slice-length-not-kept"
+  )
+  // A copy of an array variable keeps its element type's range.
+  assertDischarged(
+    "type Small = Int range 0 ..= 10\nfunc f(x: in array[2, Small]): Bool\n  ensures: result\n{\n  var a = x\n  a[0] <= 10\n}\n",
+    "copy-keeps-element-range"
+  )
+}
+
+test "element writes outside an array variable fail closed (#8394)" {
+  assertFailsClosed(
+    "record R {\n  var a: array[2, Int]\n}\nfunc f(r: inout R): Unit\n  ensures: true\n{\n  r.a[0] = 1\n}\n",
+    "V0026",
+    "field-array-element"
+  )
+}
+
+test "sequence builtins render through Lyric!Seq (#8394)" {
+  val a = TVar(name = "a", sort = SArray(element = SInt))
+  val i = TVar(name = "i", sort = SInt)
+  val v = TVar(name = "v", sort = SInt)
+  assertEqual(smtRenderTerm(lengthTerm(a)), "(Seq!len a)", "length")
+  assertEqual(smtRenderTerm(TBuiltin(op = BOpSliceIndex, args = termList2(a, i))), "(select (Seq!elems a) i)", "select")
+  assertEqual(
+    smtRenderTerm(TBuiltin(op = BOpSliceStore, args = termList3(a, i, v))),
+    "((as Seq!mk (Lyric!Seq Int)) (Seq!len a) (store (Seq!elems a) i v))",
+    "store"
+  )
+  assertEqual(
+    smtRenderTerm(lengthTerm(TVar(name = "s", sort = SString))),
+    "(_len s)",
+    "a string keeps its length function"
   )
 }
 

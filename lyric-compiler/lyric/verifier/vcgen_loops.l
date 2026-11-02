@@ -9,10 +9,13 @@ import Lyric.Parser
 import Lyric.ModeChecker
 import Lyric.SelfFields as SelfFields
 
-// `x = v` / `x op= v`, then the rest of the block.  Only a variable is a
-// target the verifier models: a record is a reference, and a write to one
-// of its fields is seen through every alias of it, which the verifier has
-// no heap to follow — so a field or element write fails closed rather than
+// `x = v` / `x op= v`, then the rest of the block.  A variable and an
+// element of an array variable (`a[i] = v`, #8394) are the targets the
+// verifier models: an array is a value (docs/01 §2.7), so a write to one
+// binding is never seen through another, and the variable simply takes the
+// array with that element replaced.  A record is a reference, and a write
+// to one of its fields is seen through every alias of it, which the
+// verifier has no heap to follow, so a field write fails closed rather than
 // leave the proof reasoning about the old value (#8102).
 func wpAssign(
   env: in VEnv,
@@ -25,12 +28,16 @@ func wpAssign(
   value: in Expr,
   sp: in Span,
 ): WpResult {
+  match elementTarget(target) {
+    case Some(et) -> return wpAssignElement(env, resultSort, postcond, stmts, idx, target, et, op, value, sp)
+    case None -> ()
+  }
   val name = match target.kind {
     case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
     case _ -> ""
   }
   if name.length == 0 {
-    return unsupportedWp("an assignment to a field or an element", target.span)
+    return unsupportedWp("an assignment to a field or to an element of anything but an array variable", target.span)
   }
   // A name no binding declares is a module-level `val`, which no assignment
   // reaches; one the walk lost track of must not be given a value (#8109).
@@ -45,50 +52,8 @@ func wpAssign(
   // compound assignment's overflow under checked arithmetic (#7871).
   val rhsSide: List[Term] = newList()
   appendTermList(rhsSide, rhsR.sideConds)
-  val rawCombined = match op {
-    case AssEq -> rhsR.term
-    case _ -> {
-      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, SInt) }
-      val bin = match op {
-        case AssPlus -> BOpAdd
-        case AssMinus -> BOpSub
-        case AssStar -> BOpMul
-        case AssSlash -> BOpDiv
-        case AssPercent -> BOpMod
-        case _ -> BOpAdd
-      }
-      val combinedOp = match unifyOperands(existing, rhsR.term) {
-        case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
-        case Err(reason) -> {
-          rhsDiags.add(untranslatableDiag(reason, sp))
-          poisonTerm(TBuiltin(op = bin, args = termList2(existing, rhsR.term)))
-        }
-      }
-      match combinedOp {
-        case TBuiltin(_, dargs) -> appendTermList(rhsSide, divisorSideConds(bin, dargs, intBitsOfExpr(env, target)))
-        case _ -> ()
-      }
-      if env.checkedArithmetic {
-        match combinedOp {
-          case TBuiltin(_, cargs) -> {
-            match sortOf(cargs[0]) {
-              case SInt -> match bin {
-                case BOpAdd | BOpSub | BOpMul -> appendTermList(
-                  rhsSide,
-                  signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
-                )
-                case _ -> ()
-              }
-              case SBitVec(w) -> appendTermList(rhsSide, unsignedOverflowSideConds(bin, cargs[0], cargs[1], combinedOp, w))
-              case _ -> ()
-            }
-          }
-          case _ -> ()
-        }
-      }
-      combinedOp
-    }
-  }
+  val existing = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, SInt) }
+  val rawCombined = assignedValue(env, existing, rhsR.term, op, target, sp, rhsSide, rhsDiags)
   // The assigned value takes the variable's sort (#7848).
   val combined = match envLookupSort(name, env) {
     case Some(si) -> coerceTermAt(rawCombined, si.sort, value.span, rhsDiags)
@@ -131,6 +96,192 @@ func wpAssign(
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, rhsDiags)
+  appendTermList2(di, inner.diags)
+  WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
+}
+
+// The value an assignment stores: `rhs` for `=`, `existing op rhs` for a
+// compound assignment, whose divisor and, under checked arithmetic,
+// overflow obligations it adds to `sides`.  `target` gives the stored
+// place's width.
+func assignedValue(
+  env: in VEnv,
+  existing: in Term,
+  rhs: in Term,
+  op: in AssignOp,
+  target: in Expr,
+  sp: in Span,
+  sides: in List[Term],
+  diags: in List[Diagnostic],
+): Term {
+  val plain = match op { case AssEq -> true; case _ -> false }
+  if plain {
+    return rhs
+  }
+  val bin = match op {
+    case AssPlus -> BOpAdd
+    case AssMinus -> BOpSub
+    case AssStar -> BOpMul
+    case AssSlash -> BOpDiv
+    case AssPercent -> BOpMod
+    case _ -> BOpAdd
+  }
+  val combinedOp = match unifyOperands(existing, rhs) {
+    case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
+    case Err(reason) -> {
+      diags.add(untranslatableDiag(reason, sp))
+      poisonTerm(TBuiltin(op = bin, args = termList2(existing, rhs)))
+    }
+  }
+  match combinedOp {
+    case TBuiltin(_, dargs) -> appendTermList(sides, divisorSideConds(bin, dargs, intBitsOfExpr(env, target)))
+    case _ -> ()
+  }
+  if env.checkedArithmetic {
+    match combinedOp {
+      case TBuiltin(_, cargs) -> {
+        match sortOf(cargs[0]) {
+          case SInt -> match bin {
+            case BOpAdd | BOpSub | BOpMul -> appendTermList(
+              sides,
+              signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
+            )
+            case _ -> ()
+          }
+          case SBitVec(w) -> appendTermList(sides, unsignedOverflowSideConds(bin, cargs[0], cargs[1], combinedOp, w))
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  combinedOp
+}
+
+func isArraySort(s: in Sort): Bool {
+  match s {
+    case SArray(_) -> true
+    case _ -> false
+  }
+}
+
+// An element write's variable and index: `a[i]` for an array variable `a`.
+record ElementTarget {
+  name: String
+  index: Expr
+}
+
+func elementTarget(target: in Expr): Option[ElementTarget] {
+  match target.kind {
+    case EParen(inner) -> elementTarget(inner)
+    case EIndex(receiver, indices) -> {
+      if indices.count != 1 {
+        return None
+      }
+      match receiver.kind {
+        case EPath(path) -> if path.segments.count == 1 {
+          Some(value = ElementTarget(name = path.segments[0], index = indices[0]))
+        } else {
+          None
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// `a[i] = v` / `a[i] op= v` on an array variable, then the rest of the
+// block: `i` must be in bounds (the write panics otherwise), the stored value
+// must lie in the element type's range, and `a` takes the array with
+// element `i` replaced (#8394).
+func wpAssignElement(
+  env: in VEnv,
+  resultSort: in SortInfo,
+  postcond: in Term,
+  stmts: in List[Statement],
+  idx: in Int,
+  target: in Expr,
+  et: in ElementTarget,
+  op: in AssignOp,
+  value: in Expr,
+  sp: in Span,
+): WpResult {
+  val name = et.name
+  if not isSome(envLookup(name, env)) {
+    return unsupportedWp(
+      "an assignment to an element of '" + name + "', which no binding the verifier tracks declares",
+      target.span
+    )
+  }
+  val info = match envLookupSort(name, env) { case Some(si) -> si; case None -> sortInfoNoRange(SInt) }
+  if not isArraySort(info.sort) {
+    return unsupportedWp("an assignment to an element of anything but an array variable", target.span)
+  }
+  val arr = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, info.sort) }
+  // The index and the value are evaluated before the store; an index that
+  // changes a variable, or a value that changes the array, leaves no single
+  // state to store into.
+  val idxEff = effectsOfExpr(env, et.index)
+  if idxEff.assigned.count > 0 or idxEff.outArgs.count > 0 or idxEff.jumps.count > 0 {
+    return unsupportedWp("an element index that assigns, passes `out`/`inout` or jumps", et.index.span)
+  }
+  val valueEff = effectsOfExpr(env, value)
+  if valueEff.assigned.count > 0 {
+    return unsupportedWp("an assignment inside an expression", value.span)
+  }
+  if valueEff.outArgs.contains(name) {
+    return unsupportedWp("a value that changes the array it is stored into", value.span)
+  }
+  val diags: List[Diagnostic] = newList()
+  val sides: List[Term] = newList()
+  val (idxR, idxDiags) = translateExpr(env, et.index)
+  appendTermList2(diags, idxDiags)
+  appendTermList(sides, idxR.sideConds)
+  val indexTerm = if sortEq(sortOf(idxR.term), SInt) {
+    idxR.term
+  } else {
+    diags.add(untranslatableDiag("an element index that is not a signed integer", et.index.span))
+    poisonTerm(idxR.term)
+  }
+  // `0 <= i < a.length`, the write's own bounds check.
+  val inRange = termList2(
+    TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = 0i64), sort = SInt), indexTerm)),
+    TBuiltin(op = BOpLt, args = termList2(indexTerm, lengthTerm(arr)))
+  )
+  appendTermList(sides, afterFacts(idxR.assumed, termList1(mkAnd(inRange))))
+  val (rhsR, rhsDiags) = translateExpr(env, value)
+  appendTermList2(diags, rhsDiags)
+  appendTermList(sides, rhsR.sideConds)
+  val elemInfo = elementSortInfo(info)
+  val existing = TBuiltin(op = BOpSliceIndex, args = termList2(arr, indexTerm))
+  val rawCombined = assignedValue(env, existing, rhsR.term, op, target, sp, sides, diags)
+  val combined = coerceTermAt(rawCombined, elemInfo.sort, value.span, diags)
+  match rangeObligationsForTerm(combined, elemInfo) {
+    case Ok(obligations) -> appendTermList(sides, afterFacts(rhsR.assumed, obligations))
+    case Err(reason) -> diags.add(untranslatableDiag("the range of an element of `" + name + "`: " + reason, sp))
+  }
+  val after = havocOutArgs(env, value)
+  val stored = TBuiltin(op = BOpSliceStore, args = termList3(arr, indexTerm, combined))
+  val env2 = envBindTerm(name, stored, info, after.env)
+  val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+  val sg: List[SideGoal] = newList()
+  if termIsPoisoned(idxR.term) or termIsPoisoned(rhsR.term) {
+    sg.add(SideGoal(term = poisonTerm(falseT()), kind = GKAssertion, span = target.span))
+  }
+  for side in sides {
+    sg.add(SideGoal(term = side, kind = GKAssertion, span = sp))
+  }
+  for g in inner.sideGoals {
+    sg.add(g)
+  }
+  val asList: List[Term] = newList()
+  appendTermList(asList, idxR.assumed)
+  appendTermList(asList, rhsR.assumed)
+  appendTermList(asList, after.hyps)
+  appendTermList(asList, inner.assumed)
+  val di: List[Diagnostic] = newList()
+  appendTermList2(di, diags)
   appendTermList2(di, inner.diags)
   WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
 }

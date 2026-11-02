@@ -37,6 +37,10 @@ pub record SortInfo {
   // The length of an `array[N, T]` whose `N` is an integer literal, or -1
   // for every other sort (#8157).
   pub fixedLen: Int = -1
+  // For an array or slice, the range and width of its element type, which
+  // every element read has and every element write must keep (#8394).
+  pub elemRange: RangeBoundKind = RBKNone
+  pub elemIntBits: Int = 0
 }
 
 pub func sortInfoNoRange(s: in Sort): SortInfo {
@@ -169,11 +173,37 @@ pub func isSequenceSort(s: in Sort): Bool {
   }
 }
 
-// The length of a sequence value, one uninterpreted function of it (#8157).
+// The length of a sequence value (#8157): an array's or slice's own length
+// (`Lyric!Seq`, #8394), a `String`'s one uninterpreted function of it.
 // Every `.count`/`.length` read and every index bound goes through it, so
 // they agree.
 pub func lengthTerm(v: in Term): Term {
-  TApp(name = "$len", args = termList1(v), retSort = SInt)
+  match sortOf(v) {
+    case SSlice(_) -> TBuiltin(op = BOpSliceLength, args = termList1(v))
+    case SArray(_) -> TBuiltin(op = BOpSliceLength, args = termList1(v))
+    case _ -> TApp(name = "$len", args = termList1(v), retSort = SInt)
+  }
+}
+
+// An array or slice sort: one whose elements the verifier models (#8394).
+pub func isElementSequenceSort(s: in Sort): Bool {
+  match s {
+    case SSlice(_) -> true
+    case SArray(_) -> true
+    case _ -> false
+  }
+}
+
+// What is known of an element of an array or slice described by `info`: its
+// sort, and the range and width of its declared type.
+pub func elementSortInfo(info: in SortInfo): SortInfo {
+  val element = match info.sort { case SSlice(e) -> e; case SArray(e) -> e; case other -> other }
+  SortInfo(sort = element, range = info.elemRange, intBits = info.elemIntBits)
+}
+
+// An array or slice whose elements are of the type `elem` describes.
+func sequenceSortInfo(sort: in Sort, elem: in SortInfo, fixedLen: in Int): SortInfo {
+  SortInfo(sort = sort, range = RBKNone, fixedLen = fixedLen, elemRange = elem.range, elemIntBits = elem.intBits)
 }
 
 // Map a TypeExpr to a SortInfo.  Falls back to an uninterpreted sort for
@@ -221,14 +251,12 @@ pub func sortOfTypeExprShadowed(t: in TypeExpr, typeParams: in List[String]): So
       sortInfoNoRange(SDatatype(name = qualifiedDatatypeName(segs), args = argSorts))
     }
     case TArray(size, elt) -> {
-      SortInfo(
-        sort = SArray(element = sortOfTypeExprShadowed(elt, typeParams).sort),
-        range = RBKNone,
-        fixedLen = literalArrayLength(size)
-      )
+      val elem = sortOfTypeExprShadowed(elt, typeParams)
+      sequenceSortInfo(SArray(element = elem.sort), elem, literalArrayLength(size))
     }
     case TSlice(elt) -> {
-      sortInfoNoRange(SSlice(element = sortOfTypeExprShadowed(elt, typeParams).sort))
+      val elem = sortOfTypeExprShadowed(elt, typeParams)
+      sequenceSortInfo(SSlice(element = elem.sort), elem, -1)
     }
     case TRefined(underlying, range) -> {
       val segs = underlying.segments

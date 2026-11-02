@@ -40,10 +40,19 @@ pub func smtRenderSort(s: in Sort): String {
         output + ")"
       }
     }
-    case SSlice(e) -> "(Array Int " + smtRenderSort(e) + ")"
-    case SArray(e) -> "(Array Int " + smtRenderSort(e) + ")"
+    case SSlice(e) -> smtSeqSort(e)
+    case SArray(e) -> smtSeqSort(e)
     case SUninterp(n) -> smtSanitize(n)
   }
+}
+
+// An array or slice is its length and its elements, the preamble's
+// `Lyric!Seq` (#8394).  The length is part of the value, not a function of
+// the elements: over an element type with one value (`Unit`) every SMT
+// array is the same array, so a length computed from it would make two
+// sequences of different lengths contradictory.
+func smtSeqSort(element: in Sort): String {
+  "(Lyric!Seq " + smtRenderSort(element) + ")"
 }
 
 // Replace every char but letters, digits, `_`, `.` and `!` with an
@@ -373,9 +382,18 @@ pub func smtRenderTerm(t: in Term): String {
       } else if (builtinEq(op, BOpNot) or builtinEq(op, BOpNeg)) and args.count == 1 {
         "(" + smtOpName(op, args) + " " + smtRenderTerm(args[0]) + ")"
       } else if builtinEq(op, BOpSliceLength) and args.count == 1 {
-        "(slice.length " + smtRenderTerm(args[0]) + ")"
+        "(Seq!len " + smtRenderTerm(args[0]) + ")"
       } else if builtinEq(op, BOpSliceIndex) and args.count == 2 {
-        "(select " + smtRenderTerm(args[0]) + " " + smtRenderTerm(args[1]) + ")"
+        "(select (Seq!elems " + smtRenderTerm(args[0]) + ") " + smtRenderTerm(args[1]) + ")"
+      } else if builtinEq(op, BOpSliceStore) and args.count == 3 {
+        // Qualified by its sort, which z3 resolves only at an instance it
+        // has seen (`collectMonadSortsInSort`).
+        val seq = smtRenderTerm(args[0])
+        "((as Seq!mk " + smtRenderSort(sortOf(args[0])) + ") (Seq!len " + seq + ") (store (Seq!elems " + seq + ") " +
+          smtRenderTerm(args[1]) +
+          " " +
+          smtRenderTerm(args[2]) +
+          "))"
       } else {
         var output = "(" + smtOpName(op, args)
         var i = 0
@@ -622,7 +640,13 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
 pub func smtRenderPreamble(): String {
   "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Lyric!Unit 0)) (((Lyric!unit))))\n" +
     smtMonadDatatypes() +
+    smtSeqDatatype() +
     smtTruncDivDefinitions()
+}
+
+// Arrays and slices (#8394): see `smtSeqSort`.
+func smtSeqDatatype(): String {
+  "(declare-datatypes ((Lyric!Seq 1)) ((par (T) ((Seq!mk (Seq!len Int) (Seq!elems (Array Int T)))))))\n"
 }
 
 // `Result[T, E]` and `Option[T]` (#8108).
@@ -1288,8 +1312,19 @@ func collectMonadSortsInSort(srt: in Sort, seen: in Map[String, Bool], outSorts:
         }
       }
     }
-    case SSlice(e) -> collectMonadSortsInSort(e, seen, outSorts)
-    case SArray(e) -> collectMonadSortsInSort(e, seen, outSorts)
+    case SSlice(e) -> collectSeqInstance(srt, e, seen, outSorts)
+    case SArray(e) -> collectSeqInstance(srt, e, seen, outSorts)
     case _ -> ()
+  }
+}
+
+// A sequence's `Lyric!Seq` instance, for its qualified constructor.  An
+// array and a slice of one element sort are the same instance.
+func collectSeqInstance(srt: in Sort, element: in Sort, seen: in Map[String, Bool], outSorts: in List[Sort]): Unit {
+  collectMonadSortsInSort(element, seen, outSorts)
+  val key = smtRenderSort(srt)
+  if not seen.containsKey(key) {
+    seen.add(key, true)
+    outSorts.add(srt)
   }
 }

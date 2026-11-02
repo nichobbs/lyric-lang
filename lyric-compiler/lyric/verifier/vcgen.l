@@ -256,7 +256,14 @@ func sortOfTypeExprDepth(
 ): SortInfo {
   val si = sortOfTypeExprDepthRaw(distincts, typeParams, te, depth)
   if distincts.containsKey(shadowedMonadKey("Result")) or distincts.containsKey(shadowedMonadKey("Option")) {
-    SortInfo(sort = unshadowMonadSort(distincts, si.sort), range = si.range, intBits = si.intBits)
+    SortInfo(
+      sort = unshadowMonadSort(distincts, si.sort),
+      range = si.range,
+      intBits = si.intBits,
+      fixedLen = si.fixedLen,
+      elemRange = si.elemRange,
+      elemIntBits = si.elemIntBits
+    )
   } else {
     si
   }
@@ -370,6 +377,16 @@ func sortOfTypeExprDepthRaw(
       } else {
         sortOfTypeExprShadowed(resolved, typeScope)
       }
+    }
+    // An element of a distinct or range type is of that type's sort, with
+    // its range, as a variable of the type is (#8394).
+    case TArray(size, elt) -> {
+      val elem = sortOfTypeExprDepth(distincts, typeScope, elt, depth + 1)
+      sequenceSortInfo(SArray(element = elem.sort), elem, literalArrayLength(size))
+    }
+    case TSlice(elt) -> {
+      val elem = sortOfTypeExprDepth(distincts, typeScope, elt, depth + 1)
+      sequenceSortInfo(SSlice(element = elem.sort), elem, -1)
     }
     case _ -> sortOfTypeExprShadowed(resolved, typeScope)
   }
