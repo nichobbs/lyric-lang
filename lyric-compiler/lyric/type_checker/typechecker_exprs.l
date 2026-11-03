@@ -20202,7 +20202,9 @@ func receiverFitsSig(tbl: in SymbolTable, c: in ResolvedSignature, recv: in Type
 }
 
 // `instantiateSigForArgs` for argument types already in the order of `sig`'s
-// parameters; a parameter beyond them binds nothing.
+// parameters; a parameter beyond them binds nothing (it is padded with
+// `TyError`, which `inferGenericArgsForSig` treats as a hole, never as a
+// binding: an unsupplied parameter must stay open).
 func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): ResolvedSignature {
   if sig.generics.count == 0 {
     return sig

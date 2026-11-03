@@ -263,7 +263,7 @@ second error), but it can only be constructed with a recorded diagnostic.
 
 Generic calls solve their type arguments from argument types and the
 expected type. An unsolved inference variable at the end of solving is
-**T0222** (`cannot infer type argument T of f; write f[...]`), never a
+**T0224** (`cannot infer type argument T of f; write f[...]`), never a
 default. This replaces the monomorphizer's defaulting of unbound parameters
 to `Object` (`mono.l:3508`), which produced `View[Object]` (afe3b73).
 
@@ -780,9 +780,9 @@ bare-name resolution) read each file's own or receive resolved symbols
 
 - **3a** the I0001 gate (moved from phase 1, D280); `Lyric.Tir` types, `Lyric.Tir.Verify`, `NodeId`s, the checker's
   per-node tables and the TIR builder (§6.3); type rules of §5 (`TyParam`,
-  `TyInfer`, T0222, real builtin signatures, the §5.4 rules).
+  `TyInfer`, T0224, real builtin signatures, the §5.4 rules).
 
-  Status: the `TyParam(name, owner)` / `TyInfer(id)` split is in the checker's `Type` (D329); `TyParam` is rigid in `typeEquiv` and a call's arguments are checked against the signature instantiated from the call (D331; `TyInfer` and `TyError` are still wildcards, `owner` still empty), so the T0222, `TyError`-with-diagnostic, builtin-signature and I0001 steps are open.
+  Status: the `TyParam(name, owner)` / `TyInfer(id)` split is in the checker's `Type` (D329); `TyParam` is rigid in `typeEquiv` and a call's arguments are checked against the signature instantiated from the call (D331; `TyInfer` and `TyError` are still wildcards, `owner` still empty), so the T0224, `TyError`-with-diagnostic, builtin-signature and I0001 steps are open.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 - **3c** TIR passes: contract elaboration (declaration step only; caller
@@ -832,12 +832,12 @@ clause on MSIL, JVM and native.
 
 | Code | Meaning |
 |---|---|
-| T0210 | a selective import names a declaration the package does not declare (shipped in phase 1; the "cannot infer" meaning formerly written here is T0222) |
+| T0210 | a selective import names a declaration the package does not declare (shipped in phase 1; the "cannot infer" meaning formerly written here is T0224; T0222 is the bare-enum-case ambiguity of D312) |
 | T0211 | a dependency's interface names a declaration that cannot be resolved (corrupt or missing dependency) |
 | T0212 | a `pub` or `internal` signature names a less-visible type |
 | T0213 | a carried body, default or contract references a declaration that is neither public nor a hidden export |
 | W0033 | retired (D311): a name reached only through a whole import of a package that is not re-exported, the warning mode of §4.3's D141 change; such a name is now T0020 |
-| T0222 | cannot infer a type argument; write it explicitly |
+| T0224 | cannot infer a type argument; write it explicitly |
 | T0219 | a name a file sees only through a sibling file's import (§4.1; the warning `W0032` until D300) |
 | I0001 | internal: a `TyError` with no diagnostic reached the gate |
 | I0002 | internal: the TIR builder found a node the checker did not record |

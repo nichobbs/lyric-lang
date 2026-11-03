@@ -1,5 +1,8 @@
 # D329 - `TyVar` splits into `TyParam` and `TyInfer`; the "cannot infer" code is T0222 (docs/70 phase 3a, #8613)
 
+**Amended by D331:** the code in item 4 is **T0224**, not T0222; D312 had already
+taken T0222 (bare enum-case ambiguity).
+
 **Status:** step 1 shipped (the types and the rename, no behaviour change).
 Steps 2 to 5 of the §5 type rules (rigid parameters, the unsolved-variable
 diagnostic, `TyError` with a diagnostic, builtin signatures, the I0001 gate)

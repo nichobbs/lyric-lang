@@ -29,9 +29,15 @@ leniency let a generic value flow wherever a concrete type was wanted.
    `List[JObject]`. They now fill a `java.util.ArrayList` through the extern
    boundary, which takes any value (null included) and still yields a real
    `Object[]`.
-4. `owner` is still `""` at every construction, so two nested declarations
+4. **Correction to D329 item 4.** The "cannot infer a type argument"
+   diagnostic is **T0224**. D329 named T0222, which D312 had already made the
+   bare enum-case ambiguity (docs/01 §9.2, live on MSIL, JVM and native); the
+   check missed it because it searched only `lyric-compiler/lyric/`. T0210
+   stays the selective-import error, T0223 belongs to the package-interface
+   work, and docs/70 §5.2, §13 and §14 now say T0224.
+5. `owner` is still `""` at every construction, so two nested declarations
    that each bind a `T` compare equal. Threading the binder through
-   `GenericContext` is the next change; it can only make more programs
+   `GenericContext` is tracked in #8747; it can only make more programs
    distinct, never fewer.
 
 ## Consequences
