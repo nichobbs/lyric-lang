@@ -7,6 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
+import Lyric.Resolve.{UseType}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public entry point.
@@ -977,6 +978,10 @@ func resolveTypePath(
   // silently here just as it did for the expression-position case.
   if checkQualifiedTypePackageRef(tbl, ownerSegs, last, span, diag) {
     return TyError
+  }
+  match symTableDepPath(tbl, path.segments, UseType) {
+    case Some(sym) -> if symbolIsType(sym) { return symbolToType(tbl, ctx, diag, sym, args, span) }
+    case None -> ()
   }
   val defaultPick = symTableTryFindOne(tbl, last)
   val defaultPickMatchesOwner = match defaultPick {

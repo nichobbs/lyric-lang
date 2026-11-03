@@ -4,10 +4,11 @@ package Lyric.TypeChecker
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, resolvePath, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -1432,7 +1433,12 @@ func packagelessSymbols(tbl: in SymbolTable, name: in String): List[Symbol] {
 
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
   match resolverFileOrder(tbl) {
-    case None -> tryFindOneCore(tbl, name)
+    case None -> {
+      match dependencyLookup(tbl, name) {
+        case Some(found) -> found
+        case None -> newestSymbolNamed(tbl, name)
+      }
+    }
     case Some(order) -> {
       for fid in order {
         match resolverPickIn(tbl, fid, name) {
@@ -1446,6 +1452,78 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
         Some(value = bare[bare.count - 1])
       } else {
         None
+      }
+    }
+  }
+}
+
+// A dependency's lookup in the scope its own imports
+// make, with the package-less fallback of the checked package's lookup.
+func dependencyLookup(tbl: in SymbolTable, name: in String): Option[Option[Symbol]] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  val ctx = tbl.resolveCtx[0]
+  match mapGet(ctx.depScopes, symTableScopePkg(tbl)) {
+    case None -> None
+    case Some(fsc) -> {
+      val found: Option[Symbol] = match resolveBare(ctx.tbl, fsc, name, UseValue) {
+        case RSymbol(id) -> symbolOfDefIdNamed(tbl, id, name)
+        case ROverloads(ids) -> {
+          var r: Option[Symbol] = None
+          var i = ids.count - 1
+          while i >= 0 and not isSome(r) {
+            r = symbolOfDefIdNamed(tbl, ids[i], name)
+            i = i - 1
+          }
+          r
+        }
+        case RUnresolved(code, _) -> {
+          if code == "T0097" {
+            match hiddenDecl(ctx.tbl, fsc, name, UseValue) {
+              case Some(d) -> symbolOfDefIdNamed(tbl, d.id, name)
+              case None -> None
+            }
+          } else {
+            None
+          }
+        }
+        case _ -> None
+      }
+      match found {
+        case Some(_) -> Some(value = found)
+        case None -> {
+          val bare = packagelessSymbols(tbl, name)
+          if bare.count > 0 {
+            Some(value = Some(value = bare[bare.count - 1]))
+          } else {
+            Some(value = None)
+          }
+        }
+      }
+    }
+  }
+}
+
+// A dotted path written in a dependency's signature, resolved in the scope its
+// own imports make (an alias, the full path of a package it imports, or its
+// own package).  `None` outside a dependency's scope or when nothing matches.
+pub func symTableDepPath(tbl: in SymbolTable, segs: in List[String], nameUse: in NameUse): Option[Symbol] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  val ctx = tbl.resolveCtx[0]
+  match mapGet(ctx.depScopes, symTableScopePkg(tbl)) {
+    case None -> None
+    case Some(fsc) -> {
+      val pr = resolvePath(ctx.tbl, fsc, segs, nameUse)
+      if pr.consumed != segs.count {
+        return None
+      }
+      match pr.res {
+        case RSymbol(id) -> symbolOfDefIdNamed(tbl, id, segs[segs.count - 1])
+        case ROverloads(ids) -> symbolOfDefIdNamed(tbl, ids[ids.count - 1], segs[segs.count - 1])
+        case _ -> None
       }
     }
   }
@@ -1628,83 +1706,26 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
   }
 }
 
-func tryFindOneCore(tbl: in SymbolTable, name: in String): Option[Symbol] {
+// The symbol named `name` when no scope judges the lookup (a synthesised
+// contract surface, or no package being checked): the checked package's own
+// first, else the newest registration.
+func newestSymbolNamed(tbl: in SymbolTable, name: in String): Option[Symbol] {
   val curPkg = symTableScopePkg(tbl)
-  val hasScope = curPkg.length > 0
-  val hasImports = tbl.scopeImports.count > 0
-  var best2: Option[Symbol] = None
-  var best2b: Option[Symbol] = None
-  var has2b = false
-  val reach: Map[String, Bool] = newMap()
-  var best3: Option[Symbol] = None
+  var newest: Option[Symbol] = None
   var i = tbl.symbols.count - 1
   while i >= 0 {
     val s = tbl.symbols[i]
     if s.name == name {
-      if hasScope and s.originPackage == curPkg {
+      if curPkg.length > 0 and s.originPackage == curPkg {
         return Some(value = s)
       }
-      if hasImports and symTableScopeAllows(tbl, s.originPackage) {
-        match best2 {
-          case None -> {
-            best2 = Some(value = s)
-          }
-          case Some(_) -> {
-          }
-        }
-      }
-      // An imported package's signature scope also sees what the packages
-      // it imports declare (the kernel re-export idiom: `Std.Uuid` imports
-      // the `Uuid` type from its host package), ahead of an unrelated
-      // same-named declaration of whichever package is being checked
-      // (#7372).  The checked package's own bare lookups go through the
-      // resolver instead.
-      if hasImports and hasScope and not has2b and reachableOnce(tbl, reach, s.originPackage) {
-        best2b = Some(value = s)
-        has2b = true
-      }
-      match best3 {
-        case None -> {
-          best3 = Some(value = s)
-        }
-        case Some(_) -> {
-        }
+      if not isSome(newest) {
+        newest = Some(value = s)
       }
     }
     i = i - 1
   }
-  match best2 {
-    case Some(_) -> best2
-    case None -> match best2b { case Some(_) -> best2b; case None -> best3 }
-  }
-}
-
-// True when `pkg` is imported, at any depth, by a package the current scope
-// imports.  The registered import lists record only a package's own imports,
-// so the walk follows them with a visited set.  `reach` holds the set once
-// built, for one `symTableTryFindOne` call; it is empty until the first
-// candidate needs it.
-func reachableOnce(tbl: in SymbolTable, reach: in Map[String, Bool], pkg: in String): Bool {
-  if pkg.length == 0 {
-    return false
-  }
-  if reach.count == 0 {
-    val pending: List[String] = newList()
-    for imp in tbl.scopeImports {
-      pending.add(imp)
-    }
-    while pending.count > 0 {
-      val cur = pending[pending.count - 1]
-      pending.removeAt(pending.count - 1)
-      if not reach.containsKey(cur) {
-        reach.add(cur, true)
-        for dep in symTablePackageImportsOf(tbl, cur) {
-          pending.add(dep)
-        }
-      }
-    }
-  }
-  reach.containsKey(pkg)
+  newest
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

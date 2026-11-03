@@ -14289,3 +14289,38 @@ test "an unchecked surface reports no String method (#7204)" {
   assertFalse(hasDiagCode(checkForSurface(src, SMSUnchecked), "T0113"), "no target, no report")
   assertFalse(hasDiagCode(parseCheck(src), "T0113"), "the target-less entry points keep the old leniency")
 }
+
+func depPackage(src: in String): ImportedPackage {
+  val p = parse(src)
+  ImportedPackage(
+    name = modulePathJoin(p.file.packageDecl.path.segments),
+    items = p.file.items,
+    imports = collectImportNames(p.file.imports),
+    wholeImports = collectWholeImportNames(p.file.imports),
+    importDecls = p.file.imports
+  )
+}
+
+// docs/70 phase 2c (D322): a dependency's signatures resolve in the scope its
+// own imports make, so a name written through its import alias binds to the
+// package the alias names.
+test "a dependency's aliased import qualifies its signature types (D322)" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(depPackage("package Host\npub record Row { v: Int }\n"))
+  packages.add(depPackage("package Dep\nimport Host as H\npub func f(r: in H.Row): Int = r.v\n"))
+  val src = "package App\nimport Host\nimport Dep\nfunc g(r: in Row): Int = f(r)\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertFalse(hasDiagCode(cr, "T0211"), "the dependency surface resolves through its alias")
+  assertFalse(hasDiagCode(cr, "T0014"), "no unknown qualified type")
+}
+
+// A name a dependency uses bare must come from its own imports: a package it
+// does not import cannot supply it, even when that package is loaded.
+test "a dependency's bare name needs its own import (D322)" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(depPackage("package Host\npub record Row { v: Int }\n"))
+  packages.add(depPackage("package Dep\npub func f(r: in Row): Int = r.v\n"))
+  val src = "package App\nimport Host\nimport Dep\nfunc g(r: in Row): Int = f(r)\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertTrue(hasDiagCode(cr, "T0211"), "Dep never imports Host, so its signature does not resolve")
+}

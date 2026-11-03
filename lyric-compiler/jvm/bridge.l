@@ -331,6 +331,7 @@ pub func compileToJar(
         items = pkgItems,
         imports = collectImportNames(stdPrInv.imports),
         wholeImports = collectWholeImportNames(stdPrInv.imports),
+        importDecls = stdPrInv.imports,
         reexports = collectReexportNames(stdPrInv.imports)
       )
     )
@@ -3034,6 +3035,7 @@ func jvmProjectFrontEnd(
       items = userEntryItems,
       imports = collectImportNames(userFile.imports),
       wholeImports = collectWholeImportNames(userFile.imports),
+      importDecls = userFile.imports,
       reexports = collectReexportNames(userFile.imports)
     )
   )
@@ -3092,6 +3094,7 @@ func jvmProjectFrontEnd(
         items = pkgItems,
         imports = collectImportNames(prFile.imports),
         wholeImports = collectWholeImportNames(prFile.imports),
+        importDecls = prFile.imports,
         reexports = collectReexportNames(prFile.imports)
       )
     )
@@ -3189,6 +3192,7 @@ func jvmProjectFrontEnd(
           items = sItems,
           imports = collectImportNames(sf.imports),
           wholeImports = collectWholeImportNames(sf.imports),
+          importDecls = sf.imports,
           reexports = collectReexportNames(sf.imports)
         )
       )
@@ -3223,6 +3227,7 @@ func jvmProjectFrontEnd(
         items = rPkgItems,
         imports = pipeRestoredImportNames(rf, synArt.contract.imports),
         wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports),
+        selectedImports = pipeRestoredSelectedImportNames(rf, synArt.contract.selectedImports),
         reexports = pipeRestoredReexportNames(rf, synArt.contract.reexports)
       )
     )

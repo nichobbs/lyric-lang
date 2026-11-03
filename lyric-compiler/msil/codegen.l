@@ -50708,6 +50708,8 @@ pub record StdlibPkg {
   wholeImports: List[String]
   /// The packages it re-exports whole (`pub use P`, docs/01 §9.3).
   reexports: List[String] = newList()
+  /// The package's imports as declared, for its signature scope.
+  importDecls: List[ImportDecl] = newList()
   /// `<package>::<name>` for each name the package imports selectively.
   selectedImports: List[String]
   /// Private (non-`pub`) generic funcs with a body, kept separate from

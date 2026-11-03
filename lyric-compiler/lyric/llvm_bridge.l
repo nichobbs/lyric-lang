@@ -807,6 +807,7 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in Stri
         items = pkgItems,
         imports = collectImportNames(stdFile.imports),
         wholeImports = collectWholeImportNames(stdFile.imports),
+        importDecls = stdFile.imports,
         reexports = collectReexportNames(stdFile.imports)
       )
     )
@@ -2391,6 +2392,7 @@ func nativeProjectFrontEnd(
         items = pkgItems,
         imports = collectImportNames(f.imports),
         wholeImports = collectWholeImportNames(f.imports),
+        importDecls = f.imports,
         reexports = collectReexportNames(f.imports)
       )
     )

@@ -17,6 +17,9 @@ pub record DepPackage {
   name: String
   items: List[Item]
   reexports: List[String]
+  /// The package's own imports as declared: they give its signatures a scope
+  /// (docs/70 §4.3), like a file of the checked package.
+  imports: List[ImportDecl] = newList()
 }
 
 /// Everything the resolver reads for the package `pkg`.
@@ -24,6 +27,8 @@ pub record ResolverContext {
   tbl: DeclTable
   pkg: String
   scopes: List[FileScope]
+  /// A dependency's scope, by package name: what its signatures resolve in.
+  depScopes: Map[String, FileScope] = newMap()
 }
 
 func isWholeImport(imp: in ImportDecl): Bool {
@@ -107,6 +112,15 @@ pub func buildResolverContext(
     }
   }
   registerItems(tbl, pkg, file.items)
+  val depScopes: Map[String, FileScope] = newMap()
+  for d in deps {
+    if d.name != pkg {
+      if depScopes.containsKey(d.name) {
+        depScopes.remove(d.name)
+      }
+      depScopes.add(d.name, buildFileScope(tbl, d.name, 0, "", d.imports))
+    }
+  }
   val scopes: List[FileScope] = newList()
   if file.files.count == 0 {
     scopes.add(buildFileScope(tbl, pkg, 0, "", file.imports))
@@ -141,7 +155,7 @@ pub func buildResolverContext(
       i = i + 1
     }
   }
-  ResolverContext(tbl = tbl, pkg = pkg, scopes = scopes)
+  ResolverContext(tbl = tbl, pkg = pkg, scopes = scopes, depScopes = depScopes)
 }
 
 /// The fsc of the file `fileId` of the package; the first file's when the
