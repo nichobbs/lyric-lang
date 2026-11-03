@@ -370,6 +370,27 @@ test "a bare call binds to the checker's callee, not a same-named private functi
   assertEqual(Str.trim(result.stdout), "2\n101", "site_callee: pick is the pub one, other reaches its own private pick")
 }
 
+// D336: a call through an import alias (`P.pick`) binds to the function the
+// checker resolved it to, the declaring package's `pub` one, though another
+// whole import declares a package-private function of the same name.
+test "an aliased package-qualified call binds to the checker's callee (D336)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XQual.Priv", "package XQual.Priv\n" + "\n" + "func pick(x: in Int): Int { x + 100 }\n" + "\n" + "pub func other(x: in Int): Int { pick(x) }\n"))
+  packages.add(mkPkg("XQual.Pub", "package XQual.Pub\n" + "\n" + "pub func pick(x: in Int): Int { x + 1 }\n"))
+  packages.add(
+    mkPkg(
+      "XQual.App",
+      "package XQual.App\n" + "\n" + "import XQual.Priv\n" + "import XQual.Pub as P\n" + "\n" + "func main(): Unit {\n" +
+        "  println(P.pick(1))\n" +
+        "  println(other(1))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xqual", packages, "XQual")
+  assertEqualInt(result.exitCode, 0, "aliased_site_callee: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2\n101", "aliased_site_callee: P.pick is the pub one, other reaches its own private pick")
+}
+
 // Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
 // direct-import tie-break tiers must key on EXACT package identity, not a
 // string prefix. `XNest.App.Inner` is a nested SUB-package of the caller
