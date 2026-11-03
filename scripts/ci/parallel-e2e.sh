@@ -39,7 +39,7 @@ for threads in 2 4; do
   LYRIC_THREADS=$threads TSAN_OPTIONS="halt_on_error=1 exitcode=66" "$work/tsan_main_bin"
 done
 
-cores="$(nproc)"
+cores="$(getconf _NPROCESSORS_ONLN)"
 if [ "$cores" -lt 2 ]; then
   echo "=== scaling: skipped on a single-core machine ==="
   exit 0

@@ -14,7 +14,7 @@ triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
 buffers, textures, samplers and the textured-quad example; D197: X11 and Wayland
 surfaces and presentation, tested under Xvfb; D317: Cocoa windows present through a Metal layer, `Gpu.createMetalSurface`, verified on Apple Silicon; Win32 surfaces shipped with G9, D219).
 G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
-in CI; macOS is not yet in CI). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`Vec3`/`Vec4`,
+in CI; on macOS the headless demo runs in the `Native platforms` workflow and Cocoa windows are exercised by D317's lane). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`Vec3`/`Vec4`,
 `Quat`, `Mat3`, `Mat4`, `Rgba8`, on all three targets), `lyric-text` (D199: FreeType and HarfBuzz
 shaping, rasterising, glyph atlas, fallback and line layout, with a golden Latin/Arabic/CJK scene;
 bidirectional reordering and UAX #14 for text areas are in D216, for `layoutText` itself #8496) and `lyric-draw` (D200: instanced
@@ -593,7 +593,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 gained its Cocoa surface in D317; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D268; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
+**Status (2026-11-02; platform lanes, D320: the graphics examples, the lyric-text and lyric-draw goldens with a pinned CJK font on macOS, and the sanitizer runs also run on macOS arm64 and Linux arm64, #8563):** G0-G6 done (G4 on Linux and macOS; G5 gained its Cocoa surface in D317; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D268; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) the compiler-hosted self-tests with AddressSanitizer (D213) and the graphics libraries (D219), meeting its exit criterion of running the G4 to G7 examples on Windows. Follow-ups: #8394, #8395, #8401, #7955, #8521.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

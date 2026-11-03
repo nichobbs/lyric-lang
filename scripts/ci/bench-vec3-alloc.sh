@@ -33,7 +33,11 @@ if ! "$lyric_bin" bench --target native "$src" --runs 5 --warmup 1 >"$work/bench
 fi
 cat "$work/bench.log"
 
-mapfile -t benches < <(grep -A1 '^@bench$' "$src" | sed -n 's/^pub func \([A-Za-z0-9_]*\)(.*/\1/p')
+# A read loop, not mapfile: macOS's /bin/bash is 3.2.
+benches=()
+while IFS= read -r name; do
+  benches+=("$name")
+done < <(grep -A1 '^@bench$' "$src" | sed -n 's/^pub func \([A-Za-z0-9_]*\)(.*/\1/p')
 if [[ ${#benches[@]} -eq 0 ]]; then
   echo "::error::no @bench functions found in $src" >&2
   exit 1

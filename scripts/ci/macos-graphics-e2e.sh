@@ -10,8 +10,13 @@
 #
 # Fonts: the goldens were drawn with DejaVu Sans, so the script needs it
 # (`brew install --cask font-dejavu`, found under ~/Library/Fonts) and fails
-# without it.  The lyric-text shape and lyric-draw scene examples also need
-# WenQuanYi Zen Hei (CJK), which Homebrew does not ship, so they stay on Linux.
+# without it.  The lyric-text shape and lyric-draw scene goldens also use
+# WenQuanYi Zen Hei (CJK), which Homebrew does not ship.  The script fetches the
+# very file Linux uses: the Debian fonts-wqy-zenhei 0.9.45-8 package from
+# snapshot.debian.org (an immutable URL), checked against a pinned SHA-256 of the
+# package and of the extracted wqy-zenhei.ttc, which is byte-identical to the one
+# Ubuntu 24.04's package of the same version installs.  Either digest mismatching
+# fails the run, so the goldens can never be compared against a different font.
 #
 # Usage: LYRIC_BIN=<lyric> bash scripts/ci/macos-graphics-e2e.sh probe|run
 # ---------------------------------------------------------------------------
@@ -53,11 +58,41 @@ if [ "$mode" = probe ]; then
   exit 0
 fi
 
+# Echoes the path of the pinned WenQuanYi Zen Hei collection, downloading it once.
+WQY_DEB_URL="https://snapshot.debian.org/archive/debian/20260101T000000Z/pool/main/f/fonts-wqy-zenhei/fonts-wqy-zenhei_0.9.45-8_all.deb"
+WQY_DEB_SHA256="cfed2c29164ff2f133e40ed2046610b172b8618d174840936ac4ec9b6fd668e7"
+WQY_TTC_SHA256="79c18ebe7b811951e8311bad7103ebeae8c337ed9988ea69e8a78a66cfe029b9"
+fetch_cjk_font() {
+  local dir="$work/wqy" ttc="$work/wqy/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+  mkdir -p "$dir"
+  curl -fsSL --retry 3 -o "$dir/wqy.deb" "$WQY_DEB_URL" >&2
+  echo "$WQY_DEB_SHA256  $dir/wqy.deb" | shasum -a 256 -c - >&2
+  (cd "$dir" && ar x wqy.deb && tar -xf data.tar.xz) >&2
+  echo "$WQY_TTC_SHA256  $ttc" | shasum -a 256 -c - >&2
+  echo "$ttc"
+}
+
 latin="${LYRIC_TEXT_FONT_LATIN:-$HOME/Library/Fonts/DejaVuSans.ttf}"
 bold="${LYRIC_UI_FONT_BOLD:-$HOME/Library/Fonts/DejaVuSans-Bold.ttf}"
 [ -f "$latin" ] || { echo "::error::DejaVu Sans is not installed ($latin)"; exit 1; }
 [ -f "$bold" ] || { echo "::error::DejaVu Sans Bold is not installed ($bold)"; exit 1; }
 export LYRIC_TEXT_FONT_LATIN="$latin" LYRIC_UI_FONT="$latin" LYRIC_UI_FONT_BOLD="$bold"
+export LYRIC_TEXT_FONT_CJK="${LYRIC_TEXT_FONT_CJK:-$(fetch_cjk_font)}"
+
+echo "=== lyric-text: struct offsets against the installed FreeType and HarfBuzz headers ==="
+cc -fsyntax-only $(pkg-config --cflags freetype2 harfbuzz) lyric-text/native/text_layout_check.c
+
+echo "=== lyric-text shape (shaping, fallback, layout, golden scene) ==="
+shape="$(build lyric-text/examples/shape/lyric.toml shape)"
+out="$(LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm "$shape")"
+echo "$out"
+echo "$out" | grep -q "fallback + wrap ok, runs ok"
+echo "$out" | grep -q "^golden: "
+
+echo "=== lyric-draw scene on Metal (golden image, then the text-heavy frame budget) ==="
+scene="$(build lyric-draw/examples/scene/lyric.toml scene)"
+"$scene" lyric-draw/examples/scene/golden/scene-256x192.rgba
+"$scene" --stress
 
 echo "=== lyric-gpu triangle and quad on Metal ==="
 "$(build lyric-gpu/examples/triangle/lyric.toml triangle)" lyric-gpu/examples/triangle/golden/triangle-64.rgba
