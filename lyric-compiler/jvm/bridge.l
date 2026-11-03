@@ -14,6 +14,7 @@ import Std.Path as Path
 import Lyric.BuildDefines as BD
 import Lyric.ContractMeta as Meta
 import Lyric.AnnotationMetaEmit as AnnotationMeta
+import Lyric.IfaceBuild as IfaceBuild
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -687,6 +688,8 @@ func runMiddleEnd(
   quietWarnings: in Bool = false,
   sink: in DiagSink = printDiagnostics(),
   externIter: in List[ExternIterResolver] = newList(),
+  ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
+  buildInterface: in Bool = false,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   val opts = jvmMiddleEndOptions(
@@ -700,7 +703,9 @@ func runMiddleEnd(
     contractsEnabled,
     quietWarnings,
     sink,
-    externIter
+    externIter,
+    ifaceOut,
+    buildInterface
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
@@ -724,6 +729,8 @@ func jvmMiddleEndOptions(
   quietWarnings: in Bool,
   sink: in DiagSink = printDiagnostics(),
   externIter: in List[ExternIterResolver] = newList(),
+  ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
+  buildInterface: in Bool = false,
 ): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
   MiddleEndOptions(
@@ -748,8 +755,30 @@ func jvmMiddleEndOptions(
     ioForbiddenReason = ioForbiddenReason,
     quietWarnings = quietWarnings,
     stringSurface = jvmStringSurface(),
-    sink = sink
+    sink = sink,
+    buildInterface = buildInterface,
+    interfaceTargets = jvmInterfaceTarget(),
+    interfaceOut = ifaceOut
   )
+}
+
+func jvmInterfaceTarget(): List[String] {
+  val ts: List[String] = newList()
+  ts.add("jvm")
+  ts
+}
+
+// The package interface (docs/70 §9.6) as a `META-INF/lyric/<Pkg>.lyri` JAR
+// entry, or nothing when the build produced none (an executable).
+func interfaceZipBytes(outcomes: in List[IfaceBuild.IfaceOutcome]): Option[List[Byte]] {
+  match IfaceBuild.builtBytesOf(outcomes) {
+    case Some(bytes) -> Some(value = utf8SliceToByteList(bytes))
+    case None -> None
+  }
+}
+
+func interfaceZipName(pkgName: in String): String {
+  "META-INF/lyric/" + pkgName + ".lyri"
 }
 
 // The `String` method surface of `--target jvm` (#7204): the lowering's own
@@ -4177,7 +4206,8 @@ pub func compileProjectToJarBundledWithRestored(
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
   val userCallArities: Map[String, Int] = newMap()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx)) {
+  val userIface: List[IfaceBuild.IfaceOutcome] = newList()
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx), userIface, true) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4266,6 +4296,13 @@ pub func compileProjectToJarBundledWithRestored(
       val (fAnnoName, fAnnoData) = annotationMetaZipEntry(userFile, dottedPath(f.packageDecl.path))
       contractEntryNames.add(fAnnoName)
       contractEntryDatas.add(fAnnoData)
+      match interfaceZipBytes(userIface) {
+        case Some(ifData) -> {
+          contractEntryNames.add(interfaceZipName(dottedPath(f.packageDecl.path)))
+          contractEntryDatas.add(ifData)
+        }
+        case None -> ()
+      }
       val userFileName = match mapGet(pkgPathByName, dottedPath(f.packageDecl.path)) { case Some(p) -> p; case None -> "" }
       codegenPackageInto(
         f,
@@ -4340,11 +4377,12 @@ pub func compileProjectToJarBundledWithRestored(
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
       val siblingCallArities: Map[String, Int] = newMap()
+      val siblingIface: List[IfaceBuild.IfaceOutcome] = newList()
       // Stdlib contracts are always enabled (#7748);
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx)) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx), siblingIface, isProjectPkg) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -4412,6 +4450,13 @@ pub func compileProjectToJarBundledWithRestored(
             val (ffAnnoName, ffAnnoData) = annotationMetaZipEntry(f, pkgName)
             contractEntryNames.add(ffAnnoName)
             contractEntryDatas.add(ffAnnoData)
+            match interfaceZipBytes(siblingIface) {
+              case Some(ifData) -> {
+                contractEntryNames.add(interfaceZipName(pkgName))
+                contractEntryDatas.add(ifData)
+              }
+              case None -> ()
+            }
           }
           val bundledFileName = match mapGet(pkgPathByName, pkgName) { case Some(p) -> p; case None -> "" }
           codegenPackageInto(

@@ -456,11 +456,11 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   ran="$ran multi-file-package-merge-e2e"
 fi
 # docs/70 §9.6, D327: a library build embeds its package interface and
-# `lyric interface dump` reads it back.
+# `lyric interface dump` reads it back, both targets (Java 21, as above).
 idx=$((idx + 1))
 if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/interface-embed-e2e.sh ==="
-  LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh dotnet
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh dotnet jvm
   ran="$ran interface-embed-e2e"
 fi
 # #8279: an indexed callee beside `?` and `await` named from another package

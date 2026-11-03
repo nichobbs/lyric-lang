@@ -140,7 +140,7 @@ LYRIC
   fi
   if (cd "$edir" && "$lyric_bin" interface dump "$(artifact "$target")") > "$work/log" 2>&1; then
     echo "FAIL [$target] an executable embeds an interface"; fail=1
-  elif grep -q "no Lyric.Interface" "$work/log"; then
+  elif grep -q "carries no" "$work/log"; then
     echo "PASS [$target] an executable embeds no interface"
   else
     echo "FAIL [$target] unexpected dump output for an executable"; cat "$work/log"; fail=1
