@@ -1,6 +1,6 @@
 # A bare union case must be visible to the file, docs/70 phase 2c step 9 (#8722)
 
-D325.
+D328.
 
 - `nameIsSharedUnionCase` counts the cases the file can reach
   (`symTableTryFindAllVisible`): a bare case through an alias-only import is

@@ -1,4 +1,4 @@
-# D325 - A bare union case must be visible to the file; a restored dependency's imports keep their form (docs/70 phase 2c, #8722)
+# D328 - A bare union case must be visible to the file; a restored dependency's imports keep their form (docs/70 phase 2c, #8722)
 
 **Status:** shipped. Step 9 of docs/70 §13 phase 2c, after D322.
 
