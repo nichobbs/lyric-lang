@@ -20173,17 +20173,47 @@ func reportGenericBindingConflicts(
 
 // Check each argument against the parameter `srcIdx` pairs it with
 // (`srcIdx[k]` is the argument for parameter k, or -1).
+// `sig` with its type parameters replaced by what the call's arguments bind
+// them to; a parameter no argument fixes is an inference variable (`TyInfer`),
+// the hole it always was, now named.  A signature without type parameters is
+// returned as is.  `srcIdx[k]` is the argument for parameter k, or -1.
+func instantiateSigForArgs(
+  sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]
+): ResolvedSignature {
+  if sig.generics.count == 0 {
+    return sig
+  }
+  val paramTys: List[Type] = newList()
+  val ordered: List[Type] = newList()
+  var k = 0
+  while k < sig.params.count {
+    paramTys.add(sig.params[k].ty)
+    val ai = if k < srcIdx.count { srcIdx[k] } else { -1 }
+    ordered.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    k = k + 1
+  }
+  val solved = inferGenericArgsForSig(sig, paramTys, ordered)
+  val targs: List[Type] = newList()
+  var g = 0
+  while g < solved.count {
+    targs.add(if typeIsHole(solved[g]) { TyInfer(id = g) } else { solved[g] })
+    g = g + 1
+  }
+  instantiateSigAt(sig, targs)
+}
+
 func checkPairedCallArgs(
   sc: in Scope,
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  sig: in ResolvedSignature,
+  rawSig: in ResolvedSignature,
   args: in List[CallArg],
   argTypes: in List[Type],
   srcIdx: in List[Int],
   span: in Span,
 ): Unit {
+  val sig = instantiateSigForArgs(rawSig, argTypes, srcIdx)
   var k = 0
   while k < sig.params.count {
     val p = sig.params[k]
