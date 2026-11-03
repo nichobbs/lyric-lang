@@ -610,7 +610,7 @@ test "a generic function inside a generic call chain keeps its own parameter" {
 }
 
 test "a method with its own parameter on a generic record" {
-  val src = "package P\nrecord Box[T] {\n  value: T\n  func map[U](f: in (T) -> U): Box[U] {\n    Box(value = f(self.value))\n  }\n}\nfunc g(b: in Box[Int]): Box[String] {\n  b.map((n: Int) -> \"x\")\n}\n"
+  val src = "package P\nrecord Box[T] {\n  value: T\n  func map[U](f: in (T) -> U): Box[U] {\n    Box(value = f(self.value))\n  }\n}\nfunc g(b: in Box[Int]): Box[String] {\n  b.map({ n -> \"x\" })\n}\n"
   assertEqualInt(errorCount(parseCheck(src)), 0, "owner: Box[T].map[U] instantiates T and U separately")
 }
 

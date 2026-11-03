@@ -3504,7 +3504,16 @@ func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.name, sig.name, decl.generics, sig.generics, sig.params, sig.ret)
+      case IMSig(sig) -> checkMemberSigTypes(
+        tbl,
+        diag,
+        decl.name,
+        sig.name,
+        decl.generics,
+        sig.generics,
+        sig.params,
+        sig.ret
+      )
       case IMFunc(fn) -> {
         checkMemberSigTypes(tbl, diag, decl.name, fn.name, decl.generics, fn.generics, fn.params, fn.ret)
         val shadowed: List[String] = newList()
@@ -3587,7 +3596,21 @@ func checkMethodContracts(
   if contracts.count == 0 {
     return
   }
-  val rsig = resolveMethodSigParts(tbl, "", ownerKey, fnName, ownerGenerics, ownGenerics, params, ret, isAsync, false, false, false, span)
+  val rsig = resolveMethodSigParts(
+    tbl,
+    "",
+    ownerKey,
+    fnName,
+    ownerGenerics,
+    ownGenerics,
+    params,
+    ret,
+    isAsync,
+    false,
+    false,
+    false,
+    span
+  )
   val combined: List[String] = newList()
   for g in ownerGenerics {
     combined.add(g)
@@ -4820,7 +4843,11 @@ func implTargetFieldLocals(tbl: in SymbolTable, selfTy: in Type): List[LocalBind
       // type's own locked members, so it sees the fields exactly as an
       // `entry`/`func` body does.
       case None -> match findProtectedDeclByTypeId(tbl, tid) {
-        case Some(pd) -> protectedFieldLocals(tbl, declGenericContext(pd.generics, pd.name), pd)
+        case Some(pd) -> protectedFieldLocals(
+          tbl,
+          declGenericContext(pd.generics, pd.name),
+          pd
+        )
         case None -> none
       }
       case Some(rd) -> {
