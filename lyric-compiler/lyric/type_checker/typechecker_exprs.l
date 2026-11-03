@@ -20177,9 +20177,7 @@ func reportGenericBindingConflicts(
 // them to; a parameter no argument fixes is an inference variable (`TyInfer`),
 // the hole it always was, now named.  A signature without type parameters is
 // returned as is.  `srcIdx[k]` is the argument for parameter k, or -1.
-func instantiateSigForArgs(
-  sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]
-): ResolvedSignature {
+func instantiateSigForArgs(sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]): ResolvedSignature {
   if sig.generics.count == 0 {
     return sig
   }

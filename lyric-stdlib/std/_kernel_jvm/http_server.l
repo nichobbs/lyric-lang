@@ -183,6 +183,11 @@ extern type JReflectArray = "java.lang.reflect.Array"
 
 extern type JObject = "java.lang.Object"
 
+// A generic argument is not a `JObject` on its own; an `ArrayList` takes
+// any value (null included) through the extern boundary and still yields a
+// genuine `Object[]` for reflective calls.
+extern type JArrayList = "java.util.ArrayList"
+
 extern type JCharacter = "java.lang.Character"
 
 /// Failure returned by `startListenerTls`. Currently only `NotSupportedOnTarget`
@@ -245,7 +250,7 @@ func makeTypedArray1[T](elemClassName: in String, v: in T): JObject {
 func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in C): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 2)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   argsList.add(arg1)
   m.invoke(target, argsList.toArray())
@@ -254,7 +259,7 @@ func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in 
 func invoke3[A, B, C, D](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 3)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   argsList.add(arg1)
   argsList.add(arg2)
@@ -266,7 +271,7 @@ func invoke4[A, B, C, D, E](
 ): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 4)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   argsList.add(arg1)
   argsList.add(arg2)

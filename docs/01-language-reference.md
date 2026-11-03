@@ -586,6 +586,8 @@ record Box[T] {
 
 (The legacy `generic[T] func identity(x: in T): T = x` form parses for back-compat. Prefer the bracket form in new code; mixed-mode `: in T` is also still legal but redundant.)
 
+Inside a generic declaration a type parameter is a rigid type: `T` is equal only to itself, never to `Int`, `String` or another declaration's parameter, so `val n: Int = x` with `x: T` is a type error (**T0060**), and so is passing `x` to a parameter of a concrete type (**T0043**). At a call the callee's own parameters are replaced by what the arguments bind them to before the arguments are checked; a parameter no argument fixes stays open until the expected type or a later argument decides it. To pass a generic value across the host boundary (a `List[JObject]` or an extern parameter), hand it to an extern call, which accepts any value (D329, docs/70 section 5.1).
+
 Constraints expressed via `where`:
 
 ```

@@ -90,6 +90,11 @@ extern type JReflectArray = "java.lang.reflect.Array"
 
 extern type JObject = "java.lang.Object"
 
+// A generic argument is not a `JObject` on its own; an `ArrayList` takes
+// any value (null included) through the extern boundary and still yields a
+// genuine `Object[]` for reflective calls.
+extern type JArrayList = "java.util.ArrayList"
+
 extern type JCharacter = "java.lang.Character"
 
 // Self-signed RSA 2048 certificate, CN=test-rsa, valid 2026-07-16..2036-07-13.
@@ -213,7 +218,7 @@ func makeStringArray(values: in List[String]): JObject {
 func invoke1[A, B](target: in A, methodName: in String, arg0: in B): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 1)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   m.invoke(target, argsList.toArray())
 }
@@ -221,7 +226,7 @@ func invoke1[A, B](target: in A, methodName: in String, arg0: in B): JObject {
 func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in C): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 2)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   argsList.add(arg1)
   m.invoke(target, argsList.toArray())
@@ -230,7 +235,7 @@ func invoke2[A, B, C](target: in A, methodName: in String, arg0: in B, arg1: in 
 func invoke3[A, B, C, D](target: in A, methodName: in String, arg0: in B, arg1: in C, arg2: in D): JObject {
   val cls: JClass = target.getClass()
   val m = findMethodByNameAndArity(cls, methodName, 3)
-  val argsList: List[JObject] = newList()
+  val argsList: JArrayList = JArrayList.new()
   argsList.add(arg0)
   argsList.add(arg1)
   argsList.add(arg2)

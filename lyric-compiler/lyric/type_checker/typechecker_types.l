@@ -265,15 +265,16 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
 func typeEquivCore(a: in Type, b: in Type): Bool {
   match a {
     case TyError -> true
-    case TyParam(na, oa) -> match b { case TyParam(nb, ob) -> na == nb and oa == ob; case TyInfer(_) -> true; case TyError -> true; case _ -> false }
+    case TyParam(na, oa) -> match b {
+      case TyParam(nb, ob) -> na == nb and oa == ob
+      case TyInfer(_) -> true
+      case TyError -> true
+      case _ -> false
+    }
     case TyInfer(_) -> true
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
-    case TyLen(na) -> match b {
-      case TyLen(nb) -> na == nb
-      case TyInfer(_) -> true
-      case _ -> false
-    }
+    case TyLen(na) -> match b { case TyLen(nb) -> na == nb; case TyInfer(_) -> true; case _ -> false }
     case TyNullable(ia) -> match b { case TyNullable(ib) -> typeEquiv(ia, ib); case _ -> false }
     case TyTuple(xs) -> match b {
       case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }
