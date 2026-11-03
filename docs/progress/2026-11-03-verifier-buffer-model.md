@@ -36,7 +36,10 @@ positions past the length, which costs completeness but not soundness.
 (`a[0][1] = 5`).
 
 `for x in b` over an array or buffer, and element writes through a field or a
-nested element, still fail closed (`V0026`) and remain on #8394.
+nested element, still fail closed (`V0026`) and remain on #8394. A buffer a
+`Std.Buffer` function returns (`filled`, `fromSlice`, `grow`, `truncate`) is
+not yet a sequence term, so a proof over it fails closed (`V0033`); that is
+#8753.
 
 Tests: `verifier_self_test.l`, three buffer tests (reads, writes and copies;
 length across a loop and an `inout` argument; a user type named `buffer`).
