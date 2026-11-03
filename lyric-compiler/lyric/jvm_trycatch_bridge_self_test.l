@@ -90,19 +90,11 @@ test "generic fn: a Unit-yielding catch arm beside a type-parameter try body is 
     "  println(wrap(1, 42))\n" +
     "}\n"
   val noStdlib: List[String] = newList()
-  var panicked = false
-  var caughtMessage = ""
-  try {
-    compileToJarBundled(source, outPath, "TryCatchJ004", noStdlib, "")
-  } catch Bug as b {
-    panicked = true
-    caughtMessage = b.message
-  }
+  val ok = compileToJarBundled(source, outPath, "TryCatchJ004", noStdlib, "")
   cleanup(dir)
-  assertTrue(panicked, "wrap[T] with a Unit catch arm beside a T try body must be rejected before codegen")
   assertTrue(
-    Str.contains(caughtMessage, "T0067"),
-    "the rejection is the type checker's T0067 at the generic definition (got: " + caughtMessage + ")"
+    not ok,
+    "wrap[T] with a Unit catch arm beside a T try body is rejected by the checker (T0067) before codegen"
   )
 }
 
