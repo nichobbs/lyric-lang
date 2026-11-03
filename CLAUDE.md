@@ -884,6 +884,8 @@ need direction and have nothing else productive to do**.  Specifically:
     (no error and no inference case; `tyEq` has no wildcard), `TExpr` and its
     kinds, `Callee`, `ConvKind`, typed patterns and the declaration records,
     over `SymbolId`s from `Lyric.Symbols`. `tir_self_test.l` covers it.
+    `tir/verify/` is `Lyric.Tir.Verify` (D323): the I0003 verifier, run by
+    passes through `Lyric.Pipeline.pipeVerifyTir`; `tir_verify_self_test.l`.
   - `resolve/` — `Lyric.Resolve` (docs/70 §4.3-§4.4, D313): the declaration
     table with a DefPath for every declaration kind (`resolve_collect.l`), a
     file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
