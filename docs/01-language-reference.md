@@ -2162,14 +2162,7 @@ program is rejected at compile time (**T0067**). Diverging handlers (a body
 of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
 statement-position `try` blocks whose value is discarded (`Unit`).
 
-On `--target dotnet`, one shape of this mismatch survives past T0067 to the
-MSIL backend: a catch arm that yields `Unit` while the try body (or an
-earlier, non-diverging catch arm) already established a value-producing
-result type. The backend cannot route an absent value through the shared
-result slot, so it is rejected at codegen time as **F0025** rather than
-silently leaving the slot at its zero-initialised default (a type-checker
-gap, #2042). The JVM backend rejects the same source shape earlier, at
-check time, with **J004**.
+A shape that hid behind a type parameter (`func wrap[T](v: in T): T` whose try body yields `v` and whose catch arm yields `Unit`) reached the backends until type parameters became rigid (D331); it is now **T0067** at the generic definition like any other. The MSIL backend keeps **F0025** and the JVM backend **J004** as backstops for a mismatch the checker cannot see: a catch arm that yields `Unit` beside a value-producing try body cannot be routed through the shared result slot, so it is rejected at code generation rather than silently leaving the slot at its zero-initialised default.
 
 ### 8.3 Result and panics
 

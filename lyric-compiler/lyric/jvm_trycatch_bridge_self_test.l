@@ -16,18 +16,14 @@
 //! front so `Jvm.Bridge`'s `b.message.startsWith("error[J0")` passthrough
 //! guard (added to avoid double-wrapping, #3311) still recognises it.
 //!
-//! For a NON-generic function, T0067 (#2355/#3262) now rejects a
-//! Unit-catch-arm/value-try-body mismatch at type-check time whenever the
-//! `try` is genuinely in value position, so a source-level repro of this
-//! shape must reach for a case T0067 cannot see: a **generic** function
-//! whose try body yields the abstract type parameter and whose catch arm
-//! yields Unit.  The type checker treats the still-unbound type parameter
-//! leniently (it can unify with anything), so no T0067 fires at the
-//! generic definition; `Lyric.Mono`'s monomorphizer then specialises the
-//! function for a concrete call-site type argument (e.g. `Int`), and it is
-//! only that specialised copy the JVM codegen sees a genuine value/Unit
-//! mismatch in — confirmed against `./bin/lyric build --target jvm` while
-//! developing this fix (see the issue for the exact repro and stack trace).
+//! T0067 (#2355/#3262) rejects a Unit-catch-arm/value-try-body mismatch at
+//! type-check time whenever the `try` is genuinely in value position.  Until
+//! type parameters became rigid (D331) a **generic** function whose try body
+//! yields the abstract type parameter and whose catch arm yields Unit slipped
+//! past it (the parameter unified with anything, and only `Lyric.Mono`'s
+//! specialised copy exposed the mismatch to the JVM codegen as `error[J004]`);
+//! that shape is now T0067 at the generic definition, so the J004 backstop has
+//! no source-level repro and the first test below pins the earlier rejection.
 //!
 //! Compiling is itself the observable behaviour under test (the abort
 //! happens mid-codegen, before any bytecode could run), so — mirroring
@@ -79,7 +75,7 @@ func cleanup(dir: in String): Unit {
   }
 }
 
-test "generic fn: Unit-yielding catch arm survives type-check on the abstract type param, then aborts monomorphized codegen under error[J004] naming the owning package (#3310)" {
+test "generic fn: a Unit-yielding catch arm beside a type-parameter try body is T0067 at the definition (was J004 after specialisation, #3310)" {
   val dir = freshTempDir("unit-catch-arm")
   val outPath = Path.join(dir, "TryCatchJ004.jar")
   val source = "package TryCatchJ004.App\n" + "\n" + "func wrap[T](n: Int, v: T): T {\n" + "  val r = try {\n" +
@@ -103,17 +99,10 @@ test "generic fn: Unit-yielding catch arm survives type-check on the abstract ty
     caughtMessage = b.message
   }
   cleanup(dir)
+  assertTrue(panicked, "wrap[T] with a Unit catch arm beside a T try body must be rejected before codegen")
   assertTrue(
-    panicked,
-    "the Int-specialised copy of wrap[T] must abort codegen once T is resolved to a concrete, mismatching type"
-  )
-  assertTrue(
-    Str.contains(caughtMessage, "error[J004]: TryCatchJ004.App:"),
-    "diagnostic names the owning package (dotted) right after the code, ahead of line:col (got: " + caughtMessage + ")"
-  )
-  assertTrue(
-    Str.contains(caughtMessage, "try-catch used as an expression"),
-    "diagnostic keeps its original explanation text (got: " + caughtMessage + ")"
+    Str.contains(caughtMessage, "T0067"),
+    "the rejection is the type checker's T0067 at the generic definition (got: " + caughtMessage + ")"
   )
 }
 
