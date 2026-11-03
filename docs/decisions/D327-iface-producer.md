@@ -56,6 +56,27 @@ re-resolving names.
    table and hidden exports are 5b. A build error names each such declaration
    where it would otherwise lose type information.
 
+8. **Outcome and validation.** `buildIfaceOutcome` builds the interface, encodes
+   it, reads it back with a fresh interner and compares dumps. The result is
+   `IOBuilt` (the canonical bytes and their SHA-256), `IOUnrecordable` (the
+   reasons) or `IORoundTrip` (a producer bug, internal error `I0005`). In
+   `pipeCheckAndMono` an unrecordable library is `T0223` against the package and
+   fails the build; an executable (a file with `main`) builds and embeds no interface, since
+   nothing depends on it. `T0212`, which docs/70 §9.3 lists with the producer
+   validation, already exists.
+9. **A `pub val` without a written type** is recorded at the type the checker
+   found for it (`moduleValTypes`, which `recordModuleValTypes` fills for every
+   unannotated module `val`), the same type an importing package reads it at
+   (#7777), whatever its initialiser. Its constant value is recorded when the
+   initialiser is a plain literal.
+10. **MSIL embedding.** `Msil.Bridge` asks the middle end for the interface on
+    every single-file and project build and embeds the bytes as the
+    `Lyric.Interface.<Pkg>` manifest resource beside the contract resource, through
+    one shared resource-writing helper. `lyric interface dump` reads `.dll`s.
+    `scripts/ci/interface-embed-e2e.sh` checks it through the CLI. The census
+    (stage 2 rebuilding the stdlib and the whole compiler, and every ecosystem
+    library) found no unrecordable declaration. JVM and native embedding follow.
+
 ## Consequences
 
 - The converter file imports `Lyric.Tir` and `Lyric.TypeChecker` but not

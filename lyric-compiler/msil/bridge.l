@@ -31,6 +31,7 @@ import Lyric.WireExpand as WireExpand
 import Lyric.PluginExpand as PluginExpand
 import Lyric.AliasRewriter as Aliases
 import Lyric.Pipeline
+import Lyric.IfaceBuild as IfaceBuild
 import Msil.Lowering
 import Msil.MetadataReader as Mdr
 import Msil.Codegen
@@ -308,6 +309,7 @@ pub func compileToMsilWithVersion(
   val singleFileCallArities: Map[String, Int] = newMap()
   val singleFileTypeArgCallees: Map[String, Bool] = newMap()
   val singleFileGenericItems: List[Item] = newList()
+  val singleFileIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
   val singleFileOpts = MiddleEndOptions(
     externIterResolver = msilIterResolver(newMsilHostIterIndex(newList())),
     tcFatal = true,
@@ -326,7 +328,10 @@ pub func compileToMsilWithVersion(
     genericItemsOut = singleFileGenericItems,
     foreignValueRecordsOut = newList(),
     arraysAsLists = true,
-    stringSurface = SMSClosed
+    stringSurface = SMSClosed,
+    buildInterface = true,
+    interfaceTargets = dotnetTarget(),
+    interfaceOut = singleFileIfaceOut
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -487,6 +492,7 @@ pub func compileToMsilWithVersion(
   // annotations alongside its contract, so a runtime reader (PR 2) can
   // recover them without linking the self-hosted lexer/parser.
   embedLyricAnnotationMeta(cctx.lctx, file0, "Lyric.AnnotationMeta")
+  embedLyricInterface(cctx.lctx, singleFileIfaceOut, segmentsToString(file0.packageDecl.path.segments))
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -927,6 +933,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // The type-checked, `.copy`-desugared file per package: contract metadata
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val perPkgChecked: List[SourceFile] = newList()
+  val perPkgIface: List[List[IfaceBuild.IfaceOutcome]] = newList()
   val perPkgNames: List[String] = newList()
   // Every package sees the same registered set (#7583): build it, and its
   // flat item view, once rather than per package.
@@ -959,6 +966,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     val projCallArities: Map[String, Int] = newMap()
     val projTypeArgCallees: Map[String, Bool] = newMap()
     val projGenericItems: List[Item] = newList()
+    val projIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
     val projOpts = MiddleEndOptions(
       externIterResolver = msilIterResolver(hostIterIx),
       tcFatal = true,
@@ -979,7 +987,10 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       arraysAsLists = true,
       ioForbiddenReason = pp.ioForbiddenReason,
       sink = sink,
-      stringSurface = SMSClosed
+      stringSurface = SMSClosed,
+      buildInterface = true,
+      interfaceTargets = dotnetTarget(),
+      interfaceOut = projIfaceOut
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
@@ -992,6 +1003,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     perPkgTypeArgCallees.add(projTypeArgCallees)
     perPkgGenericItems.add(projGenericItems)
     perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
+    perPkgIface.add(projIfaceOut)
     perPkgNames.add(pp.name)
 
     ti = ti + 1
@@ -1248,6 +1260,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // #6866, D-progress-941: per-package annotation metadata, matching the
     // per-package `Lyric.Contract.<Pkg>` embedding above.
     embedLyricAnnotationMeta(cctx.lctx, parsedPkgs[li].file, "Lyric.AnnotationMeta." + perPkgNames[li])
+    embedLyricInterface(cctx.lctx, perPkgIface[li], perPkgNames[li])
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -2785,23 +2798,30 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
   // bootstrap path supports loading self-hosted packages (tracked in #2580).
   val json = Meta.contractToJson(contract)
   val jsonBytes = Encoding.encodeUtf8(json)
-  val jsonLen = jsonBytes.length
+  embedResourceBytes(lctx, jsonBytes, resourceName)
+}
+
+// Appends `bytes` to the resources region as a length-prefixed slot and
+// registers the ManifestResource row naming it.
+func embedResourceBytes(lctx: in LoweringCtx, bytes: in slice[Byte], resourceName: in String): Unit {
+  val payloadLen = bytes.length
 
   // Resources region layout: per-resource = 4-byte LE length + bytes.
   // `offset` on the ManifestResource row points at the start of this
   // resource's length-prefixed slot.
   val offset = lctx.resourceData.count
 
-  // Append the 4-byte LE length prefix.
-  lctx.resourceData.add(jsonLen.toByte())
-  lctx.resourceData.add((jsonLen / 256).toByte())
-  lctx.resourceData.add((jsonLen / 65536).toByte())
-  lctx.resourceData.add((jsonLen / 16777216).toByte())
+  // Append the 4-byte LE length prefix; `.toByte()` keeps the low eight bits,
+  // so each byte is the length divided down and truncated.
+  lctx.resourceData.add(payloadLen.toByte())
+  lctx.resourceData.add((payloadLen / 256).toByte())
+  lctx.resourceData.add((payloadLen / 65536).toByte())
+  lctx.resourceData.add((payloadLen / 16777216).toByte())
 
-  // Append the UTF-8 bytes.
+  // Append the bytes.
   var i = 0
-  while i < jsonLen {
-    lctx.resourceData.add(jsonBytes[i])
+  while i < payloadLen {
+    lctx.resourceData.add(bytes[i])
     i = i + 1
   }
 
@@ -2812,15 +2832,24 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
   val sName = internString(lctx.strings, resourceName)
   val _row = addManifestResource(
     lctx.tables,
-    ManifestResourceRow(
-      offset = offset,
-      flags = 1,
-      // Public
-      name = sName,
-      implementation = 0
-    )
+    ManifestResourceRow(offset = offset, flags = 1, name = sName, implementation = 0)
   )
-  // embedded
+}
+
+func dotnetTarget(): List[String] {
+  val ts: List[String] = newList()
+  ts.add("dotnet")
+  ts
+}
+
+// Embeds a package's interface (docs/70 §9.6) as the `Lyric.Interface.<Pkg>`
+// resource when its build produced one.  An executable, or a package whose
+// interface was not built, embeds nothing.
+func embedLyricInterface(lctx: in LoweringCtx, outcomes: in List[IfaceBuild.IfaceOutcome], pkgName: in String): Unit {
+  match IfaceBuild.builtBytesOf(outcomes) {
+    case Some(bytes) -> embedResourceBytes(lctx, bytes, "Lyric.Interface." + pkgName)
+    case None -> ()
+  }
 }
 
 // Build a `Lyric.AnnotationMeta`[.`<Pkg>`] resource for `file` and seed
@@ -2836,26 +2865,7 @@ func embedLyricAnnotationMeta(lctx: in LoweringCtx, file: in SourceFile, resourc
   val fields = AnnotationMeta.collectAnnotatedFields(file)
   val json = AnnotationMeta.emitAnnotationMetaJson(fields)
   val jsonBytes = Encoding.encodeUtf8(json)
-  val jsonLen = jsonBytes.length
-
-  val offset = lctx.resourceData.count
-
-  lctx.resourceData.add(jsonLen.toByte())
-  lctx.resourceData.add((jsonLen / 256).toByte())
-  lctx.resourceData.add((jsonLen / 65536).toByte())
-  lctx.resourceData.add((jsonLen / 16777216).toByte())
-
-  var i = 0
-  while i < jsonLen {
-    lctx.resourceData.add(jsonBytes[i])
-    i = i + 1
-  }
-
-  val sName = internString(lctx.strings, resourceName)
-  val _row = addManifestResource(
-    lctx.tables,
-    ManifestResourceRow(offset = offset, flags = 1, name = sName, implementation = 0)
-  )
+  embedResourceBytes(lctx, jsonBytes, resourceName)
 }
 
 // Resolve the bundle-wide entry-point MethodDef token.  Returns 0

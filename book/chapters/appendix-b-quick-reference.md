@@ -1261,7 +1261,7 @@ lyric fmt --diff --write               # show diff then apply changes in place
 # Lint
 lyric lint <file.l>                    # report style/quality diagnostics (AST-only; fast)
 lyric lint --error-on-warning <file.l> # treat warnings as errors (CI gate)
-lyric interface dump <file.lyri>      # print a package interface (declaration index) and its hash
+lyric interface dump <file.lyri|lib.dll> # print the package interfaces of a .lyri file or a .NET library, with hashes
 lyric lint                             # project mode: lint every [project.packages] source file;
                                        # prints summary: "N error(s), M warning(s) in K file(s)"
                                        # or "K file(s) clean"

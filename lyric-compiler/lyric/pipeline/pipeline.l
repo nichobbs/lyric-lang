@@ -77,7 +77,6 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.PackageMerge as PM
 import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
-import Lyric.Iface as If
 import Lyric.IfaceBuild as IfaceBuild
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
@@ -192,9 +191,9 @@ pub record MiddleEndOptions {
   buildInterface: Bool = false
   /// The backends the interface header lists as the build's target set.
   interfaceTargets: List[String] = newList()
-  /// Receives the package's interface, or the reasons it could not be built,
-  /// when `buildInterface` is set.
-  interfaceOut: List[Result[If.Iface, List[String]]] = newList()
+  /// Receives the outcome of building the package's interface (its bytes, or
+  /// why it could not be recorded) when `buildInterface` is set.
+  interfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
   /// Why this package may not do I/O, from the manifest's `[layers]`
   /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
   /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
@@ -1787,8 +1786,15 @@ pub func pipeCheckFront(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
-  if opts.buildInterface {
-    opts.interfaceOut.add(IfaceBuild.buildIface(tcRes, newList(), opts.interfaceTargets))
+  if opts.buildInterface and not IfaceBuild.isExecutable(tcRes.file) {
+    // The interfaces this package was built against are empty until a
+    // dependency ships its own interface (docs/70 phase 5b); the header field
+    // exists so the format does not change when they do.
+    val outcome = IfaceBuild.buildIfaceOutcome(tcRes, newList(), opts.interfaceTargets)
+    opts.interfaceOut.add(outcome)
+    if gateTo(sink, opts.pkgLabel, opts.filePaths, IfaceBuild.outcomeDiagnostics(outcome, tcRes.file)) {
+      return None
+    }
   }
   // Bound to an annotated local: the stage-0 seed compiler that builds this
   // package cannot infer `mapKeys`'s type arguments from a restored

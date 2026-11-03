@@ -139,7 +139,50 @@ test "extern types are recorded without a modifier" {
   assertTrue(text.contains("pub extern type extern::System.Text.StringBuilder = System.Text.StringBuilder\n"), text)
 }
 
-test "an unannotated pub val cannot be recorded and is reported by name" {
-  val text = dumpOf("package P\n\npub val Limit = 5\n")
-  assertTrue(text.contains("ERR: ") and text.contains("P::Limit") and text.contains("needs a written type"), text)
+test "an unannotated pub val takes the type the checker found (#7777)" {
+  val text = dumpOf(
+    "package P\n\nfunc helper(): Int {\n  41\n}\n\npub val Limit = 5\npub val Name = \"p\"\npub val Ratio = -2.5\npub val Answer = helper() + 1\n"
+  )
+  assertTrue(text.contains("pub val P::Limit: Int = 5\n"), text)
+  assertTrue(text.contains("pub val P::Name: String = \"p\"\n"), text)
+  assertTrue(text.contains("pub val P::Ratio: Double = bits:-4610560118520545280\n"), text)
+  assertTrue(text.contains("pub val P::Answer: Int\n"), text)
+}
+
+test "an unrecordable declaration is T0223 and a failed round trip is I0005" {
+  val reasons: List[String] = newList()
+  reasons.add("P::f: the type did not resolve")
+  val lib = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  val diags = outcomeDiagnostics(IOUnrecordable(reasons = reasons), lib.file)
+  assertEqualInt(diags.count, 1, "one diagnostic per reason")
+  assertEqual(diags[0].code, "T0223", "the code")
+  assertTrue(diags[0].message.contains("P::f"), "it names the declaration")
+  val broken = IORoundTrip(message = "the interface read back differs from the one built")
+  assertEqual(outcomeDiagnostics(broken, lib.file)[0].code, "I0005", "the round trip")
+}
+
+test "a package with main is an executable" {
+  val exe = checked("package P\n\nfunc main(): Int {\n  0\n}\n")
+  val lib = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  assertTrue(isExecutable(exe.file), "main makes an executable")
+  assertFalse(isExecutable(lib.file), "no main is a library")
+}
+
+test "the outcome carries the bytes and their hash" {
+  val res = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  val outs: List[IfaceOutcome] = newList()
+  outs.add(buildIfaceOutcome(res, newList(), targets()))
+  match outs[0] {
+    case IOBuilt(b) -> assertEqual(b.hash, ifaceHash(b.bytes), "the hash is the hash of the bytes")
+    case _ -> assertTrue(false, "the library should build")
+  }
+  assertTrue(builtBytesOf(outs) != None, "the bytes are reachable")
+}
+
+test "Self in a type's methods is the type applied to its own parameters" {
+  val text = dumpOf(
+    "package P\n\npub record Counter {\n  n: Int\n\n  func bump(self: in Self): Self {\n    self\n  }\n}\n\npub record Acc[T] {\n  value: T\n\n  func withValue(self: in Self, v: in T): Self {\n    self\n  }\n}\n"
+  )
+  assertTrue(text.contains("pub method P::Counter::bump(Self)(self: in P::Counter): P::Counter\n"), text)
+  assertTrue(text.contains("(self: in P::Acc[param P::Acc#0], v: in param P::Acc#0): P::Acc[param P::Acc#0]\n"), text)
 }

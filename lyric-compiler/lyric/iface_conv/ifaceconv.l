@@ -30,10 +30,13 @@ pub ref record BuildCtx {
   tbl: SymbolTable
   pkg: String
   errs: List[String]
+  /// The number of generic parameters of each type the package declares, by
+  /// name, for the `Self` of a `func Type.method` declared outside the type.
+  owners: Map[String, Int]
 }
 
 pub func newBuildCtx(tbl: in SymbolTable, pkg: in String): BuildCtx {
-  BuildCtx(tbl = tbl, pkg = pkg, errs = newList())
+  BuildCtx(tbl = tbl, pkg = pkg, errs = newList(), owners = newMap())
 }
 
 pub func buildFail(bc: in BuildCtx, msg: in String) {
@@ -81,35 +84,29 @@ func findParam(frames: in List[ConvFrame], name: in String): Option[ParamLoc] {
 }
 
 func tysOf(
-  bc: in BuildCtx,
-  frames: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
-  ts: in List[Type],
-  what: in String,
+  bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], ts: in List[Type], what: in String
 ): List[Ty] {
   val res: List[Ty] = newList()
   for t in ts {
-    res.add(tyOf(bc, frames, selfOwner, t, what))
+    res.add(tyOf(bc, frames, selfTy, t, what))
   }
   res
 }
 
-/// `t` as a `Ty`.  `selfOwner` is the interface whose `Self` is in scope.  A
+/// `t` as a `Ty`.  `selfTy` is the interface whose `Self` is in scope.  A
 /// type the interface cannot record (the checker's error type, a `Self` outside
 /// an interface, a parameter no frame declares) is a build error naming `what`.
-pub func tyOf(
-  bc: in BuildCtx, frames: in List[ConvFrame], selfOwner: in Option[SymbolId], t: in Type, what: in String
-): Ty {
+pub func tyOf(bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], t: in Type, what: in String): Ty {
   match t {
     case TyPrim(pt) -> primTy(pt)
-    case TyTuple(elems) -> TTuple(elems = tysOf(bc, frames, selfOwner, elems, what))
-    case TyNullable(inner) -> TNullable(inner = tyOf(bc, frames, selfOwner, inner, what))
+    case TyTuple(elems) -> TTuple(elems = tysOf(bc, frames, selfTy, elems, what))
+    case TyNullable(inner) -> TNullable(inner = tyOf(bc, frames, selfTy, inner, what))
     case TyFunction(ps, ret, isAsync) -> {
       val params: List[TParamTy] = newList()
       for p in ps {
-        params.add(TParamTy(mode = TMIn, ty = tyOf(bc, frames, selfOwner, p, what)))
+        params.add(TParamTy(mode = TMIn, ty = tyOf(bc, frames, selfTy, p, what)))
       }
-      TFunc(params = params, ret = tyOf(bc, frames, selfOwner, ret, what), isAsync = isAsync)
+      TFunc(params = params, ret = tyOf(bc, frames, selfTy, ret, what), isAsync = isAsync)
     }
     case TyArray(size, element, sizeVar) -> {
       val len = match size {
@@ -126,20 +123,20 @@ pub func tyOf(
           ALUnsized
         }
       }
-      TArray(len = len, element = tyOf(bc, frames, selfOwner, element, what))
+      TArray(len = len, element = tyOf(bc, frames, selfTy, element, what))
     }
-    case TySlice(element) -> TSlice(element = tyOf(bc, frames, selfOwner, element, what))
-    case TyUser(id, name, args) -> userTy(bc, frames, selfOwner, id, name, args, what)
+    case TySlice(element) -> TSlice(element = tyOf(bc, frames, selfTy, element, what))
+    case TyUser(id, name, args) -> userTy(bc, frames, selfTy, id, name, args, what)
     case TyRefined(underlying, lo, hi, hiInclusive, _) -> TRefined(
-      underlying = tyOf(bc, frames, selfOwner, underlying, what),
+      underlying = tyOf(bc, frames, selfTy, underlying, what),
       lo = lo,
       hi = hi,
       hiInclusive = hiInclusive
     )
-    case TySelf -> match selfOwner {
-      case Some(o) -> tySelfOf(o)
+    case TySelf -> match selfTy {
+      case Some(t) -> t
       case None -> {
-        buildFail(bc, what + ": 'Self' outside an interface")
+        buildFail(bc, what + ": 'Self' where no type or interface is in scope")
         TNever
       }
     }
@@ -166,13 +163,13 @@ pub func tyOf(
 func userTy(
   bc: in BuildCtx,
   frames: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
+  selfTy: in Option[Ty],
   id: in SymbolId,
   name: in String,
   args: in List[Type],
   what: in String,
 ): Ty {
-  val targs = tysOf(bc, frames, selfOwner, args, what)
+  val targs = tysOf(bc, frames, selfTy, args, what)
   if isBuiltinSymbol(id) {
     return TNamed(sym = id, args = targs)
   }
@@ -256,4 +253,21 @@ pub func mkLitFloat(v: in Double): TLit {
 
 pub func mkLitChar(cp: in Int): TLit {
   TLChar(codepoint = cp)
+}
+
+/// `Self` inside the interface `iface`: its own `Self` parameter.
+pub func selfOfInterface(iface: in SymbolId): Ty {
+  tySelfOf(iface)
+}
+
+/// `Self` inside the type `owner`'s methods: the type applied to its own
+/// generic parameters, in declaration order.
+pub func selfOfType(owner: in SymbolId, paramCount: in Int): Ty {
+  val args: List[Ty] = newList()
+  var i = 0
+  while i < paramCount {
+    args.add(TParam(owner = owner, index = i))
+    i = i + 1
+  }
+  TNamed(sym = owner, args = args)
 }

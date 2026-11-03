@@ -843,6 +843,7 @@ clause on MSIL, JVM and native.
 | I0002 | internal: the TIR builder found a node the checker did not record |
 | I0003 | internal: a pass produced ill-formed TIR |
 | I0004 | internal: a backend panicked on verified TIR |
+| T0223 | a library's package interface cannot record a declaration (a type the checker did not resolve, `Self` outside an interface) |
 | I0005 | internal: an interface did not round-trip |
 
 Existing name codes (T0010, T0020, T0097, T0123, T0148) keep their meaning
