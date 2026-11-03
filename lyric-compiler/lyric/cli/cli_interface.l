@@ -6,16 +6,18 @@ import Std.Errors
 import Std.Console as Console
 import Std.File as File
 import Std.String as Str
+import Std.Zip as Zip
 import Msil.MetadataReader as Mdr
 import Lyric.Iface
 import Lyric.Symbols
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `lyric interface dump <file.lyri|assembly.dll>` (docs/70 §9.6)
+// `lyric interface dump <file.lyri|assembly.dll|library.jar>` (docs/70 §9.6)
 // ─────────────────────────────────────────────────────────────────────────────
 // Prints each package interface in the file as text: the canonical dump, then
 // the interface hash.  A `.lyri` file holds one interface; a .NET assembly
-// holds one `Lyric.Interface.<Pkg>` resource per package.  Exit 0 on success,
+// holds one `Lyric.Interface.<Pkg>` resource per package; a JAR holds one
+// `META-INF/lyric/<Pkg>.lyri` entry per package.  Exit 0 on success,
 // 1 for a usage error or an unreadable, malformed or absent interface.
 record FoundIface {
   label: String
@@ -23,7 +25,7 @@ record FoundIface {
 }
 
 func interfaceUsage(): Int {
-  printErr("usage: lyric interface dump <file.lyri|assembly.dll>")
+  printErr("usage: lyric interface dump <file.lyri|assembly.dll|library.jar>")
   1
 }
 
@@ -58,6 +60,50 @@ func interfacesOf(path: in String): Option[List[FoundIface]] {
         }
       }
     }
+  } else if Str.endsWith(path, ".jar") {
+    match File.readBytes(path) {
+      case Err(e) -> {
+        printErr("interface dump: cannot read " + path + ": " + e.message())
+        return None
+      }
+      case Ok(jar) -> {
+        val limits = Zip.ZipLimits(
+          maxEntries = 65535,
+          maxEntrySize = 536870912i64,
+          maxTotalSize = 4294967296i64,
+          maxRatio = 1000i64
+        )
+        match Zip.readZipDirectory(jar, limits) {
+          case Err(_) -> {
+            printErr("interface dump: " + path + ": not a readable JAR")
+            return None
+          }
+          case Ok(entries) -> {
+            val prefix = "META-INF/lyric/"
+            for e in entries {
+              if Str.startsWith(e.name, prefix) and Str.endsWith(e.name, ".lyri") {
+                match Zip.readZipEntry(jar, e) {
+                  case Ok(bytes) -> res.add(
+                    FoundIface(
+                      label = e.name.substring(prefix.length, e.name.length - prefix.length - 5),
+                      bytes = bytes
+                    )
+                  )
+                  case Err(_) -> {
+                    printErr("interface dump: " + path + ": the entry " + e.name + " cannot be read")
+                    return None
+                  }
+                }
+              }
+            }
+            if res.count == 0 {
+              printErr("interface dump: " + path + ": the JAR carries no META-INF/lyric/*.lyri entry")
+              return None
+            }
+          }
+        }
+      }
+    }
   } else if Str.endsWith(path, ".lyri") {
     match File.readBytes(path) {
       case Err(e) -> {
@@ -67,7 +113,7 @@ func interfacesOf(path: in String): Option[List[FoundIface]] {
       case Ok(bytes) -> res.add(FoundIface(label = "", bytes = bytes))
     }
   } else {
-    printErr("interface dump: " + path + ": expected a .lyri or .dll file")
+    printErr("interface dump: " + path + ": expected a .lyri, .dll or .jar file")
     return None
   }
   Some(value = res)

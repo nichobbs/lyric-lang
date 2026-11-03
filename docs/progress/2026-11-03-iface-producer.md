@@ -15,3 +15,10 @@ Embedding (MSIL): a .NET library build embeds its interface as the
 compare (I0005); an unrecordable library declaration is T0223. `lyric interface
 dump` reads assemblies. `scripts/ci/interface-embed-e2e.sh` runs in the compiler
 self-test batch. JVM and native embedding follow.
+
+Embedding (JVM): a JVM library build embeds the same bytes as the
+`META-INF/lyric/<Pkg>.lyri` JAR entry beside `Lyric.Contract.<Pkg>`, for the
+user package and each project package (a merely bundled stdlib package gets
+none; an executable gets none). `lyric interface dump` reads JARs through
+`Std.Zip` (size and CRC-32 checked). The e2e script now runs on both targets.
+Native embedding follows.

@@ -509,7 +509,7 @@ Core commands you will use constantly:
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric doc` | Generate docs for all packages in the discovered project |
-| `lyric interface dump <file.lyri\|assembly.dll>` | Print package interfaces as text, each followed by its hash (docs/70 §9.6); a .NET library embeds one per package |
+| `lyric interface dump <file.lyri\|assembly.dll\|library.jar>` | Print package interfaces as text, each followed by its hash (docs/70 §9.6); a .NET library embeds one per package, a JVM library one `META-INF/lyric/<Pkg>.lyri` entry per package |
 | `lyric prove <file.l>` | Type-check, then run the SMT-backed verifier on `@proof_required` modules (an ill-typed program is not proved) |
 | `lyric prove` | Verify all packages in the discovered project |
 | `lyric prove --target <t> --features <f> --define K=V` | Type-check the program for that build before proving it |
