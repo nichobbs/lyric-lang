@@ -104,8 +104,24 @@ func hidden(): Int {
   1
 }
 LYRIC
+  if [ "$target" = native ]; then
+    # A native build links an executable: the library gets an entry package
+    # beside it, which writes no interface of its own.
+    mkdir -p "$dir/app"
+    printf '"App" = "app"\n' >> "$dir/lyric.toml"
+    cat > "$dir/app/main.l" <<'LYRIC'
+package App
+
+func main(): Int {
+  0
+}
+LYRIC
+  fi
   if ! build "$dir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the library build failed"; cat "$work/log"; fail=1; continue
+  fi
+  if [ "$target" = native ] && [ -e "$dir/out/App.lyri" ]; then
+    echo "FAIL [$target] the entry package wrote an interface"; fail=1
   fi
   dump="$(cd "$dir" && "$lyric_bin" interface dump "$(dumpable "$target")" 2>"$work/err")" || {
     echo "FAIL [$target] interface dump failed"; cat "$work/err"; fail=1; continue
