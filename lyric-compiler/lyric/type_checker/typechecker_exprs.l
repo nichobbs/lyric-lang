@@ -19202,10 +19202,10 @@ func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
   }
 }
 
-// True when `name` has two or more candidates and every one is a union case.
-// Counts every such case, not only those the file's imports make bare: a case
-// constructor of a package imported only under an alias is told apart by the
-// expected type today (#8722 tracks tightening this to the visible set).
+// True when `name` has two or more candidates the file can reach and every one
+// is a union case, so the expected type picks the one it means.  A case of a
+// package imported only under an alias is not reachable bare (docs/70 §4.3,
+// #8722).
 func nameIsSharedUnionCase(tbl: in SymbolTable, name: in String): Bool {
   val candidates = symTableTryFindAllVisible(tbl, name)
   if candidates.count < 2 {

@@ -205,7 +205,7 @@ test "a file's own declared type is not shadowed by a same-named type it imports
   )
   pkgSrcs.add(
     "package XPkgApp\n" + "\n" + "import SafePkg as Safe\n" + "\n" + "func main(): Int {\n" +
-      "  println(Safe.errorMessage(TimedOut(message = \"x\")))\n" +
+      "  println(Safe.errorMessage(Safe.TimedOut(message = \"x\")))\n" +
       "  println(Safe.errorMessage(Safe.SafeBug(message = \"y\")))\n" +
       "  0\n" +
       "}\n"
@@ -264,9 +264,9 @@ test "aliased calls into two same-simple-name colliding packages each resolve to
   pkgSrcs.add(
     "package AliasedConsumerApp\n" + "\n" + "import RegexLikePkg as Re\n" + "import RegexSafeLikePkg as Rx\n" + "\n" +
       "func main(): Int {\n" +
-      "  println(Rx.errorMessage(TimedOut(message = \"a\")))\n" +
+      "  println(Rx.errorMessage(Rx.TimedOut(message = \"a\")))\n" +
       "  println(Rx.errorMessage(Rx.XBug(message = \"b\")))\n" +
-      "  println(Re.errorMessage(TimedOut(message = \"c\")))\n" +
+      "  println(Re.errorMessage(Re.TimedOut(message = \"c\")))\n" +
       "  println(Re.errorMessage(Re.InvalidX(message = \"d\")))\n" +
       "  0\n" +
       "}\n"
