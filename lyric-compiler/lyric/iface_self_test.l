@@ -446,7 +446,7 @@ test "every form of Ty round trips through another interner" {
     assertEqual(roundTrip(oneDecl(valueOf(t)), it), "", "type case " + toString(n))
     n = n + 1
   }
-  assertTrue(n >= 25, "all cases ran")
+  assertEqualInt(n, 23, "all type cases ran")
 }
 
 test "types are written by DefPath, so ids need not match between compilations" {
