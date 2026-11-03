@@ -1457,8 +1457,8 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
   }
 }
 
-// A dependency's lookup in the scope its own imports
-// make, with the package-less fallback of the checked package's lookup.
+// A dependency's bare-name lookup: what its own imports make visible to it,
+// with the package-less fallback of the checked package's lookup.
 func dependencyLookup(tbl: in SymbolTable, name: in String): Option[Option[Symbol]] {
   if tbl.resolveCtx.count == 0 {
     return None

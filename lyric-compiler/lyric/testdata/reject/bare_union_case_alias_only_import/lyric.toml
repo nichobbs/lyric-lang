@@ -1,0 +1,8 @@
+[package]
+name = "reject-bare-union-case-alias"
+version = "0.1.0"
+[project]
+name = "RejectBareUnionCaseAlias"
+[project.packages]
+"App" = "app"
+"Lib" = "lib"
