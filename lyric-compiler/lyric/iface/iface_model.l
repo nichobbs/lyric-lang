@@ -28,6 +28,7 @@ pub union IfVerif {
   case IfProofRequired
   case IfProofRequiredUnsafe
   case IfProofRequiredChecked
+  case IfAxiom
 }
 
 /// How far a declaration is visible: `pub` and `internal` cross a package
@@ -148,6 +149,7 @@ pub func ifVerifCode(v: in IfVerif): Int {
     case IfProofRequired -> 1
     case IfProofRequiredUnsafe -> 2
     case IfProofRequiredChecked -> 3
+    case IfAxiom -> 4
   }
 }
 
@@ -157,6 +159,7 @@ pub func ifVerifOfCode(c: in Int): Option[IfVerif] {
     case 1 -> Some(value = IfProofRequired)
     case 2 -> Some(value = IfProofRequiredUnsafe)
     case 3 -> Some(value = IfProofRequiredChecked)
+    case 4 -> Some(value = IfAxiom)
     case _ -> None
   }
 }
@@ -167,6 +170,7 @@ pub func ifVerifName(v: in IfVerif): String {
     case IfProofRequired -> "@proof_required"
     case IfProofRequiredUnsafe -> "@proof_required(unsafe_blocks_allowed)"
     case IfProofRequiredChecked -> "@proof_required(checked_arithmetic)"
+    case IfAxiom -> "@axiom"
   }
 }
 

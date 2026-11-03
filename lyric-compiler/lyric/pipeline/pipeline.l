@@ -77,6 +77,8 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.PackageMerge as PM
 import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
+import Lyric.Iface as If
+import Lyric.IfaceBuild as IfaceBuild
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
 /// diagnostics (every target's own packages, and the native target's path
@@ -184,6 +186,15 @@ pub record MiddleEndOptions {
   /// once, so every package shares one `Vec__V3`.  Other backends erase the
   /// value parameters instead; they pass a list and ignore it.
   foreignValueRecordsOut: List[ForeignValueRecord]
+  /// Whether `pipeCheckAndMono` builds the package's interface (docs/70 §9,
+  /// D325) from the type-checked file into `interfaceOut`.  Off by default:
+  /// only a build that embeds the interface asks for it.
+  buildInterface: Bool = false
+  /// The backends the interface header lists as the build's target set.
+  interfaceTargets: List[String] = newList()
+  /// Receives the package's interface, or the reasons it could not be built,
+  /// when `buildInterface` is set.
+  interfaceOut: List[Result[If.Iface, List[String]]] = newList()
   /// Why this package may not do I/O, from the manifest's `[layers]`
   /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
   /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
@@ -1776,6 +1787,9 @@ pub func pipeCheckFront(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
+  if opts.buildInterface {
+    opts.interfaceOut.add(IfaceBuild.buildIface(tcRes, newList(), opts.interfaceTargets))
+  }
   // Bound to an annotated local: the stage-0 seed compiler that builds this
   // package cannot infer `mapKeys`'s type arguments from a restored
   // package's field chain and instantiates it over `Object` (#7441, fixed
