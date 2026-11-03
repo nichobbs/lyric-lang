@@ -5919,14 +5919,7 @@ func importDeclsFromNames(
         )
       } else {
         acc.add(
-          ImportDecl(
-            path = path,
-            selector = None,
-            asAlias = Some(value = n),
-            isPubUse = false,
-            isExtern = false,
-            span = span
-          )
+          ImportDecl(path = path, selector = None, asAlias = Some(value = n), isPubUse = false, isExtern = false, span = span)
         )
       }
     }

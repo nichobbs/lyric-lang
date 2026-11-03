@@ -11,7 +11,6 @@ pub use Lyric.Symbols
 // The identity types live in `Lyric.Symbols` (docs/70 §4.2) so the resolver
 // can name them before the checker runs; the checker re-exports them for the
 // packages that name a `SymbolId` through it.
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Primitive types.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,7 +248,12 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
     case TyError -> true
     case TyParam(_, _) -> true
     case TyInfer(_) -> true
-    case _ -> match ub { case TyError -> true; case TyParam(_, _) -> true; case TyInfer(_) -> true; case _ -> typeEquivCore(ua, ub) }
+    case _ -> match ub {
+      case TyError -> true
+      case TyParam(_, _) -> true
+      case TyInfer(_) -> true
+      case _ -> typeEquivCore(ua, ub)
+    }
   }
 }
 
@@ -260,7 +264,12 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
     case TyInfer(_) -> true
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
-    case TyLen(na) -> match b { case TyLen(nb) -> na == nb; case TyParam(_, _) -> true; case TyInfer(_) -> true; case _ -> false }
+    case TyLen(na) -> match b {
+      case TyLen(nb) -> na == nb
+      case TyParam(_, _) -> true
+      case TyInfer(_) -> true
+      case _ -> false
+    }
     case TyNullable(ia) -> match b { case TyNullable(ib) -> typeEquiv(ia, ib); case _ -> false }
     case TyTuple(xs) -> match b {
       case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }
