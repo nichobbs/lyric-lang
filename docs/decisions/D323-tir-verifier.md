@@ -1,4 +1,4 @@
-# D321 - `Lyric.Tir.Verify`: the TIR verifier and I0003 (docs/70 phase 3a, #8613)
+# D323 - `Lyric.Tir.Verify`: the TIR verifier and I0003 (docs/70 phase 3a, #8613)
 
 **Status:** shipped. Step 2 of docs/70 §13 phase 3a, after D319.
 

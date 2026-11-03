@@ -1,4 +1,4 @@
-//! tir_verify_self_test.l - Lyric.Tir.Verify (docs/70 §6.4, D321).
+//! tir_verify_self_test.l - Lyric.Tir.Verify (docs/70 §6.4, D323).
 //!
 //! Builds well-formed and ill-formed TIR by hand and checks that each rule
 //! fires on exactly the node that breaks it, and that well-formed TIR,

@@ -1,6 +1,6 @@
 # `Lyric.Tir.Verify`: the TIR verifier, docs/70 phase 3a step 2 (#8613)
 
-D321.
+D323.
 
 - **`Lyric.Tir.Verify`** (new, `lyric-compiler/lyric/tir/verify/`):
   `verifyPackage`, `VerifyDiag`, `renderVerifyDiag`; I0003 with the rules of

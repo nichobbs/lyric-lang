@@ -1,4 +1,4 @@
-//! verify.l - Lyric.Tir.Verify: the TIR verifier (docs/70 §6.4, D321).
+//! verify.l - Lyric.Tir.Verify: the TIR verifier (docs/70 §6.4, D323).
 //!
 //! `verifyPackage` checks a TIR package and reports I0003 for every node that
 //! breaks a rule: types closed, call arguments equal to the callee's
