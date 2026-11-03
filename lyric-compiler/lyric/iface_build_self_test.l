@@ -118,3 +118,28 @@ test "the interface round trips and agrees with the resolver" {
     }
   }
 }
+
+test "methods nest under their type" {
+  val text = dumpOf(
+    "package P\n\npub record Point {\n  x: Int\n\n  func norm(self: in Point): Int {\n    self.x\n  }\n}\n"
+  )
+  assertTrue(text.contains("pub method P::Point::norm(Point)(self: in P::Point): Int"), text)
+}
+
+test "axioms and per-function verification levels" {
+  val text = dumpOf(
+    "package P\n\n@axiom\npub func trusted(x: Int): Int\n\n@proof_required\npub func proven(x: Int): Int {\n  x\n}\n"
+  )
+  assertTrue(text.contains("pub func P::trusted(Int)(x: in Int): Int @axiom\n"), text)
+  assertTrue(text.contains("pub func P::proven(Int)(x: in Int): Int @proof_required\n"), text)
+}
+
+test "extern types are recorded without a modifier" {
+  val text = dumpOf("package P\n\nextern type Sb = \"System.Text.StringBuilder\"\n")
+  assertTrue(text.contains("pub extern type extern::System.Text.StringBuilder = System.Text.StringBuilder\n"), text)
+}
+
+test "an unannotated pub val cannot be recorded and is reported by name" {
+  val text = dumpOf("package P\n\npub val Limit = 5\n")
+  assertTrue(text.contains("ERR: ") and text.contains("P::Limit") and text.contains("needs a written type"), text)
+}

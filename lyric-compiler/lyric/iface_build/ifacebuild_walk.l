@@ -218,7 +218,11 @@ func funcDetail(
   fileLevel: in VerificationLevel,
 ): IfDetail {
   val level = levelOfFunction(fileLevel, fn)
-  val verification = if vlDisplay(level) == vlDisplay(fileLevel) { None } else { Some(value = ifVerifOf(level)) }
+  val verification = if vlIsAxiom(level) or vlDisplay(level) == vlDisplay(fileLevel) {
+    None
+  } else {
+    Some(value = ifVerifOf(level))
+  }
   callableDetail(
     bc,
     outer,
@@ -409,7 +413,7 @@ func addItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, fileLevel: in V
         acc,
         path,
         IfKExternType,
-        vis,
+        IfPublic,
         IfDExtern(typeParams = typeParamsOf(bc, frames, decl.generics, None, defPathKey(path)), host = decl.clrName)
       )
     }
