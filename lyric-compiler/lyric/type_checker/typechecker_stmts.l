@@ -401,7 +401,7 @@ pub func checkStatement(
         }
         case Some(te) -> {
           val ctx = newGenericContext()
-          gctxPush(ctx, genericNames)
+          gctxPushScope(ctx, sc)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
@@ -441,7 +441,7 @@ pub func checkStatement(
         }
         case Some(te) -> {
           val ctx = newGenericContext()
-          gctxPush(ctx, genericNames)
+          gctxPushScope(ctx, sc)
           val declT = resolveType(tbl, ctx, diag, te)
           match initOpt {
             case Some(initE) -> {
@@ -480,7 +480,7 @@ pub func checkStatement(
         }
         case Some(te) -> {
           val ctx = newGenericContext()
-          gctxPush(ctx, genericNames)
+          gctxPushScope(ctx, sc)
           val declT = resolveType(tbl, ctx, diag, te)
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
@@ -1789,6 +1789,7 @@ func checkFunctionBodyAt(
   // (raised deep inside a nested block via `checkStatement`) render the same
   // alias-aware display as T0070/T0114 below.
   val sc = newScopeForBoundedFunction(sig.returnTy, sig.generics, sig.bounds, fn.ret, selfFields, selfChecked, selfType)
+  scopeSetGenericOwners(sc, sig.genericOwners)
   // #6481/#6487: a member body (protected `entry`/`func`, a record-body
   // method, or an impl method — #6173) reads/writes the enclosing type's
   // fields as bare names (the implicit-`self` idiom every one of these

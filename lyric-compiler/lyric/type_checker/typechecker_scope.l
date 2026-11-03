@@ -41,6 +41,10 @@ pub record Scope {
   frameStarts: List[Int]
   returnTy: Type
   genericNames: List[String]
+  /// The declaration that binds each of `genericNames`, parallel to it; empty
+  /// when no binder is known (a type annotation then resolves to a parameter
+  /// of unknown owner, which matches any binder).
+  genericOwners: List[String]
   // #6467: the ORIGINAL (pre-erasure) return-type annotation `TypeExpr` that
   // `returnTy` was resolved from, when one exists — carries `aliasName` when
   // the user wrote an alias here (mirrors `fn.ret`, D-progress-765).
@@ -97,6 +101,7 @@ pub func newScope(): Scope {
     frameStarts = starts,
     returnTy = TyError,
     genericNames = newList(),
+    genericOwners = newList(),
     returnTyExpr = noReturnTyExpr,
     selfFields = noSelfFields,
     selfChecked = false,
@@ -148,6 +153,7 @@ pub func newScopeForBoundedFunction(
     frameStarts = starts,
     returnTy = returnTy,
     genericNames = genericNames,
+    genericOwners = newList(),
     returnTyExpr = returnTyExpr,
     selfFields = selfFields,
     selfChecked = selfChecked,
@@ -155,6 +161,18 @@ pub func newScopeForBoundedFunction(
     contractDepth = newList(),
     bounds = bounds
   )
+}
+
+/// Record the binder of each of the scope's generic parameters.
+pub func scopeSetGenericOwners(sc: in Scope, owners: in List[String]): Unit {
+  for o in owners {
+    sc.genericOwners.add(o)
+  }
+}
+
+/// Push the scope's generic parameters, with their binders, into `ctx`.
+pub func gctxPushScope(ctx: in GenericContext, sc: in Scope): Unit {
+  gctxPushEach(ctx, sc.genericNames, sc.genericOwners)
 }
 
 pub func scopePush(sc: in Scope): Unit {
@@ -196,22 +214,60 @@ pub func scopeTryFind(sc: in Scope, name: in String): Option[LocalBinding] {
 @stable(since = "0.1")
 pub record GenericContext {
   params: List[String]
+  /// The declaration that binds each parameter, parallel to `params` (the
+  /// qualified name of a function, method or type; empty where no binder is
+  /// known).  Two nested declarations that each bind a `T` get distinct
+  /// `TyParam`s (docs/70 §5.1).
+  owners: List[String]
   stackDepths: List[Int]
 }
 
 pub func newGenericContext(): GenericContext {
   val params: List[String] = newList()
   val depths: List[Int] = newList()
-  GenericContext(params = params, stackDepths = depths)
+  val owners: List[String] = newList()
+  GenericContext(params = params, owners = owners, stackDepths = depths)
 }
 
+/// Push parameters whose binder the caller does not know (they resolve to a
+/// `TyParam` with an empty owner, which matches any binder).
 pub func gctxPush(ctx: in GenericContext, names: in List[String]): Unit {
+  gctxPushOwned(ctx, names, "")
+}
+
+/// Push `names` as the type parameters bound by the declaration `owner`.
+pub func gctxPushOwned(ctx: in GenericContext, names: in List[String], owner: in String): Unit {
   ctx.stackDepths.add(ctx.params.count)
   var i = 0
   while i < names.count {
     ctx.params.add(names[i])
+    ctx.owners.add(owner)
     i = i + 1
   }
+}
+
+/// Push `names` with one owner per name (a scope's parameters, which come
+/// from an owner type and the member itself).  A missing owner is empty.
+pub func gctxPushEach(ctx: in GenericContext, names: in List[String], owners: in List[String]): Unit {
+  ctx.stackDepths.add(ctx.params.count)
+  var i = 0
+  while i < names.count {
+    ctx.params.add(names[i])
+    ctx.owners.add(if i < owners.count { owners[i] } else { "" })
+    i = i + 1
+  }
+}
+
+/// The binder of the innermost parameter named `name` (empty if none).
+pub func gctxOwnerOf(ctx: in GenericContext, name: in String): String {
+  var i = ctx.params.count - 1
+  while i >= 0 {
+    if ctx.params[i] == name {
+      return ctx.owners[i]
+    }
+    i = i - 1
+  }
+  ""
 }
 
 pub func gctxPop(ctx: in GenericContext): Unit {
@@ -222,6 +278,7 @@ pub func gctxPop(ctx: in GenericContext): Unit {
     var j = 0
     while j < toRemove {
       ctx.params.removeAt(ctx.params.count - 1)
+      ctx.owners.removeAt(ctx.owners.count - 1)
       j = j + 1
     }
     ctx.stackDepths.removeAt(n - 1)

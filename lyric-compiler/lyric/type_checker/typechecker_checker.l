@@ -495,7 +495,7 @@ func registerImplsFromItems(
     match items[i].kind {
       case IImpl(decl) -> {
         val ifaceTy = resolveType(tbl, ctx, diag, mkTypeRef(decl.iface.head, decl.span))
-        val targetTy = resolveType(tbl, declGenericContext(decl.generics), diag, decl.target)
+        val targetTy = resolveType(tbl, declGenericContext(decl.generics, implOwnerKey(decl)), diag, decl.target)
         match typeIdOfType(ifaceTy) {
           case Some(ifaceId) -> match typeIdOfType(targetTy) {
             case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId)
@@ -1160,13 +1160,45 @@ func funcBodyContainsYield(fn: in FunctionDecl): Bool {
   }
 }
 
+// `n` copies of `owner`, one per name: the binder of each type parameter.
+func ownersFor(names: in List[String], owner: in String): List[String] {
+  val res: List[String] = newList()
+  var i = 0
+  while i < names.count {
+    res.add(owner)
+    i = i + 1
+  }
+  res
+}
+
+// The binders of a member's full parameter list: the owner type's, then the
+// member's own.
+func combinedOwners(ownerKey: in String, ownerCount: in Int, own: in List[String]): List[String] {
+  val res: List[String] = newList()
+  var i = 0
+  while i < ownerCount {
+    res.add(ownerKey)
+    i = i + 1
+  }
+  for o in own {
+    res.add(o)
+  }
+  res
+}
+
+// The binder of an impl block's type parameters: a block has no name of its
+// own, so it is keyed by where the block starts.
+func implOwnerKey(decl: in ImplDecl): String {
+  "impl@" + toString(decl.span.startPos.fileId) + ":" + toString(decl.span.startPos.offset)
+}
+
 func resolveFunctionSig(
   tbl: in SymbolTable, diag: in List[Diagnostic], pkgName: in String, fn: in FunctionDecl
 ): ResolvedSignature {
   val genericNames = extractGenericNames(fn.generics)
   val ctx = newGenericContext()
   if genericNames.count > 0 {
-    gctxPush(ctx, genericNames)
+    gctxPushOwned(ctx, genericNames, fn.name)
   }
 
   checkWhereClause(tbl, diag, genericNames, fn.whereClause)
@@ -1213,6 +1245,7 @@ func resolveFunctionSig(
 
   ResolvedSignature(
     generics = genericNames,
+    genericOwners = ownersFor(genericNames, fn.name),
     bounds = bounds,
     params = params,
     returnTy = returnTy,
@@ -1698,6 +1731,8 @@ func checkReservedBuiltinFuncDecl(
 func resolveMethodSigParts(
   tbl: in SymbolTable,
   pkgName: in String,
+  ownerKey: in String,
+  fnName: in String,
   ownerGenerics: in List[String],
   fnGenerics: in Option[GenericParams],
   fnParams: in List[Param],
@@ -1709,12 +1744,13 @@ func resolveMethodSigParts(
   span: in Span,
 ): ResolvedSignature {
   val genericNames = extractGenericNames(fnGenerics)
+  val memberKey = ownerKey + "." + fnName
   val ctx = newGenericContext()
   if ownerGenerics.count > 0 {
-    gctxPush(ctx, ownerGenerics)
+    gctxPushOwned(ctx, ownerGenerics, ownerKey)
   }
   if genericNames.count > 0 {
-    gctxPush(ctx, genericNames)
+    gctxPushOwned(ctx, genericNames, memberKey)
   }
   val scratch: List[Diagnostic] = newList()
   val params: List[ResolvedParam] = newList()
@@ -1741,6 +1777,7 @@ func resolveMethodSigParts(
   val noBounds: List[ResolvedBound] = newList()
   ResolvedSignature(
     generics = genericNames,
+    genericOwners = ownersFor(genericNames, memberKey),
     bounds = noBounds,
     params = params,
     returnTy = returnTy,
@@ -1782,6 +1819,8 @@ func addRecordMethodSigs(tbl: in SymbolTable, pkgName: in String, decl: in Recor
                 sig = resolveMethodSigParts(
                   tbl,
                   pkgName,
+                  decl.name,
+                  fn.name,
                   ownerGen,
                   fn.generics,
                   fn.params,
@@ -1824,7 +1863,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
         val implGenerics = extractGenericNames(decl.generics)
         val ctx = newGenericContext()
         if implGenerics.count > 0 {
-          gctxPush(ctx, implGenerics)
+          gctxPushOwned(ctx, implGenerics, implOwnerKey(decl))
         }
         val targetTy = resolveType(tbl, ctx, scratch, decl.target)
         match typeIdOfType(targetTy) {
@@ -1842,6 +1881,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                     sig = resolveMethodSigParts(
                       tbl,
                       pkgName,
+                      implOwnerKey(decl),
+                      fn.name,
                       implGenerics,
                       fn.generics,
                       fn.params,
@@ -1882,6 +1923,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       sig = resolveMethodSigParts(
                         tbl,
                         pkgName,
+                        decl.name,
+                        sig.name,
                         ifaceGen,
                         sig.generics,
                         sig.params,
@@ -1904,6 +1947,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       sig = resolveMethodSigParts(
                         tbl,
                         pkgName,
+                        decl.name,
+                        fn.name,
                         ifaceGen,
                         fn.generics,
                         fn.params,
@@ -1958,6 +2003,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       sig = resolveMethodSigParts(
                         tbl,
                         pkgName,
+                        decl.name,
+                        ed.name,
                         protGen,
                         noGenerics,
                         ed.params,
@@ -1980,6 +2027,8 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                       sig = resolveMethodSigParts(
                         tbl,
                         pkgName,
+                        decl.name,
+                        fn.name,
                         protGen,
                         fn.generics,
                         fn.params,
@@ -2244,7 +2293,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
     case Some(ifaceDecl) -> {
       // The impl's own type parameters (`impl[T] I for Box[T]`) are in scope
       // for its target and for its methods' signatures (#7704).
-      val ctx = declGenericContext(decl.generics)
+      val ctx = declGenericContext(decl.generics, implOwnerKey(decl))
       val selfTy = resolveType(tbl, ctx, diag, decl.target)
       val ifaceGenNames = extractGenericNames(ifaceDecl.generics)
       val ifaceArgTys: List[Type] = newList()
@@ -2314,7 +2363,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 val fnGenNames = extractGenericNames(fn.generics)
                 val sigGenVars: List[Type] = newList()
                 for gn in sigGenNames {
-                  sigGenVars.add(TyParam(name = gn, owner = ""))
+                  sigGenVars.add(TyParam(name = gn, owner = ifaceName + "." + sig.name))
                 }
                 if fn.params.count != sig.params.count {
                   diag.add(
@@ -2333,9 +2382,9 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   // interface arguments, and the impl method's own parameters
                   // are renamed to the interface method's (#7791).
                   val ictx = newGenericContext()
-                  gctxPush(ictx, ifaceGenNames)
-                  gctxPush(ictx, sigGenNames)
-                  gctxPush(ctx, fnGenNames)
+                  gctxPushOwned(ictx, ifaceGenNames, ifaceName)
+                  gctxPushOwned(ictx, sigGenNames, ifaceName + "." + sig.name)
+                  gctxPushOwned(ctx, fnGenNames, implOwnerKey(decl) + "." + fn.name)
                   var pi = 0
                   while pi < sig.params.count {
                     val ifacePTy = substitutesSelf(
@@ -2583,11 +2632,11 @@ func collectDefaultNameOrigins(tbl: in SymbolTable, pkg: in String, e: in Expr, 
 // silently degraded to `System.Object` and surfaced as a codegen failure far
 // from the declaration.  Resolve every declared type reference here — the
 // resolved types are discarded; only the T0010/T0013/T0014 diagnostics matter.
-func declGenericContext(generics: in Option[GenericParams]): GenericContext {
+func declGenericContext(generics: in Option[GenericParams], owner: in String): GenericContext {
   val names = extractGenericNames(generics)
   val ctx = newGenericContext()
   if names.count > 0 {
-    gctxPush(ctx, names)
+    gctxPushOwned(ctx, names, owner)
   }
   ctx
 }
@@ -2598,15 +2647,17 @@ func declGenericContext(generics: in Option[GenericParams]): GenericContext {
 func checkMemberSigTypes(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
+  ownerKey: in String,
+  fnName: in String,
   outerGenerics: in Option[GenericParams],
   generics: in Option[GenericParams],
   params: in List[Param],
   ret: in Option[TypeExpr],
 ): Unit {
-  val ctx = declGenericContext(outerGenerics)
+  val ctx = declGenericContext(outerGenerics, ownerKey)
   val names = extractGenericNames(generics)
   if names.count > 0 {
-    gctxPush(ctx, names)
+    gctxPushOwned(ctx, names, ownerKey + "." + fnName)
   }
   var i = 0
   while i < params.count {
@@ -2623,7 +2674,7 @@ func checkMemberSigTypes(
 }
 
 func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in RecordDecl): Unit {
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -2631,7 +2682,7 @@ func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
         val _ = resolveType(tbl, ctx, diag, field.ty)
       }
       case RMFunc(fn) -> {
-        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        checkMemberSigTypes(tbl, diag, decl.name, fn.name, decl.generics, fn.generics, fn.params, fn.ret)
         checkMethodGenericByRefParams(diag, decl.name, fn)
       }
       case RMInvariant(_) -> {
@@ -2808,7 +2859,7 @@ func checkArrayFieldDerives(
   if derives.count == 0 {
     return
   }
-  val ctx = declGenericContext(generics)
+  val ctx = declGenericContext(generics, typeName)
   val scratch: List[Diagnostic] = newList()
   var hasArray = false
   for ft in fieldTypes {
@@ -2941,7 +2992,7 @@ func homogeneousNumericProblem(decl: in RecordDecl): Option[String] {
 }
 
 func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in UnionDecl): Unit {
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   var i = 0
   while i < decl.cases.count {
     val c = decl.cases[i]
@@ -3453,9 +3504,9 @@ func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
-      case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.generics, sig.generics, sig.params, sig.ret)
+      case IMSig(sig) -> checkMemberSigTypes(tbl, diag, decl.name, sig.name, decl.generics, sig.generics, sig.params, sig.ret)
       case IMFunc(fn) -> {
-        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        checkMemberSigTypes(tbl, diag, decl.name, fn.name, decl.generics, fn.generics, fn.params, fn.ret)
         val shadowed: List[String] = newList()
         val ctx = DefaultBodyCtx(
           ifaceName = decl.name,
@@ -3490,6 +3541,8 @@ func checkInterfaceContracts(
         tbl,
         sigs,
         diag,
+        decl.name,
+        sig.name,
         ifaceGen,
         sig.generics,
         sig.params,
@@ -3502,6 +3555,8 @@ func checkInterfaceContracts(
         tbl,
         sigs,
         diag,
+        decl.name,
+        fn.name,
         ifaceGen,
         fn.generics,
         fn.params,
@@ -3519,6 +3574,8 @@ func checkMethodContracts(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
+  ownerKey: in String,
+  fnName: in String,
   ownerGenerics: in List[String],
   ownGenerics: in Option[GenericParams],
   params: in List[Param],
@@ -3530,7 +3587,7 @@ func checkMethodContracts(
   if contracts.count == 0 {
     return
   }
-  val rsig = resolveMethodSigParts(tbl, "", ownerGenerics, ownGenerics, params, ret, isAsync, false, false, false, span)
+  val rsig = resolveMethodSigParts(tbl, "", ownerKey, fnName, ownerGenerics, ownGenerics, params, ret, isAsync, false, false, false, span)
   val combined: List[String] = newList()
   for g in ownerGenerics {
     combined.add(g)
@@ -3540,6 +3597,7 @@ func checkMethodContracts(
   }
   val noFields: Map[String, Type] = newMap()
   val sc = newScopeForFunction(rsig.returnTy, combined, ret, noFields, false, TyError)
+  scopeSetGenericOwners(sc, combinedOwners(ownerKey, ownerGenerics.count, rsig.genericOwners))
   for p in rsig.params {
     val isMut = match p.mode { case PMIn -> false; case _ -> true }
     scopeAdd(sc, LocalBinding(name = p.name, ty = p.ty, isMutable = isMut, byRefParam = isMut))
@@ -3548,7 +3606,7 @@ func checkMethodContracts(
 }
 
 func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -3587,7 +3645,7 @@ func checkProtectedValueGenericVisibility(
 }
 
 func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ProtectedTypeDecl): Unit {
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -3619,7 +3677,7 @@ func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
         }
       }
       case PMFunc(fn) -> {
-        checkMemberSigTypes(tbl, diag, decl.generics, fn.generics, fn.params, fn.ret)
+        checkMemberSigTypes(tbl, diag, decl.name, fn.name, decl.generics, fn.generics, fn.params, fn.ret)
         checkProtectedFuncShape(diag, decl.name, fn)
       }
       case PMInvariant(_) -> {
@@ -3724,7 +3782,7 @@ func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGen
         val targs: List[Type] = newList()
         var i = 0
         while i < ownerGenerics.count {
-          targs.add(TyParam(name = ownerGenerics[i], owner = ""))
+          targs.add(TyParam(name = ownerGenerics[i], owner = decl.name))
           i = i + 1
         }
         TyUser(id = tid, name = decl.name, args = targs)
@@ -3742,7 +3800,7 @@ func checkProtectedMemberBodies(
   decl: in ProtectedTypeDecl,
 ): Unit {
   val ownerGenerics = extractGenericNames(decl.generics)
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   val fieldLocals = protectedFieldLocals(tbl, ctx, decl)
   val selfTy = protectedSelfType(tbl, decl, ownerGenerics)
   var i = 0
@@ -3753,6 +3811,8 @@ func checkProtectedMemberBodies(
         val sig0 = resolveMethodSigParts(
           tbl,
           "",
+          decl.name,
+          entryDecl.name,
           ownerGenerics,
           noGenerics,
           entryDecl.params,
@@ -3821,6 +3881,8 @@ func checkProtectedMemberBodies(
         val sig0 = resolveMethodSigParts(
           tbl,
           "",
+          decl.name,
+          fn.name,
           ownerGenerics,
           fn.generics,
           fn.params,
@@ -3833,6 +3895,7 @@ func checkProtectedMemberBodies(
         )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
+          genericOwners = combinedOwners(decl.name, ownerGenerics.count, sig0.genericOwners),
           bounds = sig0.bounds,
           params = sig0.params,
           returnTy = sig0.returnTy,
@@ -3986,7 +4049,7 @@ func checkOpaqueInvariants(
     return
   }
   val ownerGenerics = extractGenericNames(decl.generics)
-  val fieldLocals = opaqueFieldLocals(tbl, declGenericContext(decl.generics), decl)
+  val fieldLocals = opaqueFieldLocals(tbl, declGenericContext(decl.generics, decl.name), decl)
   val selfTy = opaqueSelfType(tbl, decl.name, ownerGenerics)
   for m in decl.members {
     match m {
@@ -4012,7 +4075,7 @@ func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List
       case Some(tid) -> {
         val targs: List[Type] = newList()
         for g in ownerGenerics {
-          targs.add(TyParam(name = g, owner = ""))
+          targs.add(TyParam(name = g, owner = name))
         }
         TyUser(id = tid, name = name, args = targs)
       }
@@ -4084,7 +4147,7 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
         val targs: List[Type] = newList()
         var i = 0
         while i < ownerGenerics.count {
-          targs.add(TyParam(name = ownerGenerics[i], owner = ""))
+          targs.add(TyParam(name = ownerGenerics[i], owner = decl.name))
           i = i + 1
         }
         TyUser(id = tid, name = decl.name, args = targs)
@@ -4257,7 +4320,7 @@ func checkRecordMemberBodies(
   decl: in RecordDecl,
 ): Unit {
   val ownerGenerics = recordDeclGenericNames(decl)
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, decl.name)
   val fieldLocals = recordFieldLocals(tbl, ctx, decl)
   val selfTy = recordSelfType(tbl, decl, ownerGenerics)
   var i = 0
@@ -4279,6 +4342,8 @@ func checkRecordMemberBodies(
         val sig0 = resolveMethodSigParts(
           tbl,
           "",
+          decl.name,
+          fn.name,
           ownerGenerics,
           fn.generics,
           fn.params,
@@ -4291,6 +4356,7 @@ func checkRecordMemberBodies(
         )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
+          genericOwners = combinedOwners(decl.name, ownerGenerics.count, sig0.genericOwners),
           bounds = sig0.bounds,
           params = substitutesSelfParams(sig0.params, selfTy),
           returnTy = substitutesSelf(sig0.returnTy, selfTy),
@@ -4400,7 +4466,7 @@ func findProtectedDeclByTypeId(tbl: in SymbolTable, tid: in SymbolId): Option[Pr
 //     exactly as for a protected `func`.
 func checkImplOnProtected(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl, items: in List[Item]): Unit {
   val scratch: List[Diagnostic] = newList()
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, implOwnerKey(decl))
   val targetTy = resolveType(tbl, ctx, scratch, decl.target)
   val pdOpt: Option[ProtectedTypeDecl] = match typeIdOfType(targetTy) {
     case Some(tid) -> findProtectedDeclByTypeId(tbl, tid)
@@ -4590,7 +4656,7 @@ func earlierImplWithMethodForTarget(
           return None
         }
         val scratch: List[Diagnostic] = newList()
-        val octx = declGenericContext(other.generics)
+        val octx = declGenericContext(other.generics, implOwnerKey(other))
         val otherTy = resolveType(tbl, octx, scratch, other.target)
         if simpleTypeNameOf(otherTy) == targetName {
           var m = 0
@@ -4639,7 +4705,7 @@ func checkImplMethodNameConflicts(
   items: in List[Item],
 ): Unit {
   val scratch: List[Diagnostic] = newList()
-  val ctx = declGenericContext(decl.generics)
+  val ctx = declGenericContext(decl.generics, implOwnerKey(decl))
   val targetTy = resolveType(tbl, ctx, scratch, decl.target)
   val pdOpt: Option[ProtectedTypeDecl] = match typeIdOfType(targetTy) {
     case Some(tid) -> findProtectedDeclByTypeId(tbl, tid)
@@ -4754,11 +4820,11 @@ func implTargetFieldLocals(tbl: in SymbolTable, selfTy: in Type): List[LocalBind
       // type's own locked members, so it sees the fields exactly as an
       // `entry`/`func` body does.
       case None -> match findProtectedDeclByTypeId(tbl, tid) {
-        case Some(pd) -> protectedFieldLocals(tbl, declGenericContext(pd.generics), pd)
+        case Some(pd) -> protectedFieldLocals(tbl, declGenericContext(pd.generics, pd.name), pd)
         case None -> none
       }
       case Some(rd) -> {
-        val ownCtx = declGenericContext(rd.generics)
+        val ownCtx = declGenericContext(rd.generics, rd.name)
         val raw = recordFieldLocals(tbl, ownCtx, rd)
         val gnames = recordDeclGenericNames(rd)
         val targs = match unrefine(selfTy) { case TyUser(_, _, args) -> args; case _ -> newList() }
@@ -4813,7 +4879,7 @@ func checkImplMemberBodies(
   val implGenerics = extractGenericNames(decl.generics)
   val ctx = newGenericContext()
   if implGenerics.count > 0 {
-    gctxPush(ctx, implGenerics)
+    gctxPushOwned(ctx, implGenerics, implOwnerKey(decl))
   }
   // The impl target's own declaration-position validation is
   // `checkImplConformance`'s job (against the shared `diag`); re-resolving it
@@ -4840,6 +4906,8 @@ func checkImplMemberBodies(
         val sig0 = resolveMethodSigParts(
           tbl,
           "",
+          implOwnerKey(decl),
+          fn.name,
           implGenerics,
           fn.generics,
           fn.params,
@@ -4852,6 +4920,7 @@ func checkImplMemberBodies(
         )
         val sig = ResolvedSignature(
           generics = combinedGenerics,
+          genericOwners = combinedOwners(implOwnerKey(decl), implGenerics.count, sig0.genericOwners),
           bounds = sig0.bounds,
           params = substitutesSelfParams(sig0.params, selfTy),
           returnTy = substitutesSelf(sig0.returnTy, selfTy),
@@ -5077,7 +5146,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
         checkProtectedValueGenericVisibility(diag, decl, items[i].visibility)
       }
       case ITypeAlias(decl) -> {
-        val ctx = declGenericContext(decl.generics)
+        val ctx = declGenericContext(decl.generics, decl.name)
         val _ = resolveType(tbl, ctx, diag, decl.rhs)
       }
       case IConst(decl) -> {

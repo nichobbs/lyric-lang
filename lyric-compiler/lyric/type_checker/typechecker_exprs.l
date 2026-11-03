@@ -3388,7 +3388,7 @@ func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, ge
               while gi < gnames.count and gi < targs.count {
                 if gnames[gi] == g {
                   match targs[gi] {
-                    case TyParam(n, _) -> if genericNames.contains(n) { return TyParam(name = n, owner = "") }
+                    case TyParam(n, o) -> if genericNames.contains(n) { return TyParam(name = n, owner = o) }
                     case _ -> ()
                   }
                 }
@@ -3427,7 +3427,7 @@ func ownOpaqueFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Ty
 func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in List[Type], name: in String): Option[Type] {
   val gnames = extractGenericNames(od.generics)
   val ctx = newGenericContext()
-  gctxPush(ctx, gnames)
+  gctxPushOwned(ctx, gnames, od.name)
   val scratch: List[Diagnostic] = newList()
   for m in od.members {
     match m {
@@ -3445,7 +3445,7 @@ func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List
   // Register the record's own type params so a `value: T` field resolves to
   // `TyParam("T")` (substitutable by `fieldsOfRecordInstantiated`) instead of a
   // swallowed unknown-type `TyError`.
-  gctxPush(ctx, recordDeclGenericNames(rd))
+  gctxPushOwned(ctx, recordDeclGenericNames(rd), rd.name)
   val dummyDiag: List[Diagnostic] = newList()
   var i = 0
   while i < rd.members.count {
@@ -10397,13 +10397,15 @@ func inferUnionCaseConstruction(
 // Destructures the scrutinee *type* so each pattern variable gets its real type:
 // `Some(ns)` on `Option[NameAndSpan]` binds `ns : NameAndSpan`.  Used by the
 // `EMatch` arm so arm-body types are correct for branch unification.
-// Replace generic type variables in `t`: each `TyParam(names[i])` becomes `args[i]`.
-func substituteTyParams(t: in Type, names: in List[String], args: in List[Type]): Type {
+// Replace generic type variables in `t`: each `TyParam(names[i], owners[i])`
+// becomes `args[i]`.  A parameter of the same name bound by another declaration
+// is left alone (docs/70 §5.1); `owners` shorter than `names` matches by name.
+func substituteTyParamsOwned(t: in Type, names: in List[String], owners: in List[String], args: in List[Type]): Type {
   match t {
-    case TyParam(nm, _) -> {
+    case TyParam(nm, own) -> {
       var i = 0
       while i < names.count and i < args.count {
-        if names[i] == nm {
+        if names[i] == nm and (i >= owners.count or tyParamOwnersMatch(owners[i], own)) {
           return args[i]
         }
         i = i + 1
@@ -10414,31 +10416,31 @@ func substituteTyParams(t: in Type, names: in List[String], args: in List[Type])
       val na: List[Type] = newList()
       var i = 0
       while i < targs.count {
-        na.add(substituteTyParams(targs[i], names, args))
+        na.add(substituteTyParamsOwned(targs[i], names, owners, args))
         i = i + 1
       }
       TyUser(id = id, name = name, args = na)
     }
-    case TySlice(e) -> TySlice(element = substituteTyParams(e, names, args))
+    case TySlice(e) -> TySlice(element = substituteTyParamsOwned(e, names, owners, args))
     case TyArray(sz, e, sv) -> {
-      val elem = substituteTyParams(e, names, args)
+      val elem = substituteTyParamsOwned(e, names, owners, args)
       // A length that is a value generic parameter takes its argument: a
       // known length (`TyLen`) or another parameter (D169).
       match sz {
         case Some(_) -> TyArray(size = sz, element = elem, sizeVar = sv)
-        case None -> match substituteTyParams(TyParam(name = sv, owner = ""), names, args) {
+        case None -> match substituteTyParamsOwned(TyParam(name = sv, owner = ""), names, owners, args) {
           case TyLen(n) -> TyArray(size = Some(value = n), element = elem, sizeVar = "")
           case TyParam(m, _) -> TyArray(size = None, element = elem, sizeVar = m)
           case _ -> TyArray(size = None, element = elem, sizeVar = sv)
         }
       }
     }
-    case TyNullable(inner) -> TyNullable(inner = substituteTyParams(inner, names, args))
+    case TyNullable(inner) -> TyNullable(inner = substituteTyParamsOwned(inner, names, owners, args))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
       while i < elems.count {
-        ne.add(substituteTyParams(elems[i], names, args))
+        ne.add(substituteTyParamsOwned(elems[i], names, owners, args))
         i = i + 1
       }
       TyTuple(elems = ne)
@@ -10447,13 +10449,18 @@ func substituteTyParams(t: in Type, names: in List[String], args: in List[Type])
       val np: List[Type] = newList()
       var i = 0
       while i < ps.count {
-        np.add(substituteTyParams(ps[i], names, args))
+        np.add(substituteTyParamsOwned(ps[i], names, owners, args))
         i = i + 1
       }
-      TyFunction(params = np, ret = substituteTyParams(ret, names, args), isAsync = isA)
+      TyFunction(params = np, ret = substituteTyParamsOwned(ret, names, owners, args), isAsync = isA)
     }
     case _ -> t
   }
+}
+
+func substituteTyParams(t: in Type, names: in List[String], args: in List[Type]): Type {
+  val noOwners: List[String] = newList()
+  substituteTyParamsOwned(t, names, noOwners, args)
 }
 
 // Deep generic-argument inference (#1488 category B): structurally match a
@@ -15363,7 +15370,7 @@ func explicitCallTypeArgs(sc: in Scope, tbl: in SymbolTable, fn: in Expr, sig: i
     return None
   }
   val ctx = newGenericContext()
-  gctxPush(ctx, sc.genericNames)
+  gctxPushScope(ctx, sc)
   val ts: List[Type] = newList()
   for ta in given {
     val te = match ta {
@@ -18576,7 +18583,7 @@ func inferLambda(
   // A parameter annotation may name the enclosing declaration's type
   // parameters, as a local's annotation may.
   val lctx = newGenericContext()
-  gctxPush(lctx, sc.genericNames)
+  gctxPushScope(lctx, sc)
   val paramTypes: List[Type] = newList()
   scopePush(sc)
   shadowCapturedByRefParams(sc)
@@ -18622,6 +18629,7 @@ func inferLambda(
     frameStarts = sc.frameStarts,
     returnTy = match declaredRet { case Some(rt) -> rt; case None -> TyError },
     genericNames = sc.genericNames,
+    genericOwners = sc.genericOwners,
     returnTyExpr = noLambdaRte,
     selfFields = sc.selfFields,
     selfChecked = sc.selfChecked,

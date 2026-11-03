@@ -238,6 +238,13 @@ func primEq(a: in PrimType, b: in PrimType): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Type equivalence.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Two parameters of the same name are the same parameter when they have the
+/// same binder.  An empty owner marks a parameter whose binder is not known
+/// (generated code, a hand-built type); it matches any binder.
+pub func tyParamOwnersMatch(a: in String, b: in String): Bool {
+  a == b or a == "" or b == ""
+}
+
 pub func typeEquiv(a: in Type, b: in Type): Bool {
   // Refinements are transparent: a refined type is equivalent to its
   // underlying representation (and vice versa).  Unwrap both sides first
@@ -250,7 +257,7 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
     case TyParam(na, oa) -> match ub {
       case TyError -> true
       case TyInfer(_) -> true
-      case TyParam(nb, ob) -> na == nb and oa == ob
+      case TyParam(nb, ob) -> na == nb and tyParamOwnersMatch(oa, ob)
       case _ -> false
     }
     case _ -> match ub {
@@ -266,7 +273,7 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
   match a {
     case TyError -> true
     case TyParam(na, oa) -> match b {
-      case TyParam(nb, ob) -> na == nb and oa == ob
+      case TyParam(nb, ob) -> na == nb and tyParamOwnersMatch(oa, ob)
       case TyInfer(_) -> true
       case TyError -> true
       case _ -> false
