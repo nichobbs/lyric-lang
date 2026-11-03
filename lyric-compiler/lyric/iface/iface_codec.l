@@ -32,17 +32,20 @@ pub val ifaceMagic3: Int = 73
 /// The format version this compiler writes and reads.  Interfaces replace
 /// contract metadata outright (docs/70 §12.3); a reader never accepts an
 /// older or newer version.
-pub val ifaceFormatVersion: Int = 1
+pub val ifaceFormatVersion: Int = 2
 
 /// Collects the body of an interface and the string table it refers to.
-pub record IfaceWriter {
+/// `err` is the first thing the model could not be encoded as (a type that
+/// names a declaration with no DefPath); `encodeIface` returns it.
+pub ref record IfaceWriter {
   buf: List[Byte]
   strings: Map[String, Int]
   table: List[String]
+  var err: String
 }
 
 pub func newIfaceWriter(): IfaceWriter {
-  IfaceWriter(buf = newList(), strings = newMap(), table = newList())
+  IfaceWriter(buf = newList(), strings = newMap(), table = newList(), err = "")
 }
 
 func putByteTo(buf: in List[Byte], b: in Int) {
@@ -66,6 +69,22 @@ pub func putByte(w: in IfaceWriter, b: in Int) {
 /// A non-negative integer as LEB128.
 pub func putU(w: in IfaceWriter, n: in Int) {
   putUTo(w.buf, n)
+}
+
+/// A 64-bit integer as eight little-endian bytes: fixed width keeps it
+/// canonical without a sign convention.
+pub func putLong(w: in IfaceWriter, n: in Long) {
+  var k = 0
+  while k < 8 {
+    putByteTo(w.buf, n.shr(8 * k).and(255i64).toInt())
+    k = k + 1
+  }
+}
+
+pub func writeFail(w: in IfaceWriter, msg: in String) {
+  if w.err.length == 0 {
+    w.err = msg
+  }
 }
 
 pub func putBool(w: in IfaceWriter, b: in Bool) {
@@ -122,11 +141,12 @@ pub ref record IfaceReader {
   var pos: Int
   var failed: Bool
   var err: String
+  var depth: Int
   strings: List[String]
 }
 
 pub func newIfaceReader(data: in slice[Byte]): IfaceReader {
-  IfaceReader(data = data, pos = 0, failed = false, err = "", strings = newList())
+  IfaceReader(data = data, pos = 0, failed = false, err = "", depth = 0, strings = newList())
 }
 
 pub func readFail(r: in IfaceReader, msg: in String) {
@@ -173,6 +193,31 @@ pub func readU(r: in IfaceReader): Int {
     }
   }
   result
+}
+
+pub func readLong(r: in IfaceReader): Long {
+  var v = 0i64
+  var k = 0
+  while k < 8 {
+    v = v.or(readByte(r).toLong().shl(8 * k))
+    k = k + 1
+  }
+  v
+}
+
+/// Enters one level of a nested structure; a file nested deeper than any
+/// real type is rejected rather than risking the stack.
+pub func readEnter(r: in IfaceReader): Bool {
+  r.depth = r.depth + 1
+  if r.depth > 200 {
+    readFail(r, "nesting too deep")
+    return false
+  }
+  true
+}
+
+pub func readLeave(r: in IfaceReader) {
+  r.depth = r.depth - 1
 }
 
 pub func readBool(r: in IfaceReader): Bool {

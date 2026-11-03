@@ -15,6 +15,7 @@ import Std.Hash as Hash
 import Std.String as Str
 import Std.Sort as Sort
 import Lyric.Symbols
+import Lyric.Tir
 
 func sortedStrings(xs: in List[String]): List[String] {
   val sorted = Sort.sort(xs.toArray(), { a, b -> Str.compare(a, b) })
@@ -91,8 +92,172 @@ func putDefPath(w: in IfaceWriter, p: in DefPath) {
   }
 }
 
-/// The canonical bytes of `i`.
-pub func encodeIface(i: in Iface): slice[Byte] {
+func putFields(w: in IfaceWriter, it: in DefPathInterner, fs: in List[IfField]) {
+  putU(w, fs.count)
+  for f in fs {
+    putStr(w, f.name)
+    putTy(w, it, f.ty)
+    putBool(w, f.mutable)
+    putBool(w, f.hasDefault)
+  }
+}
+
+func readFields(r: in IfaceReader, it: in DefPathInterner): List[IfField] {
+  val n = readCount(r)
+  val res: List[IfField] = newList()
+  var k = 0
+  while k < n and not r.failed {
+    val name = readStr(r)
+    val ty = readTy(r, it)
+    val mutable = readBool(r)
+    res.add(IfField(name = name, ty = ty, mutable = mutable, hasDefault = readBool(r)))
+    k = k + 1
+  }
+  res
+}
+
+func putDetail(w: in IfaceWriter, it: in DefPathInterner, d: in IfDetail) {
+  match d {
+    case IfDNone -> putU(w, 0)
+    case IfDFunc(tps, ps, ret, isAsync, isAxiom, isPure, verification) -> {
+      putU(w, 1)
+      putTypeParams(w, it, tps)
+      putU(w, ps.count)
+      for p in ps {
+        putStr(w, p.name)
+        putU(w, modeCode(p.mode))
+        putTy(w, it, p.ty)
+        putBool(w, p.hasDefault)
+      }
+      putTy(w, it, ret)
+      putBool(w, isAsync)
+      putBool(w, isAxiom)
+      putBool(w, isPure)
+      match verification {
+        case None -> putBool(w, false)
+        case Some(v) -> {
+          putBool(w, true)
+          putU(w, ifVerifCode(v))
+        }
+      }
+    }
+    case IfDRecord(tps, fs) -> {
+      putU(w, 2)
+      putTypeParams(w, it, tps)
+      putFields(w, it, fs)
+    }
+    case IfDType(tps) -> {
+      putU(w, 3)
+      putTypeParams(w, it, tps)
+    }
+    case IfDAlias(tps, underlying) -> {
+      putU(w, 4)
+      putTypeParams(w, it, tps)
+      putTy(w, it, underlying)
+    }
+    case IfDCase(fs) -> {
+      putU(w, 5)
+      putFields(w, it, fs)
+    }
+    case IfDValue(ty, mutable, value) -> {
+      putU(w, 6)
+      putTy(w, it, ty)
+      putBool(w, mutable)
+      match value {
+        case None -> putBool(w, false)
+        case Some(l) -> {
+          putBool(w, true)
+          putLit(w, l)
+        }
+      }
+    }
+    case IfDExtern(tps, host) -> {
+      putU(w, 7)
+      putTypeParams(w, it, tps)
+      putStr(w, host)
+    }
+  }
+}
+
+func readDetail(r: in IfaceReader, it: in DefPathInterner): IfDetail {
+  val tag = readU(r)
+  if r.failed {
+    return IfDNone
+  }
+  match tag {
+    case 0 -> IfDNone
+    case 1 -> {
+      val tps = readTypeParams(r, it)
+      val n = readCount(r)
+      val ps: List[IfParam] = newList()
+      var k = 0
+      while k < n and not r.failed {
+        val name = readStr(r)
+        val mc = readU(r)
+        val ty = readTy(r, it)
+        val hasDefault = readBool(r)
+        match modeOfCode(mc) {
+          case Some(m) -> ps.add(IfParam(name = name, mode = m, ty = ty, hasDefault = hasDefault))
+          case None -> readFail(r, "unknown parameter mode " + toString(mc))
+        }
+        k = k + 1
+      }
+      val ret = readTy(r, it)
+      val isAsync = readBool(r)
+      val isAxiom = readBool(r)
+      val isPure = readBool(r)
+      val verification = if readBool(r) {
+        val vc = readU(r)
+        match ifVerifOfCode(vc) {
+          case Some(v) -> Some(value = v)
+          case None -> {
+            readFail(r, "unknown verification level " + toString(vc))
+            None
+          }
+        }
+      } else {
+        None
+      }
+      IfDFunc(
+        typeParams = tps,
+        params = ps,
+        ret = ret,
+        isAsync = isAsync,
+        isAxiom = isAxiom,
+        isPure = isPure,
+        verification = verification
+      )
+    }
+    case 2 -> {
+      val tps = readTypeParams(r, it)
+      IfDRecord(typeParams = tps, fields = readFields(r, it))
+    }
+    case 3 -> IfDType(typeParams = readTypeParams(r, it))
+    case 4 -> {
+      val tps = readTypeParams(r, it)
+      IfDAlias(typeParams = tps, underlying = readTy(r, it))
+    }
+    case 5 -> IfDCase(fields = readFields(r, it))
+    case 6 -> {
+      val ty = readTy(r, it)
+      val mutable = readBool(r)
+      val value = if readBool(r) then Some(value = readLit(r)) else None
+      IfDValue(ty = ty, mutable = mutable, value = value)
+    }
+    case 7 -> {
+      val tps = readTypeParams(r, it)
+      IfDExtern(typeParams = tps, host = readStr(r))
+    }
+    case _ -> {
+      readFail(r, "unknown declaration detail tag " + toString(tag))
+      IfDNone
+    }
+  }
+}
+
+/// The canonical bytes of `i`, or the reason it cannot be written: a type
+/// that names a declaration `it` has no DefPath for.
+pub func encodeIface(i: in Iface, it: in DefPathInterner): Result[slice[Byte], String] {
   val c = canonicalIface(i)
   val w = newIfaceWriter()
   putStr(w, c.header.pkg)
@@ -111,8 +276,13 @@ pub func encodeIface(i: in Iface): slice[Byte] {
     putDefPath(w, d.path)
     putU(w, ifKindCode(d.kind))
     putU(w, ifVisCode(d.vis))
+    putDetail(w, it, d.detail)
   }
-  finishIface(w)
+  if w.err.length > 0 {
+    Err(error = w.err)
+  } else {
+    Ok(value = finishIface(w))
+  }
 }
 
 /// The interface hash of §9.6: SHA-256 of the canonical bytes, as lower-case hex.
@@ -146,7 +316,7 @@ func readDefPath(r: in IfaceReader): DefPath {
 /// Decodes `bytes`.  The error names the first problem and the byte it was
 /// found at; a file whose body is followed by extra bytes, or whose lists are
 /// not in canonical order, is rejected too, so one interface has one image.
-pub func decodeIface(bytes: in slice[Byte]): Result[Iface, String] {
+pub func decodeIface(bytes: in slice[Byte], it: in DefPathInterner): Result[Iface, String] {
   val r = newIfaceReader(bytes)
   readIfacePrelude(r)
   val pkg = readStr(r)
@@ -171,12 +341,13 @@ pub func decodeIface(bytes: in slice[Byte]): Result[Iface, String] {
     val path = readDefPath(r)
     val kindCode = readU(r)
     val visCode = readU(r)
+    val detail = readDetail(r, it)
     if not r.failed {
       match ifKindOfCode(kindCode) {
         case None -> readFail(r, "unknown declaration kind " + toString(kindCode))
         case Some(kind) -> match ifVisOfCode(visCode) {
           case None -> readFail(r, "unknown visibility " + toString(visCode))
-          case Some(vis) -> decls.add(IfDecl(path = path, kind = kind, vis = vis))
+          case Some(vis) -> decls.add(IfDecl(path = path, kind = kind, vis = vis, detail = detail))
         }
       }
     }
@@ -203,11 +374,13 @@ pub func decodeIface(bytes: in slice[Byte]): Result[Iface, String] {
         decls = decls,
         reexports = reexports
       )
-      val again = encodeIface(iface)
-      if not sameBytes(again, bytes) {
-        Err(error = "the interface is not in canonical form")
-      } else {
-        Ok(value = iface)
+      match encodeIface(iface, it) {
+        case Err(msg) -> Err(error = msg)
+        case Ok(again) -> if not sameBytes(again, bytes) {
+          Err(error = "the interface is not in canonical form")
+        } else {
+          Ok(value = iface)
+        }
       }
     }
   }

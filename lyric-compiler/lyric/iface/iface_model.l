@@ -7,15 +7,19 @@
 //! `iface_dump.l` its text form.
 //!
 //! Declarations are identified by their `DefPath` (`Lyric.Symbols`, docs/70
-//! §4.2), the same path the resolver gives them.  This slice covers the header
-//! and the declaration index (every declaration's path, kind and visibility).
-//! Types, signatures and the other per-kind detail of §9.2 are added once the
-//! typed IR's `Ty` exists; nothing here stands in for them.
+//! §4.2), the same path the resolver gives them.  Types are `Lyric.Tir`'s `Ty`:
+//! it names a declaration by `SymbolId`, which exists only within one
+//! compilation, so the codec writes the DefPath key and a reader interns it
+//! again (`iface_ty.l`).  A declaration carries the detail of its kind
+//! (`IfDetail`).  Bodies, default values, contracts, the linkage table and
+//! hidden exports are not in the model yet: they need the TIR builder and the
+//! consumer work of docs/70 phases 3a and 5b (D321, D324).
 package Lyric.Iface
 
 import Std.Core
 import Std.Collections
 import Lyric.Symbols
+import Lyric.Tir
 
 /// A package's verification level (language reference §6): the file-level
 /// annotation the mode checker reads.
@@ -79,11 +83,54 @@ pub record IfHeader {
   targets: List[String]
 }
 
+/// A parameter of a function.  `hasDefault` records that a call may omit it;
+/// the default's value is a TIR expression and follows with the TIR builder.
+pub record IfParam {
+  name: String
+  mode: TMode
+  ty: Ty
+  hasDefault: Bool
+}
+
+/// A field of a record, a protected type or a union case.
+pub record IfField {
+  name: String
+  ty: Ty
+  mutable: Bool
+  hasDefault: Bool
+}
+
+/// What a declaration is, beyond its kind and visibility.
+///
+/// - `IfDNone`: a wire, scope, config or aspect, whose content is code.
+/// - `IfDFunc`: a function, method or interface member.  `verification` is
+///   the function's own level when it differs from the package's.
+/// - `IfDRecord`: a record, exposed record or protected type.
+/// - `IfDType`: a union, enum, opaque type or interface (cases and members
+///   are declarations of their own, nested under it).
+/// - `IfDAlias`: an alias or distinct type, with its underlying type (a
+///   refinement for a range subtype).
+/// - `IfDCase`: a union or enum case and its payload.
+/// - `IfDValue`: a `val`, `const` or `var` global; `value` is a constant's
+///   literal.
+/// - `IfDExtern`: an extern type and the host type it names.
+pub union IfDetail {
+  case IfDNone
+  case IfDFunc(typeParams: List[TTypeParam], params: List[IfParam], ret: Ty, isAsync: Bool, isAxiom: Bool, isPure: Bool, verification: Option[IfVerif])
+  case IfDRecord(typeParams: List[TTypeParam], fields: List[IfField])
+  case IfDType(typeParams: List[TTypeParam])
+  case IfDAlias(typeParams: List[TTypeParam], underlying: Ty)
+  case IfDCase(fields: List[IfField])
+  case IfDValue(ty: Ty, mutable: Bool, value: Option[TLit])
+  case IfDExtern(typeParams: List[TTypeParam], host: String)
+}
+
 /// One declaration of the package's interface.
 pub record IfDecl {
   path: DefPath
   kind: IfKind
   vis: IfVis
+  detail: IfDetail
 }
 
 /// A package interface.  `reexports` lists the packages the package re-exports

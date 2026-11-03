@@ -104,6 +104,21 @@ pub func internDefPath(it: in DefPathInterner, path: in DefPath): SymbolId {
   }
 }
 
+/// The `SymbolId` of the declaration whose rendered path (`defPathKey`) is
+/// `key`: what a package interface reader interns, since an interface records
+/// the key.
+pub func internDefPathKey(it: in DefPathInterner, key: in String): SymbolId {
+  match mapGet(it.ids, key) {
+    case Some(id) -> SymbolId(id = id)
+    case None -> {
+      it.keys.add(key)
+      val id = it.keys.count
+      it.ids.add(key, id)
+      SymbolId(id = id)
+    }
+  }
+}
+
 /// A fresh `SymbolId` for a declaration with no DefPath: one registered with
 /// no package (the checker's flat `checkWithImports` form), whose identity is
 /// its registration.

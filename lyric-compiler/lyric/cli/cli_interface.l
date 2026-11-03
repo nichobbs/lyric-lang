@@ -6,6 +6,7 @@ import Std.Errors
 import Std.Console as Console
 import Std.File as File
 import Lyric.Iface
+import Lyric.Symbols
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `lyric interface dump <file.lyri>` (docs/70 §9.6)
@@ -23,18 +24,19 @@ func cmdInterface(argv: in slice[String]): Int {
     return 1
   }
   val path = argv[2]
+  val interner = newDefPathInterner()
   match File.readBytes(path) {
     case Err(e) -> {
       printErr("interface dump: cannot read " + path + ": " + e.message())
       1
     }
-    case Ok(bytes) -> match decodeIface(bytes) {
+    case Ok(bytes) -> match decodeIface(bytes, interner) {
       case Err(msg) -> {
         printErr("interface dump: " + path + ": " + msg)
         1
       }
       case Ok(iface) -> {
-        Console.print(dumpIface(iface))
+        Console.print(dumpIface(iface, interner))
         Console.println("hash: " + ifaceHash(bytes))
         0
       }
