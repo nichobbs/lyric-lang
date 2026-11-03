@@ -10621,7 +10621,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
     var pinned = false
     while pi < sig.params.count and pi < argTys.count and pi < paramTys.count and not pinned {
       val byRef = match sig.params[pi].mode { case PMIn -> false; case _ -> true }
-      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) and not typeIsInfer(argTys[pi]) {
+      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
         targs[g] = argTys[pi]
         pinned = true
       }
@@ -10632,16 +10632,12 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
   targs
 }
 
-func typeIsInfer(t: in Type): Bool {
-  match t {
-    case TyInfer(_) -> true
-    case _ -> false
-  }
-}
-
+// An unsolved position: `TyError` (no information) or a `TyInfer` the call has
+// not solved yet.
 func typeIsHole(t: in Type): Bool {
   match t {
     case TyError -> true
+    case TyInfer(_) -> true
     case _ -> false
   }
 }
@@ -20314,7 +20310,7 @@ func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): R
   val targs: List[Type] = newList()
   var g = 0
   while g < solved.count {
-    targs.add(if typeIsHole(solved[g]) or typeIsInfer(solved[g]) { TyInfer(id = g) } else { solved[g] })
+    targs.add(if typeIsHole(solved[g]) { TyInfer(id = g) } else { solved[g] })
     g = g + 1
   }
   instantiateSigAt(sig, targs)
