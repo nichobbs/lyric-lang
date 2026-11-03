@@ -8,7 +8,7 @@ import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, resolvePath, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{DeclTable, hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, resolvePath, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
