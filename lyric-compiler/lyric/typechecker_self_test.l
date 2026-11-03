@@ -572,6 +572,28 @@ test "generic return instantiated clean" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "generic-return: instantiated Int return compares cleanly with Int")
 }
 
+// D331: a type parameter is rigid.  Inside a generic declaration `T` is equal
+// only to itself, never to a concrete type or to another parameter.
+test "a type parameter is not a concrete type" {
+  val src = "package P\nfunc f[T](x: in T): Int {\n  val n: Int = x\n  n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "rigid: val n: Int = x with x: T is T0060")
+}
+
+test "a type parameter does not satisfy a concrete parameter" {
+  val src = "package P\nfunc take(i: in Int): Unit {\n}\nfunc f[T](x: in T): Unit {\n  take(x)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0043"), "rigid: take(x) with x: T is T0043")
+}
+
+test "two distinct type parameters are not the same type" {
+  val src = "package P\nfunc f[T, U](x: in T): U {\n  x\n}\n"
+  assertTrue(errorCount(parseCheck(src)) > 0, "rigid: returning a T where a U is declared is rejected")
+}
+
+test "a type parameter is equal to itself and instantiates at a call" {
+  val src = "package P\nfunc id[T](x: in T): T {\n  x\n}\nfunc g(): Int {\n  id(1)\n}\nfunc h[T](y: in T): T {\n  id(y)\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "rigid: identity over T and over Int is clean")
+}
+
 // #2228: a generic that occurs in multiple parameter positions resolves
 // consistently — `pick(a: T, b: T): T` called with two `Int`s returns `Int`,
 // so a `String` binding mismatches (T0060).  (When the occurrences disagree the

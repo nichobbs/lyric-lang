@@ -4369,7 +4369,7 @@ func dotNamedApplicable(
     return false
   }
   val dropped = dropReceiverParam(sig)
-  suppliedArgsMatch(tbl, dropped.params, argTypesInSigOrder(dropped, 0, args, argTypes))
+  suppliedArgsMatch(tbl, dropped, argTypesInSigOrder(dropped, 0, args, argTypes))
 }
 
 // Whether a method in the body of the receiver's type, or of an `impl` for
@@ -4383,7 +4383,7 @@ func ownBodyMethodApplicable(
   argTypes: in List[Type],
 ): Bool {
   for m in methodCandidatesFor(tbl, unrefine(recv), name) {
-    if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m.params, argTypesInSigOrder(m, 0, args, argTypes)) {
+    if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m, argTypesInSigOrder(m, 0, args, argTypes)) {
       return true
     }
   }
@@ -4655,7 +4655,8 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
 // Positional supplied-argument compatibility for CANDIDATE SELECTION only
 // (named-arg pairing and the real T0042/T0043 reporting happen in
 // `checkCallArgsAgainstSig` after selection).
-func suppliedArgsMatch(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
+func suppliedArgsMatch(tbl: in SymbolTable, sig: in ResolvedSignature, argTypes: in List[Type]): Bool {
+  val params = instantiateSigOrdered(sig, argTypes).params
   var i = 0
   while i < argTypes.count and i < params.count {
     if not argSatisfiesParam(tbl, params[i].ty, argTypes[i]) {
@@ -4726,7 +4727,7 @@ func resolveMethodCallPick(
     if sigDefaultsFilled(p.sig, args) >= 0 and not sigListHas(seen, p.sig) {
       seen.add(p.sig)
       fits.add(p)
-      if suppliedArgsMatch(tbl, p.sig.params, argTypesInSigOrder(p.sig, 0, args, argTypes)) {
+      if suppliedArgsMatch(tbl, p.sig, argTypesInSigOrder(p.sig, 0, args, argTypes)) {
         typed.add(p)
       }
     }
@@ -7152,7 +7153,7 @@ func pickByShape(
   for c in cands {
     if sigDefaultsFilled(c, args) >= 0 and not sigListHas(fitting, c) {
       fitting.add(c)
-      if suppliedArgsMatch(tbl, c.params, argTypesInSigOrder(c, 0, args, argTypes)) {
+      if suppliedArgsMatch(tbl, c, argTypesInSigOrder(c, 0, args, argTypes)) {
         typed.add(c)
       }
     }
@@ -20171,26 +20172,43 @@ func reportGenericBindingConflicts(
   }
 }
 
-// Check each argument against the parameter `srcIdx` pairs it with
-// (`srcIdx[k]` is the argument for parameter k, or -1).
 // `sig` with its type parameters replaced by what the call's arguments bind
 // them to; a parameter no argument fixes is an inference variable (`TyInfer`),
-// the hole it always was, now named.  A signature without type parameters is
-// returned as is.  `srcIdx[k]` is the argument for parameter k, or -1.
-func instantiateSigForArgs(sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]): ResolvedSignature {
+// the hole it always was, now named.  The id is the parameter's index in the
+// signature, meaningful only within this one instantiation.  A signature
+// without type parameters is returned as is.  `srcIdx[k]` is the argument for
+// parameter k, or -1.
+func instantiateSigForArgs(
+  sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]
+): ResolvedSignature {
   if sig.generics.count == 0 {
     return sig
   }
-  val paramTys: List[Type] = newList()
   val ordered: List[Type] = newList()
   var k = 0
   while k < sig.params.count {
-    paramTys.add(sig.params[k].ty)
     val ai = if k < srcIdx.count { srcIdx[k] } else { -1 }
     ordered.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
     k = k + 1
   }
-  val solved = inferGenericArgsForSig(sig, paramTys, ordered)
+  instantiateSigOrdered(sig, ordered)
+}
+
+// `instantiateSigForArgs` for argument types already in the order of `sig`'s
+// parameters; a parameter beyond them binds nothing.
+func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): ResolvedSignature {
+  if sig.generics.count == 0 {
+    return sig
+  }
+  val paramTys: List[Type] = newList()
+  val argTys: List[Type] = newList()
+  var k = 0
+  while k < sig.params.count {
+    paramTys.add(sig.params[k].ty)
+    argTys.add(if k < ordered.count { ordered[k] } else { TyError })
+    k = k + 1
+  }
+  val solved = inferGenericArgsForSig(sig, paramTys, argTys)
   val targs: List[Type] = newList()
   var g = 0
   while g < solved.count {
@@ -20200,6 +20218,8 @@ func instantiateSigForArgs(sig: in ResolvedSignature, argTypes: in List[Type], s
   instantiateSigAt(sig, targs)
 }
 
+// Check each argument against the parameter `srcIdx` pairs it with
+// (`srcIdx[k]` is the argument for parameter k, or -1).
 func checkPairedCallArgs(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -21909,7 +21929,7 @@ func applicableBodyMethod(
     case TyUser(tid, _, targs) -> {
       for e in symTableMethodSigs(tbl, tid, name) {
         val m = substituteMethodSig(e, unrefine(recv), targs)
-        if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m.params, argTypesInSigOrder(m, 0, args, argTypes)) {
+        if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m, argTypesInSigOrder(m, 0, args, argTypes)) {
           return Some(value = m)
         }
       }
