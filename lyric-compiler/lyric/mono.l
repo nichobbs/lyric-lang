@@ -7009,29 +7009,19 @@ func noteUnsafeImportedFallback(
   )
 }
 
-// W0034 (docs/70 section 5.2, D335): a call to an imported generic whose type
+// T0224 (docs/70 section 5.2, D335): a call to an imported generic whose type
 // argument(s) neither its arguments, its expected type nor the checker's
-// resolved type arguments fix is specialised at `Object`.  That default is
-// retiring: the warning is the first step of the two-step migration
-// (docs/70 section 12.2) and becomes the error T0224 once the sources that
-// rely on it are fixed.
-func noteObjectDefaultedTypeArgs(
-  state: in MonoState,
-  env: in Map[String, TypeExpr],
-  fname: in String,
-  unpinned: in List[String],
-  callSpan: in Span,
-): Unit {
-  if env.containsKey(fname) or isNoSourceSpan(callSpan) {
-    return
-  }
+// resolved type arguments fix.  It was specialised at `Object` (the warning
+// W0034 while the sources migrated); it is now an error and the call is not
+// rewritten.
+func noteUnpinnedTypeArgs(state: in MonoState, fname: in String, unpinned: in List[String], callSpan: in Span): Unit {
   state.diags.add(
-    warningDiagnostic(
-      "W0034",
+    errorDiagnostic(
+      "T0224",
       "cannot infer type argument(s) " + quotedStringList(unpinned) + " of '" + fname +
-        "' from the call's arguments or its expected type, so they default to 'Object'; write '" +
+        "' from the call's arguments or its expected type; write '" +
         fname +
-        "[...](...)' (this becomes error T0224)",
+        "[...](...)' or give the call an expected type",
       callSpan
     )
   )
@@ -8389,17 +8379,18 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                       fillCheckedTypeArgsMono(state, typeParams, subst, fn.span)
                     }
                     var unsafeImportedFallback = false
+                    var reportedUnpinned = false
                     if not substIsComplete(typeParams, subst) {
                       if not state.droppedLocalGenerics.containsKey(fname) and not annsHaveAxiomMono(baseDecl.annotations) {
                         val unpinnedNow = collectUnpinnedTypeParams(typeParams, subst)
                         if hasOpaqueErasureUnsafeGenericParam(baseDecl, unpinnedNow, argOpaque) {
                           unsafeImportedFallback = true
-                        } else {
+                        } else if annsHaveExternTargetMono(baseDecl.annotations) or env.containsKey(fname) or isNoSourceSpan(fn.span) {
                           // An `@externTarget` generic is a host boundary whose type
-                          // arguments are erased, never a specialisation to get wrong.
-                          if not annsHaveExternTargetMono(baseDecl.annotations) {
-                            noteObjectDefaultedTypeArgs(state, env, fname, unpinnedNow, fn.span)
-                          }
+                          // arguments are erased, a name `env` binds is a function
+                          // value, and a call without a source position was generated:
+                          // none of them has a call the user could write type
+                          // arguments on, so the erased default stays (D335).
                           var du = 0
                           while du < typeParams.count {
                             if not subst.containsKey(typeParams[du]) {
@@ -8407,6 +8398,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                             }
                             du = du + 1
                           }
+                        } else {
+                          reportedUnpinned = true
+                          noteUnpinnedTypeArgs(state, fname, unpinnedNow, fn.span)
                         }
                       }
                     }
@@ -8442,7 +8436,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                     }
                     if unsafeImportedFallback {
                       noteUnsafeImportedFallback(state, env, fname, collectUnpinnedTypeParams(typeParams, subst), fn.span)
-                    } else {
+                    } else if not reportedUnpinned {
                       noteUnspecialisableLocalCall(
                         state,
                         env,
