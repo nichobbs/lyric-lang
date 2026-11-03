@@ -990,7 +990,7 @@ func resolveTypePath(
   // A dependency's signatures: a restored contract names its types fully
   // qualified and carries no import for the package that declares them, so
   // there is no scope to resolve the owner in; its own build checked what it
-  // names (D331).
+  // names (D333).
   match dependencyQualifiedType(tbl, ownerPkg, last) {
     case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
     case None -> ()
