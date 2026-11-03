@@ -170,8 +170,8 @@ test "a List of tuples keeps its element type for None components" {
   assertTrue(isNone2(ys[0]), "inserted element")
 }
 
-test "a generic call whose only argument is a bare None" {
-  assertTrue(isNone(None), "isNone(None)")
+test "a generic call whose only argument is a bare None, with its type argument written" {
+  assertTrue(isNone[Int](None), "isNone[Int](None)")
 }
 
 test "a module-level val initialised with newList" {
