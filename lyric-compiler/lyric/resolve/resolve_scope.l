@@ -131,7 +131,7 @@ func bindExtern(tbl: in DeclTable, fsc: in FileScope, local: in String, fqn: in 
 
 // An import as written (`import P.{A, B as C}`, `import P as Q`), the advice a
 // file that relies on a sibling's import is given (T0219).
-func renderImport(imp: in ImportDecl): String {
+pub func renderImport(imp: in ImportDecl): String {
   var text = importWord(imp) + modulePathJoin(imp.path.segments)
   match imp.selector {
     case Some(sel) -> {
@@ -230,4 +230,104 @@ func addSelected(tbl: in DeclTable, fsc: in FileScope, target: in String, item: 
       }
     }
   }
+}
+
+/// A spelling that heads a qualified reference in a file, and the package it
+/// names: the alias of `import P as A`, the last segment of a bare
+/// `import P.Q` (so `Q.f` names `P.Q.f`), and the full dotted path of either
+/// (so `P.Q.f` is still read as a qualified reference).  Explicit aliases come
+/// first and win a spelling a bare import also claims; two bare imports that
+/// share a tail resolve first-wins in source order (#3250).
+pub record ImportHead {
+  head: String
+  target: String
+}
+
+/// A rename of a selective import (`import P.{f as g}`, D160): `g` is a bare
+/// name for `f` of package `pkg`.
+pub record ImportRename {
+  local: String
+  pkg: String
+  name: String
+}
+
+func hasAlias(imp: in ImportDecl): Bool {
+  match imp.asAlias {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func headsHave(heads: in List[ImportHead], head: in String): Bool {
+  for h in heads {
+    if h.head == head {
+      return true
+    }
+  }
+  false
+}
+
+/// The qualified-reference heads `imports` bind, in the order described on
+/// `ImportHead`.  `import extern` bindings are types, not packages, and bind
+/// none.
+pub func importHeads(imports: in List[ImportDecl]): List[ImportHead] {
+  val heads: List[ImportHead] = newList()
+  for imp in imports {
+    if not imp.isExtern {
+      match imp.asAlias {
+        case Some(name) -> {
+          val dotted = modulePathJoin(imp.path.segments)
+          heads.add(ImportHead(head = name, target = dotted))
+          if not headsHave(heads, dotted) {
+            heads.add(ImportHead(head = dotted, target = dotted))
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  for imp in imports {
+    if not imp.isExtern and not hasAlias(imp) and imp.path.segments.count >= 1 {
+      val dotted = modulePathJoin(imp.path.segments)
+      val tail = lastSegment(imp.path)
+      if not headsHave(heads, tail) {
+        heads.add(ImportHead(head = tail, target = dotted))
+      }
+      if dotted != tail and not headsHave(heads, dotted) {
+        heads.add(ImportHead(head = dotted, target = dotted))
+      }
+    }
+  }
+  heads
+}
+
+/// The renames `imports` bind, in source order.
+pub func importRenames(imports: in List[ImportDecl]): List[ImportRename] {
+  val renames: List[ImportRename] = newList()
+  for imp in imports {
+    if not imp.isExtern {
+      match imp.selector {
+        case Some(sel) -> {
+          for item in importItems(sel) {
+            match item.asAlias {
+              case Some(local) -> renames.add(ImportRename(local = local, pkg = modulePathJoin(imp.path.segments), name = item.name))
+              case None -> ()
+            }
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  renames
+}
+
+/// Whether `imports` import the Lyric package `pkg` in any form.
+pub func importsPackage(imports: in List[ImportDecl], pkg: in String): Bool {
+  for imp in imports {
+    if not imp.isExtern and modulePathJoin(imp.path.segments) == pkg {
+      return true
+    }
+  }
+  false
 }

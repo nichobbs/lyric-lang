@@ -29,6 +29,7 @@ import Std.Collections
 import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Resolve.{importHeads, importRenames, importsPackage, renderImport}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Alias collection.
@@ -56,89 +57,14 @@ func asAliasOf(imp: in ImportDecl): Option[String] {
   imp.asAlias
 }
 
-// Build a list of single-segment alias names from the source file's
-// imports.  Only `import X as A`-style aliases participate; selector
-// aliases (`{ foo as bar }`) are handled elsewhere.
-//
-// A list is used instead of a set because the typechecker isn't a
-// hot path for huge alias counts — linear membership is plenty.
-//
-// Each entry is `"<alias>=<dotted declaring package>"`, e.g. `"Rx=Std.RegexSafe"`,
-// so a later `Rx.foo` rewrite can substitute the alias head with the full package
-// path (preserving which package the call/type targets) rather than dropping it.
-// `=` is a safe separator: neither identifiers nor package names contain it.
-//
-// Bare `import X` / `import A.B.X` (no `as` clause) is treated as an implicit
-// `import ... as X`: the tail segment `X` is registered as an alias for the
-// full dotted path so that `X.func(...)` call sites are rewritten from
-// `EMember(EPath(["X"]), "func")` to the flat `EPath([..., "X", "func"])` form
-// that `lowerBuiltinOrStaticCallMsil` can dispatch correctly.  Without this,
-// the call lands in `lowerMethodCallMsil` which looks for `func` as a method
-// on an unknown receiver and throws at runtime (#2930 single-segment, #2929
-// multi-segment).  Explicit `as` aliases are collected first and win: a bare
-// import never shadows a name an explicit alias already claims.  Two bare
-// imports sharing a tail segment (`import Foo.Bar` + `import Other.Bar`)
-// resolve first-wins in source order with no diagnostic — matching the
-// existing duplicate-explicit-alias behavior; add an explicit `as` clause to
-// disambiguate (#3250).
+// The qualified-reference heads of `imports` as `"<head>=<dotted package>"`
+// entries, e.g. `"Rx=Std.RegexSafe"`.  What binds a head (explicit aliases,
+// bare-import tails, full paths) is `Lyric.Resolve.importHeads`'s rule
+// (docs/70 §4.3, D329); the rewriter only spells the result as entries.
 func collectAliases(imports: in List[ImportDecl]): List[String] {
   val entries: List[String] = newList()
-  var i = 0
-  while i < imports.count {
-    val imp = imports[i]
-    if not imp.isExtern {
-      match asAliasOf(imp) {
-        case Some(name) -> {
-          val dotted = modulePathJoin(imp.path.segments)
-          entries.add(name + "=" + dotted)
-          // Self-mapped full-path key (#6294 follow-up): `import Pkg.Sub as X`
-          // makes `X.foo(...)` the idiomatic call form, but the ORIGINAL
-          // dotted name (`Pkg.Sub.foo(...)`) is still valid Lyric and parses
-          // the same way — a qualified-call `EMember` chain, not a
-          // single-segment `EPath` head. Without this, calling via the
-          // pre-alias name (instead of the alias) hits the exact #6294
-          // silent-`TyError` gap this fix exists to close, just reached
-          // through an aliased rather than bare import.
-          if not entriesContain(entries, dotted) {
-            entries.add(dotted + "=" + dotted)
-          }
-        }
-        case None -> ()
-      }
-    }
-    i = i + 1
-  }
-  var j = 0
-  while j < imports.count {
-    val imp = imports[j]
-    if not imp.isExtern {
-      match asAliasOf(imp) {
-        case Some(_) -> ()
-        case None -> {
-          if imp.path.segments.count >= 1 {
-            val dotted = modulePathJoin(imp.path.segments)
-            val tail = imp.path.segments[imp.path.segments.count - 1]
-            if not entriesContain(entries, tail) {
-              entries.add(tail + "=" + dotted)
-            }
-            // Self-mapped full-path key (#6294): a bare `import Pkg.Sub` is
-            // also referenced at call sites by its FULL dotted spelling
-            // (`Pkg.Sub.func(...)`), which the expression parser produces as
-            // nested `EMember`s, not a single-segment `EPath` head — the
-            // tail-only key above only matches the one-dot-short form
-            // (`Sub.func(...)`). Registering the whole dotted path as its own
-            // key lets `rewriteExpr`'s EMember-chain flattening recognise the
-            // fully-qualified form too, for a package name of ANY segment
-            // count (a single-segment import's tail key already covers it,
-            // so this is a no-op there and only matters for segments.count >= 2).
-            if dotted != tail and not entriesContain(entries, dotted) {
-              entries.add(dotted + "=" + dotted)
-            }
-          }
-        }
-      }
-    }
-    j = j + 1
+  for h in importHeads(imports) {
+    entries.add(h.head + "=" + h.target)
   }
   entries
 }
@@ -270,28 +196,8 @@ func aliasPkgSegs(aliases: in AliasEnv, name: in String, sp: in Span): List[Stri
 // (`dropRenamesNamed` at each binding site).
 func collectRenames(imports: in List[ImportDecl]): List[String] {
   val entries: List[String] = newList()
-  for imp in imports {
-    if not imp.isExtern {
-      match imp.selector {
-        case Some(sel) -> {
-          val items: List[ImportItem] = match sel {
-            case ISGroup(group) -> group
-            case ISSingle(one) -> {
-              val single: List[ImportItem] = newList()
-              single.add(one)
-              single
-            }
-          }
-          for item in items {
-            match item.asAlias {
-              case Some(local) -> entries.add("^" + local + "=" + modulePathJoin(imp.path.segments) + "." + item.name)
-              case None -> ()
-            }
-          }
-        }
-        case None -> ()
-      }
-    }
+  for r in importRenames(imports) {
+    entries.add("^" + r.local + "=" + r.pkg + "." + r.name)
   }
   entries
 }
@@ -2668,48 +2574,6 @@ func listHasKey(entries: in List[String], key: in String): Bool {
   false
 }
 
-// An import as written, for the advice of T0219.
-func renderImport(imp: in ImportDecl): String {
-  var text = if imp.isPubUse { "pub use " } else { "import " }
-  text = text + modulePathJoin(imp.path.segments)
-  match imp.selector {
-    case Some(sel) -> {
-      val items: List[ImportItem] = match sel {
-        case ISGroup(group) -> group
-        case ISSingle(one) -> {
-          val single: List[ImportItem] = newList()
-          single.add(one)
-          single
-        }
-      }
-      text = text + ".{"
-      var k = 0
-      while k < items.count {
-        if k > 0 {
-          text = text + ", "
-        }
-        text = text + items[k].name
-        match items[k].asAlias {
-          case Some(a) -> {
-            text = text + " as " + a
-          }
-          case None -> ()
-        }
-        k = k + 1
-      }
-      text = text + "}"
-    }
-    case None -> ()
-  }
-  match imp.asAlias {
-    case Some(a) -> {
-      text = text + " as " + a
-    }
-    case None -> ()
-  }
-  text
-}
-
 // T0219 for each rewrite of an item of file `fid` through another file's
 // alias or rename, once per spelling and file, when the file imports the
 // target package in some form; when it imports it in none, the type checker
@@ -2723,7 +2587,7 @@ func reportSiblingUses(
 ): Unit {
   for u in env.used {
     val tag = toString(fid) + "|" + u.key
-    if fileImportsPackage(header, u.target) and not listHas(reported, tag) {
+    if importsPackage(header.imports, u.target) and not listHas(reported, tag) {
       reported.add(tag)
       val location = if u.path.length > 0 { u.path } else { "another file of this package" }
       diags.add(
@@ -2758,14 +2622,4 @@ func packageOfMember(target: in String): String {
   } else {
     target
   }
-}
-
-// Whether `header`'s own imports import `pkg` in any form.
-func fileImportsPackage(header: in FileHeader, pkg: in String): Bool {
-  for imp in header.imports {
-    if not imp.isExtern and modulePathJoin(imp.path.segments) == pkg {
-      return true
-    }
-  }
-  false
 }
