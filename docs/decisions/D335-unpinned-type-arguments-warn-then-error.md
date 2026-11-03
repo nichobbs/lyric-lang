@@ -1,8 +1,8 @@
 # D335 - A type argument nothing fixes is W0034, then error T0224 (docs/70 phase 3a, #8613)
 
-**Status:** step one of two (the warning and the source migration). Step two
-turns W0034 into the error T0224 and deletes the `Object` default; it lands
-after CI's logs show no remaining W0034.
+**Status:** shipped in two steps. Step one (#8757) added the warning W0034 and
+migrated the sources; step two (this entry's items 6 and 7) turned W0034 into
+the error T0224 and deleted the `Object` default for ordinary generics.
 
 ## Context
 
@@ -38,12 +38,25 @@ belongs to the package-interface work.
    `unwrapResult(Err(...))`); each now writes its type arguments
    (`isSome[Int](None)`), a form the seed also accepts. An `assertPanics`
    lambda that must return `Unit` is `unwrapResult[Unit, String](...)`.
-6. **Step two.** W0034 becomes the error T0224, the Mono `Object` fill (the
-   imported-generic branch and its twin in the result-type inference) is
-   deleted, and docs/01 gets the T0224 row. The `Ok(value = 7)` expression
-   that stands alone keeps its `Result[Int, Object]` typing until the checker
-   reports the unsolved parameter itself (the `TyInfer` work in the next
-   step).
+6. **Step two: T0224.** The warning is the error **T0224** ("cannot infer
+   type argument(s) 'T' of 'f' from the call's arguments or its expected type;
+   write 'f[...](...)' or give the call an expected type") and the call is not
+   rewritten. The `Object` default is deleted for an ordinary imported
+   generic. It stays, silently, for three calls that have no call the user can
+   write type arguments on: an `@externTarget` generic (a host boundary), a
+   name the local environment binds (a function value) and a call without a
+   source position (generated code).
+7. **What the Mono unit tests pin.** Five tests encoded the default
+   (`isEmptyLike(NoneLike)`, a partially pinned union constructor, a binding
+   from an unpinned call, an ambiguous lambda body, a slice-shaped opaque
+   argument). They now assert T0224 and no `Object` specialisation, and the two
+   that tested instantiation tracking write their type arguments. The
+   compile-fail corpus case `unpinned_type_argument` pins the diagnostic on
+   both targets.
+8. **Not changed.** The `Ok(value = 7)` expression that stands alone keeps its
+   `Result[Int, Object]` typing in Mono's result-type inference until the
+   checker reports the unsolved parameter itself (the `TyInfer`-at-the-call
+   work); it is an inferred type, never a specialisation.
 
 ## Census
 
