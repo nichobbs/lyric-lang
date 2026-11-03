@@ -246,12 +246,17 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
   val ub = unrefine(b)
   match ua {
     case TyError -> true
-    case TyParam(_, _) -> true
     case TyInfer(_) -> true
+    case TyParam(na, oa) -> match ub {
+      case TyError -> true
+      case TyInfer(_) -> true
+      case TyParam(nb, ob) -> na == nb and oa == ob
+      case _ -> false
+    }
     case _ -> match ub {
       case TyError -> true
-      case TyParam(_, _) -> true
       case TyInfer(_) -> true
+      case TyParam(_, _) -> false
       case _ -> typeEquivCore(ua, ub)
     }
   }
@@ -260,13 +265,12 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
 func typeEquivCore(a: in Type, b: in Type): Bool {
   match a {
     case TyError -> true
-    case TyParam(_, _) -> true
+    case TyParam(na, oa) -> match b { case TyParam(nb, ob) -> na == nb and oa == ob; case TyInfer(_) -> true; case TyError -> true; case _ -> false }
     case TyInfer(_) -> true
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
     case TyLen(na) -> match b {
       case TyLen(nb) -> na == nb
-      case TyParam(_, _) -> true
       case TyInfer(_) -> true
       case _ -> false
     }
