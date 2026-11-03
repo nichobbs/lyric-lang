@@ -17,6 +17,11 @@ import Lyric.Symbols
 // the interface hash.  A `.lyri` file holds one interface; a .NET assembly
 // holds one `Lyric.Interface.<Pkg>` resource per package.  Exit 0 on success,
 // 1 for a usage error or an unreadable, malformed or absent interface.
+record FoundIface {
+  label: String
+  bytes: slice[Byte]
+}
+
 func interfaceUsage(): Int {
   printErr("usage: lyric interface dump <file.lyri|assembly.dll>")
   1
@@ -24,8 +29,8 @@ func interfaceUsage(): Int {
 
 // The interfaces `path` holds, as (label, bytes).  `None` after reporting why
 // there are none.
-func interfacesOf(path: in String): Option[List[(String, slice[Byte])]] {
-  val res: List[(String, slice[Byte])] = newList()
+func interfacesOf(path: in String): Option[List[FoundIface]] {
+  val res: List[FoundIface] = newList()
   if Str.endsWith(path, ".dll") {
     match Mdr.openResourceImage(path) {
       case None -> {
@@ -37,7 +42,9 @@ func interfacesOf(path: in String): Option[List[(String, slice[Byte])]] {
         for name in Mdr.resourceNamesIn(ri) {
           if Str.startsWith(name, prefix) {
             match Mdr.tryReadResourceIn(ri, name) {
-              case Some(bytes) -> res.add((name.substring(prefix.length, name.length - prefix.length), bytes))
+              case Some(bytes) -> res.add(
+                FoundIface(label = name.substring(prefix.length, name.length - prefix.length), bytes = bytes)
+              )
               case None -> ()
             }
           }
@@ -54,7 +61,7 @@ func interfacesOf(path: in String): Option[List[(String, slice[Byte])]] {
         printErr("interface dump: cannot read " + path + ": " + e.message())
         return None
       }
-      case Ok(bytes) -> res.add(("", bytes))
+      case Ok(bytes) -> res.add(FoundIface(label = "", bytes = bytes))
     }
   } else {
     printErr("interface dump: " + path + ": expected a .lyri or .dll file")
@@ -74,7 +81,8 @@ func cmdInterface(argv: in slice[String]): Int {
       var status = 0
       var first = true
       for entry in found {
-        val (label, bytes) = entry
+        val label = entry.label
+        val bytes = entry.bytes
         val interner = newDefPathInterner()
         match decodeIface(bytes, interner) {
           case Err(msg) -> {
