@@ -634,7 +634,7 @@ func checkMatchExhaustive(
     case TyError -> {
     }
     // scrutinee type unknown — already diagnosed
-    case TyVar(_) -> {
+    case TyParam(_, _) -> {
     }
     // generic type parameter — cannot enumerate
     case TyPrim(pt) -> {
@@ -807,7 +807,7 @@ func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: i
     case TyError -> {
       return
     }
-    case TyVar(_) -> {
+    case TyParam(_, _) -> {
       return
     }
     case _ -> ()
@@ -2311,7 +2311,7 @@ pub func operatorMarker(op: in BinOp): String {
 // clause bounds it by `marker` (#7996, #8017).
 func tyVarBoundedBy(sc: in Scope, t: in Type, marker: in String): Bool {
   match t {
-    case TyVar(name) -> {
+    case TyParam(name, _) -> {
       for b in sc.bounds {
         if b.name == name and listContainsStr(b.constraints, marker) {
           return true
@@ -2337,7 +2337,7 @@ func boundedOperandsClash(sc: in Scope, op: in BinOp, lhs: in Type, rhs: in Type
     return false
   }
   match lhs {
-    case TyVar(ln) -> match rhs { case TyVar(rn) -> ln != rn; case TyError -> false; case _ -> true }
+    case TyParam(ln, _) -> match rhs { case TyParam(rn, _) -> ln != rn; case TyError -> false; case _ -> true }
     case TyError -> false
     case _ -> match rhs { case TyError -> false; case _ -> true }
   }
@@ -3322,7 +3322,7 @@ func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs: in
   val result: List[FieldEntry] = newList()
   var i = 0
   while i < raw.count {
-    result.add(FieldEntry(name = raw[i].name, ty = eraseTyVars(substituteTyVars(raw[i].ty, gnames, targs))))
+    result.add(FieldEntry(name = raw[i].name, ty = eraseTyParams(substituteTyParams(raw[i].ty, gnames, targs))))
     i = i + 1
   }
   result
@@ -3340,12 +3340,12 @@ func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, ge
       while i < raw.count {
         if raw[i].name == name {
           match raw[i].ty {
-            case TyVar(g) -> {
+            case TyParam(g, _) -> {
               var gi = 0
               while gi < gnames.count and gi < targs.count {
                 if gnames[gi] == g {
                   match targs[gi] {
-                    case TyVar(n) -> if genericNames.contains(n) { return TyVar(n) }
+                    case TyParam(n, _) -> if genericNames.contains(n) { return TyParam(name = n, owner = "") }
                     case _ -> ()
                   }
                 }
@@ -3389,7 +3389,7 @@ func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in Lis
   for m in od.members {
     match m {
       case OMField(fd) -> if fd.name == name {
-        return Some(value = eraseTyVars(substituteTyVars(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
+        return Some(value = eraseTyParams(substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
       }
       case OMInvariant(_) -> ()
     }
@@ -3627,7 +3627,7 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
 // `branchesAgainstExpected`/`adoptUnionCaseExpected`.
 func typeIsClosed(t: in Type): Bool {
   match t {
-    case TyVar(_) -> false
+    case TyParam(_, _) -> false
     case TyError -> false
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosed(args)
@@ -4196,7 +4196,7 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     val p = entry.sig.params[i]
     var ty = substitutesSelf(p.ty, recv)
     if doSub {
-      ty = substituteTyVars(ty, entry.ownerGenerics, targs)
+      ty = substituteTyParams(ty, entry.ownerGenerics, targs)
     }
     // #6467: `p.tyExpr` threads through Self/generic substitution unchanged —
     // substitution only ever rewrites a `Self` or owner-generic reference,
@@ -4218,7 +4218,7 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
   }
   var rty = substitutesSelf(entry.sig.returnTy, recv)
   if doSub {
-    rty = substituteTyVars(rty, entry.ownerGenerics, targs)
+    rty = substituteTyParams(rty, entry.ownerGenerics, targs)
   }
   ResolvedSignature(
     generics = entry.sig.generics,
@@ -5132,7 +5132,7 @@ func isSelfTypeArgument(selfTy: in Type, tvName: in String): Bool {
     case TyUser(_, _, selfArgs) -> {
       for sa in selfArgs {
         match sa {
-          case TyVar(sn) -> {
+          case TyParam(sn, _) -> {
             if sn == tvName {
               return true
             }
@@ -5180,7 +5180,7 @@ func maybeUnknownTypeParamMethodDiag(
   span: in Span,
 ): Unit {
   match unrefine(recvRaw) {
-    case TyVar(tvName) -> {
+    case TyParam(tvName, _) -> {
       if not sc.genericNames.contains(tvName) {
         return
       }
@@ -5728,7 +5728,7 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
     } else {
       typeExprForUserType(tbl, tid, args, sp, vars)
     }
-    case TyVar(nm) -> if vars {
+    case TyParam(nm, _) -> if vars {
       val vsegs: List[String] = newList()
       vsegs.add(nm)
       Some(value = TypeExpr(kind = TRef(path = refTypePath(vsegs, sp)), span = sp))
@@ -6052,7 +6052,7 @@ func noteCaseRangeAgainstExpected(
         while k < ftypes.count and k < order.count {
           val ai = order[k]
           if ai >= 0 and ai < args.count {
-            noteRangeSlot(tbl, substituteTyVars(ftypes[k], gnames, eargs), callArgExpr(args[ai]), uc.name + " payload")
+            noteRangeSlot(tbl, substituteTyParams(ftypes[k], gnames, eargs), callArgExpr(args[ai]), uc.name + " payload")
           }
           k = k + 1
         }
@@ -6274,7 +6274,7 @@ func ctorArgsExpected(
   while k < srcIdx.count {
     val ai = srcIdx[k]
     if ai >= 0 and ai < exps.count {
-      val st = substituteTyVars(slotTypes[k], gnames, eargs)
+      val st = substituteTyParams(slotTypes[k], gnames, eargs)
       if typeIsClosed(st) {
         exps[ai] = st
       }
@@ -7054,7 +7054,7 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
 // rejected (#8332).
 func typeIsBoolOperand(t: in Type): Bool {
   match t {
-    case TyVar(_) -> false
+    case TyParam(_, _) -> false
     case _ -> typeEquiv(t, TyPrim(pt = PtBool))
   }
 }
@@ -7692,7 +7692,7 @@ func genericArgFromResultExpected(
   var k = 0
   while k < srcIdx.count {
     if srcIdx[k] == ai {
-      return substituteTyVars(sig.params[k].ty, sig.generics, targs)
+      return substituteTyParams(sig.params[k].ty, sig.generics, targs)
     }
     k = k + 1
   }
@@ -7970,7 +7970,7 @@ func valueArgsOfInstance(params: in List[GenericParam], targs: in List[Type], sp
         case TyLen(n) -> vargs.add(
           TAValue(expr = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), span))
         )
-        case TyVar(m) -> {
+        case TyParam(m, _) -> {
           val segs: List[String] = newList()
           segs.add(m)
           vargs.add(TAType(ty = TypeExpr(kind = TRef(path = refTypePath(segs, span)), span = span)))
@@ -8222,7 +8222,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
 // Used to determine which constructor fields constrain a given type parameter.
 func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
   match ty {
-    case TyVar(nm) -> nm == name
+    case TyParam(nm, _) -> nm == name
     case TyUser(_, _, targs) -> {
       var i = 0
       while i < targs.count {
@@ -8262,7 +8262,7 @@ func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
 
 // Returns true when at least one constructor field that constrains `name` has a
 // corresponding arg of type TyError (the lenient wildcard produced by
-// `eraseTyVars` in `bindPatternTyped` for pattern-bound variables).  When true,
+// `eraseTyParams` in `bindPatternTyped` for pattern-bound variables).  When true,
 // the inference failure for `name` is due to type-variable erasure, not a real
 // mismatch — T0110 should be suppressed for this parameter.
 func anyFieldArgIsLenientForParam(name: in String, fieldTypes: in List[Type], orderedArgTypes: in List[Type]): Bool {
@@ -8318,7 +8318,7 @@ func instantiatedFieldType(
   var i = 0
   while i < fieldNames.count and i < fieldTypes.count {
     if fieldNames[i] == name {
-      return substituteTyVars(fieldTypes[i], gnames, targs)
+      return substituteTyParams(fieldTypes[i], gnames, targs)
     }
     i = i + 1
   }
@@ -9084,7 +9084,7 @@ func inferConstructionExpected(
       val isErr = match targs[gi] { case TyError -> true; case _ -> false }
       if isErr {
         // Suppress T0110 for this param when the inference failure is due to
-        // an erased type variable (TyError from eraseTyVars in bindPatternTyped).
+        // an erased type variable (TyError from eraseTyParams in bindPatternTyped).
         // A TyError arg at a field position that constrains the param is a lenient
         // wildcard, not a genuine mismatch — consistent with typeEquiv treating
         // TyError as a wildcard everywhere else in the type checker.
@@ -10165,7 +10165,7 @@ func recordCaseFieldWidenings(
   while k < srcIdx.count and k < ftypes.count {
     val ai = srcIdx[k]
     if ai >= 0 and ai < argTypes.count {
-      val fieldTy = substituteTyVars(ftypes[k], gnames, targs)
+      val fieldTy = substituteTyParams(ftypes[k], gnames, targs)
       val _ = covariantFlow(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       val fieldLabel = if names[k].length > 0 { "field " + names[k] } else { "field " + toString(k + 1) }
@@ -10225,7 +10225,7 @@ func recordGenericArgWidenings(
     val p = sig.params[j + offset]
     val isIn = match p.mode { case PMIn -> true; case _ -> false }
     if ai >= 0 and ai < argTypes.count and isIn {
-      recordUnsignedWidening(tbl, substituteTyVars(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
+      recordUnsignedWidening(tbl, substituteTyParams(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
       // A type parameter instantiated with an inline range type is checked
       // at the call: the generic body knows nothing of the range (#8031).
       // A parameter declared with a range is checked by the callee.
@@ -10233,7 +10233,7 @@ func recordGenericArgWidenings(
         case TyRefined(_, _, _, _, _) -> ()
         case _ -> noteRangeSlot(
           tbl,
-          substituteTyVars(p.ty, sig.generics, targs),
+          substituteTyParams(p.ty, sig.generics, targs),
           callArgExpr(args[ai]),
           "argument " + toString(j + 1)
         )
@@ -10354,9 +10354,9 @@ func inferUnionCaseConstruction(
 // `Some(ns)` on `Option[NameAndSpan]` binds `ns : NameAndSpan`.  Used by the
 // `EMatch` arm so arm-body types are correct for branch unification.
 // Replace generic type variables in `t`: each `TyVar(names[i])` becomes `args[i]`.
-func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): Type {
+func substituteTyParams(t: in Type, names: in List[String], args: in List[Type]): Type {
   match t {
-    case TyVar(nm) -> {
+    case TyParam(nm, _) -> {
       var i = 0
       while i < names.count and i < args.count {
         if names[i] == nm {
@@ -10370,31 +10370,31 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
       val na: List[Type] = newList()
       var i = 0
       while i < targs.count {
-        na.add(substituteTyVars(targs[i], names, args))
+        na.add(substituteTyParams(targs[i], names, args))
         i = i + 1
       }
       TyUser(id = id, name = name, args = na)
     }
-    case TySlice(e) -> TySlice(element = substituteTyVars(e, names, args))
+    case TySlice(e) -> TySlice(element = substituteTyParams(e, names, args))
     case TyArray(sz, e, sv) -> {
-      val elem = substituteTyVars(e, names, args)
+      val elem = substituteTyParams(e, names, args)
       // A length that is a value generic parameter takes its argument: a
       // known length (`TyLen`) or another parameter (D169).
       match sz {
         case Some(_) -> TyArray(size = sz, element = elem, sizeVar = sv)
-        case None -> match substituteTyVars(TyVar(name = sv), names, args) {
+        case None -> match substituteTyParams(TyParam(name = sv, owner = ""), names, args) {
           case TyLen(n) -> TyArray(size = Some(value = n), element = elem, sizeVar = "")
-          case TyVar(m) -> TyArray(size = None, element = elem, sizeVar = m)
+          case TyParam(m, _) -> TyArray(size = None, element = elem, sizeVar = m)
           case _ -> TyArray(size = None, element = elem, sizeVar = sv)
         }
       }
     }
-    case TyNullable(inner) -> TyNullable(inner = substituteTyVars(inner, names, args))
+    case TyNullable(inner) -> TyNullable(inner = substituteTyParams(inner, names, args))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
       while i < elems.count {
-        ne.add(substituteTyVars(elems[i], names, args))
+        ne.add(substituteTyParams(elems[i], names, args))
         i = i + 1
       }
       TyTuple(elems = ne)
@@ -10403,10 +10403,10 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
       val np: List[Type] = newList()
       var i = 0
       while i < ps.count {
-        np.add(substituteTyVars(ps[i], names, args))
+        np.add(substituteTyParams(ps[i], names, args))
         i = i + 1
       }
-      TyFunction(params = np, ret = substituteTyVars(ret, names, args), isAsync = isA)
+      TyFunction(params = np, ret = substituteTyParams(ret, names, args), isAsync = isA)
     }
     case _ -> t
   }
@@ -10420,7 +10420,7 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
 // occur in `paramTy` or the shapes don't align.
 func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Option[Type] {
   match paramTy {
-    case TyVar(nm) -> if nm == name { Some(value = argTy) } else { None }
+    case TyParam(nm, _) -> if nm == name { Some(value = argTy) } else { None }
     case TyUser(pid, _, pargs) -> {
       // Guard by SymbolId to avoid cross-constructor inference (e.g. Result vs Option).
       val aargs = match unrefine(argTy) {
@@ -10436,7 +10436,7 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
       case TyArray(asz, ae, asv) -> if psv == name {
         match asz {
           case Some(n) -> Some(value = TyLen(n = n))
-          case None -> if asv.length > 0 { Some(value = TyVar(name = asv)) } else { None }
+          case None -> if asv.length > 0 { Some(value = TyParam(name = asv, owner = "")) } else { None }
         }
       } else {
         findGenericInPair(name, pe, ae)
@@ -10514,7 +10514,7 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
   while i < paramTys.count and i < argTys.count {
     match findGenericInPair(name, paramTys[i], argTys[i]) {
       case Some(v) -> {
-        val bare = isBareTyVar(paramTys[i], name)
+        val bare = isBareTyParam(paramTys[i], name)
         if not haveBinding {
           bound = v
           haveBinding = true
@@ -10568,7 +10568,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
     var pinned = false
     while pi < sig.params.count and pi < argTys.count and pi < paramTys.count and not pinned {
       val byRef = match sig.params[pi].mode { case PMIn -> false; case _ -> true }
-      if byRef and isBareTyVar(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
+      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
         targs[g] = argTys[pi]
         pinned = true
       }
@@ -10586,9 +10586,9 @@ func typeIsHole(t: in Type): Bool {
   }
 }
 
-func isBareTyVar(t: in Type, name: in String): Bool {
+func isBareTyParam(t: in Type, name: in String): Bool {
   match t {
-    case TyVar(n) -> n == name
+    case TyParam(n, _) -> n == name
     case _ -> false
   }
 }
@@ -10614,7 +10614,7 @@ func instantiateReturnType(
     i = i + 1
   }
   val targs = inferGenericArgsForSig(sig, paramTys, argTypesInSigOrder(sig, skip, args, argTypes))
-  substituteTyVars(sig.returnTy, sig.generics, targs)
+  substituteTyParams(sig.returnTy, sig.generics, targs)
 }
 
 // `argTypes` (the types of `skip` leading receiver arguments, then of `args`
@@ -10689,7 +10689,7 @@ func checkBoundsSatisfied(
       match concreteTy {
         case TyError -> {
         }
-        case TyVar(_) -> {
+        case TyParam(_, _) -> {
         }
         case _ -> {
           var ci = 0
@@ -10773,7 +10773,7 @@ func caseFieldTypesInstantiated(
         val result: List[Type] = newList()
         var i = 0
         while i < ftypes.count {
-          result.add(substituteTyVars(ftypes[i], gnames, targs))
+          result.add(substituteTyParams(ftypes[i], gnames, targs))
           i = i + 1
         }
         result
@@ -10870,7 +10870,7 @@ func checkConstRefPattern(
               val ctx = newGenericContext()
               val constTy = resolveType(tbl, ctx, diag, cd.ty)
               match constTy {
-                case TyVar(_) -> {
+                case TyParam(_, _) -> {
                   diag.add(
                     errorDiagnostic(
                       "T0071",
@@ -10916,7 +10916,7 @@ func checkConstRefPattern(
                   }
                 }
                 match valTy {
-                  case TyVar(_) -> {
+                  case TyParam(_, _) -> {
                     diag.add(
                       errorDiagnostic(
                         "T0071",
@@ -11028,26 +11028,26 @@ func checkConstRefPattern(
 // `Some(v)` on `Option[V]` inside a generic function) must not later trip a
 // false "not numeric" / type-mismatch — the type checker does not track the
 // `where V: Add`-style bounds that make such uses valid.
-func eraseTyVars(t: in Type): Type {
+func eraseTyParams(t: in Type): Type {
   match t {
-    case TyVar(_) -> TyError
+    case TyParam(_, _) -> TyError
     case TyUser(id, name, targs) -> {
       val na: List[Type] = newList()
       var i = 0
       while i < targs.count {
-        na.add(eraseTyVars(targs[i]))
+        na.add(eraseTyParams(targs[i]))
         i = i + 1
       }
       TyUser(id = id, name = name, args = na)
     }
-    case TySlice(e) -> TySlice(element = eraseTyVars(e))
-    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyVars(e), sizeVar = sv)
-    case TyNullable(inner) -> TyNullable(inner = eraseTyVars(inner))
+    case TySlice(e) -> TySlice(element = eraseTyParams(e))
+    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyParams(e), sizeVar = sv)
+    case TyNullable(inner) -> TyNullable(inner = eraseTyParams(inner))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
       while i < elems.count {
-        ne.add(eraseTyVars(elems[i]))
+        ne.add(eraseTyParams(elems[i]))
         i = i + 1
       }
       TyTuple(elems = ne)
@@ -11056,10 +11056,10 @@ func eraseTyVars(t: in Type): Type {
       val np: List[Type] = newList()
       var i = 0
       while i < ps.count {
-        np.add(eraseTyVars(ps[i]))
+        np.add(eraseTyParams(ps[i]))
         i = i + 1
       }
-      TyFunction(params = np, ret = eraseTyVars(ret), isAsync = isA)
+      TyFunction(params = np, ret = eraseTyParams(ret), isAsync = isA)
     }
     case _ -> t
   }
@@ -11117,7 +11117,7 @@ func bindPatternTyped(
             recordEnumCasePattern(tbl, pat.span, ty)
           }
         } else {
-          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+          scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParams(ty), isMutable = false))
         }
       }
       match inner {
@@ -12281,7 +12281,7 @@ func bindOpenCaseArg(
       if name == "_" or isConstructorPatternName(tbl, name) {
         return
       }
-      val gname = match fty { case TyVar(g) -> g; case _ -> return }
+      val gname = match fty { case TyParam(g, _) -> g; case _ -> return }
       var gi = -1
       var k = 0
       while k < gnames.count {
@@ -12636,7 +12636,7 @@ func noteOpenBindingType(
 // as closed.
 func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
   match t {
-    case TyVar(n) -> typeParams.contains(n)
+    case TyParam(n, _) -> typeParams.contains(n)
     case TyError -> false
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosedOver(args, typeParams)
@@ -12665,12 +12665,12 @@ func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, name
   val e = unrefine(expected)
   val a = unrefine(actual)
   match a {
-    case TyVar(n) -> {
+    case TyParam(n, _) -> {
       if not names.contains(n) {
         return false
       }
       match e {
-        case TyVar(_) -> false
+        case TyParam(_, _) -> false
         case TyError -> false
         case TySelf -> false
         case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid) and not symTableIsExternTypeId(tbl, eid)
@@ -12733,7 +12733,7 @@ func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typePa
     return typeExprForRef(tbl, t, sp)
   }
   match t {
-    case TyVar(n) -> if typeParams.contains(n) {
+    case TyParam(n, _) -> if typeParams.contains(n) {
       val segs: List[String] = newList()
       segs.add(n)
       Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
@@ -13018,7 +13018,7 @@ func argTypesAgainstFields(
   while k < cargs.count {
     val slot = slots[k]
     if slot >= 0 and slot < ftypes.count {
-      expected.add(substituteTyVars(ftypes[slot], gnames, targs))
+      expected.add(substituteTyParams(ftypes[slot], gnames, targs))
     } else {
       expected.add(TyError)
     }
@@ -14180,7 +14180,7 @@ func hoistedRecvType(
       val vars: List[Type] = newList()
       var vi = 0
       while vi < targs.count {
-        vars.add(TyVar(name = recvTypeVarName(vi)))
+        vars.add(TyParam(name = recvTypeVarName(vi), owner = ""))
         vi = vi + 1
       }
       TyUser(id = tid, name = tname, args = vars)
@@ -14224,7 +14224,7 @@ func hoistedRecvType(
         }
         paramTys.add(pattern)
         slotTys.add(recvTy)
-        substituteTyVars(pattern, names, inferGenericArgsDeep(names, paramTys, slotTys))
+        substituteTyParams(pattern, names, inferGenericArgsDeep(names, paramTys, slotTys))
       }
       case None -> TyError
     }
@@ -14269,7 +14269,7 @@ func recvTypeFromMethod(
   slotTys.add(recvTy)
   val targs = inferGenericArgsDeep(names, paramTys, slotTys)
   fillTypeArgsFromResult(targs, names, sig.returnTy, resultExpected)
-  substituteTyVars(pattern, names, targs)
+  substituteTyParams(pattern, names, targs)
 }
 
 func recvTypeVarNames(pattern: in Type): List[String] {
@@ -14337,7 +14337,7 @@ func methodRecvTypeFromSig(
   val srcIdx = argIndicesInParamOrder(args, paramNames)
   val targs = sigCallTypeArgsInOrder(fullS, Some(value = recvTy), srcIdx, argTypes)
   fillTypeArgsFromResult(targs, fullS.generics, fullS.returnTy, resultExpected)
-  substituteTyVars(selfTy, fullS.generics, targs)
+  substituteTyParams(selfTy, fullS.generics, targs)
 }
 
 // A receiver the hoist binds whose type neither it nor the method's signature
@@ -14509,7 +14509,7 @@ func adoptLiteralArgsOver(
           j = j + 1
         }
         val fromArgs = inferGenericArgsDeep(generics, paramTys, slots)
-        substituteTyVars(paramTys[k], generics, bindOpenFromResult(generics, fromArgs, retTy, resultExpected))
+        substituteTyParams(paramTys[k], generics, bindOpenFromResult(generics, fromArgs, retTy, resultExpected))
       } else {
         paramTys[k]
       }
@@ -14521,7 +14521,7 @@ func adoptLiteralArgsOver(
         if isStdListType(tbl, r.ty) and hoistBindsOperand(sc, lit) {
           recordHoistOperandTypeOver(tbl, sc.genericNames, lit, r.ty, r.ty)
         }
-      } else if r.failed and generics.count > 0 and typeMentionsTyVar(paramTys[k]) {
+      } else if r.failed and generics.count > 0 and typeMentionsTyParam(paramTys[k]) {
         diag.add(
           errorDiagnostic(
             code,
@@ -15149,7 +15149,7 @@ func sigExpectedArgTypes(
     val ai = srcIdx[j]
     if ai >= 0 and ai < expected.count {
       val pty = sig.params[j + offset].ty
-      expected[ai] = if sig.generics.count > 0 { substituteTyVars(pty, sig.generics, targs) } else { pty }
+      expected[ai] = if sig.generics.count > 0 { substituteTyParams(pty, sig.generics, targs) } else { pty }
     }
     j = j + 1
   }
@@ -15300,7 +15300,7 @@ func recordExplicitTypeArgCall(
   while j < srcIdx.count and j < sig.params.count {
     val ai = srcIdx[j]
     if ai >= 0 and ai < expected.count {
-      expected[ai] = substituteTyVars(sig.params[j].ty, sig.generics, targs)
+      expected[ai] = substituteTyParams(sig.params[j].ty, sig.generics, targs)
     }
     j = j + 1
   }
@@ -16102,7 +16102,7 @@ func explicitTypeArgCallType(
     return None
   }
   val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return None }
-  Some(value = substituteTyVars(sig.returnTy, sig.generics, targs))
+  Some(value = substituteTyParams(sig.returnTy, sig.generics, targs))
 }
 
 func checkExplicitValueGenericCall(
@@ -16133,7 +16133,7 @@ func checkExplicitValueGenericCall(
 func instantiateSigAt(sig: in ResolvedSignature, targs: in List[Type]): ResolvedSignature {
   val ps: List[ResolvedParam] = newList()
   for p in sig.params {
-    ps.add(p.copy(ty = substituteTyVars(p.ty, sig.generics, targs)))
+    ps.add(p.copy(ty = substituteTyParams(p.ty, sig.generics, targs)))
   }
   val noGenerics: List[String] = newList()
   val noBounds: List[ResolvedBound] = newList()
@@ -16141,7 +16141,7 @@ func instantiateSigAt(sig: in ResolvedSignature, targs: in List[Type]): Resolved
     generics = noGenerics,
     bounds = noBounds,
     params = ps,
-    returnTy = substituteTyVars(sig.returnTy, sig.generics, targs)
+    returnTy = substituteTyParams(sig.returnTy, sig.generics, targs)
   )
 }
 
@@ -18107,7 +18107,7 @@ func inferExprCore(
         case None -> ()
       }
       match unrefine(rt) {
-        case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
+        case TyParam(tvName, _) -> if sc.genericNames.contains(tvName) {
           diag.add(
             errorDiagnostic(
               "T0197",
@@ -18131,7 +18131,7 @@ func inferExprCore(
             val scratch: List[Diagnostic] = newList()
             val innerRecvTy = inferExpr(sc, tbl, sigs, scratch, innerRecv)
             match rigidTypeParamField(tbl, innerRecvTy, innerName, sc.genericNames) {
-              case TyVar(tvName) -> {
+              case TyParam(tvName, _) -> {
                 diag.add(
                   errorDiagnostic(
                     "T0197",
@@ -18540,7 +18540,7 @@ func inferLambda(
   while li < lambdaParams.count {
     val lp = lambdaParams[li]
     val pTy = match lp.ty {
-      case None -> if useExpected { eraseTyVars(expectedParams[li]) } else { TyError }
+      case None -> if useExpected { eraseTyParams(expectedParams[li]) } else { TyError }
       case Some(te) -> resolveType(tbl, lctx, diag, te)
     }
     paramTypes.add(pTy)
@@ -19129,9 +19129,9 @@ func genericCtorArrayFieldTypes(
       var j = 0
       while j < fieldNames.count and j < fieldTypes.count {
         if fieldNames[j] == fieldName {
-          val inst = substituteTyVars(fieldTypes[j], gnames, targs)
+          val inst = substituteTyParams(fieldTypes[j], gnames, targs)
           match unrefine(inst) {
-            case TyArray(Some(_), el, _) -> if not typeMentionsTyVar(inst) and not typeIsHole(el) {
+            case TyArray(Some(_), el, _) -> if not typeMentionsTyParam(inst) and not typeIsHole(el) {
               tys[i] = inst
               // The field's own type names a type parameter, so the
               // literal is built through a binding of the instantiated type.
@@ -20312,7 +20312,7 @@ func expectedCallArgTypes(
           val ai2 = srcIdx[k2]
           if ai2 >= 0 and ai2 < expected.count {
             if sig.generics.count > 0 {
-              expected[ai2] = substituteTyVars(sig.params[k2].ty, sig.generics, targs)
+              expected[ai2] = substituteTyParams(sig.params[k2].ty, sig.generics, targs)
             } else if sig.isExternFunc {
               expected[ai2] = externArgExpectedType(tbl, sig.params[k2].ty)
             } else {
@@ -21210,7 +21210,7 @@ func covariantCtors(tbl: in SymbolTable, tid: in SymbolId, args: in List[Type]):
           while i < uc.fields.count {
             val fname: String = match uc.fields[i] { case UFNamed(nm, _, _) -> nm; case UFPos(_, _) -> "" }
             names.add(fname)
-            val fty: Type = if i < raw.count { substituteTyVars(raw[i], gnames, args) } else { TyError }
+            val fty: Type = if i < raw.count { substituteTyParams(raw[i], gnames, args) } else { TyError }
             tys.add(fty)
             i = i + 1
           }
@@ -21225,7 +21225,7 @@ func covariantCtors(tbl: in SymbolTable, tid: in SymbolId, args: in List[Type]):
         val tys: List[Type] = newList()
         for fe in entries {
           names.add(fe.name)
-          tys.add(substituteTyVars(fe.ty, gnames, args))
+          tys.add(substituteTyParams(fe.ty, gnames, args))
         }
         acc.add(CovCtor(name = rd.name, fieldNames = names, fieldTypes = tys))
       }

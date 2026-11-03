@@ -64,7 +64,7 @@ func plainViolationAt(tbl: in SymbolTable, t: in Type, depth: in Int): Option[St
     case TyFunction(_, _, _) -> Some(value = "a function is a reference")
     case TySlice(_) -> Some(value = "a slice is a reference to storage")
     case TyUser(tid, name, args) -> plainUserViolation(tbl, t, tid, name, args, depth)
-    case TyVar(_) -> Some(value = "an unresolved type parameter cannot be proved 'Plain'")
+    case TyParam(_, _) -> Some(value = "an unresolved type parameter cannot be proved 'Plain'")
     case _ -> Some(value = "this type is not a scalar, enum, record or array")
   }
 }

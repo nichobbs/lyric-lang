@@ -90,7 +90,12 @@ pub union Type {
   // `FixedVec[Int, 3]` (D169).  It appears only as a `TyUser` argument, or
   // as what a value generic parameter is bound to.
   case TyLen(n: Int)
-  case TyVar(name: String)
+  // A rigid generic parameter: equal only to itself (docs/70 §5.1).  `owner`
+  // is the qualified name of the declaration that binds it, empty where the
+  // checker does not yet thread the binder through.
+  case TyParam(name: String, owner: String)
+  // An inference variable, alive only while one call or binding is solved.
+  case TyInfer(id: Int)
   case TyError
   case TyException
   // Strip any refinement layers, yielding the underlying representation
@@ -242,18 +247,20 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
   val ub = unrefine(b)
   match ua {
     case TyError -> true
-    case TyVar(_) -> true
-    case _ -> match ub { case TyError -> true; case TyVar(_) -> true; case _ -> typeEquivCore(ua, ub) }
+    case TyParam(_, _) -> true
+    case TyInfer(_) -> true
+    case _ -> match ub { case TyError -> true; case TyParam(_, _) -> true; case TyInfer(_) -> true; case _ -> typeEquivCore(ua, ub) }
   }
 }
 
 func typeEquivCore(a: in Type, b: in Type): Bool {
   match a {
     case TyError -> true
-    case TyVar(_) -> true
+    case TyParam(_, _) -> true
+    case TyInfer(_) -> true
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
-    case TyLen(na) -> match b { case TyLen(nb) -> na == nb; case TyVar(_) -> true; case _ -> false }
+    case TyLen(na) -> match b { case TyLen(nb) -> na == nb; case TyParam(_, _) -> true; case TyInfer(_) -> true; case _ -> false }
     case TyNullable(ia) -> match b { case TyNullable(ib) -> typeEquiv(ia, ib); case _ -> false }
     case TyTuple(xs) -> match b {
       case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }
@@ -326,7 +333,8 @@ pub func renderType(t: in Type): String {
     case TyException -> "Exception"
     case TySelf -> "Self"
     case TyLen(n) -> toString(n)
-    case TyVar(nm) -> nm
+    case TyParam(nm, _) -> nm
+    case TyInfer(i) -> "?" + toString(i)
     case TyPrim(pt) -> primName(pt)
     case TyNullable(inner) -> renderType(inner) + "?"
     case TyTuple(elems) -> "(" + joinTypes(elems, ", ") + ")"

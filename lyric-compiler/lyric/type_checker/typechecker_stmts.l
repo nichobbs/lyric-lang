@@ -132,7 +132,7 @@ func forRangeElemType(
 // mismatched high bound (Int lo with Long hi or vice versa) degrades to
 // `TyError` rather than claiming a type for a loop codegen cannot lower.
 func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
-  val hiUnknown = match hiTy { case TyError -> true; case TyVar(_) -> true; case _ -> false }
+  val hiUnknown = match hiTy { case TyError -> true; case TyParam(_, _) -> true; case _ -> false }
   if unrefinesToInt(loTy) and (unrefinesToInt(hiTy) or hiUnknown) {
     return TyPrim(pt = PtInt)
   }
@@ -563,7 +563,7 @@ pub func checkStatement(
       match op {
         case AssEq -> ()
         case _ -> match targetType {
-          case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
+          case TyParam(tvName, _) -> if sc.genericNames.contains(tvName) {
             val marker = compoundAssignDerive(op)
             if not tyVarBoundedBy(sc, targetType, marker) {
               diag.add(
@@ -574,7 +574,7 @@ pub func checkStatement(
                 )
               )
             } else {
-              val sameParam = match valueType { case TyVar(vn) -> vn == tvName; case TyError -> true; case _ -> false }
+              val sameParam = match valueType { case TyParam(vn, _) -> vn == tvName; case TyError -> true; case _ -> false }
               if not sameParam {
                 diag.add(
                   errorDiagnostic(
@@ -783,7 +783,7 @@ pub func checkStatement(
       // a generic function) to the lenient wildcard: `TyVar` passes `typeEquiv`
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
-      bindPattern(sc, tbl, sigs, pat, eraseTyVars(elemType))
+      bindPattern(sc, tbl, sigs, pat, eraseTyParams(elemType))
       // A generator's elements reach the loop through an erased iterator
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a
@@ -794,7 +794,7 @@ pub func checkStatement(
       recordTuplePatternBindings(
         tbl,
         pat,
-        eraseTyVars(elemType),
+        eraseTyParams(elemType),
         forIterIsGeneratorCall(tbl, iter) or forIterIsExternHostLoop(tbl, iter, elemType),
         sc.genericNames
       )
@@ -2183,7 +2183,7 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
 func localValShapeUnknown(t: in Type): Bool {
   match t {
     case TyError -> true
-    case TyVar(_) -> true
+    case TyParam(_, _) -> true
     case TySelf -> true
     case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
     case _ -> false
@@ -2280,7 +2280,7 @@ func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Typ
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
     case TyError -> TyError
-    case TyVar(_) -> TyError
+    case TyParam(_, _) -> TyError
     case TySelf -> TyError
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e

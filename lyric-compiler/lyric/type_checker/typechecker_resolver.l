@@ -219,7 +219,7 @@ func resolveLengthArg(
 ): Type {
   val pname = arrayLengthParamName(ctx, arg)
   if pname.length > 0 {
-    return TyVar(name = pname)
+    return TyParam(name = pname, owner = "")
   }
   match resolveArrayLength(tbl, ctx, arg) {
     case Some(n) -> {
@@ -862,7 +862,7 @@ func bufferNameIsBuiltin(tbl: in SymbolTable): Bool {
 // type variable or not yet resolved is checked where it is instantiated.
 func resolveBufferType(tbl: in SymbolTable, diag: in List[Diagnostic], element: in Type, span: in Span): Type {
   match element {
-    case TyVar(_) -> ()
+    case TyParam(_, _) -> ()
     case TyError -> ()
     case _ -> match plainViolation(tbl, element) {
       case Some(why) -> diag.add(
@@ -903,7 +903,7 @@ func resolveTypePath(
       }
     }
     if gctxIsTypeParam(ctx, name) and args.count == 0 {
-      return TyVar(name = name)
+      return TyParam(name = name, owner = "")
     }
     if name == "Task" and args.count == 1 and taskNameIsBuiltin(tbl) {
       return taskType(args[0])

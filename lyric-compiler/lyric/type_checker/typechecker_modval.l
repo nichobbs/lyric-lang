@@ -615,7 +615,7 @@ func tupleShapeProblem(p: in Pattern, ty: in Type): String {
     case PBinding(_, inner) -> match inner { case Some(ip) -> tupleShapeProblem(ip, ty); case None -> "" }
     case PTuple(ps) -> match unrefine(ty) {
       case TyError -> ""
-      case TyVar(_) -> ""
+      case TyParam(_, _) -> ""
       case TyTuple(elems) -> {
         if elems.count != ps.count {
           return "a " + toString(ps.count) + "-element tuple pattern is bound to a value of type " + renderType(ty)
