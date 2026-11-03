@@ -501,3 +501,65 @@ test "externVia names the import extern that binds a local name" {
   assertEqual(viaText(externVia(fsc, "SB")), "some:import extern System.Text", "the extern import")
   assertEqual(viaText(externVia(fsc, "Other")), "none", "an unbound name")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Node identity (docs/70 §6.1).
+// ─────────────────────────────────────────────────────────────────────────────
+func hasDuplicates(ids: in List[Int]): Bool {
+  val seen: Map[Int, Bool] = newMap()
+  var dup = false
+  for i in ids {
+    match mapGet(seen, i) {
+      case Some(_) -> {
+        dup = true
+      }
+      case None -> seen.add(i, true)
+    }
+  }
+  dup
+}
+
+test "the parser leaves nodes unnumbered and renumbering numbers every node" {
+  val src = "package P\npub func f(x: in Int): Int {\n  val y = match x {\n    case 0 -> 1\n    case n -> n + 1\n  }\n  y\n}\n"
+  val file = parse(src).file
+  val before = nodeIdsOf(file)
+  assertTrue(before.count > 0, "the function has nodes")
+  for i in before {
+    assertEqualInt(i, 0, "unnumbered after parse")
+  }
+  val numbered = renumberNodeIds(file)
+  val after = nodeIdsOf(numbered.file)
+  assertEqualInt(after.count, numbered.count, "every node counted once")
+  assertEqualInt(after.count, before.count, "numbering adds no nodes")
+  assertFalse(hasDuplicates(after), "ids are unique")
+  var mx = 0
+  for i in after {
+    assertTrue(i >= 1, "ids start at 1")
+    if i > mx {
+      mx = i
+    }
+  }
+  assertEqualInt(mx, numbered.count, "ids are dense")
+}
+
+test "patterns in arms, bindings and range patterns are numbered" {
+  val src = "package P\npub func g(x: in Int): Int {\n  val (a, b) = (x, x)\n  match a {\n    case 1 ..= 5 -> b\n    case _ -> 0\n  }\n}\n"
+  val numbered = renumberNodeIds(parse(src).file)
+  val ids = nodeIdsOf(numbered.file)
+  assertFalse(hasDuplicates(ids), "ids are unique")
+  for i in ids {
+    assertTrue(i >= 1, "no node left at 0")
+  }
+}
+
+test "renumbering twice gives the same ids" {
+  val file = parse("package P\npub func h(): Int = 1 + 2\n").file
+  val a = nodeIdsOf(renumberNodeIds(file).file)
+  val b = nodeIdsOf(renumberNodeIds(renumberNodeIds(file).file).file)
+  assertEqualInt(a.count, b.count, "same count")
+  var i = 0
+  while i < a.count {
+    assertEqualInt(a[i], b[i], "same id")
+    i = i + 1
+  }
+}
