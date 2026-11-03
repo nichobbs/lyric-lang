@@ -1745,7 +1745,12 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
 /// `allowArityMatch`, a signature whose span no declaration has (a
 /// dependency's) takes the one same-named function of its package with its
 /// parameter count.
-pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String, allowArityMatch: in Bool): Option[String] {
+pub func symTableFuncDefPathKey(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  name: in String,
+  allowArityMatch: in Bool,
+): Option[String] {
   if sig.originPackage.length == 0 {
     return None
   }

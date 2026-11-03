@@ -17162,10 +17162,7 @@ func calleeFqnOfDefPathMsil(dp: in String): String {
     case Some(i) -> {
       val pkg = String.substring(dp, 0, i)
       val rest = String.substring(dp, i + 2, dp.length - i - 2)
-      val name = match String.indexOf(rest, "(") {
-        case Some(j) -> String.substring(rest, 0, j)
-        case None -> rest
-      }
+      val name = match String.indexOf(rest, "(") { case Some(j) -> String.substring(rest, 0, j); case None -> rest }
       pkg + "." + name
     }
   }
@@ -21901,18 +21898,6 @@ func lowerBuiltinOrStaticCallMsil(
             } else {
               ""
             }
-            // TEMP-AUDIT (D334)
-            match mapGet(cctx.calleeSites, methodCallPathKey(path)) {
-              case Some(dp) -> {
-                val sited = calleeFqnOfDefPathMsil(dp)
-                if resolvedFqn.length > 0 and sited != resolvedFqn {
-                  Console.error("CALLEE-AUDIT mismatch in " + fctx.pkgName + ": site=" + sited + " legacy=" + resolvedFqn)
-                }
-              }
-              case None -> if resolvedFqn.length > 0 and path.segments.count >= 1 {
-                Console.error("CALLEE-AUDIT nosite in " + fctx.pkgName + ": " + resolvedFqn)
-              }
-            }
             if resolvedFqn.length > 0 {
               // Narrow to the arity-qualified token (#1536): a package may
               // declare overloads sharing `resolvedFqn` but registered under
@@ -23154,7 +23139,14 @@ func lowerMethodCallMsil(
         sitedPath.add(sitedSegs[sgi])
         sgi = sgi + 1
       }
-      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, ModulePath(segments = sitedPath, span = recv.span), args)
+      return lowerBuiltinOrStaticCallMsil(
+        cctx,
+        fctx,
+        insns,
+        memberName,
+        ModulePath(segments = sitedPath, span = recv.span),
+        args
+      )
     }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
