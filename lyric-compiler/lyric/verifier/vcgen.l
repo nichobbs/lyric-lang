@@ -292,6 +292,7 @@ func unshadowMonadSort(distincts: in Map[String, TypeExpr], s: in Sort): Sort {
     }
     case SSlice(e) -> SSlice(element = unshadowMonadSort(distincts, e))
     case SArray(e) -> SArray(element = unshadowMonadSort(distincts, e))
+    case SBuffer(e) -> SBuffer(element = unshadowMonadSort(distincts, e))
     case _ -> s
   }
 }
@@ -388,8 +389,32 @@ func sortOfTypeExprDepthRaw(
       val elem = sortOfTypeExprDepth(distincts, typeScope, elt, depth + 1)
       sequenceSortInfo(SSlice(element = elem.sort), elem, -1)
     }
+    case TGenericApp(head, args) -> {
+      val builtinBuffer = head.segments.count == 1 and head.segments[0] == "buffer" and args.count == 1 and
+        not typeScope.contains("buffer") and
+        distincts.containsKey(builtinBufferKey())
+      if builtinBuffer {
+        match args[0] {
+          case TAType(elt) -> {
+            val elem = sortOfTypeExprDepth(distincts, typeScope, elt, depth + 1)
+            return sequenceSortInfo(SBuffer(element = elem.sort), elem, -1)
+          }
+          case TAValue(_) -> ()
+        }
+      }
+      sortOfTypeExprShadowed(resolved, typeScope)
+    }
     case _ -> sortOfTypeExprShadowed(resolved, typeScope)
   }
+}
+
+// `buffer[T]` is the built-in buffer type only where no type named `buffer`
+// is in scope, as the checker has it (`bufferNameIsBuiltin`).  `goalsForFile`
+// adds this key to the distinct-type map when the file can name no other
+// `buffer`; without it a `buffer[T]` is an uninterpreted type, which proves
+// nothing about it.
+func builtinBufferKey(): String {
+  "!builtin.buffer"
 }
 
 func copyVarMap(m: in Map[String, Term], names: in List[String]): Map[String, Term] {
@@ -948,6 +973,7 @@ func substSortParams(s: in Sort, params: in List[String], args: in List[Sort]): 
     }
     case SSlice(e) -> SSlice(element = substSortParams(e, params, args))
     case SArray(e) -> SArray(element = substSortParams(e, params, args))
+    case SBuffer(e) -> SBuffer(element = substSortParams(e, params, args))
     case _ -> s
   }
 }
@@ -1016,6 +1042,7 @@ func matchSortParams(pattern: in Sort, actual: in Sort, params: in List[String],
     }
     case SSlice(pe) -> match actual { case SSlice(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
     case SArray(pe) -> match actual { case SArray(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
+    case SBuffer(pe) -> match actual { case SBuffer(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
     case _ -> smtRenderSort(pattern) == smtRenderSort(actual)
   }
 }

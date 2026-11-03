@@ -158,14 +158,8 @@ func assignedValue(
   combinedOp
 }
 
-func isArraySort(s: in Sort): Bool {
-  match s {
-    case SArray(_) -> true
-    case _ -> false
-  }
-}
-
-// An element write's variable and index: `a[i]` for an array variable `a`.
+// An element write's variable and index: `a[i]` for an array or buffer
+// variable `a`.
 record ElementTarget {
   name: String
   index: Expr
@@ -191,10 +185,11 @@ func elementTarget(target: in Expr): Option[ElementTarget] {
   }
 }
 
-// `a[i] = v` / `a[i] op= v` on an array variable, then the rest of the
-// block: `i` must be in bounds (the write panics otherwise), the stored value
-// must lie in the element type's range, and `a` takes the array with
-// element `i` replaced (#8394).
+// `a[i] = v` / `a[i] op= v` on an array or buffer variable, then the rest of
+// the block: `i` must be in bounds (the write panics otherwise), the stored
+// value must lie in the element type's range, and `a` takes the sequence
+// with element `i` replaced (#8394).  A buffer's copies are values of their
+// own (docs/01 §2.7), so the store changes this variable alone.
 func wpAssignElement(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -215,12 +210,12 @@ func wpAssignElement(
     )
   }
   val info = match envLookupSort(name, env) { case Some(si) -> si; case None -> sortInfoNoRange(SInt) }
-  if not isArraySort(info.sort) {
-    return unsupportedWp("an assignment to an element of anything but an array variable", target.span)
+  if not isOwnedSequenceSort(info.sort) {
+    return unsupportedWp("an assignment to an element of anything but an array or buffer variable", target.span)
   }
   val arr = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, info.sort) }
   // The index and the value are evaluated before the store; an index that
-  // changes a variable, or a value that changes the array, leaves no single
+  // changes a variable, or a value that changes the sequence, leaves no single
   // state to store into.
   val idxEff = effectsOfExpr(env, et.index)
   if idxEff.assigned.count > 0 or idxEff.outArgs.count > 0 or idxEff.jumps.count > 0 {
@@ -231,7 +226,7 @@ func wpAssignElement(
     return unsupportedWp("an assignment inside an expression", value.span)
   }
   if valueEff.outArgs.contains(name) {
-    return unsupportedWp("a value that changes the array it is stored into", value.span)
+    return unsupportedWp("a value that changes the sequence it is stored into", value.span)
   }
   val diags: List[Diagnostic] = newList()
   val sides: List[Term] = newList()

@@ -217,6 +217,9 @@ pub func goalsForFileInScope(
     }
     mi = mi + 1
   }
+  if not monadNameShadowed(file, "buffer") and siblingsKnown and not siblingTypeNames.contains("buffer") {
+    distinctMap.add(builtinBufferKey(), TypeExpr(kind = TUnit, span = file.packageDecl.path.span))
+  }
 
   val fieldInfosMap: Map[String, SortInfo] = newMap()
   val recordDefaultsMap: Map[String, List[Option[Expr]]] = newMap()

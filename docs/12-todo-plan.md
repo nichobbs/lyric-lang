@@ -92,8 +92,8 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
    methods on primitives accepted (#8334).
 5. **Verifier soundness (`verifier` 7 plus an unlabelled family).**  Match arm
    guards ignored (#8142), `sortEq` ignores datatype arguments (#8354), no
-   bounds obligation on index (#8157), no `buffer[T]` or `for` model (#8394;
-   arrays and slices are modelled),
+   bounds obligation on index (#8157), no `for` model (#8394;
+   arrays, slices and buffers are modelled),
    sibling-file record fields (#8306), Float as Real (#8141), no heap model
    (#8110).  The verifier must fail closed; these are the unsound ones.
 6. **Silent build-system behaviour (`build-system-toolchain` 10).**  JVM project

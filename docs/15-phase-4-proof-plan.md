@@ -276,7 +276,8 @@ Lyric.Verifier/
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read, or the result of a call to one of the record's own methods, is instantiated at the receiver's type arguments (#8356: a call of a record-body method is applied by the method's contract and, if `@pure`, its body, with the record's type parameters instantiated at the receiver's); a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
-| `array[N, T]`, `slice[T]` | the preamble datatype `(Lyric!Seq T)`: a length `Seq!len` and the elements `Seq!elems : (Array Int T)` | every value has `length >= 0`, an `array[N, T]` with a literal `N` has `length == N`; an array's `xs[i]` is `(select (Seq!elems xs) i)`, a slice's a fresh value (a kernel extern can fill it in place), both with the element type's range and width; `a[i] = v` makes `a` the same length with `(store (Seq!elems a) i v)`. The length is part of the value: over an element sort with one value (`Unit`) every SMT array is the same array, so a length computed from the elements would make two sequences of different lengths contradictory (#8394) |
+| `array[N, T]`, `slice[T]` | the preamble datatype `(Lyric!Seq T)`: a length `Seq!len` and the elements `Seq!elems : (Array Int T)` | every value has `length >= 0`, an `array[N, T]` with a literal `N` has `length == N`; an array's `xs[i]` is `(select (Seq!elems xs) i)`, a slice's a fresh value (a kernel extern can fill it in place), both with the element type's range and width; `a[i] = v` makes `a` the same length with `(store (Seq!elems a) i v)`. The length is part of the value: over an element sort with one value (`Unit`) every SMT array is the same array, so a length computed from the elements would make two sequences of different lengths contradictory (#8394). SMT `=` on two `Lyric!Seq` values also compares the elements past their lengths; that costs completeness but not soundness, since nothing constrains a position past the length and every access carries its bounds obligation |
+| `buffer[T]`               | `(Lyric!Seq T)`, as an array, under a sort of its own (`SBuffer`) | where no type named `buffer` is in scope (declared, imported by name, or possibly brought in by a whole-package import outside `Std.*`), the checker's rule; otherwise `buffer[T]` is the user's type. `b[i]` is `(select (Seq!elems b) i)` with the element type's width and the bounds obligation against the runtime length; `b[i] = v` stores, as for an array. A copy, an `in` argument and a `spawn` are values of their own (docs/01 §2.7), so no other binding sees a write. The length changes only when the variable takes another buffer (`grow`, `truncate`, an assignment), so a loop or an `out`/`inout` argument that may change the variable keeps no length. `==` fails closed: the language defines no buffer equality (#8394). A buffer that a `Std.Buffer` function returns (`filled`, `fromSlice`, `grow`, `truncate`) is not yet a sequence term, so an index or `.length` on it fails closed (`V0033`, #8753) |
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
 | function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise the call site's own result; `==`/`!=` on function values fail closed (#8109) |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
@@ -539,12 +540,13 @@ the variable takes that symbol, so the callee's `ensures:` about the
 parameter (`x == old(x) + 1`) reach the caller (#8111). Any other argument (a
 field, an element) or a variable also changed by another call in the same
 expression takes an unrelated new value.
-An element write `a[i] = v` or `a[i] op= v` to an array variable (a `var`
-local or an `out`/`inout` parameter) carries the bounds obligation, the
+An element write `a[i] = v` or `a[i] op= v` to an array or buffer variable
+(a `var` local or an `out`/`inout` parameter) carries the bounds obligation, the
 element type's range and, for a compound operator, the same divisor and
 overflow obligations as a variable; `a` then holds the array with element `i`
-replaced. An array is a value (docs/01 §2.7), so no other binding sees the
-write and a copy needs no frame condition (#8394). The index may not assign,
+replaced. An array is a value, and so is each copy of a buffer (docs/01
+§2.7), so no other binding sees the write and a copy needs no frame
+condition (#8394). The index may not assign,
 pass `out`/`inout` or jump, and the value may not change `a`. A write to a
 record field, to an element of a field (`r.a[i]`), or a nested element
 (`a[i][j]`) fails closed (`V0026`): a record is a reference, and the
@@ -861,16 +863,16 @@ Known limitations, tracked separately: no heap model; a protected-type
 member's contract not used at its calls (#8110); precision and range gaps
 (#8103); generic aliases of `Result`/`Option` (#8631).
 
-An index read `xs[i]` on an array, a slice or a `String` carries the
+An index read `xs[i]` on an array, a slice, a buffer or a `String` carries the
 obligation `0 <= i < length`, the runtime bounds check; `.length` reads the
 same length, and an `array[N, T]` parameter carries `length == N` when `N` is
-a literal. An array's element is `select` of its elements, so two reads of
-one element agree and a contract can speak of elements. A slice's element is a
+a literal. An array's or buffer's element is `select` of its elements, so two
+reads of one element agree and a contract can speak of elements. A slice's element is a
 fresh value at each read. Lyric code cannot write one (T0157, docs/01 §2.7),
 but every binding of a slice shares its storage and a kernel extern may fill
 it in place (`streamReadInto` reads a stream into the caller's
 `slice[Byte]`), so two reads need not agree (#8394). Where the receiver is a variable
-or parameter, an array's or slice's element lies in its type's range and width.
+or parameter, an array's, slice's or buffer's element lies in its type's range and width.
 A `String`'s element is a fresh value. A `List` or `Map` index,
 and an index of any other receiver, fails closed (`V0033`): `add` and `clear`
 change a list the verifier models as one value. An assignment to a variable of
@@ -878,7 +880,7 @@ a range type carries the range as an obligation, the store being range-checked
 at run time (#8157, #8143). A `@pure` callee is unfolded only at a call whose
 arguments are values (a list or a closure may change between two calls with the
 same term), and `==` on slices fails closed because dotnet compares slices by
-reference (#8218). `array[N, T]` and `slice[T]` are distinct sorts. A sibling
+reference (#8218). `array[N, T]`, `slice[T]` and `buffer[T]` are distinct sorts. A sibling
 file's records and distinct types are in scope for a proof, as its interfaces
 and unions are (#8306).
 

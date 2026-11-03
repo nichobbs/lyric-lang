@@ -300,8 +300,9 @@ func equalityModelledSort(
     }
     // An array compares element by element; a slice compares by reference
     // on dotnet and by value elsewhere, so `==` on one has no faithful
-    // translation (#8218).
+    // translation (#8218).  The language defines no equality on buffers.
     case SSlice(_) -> false
+    case SBuffer(_) -> false
     case SArray(e) -> equalityModelledSort(valueTypes, typeParams, e, depth + 1)
     // A value the verifier does not model is a symbol of its own — one
     // evaluation's — or the result of a method it does not model (#8110);

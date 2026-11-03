@@ -202,6 +202,7 @@ Knowing what discharges deterministically helps you write contracts that stay wi
 
 - Linear integer arithmetic — sums, differences, multiplications by constants, comparisons. `a + b == c + d`, `x >= 0 and x <= 100`, `n * 2 == m` (constant multiplier).
 - Fixed-size or bounded arrays and slices where the length is constrained by a range-typed index. `xs.length == old(xs.length) + 1` when `xs.length` is in a named range type.
+- Element reads and writes of an `array[N, T]` or a `buffer[T]` variable. Each is a value with a length and its elements, so `b[i] = v` followed by `b[i]` proves to be `v`, and a write to a copy (`var c = b`) is never seen through `b`. Each access carries its bounds obligation: `0 <= i < b.length`. A buffer's length is not kept across a loop or an `inout` call that changes the variable, since either may give it another buffer (`grow`, `truncate`): state it in the loop's `invariant:` against a binding the loop does not change (`b.length == x.length`). A slice's element is a fresh value at each read, because every binding of a slice shares its storage.
 - Quantifiers over finite ranges from range subtypes — `forall (i: Nat range 0 ..= 9) implies xs[i] >= 0`. The range is finite; Z3 can enumerate it or reason about it within bounded LIA.
 - Quantifiers over slice lengths bounded by range-typed indices — `forall (i: Nat) where i < xs.length implies xs[i] > 0`, when `xs.length` is bounded by a range type.
 - Propositional combinations of the above — `and`, `or`, `not`, `implies` over arithmetic facts.

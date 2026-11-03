@@ -27,6 +27,10 @@ pub union Sort {
   // array[N, T] — a value compared element by element; its length is a fact
   // about the value, not part of the sort.
   case SArray(element: Sort)
+  // buffer[T] — a runtime-length value written in place through a writable
+  // binding (docs/01 §2.7): reads see the binding's own value, and its
+  // length changes only when the binding takes another buffer.
+  case SBuffer(element: Sort)
   // Uninterpreted sort for opaque protected-type refs and unmodelled resources.
   case SUninterp(name: String)
 }
@@ -75,6 +79,7 @@ pub func sortDisplay(s: in Sort): String {
     }
     case SSlice(e) -> "Slice[" + sortDisplay(e) + "]"
     case SArray(e) -> "Array[" + sortDisplay(e) + "]"
+    case SBuffer(e) -> "Buffer[" + sortDisplay(e) + "]"
     case SUninterp(n) -> n
   }
 }
@@ -349,6 +354,7 @@ func builtinResultSort(b: in Builtin, args: in List[Term]): Sort {
         match sortOf(args[0]) {
           case SSlice(e) -> e
           case SArray(e) -> e
+          case SBuffer(e) -> e
           case _ -> SInt
         }
       } else {
@@ -467,6 +473,12 @@ pub func sortEq(a: in Sort, b: in Sort): Bool {
     case SArray(e1) -> {
       match b {
         case SArray(e2) -> sortEq(e1, e2)
+        case _ -> false
+      }
+    }
+    case SBuffer(e1) -> {
+      match b {
+        case SBuffer(e2) -> sortEq(e1, e2)
         case _ -> false
       }
     }

@@ -439,6 +439,7 @@ func bareNameBinds(env: in VEnv, scrutSort: in Sort, name: in String): Bool {
     }
     case SSlice(_) -> return true
     case SArray(_) -> return true
+    case SBuffer(_) -> return true
     case SUninterp(_) -> ()
     case _ -> return isPrimitiveSort(scrutSort)
   }

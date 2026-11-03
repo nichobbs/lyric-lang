@@ -589,6 +589,7 @@ func sortNamesDatatype(s: in Sort, name: in String): Bool {
     }
     case SSlice(e) -> sortNamesDatatype(e, name)
     case SArray(e) -> sortNamesDatatype(e, name)
+    case SBuffer(e) -> sortNamesDatatype(e, name)
     case _ -> false
   }
 }

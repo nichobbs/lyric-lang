@@ -940,6 +940,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val elemSort: Sort = match recvSort {
         case SSlice(el) -> el
         case SArray(el) -> el
+        case SBuffer(el) -> el
         case SDatatype(dn, dargs) -> if dn == "List" and dargs.count == 1 {
           dargs[0]
         } else {
@@ -959,13 +960,16 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
         )
         sc.add(mkAnd(inRange))
-        // A slice's element is a value of its own at each read: every
-        // binding of a slice shares its storage, and a kernel extern may fill
-        // it in place (`streamReadInto`), so two reads need not agree
-        // (#8394).  Its length does not change.
-        val elemTerm = match recvSort {
-          case SArray(_) -> TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
-          case _ -> freshVar(env, "elem", elemSort)
+        // An array's or buffer's element is the value's own: each binding
+        // holds a copy, changed only by a write through it (#8394).  A
+        // slice's element is a value of its own at each read: every binding
+        // of a slice shares its storage, and a kernel extern may fill it in
+        // place (`streamReadInto`), so two reads need not agree.  Its length
+        // does not change.
+        val elemTerm = if isOwnedSequenceSort(recvSort) {
+          TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
+        } else {
+          freshVar(env, "elem", elemSort)
         }
         if isElementSequenceSort(recvSort) {
           match receiverSortInfo(env, receiver) {

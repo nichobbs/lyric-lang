@@ -1658,6 +1658,7 @@ func floatSortProblem(s: in Sort): String {
     case SFloat32 -> "a 32-bit `Float` (its width differs between targets; use `Double`)"
     case SSlice(e) -> floatSortProblem(e)
     case SArray(e) -> floatSortProblem(e)
+    case SBuffer(e) -> floatSortProblem(e)
     case SDatatype(_, args) -> {
       var i = 0
       while i < args.count {
