@@ -6,6 +6,7 @@ package Std.Regex.Tests
 
 import Std.Core
 import Std.Regex as Re
+import Std.Regex.{RegexError}
 import Std.Testing
 
 // ─── tryCompile ─────────────────────────────────────────────────────────────

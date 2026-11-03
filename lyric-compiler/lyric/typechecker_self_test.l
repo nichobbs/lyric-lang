@@ -14324,3 +14324,50 @@ test "a dependency's bare name needs its own import (D322)" {
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertTrue(hasDiagCode(cr, "T0211"), "Dep never imports Host, so its signature does not resolve")
 }
+
+func depPackageByName(
+  src: in String, imports: in List[String], whole: in List[String], selected: in List[String]
+): ImportedPackage {
+  val p = parse(src)
+  ImportedPackage(
+    name = modulePathJoin(p.file.packageDecl.path.segments),
+    items = p.file.items,
+    imports = imports,
+    wholeImports = whole,
+    selectedImports = selected
+  )
+}
+
+// A restored dependency is known by the names its contract records: the
+// packages it imports, those whole, and `<package>::<name>` for each selective
+// import.  A package imported selectively makes only the listed names bare, so
+// a same-named union case of that package does not collide (D322).  Listing a
+// union brings its cases, so the test lists a record.
+test "a name-only dependency reads its selective imports as selective (D322)" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(depPackage("package Host\npub record Row { v: Int }\n"))
+  packages.add(depPackage("package Other\npub record View { w: Int }\npub union Kind {\n  case Row\n  case Col\n}\n"))
+  val imports: List[String] = newList()
+  imports.add("Host")
+  imports.add("Other")
+  val whole: List[String] = newList()
+  whole.add("Host")
+  val selected: List[String] = newList()
+  selected.add("Other::View")
+  packages.add(depPackageByName("package Dep\npub func f(r: in Row): Int = 1\n", imports, whole, selected))
+  val src = "package App\nimport Host\nimport Dep\nfunc g(r: in Row): Int = f(r)\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertFalse(hasDiagCode(cr, "T0211"), "Other.Row is not bare in Dep: only View was imported")
+  assertFalse(hasDiagCode(cr, "T0123"), "no ambiguity")
+}
+
+test "a name-only dependency reads a whole import as whole (D322)" {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(depPackage("package Host\npub union Oops {\n  case Bad\n}\n"))
+  val names: List[String] = newList()
+  names.add("Host")
+  packages.add(depPackageByName("package Dep\npub func f(e: in Oops): Int = 1\n", names, names, newList()))
+  val src = "package App\nimport Host\nimport Dep\nfunc g(e: in Oops): Int = f(e)\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertFalse(hasDiagCode(cr, "T0211"), "a whole import brings Oops")
+}

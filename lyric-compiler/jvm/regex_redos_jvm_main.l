@@ -20,6 +20,7 @@ package Main
 import Std.Core
 import Std.Console
 import Std.Regex as Re
+import Std.Regex.{RegexError}
 
 func main(): Int {
   var hostile = ""

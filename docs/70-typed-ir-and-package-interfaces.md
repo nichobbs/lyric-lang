@@ -750,7 +750,9 @@ builder (I0002) rather than on the current checker.
   Step 7 (D318) takes the single lookup and T0219 from the resolver's per-file
   scopes and deletes the checker's import-rule tables and the differential
   mode. Step 8 (D322) gives each dependency a scope built from its own imports
-  as declarations and deletes the checker's scan. Next: #8722, and folding
+  as declarations and deletes the checker's scan. Step 9 (D328) makes a bare
+  union case need a name the file can reach (#8722) and keeps a restored
+  dependency's selective and aliased imports in their form. Next: folding
   `AliasRewriter` and `TypeAliasResolve` in.
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
