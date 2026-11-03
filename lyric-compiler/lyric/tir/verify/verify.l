@@ -17,13 +17,22 @@ import Lyric.Tir
 /// `call-arg-type`, ...) so tests and tooling can match on it.
 pub record VerifyDiag {
   node: NodeId
+  /// The function being verified (its `SymbolId`), so a diagnostic about a
+  /// parameter or the return type, which has no node of its own, still says
+  /// where it is.
+  fnSym: SymbolId
   rule: String
   message: String
 }
 
 /// `I0003: pass <pass> produced an ill-formed node #<id>: <rule>: <message>`.
 pub func renderVerifyDiag(pass: in String, d: in VerifyDiag): String {
-  "I0003: pass " + pass + " produced an ill-formed node #" + toString(d.node.id) + ": " + d.rule + ": " + d.message
+  "I0003: pass " + pass + " produced an ill-formed node #" + toString(d.node.id) + " (in function #" +
+    toString(d.fnSym.id) +
+    "): " +
+    d.rule +
+    ": " +
+    d.message
 }
 
 record Subst {
@@ -44,11 +53,15 @@ record Ctx {
   fnSym: SymbolId
   tpCount: Int
   locals: Map[Int, LocalDecl]
+  /// Locals whose scope is open: a binding leaves it when its block, arm,
+  /// loop, closure or quantifier ends, while `locals` keeps the declaration.
+  live: Map[Int, Bool]
+  scopeIds: List[Int]
   frames: List[LambdaFrame]
 }
 
 func report(c: in Ctx, id: in NodeId, rule: in String, msg: in String): Unit {
-  c.diags.add(VerifyDiag(node = id, rule = rule, message = msg))
+  c.diags.add(VerifyDiag(node = id, fnSym = c.fnSym, rule = rule, message = msg))
 }
 
 func lookupSym(c: in Ctx, s: in SymbolId): Option[TSymEntry] {
@@ -57,7 +70,7 @@ func lookupSym(c: in Ctx, s: in SymbolId): Option[TSymEntry] {
 
 func isTrue(m: in Map[Int, Bool], k: in Int): Bool {
   match mapGet(m, k) {
-    case Some(_) -> true
+    case Some(v) -> v
     case None -> false
   }
 }
@@ -210,6 +223,9 @@ func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
     case TException -> {
     }
     case TExtern(h) -> {
+      // The host name is not checked here: whether the host type exists is
+      // the host-metadata reader's call at check time (docs/70 5.3), and TIR
+      // is built only after that check.
       for a in h.args {
         checkTy(c, id, a, what)
       }
@@ -236,7 +252,48 @@ func defineLocal(c: in Ctx, id: in NodeId, d: in LocalDecl): Unit {
   }
   c.allLocals.add(d.id.id, true)
   c.locals.add(d.id.id, d)
+  c.live.add(d.id.id, true)
+  c.scopeIds.add(d.id.id)
   checkTy(c, id, d.ty, "local " + d.name)
+}
+
+/// A field reference names a field its owner declares, at that position.
+func checkFieldRef(c: in Ctx, id: in NodeId, f: in FieldRef): Unit {
+  match lookupSym(c, f.owner) {
+    case Some(entry) -> if f.index < 0 or f.index >= entry.fields.count {
+      report(
+        c,
+        id,
+        "field-exists",
+        "field " + f.name + " is not field " + toString(f.index) + " of #" + toString(f.owner.id)
+      )
+    } else if entry.fields[f.index].name != f.name {
+      report(
+        c,
+        id,
+        "field-exists",
+        "field " + f.name + " is named " + entry.fields[f.index].name + " at position " + toString(f.index) + " of #" +
+          toString(f.owner.id)
+      )
+    }
+    case None -> if not isBuiltinSymbol(f.owner) {
+      report(c, id, "symbol-defined", "field owner #" + toString(f.owner.id) + " is not defined by any loaded package")
+    }
+  }
+}
+
+func enterScope(c: in Ctx): Int {
+  c.scopeIds.count
+}
+
+/// Closes the scope opened at `mark`: every local bound since is no longer
+/// usable.  `locals` keeps the declaration (an id is bound once per package).
+func exitScope(c: in Ctx, mark: in Int): Unit {
+  while c.scopeIds.count > mark {
+    val last = c.scopeIds.count - 1
+    c.live.add(c.scopeIds[last], false)
+    c.scopeIds.removeAt(last)
+  }
 }
 
 func noteNode(c: in Ctx, id: in NodeId): Unit {
@@ -253,7 +310,12 @@ func useLocal(c: in Ctx, id: in NodeId, l: in LocalId): Option[LocalDecl] {
     }
   }
   match mapGet(c.locals, l.id) {
-    case Some(d) -> Some(d)
+    case Some(d) -> if isTrue(c.live, l.id) {
+      Some(d)
+    } else {
+      report(c, id, "local-in-scope", "local " + d.name + " is used outside the scope that binds it")
+      None
+    }
     case None -> {
       report(c, id, "local-defined", "local #" + toString(l.id) + " is used before it is defined")
       None
@@ -510,8 +572,12 @@ func visitPat(c: in Ctx, p: in TPat, defs: in Bool): Unit {
                 toString(args.count)
             )
           }
-          case None -> {
-          }
+          case None -> report(
+            c,
+            p.id,
+            "pattern-callable",
+            "case #" + toString(sym.id) + " has no signature to match against"
+          )
         }
         case None -> {
         }
@@ -523,6 +589,7 @@ func visitPat(c: in Ctx, p: in TPat, defs: in Bool): Unit {
     case TpRecord(sym, fields) -> {
       requireSym(c, p.id, sym, "record pattern")
       for f in fields {
+        checkFieldRef(c, p.id, f.field)
         visitPat(c, f.pat, defs)
       }
     }
@@ -575,12 +642,14 @@ func visitStmt(c: in Ctx, s: in TStmt): Unit {
     case TsTry(body, catches, fin) -> {
       visitExpr(c, body)
       for k in catches {
+        val mark = enterScope(c)
         match k.binding {
           case Some(d) -> defineLocal(c, s.id, d)
           case None -> {
           }
         }
         visitExpr(c, k.body)
+        exitScope(c, mark)
       }
       match fin {
         case Some(f) -> visitExpr(c, f)
@@ -590,17 +659,21 @@ func visitStmt(c: in Ctx, s: in TStmt): Unit {
     }
     case TsDefer(b) -> visitExpr(c, b)
     case TsScope(binding, body) -> {
+      val mark = enterScope(c)
       match binding {
         case Some(d) -> defineLocal(c, s.id, d)
         case None -> {
         }
       }
       visitExpr(c, body)
+      exitScope(c, mark)
     }
     case TsFor(_, pat, iter, body) -> {
       visitExpr(c, iter)
+      val mark = enterScope(c)
       visitPat(c, pat, true)
       visitExpr(c, body)
+      exitScope(c, mark)
     }
     case TsWhile(_, cond, body) -> {
       visitExpr(c, cond)
@@ -742,6 +815,7 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
     case XMatch(scrut, arms, _) -> {
       visitExpr(c, scrut)
       for a in arms {
+        val mark = enterScope(c)
         visitPat(c, a.pat, true)
         expectTy(c, e.id, a.pat.ty, scrut.ty, "pattern-type", "arm pattern")
         match a.guard {
@@ -754,9 +828,11 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         }
         visitExpr(c, a.body)
         branchTy(c, e.id, a.body, e.ty, "match arm")
+        exitScope(c, mark)
       }
     }
     case XBlock(stmts, tail) -> {
+      val mark = enterScope(c)
       for s in stmts {
         visitStmt(c, s)
       }
@@ -768,6 +844,7 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case None -> {
         }
       }
+      exitScope(c, mark)
     }
     case XUnsafe(b) -> {
       visitExpr(c, b)
@@ -796,6 +873,7 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
 }
 
 func visitQuant(c: in Ctx, e: in TExpr, bs: in List[LocalDecl], w: in Option[TExpr], body: in TExpr): Unit {
+  val mark = enterScope(c)
   for b in bs {
     defineLocal(c, e.id, b)
   }
@@ -810,13 +888,16 @@ func visitQuant(c: in Ctx, e: in TExpr, bs: in List[LocalDecl], w: in Option[TEx
   visitExpr(c, body)
   expectTy(c, e.id, body.ty, tyBool(), "condition-type", "quantifier body")
   expectTy(c, e.id, e.ty, tyBool(), "condition-type", "quantifier")
+  exitScope(c, mark)
 }
 
 func visitLambda(c: in Ctx, e: in TExpr, params: in List[LocalDecl], caps: in List[Capture], body: in TExpr): Unit {
   val outer: Map[Int, Bool] = newMap()
   val captured: Map[Int, Bool] = newMap()
-  for k in mapKeys(c.locals) {
-    outer.add(k, true)
+  for k in mapKeys(c.live) {
+    if isTrue(c.live, k) {
+      outer.add(k, true)
+    }
   }
   for cp in caps {
     captured.add(cp.local.id, true)
@@ -829,12 +910,14 @@ func visitLambda(c: in Ctx, e: in TExpr, params: in List[LocalDecl], caps: in Li
       )
     }
   }
+  val mark = enterScope(c)
   for p in params {
     defineLocal(c, e.id, p)
   }
   c.frames.add(LambdaFrame(outer = outer, captured = captured))
   visitExpr(c, body)
   c.frames.removeAt(c.frames.count - 1)
+  exitScope(c, mark)
   match e.ty {
     case TFunc(ps, r, _) -> {
       if ps.count != params.count {
@@ -904,6 +987,8 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
     fnSym = f.sym,
     tpCount = f.typeParams.count,
     locals = newMap(),
+    live = newMap(),
+    scopeIds = newList(),
     frames = newList()
   )
   val none = NodeId(id = 0)
@@ -952,6 +1037,8 @@ pub func verifyPackage(pkg: in TPackage, deps: in List[TSymEntry]): List[VerifyD
     fnSym = SymbolId(id = 0),
     tpCount = 0,
     locals = newMap(),
+    live = newMap(),
+    scopeIds = newList(),
     frames = newList()
   )
   for f in pkg.funcs {
