@@ -76,6 +76,7 @@ import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.PackageMerge as PM
 import Lyric.Tir as Tir
+import Lyric.Tir.Verify as TirVerify
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
 /// diagnostics (every target's own packages, and the native target's path
@@ -6435,4 +6436,15 @@ func endBlockInUnit(body: in Block): Block {
 /// §6.3) fills and `Lyric.Tir.Verify` checks.
 pub func pipeNewTirPackage(name: in String): Tir.TPackage {
   Tir.TPackage(name = name, symbols = newList(), funcs = newList())
+}
+
+/// The I0003 diagnostics for `pkg` as produced by `pass`: every pass that
+/// builds or rewrites TIR runs this on its output (docs/70 §6.4).  Empty
+/// means the package is well formed.
+pub func pipeVerifyTir(pass: in String, pkg: in Tir.TPackage, deps: in List[Tir.TSymEntry]): List[String] {
+  val out: List[String] = newList()
+  for d in TirVerify.verifyPackage(pkg, deps) {
+    out.add(TirVerify.renderVerifyDiag(pass, d))
+  }
+  out
 }
