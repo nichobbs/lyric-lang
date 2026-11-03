@@ -7009,7 +7009,7 @@ func noteUnsafeImportedFallback(
   )
 }
 
-// W0034 (docs/70 section 5.2, D334): a call to an imported generic whose type
+// W0034 (docs/70 section 5.2, D335): a call to an imported generic whose type
 // argument(s) neither its arguments, its expected type nor the checker's
 // resolved type arguments fix is specialised at `Object`.  That default is
 // retiring: the warning is the first step of the two-step migration

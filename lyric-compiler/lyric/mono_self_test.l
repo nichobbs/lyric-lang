@@ -1136,7 +1136,7 @@ test "partially-pinned union-ctor argument mixes concrete and Object slots (#560
   )
 }
 
-// W0034 (D334): a type argument of an imported generic that nothing fixes is
+// W0034 (D335): a type argument of an imported generic that nothing fixes is
 // defaulted to Object, which is warned about while the default retires
 // (docs/70 section 5.2); the call still specialises as before.
 test "an unpinned type argument defaulted to Object is W0034" {
@@ -1151,7 +1151,7 @@ test "an unpinned type argument defaulted to Object is W0034" {
   )
 }
 
-test "an @externTarget generic is exempt from W0034 (D334)" {
+test "an @externTarget generic is exempt from W0034 (D335)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { mkThing() }\n"
   val plainLib = "package Lib\n" + "pub func mkThing[T](): Int = 0\n"
   val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
