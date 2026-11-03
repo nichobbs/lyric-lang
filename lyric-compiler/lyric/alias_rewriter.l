@@ -34,29 +34,6 @@ import Lyric.Resolve.{importHeads, importRenames, importsPackage, renderImport}
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Alias collection.
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: extract `asAlias` through an explicit function-typed
-// indirection.  Works around the F# emitter's #1140 cross-package
-// generic-arg widening bug — `imports[i].asAlias` peeks as
-// `System.Object.asAlias` when the list element type widens, but a
-// dedicated function with an `ImportDecl` parameter keeps the static
-// type stable for codegen.  Self-hosted bridge isn't affected; this
-// only matters when the F# stage-0 compiler builds this DLL.
-//
-// Note (#1451): the same #1140-class widening fires on bare `None`
-// match arms — `case None -> None` produces an `Option[obj]` value
-// whose stale generic arg poisons downstream type-inference for the
-// containing `match` expression.  Every Option-shaped match in this
-// file therefore returns the matched expression itself in the None
-// arm (e.g. `case None -> ty`) so the arm reuses the input's fully
-// resolved `Option[T]` static type instead of synthesising a fresh
-// `None`.  Stage-1 (self-hosted) builds aren't affected, but the F#
-// stage-0 compiler must produce a working `Lyric.AliasRewriter.dll`,
-// and bare `None` in this file breaks `lyric build --manifest
-// lyric-stdlib/lyric.toml`.
-func asAliasOf(imp: in ImportDecl): Option[String] {
-  imp.asAlias
-}
-
 // The qualified-reference heads of `imports` as `"<head>=<dotted package>"`
 // entries, e.g. `"Rx=Std.RegexSafe"`.  What binds a head (explicit aliases,
 // bare-import tails, full paths) is `Lyric.Resolve.importHeads`'s rule

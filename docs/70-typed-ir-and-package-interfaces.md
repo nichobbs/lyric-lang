@@ -752,8 +752,12 @@ builder (I0002) rather than on the current checker.
   mode. Step 8 (D322) gives each dependency a scope built from its own imports
   as declarations and deletes the checker's scan. Step 9 (D328) makes a bare
   union case need a name the file can reach (#8722) and keeps a restored
-  dependency's selective and aliased imports in their form. Next: folding
-  `AliasRewriter` and `TypeAliasResolve` in.
+  dependency's selective and aliased imports in their form. Step 10 (D330)
+  moves what an import binds (heads, renames) into `Lyric.Resolve`; the
+  `AliasRewriter` tree walk becomes its projection and stays until 2d, which
+  is when backends stop reading rewritten names. Step 11 (D331) resolves
+  qualified type paths through `resolvePath` and deletes the checker's owner
+  scans. `TypeAliasResolve` waits for 2d (D331).
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.
