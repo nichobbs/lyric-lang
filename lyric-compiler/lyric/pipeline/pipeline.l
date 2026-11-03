@@ -6442,9 +6442,9 @@ pub func pipeNewTirPackage(name: in String): Tir.TPackage {
 /// builds or rewrites TIR runs this on its output (docs/70 §6.4).  Empty
 /// means the package is well formed.
 pub func pipeVerifyTir(pass: in String, pkg: in Tir.TPackage, deps: in List[Tir.TSymEntry]): List[String] {
-  val out: List[String] = newList()
+  val res: List[String] = newList()
   for d in TirVerify.verifyPackage(pkg, deps) {
-    out.add(TirVerify.renderVerifyDiag(pass, d))
+    res.add(TirVerify.renderVerifyDiag(pass, d))
   }
-  out
+  res
 }

@@ -78,11 +78,11 @@ func substTy(t: in Ty, subs: in List[Subst], selfTy: in Option[Ty]): Ty {
     case TTuple(xs) -> TTuple(elems = substList(xs, subs, selfTy))
     case TNullable(i) -> TNullable(inner = substTy(i, subs, selfTy))
     case TFunc(ps, r, asy) -> {
-      val out: List[TParamTy] = newList()
+      val res: List[TParamTy] = newList()
       for p in ps {
-        out.add(TParamTy(mode = p.mode, ty = substTy(p.ty, subs, selfTy)))
+        res.add(TParamTy(mode = p.mode, ty = substTy(p.ty, subs, selfTy)))
       }
-      TFunc(params = out, ret = substTy(r, subs, selfTy), isAsync = asy)
+      TFunc(params = res, ret = substTy(r, subs, selfTy), isAsync = asy)
     }
     case TArray(len, e) -> TArray(len = substLen(len, subs), element = substTy(e, subs, selfTy))
     case TSlice(e) -> TSlice(element = substTy(e, subs, selfTy))
@@ -127,11 +127,11 @@ func substLen(len: in ArrayLen, subs: in List[Subst]): ArrayLen {
 }
 
 func substList(xs: in List[Ty], subs: in List[Subst], selfTy: in Option[Ty]): List[Ty] {
-  val out: List[Ty] = newList()
+  val res: List[Ty] = newList()
   for x in xs {
-    out.add(substTy(x, subs, selfTy))
+    res.add(substTy(x, subs, selfTy))
   }
-  out
+  res
 }
 
 func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
@@ -155,8 +155,10 @@ func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
 func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
   match t {
     case TPrim(_) -> {}
-    case TTuple(xs) -> for x in xs {
-      checkTy(c, id, x, what)
+    case TTuple(xs) -> {
+      for x in xs {
+        checkTy(c, id, x, what)
+      }
     }
     case TNullable(i) -> checkTy(c, id, i, what)
     case TFunc(ps, r, _) -> {
@@ -188,8 +190,10 @@ func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
     case TLen(_) -> {}
     case TNever -> {}
     case TException -> {}
-    case TExtern(h) -> for a in h.args {
-      checkTy(c, id, a, what)
+    case TExtern(h) -> {
+      for a in h.args {
+        checkTy(c, id, a, what)
+      }
     }
   }
 }
@@ -422,8 +426,10 @@ func visitPat(c: in Ctx, p: in TPat, defs: in Bool): Unit {
         visitPat(c, f.pat, defs)
       }
     }
-    case TpTuple(elems) -> for x in elems {
-      visitPat(c, x, defs)
+    case TpTuple(elems) -> {
+      for x in elems {
+        visitPat(c, x, defs)
+      }
     }
     case TpTypeTest(inner, ty) -> {
       checkTy(c, p.id, ty, "type test")
@@ -574,15 +580,21 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case _ -> {}
       }
     }
-    case XTuple(elems) -> for x in elems {
-      visitExpr(c, x)
+    case XTuple(elems) -> {
+      for x in elems {
+        visitExpr(c, x)
+      }
     }
-    case XListLit(elems) -> for x in elems {
-      visitExpr(c, x)
+    case XListLit(elems) -> {
+      for x in elems {
+        visitExpr(c, x)
+      }
     }
-    case XInterp(parts) -> for x in parts {
-      visitExpr(c, x)
-      expectTy(c, e.id, x.ty, tyString(), "interp-part-type", "interpolation part")
+    case XInterp(parts) -> {
+      for x in parts {
+        visitExpr(c, x)
+        expectTy(c, e.id, x.ty, tyString(), "interp-part-type", "interpolation part")
+      }
     }
     case XRange(lo, hi, _) -> {
       visitExpr(c, lo)
