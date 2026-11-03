@@ -56,22 +56,23 @@ func has(text: in String, line: in String, label: in String) {
 
 test "functions record their signature, modes, async and purity" {
   val text = dumpOf(
-    "package P\n\n@pure\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n\npub func fill(out buf: String, n: Int = 3) {\n}\n\nfunc hidden(): Int {\n  1\n}\n"
+    "package P\n\n@pure\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n\npub func fill(buf: inout String, n: Int = 3) {\n}\n\nfunc hidden(): Int {\n  1\n}\n"
   )
   has(text, "  pub func P::add(Int,Int)(a: in Int, b: in Int): Int @pure", "add")
+  assertTrue(text.contains("(buf: inout String, n: in Int = <default>): Unit"), "fill:\n" + text)
   assertFalse(text.contains("hidden"), "a private function is not recorded:\n" + text)
 }
 
 test "records, unions, enums and constants" {
   val text = dumpOf(
-    "package P\n\npub record Point {\n  x: Int\n  var label: String = \"p\"\n}\n\npub union Shape {\n  case Circle(radius: Int)\n  case Empty\n}\n\npub enum Color {\n  case Red\n  case Green\n}\n\npub const Max: Int = 100\n"
+    "package P\n\npub ref record Point {\n  x: Int\n  var label: String = \"p\"\n}\n\npub union Shape {\n  case Circle(radius: Int)\n  case Empty\n}\n\npub enum Color {\n  case Red\n  case Green\n}\n\npub val Max: Int = 100\n"
   )
   has(text, "  pub record P::Point(x: Int, var label: String = <default>)", "record")
   has(text, "  pub union P::Shape", "union")
   has(text, "  pub union case P::Shape::Circle(radius: Int)", "case")
   has(text, "  pub enum P::Color", "enum")
   has(text, "  pub enum case P::Color::Red()", "enum case")
-  has(text, "  pub const P::Max: Int = 100", "const")
+  has(text, "  pub val P::Max: Int = 100", "val")
 }
 
 test "generics, bounds and Self" {
@@ -109,7 +110,10 @@ test "the interface round trips and agrees with the resolver" {
       val tbl = res.symbols.resolveCtx[0].tbl
       for d in iface.decls {
         val key = defPathKey(d.path)
-        assertTrue(mapGet(tbl.byId, key) != None, "the resolver declares " + key)
+        match symbolIdOfKey(it, key) {
+          case Some(id) -> assertTrue(mapGet(tbl.byId, toString(id.id)) != None, "the resolver declares " + key)
+          case None -> assertTrue(false, "the interner knows " + key)
+        }
       }
     }
   }

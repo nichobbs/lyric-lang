@@ -165,7 +165,7 @@ func detailText(it: in DefPathInterner, d: in IfDetail): String {
       }
       typeParamsText(it, tps) + "(" + joinList(parts, ", ") + "): " + tyText(it, ret) + flags
     }
-    case IfDRecord(tps, fs) -> typeParamsText(it, tps) + " " + fieldsText(it, fs)
+    case IfDRecord(tps, fs) -> typeParamsText(it, tps) + fieldsText(it, fs)
     case IfDType(tps) -> typeParamsText(it, tps)
     case IfDAlias(tps, underlying) -> typeParamsText(it, tps) + " = " + tyText(it, underlying)
     case IfDCase(fs) -> fieldsText(it, fs)
