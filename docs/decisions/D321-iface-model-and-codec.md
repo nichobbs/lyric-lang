@@ -1,4 +1,4 @@
-# D319 - `Lyric.Iface`: the package interface model, canonical codec and `lyric interface dump` (docs/70 phase 5a, #8612)
+# D321 - `Lyric.Iface`: the package interface model, canonical codec and `lyric interface dump` (docs/70 phase 5a, #8612)
 
 **Status:** first slice shipped (header and declaration index). Phase 5a of
 docs/70 §13; supersedes docs/45 phases 2-5 as D267 recorded.
