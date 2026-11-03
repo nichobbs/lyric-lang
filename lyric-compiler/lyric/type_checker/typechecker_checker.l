@@ -5876,26 +5876,60 @@ pub record ImportedPackage {
   /// signatures resolve in the scope they make.  Empty for a package whose
   /// imports are known by name only; `imports` then stands in as whole imports.
   importDecls: List[ImportDecl] = newList()
+  /// `<package>::<name>` for each name the package imports selectively; read
+  /// with `imports` and `wholeImports` when `importDecls` is empty.
+  selectedImports: List[String] = newList()
 }
 
-// The imports of a package known by name only, as whole imports.
-func wholeImportDecls(names: in List[String], span: in Span): List[ImportDecl] {
+// The imports of a package known by the names of its imports only (a restored
+// dependency: its contract records the packages it imports, those it imports
+// whole, and `<package>::<name>` for each name it imports selectively, but no
+// alias): a whole import for each package in `whole`; a selective import of the
+// listed names for a package in `selected`; and for any other package an
+// aliased import, which makes none of its names bare.
+func importDeclsFromNames(
+  imports: in List[String], whole: in List[String], selected: in List[String], span: in Span
+): List[ImportDecl] {
   val acc: List[ImportDecl] = newList()
-  for n in names {
+  for n in imports {
     val segs: List[String] = newList()
     for seg in split(n, ".") {
       segs.add(seg)
     }
-    acc.add(
-      ImportDecl(
-        path = ModulePath(segments = segs, span = span),
-        selector = None,
-        asAlias = None,
-        isPubUse = false,
-        isExtern = false,
-        span = span
-      )
-    )
+    val path = ModulePath(segments = segs, span = span)
+    if whole.contains(n) {
+      acc.add(ImportDecl(path = path, selector = None, asAlias = None, isPubUse = false, isExtern = false, span = span))
+    } else {
+      val items: List[ImportItem] = newList()
+      for sel in selected {
+        if sel.startsWith(n + "::") {
+          items.add(ImportItem(name = sel.substring(n.length + 2, sel.length - n.length - 2), asAlias = None, span = span))
+        }
+      }
+      if items.count > 0 {
+        acc.add(
+          ImportDecl(
+            path = path,
+            selector = Some(value = ISGroup(items = items)),
+            asAlias = None,
+            isPubUse = false,
+            isExtern = false,
+            span = span
+          )
+        )
+      } else {
+        acc.add(
+          ImportDecl(
+            path = path,
+            selector = None,
+            asAlias = Some(value = n),
+            isPubUse = false,
+            isExtern = false,
+            span = span
+          )
+        )
+      }
+    }
   }
   acc
 }
@@ -7118,7 +7152,7 @@ func checkWithImportedPackagesCore(
     val depImports = if ip.importDecls.count > 0 {
       ip.importDecls
     } else {
-      wholeImportDecls(ip.imports, file.packageDecl.span)
+      importDeclsFromNames(ip.imports, ip.wholeImports, ip.selectedImports, file.packageDecl.span)
     }
     resolveDeps.add(DepPackage(name = ip.name, items = ipItems, reexports = ip.reexports, imports = depImports))
     var ii = 0

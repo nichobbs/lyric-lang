@@ -1628,6 +1628,10 @@ func projectFrontEnd(
           restoredArtifacts[ri0].source,
           restoredArtifacts[ri0].contract.wholeImports
         ),
+        selectedImports = pipeRestoredSelectedImportNames(
+          restoredArtifacts[ri0].source,
+          restoredArtifacts[ri0].contract.selectedImports
+        ),
         reexports = pipeRestoredReexportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.reexports)
       )
     )

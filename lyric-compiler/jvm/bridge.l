@@ -3227,6 +3227,7 @@ func jvmProjectFrontEnd(
         items = rPkgItems,
         imports = pipeRestoredImportNames(rf, synArt.contract.imports),
         wholeImports = pipeRestoredWholeImportNames(rf, synArt.contract.wholeImports),
+        selectedImports = pipeRestoredSelectedImportNames(rf, synArt.contract.selectedImports),
         reexports = pipeRestoredReexportNames(rf, synArt.contract.reexports)
       )
     )
