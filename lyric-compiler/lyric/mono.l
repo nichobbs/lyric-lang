@@ -6985,6 +6985,30 @@ func noteUnspecialisableLocalCall(
 // trade for same-package generics. A name shadowed by a typed local binding
 // in `env` is a lambda/function-value call, not a call to the generic — skip
 // it, same as `noteUnspecialisableLocalCall`.
+func noteUnsafeImportedFallback(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  unpinned: in List[String],
+  callSpan: in Span,
+): Unit {
+  if env.containsKey(fname) {
+    return
+  }
+  state.diags.add(
+    errorDiagnostic(
+      "M0004",
+      "call to imported generic function '" + fname + "' could not infer type argument(s) " + quotedStringList(unpinned) +
+        " from the call's arguments; '" +
+        fname +
+        "' takes a parameter whose representation depends on the exact type argument (a record, union, or collection type — not a plain array), so defaulting the missing type argument(s) to 'Object' would emit a specialisation that crashes at runtime against the real argument's actual instantiation instead of compiling to a working call — make the argument types inferable (e.g. bind the argument to an explicitly-typed local) or supply the type argument(s) explicitly (e.g. '" +
+        fname +
+        "[...](...)')",
+      callSpan
+    )
+  )
+}
+
 // W0034 (docs/70 section 5.2, D334): a call to an imported generic whose type
 // argument(s) neither its arguments, its expected type nor the checker's
 // resolved type arguments fix is specialised at `Object`.  That default is
@@ -7008,30 +7032,6 @@ func noteObjectDefaultedTypeArgs(
         "' from the call's arguments or its expected type, so they default to 'Object'; write '" +
         fname +
         "[...](...)' (this becomes error T0224)",
-      callSpan
-    )
-  )
-}
-
-func noteUnsafeImportedFallback(
-  state: in MonoState,
-  env: in Map[String, TypeExpr],
-  fname: in String,
-  unpinned: in List[String],
-  callSpan: in Span,
-): Unit {
-  if env.containsKey(fname) {
-    return
-  }
-  state.diags.add(
-    errorDiagnostic(
-      "M0004",
-      "call to imported generic function '" + fname + "' could not infer type argument(s) " + quotedStringList(unpinned) +
-        " from the call's arguments; '" +
-        fname +
-        "' takes a parameter whose representation depends on the exact type argument (a record, union, or collection type — not a plain array), so defaulting the missing type argument(s) to 'Object' would emit a specialisation that crashes at runtime against the real argument's actual instantiation instead of compiling to a working call — make the argument types inferable (e.g. bind the argument to an explicitly-typed local) or supply the type argument(s) explicitly (e.g. '" +
-        fname +
-        "[...](...)')",
       callSpan
     )
   )
