@@ -418,7 +418,7 @@ func classifyArrayIndex(tbl: in SymbolTable, idxTy: in Type, n: in Int): IndexKi
       case None -> badIndex()
     }
     case TyError -> IndexKind(kind = "", elide = false, wide = false)
-    case TyVar(_) -> IndexKind(kind = "", elide = false, wide = false)
+    case TyParam(_, _) -> IndexKind(kind = "", elide = false, wide = false)
     case _ -> badIndex()
   }
 }
@@ -1195,21 +1195,21 @@ pub func typeMentionsGenericParam(t: in Type): Bool {
       }
       false
     }
-    case _ -> typeMentionsTyVar(t)
+    case _ -> typeMentionsTyParam(t)
   }
 }
 
 /// Whether `t` mentions a type variable anywhere.
-pub func typeMentionsTyVar(t: in Type): Bool {
+pub func typeMentionsTyParam(t: in Type): Bool {
   match t {
-    case TyVar(_) -> true
-    case TyRefined(u, _, _, _, _) -> typeMentionsTyVar(u)
-    case TyNullable(inner) -> typeMentionsTyVar(inner)
-    case TySlice(el) -> typeMentionsTyVar(el)
-    case TyArray(_, el, _) -> typeMentionsTyVar(el)
+    case TyParam(_, _) -> true
+    case TyRefined(u, _, _, _, _) -> typeMentionsTyParam(u)
+    case TyNullable(inner) -> typeMentionsTyParam(inner)
+    case TySlice(el) -> typeMentionsTyParam(el)
+    case TyArray(_, el, _) -> typeMentionsTyParam(el)
     case TyTuple(elems) -> {
       for el in elems {
-        if typeMentionsTyVar(el) {
+        if typeMentionsTyParam(el) {
           return true
         }
       }
@@ -1217,7 +1217,7 @@ pub func typeMentionsTyVar(t: in Type): Bool {
     }
     case TyUser(_, _, args) -> {
       for a in args {
-        if typeMentionsTyVar(a) {
+        if typeMentionsTyParam(a) {
           return true
         }
       }
@@ -1361,7 +1361,7 @@ func buildUnionEqShape(
     val ftys = unionCaseFieldTypes(tbl, scratch, uc, gnames, sym.originPackage)
     val shapes: List[EqShape] = newList()
     for ft in ftys {
-      match buildEqShape(tbl, span, substituteTyVars(ft, gnames, targs), depth + 1) {
+      match buildEqShape(tbl, span, substituteTyParams(ft, gnames, targs), depth + 1) {
         case Err(bad) -> return Err(error = bad)
         case Ok(sh) -> shapes.add(sh)
       }

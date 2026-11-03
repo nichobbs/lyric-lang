@@ -17,7 +17,7 @@ import Lyric.Iface
 import Lyric.TypeChecker
 
 /// The generic parameters of one declaration: `owner` is its symbol and `names`
-/// its type and value parameters in order, so `TyVar(name)` becomes
+/// its type and value parameters in order, so `TyParam(name)` becomes
 /// `TParam(owner, index)`.  Frames nest innermost last.
 pub record ConvFrame {
   owner: SymbolId
@@ -144,12 +144,16 @@ pub func tyOf(
       }
     }
     case TyLen(n) -> TLen(n = n)
-    case TyVar(name) -> match findParam(frames, name) {
+    case TyParam(name, _) -> match findParam(frames, name) {
       case Some(loc) -> TParam(owner = loc.owner, index = loc.index)
       case None -> {
         buildFail(bc, what + ": type parameter '" + name + "' is not declared by the declaration or its owner")
         TNever
       }
+    }
+    case TyInfer(_) -> {
+      buildFail(bc, what + ": an inference variable reached the interface")
+      TNever
     }
     case TyError -> {
       buildFail(bc, what + ": the type did not resolve")

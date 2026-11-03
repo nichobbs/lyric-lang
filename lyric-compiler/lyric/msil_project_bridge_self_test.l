@@ -955,7 +955,7 @@ test "restored record ctor token populated" {
 
 // Regression for #1435: a shared package appearing as BOTH a bundle
 // entry AND a stdlibSources entry must not cause double type-variable
-// registration that corrupts `TyVar("")` resolution in subsequent
+// registration that corrupts `TyParam("")` resolution in subsequent
 // packages.
 test "stdlib self-build no duplicate type-var corruption" {
   val sharedSrc = "package Ix1435.Core\n" + "\n" + "pub generic[T] union Wrap {\n" + "  case Wrapped(value: T)\n" +

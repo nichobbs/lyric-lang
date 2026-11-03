@@ -1500,11 +1500,11 @@ func addFuncSigOrigin(
   // overload and wrongly rejected (T0043).  Register every non-generic sig
   // under an indexed `arityKey@i` key so the call site can gather the full
   // candidate set and pick the overload whose params match the argument
-  // types via `typeEquiv` (which honours `TyError`/`TyVar` wildcards, so an
+  // types via `typeEquiv` (which honours `TyError`/`TyParam` wildcards, so an
   // empty-literal `slice[<error>]` arg still selects the `slice[String]`
   // overload).  Indexing auto-continues across the imported-then-user
   // registration passes (we probe for the next free slot).  Generic sigs
-  // are skipped: their `TyVar` params match any argument under `typeEquiv`
+  // are skipped: their `TyParam` params match any argument under `typeEquiv`
   // and would shadow a concrete overload — they keep the arity-key path.
   if sg.generics.count == 0 {
     registerOverloadCandidate(sigs, arityKey, sg)
@@ -1691,7 +1691,7 @@ func checkReservedBuiltinFuncDecl(
 // `sig.params` aligns 1:1 with a call site's argument list; `impl` block and
 // interface members never carry a `self` param (the receiver is implicit).
 // Owner generics are pushed alongside the method's own generics so a `Box[T]`
-// method's `T`-typed params resolve to `TyVar("T")` (substitutable at the call
+// method's `T`-typed params resolve to `TyParam("T")` (substitutable at the call
 // site from the receiver's type args).  Type-reference diagnostics go to a
 // scratch list: declaration-position validation of member signatures is
 // `checkMemberSigTypes`'s job (T4), and re-reporting here would duplicate it.
@@ -2314,7 +2314,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 val fnGenNames = extractGenericNames(fn.generics)
                 val sigGenVars: List[Type] = newList()
                 for gn in sigGenNames {
-                  sigGenVars.add(TyVar(name = gn))
+                  sigGenVars.add(TyParam(name = gn, owner = ""))
                 }
                 if fn.params.count != sig.params.count {
                   diag.add(
@@ -2339,7 +2339,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   var pi = 0
                   while pi < sig.params.count {
                     val ifacePTy = substitutesSelf(
-                      substituteTyVars(
+                      substituteTyParams(
                         resolveIfaceType(tbl, ifaceSym, ictx, diag, sig.params[pi].ty),
                         ifaceGenNames,
                         ifaceArgTys
@@ -2347,7 +2347,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                       selfTy
                     )
                     val implPTy = substitutesSelf(
-                      substituteTyVars(resolveType(tbl, ctx, diag, fn.params[pi].ty), fnGenNames, sigGenVars),
+                      substituteTyParams(resolveType(tbl, ctx, diag, fn.params[pi].ty), fnGenNames, sigGenVars),
                       selfTy
                     )
                     if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
@@ -2366,7 +2366,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                   }
                   // C11: check return type matches (with Self substitution).
                   val ifaceRetTy = substitutesSelf(
-                    substituteTyVars(
+                    substituteTyParams(
                       match sig.ret {
                         case None -> TyPrim(pt = PtUnit)
                         case Some(te) -> resolveIfaceType(tbl, ifaceSym, ictx, diag, te)
@@ -2377,7 +2377,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                     selfTy
                   )
                   val implRetTy = substitutesSelf(
-                    substituteTyVars(
+                    substituteTyParams(
                       match fn.ret {
                         case None -> TyPrim(pt = PtUnit)
                         case Some(te) -> resolveType(tbl, ctx, diag, te)
@@ -3715,7 +3715,7 @@ func protectedFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in 
 // declaring type's other members would.
 // The protected-type analog of `recordSelfType`: the concrete receiver type
 // member bodies see for whole-`self` reads and the ECall bare-sibling
-// fallback (#6483).  Same raw-`TyVar` type-argument convention as
+// fallback (#6483).  Same raw-`TyParam` type-argument convention as
 // `recordSelfType` (see its doc comment).
 func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGenerics: in List[String]): Type {
   match symTableTryFindOne(tbl, decl.name) {
@@ -3724,7 +3724,7 @@ func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGen
         val targs: List[Type] = newList()
         var i = 0
         while i < ownerGenerics.count {
-          targs.add(TyVar(name = ownerGenerics[i]))
+          targs.add(TyParam(name = ownerGenerics[i], owner = ""))
           i = i + 1
         }
         TyUser(id = tid, name = decl.name, args = targs)
@@ -4012,7 +4012,7 @@ func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List
       case Some(tid) -> {
         val targs: List[Type] = newList()
         for g in ownerGenerics {
-          targs.add(TyVar(name = g))
+          targs.add(TyParam(name = g, owner = ""))
         }
         TyUser(id = tid, name = name, args = targs)
       }
@@ -4024,7 +4024,7 @@ func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List
 
 // #6487: the record-body counterpart of `protectedFieldLocals` — resolves
 // every `RMField`'s declared type against the record's OWN generic context
-// (so a `Box[T]` field `v: T` stays `TyVar("T")`, matching `sig.generics`
+// (so a `Box[T]` field `v: T` stays `TyParam("T")`, matching `sig.generics`
 // below rather than erasing to `TyError`) into `LocalBinding`s. Unlike
 // `protectedFieldLocals`, this list is used ONLY to seed `sc.selfFields`
 // (the `self.field` map) — record-body methods have no bare-name field
@@ -4071,10 +4071,10 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // T0070 on a body that was always well-typed (found via the #6417 case in
 // `impl_method_self_test.l`'s battery run, same root cause as the impl-side
 // fix below).
-// The type-argument list is built with raw `TyVar(name = ...)` rather than
+// The type-argument list is built with raw `TyParam(name = ...)` rather than
 // the `ctx`/`gctxPush`-scoped resolution `recordFieldLocals` uses for the
 // same generic names: this type only feeds `substitutesSelf` and
-// equivalence checks, and `typeEquiv` treats every `TyVar` as universally
+// equivalence checks, and `typeEquiv` treats every `TyParam` as universally
 // equivalent, so the two representations never need to agree structurally
 // (#6488 review nit).
 func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in List[String]): Type {
@@ -4084,7 +4084,7 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
         val targs: List[Type] = newList()
         var i = 0
         while i < ownerGenerics.count {
-          targs.add(TyVar(name = ownerGenerics[i]))
+          targs.add(TyParam(name = ownerGenerics[i], owner = ""))
           i = i + 1
         }
         TyUser(id = tid, name = decl.name, args = targs)
@@ -4734,7 +4734,7 @@ func protectedDeclaresMember(pd: in ProtectedTypeDecl, name: in String): Bool {
 // block itself — resolve the target's own fields (via
 // `findRecordDeclByTypeId` + `recordFieldLocals`, in the target record's OWN
 // generic-parameter names) and substitute those names for `selfTy`'s actual
-// type arguments (`substituteTyVars`, the same mechanism
+// type arguments (`substituteTyParams`, the same mechanism
 // `substituteMethodSig` uses for a call-site method signature) so `impl
 // Container[T] for Box[T] { func get(self: in Self): T { self.v } }` types
 // `self.v` as the IMPL's own `T`, not the record's. Non-record targets
@@ -4766,7 +4766,7 @@ func implTargetFieldLocals(tbl: in SymbolTable, selfTy: in Type): List[LocalBind
         var i = 0
         while i < raw.count {
           substituted.add(
-            LocalBinding(name = raw[i].name, ty = substituteTyVars(raw[i].ty, gnames, targs), isMutable = raw[i].isMutable)
+            LocalBinding(name = raw[i].name, ty = substituteTyParams(raw[i].ty, gnames, targs), isMutable = raw[i].isMutable)
           )
           i = i + 1
         }
@@ -5740,7 +5740,7 @@ func noteFieldZeroDefaultOf(
   // A field whose element type is a type variable is zero filled by each
   // construction that leaves it out, at the instantiated element type
   // (`noteCtorZeroArgs`), so it is not an error here.
-  if typeMentionsTyVar(declT) {
+  if typeMentionsTyParam(declT) {
     return
   }
   noteArrayZeroInit(
@@ -5919,14 +5919,7 @@ func importDeclsFromNames(
         )
       } else {
         acc.add(
-          ImportDecl(
-            path = path,
-            selector = None,
-            asAlias = Some(value = n),
-            isPubUse = false,
-            isExtern = false,
-            span = span
-          )
+          ImportDecl(path = path, selector = None, asAlias = Some(value = n), isPubUse = false, isExtern = false, span = span)
         )
       }
     }

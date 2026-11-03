@@ -1460,8 +1460,9 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       renderType(cr, u) + " range " + left + opBare + right
     }
     case TySelf -> "Self"
+    case TyParam(n, _) -> n
+    case TyInfer(i) -> "?" + toString(i)
     case TyLen(n) -> toString(n)
-    case TyVar(n) -> n
     case TyError -> "<error>"
     case TyException -> "Exception"
   }
