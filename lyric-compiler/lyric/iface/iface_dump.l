@@ -141,7 +141,7 @@ func fieldsText(it: in DefPathInterner, fs: in List[IfField]): String {
 func detailText(it: in DefPathInterner, d: in IfDetail): String {
   match d {
     case IfDNone -> ""
-    case IfDFunc(tps, ps, ret, isAsync, isAxiom, isPure, verification) -> {
+    case IfDFunc(tps, ps, ret, isAsync, isAxiom, isPure) -> {
       val parts: List[String] = newList()
       for p in ps {
         parts.add(p.name + ": " + modeName(p.mode) + " " + tyText(it, p.ty) + (if p.hasDefault then " = <default>" else ""))
@@ -156,16 +156,9 @@ func detailText(it: in DefPathInterner, d: in IfDetail): String {
       if isPure {
         flags = flags + " @pure"
       }
-      match verification {
-        case Some(v) -> {
-          flags = flags + " " + ifVerifName(v)
-        }
-        case None -> {
-        }
-      }
       typeParamsText(it, tps) + "(" + joinList(parts, ", ") + "): " + tyText(it, ret) + flags
     }
-    case IfDRecord(tps, fs) -> typeParamsText(it, tps) + " " + fieldsText(it, fs)
+    case IfDRecord(tps, fs) -> typeParamsText(it, tps) + fieldsText(it, fs)
     case IfDType(tps) -> typeParamsText(it, tps)
     case IfDAlias(tps, underlying) -> typeParamsText(it, tps) + " = " + tyText(it, underlying)
     case IfDCase(fs) -> fieldsText(it, fs)

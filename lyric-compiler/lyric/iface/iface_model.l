@@ -28,6 +28,7 @@ pub union IfVerif {
   case IfProofRequired
   case IfProofRequiredUnsafe
   case IfProofRequiredChecked
+  case IfAxiom
 }
 
 /// How far a declaration is visible: `pub` and `internal` cross a package
@@ -103,8 +104,8 @@ pub record IfField {
 /// What a declaration is, beyond its kind and visibility.
 ///
 /// - `IfDNone`: a wire, scope, config or aspect, whose content is code.
-/// - `IfDFunc`: a function, method or interface member.  `verification` is
-///   the function's own level when it differs from the package's.
+/// - `IfDFunc`: a function, method or interface member.  A function's level is
+///   the package's unless it is `@axiom`.
 /// - `IfDRecord`: a record, exposed record or protected type.
 /// - `IfDType`: a union, enum, opaque type or interface (cases and members
 ///   are declarations of their own, nested under it).
@@ -116,7 +117,7 @@ pub record IfField {
 /// - `IfDExtern`: an extern type and the host type it names.
 pub union IfDetail {
   case IfDNone
-  case IfDFunc(typeParams: List[TTypeParam], params: List[IfParam], ret: Ty, isAsync: Bool, isAxiom: Bool, isPure: Bool, verification: Option[IfVerif])
+  case IfDFunc(typeParams: List[TTypeParam], params: List[IfParam], ret: Ty, isAsync: Bool, isAxiom: Bool, isPure: Bool)
   case IfDRecord(typeParams: List[TTypeParam], fields: List[IfField])
   case IfDType(typeParams: List[TTypeParam])
   case IfDAlias(typeParams: List[TTypeParam], underlying: Ty)
@@ -148,6 +149,7 @@ pub func ifVerifCode(v: in IfVerif): Int {
     case IfProofRequired -> 1
     case IfProofRequiredUnsafe -> 2
     case IfProofRequiredChecked -> 3
+    case IfAxiom -> 4
   }
 }
 
@@ -157,6 +159,7 @@ pub func ifVerifOfCode(c: in Int): Option[IfVerif] {
     case 1 -> Some(value = IfProofRequired)
     case 2 -> Some(value = IfProofRequiredUnsafe)
     case 3 -> Some(value = IfProofRequiredChecked)
+    case 4 -> Some(value = IfAxiom)
     case _ -> None
   }
 }
@@ -167,6 +170,7 @@ pub func ifVerifName(v: in IfVerif): String {
     case IfProofRequired -> "@proof_required"
     case IfProofRequiredUnsafe -> "@proof_required(unsafe_blocks_allowed)"
     case IfProofRequiredChecked -> "@proof_required(checked_arithmetic)"
+    case IfAxiom -> "@axiom"
   }
 }
 
