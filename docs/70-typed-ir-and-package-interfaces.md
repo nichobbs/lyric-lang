@@ -2,7 +2,7 @@
 
 _Status: **Accepted in D267** as the direction for the compiler's front and
 middle end, the library boundary and cross-package contracts. Phase 1 shipped
-in D280; the `Lyric.Tir` data model (§6.2) in D319, the verifier (§6.4) in D323 and node identity (§6.1) in D325; §13 is the plan for the rest. It supersedes docs/45 phases
+in D280; the `Lyric.Tir` data model (§6.2) in D319, the verifier (§6.4) in D323 and node identity (§6.1) in D325 and the generic builtin signatures (§5.3) in D334; §13 is the plan for the rest. It supersedes docs/45 phases
 2-5 (§9.9), the per-package import scope of docs/19 §4 step 2 and §8 (§4.1),
 and the transitive bare-name half of D141 (§4.3). Open questions are §15._
 

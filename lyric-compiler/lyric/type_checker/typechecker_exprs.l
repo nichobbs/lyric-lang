@@ -116,7 +116,11 @@ func instantiateBuiltinCall(fnT: in Type, argTypes: in List[Type]): Type {
         }
         k = k + 1
       }
-      if any { TyFunction(params = bound, ret = r, isAsync = isAsync) } else { fnT }
+      if any {
+        TyFunction(params = bound, ret = r, isAsync = isAsync)
+      } else {
+        fnT
+      }
     }
     case _ -> fnT
   }

@@ -14429,7 +14429,7 @@ test "a dependency's fully qualified type with no import of its owner resolves (
 // `println[T](x: T)`, `toString[T](x: T)` and `formatN[A1..AN]` are typed with
 // type parameters bound to the call's arguments, not with `TyError` holes.
 test "println and toString accept an argument of any type" {
-  val src = "package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R, xs: in List[Int]): String {\n  println(1)\n  println(\"s\")\n  println(r)\n  print(xs)\n  toString(r.a) + toString(xs.count)\n}\n"
+  val src = "package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R, t: in (Int, Bool)): String {\n  println(1)\n  println(\"s\")\n  println(r)\n  print(t)\n  toString(r.a) + toString(true)\n}\n"
   assertEqual(diagCodesOf(parseCheck(src)), "", "no diagnostics")
 }
 
@@ -14454,13 +14454,13 @@ test "a builtin's arity is still checked" {
     "toString takes one argument"
   )
   assertTrue(
-    hasDiagCode(parseCheck("package P\nfunc f(): String {\n  format2(\"{} {}\", 1)\n}\n"), "T0042"),
+    hasDiagCode(parseCheck("package P\nfunc f(): String {\n  format2(\"{0} {1}\", 1)\n}\n"), "T0042"),
     "format2 takes a template and two arguments"
   )
 }
 
 test "formatN takes a String template and N arguments of any type" {
-  val ok = "package P\nfunc f(n: in Int, b: in Bool): String {\n  format1(\"{}\", n) + format2(\"{} {}\", n, b) + format3(\"{}{}{}\", n, b, \"s\") + format4(\"{}{}{}{}\", n, b, 1.5, 'c')\n}\n"
+  val ok = "package P\nfunc f(n: in Int, b: in Bool): String {\n  format1(\"{0}\", n) + format2(\"{0} {1}\", n, b) + format3(\"{0}{1}{2}\", n, b, \"s\") + format4(\"{0}{1}{2}{3}\", n, b, 1.5, 'c')\n}\n"
   assertEqual(diagCodesOf(parseCheck(ok)), "", "no diagnostics")
   assertTrue(
     hasDiagCode(parseCheck("package P\nfunc f(n: in Int): String {\n  format1(n, n)\n}\n"), "T0043"),
