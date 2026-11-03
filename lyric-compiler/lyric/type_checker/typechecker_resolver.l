@@ -987,6 +987,14 @@ func resolveTypePath(
     case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
     case None -> ()
   }
+  // A package-private type named through its package is T0097 whether or not
+  // the file imports the package (#7548); `symbolToType` reports it.
+  match symTableTryFindInPackage(tbl, ownerPkg, last) {
+    case Some(sym) -> if symbolIsType(sym) and symbolIsPackagePrivateBinding(sym) {
+      return symbolToType(tbl, ctx, diag, sym, args, span)
+    }
+    case None -> ()
+  }
   val defaultPick = symTableTryFindOne(tbl, last)
   match defaultPick {
     case Some(sym) -> {
