@@ -14371,3 +14371,31 @@ test "a name-only dependency reads a whole import as whole (D322)" {
   val cr = checkWithImportedPackages(parse(src).file, packages)
   assertFalse(hasDiagCode(cr, "T0211"), "a whole import brings Oops")
 }
+
+// A restored dependency names a type of another package fully qualified and
+// carries no import for it, so its signatures cannot resolve the owner in a
+// scope; the owner-matched lookup serves them (D331, aot-smoke).
+test "a dependency's fully qualified type with no import of its owner resolves (D331)" {
+  val lib = parse("package Lib\npub record Cert {\n  name: String\n}\n")
+  val mid = parse("package Mid\npub func use(c: in Lib.Cert): Unit {}\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  packages.add(
+    ImportedPackage(
+      name = "Mid",
+      items = mid.file.items,
+      imports = collectImportNames(mid.file.imports),
+      wholeImports = collectWholeImportNames(mid.file.imports)
+    )
+  )
+  val cr = checkWithImportedPackages(parse("package App\nimport Mid\nfunc g(): Unit {}\n").file, packages)
+  assertEqualInt(countDiagCode(cr, "T0211"), 0, "Mid's signature resolves Lib.Cert")
+  assertEqualInt(countDiagCode(cr, "T0014"), 0, "no unknown qualified type")
+}
