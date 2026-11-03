@@ -161,47 +161,72 @@ func literalArrayLength(size: in TypeArg): Int {
   }
 }
 
-// A sort whose values have a length that no operation changes: an array or
-// slice, a `String`.  A `List` is not one: `add` and `clear` change a list the
+// A sort whose values have a length that no operation changes: an array,
+// slice or buffer, a `String`.  A `List` is not one: `add` and `clear` change a list the
 // verifier models as one value, so its length cannot be named (#8110).
 pub func isSequenceSort(s: in Sort): Bool {
   match s {
     case SSlice(_) -> true
     case SArray(_) -> true
+    case SBuffer(_) -> true
     case SString -> true
     case _ -> false
   }
 }
 
-// The length of a sequence value (#8157): an array's or slice's own length
-// (`Lyric!Seq`, #8394), a `String`'s one uninterpreted function of it.
+// The length of a sequence value (#8157): an array's, slice's or buffer's own
+// length (`Lyric!Seq`, #8394), a `String`'s one uninterpreted function of it.
 // Every `.count`/`.length` read and every index bound goes through it, so
 // they agree.
 pub func lengthTerm(v: in Term): Term {
   match sortOf(v) {
     case SSlice(_) -> TBuiltin(op = BOpSliceLength, args = termList1(v))
     case SArray(_) -> TBuiltin(op = BOpSliceLength, args = termList1(v))
+    case SBuffer(_) -> TBuiltin(op = BOpSliceLength, args = termList1(v))
     case _ -> TApp(name = "$len", args = termList1(v), retSort = SInt)
   }
 }
 
-// An array or slice sort: one whose elements the verifier models (#8394).
+// An array, slice or buffer sort: one whose elements the verifier models
+// (#8394).
 pub func isElementSequenceSort(s: in Sort): Bool {
   match s {
     case SSlice(_) -> true
+    case SArray(_) -> true
+    case SBuffer(_) -> true
+    case _ -> false
+  }
+}
+
+// A sequence a variable owns: an array or a buffer, whose elements change
+// only through a write to that variable (each copy is a value of its own),
+// so an element read is the value's own element and `b[i] = v` stores into
+// it.  A slice is not one: its bindings share storage (#8394).
+pub func isOwnedSequenceSort(s: in Sort): Bool {
+  match s {
+    case SArray(_) -> true
+    case SBuffer(_) -> true
+    case _ -> false
+  }
+}
+
+// An array sort, whose length its type fixes: no change to a variable of it
+// changes its length.
+pub func isArraySort(s: in Sort): Bool {
+  match s {
     case SArray(_) -> true
     case _ -> false
   }
 }
 
-// What is known of an element of an array or slice described by `info`: its
-// sort, and the range and width of its declared type.
+// What is known of an element of an array, slice or buffer described by
+// `info`: its sort, and the range and width of its declared type.
 pub func elementSortInfo(info: in SortInfo): SortInfo {
-  val element = match info.sort { case SSlice(e) -> e; case SArray(e) -> e; case other -> other }
+  val element = match info.sort { case SSlice(e) -> e; case SArray(e) -> e; case SBuffer(e) -> e; case other -> other }
   SortInfo(sort = element, range = info.elemRange, intBits = info.elemIntBits)
 }
 
-// An array or slice whose elements are of the type `elem` describes.
+// An array, slice or buffer whose elements are of the type `elem` describes.
 func sequenceSortInfo(sort: in Sort, elem: in SortInfo, fixedLen: in Int): SortInfo {
   SortInfo(sort = sort, range = RBKNone, fixedLen = fixedLen, elemRange = elem.range, elemIntBits = elem.intBits)
 }

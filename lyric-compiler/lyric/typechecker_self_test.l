@@ -3664,6 +3664,9 @@ test "a slice element is never written in place: T0157 (docs/01 §2.7)" {
   assertTrue(not hasDiagCode(rebind, "T0157"), "rebinding a slice is not an element write: " + diagCodesOf(rebind))
   val arr = parseCheck("package P\nfunc f(): Int {\n  var a: array[2, Int] = [1, 2]\n  a[0] = 5\n  a[0]\n}\n")
   assertTrue(not hasDiagCode(arr, "T0157"), "an array var: " + diagCodesOf(arr))
+  // A slice reached through an array element shares its storage too.
+  val nested = parseCheck("package P\nfunc f(): Unit {\n  var a: array[2, slice[Int]]\n  a[0][1] = 5\n}\n")
+  assertEqualInt(countDiagCode(nested, "T0157"), 1, "a slice element of an array var: " + diagCodesOf(nested))
 }
 
 test "a buffer element is written through a writable place: T0157" {

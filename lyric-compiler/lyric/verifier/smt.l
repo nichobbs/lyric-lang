@@ -42,6 +42,7 @@ pub func smtRenderSort(s: in Sort): String {
     }
     case SSlice(e) -> smtSeqSort(e)
     case SArray(e) -> smtSeqSort(e)
+    case SBuffer(e) -> smtSeqSort(e)
     case SUninterp(n) -> smtSanitize(n)
   }
 }
@@ -725,6 +726,7 @@ func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[S
     }
     case SSlice(e) -> collectSortNames(e, seen, outList)
     case SArray(e) -> collectSortNames(e, seen, outList)
+    case SBuffer(e) -> collectSortNames(e, seen, outList)
     case SUninterp(name) -> {
       val sanitized = smtSanitize(name)
       if not isBuiltinSortName(sanitized) and not seen.containsKey(sanitized) {
@@ -1000,6 +1002,7 @@ func datatypeNamesInSort(s: in Sort, names: in Map[String, Bool]): Unit {
     }
     case SSlice(e) -> datatypeNamesInSort(e, names)
     case SArray(e) -> datatypeNamesInSort(e, names)
+    case SBuffer(e) -> datatypeNamesInSort(e, names)
     case _ -> ()
   }
 }
@@ -1314,6 +1317,7 @@ func collectMonadSortsInSort(srt: in Sort, seen: in Map[String, Bool], outSorts:
     }
     case SSlice(e) -> collectSeqInstance(srt, e, seen, outSorts)
     case SArray(e) -> collectSeqInstance(srt, e, seen, outSorts)
+    case SBuffer(e) -> collectSeqInstance(srt, e, seen, outSorts)
     case _ -> ()
   }
 }

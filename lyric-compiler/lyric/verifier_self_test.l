@@ -4300,6 +4300,83 @@ test "element writes outside an array variable fail closed (#8394)" {
   )
 }
 
+test "a buffer is a value whose elements a write through its binding changes (#8394)" {
+  val sig = "func f(x: in buffer[Int]): Int\n"
+  assertDischarged(sig + "  ensures: true\n{\n  if x.length > 0 {\n    x[0]\n  } else {\n    0\n  }\n}\n", "read-under-length")
+  assertRefuted(sig + "  ensures: true\n{\n  x[0]\n}\n", "read-no-bounds-facts")
+  assertDischarged(
+    sig + "  requires: x.length > 1\n  ensures: result == x[1]\n{\n  x[1]\n}\n",
+    "read-is-the-element"
+  )
+  assertDischarged(
+    "func f(x: in buffer[Int]): Bool\n  requires: x.length > 0\n  ensures: result\n{\n  x[0] == x[0]\n}\n",
+    "same-element-twice"
+  )
+  val w = "  requires: x.length > 1\n"
+  assertDischarged(sig + w + "  ensures: result == 7\n{\n  var b = x\n  b[1] = 7\n  b[1]\n}\n", "write-then-read")
+  assertDischarged(
+    sig + w + "  ensures: result == x[0]\n{\n  var b = x\n  b[1] = 7\n  b[0]\n}\n",
+    "other-element-unchanged"
+  )
+  // A copy is a value of its own (docs/01 §2.7): the buffer it was made
+  // from does not change.
+  assertDischarged(sig + w + "  ensures: result == x[1]\n{\n  var b = x\n  b[1] = 7\n  x[1]\n}\n", "copy-unchanged")
+  assertRefuted(sig + w + "  ensures: result == 7\n{\n  var b = x\n  b[1] = 7\n  x[1]\n}\n", "copy-not-written")
+  assertDischarged(
+    sig + w + "  ensures: result == x.length\n{\n  var b = x\n  b[1] = 7\n  b.length\n}\n",
+    "length-unchanged-by-a-write"
+  )
+  assertRefuted(sig + "  ensures: true\n{\n  var b = x\n  b[1] = 7\n  0\n}\n", "write-no-bounds-facts")
+  assertDischarged(
+    sig + w + "  requires: x[0] > -1000 and x[0] < 1000\n  ensures: result == x[0] + 1\n{\n  var b = x\n  b[0] += 1\n  b[0]\n}\n",
+    "compound-element-write"
+  )
+  assertCheckedRefuted(sig + w + "{\n  var b = x\n  b[0] += 1\n  0\n}\n", "compound-element-overflow")
+  assertDischarged(
+    "func f(x: in buffer[Int]): Bool\n  requires: x.length > 0\n  ensures: result\n{\n  x[0] <= 2147483647\n}\n",
+    "element-width"
+  )
+}
+
+test "a buffer's length is not kept where the variable may take another buffer (#8394)" {
+  // An element write keeps the length; a loop that may rebind the variable
+  // (to a `grow`n buffer, say) does not.
+  assertDischarged(
+    "func zero(x: in buffer[Int]): Int\n  ensures: true\n{\n  var b = x\n  var i = 0\n  while i < b.length\n" +
+      "    invariant: i >= 0\n  {\n    b[i] = 0\n    i = i + 1\n  }\n  0\n}\n",
+    "loop-writes-under-length"
+  )
+  // An invariant states the length a loop of element writes keeps.
+  assertDischarged(
+    "func zero(x: in buffer[Int]): Int\n  requires: x.length > 0\n  ensures: result == 0\n{\n  var b = x\n  var i = 0\n" +
+      "  while i < b.length\n    invariant: i >= 0 and b.length == x.length\n  {\n    b[i] = 0\n    i = i + 1\n  }\n" +
+      "  b[0] * 0\n}\n",
+    "invariant-keeps-length"
+  )
+  assertNotProved(
+    "func f(x: in buffer[Int], y: in buffer[Int], n: in Int): Bool\n  ensures: result\n{\n  var b = x\n  var i = 0\n" +
+      "  while i < n\n    invariant: i >= 0\n  {\n    b = y\n    i = i + 1\n  }\n  b.length == x.length\n}\n",
+    "loop-rebinding-keeps-no-length"
+  )
+  // An `inout` argument may come back as another buffer.
+  assertNotProved(
+    "func g(b: inout buffer[Int]): Unit {\n}\nfunc f(x: in buffer[Int]): Bool\n  ensures: result\n{\n" +
+      "  var b = x\n  g(b)\n  b.length == x.length\n}\n",
+    "inout-keeps-no-length"
+  )
+}
+
+test "a type named `buffer` in scope is not the built-in buffer (#8394)" {
+  // The user's own `buffer` is an ordinary record datatype, as the checker
+  // has it.
+  assertDischarged(
+    "record buffer[T] {\n  v: T\n}\nfunc f(b: in buffer[Int]): Int\n  ensures: result == b.v\n{\n  b.v\n}\n",
+    "user-buffer-record"
+  )
+  assertEqual(sortDisplay(SBuffer(element = SInt)), "Buffer[Int]", "display")
+  assertEqual(smtRenderSort(SBuffer(element = SInt)), "(Lyric!Seq Int)", "a buffer is a Lyric!Seq")
+}
+
 test "sequence builtins render through Lyric!Seq (#8394)" {
   val a = TVar(name = "a", sort = SArray(element = SInt))
   val i = TVar(name = "i", sort = SInt)
