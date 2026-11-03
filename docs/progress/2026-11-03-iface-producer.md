@@ -21,4 +21,12 @@ Embedding (JVM): a JVM library build embeds the same bytes as the
 user package and each project package (a merely bundled stdlib package gets
 none; an executable gets none). `lyric interface dump` reads JARs through
 `Std.Zip` (size and CRC-32 checked). The e2e script now runs on both targets.
-Native embedding follows.
+
+Embedding (native): a native project build writes `<Pkg>.lyri` into the output's
+directory for each own library package (a dependency package built from source
+and an executable write none), after the link succeeds; a write failure is
+N0027. `lyric interface dump` reads the `.lyri` directly. A single-file native
+build is a program and writes none. The e2e script runs on `native` in the native
+backend self-test job (clang). Phase 5a producer work is complete on all three
+targets; the linkage table, hidden exports and default/contract/body data stay
+deferred (D327).

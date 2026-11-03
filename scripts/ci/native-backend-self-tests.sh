@@ -185,6 +185,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 # #8279: indexed callees beside `?` and `await` named from another package.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
+# docs/70 §9.6: a native library build writes `<Pkg>.lyri` beside its output.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/interface-embed-e2e.sh native
 # Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
 # the stdlib suites that need no catchable panic.
 for t in \

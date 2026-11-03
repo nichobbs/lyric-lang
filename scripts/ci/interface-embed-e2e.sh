@@ -8,7 +8,7 @@
 #   - an executable embeds no interface;
 #   - an unannotated `pub val` is recorded at the type its package checked.
 #
-#   bash scripts/ci/interface-embed-e2e.sh [dotnet] [jvm]
+#   bash scripts/ci/interface-embed-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -32,6 +32,16 @@ artifact() {
   case "$1" in
     dotnet) echo "out/Lib.dll" ;;
     jvm) echo "out/Lib.jar" ;;
+    native) echo "out/Lib" ;;
+  esac
+}
+
+# The file `lyric interface dump` reads: the build output, or for native the
+# `<Pkg>.lyri` written beside it.
+dumpable() {
+  case "$1" in
+    native) echo "out/Lib.lyri" ;;
+    *) artifact "$1" ;;
   esac
 }
 
@@ -97,7 +107,7 @@ LYRIC
   if ! build "$dir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the library build failed"; cat "$work/log"; fail=1; continue
   fi
-  dump="$(cd "$dir" && "$lyric_bin" interface dump "$(artifact "$target")" 2>"$work/err")" || {
+  dump="$(cd "$dir" && "$lyric_bin" interface dump "$(dumpable "$target")" 2>"$work/err")" || {
     echo "FAIL [$target] interface dump failed"; cat "$work/err"; fail=1; continue
   }
   ok=1
@@ -120,7 +130,7 @@ LYRIC
 
   hash1="$(grep '^hash:' <<<"$dump")"
   build "$dir" "$target" > /dev/null 2>&1
-  hash2="$(cd "$dir" && "$lyric_bin" interface dump "$(artifact "$target")" 2>/dev/null | grep '^hash:')"
+  hash2="$(cd "$dir" && "$lyric_bin" interface dump "$(dumpable "$target")" 2>/dev/null | grep '^hash:')"
   if [ -n "$hash1" ] && [ "$hash1" = "$hash2" ]; then
     echo "PASS [$target] the interface hash is stable across builds"
   else
@@ -138,9 +148,9 @@ LYRIC
   if ! build "$edir" "$target" > "$work/log" 2>&1; then
     echo "FAIL [$target] the executable build failed"; cat "$work/log"; fail=1; continue
   fi
-  if (cd "$edir" && "$lyric_bin" interface dump "$(artifact "$target")") > "$work/log" 2>&1; then
+  if (cd "$edir" && "$lyric_bin" interface dump "$(dumpable "$target")") > "$work/log" 2>&1; then
     echo "FAIL [$target] an executable embeds an interface"; fail=1
-  elif grep -q "carries no" "$work/log"; then
+  elif grep -qE "carries no|cannot read" "$work/log"; then
     echo "PASS [$target] an executable embeds no interface"
   else
     echo "FAIL [$target] unexpected dump output for an executable"; cat "$work/log"; fail=1
