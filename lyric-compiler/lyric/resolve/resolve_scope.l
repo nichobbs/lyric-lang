@@ -310,7 +310,9 @@ pub func importRenames(imports: in List[ImportDecl]): List[ImportRename] {
         case Some(sel) -> {
           for item in importItems(sel) {
             match item.asAlias {
-              case Some(local) -> renames.add(ImportRename(local = local, pkg = modulePathJoin(imp.path.segments), name = item.name))
+              case Some(local) -> renames.add(
+                ImportRename(local = local, pkg = modulePathJoin(imp.path.segments), name = item.name)
+              )
               case None -> ()
             }
           }
