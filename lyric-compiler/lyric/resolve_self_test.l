@@ -563,3 +563,30 @@ test "renumbering twice gives the same ids" {
     i = i + 1
   }
 }
+
+func headText(imports: in List[ImportDecl]): String {
+  var s = ""
+  for h in importHeads(imports) {
+    s = s + h.head + "=" + h.target + ";"
+  }
+  s
+}
+
+test "import heads: explicit aliases first, then bare-import tails, then full paths" {
+  val src = "package P\nimport Std.Collections\nimport Std.Json as J\nimport Other.Json\nimport Std.Core.{Option}\n"
+  val heads = headText(parse(src).file.imports)
+  assertEqual(
+    heads,
+    "J=Std.Json;Std.Json=Std.Json;Collections=Std.Collections;Std.Collections=Std.Collections;Json=Other.Json;Other.Json=Other.Json;Core=Std.Core;Std.Core=Std.Core;",
+    "heads"
+  )
+}
+
+test "import renames and importsPackage" {
+  val imports = parse("package P\nimport Std.Collections.{List as L, Map}\nimport extern System.Math\n").file.imports
+  val rs = importRenames(imports)
+  assertEqualInt(rs.count, 1, "one rename")
+  assertEqual(rs[0].local + "=" + rs[0].pkg + "." + rs[0].name, "L=Std.Collections.List", "rename")
+  assertTrue(importsPackage(imports, "Std.Collections"), "imports Std.Collections")
+  assertFalse(importsPackage(imports, "System.Math"), "extern is not a package")
+}
