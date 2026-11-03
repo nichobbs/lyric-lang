@@ -1771,6 +1771,8 @@ pub func symTableFuncDefPathKey(
       }
     }
   }
+  // Two same-arity overloads cannot be told apart without the span: record
+  // nothing, and the backend keeps its own lookup for the call.
   if allowArityMatch and sameArity.count == 1 {
     return Some(value = sameArity[0])
   }
