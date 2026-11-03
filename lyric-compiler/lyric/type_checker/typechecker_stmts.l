@@ -780,7 +780,7 @@ pub func checkStatement(
       checkForTuplePattern(diag, pat, elemType)
       scopePush(sc)
       // Erase unresolved type variables (a `List[T]` / `slice[T]` element inside
-      // a generic function) to the lenient wildcard: `TyVar` passes `typeEquiv`
+      // a generic function) to the lenient wildcard: `TyParam` passes `typeEquiv`
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
       bindPattern(sc, tbl, sigs, pat, eraseTyParams(elemType))

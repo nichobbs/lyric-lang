@@ -5128,7 +5128,7 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   // the same `trunc` `.toByte()` emits explicitly (above). Reachable
   // whenever the type checker admits an `Int`-typed argument where a
   // narrower type is lowered: a type parameter inside a generic body
-  // (`typeEquiv` treats a bare `TyVar` as satisfied by any argument type,
+  // (`typeEquiv` treats a bare `TyParam` as satisfied by any argument type,
   // `typechecker_types.l`) instantiated so that an `Int` reaches a `Byte`
   // slot.  The stdlib collections' own element-taking members check their
   // arguments against the element type since #7969.  MSIL narrows implicitly

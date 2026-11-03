@@ -553,8 +553,8 @@ test "range subtype arithmetic" {
 
 // #1488 (B): a generic function's return type is instantiated from the
 // argument types at the call site — `unwrapOr(o: Opt[T], d: T): T` called on an
-// `Opt[Int]` returns `Int`, not the raw `TyVar("T")`.  A `String`-typed binding
-// of the result must mismatch (T0060); were the return still `TyVar`, `typeEquiv`
+// `Opt[Int]` returns `Int`, not the raw `TyParam("T")`.  A `String`-typed binding
+// of the result must mismatch (T0060); were the return still `TyParam`, `typeEquiv`
 // would treat it as a wildcard and the binding would pass silently.
 test "generic return instantiated mismatch" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Unit {\n  val s: String = unwrapOr(o, 0)\n}\n"
@@ -565,7 +565,7 @@ test "generic return instantiated mismatch" {
 }
 
 // The complementary clean case: the instantiated `Int` return is usable in an
-// `Int` comparison.  Were the return still `TyVar("T")`, `T < 0` would raise
+// `Int` comparison.  Were the return still `TyParam("T")`, `T < 0` would raise
 // T0033 (comparison of `T` and `Int`).
 test "generic return instantiated clean" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Bool {\n  unwrapOr(o, 0) < 0\n}\n"
@@ -3235,7 +3235,7 @@ test "annotated binding lambda return mismatch diagnosed" {
 
 test "generic callee lambda param typed by substitution from sibling arg" {
   // T is inferred Int from the second argument; the lambda's expected type
-  // becomes (Int) -> Bool after TyVar substitution.
+  // becomes (Int) -> Bool after TyParam substitution.
   val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "generic expectation substituted to (Int) -> Bool: no errors")
@@ -3252,7 +3252,7 @@ test "generic callee lambda body error diagnosed after substitution" {
 
 test "unresolved generic expectation degrades to lenient" {
   // The generic T occurs only in the lambda's own parameter position, so no
-  // sibling argument determines it — the leftover TyVar is erased to TyError
+  // sibling argument determines it — the leftover TyParam is erased to TyError
   // and the lambda stays lenient (no false rejection).
   val src = "package P\nfunc only[T](f: in (T) -> Bool): Bool {\n  true\n}\nfunc g(): Bool {\n  only({ n -> n > 0 })\n}\n"
   val cr = parseCheck(src)
@@ -6636,7 +6636,7 @@ test "generic record method body: self.field types as the owner's own type param
 }
 
 // Deliberately NOT a "self.v (T) vs a concrete declared return is T0070"
-// case: `typeEquiv` (typechecker_types.l) treats an unconstrained `TyVar`
+// case: `typeEquiv` (typechecker_types.l) treats an unconstrained `TyParam`
 // as universally equivalent to anything on either side (the same wildcard
 // leniency `TyError` gets), a pre-existing rule that predates #6487 and
 // applies to every generic-bodied function, not just record/impl methods —

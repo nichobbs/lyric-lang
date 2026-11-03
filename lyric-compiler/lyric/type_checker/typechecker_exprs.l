@@ -3315,7 +3315,7 @@ func recordGenericNamesOf(tbl: in SymbolTable, tid: in SymbolId): List[String] {
 // (absent or partially-inferred receiver targs) are erased to `TyError` —
 // the lenient wildcard — so an under-instantiated receiver degrades to the
 // pre-instantiation behaviour instead of tripping false T0030-style
-// diagnostics on a raw `TyVar`.
+// diagnostics on a raw `TyParam`.
 func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type]): List[FieldEntry] {
   val raw = fieldsOfRecord(tbl, tid)
   val gnames = recordGenericNamesOf(tbl, tid)
@@ -3400,7 +3400,7 @@ func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in Lis
 func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List[FieldEntry]): Unit {
   val ctx = newGenericContext()
   // Register the record's own type params so a `value: T` field resolves to
-  // `TyVar("T")` (substitutable by `fieldsOfRecordInstantiated`) instead of a
+  // `TyParam("T")` (substitutable by `fieldsOfRecordInstantiated`) instead of a
   // swallowed unknown-type `TyError`.
   gctxPush(ctx, recordDeclGenericNames(rd))
   val dummyDiag: List[Diagnostic] = newList()
@@ -3619,7 +3619,7 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
   }
 }
 
-// #7752: true when `t` mentions no wildcard — no `TyVar`, `TyError` or
+// #7752: true when `t` mentions no wildcard — no `TyParam`, `TyError` or
 // `TySelf` anywhere inside it.  `typeEquiv` treats every one of those as
 // equivalent to anything, so checking branches against a NON-closed expected
 // type (a generic function's `T`, an unresolved annotation) would accept
@@ -4187,7 +4187,7 @@ func isUniversalMethodName(name: in String): Bool {
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
-// receiver leaves them as `TyVar` wildcards — lenient).
+// receiver leaves them as `TyParam` wildcards — lenient).
 func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Type]): ResolvedSignature {
   val doSub = entry.ownerGenerics.count > 0 and entry.ownerGenerics.count == targs.count
   val np: List[ResolvedParam] = newList()
@@ -8194,7 +8194,7 @@ func ctorAllFields(sym: in Symbol): List[FieldDecl] {
 
 // Collect the raw field types from a constructor symbol with `genericNames`
 // registered in the generic context, so that type-parameter fields resolve to
-// `TyVar(name)` rather than `TyError`.  Used by generic-constructor type-arg
+// `TyParam(name)` rather than `TyError`.  Used by generic-constructor type-arg
 // inference in `inferConstruction`.
 func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
   val ctx = newGenericContext()
@@ -8218,7 +8218,7 @@ func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[S
   result
 }
 
-// Returns true when `TyVar(name)` appears anywhere in `ty` (directly or nested).
+// Returns true when `TyParam(name)` appears anywhere in `ty` (directly or nested).
 // Used to determine which constructor fields constrain a given type parameter.
 func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
   match ty {
@@ -8283,7 +8283,7 @@ func anyFieldArgIsLenientForParam(name: in String, fieldTypes: in List[Type], or
 // Re-resolve constructor field types into `diag` so genuine field-type errors
 // (e.g. references to unknown types) surface even when T0110 fires early.
 // Pushes the constructor's own generic parameter names so generic-position
-// fields correctly resolve to TyVar (silent) rather than producing spurious
+// fields correctly resolve to TyParam (silent) rather than producing spurious
 // T0010 "unknown type name" diagnostics.  Called only on the T0110
 // early-return path (#3155).
 func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in List[Diagnostic]): Unit {
@@ -9033,7 +9033,7 @@ func inferConstructionExpected(
       return TyError
     }
     // Collect field types with generic names in context so type-param fields
-    // resolve to TyVar("T") (not TyError), enabling inference from arg types.
+    // resolve to TyParam("T") (not TyError), enabling inference from arg types.
     // Reorder argTypes to declaration order (#3157): named args are matched by
     // field name, positional args fill remaining slots left to right.
     val fieldTypes = ctorFieldTypes(tbl, sym, gnames)
@@ -9923,7 +9923,7 @@ func checkRecordPatternHead(
 // `case Ok(v)` against an `Option`) type-checked and then silently
 // miscompiled: MSIL treated the Int as the case object, JVM failed
 // verification.  Returns false (after reporting T0129) on a mismatch.
-// Scrutinees whose type is unknown or open (`TyError`, `TyVar`, `TySelf`,
+// Scrutinees whose type is unknown or open (`TyError`, `TyParam`, `TySelf`,
 // nullable, exception) are left alone: those are either already
 // diagnosed or resolved later.
 func checkCasePatternScrutinee(
@@ -10353,7 +10353,7 @@ func inferUnionCaseConstruction(
 // Destructures the scrutinee *type* so each pattern variable gets its real type:
 // `Some(ns)` on `Option[NameAndSpan]` binds `ns : NameAndSpan`.  Used by the
 // `EMatch` arm so arm-body types are correct for branch unification.
-// Replace generic type variables in `t`: each `TyVar(names[i])` becomes `args[i]`.
+// Replace generic type variables in `t`: each `TyParam(names[i])` becomes `args[i]`.
 func substituteTyParams(t: in Type, names: in List[String], args: in List[Type]): Type {
   match t {
     case TyParam(nm, _) -> {
@@ -10595,7 +10595,7 @@ func isBareTyParam(t: in Type, name: in String): Bool {
 
 // A generic function's return type instantiated from the call's argument types:
 // `unwrapOr(o: Option[T], default: T): T` called with an `Option[Int]` / `Int`
-// pair yields `Int` instead of the raw `TyVar("T")` (#1488 category B).  A
+// pair yields `Int` instead of the raw `TyParam("T")` (#1488 category B).  A
 // non-generic sig is returned unchanged.  `argTypes` are the types of the
 // call's `skip` leading receiver arguments followed by those of `args`, in
 // source order; each is paired with its parameter as the call pairs them
@@ -10653,7 +10653,7 @@ func argTypesInSigOrder(
 
 // H15: verify that concrete type arguments inferred for a generic call site
 // satisfy every `where T: Constraint` bound declared on `sig`.  Called from
-// `ECall` after a signature is selected.  `TyError`/`TyVar` args pass
+// `ECall` after a signature is selected.  `TyError`/`TyParam` args pass
 // silently (the lenient unifier, or still-abstract).
 func checkBoundsSatisfied(
   tbl: in SymbolTable,
@@ -12651,7 +12651,7 @@ func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
 }
 
 // A type parameter of the enclosing generic is rigid inside its body: it is
-// the same type only as itself.  `typeEquiv` still treats every `TyVar` as a
+// the same type only as itself.  `typeEquiv` still treats every `TyParam` as a
 // wildcard, because the same variable stands for an instantiation variable
 // of a callee, so a mismatch against a type parameter is decided here, where
 // the enclosing generic's names are known (#7974).  True when `actual` has a
@@ -17636,7 +17636,7 @@ func inferExprCore(
           // H15: verify where-clause bounds on generic call sites.
           checkBoundsSatisfied(tbl, diag, sig, args, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
-          // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
+          // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyParam("T")`.
           var instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
           match bodyMethodCalleeBinding(tbl, sigs, fn, args, argTypes) {
             // `T.m(x, args)` binding a method in the body of `x`'s type is
@@ -18471,7 +18471,7 @@ func inferExprCore(
 
 // True when `params` and `argTypes` have the same count and every argument is
 // acceptable for its parameter (`argSatisfiesParam`): `typeEquiv` — which treats
-// `TyError`/`TyVar` as wildcards, the leniency that lets an empty-literal arg
+// `TyError`/`TyParam` as wildcards, the leniency that lets an empty-literal arg
 // still select the structurally-correct overload (#1488 category C) — or
 // interface subtyping, so overload selection agrees with the argument check
 // (#2304).
@@ -18482,7 +18482,7 @@ func inferExprCore(
 // "no expectation": unannotated params degrade to `TyError`, the historical
 // leniency, so a mismatched expectation never rejects here — the ordinary
 // arg-vs-param / binding checks report any genuine mismatch.  Explicit
-// annotations always win over the expectation.  Leftover generic `TyVar`s in
+// annotations always win over the expectation.  Leftover generic `TyParam`s in
 // an expected param (a partially-inferred generic callee) are erased to
 // `TyError` so partially-known expectations still type what they can.
 // #6604: `expectedReturn` is the lambda's expected return type when the
@@ -19859,7 +19859,7 @@ func inferExprExpectedCore(
 // deferred lambda arguments.  Slots without a usable expectation carry
 // `TyError` ("no expectation" — `inferExprExpected` then falls back to the
 // historical lenient path).  Expectations come from the selected direct
-// signature (named-arg aware via `argIndicesInParamOrder`; generic `TyVar`s
+// signature (named-arg aware via `argIndicesInParamOrder`; generic `TyParam`s
 // substituted from the *other* arguments' types, mirroring
 // `instantiateReturnType`'s substitute-then-erase approach) or, for a
 // function-typed callee value, positionally from its parameter types.
@@ -21063,7 +21063,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
 
 // True when a value of type `actual` may be used where `expected` is
 // required.  Three cases, in order:
-//   1. `typeEquiv` — exact match, or either side a wildcard (TyError/TyVar).
+//   1. `typeEquiv` — exact match, or either side a wildcard (TyError/TyParam).
 //   2. Interface subsumption — `expected` is an interface `I` and `actual`
 //      is a concrete type `T` with a registered `impl I for T` (keyed by
 //      `SymbolId`, so a same-named interface from another package never
@@ -22347,7 +22347,7 @@ func findDirectSigPick(
       // `registerOverloadCandidate`) whose params do.  This dispatches
       // `toUpper("s")` to `Std.String.toUpper(String)` when the primary
       // `Std.Char.toUpper(Char)` mismatches, and — because `typeEquiv` treats
-      // `TyError`/`TyVar` as wildcards — resolves `join(",", [])` (an
+      // `TyError`/`TyParam` as wildcards — resolves `join(",", [])` (an
       // empty-literal `slice[<error>]` arg) to `Std.String.join(String,
       // slice[String])` over `Std.Path.join(String, String)`.
       val candidates = gatherOverloadCandidates(sigs, arityKey)

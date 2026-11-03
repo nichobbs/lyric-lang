@@ -207,7 +207,7 @@ pub func genericParamName(p: in GenericParam): String {
 
 // The argument at a value generic parameter's position: a known length
 // (`TyLen`), or a value generic parameter of the enclosing declaration
-// (`TyVar`).  Anything else is T0163.
+// (`TyParam`).  Anything else is T0163.
 func resolveLengthArg(
   tbl: in SymbolTable,
   ctx: in GenericContext,

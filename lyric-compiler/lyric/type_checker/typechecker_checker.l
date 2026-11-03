@@ -1500,11 +1500,11 @@ func addFuncSigOrigin(
   // overload and wrongly rejected (T0043).  Register every non-generic sig
   // under an indexed `arityKey@i` key so the call site can gather the full
   // candidate set and pick the overload whose params match the argument
-  // types via `typeEquiv` (which honours `TyError`/`TyVar` wildcards, so an
+  // types via `typeEquiv` (which honours `TyError`/`TyParam` wildcards, so an
   // empty-literal `slice[<error>]` arg still selects the `slice[String]`
   // overload).  Indexing auto-continues across the imported-then-user
   // registration passes (we probe for the next free slot).  Generic sigs
-  // are skipped: their `TyVar` params match any argument under `typeEquiv`
+  // are skipped: their `TyParam` params match any argument under `typeEquiv`
   // and would shadow a concrete overload — they keep the arity-key path.
   if sg.generics.count == 0 {
     registerOverloadCandidate(sigs, arityKey, sg)
@@ -1691,7 +1691,7 @@ func checkReservedBuiltinFuncDecl(
 // `sig.params` aligns 1:1 with a call site's argument list; `impl` block and
 // interface members never carry a `self` param (the receiver is implicit).
 // Owner generics are pushed alongside the method's own generics so a `Box[T]`
-// method's `T`-typed params resolve to `TyVar("T")` (substitutable at the call
+// method's `T`-typed params resolve to `TyParam("T")` (substitutable at the call
 // site from the receiver's type args).  Type-reference diagnostics go to a
 // scratch list: declaration-position validation of member signatures is
 // `checkMemberSigTypes`'s job (T4), and re-reporting here would duplicate it.
@@ -3715,7 +3715,7 @@ func protectedFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in 
 // declaring type's other members would.
 // The protected-type analog of `recordSelfType`: the concrete receiver type
 // member bodies see for whole-`self` reads and the ECall bare-sibling
-// fallback (#6483).  Same raw-`TyVar` type-argument convention as
+// fallback (#6483).  Same raw-`TyParam` type-argument convention as
 // `recordSelfType` (see its doc comment).
 func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGenerics: in List[String]): Type {
   match symTableTryFindOne(tbl, decl.name) {
@@ -4024,7 +4024,7 @@ func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List
 
 // #6487: the record-body counterpart of `protectedFieldLocals` — resolves
 // every `RMField`'s declared type against the record's OWN generic context
-// (so a `Box[T]` field `v: T` stays `TyVar("T")`, matching `sig.generics`
+// (so a `Box[T]` field `v: T` stays `TyParam("T")`, matching `sig.generics`
 // below rather than erasing to `TyError`) into `LocalBinding`s. Unlike
 // `protectedFieldLocals`, this list is used ONLY to seed `sc.selfFields`
 // (the `self.field` map) — record-body methods have no bare-name field
@@ -4071,10 +4071,10 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // T0070 on a body that was always well-typed (found via the #6417 case in
 // `impl_method_self_test.l`'s battery run, same root cause as the impl-side
 // fix below).
-// The type-argument list is built with raw `TyVar(name = ...)` rather than
+// The type-argument list is built with raw `TyParam(name = ...)` rather than
 // the `ctx`/`gctxPush`-scoped resolution `recordFieldLocals` uses for the
 // same generic names: this type only feeds `substitutesSelf` and
-// equivalence checks, and `typeEquiv` treats every `TyVar` as universally
+// equivalence checks, and `typeEquiv` treats every `TyParam` as universally
 // equivalent, so the two representations never need to agree structurally
 // (#6488 review nit).
 func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in List[String]): Type {
