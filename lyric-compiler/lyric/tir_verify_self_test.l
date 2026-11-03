@@ -53,7 +53,15 @@ func sigOf(tp: in Int, ps: in List[TParamTy], ret: in Ty): TSig {
 }
 
 func funcEntry(s: in Int, sg: in TSig): TSymEntry {
-  TSymEntry(sym = sym(s), kind = TSkFunc, typeParamCount = sg.typeParamCount, sig = Some(sg), fields = newList(), ty = None, mutable = false)
+  TSymEntry(
+    sym = sym(s),
+    kind = TSkFunc,
+    typeParamCount = sg.typeParamCount,
+    sig = Some(sg),
+    fields = newList(),
+    ty = None,
+    mutable = false
+  )
 }
 
 func fnDecl(s: in Int, tparams: in Int, params: in List[TParamDecl], ret: in Ty, body: in TExpr): TFnDecl {
@@ -164,26 +172,40 @@ test "a call argument of the wrong type is reported at the call" {
 
 test "a generic instantiation that does not match the argument is reported" {
   val x = local(1, "x", tyInt(), false)
-  val c = call(2, tyInt(), Direct(sym = sym(12), typeArgs = tys(tyString())), argsOf(ex(3, tyInt(), XLocal(local = x.id))))
-  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("call-arg-type"), "id[String](Int)")
+  val c = call(
+    2,
+    tyInt(),
+    Direct(sym = sym(12), typeArgs = tys(tyString())),
+    argsOf(ex(3, tyInt(), XLocal(local = x.id)))
+  )
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("call-arg-type"),
+    "id[String](Int)"
+  )
 }
 
 test "a wrong number of type arguments is reported" {
   val x = local(1, "x", tyInt(), false)
   val c = call(2, tyInt(), Direct(sym = sym(12), typeArgs = newList()), argsOf(ex(3, tyInt(), XLocal(local = x.id))))
-  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("call-type-args"), "missing type argument")
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("call-type-args"),
+    "missing type argument"
+  )
 }
 
 test "a wrong result type is reported" {
-  val c = call(2, tyString(), Direct(sym = sym(11), typeArgs = newList()), argsOf(lit(3, 1L)))
+  val c = call(2, tyString(), Direct(sym = sym(11), typeArgs = newList()), argsOf(lit(3, 1i64)))
   val x = local(1, "x", tyInt(), false)
   assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyString(), c))).contains("call-result-type"), "result")
 }
 
 test "a callee that no package defines is reported" {
-  val c = call(2, tyInt(), Direct(sym = sym(77), typeArgs = newList()), argsOf(lit(3, 1L)))
+  val c = call(2, tyInt(), Direct(sym = sym(77), typeArgs = newList()), argsOf(lit(3, 1i64)))
   val x = local(1, "x", tyInt(), false)
-  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("symbol-defined"), "undefined callee")
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), c))).contains("symbol-defined"),
+    "undefined callee"
+  )
 }
 
 test "a local used before it is defined is reported" {
@@ -202,7 +224,7 @@ test "a NodeId used twice is reported" {
 test "if branches must have the node's type" {
   val x = local(1, "x", tyInt(), false)
   val cond = ex(2, tyBool(), XLit(lit = TLBool(value = true)))
-  val body = ex(5, tyInt(), XIf(cond = cond, thenBranch = lit(3, 1L), elseBranch = Some(str(4))))
+  val body = ex(5, tyInt(), XIf(cond = cond, thenBranch = lit(3, 1i64), elseBranch = Some(str(4))))
   assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))).contains("branch-type"), "else branch")
 }
 
@@ -210,19 +232,19 @@ test "a branch of type Never is allowed" {
   val x = local(1, "x", tyInt(), false)
   val cond = ex(2, tyBool(), XLit(lit = TLBool(value = true)))
   val thrower = ex(4, TNever, XLit(lit = TLUnit))
-  val body = ex(5, tyInt(), XIf(cond = cond, thenBranch = lit(3, 1L), elseBranch = Some(thrower)))
+  val body = ex(5, tyInt(), XIf(cond = cond, thenBranch = lit(3, 1i64), elseBranch = Some(thrower)))
   assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))), "", "Never fits any type")
 }
 
 test "assigning to an immutable local is reported, to a mutable one is not" {
   val x = local(1, "x", tyInt(), false)
   val place = TPlace(ty = tyInt(), kind = PlLocal(local = x.id))
-  val asg = ex(2, tyUnit(), XAssign(place = place, op = AkSet, value = lit(3, 1L)))
+  val asg = ex(2, tyUnit(), XAssign(place = place, op = AkSet, value = lit(3, 1i64)))
   val body = ex(4, tyUnit(), XBlock(stmts = newList(), tail = Some(asg)))
   assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyUnit(), body))), "assign-mutable", "immutable")
   val y = local(1, "y", tyInt(), true)
   val place2 = TPlace(ty = tyInt(), kind = PlLocal(local = y.id))
-  val asg2 = ex(2, tyUnit(), XAssign(place = place2, op = AkSet, value = lit(3, 1L)))
+  val asg2 = ex(2, tyUnit(), XAssign(place = place2, op = AkSet, value = lit(3, 1i64)))
   val body2 = ex(4, tyUnit(), XBlock(stmts = newList(), tail = Some(asg2)))
   assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(y), tyUnit(), body2))), "", "mutable")
 }
@@ -232,7 +254,10 @@ test "a closure must capture the outer locals it uses" {
   val fty = TFunc(params = newList(), ret = tyInt(), isAsync = false)
   val inner = ex(3, tyInt(), XLocal(local = x.id))
   val lam = ex(2, fty, XLambda(params = newList(), captures = newList(), body = inner))
-  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), fty, lam))).contains("local-captured"), "uncaptured use")
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), fty, lam))).contains("local-captured"),
+    "uncaptured use"
+  )
   val caps: List[Capture] = newList()
   caps.add(Capture(local = x.id, mode = CmByValue))
   val inner2 = ex(3, tyInt(), XLocal(local = x.id))
@@ -242,7 +267,12 @@ test "a closure must capture the outer locals it uses" {
 
 test "a function body of the wrong type is reported" {
   val x = local(1, "x", tyInt(), false)
-  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyString(), ex(2, tyInt(), XLocal(local = x.id))))).contains("branch-type"), "body vs return type")
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyString(), ex(2, tyInt(), XLocal(local = x.id))))).contains(
+      "branch-type"
+    ),
+    "body vs return type"
+  )
 }
 
 test "a diagnostic renders as I0003 naming the pass and the node" {

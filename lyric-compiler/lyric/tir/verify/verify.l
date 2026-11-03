@@ -67,8 +67,14 @@ func requireSym(c: in Ctx, id: in NodeId, s: in SymbolId, what: in String): Unit
     return
   }
   match lookupSym(c, s) {
-    case Some(_) -> {}
-    case None -> report(c, id, "symbol-defined", what + " names symbol #" + toString(s.id) + " that no loaded package defines")
+    case Some(_) -> {
+    }
+    case None -> report(
+      c,
+      id,
+      "symbol-defined",
+      what + " names symbol #" + toString(s.id) + " that no loaded package defines"
+    )
   }
 }
 
@@ -101,7 +107,12 @@ func substTy(t: in Ty, subs: in List[Subst], selfTy: in Option[Ty]): Ty {
       }
       t
     }
-    case TRefined(u, lo, hi, inc) -> TRefined(underlying = substTy(u, subs, selfTy), lo = lo, hi = hi, hiInclusive = inc)
+    case TRefined(u, lo, hi, inc) -> TRefined(
+      underlying = substTy(u, subs, selfTy),
+      lo = lo,
+      hi = hi,
+      hiInclusive = inc
+    )
     case TLen(_) -> t
     case TNever -> t
     case TException -> t
@@ -116,7 +127,8 @@ func substLen(len: in ArrayLen, subs: in List[Subst]): ArrayLen {
         if symbolIdEq(s.owner, o) and i >= 0 and i < s.args.count {
           match s.args[i] {
             case TLen(n) -> return ALKnown(n = n)
-            case _ -> {}
+            case _ -> {
+            }
           }
         }
       }
@@ -140,10 +152,7 @@ func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
   }
   if index == selfParamIndex() {
     match lookupSym(c, owner) {
-      case Some(e) -> match e.kind {
-        case TSkType -> return true
-        case _ -> return false
-      }
+      case Some(e) -> match e.kind { case TSkType -> return true; case _ -> return false }
       case None -> return false
     }
   }
@@ -154,7 +163,8 @@ func paramInScope(c: in Ctx, owner: in SymbolId, index: in Int): Bool {
 /// being verified (or is the `Self` of an interface) and every symbol exists.
 func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
   match t {
-    case TPrim(_) -> {}
+    case TPrim(_) -> {
+    }
     case TTuple(xs) -> {
       for x in xs {
         checkTy(c, id, x, what)
@@ -170,9 +180,15 @@ func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
     case TArray(len, e) -> {
       match len {
         case ALParam(o, i) -> if not paramInScope(c, o, i) {
-          report(c, id, "closed-type", what + ": array length parameter " + toString(i) + " of #" + toString(o.id) + " is not in scope")
+          report(
+            c,
+            id,
+            "closed-type",
+            what + ": array length parameter " + toString(i) + " of #" + toString(o.id) + " is not in scope"
+          )
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
       checkTy(c, id, e, what)
     }
@@ -187,9 +203,12 @@ func checkTy(c: in Ctx, id: in NodeId, t: in Ty, what: in String): Unit {
       report(c, id, "closed-type", what + ": parameter " + toString(i) + " of #" + toString(o.id) + " is not in scope")
     }
     case TRefined(u, _, _, _) -> checkTy(c, id, u, what)
-    case TLen(_) -> {}
-    case TNever -> {}
-    case TException -> {}
+    case TLen(_) -> {
+    }
+    case TNever -> {
+    }
+    case TException -> {
+    }
     case TExtern(h) -> {
       for a in h.args {
         checkTy(c, id, a, what)
@@ -258,16 +277,35 @@ func argMode(a: in TArg): TMode {
   }
 }
 
-func checkArgs(c: in Ctx, id: in NodeId, params: in List[TParamTy], args: in List[TArg], subs: in List[Subst], selfTy: in Option[Ty], callTy: in Ty, ret: in Ty): Unit {
+func checkArgs(
+  c: in Ctx,
+  id: in NodeId,
+  params: in List[TParamTy],
+  args: in List[TArg],
+  subs: in List[Subst],
+  selfTy: in Option[Ty],
+  callTy: in Ty,
+  ret: in Ty,
+): Unit {
   if params.count != args.count {
-    report(c, id, "call-arity", "callee takes " + toString(params.count) + " argument(s) but the call passes " + toString(args.count))
+    report(
+      c,
+      id,
+      "call-arity",
+      "callee takes " + toString(params.count) + " argument(s) but the call passes " + toString(args.count)
+    )
     return
   }
   var i = 0
   while i < params.count {
     val p = params[i]
     if not modeEq(p.mode, argMode(args[i])) {
-      report(c, id, "call-arg-mode", "argument " + toString(i) + " is passed " + modeName(argMode(args[i])) + " but the parameter is " + modeName(p.mode))
+      report(
+        c,
+        id,
+        "call-arg-mode",
+        "argument " + toString(i) + " is passed " + modeName(argMode(args[i])) + " but the parameter is " + modeName(p.mode)
+      )
     }
     expectTy(c, id, argTy(args[i]), substTy(p.ty, subs, selfTy), "call-arg-type", "argument " + toString(i))
     i = i + 1
@@ -285,14 +323,24 @@ func checkCallee(c: in Ctx, e: in TExpr, callee: in Callee, args: in List[TArg])
         case Some(entry) -> match entry.sig {
           case Some(sg) -> {
             if targs.count != sg.typeParamCount {
-              report(c, e.id, "call-type-args", "callee has " + toString(sg.typeParamCount) + " type parameter(s) but the call gives " + toString(targs.count))
+              report(
+                c,
+                e.id,
+                "call-type-args",
+                "callee has " + toString(sg.typeParamCount) + " type parameter(s) but the call gives " + toString(targs.count)
+              )
               return
             }
             val subs: List[Subst] = newList()
             subs.add(Subst(owner = sym, args = targs))
             checkArgs(c, e.id, sg.params, args, subs, None, e.ty, sg.ret)
           }
-          case None -> report(c, e.id, "callee-callable", "symbol #" + toString(sym.id) + " has no signature to call")
+          case None -> report(
+            c,
+            e.id,
+            "callee-callable",
+            "symbol #" + toString(sym.id) + " has no signature to call"
+          )
         }
         case None -> if not isBuiltinSymbol(sym) {
           report(c, e.id, "symbol-defined", "callee symbol #" + toString(sym.id) + " is not defined by any loaded package")
@@ -311,7 +359,12 @@ func checkCallee(c: in Ctx, e: in TExpr, callee: in Callee, args: in List[TArg])
         case Some(entry) -> match entry.sig {
           case Some(sg) -> {
             if targs.count != sg.typeParamCount {
-              report(c, e.id, "call-type-args", "method has " + toString(sg.typeParamCount) + " type parameter(s) but the call gives " + toString(targs.count))
+              report(
+                c,
+                e.id,
+                "call-type-args",
+                "method has " + toString(sg.typeParamCount) + " type parameter(s) but the call gives " + toString(targs.count)
+              )
               return
             }
             val subs: List[Subst] = newList()
@@ -320,17 +373,34 @@ func checkCallee(c: in Ctx, e: in TExpr, callee: in Callee, args: in List[TArg])
             val selfTy: Option[Ty] = if args.count > 0 { Some(argTy(args[0])) } else { None }
             checkArgs(c, e.id, sg.params, args, subs, selfTy, e.ty, sg.ret)
           }
-          case None -> report(c, e.id, "callee-callable", "method #" + toString(method.id) + " has no signature to call")
+          case None -> report(
+            c,
+            e.id,
+            "callee-callable",
+            "method #" + toString(method.id) + " has no signature to call"
+          )
         }
-        case None -> report(c, e.id, "symbol-defined", "interface method #" + toString(method.id) + " is not defined by any loaded package")
+        case None -> report(
+          c,
+          e.id,
+          "symbol-defined",
+          "interface method #" + toString(method.id) + " is not defined by any loaded package"
+        )
       }
     }
     case Indirect(fnValue) -> match fnValue.ty {
       case TFunc(ps, r, _) -> checkArgs(c, e.id, ps, args, newList(), None, e.ty, r)
-      case _ -> report(c, e.id, "callee-callable", "an indirect call through a value of type " + renderTy(fnValue.ty) + ", which is not a function type")
+      case _ -> report(
+        c,
+        e.id,
+        "callee-callable",
+        "an indirect call through a value of type " + renderTy(fnValue.ty) +
+          ", which is not a function type"
+      )
     }
     case Extern(member) -> checkArgs(c, e.id, member.params, args, newList(), None, e.ty, member.ret)
-    case Intrinsic(_) -> {}
+    case Intrinsic(_) -> {
+    }
   }
 }
 
@@ -343,23 +413,40 @@ func placeMutable(c: in Ctx, id: in NodeId, p: in TPlace): Unit {
         }
         expectTy(c, id, p.ty, d.ty, "place-type", "local place")
       }
-      case None -> {}
+      case None -> {
+      }
     }
     case PlGlobal(s) -> match lookupSym(c, s) {
       case Some(entry) -> if not entry.mutable {
         report(c, id, "assign-mutable", "assignment to the immutable global #" + toString(s.id))
       }
-      case None -> report(c, id, "symbol-defined", "global place names symbol #" + toString(s.id) + " that no loaded package defines")
+      case None -> report(
+        c,
+        id,
+        "symbol-defined",
+        "global place names symbol #" + toString(s.id) +
+          " that no loaded package defines"
+      )
     }
     case PlField(recv, f) -> {
       visitExpr(c, recv)
       match lookupSym(c, f.owner) {
         case Some(entry) -> if f.index < 0 or f.index >= entry.fields.count {
-          report(c, id, "field-exists", "field " + f.name + " is not field " + toString(f.index) + " of #" + toString(f.owner.id))
+          report(
+            c,
+            id,
+            "field-exists",
+            "field " + f.name + " is not field " + toString(f.index) + " of #" + toString(f.owner.id)
+          )
         } else if not entry.fields[f.index].mutable {
           report(c, id, "assign-mutable", "assignment to the immutable field " + f.name)
         }
-        case None -> report(c, id, "symbol-defined", "field owner #" + toString(f.owner.id) + " is not defined by any loaded package")
+        case None -> report(
+          c,
+          id,
+          "symbol-defined",
+          "field owner #" + toString(f.owner.id) + " is not defined by any loaded package"
+        )
       }
     }
     case PlIndex(recv, idx, _) -> {
@@ -375,7 +462,8 @@ func visitPlaceValue(c: in Ctx, id: in NodeId, p: in TPlace): Unit {
     case PlLocal(l) -> {
       match useLocal(c, id, l) {
         case Some(d) -> expectTy(c, id, p.ty, d.ty, "place-type", "local place")
-        case None -> {}
+        case None -> {
+        }
       }
     }
     case PlGlobal(s) -> requireSym(c, id, s, "global place")
@@ -392,7 +480,8 @@ func visitPat(c: in Ctx, p: in TPat, defs: in Bool): Unit {
   noteNode(c, p.id)
   checkTy(c, p.id, p.ty, "pattern")
   match p.kind {
-    case TpWild -> {}
+    case TpWild -> {
+    }
     case TpBind(d, inner) -> {
       if defs {
         defineLocal(c, p.id, d)
@@ -400,21 +489,32 @@ func visitPat(c: in Ctx, p: in TPat, defs: in Bool): Unit {
       expectTy(c, p.id, d.ty, p.ty, "pattern-binding-type", "binding " + d.name)
       match inner {
         case Some(ip) -> visitPat(c, ip, defs)
-        case None -> {}
+        case None -> {
+        }
       }
     }
-    case TpLit(_) -> {}
-    case TpRange(_, _, _) -> {}
+    case TpLit(_) -> {
+    }
+    case TpRange(_, _, _) -> {
+    }
     case TpCtor(sym, args) -> {
       requireSym(c, p.id, sym, "constructor pattern")
       match lookupSym(c, sym) {
         case Some(entry) -> match entry.sig {
           case Some(sg) -> if sg.params.count != args.count {
-            report(c, p.id, "pattern-arity", "case #" + toString(sym.id) + " has " + toString(sg.params.count) + " field(s) but the pattern has " + toString(args.count))
+            report(
+              c,
+              p.id,
+              "pattern-arity",
+              "case #" + toString(sym.id) + " has " + toString(sg.params.count) + " field(s) but the pattern has " +
+                toString(args.count)
+            )
           }
-          case None -> {}
+          case None -> {
+          }
         }
-        case None -> {}
+        case None -> {
+        }
       }
       for a in args {
         visitPat(c, a, defs)
@@ -460,37 +560,40 @@ func visitStmt(c: in Ctx, s: in TStmt): Unit {
           visitExpr(c, e)
           expectTy(c, s.id, e.ty, d.ty, "let-type", "initialiser of " + d.name)
         }
-        case None -> {}
+        case None -> {
+        }
       }
       defineLocal(c, s.id, d)
     }
     case TsExpr(e) -> visitExpr(c, e)
-    case TsReturn(v) -> match v {
-      case Some(e) -> visitExpr(c, e)
-      case None -> {}
+    case TsReturn(v) -> match v { case Some(e) -> visitExpr(c, e); case None -> {  } }
+    case TsBreak(_) -> {
     }
-    case TsBreak(_) -> {}
-    case TsContinue(_) -> {}
+    case TsContinue(_) -> {
+    }
     case TsThrow(e) -> visitExpr(c, e)
     case TsTry(body, catches, fin) -> {
       visitExpr(c, body)
       for k in catches {
         match k.binding {
           case Some(d) -> defineLocal(c, s.id, d)
-          case None -> {}
+          case None -> {
+          }
         }
         visitExpr(c, k.body)
       }
       match fin {
         case Some(f) -> visitExpr(c, f)
-        case None -> {}
+        case None -> {
+        }
       }
     }
     case TsDefer(b) -> visitExpr(c, b)
     case TsScope(binding, body) -> {
       match binding {
         case Some(d) -> defineLocal(c, s.id, d)
-        case None -> {}
+        case None -> {
+        }
       }
       visitExpr(c, body)
     }
@@ -522,10 +625,12 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
   noteNode(c, e.id)
   checkTy(c, e.id, e.ty, "expression")
   match e.kind {
-    case XLit(_) -> {}
+    case XLit(_) -> {
+    }
     case XLocal(l) -> match useLocal(c, e.id, l) {
       case Some(d) -> expectTy(c, e.id, e.ty, d.ty, "local-type", "local " + d.name)
-      case None -> {}
+      case None -> {
+      }
     }
     case XGlobal(sym, targs) -> {
       requireSym(c, e.id, sym, "global")
@@ -536,7 +641,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
     case XCall(callee, args) -> {
       match callee {
         case Indirect(fv) -> visitExpr(c, fv)
-        case _ -> {}
+        case _ -> {
+        }
       }
       for a in args {
         match a {
@@ -558,7 +664,12 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       visitExpr(c, recv)
       match lookupSym(c, f.owner) {
         case Some(entry) -> if f.index < 0 or f.index >= entry.fields.count {
-          report(c, e.id, "field-exists", "field " + f.name + " is not field " + toString(f.index) + " of #" + toString(f.owner.id))
+          report(
+            c,
+            e.id,
+            "field-exists",
+            "field " + f.name + " is not field " + toString(f.index) + " of #" + toString(f.owner.id)
+          )
         }
         case None -> if not isBuiltinSymbol(f.owner) {
           report(c, e.id, "symbol-defined", "field owner #" + toString(f.owner.id) + " is not defined by any loaded package")
@@ -577,7 +688,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
         case CvFromNever -> if not isNever(inner.ty) {
           report(c, e.id, "convert-type", "CvFromNever applied to a value of type " + renderTy(inner.ty))
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
     }
     case XTuple(elems) -> {
@@ -605,7 +717,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       visitExpr(c, l)
       visitExpr(c, r)
       match op {
-        case ShCoalesce -> {}
+        case ShCoalesce -> {
+        }
         case _ -> {
           expectTy(c, e.id, l.ty, tyBool(), "condition-type", "left operand")
           expectTy(c, e.id, r.ty, tyBool(), "condition-type", "right operand")
@@ -636,7 +749,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
             visitExpr(c, g)
             expectTy(c, e.id, g.ty, tyBool(), "condition-type", "arm guard")
           }
-          case None -> {}
+          case None -> {
+          }
         }
         visitExpr(c, a.body)
         branchTy(c, e.id, a.body, e.ty, "match arm")
@@ -651,7 +765,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
           visitExpr(c, t)
           branchTy(c, e.id, t, e.ty, "block tail")
         }
-        case None -> {}
+        case None -> {
+        }
       }
     }
     case XUnsafe(b) -> {
@@ -667,7 +782,8 @@ func visitExpr(c: in Ctx, e: in TExpr): Unit {
       visitExpr(c, i)
       expectTy(c, e.id, e.ty, i.ty, "old-type", "old")
     }
-    case XResult -> {}
+    case XResult -> {
+    }
     case XForall(bs, w, body) -> visitQuant(c, e, bs, w, body)
     case XExists(bs, w, body) -> visitQuant(c, e, bs, w, body)
     case XAssign(place, _, value) -> {
@@ -688,7 +804,8 @@ func visitQuant(c: in Ctx, e: in TExpr, bs: in List[LocalDecl], w: in Option[TEx
       visitExpr(c, x)
       expectTy(c, e.id, x.ty, tyBool(), "condition-type", "where clause")
     }
-    case None -> {}
+    case None -> {
+    }
   }
   visitExpr(c, body)
   expectTy(c, e.id, body.ty, tyBool(), "condition-type", "quantifier body")
@@ -704,7 +821,12 @@ func visitLambda(c: in Ctx, e: in TExpr, params: in List[LocalDecl], caps: in Li
   for cp in caps {
     captured.add(cp.local.id, true)
     if not isTrue(outer, cp.local.id) {
-      report(c, e.id, "local-defined", "closure captures local #" + toString(cp.local.id) + ", which is not defined where the closure is created")
+      report(
+        c,
+        e.id,
+        "local-defined",
+        "closure captures local #" + toString(cp.local.id) + ", which is not defined where the closure is created"
+      )
     }
   }
   for p in params {
@@ -716,7 +838,12 @@ func visitLambda(c: in Ctx, e: in TExpr, params: in List[LocalDecl], caps: in Li
   match e.ty {
     case TFunc(ps, r, _) -> {
       if ps.count != params.count {
-        report(c, e.id, "lambda-type", "closure type has " + toString(ps.count) + " parameter(s) but the closure declares " + toString(params.count))
+        report(
+          c,
+          e.id,
+          "lambda-type",
+          "closure type has " + toString(ps.count) + " parameter(s) but the closure declares " + toString(params.count)
+        )
       }
       branchTy(c, e.id, body, r, "closure body")
     }
@@ -728,7 +855,13 @@ func checkConstruct(c: in Ctx, e: in TExpr, sym: in SymbolId, fields: in List[TE
   match lookupSym(c, sym) {
     case Some(entry) -> {
       if fields.count != entry.fields.count {
-        report(c, e.id, "construct-arity", "#" + toString(sym.id) + " has " + toString(entry.fields.count) + " field(s) but the construction gives " + toString(fields.count))
+        report(
+          c,
+          e.id,
+          "construct-arity",
+          "#" + toString(sym.id) + " has " + toString(entry.fields.count) + " field(s) but the construction gives " +
+            toString(fields.count)
+        )
         return
       }
       val subs: List[Subst] = newList()
@@ -737,15 +870,28 @@ func checkConstruct(c: in Ctx, e: in TExpr, sym: in SymbolId, fields: in List[TE
           subs.add(Subst(owner = owner, args = args))
           subs.add(Subst(owner = sym, args = args))
         }
-        case _ -> report(c, e.id, "construct-type", "construction has type " + renderTy(e.ty) + ", which is not a declared type")
+        case _ -> report(
+          c,
+          e.id,
+          "construct-type",
+          "construction has type " + renderTy(e.ty) + ", which is not a declared type"
+        )
       }
       var i = 0
       while i < fields.count {
-        expectTy(c, e.id, fields[i].ty, substTy(entry.fields[i].ty, subs, None), "construct-field-type", "field " + entry.fields[i].name)
+        expectTy(
+          c,
+          e.id,
+          fields[i].ty,
+          substTy(entry.fields[i].ty, subs, None),
+          "construct-field-type",
+          "field " + entry.fields[i].name
+        )
         i = i + 1
       }
     }
-    case None -> {}
+    case None -> {
+    }
   }
 }
 
@@ -765,7 +911,8 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
     defineLocal(c, none, p.local)
     match p.dflt {
       case Some(d) -> visitExpr(c, d)
-      case None -> {}
+      case None -> {
+      }
     }
   }
   checkTy(c, none, f.ret, "return type")
@@ -782,7 +929,8 @@ func verifyFn(shared: in Ctx, f: in TFnDecl): Unit {
       visitExpr(c, b)
       branchTy(c, b.id, b, f.ret, "function body")
     }
-    case None -> {}
+    case None -> {
+    }
   }
 }
 
