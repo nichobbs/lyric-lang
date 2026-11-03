@@ -4327,7 +4327,7 @@ func dotNamedCandidatesFor(
   }
   val kept: List[ResolvedSignature] = newList()
   for c in all {
-    if takesArgCount(c, argc + 1) and argSatisfiesParam(tbl, c.params[0].ty, recv) and not sigListHas(kept, c) {
+    if takesArgCount(c, argc + 1) and receiverFitsSig(tbl, c, recv) and not sigListHas(kept, c) {
       kept.add(c)
     }
   }
@@ -4335,7 +4335,7 @@ func dotNamedCandidatesFor(
   // are kept so the call reports its arity against a real signature (T0042).
   if kept.count == 0 {
     for c in all {
-      if c.params.count >= 1 and argSatisfiesParam(tbl, c.params[0].ty, recv) and not sigListHas(kept, c) {
+      if c.params.count >= 1 and receiverFitsSig(tbl, c, recv) and not sigListHas(kept, c) {
         kept.add(c)
       }
     }
@@ -20178,9 +20178,7 @@ func reportGenericBindingConflicts(
 // signature, meaningful only within this one instantiation.  A signature
 // without type parameters is returned as is.  `srcIdx[k]` is the argument for
 // parameter k, or -1.
-func instantiateSigForArgs(
-  sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]
-): ResolvedSignature {
+func instantiateSigForArgs(sig: in ResolvedSignature, argTypes: in List[Type], srcIdx: in List[Int]): ResolvedSignature {
   if sig.generics.count == 0 {
     return sig
   }
@@ -20192,6 +20190,15 @@ func instantiateSigForArgs(
     k = k + 1
   }
   instantiateSigOrdered(sig, ordered)
+}
+
+// Whether `recv` satisfies the first parameter of the candidate `c`, with the
+// candidate's type parameters bound by that receiver (`self: in Box[T]` takes
+// a `Box[Int]`).
+func receiverFitsSig(tbl: in SymbolTable, c: in ResolvedSignature, recv: in Type): Bool {
+  val one: List[Type] = newList()
+  one.add(recv)
+  argSatisfiesParam(tbl, instantiateSigOrdered(c, one).params[0].ty, recv)
 }
 
 // `instantiateSigForArgs` for argument types already in the order of `sig`'s
@@ -20586,7 +20593,8 @@ func externCallbackHint(tbl: in SymbolTable, sig: in ResolvedSignature, paramTy:
   }
 }
 
-func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
+func paramsMatchArgs(tbl: in SymbolTable, sig: in ResolvedSignature, argTypes: in List[Type]): Bool {
+  val params = instantiateSigOrdered(sig, argTypes).params
   if params.count != argTypes.count {
     return false
   }
@@ -22386,7 +22394,7 @@ func findDirectSigPick(
       // the arguments, use it.  Only when it does *not* match do we consult the
       // overload candidates — this is the disambiguation for #1488 category C.
       match primary {
-        case Some(s) -> if paramsMatchArgs(tbl, s.params, argTypes) { return Some(value = s) }
+        case Some(s) -> if paramsMatchArgs(tbl, s, argTypes) { return Some(value = s) }
         case None -> {
         }
       }
@@ -22404,7 +22412,7 @@ func findDirectSigPick(
       while ci < candidates.count {
         val cand = candidates[ci]
         if not bare or symTableBareFuncVisible(tbl, cand.originPackage, name) {
-          if paramsMatchArgs(tbl, cand.params, argTypes) {
+          if paramsMatchArgs(tbl, cand, argTypes) {
             return Some(value = cand)
           }
           match firstVisible {
