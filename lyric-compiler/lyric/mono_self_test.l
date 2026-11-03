@@ -1096,9 +1096,14 @@ test "imported functions differing only in parameter mode are ambiguous (#5962)"
     jb = jb + 1
   }
   val res = monoFileWithImports(callerPr.file, feed)
-  assertTrue(
+  assertFalse(
     hasFunc(res.file, "mapLike2__String__Object"),
-    "mode-differing same-name imports are ambiguous; U safely defaults to Object"
+    "mode-differing same-name imports are ambiguous; U is no longer defaulted to Object"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "T0224"),
+    1,
+    "the ambiguous lambda body leaves U unpinned: T0224 (D335)"
   )
 }
 
@@ -1111,47 +1116,33 @@ test "lambda-only argument binds type param when no other source exists (#5604)"
   assertTrue(hasFunc(res.file, "eachLike__Int"), "eachLike binds T from the lambda's annotated param alone")
 }
 
-// #5604: an IMPORTED generic whose type params the arguments cannot pin
-// (`isNone(None)` — a nullary case carries no type information) defaults the
-// unbound params to Object and specialises, matching the erased uniform-ABI
-// meaning.  Generic pub funcs are never emitted to any assembly, so leaving
-// the call generic meant codegen silently dropped it.  Local generics keep
-// the loud M0002 (covered by the existing M0002 tests).
-// #5604: a ctor argument that pins only SOME of the union's type params
-// (`isOk(Ok(value = 7))` — T pinned by the field, E unpinned) must
-// specialise with the pinned slot concrete and the unpinned slot Object —
-// the exact instantiation the argument's `newobj` builds (field-derived
-// per-slot, `object` fill).  An all-Object specialisation here mismatched
-// the construction and the specialised match's closed isinst never fired.
-test "partially-pinned union-ctor argument mixes concrete and Object slots (#5604)" {
-  val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7)) }\n"
+// #5604: a ctor argument whose union has type params its field does not pin
+// (`isOk(Ok(value = 7))`: T pinned by the field, E not) is an unpinned type
+// argument, T0224 since D335.  Written with its type arguments the call
+// specialises over the exact instantiation the argument's `newobj` builds.
+test "explicit type arguments specialise a partially-pinned union-ctor argument (#5604)" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2[Int, String](MkOk(v = 7)) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
     "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
   val callerPr = parse(callerSrc)
   val libPr = parse(libSrc)
   val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
-  assertTrue(
-    hasFunc(res.file, "isOkLike2__Int__Object"),
-    "isOkLike2 pins T from the MkOk field and defaults the unpinned E to Object"
-  )
+  assertTrue(hasFunc(res.file, "isOkLike2__Int__String"), "isOkLike2 specialises at its written type arguments")
+  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 0, "nothing is left unpinned")
 }
 
-// W0034 (D335): a type argument of an imported generic that nothing fixes is
-// defaulted to Object, which is warned about while the default retires
-// (docs/70 section 5.2); the call still specialises as before.
-test "an unpinned type argument defaulted to Object is W0034" {
+// T0224 (D335): a type argument of an imported generic that nothing fixes is an
+// error, not a specialisation at Object (docs/70 section 5.2).
+test "an unpinned type argument is T0224, with no Object specialisation" {
   val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7)) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
     "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
   val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
-  assertEqualInt(diagCountCode(res.diagnostics, "W0034"), 1, "the defaulted E is reported once, at the call")
-  assertTrue(
-    hasFunc(res.file, "isOkLike2__Int__Object"),
-    "the call still specialises at Object while the default stands"
-  )
+  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 1, "the unpinned E is reported once, at the call")
+  assertFalse(hasFunc(res.file, "isOkLike2__Int__Object"), "the call is not specialised at Object")
 }
 
-test "an @externTarget generic is exempt from W0034 (D335)" {
+test "an @externTarget generic keeps its erased default and is not T0224 (D335)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { mkThing() }\n"
   val plainLib = "package Lib\n" + "pub func mkThing[T](): Int = 0\n"
   val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
@@ -1159,50 +1150,46 @@ test "an @externTarget generic is exempt from W0034 (D335)" {
   val plain = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(plainLib).file))
   val hosted = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(externLib).file))
   assertEqualInt(
-    diagCountCode(plain.diagnostics, "W0034"),
+    diagCountCode(plain.diagnostics, "T0224"),
     1,
-    "control: the same unpinned call to a plain generic warns"
+    "control: the same unpinned call to a plain generic is T0224"
   )
-  assertEqualInt(diagCountCode(hosted.diagnostics, "W0034"), 0, "an @externTarget generic never warns")
+  assertEqualInt(diagCountCode(hosted.diagnostics, "T0224"), 0, "an @externTarget generic is exempt")
 }
 
-test "a fully pinned imported generic call has no W0034" {
+test "a fully pinned imported generic call has no T0224" {
   val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7), 1) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
     "pub func isOkLike2[T, E](r: in ResLike[T, E], e: in E): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
   val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
-  assertEqualInt(diagCountCode(res.diagnostics, "W0034"), 0, "T and E are both pinned by the arguments")
+  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 0, "T and E are both pinned by the arguments")
 }
 
 // #5604: a binding initialised from an imported generic call must track the
-// CALL's (defaulted) instantiation, so a later generic call over the binding
-// specialises at the instantiation the value actually carries.
-test "binding from an imported generic call tracks the defaulted instantiation (#5604)" {
-  val callerSrc = "package Caller\n" + "func caller(): Bool { val m = wrapIt(MkOk(v = 5))\n isOkLike2(m) }\n"
+// CALL's instantiation, so a later generic call over the binding specialises
+// at the instantiation the value actually carries.
+test "binding from an imported generic call tracks the call's instantiation (#5604)" {
+  val callerSrc = "package Caller\n" +
+    "func caller(): Bool { val m = wrapIt[Int, String](MkOk(v = 5))\n isOkLike2(m) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
     "pub func wrapIt[T, E](r: in ResLike[T, E]): ResLike[T, E] { r }\n" +
     "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
   val callerPr = parse(callerSrc)
   val libPr = parse(libSrc)
   val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
-  assertTrue(hasFunc(res.file, "wrapIt__Int__Object"), "wrapIt specialises with T pinned and E defaulted")
-  assertTrue(
-    hasFunc(res.file, "isOkLike2__Int__Object"),
-    "isOkLike2 over the binding reuses the call's defaulted instantiation"
-  )
+  assertTrue(hasFunc(res.file, "wrapIt__Int__String"), "wrapIt specialises at its written type arguments")
+  assertTrue(hasFunc(res.file, "isOkLike2__Int__String"), "isOkLike2 over the binding reuses the call's instantiation")
 }
 
-test "unconstrained imported generic defaults unbound type params to Object (#5604)" {
+test "an unconstrained imported generic call is T0224, not an Object default (#5604, D335)" {
   val callerSrc = "package Caller\n" + "func caller(): Bool { isEmptyLike(NoneLike) }\n"
   val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n case NoneLike }\n" +
     "pub func isEmptyLike[T](o: in OptLike[T]): Bool { match o { case NoneLike -> true\n case _ -> false } }\n"
   val callerPr = parse(callerSrc)
   val libPr = parse(libSrc)
   val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
-  assertTrue(
-    hasFunc(res.file, "isEmptyLike__Object"),
-    "isEmptyLike defaults its unbound T to Object instead of staying generic"
-  )
+  assertFalse(hasFunc(res.file, "isEmptyLike__Object"), "isEmptyLike's unbound T is no longer defaulted to Object")
+  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 1, "the unbound T is reported at the call")
 }
 
 // #3705: a generic union predicate (`isErrLike`, the shape of stdlib
@@ -2673,15 +2660,20 @@ test "opaque binding fed into an imported generic with a Result-shaped param rai
 // genuinely tolerates any real reference-typed array argument. Confirms
 // #5970's fix is scoped to erasure-UNSAFE shapes and does not regress this
 // legitimate, pervasive usage.
-test "opaque argument to an imported generic with a slice-shaped param still defaults to Object (no regression, #5970)" {
+test "opaque argument to an imported generic with a slice-shaped param is T0224, not M0004 (#5970, D335)" {
   val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Unit { val r = firstLike(getXs()) }\n"
   val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in slice[T]): T { xs[0] }\n"
   val callerPr = parse(callerSrc)
   val libPr = parse(libSrc)
   val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
-  assertTrue(
+  assertFalse(
     hasFunc(res.file, "firstLike__Object"),
-    "a slice-shaped param must still default its opaque, unpinned T to Object -- array covariance makes this safe"
+    "the Object default no longer applies, even to the erasure-safe slice shape"
+  )
+  assertEqualInt(
+    diagCountCode(res.diagnostics, "T0224"),
+    1,
+    "the unpinned T is T0224 (the pipeline pins it from the checker's sites)"
   )
   assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "no M0004 for the erasure-safe slice shape")
 }

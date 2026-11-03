@@ -1,0 +1,7 @@
+[package]
+name = "reject-unpinned-type-argument"
+version = "0.1.0"
+[project]
+name = "RejectUnpinnedTypeArgument"
+[project.packages]
+"App" = "app"
