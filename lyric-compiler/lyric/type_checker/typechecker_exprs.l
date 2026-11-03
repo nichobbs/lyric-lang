@@ -83,16 +83,55 @@ func recvIsUnboundName(sc: in Scope, e: in Expr): Bool {
   }
 }
 
+// The owner of the type parameters of a polymorphic builtin's signature
+// (docs/70 §5.3): `println[T](x: T)`, `toString[T](x: T)`, `formatN[A1..AN](...)`.
+// A builtin has no declaration to own them, so they share this reserved owner;
+// `instantiateBuiltinCall` binds them to the call's argument types.
+func builtinParamOwner(): String {
+  "$builtin"
+}
+
+func builtinTyParam(name: in String): Type {
+  TyParam(name = name, owner = builtinParamOwner())
+}
+
+// A polymorphic builtin's signature with its type parameters bound to what the
+// call's arguments are, position by position (a parameter with no argument
+// stays a hole).  Any other callee type is returned as is.
+func instantiateBuiltinCall(fnT: in Type, argTypes: in List[Type]): Type {
+  match fnT {
+    case TyFunction(ps, r, isAsync) -> {
+      val bound: List[Type] = newList()
+      var k = 0
+      var any = false
+      while k < ps.count {
+        match ps[k] {
+          case TyParam(_, owner) -> if owner == builtinParamOwner() {
+            any = true
+            bound.add(if k < argTypes.count { argTypes[k] } else { TyError })
+          } else {
+            bound.add(ps[k])
+          }
+          case _ -> bound.add(ps[k])
+        }
+        k = k + 1
+      }
+      if any { TyFunction(params = bound, ret = r, isAsync = isAsync) } else { fnT }
+    }
+    case _ -> fnT
+  }
+}
+
 // Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
   if name == "println" or name == "print" {
     val ps: List[Type] = newList()
-    ps.add(TyError)
+    ps.add(builtinTyParam("T"))
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtUnit), isAsync = false))
   }
   if name == "toString" {
     val ps: List[Type] = newList()
-    ps.add(TyError)
+    ps.add(builtinTyParam("T"))
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
   }
   if name == "panic" {
@@ -126,7 +165,7 @@ func codegenBuiltinType(name: in String): Option[Type] {
       ps.add(TyPrim(pt = PtString))
       var fi = 0
       while fi < arity {
-        ps.add(TyError)
+        ps.add(builtinTyParam("A" + toString(fi + 1)))
         fi = fi + 1
       }
       return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
@@ -17899,7 +17938,7 @@ func inferExprCore(
                     }
                     case None -> ()
                   }
-                  match fnT {
+                  match instantiateBuiltinCall(fnT, argTypes) {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)

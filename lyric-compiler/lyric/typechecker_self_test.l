@@ -14424,3 +14424,46 @@ test "a dependency's fully qualified type with no import of its owner resolves (
   assertEqualInt(countDiagCode(cr, "T0211"), 0, "Mid's signature resolves Lib.Cert")
   assertEqualInt(countDiagCode(cr, "T0014"), 0, "no unknown qualified type")
 }
+
+// ─── Polymorphic builtins have real generic signatures (docs/70 §5.3) ──────
+// `println[T](x: T)`, `toString[T](x: T)` and `formatN[A1..AN]` are typed with
+// type parameters bound to the call's arguments, not with `TyError` holes.
+test "println and toString accept an argument of any type" {
+  val src = "package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R, xs: in List[Int]): String {\n  println(1)\n  println(\"s\")\n  println(r)\n  print(xs)\n  toString(r.a) + toString(xs.count)\n}\n"
+  assertEqual(diagCodesOf(parseCheck(src)), "", "no diagnostics")
+}
+
+test "toString is a String and println is a Unit" {
+  assertTrue(
+    diagCodesOf(parseCheck("package P\nfunc f(): Int {\n  toString(1)\n}\n")) != "",
+    "toString(1) is not an Int"
+  )
+  assertTrue(
+    diagCodesOf(parseCheck("package P\nfunc f(): String {\n  println(1)\n}\n")) != "",
+    "println(1) is not a String"
+  )
+}
+
+test "a builtin's arity is still checked" {
+  assertTrue(
+    hasDiagCode(parseCheck("package P\nfunc f(): Unit {\n  println(1, 2)\n}\n"), "T0042"),
+    "println takes one argument"
+  )
+  assertTrue(
+    hasDiagCode(parseCheck("package P\nfunc f(): String {\n  toString()\n}\n"), "T0042"),
+    "toString takes one argument"
+  )
+  assertTrue(
+    hasDiagCode(parseCheck("package P\nfunc f(): String {\n  format2(\"{} {}\", 1)\n}\n"), "T0042"),
+    "format2 takes a template and two arguments"
+  )
+}
+
+test "formatN takes a String template and N arguments of any type" {
+  val ok = "package P\nfunc f(n: in Int, b: in Bool): String {\n  format1(\"{}\", n) + format2(\"{} {}\", n, b) + format3(\"{}{}{}\", n, b, \"s\") + format4(\"{}{}{}{}\", n, b, 1.5, 'c')\n}\n"
+  assertEqual(diagCodesOf(parseCheck(ok)), "", "no diagnostics")
+  assertTrue(
+    hasDiagCode(parseCheck("package P\nfunc f(n: in Int): String {\n  format1(n, n)\n}\n"), "T0043"),
+    "the template is a String"
+  )
+}
