@@ -32,7 +32,7 @@
 
 ## Consequences
 
-`tir_verify_self_test.l` grows from 16 to 26 cases (block, arm, `for`, `catch`,
+`tir_verify_self_test.l` grows from 16 to 27 cases (block, arm, `for`, `catch`, `scope`,
 quantifier and closure scoping, `val v = v`, record-pattern field names, case
 without signature, function in the diagnostic). `resolve_self_test.l` pins that a second renumbering keeps ids
 dense. No pipeline behaviour changes: nothing builds TIR yet.

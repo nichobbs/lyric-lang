@@ -432,6 +432,9 @@ func stmtsLocals(a: in LocalDecl): List[LocalDecl] {
   xs
 }
 
+// A closure's outer set is the live locals, so capturing an ended local is
+// reported as undefined where the closure is created (`local-defined`), not as
+// out of scope.
 test "a closure cannot capture a local whose block has ended" {
   val x = local(1, "x", tyInt(), false)
   val y = local(5, "y", tyInt(), false)
@@ -510,5 +513,17 @@ test "a quantifier binder is not usable after the quantifier" {
     rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
     "local-in-scope",
     "binder after the quantifier"
+  )
+}
+
+test "a scope statement binding is not usable after the scope" {
+  val x = local(1, "x", tyInt(), false)
+  val h = local(5, "h", tyInt(), false)
+  val sc = stmt(50, TsScope(binding = Some(h), body = ex(51, tyUnit(), XBlock(stmts = newList(), tail = None))))
+  val body = ex(52, tyInt(), XBlock(stmts = stmts1(sc), tail = Some(ex(53, tyInt(), XLocal(local = h.id)))))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
+    "local-in-scope",
+    "scope binding after the scope"
   )
 }
