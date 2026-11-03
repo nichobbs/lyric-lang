@@ -1786,7 +1786,7 @@ pub func pipeCheckFront(
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
-  if opts.buildInterface {
+  if opts.buildInterface and not IfaceBuild.isExecutable(tcRes.file) {
     // The interfaces this package was built against are empty until a
     // dependency ships its own interface (docs/70 phase 5b); the header field
     // exists so the format does not change when they do.

@@ -702,7 +702,9 @@ pub func buildIfaceOutcome(
   }
 }
 
-func hasMain(file: in SourceFile): Bool {
+/// Whether the file declares `main`: the package is an executable, which no
+/// other package depends on, so it embeds no interface.
+pub func isExecutable(file: in SourceFile): Bool {
   for it in file.items {
     match it.kind {
       case IFunc(decl) -> if decl.name == "main" { return true }
@@ -712,17 +714,14 @@ func hasMain(file: in SourceFile): Bool {
   false
 }
 
-/// The diagnostics of an outcome.  An executable has no dependents, so a
-/// declaration it cannot record is not an error; a round trip that fails is one
-/// for every package.
+/// The diagnostics of an outcome: T0223 for each declaration a library's
+/// interface cannot record, I0005 for a round trip that fails.
 pub func outcomeDiagnostics(o: in IfaceOutcome, file: in SourceFile): List[Diagnostic] {
   val res: List[Diagnostic] = newList()
   match o {
     case IOBuilt(_) -> ()
-    case IOUnrecordable(reasons) -> if not hasMain(file) {
-      for r in reasons {
-        res.add(errorDiagnostic("T0223", "the package interface cannot record " + r, file.span))
-      }
+    case IOUnrecordable(reasons) -> for r in reasons {
+      res.add(errorDiagnostic("T0223", "the package interface cannot record " + r, file.span))
     }
     case IORoundTrip(msg) -> res.add(errorDiagnostic("I0005", "internal: " + msg, file.span))
   }

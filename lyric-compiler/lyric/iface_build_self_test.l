@@ -145,23 +145,27 @@ test "an unannotated pub val takes the type the checker found (#7777)" {
   )
   assertTrue(text.contains("pub val P::Limit: Int = 5\n"), text)
   assertTrue(text.contains("pub val P::Name: String = \"p\"\n"), text)
-  assertTrue(text.contains("pub val P::Ratio: Double = -2.5\n"), text)
+  assertTrue(text.contains("pub val P::Ratio: Double = bits:-4610560118520545280\n"), text)
   assertTrue(text.contains("pub val P::Answer: Int\n"), text)
 }
 
-test "an unrecordable declaration is T0223 for a library and not for an executable" {
+test "an unrecordable declaration is T0223 and a failed round trip is I0005" {
   val reasons: List[String] = newList()
   reasons.add("P::f: the type did not resolve")
-  val outcome = IOUnrecordable(reasons = reasons)
   val lib = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
-  val libDiags = outcomeDiagnostics(outcome, lib.file)
-  assertEqualInt(libDiags.count, 1, "a library reports one")
-  assertEqual(libDiags[0].code, "T0223", "the code")
-  assertTrue(libDiags[0].message.contains("P::f"), "it names the declaration")
-  val exe = checked("package P\n\nfunc main(): Int {\n  0\n}\n")
-  assertEqualInt(outcomeDiagnostics(outcome, exe.file).count, 0, "an executable does not")
+  val diags = outcomeDiagnostics(IOUnrecordable(reasons = reasons), lib.file)
+  assertEqualInt(diags.count, 1, "one diagnostic per reason")
+  assertEqual(diags[0].code, "T0223", "the code")
+  assertTrue(diags[0].message.contains("P::f"), "it names the declaration")
   val broken = IORoundTrip(message = "the interface read back differs from the one built")
-  assertEqual(outcomeDiagnostics(broken, exe.file)[0].code, "I0005", "a failed round trip is I0005 for every package")
+  assertEqual(outcomeDiagnostics(broken, lib.file)[0].code, "I0005", "the round trip")
+}
+
+test "a package with main is an executable" {
+  val exe = checked("package P\n\nfunc main(): Int {\n  0\n}\n")
+  val lib = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  assertTrue(isExecutable(exe.file), "main makes an executable")
+  assertFalse(isExecutable(lib.file), "no main is a library")
 }
 
 test "the outcome carries the bytes and their hash" {

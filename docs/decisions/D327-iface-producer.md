@@ -61,8 +61,8 @@ re-resolving names.
    `IOBuilt` (the canonical bytes and their SHA-256), `IOUnrecordable` (the
    reasons) or `IORoundTrip` (a producer bug, internal error `I0005`). In
    `pipeCheckAndMono` an unrecordable library is `T0223` against the package and
-   fails the build; an executable (a file with `main`) is exempt, since nothing
-   depends on it. `T0212`, which docs/70 §9.3 lists with the producer
+   fails the build; an executable (a file with `main`) builds and embeds no interface, since
+   nothing depends on it. `T0212`, which docs/70 §9.3 lists with the producer
    validation, already exists.
 9. **A `pub val` without a written type** is recorded at the type the checker
    found for it (`moduleValTypes`, which `recordModuleValTypes` fills for every
