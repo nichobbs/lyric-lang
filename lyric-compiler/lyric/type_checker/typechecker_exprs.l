@@ -10632,10 +10632,16 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
   targs
 }
 
+func typeIsInfer(t: in Type): Bool {
+  match t {
+    case TyInfer(_) -> true
+    case _ -> false
+  }
+}
+
 func typeIsHole(t: in Type): Bool {
   match t {
     case TyError -> true
-    case TyInfer(_) -> true
     case _ -> false
   }
 }
@@ -20308,7 +20314,7 @@ func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): R
   val targs: List[Type] = newList()
   var g = 0
   while g < solved.count {
-    targs.add(if typeIsHole(solved[g]) { TyInfer(id = g) } else { solved[g] })
+    targs.add(if typeIsHole(solved[g]) or typeIsInfer(solved[g]) { TyInfer(id = g) } else { solved[g] })
     g = g + 1
   }
   instantiateSigAt(sig, targs)
