@@ -49,6 +49,7 @@ import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.IfaceBuild as IfaceBuild
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
 import Lyric.SelfFields as SelfFields
@@ -1852,6 +1853,7 @@ pub func compileProjectToNativeWithShape(
   val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
   val foreignRecords: List[ForeignValueRecord] = newList()
+  val ifaceFiles: List[NativeInterfaceFile] = newList()
   var mei = 0
   while mei < ownFiles0.count {
     // #6824 items 1/2: same label/files attribution as the parse and
@@ -1866,6 +1868,8 @@ pub func compileProjectToNativeWithShape(
     val optsCallArities: Map[String, Int] = newMap()
     val optsGenericItems: List[Item] = newList()
     val optsForeignRecords: List[ForeignValueRecord] = newList()
+    val optsIface: List[IfaceBuild.IfaceOutcome] = newList()
+    val ownLibrary = mei < packages.count and not isDependencyPackage(packages[mei])
     val opts = nativeMiddleEndOptions(
       nativePkgLabelAt(packages, mei),
       nativePkgFilesAt(packages, mei),
@@ -1875,7 +1879,9 @@ pub func compileProjectToNativeWithShape(
       optsGenericItems,
       optsForeignRecords,
       if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
-      contractsEnabled
+      contractsEnabled,
+      ownLibrary,
+      optsIface
     )
     val siblingValueGenerics = siblingValueGenericFuncs(
       importedPkgs,
@@ -1889,6 +1895,12 @@ pub func compileProjectToNativeWithShape(
     // Mono erased the package's visible generic functions; put them back so
     // codegen can instantiate them for a call from another package.
     ownFiles.add(lowerConfigBlocksNative(withGenericItems(checked, optsGenericItems)))
+    match IfaceBuild.builtBytesOf(optsIface) {
+      case Some(bytes) -> ifaceFiles.add(
+        NativeInterfaceFile(pkg = dottedPath(ownFiles0[mei].packageDecl.path), bytes = bytes)
+      )
+      case None -> ()
+    }
     ownCallArities.add(optsCallArities)
     ownRecvClasses.add(optsRecvOut)
     for fr in optsForeignRecords {
@@ -2100,17 +2112,10 @@ pub func compileProjectToNativeWithShape(
   }
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(
-    units,
-    ownFiles.count,
-    outputPath,
-    triple,
-    optLevel,
-    extraClangFlags,
-    shape,
-    componentPkgs,
-    pluginAbiFingerprint(stdlibFiles)
-  )
+  if not linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs, pluginAbiFingerprint(stdlibFiles)) {
+    return false
+  }
+  writeNativeInterfaces(ifaceFiles, outputPath)
 }
 
 /// A single native source through the passes before the type check: the
@@ -2422,6 +2427,8 @@ func nativeMiddleEndOptions(
   foreignRecordsOut: in List[ForeignValueRecord],
   ioForbiddenReason: in String,
   contractsEnabled: in Bool,
+  buildInterface: in Bool = false,
+  ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
@@ -2440,8 +2447,40 @@ func nativeMiddleEndOptions(
     genericItemsOut = genericItemsOut,
     foreignValueRecordsOut = foreignRecordsOut,
     ioForbiddenReason = ioForbiddenReason,
-    nativeIntrinsics = true
+    nativeIntrinsics = true,
+    buildInterface = buildInterface,
+    interfaceTargets = nativeInterfaceTarget(),
+    interfaceOut = ifaceOut
   )
+}
+
+func nativeInterfaceTarget(): List[String] {
+  val ts: List[String] = newList()
+  ts.add("native")
+  ts
+}
+
+/// One own library package's built interface (docs/70 §9.6), written as
+/// `<Pkg>.lyri` beside the native output once the build links.
+record NativeInterfaceFile {
+  pkg: String
+  bytes: slice[Byte]
+}
+
+/// Writes each package's `<Pkg>.lyri` into the directory of `outputPath`.
+func writeNativeInterfaces(files: in List[NativeInterfaceFile], outputPath: in String): Bool {
+  val dir = Path.dirname(outputPath)
+  for f in files {
+    val dest = Path.join(dir, f.pkg + ".lyri")
+    match File.writeBytes(dest, f.bytes) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        Console.error("error[N0027]: cannot write " + dest + ": " + IOError.message(e))
+        return false
+      }
+    }
+  }
+  true
 }
 
 // The passes up to the mode check on `file`, as a native build runs them, into

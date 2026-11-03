@@ -75,7 +75,7 @@ re-resolving names.
     one shared resource-writing helper. `lyric interface dump` reads `.dll`s.
     `scripts/ci/interface-embed-e2e.sh` checks it through the CLI. The census
     (stage 2 rebuilding the stdlib and the whole compiler, and every ecosystem
-    library) found no unrecordable declaration. Native embedding follows (JVM embeds `META-INF/lyric/<Pkg>.lyri`, see the progress entry).
+    library) found no unrecordable declaration. JVM embeds `META-INF/lyric/<Pkg>.lyri` and a native project build writes `<Pkg>.lyri` beside its output (see the progress entry).
 
 ## Consequences
 
