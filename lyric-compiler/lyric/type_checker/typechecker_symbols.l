@@ -408,7 +408,7 @@ pub record SymbolTable {
   /// before the arguments.
   typeArgCalleeSites: Map[String, Bool]
   /// The function each bare or package-qualified call resolved to, keyed by
-  /// `Lyric.Parser.calleeSiteKey` of its callee, as the rendered DefPath of
+  /// `Lyric.Parser.methodCallSiteKey` of its callee, as the rendered DefPath of
   /// the declaration (`Pkg::name(paramTypes)`, docs/70 §4.2).  The backends
   /// bind the call to it instead of searching the bundle by name (docs/70
   /// phase 2d, D334).
@@ -1741,8 +1741,11 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
 /// The rendered DefPath of the function `sig` is the signature of, named
 /// `name` in its declaring package: the declaration whose span is the
 /// signature's.  None for a signature with no declaration of that name and
-/// span (a built-in, an `extern` member the resolver does not table).
-pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String): Option[String] {
+/// span (a built-in, an `extern` member the resolver does not table).  With
+/// `allowArityMatch`, a signature whose span no declaration has (a
+/// dependency's) takes the one same-named function of its package with its
+/// parameter count.
+pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String, allowArityMatch: in Bool): Option[String] {
   if sig.originPackage.length == 0 {
     return None
   }
@@ -1763,7 +1766,7 @@ pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, 
       }
     }
   }
-  if sameArity.count == 1 {
+  if allowArityMatch and sameArity.count == 1 {
     return Some(value = sameArity[0])
   }
   None

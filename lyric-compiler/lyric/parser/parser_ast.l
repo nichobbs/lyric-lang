@@ -1928,19 +1928,6 @@ pub func methodCallSiteKey(callee: in Expr): String {
   }
 }
 
-/// The key of a callee in `SymbolTable.calleeSites` (docs/70 phase 2d,
-/// D334): the span of the callee expression with any parentheses or explicit
-/// type arguments removed.  Every backend finds the checker's resolved callee
-/// of a call from the callee it lowers.
-pub func calleeSiteKey(callee: in Expr): String {
-  match callee.kind {
-    case EParen(inner) -> calleeSiteKey(inner)
-    case ETypeApp(inner, _) -> calleeSiteKey(inner)
-    case EIndex(inner, _) -> calleeSiteKey(inner)
-    case _ -> recordCopySiteKey(callee.span)
-  }
-}
-
 /// `methodCallSiteKey` of a bare call to a sibling method, from its path.
 pub func methodCallPathKey(path: in ModulePath): String {
   val last = if path.segments.count == 0 { "" } else { path.segments[path.segments.count - 1] }

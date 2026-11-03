@@ -167,7 +167,7 @@ pub record MiddleEndOptions {
   methodCallAritiesOut: Map[String, Int]
   /// Receives the type checker's `calleeSites` for the file (D334): the
   /// function each bare or package-qualified call resolved to, as a rendered
-  /// DefPath, keyed by `Lyric.Parser.calleeSiteKey` of its callee.  A backend
+  /// DefPath, keyed by `Lyric.Parser.methodCallSiteKey` of its callee.  A backend
   /// binds the call to it rather than searching the bundle by name.  Empty
   /// for a call the checker did not resolve to a declaration, which keeps the
   /// backend's own lookup.

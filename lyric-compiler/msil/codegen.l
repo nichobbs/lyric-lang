@@ -681,7 +681,7 @@ pub record CodegenCtx {
   methodCallArities: Map[String, Int]
   /// The function each bare or package-qualified call of the package being
   /// lowered resolved to, as the checker's rendered DefPath, keyed by
-  /// `calleeSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D334; set per
+  /// `methodCallSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D334; set per
   /// package by the bridge).
   calleeSites: Map[String, String]
   // The nominal class of each field-access receiver the type checker
@@ -17171,6 +17171,23 @@ func calleeFqnOfDefPathMsil(dp: in String): String {
   }
 }
 
+// The function the checker resolved the call at `siteKey` to when it is the
+// function `funcName` (so a call a later pass renamed does not match) and the
+// bundle has it, else "" (D334).
+func sitedCalleeFqnMsil(cctx: in CodegenCtx, siteKey: in String, funcName: in String): String {
+  match mapGet(cctx.calleeSites, siteKey) {
+    case None -> ""
+    case Some(dp) -> {
+      val fqn = calleeFqnOfDefPathMsil(dp)
+      if fqn.length > 0 and String.endsWith(fqn, "." + funcName) and cctx.funcTokens.containsKey(fqn) {
+        fqn
+      } else {
+        ""
+      }
+    }
+  }
+}
+
 // Bundle-wide fallback for a bare (unqualified) call to a `pub func` whose
 // only path to the caller's package is TRANSITIVE — reachable through a
 // facade package's own imports, not a DIRECT import of the caller (issue
@@ -21862,8 +21879,15 @@ func lowerBuiltinOrStaticCallMsil(
             // keeps it out of this gate and `qualifiedFqn` resolves it below.
             val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
               cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
+            // The function the checker resolved this call to (D334): the
+            // declaring package's own, whatever tier below would have found.
+            // Empty for a call the checker did not record, and for one a
+            // later pass renamed (a monomorphised copy), which keep the tiers.
+            val sitedFqn = sitedCalleeFqnMsil(cctx, methodCallPathKey(path), funcName)
             val resolvedFqn = if bareSiblingHit {
               ""
+            } else if sitedFqn.length > 0 {
+              sitedFqn
             } else if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
               qualifiedFqn
             } else if originFqn.length > 0 {
@@ -21878,7 +21902,7 @@ func lowerBuiltinOrStaticCallMsil(
               ""
             }
             // TEMP-AUDIT (D334)
-            match mapGet(cctx.calleeSites, recordCopySiteKey(path.span)) {
+            match mapGet(cctx.calleeSites, methodCallPathKey(path)) {
               case Some(dp) -> {
                 val sited = calleeFqnOfDefPathMsil(dp)
                 if resolvedFqn.length > 0 and sited != resolvedFqn {
@@ -23117,6 +23141,20 @@ func lowerMethodCallMsil(
       }
     } else {
       ""
+    }
+    // A call through a package qualifier the checker resolved (`Alias.f`,
+    // `Pkg.f`): the declaring package's function, whatever the qualifier
+    // spells (D334).
+    val sitedMemberFqn = sitedCalleeFqnMsil(cctx, siteKey, memberName)
+    if sitedMemberFqn.length > 0 and not fctx.slots.containsKey(recvSegs[0]) {
+      val sitedSegs = String.split(sitedMemberFqn, ".")
+      val sitedPath: List[String] = newList()
+      var sgi = 0
+      while sgi < sitedSegs.length {
+        sitedPath.add(sitedSegs[sgi])
+        sgi = sgi + 1
+      }
+      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, ModulePath(segments = sitedPath, span = recv.span), args)
     }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)

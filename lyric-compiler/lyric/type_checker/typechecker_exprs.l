@@ -22219,16 +22219,35 @@ func reportAmbiguousDefaultCall(
   )
 }
 
-// Record the function a call to the path `fn` resolved to (`calleeSites`,
-// D334).  A call inferred again replaces what an earlier inference recorded.
+// Record the function a call through `fn` resolved to (`calleeSites`, D334),
+// under `methodCallSiteKey` of the callee: a bare or package-qualified path,
+// or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
+// replaces what an earlier inference recorded.
 func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
-  val path = match fn.kind { case EPath(p) -> p; case _ -> return }
-  if path.segments.count == 0 or isNoSourceSpan(fn.span) {
+  if isNoSourceSpan(fn.span) {
     return
   }
-  val name = path.segments[path.segments.count - 1]
-  val key = calleeSiteKey(fn)
-  match symTableFuncDefPathKey(tbl, sig, name) {
+  var name = ""
+  var allowArity = false
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count == 0 {
+        return
+      }
+      name = path.segments[path.segments.count - 1]
+      allowArity = true
+    }
+    case EMember(recv, member) -> {
+      val segs: List[String] = newList()
+      if not calleeSegments(recv, segs) or modulePathJoin(segs) != sig.originPackage {
+        return
+      }
+      name = member
+    }
+    case _ -> return
+  }
+  val key = methodCallSiteKey(fn)
+  match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> {
       if tbl.calleeSites.containsKey(key) {
         tbl.calleeSites.remove(key)
