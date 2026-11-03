@@ -156,7 +156,6 @@ func detailText(it: in DefPathInterner, d: in IfDetail): String {
       if isPure {
         flags = flags + " @pure"
       }
-      }
       typeParamsText(it, tps) + "(" + joinList(parts, ", ") + "): " + tyText(it, ret) + flags
     }
     case IfDRecord(tps, fs) -> typeParamsText(it, tps) + fieldsText(it, fs)
