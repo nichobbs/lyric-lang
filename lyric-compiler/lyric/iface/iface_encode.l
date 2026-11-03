@@ -62,6 +62,20 @@ pub func canonicalIface(i: in Iface): Iface {
   )
 }
 
+func sameBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
+  if a.length != b.length {
+    return false
+  }
+  var i = 0
+  while i < a.length {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 func putStrList(w: in IfaceWriter, xs: in List[String]) {
   putU(w, xs.count)
   for s in xs {
@@ -190,7 +204,7 @@ pub func decodeIface(bytes: in slice[Byte]): Result[Iface, String] {
         reexports = reexports
       )
       val again = encodeIface(iface)
-      if again.length != bytes.length or ifaceHash(again) != ifaceHash(bytes) {
+      if not sameBytes(again, bytes) {
         Err(error = "the interface is not in canonical form")
       } else {
         Ok(value = iface)
