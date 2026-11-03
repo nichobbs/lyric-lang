@@ -6985,6 +6985,34 @@ func noteUnspecialisableLocalCall(
 // trade for same-package generics. A name shadowed by a typed local binding
 // in `env` is a lambda/function-value call, not a call to the generic — skip
 // it, same as `noteUnspecialisableLocalCall`.
+// W0034 (docs/70 section 5.2, D334): a call to an imported generic whose type
+// argument(s) neither its arguments, its expected type nor the checker's
+// resolved type arguments fix is specialised at `Object`.  That default is
+// retiring: the warning is the first step of the two-step migration
+// (docs/70 section 12.2) and becomes the error T0224 once the sources that
+// rely on it are fixed.
+func noteObjectDefaultedTypeArgs(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  unpinned: in List[String],
+  callSpan: in Span,
+): Unit {
+  if env.containsKey(fname) or isNoSourceSpan(callSpan) {
+    return
+  }
+  state.diags.add(
+    warningDiagnostic(
+      "W0034",
+      "cannot infer type argument(s) " + quotedStringList(unpinned) + " of '" + fname +
+        "' from the call's arguments or its expected type, so they default to 'Object'; write '" +
+        fname +
+        "[...](...)' (this becomes error T0224)",
+      callSpan
+    )
+  )
+}
+
 func noteUnsafeImportedFallback(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -8367,6 +8395,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         if hasOpaqueErasureUnsafeGenericParam(baseDecl, unpinnedNow, argOpaque) {
                           unsafeImportedFallback = true
                         } else {
+                          noteObjectDefaultedTypeArgs(state, env, fname, unpinnedNow, fn.span)
                           var du = 0
                           while du < typeParams.count {
                             if not subst.containsKey(typeParams[du]) {
