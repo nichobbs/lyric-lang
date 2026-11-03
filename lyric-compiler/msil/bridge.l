@@ -136,13 +136,9 @@ func useMemberRecvClassesMsil(cctx: in CodegenCtx, classes: in Map[String, Strin
   }
 }
 
-// Make `arities` (one package's `MiddleEndOptions.methodCallAritiesOut`) the
-// method-call arities the next `codegenMPackage` call dispatches by.  They
-// are keyed by source spans, which only mean something within the package
-// they were recorded for, so each package's codegen sees its own (#7828).
 // Make `sites` (one package's `MiddleEndOptions.calleeSitesOut`) the resolved
 // callees the next `codegenMPackage` call binds calls by.  Source spans only
-// mean something within the package they were recorded for (D334).
+// mean something within the package they were recorded for (D336).
 func useCalleeSitesMsil(cctx: in CodegenCtx, sites: in Map[String, String]): Unit {
   for k in mapKeys(cctx.calleeSites) {
     cctx.calleeSites.remove(k)
@@ -155,6 +151,10 @@ func useCalleeSitesMsil(cctx: in CodegenCtx, sites: in Map[String, String]): Uni
   }
 }
 
+// Make `arities` (one package's `MiddleEndOptions.methodCallAritiesOut`) the
+// method-call arities the next `codegenMPackage` call dispatches by.  They
+// are keyed by source spans, which only mean something within the package
+// they were recorded for, so each package's codegen sees its own (#7828).
 func useMethodCallAritiesMsil(cctx: in CodegenCtx, arities: in Map[String, Int]): Unit {
   for k in mapKeys(cctx.methodCallArities) {
     cctx.methodCallArities.remove(k)

@@ -22219,7 +22219,7 @@ func reportAmbiguousDefaultCall(
   )
 }
 
-// Record the function a call through `fn` resolved to (`calleeSites`, D334),
+// Record the function a call through `fn` resolved to (`calleeSites`, D336),
 // under `methodCallSiteKey` of the callee: a bare or package-qualified path,
 // or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
 // replaces what an earlier inference recorded.

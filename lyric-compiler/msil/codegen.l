@@ -681,7 +681,7 @@ pub record CodegenCtx {
   methodCallArities: Map[String, Int]
   /// The function each bare or package-qualified call of the package being
   /// lowered resolved to, as the checker's rendered DefPath, keyed by
-  /// `methodCallSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D334; set per
+  /// `methodCallSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D336; set per
   /// package by the bridge).
   calleeSites: Map[String, String]
   // The nominal class of each field-access receiver the type checker
@@ -17155,7 +17155,7 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
 }
 
 // The `Pkg.name` the checker's rendered callee DefPath (`Pkg::name(P1,P2)`)
-// names, "" when `dp` is not of that form (D334).
+// names, "" when `dp` is not of that form (D336).
 func calleeFqnOfDefPathMsil(dp: in String): String {
   match String.indexOf(dp, "::") {
     case None -> ""
@@ -17170,7 +17170,7 @@ func calleeFqnOfDefPathMsil(dp: in String): String {
 
 // The function the checker resolved the call at `siteKey` to when it is the
 // function `funcName` (so a call a later pass renamed does not match) and the
-// bundle has it, else "" (D334).
+// bundle has it, else "" (D336).
 func sitedCalleeFqnMsil(cctx: in CodegenCtx, siteKey: in String, funcName: in String): String {
   match mapGet(cctx.calleeSites, siteKey) {
     case None -> ""
@@ -21876,7 +21876,7 @@ func lowerBuiltinOrStaticCallMsil(
             // keeps it out of this gate and `qualifiedFqn` resolves it below.
             val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
               cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
-            // The function the checker resolved this call to (D334): the
+            // The function the checker resolved this call to (D336): the
             // declaring package's own, whatever tier below would have found.
             // Empty for a call the checker did not record, and for one a
             // later pass renamed (a monomorphised copy), which keep the tiers.
@@ -23129,7 +23129,7 @@ func lowerMethodCallMsil(
     }
     // A call through a package qualifier the checker resolved (`Alias.f`,
     // `Pkg.f`): the declaring package's function, whatever the qualifier
-    // spells (D334).
+    // spells (D336).
     val sitedMemberFqn = sitedCalleeFqnMsil(cctx, siteKey, memberName)
     if sitedMemberFqn.length > 0 and not fctx.slots.containsKey(recvSegs[0]) {
       val sitedSegs = String.split(sitedMemberFqn, ".")

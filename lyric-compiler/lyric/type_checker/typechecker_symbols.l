@@ -411,7 +411,7 @@ pub record SymbolTable {
   /// `Lyric.Parser.methodCallSiteKey` of its callee, as the rendered DefPath of
   /// the declaration (`Pkg::name(paramTypes)`, docs/70 §4.2).  The backends
   /// bind the call to it instead of searching the bundle by name (docs/70
-  /// phase 2d, D334).
+  /// phase 2d, D336).
   calleeSites: Map[String, String]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings

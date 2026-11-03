@@ -165,7 +165,7 @@ pub record MiddleEndOptions {
   /// a method's overloads up by this count, so the call binds to the
   /// overload the checker resolved (#7828).
   methodCallAritiesOut: Map[String, Int]
-  /// Receives the type checker's `calleeSites` for the file (D334): the
+  /// Receives the type checker's `calleeSites` for the file (D336): the
   /// function each bare or package-qualified call resolved to, as a rendered
   /// DefPath, keyed by `Lyric.Parser.methodCallSiteKey` of its callee.  A backend
   /// binds the call to it rather than searching the bundle by name.  Empty

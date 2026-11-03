@@ -43,6 +43,11 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    has it. It comes before every other tier, in the static-call path and in the
    package-member path (`Pkg.f`, `Alias.f`), where it replaces the alias
    lookup.
+   The site names the declaring package and function, not an overload: the
+   backend still picks among a package's overloads of that name by the
+   checker's resolved arity (`methodCallArities`, #7828) and its own argument
+   matching, as before. The DefPath's parameter list is recorded for
+   phase 4, where `Callee` carries the full identity.
 4. **The name tiers stay for the calls with no site.** They are not deleted
    here: a census of the stdlib, compiler and ecosystem build shows the calls
    still without a site are builtins (`println`), dot-named type functions
