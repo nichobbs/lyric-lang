@@ -10587,7 +10587,7 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
             }
             case None -> return TyError
           }
-        } else if typeIsHole(bound) {
+        } else if typeIsUnsolved(bound) {
           // An argument that left the parameter open (`None` for an
           // `Option[T]` parameter) bound nothing; a later one fixes it
           // (#7844): `Holder(value = None, fallback = 5)` binds `T` to `Int`.
@@ -10621,7 +10621,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
     var pinned = false
     while pi < sig.params.count and pi < argTys.count and pi < paramTys.count and not pinned {
       val byRef = match sig.params[pi].mode { case PMIn -> false; case _ -> true }
-      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
+      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsUnsolved(argTys[pi]) {
         targs[g] = argTys[pi]
         pinned = true
       }
@@ -10632,12 +10632,21 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
   targs
 }
 
-// An unsolved position: `TyError` (no information) or a `TyInfer` the call has
-// not solved yet.
-func typeIsHole(t: in Type): Bool {
+// A position inference has no type for: `TyError`, or the `TyInfer` that
+// stands for a parameter or argument nothing has fixed.  Inference reads
+// this; elsewhere an instantiated signature's `TyInfer` is not a hole (it is
+// an open parameter the caller's other checks know how to treat).
+func typeIsUnsolved(t: in Type): Bool {
   match t {
     case TyError -> true
     case TyInfer(_) -> true
+    case _ -> false
+  }
+}
+
+func typeIsHole(t: in Type): Bool {
+  match t {
+    case TyError -> true
     case _ -> false
   }
 }
@@ -20310,7 +20319,7 @@ func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): R
   val targs: List[Type] = newList()
   var g = 0
   while g < solved.count {
-    targs.add(if typeIsHole(solved[g]) { TyInfer(id = g) } else { solved[g] })
+    targs.add(if typeIsUnsolved(solved[g]) { TyInfer(id = g) } else { solved[g] })
     g = g + 1
   }
   instantiateSigAt(sig, targs)
