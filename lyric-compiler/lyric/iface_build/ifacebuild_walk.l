@@ -193,7 +193,6 @@ func callableDetail(
   isAsync: in Bool,
   isAxiom: in Bool,
   isPure: in Bool,
-  verification: in Option[IfVerif],
 ): IfDetail {
   val what = defPathKey(path)
   val frames = withFrame(outer, frameOf(bc, path, gps))
@@ -204,8 +203,7 @@ func callableDetail(
     ret = result,
     isAsync = isAsync,
     isAxiom = isAxiom,
-    isPure = isPure,
-    verification = verification
+    isPure = isPure
   )
 }
 
@@ -218,11 +216,6 @@ func funcDetail(
   fileLevel: in VerificationLevel,
 ): IfDetail {
   val level = levelOfFunction(fileLevel, fn)
-  val verification = if vlIsAxiom(level) or vlDisplay(level) == vlDisplay(fileLevel) {
-    None
-  } else {
-    Some(value = ifVerifOf(level))
-  }
   callableDetail(
     bc,
     outer,
@@ -234,8 +227,7 @@ func funcDetail(
     fn.ret,
     fn.isAsync,
     vlIsAxiom(level),
-    isFuncPure(fn),
-    verification
+    isFuncPure(fn)
   )
 }
 
@@ -257,8 +249,7 @@ func sigDetail(
     sig.ret,
     sig.isAsync,
     false,
-    annotationNamed(sig.annotations, "pure"),
-    None
+    annotationNamed(sig.annotations, "pure")
   )
 }
 
@@ -474,7 +465,7 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
               epath,
               IfKMethod,
               vis,
-              callableDetail(bc, frames, None, epath, None, None, e.params, e.ret, false, false, false, None)
+              callableDetail(bc, frames, None, epath, None, None, e.params, e.ret, false, false, false)
             )
           }
           case _ -> ()
@@ -552,7 +543,7 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
         path,
         IfKFunc,
         vis,
-        callableDetail(bc, newList(), None, path, None, None, decl.params, decl.ret, false, false, false, None)
+        callableDetail(bc, newList(), None, path, None, None, decl.params, decl.ret, false, false, false)
       )
     }
     case IConst(decl) -> {

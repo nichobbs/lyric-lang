@@ -43,8 +43,9 @@ re-resolving names.
 5. **Header.** The package name, the file-level verification level (new
    `IfAxiom` for `@axiom`, so format version 3), `@pure`/`@io` file annotations,
    re-exports (`pub use`), the caller's target set, and the interfaces built
-   against (empty until dependencies ship interfaces). A function whose level
-   differs from the package's records its own.
+   against (empty until dependencies ship interfaces). A function's level is the
+   package's unless it is `@axiom` (the only per-function level the language
+   has), so `IfDFunc` carries `isAxiom` and no separate level.
 6. **Pipeline hook.** `MiddleEndOptions.buildInterface` makes `pipeCheckAndMono`
    build the interface from the type-checked file into `interfaceOut`. It is off
    by default; the embedding slice turns it on.

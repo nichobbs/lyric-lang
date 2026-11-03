@@ -104,8 +104,8 @@ pub record IfField {
 /// What a declaration is, beyond its kind and visibility.
 ///
 /// - `IfDNone`: a wire, scope, config or aspect, whose content is code.
-/// - `IfDFunc`: a function, method or interface member.  `verification` is
-///   the function's own level when it differs from the package's.
+/// - `IfDFunc`: a function, method or interface member.  A function's level is
+///   the package's unless it is `@axiom`.
 /// - `IfDRecord`: a record, exposed record or protected type.
 /// - `IfDType`: a union, enum, opaque type or interface (cases and members
 ///   are declarations of their own, nested under it).
@@ -117,7 +117,7 @@ pub record IfField {
 /// - `IfDExtern`: an extern type and the host type it names.
 pub union IfDetail {
   case IfDNone
-  case IfDFunc(typeParams: List[TTypeParam], params: List[IfParam], ret: Ty, isAsync: Bool, isAxiom: Bool, isPure: Bool, verification: Option[IfVerif])
+  case IfDFunc(typeParams: List[TTypeParam], params: List[IfParam], ret: Ty, isAsync: Bool, isAxiom: Bool, isPure: Bool)
   case IfDRecord(typeParams: List[TTypeParam], fields: List[IfField])
   case IfDType(typeParams: List[TTypeParam])
   case IfDAlias(typeParams: List[TTypeParam], underlying: Ty)

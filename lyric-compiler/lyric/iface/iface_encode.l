@@ -119,7 +119,7 @@ func readFields(r: in IfaceReader, it: in DefPathInterner): List[IfField] {
 func putDetail(w: in IfaceWriter, it: in DefPathInterner, d: in IfDetail) {
   match d {
     case IfDNone -> putU(w, 0)
-    case IfDFunc(tps, ps, ret, isAsync, isAxiom, isPure, verification) -> {
+    case IfDFunc(tps, ps, ret, isAsync, isAxiom, isPure) -> {
       putU(w, 1)
       putTypeParams(w, it, tps)
       putU(w, ps.count)
@@ -133,13 +133,6 @@ func putDetail(w: in IfaceWriter, it: in DefPathInterner, d: in IfDetail) {
       putBool(w, isAsync)
       putBool(w, isAxiom)
       putBool(w, isPure)
-      match verification {
-        case None -> putBool(w, false)
-        case Some(v) -> {
-          putBool(w, true)
-          putU(w, ifVerifCode(v))
-        }
-      }
     }
     case IfDRecord(tps, fs) -> {
       putU(w, 2)
@@ -206,27 +199,7 @@ func readDetail(r: in IfaceReader, it: in DefPathInterner): IfDetail {
       val isAsync = readBool(r)
       val isAxiom = readBool(r)
       val isPure = readBool(r)
-      val verification = if readBool(r) {
-        val vc = readU(r)
-        match ifVerifOfCode(vc) {
-          case Some(v) -> Some(value = v)
-          case None -> {
-            readFail(r, "unknown verification level " + toString(vc))
-            None
-          }
-        }
-      } else {
-        None
-      }
-      IfDFunc(
-        typeParams = tps,
-        params = ps,
-        ret = ret,
-        isAsync = isAsync,
-        isAxiom = isAxiom,
-        isPure = isPure,
-        verification = verification
-      )
+      IfDFunc(typeParams = tps, params = ps, ret = ret, isAsync = isAsync, isAxiom = isAxiom, isPure = isPure)
     }
     case 2 -> {
       val tps = readTypeParams(r, it)

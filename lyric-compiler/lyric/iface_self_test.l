@@ -484,14 +484,13 @@ test "a function's signature, generic parameters and flags round trip" {
     ret = TNullable(inner = TPrim(kind = TPInt)),
     isAsync = true,
     isAxiom = true,
-    isPure = true,
-    verification = Some(value = IfProofRequiredChecked)
+    isPure = true
   )
   assertEqual(roundTrip(oneDecl(d), it), "", "function")
   val line = dumpIface(oneDecl(d), it)
   assertTrue(
     line.contains(
-      "[T: Std.Core::Ordered, N: value Int](xs: in slice[param T::X#0], limit: in Int = <default>, sink: out String): Int? async @axiom @pure @proof_required(checked_arithmetic)"
+      "[T: Std.Core::Ordered, N: value Int](xs: in slice[param T::X#0], limit: in Int = <default>, sink: out String): Int? async @axiom @pure"
     ),
     "dump line: " + line
   )
@@ -595,8 +594,7 @@ test "the golden dump shows types and detail" {
         ret = TPrim(kind = TPDouble),
         isAsync = false,
         isAxiom = false,
-        isPure = true,
-        verification = None
+        isPure = true
       )
     )
   )
