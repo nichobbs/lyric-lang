@@ -343,6 +343,10 @@ pub func main(argv: in slice[String]): Int {
     return cmdPublicApiDiff(argv)
   }
 
+  if cmd == "interface" {
+    return cmdInterface(argv)
+  }
+
   if cmd == "restore" {
     return cmdRestore(argv)
   }
