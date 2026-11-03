@@ -425,3 +425,55 @@ test "a diagnostic names its function" {
   assertEqualInt(ds[0].fnSym.id, 10, "the function")
   assertTrue(renderVerifyDiag("p", ds[0]).contains("(in function #10)"), "rendered")
 }
+
+func stmtsLocals(a: in LocalDecl): List[LocalDecl] {
+  val xs: List[LocalDecl] = newList()
+  xs.add(a)
+  xs
+}
+
+test "a closure cannot capture a local whose block has ended" {
+  val x = local(1, "x", tyInt(), false)
+  val y = local(5, "y", tyInt(), false)
+  val fty = TFunc(params = newList(), ret = tyInt(), isAsync = false)
+  val caps: List[Capture] = newList()
+  caps.add(Capture(local = y.id, mode = CmByValue))
+  val lam = ex(10, fty, XLambda(params = newList(), captures = caps, body = ex(11, tyInt(), XLocal(local = y.id))))
+  val ended = ex(12, tyUnit(), XBlock(stmts = stmts1(stmt(13, TsVar(decl = y, init = Some(lit(14, 1i64))))), tail = None))
+  val body = ex(15, fty, XBlock(stmts = stmts1(stmt(16, TsExpr(expr = ended))), tail = Some(lam)))
+  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), fty, body))).contains("local-defined"), "capture of an ended local")
+}
+
+test "a for-loop binding is not usable after the loop" {
+  val x = local(1, "x", tyInt(), false)
+  val i = local(5, "i", tyInt(), false)
+  val range = ex(20, tyInt(), XLocal(local = x.id))
+  val loop = stmt(
+    21,
+    TsFor(label = None, pat = pat(22, tyInt(), TpBind(decl = i, inner = None)), iter = range, body = ex(23, tyUnit(), XBlock(stmts = newList(), tail = None)))
+  )
+  val body = ex(24, tyInt(), XBlock(stmts = stmts1(loop), tail = Some(ex(25, tyInt(), XLocal(local = i.id)))))
+  assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))), "local-in-scope", "for binding after the loop")
+}
+
+test "a catch binding is not usable after its clause" {
+  val x = local(1, "x", tyInt(), false)
+  val e = local(5, "e", TException, false)
+  val clause = TCatch(binding = Some(e), exceptionType = "Err", body = ex(30, tyUnit(), XBlock(stmts = newList(), tail = None)))
+  val clauses: List[TCatch] = newList()
+  clauses.add(clause)
+  val tryS = stmt(31, TsTry(body = ex(32, tyUnit(), XBlock(stmts = newList(), tail = None)), catches = clauses, finallyBody = None))
+  val useE = ex(33, TException, XLocal(local = e.id))
+  val body = ex(34, TException, XBlock(stmts = stmts1(tryS), tail = Some(useE)))
+  assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), TException, body))), "local-in-scope", "catch binding after the clause")
+}
+
+test "a quantifier binder is not usable after the quantifier" {
+  val x = local(1, "x", tyInt(), false)
+  val k = local(5, "k", tyInt(), false)
+  val tru = ex(40, tyBool(), XLit(lit = TLBool(value = true)))
+  val q = ex(41, tyBool(), XForall(binders = stmtsLocals(k), whereExpr = None, body = tru))
+  val useK = ex(42, tyInt(), XLocal(local = k.id))
+  val body = ex(43, tyInt(), XBlock(stmts = stmts1(stmt(44, TsExpr(expr = q))), tail = Some(useK)))
+  assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))), "local-in-scope", "binder after the quantifier")
+}
