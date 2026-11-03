@@ -1746,15 +1746,25 @@ pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, 
   if sig.originPackage.length == 0 {
     return None
   }
+  val sameArity: List[String] = newList()
   for s in symTableTryFindAllNamed(tbl, name) {
-    if s.originPackage == sig.originPackage and spanKey(s.declSpan) == spanKey(sig.span) {
+    if s.originPackage == sig.originPackage {
       match s.kind {
         case DKFunc(decl) -> {
-          return Some(value = defPathKey(funcDefPath(s.originPackage, s.name, decl.params)))
+          val key = defPathKey(funcDefPath(s.originPackage, s.name, decl.params))
+          if spanKey(s.declSpan) == spanKey(sig.span) {
+            return Some(value = key)
+          }
+          if decl.params.count == sig.params.count and not sameArity.contains(key) {
+            sameArity.add(key)
+          }
         }
         case _ -> ()
       }
     }
+  }
+  if sameArity.count == 1 {
+    return Some(value = sameArity[0])
   }
   None
 }
