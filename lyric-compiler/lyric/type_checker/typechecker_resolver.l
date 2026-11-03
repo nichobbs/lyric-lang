@@ -987,6 +987,14 @@ func resolveTypePath(
     case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
     case None -> ()
   }
+  // A dependency's signatures: a restored contract names its types fully
+  // qualified and carries no import for the package that declares them, so
+  // there is no scope to resolve the owner in; its own build checked what it
+  // names (D331).
+  match dependencyQualifiedType(tbl, ownerPkg, last) {
+    case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
+    case None -> ()
+  }
   // A package-private type named through its package is T0097 whether or not
   // the file imports the package (#7548); `symbolToType` reports it.
   match symTableTryFindInPackage(tbl, ownerPkg, last) {
@@ -1020,6 +1028,33 @@ func resolveTypePath(
       TyError
     }
   }
+}
+
+// The type `Owner.Name` names in a dependency's own signatures when the
+// dependency's scope cannot judge it: the newest type called `name` declared
+// by `ownerPkg`, or by a package `ownerPkg` re-exports.  `None` for the
+// checked package, whose files' imports decide (`symTableQualifiedType`).
+func dependencyQualifiedType(tbl: in SymbolTable, ownerPkg: in String, name: in String): Option[Symbol] {
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length == 0 or symTableImportRuleApplies(tbl, curPkg) {
+    return None
+  }
+  val owners: List[String] = newList()
+  owners.add(ownerPkg)
+  for q in symTableReexportClosure(tbl, ownerPkg) {
+    owners.add(q)
+  }
+  val cands = symTableTryFindAllNamed(tbl, name)
+  for owner in owners {
+    var i = cands.count - 1
+    while i >= 0 {
+      if symbolIsType(cands[i]) and cands[i].originPackage == owner {
+        return Some(value = cands[i])
+      }
+      i = i - 1
+    }
+  }
+  None
 }
 
 // Whether a qualified type reference `Owner.Name` may resolve to `sym`: the
