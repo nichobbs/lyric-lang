@@ -15,8 +15,8 @@ func testOption(): Unit {
 
   // isSome / isNone
   assertTrue(isSome(Some(value = 1)), "isSome Some")
-  assertTrue(not isSome(None), "isSome None is false")
-  assertTrue(isNone(None), "isNone None")
+  assertTrue(not isSome[Int](None), "isSome None is false")
+  assertTrue(isNone[Int](None), "isNone None")
   assertTrue(not isNone(Some(value = 0)), "isNone Some is false")
 
   // mapOption — transforms value inside Some, passes None through
@@ -33,21 +33,21 @@ func testOption(): Unit {
 
 func testResult(): Unit {
   // isOk / isErr
-  assertTrue(isOk(Ok(value = 7)), "isOk Ok")
-  assertTrue(not isOk(Err(error = 1)), "isOk Err is false")
-  assertTrue(isErr(Err(error = 1)), "isErr Err")
-  assertTrue(not isErr(Ok(value = 7)), "isErr Ok is false")
+  assertTrue(isOk[Int, String](Ok(value = 7)), "isOk Ok")
+  assertTrue(not isOk[String, Int](Err(error = 1)), "isOk Err is false")
+  assertTrue(isErr[String, Int](Err(error = 1)), "isErr Err")
+  assertTrue(not isErr[Int, String](Ok(value = 7)), "isErr Ok is false")
 
   // unwrapResultOr
-  assertEqualInt(unwrapResultOr(Ok(value = 7), 0), 7, "unwrapResultOr Ok")
+  assertEqualInt(unwrapResultOr[Int, String](Ok(value = 7), 0), 7, "unwrapResultOr Ok")
   assertEqualInt(unwrapResultOr(Err(error = 1), 99), 99, "unwrapResultOr Err")
 
   // unwrapErrOr
-  assertEqualInt(unwrapErrOr(Err(error = 42), 0), 42, "unwrapErrOr Err")
+  assertEqualInt(unwrapErrOr[String, Int](Err(error = 42), 0), 42, "unwrapErrOr Err")
   assertEqualInt(unwrapErrOr(Ok(value = 5), 77), 77, "unwrapErrOr Ok falls back")
 
   // mapResult — transforms Ok value, passes Err through
-  val mapped = mapResult(Ok(value = 5), { x: Int -> x + 1 })
+  val mapped = mapResult[Int, Int, String](Ok(value = 5), { x: Int -> x + 1 })
   assertTrue(isOk(mapped), "mapResult Ok stays Ok")
   assertEqualInt(unwrapResultOr(mapped, 0), 6, "mapResult Ok value")
   assertTrue(isErr(mapResult(Err(error = 42), { x: Int -> x + 1 })), "mapResult Err stays Err")
@@ -70,7 +70,7 @@ func testAndThen(): Unit {
   assertTrue(isSome(doubled), "andThen Some produces Some")
   assertEqualInt(unwrapOr(doubled, 0), 10, "andThen Some value")
 
-  val chained = andThen(Some(value = 0), { x: Int -> None })
+  val chained = andThen[Int, Int](Some(value = 0), { x: Int -> None })
   assertTrue(isNone(chained), "andThen f returns None")
 
   assertTrue(isNone(andThen(None, { x: Int -> Some(value = x) })), "andThen on None is None")
@@ -83,7 +83,7 @@ func testOrElse(): Unit {
   val fallback = orElse(None, { () -> Some(value = 99) })
   assertEqualInt(unwrapOr(fallback, 0), 99, "orElse None uses fallback")
 
-  assertTrue(isNone(orElse(None, { () -> None })), "orElse None fallback None is None")
+  assertTrue(isNone(orElse[Int](None, { () -> None })), "orElse None fallback None is None")
 }
 
 func testAndThenResult(): Unit {

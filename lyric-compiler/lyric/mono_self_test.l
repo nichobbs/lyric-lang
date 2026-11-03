@@ -1136,6 +1136,44 @@ test "partially-pinned union-ctor argument mixes concrete and Object slots (#560
   )
 }
 
+// W0034 (D334): a type argument of an imported generic that nothing fixes is
+// defaulted to Object, which is warned about while the default retires
+// (docs/70 section 5.2); the call still specialises as before.
+test "an unpinned type argument defaulted to Object is W0034" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7)) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
+    "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertEqualInt(diagCountCode(res.diagnostics, "W0034"), 1, "the defaulted E is reported once, at the call")
+  assertTrue(
+    hasFunc(res.file, "isOkLike2__Int__Object"),
+    "the call still specialises at Object while the default stands"
+  )
+}
+
+test "an @externTarget generic is exempt from W0034 (D334)" {
+  val callerSrc = "package Caller\n" + "func caller(): Int { mkThing() }\n"
+  val plainLib = "package Lib\n" + "pub func mkThing[T](): Int = 0\n"
+  val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+    "pub func mkThing[T](): Int = ()\n"
+  val plain = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(plainLib).file))
+  val hosted = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(externLib).file))
+  assertEqualInt(
+    diagCountCode(plain.diagnostics, "W0034"),
+    1,
+    "control: the same unpinned call to a plain generic warns"
+  )
+  assertEqualInt(diagCountCode(hosted.diagnostics, "W0034"), 0, "an @externTarget generic never warns")
+}
+
+test "a fully pinned imported generic call has no W0034" {
+  val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7), 1) }\n"
+  val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
+    "pub func isOkLike2[T, E](r: in ResLike[T, E], e: in E): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
+  val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
+  assertEqualInt(diagCountCode(res.diagnostics, "W0034"), 0, "T and E are both pinned by the arguments")
+}
+
 // #5604: a binding initialised from an imported generic call must track the
 // CALL's (defaulted) instantiation, so a later generic call over the binding
 // specialises at the instantiation the value actually carries.
