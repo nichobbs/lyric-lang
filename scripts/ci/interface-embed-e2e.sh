@@ -6,8 +6,7 @@
 #     `lyric interface dump` prints, with its hash;
 #   - building the same library twice gives the same interface hash;
 #   - an executable embeds no interface;
-#   - a library with a `pub val` whose type is neither written nor a literal's
-#     is T0223, against the declaration.
+#   - an unannotated `pub val` is recorded at the type its package checked.
 #
 #   bash scripts/ci/interface-embed-e2e.sh [dotnet] [jvm]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -81,8 +80,14 @@ pub type Age = Int range 0 ..= 150
 
 pub val Limit: Int = 100
 
+pub val Computed = helper() + 1
+
 pub func add(a: Int, b: Int): Int {
   a + b
+}
+
+func helper(): Int {
+  41
 }
 
 func hidden(): Int {
@@ -102,6 +107,7 @@ LYRIC
     "pub union case Lib::Shape::Circle(radius: Int)" \
     "pub distinct Lib::Age = Int range 0 ..= 150" \
     "pub val Lib::Limit: Int = 100" \
+    "pub val Lib::Computed: Int" \
     "pub func Lib::add(Int,Int)(a: in Int, b: in Int): Int"; do
     if ! grep -qF -- "$want" <<<"$dump"; then
       echo "FAIL [$target] the dump lacks: $want"; ok=0
@@ -125,8 +131,6 @@ LYRIC
   cat > "$edir/src/main.l" <<'LYRIC'
 package Lib
 
-pub val Computed = 1 + 2
-
 func main(): Int {
   0
 }
@@ -140,20 +144,6 @@ LYRIC
     echo "PASS [$target] an executable embeds no interface"
   else
     echo "FAIL [$target] unexpected dump output for an executable"; cat "$work/log"; fail=1
-  fi
-
-  bdir="$(project "bad_$target")"
-  cat > "$bdir/src/lib.l" <<'LYRIC'
-package Lib
-
-pub val Computed = 1 + 2
-LYRIC
-  if build "$bdir" "$target" > "$work/log" 2>&1; then
-    echo "FAIL [$target] a library with an unrecordable pub val built"; fail=1
-  elif grep -q "T0223" "$work/log" && grep -q "Lib::Computed" "$work/log"; then
-    echo "PASS [$target] an unrecordable declaration is T0223"
-  else
-    echo "FAIL [$target] expected T0223 naming Lib::Computed"; cat "$work/log"; fail=1
   fi
 done
 

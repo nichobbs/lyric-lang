@@ -139,34 +139,38 @@ test "extern types are recorded without a modifier" {
   assertTrue(text.contains("pub extern type extern::System.Text.StringBuilder = System.Text.StringBuilder\n"), text)
 }
 
-test "an unannotated pub val takes its literal's type" {
-  val text = dumpOf("package P\n\npub val Limit = 5\npub val Name = \"p\"\npub val Ratio = -2.5\n")
+test "an unannotated pub val takes the type the checker found (#7777)" {
+  val text = dumpOf(
+    "package P\n\nfunc helper(): Int {\n  41\n}\n\npub val Limit = 5\npub val Name = \"p\"\npub val Ratio = -2.5\npub val Answer = helper() + 1\n"
+  )
   assertTrue(text.contains("pub val P::Limit: Int = 5\n"), text)
   assertTrue(text.contains("pub val P::Name: String = \"p\"\n"), text)
-  assertTrue(text.contains("pub val P::Ratio: Double = -2.5\n") or text.contains("P::Ratio: Double"), text)
+  assertTrue(text.contains("pub val P::Ratio: Double = -2.5\n"), text)
+  assertTrue(text.contains("pub val P::Answer: Int\n"), text)
 }
 
-test "a pub val with neither a written type nor a literal cannot be recorded" {
-  val text = dumpOf("package P\n\npub val Limit = 5 + 1\n")
-  assertTrue(text.contains("ERR: ") and text.contains("P::Limit") and text.contains("needs a written type"), text)
+test "an unrecordable declaration is T0223 for a library and not for an executable" {
+  val reasons: List[String] = newList()
+  reasons.add("P::f: the type did not resolve")
+  val outcome = IOUnrecordable(reasons = reasons)
+  val lib = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  val libDiags = outcomeDiagnostics(outcome, lib.file)
+  assertEqualInt(libDiags.count, 1, "a library reports one")
+  assertEqual(libDiags[0].code, "T0223", "the code")
+  assertTrue(libDiags[0].message.contains("P::f"), "it names the declaration")
+  val exe = checked("package P\n\nfunc main(): Int {\n  0\n}\n")
+  assertEqualInt(outcomeDiagnostics(outcome, exe.file).count, 0, "an executable does not")
+  val broken = IORoundTrip(message = "the interface read back differs from the one built")
+  assertEqual(outcomeDiagnostics(broken, exe.file)[0].code, "I0005", "a failed round trip is I0005 for every package")
 }
 
-test "the outcome carries the bytes, their hash, and diagnostics by kind" {
+test "the outcome carries the bytes and their hash" {
   val res = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
-  match buildIfaceOutcome(res, newList(), targets()) {
+  val outs: List[IfaceOutcome] = newList()
+  outs.add(buildIfaceOutcome(res, newList(), targets()))
+  match outs[0] {
     case IOBuilt(b) -> assertEqual(b.hash, ifaceHash(b.bytes), "the hash is the hash of the bytes")
     case _ -> assertTrue(false, "the library should build")
   }
-  val bad = checked("package P\n\npub val Limit = 5 + 1\n")
-  val outcome = buildIfaceOutcome(bad, newList(), targets())
-  assertEqualInt(outcomeDiagnostics(outcome, bad.file).count, 1, "a library reports T0223")
-  val exe = checked("package P\n\npub val Limit = 5 + 1\n\nfunc main(): Int {\n  0\n}\n")
-  assertEqualInt(
-    outcomeDiagnostics(buildIfaceOutcome(exe, newList(), targets()), exe.file).count,
-    0,
-    "an executable does not"
-  )
-  val outs: List[IfaceOutcome] = newList()
-  outs.add(buildIfaceOutcome(res, newList(), targets()))
   assertTrue(builtBytesOf(outs) != None, "the bytes are reachable")
 }

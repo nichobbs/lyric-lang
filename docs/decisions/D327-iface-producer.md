@@ -64,10 +64,11 @@ re-resolving names.
    fails the build; an executable (a file with `main`) is exempt, since nothing
    depends on it. `T0212`, which docs/70 §9.3 lists with the producer
    validation, already exists.
-9. **A `pub val` without a written type** takes the type of a plain literal
-   initialiser (the checker's `typeOfLiteral`, so `5` is `Int`, `-2.5` is
-   `Double`); any other initialiser is `T0223`. The count in the compiler and
-   stdlib sources is one (`windowsTriple`, a string literal).
+9. **A `pub val` without a written type** is recorded at the type the checker
+   found for it (`moduleValTypes`, which `recordModuleValTypes` fills for every
+   unannotated module `val`), the same type an importing package reads it at
+   (#7777), whatever its initialiser. Its constant value is recorded when the
+   initialiser is a plain literal.
 10. **MSIL embedding.** `Msil.Bridge` asks the middle end for the interface on
     every single-file and project build and embeds the bytes as the
     `Lyric.Interface.<Pkg>` manifest resource beside the contract resource, through

@@ -45,7 +45,10 @@ func interfacesOf(path: in String): Option[List[FoundIface]] {
               case Some(bytes) -> res.add(
                 FoundIface(label = name.substring(prefix.length, name.length - prefix.length), bytes = bytes)
               )
-              case None -> ()
+              case None -> {
+                printErr("interface dump: " + path + ": the resource " + name + " cannot be read")
+                return None
+              }
             }
           }
         }

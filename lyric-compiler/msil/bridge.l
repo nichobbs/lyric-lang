@@ -2804,24 +2804,24 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
 // Appends `bytes` to the resources region as a length-prefixed slot and
 // registers the ManifestResource row naming it.
 func embedResourceBytes(lctx: in LoweringCtx, bytes: in slice[Byte], resourceName: in String): Unit {
-  val jsonBytes = bytes
-  val jsonLen = jsonBytes.length
+  val payloadLen = bytes.length
 
   // Resources region layout: per-resource = 4-byte LE length + bytes.
   // `offset` on the ManifestResource row points at the start of this
   // resource's length-prefixed slot.
   val offset = lctx.resourceData.count
 
-  // Append the 4-byte LE length prefix.
-  lctx.resourceData.add(jsonLen.toByte())
-  lctx.resourceData.add((jsonLen / 256).toByte())
-  lctx.resourceData.add((jsonLen / 65536).toByte())
-  lctx.resourceData.add((jsonLen / 16777216).toByte())
+  // Append the 4-byte LE length prefix; `.toByte()` keeps the low eight bits,
+  // so each byte is the length divided down and truncated.
+  lctx.resourceData.add(payloadLen.toByte())
+  lctx.resourceData.add((payloadLen / 256).toByte())
+  lctx.resourceData.add((payloadLen / 65536).toByte())
+  lctx.resourceData.add((payloadLen / 16777216).toByte())
 
   // Append the bytes.
   var i = 0
-  while i < jsonLen {
-    lctx.resourceData.add(jsonBytes[i])
+  while i < payloadLen {
+    lctx.resourceData.add(bytes[i])
     i = i + 1
   }
 

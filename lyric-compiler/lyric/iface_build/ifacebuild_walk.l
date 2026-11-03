@@ -21,7 +21,7 @@ import Lyric.Iface
 import Lyric.IfaceConv
 import Lyric.ModeChecker
 import Lyric.Resolve.{funcDefPath, methodDefPath, reexportsOf}
-import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPush, resolveType, typeOfLiteral}
+import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPush, resolveType}
 
 func visOf(v: in Option[Visibility]): IfVis {
   match v {
@@ -572,18 +572,19 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
                 value = literalOf(decl.init)
               )
             )
-            case None -> match literalValTy(bc, decl.init, what) {
-              case Some(ty) -> emit(
+            case None -> match mapGet(bc.tbl.moduleValTypes, name) {
+              case Some(checked) -> emit(
                 acc,
                 topDefPath(pkg, name),
                 IfKVal,
                 vis,
-                IfDValue(ty = ty, mutable = false, value = literalOf(decl.init))
+                IfDValue(
+                  ty = resolveTy(bc, newList(), None, checked, what),
+                  mutable = false,
+                  value = literalOf(decl.init)
+                )
               )
-              case None -> buildFail(
-                bc,
-                what + ": a pub val needs a written type or a literal initialiser to be recorded"
-              )
+              case None -> buildFail(bc, what + ": the checker recorded no type for this pub val")
             }
           }
         }
@@ -595,16 +596,6 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
     case IConfig(decl) -> emit(acc, topDefPath(pkg, decl.name), IfKConfig, vis, IfDNone)
     case IAspect(decl) -> emit(acc, topDefPath(pkg, decl.name), IfKAspect, vis, IfDNone)
     case _ -> ()
-  }
-}
-
-// The type of a plain literal initialiser, as the checker types it.
-func literalValTy(bc: in BuildCtx, e: in Expr, what: in String): Option[Ty] {
-  match e.kind {
-    case ELiteral(lit) -> Some(value = tyOf(bc, newList(), None, typeOfLiteral(lit), what))
-    case EPrefix(op, inner) -> match op { case PreNeg -> literalValTy(bc, inner, what); case _ -> None }
-    case EParen(inner) -> literalValTy(bc, inner, what)
-    case _ -> None
   }
 }
 
@@ -738,7 +729,9 @@ pub func outcomeDiagnostics(o: in IfaceOutcome, file: in SourceFile): List[Diagn
   res
 }
 
-/// The canonical bytes of the interface the outcomes built, if one was.
+/// The canonical bytes of the interface the outcomes built, if one was.  A
+/// pipeline call checks one package, so there is at most one built outcome and
+/// the first is the only one.
 pub func builtBytesOf(outcomes: in List[IfaceOutcome]): Option[slice[Byte]] {
   for o in outcomes {
     match o {
