@@ -720,8 +720,10 @@ pub func outcomeDiagnostics(o: in IfaceOutcome, file: in SourceFile): List[Diagn
   val res: List[Diagnostic] = newList()
   match o {
     case IOBuilt(_) -> ()
-    case IOUnrecordable(reasons) -> for r in reasons {
-      res.add(errorDiagnostic("T0223", "the package interface cannot record " + r, file.span))
+    case IOUnrecordable(reasons) -> {
+      for r in reasons {
+        res.add(errorDiagnostic("T0223", "the package interface cannot record " + r, file.span))
+      }
     }
     case IORoundTrip(msg) -> res.add(errorDiagnostic("I0005", "internal: " + msg, file.span))
   }
