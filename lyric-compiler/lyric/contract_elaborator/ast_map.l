@@ -1,7 +1,8 @@
 //! A post-order expression rewriter over a whole source file: every
 //! expression reachable from a function, method, entry, test, `val`,
 //! `const` or field default is rebuilt bottom-up and then passed to `f`,
-//! whose result replaces it.  Patterns and types are left untouched, and
+//! whose result replaces it.  A rebuilt node keeps the `nodeId` of the node it
+//! replaces.  Patterns and types are left untouched, and
 //! contract clauses are too unless the mapper opts in (`contracts`).
 package Lyric.ContractElaborator
 
@@ -45,7 +46,12 @@ pub func mapStmtsInFile(file: in SourceFile, g: in (Statement) -> Statement): So
 
 /// Every expression, statement and pattern of `file` (contract clauses
 /// included), each rebuilt bottom-up and passed to its callback.
-pub func mapFileNodes(file: in SourceFile, f: in (Expr) -> Expr, g: in (Statement) -> Statement, h: in (Pattern) -> Pattern): SourceFile {
+pub func mapFileNodes(
+  file: in SourceFile,
+  f: in (Expr) -> Expr,
+  g: in (Statement) -> Statement,
+  h: in (Pattern) -> Pattern,
+): SourceFile {
   mapFileWith(file, AstMapper(expr = f, stmt = g, contracts = true, pat = Some(h)))
 }
 
@@ -391,7 +397,12 @@ func mapExprWith(e: in Expr, m: in AstMapper): Expr {
       while i < arms.count {
         val arm = arms[i]
         acc.add(
-          MatchArm(pattern = mapPat(arm.pattern, m), guard = mapExprOpt(arm.guard, m), body = mapEob(arm.body, m), span = arm.span)
+          MatchArm(
+            pattern = mapPat(arm.pattern, m),
+            guard = mapExprOpt(arm.guard, m),
+            body = mapEob(arm.body, m),
+            span = arm.span
+          )
         )
         i = i + 1
       }
@@ -465,7 +476,7 @@ func mapExprWith(e: in Expr, m: in AstMapper): Expr {
     case _ -> e
   }
   val fe = m.expr
-  fe(rebuilt)
+  fe(Expr(kind = rebuilt.kind, span = rebuilt.span, nodeId = e.nodeId))
 }
 
 func mapBlockWith(blk: in Block, m: in AstMapper): Block {
@@ -533,7 +544,7 @@ func mapStmt(s: in Statement, m: in AstMapper): Statement {
     case _ -> s
   }
   val fs = m.stmt
-  fs(rebuilt)
+  fs(Statement(kind = rebuilt.kind, span = rebuilt.span, nodeId = s.nodeId))
 }
 
 /// True when `p` holds for some expression `mapExprsInFile` would visit in
@@ -783,7 +794,10 @@ func anyInStmt(s: in Statement, p: in (Expr) -> Bool): Bool {
 func mapPat(p: in Pattern, m: in AstMapper): Pattern {
   match m.pat {
     case None -> p
-    case Some(f) -> f(mapPatChildren(p, m))
+    case Some(f) -> {
+      val rebuilt = mapPatChildren(p, m)
+      f(Pattern(kind = rebuilt.kind, span = rebuilt.span, nodeId = p.nodeId))
+    }
   }
 }
 
@@ -798,12 +812,17 @@ func mapPats(ps: in List[Pattern], m: in AstMapper): List[Pattern] {
 func mapPatChildren(p: in Pattern, m: in AstMapper): Pattern {
   val sp = p.span
   match p.kind {
-    case PRange(lo, inc, hi, bare) -> mkPat(PRange(lo = mapExprWith(lo, m), inclusive = inc, hi = mapExprWith(hi, m), bareDotDot = bare), sp)
+    case PRange(lo, inc, hi, bare) -> mkPat(
+      PRange(
+        lo = mapExprWith(lo, m),
+        inclusive = inc,
+        hi = mapExprWith(hi, m),
+        bareDotDot = bare
+      ),
+      sp
+    )
     case PBinding(name, inner) -> {
-      val ni = match inner {
-        case Some(ip) -> Some(mapPat(ip, m))
-        case None -> None
-      }
+      val ni = match inner { case Some(ip) -> Some(mapPat(ip, m)); case None -> None }
       mkPat(PBinding(name = name, inner = ni), sp)
     }
     case PConstructor(head, args) -> mkPat(PConstructor(head = head, args = mapPats(args, m)), sp)

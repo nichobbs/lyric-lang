@@ -32,7 +32,9 @@ dense and unique per package whatever generated the node, so the checker's
 4. To reach patterns the existing post-order AST mapper
    (`Lyric.ContractElaborator.ast_map`) gains `AstMapper.pat` (`None` keeps the
    old reach: patterns untouched) and `mapFileNodes(file, expr, stmt, pat)`.
-   Existing callers are unchanged.
+   A node the mapper rebuilds keeps the `nodeId` of the node it replaces when it
+   reaches a callback, so a callback can read it; a callback that builds a new
+   node chooses the new id. Existing callers are unchanged.
 5. Ids are per file for now: the numbering of an assembled multi-file package
    (one counter across its files) is the builder's call, and uses the same
    function over each file with a running base when it lands.
