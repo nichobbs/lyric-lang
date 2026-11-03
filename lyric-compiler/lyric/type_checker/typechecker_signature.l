@@ -50,6 +50,10 @@ pub record ResolvedBound {
 @stable(since = "0.1")
 pub record ResolvedSignature {
   generics: List[String]
+  /// The declaration that binds each of `generics`, parallel to it (a
+  /// function's own name, `Type.method` for a member).  Empty when unknown;
+  /// substitution then matches by name.
+  genericOwners: List[String] = newList()
   bounds: List[ResolvedBound]
   params: List[ResolvedParam]
   returnTy: Type

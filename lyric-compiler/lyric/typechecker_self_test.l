@@ -594,6 +594,26 @@ test "a type parameter is equal to itself and instantiates at a call" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "rigid: identity over T and over Int is clean")
 }
 
+// D337: a type parameter belongs to the declaration that binds it.  Two
+// declarations that each bind a `T` do not share it.
+test "same-named parameters of different binders are distinct" {
+  val a = TyParam(name = "T", owner = "f")
+  val b = TyParam(name = "T", owner = "g")
+  assertFalse(typeEquiv(a, b), "owner: T of f is not T of g")
+  assertTrue(typeEquiv(a, TyParam(name = "T", owner = "f")), "owner: T of f is T of f")
+  assertTrue(typeEquiv(a, TyParam(name = "T", owner = "")), "owner: a parameter of unknown owner matches any binder")
+}
+
+test "a generic function inside a generic call chain keeps its own parameter" {
+  val src = "package P\nfunc id[T](x: in T): T {\n  x\n}\nfunc twice[T](x: in T): T {\n  id(id(x))\n}\nfunc rec[T](x: in T): T {\n  rec(x)\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "owner: T of twice flows through id[T] and back")
+}
+
+test "a method with its own parameter on a generic record" {
+  val src = "package P\nrecord Box[T] {\n  value: T\n  func map[U](f: in (T) -> U): Box[U] {\n    Box(value = f(self.value))\n  }\n}\nfunc g(b: in Box[Int]): Box[String] {\n  b.map({ n -> \"x\" })\n}\n"
+  assertEqualInt(errorCount(parseCheck(src)), 0, "owner: Box[T].map[U] instantiates T and U separately")
+}
+
 // #2228: a generic that occurs in multiple parameter positions resolves
 // consistently — `pick(a: T, b: T): T` called with two `Int`s returns `Int`,
 // so a `String` binding mismatches (T0060).  (When the occurrences disagree the

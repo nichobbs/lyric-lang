@@ -219,7 +219,7 @@ func resolveLengthArg(
 ): Type {
   val pname = arrayLengthParamName(ctx, arg)
   if pname.length > 0 {
-    return TyParam(name = pname, owner = "")
+    return TyParam(name = pname, owner = gctxOwnerOf(ctx, pname))
   }
   match resolveArrayLength(tbl, ctx, arg) {
     case Some(n) -> {
@@ -903,7 +903,7 @@ func resolveTypePath(
       }
     }
     if gctxIsTypeParam(ctx, name) and args.count == 0 {
-      return TyParam(name = name, owner = "")
+      return TyParam(name = name, owner = gctxOwnerOf(ctx, name))
     }
     if name == "Task" and args.count == 1 and taskNameIsBuiltin(tbl) {
       return taskType(args[0])

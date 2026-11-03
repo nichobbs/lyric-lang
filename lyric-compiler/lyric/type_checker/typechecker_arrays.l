@@ -1136,7 +1136,7 @@ func typeHoldsArrayOr(tbl: in SymbolTable, t: in Type, seen: in List[Int], float
           }
           case DKUnion(_, ud) -> {
             val saved = enterDeclaringScopeIfForeign(tbl, sym)
-            val ctx = declGenericContext(ud.generics)
+            val ctx = declGenericContext(ud.generics, ud.name)
             val scratch: List[Diagnostic] = newList()
             var found = false
             for c in ud.cases {
