@@ -983,55 +983,15 @@ func resolveTypePath(
     case Some(sym) -> if symbolIsType(sym) { return symbolToType(tbl, ctx, diag, sym, args, span) }
     case None -> ()
   }
+  match symTableQualifiedType(tbl, path.segments) {
+    case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
+    case None -> ()
+  }
   val defaultPick = symTableTryFindOne(tbl, last)
-  val defaultPickMatchesOwner = match defaultPick {
-    case Some(pref) -> symbolIsType(pref) and pref.originPackage == ownerPkg
-    case None -> false
-  }
-  // Newest-first, like `symTableTryFindInPackage` and `symTableTryFindOne`:
-  // when the owner's type is registered more than once (a package reached
-  // both as a restored dependency and from source), the qualified
-  // constructor `Pkg.Type(...)` and the package's own signatures resolve to
-  // the newest entry, so the qualified type `Pkg.Type` must too, or
-  // `val c: B.Choice = B.Choice(...)` is a mismatch between two types named
-  // `Choice`.
-  if not defaultPickMatchesOwner {
-    val qualifiedCands = symTableTryFindAllNamed(tbl, last)
-    var qi = qualifiedCands.count - 1
-    while qi >= 0 {
-      if qualifiedCands[qi].originPackage == ownerPkg and symbolIsType(qualifiedCands[qi]) {
-        return symbolToType(tbl, ctx, diag, qualifiedCands[qi], args, span)
-      }
-      qi = qi - 1
-    }
-    // D311: `Owner.Name` also names a type of a package `Owner` re-exports
-    // (`Std.Collections.List`, declared in `Std.CollectionsHost`), whether or
-    // not the file sees `Name` bare (an aliased import does not).
-    val reexported = symTableReexportClosure(tbl, ownerPkg)
-    if reexported.count > 0 {
-      var ri = qualifiedCands.count - 1
-      while ri >= 0 {
-        if symbolIsType(qualifiedCands[ri]) and reexported.contains(qualifiedCands[ri].originPackage) {
-          return symbolToType(tbl, ctx, diag, qualifiedCands[ri], args, span)
-        }
-        ri = ri - 1
-      }
-    }
-  }
   match defaultPick {
     case Some(sym) -> {
       if symbolIsType(sym) and qualifiedTypeOwnerAccepts(tbl, ownerPkg, sym) {
         return symbolToType(tbl, ctx, diag, sym, args, span)
-      }
-      // Same type-symbol preference as the single-segment arm: a non-type
-      // symbol shadowing a same-named type must not hide it in type position.
-      val all = symTableTryFindAllNamed(tbl, last)
-      var ti = 0
-      while ti < all.count {
-        if symbolIsType(all[ti]) and qualifiedTypeOwnerAccepts(tbl, ownerPkg, all[ti]) {
-          return symbolToType(tbl, ctx, diag, all[ti], args, span)
-        }
-        ti = ti + 1
       }
     }
     case None -> {
@@ -1067,16 +1027,6 @@ func qualifiedTypeOwnerAccepts(tbl: in SymbolTable, ownerPkg: in String, sym: in
   }
   if tbl.contractSourceFile.count > 0 and sym.originPackage == symTableScopePkg(tbl) {
     return true
-  }
-  match mapGet(tbl.packageImports, ownerPkg) {
-    case Some(reexported) -> {
-      for r in reexported {
-        if r == sym.originPackage {
-          return true
-        }
-      }
-    }
-    case None -> ()
   }
   if symTablePackageHasAnySymbol(tbl, ownerPkg) {
     return false
