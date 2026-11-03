@@ -178,3 +178,11 @@ test "the outcome carries the bytes and their hash" {
   }
   assertTrue(builtBytesOf(outs) != None, "the bytes are reachable")
 }
+
+test "Self in a type's methods is the type applied to its own parameters" {
+  val text = dumpOf(
+    "package P\n\npub record Counter {\n  n: Int\n\n  func bump(self: in Self): Self {\n    self\n  }\n}\n\npub record Acc[T] {\n  value: T\n\n  func withValue(self: in Self, v: in T): Self {\n    self\n  }\n}\n"
+  )
+  assertTrue(text.contains("pub method P::Counter::bump(Self)(self: in P::Counter): P::Counter\n"), text)
+  assertTrue(text.contains("(self: in P::Acc[param P::Acc#0], v: in param P::Acc#0): P::Acc[param P::Acc#0]\n"), text)
+}

@@ -68,13 +68,7 @@ func withFrame(frames: in List[ConvFrame], f: in ConvFrame): List[ConvFrame] {
 }
 
 // `te` as the checker resolves it, with the generics of `frames` in scope.
-func resolveTy(
-  bc: in BuildCtx,
-  frames: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
-  te: in TypeExpr,
-  what: in String,
-): Ty {
+func resolveTy(bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], te: in TypeExpr, what: in String): Ty {
   val ctx = newGenericContext()
   for f in frames {
     gctxPush(ctx, f.names)
@@ -84,7 +78,7 @@ func resolveTy(
   if diag.count > 0 {
     buildFail(bc, what + ": " + diag[0].message)
   }
-  tyOf(bc, frames, selfOwner, t, what)
+  tyOf(bc, frames, selfTy, t, what)
 }
 
 func constraintTypeArgs(bc: in BuildCtx, frames: in List[ConvFrame], cr: in ConstraintRef, what: in String): List[Ty] {
@@ -163,17 +157,13 @@ func ifVerifOf(v: in VerificationLevel): IfVerif {
 }
 
 func paramsOf(
-  bc: in BuildCtx,
-  frames: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
-  ps: in List[Param],
-  what: in String,
+  bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], ps: in List[Param], what: in String
 ): List[IfParam] {
   val res: List[IfParam] = newList()
   for p in ps {
     val mode = match p.mode { case PMIn -> 0; case PMOut -> 1; case PMInout -> 2 }
     val hasDefault = match p.dflt { case Some(_) -> true; case None -> false }
-    res.add(mkParam(p.name, mode, resolveTy(bc, frames, selfOwner, p.ty, what), hasDefault))
+    res.add(mkParam(p.name, mode, resolveTy(bc, frames, selfTy, p.ty, what), hasDefault))
   }
   res
 }
@@ -184,7 +174,7 @@ func paramsOf(
 func callableDetail(
   bc: in BuildCtx,
   outer: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
+  selfTy: in Option[Ty],
   path: in DefPath,
   gps: in Option[GenericParams],
   wc: in Option[WhereClause],
@@ -196,10 +186,10 @@ func callableDetail(
 ): IfDetail {
   val what = defPathKey(path)
   val frames = withFrame(outer, frameOf(bc, path, gps))
-  val result = match ret { case Some(te) -> resolveTy(bc, frames, selfOwner, te, what); case None -> tyUnitValue() }
+  val result = match ret { case Some(te) -> resolveTy(bc, frames, selfTy, te, what); case None -> tyUnitValue() }
   IfDFunc(
     typeParams = typeParamsOf(bc, frames, gps, wc, what),
-    params = paramsOf(bc, frames, selfOwner, ps, what),
+    params = paramsOf(bc, frames, selfTy, ps, what),
     ret = result,
     isAsync = isAsync,
     isAxiom = isAxiom,
@@ -210,7 +200,7 @@ func callableDetail(
 func funcDetail(
   bc: in BuildCtx,
   outer: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
+  selfTy: in Option[Ty],
   path: in DefPath,
   fn: in FunctionDecl,
   fileLevel: in VerificationLevel,
@@ -219,7 +209,7 @@ func funcDetail(
   callableDetail(
     bc,
     outer,
-    selfOwner,
+    selfTy,
     path,
     fn.generics,
     fn.whereClause,
@@ -232,16 +222,12 @@ func funcDetail(
 }
 
 func sigDetail(
-  bc: in BuildCtx,
-  outer: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
-  path: in DefPath,
-  sig: in FunctionSig,
+  bc: in BuildCtx, outer: in List[ConvFrame], selfTy: in Option[Ty], path: in DefPath, sig: in FunctionSig
 ): IfDetail {
   callableDetail(
     bc,
     outer,
-    selfOwner,
+    selfTy,
     path,
     sig.generics,
     sig.whereClause,
@@ -261,14 +247,14 @@ func addMethod(
   bc: in BuildCtx,
   acc: in List[IfDecl],
   outer: in List[ConvFrame],
-  selfOwner: in Option[SymbolId],
+  selfTy: in Option[Ty],
   owner: in DefPath,
   fn: in FunctionDecl,
   vis: in IfVis,
   fileLevel: in VerificationLevel,
 ) {
   val path = methodDefPath(owner, fn.name, fn.params)
-  emit(acc, path, IfKMethod, vis, funcDetail(bc, outer, selfOwner, path, fn, fileLevel))
+  emit(acc, path, IfKMethod, vis, funcDetail(bc, outer, selfTy, path, fn, fileLevel))
 }
 
 // ── Fields and cases ─────────────────────────────────────────────────────────
@@ -387,7 +373,16 @@ func addRecordLike(
   )
   for m in decl.members {
     match m {
-      case RMFunc(fn) -> addMethod(bc, acc, frames, None, path, fn, vis, fileLevel)
+      case RMFunc(fn) -> addMethod(
+        bc,
+        acc,
+        frames,
+        Some(value = selfOfType(frame.owner, frame.names.count)),
+        path,
+        fn,
+        vis,
+        fileLevel
+      )
       case _ -> ()
     }
   }
@@ -447,7 +442,8 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
     }
     case IProtected(decl) -> {
       val path = typeDefPath(pkg, decl.name)
-      val frames = withFrame(newList(), frameOf(bc, path, decl.generics))
+      val pframe = frameOf(bc, path, decl.generics)
+      val frames = withFrame(newList(), pframe)
       emit(
         acc,
         path,
@@ -457,7 +453,16 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
       )
       for m in decl.members {
         match m {
-          case PMFunc(fn) -> addMethod(bc, acc, frames, None, path, fn, vis, fileLevel)
+          case PMFunc(fn) -> addMethod(
+            bc,
+            acc,
+            frames,
+            Some(value = selfOfType(pframe.owner, pframe.names.count)),
+            path,
+            fn,
+            vis,
+            fileLevel
+          )
           case PMEntry(e) -> {
             val epath = methodDefPath(path, e.name, e.params)
             emit(
@@ -512,7 +517,7 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
         vis,
         IfDType(typeParams = typeParamsOf(bc, frames, decl.generics, decl.whereClause, defPathKey(path)))
       )
-      val selfSome = Some(value = frame.owner)
+      val selfSome = Some(value = selfOfInterface(frame.owner))
       for m in decl.members {
         match m {
           case IMSig(sig) -> {
@@ -530,7 +535,11 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
         val owner = typeDefPath(pkg, decl.name.substring(0, dot))
         val member = decl.name.substring(dot + 1)
         val path = methodDefPath(owner, member, decl.params)
-        emit(acc, path, IfKMethod, vis, funcDetail(bc, newList(), None, path, decl, fileLevel))
+        val ownerSelf = match mapGet(bc.owners, decl.name.substring(0, dot)) {
+          case Some(n) -> Some(value = selfOfType(internDefPath(bc.tbl.interner, owner), n))
+          case None -> None
+        }
+        emit(acc, path, IfKMethod, vis, funcDetail(bc, newList(), ownerSelf, path, decl, fileLevel))
       } else {
         val path = funcDefPath(pkg, decl.name, decl.params)
         emit(acc, path, IfKFunc, vis, funcDetail(bc, newList(), None, path, decl, fileLevel))
@@ -599,6 +608,19 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
   }
 }
 
+// The generic parameter count of a type the package declares.
+func noteOwner(bc: in BuildCtx, it: in Item) {
+  match it.kind {
+    case IRecord(d) -> bc.owners.add(d.name, genericNamesOf(d.generics).count)
+    case IExposedRec(d) -> bc.owners.add(d.name, genericNamesOf(d.generics).count)
+    case IUnion(d) -> bc.owners.add(d.name, genericNamesOf(d.generics).count)
+    case IOpaque(d) -> bc.owners.add(d.name, genericNamesOf(d.generics).count)
+    case IProtected(d) -> bc.owners.add(d.name, genericNamesOf(d.generics).count)
+    case IEnum(d) -> bc.owners.add(d.name, 0)
+    case _ -> ()
+  }
+}
+
 func indexOfDot(s: in String): Int {
   var i = 0
   while i < s.length {
@@ -624,6 +646,9 @@ pub func buildIface(
   val levelDiags: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, levelDiags)
   val decls: List[IfDecl] = newList()
+  for it in file.items {
+    noteOwner(bc, it)
+  }
   for it in file.items {
     addItem(bc, decls, it, fileLevel)
   }
