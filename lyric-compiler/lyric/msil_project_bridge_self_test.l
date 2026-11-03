@@ -375,7 +375,13 @@ test "a bare call binds to the checker's callee, not a same-named private functi
 // whole import declares a package-private function of the same name.
 test "an aliased package-qualified call binds to the checker's callee (D336)" {
   val packages: List[ProjectPackagePayload] = newList()
-  packages.add(mkPkg("XQual.Priv", "package XQual.Priv\n" + "\n" + "func pick(x: in Int): Int { x + 100 }\n" + "\n" + "pub func other(x: in Int): Int { pick(x) }\n"))
+  packages.add(
+    mkPkg(
+      "XQual.Priv",
+      "package XQual.Priv\n" + "\n" + "func pick(x: in Int): Int { x + 100 }\n" + "\n" +
+        "pub func other(x: in Int): Int { pick(x) }\n"
+    )
+  )
   packages.add(mkPkg("XQual.Pub", "package XQual.Pub\n" + "\n" + "pub func pick(x: in Int): Int { x + 1 }\n"))
   packages.add(
     mkPkg(
@@ -388,7 +394,11 @@ test "an aliased package-qualified call binds to the checker's callee (D336)" {
   )
   val result = compileAndRun("xqual", packages, "XQual")
   assertEqualInt(result.exitCode, 0, "aliased_site_callee: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "2\n101", "aliased_site_callee: P.pick is the pub one, other reaches its own private pick")
+  assertEqual(
+    Str.trim(result.stdout),
+    "2\n101",
+    "aliased_site_callee: P.pick is the pub one, other reaches its own private pick"
+  )
 }
 
 // Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
