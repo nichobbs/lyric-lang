@@ -14399,8 +14399,8 @@ test "a name-only dependency reads a whole import as whole (D322)" {
 
 // A restored dependency names a type of another package fully qualified and
 // carries no import for it, so its signatures cannot resolve the owner in a
-// scope; the owner-matched lookup serves them (D331, aot-smoke).
-test "a dependency's fully qualified type with no import of its owner resolves (D331)" {
+// scope; the owner-matched lookup serves them (D333, aot-smoke).
+test "a dependency's fully qualified type with no import of its owner resolves (D333)" {
   val lib = parse("package Lib\npub record Cert {\n  name: String\n}\n")
   val mid = parse("package Mid\npub func use(c: in Lib.Cert): Unit {}\n")
   val packages: List[ImportedPackage] = newList()

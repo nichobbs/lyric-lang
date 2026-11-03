@@ -1,4 +1,4 @@
-# D331 - A qualified type path in the checked package resolves through `Lyric.Resolve` (docs/70 phase 2c, #8612)
+# D333 - A qualified type path in the checked package resolves through `Lyric.Resolve` (docs/70 phase 2c, #8612)
 
 **Status:** shipped. Follows D330; the last lookup of 2c that D315 and D322 left
 on the checker's owner scan.

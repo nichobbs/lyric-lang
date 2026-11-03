@@ -755,9 +755,9 @@ builder (I0002) rather than on the current checker.
   dependency's selective and aliased imports in their form. Step 10 (D330)
   moves what an import binds (heads, renames) into `Lyric.Resolve`; the
   `AliasRewriter` tree walk becomes its projection and stays until 2d, which
-  is when backends stop reading rewritten names. Step 11 (D331) resolves
+  is when backends stop reading rewritten names. Step 11 (D333) resolves
   qualified type paths through `resolvePath` and deletes the checker's owner
-  scans. `TypeAliasResolve` waits for 2d (D331).
+  scans. `TypeAliasResolve` waits for 2d (D333).
 - **2d** Backends receive the resolved callee `SymbolId` per call through
   the existing `MiddleEndOptions` channel, and their name lookups
   (`findBundleFqnByName` and kin) are deleted.
