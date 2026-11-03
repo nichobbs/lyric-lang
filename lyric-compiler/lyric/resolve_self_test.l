@@ -590,3 +590,8 @@ test "import renames and importsPackage" {
   assertTrue(importsPackage(imports, "Std.Collections"), "imports Std.Collections")
   assertFalse(importsPackage(imports, "System.Math"), "extern is not a package")
 }
+
+test "import heads: two bare imports sharing a tail resolve first-wins (#3250)" {
+  val imports = parse("package P\nimport A.Json\nimport B.Json\n").file.imports
+  assertEqual(headText(imports), "Json=A.Json;A.Json=A.Json;B.Json=B.Json;", "first bare import owns the tail")
+}

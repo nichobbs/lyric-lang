@@ -1529,6 +1529,31 @@ pub func symTableDepPath(tbl: in SymbolTable, segs: in List[String], nameUse: in
   }
 }
 
+// A qualified type path (`Owner.Name`, `Alias.Name`) written in the checked
+// package, resolved in the scope of the file that contains it (the files of the
+// package nearest first, every file for a synthesised item): the owner is an
+// alias, the full path of a package the file imports, or its own package, and
+// `Name` is what that package declares or re-exports (docs/70 §4.3, D311).
+// `None` outside the checked package's scope, or when nothing there matches.
+pub func symTableQualifiedType(tbl: in SymbolTable, segs: in List[String]): Option[Symbol] {
+  val order = match resolverFileOrder(tbl) { case Some(o) -> o; case None -> return None }
+  val ctx = tbl.resolveCtx[0]
+  val name = segs[segs.count - 1]
+  for fid in order {
+    val pr = resolvePath(ctx.tbl, scopeOfFile(ctx, fid), segs, UseType)
+    if pr.consumed == segs.count {
+      match pr.res {
+        case RSymbol(id) -> match symbolOfDefIdNamed(tbl, id, name) {
+          case Some(sym) -> if symbolIsType(sym) { return Some(value = sym) }
+          case None -> ()
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
+}
+
 func resolverFileFor(tbl: in SymbolTable): Option[Int] {
   match resolverFileOrder(tbl) {
     case Some(order) -> Some(value = order[0])
