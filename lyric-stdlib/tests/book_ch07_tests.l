@@ -155,7 +155,7 @@ func testUnwrapResult(): Unit {
 // ---------------------------------------------------------------------------
 
 func testBugVsError(): Unit {
-  assertPanics("unwrapResult on Err panics", { -> unwrapResult(Err(error = "trigger bug")) })
+  assertPanics("unwrapResult on Err panics", { -> unwrapResult[Int, String](Err(error = "trigger bug")) })
 }
 
 func main(): Unit {

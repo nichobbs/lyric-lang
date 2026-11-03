@@ -8395,7 +8395,11 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         if hasOpaqueErasureUnsafeGenericParam(baseDecl, unpinnedNow, argOpaque) {
                           unsafeImportedFallback = true
                         } else {
-                          noteObjectDefaultedTypeArgs(state, env, fname, unpinnedNow, fn.span)
+                          // An `@externTarget` generic is a host boundary whose type
+                          // arguments are erased, never a specialisation to get wrong.
+                          if not annsHaveExternTargetMono(baseDecl.annotations) {
+                            noteObjectDefaultedTypeArgs(state, env, fname, unpinnedNow, fn.span)
+                          }
                           var du = 0
                           while du < typeParams.count {
                             if not subst.containsKey(typeParams[du]) {
