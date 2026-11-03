@@ -1493,6 +1493,13 @@ func dependencyLookup(tbl: in SymbolTable, name: in String): Option[Option[Symbo
       match found {
         case Some(_) -> Some(value = found)
         case None -> {
+          if name == "FieldError" {
+            val pk: List[String] = newList()
+            for k in mapKeys(ctx.tbl.packages) {
+              pk.add(k)
+            }
+            println("DEPDBG " + symTableScopePkg(tbl) + " whole=" + joinList(",", mapKeys(fsc.whole)) + " names=" + joinList(",", mapKeys(fsc.names)) + " pkgs=" + joinList(",", pk) + " decls=" + toString(namedDeclCount(ctx.tbl, name)))
+          }
           val bare = packagelessSymbols(tbl, name)
           if bare.count > 0 {
             Some(value = Some(value = bare[bare.count - 1]))
@@ -2253,4 +2260,11 @@ pub func symTableWholeImportTier(tbl: in SymbolTable, pkg: in String): Int {
     }
   }
   tier
+}
+
+func namedDeclCount(tbl: in DeclTable, name: in String): Int {
+  match mapGet(tbl.byName, name) {
+    case Some(ixs) -> ixs.count
+    case None -> 0
+  }
 }
