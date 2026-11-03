@@ -1,4 +1,4 @@
-# D334 - A type argument nothing fixes is W0034, then error T0224 (docs/70 phase 3a, #8613)
+# D335 - A type argument nothing fixes is W0034, then error T0224 (docs/70 phase 3a, #8613)
 
 **Status:** step one of two (the warning and the source migration). Step two
 turns W0034 into the error T0224 and deletes the `Object` default; it lands

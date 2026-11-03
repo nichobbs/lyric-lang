@@ -786,7 +786,7 @@ bare-name resolution) read each file's own or receive resolved symbols
   per-node tables and the TIR builder (§6.3); type rules of §5 (`TyParam`,
   `TyInfer`, T0224, real builtin signatures, the §5.4 rules).
 
-  Status: the `TyParam(name, owner)` / `TyInfer(id)` split is in the checker's `Type` (D329); `TyParam` is rigid in `typeEquiv` and a call's arguments are checked against the signature instantiated from the call (D331; `TyInfer` and `TyError` are still wildcards, `owner` still empty), W0034 now warns where Mono defaults an unpinned type argument to `Object` (D334, the first step of T0224; the default is deleted when the warning becomes the error), so the T0224 error, `TyError`-with-diagnostic, builtin-signature and I0001 steps are open.
+  Status: the `TyParam(name, owner)` / `TyInfer(id)` split is in the checker's `Type` (D329); `TyParam` is rigid in `typeEquiv` and a call's arguments are checked against the signature instantiated from the call (D331; `TyInfer` and `TyError` are still wildcards, `owner` still empty), W0034 now warns where Mono defaults an unpinned type argument to `Object` (D335, the first step of T0224; the default is deleted when the warning becomes the error), so the T0224 error, `TyError`-with-diagnostic, builtin-signature and I0001 steps are open.
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 - **3c** TIR passes: contract elaboration (declaration step only; caller
