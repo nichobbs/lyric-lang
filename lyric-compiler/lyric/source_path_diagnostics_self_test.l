@@ -874,15 +874,14 @@ test "multi-file project package (native): a parse error in the second file name
 // #6824 item 2: codegen-phase (F0xxx) diagnostics on a multi-file MSIL
 // project package resolve through the SAME file table the
 // parse/typecheck/modecheck/elaborate/weave gates already use, instead of
-// falling back to the bare package name. `Msil.Bridge`'s F0025 (try-catch
-// expression with a Unit-yielding, non-diverging catch arm beside a
-// value-yielding try body — `msil_codegen_diag_self_test.l`'s own single-file
-// repro) never routes through `Lyric.Pipeline.gate` (codegen diagnostics
-// accumulate on `CodegenCtx.diagnostics` directly), so #6282/#6824's earlier
-// items never touched it. `wrap[T]`'s bad try/catch and its `main()` caller
-// both live in the SECOND file so the file table (not just the label) is
-// exercised.
-test "multi-file project package (dotnet): a codegen-phase error (F0025) in the second file names that file and its real line (#6824)" {
+// falling back to the bare package name. `Msil.Bridge`'s F0021 (an `impl` of
+// an extern interface that omits a required method,
+// `msil_codegen_diag_self_test.l`'s own single-file repro) never routes
+// through `Lyric.Pipeline.gate` (codegen diagnostics accumulate on
+// `CodegenCtx.diagnostics` directly), so #6282/#6824's earlier items never
+// touched it. The `impl` and its `main()` caller both live in the SECOND file
+// so the file table (not just the label) is exercised.
+test "multi-file project package (dotnet): a codegen-phase error (F0021) in the second file names that file and its real line (#6824)" {
   val dir = freshTempDir("mf-codegen")
   defer {
     cleanup(dir)
@@ -896,20 +895,18 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
     "func helperB(): Int {\n" +
     "  2\n" +
     "}\n"
-  // `wrap[T]`'s try body yields `T` (bound to `Int` at the `wrap(1)` call
-  // site below via `Lyric.Mono`) while its catch arm yields `Unit` — the
-  // F0025 shape from `msil_codegen_diag_self_test.l`. No blank line before
-  // `func wrap`, so the `catch` keyword lands on line 6, column 5, matching
-  // that file's own single-file fixture exactly.
-  val bSrc = "package CodegenMf\n" + "import Std.Core\n" + "func wrap[T](v: in T): T {\n" + "  val r = try {\n" +
-    "    v\n" +
-    "  } catch Bug as _ {\n" +
-    "    println(0)\n" +
-    "  }\n" +
-    "  r\n" +
+  // An `impl` of an extern interface that omits a required method: the
+  // checker accepts it and the MSIL backend rejects it as F0021 at the
+  // `impl` keyword, line 7, column 1 (the shape `msil_codegen_diag_self_test.l`
+  // uses for F0021).
+  val bSrc = "package CodegenMf\n" + "import Std.Core\n" + "extern type IDisposableMf = \"System.IDisposable\"\n" +
+    "record RMf {\n" +
+    "  tag: Int\n" +
+    "}\n" +
+    "impl IDisposableMf for RMf {\n" +
     "}\n" +
     "func main(): Unit {\n" +
-    "  println(toString(wrap(1)))\n" +
+    "  println(\"unreachable\")\n" +
     "}\n"
   val aPath = Path.join(srcDir, "a.l")
   val bPath = Path.join(srcDir, "b.l")
@@ -944,26 +941,26 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
   args.add("-o")
   args.add(outPath)
   val result = runLyric(args)
-  assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
+  assertTrue(result.exitCode != 0, "an extern impl missing a required method must fail the build")
   assertTrue(
-    Str.contains(result.stderr, "F0025"),
-    "expected an F0025 diagnostic (codegen phase, not parse/typecheck/modecheck/weave) in stderr, got:\n" +
+    Str.contains(result.stderr, "F0021"),
+    "expected an F0021 diagnostic (codegen phase, not parse/typecheck/modecheck/weave) in stderr, got:\n" +
       result.stderr
   )
   assertTrue(
-    Str.contains(result.stderr, bPath + ": error[F0025]"),
-    "expected the F0025 diagnostic to be labelled with b.l's own real path '" + bPath +
+    Str.contains(result.stderr, bPath + ": error[F0021]"),
+    "expected the F0021 diagnostic to be labelled with b.l's own real path '" + bPath +
       "' (not the bare package name 'CodegenMf') for a CODEGEN-phase diagnostic on a multi-file MSIL project package (#6824), got:\n" +
       result.stderr
   )
   assertTrue(
-    Str.contains(result.stderr, "] 6:"),
-    "expected the diagnostic to name b.l's own line 6 (the 'catch' keyword) — not a merged-blob-relative line number, got:\n" +
+    Str.contains(result.stderr, "] 7:"),
+    "expected the diagnostic to name b.l's own line 7 (the 'impl' keyword) — not a merged-blob-relative line number, got:\n" +
       result.stderr
   )
 }
 
-// #7034: the multi-file F0025 case above only exercises a package whose
+// #7034: the multi-file F0021 case above only exercises a package whose
 // file table names every file, which never hits
 // `DiagUtil.diagFilePath`'s unknown-file fallback branch — the one
 // that uses whatever label string was passed in verbatim. A single-file
@@ -974,9 +971,9 @@ test "multi-file project package (dotnet): a codegen-phase error (F0025) in the 
 // codegen-phase call site was passing the bare `perPkgNames[ci]` package
 // name there instead of `parsedPkgs[ci].label` (the real-path-or-name field
 // the middle-end gate a few lines above already uses for the same index),
-// so a single-file package's F0021–F0025/F0034 diagnostics fell back to the
+// so a single-file package's F0021–F0021/F0034 diagnostics fell back to the
 // bare package name even though the real path was already known.
-test "single-file project package (one entry in [project.packages]): a codegen-phase error (F0025) still names the real source path (#7034)" {
+test "single-file project package (one entry in [project.packages]): a codegen-phase error (F0021) still names the real source path (#7034)" {
   val dir = freshTempDir("mf-codegen-single")
   defer {
     cleanup(dir)
@@ -986,21 +983,18 @@ test "single-file project package (one entry in [project.packages]): a codegen-p
     case Ok(_) -> ()
     case Err(e) -> panic("cannot create src dir: " + IOError.message(e))
   }
-  // Same F0025 shape as the multi-file case above (`wrap[T]`'s try body
-  // yields `T` while its catch arm yields `Unit`), but as a single file so
-  // the package's label is its one file's path and the fallback label path is
-  // actually exercised. No blank line before `func wrap`, so `catch` lands
-  // on line 6, column 5, matching `msil_codegen_diag_self_test.l`'s own
-  // single-file fixture.
-  val aSrc = "package CodegenSingle\n" + "import Std.Core\n" + "func wrap[T](v: in T): T {\n" + "  val r = try {\n" +
-    "    v\n" +
-    "  } catch Bug as _ {\n" +
-    "    println(0)\n" +
-    "  }\n" +
-    "  r\n" +
+  // Same F0021 shape as the multi-file case above, as a single file so the
+  // package's label is its one file's path and the fallback label path is
+  // actually exercised.
+  val aSrc = "package CodegenSingle\n" + "import Std.Core\n" +
+    "extern type IDisposableSingle = \"System.IDisposable\"\n" +
+    "record RSingle {\n" +
+    "  tag: Int\n" +
+    "}\n" +
+    "impl IDisposableSingle for RSingle {\n" +
     "}\n" +
     "func main(): Unit {\n" +
-    "  println(toString(wrap(1)))\n" +
+    "  println(\"unreachable\")\n" +
     "}\n"
   val aPath = Path.join(srcDir, "a.l")
   match File.writeText(aPath, aSrc) {
@@ -1030,10 +1024,10 @@ test "single-file project package (one entry in [project.packages]): a codegen-p
   args.add("-o")
   args.add(outPath)
   val result = runLyric(args)
-  assertTrue(result.exitCode != 0, "a try-catch expression with mismatched branch types must fail the build")
+  assertTrue(result.exitCode != 0, "an extern impl missing a required method must fail the build")
   assertTrue(
-    Str.contains(result.stderr, aPath + ": error[F0025]"),
-    "expected the F0025 diagnostic to be labelled with a.l's own real path '" + aPath +
+    Str.contains(result.stderr, aPath + ": error[F0021]"),
+    "expected the F0021 diagnostic to be labelled with a.l's own real path '" + aPath +
       "' (not the bare package name 'CodegenSingle') for a CODEGEN-phase diagnostic on a single-file [project.packages] entry (#7034), got:\n" +
       result.stderr
   )

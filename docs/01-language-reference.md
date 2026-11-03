@@ -586,6 +586,8 @@ record Box[T] {
 
 (The legacy `generic[T] func identity(x: in T): T = x` form parses for back-compat. Prefer the bracket form in new code; mixed-mode `: in T` is also still legal but redundant.)
 
+Inside a generic declaration a type parameter is a rigid type: `T` is equal only to itself, never to `Int`, `String` or another declaration's parameter, so `val n: Int = x` with `x: T` is a type error (**T0060**), and so is passing `x` to a parameter of a concrete type (**T0043**). At a call the callee's own parameters are replaced by what the arguments bind them to before the arguments are checked; a parameter no argument fixes stays open until the expected type or a later argument decides it. To pass a generic value across the host boundary (a `List[JObject]` or an extern parameter), hand it to an extern call, which accepts any value (D329, docs/70 section 5.1).
+
 Constraints expressed via `where`:
 
 ```
@@ -2160,14 +2162,7 @@ program is rejected at compile time (**T0067**). Diverging handlers (a body
 of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
 statement-position `try` blocks whose value is discarded (`Unit`).
 
-On `--target dotnet`, one shape of this mismatch survives past T0067 to the
-MSIL backend: a catch arm that yields `Unit` while the try body (or an
-earlier, non-diverging catch arm) already established a value-producing
-result type. The backend cannot route an absent value through the shared
-result slot, so it is rejected at codegen time as **F0025** rather than
-silently leaving the slot at its zero-initialised default (a type-checker
-gap, #2042). The JVM backend rejects the same source shape earlier, at
-check time, with **J004**.
+A shape that hid behind a type parameter (`func wrap[T](v: in T): T` whose try body yields `v` and whose catch arm yields `Unit`) reached the backends until type parameters became rigid (D331); it is now **T0067** at the generic definition like any other. The MSIL backend keeps **F0025** and the JVM backend **J004** as backstops for a mismatch the checker cannot see: a catch arm that yields `Unit` beside a value-producing try body cannot be routed through the shared result slot, so it is rejected at code generation rather than silently leaving the slot at its zero-initialised default.
 
 ### 8.3 Result and panics
 

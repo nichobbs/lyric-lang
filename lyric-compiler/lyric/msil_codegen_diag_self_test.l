@@ -337,20 +337,15 @@ test "F0024: impl target FQN typo (not in reference metadata) fails cleanly" {
 }
 
 // ─── F0025: try-catch-as-expression Unit/value mismatch ────────────────────
-// A NON-generic function with this shape is now rejected earlier, at
-// type-check time, by T0067 (#2355/#3262) — so it never reaches
-// `lowerTryCatchExprMsil` at all.  To exercise the codegen-level F0025
-// path specifically (mirroring `jvm_trycatch_bridge_self_test.l`'s
-// identical reasoning for the JVM backend's `error[J004]` twin), the
-// mismatch must hide behind a **generic** type parameter: the type
-// checker treats the still-unbound `T` leniently (it unifies with
-// anything, so no T0067 fires at the generic definition), and it is
-// only `Lyric.Mono`'s monomorphized copy — specialised for the `Int`
-// argument at the `wrap(1)` call site — where the try body's inferred
-// type (`Int`) and the catch arm's `Unit` genuinely collide.  That
-// collision is exactly the type-checker gap #2042 shape
-// `lowerTryCatchExprMsil` used to `panic("F0025: …")` on.
-test "F0025: try-catch expression with a Unit-yielding, non-diverging catch arm fails cleanly" {
+// A function with this shape is rejected at type-check time by T0067
+// (#2355/#3262), so it never reaches `lowerTryCatchExprMsil`.  That holds for
+// a generic function too since type parameters became rigid (D331): `T` is no
+// longer a wildcard that hides the mismatch until `Lyric.Mono` specialises
+// `wrap` for `Int`, so the Unit catch arm beside the `T` try body is T0067 at
+// the generic definition.  The codegen-level F0025 check
+// (`lowerTryCatchExprMsil`, the JVM `error[J004]` twin) stays as a backstop
+// for a shape the checker cannot yet see; no source reaches it today.
+test "T0067: a try-catch expression with a Unit catch arm beside a type-parameter try body is rejected at the definition (was F0025 after specialisation)" {
   val src = "package F0025App\n" + "\n" + "func wrap[T](v: in T): T {\n" + "  val r = try {\n" + "    v\n" +
     "  } catch Bug as _ {\n" +
     "    println(0)\n" +
@@ -361,17 +356,13 @@ test "F0025: try-catch expression with a Unit-yielding, non-diverging catch arm 
     "func main(): Unit {\n" +
     "  println(toString(wrap(1)))\n" +
     "}\n"
-  // F0025 uses `c.span` (the catch clause's own span, `parseCatchClause`'s
-  // `startTok` = the `catch` keyword) — line 6, column 5 (`  } catch …`:
-  // two-space indent, `}`, space, then `catch` starts at column 5).
-  // `Lyric.Mono` preserves the original clause span verbatim when it clones
-  // `wrap`'s body for the `Int`-specialised copy (`mono.l`'s `STry`
-  // substitution threads `span = cc.span` through unchanged), so the
-  // diagnostic still points at the generic source, not a synthetic location.
+  // The type checker reports T0067 at the catch clause and stops the build
+  // before code generation, so `compileDiag`, which returns the backend's own
+  // F-code diagnostics, comes back empty and the build is rejected.
   val diags: List[Diagnostic] = newList()
   val ok = compileDiag("F0025Bad", src, diags)
-  assertTrue(not ok, "try-catch expr with a Unit catch arm beside an Int try body must be rejected, not panic")
-  assertDiagAt(diags, "F0025", 6, 5, "F0025: try-catch expr with a Unit catch arm beside an Int try body")
+  assertTrue(not ok, "try-catch expr with a Unit catch arm beside a T try body must be rejected, not panic")
+  assertEqualInt(diags.count, 0, "the checker rejects it first (T0067), so no codegen-phase diagnostic is produced")
 }
 
 // Companion "good" case: the catch arm yields the same type as the try

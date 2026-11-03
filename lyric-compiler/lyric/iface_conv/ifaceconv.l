@@ -17,7 +17,7 @@ import Lyric.Iface
 import Lyric.TypeChecker
 
 /// The generic parameters of one declaration: `owner` is its symbol and `names`
-/// its type and value parameters in order, so `TyParam(name)` becomes
+/// its type and value parameters in order, so `TyParam(name, owner)` becomes
 /// `TParam(owner, index)`.  Frames nest innermost last.
 pub record ConvFrame {
   owner: SymbolId
