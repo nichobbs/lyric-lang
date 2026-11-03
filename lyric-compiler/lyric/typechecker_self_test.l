@@ -3633,6 +3633,17 @@ test "a buffer element must be Plain: T0173" {
   assertTrue(not hasDiagCode(parseCheck(genericSrc), "T0173"), "an unresolved parameter is checked where it is bound")
 }
 
+test "a slice element is never written in place: T0157 (docs/01 §2.7)" {
+  val plain = parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  var s = xs\n  s[0] = 1\n  s[0]\n}\n")
+  assertEqualInt(countDiagCode(plain, "T0157"), 1, "a var slice: " + diagCodesOf(plain))
+  val compound = parseCheck("package P\nfunc f(xs: inout slice[Int]) {\n  xs[0] += 1\n}\n")
+  assertEqualInt(countDiagCode(compound, "T0157"), 1, "an inout slice, compound: " + diagCodesOf(compound))
+  val rebind = parseCheck("package P\nfunc f(xs: inout slice[Int]) {\n  xs = xs.append(1)\n}\n")
+  assertTrue(not hasDiagCode(rebind, "T0157"), "rebinding a slice is not an element write: " + diagCodesOf(rebind))
+  val arr = parseCheck("package P\nfunc f(): Int {\n  var a: array[2, Int] = [1, 2]\n  a[0] = 5\n  a[0]\n}\n")
+  assertTrue(not hasDiagCode(arr, "T0157"), "an array var: " + diagCodesOf(arr))
+}
+
 test "a buffer element is written through a writable place: T0157" {
   val bad = "package P\nfunc f(b: in buffer[Int]): Unit {\n  b[0] = 1\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0157"), "an in parameter: " + diagCodesOf(parseCheck(bad)))

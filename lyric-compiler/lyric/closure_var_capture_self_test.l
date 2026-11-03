@@ -142,8 +142,8 @@ test "var without initializer: assigned inside closure, read after" {
 }
 
 // ── Slices and collections ──────────────────────────────────────────────────
-test "var slice[Int]: element write inside closure" {
-  var xs = [1, 2, 3]
+test "var array[3, Int]: element write inside closure" {
+  var xs: array[3, Int] = [1, 2, 3]
   run({ -> xs[0] = 9; xs[2] += 10 })
   assertEqualInt(xs[0], 9, "xs[0] after closure element write")
   assertEqualInt(xs[2], 13, "xs[2] after closure element +=")

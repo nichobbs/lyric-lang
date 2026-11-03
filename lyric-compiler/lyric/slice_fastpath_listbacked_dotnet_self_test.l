@@ -1,7 +1,7 @@
 //! slice_fastpath_listbacked_dotnet_self_test.l — the `IList` fallback
 //! behind MSIL's typed slice fast paths (#7259, #7342).
 //!
-//! Index reads, index writes, `for` iteration and slice copies on MSIL test
+//! Index reads, `for` iteration and slice copies on MSIL test
 //! whether a `slice[T]` is a genuine CLI `T[]` and otherwise fall back to
 //! `IList`. The self-hosted code generator only ever produces genuine arrays
 //! (see `slice_fastpath_self_test.l`), so this module obtains a real
@@ -47,22 +47,6 @@ test "index read falls back to IList" {
   assertEqual(xs[0], "a", "first")
   assertEqual(xs[2], "c", "last")
   assertEqualInt(xs.length, 3, "length")
-}
-
-test "index write falls back to IList" {
-  var xs = listBacked()
-  xs[1] = "z"
-  assertEqual(xs[1], "z", "written element")
-  assertEqual(xs[0], "a", "neighbour untouched")
-}
-
-test "compound assignment falls back to IList (#7343)" {
-  var xs = listBacked()
-  xs[1] += "!"
-  xs[2] += 7
-  assertEqual(xs[1], "b!", "String += String")
-  assertEqual(xs[2], "c7", "String += Int")
-  assertEqual(xs[0], "a", "neighbour untouched")
 }
 
 test "for iteration falls back to IList" {

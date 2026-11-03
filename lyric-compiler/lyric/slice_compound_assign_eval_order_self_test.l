@@ -24,6 +24,10 @@
 //! arm, which already evaluated the RHS after the receiver/index but that
 //! ordering has no read-then-combine step to invert.
 //!
+//! A slice is no longer written in place (docs/01 §2.7, T0157), so the cases
+//! below use `array[N, T]`, which the JVM also lowers to a primitive Java
+//! array through the same `JArray` arm.
+//!
 //! Run by the native `lyric test` on BOTH targets (like
 //! `inout_slice_self_test.l`):
 //!   lyric test --target dotnet lyric-compiler/lyric/slice_compound_assign_eval_order_self_test.l
@@ -46,13 +50,13 @@ import Std.Testing
 // Read-first (the pre-fix `JArray` bug): reads `xs[0]`'s PRE-mutation value
 // (`10`) before this call runs, so the eventual store combines the stale
 // `10` with `5` -> `15`, silently overwriting the `999` this function wrote.
-func mutateSameSlotAndReturn(xs: inout slice[Int]): Int {
+func mutateSameSlotAndReturn(xs: inout array[3, Int]): Int {
   xs[0] = 999
   5
 }
 
-test "slice[Int] compound-assign evaluates the RHS before the container read (#7005)" {
-  var xs: slice[Int] = [10, 20, 30]
+test "array[3, Int] compound-assign evaluates the RHS before the container read (#7005)" {
+  var xs: array[3, Int] = [10, 20, 30]
   xs[0] += mutateSameSlotAndReturn(xs)
   assertEqualInt(xs[0], 1004, "xs[0] must reflect the RHS's own same-slot write, not a stale pre-call read")
 }
@@ -67,13 +71,13 @@ test "slice[Int] compound-assign evaluates the RHS before the container read (#7
 // declared `String` element `indexedElemTypeOverride` resolves for the
 // plain-`AssEq` arm — a separate, pre-existing gap unrelated to this
 // eval-order fix, not attempted here.)
-func mutateSameSlotAndReturnLong(xs: inout slice[Long]): Long {
+func mutateSameSlotAndReturnLong(xs: inout array[3, Long]): Long {
   xs[0] = 999i64
   5i64
 }
 
-test "slice[Long] compound-assign evaluates the RHS before the container read (#7005)" {
-  var xs: slice[Long] = [10i64, 20i64, 30i64]
+test "array[3, Long] compound-assign evaluates the RHS before the container read (#7005)" {
+  var xs: array[3, Long] = [10i64, 20i64, 30i64]
   xs[0] += mutateSameSlotAndReturnLong(xs)
   assertEqualLong(xs[0], 1004i64, "xs[0] must reflect the RHS's own same-slot write, not a stale pre-call read")
 }

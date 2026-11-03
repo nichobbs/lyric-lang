@@ -4208,16 +4208,18 @@ test "an element read is select of an array's elements, a slice's is a value of 
     "func first(a: in array[3, Int]): Int\n  requires: a[0] > 0\n  ensures: result > 0\n{\n  a[0]\n}\n",
     "element-in-a-contract"
   )
-  // A slice's element is a value of its own at each read: a write through
-  // another binding of the slice is seen through this one.
+  // A slice's element is a value of its own at each read: its storage is
+  // shared by every binding of it and a kernel extern may fill it in place.
   assertRefuted(
     "func at(xs: in slice[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.length and xs[i] == 4\n  ensures: result == 4\n{\n  xs[i]\n}\n",
     "slice-element-not-a-value"
   )
+  // A kernel extern may fill a slice in place (`streamReadInto`), so two
+  // reads around a call need not agree.
   assertRefuted(
-    "func g(xs: in slice[Int]): Unit {\n  var s = xs\n  s[0] = 99\n}\nfunc f(xs: in slice[Int]): Bool\n  requires: xs.length > 0\n" +
+    "func g(xs: in slice[Int]): Unit {\n}\nfunc f(xs: in slice[Int]): Bool\n  requires: xs.length > 0\n" +
       "  ensures: result\n{\n  val before = xs[0]\n  g(xs)\n  before == xs[0]\n}\n",
-    "slice-written-through-an-alias"
+    "slice-read-around-a-call"
   )
   assertDischarged(
     "type Small = Int range 0 ..= 10\nfunc f(xs: in slice[Small]): Bool\n  requires: xs.length > 0\n  ensures: result\n{\n  xs[0] <= 10\n}\n",

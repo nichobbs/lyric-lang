@@ -261,8 +261,8 @@ func mapValue(c: in Bool): Int {
   resValue(m["k"])
 }
 
-func sliceElement(c: in Bool): Int {
-  val xs: slice[Option[Int]] = [Some(1), Some(2)]
+func arrayElement(c: in Bool): Int {
+  var xs: array[2, Option[Int]] = [Some(1), Some(2)]
   xs[1] = match c { case true -> None; case false -> Some(5) }
   optValue(xs[1])
 }
@@ -540,7 +540,7 @@ test "if and match values assigned to a field" {
 test "if and match values assigned to an element" {
   assertEqualInt(listElement(true) + listElement(false), 1005, "List element")
   assertEqualInt(mapValue(true) + mapValue(false), 307, "Map value")
-  assertEqualInt(sliceElement(true) + sliceElement(false), 1005, "slice element")
+  assertEqualInt(arrayElement(true) + arrayElement(false), 1005, "array element")
   assertEqualLong(compoundField(true) + compoundField(false), 23i64, "compound")
 }
 

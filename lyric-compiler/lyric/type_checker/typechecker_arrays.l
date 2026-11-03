@@ -603,6 +603,19 @@ pub func checkArrayElementWrite(
     case EIndex(recv, _) -> {
       val scratch: List[Diagnostic] = newList()
       val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+      // A slice has no in-place mutation (docs/01 §2.7): every binding of one
+      // shares its storage, so a write through one would be seen through all.
+      if isSliceType(rt) {
+        diag.add(
+          errorDiagnostic(
+            "T0157",
+            "cannot write an element of " + renderType(rt) +
+              ": a slice is never written in place; use an `array[N, T]` or a `buffer[T]`, or build a new slice",
+            target.span
+          )
+        )
+        return
+      }
       if isStorageType(rt) and not arrayPlaceWritable(sc, tbl, sigs, recv) {
         diag.add(
           errorDiagnostic(
