@@ -75,6 +75,7 @@ import Lyric.Weaver as Weaver
 import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.PackageMerge as PM
+import Lyric.Tir as Tir
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
 /// diagnostics (every target's own packages, and the native target's path
@@ -6428,4 +6429,10 @@ func endBlockInUnit(body: in Block): Block {
   val unitSpan = Span(startPos = body.span.endPos, endPos = body.span.endPos)
   stmts.add(Statement(kind = SExpr(expr = Expr(kind = ELiteral(lit = LUnit), span = unitSpan)), span = unitSpan))
   Block(statements = stmts, span = body.span)
+}
+
+/// An empty TIR package named `name`: the value the TIR builder (docs/70
+/// §6.3) fills and `Lyric.Tir.Verify` checks.
+pub func pipeNewTirPackage(name: in String): Tir.TPackage {
+  Tir.TPackage(name = name, symbols = newList(), funcs = newList())
 }
