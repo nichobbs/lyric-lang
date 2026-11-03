@@ -595,3 +595,15 @@ test "import heads: two bare imports sharing a tail resolve first-wins (#3250)" 
   val imports = parse("package P\nimport A.Json\nimport B.Json\n").file.imports
   assertEqual(headText(imports), "Json=A.Json;A.Json=A.Json;B.Json=B.Json;", "first bare import owns the tail")
 }
+
+test "a second renumbering keeps ids dense from 1 and drops none" {
+  val once = renumberNodeIds(parse("package P\npub func k(x: in Int): Int = x + 1\n").file)
+  val twice = renumberNodeIds(once.file)
+  assertEqualInt(twice.count, once.count, "same count")
+  var seen = 0
+  for i in nodeIdsOf(twice.file) {
+    assertTrue(i >= 1 and i <= twice.count, "within 1..count")
+    seen = seen + 1
+  }
+  assertEqualInt(seen, twice.count, "every node has an id")
+}

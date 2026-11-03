@@ -282,3 +282,248 @@ test "a diagnostic renders as I0003 naming the pass and the node" {
   val text = renderVerifyDiag("monomorphise", ds[0])
   assertTrue(text.startsWith("I0003: pass monomorphise produced an ill-formed node #2"), "prefix")
 }
+
+func stmt(n: in Int, kind: in TStmtKind): TStmt {
+  TStmt(id = nid(n), span = noSourceSpan(), kind = kind)
+}
+
+func pat(n: in Int, ty: in Ty, kind: in TPatKind): TPat {
+  TPat(id = nid(n), ty = ty, span = noSourceSpan(), kind = kind)
+}
+
+func stmts1(a: in TStmt): List[TStmt] {
+  val xs: List[TStmt] = newList()
+  xs.add(a)
+  xs
+}
+
+func stmts2(a: in TStmt, b: in TStmt): List[TStmt] {
+  val xs: List[TStmt] = newList()
+  xs.add(a)
+  xs.add(b)
+  xs
+}
+
+test "a block-local is not usable after its block ends" {
+  val x = local(1, "x", tyInt(), false)
+  val y = local(5, "y", tyInt(), false)
+  val inner = ex(
+    10,
+    tyUnit(),
+    XBlock(stmts = stmts1(stmt(11, TsVar(decl = y, init = Some(lit(12, 1i64))))), tail = None)
+  )
+  val useY = ex(13, tyInt(), XLocal(local = y.id))
+  val body = ex(14, tyInt(), XBlock(stmts = stmts1(stmt(15, TsExpr(expr = inner))), tail = Some(useY)))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
+    "local-in-scope",
+    "use after the block"
+  )
+  val useInside = ex(
+    14,
+    tyInt(),
+    XBlock(
+      stmts = stmts1(stmt(15, TsVar(decl = y, init = Some(lit(12, 1i64))))),
+      tail = Some(ex(13, tyInt(), XLocal(local = y.id)))
+    )
+  )
+  assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), useInside))), "", "use inside the block")
+}
+
+test "a match-arm binding is not usable after the match" {
+  val x = local(1, "x", tyInt(), false)
+  val n = local(5, "n", tyInt(), false)
+  val arm = TArm(
+    pat = pat(20, tyInt(), TpBind(decl = n, inner = None)),
+    guard = None,
+    body = ex(21, tyInt(), XLocal(local = n.id))
+  )
+  val arms: List[TArm] = newList()
+  arms.add(arm)
+  val m = ex(22, tyInt(), XMatch(scrutinee = ex(23, tyInt(), XLocal(local = x.id)), arms = arms, exhaustive = true))
+  assertEqual(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), m))), "", "binding used in its arm")
+  val after = ex(
+    24,
+    tyInt(),
+    XBlock(stmts = stmts1(stmt(25, TsExpr(expr = m))), tail = Some(ex(26, tyInt(), XLocal(local = n.id))))
+  )
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), after))),
+    "local-in-scope",
+    "binding used after the match"
+  )
+}
+
+test "a let initialiser cannot use the binding it introduces" {
+  val x = local(1, "x", tyInt(), false)
+  val v = local(5, "v", tyInt(), false)
+  val letV = stmt(
+    30,
+    TsLet(
+      pat = pat(31, tyInt(), TpBind(decl = v, inner = None)),
+      init = ex(32, tyInt(), XLocal(local = v.id))
+    )
+  )
+  val body = ex(33, tyInt(), XBlock(stmts = stmts1(letV), tail = Some(lit(34, 1i64))))
+  assertTrue(rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))).contains("local-defined"), "val v = v")
+}
+
+test "a record pattern names fields its owner declares" {
+  val x = local(1, "x", tyInt(), false)
+  val rec = TNamed(sym = sym(40), args = newList())
+  val fields: List[TFieldSig] = newList()
+  fields.add(TFieldSig(name = "a", ty = tyInt(), mutable = false))
+  val es = entries()
+  es.add(
+    TSymEntry(
+      sym = sym(40),
+      kind = TSkType,
+      typeParamCount = 0,
+      sig = None,
+      fields = fields,
+      ty = None,
+      mutable = false
+    )
+  )
+  val fp: List[TFieldPat] = newList()
+  fp.add(TFieldPat(field = FieldRef(owner = sym(40), name = "b", index = 0), pat = pat(41, tyInt(), TpWild)))
+  val arm = TArm(pat = pat(42, rec, TpRecord(sym = sym(40), fields = fp)), guard = None, body = lit(43, 1i64))
+  val arms: List[TArm] = newList()
+  arms.add(arm)
+  val scrut = ex(44, rec, XConstruct(sym = sym(40), fields = newList()))
+  val body = ex(45, tyInt(), XMatch(scrutinee = scrut, arms = arms, exhaustive = true))
+  assertTrue(
+    rulesOf(oneFn(es, fnDecl(10, 0, params1(x), tyInt(), body))).contains("field-exists"),
+    "field name differs from the declaration"
+  )
+}
+
+test "a constructor pattern on a case with no signature is reported" {
+  val x = local(1, "x", tyInt(), false)
+  val es = entries()
+  es.add(
+    TSymEntry(
+      sym = sym(50),
+      kind = TSkCase,
+      typeParamCount = 0,
+      sig = None,
+      fields = newList(),
+      ty = None,
+      mutable = false
+    )
+  )
+  val arm = TArm(pat = pat(51, tyInt(), TpCtor(sym = sym(50), args = newList())), guard = None, body = lit(52, 1i64))
+  val arms: List[TArm] = newList()
+  arms.add(arm)
+  val body = ex(53, tyInt(), XMatch(scrutinee = ex(54, tyInt(), XLocal(local = x.id)), arms = arms, exhaustive = true))
+  assertTrue(rulesOf(oneFn(es, fnDecl(10, 0, params1(x), tyInt(), body))).contains("pattern-callable"), "no signature")
+}
+
+test "a diagnostic names its function" {
+  val x = local(1, "x", tyInt(), false)
+  val ds = oneFn(entries(), fnDecl(10, 0, params1(x), tyString(), ex(2, tyInt(), XLocal(local = x.id))))
+  assertEqualInt(ds[0].fnSym.id, 10, "the function")
+  assertTrue(renderVerifyDiag("p", ds[0]).contains("(in function #10)"), "rendered")
+}
+
+func stmtsLocals(a: in LocalDecl): List[LocalDecl] {
+  val xs: List[LocalDecl] = newList()
+  xs.add(a)
+  xs
+}
+
+// A closure's outer set is the live locals, so capturing an ended local is
+// reported as undefined where the closure is created (`local-defined`), not as
+// out of scope.
+test "a closure cannot capture a local whose block has ended" {
+  val x = local(1, "x", tyInt(), false)
+  val y = local(5, "y", tyInt(), false)
+  val fty = TFunc(params = newList(), ret = tyInt(), isAsync = false)
+  val caps: List[Capture] = newList()
+  caps.add(Capture(local = y.id, mode = CmByValue))
+  val lam = ex(10, fty, XLambda(params = newList(), captures = caps, body = ex(11, tyInt(), XLocal(local = y.id))))
+  val ended = ex(
+    12,
+    tyUnit(),
+    XBlock(stmts = stmts1(stmt(13, TsVar(decl = y, init = Some(lit(14, 1i64))))), tail = None)
+  )
+  val body = ex(15, fty, XBlock(stmts = stmts1(stmt(16, TsExpr(expr = ended))), tail = Some(lam)))
+  assertTrue(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), fty, body))).contains("local-defined"),
+    "capture of an ended local"
+  )
+}
+
+test "a for-loop binding is not usable after the loop" {
+  val x = local(1, "x", tyInt(), false)
+  val i = local(5, "i", tyInt(), false)
+  val range = ex(20, tyInt(), XLocal(local = x.id))
+  val loop = stmt(
+    21,
+    TsFor(
+      label = None,
+      pat = pat(22, tyInt(), TpBind(decl = i, inner = None)),
+      iter = range,
+      body = ex(23, tyUnit(), XBlock(stmts = newList(), tail = None))
+    )
+  )
+  val body = ex(24, tyInt(), XBlock(stmts = stmts1(loop), tail = Some(ex(25, tyInt(), XLocal(local = i.id)))))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
+    "local-in-scope",
+    "for binding after the loop"
+  )
+}
+
+test "a catch binding is not usable after its clause" {
+  val x = local(1, "x", tyInt(), false)
+  val e = local(5, "e", TException, false)
+  val clause = TCatch(
+    binding = Some(e),
+    exceptionType = "Err",
+    body = ex(30, tyUnit(), XBlock(stmts = newList(), tail = None))
+  )
+  val clauses: List[TCatch] = newList()
+  clauses.add(clause)
+  val tryS = stmt(
+    31,
+    TsTry(
+      body = ex(32, tyUnit(), XBlock(stmts = newList(), tail = None)),
+      catches = clauses,
+      finallyBody = None
+    )
+  )
+  val useE = ex(33, TException, XLocal(local = e.id))
+  val body = ex(34, TException, XBlock(stmts = stmts1(tryS), tail = Some(useE)))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), TException, body))),
+    "local-in-scope",
+    "catch binding after the clause"
+  )
+}
+
+test "a quantifier binder is not usable after the quantifier" {
+  val x = local(1, "x", tyInt(), false)
+  val k = local(5, "k", tyInt(), false)
+  val tru = ex(40, tyBool(), XLit(lit = TLBool(value = true)))
+  val q = ex(41, tyBool(), XForall(binders = stmtsLocals(k), whereExpr = None, body = tru))
+  val useK = ex(42, tyInt(), XLocal(local = k.id))
+  val body = ex(43, tyInt(), XBlock(stmts = stmts1(stmt(44, TsExpr(expr = q))), tail = Some(useK)))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
+    "local-in-scope",
+    "binder after the quantifier"
+  )
+}
+
+test "a scope statement binding is not usable after the scope" {
+  val x = local(1, "x", tyInt(), false)
+  val h = local(5, "h", tyInt(), false)
+  val sc = stmt(50, TsScope(binding = Some(h), body = ex(51, tyUnit(), XBlock(stmts = newList(), tail = None))))
+  val body = ex(52, tyInt(), XBlock(stmts = stmts1(sc), tail = Some(ex(53, tyInt(), XLocal(local = h.id)))))
+  assertEqual(
+    rulesOf(oneFn(entries(), fnDecl(10, 0, params1(x), tyInt(), body))),
+    "local-in-scope",
+    "scope binding after the scope"
+  )
+}
