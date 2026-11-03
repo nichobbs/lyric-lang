@@ -1572,6 +1572,7 @@ func stdlibImportedPackages(stdlibPkgs: in List[StdlibPkg]): List[ImportedPackag
         items = sp.items,
         imports = sp.imports,
         wholeImports = sp.wholeImports,
+        importDecls = sp.importDecls,
         reexports = sp.reexports
       )
     )
@@ -2084,8 +2085,10 @@ func perPackageImportedPackages(
       val depNames: List[String] = newList()
       var wholeNames: List[String] = newList()
       var reexportNames: List[String] = newList()
+      var declaredImports: List[ImportDecl] = newList()
       match mapGet(inBundleImports, pkgName) {
         case Some(deps) -> {
+          declaredImports = deps
           var di = 0
           while di < deps.count {
             depNames.add(segmentsToString(deps[di].path.segments))
@@ -2103,6 +2106,7 @@ func perPackageImportedPackages(
             items = items,
             imports = depNames,
             wholeImports = wholeNames,
+            importDecls = declaredImports,
             reexports = reexportNames
           )
         )
@@ -2222,6 +2226,7 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         items = items,
         imports = collectImportNames(stdPrInv.imports),
         wholeImports = collectWholeImportNames(stdPrInv.imports),
+        importDecls = stdPrInv.imports,
         reexports = collectReexportNames(stdPrInv.imports),
         selectedImports = collectSelectedImportNames(stdPrInv.imports),
         privateGenericItems = privateGenericItems

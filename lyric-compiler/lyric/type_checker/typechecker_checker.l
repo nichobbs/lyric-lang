@@ -5872,6 +5872,32 @@ pub record ImportedPackage {
   /// §9.3): the subset of `wholeImports` a file importing this package
   /// whole sees bare, transitively (docs/70 §4.3, D311).
   reexports: List[String] = newList()
+  /// The package's imports as declared (docs/70 §4.3, phase 2c): its
+  /// signatures resolve in the scope they make.  Empty for a package whose
+  /// imports are known by name only; `imports` then stands in as whole imports.
+  importDecls: List[ImportDecl] = newList()
+}
+
+// The imports of a package known by name only, as whole imports.
+func wholeImportDecls(names: in List[String], span: in Span): List[ImportDecl] {
+  val acc: List[ImportDecl] = newList()
+  for n in names {
+    val segs: List[String] = newList()
+    for seg in split(n, ".") {
+      segs.add(seg)
+    }
+    acc.add(
+      ImportDecl(
+        path = ModulePath(segments = segs, span = span),
+        selector = None,
+        asAlias = None,
+        isPubUse = false,
+        isExtern = false,
+        span = span
+      )
+    )
+  }
+  acc
 }
 
 func dottedPackageName(path: in ModulePath): String {
@@ -6114,8 +6140,8 @@ func reexportClosure(pkg: in String, importedPackages: in List[ImportedPackage])
 // visible bare, since they are reached as `Q.f`.
 //
 // Imports are per file (docs/70 §4.1).  Each file of `files` gets its own
-// rule, a name is visible bare in a file only through that file's imports
-// (`symTableImportVisible`), and its renames (T0148) and selective imports
+// scope in `Lyric.Resolve`, a name is visible bare in a file only through that
+// file's imports (`resolveBare`), and its renames (T0148) and selective imports
 // (T0210) are checked against its own imports.  A name a file sees only
 // through a sibling file's import is T0219 (`symTableNoteBareUse` and kin).
 // A rename that collides with a name a sibling's import brings in stays
@@ -7089,7 +7115,12 @@ func checkWithImportedPackagesCore(
     // T0144 in another package is that package's own build error.
     val ipDiag: List[Diagnostic] = newList()
     val ipItems = desugarModuleValItems(ip.items, ipDiag)
-    resolveDeps.add(DepPackage(name = ip.name, items = ipItems, reexports = ip.reexports))
+    val depImports = if ip.importDecls.count > 0 {
+      ip.importDecls
+    } else {
+      wholeImportDecls(ip.imports, file.packageDecl.span)
+    }
+    resolveDeps.add(DepPackage(name = ip.name, items = ipItems, reexports = ip.reexports, imports = depImports))
     var ii = 0
     while ii < ipItems.count {
       registerItem(tbl, diag, true, ip.name, ipItems[ii])
