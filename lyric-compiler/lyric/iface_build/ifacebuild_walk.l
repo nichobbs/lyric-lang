@@ -21,7 +21,7 @@ import Lyric.Iface
 import Lyric.IfaceConv
 import Lyric.ModeChecker
 import Lyric.Resolve.{funcDefPath, methodDefPath, reexportsOf}
-import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPush, resolveType}
+import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPush, resolveType, typeOfLiteral}
 
 func visOf(v: in Option[Visibility]): IfVis {
   match v {
@@ -572,7 +572,19 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
                 value = literalOf(decl.init)
               )
             )
-            case None -> buildFail(bc, what + ": a pub val needs a written type to be recorded")
+            case None -> match literalValTy(bc, decl.init, what) {
+              case Some(ty) -> emit(
+                acc,
+                topDefPath(pkg, name),
+                IfKVal,
+                vis,
+                IfDValue(ty = ty, mutable = false, value = literalOf(decl.init))
+              )
+              case None -> buildFail(
+                bc,
+                what + ": a pub val needs a written type or a literal initialiser to be recorded"
+              )
+            }
           }
         }
         case _ -> ()
@@ -583,6 +595,16 @@ func addVisibleItem(bc: in BuildCtx, acc: in List[IfDecl], it: in Item, vis: in 
     case IConfig(decl) -> emit(acc, topDefPath(pkg, decl.name), IfKConfig, vis, IfDNone)
     case IAspect(decl) -> emit(acc, topDefPath(pkg, decl.name), IfKAspect, vis, IfDNone)
     case _ -> ()
+  }
+}
+
+// The type of a plain literal initialiser, as the checker types it.
+func literalValTy(bc: in BuildCtx, e: in Expr, what: in String): Option[Ty] {
+  match e.kind {
+    case ELiteral(lit) -> Some(value = tyOf(bc, newList(), None, typeOfLiteral(lit), what))
+    case EPrefix(op, inner) -> match op { case PreNeg -> literalValTy(bc, inner, what); case _ -> None }
+    case EParen(inner) -> literalValTy(bc, inner, what)
+    case _ -> None
   }
 }
 
@@ -638,4 +660,91 @@ pub func buildIface(
       reexports = reexportsOf(file.imports)
     )
   )
+}
+
+// ── Outcome, validation and diagnostics ──────────────────────────────────────
+/// A built interface: its canonical bytes and their hash.
+pub record BuiltIface {
+  bytes: slice[Byte]
+  hash: String
+}
+
+/// What building a package's interface came to.  `IOUnrecordable` is a
+/// declaration the interface cannot record (T0223); `IORoundTrip` is a producer
+/// bug, the written interface not reading back as the one built (I0005,
+/// docs/70 §9.3).
+pub union IfaceOutcome {
+  case IOBuilt(built: BuiltIface)
+  case IOUnrecordable(reasons: List[String])
+  case IORoundTrip(message: String)
+}
+
+/// Builds the interface of `res`, writes it, reads it back with a fresh
+/// interner and compares: the "consumer sees exactly what the library's checker
+/// saw" property of docs/70 §9.3.
+pub func buildIfaceOutcome(
+  res: in CheckResult, builtAgainst: in List[IfBuiltAgainst], targets: in List[String]
+): IfaceOutcome {
+  match buildIface(res, builtAgainst, targets) {
+    case Err(reasons) -> IOUnrecordable(reasons = reasons)
+    case Ok(iface) -> {
+      val it = res.symbols.interner
+      match encodeIface(iface, it) {
+        case Err(msg) -> {
+          val reasons: List[String] = newList()
+          reasons.add(msg)
+          IOUnrecordable(reasons = reasons)
+        }
+        case Ok(bytes) -> {
+          val other = newDefPathInterner()
+          match decodeIface(bytes, other) {
+            case Err(msg) -> IORoundTrip(message = "the interface does not read back: " + msg)
+            case Ok(back) -> if dumpIface(back, other) != dumpIface(iface, it) {
+              IORoundTrip(message = "the interface read back differs from the one built")
+            } else {
+              IOBuilt(built = BuiltIface(bytes = bytes, hash = ifaceHash(bytes)))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+func hasMain(file: in SourceFile): Bool {
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if decl.name == "main" { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+/// The diagnostics of an outcome.  An executable has no dependents, so a
+/// declaration it cannot record is not an error; a round trip that fails is one
+/// for every package.
+pub func outcomeDiagnostics(o: in IfaceOutcome, file: in SourceFile): List[Diagnostic] {
+  val res: List[Diagnostic] = newList()
+  match o {
+    case IOBuilt(_) -> ()
+    case IOUnrecordable(reasons) -> if not hasMain(file) {
+      for r in reasons {
+        res.add(errorDiagnostic("T0223", "the package interface cannot record " + r, file.span))
+      }
+    }
+    case IORoundTrip(msg) -> res.add(errorDiagnostic("I0005", "internal: " + msg, file.span))
+  }
+  res
+}
+
+/// The canonical bytes of the interface the outcomes built, if one was.
+pub func builtBytesOf(outcomes: in List[IfaceOutcome]): Option[slice[Byte]] {
+  for o in outcomes {
+    match o {
+      case IOBuilt(b) -> return Some(value = b.bytes)
+      case _ -> ()
+    }
+  }
+  None
 }

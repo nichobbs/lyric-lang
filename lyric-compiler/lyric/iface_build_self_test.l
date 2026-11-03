@@ -139,7 +139,34 @@ test "extern types are recorded without a modifier" {
   assertTrue(text.contains("pub extern type extern::System.Text.StringBuilder = System.Text.StringBuilder\n"), text)
 }
 
-test "an unannotated pub val cannot be recorded and is reported by name" {
-  val text = dumpOf("package P\n\npub val Limit = 5\n")
+test "an unannotated pub val takes its literal's type" {
+  val text = dumpOf("package P\n\npub val Limit = 5\npub val Name = \"p\"\npub val Ratio = -2.5\n")
+  assertTrue(text.contains("pub val P::Limit: Int = 5\n"), text)
+  assertTrue(text.contains("pub val P::Name: String = \"p\"\n"), text)
+  assertTrue(text.contains("pub val P::Ratio: Double = -2.5\n") or text.contains("P::Ratio: Double"), text)
+}
+
+test "a pub val with neither a written type nor a literal cannot be recorded" {
+  val text = dumpOf("package P\n\npub val Limit = 5 + 1\n")
   assertTrue(text.contains("ERR: ") and text.contains("P::Limit") and text.contains("needs a written type"), text)
+}
+
+test "the outcome carries the bytes, their hash, and diagnostics by kind" {
+  val res = checked("package P\n\npub func f(x: Int): Int {\n  x\n}\n")
+  match buildIfaceOutcome(res, newList(), targets()) {
+    case IOBuilt(b) -> assertEqual(b.hash, ifaceHash(b.bytes), "the hash is the hash of the bytes")
+    case _ -> assertTrue(false, "the library should build")
+  }
+  val bad = checked("package P\n\npub val Limit = 5 + 1\n")
+  val outcome = buildIfaceOutcome(bad, newList(), targets())
+  assertEqualInt(outcomeDiagnostics(outcome, bad.file).count, 1, "a library reports T0223")
+  val exe = checked("package P\n\npub val Limit = 5 + 1\n\nfunc main(): Int {\n  0\n}\n")
+  assertEqualInt(
+    outcomeDiagnostics(buildIfaceOutcome(exe, newList(), targets()), exe.file).count,
+    0,
+    "an executable does not"
+  )
+  val outs: List[IfaceOutcome] = newList()
+  outs.add(buildIfaceOutcome(res, newList(), targets()))
+  assertTrue(builtBytesOf(outs) != None, "the bytes are reachable")
 }
