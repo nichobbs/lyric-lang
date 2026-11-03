@@ -1815,6 +1815,15 @@ func missingPayloadNames(closure: in List[String], have: in List[String]): List[
   missing
 }
 
+/// The file name of the per-package DLL for compiler package `pkg`
+/// (`Lyric.Lexer` -> `Lyric.Lyric.Lexer.dll`): the assembly name the
+/// per-package emit gives it, so a package with more than two name segments
+/// (`Lyric.Tir.Verify` -> `Lyric.Lyric.TirVerify.dll`) is found where it was
+/// written.
+pub func compilerPackageDllName(pkg: in String): String {
+  perPackageAssemblyName(pkg, Dotnet) + ".dll"
+}
+
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
 // `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
 // transitive compiler-package import closure from source, then maps each closure
@@ -1911,7 +1920,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   var shComplete = closure.count > 0
   var shi = 0
   while shi < closure.count {
-    if not File.fileExists(Path.join(shDir, "Lyric." + closure[shi] + ".dll")) {
+    if not File.fileExists(Path.join(shDir, compilerPackageDllName(closure[shi]))) {
       shComplete = false
     }
     shi = shi + 1
@@ -1920,7 +1929,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
     var sj = 0
     while sj < closure.count {
       val shPkg = closure[sj]
-      dlls.add(shPkg + "\t" + Path.join(shDir, "Lyric." + shPkg + ".dll"))
+      dlls.add(shPkg + "\t" + Path.join(shDir, compilerPackageDllName(shPkg)))
       sj = sj + 1
     }
     return CompilerClosureResult(dlls = dlls, missingPackages = noMissing)
@@ -1937,7 +1946,7 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): Comp
   var i = 0
   while i < closure.count {
     val pkg = closure[i]
-    val dll = Path.join(libDir, "Lyric." + pkg + ".dll")
+    val dll = Path.join(libDir, compilerPackageDllName(pkg))
     if File.fileExists(dll) {
       dlls.add(pkg + "\t" + dll)
       gotPkgs.add(pkg)

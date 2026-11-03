@@ -3531,3 +3531,10 @@ test "collectImportLines keeps selective imports of one package with different i
   )
   assertEqualInt(acc.count, 2, "two distinct selective imports survive, the duplicate collapses")
 }
+
+// A compiler package's DLL is looked up under the name the per-package emit
+// wrote it with, including packages with more than two name segments.
+test "compilerPackageDllName follows the per-package assembly name" {
+  assertEqual(Emitter.compilerPackageDllName("Lyric.Lexer"), "Lyric.Lyric.Lexer.dll", "two segments")
+  assertEqual(Emitter.compilerPackageDllName("Lyric.Tir.Verify"), "Lyric.Lyric.TirVerify.dll", "three segments")
+}
