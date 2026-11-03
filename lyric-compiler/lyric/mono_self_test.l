@@ -1154,11 +1154,16 @@ test "an unpinned type argument defaulted to Object is W0034" {
 test "an @externTarget generic is exempt from W0034 (D334)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { mkThing() }\n"
   val plainLib = "package Lib\n" + "pub func mkThing[T](): Int = 0\n"
-  val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" + "pub func mkThing[T](): Int = ()\n"
+  val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
+    "pub func mkThing[T](): Int = ()\n"
   val plain = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(plainLib).file))
-  val extern = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(externLib).file))
-  assertEqualInt(diagCountCode(plain.diagnostics, "W0034"), 1, "control: the same unpinned call to a plain generic warns")
-  assertEqualInt(diagCountCode(extern.diagnostics, "W0034"), 0, "an @externTarget generic never warns")
+  val hosted = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(externLib).file))
+  assertEqualInt(
+    diagCountCode(plain.diagnostics, "W0034"),
+    1,
+    "control: the same unpinned call to a plain generic warns"
+  )
+  assertEqualInt(diagCountCode(hosted.diagnostics, "W0034"), 0, "an @externTarget generic never warns")
 }
 
 test "a fully pinned imported generic call has no W0034" {
