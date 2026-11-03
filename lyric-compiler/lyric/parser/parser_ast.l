@@ -304,6 +304,9 @@ pub union RecordPatternField {
 pub record Pattern {
   kind: PatternKind
   span: Span
+  /// The node's id within its package (docs/70 §6.1): 0 until `Lyric.Resolve.renumberNodeIds`
+  /// numbers the package; a pass that rebuilds a node leaves the new one at 0.
+  nodeId: Int = 0
 }
 
 pub union PatternKind {
@@ -515,6 +518,9 @@ pub record MatchArm {
 pub record Expr {
   kind: ExprKind
   span: Span
+  /// The node's id within its package (docs/70 §6.1): 0 until `Lyric.Resolve.renumberNodeIds`
+  /// numbers the package; a pass that rebuilds a node leaves the new one at 0.
+  nodeId: Int = 0
 }
 
 pub union ExprKind {
@@ -593,6 +599,9 @@ pub union StatementKind {
 pub record Statement {
   kind: StatementKind
   span: Span
+  /// The node's id within its package (docs/70 §6.1): 0 until `Lyric.Resolve.renumberNodeIds`
+  /// numbers the package; a pass that rebuilds a node leaves the new one at 0.
+  nodeId: Int = 0
   // ─────────────────────────────────────────────────────────────────────────────
   // §9. Declaration types.
   // ─────────────────────────────────────────────────────────────────────────────

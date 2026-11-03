@@ -886,6 +886,9 @@ need direction and have nothing else productive to do**.  Specifically:
     over `SymbolId`s from `Lyric.Symbols`. `tir_self_test.l` covers it.
     `tir/verify/` is `Lyric.Tir.Verify` (D323): the I0003 verifier, run by
     passes through `Lyric.Pipeline.pipeVerifyTir`; `tir_verify_self_test.l`.
+  - `resolve/resolve_nodeids.l` — `renumberNodeIds` (docs/70 §6.1, D325): the
+    dense per-file numbering of `Expr`/`Statement`/`Pattern` `nodeId`s, run after
+    the last expansion (the parser leaves 0).
   - `resolve/` — `Lyric.Resolve` (docs/70 §4.3-§4.4, D313): the declaration
     table with a DefPath for every declaration kind (`resolve_collect.l`), a
     file's import scope (`resolve_scope.l`), the §4.3 lookup `resolveBare` /
