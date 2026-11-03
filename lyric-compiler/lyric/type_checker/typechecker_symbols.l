@@ -1498,6 +1498,7 @@ func dependencyLookup(tbl: in SymbolTable, name: in String): Option[Option[Symbo
             for k in mapKeys(ctx.tbl.packages) {
               pk.add(k)
             }
+            println("DEPDBG2 " + (match resolveBare(ctx.tbl, fsc, name, UseValue) { case RUnresolved(c, m) -> c + " " + m; case RSymbol(_) -> "RSymbol"; case ROverloads(_) -> "ROverloads"; case _ -> "other" }))
             println("DEPDBG " + symTableScopePkg(tbl) + " whole=" + joinList(",", mapKeys(fsc.whole)) + " names=" + joinList(",", mapKeys(fsc.names)) + " pkgs=" + joinList(",", pk) + " decls=" + toString(namedDeclCount(ctx.tbl, name)))
           }
           val bare = packagelessSymbols(tbl, name)
