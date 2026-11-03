@@ -4,6 +4,8 @@ package Lyric.TypeChecker
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
+import Std.Environment.{getVarOrDefault}
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
@@ -10633,6 +10635,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
 func typeIsHole(t: in Type): Bool {
   match t {
     case TyError -> true
+    case TyInfer(_) -> true
     case _ -> false
   }
 }
@@ -11651,13 +11654,43 @@ pub func inferExpr(
   diag: in List[Diagnostic],
   e: in Expr,
 ): Type {
+  val diagsBefore = diag.count
   val t = inferExprCore(sc, tbl, sigs, diag, e)
   match e.kind {
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
   }
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
+  if tyErrorCensusOn and diag.count == diagsBefore {
+    match t {
+      case TyError -> Console.error("TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + toString(e.span.startPos.fileId) + ":" + toString(e.span.startPos.offset))
+      case _ -> ()
+    }
+  }
   t
+}
+
+// The I0001 census (docs/70 section 5.3, D338): with `LYRIC_TYERR_CENSUS=1` the
+// checker logs every expression it types `TyError` without reporting an error,
+// as `TYERR<TAB>package<TAB>kind`, so the sites the gate must classify can be
+// counted per package.  It is removed with the gate.
+val tyErrorCensusOn: Bool = getVarOrDefault("LYRIC_TYERR_CENSUS", "") == "1"
+
+func exprKindTag(e: in Expr): String {
+  match e.kind {
+    case ELiteral(_) -> "literal"
+    case EPath(p) -> if p.segments.count > 1 { "path-qualified" } else { "path" }
+    case ECall(fn, _) -> "call"
+    case EMember(_, _) -> "member"
+    case ELambda(_, _) -> "lambda"
+    case EIf(_, _, _, _) -> "if"
+    case EMatch(_, _) -> "match"
+    case EIndex(_, _) -> "index"
+    case EBlock(_) -> "block"
+    case EBinop(_, _, _) -> "binop"
+    case EPrefix(_, _) -> "prefix"
+    case _ -> "other"
+  }
 }
 
 // Record a qualified or method call's result type for `Lyric.Mono`
@@ -20268,7 +20301,7 @@ func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): R
   var k = 0
   while k < sig.params.count {
     paramTys.add(sig.params[k].ty)
-    argTys.add(if k < ordered.count { ordered[k] } else { TyError })
+    argTys.add(if k < ordered.count { ordered[k] } else { TyInfer(id = -1 - k) })
     k = k + 1
   }
   val solved = inferGenericArgsForSig(sig, paramTys, argTys)
