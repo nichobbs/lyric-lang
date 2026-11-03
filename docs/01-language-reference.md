@@ -3506,7 +3506,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 ### 13.5.1 Package interfaces
 
-`lyric interface dump <file.lyri>` prints a package interface (docs/70 §9.6) as text: the package header, the packages it re-exports, the interfaces it was built against, every declaration with its visibility, kind and DefPath, and finally `hash: <sha256>`, the interface hash of the canonical bytes. It exits 0 on success and 1 for a usage error or a file that is unreadable, malformed, of another format version, or not in canonical form. The interface format is versioned and canonical (tagged records, LEB128 integers, one string table); two builds of one package produce the same bytes. This phase covers the header and the declaration index; types, signatures and bodies follow (D321).
+`lyric interface dump <file.lyri>` prints a package interface (docs/70 §9.6) as text: the package header, the packages it re-exports, the interfaces it was built against, every declaration with its visibility, kind and DefPath, and finally `hash: <sha256>`, the interface hash of the canonical bytes. It exits 0 on success and 1 for a usage error or a file that is unreadable, malformed, of another format version, or not in canonical form. The interface format is versioned and canonical (tagged records, LEB128 integers, one string table); two builds of one package produce the same bytes. Each declaration is printed with its generic parameters, signature, fields or constant value, types named by DefPath. Default values, contracts and bodies are not in the interface yet (D321, D324).
 
 ### 13.6 LSP
 

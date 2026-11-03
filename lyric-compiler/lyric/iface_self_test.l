@@ -13,6 +13,7 @@ import Std.Testing
 import Std.Hash as Hash
 import Std.Encoding as Enc
 import Lyric.Symbols
+import Lyric.Tir
 import Lyric.Iface
 
 func path(pkg: in String, a: in String): DefPath {
@@ -20,7 +21,11 @@ func path(pkg: in String, a: in String): DefPath {
 }
 
 func decl(pkg: in String, name: in String, kind: in IfKind, vis: in IfVis): IfDecl {
-  IfDecl(path = path(pkg, name), kind = kind, vis = vis)
+  IfDecl(path = path(pkg, name), kind = kind, vis = vis, detail = IfDNone)
+}
+
+func declWith(pkg: in String, name: in String, kind: in IfKind, detail: in IfDetail): IfDecl {
+  IfDecl(path = path(pkg, name), kind = kind, vis = IfPublic, detail = detail)
 }
 
 func header(pkg: in String): IfHeader {
@@ -46,7 +51,14 @@ func sample(): Iface {
   val decls: List[IfDecl] = newList()
   decls.add(decl("Shapes", "area", IfKFunc, IfPublic))
   decls.add(decl("Shapes", "Shape", IfKUnion, IfPublic))
-  decls.add(IfDecl(path = memberDefPath(path("Shapes", "Shape"), "Circle"), kind = IfKUnionCase, vis = IfPublic))
+  decls.add(
+    IfDecl(
+      path = memberDefPath(path("Shapes", "Shape"), "Circle"),
+      kind = IfKUnionCase,
+      vis = IfPublic,
+      detail = IfDNone
+    )
+  )
   decls.add(decl("Shapes", "helper", IfKFunc, IfPrivate))
   decls.add(decl("Shapes", "Id", IfKDistinct, IfInternal))
   val re: List[String] = newList()
@@ -63,8 +75,18 @@ func bytesOf(xs: in List[Int]): slice[Byte] {
   buf.toArray()
 }
 
+func enc(i: in Iface, it: in DefPathInterner): slice[Byte] {
+  match encodeIface(i, it) {
+    case Ok(b) -> b
+    case Err(e) -> {
+      assertTrue(false, "encode: " + e)
+      bytesOf(newList())
+    }
+  }
+}
+
 func decodeErr(bytes: in slice[Byte]): String {
-  match decodeIface(bytes) {
+  match decodeIface(bytes, newDefPathInterner()) {
     case Ok(_) -> ""
     case Err(e) -> e
   }
@@ -139,13 +161,14 @@ test "strings are interned in order of first use" {
 }
 
 test "an interface round trips" {
-  val bytes = encodeIface(sample())
-  match decodeIface(bytes) {
+  val bytes = enc(sample(), newDefPathInterner())
+  val it = newDefPathInterner()
+  match decodeIface(bytes, it) {
     case Err(e) -> assertTrue(false, "decode: " + e)
     case Ok(back) -> {
-      assertEqual(dumpIface(back), dumpIface(sample()), "the dump is unchanged")
-      assertEqualInt(encodeIface(back).length, bytes.length, "the bytes are unchanged")
-      assertEqual(ifaceHash(encodeIface(back)), ifaceHash(bytes), "the hash is unchanged")
+      assertEqual(dumpIface(back, it), dumpIface(sample(), it), "the dump is unchanged")
+      assertEqualInt(enc(back, it).length, bytes.length, "the bytes are unchanged")
+      assertEqual(ifaceHash(enc(back, it)), ifaceHash(bytes), "the hash is unchanged")
     }
   }
 }
@@ -184,11 +207,12 @@ test "every declaration kind and visibility round trips" {
     n = n + 1
   }
   val iface = Iface(header = header("Kinds"), decls = decls, reexports = newList())
-  match decodeIface(encodeIface(iface)) {
+  val it = newDefPathInterner()
+  match decodeIface(enc(iface, it), it) {
     case Err(e) -> assertTrue(false, "decode: " + e)
     case Ok(back) -> {
       assertEqualInt(back.decls.count, 20, "all twenty kinds")
-      assertEqual(dumpIface(back), dumpIface(iface), "same dump")
+      assertEqual(dumpIface(back, it), dumpIface(iface, it), "same dump")
     }
   }
   var c = 0
@@ -213,18 +237,19 @@ test "the bytes do not depend on collection order" {
   re.add("Std.Collections")
   re.add("Std.Json")
   val b = Iface(header = a.header, decls = rev, reexports = re)
-  assertEqual(ifaceHash(encodeIface(a)), ifaceHash(encodeIface(b)), "same hash")
-  assertEqual(dumpIface(a), dumpIface(b), "same dump")
+  val it = newDefPathInterner()
+  assertEqual(ifaceHash(enc(a, it)), ifaceHash(enc(b, it)), "same hash")
+  assertEqual(dumpIface(a, it), dumpIface(b, it), "same dump")
 }
 
 test "encoding twice gives identical bytes" {
-  val x = encodeIface(sample())
-  val y = encodeIface(sample())
+  val x = enc(sample(), newDefPathInterner())
+  val y = enc(sample(), newDefPathInterner())
   assertEqual(Enc.encodeHex(x), Enc.encodeHex(y), "identical")
 }
 
 test "the hash is the SHA-256 of the canonical bytes" {
-  val bytes = encodeIface(sample())
+  val bytes = enc(sample(), newDefPathInterner())
   assertEqual(ifaceHash(bytes), Hash.sha256OfBytes(bytes).toLower(), "hash")
   assertEqualInt(ifaceHash(bytes).length, 64, "64 hex digits")
 }
@@ -237,11 +262,12 @@ test "a different declaration changes the hash" {
   }
   decls.add(decl("Shapes", "extra", IfKVal, IfPublic))
   val b = Iface(header = a.header, decls = decls, reexports = a.reexports)
-  assertFalse(ifaceHash(encodeIface(a)) == ifaceHash(encodeIface(b)), "hash differs")
+  val it = newDefPathInterner()
+  assertFalse(ifaceHash(enc(a, it)) == ifaceHash(enc(b, it)), "hash differs")
 }
 
 test "the dump is canonical text" {
-  val expected = "interface Shapes (format 1)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
+  val expected = "interface Shapes (format 2)\n" + "verification: @proof_required\n" + "targets: dotnet, jvm\n" +
     "annotations: pure\n" +
     "reexports: Std.Collections, Std.Json\n" +
     "built against (2):\n" +
@@ -253,11 +279,11 @@ test "the dump is canonical text" {
     "  pub union case Shapes::Shape::Circle\n" +
     "  pub func Shapes::area\n" +
     "  private func Shapes::helper\n"
-  assertEqual(dumpIface(sample()), expected, "golden dump")
+  assertEqual(dumpIface(sample(), newDefPathInterner()), expected, "golden dump")
 }
 
 test "malformed files are rejected" {
-  val good = encodeIface(sample())
+  val good = enc(sample(), newDefPathInterner())
   assertTrue(decodeErr(bytesOf(newList())).length > 0, "empty")
   val badMagic: List[Int] = newList()
   badMagic.add(88)
@@ -328,4 +354,264 @@ test "decoding rejects declarations out of canonical order" {
   putU(w, ifKindCode(IfKFunc))
   putU(w, ifVisCode(IfPublic))
   assertTrue(decodeErr(finishIface(w)).length > 0, "b before a")
+}
+
+// ── Types and declaration detail (D324) ──────────────────────────────────────
+func named(it: in DefPathInterner, pkg: in String, name: in String): Ty {
+  TNamed(sym = internDefPath(it, typeDefPath(pkg, name)), args = newList())
+}
+
+func owner(it: in DefPathInterner, pkg: in String, name: in String): SymbolId {
+  internDefPath(it, typeDefPath(pkg, name))
+}
+
+func oneDecl(detail: in IfDetail): Iface {
+  val decls: List[IfDecl] = newList()
+  decls.add(declWith("T", "X", IfKFunc, detail))
+  Iface(header = header("T"), decls = decls, reexports = newList())
+}
+
+func roundTrip(iface: in Iface, it: in DefPathInterner): String {
+  match encodeIface(iface, it) {
+    case Err(e) -> "encode: " + e
+    case Ok(bytes) -> {
+      val other = newDefPathInterner()
+      match decodeIface(bytes, other) {
+        case Err(e) -> "decode: " + e
+        case Ok(back) -> {
+          val a = dumpIface(iface, it)
+          val b = dumpIface(back, other)
+          if a == b then "" else "dump differs:\n" + a + "\nvs\n" + b
+        }
+      }
+    }
+  }
+}
+
+func valueOf(ty: in Ty): IfDetail {
+  IfDValue(ty = ty, mutable = false, value = None)
+}
+
+func tyCases(it: in DefPathInterner): List[Ty] {
+  val ts: List[Ty] = newList()
+  ts.add(TPrim(kind = TPInt))
+  ts.add(TPrim(kind = TPUnit))
+  val elems: List[Ty] = newList()
+  elems.add(TPrim(kind = TPString))
+  elems.add(named(it, "Shapes", "Shape"))
+  ts.add(TTuple(elems = elems))
+  ts.add(TNullable(inner = TPrim(kind = TPBool)))
+  val ps: List[TParamTy] = newList()
+  ps.add(TParamTy(mode = TMIn, ty = TPrim(kind = TPInt)))
+  ps.add(TParamTy(mode = TMOut, ty = TPrim(kind = TPString)))
+  ps.add(TParamTy(mode = TMInout, ty = TPrim(kind = TPDouble)))
+  ts.add(TFunc(params = ps, ret = TNever, isAsync = true))
+  ts.add(TArray(len = ALKnown(n = 3), element = TPrim(kind = TPByte)))
+  ts.add(TArray(len = ALParam(owner = owner(it, "T", "Buf"), index = 1), element = TPrim(kind = TPChar)))
+  ts.add(TArray(len = ALUnsized, element = TPrim(kind = TPLong)))
+  ts.add(TSlice(element = TPrim(kind = TPFloat)))
+  val args: List[Ty] = newList()
+  args.add(TPrim(kind = TPInt))
+  args.add(TLen(n = 4))
+  ts.add(TNamed(sym = owner(it, "Std.Core", "Result"), args = args))
+  ts.add(TNamed(sym = SymbolId(id = -2), args = newList()))
+  ts.add(TParam(owner = owner(it, "T", "Box"), index = 0))
+  ts.add(tySelfOf(owner(it, "T", "Show")))
+  ts.add(
+    TRefined(underlying = TPrim(kind = TPInt), lo = Some(value = -5i64), hi = Some(value = 150i64), hiInclusive = true)
+  )
+  ts.add(
+    TRefined(
+      underlying = TPrim(kind = TPLong),
+      lo = None,
+      hi = Some(value = -9223372036854775807i64),
+      hiInclusive = false
+    )
+  )
+  ts.add(TLen(n = 0))
+  ts.add(TNever)
+  ts.add(TException)
+  ts.add(TExtern(host = HostTypeRef(name = "System.Math", args = newList())))
+  ts.add(TExtern(host = HostTypeRef(name = "java.util.ArrayList", args = args)))
+  ts.add(TPrim(kind = TPUInt))
+  ts.add(TPrim(kind = TPULong))
+  ts.add(TPrim(kind = TPNat))
+  ts
+}
+
+test "every form of Ty round trips through another interner" {
+  val it = newDefPathInterner()
+  var n = 0
+  for t in tyCases(it) {
+    assertEqual(roundTrip(oneDecl(valueOf(t)), it), "", "type case " + toString(n))
+    n = n + 1
+  }
+  assertEqualInt(n, 23, "all type cases ran")
+}
+
+test "types are written by DefPath, so ids need not match between compilations" {
+  val a = newDefPathInterner()
+  internDefPath(a, typeDefPath("Other", "Pad"))
+  val ta = named(a, "Shapes", "Shape")
+  val b = newDefPathInterner()
+  val tb = named(b, "Shapes", "Shape")
+  val ia = enc(oneDecl(valueOf(ta)), a)
+  val ib = enc(oneDecl(valueOf(tb)), b)
+  assertEqual(ifaceHash(ia), ifaceHash(ib), "same hash though the ids differ")
+}
+
+test "a function's signature, generic parameters and flags round trip" {
+  val it = newDefPathInterner()
+  val bounds: List[Ty] = newList()
+  bounds.add(named(it, "Std.Core", "Ordered"))
+  val tps: List[TTypeParam] = newList()
+  tps.add(TTypeParam(name = "T", bounds = bounds, valueTy = None))
+  tps.add(TTypeParam(name = "N", bounds = newList(), valueTy = Some(value = TPrim(kind = TPInt))))
+  val ps: List[IfParam] = newList()
+  ps.add(
+    IfParam(
+      name = "xs",
+      mode = TMIn,
+      ty = TSlice(element = TParam(owner = owner(it, "T", "X"), index = 0)),
+      hasDefault = false
+    )
+  )
+  ps.add(IfParam(name = "limit", mode = TMIn, ty = TPrim(kind = TPInt), hasDefault = true))
+  ps.add(IfParam(name = "sink", mode = TMOut, ty = TPrim(kind = TPString), hasDefault = false))
+  val d = IfDFunc(
+    typeParams = tps,
+    params = ps,
+    ret = TNullable(inner = TPrim(kind = TPInt)),
+    isAsync = true,
+    isAxiom = true,
+    isPure = true,
+    verification = Some(value = IfProofRequiredChecked)
+  )
+  assertEqual(roundTrip(oneDecl(d), it), "", "function")
+  val line = dumpIface(oneDecl(d), it)
+  assertTrue(
+    line.contains(
+      "[T: Std.Core::Ordered, N: value Int](xs: in slice[param T::X#0], limit: in Int = <default>, sink: out String): Int? async @axiom @pure @proof_required(checked_arithmetic)"
+    ),
+    "dump line: " + line
+  )
+}
+
+test "records, cases, aliases, values and extern types round trip" {
+  val it = newDefPathInterner()
+  val fs: List[IfField] = newList()
+  fs.add(IfField(name = "x", ty = TPrim(kind = TPDouble), mutable = false, hasDefault = false))
+  fs.add(IfField(name = "label", ty = TPrim(kind = TPString), mutable = true, hasDefault = true))
+  assertEqual(roundTrip(oneDecl(IfDRecord(typeParams = newList(), fields = fs)), it), "", "record")
+  assertEqual(roundTrip(oneDecl(IfDCase(fields = fs)), it), "", "case with payload")
+  assertEqual(roundTrip(oneDecl(IfDCase(fields = newList())), it), "", "case without payload")
+  val tps: List[TTypeParam] = newList()
+  tps.add(TTypeParam(name = "T", bounds = newList(), valueTy = None))
+  assertEqual(roundTrip(oneDecl(IfDType(typeParams = tps)), it), "", "union")
+  assertEqual(
+    roundTrip(
+      oneDecl(
+        IfDAlias(
+          typeParams = newList(),
+          underlying = TRefined(
+            underlying = TPrim(kind = TPInt),
+            lo = Some(value = 0i64),
+            hi = Some(value = 150i64),
+            hiInclusive = true
+          )
+        )
+      ),
+      it
+    ),
+    "",
+    "range subtype"
+  )
+  assertEqual(roundTrip(oneDecl(IfDExtern(typeParams = newList(), host = "System.Math")), it), "", "extern")
+  assertEqual(roundTrip(oneDecl(IfDNone), it), "", "none")
+}
+
+func litValue(l: in TLit): IfDetail {
+  IfDValue(ty = TPrim(kind = TPInt), mutable = false, value = Some(value = l))
+}
+
+test "constant values of every literal form round trip exactly" {
+  val it = newDefPathInterner()
+  assertEqual(roundTrip(oneDecl(litValue(TLInt(value = -9223372036854775807i64))), it), "", "int")
+  assertEqual(roundTrip(oneDecl(litValue(TLInt(value = 9223372036854775807i64))), it), "", "int max")
+  assertEqual(roundTrip(oneDecl(litValue(TLFloat(value = 0.1))), it), "", "float")
+  assertEqual(roundTrip(oneDecl(litValue(TLFloat(value = -2.5e300))), it), "", "float big")
+  assertEqual(roundTrip(oneDecl(litValue(TLChar(codepoint = 128512))), it), "", "char")
+  assertEqual(roundTrip(oneDecl(litValue(TLString(text = "héllo"))), it), "", "string")
+  assertEqual(roundTrip(oneDecl(litValue(TLBool(value = true))), it), "", "bool")
+  assertEqual(roundTrip(oneDecl(litValue(TLUnit)), it), "", "unit")
+  assertEqual(roundTrip(oneDecl(IfDValue(ty = TPrim(kind = TPInt), mutable = true, value = None)), it), "", "var")
+}
+
+test "a type naming a declaration with no DefPath cannot be encoded" {
+  val it = newDefPathInterner()
+  val fresh = freshSymbolId(it)
+  match encodeIface(oneDecl(valueOf(TNamed(sym = fresh, args = newList()))), it) {
+    case Ok(_) -> assertTrue(false, "should not encode")
+    case Err(e) -> assertTrue(e.contains("no DefPath"), "error: " + e)
+  }
+}
+
+test "types nested past the limit are rejected" {
+  val it = newDefPathInterner()
+  var t: Ty = TPrim(kind = TPInt)
+  var i = 0
+  while i < 250 {
+    t = TNullable(inner = t)
+    i = i + 1
+  }
+  val bytes = enc(oneDecl(valueOf(t)), it)
+  assertTrue(decodeErr(bytes).contains("nesting"), "deep type")
+}
+
+test "the golden dump shows types and detail" {
+  val it = newDefPathInterner()
+  val fs: List[IfField] = newList()
+  fs.add(IfField(name = "radius", ty = TPrim(kind = TPDouble), mutable = false, hasDefault = false))
+  val ps: List[IfParam] = newList()
+  ps.add(IfParam(name = "s", mode = TMIn, ty = named(it, "Shapes", "Shape"), hasDefault = false))
+  val decls: List[IfDecl] = newList()
+  decls.add(
+    IfDecl(
+      path = memberDefPath(path("Shapes", "Shape"), "Circle"),
+      kind = IfKUnionCase,
+      vis = IfPublic,
+      detail = IfDCase(fields = fs)
+    )
+  )
+  decls.add(declWith("Shapes", "Shape", IfKUnion, IfDType(typeParams = newList())))
+  decls.add(
+    declWith(
+      "Shapes",
+      "area",
+      IfKFunc,
+      IfDFunc(
+        typeParams = newList(),
+        params = ps,
+        ret = TPrim(kind = TPDouble),
+        isAsync = false,
+        isAxiom = false,
+        isPure = true,
+        verification = None
+      )
+    )
+  )
+  decls.add(
+    declWith(
+      "Shapes",
+      "Max",
+      IfKConst,
+      IfDValue(ty = TPrim(kind = TPInt), mutable = false, value = Some(value = TLInt(value = 100i64)))
+    )
+  )
+  val iface = Iface(header = header("Shapes"), decls = decls, reexports = newList())
+  val text = dumpIface(iface, it)
+  assertTrue(text.contains("  pub const Shapes::Max: Int = 100\n"), text)
+  assertTrue(text.contains("  pub union Shapes::Shape\n"), text)
+  assertTrue(text.contains("  pub union case Shapes::Shape::Circle(radius: Double)\n"), text)
+  assertTrue(text.contains("  pub func Shapes::area(s: in Shapes::Shape): Double @pure\n"), text)
 }
