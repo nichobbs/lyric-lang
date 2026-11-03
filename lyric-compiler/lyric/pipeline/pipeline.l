@@ -165,6 +165,13 @@ pub record MiddleEndOptions {
   /// a method's overloads up by this count, so the call binds to the
   /// overload the checker resolved (#7828).
   methodCallAritiesOut: Map[String, Int]
+  /// Receives the type checker's `calleeSites` for the file (D334): the
+  /// function each bare or package-qualified call resolved to, as a rendered
+  /// DefPath, keyed by `Lyric.Parser.calleeSiteKey` of its callee.  A backend
+  /// binds the call to it rather than searching the bundle by name.  Empty
+  /// for a call the checker did not resolve to a declaration, which keeps the
+  /// backend's own lookup.
+  calleeSitesOut: Map[String, String] = newMap()
   /// Receives the type checker's `typeArgCalleeSites` for the file: the
   /// callees written as a generic function under explicit type arguments
   /// (`f[Int](...)`), which the `?` and `await` hoists leave in their calls
@@ -1814,6 +1821,12 @@ pub func pipeCheckFront(
   for ak in mapKeys(tcRes.symbols.methodCallArities) {
     match mapGet(tcRes.symbols.methodCallArities, ak) {
       case Some(n) -> if not opts.methodCallAritiesOut.containsKey(ak) { opts.methodCallAritiesOut.add(ak, n) }
+      case None -> ()
+    }
+  }
+  for ck in mapKeys(tcRes.symbols.calleeSites) {
+    match mapGet(tcRes.symbols.calleeSites, ck) {
+      case Some(dp) -> if not opts.calleeSitesOut.containsKey(ck) { opts.calleeSitesOut.add(ck, dp) }
       case None -> ()
     }
   }

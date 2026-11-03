@@ -17320,7 +17320,10 @@ func inferExprCore(
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
       match directSig {
-        case Some(ds) -> noteBareCalleeFunc(tbl, fn, ds.originPackage)
+        case Some(ds) -> {
+          noteBareCalleeFunc(tbl, fn, ds.originPackage)
+          recordCalleeSite(tbl, fn, ds)
+        }
         case None -> ()
       }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
@@ -22214,6 +22217,26 @@ func reportAmbiguousDefaultCall(
       span
     )
   )
+}
+
+// Record the function a call to the path `fn` resolved to (`calleeSites`,
+// D334).  A call inferred again replaces what an earlier inference recorded.
+func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
+  val path = match fn.kind { case EPath(p) -> p; case _ -> return }
+  if path.segments.count == 0 or isNoSourceSpan(fn.span) {
+    return
+  }
+  val name = path.segments[path.segments.count - 1]
+  val key = calleeSiteKey(fn)
+  match symTableFuncDefPathKey(tbl, sig, name) {
+    case Some(dp) -> {
+      if tbl.calleeSites.containsKey(key) {
+        tbl.calleeSites.remove(key)
+      }
+      tbl.calleeSites.add(key, dp)
+    }
+    case None -> ()
+  }
 }
 
 // T0219 for a bare callee `fn` (`f(...)`) bound to a function of `origin`

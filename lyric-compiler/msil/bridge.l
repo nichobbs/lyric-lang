@@ -140,6 +140,21 @@ func useMemberRecvClassesMsil(cctx: in CodegenCtx, classes: in Map[String, Strin
 // method-call arities the next `codegenMPackage` call dispatches by.  They
 // are keyed by source spans, which only mean something within the package
 // they were recorded for, so each package's codegen sees its own (#7828).
+// Make `sites` (one package's `MiddleEndOptions.calleeSitesOut`) the resolved
+// callees the next `codegenMPackage` call binds calls by.  Source spans only
+// mean something within the package they were recorded for (D334).
+func useCalleeSitesMsil(cctx: in CodegenCtx, sites: in Map[String, String]): Unit {
+  for k in mapKeys(cctx.calleeSites) {
+    cctx.calleeSites.remove(k)
+  }
+  for k in mapKeys(sites) {
+    match mapGet(sites, k) {
+      case Some(dp) -> cctx.calleeSites.add(k, dp)
+      case None -> ()
+    }
+  }
+}
+
 func useMethodCallAritiesMsil(cctx: in CodegenCtx, arities: in Map[String, Int]): Unit {
   for k in mapKeys(cctx.methodCallArities) {
     cctx.methodCallArities.remove(k)
@@ -307,6 +322,7 @@ pub func compileToMsilWithVersion(
   val singleFileOptsCheckedOut: List[SourceFile] = newList()
   val singleFileOptsRecvOut: Map[String, String] = newMap()
   val singleFileCallArities: Map[String, Int] = newMap()
+  val singleFileCalleeSites: Map[String, String] = newMap()
   val singleFileTypeArgCallees: Map[String, Bool] = newMap()
   val singleFileGenericItems: List[Item] = newList()
   val singleFileIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
@@ -324,6 +340,7 @@ pub func compileToMsilWithVersion(
     memberRecvClassesOut = singleFileOptsRecvOut,
     foreignRecvClasses = true,
     methodCallAritiesOut = singleFileCallArities,
+    calleeSitesOut = singleFileCalleeSites,
     typeArgCalleesOut = singleFileTypeArgCallees,
     genericItemsOut = singleFileGenericItems,
     foreignValueRecordsOut = newList(),
@@ -449,6 +466,7 @@ pub func compileToMsilWithVersion(
   // same way the type-checker / mode-checker error lists just above in this
   // pipeline gate the build, instead of proceeding to lower invalid IR.
   useMethodCallAritiesMsil(cctx, singleFileCallArities)
+  useCalleeSitesMsil(cctx, singleFileCalleeSites)
   useMemberRecvClassesMsil(cctx, singleFileOptsRecvOut)
   val pkg = codegenMPackage(liftedFile, cctx)
   if abortOnCodegenDiagnosticsMsil(cctx) {
@@ -927,6 +945,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val perPkgFiles: List[SourceFile] = newList()
   // Each package's `methodCallAritiesOut` (#7828), parallel to `perPkgFiles`.
   val perPkgCallArities: List[Map[String, Int]] = newList()
+  val perPkgCalleeSites: List[Map[String, String]] = newList()
   val perPkgRecvClasses: List[Map[String, String]] = newList()
   val perPkgTypeArgCallees: List[Map[String, Bool]] = newList()
   val perPkgGenericItems: List[List[Item]] = newList()
@@ -964,6 +983,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     val projOptsCheckedOut: List[SourceFile] = newList()
     val projOptsRecvOut: Map[String, String] = newMap()
     val projCallArities: Map[String, Int] = newMap()
+    val projCalleeSites: Map[String, String] = newMap()
     val projTypeArgCallees: Map[String, Bool] = newMap()
     val projGenericItems: List[Item] = newList()
     val projIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
@@ -981,6 +1001,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       memberRecvClassesOut = projOptsRecvOut,
       foreignRecvClasses = true,
       methodCallAritiesOut = projCallArities,
+      calleeSitesOut = projCalleeSites,
       typeArgCalleesOut = projTypeArgCallees,
       genericItemsOut = projGenericItems,
       foreignValueRecordsOut = newList(),
@@ -999,6 +1020,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
     perPkgFiles.add(monoFile)
     perPkgCallArities.add(projCallArities)
+    perPkgCalleeSites.add(projCalleeSites)
     perPkgRecvClasses.add(projOptsRecvOut)
     perPkgTypeArgCallees.add(projTypeArgCallees)
     perPkgGenericItems.add(projGenericItems)
@@ -1293,6 +1315,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   var ci = 0
   while ci < liftedFiles.count {
     useMethodCallAritiesMsil(cctx, perPkgCallArities[ci])
+    useCalleeSitesMsil(cctx, perPkgCalleeSites[ci])
     useMemberRecvClassesMsil(cctx, perPkgRecvClasses[ci])
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)

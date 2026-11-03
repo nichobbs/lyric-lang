@@ -679,6 +679,11 @@ pub record CodegenCtx {
   // `methodCallSiteKey`; set per package by the bridge).  Method dispatch
   // keys an overload by it, not by the number of arguments written (#7828).
   methodCallArities: Map[String, Int]
+  /// The function each bare or package-qualified call of the package being
+  /// lowered resolved to, as the checker's rendered DefPath, keyed by
+  /// `calleeSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D334; set per
+  /// package by the bridge).
+  calleeSites: Map[String, String]
   // The nominal class of each field-access receiver the type checker
   // resolved, keyed by `recordCopySiteKey` of the receiver's span (and
   // `<origin>|<key>` in a body specialised from another package's generic);
@@ -2553,6 +2558,7 @@ pub func newCodegenCtx(
     methodParamModes = newMap(),
     methodParamDecls = newMap(),
     methodCallArities = newMap(),
+    calleeSites = newMap(),
     memberRecvClasses = newMap(),
     restoredFuncParamTypes = newMap(),
     implEntries = newList(),
@@ -17148,6 +17154,23 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
+// The `Pkg.name` the checker's rendered callee DefPath (`Pkg::name(P1,P2)`)
+// names, "" when `dp` is not of that form (D334).
+func calleeFqnOfDefPathMsil(dp: in String): String {
+  match String.indexOf(dp, "::") {
+    case None -> ""
+    case Some(i) -> {
+      val pkg = String.substring(dp, 0, i)
+      val rest = String.substring(dp, i + 2, dp.length - i - 2)
+      val name = match String.indexOf(rest, "(") {
+        case Some(j) -> String.substring(rest, 0, j)
+        case None -> rest
+      }
+      pkg + "." + name
+    }
+  }
+}
+
 // Bundle-wide fallback for a bare (unqualified) call to a `pub func` whose
 // only path to the caller's package is TRANSITIVE — reachable through a
 // facade package's own imports, not a DIRECT import of the caller (issue
@@ -21853,6 +21876,18 @@ func lowerBuiltinOrStaticCallMsil(
               bundleFqn
             } else {
               ""
+            }
+            // TEMP-AUDIT (D334)
+            match mapGet(cctx.calleeSites, recordCopySiteKey(path.span)) {
+              case Some(dp) -> {
+                val sited = calleeFqnOfDefPathMsil(dp)
+                if resolvedFqn.length > 0 and sited != resolvedFqn {
+                  Console.error("CALLEE-AUDIT mismatch in " + fctx.pkgName + ": site=" + sited + " legacy=" + resolvedFqn)
+                }
+              }
+              case None -> if resolvedFqn.length > 0 and path.segments.count >= 1 {
+                Console.error("CALLEE-AUDIT nosite in " + fctx.pkgName + ": " + resolvedFqn)
+              }
             }
             if resolvedFqn.length > 0 {
               // Narrow to the arity-qualified token (#1536): a package may

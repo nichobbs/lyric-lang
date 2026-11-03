@@ -407,6 +407,12 @@ pub record SymbolTable {
   /// (`handlers[i](x)`, including an imported `pub val`) is a value, read
   /// before the arguments.
   typeArgCalleeSites: Map[String, Bool]
+  /// The function each bare or package-qualified call resolved to, keyed by
+  /// `Lyric.Parser.calleeSiteKey` of its callee, as the rendered DefPath of
+  /// the declaration (`Pkg::name(paramTypes)`, docs/70 §4.2).  The backends
+  /// bind the call to it instead of searching the bundle by name (docs/70
+  /// phase 2d, D334).
+  calleeSites: Map[String, String]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -902,6 +908,7 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     ownFuncValueSites = newMap(),
     typeArgCalleeSites = newMap(),
+    calleeSites = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
@@ -1729,6 +1736,27 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
     case Some(d) -> d.pkg
     case None -> "unknown declaration"
   }
+}
+
+/// The rendered DefPath of the function `sig` is the signature of, named
+/// `name` in its declaring package: the declaration whose span is the
+/// signature's.  None for a signature with no declaration of that name and
+/// span (a built-in, an `extern` member the resolver does not table).
+pub func symTableFuncDefPathKey(tbl: in SymbolTable, sig: in ResolvedSignature, name: in String): Option[String] {
+  if sig.originPackage.length == 0 {
+    return None
+  }
+  for s in symTableTryFindAllNamed(tbl, name) {
+    if s.originPackage == sig.originPackage and spanKey(s.declSpan) == spanKey(sig.span) {
+      match s.kind {
+        case DKFunc(decl) -> {
+          return Some(value = defPathKey(funcDefPath(s.originPackage, s.name, decl.params)))
+        }
+        case _ -> ()
+      }
+    }
+  }
+  None
 }
 
 // The symbol named `name` when no scope judges the lookup (a synthesised
