@@ -679,6 +679,11 @@ pub record CodegenCtx {
   // `methodCallSiteKey`; set per package by the bridge).  Method dispatch
   // keys an overload by it, not by the number of arguments written (#7828).
   methodCallArities: Map[String, Int]
+  /// The function each bare or package-qualified call of the package being
+  /// lowered resolved to, as the checker's rendered DefPath, keyed by
+  /// `methodCallSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D336; set per
+  /// package by the bridge).
+  calleeSites: Map[String, String]
   // The nominal class of each field-access receiver the type checker
   // resolved, keyed by `recordCopySiteKey` of the receiver's span (and
   // `<origin>|<key>` in a body specialised from another package's generic);
@@ -2553,6 +2558,7 @@ pub func newCodegenCtx(
     methodParamModes = newMap(),
     methodParamDecls = newMap(),
     methodCallArities = newMap(),
+    calleeSites = newMap(),
     memberRecvClasses = newMap(),
     restoredFuncParamTypes = newMap(),
     implEntries = newList(),
@@ -17148,6 +17154,37 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
+// The `Pkg.name` the checker's rendered callee DefPath (`Pkg::name(P1,P2)`)
+// names, "" when `dp` is not of that form (D336).
+func calleeFqnOfDefPathMsil(dp: in String): String {
+  match String.indexOf(dp, "::") {
+    case None -> ""
+    case Some(i) -> {
+      val pkg = String.substring(dp, 0, i)
+      val rest = String.substring(dp, i + 2, dp.length - i - 2)
+      val name = match String.indexOf(rest, "(") { case Some(j) -> String.substring(rest, 0, j); case None -> rest }
+      pkg + "." + name
+    }
+  }
+}
+
+// The function the checker resolved the call at `siteKey` to when it is the
+// function `funcName` (so a call a later pass renamed does not match) and the
+// bundle has it, else "" (D336).
+func sitedCalleeFqnMsil(cctx: in CodegenCtx, siteKey: in String, funcName: in String): String {
+  match mapGet(cctx.calleeSites, siteKey) {
+    case None -> ""
+    case Some(dp) -> {
+      val fqn = calleeFqnOfDefPathMsil(dp)
+      if fqn.length > 0 and String.endsWith(fqn, "." + funcName) and cctx.funcTokens.containsKey(fqn) {
+        fqn
+      } else {
+        ""
+      }
+    }
+  }
+}
+
 // Bundle-wide fallback for a bare (unqualified) call to a `pub func` whose
 // only path to the caller's package is TRANSITIVE — reachable through a
 // facade package's own imports, not a DIRECT import of the caller (issue
@@ -21839,8 +21876,15 @@ func lowerBuiltinOrStaticCallMsil(
             // keeps it out of this gate and `qualifiedFqn` resolves it below.
             val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
               cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
+            // The function the checker resolved this call to (D336): the
+            // declaring package's own, whatever tier below would have found.
+            // Empty for a call the checker did not record, and for one a
+            // later pass renamed (a monomorphised copy), which keep the tiers.
+            val sitedFqn = sitedCalleeFqnMsil(cctx, methodCallPathKey(path), funcName)
             val resolvedFqn = if bareSiblingHit {
               ""
+            } else if sitedFqn.length > 0 {
+              sitedFqn
             } else if qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn) {
               qualifiedFqn
             } else if originFqn.length > 0 {
@@ -23082,6 +23126,27 @@ func lowerMethodCallMsil(
       }
     } else {
       ""
+    }
+    // A call through a package qualifier the checker resolved (`Alias.f`,
+    // `Pkg.f`): the declaring package's function, whatever the qualifier
+    // spells (D336).
+    val sitedMemberFqn = sitedCalleeFqnMsil(cctx, siteKey, memberName)
+    if sitedMemberFqn.length > 0 and not fctx.slots.containsKey(recvSegs[0]) {
+      val sitedSegs = String.split(sitedMemberFqn, ".")
+      val sitedPath: List[String] = newList()
+      var sgi = 0
+      while sgi < sitedSegs.length {
+        sitedPath.add(sitedSegs[sgi])
+        sgi = sgi + 1
+      }
+      return lowerBuiltinOrStaticCallMsil(
+        cctx,
+        fctx,
+        insns,
+        memberName,
+        ModulePath(segments = sitedPath, span = recv.span),
+        args
+      )
     }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)

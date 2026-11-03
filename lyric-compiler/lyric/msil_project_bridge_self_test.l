@@ -340,6 +340,36 @@ test "bundle-wide fallback never selects a package-private function (#6851)" {
   assertEqual(Str.trim(result.stdout), "42", "bare_call_skips_package_private: resolves pub target, not private -999")
 }
 
+// D336: a bare call binds to the function the checker resolved it to, not to
+// whichever candidate the bundle-wide name search ranks first.  `XSite.Priv`
+// is imported first and declares a package-private `pick` (it is not visible
+// to `XSite.App`) beside a `pub` caller of it; `XSite.Pub` declares the `pub`
+// `pick` the call means.  Both imports are whole, so the name search sees two
+// candidates and cannot tell which of them the file may use.
+test "a bare call binds to the checker's callee, not a same-named private function (D336)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XSite.Priv",
+      "package XSite.Priv\n" + "\n" + "func pick(x: in Int): Int { x + 100 }\n" + "\n" +
+        "pub func other(x: in Int): Int { pick(x) }\n"
+    )
+  )
+  packages.add(mkPkg("XSite.Pub", "package XSite.Pub\n" + "\n" + "pub func pick(x: in Int): Int { x + 1 }\n"))
+  packages.add(
+    mkPkg(
+      "XSite.App",
+      "package XSite.App\n" + "\n" + "import XSite.Priv\n" + "import XSite.Pub\n" + "\n" + "func main(): Unit {\n" +
+        "  println(pick(1))\n" +
+        "  println(other(1))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xsite", packages, "XSite")
+  assertEqualInt(result.exitCode, 0, "site_callee: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2\n101", "site_callee: pick is the pub one, other reaches its own private pick")
+}
+
 // Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
 // direct-import tie-break tiers must key on EXACT package identity, not a
 // string prefix. `XNest.App.Inner` is a nested SUB-package of the caller

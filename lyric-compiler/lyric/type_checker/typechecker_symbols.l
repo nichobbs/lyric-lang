@@ -407,6 +407,12 @@ pub record SymbolTable {
   /// (`handlers[i](x)`, including an imported `pub val`) is a value, read
   /// before the arguments.
   typeArgCalleeSites: Map[String, Bool]
+  /// The function each bare or package-qualified call resolved to, keyed by
+  /// `Lyric.Parser.methodCallSiteKey` of its callee, as the rendered DefPath of
+  /// the declaration (`Pkg::name(paramTypes)`, docs/70 §4.2).  The backends
+  /// bind the call to it instead of searching the bundle by name (docs/70
+  /// phase 2d, D336).
+  calleeSites: Map[String, String]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -902,6 +908,7 @@ pub func newSymbolTable(): SymbolTable {
     funcRefCallees = newMap(),
     ownFuncValueSites = newMap(),
     typeArgCalleeSites = newMap(),
+    calleeSites = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
@@ -1729,6 +1736,45 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
     case Some(d) -> d.pkg
     case None -> "unknown declaration"
   }
+}
+
+/// The rendered DefPath of the function `sig` is the signature of, named
+/// `name` in its declaring package: the declaration whose span is the
+/// signature's.  None for a signature with no declaration of that name and
+/// span (a built-in, an `extern` member the resolver does not table).  With
+/// `allowArityMatch`, a signature whose span no declaration has (a
+/// dependency's) takes the one same-named function of its package with its
+/// parameter count.
+pub func symTableFuncDefPathKey(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  name: in String,
+  allowArityMatch: in Bool,
+): Option[String] {
+  if sig.originPackage.length == 0 {
+    return None
+  }
+  val sameArity: List[String] = newList()
+  for s in symTableTryFindAllNamed(tbl, name) {
+    if s.originPackage == sig.originPackage {
+      match s.kind {
+        case DKFunc(decl) -> {
+          val key = defPathKey(funcDefPath(s.originPackage, s.name, decl.params))
+          if spanKey(s.declSpan) == spanKey(sig.span) {
+            return Some(value = key)
+          }
+          if decl.params.count == sig.params.count and not sameArity.contains(key) {
+            sameArity.add(key)
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  if allowArityMatch and sameArity.count == 1 {
+    return Some(value = sameArity[0])
+  }
+  None
 }
 
 // The symbol named `name` when no scope judges the lookup (a synthesised

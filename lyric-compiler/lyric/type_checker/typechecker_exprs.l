@@ -17320,7 +17320,10 @@ func inferExprCore(
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
       match directSig {
-        case Some(ds) -> noteBareCalleeFunc(tbl, fn, ds.originPackage)
+        case Some(ds) -> {
+          noteBareCalleeFunc(tbl, fn, ds.originPackage)
+          recordCalleeSite(tbl, fn, ds)
+        }
         case None -> ()
       }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
@@ -22214,6 +22217,45 @@ func reportAmbiguousDefaultCall(
       span
     )
   )
+}
+
+// Record the function a call through `fn` resolved to (`calleeSites`, D336),
+// under `methodCallSiteKey` of the callee: a bare or package-qualified path,
+// or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
+// replaces what an earlier inference recorded.
+func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
+  if isNoSourceSpan(fn.span) {
+    return
+  }
+  var name = ""
+  var allowArity = false
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count == 0 {
+        return
+      }
+      name = path.segments[path.segments.count - 1]
+      allowArity = true
+    }
+    case EMember(recv, member) -> {
+      val segs: List[String] = newList()
+      if not calleeSegments(recv, segs) or modulePathJoin(segs) != sig.originPackage {
+        return
+      }
+      name = member
+    }
+    case _ -> return
+  }
+  val key = methodCallSiteKey(fn)
+  match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
+    case Some(dp) -> {
+      if tbl.calleeSites.containsKey(key) {
+        tbl.calleeSites.remove(key)
+      }
+      tbl.calleeSites.add(key, dp)
+    }
+    case None -> ()
+  }
 }
 
 // T0219 for a bare callee `fn` (`f(...)`) bound to a function of `origin`
