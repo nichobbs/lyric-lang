@@ -187,7 +187,7 @@ func userTy(
 
 /// The type a `where` constraint names: the interface declaration it resolves
 /// to, or, for a marker with no declaration (a derive marker such as `Equatable`),
-/// the path `marker::<name>` interned like any DefPath (D325).
+/// the path `marker::<name>` interned like any DefPath (D327).
 pub func boundTy(bc: in BuildCtx, written: in String, targs: in List[Ty]): Ty {
   match constraintInterfaceSym(bc.tbl, written) {
     case Some(sym) -> match symbolTypeIdOpt(sym) {

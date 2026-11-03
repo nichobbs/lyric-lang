@@ -1,4 +1,4 @@
-# D325 - The interface producer: `Lyric.IfaceBuild` builds a package's `Iface` from its checked source (docs/70 phase 5a, #8615)
+# D327 - The interface producer: `Lyric.IfaceBuild` builds a package's `Iface` from its checked source (docs/70 phase 5a, #8615)
 
 **Status:** shipped (producer only). Third slice of phase 5a, after D321 and
 D324. Format version 3. Embedding in DLL, JAR and native outputs, the round-trip

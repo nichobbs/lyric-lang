@@ -8,7 +8,7 @@
 //! against the checked package's symbol table) and converted to `Ty`
 //! (`Lyric.IfaceConv`).  Only what a consumer can name is recorded: `pub` and
 //! `internal` declarations, and extern types.  Default values, contracts and
-//! bodies are not recorded yet (D325).
+//! bodies are not recorded yet (D327).
 package Lyric.IfaceBuild
 
 import Std.Core

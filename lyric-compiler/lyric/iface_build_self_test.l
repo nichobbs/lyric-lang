@@ -1,4 +1,4 @@
-//! iface_build_self_test.l - the interface producer (docs/70 §9.2, §9.3, D325).
+//! iface_build_self_test.l - the interface producer (docs/70 §9.2, §9.3, D327).
 //!
 //! Builds the interface of small checked packages and compares the dump: every
 //! declaration kind, generics with bounds, `Self`, ranges, constants, visibility

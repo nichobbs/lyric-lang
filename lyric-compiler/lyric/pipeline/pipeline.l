@@ -187,7 +187,7 @@ pub record MiddleEndOptions {
   /// value parameters instead; they pass a list and ignore it.
   foreignValueRecordsOut: List[ForeignValueRecord]
   /// Whether `pipeCheckAndMono` builds the package's interface (docs/70 §9,
-  /// D325) from the type-checked file into `interfaceOut`.  Off by default:
+  /// D327) from the type-checked file into `interfaceOut`.  Off by default:
   /// only a build that embeds the interface asks for it.
   buildInterface: Bool = false
   /// The backends the interface header lists as the build's target set.
