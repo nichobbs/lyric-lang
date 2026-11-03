@@ -4302,12 +4302,12 @@ test "element writes outside an array variable fail closed (#8394)" {
 
 test "a buffer is a value whose elements a write through its binding changes (#8394)" {
   val sig = "func f(x: in buffer[Int]): Int\n"
-  assertDischarged(sig + "  ensures: true\n{\n  if x.length > 0 {\n    x[0]\n  } else {\n    0\n  }\n}\n", "read-under-length")
-  assertRefuted(sig + "  ensures: true\n{\n  x[0]\n}\n", "read-no-bounds-facts")
   assertDischarged(
-    sig + "  requires: x.length > 1\n  ensures: result == x[1]\n{\n  x[1]\n}\n",
-    "read-is-the-element"
+    sig + "  ensures: true\n{\n  if x.length > 0 {\n    x[0]\n  } else {\n    0\n  }\n}\n",
+    "read-under-length"
   )
+  assertRefuted(sig + "  ensures: true\n{\n  x[0]\n}\n", "read-no-bounds-facts")
+  assertDischarged(sig + "  requires: x.length > 1\n  ensures: result == x[1]\n{\n  x[1]\n}\n", "read-is-the-element")
   assertDischarged(
     "func f(x: in buffer[Int]): Bool\n  requires: x.length > 0\n  ensures: result\n{\n  x[0] == x[0]\n}\n",
     "same-element-twice"
@@ -4328,7 +4328,8 @@ test "a buffer is a value whose elements a write through its binding changes (#8
   )
   assertRefuted(sig + "  ensures: true\n{\n  var b = x\n  b[1] = 7\n  0\n}\n", "write-no-bounds-facts")
   assertDischarged(
-    sig + w + "  requires: x[0] > -1000 and x[0] < 1000\n  ensures: result == x[0] + 1\n{\n  var b = x\n  b[0] += 1\n  b[0]\n}\n",
+    sig + w +
+      "  requires: x[0] > -1000 and x[0] < 1000\n  ensures: result == x[0] + 1\n{\n  var b = x\n  b[0] += 1\n  b[0]\n}\n",
     "compound-element-write"
   )
   assertCheckedRefuted(sig + w + "{\n  var b = x\n  b[0] += 1\n  0\n}\n", "compound-element-overflow")

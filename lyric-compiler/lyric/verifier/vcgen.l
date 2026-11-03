@@ -391,7 +391,8 @@ func sortOfTypeExprDepthRaw(
     }
     case TGenericApp(head, args) -> {
       val builtinBuffer = head.segments.count == 1 and head.segments[0] == "buffer" and args.count == 1 and
-        not typeScope.contains("buffer") and distincts.containsKey(builtinBufferKey())
+        not typeScope.contains("buffer") and
+        distincts.containsKey(builtinBufferKey())
       if builtinBuffer {
         match args[0] {
           case TAType(elt) -> {
