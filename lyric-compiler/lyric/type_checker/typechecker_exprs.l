@@ -4281,7 +4281,8 @@ func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in St
 func isBuiltinDefaultCall(sigs: in Map[String, ResolvedSignature], e: in Expr): Bool {
   match e.kind {
     case ECall(fn, cargs) -> match fn.kind {
-      case EPath(p) -> p.segments.count == 1 and p.segments[0] == "default" and cargs.count == 0 and
+      case EPath(p) -> p.segments.count == 1 and p.segments[0] == "default" and
+        cargs.count == 0 and
         not sigs.containsKey("default")
       case _ -> false
     }
