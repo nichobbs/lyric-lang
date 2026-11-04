@@ -3278,13 +3278,13 @@ test "annotated binding lambda return mismatch diagnosed" {
 test "generic callee lambda param typed by substitution from sibling arg" {
   // T is inferred Int from the second argument; the lambda's expected type
   // becomes (Int) -> Bool after TyParam substitution.
-  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
+  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "generic expectation substituted to (Int) -> Bool: no errors")
 }
 
 test "generic callee lambda body error diagnosed after substitution" {
-  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n + true }, 5)\n}\n"
+  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n + true }, 5)\n}\n"
   val cr = parseCheck(src)
   assertTrue(
     hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
@@ -3537,6 +3537,9 @@ test "a defaulted generic parameter left unsupplied binds nothing" {
   assertEqual(diagCodesOf(parseCheck(src)), "", "pick(5) is Int and pick(\"x\") is String")
   val bad = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](a: in T, b: in Option[T] = None): T { a }\nfunc f(): String { pick(5) }\n"
   assertTrue(diagCount(parseCheck(bad)) > 0, "pick(5) is not a String")
+  val open = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc both[T](a: in Option[T], b: in T): T { b }\n" +
+    "func f(): Int { both(None, 5) }\n"
+  assertEqual(diagCodesOf(parseCheck(open)), "", "both(None, 5) is Int: the later argument fixes T")
 }
 
 // Component-wise derives on records (D155): only Add and Sub, only on a
