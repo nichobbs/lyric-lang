@@ -14834,23 +14834,11 @@ test "a universal method with the wrong arity stays untyped" {
   )
 }
 
-test ".new on an extern type is that type, and default() adopts its expected type" {
-  val ext = "package P\nextern type SB = \"System.Text.StringBuilder\"\n"
-  assertEqual(diagCodesOf(parseCheck(ext + "func f(): SB {\n  SB.new()\n}\n")), "", "SB.new() is an SB")
-  assertTrue(diagCodesOf(parseCheck(ext + "func f(): Int {\n  SB.new()\n}\n")) != "", "SB.new() is not an Int")
+test "default() adopts its expected type, and a user default() is an ordinary call" {
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(): Int {\n  var v: Int = default()\n  v\n}\n")),
     "",
     "default() adopts the annotation"
-  )
-}
-
-test "an extern alias of the host string type constructs a String, and a user default() is an ordinary call" {
-  val ext = "package P\nextern type JString = \"java.lang.String\"\n"
-  assertEqual(
-    diagCodesOf(parseCheck(ext + "func f(): String {\n  JString.new(\"x\")\n}\n")),
-    "",
-    "JString.new(...) is a String"
   )
   assertTrue(
     diagCodesOf(

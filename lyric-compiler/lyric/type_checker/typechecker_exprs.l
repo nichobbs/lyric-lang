@@ -4251,40 +4251,6 @@ func universalMethodResultType(name: in String, argc: in Int): Type {
   tyErrorSilent()
 }
 
-// The host's own string type is Lyric's `String` (an `extern type` alias of it
-// constructs one: `JString.new(bytes, "UTF-8")`).
-func isHostStringTypeName(clrName: in String): Bool {
-  clrName == "java.lang.String" or clrName == "System.String"
-}
-
-// The result of a member call whose receiver declares no signature for it:
-// `T.new(args)` on an `extern type T` (docs/48) constructs a `T`; a universal
-// method has its fixed result type.  Anything else has no rule.
-func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in String, argc: in Int): Type {
-  if memberName == "new" {
-    match fn.kind {
-      case EMember(recv, _) -> match recv.kind {
-        case EPath(p) -> if p.segments.count == 1 {
-          match symTableTryFindOne(tbl, p.segments[0]) {
-            case Some(sym) -> match sym.kind {
-              case DKExternType(tid, d) -> return if isHostStringTypeName(d.clrName) {
-                TyPrim(pt = PtString)
-              } else {
-                TyUser(id = tid, name = d.name, args = newList())
-              }
-              case _ -> ()
-            }
-            case None -> ()
-          }
-        }
-        case _ -> ()
-      }
-      case _ -> ()
-    }
-  }
-  universalMethodResultType(memberName, argc)
-}
-
 // `default()` has the type its context expects (docs/01): with a known
 // expected type the call adopts it; without one it stays untyped.  A user
 // function named `default` is an ordinary call.
@@ -18622,7 +18588,7 @@ func inferExprCore(
                             case None -> tyErrorSilent()
                           }
                           case None -> if isMemberCallee {
-                            untypedMemberCallResult(tbl, fn, memberName, args.count)
+                            universalMethodResultType(memberName, args.count)
                           } else {
                             tyErrorSilent()
                           }
