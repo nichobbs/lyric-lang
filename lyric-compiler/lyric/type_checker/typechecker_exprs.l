@@ -11695,7 +11695,7 @@ func censusJoinSegments(xs: in List[String]): String {
   var out2 = ""
   var i = 0
   while i < xs.count {
-    out2 = out2 + (if i == 0 { "" } else { "." }) + xs.get(i)
+    out2 = out2 + (if i == 0 { "" } else { "." }) + xs[i]
     i = i + 1
   }
   out2
