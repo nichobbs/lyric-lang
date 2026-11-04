@@ -14865,3 +14865,18 @@ test "a universal method with the wrong arity stays untyped" {
     "toString(1) has no rule"
   )
 }
+
+test "default() adopts its expected type, and a user default() is an ordinary call" {
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nfunc f(): Int {\n  var v: Int = default()\n  v\n}\n")),
+    "",
+    "default() adopts the annotation"
+  )
+  assertTrue(
+    diagCodesOf(
+      parseCheck("package P\nfunc default(): String {\n  \"s\"\n}\nfunc f(): Int {\n  var v: Int = default()\n  v\n}\n")
+    ) !=
+      "",
+    "a user-defined default() keeps its own result type"
+  )
+}

@@ -4251,6 +4251,21 @@ func universalMethodResultType(name: in String, argc: in Int): Type {
   tyErrorSilent()
 }
 
+// `default()` has the type its context expects (docs/01): with a known
+// expected type the call adopts it; without one it stays untyped.  A user
+// function named `default` is an ordinary call.
+func isBuiltinDefaultCall(sigs: in Map[String, ResolvedSignature], e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> p.segments.count == 1 and p.segments[0] == "default" and
+        cargs.count == 0 and
+        not sigs.containsKey("default")
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
@@ -20181,6 +20196,9 @@ func inferExprExpectedCore(
   expected: in Type,
 ): Type {
   noteExpectedFlow(sc, tbl, e, expected)
+  if not typeIsHole(expected) and isBuiltinDefaultCall(sigs, e) {
+    return expected
+  }
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {
     return adoptFloatLiteralType(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
   }
