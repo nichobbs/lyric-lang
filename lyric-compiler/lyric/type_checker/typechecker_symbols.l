@@ -858,6 +858,11 @@ pub record UnsolvedCallSite {
   /// The checker cannot tell whether the call is unsolved: an argument it
   /// typed `TyError`, or an open binding it passes. Never reported.
   indeterminate: Bool
+  /// A constructor call (`Ok(value = 7)`), not a function call: an open
+  /// binding that holds it counts as fixing it only once the binding got an
+  /// annotation, and it is reported as W0038 while the function-call rule is
+  /// the error T0224 (D352).
+  ctor: Bool
 }
 
 /// A call that is an argument of a generic call (D339): the parent's callee,
