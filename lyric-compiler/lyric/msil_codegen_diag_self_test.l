@@ -546,14 +546,15 @@ test "hint-less @externTarget instance method verified by metadata still compile
 }
 
 // ─── F0047: untyped module-level val whose type could not be predicted ──────
-// The pre-scan cannot predict a chained-call initializer's type, so it types
+// The pre-scan cannot predict an extern property read's type (the checker has
+// no rule for host properties yet), so it types
 // readers of `big0047` as `object` while the field is really `int32`.  That
 // disagreement across a value type used to be silent IL corruption (an
 // uncatchable AccessViolationException at the first unbox); it must now be a
 // positioned build diagnostic on the initializer.
 test "F0047: untyped module-level val with an unpredictable value-type initializer fails cleanly" {
-  val src = "package F0047App\n" + "\n" + "func cond0047(): Bool = true\n" +
-    "val big0047 = cond0047().toString().length\n" +
+  val src = "package F0047App\n" + "\n" + "extern type Sb0047 = \"System.Text.StringBuilder\"\n" +
+    "val big0047 = Sb0047.new().Length\n" +
     "\n" +
     "func main(): Unit {\n" +
     "  println(toString(big0047 + 1))\n" +
