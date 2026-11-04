@@ -1463,7 +1463,7 @@ func renderType(cr: in CheckResult, ty: in Type): String {
     case TyParam(n, _) -> n
     case TyInfer(i) -> "?" + toString(i)
     case TyLen(n) -> toString(n)
-    case TyError -> "<error>"
+    case TyError(_) -> "<error>"
     case TyException -> "Exception"
   }
 }

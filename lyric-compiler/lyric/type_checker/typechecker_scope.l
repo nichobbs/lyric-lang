@@ -99,13 +99,13 @@ pub func newScope(): Scope {
   Scope(
     bindings = bindings,
     frameStarts = starts,
-    returnTy = TyError,
+    returnTy = tyErrorSilent(),
     genericNames = newList(),
     genericOwners = newList(),
     returnTyExpr = noReturnTyExpr,
     selfFields = noSelfFields,
     selfChecked = false,
-    selfType = TyError,
+    selfType = tyErrorSilent(),
     contractDepth = newList(),
     bounds = newList()
   )

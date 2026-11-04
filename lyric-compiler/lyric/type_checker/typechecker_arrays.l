@@ -417,7 +417,7 @@ func classifyArrayIndex(tbl: in SymbolTable, idxTy: in Type, n: in Int): IndexKi
       }
       case None -> badIndex()
     }
-    case TyError -> IndexKind(kind = "", elide = false, wide = false)
+    case TyError(_) -> IndexKind(kind = "", elide = false, wide = false)
     case TyParam(_, _) -> IndexKind(kind = "", elide = false, wide = false)
     case _ -> badIndex()
   }
@@ -906,7 +906,7 @@ func zeroRecord(
       case RMField(fd) -> match fd.dflt {
         case Some(_) -> ()
         case None -> {
-          var fty: Type = TyError
+          var fty: Type = tyErrorSilent()
           for fe in fields {
             if fe.name == fd.name {
               fty = fe.ty

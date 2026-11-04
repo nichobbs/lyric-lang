@@ -415,7 +415,7 @@ func checkTestBody(
     span = decl.span
   )
   val sig = resolveFunctionSig(tbl, diag, pkgName, fn)
-  checkFunctionBody(tbl, sigs, diag, fn, sig, noLocals, noLocals, false, TyError)
+  checkFunctionBody(tbl, sigs, diag, fn, sig, noLocals, noLocals, false, tyErrorSilent())
 }
 
 // The diagnostics of `pkgDiag` that fall inside a dependency's exported
@@ -1583,7 +1583,7 @@ func canonicalDotNamedName(
   val canonical = match unrefine(t) {
     case TyUser(_, n, targs) -> if targs.count == 0 { n } else { "" }
     case TyPrim(pt) -> primName(pt)
-    case TyError -> return decl.name
+    case TyError(_) -> return decl.name
     case _ -> ""
   }
   if canonical.length == 0 {
@@ -3619,7 +3619,7 @@ func checkMethodContracts(
     combined.add(g)
   }
   val noFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(rsig.returnTy, combined, ret, noFields, false, TyError)
+  val sc = newScopeForFunction(rsig.returnTy, combined, ret, noFields, false, tyErrorSilent())
   scopeSetGenericOwners(sc, combinedOwners(ownerKey, ownerGenerics.count, rsig.genericOwners))
   for p in rsig.params {
     val isMut = match p.mode { case PMIn -> false; case _ -> true }
@@ -3810,9 +3810,9 @@ func protectedSelfType(tbl: in SymbolTable, decl: in ProtectedTypeDecl, ownerGen
         }
         TyUser(id = tid, name = decl.name, args = targs)
       }
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
-    case None -> TyError
+    case None -> tyErrorSilent()
   }
 }
 
@@ -4102,9 +4102,9 @@ func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List
         }
         TyUser(id = tid, name = name, args = targs)
       }
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
-    case None -> TyError
+    case None -> tyErrorSilent()
   }
 }
 
@@ -4175,9 +4175,9 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
         }
         TyUser(id = tid, name = decl.name, args = targs)
       }
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
-    case None -> TyError
+    case None -> tyErrorSilent()
   }
 }
 
@@ -5392,7 +5392,7 @@ func checkDeclaredInit(
 ): Unit {
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, TyError)
+  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, tyErrorSilent())
   checkDeclaredInitIn(sc, tbl, sigs, diag, genericNames, te, init, subject, initNoun, sp)
 }
 
@@ -5530,7 +5530,7 @@ func checkWireInits(
   val noGenerics: List[String] = newList()
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, TyError)
+  val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, tyErrorSilent())
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
   // A member spliced from a wire template carries references qualified for
@@ -5722,7 +5722,7 @@ func checkItemDeclaredInits(
         case None -> {
           val noRte: Option[TypeExpr] = None
           val noSelfFields: Map[String, Type] = newMap()
-          val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, TyError)
+          val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, tyErrorSilent())
           val _ = inferExpr(sc, tbl, sigs, diag, decl.init)
         }
       }
@@ -7343,7 +7343,17 @@ func checkWithImportedPackagesCore(
         val noExtraLocals: List[LocalBinding] = newList()
         val arityKey = decl.name + "/" + toString(decl.params.count)
         match mapGet(sigs, arityKey) {
-          case Some(sig) -> checkFunctionBody(tbl, sigs, diag, decl, sig, noExtraLocals, noExtraLocals, false, TyError)
+          case Some(sig) -> checkFunctionBody(
+            tbl,
+            sigs,
+            diag,
+            decl,
+            sig,
+            noExtraLocals,
+            noExtraLocals,
+            false,
+            tyErrorSilent()
+          )
           case None -> match mapGet(sigs, decl.name) {
             case Some(sig) -> checkFunctionBody(
               tbl,
@@ -7354,7 +7364,7 @@ func checkWithImportedPackagesCore(
               noExtraLocals,
               noExtraLocals,
               false,
-              TyError
+              tyErrorSilent()
             )
             case None -> {
             }

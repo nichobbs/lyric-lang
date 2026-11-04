@@ -586,13 +586,13 @@ func inferModuleValInit(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignat
   val scratch: List[Diagnostic] = newList()
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
+  val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, tyErrorSilent())
   inferExpr(emptyScope, tbl, sigs, scratch, init)
 }
 
 func recordModuleValType(tbl: in SymbolTable, name: in String, ty: in Type, sp: in Span): Unit {
   val usable = match unrefine(ty) {
-    case TyError -> false
+    case TyError(_) -> false
     case TyPrim(pt) -> match pt { case PtUnit -> false; case PtNever -> false; case _ -> true }
     case _ -> true
   }
@@ -614,7 +614,7 @@ func tupleShapeProblem(p: in Pattern, ty: in Type): String {
     case PParen(ip) -> tupleShapeProblem(ip, ty)
     case PBinding(_, inner) -> match inner { case Some(ip) -> tupleShapeProblem(ip, ty); case None -> "" }
     case PTuple(ps) -> match unrefine(ty) {
-      case TyError -> ""
+      case TyError(_) -> ""
       case TyParam(_, _) -> ""
       case TyTuple(elems) -> {
         if elems.count != ps.count {
