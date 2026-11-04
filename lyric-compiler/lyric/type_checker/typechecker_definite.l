@@ -100,14 +100,14 @@ pub func checkDefiniteAssignment(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  genericNames: in List[String],
+  gsc: in Scope,
   body: in Option[FunctionBody],
 ): Unit {
   match body {
     case None -> ()
     case Some(b) -> match b {
-      case FBBlock(blk) -> findDeclsBlock(tbl, sigs, diag, genericNames, blk)
-      case FBExpr(e) -> findDeclsExpr(tbl, sigs, diag, genericNames, e)
+      case FBBlock(blk) -> findDeclsBlock(tbl, sigs, diag, gsc, blk)
+      case FBExpr(e) -> findDeclsExpr(tbl, sigs, diag, gsc, e)
     }
   }
 }
@@ -116,7 +116,7 @@ func findDeclsBlock(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  gnames: in List[String],
+  gsc: in Scope,
   blk: in Block,
 ): Unit {
   var i = 0
@@ -126,11 +126,11 @@ func findDeclsBlock(
       case SLocal(lb) -> match lb {
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
-            case Some(ie) -> findDeclsExpr(tbl, sigs, diag, gnames, ie)
+            case Some(ie) -> findDeclsExpr(tbl, sigs, diag, gsc, ie)
             case None -> match tyOpt {
               case Some(te) -> {
                 val ctx = newGenericContext()
-                gctxPush(ctx, gnames)
+                gctxPushScope(ctx, gsc)
                 val scratch: List[Diagnostic] = newList()
                 val declT = resolveType(tbl, ctx, scratch, te)
                 if typeNeedsAssignment(tbl, declT) {
@@ -150,37 +150,37 @@ func findDeclsBlock(
             }
           }
         }
-        case LBVal(_, _, ie) -> findDeclsExpr(tbl, sigs, diag, gnames, ie)
-        case LBLet(_, _, ie) -> findDeclsExpr(tbl, sigs, diag, gnames, ie)
+        case LBVal(_, _, ie) -> findDeclsExpr(tbl, sigs, diag, gsc, ie)
+        case LBLet(_, _, ie) -> findDeclsExpr(tbl, sigs, diag, gsc, ie)
       }
       case SAssign(t, _, v) -> {
-        findDeclsExpr(tbl, sigs, diag, gnames, t)
-        findDeclsExpr(tbl, sigs, diag, gnames, v)
+        findDeclsExpr(tbl, sigs, diag, gsc, t)
+        findDeclsExpr(tbl, sigs, diag, gsc, v)
       }
-      case SReturn(vo) -> match vo { case Some(v) -> findDeclsExpr(tbl, sigs, diag, gnames, v); case None -> () }
-      case SThrow(e) -> findDeclsExpr(tbl, sigs, diag, gnames, e)
+      case SReturn(vo) -> match vo { case Some(v) -> findDeclsExpr(tbl, sigs, diag, gsc, v); case None -> () }
+      case SThrow(e) -> findDeclsExpr(tbl, sigs, diag, gsc, e)
       case STry(b, catches, fin) -> {
-        findDeclsBlock(tbl, sigs, diag, gnames, b)
+        findDeclsBlock(tbl, sigs, diag, gsc, b)
         for c in catches {
-          findDeclsBlock(tbl, sigs, diag, gnames, c.body)
+          findDeclsBlock(tbl, sigs, diag, gsc, c.body)
         }
         match fin {
-          case Some(f) -> findDeclsBlock(tbl, sigs, diag, gnames, f)
+          case Some(f) -> findDeclsBlock(tbl, sigs, diag, gsc, f)
           case None -> ()
         }
       }
-      case SDefer(b) -> findDeclsBlock(tbl, sigs, diag, gnames, b)
-      case SScope(_, b) -> findDeclsBlock(tbl, sigs, diag, gnames, b)
+      case SDefer(b) -> findDeclsBlock(tbl, sigs, diag, gsc, b)
+      case SScope(_, b) -> findDeclsBlock(tbl, sigs, diag, gsc, b)
       case SFor(_, _, it, b) -> {
-        findDeclsExpr(tbl, sigs, diag, gnames, it)
-        findDeclsBlock(tbl, sigs, diag, gnames, b)
+        findDeclsExpr(tbl, sigs, diag, gsc, it)
+        findDeclsBlock(tbl, sigs, diag, gsc, b)
       }
       case SWhile(_, c, b) -> {
-        findDeclsExpr(tbl, sigs, diag, gnames, c)
-        findDeclsBlock(tbl, sigs, diag, gnames, b)
+        findDeclsExpr(tbl, sigs, diag, gsc, c)
+        findDeclsBlock(tbl, sigs, diag, gsc, b)
       }
-      case SLoop(_, b) -> findDeclsBlock(tbl, sigs, diag, gnames, b)
-      case SExpr(e) -> findDeclsExpr(tbl, sigs, diag, gnames, e)
+      case SLoop(_, b) -> findDeclsBlock(tbl, sigs, diag, gsc, b)
+      case SExpr(e) -> findDeclsExpr(tbl, sigs, diag, gsc, e)
       case _ -> ()
     }
     i = i + 1
@@ -191,17 +191,17 @@ func findDeclsExpr(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  gnames: in List[String],
+  gsc: in Scope,
   e: in Expr,
 ): Unit {
   val kids: List[Expr] = newList()
   val blocks: List[Block] = newList()
   exprKids(e, kids, blocks)
   for k in kids {
-    findDeclsExpr(tbl, sigs, diag, gnames, k)
+    findDeclsExpr(tbl, sigs, diag, gsc, k)
   }
   for b in blocks {
-    findDeclsBlock(tbl, sigs, diag, gnames, b)
+    findDeclsBlock(tbl, sigs, diag, gsc, b)
   }
 }
 

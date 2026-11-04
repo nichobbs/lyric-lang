@@ -51,17 +51,33 @@ pub func builtinBufferTypeId(): SymbolId {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Resolved type.
 // ─────────────────────────────────────────────────────────────────────────────
+/// Whether an array type's `sizeVar` names a value generic parameter.
+pub func hasSizeVar(sv: in Option[Type]): Bool {
+  match sv {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+/// The name of an array type's value generic length parameter, or "".
+pub func sizeVarName(sv: in Option[Type]): String {
+  match sv {
+    case Some(t) -> match t { case TyParam(n, _) -> n; case _ -> "" }
+    case None -> ""
+  }
+}
+
 @stable(since = "0.1")
 pub union Type {
   case TyPrim(pt: PrimType)
   case TyTuple(elems: List[Type])
   case TyNullable(inner: Type)
   case TyFunction(params: List[Type], ret: Type, isAsync: Bool)
-  // `sizeVar` names the value generic parameter that is the length when
-  // `size` is `None` because the length is a parameter (`array[N, T]` in a
-  // value-generic declaration), and is "" otherwise.  Substituting the
-  // parameter fills `size` (D169).
-  case TyArray(size: Option[Int], element: Type, sizeVar: String)
+  // `sizeVar` is the value generic parameter (a `TyParam` with its binder) that
+  // is the length when `size` is `None` because the length is a parameter
+  // (`array[N, T]` in a value-generic declaration), and `None` otherwise.
+  // Substituting the parameter fills `size` (D169).
+  case TyArray(size: Option[Int], element: Type, sizeVar: Option[Type])
   case TySlice(element: Type)
   /// `TyUser.name` is the declared name from the type environment
   /// (set by `resolveTypePath` from the matched `Symbol.name`).
@@ -268,10 +284,10 @@ func primEq(a: in PrimType, b: in PrimType): Bool {
 // §5. Type equivalence.
 // ─────────────────────────────────────────────────────────────────────────────
 /// Two parameters of the same name are the same parameter when they have the
-/// same binder.  An empty owner marks a parameter whose binder is not known
-/// (generated code, a hand-built type); it matches any binder.
+/// same binder.  Every parameter has a binder; an empty owner is an internal
+/// error (I0001, `gctxPushOwned`), so it matches only another empty owner.
 pub func tyParamOwnersMatch(a: in String, b: in String): Bool {
-  a == b or a == "" or b == ""
+  a == b
 }
 
 pub func typeEquiv(a: in Type, b: in Type): Bool {

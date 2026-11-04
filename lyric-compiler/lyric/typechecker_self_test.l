@@ -594,6 +594,13 @@ test "a type parameter is equal to itself and instantiates at a call" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "rigid: identity over T and over Int is clean")
 }
 
+// An invariant of a generic type is checked in a scope whose parameters carry
+// the type's binder; an explicit type argument in it resolves `T` against it.
+test "a generic record invariant names the record's parameter" {
+  val src = "package P\nfunc same[U](a: in U, b: in U): Bool {\n  true\n}\ngeneric[T] record H {\n  v: T\n  invariant: forall (k: Byte) { same[T](v, v) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "owner: T in a record invariant resolves to the record's T")
+}
+
 // D337: a type parameter belongs to the declaration that binds it.  Two
 // declarations that each bind a `T` do not share it.
 test "same-named parameters of different binders are distinct" {
@@ -601,7 +608,37 @@ test "same-named parameters of different binders are distinct" {
   val b = TyParam(name = "T", owner = "g")
   assertFalse(typeEquiv(a, b), "owner: T of f is not T of g")
   assertTrue(typeEquiv(a, TyParam(name = "T", owner = "f")), "owner: T of f is T of f")
-  assertTrue(typeEquiv(a, TyParam(name = "T", owner = "")), "owner: a parameter of unknown owner matches any binder")
+  assertFalse(typeEquiv(a, TyParam(name = "T", owner = "")), "owner: an empty owner is not a wildcard")
+}
+
+test "substitution by binder leaves an inner same-named parameter alone" {
+  val outerT = TyParam(name = "T", owner = "Box")
+  val innerT = TyParam(name = "T", owner = "Box.map")
+  val names: List[String] = newList()
+  names.add("T")
+  val owners: List[String] = newList()
+  owners.add("Box")
+  val args: List[Type] = newList()
+  args.add(TyPrim(pt = PtInt))
+  assertTrue(
+    typeEquiv(substituteTyParamsOwned(outerT, names, owners, args), TyPrim(pt = PtInt)),
+    "owner: the outer T is replaced by its instantiation"
+  )
+  assertTrue(
+    typeEquiv(substituteTyParamsOwned(innerT, names, owners, args), innerT),
+    "owner: an inner T of another binder is left alone"
+  )
+  val both: List[Type] = newList()
+  both.add(outerT)
+  both.add(innerT)
+  val mixed = TyTuple(elems = both)
+  match substituteTyParamsOwned(mixed, names, owners, args) {
+    case TyTuple(es) -> {
+      assertTrue(typeEquiv(es[0], TyPrim(pt = PtInt)), "owner: tuple element of the outer binder is replaced")
+      assertTrue(typeEquiv(es[1], innerT), "owner: tuple element of the inner binder is kept")
+    }
+    case _ -> assertTrue(false, "owner: a tuple stays a tuple")
+  }
 }
 
 test "a generic function inside a generic call chain keeps its own parameter" {

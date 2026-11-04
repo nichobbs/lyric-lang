@@ -111,11 +111,11 @@ pub func tyOf(bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty]
     case TyArray(size, element, sizeVar) -> {
       val len = match size {
         case Some(n) -> ALKnown(n = n)
-        case None -> if sizeVar.length > 0 {
-          match findParam(frames, sizeVar) {
+        case None -> if hasSizeVar(sizeVar) {
+          match findParam(frames, sizeVarName(sizeVar)) {
             case Some(loc) -> ALParam(owner = loc.owner, index = loc.index)
             case None -> {
-              buildFail(bc, what + ": array length parameter '" + sizeVar + "' is not declared")
+              buildFail(bc, what + ": array length parameter '" + sizeVarName(sizeVar) + "' is not declared")
               ALUnsized
             }
           }

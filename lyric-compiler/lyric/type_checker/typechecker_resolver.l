@@ -55,7 +55,7 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
         )
       }
       noteArrayTypeLength(tbl, te, size, len)
-      val lenVar = match len { case Some(_) -> ""; case None -> arrayLengthParamName(ctx, size) }
+      val lenVar = match len { case Some(_) -> None; case None -> arrayLengthParamType(ctx, size) }
       TyArray(size = len, element = resolveType(tbl, ctx, diag, elem), sizeVar = lenVar)
     }
 
@@ -251,7 +251,17 @@ func resolveLengthArg(
   }
 }
 
-// The value generic parameter an `array[N, T]`'s length names, or "".
+// The value generic parameter, with its binder, that an `array[N, T]`'s length
+// names (`None` when it names none).
+func arrayLengthParamType(ctx: in GenericContext, size: in TypeArg): Option[Type] {
+  val name = arrayLengthParamName(ctx, size)
+  if name.length == 0 {
+    return None
+  }
+  Some(value = TyParam(name = name, owner = gctxOwnerOf(ctx, name)))
+}
+
+// The name of the value generic parameter an `array[N, T]`'s length names, or "".
 func arrayLengthParamName(ctx: in GenericContext, size: in TypeArg): String {
   if not arrayLengthIsTypeParam(ctx, size) {
     return ""

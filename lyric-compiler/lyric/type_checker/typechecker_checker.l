@@ -1368,6 +1368,7 @@ func externMemberAsFunctionDecl(m: in ExternMemberDecl): Option[FunctionDecl] {
 func withOriginPackage(sg: in ResolvedSignature, originPkg: in String): ResolvedSignature {
   ResolvedSignature(
     generics = sg.generics,
+    genericOwners = sg.genericOwners,
     bounds = sg.bounds,
     params = sg.params,
     returnTy = sg.returnTy,
@@ -1386,6 +1387,7 @@ func withOriginPackage(sg: in ResolvedSignature, originPkg: in String): Resolved
 func asExternFuncSig(sg: in ResolvedSignature): ResolvedSignature {
   ResolvedSignature(
     generics = sg.generics,
+    genericOwners = sg.genericOwners,
     bounds = sg.bounds,
     params = sg.params,
     returnTy = sg.returnTy,
@@ -3848,6 +3850,7 @@ func checkProtectedMemberBodies(
         )
         val sig = ResolvedSignature(
           generics = ownerGenerics,
+          genericOwners = ownersOfKey(ownerGenerics, decl.name),
           bounds = sig0.bounds,
           params = sig0.params,
           returnTy = sig0.returnTy,
@@ -3954,7 +3957,7 @@ func checkProtectedMemberBodies(
         for vp in valueGenericNames(decl.generics) {
           invLocals.add(LocalBinding(name = vp, ty = TyPrim(pt = PtInt), isMutable = false))
         }
-        checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, invLocals, selfTy)
+        checkProtectedInvariant(tbl, sigs, diag, inv, decl.name, ownerGenerics, invLocals, selfTy)
       }
       case _ -> {
       }
@@ -3973,11 +3976,12 @@ func checkProtectedInvariant(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   inv: in InvariantClause,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
 ): Unit {
-  checkInvariantExpr(tbl, sigs, diag, inv.expr, inv.span, ownerGenerics, fieldLocals, selfTy)
+  checkInvariantExpr(tbl, sigs, diag, inv.expr, inv.span, ownerKey, ownerGenerics, fieldLocals, selfTy)
 }
 
 // An `invariant:` expression, checked as `Bool` with the type's fields bound
@@ -3988,6 +3992,7 @@ func checkInvariantExpr(
   diag: in List[Diagnostic],
   expr: in Expr,
   sp: in Span,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
@@ -3998,6 +4003,7 @@ func checkInvariantExpr(
   }
   val noRet: Option[TypeExpr] = None
   val sc = newScopeForFunction(TyPrim(pt = PtBool), ownerGenerics, noRet, selfFields, true, selfTy)
+  scopeSetGenericOwners(sc, ownersOfKey(ownerGenerics, ownerKey))
   for f in fieldLocals {
     scopeAdd(sc, f)
   }
@@ -4014,6 +4020,7 @@ func checkQuantifiedInvariantConjuncts(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   inv: in InvariantClause,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
@@ -4022,7 +4029,7 @@ func checkQuantifiedInvariantConjuncts(
   collectInvariantConjuncts(inv.expr, parts)
   for part in parts {
     if exprHasQuantifier(part) {
-      checkInvariantExpr(tbl, sigs, diag, part, part.span, ownerGenerics, fieldLocals, selfTy)
+      checkInvariantExpr(tbl, sigs, diag, part, part.span, ownerKey, ownerGenerics, fieldLocals, selfTy)
     }
   }
 }
@@ -4076,7 +4083,16 @@ func checkOpaqueInvariants(
   val selfTy = opaqueSelfType(tbl, decl.name, ownerGenerics)
   for m in decl.members {
     match m {
-      case OMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case OMInvariant(inv) -> checkQuantifiedInvariantConjuncts(
+        tbl,
+        sigs,
+        diag,
+        inv,
+        decl.name,
+        ownerGenerics,
+        fieldLocals,
+        selfTy
+      )
       case OMField(_) -> ()
     }
   }
@@ -4158,7 +4174,7 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // `impl_method_self_test.l`'s battery run, same root cause as the impl-side
 // fix below).
 // The type-argument list is built with raw `TyParam(name = ...)` rather than
-// the `ctx`/`gctxPush`-scoped resolution `recordFieldLocals` uses for the
+// the `ctx`/`gctxPushOwned`-scoped resolution `recordFieldLocals` uses for the
 // same generic names: this type only feeds `substitutesSelf` and
 // equivalence checks, and `typeEquiv` treats every `TyParam` as universally
 // equivalent, so the two representations never need to agree structurally
@@ -4415,7 +4431,16 @@ func checkRecordMemberBodies(
           selfTy
         )
       }
-      case RMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case RMInvariant(inv) -> checkQuantifiedInvariantConjuncts(
+        tbl,
+        sigs,
+        diag,
+        inv,
+        decl.name,
+        ownerGenerics,
+        fieldLocals,
+        selfTy
+      )
       case _ -> {
       }
     }
@@ -5384,6 +5409,7 @@ func checkDeclaredInit(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   genericNames: in List[String],
+  genericOwners: in List[String],
   te: in TypeExpr,
   init: in Expr,
   subject: in String,
@@ -5393,7 +5419,8 @@ func checkDeclaredInit(
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
   val sc = newScopeForFunction(tyErrorSilent(), genericNames, noRte, noSelfFields, false, tyErrorSilent())
-  checkDeclaredInitIn(sc, tbl, sigs, diag, genericNames, te, init, subject, initNoun, sp)
+  scopeSetGenericOwners(sc, genericOwners)
+  checkDeclaredInitIn(sc, tbl, sigs, diag, te, init, subject, initNoun, sp)
 }
 
 // `checkDeclaredInit` against a caller-supplied scope, for initialisers that
@@ -5403,7 +5430,6 @@ func checkDeclaredInitIn(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
-  genericNames: in List[String],
   te: in TypeExpr,
   init: in Expr,
   subject: in String,
@@ -5411,8 +5437,8 @@ func checkDeclaredInitIn(
   sp: in Span,
 ): Unit {
   val ctx = newGenericContext()
-  if genericNames.count > 0 {
-    gctxPush(ctx, genericNames)
+  if sc.genericNames.count > 0 {
+    gctxPushScope(ctx, sc)
   }
   val scratch: List[Diagnostic] = newList()
   val declT = resolveType(tbl, ctx, scratch, te)
@@ -5453,11 +5479,38 @@ func concatGenericNames(outer: in List[String], own: in Option[GenericParams]): 
   names
 }
 
+// The binder of each name in `names`, all the one declaration `key`.
+func ownersOfKey(names: in List[String], key: in String): List[String] {
+  val owners: List[String] = newList()
+  var i = 0
+  while i < names.count {
+    owners.add(key)
+    i = i + 1
+  }
+  owners
+}
+
+// The binders parallel to `concatGenericNames(outer, own)`: the enclosing
+// declaration `outerKey` binds `outer`, the member `ownKey` binds its own.
+func concatGenericOwners(
+  outer: in List[String], outerKey: in String, own: in Option[GenericParams], ownKey: in String
+): List[String] {
+  val owners = ownersOfKey(outer, outerKey)
+  val ownNames = extractGenericNames(own)
+  var i = 0
+  while i < ownNames.count {
+    owners.add(ownKey)
+    i = i + 1
+  }
+  owners
+}
+
 func checkParamDefaults(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   genericNames: in List[String],
+  genericOwners: in List[String],
   fnName: in String,
   params: in List[Param],
 ): Unit {
@@ -5468,6 +5521,7 @@ func checkParamDefaults(
         sigs,
         diag,
         genericNames,
+        genericOwners,
         p.ty,
         d,
         "parameter '" + p.name + "' of '" + fnName + "'",
@@ -5495,6 +5549,7 @@ func checkFieldDefault(
       sigs,
       diag,
       genericNames,
+      ownersOfKey(genericNames, typeName),
       ty,
       d,
       "field '" + typeName + "." + fieldName + "'",
@@ -5629,7 +5684,6 @@ func checkWireInits(
         tbl,
         sigs,
         quiet,
-        noGenerics,
         ty,
         init,
         "wire member '" + n + "'",
@@ -5641,7 +5695,6 @@ func checkWireInits(
         tbl,
         sigs,
         quiet,
-        noGenerics,
         ty,
         init,
         "wire member '" + n + "'",
@@ -5653,7 +5706,6 @@ func checkWireInits(
         tbl,
         sigs,
         quiet,
-        noGenerics,
         iface,
         provider,
         "wire binding '" + wireBindName(iface) + "'",
@@ -5665,7 +5717,6 @@ func checkWireInits(
         tbl,
         sigs,
         quiet,
-        noGenerics,
         ty,
         init,
         "wire member '" + n + "'",
@@ -5715,7 +5766,7 @@ func checkItemDeclaredInits(
     // mismatch is T0144 (`recordModuleValTypes`).
     case IVal(decl) -> match decl.ty {
       case Some(te) -> if not annotationsHave(item.annotations, "asyncLocal") {
-        checkDeclaredInit(tbl, sigs, diag, noGenerics, te, decl.init, "val binding", "initialiser", decl.span)
+        checkDeclaredInit(tbl, sigs, diag, noGenerics, noGenerics, te, decl.init, "val binding", "initialiser", decl.span)
       }
       case None -> match projectedTemp(decl.init) {
         case Some(_) -> ()
@@ -5729,10 +5780,18 @@ func checkItemDeclaredInits(
     }
     case IWire(decl) -> checkWireInits(tbl, sigs, diag, decl)
     case IFunc(decl) -> {
-      checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+      checkParamDefaults(
+        tbl,
+        sigs,
+        diag,
+        extractGenericNames(decl.generics),
+        ownersOfKey(extractGenericNames(decl.generics), decl.name),
+        decl.name,
+        decl.params
+      )
       checkShadowedExtension(tbl, sigs, diag, decl)
     }
-    case IExternFunc(decl) -> checkParamDefaults(tbl, sigs, diag, noGenerics, decl.name, decl.params)
+    case IExternFunc(decl) -> checkParamDefaults(tbl, sigs, diag, noGenerics, noGenerics, decl.name, decl.params)
     case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IExposedRec(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IOpaque(decl) -> {
@@ -5765,8 +5824,16 @@ func checkItemDeclaredInits(
               noteFieldZeroDefault(tbl, diag, owner, decl.name, fd)
             }
           }
-          case PMEntry(ed) -> checkParamDefaults(tbl, sigs, diag, owner, ed.name, ed.params)
-          case PMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case PMEntry(ed) -> checkParamDefaults(tbl, sigs, diag, owner, ownersOfKey(owner, decl.name), ed.name, ed.params)
+          case PMFunc(fn) -> checkParamDefaults(
+            tbl,
+            sigs,
+            diag,
+            concatGenericNames(owner, fn.generics),
+            concatGenericOwners(owner, decl.name, fn.generics, decl.name + "." + fn.name),
+            fn.name,
+            fn.params
+          )
           case PMInvariant(_) -> ()
         }
       }
@@ -5780,10 +5847,19 @@ func checkItemDeclaredInits(
             sigs,
             diag,
             concatGenericNames(owner, sig.generics),
+            concatGenericOwners(owner, decl.name, sig.generics, decl.name + "." + sig.name),
             sig.name,
             sig.params
           )
-          case IMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case IMFunc(fn) -> checkParamDefaults(
+            tbl,
+            sigs,
+            diag,
+            concatGenericNames(owner, fn.generics),
+            concatGenericOwners(owner, decl.name, fn.generics, decl.name + "." + fn.name),
+            fn.name,
+            fn.params
+          )
           case IMAssoc(_) -> ()
         }
       }
@@ -5792,7 +5868,20 @@ func checkItemDeclaredInits(
       val owner = extractGenericNames(decl.generics)
       for m in decl.members {
         match m {
-          case IMplFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+          case IMplFunc(fn) -> checkParamDefaults(
+            tbl,
+            sigs,
+            diag,
+            concatGenericNames(owner, fn.generics),
+            concatGenericOwners(
+              owner,
+              implOwnerKey(decl),
+              fn.generics,
+              implOwnerKey(decl) + "." + fn.name
+            ),
+            fn.name,
+            fn.params
+          )
           case IMplAssoc(_) -> ()
         }
       }
@@ -5829,7 +5918,7 @@ func noteFieldZeroDefaultOf(
   }
   val ctx = newGenericContext()
   if genericNames.count > 0 {
-    gctxPush(ctx, genericNames)
+    gctxPushOwned(ctx, genericNames, typeName)
   }
   val scratch: List[Diagnostic] = newList()
   val declT = resolveType(tbl, ctx, scratch, fieldTy)
@@ -5862,7 +5951,15 @@ func checkRecordDeclaredInits(
         checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
         noteFieldZeroDefault(tbl, diag, owner, decl.name, fd)
       }
-      case RMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
+      case RMFunc(fn) -> checkParamDefaults(
+        tbl,
+        sigs,
+        diag,
+        concatGenericNames(owner, fn.generics),
+        concatGenericOwners(owner, decl.name, fn.generics, decl.name + "." + fn.name),
+        fn.name,
+        fn.params
+      )
       case RMInvariant(_) -> ()
     }
   }

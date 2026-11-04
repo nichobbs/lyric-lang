@@ -229,14 +229,32 @@ pub func newGenericContext(): GenericContext {
   GenericContext(params = params, owners = owners, stackDepths = depths)
 }
 
-/// Push parameters whose binder the caller does not know (they resolve to a
-/// `TyParam` with an empty owner, which matches any binder).
-pub func gctxPush(ctx: in GenericContext, names: in List[String]): Unit {
-  gctxPushOwned(ctx, names, "")
+/// I0001: a type parameter reached the checker without the declaration that
+/// binds it.  Every parameter has a binder (docs/70 §5.1), so this is a
+/// compiler bug at the site that pushed the names, never a user error.
+func ownerlessParamsBug(names: in List[String]): Unit {
+  panic(
+    "I0001: internal compiler error: type parameter(s) " + genericNameList(names) +
+      " pushed into a generic context with no binding declaration"
+  )
 }
 
-/// Push `names` as the type parameters bound by the declaration `owner`.
+func genericNameList(names: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < names.count {
+    s = if i == 0 { names[i] } else { s + ", " + names[i] }
+    i = i + 1
+  }
+  s
+}
+
+/// Push `names` as the type parameters bound by the declaration `owner`.  An
+/// empty `owner` is an internal error (I0001).
 pub func gctxPushOwned(ctx: in GenericContext, names: in List[String], owner: in String): Unit {
+  if names.count > 0 and owner.length == 0 {
+    ownerlessParamsBug(names)
+  }
   ctx.stackDepths.add(ctx.params.count)
   var i = 0
   while i < names.count {
@@ -247,13 +265,26 @@ pub func gctxPushOwned(ctx: in GenericContext, names: in List[String], owner: in
 }
 
 /// Push `names` with one owner per name (a scope's parameters, which come
-/// from an owner type and the member itself).  A missing owner is empty.
+/// from an owner type and the member itself).  The lists must be parallel and
+/// every owner non-empty, else I0001.
 pub func gctxPushEach(ctx: in GenericContext, names: in List[String], owners: in List[String]): Unit {
+  if owners.count != names.count {
+    panic(
+      "I0001: internal compiler error: generic context pushed " + toString(names.count) + " type parameter name(s) (" +
+        genericNameList(names) +
+        ") with " +
+        toString(owners.count) +
+        " binder(s)"
+    )
+  }
   ctx.stackDepths.add(ctx.params.count)
   var i = 0
   while i < names.count {
+    if owners[i].length == 0 {
+      ownerlessParamsBug(names)
+    }
     ctx.params.add(names[i])
-    ctx.owners.add(if i < owners.count { owners[i] } else { "" })
+    ctx.owners.add(owners[i])
     i = i + 1
   }
 }

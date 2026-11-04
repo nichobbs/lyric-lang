@@ -782,7 +782,7 @@ pub func zeroExprFor(tbl: in SymbolTable, t: in Type, sp: in Span, depth: in Int
       case Some(_) -> zeroArrayFill(tbl, t, el, sp, depth)
       // A length that is a value generic parameter is known only inside a
       // value-generic body, where each specialisation fills it (D169).
-      case None -> if sv.length > 0 and inValueGenericBody(tbl) {
+      case None -> if hasSizeVar(sv) and inValueGenericBody(tbl) {
         zeroArrayFill(tbl, t, el, sp, depth)
       } else {
         None
@@ -1173,7 +1173,7 @@ func recordFieldsHoldArray(tbl: in SymbolTable, tid: in SymbolId, seen: in List[
 pub func typeMentionsGenericParam(t: in Type): Bool {
   match t {
     case TyArray(sz, el, sv) -> match sz {
-      case None -> sv.length > 0 or typeMentionsGenericParam(el)
+      case None -> hasSizeVar(sv) or typeMentionsGenericParam(el)
       case Some(_) -> typeMentionsGenericParam(el)
     }
     case TyRefined(u, _, _, _, _) -> typeMentionsGenericParam(u)
@@ -1358,7 +1358,7 @@ func buildUnionEqShape(
   val cases: List[EqUnionCase] = newList()
   val scratch: List[Diagnostic] = newList()
   for uc in ud.cases {
-    val ftys = unionCaseFieldTypes(tbl, scratch, uc, gnames, sym.originPackage)
+    val ftys = unionCaseFieldTypes(tbl, scratch, uc, ud.name, gnames, sym.originPackage)
     val shapes: List[EqShape] = newList()
     for ft in ftys {
       match buildEqShape(tbl, span, substituteTyParams(ft, gnames, targs), depth + 1) {
@@ -1653,7 +1653,7 @@ pub func withBoundArrayLengths(te: in TypeExpr, t: in Type, vps: in List[String]
           case Some(_) -> sz
           case None -> match arrayLengthParam(size, vps) { case Some(p) -> mapGet(bound, p); case None -> None }
         }
-        val lenVar = match len { case Some(_) -> ""; case None -> sv }
+        val lenVar = match len { case Some(_) -> None; case None -> sv }
         TyArray(size = len, element = withBoundArrayLengths(elemTe, elemTy, vps, bound), sizeVar = lenVar)
       }
       case _ -> t
