@@ -4,8 +4,6 @@ package Lyric.TypeChecker
 
 import Std.Core
 import Std.Collections
-import Std.Console as Console
-import Std.Environment.{getVarOrDefault}
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
@@ -11653,67 +11651,13 @@ pub func inferExpr(
   diag: in List[Diagnostic],
   e: in Expr,
 ): Type {
-  val diagsBefore = diag.count
   val t = inferExprCore(sc, tbl, sigs, diag, e)
   match e.kind {
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
   }
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
-  if diag.count == diagsBefore {
-    match t {
-      case TyError -> if tyErrorCensusOn() {
-        Console.error(
-          "TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" +
-            toString(e.span.startPos.fileId) +
-            ":" +
-            toString(e.span.startPos.offset)
-        )
-      }
-      case _ -> ()
-    }
-  }
   t
-}
-
-// The I0001 census (docs/70 section 5.3, D338): with `LYRIC_TYERR_CENSUS=1` the
-// checker logs every expression it types `TyError` without reporting an error,
-// as `TYERR<TAB>package<TAB>kind`, so the sites the gate must classify can be
-// counted per package.  It is removed with the gate.
-func tyErrorCensusOn(): Bool {
-  getVarOrDefault("LYRIC_TYERR_CENSUS", "") == "1"
-}
-
-// The name an expression is spelled with, for the census: a path, the callee
-// path of a call, or a member.
-func exprKindName(e: in Expr): String {
-  match e.kind {
-    case EPath(p) -> joinStrs(p.segments, ".")
-    case ECall(fn, _) -> match fn.kind {
-      case EPath(p) -> joinStrs(p.segments, ".")
-      case EMember(_, m) -> "." + m
-      case _ -> "?"
-    }
-    case EMember(_, m) -> "." + m
-    case _ -> ""
-  }
-}
-
-func exprKindTag(e: in Expr): String {
-  match e.kind {
-    case ELiteral(_) -> "literal"
-    case EPath(p) -> if p.segments.count > 1 { "path-qualified" } else { "path" }
-    case ECall(fn, _) -> "call"
-    case EMember(_, _) -> "member"
-    case ELambda(_, _) -> "lambda"
-    case EIf(_, _, _, _) -> "if"
-    case EMatch(_, _) -> "match"
-    case EIndex(_, _) -> "index"
-    case EBlock(_) -> "block"
-    case EBinop(_, _, _) -> "binop"
-    case EPrefix(_, _) -> "prefix"
-    case _ -> "other"
-  }
 }
 
 // Record a qualified or method call's result type for `Lyric.Mono`

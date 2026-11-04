@@ -1,7 +1,7 @@
 # D338 - The silent TyError census, and the I0001 gate decided (Q-TIR-001, docs/70 phase 3a, #8613)
 
-**Status:** census shipped; the gate itself is not yet switched on (see
-"Order of work").
+**Status:** census run and recorded; the decision is made; the gate itself is
+not yet switched on (see "Order of work").
 
 ## Context
 
@@ -13,12 +13,19 @@ replaces the estimate, classifies it, and decides Q-TIR-001.
 
 ## The census
 
-`LYRIC_TYERR_CENSUS=1` makes `inferExpr` log, to stderr, one line
-`TYERR<TAB>package<TAB>kind<TAB>name<TAB>file:offset` for every expression it
-types `TyError` while adding no diagnostic. It is read once per process, off by
-default, and is removed with the gate. Stage 2 of the bootstrap
+The census was a temporary instrumentation of `inferExpr` (commit `c8abbc3` on
+`claude/docs70-phase-3a-tyerror`; not merged): after typing an expression it
+compared the diagnostic count before and after, and when the result was
+`TyError` with no new diagnostic it logged one line
+`TYERR<TAB>package<TAB>kind<TAB>name<TAB>file:offset` to stderr, gated on
+`LYRIC_TYERR_CENSUS=1`. It was run through stage 2 of the bootstrap
 (`LYRIC_TYERR_CENSUS=1 ./scripts/bootstrap.sh --stage 2`, log in
-`.bootstrap/stage2-emit.log`) checks the whole compiler and stdlib closure.
+`.bootstrap/stage2-emit.log`), which checks the whole compiler and stdlib
+closure. It is not merged because adding it to `typechecker_exprs.l` made the
+per-package typechecker DLL throw `Unable to cast List<Object> to
+List<Symbol>` in the CI job that runs `typechecker_self_test.l` against
+per-package output (1069 of 1075 cases); the cause is tracked in a separate
+issue. The numbers below are from that run.
 
 **Result: 11,654 distinct sites** (Lyric 8,682, Std 1,682, Msil 789, Jvm 501):
 
@@ -59,7 +66,7 @@ exemption in the gate that the builder removes.
 
 ## Order of work
 
-Done here: the census and this decision. Next, in order: type the `call`
+Done here: the census (recorded above, not merged) and this decision. Next, in order: type the `call`
 results and `member` reads above; read the 34 operator sites; add the callee
 exemption predicate and the gate as a warning; then the error. The
 `instantiateSigOrdered` padding (`TyError` to `TyInfer`) was tried and made
