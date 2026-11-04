@@ -4158,7 +4158,7 @@ func recordFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in Rec
 // `impl_method_self_test.l`'s battery run, same root cause as the impl-side
 // fix below).
 // The type-argument list is built with raw `TyParam(name = ...)` rather than
-// the `ctx`/`gctxPush`-scoped resolution `recordFieldLocals` uses for the
+// the `ctx`/`gctxPushOwned`-scoped resolution `recordFieldLocals` uses for the
 // same generic names: this type only feeds `substitutesSelf` and
 // equivalence checks, and `typeEquiv` treats every `TyParam` as universally
 // equivalent, so the two representations never need to agree structurally

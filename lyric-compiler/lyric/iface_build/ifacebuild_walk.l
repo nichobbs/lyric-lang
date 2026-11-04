@@ -21,7 +21,7 @@ import Lyric.Iface
 import Lyric.IfaceConv
 import Lyric.ModeChecker
 import Lyric.Resolve.{funcDefPath, methodDefPath, reexportsOf}
-import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPush, resolveType}
+import Lyric.TypeChecker.{CheckResult, GenericContext, newGenericContext, gctxPushOwned, resolveType}
 
 func visOf(v: in Option[Visibility]): IfVis {
   match v {
