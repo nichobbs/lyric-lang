@@ -4609,7 +4609,7 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
   assertEqualInt(impCr.symbols.typeArgCalleeSites.count, 0, "an imported val is a value")
 }
 
-// D339: a call to an imported generic whose type argument nothing fixes is W0035
+// D339: a call to an imported generic whose type argument nothing fixes is T0224
 // from the checker; the call's expected type, another argument or a written
 // type argument fixes it.
 func unsolvedLib(): List[ImportedPackage] {
@@ -4632,34 +4632,34 @@ func unsolvedLib(): List[ImportedPackage] {
   pkgs
 }
 
-func unsolvedWarnings(body: in String): Int {
+func unsolvedErrors(body: in String): Int {
   val src = "package App\nimport Lib\n" + body
   val cr = checkWithImportedPackages(parse(src).file, unsolvedLib())
   var n = 0
   for d in cr.diagnostics {
-    if d.code == "W0035" {
+    if d.code == "T0224" {
       n = n + 1
     }
   }
   n
 }
 
-test "an imported generic call nothing fixes is W0035 (D339)" {
-  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 2, "neither none() nor isNone(...) is fixed")
-  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments fix both")
+test "an imported generic call nothing fixes is T0224 (D339)" {
+  assertEqualInt(unsolvedErrors("func f(): Bool { isNone(none()) }\n"), 2, "neither none() nor isNone(...) is fixed")
+  assertEqualInt(unsolvedErrors("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments fix both")
 }
 
 test "an expected type, another argument or a written type argument fixes the call (D339)" {
-  assertEqualInt(unsolvedWarnings("func f(): Option[Int] { none() }\n"), 0, "the declared result type")
+  assertEqualInt(unsolvedErrors("func f(): Option[Int] { none() }\n"), 0, "the declared result type")
   assertEqualInt(
-    unsolvedWarnings("func f(): Option[Int] {\n  val x: Option[Int] = none()\n  x\n}\n"),
+    unsolvedErrors("func f(): Option[Int] {\n  val x: Option[Int] = none()\n  x\n}\n"),
     0,
     "a val annotation"
   )
-  assertEqualInt(unsolvedWarnings("func f(): Int { orElse(none(), 5) }\n"), 0, "a later argument fixes the other")
-  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments")
+  assertEqualInt(unsolvedErrors("func f(): Int { orElse(none(), 5) }\n"), 0, "a later argument fixes the other")
+  assertEqualInt(unsolvedErrors("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments")
   assertEqualInt(
-    unsolvedWarnings("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"),
+    unsolvedErrors("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"),
     0,
     "a parameter type"
   )
@@ -4667,30 +4667,30 @@ test "an expected type, another argument or a written type argument fixes the ca
 
 test "more positions that fix a call, and the cases the checker cannot decide (D339)" {
   assertEqualInt(
-    unsolvedWarnings("func f(): Option[Int] { wrap(none()) }\n"),
+    unsolvedErrors("func f(): Option[Int] { wrap(none()) }\n"),
     0,
     "a nested call takes its parameter, solved from the outer result"
   )
   assertEqualInt(
-    unsolvedWarnings(
+    unsolvedErrors(
       "func g(b: Bool, y: in Option[Int]): Option[Int] {\n  val r = if b { y } else { none() }\n  r\n}\n"
     ),
     0,
     "a branch takes the type the branches join to"
   )
   assertEqualInt(
-    unsolvedWarnings("record R { o: Option[Int] }\nfunc f(): R { R(o = none()) }\n"),
+    unsolvedErrors("record R { o: Option[Int] }\nfunc f(): R { R(o = none()) }\n"),
     0,
     "a constructor field"
   )
   assertEqualInt(
-    unsolvedWarnings("func f(): Option[Int] {\n  var v: Option[Int] = none[Int]()\n  v = none()\n  v\n}\n"),
+    unsolvedErrors("func f(): Option[Int] {\n  var v: Option[Int] = none[Int]()\n  v = none()\n  v\n}\n"),
     0,
     "an assignment target"
   )
-  assertEqualInt(unsolvedWarnings("func h[U](): Option[U] { none() }\n"), 0, "the caller's own generic solves it")
+  assertEqualInt(unsolvedErrors("func h[U](): Option[U] { none() }\n"), 0, "the caller's own generic solves it")
   assertEqualInt(
-    unsolvedWarnings("func f(): Bool { isNone(none()) }\n"),
+    unsolvedErrors("func f(): Bool { isNone(none()) }\n"),
     2,
     "still reported when nothing fixes either call"
   )

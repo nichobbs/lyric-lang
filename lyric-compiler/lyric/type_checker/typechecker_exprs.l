@@ -16906,10 +16906,10 @@ func effectiveCallExpected(tbl: in SymbolTable, key: in String, depth: in Int): 
   }
 }
 
-// W0035 (D339): a call recorded by `noteUnsolvedCall` whose type argument
-// neither the call's expected type, a recorded type-argument site nor an open
-// binding fixed.  Mono reports the same call as T0224 until the checker owns
-// the rule.
+// T0224 (D339, docs/70 section 5.2): a call recorded by `noteUnsolvedCall`
+// whose type argument neither the call's expected type, a recorded
+// type-argument site nor an open binding fixed.  Mono keeps the same error as a
+// backstop for a call shape the checker does not record.
 pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
   val keys = mapKeys(tbl.unsolvedCallSites)
   var i = 0
@@ -16917,8 +16917,8 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
       case Some(site) -> if not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
         diag.add(
-          warningDiagnostic(
-            "W0035",
+          errorDiagnostic(
+            "T0224",
             "cannot infer type argument(s) " + quoteJoinNames(site.unsolved) + " of '" + site.fname +
               "' from the call's arguments or its expected type; write '" +
               site.fname +
