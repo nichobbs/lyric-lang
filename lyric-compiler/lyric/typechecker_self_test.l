@@ -4627,6 +4627,53 @@ test "an expected type, another argument or a written type argument fixes the ca
   )
 }
 
+// D350: a declaration of the package that hides a name a file imports.
+func shadowLib(): List[ImportedPackage] {
+  val lib = parse(
+    "package Lib\npub func twice(x: in Int): Int { x + x }\npub record Box { v: Int }\npub func other(x: in Int): Int { x }\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  pkgs
+}
+
+func shadowWarnings(src: in String): List[String] {
+  val cr = checkWithImportedPackages(parse(src).file, shadowLib())
+  val msgs: List[String] = newList()
+  for d in cr.diagnostics {
+    if d.code == "W0037" {
+      msgs.add(d.message)
+    }
+  }
+  msgs
+}
+
+test "a package function that shadows an imported one is W0037 (D350)" {
+  val w = shadowWarnings("package App\nimport Lib\nfunc twice(x: in Int): Int { x * 2 }\nfunc f(): Int { twice(2) }\n")
+  assertEqualInt(w.count, 1, "one warning")
+  assertTrue(w[0].contains("'Lib'"), "names the imported package: " + w[0])
+  assertTrue(w[0].contains("import Lib"), "names the import: " + w[0])
+}
+
+test "a selective import is shadowed too, and a type shadows a type (D350)" {
+  assertEqualInt(shadowWarnings("package App\nimport Lib.{twice}\nfunc twice(x: in Int): Int { x }\n").count, 1, "selective")
+  assertEqualInt(shadowWarnings("package App\nimport Lib\nrecord Box { w: Int }\n").count, 1, "a type")
+}
+
+test "no W0037 without an import, for a different name, or across kinds (D350)" {
+  assertEqualInt(shadowWarnings("package App\nfunc twice(x: in Int): Int { x }\n").count, 0, "not imported")
+  assertEqualInt(shadowWarnings("package App\nimport Lib\nfunc mine(x: in Int): Int { x }\n").count, 0, "different name")
+  assertEqualInt(shadowWarnings("package App\nimport Lib.{other}\nfunc twice(x: in Int): Int { x }\n").count, 0, "an unlisted name")
+  assertEqualInt(shadowWarnings("package App\nimport Lib\nrecord twice { w: Int }\n").count, 0, "a type against a function")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.
