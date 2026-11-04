@@ -68,7 +68,18 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    each package registers its defaults qualified with its own recorded
    callees (`qualifyDefaultCalleesMsil`), and the bridge loads a package's
    sites before registering its tokens.
-5. **`findBareImportedFqnMsil` stays** for the calls with no site (synthesised
+5. **The JVM binds a call to its site first too.** `calleeSitesOut` reaches the
+   JVM bridges as `~callee~<site key>` seed entries (as `~arity~` does) and
+   `Jvm.Codegen.siteFuncSigJvm` looks the function up under the declaring
+   package, or for a Mono specialisation under it or the calling package,
+   before the bare-name keys. The bare-name keys stay: a census of the JVM
+   self-tests and the session, cache and auth libraries finds 888 calls still
+   resolved by name without a site (the `println` builtin, 724; synthesised
+   `__lyric_checked_*` helpers and the weaver's `__aspect_target` and
+   `__lyric_bmode_*` names; specialisations inside another package's generic
+   bodies; and a few functions whose site is not recorded, `get`,
+   `setWithTtl`, `verifyApiKey`), each tracked on #8612.
+6. **`findBareImportedFqnMsil` stays** for the calls with no site (synthesised
    `__lyric_checked_*` helpers, distinct-type factories such as
    `Type.tryFrom`, function values), tracked on #8612.
 

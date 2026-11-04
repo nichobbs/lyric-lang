@@ -307,7 +307,7 @@ test "bare call with two transitively reached declarers is T0123" {
 // declares the legitimate `pub func helper` returning its argument; the app
 // imports only the facade that re-exports `Sub`, and calls `helper` bare. The
 // package-private declarer is not `pub`/`internal`, so it must be excluded
-// from `bundleFuncFqnByName` at seeding — leaving `Sub.helper` the only
+// from the old bundle-wide name map at seeding — leaving `Sub.helper` the only
 // candidate, so the call resolves to it (stdout 42), never to the private
 // -999. Without the visibility filter, the private declarer (seeded first)
 // would win codegen's `candidates[0]` tie-break and the program would print
@@ -426,7 +426,11 @@ test "a specialised generic call binds to the checker's callee, not a same-named
   )
   val result = compileAndRun("xspec", packages, "XSpec")
   assertEqualInt(result.exitCode, 0, "spec_site_callee: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "pub\npriv", "spec_site_callee: tag is the pub one, other reaches its own private tag")
+  assertEqual(
+    Str.trim(result.stdout),
+    "pub\npriv",
+    "spec_site_callee: tag is the pub one, other reaches its own private tag"
+  )
 }
 
 // D336: `Type.f(x)` binds to the dot-named function the checker resolved it
@@ -440,14 +444,17 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
     mkPkg(
       "XType.Priv",
       "package XType.Priv\n" + "\n" + "record Box { n: Int }\n" + "\n" +
-        "func Box.describe(b: in Box): String { \"priv\" }\n" + "\n" +
+        "func Box.describe(b: in Box): String { \"priv\" }\n" +
+        "\n" +
         "pub func other(): String { Box.describe(Box(n = 1)) }\n"
     )
   )
   packages.add(
     mkPkg(
       "XType.Pub",
-      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" + "pub func Box.describe(b: in Box): String { \"pub\" }\n" + "\n" +
+      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" +
+        "pub func Box.describe(b: in Box): String { \"pub\" }\n" +
+        "\n" +
         "pub func make(): Box { Box(n = 7) }\n"
     )
   )
@@ -462,10 +469,38 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
   )
   val result = compileAndRun("xtype", packages, "XType")
   assertEqualInt(result.exitCode, 0, "type_site_callee: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "pub\npriv", "type_site_callee: Box.describe is the pub one, other reaches its own private one")
+  assertEqual(
+    Str.trim(result.stdout),
+    "pub\npriv",
+    "type_site_callee: Box.describe is the pub one, other reaches its own private one"
+  )
 }
 
-// Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
+// D336: a default expression spliced into another package means the names of
+// the package that declares it.  `XDef.Lib.plus` defaults `extra` to a call of
+// its own package-private `base`, which the calling package cannot see.
+test "a default calling the declaring package's private function is spliced into another package (D336)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XDef.Lib",
+      "package XDef.Lib\n" + "\n" + "func base(): Int { 40 }\n" + "\n" +
+        "pub func plus(x: in Int, extra: in Int = base()): Int { x + extra }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XDef.App",
+      "package XDef.App\n" + "\n" + "import XDef.Lib\n" + "\n" + "func main(): Unit {\n" + "  println(plus(2))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xdef", packages, "XDef")
+  assertEqualInt(result.exitCode, 0, "spliced_default: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "spliced_default: the default calls the declaring package's base()")
+}
+
+// Issue #6850 review follow-up: the old bundle-wide search's same-package /
 // direct-import tie-break tiers must key on EXACT package identity, not a
 // string prefix. `XNest.App.Inner` is a nested SUB-package of the caller
 // (`XNest.App`) — a DIFFERENT package whose name merely starts with
@@ -474,7 +509,7 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
 // FIRST (so it is `candidates[0]`). `App` imports only `Facade`, which
 // re-exports `Deep` and imports `Inner` through an alias, so `helper` is
 // `Deep`'s for the type checker (docs/01 §9.2, D311); neither declarer is App's own package or a
-// direct import, so the call reaches `findBundleFqnByName` with both
+// direct import, so the call reached the old bundle-wide search with both
 // candidates. A prefix-based
 // tier-1 test (`startsWith(cand, "XNest.App.")`) would wrongly classify
 // `XNest.App.Inner.helper` as "same package" and emit the -999 call; the exact
@@ -700,7 +735,7 @@ test "async func awaiting a call into a LATER package does not corrupt an unrela
 // `computeMiddle` BARE. Before the fix, the pre-scan sees an unresolved
 // (`MObject`) return for that await, `isTaskTypeMsil` rejects it, and
 // `caller`'s predicted SM field count comes up one short of what real codegen
-// (which DOES resolve the call, via `findBundleFqnByName`) emits — shifting
+// (which DOES resolve the call, from the checker's recorded callee) emits — shifting
 // the FieldDef token allocated to the THIRD await's resume value within the
 // same SM class. Sandwiching the facade-transitive bare await between two
 // ordinary same-package awaits and checking the value threaded through the
