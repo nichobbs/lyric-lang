@@ -11701,6 +11701,54 @@ func censusJoinSegments(xs: in List[String]): String {
   out2
 }
 
+// A call spelled with the package qualifier (`Std.Console.println(x)`) of a
+// codegen builtin (`println`, `toString`, `formatN`, ...) has the builtin's
+// polymorphic signature, as the bare spelling does: the imported stdlib
+// declaration is never registered (it would tighten the builtin's parameter
+// to its concrete type, `registerFunctionSig`), so the callee has no type of
+// its own.  Only a function of that name declared by a package the qualifier
+// names qualifies.
+func qualifiedBuiltinCalleeType(tbl: in SymbolTable, fn: in Expr, fnT: in Type): Type {
+  match fnT {
+    case TyError -> ()
+    case _ -> return fnT
+  }
+  match fn.kind {
+    case EPath(p) -> {
+      if p.segments.count < 2 {
+        return fnT
+      }
+      val name = p.segments[p.segments.count - 1]
+      if not isCodegenBuiltinName(name) {
+        return fnT
+      }
+      val prefix: List[String] = newList()
+      var si = 0
+      while si < p.segments.count - 1 {
+        prefix.add(p.segments[si])
+        si = si + 1
+      }
+      val qualifier = censusJoinSegments(prefix)
+      val all = symTableTryFindAllNamed(tbl, name)
+      var i = 0
+      while i < all.count {
+        match all[i].kind {
+          case DKFunc(_) -> if pkgMatchesQualifier(all[i].originPackage, qualifier) {
+            match codegenBuiltinType(name) {
+              case Some(bt) -> return bt
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      fnT
+    }
+    case _ -> fnT
+  }
+}
+
 pub func inferExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -18163,7 +18211,7 @@ func inferExprCore(
                     }
                     case None -> ()
                   }
-                  match instantiateBuiltinCall(fnT, argTypes) {
+                  match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
