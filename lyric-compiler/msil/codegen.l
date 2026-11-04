@@ -37,6 +37,7 @@ import Lyric.Lexer
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Lyric.Weaver as Weaver
+import Lyric.ContractElaborator as CE
 import Lyric.BareFuncRef as BareFuncRef
 import Lyric.SelfFields as SelfFields
 import Msil.Lowering
@@ -316,21 +317,6 @@ pub record CodegenCtx {
   // LATER package purely because that package hasn't been visited yet (#5177).
   // Never used for the token's numeric VALUE — only checked via containsKey.
   bundleFuncFqns: Map[String, Bool]
-  // Bundle-wide fallback for a bare (unqualified) call to a `pub func`
-  // reachable only TRANSITIVELY through a facade package's own imports —
-  // the plain-function analog of `unionCaseCtorByName` (issue #6849).
-  // Keyed by the function's SIMPLE name (e.g. "helper"), value is every FQN
-  // in the bundle declaring that name (e.g. ["Trepro.Sub.helper"]).
-  // `funcTokens`/`bundleFuncFqns` alone only resolve current-package +
-  // DIRECT imports (`cctx.pkgImports[pkg]`, from `file.imports` only); the
-  // typechecker resolves the same bare name via an unscoped bundle-wide
-  // tier-3 match, so a facade that imports a sub-package and a caller that
-  // imports only the facade previously hit an unresolved-callee T0123 panic
-  // even though the typechecker had already accepted the call. Populated
-  // bundle-wide in `preSeedBundleAsyncRetTypesMsil`'s `IFunc` arm (mirrors
-  // `bundleFuncFqns`'s own seeding there); disambiguated at each lookup site
-  // by `findBundleFqnByName`, mirroring `pickCaseFqnByScope`.
-  bundleFuncFqnByName: Map[String, List[String]]
   // Bundle-stable declared-type registries for the async-SM await pre-scan
   // (#5606 sibling fix, the lyric-docker `emitPhaseBAwait` count crash).
   // `inferCallReturnTypePB` types method-call receivers through these maps;
@@ -2460,7 +2446,6 @@ pub func newCodegenCtx(
     fieldFuncBareKeyArity = newMap(),
     funcTokens = funcToks,
     bundleFuncFqns = newMap(),
-    bundleFuncFqnByName = newMap(),
     pbFieldTypes = newMap(),
     pbMethodRetTypes = newMap(),
     pbFuncRetTypes = newMap(),
@@ -3331,34 +3316,6 @@ pub func preSeedBundleAsyncRetTypesMsil(
           val fqn = pkgName + "." + decl.name
           if not cctx.bundleFuncFqns.containsKey(fqn) {
             cctx.bundleFuncFqns.add(fqn, true)
-          }
-          // Seed the bare-name bundle-wide fallback map ONLY with functions
-          // that are legally callable from another package — i.e. those
-          // carrying an explicit `pub`/`internal` modifier (#6851). A
-          // package-private function (`visibility == None`) is reachable only
-          // within its own declaring package, and that same-package path is
-          // resolved earlier via `localFqn`/`funcTokens` — it must never be a
-          // candidate for `findBundleFqnByName`, whose only reachable
-          // candidates are in OTHER packages. Registering it here would let a
-          // bare call silently resolve to a package-private function in an
-          // unrelated, unimported package (a candidate the type checker's own
-          // `checkImportedVisibility`/T0097 gate would have rejected) — a
-          // silent cross-package privacy bypass / miscompile, exactly the
-          // class D-progress-876 says this fallback must never introduce.
-          val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
-          if bundleCallable {
-            match mapGet(cctx.bundleFuncFqnByName, decl.name) {
-              case Some(lst) -> {
-                if not lst.contains(fqn) {
-                  lst.add(fqn)
-                }
-              }
-              case None -> {
-                val l: List[String] = newList()
-                l.add(fqn)
-                cctx.bundleFuncFqnByName.add(decl.name, l)
-              }
-            }
           }
           seedAsyncFuncRetTypePlaceholderMsil(cctx, pkgName, decl)
         }
@@ -5702,7 +5659,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
             cctx.funcParamNames.add(pnKeyA, decl.params[pmi].name)
           }
           match decl.params[pmi].dflt {
-            case Some(dfltExpr) -> {
+            case Some(dfltExprRaw) -> {
+              val dfltExpr = qualifyDefaultCalleesMsil(cctx, dfltExprRaw)
               if not cctx.funcDefaultExprs.containsKey(pnKey) {
                 cctx.funcDefaultExprs.add(pnKey, dfltExpr)
               }
@@ -6277,7 +6235,7 @@ func inferUntypedStaticValMsilTypeWith(
           // callee's declared return type is what `lowerExprMsil`'s call
           // lowering pushes, so predict it from the same registry.
           case None -> if resolveCalls {
-            resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, cargs.count)
+            resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, cargs.count, recordCopySiteKey(path.span))
           } else {
             MObject
           }
@@ -6298,7 +6256,7 @@ func inferUntypedStaticValMsilTypeWith(
             // A chain rooted at a module-level val is a value-receiver call
             // (`earlierVal.trim()`), never a package-qualified free call.
             case Some(segs) -> if segs.count >= 2 and not env.containsKey(segs[0]) and not cctx.staticValMsilTypes.containsKey(segs[0]) {
-              resolveQualifiedFreeCallRetTypePB(cctx, pkgName, segs, cargs.count)
+              resolveQualifiedFreeCallRetTypePB(cctx, pkgName, segs, cargs.count, methodCallSiteKey(fn))
             } else {
               MObject
             }
@@ -17176,133 +17134,88 @@ func calleeNameOfDefPathMsil(dp: in String): String {
   }
 }
 
+// The callee FQN the checker recorded at `siteKey` when it is the function
+// `funcName` (the declared name, a dot-named function's member, or a
+// specialisation Mono renamed it to, `f__Int`), else "" (D336).  The
+// candidates are the FQNs the bundle may register it under: the declaring
+// package's, and for a specialisation the calling package's `callerPkg`.
+func siteCalleeCandidatesMsil(cctx: in CodegenCtx, callerPkg: in String, siteKey: in String, funcName: in String): List[String] {
+  val cands: List[String] = newList()
+  match mapGet(cctx.calleeSites, siteKey) {
+    case None -> ()
+    case Some(dp) -> {
+      val pkg = calleePkgOfDefPathMsil(dp)
+      val name = calleeNameOfDefPathMsil(dp)
+      if pkg.length > 0 and name.length > 0 {
+        if name == funcName or String.endsWith(name, "." + funcName) {
+          cands.add(pkg + "." + name)
+        } else if String.startsWith(funcName, name + "__") {
+          cands.add(pkg + "." + funcName)
+          cands.add(callerPkg + "." + funcName)
+        }
+      }
+    }
+  }
+  cands
+}
+
+// `siteCalleeCandidatesMsil`'s first candidate the bundle registers, else "".
+func sitedCalleeFqnAtMsil(cctx: in CodegenCtx, callerPkg: in String, siteKey: in String, funcName: in String): String {
+  for c in siteCalleeCandidatesMsil(cctx, callerPkg, siteKey, funcName) {
+    if cctx.funcTokens.containsKey(c) {
+      return c
+    }
+  }
+  ""
+}
+
 // The function the checker resolved the call at `siteKey` to, as the FQN the
 // bundle registers it under, when it is the function being lowered, else ""
-// (D336).  `funcName` is the name the call now carries: the declared name, the
-// member of a dot-named function (`message` for `IOError.message`), or a
-// specialisation Mono renamed it to (`f__Int`), which lives in the declaring
-// package or in the calling one.  A specialised copy of another package's
-// generic carries that package's spans, which this package's sites do not
-// describe, so it is never looked up here.
+// (D336).  A specialised copy of another package's generic carries that
+// package's spans, which this package's sites do not describe, so it is never
+// looked up here.
 func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, funcName: in String): String {
   if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
     return ""
   }
-  match mapGet(cctx.calleeSites, siteKey) {
-    case None -> ""
-    case Some(dp) -> {
-      val pkg = calleePkgOfDefPathMsil(dp)
-      val name = calleeNameOfDefPathMsil(dp)
-      if pkg.length == 0 or name.length == 0 {
-        return ""
-      }
-      val cands: List[String] = newList()
-      if name == funcName or String.endsWith(name, "." + funcName) {
-        cands.add(pkg + "." + name)
-      } else if String.startsWith(funcName, name + "__") {
-        cands.add(pkg + "." + funcName)
-        cands.add(fctx.pkgName + "." + funcName)
-      }
-      for c in cands {
-        if cctx.funcTokens.containsKey(c) {
-          return c
-        }
-      }
-      ""
-    }
-  }
+  sitedCalleeFqnAtMsil(cctx, fctx.pkgName, siteKey, funcName)
 }
 
-// Bundle-wide fallback for a bare (unqualified) call to a `pub func` whose
-// only path to the caller's package is TRANSITIVE — reachable through a
-// facade package's own imports, not a DIRECT import of the caller (issue
-// #6849). The plain-function analog of `pickCaseFqnByScope`, over
-// `cctx.bundleFuncFqnByName` instead of `cctx.unionCaseCtorByName`.
-//
-// Candidates are filtered to ones with a real resolvable token (`funcTokens`
-// — this package's own pass has run — or `bundleFuncFqns` — pre-seeded
-// bundle-wide, #5177). Today this filter never actually drops a candidate:
-// `bundleFuncFqnByName` and `bundleFuncFqns` are populated together at the
-// same seeding site (`preSeedBundleAsyncRetTypesMsil`), so every candidate
-// is already in `bundleFuncFqns`. It is kept as a deliberate guard so a
-// future change that seeds the by-name map from a different (or wider) source
-// than `bundleFuncFqns` can't make this return an FQN the caller below can't
-// look up (mirrors `findImportedFqn`'s own containsKey guard).
-// Resolution order among the survivors:
-//   1. A candidate whose FQN starts with the current package name (a
-//      same-package declaration the direct-import/local-FQN checks above
-//      this call site already missed for some other reason).
-//   2. A candidate in one of the packages imported by the current package,
-//      in declared order (first import wins, matching the type checker's
-//      shadowing rule) — this is the #6849 case: the current package imports
-//      only a facade, and the facade (not the current package) imports the
-//      package that actually declares `funcName`, so this only fires when
-//      tier 1/2 above (direct local/import match) already missed.
-//   3. First resolvable candidate (deterministic fallback, matching
-//      `pickCaseFqnByScope`'s own final fallback).
-// Returns "" when `funcName` isn't in `bundleFuncFqnByName` at all, or none
-// of its candidates have a resolvable token — the call site's existing
-// T0123 panic still fires for a genuinely undeclared callee.
-func findBundleFqnByName(cctx: in CodegenCtx, currentPkg: in String, funcName: in String): String {
-  match mapGet(cctx.bundleFuncFqnByName, funcName) {
-    case None -> ""
-    case Some(all) -> {
-      val candidates: List[String] = newList()
-      var ci = 0
-      while ci < all.count {
-        val cand = all[ci]
-        if cctx.funcTokens.containsKey(cand) or cctx.bundleFuncFqns.containsKey(cand) {
-          candidates.add(cand)
-        }
-        ci = ci + 1
-      }
-      if candidates.count == 0 {
-        return ""
-      }
-      if candidates.count == 1 {
-        return candidates[0]
-      }
-      // Every candidate is an FQN of the form `<pkg>.<funcName>` for the SAME
-      // `funcName` (the map key), so a candidate is in package P exactly when
-      // it equals `P + "." + funcName` — an EXACT match, not a string prefix.
-      // A prefix test (`startsWith(cand, P + ".")`) would wrongly classify a
-      // candidate in a nested SUB-package `P.Sub` (FQN `P.Sub.funcName`) as
-      // "in P", since Lyric package names are dot-hierarchical but `P.Sub` is a
-      // distinct package from `P`. That could silently resolve a bare call to a
-      // same-named function in an unrelated nested package over the intended
-      // direct-import/transitive target — the same silent-mis-resolution class
-      // #6851/#6852 closed elsewhere in this fallback. (pickCaseFqnByScope still
-      // uses the looser prefix form for union cases; keying it by exact package
-      // identity is the tracked #4424 follow-up.)
-      val ownFqn = currentPkg + "." + funcName
-      var i = 0
-      while i < candidates.count {
-        if candidates[i] == ownFqn {
-          return candidates[i]
-        }
-        i = i + 1
-      }
-      match bareImportsForNameMsil(cctx, currentPkg, funcName) {
-        case Some(imps) -> {
-          var ii = 0
-          while ii < imps.count {
-            val impFqn = imps[ii] + "." + funcName
-            var j = 0
-            while j < candidates.count {
-              if candidates[j] == impFqn {
-                return candidates[j]
+// A function's default expressions are lowered in whichever package calls it,
+// but mean the names of the package that declares it.  Qualify each bare call
+// in `e` with the declaring package's own resolution, recorded in the sites of
+// the package being registered (D336).
+func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, e: in Expr): Expr {
+  CE.mapExpr(
+    e,
+    { x: Expr ->
+      match x.kind {
+        case ECall(fn, args) -> match fn.kind {
+          case EPath(p) -> if p.segments.count == 1 {
+            val cands = siteCalleeCandidatesMsil(cctx, "", recordCopySiteKey(p.span), p.segments[0])
+            if cands.count > 0 {
+              val parts = String.split(cands[0], ".")
+              val segs: List[String] = newList()
+              var qi = 0
+              while qi < parts.length {
+                segs.add(parts[qi])
+                qi = qi + 1
               }
-              j = j + 1
+              x.copy(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args))
+            } else {
+              x
             }
-            ii = ii + 1
+          } else {
+            x
           }
+          case _ -> x
         }
-        case None -> ()
+        case _ -> x
       }
-      candidates[0]
     }
-  }
+  )
 }
+
 
 // The source name of the case a `<pkg>.<Union>_<Case>` constructor FQN
 // declares, given its union's simple name.
@@ -21867,27 +21780,13 @@ func lowerBuiltinOrStaticCallMsil(
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
             val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
-            // Bundle-wide fallback (#6849): a bare call to a `pub func`
-            // reachable only TRANSITIVELY through a facade package's own
-            // imports — no DIRECT import of the declaring package from
-            // `fctx.pkgName` — falls through local-FQN and direct-import
-            // resolution above and would otherwise hit the T0123 panic
-            // below even though the typechecker's unscoped bundle-wide
-            // tier-3 match already accepted the call. Only consulted when
-            // both prior tiers missed, so it never overrides a real
-            // local/direct-import hit. See `findBundleFqnByName`'s doc.
-            //
-            // Gated to BARE calls (`qualifiedFqn.length == 0`, i.e.
-            // `path.segments.count < 2`): a bundle-wide same-name search is
-            // only ever correct for an unqualified callee. A written-qualified
-            // call (`Pkg.helper()`) that reached here with its `qualifiedFqn`
-            // not in `funcTokens` is a genuinely unresolved qualified callee —
-            // it must keep hitting the loud T0123 below, never silently
-            // re-resolve to some other package's same-named `helper` (that
-            // would reintroduce exactly the silent mis-resolution #6629 set out
-            // to eliminate).
-            val bundleFqn = if qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) {
-              findBundleFqnByName(cctx, fctx.pkgName, funcName)
+            // `println` and `print` are language builtins the checker types
+            // itself; with a function of the same name in scope the call is
+            // that function (the tiers above), else the stdlib console one.
+            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and
+              importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and
+              cctx.funcTokens.containsKey("Std.Console." + funcName) {
+              "Std.Console." + funcName
             } else {
               ""
             }
@@ -32481,10 +32380,14 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // panic in `emitPhaseBAwait`, or a silent field-count mismatch surfacing as
 // `InvalidProgramException` at runtime).
 func resolveQualifiedFreeCallRetTypePB(
-  cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int
+  cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int, siteKey: in String
 ): MsilType {
   val lastSeg = segments[segments.count - 1]
   val candidates: List[String] = newList()
+  // The function the checker resolved the call to comes first (D336).
+  for sc in siteCalleeCandidatesMsil(cctx, pkgName, siteKey, lastSeg) {
+    candidates.add(sc)
+  }
   if segments.count >= 2 {
     val joinedPath = joinSegsMsil(segments, ".")
     candidates.add(joinedPath)
@@ -32554,41 +32457,6 @@ func resolveQualifiedFreeCallRetTypePB(
         }
       }
       ci2 = ci2 + 1
-    }
-  }
-  // Bundle-wide bare-call fallback (#6852, sibling to the #6849 emission fix):
-  // a BARE call (`segments.count == 1`) to a `pub`/`internal` function
-  // reachable only TRANSITIVELY through a facade package's imports falls
-  // through every candidate above (same-package + direct import, tried against
-  // both `funcRetTypes` and `pbFuncRetTypes`), leaving `result == MObject` —
-  // which `isTaskTypeMsil` rejects, so the await's SM awaiter field goes
-  // UNCOUNTED even though the emission resolver now DOES resolve the call (via
-  // `findBundleFqnByName`, #6849/#6850) and allocates the field. That
-  // asymmetry shifts every later FieldDef/MethodDef token in the state machine
-  // — the #5177-class silent IL corruption this pre-scan exists to prevent.
-  //
-  // Consults `funcRetTypes`, NOT `pbFuncRetTypes`: the latter is always the
-  // BARE declared return, never Task-wrapped (see `pbSeedRetTy`'s doc), so a
-  // bundle-resolved async function looked up there would type as e.g. `Int`
-  // instead of `Task[Int]` and still be rejected. `funcRetTypes` is safe here
-  // even though this pre-scan can run before the callee's own package pass:
-  // `preSeedBundleAsyncRetTypesMsil` seeds a Task/Task[T] placeholder for
-  // EVERY async function bundle-wide, once, before any package's pass runs, so
-  // an async bundle candidate's `funcRetTypes` entry already has the correct
-  // Task-wrapped shape by the time this runs. That sidesteps the #5606 caveat
-  // above (which is about a PLAIN function's entry not existing yet — async
-  // entries always exist bundle-wide before Pass 1). Gated exactly like
-  // emission's `bundleFqn`: bare calls only, and only after the same-package +
-  // direct-import candidates all missed.
-  if result == MObject and segments.count == 1 {
-    val bundleFqn = findBundleFqnByName(cctx, pkgName, lastSeg)
-    if bundleFqn.length > 0 {
-      match mapGet(cctx.funcRetTypes, bundleFqn + "/" + toString(cnt)) {
-        case Some(ty3) -> {
-          result = ty3
-        }
-        case None -> match mapGet(cctx.funcRetTypes, bundleFqn) { case Some(ty4) -> { result = ty4 }; case None -> () }
-      }
     }
   }
   result
@@ -32791,7 +32659,7 @@ func inferCallReturnTypePB(
     case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
-          val freeTy = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
+          val freeTy = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count, recordCopySiteKey(path.span))
           if freeTy == MObject and path.segments.count == 1 {
             pbRecordCtorTypePB(cctx, pkgName, path.segments[0])
           } else {
@@ -32893,7 +32761,7 @@ func inferCallReturnTypePB(
                     pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
                   } else {
                     recvSegs.add(field)
-                    val result = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, recvSegs, args.count)
+                    val result = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, recvSegs, args.count, methodCallSiteKey(callee))
                     if result == MObject {
                       pbMethodCallRetPB(cctx, pkgName, recv, field, args.count, spawnNms, spawnTys, localNms, localTys)
                     } else {
