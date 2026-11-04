@@ -4909,6 +4909,7 @@ func checkRecordCopy(
             val want = fields[fi].ty
             val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
             recordUnsignedWidening(tbl, want, got, valE)
+            noteCallExpected(tbl, valE, want)
             noteRangeSlot(tbl, want, valE, tname + " field " + nm)
             if not argSatisfiesParam(tbl, want, got) {
               diag.add(
@@ -9186,6 +9187,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+            noteCallExpected(tbl, valE, fieldTy)
             noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
             if not argFlowSatisfies(tbl, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
@@ -9214,6 +9216,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+            noteCallExpected(tbl, ae, fieldTy)
             noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
             if not argFlowSatisfies(tbl, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
@@ -9278,6 +9281,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+          noteCallExpected(tbl, valE, fieldTy)
           noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
           if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
@@ -9306,6 +9310,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+          noteCallExpected(tbl, ae, fieldTy)
           noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
           if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
@@ -10212,6 +10217,7 @@ func recordCaseFieldWidenings(
       val fieldTy = substituteTyParams(ftypes[k], gnames, targs)
       val _ = covariantFlow(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
+      noteCallExpected(tbl, callArgExpr(args[ai]), fieldTy)
       val fieldLabel = if names[k].length > 0 { "field " + names[k] } else { "field " + toString(k + 1) }
       noteRangeSlot(tbl, fieldTy, callArgExpr(args[ai]), uc.name + " " + fieldLabel)
       // An unsuffixed float literal for a `Float` field is a `Float` (D155).
@@ -10270,6 +10276,7 @@ func recordGenericArgWidenings(
     val isIn = match p.mode { case PMIn -> true; case _ -> false }
     if ai >= 0 and ai < argTypes.count and isIn {
       recordUnsignedWidening(tbl, substituteTyParams(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
+      noteCallExpected(tbl, callArgExpr(args[ai]), substituteTyParams(p.ty, sig.generics, targs))
       // A type parameter instantiated with an inline range type is checked
       // at the call: the generic body knows nothing of the range (#8031).
       // A parameter declared with a range is checked by the callee.
@@ -11641,7 +11648,8 @@ func recordBranchConstructionType(
 
 // A branch of a consumed `if`/`match` whose value is `e?` with an open
 // operand (`Err(error = x)?`, `None?`) takes, as its success type, the type
-// the branches join to (#8181).
+// the branches join to (#8181); a branch that is a call leaving a type
+// argument open (`newList()`) takes it from the join too (D339).
 func closePropagateBranch(
   sc: in Scope, tbl: in SymbolTable, b: in ExprOrBlock, joined: in Type, consumed: in Bool
 ): Unit {
@@ -11649,7 +11657,10 @@ func closePropagateBranch(
     return
   }
   match branchValueExpr(b) {
-    case Some(ve) -> resolvePropagateOperand(sc, tbl, ve, joined)
+    case Some(ve) -> {
+      noteCallExpected(tbl, ve, joined)
+      resolvePropagateOperand(sc, tbl, ve, joined)
+    }
     case None -> ()
   }
 }
@@ -12904,6 +12915,7 @@ func exprMayCarryOpenBinding(sc: in Scope, e: in Expr): Bool {
 // `if`/`match`/block are checked against the same expected type through
 // `inferExprExpected`, which calls this for each of them.
 pub func noteExpectedFlow(sc: in Scope, tbl: in SymbolTable, e: in Expr, expected: in Type): Unit {
+  noteCallExpected(tbl, e, expected)
   if tbl.openBindingSites.count == 0 or not typeIsClosed(expected) {
     return
   }
@@ -13335,6 +13347,7 @@ func recordCollectionArgWidenings(
   var k = 0
   while k < ps.count and k < args.count {
     recordUnsignedWidening(tbl, ps[k].ty, argTypes[k], callArgExpr(args[k]))
+    noteCallExpected(tbl, callArgExpr(args[k]), ps[k].ty)
     noteRangeSlot(tbl, ps[k].ty, callArgExpr(args[k]), "element")
     k = k + 1
   }
@@ -16407,6 +16420,153 @@ func recordGenericCallTypeArgs(
   }
 }
 
+// The type expected of the call `e` (D339): `noteExpectedFlow` is called for
+// every position that has a declared type, before or after the call itself is
+// checked, so the type is kept by the call's span and read when the file ends.
+func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit {
+  if typeIsUnsolved(expected) {
+    return
+  }
+  match e.kind {
+    case EParen(inner) -> noteCallExpected(tbl, inner, expected)
+    case ECall(_, _) -> {
+      val key = recordCopySiteKey(e.span)
+      match mapGet(tbl.callExpectedSeen, key) {
+        case Some(prev) -> if typeIsClosed(expected) and not typeIsClosed(prev) {
+          tbl.callExpectedSeen.remove(key)
+          tbl.callExpectedSeen.add(key, expected)
+        }
+        case None -> tbl.callExpectedSeen.add(key, expected)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// A call to an imported, non-extern generic whose arguments leave a type
+// argument unsolved is kept in `SymbolTable.unsolvedCallSites` for
+// `reportUnsolvedTypeArgs` (D339).  Mono exempts three calls and so does this:
+// an `@externTarget` generic, a name the local scope binds, and a call without
+// a source position.
+func noteUnsolvedCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  if sig.generics.count == 0 or sig.isExternFunc or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+    return
+  }
+  if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
+    return
+  }
+  val fname = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return }
+    case _ -> return
+  }
+  if scopeHasName(sc, fname) {
+    return
+  }
+  val valueParams = valueGenericParamsOf(tbl, fn, args.count)
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  val noRecv: Option[Type] = None
+  val allTargs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
+  if allTargs.count != sig.generics.count {
+    return
+  }
+  val unsolved: List[String] = newList()
+  var gi = 0
+  while gi < sig.generics.count {
+    if not valueParams.contains(sig.generics[gi]) and typeIsUnsolved(allTargs[gi]) {
+      unsolved.add(sig.generics[gi])
+    }
+    gi = gi + 1
+  }
+  if unsolved.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if not tbl.unsolvedCallSites.containsKey(key) {
+    tbl.unsolvedCallSites.add(
+      key,
+      UnsolvedCallSite(
+        fname = fname,
+        unsolved = unsolved,
+        generics = sig.generics,
+        returnTy = sig.returnTy,
+        callKey = recordCopySiteKey(callSpan),
+        span = fn.span,
+        callerGenerics = sc.genericNames
+      )
+    )
+  }
+}
+
+// W0035 (D339): a call recorded by `noteUnsolvedCall` whose type argument
+// neither the call's expected type, a recorded type-argument site nor an open
+// binding fixed.  Mono reports the same call as T0224 until the checker owns
+// the rule.
+pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
+  val keys = mapKeys(tbl.unsolvedCallSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.unsolvedCallSites, keys[i]) {
+      case Some(site) -> if not unsolvedCallFixed(tbl, keys[i], site) {
+        diag.add(
+          warningDiagnostic(
+            "W0035",
+            "cannot infer type argument(s) " + quoteJoinNames(site.unsolved) + " of '" + site.fname +
+              "' from the call's arguments or its expected type; write '" +
+              site.fname +
+              "[...](...)' or give the call an expected type",
+            site.span
+          )
+        )
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
+func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCallSite): Bool {
+  if tbl.genericCallTypeArgSites.containsKey(key) or tbl.openBindingSites.containsKey(site.callKey) {
+    return true
+  }
+  match mapGet(tbl.callExpectedSeen, site.callKey) {
+    case Some(expected) -> {
+      val retTys: List[Type] = newList()
+      retTys.add(site.returnTy)
+      val expTys: List[Type] = newList()
+      expTys.add(expected)
+      val solved = inferGenericArgsDeep(site.generics, retTys, expTys)
+      var gi = 0
+      while gi < site.generics.count {
+        if site.unsolved.contains(site.generics[gi]) and (typeIsUnsolved(solved[gi]) or not typeIsClosedOver(solved[gi], site.callerGenerics)) {
+          return false
+        }
+        gi = gi + 1
+      }
+      true
+    }
+    case None -> false
+  }
+}
+
+func quoteJoinNames(names: in List[String]): String {
+  val q: List[String] = newList()
+  for n in names {
+    q.add("'" + n + "'")
+  }
+  joinStrs(q, ", ")
+}
+
 // Whether `t` is or contains an instantiation of a generic type.
 func typeMentionsGenericInst(t: in Type): Bool {
   match t {
@@ -17681,15 +17841,18 @@ func inferExprCore(
           }
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           match fn.kind {
-            case EPath(_) -> recordGenericCallTypeArgs(
-              tbl,
-              sc.genericNames,
-              sig,
-              valueGenericParamsOf(tbl, fn, args.count),
-              args,
-              argTypes,
-              fn.span
-            )
+            case EPath(_) -> {
+              recordGenericCallTypeArgs(
+                tbl,
+                sc.genericNames,
+                sig,
+                valueGenericParamsOf(tbl, fn, args.count),
+                args,
+                argTypes,
+                fn.span
+              )
+              noteUnsolvedCall(sc, tbl, fn, sig, args, argTypes, e.span)
+            }
             case _ -> ()
           }
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
@@ -18497,6 +18660,7 @@ func inferExprCore(
       }
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
+        noteCallExpected(tbl, value, targetType)
       }
       noteRangeAssign(sc, tbl, target, op, targetType, value, e.span)
       recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
