@@ -4909,6 +4909,7 @@ func checkRecordCopy(
             val want = fields[fi].ty
             val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
             recordUnsignedWidening(tbl, want, got, valE)
+            noteCallExpected(tbl, valE, want)
             noteRangeSlot(tbl, want, valE, tname + " field " + nm)
             if not argSatisfiesParam(tbl, want, got) {
               diag.add(
@@ -9186,6 +9187,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+            noteCallExpected(tbl, valE, fieldTy)
             noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
             if not argFlowSatisfies(tbl, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
@@ -9214,6 +9216,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+            noteCallExpected(tbl, ae, fieldTy)
             noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
             if not argFlowSatisfies(tbl, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
@@ -9278,6 +9281,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+          noteCallExpected(tbl, valE, fieldTy)
           noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
           if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
@@ -9306,6 +9310,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+          noteCallExpected(tbl, ae, fieldTy)
           noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
           if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
@@ -10212,6 +10217,7 @@ func recordCaseFieldWidenings(
       val fieldTy = substituteTyParams(ftypes[k], gnames, targs)
       val _ = covariantFlow(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
+      noteCallExpected(tbl, callArgExpr(args[ai]), fieldTy)
       val fieldLabel = if names[k].length > 0 { "field " + names[k] } else { "field " + toString(k + 1) }
       noteRangeSlot(tbl, fieldTy, callArgExpr(args[ai]), uc.name + " " + fieldLabel)
       // An unsuffixed float literal for a `Float` field is a `Float` (D155).
@@ -10270,6 +10276,7 @@ func recordGenericArgWidenings(
     val isIn = match p.mode { case PMIn -> true; case _ -> false }
     if ai >= 0 and ai < argTypes.count and isIn {
       recordUnsignedWidening(tbl, substituteTyParams(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
+      noteCallExpected(tbl, callArgExpr(args[ai]), substituteTyParams(p.ty, sig.generics, targs))
       // A type parameter instantiated with an inline range type is checked
       // at the call: the generic body knows nothing of the range (#8031).
       // A parameter declared with a range is checked by the callee.
@@ -13336,6 +13343,7 @@ func recordCollectionArgWidenings(
   var k = 0
   while k < ps.count and k < args.count {
     recordUnsignedWidening(tbl, ps[k].ty, argTypes[k], callArgExpr(args[k]))
+    noteCallExpected(tbl, callArgExpr(args[k]), ps[k].ty)
     noteRangeSlot(tbl, ps[k].ty, callArgExpr(args[k]), "element")
     k = k + 1
   }
@@ -16419,8 +16427,12 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
     case EParen(inner) -> noteCallExpected(tbl, inner, expected)
     case ECall(_, _) -> {
       val key = recordCopySiteKey(e.span)
-      if not tbl.callExpectedSeen.containsKey(key) {
-        tbl.callExpectedSeen.add(key, expected)
+      match mapGet(tbl.callExpectedSeen, key) {
+        case Some(prev) -> if typeIsClosed(expected) and not typeIsClosed(prev) {
+          tbl.callExpectedSeen.remove(key)
+          tbl.callExpectedSeen.add(key, expected)
+        }
+        case None -> tbl.callExpectedSeen.add(key, expected)
       }
     }
     case _ -> ()
@@ -18643,6 +18655,7 @@ func inferExprCore(
       }
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
+        noteCallExpected(tbl, value, targetType)
       }
       noteRangeAssign(sc, tbl, target, op, targetType, value, e.span)
       recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
