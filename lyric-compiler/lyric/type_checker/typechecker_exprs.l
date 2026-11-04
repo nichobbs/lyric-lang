@@ -8,6 +8,8 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
 import Lyric.HoistEngine as HoistEngine
+import Std.Console as CensusConsole
+import Std.Environment as CensusEnv
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
 // `+`'s "any operand + String = String" inference (#5657).  Scoped to `+=`
@@ -11673,10 +11675,10 @@ func censusLogSilentTyError(e: in Expr, t: in Type): Unit {
   if not isErr {
     return
   }
-  if Std.Environment.getVarOrDefault("LYRIC_TYERR_CENSUS", "") != "1" {
+  if CensusEnv.getVarOrDefault("LYRIC_TYERR_CENSUS", "") != "1" {
     return
   }
-  Std.Console.error("TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" +
+  CensusConsole.error("TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" +
     e.span.startPos.fileId.toString() + ":" + e.span.startPos.offset.toString())
 }
 
