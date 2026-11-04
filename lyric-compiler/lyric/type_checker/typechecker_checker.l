@@ -8,7 +8,7 @@ import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{DepPackage, buildResolverContext}
+import Lyric.Resolve.{DepPackage, buildResolverContext, shadowedImports}
 import Std.Environment.{getVarOrDefault}
 import Lyric.Fmt as Fmt
 
