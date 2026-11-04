@@ -16443,11 +16443,46 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
   }
 }
 
+// Whether `t` mentions a hole or an unsolved inference variable anywhere.
+func typeHasUnsolved(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case TyInfer(_) -> true
+    case TyUser(_, _, args) -> typesHaveUnsolved(args)
+    case TySlice(e) -> typeHasUnsolved(e)
+    case TyArray(_, e, _) -> typeHasUnsolved(e)
+    case TyNullable(inner) -> typeHasUnsolved(inner)
+    case TyTuple(elems) -> typesHaveUnsolved(elems)
+    case TyFunction(ps, ret, _) -> typesHaveUnsolved(ps) or typeHasUnsolved(ret)
+    case TyRefined(u, _, _, _, _) -> typeHasUnsolved(u)
+    case _ -> false
+  }
+}
+
+func typesHaveUnsolved(ts: in List[Type]): Bool {
+  for t in ts {
+    if typeHasUnsolved(t) {
+      return true
+    }
+  }
+  false
+}
+
+// A solution that fixes a type parameter: nothing open in it, and only the
+// caller's own generics free.
+func typeIsSolution(t: in Type, callerGenerics: in List[String]): Bool {
+  not typeHasUnsolved(t) and typeIsClosedOver(t, callerGenerics)
+}
+
 // A call to an imported, non-extern generic whose arguments leave a type
 // argument unsolved is kept in `SymbolTable.unsolvedCallSites` for
 // `reportUnsolvedTypeArgs` (D339).  Mono exempts three calls and so does this:
 // an `@externTarget` generic, a name the local scope binds, and a call without
-// a source position.
+// a source position.  A type parameter an argument binds to a closed type is
+// solved, even if another argument disagrees (that is T0043 or a widening, not
+// a missing annotation).  A call with an argument the checker could not type,
+// or one that passes an open binding, is `indeterminate`: the checker does not
+// know, so it says nothing.
 func noteUnsolvedCall(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -16475,21 +16510,26 @@ func noteUnsolvedCall(
   for p in sig.params {
     paramNames.add(p.name)
   }
-  val noRecv: Option[Type] = None
-  val allTargs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
-  if allTargs.count != sig.generics.count {
-    return
-  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
   val unsolved: List[String] = newList()
   var gi = 0
   while gi < sig.generics.count {
-    if not valueParams.contains(sig.generics[gi]) and typeIsUnsolved(allTargs[gi]) {
+    if not valueParams.contains(sig.generics[gi]) and not genericBoundByArgs(sig, srcIdx, argTypes, sig.generics[gi], sc.genericNames) {
       unsolved.add(sig.generics[gi])
     }
     gi = gi + 1
   }
   if unsolved.count == 0 {
     return
+  }
+  var indeterminate = false
+  var ai = 0
+  while ai < args.count {
+    val ae = callArgExpr(args[ai])
+    if (ai < argTypes.count and typeIsHole(argTypes[ai])) or openSiteOfExpr(sc, ae) != "" {
+      indeterminate = true
+    }
+    ai = ai + 1
   }
   val key = recordCopySiteKey(fn.span)
   if not tbl.unsolvedCallSites.containsKey(key) {
@@ -16502,9 +16542,133 @@ func noteUnsolvedCall(
         returnTy = sig.returnTy,
         callKey = recordCopySiteKey(callSpan),
         span = fn.span,
-        callerGenerics = sc.genericNames
+        callerGenerics = sc.genericNames,
+        indeterminate = indeterminate
       )
     )
+  }
+}
+
+// Whether some argument binds the type parameter `name` of `sig` to a closed
+// type.
+func genericBoundByArgs(
+  sig: in ResolvedSignature,
+  srcIdx: in List[Int],
+  argTypes: in List[Type],
+  name: in String,
+  callerGenerics: in List[String],
+): Bool {
+  var k = 0
+  while k < srcIdx.count and k < sig.params.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < argTypes.count {
+      match findGenericInPair(name, sig.params[k].ty, argTypes[ai]) {
+        case Some(v) -> if typeIsSolution(v, callerGenerics) {
+          return true
+        }
+        case None -> ()
+      }
+    }
+    k = k + 1
+  }
+  false
+}
+
+// A call that is an argument of the generic call `sig` (D339): its expected
+// type is the parameter it fills, once the parent's holes are solved.
+func noteNestedCallFlow(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  if sig.generics.count == 0 or args.count > sig.params.count {
+    return
+  }
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  var ownTargs: List[Type] = newList()
+  var computed = false
+  var k = 0
+  while k < srcIdx.count and k < sig.params.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < args.count {
+      val child = stripExprParens(callArgExpr(args[ai]))
+      val isCall = match child.kind {
+        case ECall(_, _) -> true
+        case _ -> false
+      }
+      if isCall {
+        if not computed {
+          val noRecv: Option[Type] = None
+          ownTargs = sigCallTypeArgsInOrder(sig, noRecv, srcIdx, argTypes)
+          computed = true
+        }
+        if ownTargs.count == sig.generics.count {
+          val ckey = recordCopySiteKey(child.span)
+          if not tbl.callParents.containsKey(ckey) {
+            tbl.callParents.add(
+              ckey,
+              CallParent(
+                parentKey = recordCopySiteKey(callSpan),
+                generics = sig.generics,
+                returnTy = sig.returnTy,
+                ownTargs = ownTargs,
+                paramTy = sig.params[k].ty
+              )
+            )
+          }
+        }
+      }
+    }
+    k = k + 1
+  }
+}
+
+// The type expected of the call at `key`: what a position gave it, else the
+// parameter of the generic call it is an argument of, with that call's holes
+// solved from its own expected type.
+func effectiveCallExpected(tbl: in SymbolTable, key: in String, depth: in Int): Option[Type] {
+  match mapGet(tbl.callExpectedSeen, key) {
+    case Some(seen) -> if not typeHasUnsolved(seen) {
+      return Some(value = seen)
+    }
+    case None -> ()
+  }
+  if depth > 8 {
+    return mapGet(tbl.callExpectedSeen, key)
+  }
+  match mapGet(tbl.callParents, key) {
+    case Some(p) -> {
+      val targs: List[Type] = newList()
+      for t in p.ownTargs {
+        targs.add(t)
+      }
+      match effectiveCallExpected(tbl, p.parentKey, depth + 1) {
+        case Some(pe) -> {
+          val retTys: List[Type] = newList()
+          retTys.add(p.returnTy)
+          val expTys: List[Type] = newList()
+          expTys.add(pe)
+          val solved = inferGenericArgsDeep(p.generics, retTys, expTys)
+          var gi = 0
+          while gi < targs.count and gi < solved.count {
+            if typeHasUnsolved(targs[gi]) and not typeHasUnsolved(solved[gi]) {
+              targs[gi] = solved[gi]
+            }
+            gi = gi + 1
+          }
+        }
+        case None -> ()
+      }
+      Some(value = substituteTyParams(p.paramTy, p.generics, targs))
+    }
+    case None -> mapGet(tbl.callExpectedSeen, key)
   }
 }
 
@@ -16517,7 +16681,7 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
   var i = 0
   while i < keys.count {
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
-      case Some(site) -> if not unsolvedCallFixed(tbl, keys[i], site) {
+      case Some(site) -> if not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
         diag.add(
           warningDiagnostic(
             "W0035",
@@ -16539,7 +16703,7 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
   if tbl.genericCallTypeArgSites.containsKey(key) or tbl.openBindingSites.containsKey(site.callKey) {
     return true
   }
-  match mapGet(tbl.callExpectedSeen, site.callKey) {
+  match effectiveCallExpected(tbl, site.callKey, 0) {
     case Some(expected) -> {
       val retTys: List[Type] = newList()
       retTys.add(site.returnTy)
@@ -16548,7 +16712,7 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
       val solved = inferGenericArgsDeep(site.generics, retTys, expTys)
       var gi = 0
       while gi < site.generics.count {
-        if site.unsolved.contains(site.generics[gi]) and (typeIsUnsolved(solved[gi]) or not typeIsClosedOver(solved[gi], site.callerGenerics)) {
+        if site.unsolved.contains(site.generics[gi]) and not typeIsSolution(solved[gi], site.callerGenerics) {
           return false
         }
         gi = gi + 1
@@ -17852,6 +18016,7 @@ func inferExprCore(
                 fn.span
               )
               noteUnsolvedCall(sc, tbl, fn, sig, args, argTypes, e.span)
+              noteNestedCallFlow(sc, tbl, sig, args, argTypes, e.span)
             }
             case _ -> ()
           }

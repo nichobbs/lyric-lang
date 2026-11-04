@@ -4627,6 +4627,21 @@ test "an expected type, another argument or a written type argument fixes the ca
   )
 }
 
+test "more positions that fix a call, and the cases the checker cannot decide (D339)" {
+  val wrapLib = "func wrap[T](o: in Option[T]): Option[T] { o }\n"
+  assertEqualInt(unsolvedWarnings("func f(): Option[Int] { wrap(none()) }\n"), 0, "a nested call takes its parameter, solved from the outer result")
+  assertEqualInt(
+    unsolvedWarnings("func g(b: Bool, y: in Option[Int]): Option[Int] {\n  val r = if b { y } else { none() }\n  r\n}\n"),
+    0,
+    "a branch takes the type the branches join to"
+  )
+  assertEqualInt(unsolvedWarnings("record R { o: Option[Int] }\nfunc f(): R { R(o = none()) }\n"), 0, "a constructor field")
+  assertEqualInt(unsolvedWarnings("func f(): Option[Int] {\n  var v: Option[Int] = none[Int]()\n  v = none()\n  v\n}\n"), 0, "an assignment target")
+  assertEqualInt(unsolvedWarnings("func h[U](): Option[U] { none() }\n"), 0, "the caller's own generic solves it")
+  assertEqualInt(unsolvedWarnings("func f(): Bool {\n  val x = none()\n  isNone(x)\n}\n"), 0, "an open binding is left to its own resolution")
+  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 2, "still reported when nothing fixes either call")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.
