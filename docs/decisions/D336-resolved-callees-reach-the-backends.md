@@ -79,9 +79,32 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    `__lyric_bmode_*` names; specialisations inside another package's generic
    bodies; and a few functions whose site is not recorded, `get`,
    `setWithTtl`, `verifyApiKey`), each tracked on #8612.
-6. **`findBareImportedFqnMsil` stays** for the calls with no site (synthesised
-   `__lyric_checked_*` helpers, distinct-type factories such as
-   `Type.tryFrom`, function values), tracked on #8612.
+6. **MSIL's bare-import search is now only the fallback for a call with no
+   site.** A census of every manifest, the stdlib tests and every compiler
+   self-test (466) shows which calls still need it: a call spliced from an
+   aspect library template into the caller (`checkRetryConfig`,
+   `checkFlagName`, `nowEpochMillis`: it carries the library's span, not the
+   caller's), a call the weaver synthesises (span 0:0, `monotonicNanos`), and
+   a call inside an imported generic whose declaring package recorded no site
+   (`rootPath` in `Ui.Forms.formFields`), with the async pre-scan's candidate
+   lookups that predict the same bindings. These keep
+   `findBareImportedFqnMsil`, documented as that fallback; deleting it needs
+   the weaver to qualify what it splices (tracked on #8612).
+   What is removed: `pkgImportAliases` and the pre-scan's alias candidates (an
+   alias-qualified call binds through its site), and the origin-scoped import
+   search is reached only after the site. A body specialised from another
+   package's generic reads that package's sites, kept bundle-wide under
+   `<package>|<key>` (`CodegenCtx.originCalleeSites`, as arities and receiver
+   classes are).
+   A default expression (a function parameter's, a record field's) is lowered
+   in whichever package calls the function or builds the record but means the
+   declaring package's names. A callee in the declaring package is qualified
+   from the package's sites when the default is registered; any other bare
+   callee is resolved when the default is fetched, in the declaring package's
+   own scope (its functions, then the imports its contract records,
+   `CodegenCtx.defaultDeclPkg`), which also covers restored and stdlib
+   packages, whose defaults have no sites. `emitter_project_self_test.l` has a
+   record field default calling a function of its package.
 
 ## Consequences
 

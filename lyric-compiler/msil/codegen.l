@@ -263,6 +263,11 @@ pub record CodegenCtx {
   // these to complete a partial named-arg constructor call (e.g. `R(a = 1)` when
   // field `b` has a default) so the newobj stack arity matches the .ctor signature.
   ctorDefaultExprs: Map[String, Expr]
+  /// The declaring package of each default in `ctorDefaultExprs` and
+  /// `funcDefaultExprs` that has no source in this bundle (a restored
+  /// dependency or a stdlib package), under the same key: its calls mean that
+  /// package's names (`qualifyInDeclScopeMsil`).
+  defaultDeclPkg: Map[String, String]
   fieldVarIndices: Map[String, Int]
   // MSIL type for in-package record/union-case fields.  Key = "FQClassName/fieldName".
   // Populated by addPackageTokens so EMember returns the actual ldfld type (MBool,
@@ -670,6 +675,10 @@ pub record CodegenCtx {
   /// `methodCallSiteKey` (`Lyric.TypeChecker`'s `calleeSites`, D336; set per
   /// package by the bridge).
   calleeSites: Map[String, String]
+  /// Every package's `calleeSites` of the bundle under `<package>|<key>`,
+  /// for a body specialised from another package's generic: its spans are
+  /// that package's, so it binds its calls by that package's sites.
+  originCalleeSites: Map[String, String]
   // The nominal class of each field-access receiver the type checker
   // resolved, keyed by `recordCopySiteKey` of the receiver's span (and
   // `<origin>|<key>` in a body specialised from another package's generic);
@@ -747,12 +756,6 @@ pub record CodegenCtx {
   // The whole imports' transitive closure alone (every name of these
   // packages is visible bare), computed on first use.
   pkgWholeClosure: Map[String, List[String]]
-  // Per-package import aliases (`import Std.String as Str`).  Keyed by
-  // `<pkgName>/<alias>` → the real dotted package name (`Std.String`), so an
-  // alias-qualified call (`Str.split(..)`) parsed as `EMember(EPath["Str"], …)`
-  // can resolve to the free function `Std.String.split` instead of mis-routing
-  // to value method-dispatch.
-  pkgImportAliases: Map[String, String]
   // Cross-package union case lookup (#1183 codegen port).  Maps a union
   // case's simple name (e.g. "Some") to its FQN ctor key
   // (e.g. "Std.Core.Option$Some") so the construction site can resolve
@@ -2437,6 +2440,7 @@ pub func newCodegenCtx(
     fieldSigBytes = newMap(),
     fieldDeclaredNames = newMap(),
     ctorDefaultExprs = newMap(),
+    defaultDeclPkg = newMap(),
     fieldVarIndices = newMap(),
     fieldMsilTypes = newMap(),
     byteFields = newMap(),
@@ -2544,6 +2548,7 @@ pub func newCodegenCtx(
     methodParamDecls = newMap(),
     methodCallArities = newMap(),
     calleeSites = newMap(),
+    originCalleeSites = newMap(),
     memberRecvClasses = newMap(),
     restoredFuncParamTypes = newMap(),
     implEntries = newList(),
@@ -2559,7 +2564,6 @@ pub func newCodegenCtx(
     pkgSelectedNames = newMap(),
     pkgSelectivePkgs = newMap(),
     pkgWholeClosure = newMap(),
-    pkgImportAliases = newMap(),
     unionCaseCtorByName = newMap(),
     caseParentUnion = newMap(),
     typeFqnByName = newMap(),
@@ -3581,18 +3585,6 @@ pub func recordPackageImportsMsil(cctx: in CodegenCtx, pkgName: in String, impor
     val imp = imports[mi]
     val impDotted = joinSegsMsil(imp.path.segments, ".")
     importedDottedNames.add(impDotted)
-    // Record the `as Alias` rebinding so an alias-qualified free-function call
-    // (`Str.split(..)` for `import Std.String as Str`) resolves to the real
-    // package FQN in `lowerMethodCallMsil`'s static-call fast path.
-    match imp.asAlias {
-      case Some(al) -> {
-        val aliasKey = pkgName + "/" + al
-        if not cctx.pkgImportAliases.containsKey(aliasKey) {
-          cctx.pkgImportAliases.add(aliasKey, impDotted)
-        }
-      }
-      case None -> ()
-    }
     mi = mi + 1
   }
   if cctx.pkgImports.containsKey(pkgName) {
@@ -4220,7 +4212,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               match f.dflt {
                 case Some(dfltExpr) -> {
                   if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
-                    cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                    cctx.ctorDefaultExprs.add(byPosKey, qualifyDefaultCalleesMsil(cctx, pkgName, dfltExpr))
+                    cctx.defaultDeclPkg.add(byPosKey, pkgName)
                   }
                 }
                 case None -> ()
@@ -4393,7 +4386,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               match f.dflt {
                 case Some(dfltExpr) -> {
                   if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
-                    cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                    cctx.ctorDefaultExprs.add(byPosKey, qualifyDefaultCalleesMsil(cctx, pkgName, dfltExpr))
+                    cctx.defaultDeclPkg.add(byPosKey, pkgName)
                   }
                 }
                 case None -> ()
@@ -4891,7 +4885,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   match initOpt {
                     case Some(dfltExpr) -> {
                       if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
-                        cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                        cctx.ctorDefaultExprs.add(byPosKey, qualifyDefaultCalleesMsil(cctx, pkgName, dfltExpr))
+                        cctx.defaultDeclPkg.add(byPosKey, pkgName)
                       }
                     }
                     case None -> ()
@@ -4916,7 +4911,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   match initOpt {
                     case Some(dfltExpr) -> {
                       if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
-                        cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                        cctx.ctorDefaultExprs.add(byPosKey, qualifyDefaultCalleesMsil(cctx, pkgName, dfltExpr))
+                        cctx.defaultDeclPkg.add(byPosKey, pkgName)
                       }
                     }
                     case None -> ()
@@ -5660,12 +5656,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
           }
           match decl.params[pmi].dflt {
             case Some(dfltExprRaw) -> {
-              val dfltExpr = qualifyDefaultCalleesMsil(cctx, dfltExprRaw)
+              val dfltExpr = qualifyDefaultCalleesMsil(cctx, pkgName, dfltExprRaw)
               if not cctx.funcDefaultExprs.containsKey(pnKey) {
                 cctx.funcDefaultExprs.add(pnKey, dfltExpr)
+                cctx.defaultDeclPkg.add(pnKey, pkgName)
               }
               if not cctx.funcDefaultExprs.containsKey(pnKeyA) {
                 cctx.funcDefaultExprs.add(pnKeyA, dfltExpr)
+                cctx.defaultDeclPkg.add(pnKeyA, pkgName)
               }
             }
             case None -> ()
@@ -17142,8 +17140,17 @@ func calleeNameOfDefPathMsil(dp: in String): String {
 func siteCalleeCandidatesMsil(
   cctx: in CodegenCtx, callerPkg: in String, siteKey: in String, funcName: in String
 ): List[String] {
+  siteCalleeCandidatesInMsil(cctx.calleeSites, callerPkg, siteKey, funcName)
+}
+
+func siteCalleeCandidatesInMsil(
+  sites: in Map[String, String],
+  callerPkg: in String,
+  siteKey: in String,
+  funcName: in String,
+): List[String] {
   val cands: List[String] = newList()
-  match mapGet(cctx.calleeSites, siteKey) {
+  match mapGet(sites, siteKey) {
     case None -> ()
     case Some(dp) -> {
       val pkg = calleePkgOfDefPathMsil(dp)
@@ -17175,9 +17182,15 @@ func sitedCalleeFqnAtMsil(cctx: in CodegenCtx, callerPkg: in String, siteKey: in
 // bundle registers it under, when it is the function being lowered, else ""
 // (D336).  A specialised copy of another package's generic carries that
 // package's spans, which this package's sites do not describe, so it is never
-// looked up here.
+// looked up here: it binds by the declaring package's sites, kept bundle-wide
+// under `<origin>|<key>`.
 func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, funcName: in String): String {
   if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    for c in siteCalleeCandidatesInMsil(cctx.originCalleeSites, fctx.pkgName, fctx.originPkg + "|" + siteKey, funcName) {
+      if cctx.funcTokens.containsKey(c) {
+        return c
+      }
+    }
     return ""
   }
   sitedCalleeFqnAtMsil(cctx, fctx.pkgName, siteKey, funcName)
@@ -17187,7 +17200,7 @@ func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in Strin
 // but mean the names of the package that declares it.  Qualify each bare call
 // in `e` with the declaring package's own resolution, recorded in the sites of
 // the package being registered (D336).
-func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, e: in Expr): Expr {
+func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, pkgName: in String, e: in Expr): Expr {
   CE.mapExpr(
     e,
     { x: Expr ->
@@ -17195,8 +17208,62 @@ func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, e: in Expr): Expr {
         case ECall(fn, args) -> match fn.kind {
           case EPath(p) -> if p.segments.count == 1 {
             val cands = siteCalleeCandidatesMsil(cctx, "", recordCopySiteKey(p.span), p.segments[0])
-            if cands.count > 0 {
+            if cands.count > 0 and String.startsWith(cands[0], pkgName + ".") {
               val parts = String.split(cands[0], ".")
+              val segs: List[String] = newList()
+              var qi = 0
+              while qi < parts.length {
+                segs.add(parts[qi])
+                qi = qi + 1
+              }
+              x.copy(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args))
+            } else {
+              x
+            }
+          } else {
+            x
+          }
+          case _ -> x
+        }
+        case _ -> x
+      }
+    }
+  )
+}
+
+// `dflt`, registered under `key`, in the scope it was written in (see
+// `qualifyInDeclScopeMsil`); unchanged for a default of a package compiled in
+// this bundle, which is qualified when registered.
+func declScopeDefaultMsil(cctx: in CodegenCtx, key: in String, dflt: in Expr): Expr {
+  match mapGet(cctx.defaultDeclPkg, key) {
+    case Some(pkg) -> qualifyInDeclScopeMsil(cctx, pkg, dflt)
+    case None -> dflt
+  }
+}
+
+// A default expression of a function or record that has no source in this
+// bundle (a restored dependency, a stdlib package), with each bare call
+// qualified by the function it means in the declaring package `pkg`'s scope:
+// its own function, else one of the imports its contract records.  A default
+// is lowered in whichever package calls the function or builds the record
+// (`qualifyDefaultCalleesMsil` does the same from the checker's sites for a
+// package compiled in this bundle).
+func qualifyInDeclScopeMsil(cctx: in CodegenCtx, pkg: in String, e: in Expr): Expr {
+  CE.mapExpr(
+    e,
+    { x: Expr ->
+      match x.kind {
+        case ECall(fn, args) -> match fn.kind {
+          case EPath(p) -> if p.segments.count == 1 {
+            val name = p.segments[0]
+            val own = pkg + "." + name
+            val fqn = if cctx.funcTokens.containsKey(own) {
+              own
+            } else {
+              findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, name), name, args.count, MObject)
+            }
+            if fqn.length > 0 {
+              val parts = String.split(fqn, ".")
               val segs: List[String] = newList()
               var qi = 0
               while qi < parts.length {
@@ -19474,7 +19541,9 @@ func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[
       ordered.add(args[slots[fp]])
     } else {
       match mapGet(cctx.ctorDefaultExprs, ctorKey + "/field" + toString(fp)) {
-        case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
+        case Some(dflt) -> ordered.add(
+          CAPositional(expr = declScopeDefaultMsil(cctx, ctorKey + "/field" + toString(fp), dflt))
+        )
         case None -> return args
       }
     }
@@ -19501,7 +19570,12 @@ func funcArgsWithDefaultsMsil(
     match mapGet(cctx.funcParamNames, pnKey) {
       case Some(nm) -> {
         names.add(nm)
-        defaults.add(mapGet(cctx.funcDefaultExprs, pnKey))
+        defaults.add(
+          match mapGet(cctx.funcDefaultExprs, pnKey) {
+            case Some(d) -> Some(value = declScopeDefaultMsil(cctx, pnKey, d))
+            case None -> None
+          }
+        )
         pi = pi + 1
       }
       case None -> {
@@ -19645,7 +19719,8 @@ func lowerFuncValueInvokeMsil(
 // or hoisted cell.
 // The FQN a bare call inside a monomorphized copy of an imported generic
 // resolves to in its declaring package's scope (`fctx.originPkg`): the
-// declaring package's own function, else one it imports.  "" when the
+// declaring package's own function; one it imports is the checker's site
+// (D336).  "" when the
 // function is not such a copy, the call is qualified, or neither scope has
 // the callee — the caller then falls through to the calling package's own
 // resolution tiers (D-progress-946).
@@ -19667,7 +19742,10 @@ func originScopedFqnMsil(
   findBareImportedFqnMsil(cctx, fctx.originPkg, funcName, arity, retHint)
 }
 
-// The function a bare `funcName` in `pkg` resolves to through its imports
+// The fallback for a call the checker recorded no callee for (an aspect
+// template spliced into the caller, a call the weaver synthesised, a call in an
+// imported generic whose declaring package recorded none): the function a bare
+// `funcName` in `pkg` resolves to through its imports
 // (docs/01 §9.2): the imports that admit the name, directly imported ones
 // first, so a return-type hint (`findImportedFqnWithHint`) chooses among a
 // tier's candidates but never reaches past a direct import to a package
@@ -23041,19 +23119,6 @@ func lowerMethodCallMsil(
     fqnSegs.add(memberName)
     val callFqn = joinSegsMsil(fqnSegs, ".")
     val callArityFqn = callFqn + "/" + toString(args.count)
-    // A single-segment receiver may be an import alias (`import Std.String as
-    // Str` → `Str.split(..)`).  Resolve it to the real package FQN and try that
-    // free-function key too — without this the alias literal (`Str.split`) never
-    // matches a `funcTokens` key (`Std.String.split`) and the call mis-routes to
-    // value method-dispatch (an "unsupported method" runtime throw).
-    val aliasResolvedFqn = if recvSegs.count == 1 and not fctx.slots.containsKey(recvSegs[0]) {
-      match mapGet(cctx.pkgImportAliases, fctx.pkgName + "/" + recvSegs[0]) {
-        case Some(realPkg) -> realPkg + "." + memberName
-        case None -> ""
-      }
-    } else {
-      ""
-    }
     // A call through a package qualifier the checker resolved (`Alias.f`,
     // `Pkg.f`): the declaring package's function, whatever the qualifier
     // spells (D336).
@@ -23078,23 +23143,6 @@ func lowerMethodCallMsil(
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {
       val staticPath = ModulePath(segments = fqnSegs, span = recv.span)
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, staticPath, args)
-    }
-    if aliasResolvedFqn.length > 0 and (cctx.funcTokens.containsKey(aliasResolvedFqn + "/" + toString(args.count)) or cctx.funcTokens.containsKey(aliasResolvedFqn)) {
-      // Build a synthetic EPath carrying the resolved package FQN so the static
-      // lowering sees the real package, not the alias.  `aliasResolvedFqn` is
-      // `realPkg + "." + memberName` (built above); split it and drop the
-      // trailing memberName segment to recover realPkg's segments without a
-      // second pkgImportAliases lookup.
-      val aliasParts = String.split(aliasResolvedFqn, ".")
-      val realSegs: List[String] = newList()
-      var pi = 0
-      while pi < aliasParts.length - 1 {
-        realSegs.add(aliasParts[pi])
-        pi = pi + 1
-      }
-      realSegs.add(memberName)
-      val aliasPath = ModulePath(segments = realSegs, span = recv.span)
-      return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, aliasPath, args)
     }
     // Type-associated function call for a UFCS type-method declared in THIS
     // package (not imported): `Wrapper2.unwrap(w)` parses as
@@ -32395,15 +32443,6 @@ func resolveQualifiedFreeCallRetTypePB(
   if segments.count >= 2 {
     val joinedPath = joinSegsMsil(segments, ".")
     candidates.add(joinedPath)
-    // Alias resolution: `Alias.func(args)` where `import Pkg as Alias`.
-    // Phase B resolves the alias via pkgImportAliases; Phase A must too
-    // or await counts diverge and resumeLabels index faults.
-    if segments.count == 2 {
-      match mapGet(cctx.pkgImportAliases, pkgName + "/" + segments[0]) {
-        case Some(realPkg) -> candidates.add(realPkg + "." + segments[1])
-        case None -> ()
-      }
-    }
     match mapGet(cctx.pkgImports, pkgName) {
       case Some(imps) -> {
         var pfxI = 0
@@ -32416,8 +32455,6 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  // A bare callee through the imports that make it visible bare, in the
-  // order emission resolves it (docs/01 §9.2); an aliased import never.
   val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
   if bareImp.length > 0 {
     candidates.add(bareImp)
@@ -32697,15 +32734,6 @@ func inferCallReturnTypePB(
               // (`Acc.aGet(a, 3)`) is registered under the package-qualified
               // name, which emission resolves too (#8253).
               candidates.add(pkgName + "." + joinedPath)
-              // Alias resolution: `Alias.method(args)` where `import Pkg as Alias`.
-              // Phase B uses pkgImportAliases to resolve the alias; Phase A must do
-              // the same or await counts diverge and resumeLabels index faults.
-              if recvPath.segments.count == 1 {
-                match mapGet(cctx.pkgImportAliases, pkgName + "/" + recvPath.segments[0]) {
-                  case Some(realPkg) -> candidates.add(realPkg + "." + field)
-                  case None -> ()
-                }
-              }
               match mapGet(cctx.pkgImports, pkgName) {
                 case Some(imps) -> {
                   var pfxI = 0
@@ -49112,6 +49140,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           case Some(dfltExpr) -> {
             if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
               cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+              cctx.defaultDeclPkg.add(byPosKey, packageName)
             }
           }
           case None -> ()
@@ -49260,7 +49289,10 @@ func registerRestoredFunc(
         cctx.funcParamNames.add(rk, fn.params[rni].name)
       }
       match fn.params[rni].dflt {
-        case Some(rd) -> if not cctx.funcDefaultExprs.containsKey(rk) { cctx.funcDefaultExprs.add(rk, rd) }
+        case Some(rd) -> if not cctx.funcDefaultExprs.containsKey(rk) {
+          cctx.funcDefaultExprs.add(rk, rd)
+          cctx.defaultDeclPkg.add(rk, packageName)
+        }
         case None -> ()
       }
     }
@@ -51834,6 +51866,7 @@ func registerStdlibRecordLikeType(
             case Some(dfltExpr) -> {
               if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
                 cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                cctx.defaultDeclPkg.add(byPosKey, packageName)
               }
             }
             case None -> ()
@@ -52102,13 +52135,13 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
     cctx.funcRetTypes.add(arityKey, retType)
     cctx.funcParamTypes.add(arityKey, paramTypes)
     cctx.funcParamModes.add(arityKey, fnModes)
-    registerStdlibFuncParamNames(cctx, arityKey, fn)
+    registerStdlibFuncParamNames(cctx, packageName, arityKey, fn)
     if not cctx.funcTokens.containsKey(fqn) {
       cctx.funcTokens.add(fqn, tok)
       cctx.funcRetTypes.add(fqn, retType)
       cctx.funcParamTypes.add(fqn, paramTypes)
       cctx.funcParamModes.add(fqn, fnModes)
-      registerStdlibFuncParamNames(cctx, fqn, fn)
+      registerStdlibFuncParamNames(cctx, packageName, fqn, fn)
     }
   }
 }
@@ -52117,7 +52150,9 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
 // `addPackageTokens` and `registerRestoredFunc` record them, so a call naming
 // its arguments out of parameter order passes each to its own parameter
 // (`funcArgsWithDefaultsMsil`, #8158).
-func registerStdlibFuncParamNames(cctx: in CodegenCtx, key: in String, fn: in FunctionDecl): Unit {
+func registerStdlibFuncParamNames(
+  cctx: in CodegenCtx, packageName: in String, key: in String, fn: in FunctionDecl
+): Unit {
   var pi = 0
   while pi < fn.params.count {
     val pk = key + "/param" + toString(pi)
@@ -52125,7 +52160,10 @@ func registerStdlibFuncParamNames(cctx: in CodegenCtx, key: in String, fn: in Fu
       cctx.funcParamNames.add(pk, fn.params[pi].name)
     }
     match fn.params[pi].dflt {
-      case Some(d) -> if not cctx.funcDefaultExprs.containsKey(pk) { cctx.funcDefaultExprs.add(pk, d) }
+      case Some(d) -> if not cctx.funcDefaultExprs.containsKey(pk) {
+        cctx.funcDefaultExprs.add(pk, d)
+        cctx.defaultDeclPkg.add(pk, packageName)
+      }
       case None -> ()
     }
     pi = pi + 1

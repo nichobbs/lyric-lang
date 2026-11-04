@@ -1039,6 +1039,18 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts, nugetAssemblyPaths, pvParts[0], pvParts[1])
+  // Every package's resolved callees under `<package>|<key>`, for a body
+  // specialised from another package's generic (D336).
+  var osi = 0
+  while osi < perPkgCalleeSites.count {
+    for sk in mapKeys(perPkgCalleeSites[osi]) {
+      match mapGet(perPkgCalleeSites[osi], sk) {
+        case Some(dp) -> cctx.originCalleeSites.add(perPkgNames[osi] + "|" + sk, dp)
+        case None -> ()
+      }
+    }
+    osi = osi + 1
+  }
   // #6596: whole-build field-write lock-safety audit, across every in-build
   // package's woven source — must run before ANY package's `lowerRecordMsil`
   // (the codegenMPackage loop below) so the unsafe-name set this build's
