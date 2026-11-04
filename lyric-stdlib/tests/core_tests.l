@@ -77,17 +77,18 @@ func testAndThen(): Unit {
 }
 
 func testOrElse(): Unit {
-  val found = orElse(Some(value = 42), { () -> Some(value = 99) })
+  val found = orElse(Some(value = 42), { -> Some(value = 99) })
   assertEqualInt(unwrapOr(found, 0), 42, "orElse Some returns original")
 
-  val fallback = orElse(None, { () -> Some(value = 99) })
+  val fallback = orElse(None, { -> Some(value = 99) })
   assertEqualInt(unwrapOr(fallback, 0), 99, "orElse None uses fallback")
 
-  assertTrue(isNone(orElse[Int](None, { () -> None })), "orElse None fallback None is None")
+  assertTrue(isNone(orElse[Int](None, { -> None })), "orElse None fallback None is None")
 }
 
 func testAndThenResult(): Unit {
-  val ok = andThenResult(Ok(value = 5), { x: Int -> Ok(value = x + 1) })
+  val start: Result[Int, String] = Ok(value = 5)
+  val ok = andThenResult(start, { x: Int -> Ok(value = x + 1) })
   assertTrue(isOk(ok), "andThenResult Ok stays Ok")
   assertEqualInt(unwrapResultOr(ok, 0), 6, "andThenResult Ok value")
 
