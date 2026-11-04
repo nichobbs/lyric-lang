@@ -8,6 +8,8 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
 import Lyric.HoistEngine as HoistEngine
+import Std.Console as CensusConsole
+import Std.Environment as CensusEnv
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
 // `+`'s "any operand + String = String" inference (#5657).  Scoped to `+=`
@@ -2924,6 +2926,10 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
           return Some(value = TyFunction(params = noParams, ret = bufferType(targs[0]), isAsync = false))
         }
       }
+      // The size of a stdlib `Map` or `Set`, read as a member like `List`'s.
+      if name == "count" and ((targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map")) or (targs.count == 1 and isStdCollectionsHostType(tbl, tid, "Set"))) {
+        return Some(value = TyPrim(pt = PtInt))
+      }
       None
     }
     case _ -> None
@@ -4225,6 +4231,24 @@ func isStdEmptyCollectionCtor(sig: in ResolvedSignature, fn: in Expr): Bool {
 // `T.equals`-style signatures are not yet in `sigs` when the checker runs.
 func isUniversalMethodName(name: in String): Bool {
   name == "toString" or name == "equals" or name == "hash" or name == "show" or name == "compare" or name == "toJson"
+}
+
+// The result of a universal method (`isUniversalMethodName`) called on a
+// receiver whose type declares no such method: `toString()` is a codegen
+// intrinsic on every receiver, and `equals(other)` / `hash()` are what the
+// `Equals` / `Hash` derives synthesise (`Bool`, `Int`), which run after the
+// checker.  Any other name or arity has no rule and stays untyped.
+func universalMethodResultType(name: in String, argc: in Int): Type {
+  if name == "toString" and argc == 0 {
+    return TyPrim(pt = PtString)
+  }
+  if name == "equals" and argc == 1 {
+    return TyPrim(pt = PtBool)
+  }
+  if name == "hash" and argc == 0 {
+    return TyPrim(pt = PtInt)
+  }
+  tyErrorSilent()
 }
 
 // Substitute the receiver into a stored method signature: `Self` becomes the
@@ -11687,6 +11711,90 @@ func closePropagateBranch(
   }
 }
 
+// Census of silent `TyError`s (D338, #8613): with `LYRIC_TYERR_CENSUS=1` every
+// expression typed `TyError` with no diagnostic added while it was typed is
+// logged to stderr as `TYERR<TAB>kind<TAB>name<TAB>file:offset`. Off by default.
+func censusLogSilentTyError(e: in Expr, t: in Type): Unit {
+  val isErr = match t { case TyError(_) -> true; case _ -> false }
+  if not isErr {
+    return
+  }
+  if CensusEnv.getVarOrDefault("LYRIC_TYERR_CENSUS", "") != "1" {
+    return
+  }
+  CensusConsole.error(
+    "TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" + e.span.startPos.fileId.toString() + ":" +
+      e.span.startPos.offset.toString()
+  )
+}
+
+func censusExprName(e: in Expr): String {
+  match e.kind {
+    case ECall(fn, _) -> exprKindTag(fn) + ":" + censusExprName(fn)
+    case EMember(_, n) -> n
+    case EPath(p) -> censusJoinSegments(p.segments)
+    case _ -> ""
+  }
+}
+
+func censusJoinSegments(xs: in List[String]): String {
+  var out2 = ""
+  var i = 0
+  while i < xs.count {
+    out2 = out2 + (if i == 0 { "" } else { "." }) + xs[i]
+    i = i + 1
+  }
+  out2
+}
+
+// A call spelled with the package qualifier (`Std.Console.println(x)`) of a
+// codegen builtin (`println`, `toString`, `formatN`, ...) has the builtin's
+// polymorphic signature, as the bare spelling does: the imported stdlib
+// declaration is never registered (it would tighten the builtin's parameter
+// to its concrete type, `registerFunctionSig`), so the callee has no type of
+// its own.  Only a function of that name declared by a package the qualifier
+// names qualifies.
+func qualifiedBuiltinCalleeType(tbl: in SymbolTable, fn: in Expr, fnT: in Type): Type {
+  match fnT {
+    case TyError(_) -> ()
+    case _ -> return fnT
+  }
+  match fn.kind {
+    case EPath(p) -> {
+      if p.segments.count < 2 {
+        return fnT
+      }
+      val name = p.segments[p.segments.count - 1]
+      if not isCodegenBuiltinName(name) {
+        return fnT
+      }
+      val prefix: List[String] = newList()
+      var si = 0
+      while si < p.segments.count - 1 {
+        prefix.add(p.segments[si])
+        si = si + 1
+      }
+      val qualifier = censusJoinSegments(prefix)
+      val all = symTableTryFindAllNamed(tbl, name)
+      var i = 0
+      while i < all.count {
+        match all[i].kind {
+          case DKFunc(_) -> if pkgMatchesQualifier(all[i].originPackage, qualifier) {
+            match codegenBuiltinType(name) {
+              case Some(bt) -> return bt
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      fnT
+    }
+    case _ -> fnT
+  }
+}
+
 pub func inferExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11697,6 +11805,9 @@ pub func inferExpr(
   val diagsBefore = diag.count
   noteCalleePosition(tbl, e)
   val t = inferExprCore(sc, tbl, sigs, diag, e)
+  if diag.count == diagsBefore {
+    censusLogSilentTyError(e, t)
+  }
   match e.kind {
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
@@ -18394,7 +18505,7 @@ func inferExprCore(
                     }
                     case None -> ()
                   }
-                  match instantiateBuiltinCall(fnT, argTypes) {
+                  match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
@@ -18461,7 +18572,11 @@ func inferExprCore(
                             )
                             case None -> tyErrorSilent()
                           }
-                          case None -> tyErrorSilent()
+                          case None -> if isMemberCallee {
+                            universalMethodResultType(memberName, args.count)
+                          } else {
+                            tyErrorSilent()
+                          }
                         }
                       }
                     }

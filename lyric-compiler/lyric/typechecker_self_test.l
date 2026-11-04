@@ -14714,4 +14714,53 @@ test "W0036 reports each silent site and is silent after an error (D341)" {
   )
   reportSilentTyErrors(cr.symbols, withError)
   assertEqual(withError.count.toString(), "1", "an error in the file suppresses the cascade")
+
+// ─── Silent TyError sites typed (docs/70 §5.3, D338, #8613) ────────────────
+test "a universal method's result is typed when the receiver declares none" {
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nfunc f(n: in Int): String {\n  n.toString()\n}\n")),
+    "",
+    "toString() is a String"
+  )
+  assertTrue(
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R): Int {\n  r.toString()\n}\n")) != "",
+    "toString() is not an Int"
+  )
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R, o: in R): Bool {\n  r.equals(o)\n}\n")),
+    "",
+    "equals(x) is a Bool"
+  )
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R): Int {\n  r.hash()\n}\n")),
+    "",
+    "hash() is an Int"
+  )
+}
+
+test "Map and Set size members are Int" {
+  val head = "package P\nimport Std.CollectionsHost\n"
+  val ok = checkWithImportedPackages(
+    parse(head + "func f(m: in Map[String, Int], s: in Set[Int]): Int {\n  m.count + s.count\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(ok), "", "Map.count and Set.count are Int")
+  val bad = checkWithImportedPackages(
+    parse(head + "func f(m: in Map[String, Int]): String {\n  m.count\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(diagCodesOf(bad) != "", "Map.count is not a String")
+}
+
+test "a universal method with the wrong arity stays untyped" {
+  val rec = "package P\nrecord R {\n  a: Int\n}\n"
+  assertTrue(
+    recordedCallType(
+      parseCheck(rec + "func f(r: in R): Unit {\n  val s = r.toString(1)\n}\n"),
+      rec + "func f(r: in R): Unit {\n  val s = r.toString(1)\n}\n",
+      "r.toString(1)"
+    ) ==
+      "",
+    "toString(1) has no rule"
+  )
 }
