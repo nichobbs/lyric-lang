@@ -17139,7 +17139,9 @@ func calleeNameOfDefPathMsil(dp: in String): String {
 // specialisation Mono renamed it to, `f__Int`), else "" (D336).  The
 // candidates are the FQNs the bundle may register it under: the declaring
 // package's, and for a specialisation the calling package's `callerPkg`.
-func siteCalleeCandidatesMsil(cctx: in CodegenCtx, callerPkg: in String, siteKey: in String, funcName: in String): List[String] {
+func siteCalleeCandidatesMsil(
+  cctx: in CodegenCtx, callerPkg: in String, siteKey: in String, funcName: in String
+): List[String] {
   val cands: List[String] = newList()
   match mapGet(cctx.calleeSites, siteKey) {
     case None -> ()
@@ -17215,7 +17217,6 @@ func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, e: in Expr): Expr {
     }
   )
 }
-
 
 // The source name of the case a `<pkg>.<Union>_<Case>` constructor FQN
 // declares, given its union's simple name.
@@ -21783,9 +21784,7 @@ func lowerBuiltinOrStaticCallMsil(
             // `println` and `print` are language builtins the checker types
             // itself; with a function of the same name in scope the call is
             // that function (the tiers above), else the stdlib console one.
-            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and
-              importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and
-              cctx.funcTokens.containsKey("Std.Console." + funcName) {
+            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
               "Std.Console." + funcName
             } else {
               ""
@@ -32380,7 +32379,11 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // panic in `emitPhaseBAwait`, or a silent field-count mismatch surfacing as
 // `InvalidProgramException` at runtime).
 func resolveQualifiedFreeCallRetTypePB(
-  cctx: in CodegenCtx, pkgName: in String, segments: in List[String], cnt: in Int, siteKey: in String
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  segments: in List[String],
+  cnt: in Int,
+  siteKey: in String,
 ): MsilType {
   val lastSeg = segments[segments.count - 1]
   val candidates: List[String] = newList()
