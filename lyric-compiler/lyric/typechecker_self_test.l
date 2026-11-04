@@ -14577,3 +14577,48 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(typeEquiv(tyErrorSilent(), t), "both kinds of TyError are equivalent")
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
 }
+
+func silentSiteKinds(cr: in CheckResult): String {
+  var acc = ""
+  for k in mapKeys(cr.symbols.silentTyErrorSites) {
+    match mapGet(cr.symbols.silentTyErrorSites, k) {
+      case Some(site) -> {
+        acc = acc + site.kind + ";"
+      }
+      case None -> ()
+    }
+  }
+  acc
+}
+
+test "a fully typed program has no silent TyError site (D341)" {
+  val cr = parseCheck("package P\nfunc f(a: in Int): Int {\n  val b = a + 1\n  g(b)\n}\nfunc g(x: in Int): Int { x }\n")
+  assertEqual(silentSiteKinds(cr), "", "no silent site")
+  val diags: List[Diagnostic] = newList()
+  reportSilentTyErrors(cr.symbols, diags)
+  assertEqual(diags.count.toString(), "0", "no W0036")
+}
+
+test "a callee typed TyError is exempt, its call result is not (D338, D341)" {
+  val cr = parseCheck("package P\nfunc f(a: in Int): String {\n  val s = a.toString()\n  s\n}\n")
+  val kinds = silentSiteKinds(cr)
+  assertTrue(not Str.contains(kinds, "EMember"), "the callee a.toString is exempt: " + kinds)
+}
+
+test "W0036 reports each silent site and is silent after an error (D341)" {
+  val cr = parseCheck("package P\nfunc f(a: in Int): String {\n  val s = a.toString()\n  s\n}\n")
+  val n = mapKeys(cr.symbols.silentTyErrorSites).count
+  val diags: List[Diagnostic] = newList()
+  reportSilentTyErrors(cr.symbols, diags)
+  assertEqual(diags.count.toString(), n.toString(), "one W0036 per silent site")
+  val withError: List[Diagnostic] = newList()
+  withError.add(
+    errorDiagnostic(
+      "T0001",
+      "boom",
+      makeSpan(Position(offset = 0, line = 1, column = 1), Position(offset = 1, line = 1, column = 2))
+    )
+  )
+  reportSilentTyErrors(cr.symbols, withError)
+  assertEqual(withError.count.toString(), "1", "an error in the file suppresses the cascade")
+}

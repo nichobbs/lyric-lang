@@ -539,6 +539,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LYRIC_BOOTSTRAP_USE_DOTNET_TOOL: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
+          # W0036 (D341): list every silent TyError site in the compiler and
+          # stdlib closure; this job's log is the census for the I0001 gate.
+          LYRIC_TYERR_GATE: "1"
         run: ./scripts/bootstrap.sh --stage 2
 
       - name: Verify stage-2 toolchain runs

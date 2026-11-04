@@ -599,6 +599,15 @@ pub record SymbolTable {
   /// unannotated binding initialized by one is open (#7788); a same-named
   /// function of another package never is (#7801).
   emptyCollectionCtorSites: Map[String, Bool]
+  /// Span keys (`recordCopySiteKey`) of the expressions that are the callee of
+  /// a call, written before the callee is typed.  The silent-`TyError` gate
+  /// exempts them: the call is typed from the signature, not from the callee
+  /// expression, until the TIR builder carries a `Callee` (D338, D341).
+  calleePositionSites: Map[String, Bool]
+  /// The expressions typed `TyError` with no diagnostic added while they were
+  /// typed and that are not a callee, keyed by `recordCopySiteKey` plus the
+  /// expression form.  `reportSilentTyErrors` reports them (D341).
+  silentTyErrorSites: Map[String, SilentTyErrorSite]
   /// Span keys (`recordCopySiteKey`) of the calls whose resolved callee is an
   /// `async func` (not a generator), written by the `ECall` arm from the
   /// signature the call binds to.  A direct call to an async function awaits
@@ -813,6 +822,13 @@ pub record SymbolTable {
 /// `recordCopySiteKey` of the callee's span.  The call's expected type, a
 /// recorded `genericCallTypeArgSites` entry or an open binding fixes it later;
 /// `reportUnsolvedTypeArgs` reports what is still open at the end of the file.
+/// An expression typed `TyError` with no diagnostic (D341).
+pub record SilentTyErrorSite {
+  /// The expression form (`exprKindTag`).
+  kind: String
+  span: Span
+}
+
 pub record UnsolvedCallSite {
   fname: String
   /// The type parameters of the call's type-argument list left open.
@@ -975,6 +991,8 @@ pub func newSymbolTable(): SymbolTable {
     externHostLoopSites = newMap(),
     lenientArgDepth = newList(),
     emptyCollectionCtorSites = newMap(),
+    calleePositionSites = newMap(),
+    silentTyErrorSites = newMap(),
     asyncCallSites = newMap(),
     effectCallSites = newMap(),
     mutableModuleVals = newList(),
