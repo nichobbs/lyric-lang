@@ -767,8 +767,10 @@ builder (I0002) rather than on the current checker.
   `methodCallSiteKey`) and passes it through `MiddleEndOptions.calleeSitesOut`;
   MSIL binds such a call to it before any of its own tiers, which fixed two
   calls the tiers bound to a package-private function of another package.
-  Still open: the calls with no site (builtins, dot-named type functions,
-  monomorphised specialisations), the name tiers' deletion, the JVM and native
+  Specialised generic calls and `Type.f(x)` calls keep their site too. Still
+  open: the calls with no site (the `println`/`print` builtins, defaults
+  spliced from another package, distinct-type factories, synthesised
+  `__lyric_checked_` helpers), the name tiers' deletion, the JVM and native
   bridges, #8752 and #8690.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.

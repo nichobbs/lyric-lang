@@ -17197,7 +17197,7 @@ func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in Strin
         return ""
       }
       val cands: List[String] = newList()
-      if name == funcName {
+      if name == funcName or String.endsWith(name, "." + funcName) {
         cands.add(pkg + "." + name)
       } else if String.startsWith(funcName, name + "__") {
         cands.add(pkg + "." + funcName)

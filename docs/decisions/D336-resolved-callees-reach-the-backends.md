@@ -53,6 +53,11 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    specialisation up in the declaring package, then the calling one. A
    specialised copy of another package's generic carries that package's spans
    and never consults this package's sites.
+   A call through a type, `Type.f(x)` or the constructor shorthand
+   `Type.new(...)`, records the dot-named function (`Type.f`, registered under
+   that name in its declaring package) the same way, found in a dependency by
+   name and arity; MSIL routes it through the site, ahead of the import-order
+   search for `Type.f`.
 4. **The name tiers stay for the calls with no site.** They are not deleted
    here: a census of the stdlib, compiler and ecosystem build shows the calls
    still without a site are builtins (`println`), dot-named type functions

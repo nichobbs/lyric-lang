@@ -22247,10 +22247,22 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     }
     case EMember(recv, member) -> {
       val segs: List[String] = newList()
-      if not calleeSegments(recv, segs) or modulePathJoin(segs) != sig.originPackage {
+      if not calleeSegments(recv, segs) {
         return
       }
-      name = member
+      if modulePathJoin(segs) == sig.originPackage {
+        name = member
+      } else if segs.count == 1 and startsUppercase(segs[0]) {
+        // `Type.f(x)` or the constructor shorthand `Type.new(...)`: a
+        // dot-named function of the type, registered as `Type.f` in its
+        // declaring package, so the name is exact and a dependency's
+        // declaration (whose span the signature does not carry) is found by
+        // name and arity.
+        name = segs[0] + "." + member
+        allowArity = true
+      } else {
+        return
+      }
     }
     case _ -> return
   }

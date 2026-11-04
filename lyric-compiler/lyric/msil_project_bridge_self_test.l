@@ -429,6 +429,42 @@ test "a specialised generic call binds to the checker's callee, not a same-named
   assertEqual(Str.trim(result.stdout), "pub\npriv", "spec_site_callee: tag is the pub one, other reaches its own private tag")
 }
 
+// D336: `Type.f(x)` binds to the dot-named function the checker resolved it
+// to.  `XType.Priv` is imported first and declares its own package-private
+// `Box` with a `Box.describe`; `XType.Pub` declares the `pub` `Box` the call
+// means.  The import-order search for `Box.describe` finds `XType.Priv`'s
+// first; the checker's callee is `XType.Pub`'s.
+test "a type-qualified call binds to the checker's dot-named callee (D336)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XType.Priv",
+      "package XType.Priv\n" + "\n" + "record Box { n: Int }\n" + "\n" +
+        "func Box.describe(b: in Box): String { \"priv\" }\n" + "\n" +
+        "pub func other(): String { Box.describe(Box(n = 1)) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XType.Pub",
+      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" + "pub func Box.describe(b: in Box): String { \"pub\" }\n" + "\n" +
+        "pub func make(): Box { Box(n = 7) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "XType.App",
+      "package XType.App\n" + "\n" + "import XType.Priv\n" + "import XType.Pub\n" + "\n" + "func main(): Unit {\n" +
+        "  println(Box.describe(make()))\n" +
+        "  println(other())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xtype", packages, "XType")
+  assertEqualInt(result.exitCode, 0, "type_site_callee: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "pub\npriv", "type_site_callee: Box.describe is the pub one, other reaches its own private one")
+}
+
 // Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
 // direct-import tie-break tiers must key on EXACT package identity, not a
 // string prefix. `XNest.App.Inner` is a nested SUB-package of the caller
