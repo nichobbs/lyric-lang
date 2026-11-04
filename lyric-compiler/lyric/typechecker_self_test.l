@@ -14576,4 +14576,41 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(typeEquiv(t, TyPrim(pt = PtInt)), "TyError still suppresses cascades")
   assertTrue(typeEquiv(tyErrorSilent(), t), "both kinds of TyError are equivalent")
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
+
+// ─── Silent TyError sites typed (docs/70 §5.3, D338, #8613) ────────────────
+test "a universal method's result is typed when the receiver declares none" {
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nfunc f(n: in Int): String {\n  n.toString()\n}\n")),
+    "",
+    "toString() is a String"
+  )
+  assertTrue(
+    hasDiagCode(parseCheck("package P\nfunc f(n: in Int): Int {\n  n.toString()\n}\n"), "T0043") or
+      hasDiagCode(parseCheck("package P\nfunc f(n: in Int): Int {\n  n.toString()\n}\n"), "T0010"),
+    "toString() is not an Int"
+  )
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R, o: in R): Bool {\n  r.equals(o)\n}\n")),
+    "",
+    "equals(x) is a Bool"
+  )
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R): Int {\n  r.hash()\n}\n")),
+    "",
+    "hash() is an Int"
+  )
+}
+
+test "Map and Set size members are Int" {
+  val head = "package P\n"
+  val ok = checkWithImportedPackages(
+    parse(head + "func f(m: in Map[String, Int], s: in Set[Int]): Int {\n  m.count + s.count\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqual(diagCodesOf(ok), "", "Map.count and Set.count are Int")
+  val bad = checkWithImportedPackages(
+    parse(head + "func f(m: in Map[String, Int]): String {\n  m.count\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertTrue(diagCodesOf(bad) != "", "Map.count is not a String")
 }
