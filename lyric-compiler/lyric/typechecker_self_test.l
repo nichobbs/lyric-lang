@@ -4577,7 +4577,8 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
 // type argument fixes it.
 func unsolvedLib(): List[ImportedPackage] {
   val lib = parse(
-    "package Lib\nunion Option[T] { case Some(value: T); case None }\n" + "pub func none[T](): Option[T] { None }\n" +
+    "package Lib\nunion Option[T] { case Some(value: T); case None }\n" +
+      "pub func none[T](): Option[T] { None }\n" +
       "pub func isNone[T](o: in Option[T]): Bool { true }\n" +
       "pub func orElse[T](o: in Option[T], d: in T): T { d }\n"
   )
@@ -4612,10 +4613,18 @@ test "an imported generic call nothing fixes is W0035 (D339)" {
 
 test "an expected type, another argument or a written type argument fixes the call (D339)" {
   assertEqualInt(unsolvedWarnings("func f(): Option[Int] { none() }\n"), 0, "the declared result type")
-  assertEqualInt(unsolvedWarnings("func f(): Option[Int] {\n  val x: Option[Int] = none()\n  x\n}\n"), 0, "a val annotation")
+  assertEqualInt(
+    unsolvedWarnings("func f(): Option[Int] {\n  val x: Option[Int] = none()\n  x\n}\n"),
+    0,
+    "a val annotation"
+  )
   assertEqualInt(unsolvedWarnings("func f(): Int { orElse(none(), 5) }\n"), 0, "a later argument fixes the other")
   assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments")
-  assertEqualInt(unsolvedWarnings("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"), 0, "a parameter type")
+  assertEqualInt(
+    unsolvedWarnings("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"),
+    0,
+    "a parameter type"
+  )
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type

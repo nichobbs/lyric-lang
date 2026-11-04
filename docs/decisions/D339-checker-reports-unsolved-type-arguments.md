@@ -1,6 +1,6 @@
 # D339 - The checker reports an unsolved type argument (W0035, then T0224) (docs/70 phase 3a, #8760)
 
-**Status:** step one in progress: the checker reports the condition as the
+**Status:** step one shipped: the checker reports the condition as the
 warning W0035 while Mono still reports T0224. Steps two and three follow in
 their own entries or amendments of this one.
 
@@ -25,6 +25,21 @@ running and the checker never states the rule docs/70 §5.2 gives it.
    table.
 3. W0035 is compared with Mono's T0224 on the compiler, stdlib and ecosystem
    sources; the checker's set must be empty wherever Mono's is.
+
+## What fixes a call (step one as shipped)
+
+A recorded call is fixed when any of these holds at the end of the file: a
+`genericCallTypeArgSites` entry exists for it; its whole-call span keys an open
+binding (`newList()` as a binding's initializer); or the type expected of the
+call, unified with the callee's declared result, solves every open parameter.
+The expected type is recorded by `noteExpectedFlow`, by the declared type of a
+constructor field, a call parameter, an assignment target, and by the type a
+consumed `if`/`match` joins to (`closePropagateBranch`). The first census
+(1,204 hits, every one `newList()`/`newMap()` as a constructor field argument)
+found the field and parameter positions; the second (53, all `newList()` as a
+`match`/`if` arm) found the join. The third finds none in the compiler,
+stdlib and their tests (`./scripts/bootstrap.sh --stage 2`); the ecosystem
+libraries and the JVM and native sources are covered by CI's logs.
 
 ## Order of work
 

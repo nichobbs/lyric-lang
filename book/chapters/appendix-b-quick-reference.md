@@ -1634,6 +1634,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `W0032` | retired | Formerly: a file used a name only a sibling file's import made visible. That is the error `T0219` since D300. |
 | `W0033` | retired | Formerly: a name reached only through an imported package's own import, without a re-export. Since D311 such a name is not visible (`T0020`, or `T0010` in type position). |
 | `W0034` | retired | Formerly: a call to an imported generic whose type arguments nothing fixed defaulted them to `Object` with a warning. It is the error `T0224` since D335. |
+| `W0035` | warning | The checker's own report of what Mono reports as `T0224`: a call to an imported generic whose type argument(s) neither its arguments, its expected type, a written type argument nor an open binding fix. It becomes the error `T0224` in the next step of D339. |
 | `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
 | `W0041` | retired | Formerly: a `pub async func` exported from a `--shape component` build was a blocking WIT function. Since D184 it is a WIT `async func`, so the warning is no longer issued. |
 
