@@ -7009,6 +7009,26 @@ func noteUnsafeImportedFallback(
   )
 }
 
+// The calls whose unpinned type arguments keep the erased `Object` default
+// instead of being the error T0224 (D335, D339).  Each is a call the user
+// could not write type arguments on:
+//   - an `@externTarget` generic is a host boundary whose type arguments are
+//     erased by design (the extern signature, not the call, fixes them);
+//   - a name the local environment binds is a function value, not a named
+//     generic;
+//   - a call without a source position was generated (derives, wire and plugin
+//     expansion), so it has no spelling to add type arguments to.
+// The checker's table (`noteUnsolvedCall`, typechecker_exprs.l) exempts the same
+// three, so the checker and the monomorphiser agree on what T0224 covers.
+func unpinnedCallKeepsErasedDefault(
+  baseDecl: in FunctionDecl,
+  env: in Map[String, TypeExpr],
+  fname: in String,
+  callSpan: in Span,
+): Bool {
+  annsHaveExternTargetMono(baseDecl.annotations) or env.containsKey(fname) or isNoSourceSpan(callSpan)
+}
+
 // T0224 (docs/70 section 5.2, D335): a call to an imported generic whose type
 // argument(s) neither its arguments, its expected type nor the checker's
 // resolved type arguments fix.  It was specialised at `Object` (the warning
@@ -8385,12 +8405,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         val unpinnedNow = collectUnpinnedTypeParams(typeParams, subst)
                         if hasOpaqueErasureUnsafeGenericParam(baseDecl, unpinnedNow, argOpaque) {
                           unsafeImportedFallback = true
-                        } else if annsHaveExternTargetMono(baseDecl.annotations) or env.containsKey(fname) or isNoSourceSpan(fn.span) {
-                          // An `@externTarget` generic is a host boundary whose type
-                          // arguments are erased, a name `env` binds is a function
-                          // value, and a call without a source position was generated:
-                          // none of them has a call the user could write type
-                          // arguments on, so the erased default stays (D335).
+                        } else if unpinnedCallKeepsErasedDefault(baseDecl, env, fname, fn.span) {
                           var du = 0
                           while du < typeParams.count {
                             if not subst.containsKey(typeParams[du]) {
