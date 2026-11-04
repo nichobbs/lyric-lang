@@ -10585,7 +10585,7 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
             }
             case None -> return TyError
           }
-        } else if typeIsHole(bound) {
+        } else if typeIsUnsolved(bound) {
           // An argument that left the parameter open (`None` for an
           // `Option[T]` parameter) bound nothing; a later one fixes it
           // (#7844): `Holder(value = None, fallback = 5)` binds `T` to `Int`.
@@ -10619,7 +10619,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
     var pinned = false
     while pi < sig.params.count and pi < argTys.count and pi < paramTys.count and not pinned {
       val byRef = match sig.params[pi].mode { case PMIn -> false; case _ -> true }
-      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsHole(argTys[pi]) {
+      if byRef and isBareTyParam(paramTys[pi], sig.generics[g]) and not typeIsUnsolved(argTys[pi]) {
         targs[g] = argTys[pi]
         pinned = true
       }
@@ -10633,6 +10633,16 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
 func typeIsHole(t: in Type): Bool {
   match t {
     case TyError -> true
+    case _ -> false
+  }
+}
+
+// A type that fixes nothing: the hole (`TyError`) or an inference variable
+// (`TyInfer`) not yet solved.
+func typeIsUnsolved(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case TyInfer(_) -> true
     case _ -> false
   }
 }
@@ -13662,13 +13672,11 @@ func recordTuplePatternBinding(tbl: in SymbolTable, sp: in Span, ty: in Type, ty
 // `None`'s `T` or `Ok`'s `E`) takes what the other type has in that position.
 // `a` wins wherever neither is a hole.
 func joinOpenTypes(a: in Type, b: in Type): Type {
-  match a {
-    case TyError -> return b
-    case _ -> ()
+  if typeIsUnsolved(a) {
+    return b
   }
-  match b {
-    case TyError -> return a
-    case _ -> ()
+  if typeIsUnsolved(b) {
+    return a
   }
   match a {
     case TyUser(aid, an, aargs) -> match b {
@@ -20256,9 +20264,9 @@ func receiverFitsSig(tbl: in SymbolTable, c: in ResolvedSignature, recv: in Type
 }
 
 // `instantiateSigForArgs` for argument types already in the order of `sig`'s
-// parameters; a parameter beyond them binds nothing (it is padded with
-// `TyError`, which `inferGenericArgsForSig` treats as a hole, never as a
-// binding: an unsupplied parameter must stay open).
+// parameters; a parameter beyond them binds nothing (it is padded with an
+// inference variable, which `inferGenericArgsForSig` treats as unsolved, never
+// as a binding: an unsupplied parameter must stay open).
 func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): ResolvedSignature {
   if sig.generics.count == 0 {
     return sig
@@ -20268,14 +20276,14 @@ func instantiateSigOrdered(sig: in ResolvedSignature, ordered: in List[Type]): R
   var k = 0
   while k < sig.params.count {
     paramTys.add(sig.params[k].ty)
-    argTys.add(if k < ordered.count { ordered[k] } else { TyError })
+    argTys.add(if k < ordered.count { ordered[k] } else { TyInfer(id = k) })
     k = k + 1
   }
   val solved = inferGenericArgsForSig(sig, paramTys, argTys)
   val targs: List[Type] = newList()
   var g = 0
   while g < solved.count {
-    targs.add(if typeIsHole(solved[g]) { TyInfer(id = g) } else { solved[g] })
+    targs.add(if typeIsUnsolved(solved[g]) { TyInfer(id = g) } else { solved[g] })
     g = g + 1
   }
   instantiateSigAt(sig, targs)

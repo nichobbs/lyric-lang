@@ -3278,13 +3278,13 @@ test "annotated binding lambda return mismatch diagnosed" {
 test "generic callee lambda param typed by substitution from sibling arg" {
   // T is inferred Int from the second argument; the lambda's expected type
   // becomes (Int) -> Bool after TyParam substitution.
-  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
+  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n > 0 }, 5)\n}\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "generic expectation substituted to (Int) -> Bool: no errors")
 }
 
 test "generic callee lambda body error diagnosed after substitution" {
-  val src = "package P\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n + true }, 5)\n}\n"
+  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](f: in (T) -> Bool, x: in T): T {\n  x\n}\nfunc g(): Int {\n  pick({ n -> n + true }, 5)\n}\n"
   val cr = parseCheck(src)
   assertTrue(
     hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"),
@@ -3526,6 +3526,17 @@ test "where bound satisfied ok" {
   val src = "package P\n@derive(Add)\nrecord Meters { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Meters { add2(Meters(value = 1), Meters(value = 2)) }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0108"), "where-bound Add satisfied by @derive(Add): no T0108")
+}
+
+// An unsupplied parameter is padded with an inference variable, not the hole:
+// it binds nothing, so a later or earlier argument still fixes the type
+// parameter and the call's result is the concrete type.
+test "a defaulted generic parameter left unsupplied binds nothing" {
+  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](a: in T, b: in Option[T] = None): T { a }\n" +
+    "func f(): Int { pick(5) }\nfunc g(): String { pick(\"x\") }\n"
+  assertEqual(diagCodesOf(parseCheck(src)), "", "pick(5) is Int and pick(\"x\") is String")
+  val bad = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](a: in T, b: in Option[T] = None): T { a }\nfunc f(): String { pick(5) }\n"
+  assertTrue(diagCount(parseCheck(bad)) > 0, "pick(5) is not a String")
 }
 
 // Component-wise derives on records (D155): only Add and Sub, only on a
