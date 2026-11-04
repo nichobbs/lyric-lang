@@ -4797,7 +4797,7 @@ test "a call fed by a read of an open-typed value is not judged, a construction 
     val cr = checkWithImportedPackages(parse("package App\nimport Lib\n" + src).file, pkgs)
     var n = 0
     for d in cr.diagnostics {
-      if d.code == "W0035" {
+      if d.code == "T0224" {
         n = n + 1
       }
     }
