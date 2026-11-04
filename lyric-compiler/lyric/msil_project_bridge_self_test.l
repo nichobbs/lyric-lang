@@ -426,7 +426,11 @@ test "a specialised generic call binds to the checker's callee, not a same-named
   )
   val result = compileAndRun("xspec", packages, "XSpec")
   assertEqualInt(result.exitCode, 0, "spec_site_callee: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "pub\npriv", "spec_site_callee: tag is the pub one, other reaches its own private tag")
+  assertEqual(
+    Str.trim(result.stdout),
+    "pub\npriv",
+    "spec_site_callee: tag is the pub one, other reaches its own private tag"
+  )
 }
 
 // D336: `Type.f(x)` binds to the dot-named function the checker resolved it
@@ -440,14 +444,17 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
     mkPkg(
       "XType.Priv",
       "package XType.Priv\n" + "\n" + "record Box { n: Int }\n" + "\n" +
-        "func Box.describe(b: in Box): String { \"priv\" }\n" + "\n" +
+        "func Box.describe(b: in Box): String { \"priv\" }\n" +
+        "\n" +
         "pub func other(): String { Box.describe(Box(n = 1)) }\n"
     )
   )
   packages.add(
     mkPkg(
       "XType.Pub",
-      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" + "pub func Box.describe(b: in Box): String { \"pub\" }\n" + "\n" +
+      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" +
+        "pub func Box.describe(b: in Box): String { \"pub\" }\n" +
+        "\n" +
         "pub func make(): Box { Box(n = 7) }\n"
     )
   )
@@ -462,7 +469,11 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
   )
   val result = compileAndRun("xtype", packages, "XType")
   assertEqualInt(result.exitCode, 0, "type_site_callee: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "pub\npriv", "type_site_callee: Box.describe is the pub one, other reaches its own private one")
+  assertEqual(
+    Str.trim(result.stdout),
+    "pub\npriv",
+    "type_site_callee: Box.describe is the pub one, other reaches its own private one"
+  )
 }
 
 // D336: a default expression spliced into another package means the names of
@@ -480,8 +491,7 @@ test "a default calling the declaring package's private function is spliced into
   packages.add(
     mkPkg(
       "XDef.App",
-      "package XDef.App\n" + "\n" + "import XDef.Lib\n" + "\n" + "func main(): Unit {\n" +
-        "  println(plus(2))\n" +
+      "package XDef.App\n" + "\n" + "import XDef.Lib\n" + "\n" + "func main(): Unit {\n" + "  println(plus(2))\n" +
         "}\n"
     )
   )

@@ -609,7 +609,11 @@ test "a bare call binds to the checker's callee, not a same-named private functi
   )
   val result = compileAndRunJvm("site-callee-jvm", pkgSrcs, "XJSite.App")
   assertEqualInt(result.exitCode, 0, "site_callee_jvm: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "2\n101", "site_callee_jvm: pick is the pub one, other reaches its own private pick")
+  assertEqual(
+    Str.trim(result.stdout),
+    "2\n101",
+    "site_callee_jvm: pick is the pub one, other reaches its own private pick"
+  )
 }
 
 // Issue #6853: the bundle-wide bare-call fallback (`ctx.funcSigs`'s unscoped
