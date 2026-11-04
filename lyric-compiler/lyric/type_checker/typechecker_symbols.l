@@ -806,6 +806,13 @@ pub record SymbolTable {
   resolutionList: List[Resolution]
 }
 
+/// An expression typed `TyError` with no diagnostic (D341).
+pub record SilentTyErrorSite {
+  /// The expression form (`exprKindTag`).
+  kind: String
+  span: Span
+}
+
 /// An unannotated local binding whose initializer builds an empty
 /// collection or `None` (`newList()`, `newListWithCapacity(n)`, `newMap()`,
 /// `None`, #7788).  Nothing at the initializer fixes its type arguments, so
@@ -822,13 +829,6 @@ pub record SymbolTable {
 /// `recordCopySiteKey` of the callee's span.  The call's expected type, a
 /// recorded `genericCallTypeArgSites` entry or an open binding fixes it later;
 /// `reportUnsolvedTypeArgs` reports what is still open at the end of the file.
-/// An expression typed `TyError` with no diagnostic (D341).
-pub record SilentTyErrorSite {
-  /// The expression form (`exprKindTag`).
-  kind: String
-  span: Span
-}
-
 pub record UnsolvedCallSite {
   fname: String
   /// The type parameters of the call's type-argument list left open.

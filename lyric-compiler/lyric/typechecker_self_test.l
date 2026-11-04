@@ -14603,11 +14603,13 @@ test "a callee typed TyError is exempt, its call result is not (D338, D341)" {
   val cr = parseCheck("package P\nfunc f(a: in Int): String {\n  val s = a.toString()\n  s\n}\n")
   val kinds = silentSiteKinds(cr)
   assertTrue(not Str.contains(kinds, "EMember"), "the callee a.toString is exempt: " + kinds)
+  assertTrue(Str.contains(kinds, "ECall"), "the call result a.toString() is a silent site: " + kinds)
 }
 
 test "W0036 reports each silent site and is silent after an error (D341)" {
   val cr = parseCheck("package P\nfunc f(a: in Int): String {\n  val s = a.toString()\n  s\n}\n")
   val n = mapKeys(cr.symbols.silentTyErrorSites).count
+  assertTrue(n > 0, "the program has a silent site")
   val diags: List[Diagnostic] = newList()
   reportSilentTyErrors(cr.symbols, diags)
   assertEqual(diags.count.toString(), n.toString(), "one W0036 per silent site")
