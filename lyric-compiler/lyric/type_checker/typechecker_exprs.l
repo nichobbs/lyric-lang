@@ -11662,7 +11662,7 @@ pub func inferExpr(
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
   if tyErrorCensusOn and diag.count == diagsBefore {
     match t {
-      case TyError -> Console.error("TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + toString(e.span.startPos.fileId) + ":" + toString(e.span.startPos.offset))
+      case TyError -> Console.error("TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" + toString(e.span.startPos.fileId) + ":" + toString(e.span.startPos.offset))
       case _ -> ()
     }
   }
@@ -11674,6 +11674,21 @@ pub func inferExpr(
 // as `TYERR<TAB>package<TAB>kind`, so the sites the gate must classify can be
 // counted per package.  It is removed with the gate.
 val tyErrorCensusOn: Bool = getVarOrDefault("LYRIC_TYERR_CENSUS", "") == "1"
+
+// The name an expression is spelled with, for the census: a path, the callee
+// path of a call, or a member.
+func exprKindName(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> joinStrs(p.segments, ".")
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(p) -> joinStrs(p.segments, ".")
+      case EMember(_, m) -> "." + m
+      case _ -> "?"
+    }
+    case EMember(_, m) -> "." + m
+    case _ -> ""
+  }
+}
 
 func exprKindTag(e: in Expr): String {
   match e.kind {
