@@ -7,6 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
+import Std.Console as DbgConsole
 import Lyric.HoistEngine as HoistEngine
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
@@ -17326,6 +17327,11 @@ func inferExprCore(
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
+      // TEMP-DEBUG
+      match fn.kind {
+        case EMember(_, mm) -> DbgConsole.error("SITE-DEBUG ecall member=" + mm + " direct=" + toString(isSome(directSig)))
+        case _ -> ()
+      }
       match directSig {
         case Some(ds) -> {
           noteBareCalleeFunc(tbl, fn, ds.originPackage)
