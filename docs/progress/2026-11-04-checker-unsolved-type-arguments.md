@@ -12,3 +12,9 @@ D339, step one.
   (constructor fields), 53 (`if`/`match` arms), then none.
 - Next: T0224 from the checker with Mono's site deleted, then the `Object`
   fills and the exemption predicate.
+
+Second round (CI census of the first PR, 49 more hits, six shapes): an
+argument-bound closed type solves a parameter even if another argument
+disagrees; a nested call's expected type is its parameter solved from the
+parent's expected type (`SymbolTable.callParents`); a call with an untyped
+argument or an open-binding argument is indeterminate and unreported. See D339.

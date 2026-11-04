@@ -18,7 +18,7 @@ running and the checker never states the rule docs/70 §5.2 gives it.
    callee's span). An entry is removed when a later step fixes the arguments:
    the expected type of the call, an open binding resolved by its later uses,
    or a recorded `genericCallTypeArgSites` entry.
-2. At the end of a function body an entry still in the table is the warning
+2. At the end of `check` an entry still in the table is the warning
    **W0035** ("cannot infer type argument(s) 'T' of 'f' ..."), the same message
    T0224 will carry. Calls Mono exempts (an `@externTarget` generic, a name the
    local environment binds, a call without a source position) never enter the
@@ -40,6 +40,39 @@ found the field and parameter positions; the second (53, all `newList()` as a
 `match`/`if` arm) found the join. The third finds none in the compiler,
 stdlib and their tests (`./scripts/bootstrap.sh --stage 2`); the ecosystem
 libraries and the JVM and native sources are covered by CI's logs.
+
+## The CI census and the second round (this amendment)
+
+The first PR's CI logs (every manifest, JVM and native source, the examples and
+the fixtures) found 49 more distinct hits, in six shapes. The rule changed so
+that none of them is reported, without loosening the real case
+(`isNone(none())` is still two warnings):
+
+1. **A type parameter any argument binds to a closed type is solved**, even when
+   another argument disagrees (`unwrapResultOr(r, Square(...))` over a
+   `Result[Shape, String]` binds `T` to `Shape` and to `Square`; the
+   disagreement is T0043 or a widening, not a missing annotation).
+2. **A nested call takes its parameter as its expected type**, with the parent's
+   holes solved from the parent's own expected type
+   (`kids.add(keyed("k", paragraph("p")))`, `keyed(..., paragraph(...))` against
+   `View[Msg]`): `SymbolTable.callParents`, `effectiveCallExpected`.
+3. **A call with an argument the checker typed `TyError`, or one that passes an
+   open binding, is indeterminate** and is not reported (`eventName(h)` for a
+   loop variable in a generic body, `viewOf(children[0])`, `mapGet(dict.items,
+   key)`, `isOk(ok)` for an open `val ok`). The checker does not know; the
+   silent `TyError` that makes it not know is item 3 of the phase and the I0001
+   gate (D338), and this class closes with them.
+4. A solution counts only when nothing in it is a hole or an unsolved inference
+   variable and it mentions only the caller's generics.
+
+`noteCallExpected` keeps the first expected type with no hole in it; a call
+checked against two different expected types is judged against the first.
+
+The counts: 1,204 (first stage 2 run), 53, then 0 for the compiler and stdlib;
+49 more in CI for the sources only CI builds; 0 after the second round in the
+compiler and stdlib, and the fixed shapes verified by the self-test cases and by
+`stdlib_generic_iface_self_test.l`. The CI run of the PR that carries this
+amendment is the census for the rest; the error step reads it first.
 
 ## Order of work
 

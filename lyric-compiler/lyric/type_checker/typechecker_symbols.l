@@ -470,6 +470,9 @@ pub record SymbolTable {
   /// unsolved (see `UnsolvedCallSite`, D339), keyed by `recordCopySiteKey` of
   /// the callee's span.
   unsolvedCallSites: Map[String, UnsolvedCallSite]
+  /// Each call that is an argument of a generic call, keyed by
+  /// `recordCopySiteKey` of the argument call's span (see `CallParent`, D339).
+  callParents: Map[String, CallParent]
   /// The type expected of each call, keyed by `recordCopySiteKey` of the
   /// call's span, as `noteExpectedFlow` saw it (D339).
   callExpectedSeen: Map[String, Type]
@@ -844,6 +847,21 @@ pub record UnsolvedCallSite {
   /// The generic names in scope at the call; a solution may mention only these
   /// (the callee's own type parameters solve nothing).
   callerGenerics: List[String]
+  /// The checker cannot tell whether the call is unsolved: an argument it
+  /// typed `TyError`, or an open binding it passes. Never reported.
+  indeterminate: Bool
+}
+
+/// A call that is an argument of a generic call (D339): the parent's callee,
+/// its type arguments as the arguments bound them (holes left), and the
+/// parameter the argument fills. The argument's expected type is that
+/// parameter once the parent's own expected type has solved its holes.
+pub record CallParent {
+  parentKey: String
+  generics: List[String]
+  returnTy: Type
+  ownTargs: List[Type]
+  paramTy: Type
 }
 
 pub record OpenBindingSite {
@@ -965,6 +983,7 @@ pub func newSymbolTable(): SymbolTable {
     localBindingTypeSites = newMap(),
     openBindingSites = newMap(),
     unsolvedCallSites = newMap(),
+    callParents = newMap(),
     callExpectedSeen = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),

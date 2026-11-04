@@ -4577,10 +4577,11 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
 // type argument fixes it.
 func unsolvedLib(): List[ImportedPackage] {
   val lib = parse(
-    "package Lib\nunion Option[T] { case Some(value: T); case None }\n" +
+    "package Lib\npub union Option[T] { case Some(value: T); case None }\n" +
       "pub func none[T](): Option[T] { None }\n" +
       "pub func isNone[T](o: in Option[T]): Bool { true }\n" +
-      "pub func orElse[T](o: in Option[T], d: in T): T { d }\n"
+      "pub func orElse[T](o: in Option[T], d: in T): T { d }\n" +
+      "pub func wrap[T](o: in Option[T]): Option[T] { o }\n"
   )
   val pkgs: List[ImportedPackage] = newList()
   pkgs.add(
@@ -4625,6 +4626,59 @@ test "an expected type, another argument or a written type argument fixes the ca
     0,
     "a parameter type"
   )
+}
+
+test "more positions that fix a call, and the cases the checker cannot decide (D339)" {
+  assertEqualInt(
+    unsolvedWarnings("func f(): Option[Int] { wrap(none()) }\n"),
+    0,
+    "a nested call takes its parameter, solved from the outer result"
+  )
+  assertEqualInt(
+    unsolvedWarnings(
+      "func g(b: Bool, y: in Option[Int]): Option[Int] {\n  val r = if b { y } else { none() }\n  r\n}\n"
+    ),
+    0,
+    "a branch takes the type the branches join to"
+  )
+  assertEqualInt(
+    unsolvedWarnings("record R { o: Option[Int] }\nfunc f(): R { R(o = none()) }\n"),
+    0,
+    "a constructor field"
+  )
+  assertEqualInt(
+    unsolvedWarnings("func f(): Option[Int] {\n  var v: Option[Int] = none[Int]()\n  v = none()\n  v\n}\n"),
+    0,
+    "an assignment target"
+  )
+  assertEqualInt(unsolvedWarnings("func h[U](): Option[U] { none() }\n"), 0, "the caller's own generic solves it")
+  assertEqualInt(
+    unsolvedWarnings("func f(): Bool { isNone(none()) }\n"),
+    2,
+    "still reported when nothing fixes either call"
+  )
+}
+
+test "a type parameter one argument binds to an interface is solved though another binds a record (D339)" {
+  val lib = parse(
+    "package Lib\npub union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+      "pub func unwrapResultOr[T, E](r: in Result[T, E], default: in T): T { default }\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val src = "package App\nimport Lib\ninterface Shape { func area(self: in Self): Int }\nrecord Square { side: Int }\n" +
+    "impl Shape for Square { func area(self: in Self): Int { self.side } }\n" +
+    "func sq(): Result[Shape, String] { return Ok(Square(side = 4)) }\n" +
+    "func f(): Int {\n  val r = sq()\n  val s = unwrapResultOr(r, Square(side = 0))\n  s.area()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, pkgs)
+  assertEqual(diagCodesOf(cr), "", "unwrapResultOr(r, Square(...)) over a Result[Shape, String]")
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type
