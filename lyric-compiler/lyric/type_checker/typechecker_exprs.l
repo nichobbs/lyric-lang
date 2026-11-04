@@ -2927,9 +2927,7 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
         }
       }
       // The size of a stdlib `Map` or `Set`, read as a member like `List`'s.
-      if name == "count" and
-        ((targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map")) or
-          (targs.count == 1 and isStdCollectionsHostType(tbl, tid, "Set"))) {
+      if name == "count" and ((targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map")) or (targs.count == 1 and isStdCollectionsHostType(tbl, tid, "Set"))) {
         return Some(value = TyPrim(pt = PtInt))
       }
       None
@@ -11702,8 +11700,10 @@ func censusLogSilentTyError(e: in Expr, t: in Type): Unit {
   if CensusEnv.getVarOrDefault("LYRIC_TYERR_CENSUS", "") != "1" {
     return
   }
-  CensusConsole.error("TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" +
-    e.span.startPos.fileId.toString() + ":" + e.span.startPos.offset.toString())
+  CensusConsole.error(
+    "TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" + e.span.startPos.fileId.toString() + ":" +
+      e.span.startPos.offset.toString()
+  )
 }
 
 func censusExprName(e: in Expr): String {

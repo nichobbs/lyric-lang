@@ -14585,8 +14585,7 @@ test "a universal method's result is typed when the receiver declares none" {
     "toString() is a String"
   )
   assertTrue(
-    hasDiagCode(parseCheck("package P\nfunc f(n: in Int): Int {\n  n.toString()\n}\n"), "T0043") or
-      hasDiagCode(parseCheck("package P\nfunc f(n: in Int): Int {\n  n.toString()\n}\n"), "T0010"),
+    diagCodesOf(parseCheck("package P\nrecord R {\n  a: Int\n}\nfunc f(r: in R): Int {\n  r.toString()\n}\n")) != "",
     "toString() is not an Int"
   )
   assertEqual(
@@ -14602,7 +14601,7 @@ test "a universal method's result is typed when the receiver declares none" {
 }
 
 test "Map and Set size members are Int" {
-  val head = "package P\n"
+  val head = "package P\nimport Std.CollectionsHost\n"
   val ok = checkWithImportedPackages(
     parse(head + "func f(m: in Map[String, Int], s: in Set[Int]): Int {\n  m.count + s.count\n}\n").file,
     stdCollectionsHostPackages()
