@@ -6307,7 +6307,7 @@ func ctorArgsExpected(
   val exps: List[Type] = newList()
   var i = 0
   while i < args.count {
-    exps.add(TyError)
+    exps.add(tyErrorSilent())
     i = i + 1
   }
   if eargs.count != gnames.count or slotNames.count != slotTypes.count {
@@ -7773,7 +7773,7 @@ func resolvePropagateCallArgs(
     case ECall(fn, cargs) -> {
       val holes: List[Type] = newList()
       for a in cargs {
-        holes.add(TyError)
+        holes.add(tyErrorSilent())
       }
       match findDirectSig(sc, tbl, sigs, fn, cargs, holes) {
         case Some(sig) -> {
@@ -8393,7 +8393,7 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
   val occupied: List[Bool] = newList()
   var fi = 0
   while fi < fieldNames.count {
-    result.add(TyError)
+    result.add(tyErrorSilent())
     occupied.add(false)
     fi = fi + 1
   }
@@ -10970,7 +10970,7 @@ func checkConstRefPattern(
                   case None -> {
                     val noRte: Option[TypeExpr] = None
                     val noSelfFields: Map[String, Type] = newMap()
-                    val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, tyErrorSilent())
+                    val emptyScope = newScopeForFunction(tyErrorSilent(), newList(), noRte, noSelfFields, false, tyErrorSilent())
                     // Its errors are the declaration's to report (#7777).
                     val readDiag: List[Diagnostic] = newList()
                     inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
@@ -13081,7 +13081,7 @@ func argTypesAgainstFields(
     if slot >= 0 and slot < ftypes.count {
       expected.add(substituteTyParams(ftypes[slot], gnames, targs))
     } else {
-      expected.add(TyError)
+      expected.add(tyErrorSilent())
     }
     k = k + 1
   }
@@ -13963,7 +13963,7 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   val holes: List[Type] = newList()
   var i = 0
   while i < n {
-    holes.add(TyError)
+    holes.add(tyErrorSilent())
     i = i + 1
   }
   holes
@@ -14546,7 +14546,7 @@ func adoptLiteralArgsOver(
   while i < args.count {
     if argIsListLiteral(callArgExpr(args[i])) {
       any = true
-      current.add(TyError)
+      current.add(tyErrorSilent())
     } else {
       current.add(argTypes[i])
     }
@@ -15188,7 +15188,7 @@ func sigExpectedArgTypes(
   val expected: List[Type] = newList()
   var ei = 0
   while ei < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     ei = ei + 1
   }
   val offset = match recvTy { case Some(_) -> 1; case None -> 0 }
@@ -15347,7 +15347,7 @@ func recordExplicitTypeArgCall(
   val expected: List[Type] = newList()
   var ei = 0
   while ei < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     ei = ei + 1
   }
   val paramNames: List[String] = newList()
@@ -16498,7 +16498,7 @@ func moduleValReadType(
       // shadowing module-level names referenced in vd.init.
       val noRte: Option[TypeExpr] = None
       val noSelfFields: Map[String, Type] = newMap()
-      val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, tyErrorSilent())
+      val emptyScope = newScopeForFunction(tyErrorSilent(), newList(), noRte, noSelfFields, false, tyErrorSilent())
       inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
     }
   }
@@ -16761,7 +16761,7 @@ func inferExprCore(
         ts.add(inferExpr(sc, tbl, sigs, diag, elems[i]))
         i = i + 1
       }
-      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(TyError, elems.count))
+      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(tyErrorSilent(), elems.count))
       TyTuple(elems = ts)
     }
 
@@ -17841,7 +17841,7 @@ func inferExprCore(
                             case _ -> ()
                           }
                           fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> tyErrorSilent() })
-                          fullExpected.add(TyError)
+                          fullExpected.add(tyErrorSilent())
                           for a in args {
                             fullArgs.add(a)
                           }
@@ -17894,7 +17894,7 @@ func inferExprCore(
                       val extArgs: List[Type] = newList()
                       match memberRecvTy {
                         case Some(rt4) -> extArgs.add(rt4)
-                        case None -> extArgs.add(TyError)
+                        case None -> extArgs.add(tyErrorSilent())
                       }
                       var xi = 0
                       while xi < argTypes.count {
@@ -19044,7 +19044,7 @@ func ctorArrayFieldTypes(
   }
   var k = 0
   while k < args.count {
-    tys.add(TyError)
+    tys.add(tyErrorSilent())
     k = k + 1
   }
   if not any {
@@ -19432,7 +19432,7 @@ func caseCtorArgsExpected(
   val none: List[Type] = newList()
   var i = 0
   while i < cargs.count {
-    none.add(TyError)
+    none.add(tyErrorSilent())
     i = i + 1
   }
   if not typeIsClosed(expected) {
@@ -20418,7 +20418,7 @@ func expectedCallArgTypes(
   val expected: List[Type] = newList()
   var i = 0
   while i < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     i = i + 1
   }
   match directSig {

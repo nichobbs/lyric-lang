@@ -92,7 +92,7 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
               } else {
                 diag.add(errorDiagnostic("T0109", "value expression used as type argument", ve.span))
               }
-              resolvedArgs.add(TyError)
+              resolvedArgs.add(tyErrorSilent())
             }
           }
         }
@@ -581,7 +581,7 @@ func resolveAliasRhs(
           case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
           case TAValue(ve) -> {
             diag.add(errorDiagnostic("T0109", "value expression used as type argument in alias", ve.span))
-            resolvedArgs.add(TyError)
+            resolvedArgs.add(tyErrorSilent())
           }
         }
         i = i + 1

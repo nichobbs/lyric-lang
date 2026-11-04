@@ -586,7 +586,7 @@ func inferModuleValInit(tbl: in SymbolTable, sigs: in Map[String, ResolvedSignat
   val scratch: List[Diagnostic] = newList()
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, tyErrorSilent())
+  val emptyScope = newScopeForFunction(tyErrorSilent(), newList(), noRte, noSelfFields, false, tyErrorSilent())
   inferExpr(emptyScope, tbl, sigs, scratch, init)
 }
 

@@ -2300,7 +2300,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       for ia in decl.iface.args {
         match ia {
           case TAType(te) -> ifaceArgTys.add(resolveType(tbl, ctx, diag, te))
-          case TAValue(_) -> ifaceArgTys.add(TyError)
+          case TAValue(_) -> ifaceArgTys.add(tyErrorSilent())
         }
       }
       if ifaceArgTys.count != ifaceGenNames.count {
@@ -5392,7 +5392,7 @@ func checkDeclaredInit(
 ): Unit {
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(TyError, genericNames, noRte, noSelfFields, false, tyErrorSilent())
+  val sc = newScopeForFunction(tyErrorSilent(), genericNames, noRte, noSelfFields, false, tyErrorSilent())
   checkDeclaredInitIn(sc, tbl, sigs, diag, genericNames, te, init, subject, initNoun, sp)
 }
 
@@ -5530,7 +5530,7 @@ func checkWireInits(
   val noGenerics: List[String] = newList()
   val noRte: Option[TypeExpr] = None
   val noSelfFields: Map[String, Type] = newMap()
-  val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, tyErrorSilent())
+  val sc = newScopeForFunction(tyErrorSilent(), noGenerics, noRte, noSelfFields, false, tyErrorSilent())
   val ctx = newGenericContext()
   val scratch: List[Diagnostic] = newList()
   // A member spliced from a wire template carries references qualified for
@@ -5722,7 +5722,7 @@ func checkItemDeclaredInits(
         case None -> {
           val noRte: Option[TypeExpr] = None
           val noSelfFields: Map[String, Type] = newMap()
-          val sc = newScopeForFunction(TyError, noGenerics, noRte, noSelfFields, false, tyErrorSilent())
+          val sc = newScopeForFunction(tyErrorSilent(), noGenerics, noRte, noSelfFields, false, tyErrorSilent())
           val _ = inferExpr(sc, tbl, sigs, diag, decl.init)
         }
       }
