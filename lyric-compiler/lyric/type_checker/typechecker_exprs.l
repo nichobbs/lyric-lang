@@ -11672,13 +11672,97 @@ pub func inferExpr(
   diag: in List[Diagnostic],
   e: in Expr,
 ): Type {
+  val diagsBefore = diag.count
+  noteCalleePosition(tbl, e)
   val t = inferExprCore(sc, tbl, sigs, diag, e)
   match e.kind {
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
   }
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
+  noteSilentTyError(tbl, e, t, diag.count == diagsBefore)
   t
+}
+
+// Mark the callee of a call (and the base of a `callee[T]` type-argument list)
+// as a callee position before it is typed, so the silent-`TyError` gate can
+// exempt it (D341).
+func noteCalleePosition(tbl: in SymbolTable, e: in Expr): Unit {
+  match e.kind {
+    case ECall(fn, _) -> {
+      markCalleePosition(tbl, fn)
+      match fn.kind {
+        case EIndex(base, _) -> markCalleePosition(tbl, base)
+        case EParen(inner) -> markCalleePosition(tbl, inner)
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func markCalleePosition(tbl: in SymbolTable, callee: in Expr): Unit {
+  val key = recordCopySiteKey(callee.span)
+  if not tbl.calleePositionSites.containsKey(key) {
+    tbl.calleePositionSites.add(key, true)
+  }
+}
+
+// Record an expression typed `TyError` with no diagnostic added while it was
+// typed, unless it is a callee position (D338, D341).  A site typed again
+// (speculative checking) is recorded once; a later typing that does give it a
+// real type removes the record.
+func noteSilentTyError(tbl: in SymbolTable, e: in Expr, t: in Type, addedNoDiagnostic: in Bool): Unit {
+  if isNoSourceSpan(e.span) {
+    return
+  }
+  val key = recordCopySiteKey(e.span) + "|" + exprKindTag(e)
+  val silent = addedNoDiagnostic and isSilentTyError(t) and
+    not tbl.calleePositionSites.containsKey(recordCopySiteKey(e.span))
+  if silent {
+    if not tbl.silentTyErrorSites.containsKey(key) {
+      tbl.silentTyErrorSites.add(key, SilentTyErrorSite(kind = exprKindTag(e), span = e.span))
+    }
+  } else if tbl.silentTyErrorSites.containsKey(key) and not isTyErrorValue(t) {
+    tbl.silentTyErrorSites.remove(key)
+  }
+}
+
+func isTyErrorValue(t: in Type): Bool {
+  match t {
+    case TyError(_) -> true
+    case _ -> false
+  }
+}
+
+// W0036 (D341): the warning-mode form of the I0001 gate (docs/70 5.3).  Each
+// non-callee expression typed `TyError` with no diagnostic is reported, unless
+// the file already has an error: then the `TyError` is a cascade of a reported
+// one.  It becomes the error I0001 when the census reaches zero.
+pub func reportSilentTyErrors(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
+  for d in diag {
+    match d.severity {
+      case DiagError -> {
+        return
+      }
+      case DiagWarning -> ()
+    }
+  }
+  val keys = mapKeys(tbl.silentTyErrorSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.silentTyErrorSites, keys[i]) {
+      case Some(site) -> diag.add(
+        warningDiagnostic(
+          "W0036",
+          "internal: this " + site.kind + " expression has no type and no error was reported (I0001)",
+          site.span
+        )
+      )
+      case None -> ()
+    }
+    i = i + 1
+  }
 }
 
 // Record a qualified or method call's result type for `Lyric.Mono`

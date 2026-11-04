@@ -7415,6 +7415,9 @@ func checkWithImportedPackagesCore(
   // The uses of each open local binding fix its annotation (#7788).
   resolveOpenBindingSites(tbl)
   reportUnsolvedTypeArgs(tbl, diag)
+  if getVarOrDefault("LYRIC_TYERR_GATE", "") == "1" {
+    reportSilentTyErrors(tbl, diag)
+  }
   reportUnspellableArrayCopies(tbl, diag)
   // A `?` operand whose success type nothing fixed (#8181).
   collectPropagateFallbacks(tbl)
