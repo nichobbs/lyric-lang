@@ -1368,6 +1368,7 @@ func externMemberAsFunctionDecl(m: in ExternMemberDecl): Option[FunctionDecl] {
 func withOriginPackage(sg: in ResolvedSignature, originPkg: in String): ResolvedSignature {
   ResolvedSignature(
     generics = sg.generics,
+    genericOwners = sg.genericOwners,
     bounds = sg.bounds,
     params = sg.params,
     returnTy = sg.returnTy,
@@ -1386,6 +1387,7 @@ func withOriginPackage(sg: in ResolvedSignature, originPkg: in String): Resolved
 func asExternFuncSig(sg: in ResolvedSignature): ResolvedSignature {
   ResolvedSignature(
     generics = sg.generics,
+    genericOwners = sg.genericOwners,
     bounds = sg.bounds,
     params = sg.params,
     returnTy = sg.returnTy,
@@ -3848,6 +3850,7 @@ func checkProtectedMemberBodies(
         )
         val sig = ResolvedSignature(
           generics = ownerGenerics,
+          genericOwners = ownersOfKey(ownerGenerics, decl.name),
           bounds = sig0.bounds,
           params = sig0.params,
           returnTy = sig0.returnTy,

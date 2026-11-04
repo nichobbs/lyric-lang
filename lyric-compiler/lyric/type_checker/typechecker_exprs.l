@@ -4265,6 +4265,7 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
   }
   ResolvedSignature(
     generics = entry.sig.generics,
+    genericOwners = entry.sig.genericOwners,
     bounds = entry.sig.bounds,
     params = np,
     returnTy = rty,
@@ -4680,6 +4681,7 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
   }
   ResolvedSignature(
     generics = full.generics,
+    genericOwners = full.genericOwners,
     bounds = full.bounds,
     params = np,
     returnTy = full.returnTy,
@@ -16321,6 +16323,7 @@ func instantiateSigAt(sig: in ResolvedSignature, targs: in List[Type]): Resolved
   val noBounds: List[ResolvedBound] = newList()
   sig.copy(
     generics = noGenerics,
+    genericOwners = noGenerics,
     bounds = noBounds,
     params = ps,
     returnTy = substituteTyParams(sig.returnTy, sig.generics, targs)
