@@ -16501,7 +16501,8 @@ func noteUnsolvedCall(
         generics = sig.generics,
         returnTy = sig.returnTy,
         callKey = recordCopySiteKey(callSpan),
-        span = fn.span
+        span = fn.span,
+        callerGenerics = sc.genericNames
       )
     )
   }
@@ -16547,7 +16548,7 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
       val solved = inferGenericArgsDeep(site.generics, retTys, expTys)
       var gi = 0
       while gi < site.generics.count {
-        if site.unsolved.contains(site.generics[gi]) and typeIsUnsolved(solved[gi]) {
+        if site.unsolved.contains(site.generics[gi]) and (typeIsUnsolved(solved[gi]) or not typeIsClosedOver(solved[gi], site.callerGenerics)) {
           return false
         }
         gi = gi + 1

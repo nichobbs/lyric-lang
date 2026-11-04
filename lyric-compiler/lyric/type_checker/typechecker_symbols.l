@@ -825,6 +825,9 @@ pub record UnsolvedCallSite {
   /// binding that has the call as its initializer.
   callKey: String
   span: Span
+  /// The generic names in scope at the call; a solution may mention only these
+  /// (the callee's own type parameters solve nothing).
+  callerGenerics: List[String]
 }
 
 pub record OpenBindingSite {
