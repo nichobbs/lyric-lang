@@ -17804,6 +17804,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  DbgConsole.error("SITE-DEBUG methodPick member=" + memberName + " dotNamed=" + toString(isSome(mp.fullSig)))
                   val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
                   recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
@@ -22238,6 +22239,10 @@ func reportAmbiguousDefaultCall(
 // or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
 // replaces what an earlier inference recorded.
 func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
+  match fn.kind {
+    case EMember(_, mm) -> DbgConsole.error("SITE-DEBUG recordCalleeSite member=" + mm + " origin=" + sig.originPackage)
+    case _ -> ()
+  }
   if isNoSourceSpan(fn.span) {
     return
   }
