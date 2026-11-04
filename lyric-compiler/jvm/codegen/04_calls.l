@@ -4465,9 +4465,13 @@ pub func resolveGeneralFuncSig(
     case Some(_) -> return sited
     case None -> ()
   }
+  val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
   // TEMP-AUDIT (D336)
-  DbgConsoleJvm.error("CALLEE-AUDIT jvm nosite in " + ctx.pkgName + ": " + funcName)
-  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
+  match byName {
+    case Some(sig) -> DbgConsoleJvm.error("CALLEE-AUDIT jvm byname in " + ctx.pkgName + ": " + funcName + " -> " + sig.owner)
+    case None -> ()
+  }
+  byName
 }
 
 // The signature of the function the checker resolved the call at `path` to
