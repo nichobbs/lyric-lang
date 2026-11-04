@@ -1261,6 +1261,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // caller-side strict check turned the miss into a hard "no function
     // token could be resolved" panic instead.
     val declaredPkgName = segmentsToString(lifted.packageDecl.path.segments)
+    // The package's resolved callees, for the default expressions its
+    // functions register (`qualifyDefaultCalleesMsil`).
+    useCalleeSitesMsil(cctx, perPkgCalleeSites[li])
     addPackageTokens(cctx, lifted, declaredPkgName)
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
