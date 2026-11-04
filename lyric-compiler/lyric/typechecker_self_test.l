@@ -14831,6 +14831,8 @@ test "a universal method with the wrong arity stays untyped" {
     ) ==
       "",
     "toString(1) has no rule"
+  )
+}
 
 test ".new on an extern type is that type, and default() adopts its expected type" {
   val ext = "package P\nextern type SB = \"System.Text.StringBuilder\"\n"
