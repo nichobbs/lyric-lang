@@ -11648,7 +11648,8 @@ func recordBranchConstructionType(
 
 // A branch of a consumed `if`/`match` whose value is `e?` with an open
 // operand (`Err(error = x)?`, `None?`) takes, as its success type, the type
-// the branches join to (#8181).
+// the branches join to (#8181); a branch that is a call leaving a type
+// argument open (`newList()`) takes it from the join too (D339).
 func closePropagateBranch(
   sc: in Scope, tbl: in SymbolTable, b: in ExprOrBlock, joined: in Type, consumed: in Bool
 ): Unit {
@@ -11656,7 +11657,10 @@ func closePropagateBranch(
     return
   }
   match branchValueExpr(b) {
-    case Some(ve) -> resolvePropagateOperand(sc, tbl, ve, joined)
+    case Some(ve) -> {
+      noteCallExpected(tbl, ve, joined)
+      resolvePropagateOperand(sc, tbl, ve, joined)
+    }
     case None -> ()
   }
 }
