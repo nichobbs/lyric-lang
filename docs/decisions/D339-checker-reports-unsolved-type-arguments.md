@@ -84,18 +84,16 @@ named predicate.
 ## Step two: the error
 
 `reportUnsolvedTypeArgs` reports **T0224** (an error) instead of W0035, so a
-`lyric check` of a package states the rule without Mono running. Two things the
-census found:
+`lyric check` of a package states the rule without Mono running. The second
+round (#8779) made the rule safe to switch on; the sources the census found
+that only the error step needed:
 
-- A name, member or index argument whose type is not closed is not the call's
-  own openness: the loop variable of a generic body is erased to a wildcard
-  (`eraseTyParams`), so `for h in hs { isNone(h) }` has an argument of type
-  `Option[<hole>]` that no call created. Such a call is not recorded; the
-  openness is reported where it arose (a call or literal, an open `val`'s
-  initializer). `lyric-ui` (`eventName(h)`, `viewOf(children[0])`) had three.
 - `core_tests.l` called `andThenResult(Ok(value = 5), ...)`, whose `E` only
   Mono's standalone `Result[Int, Object]` fill made acceptable; it now binds
   the first result to an annotated `val`.
+- `lyric-ui`'s `eventName(h)` and `viewOf(children[0])` (the loop variable of a
+  generic body is erased to a wildcard, so the argument is `Option[<hole>]`)
+  are the indeterminate calls of the second round and are not reported.
 
 Mono's T0224 site is **kept** as a backstop, not deleted as the plan in #8760
 proposed: the checker records only a single-segment callee, and Mono's

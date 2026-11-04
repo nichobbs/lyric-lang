@@ -4635,9 +4635,7 @@ test "more positions that fix a call, and the cases the checker cannot decide (D
     "a nested call takes its parameter, solved from the outer result"
   )
   assertEqualInt(
-    unsolvedErrors(
-      "func g(b: Bool, y: in Option[Int]): Option[Int] {\n  val r = if b { y } else { none() }\n  r\n}\n"
-    ),
+    unsolvedErrors("func g(b: Bool, y: in Option[Int]): Option[Int] {\n  val r = if b { y } else { none() }\n  r\n}\n"),
     0,
     "a branch takes the type the branches join to"
   )
