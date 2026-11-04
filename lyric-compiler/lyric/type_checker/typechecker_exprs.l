@@ -2926,6 +2926,12 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
           return Some(value = TyFunction(params = noParams, ret = bufferType(targs[0]), isAsync = false))
         }
       }
+      // The size of a stdlib `Map` or `Set`, read as a member like `List`'s.
+      if name == "count" and
+        ((targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map")) or
+          (targs.count == 1 and isStdCollectionsHostType(tbl, tid, "Set"))) {
+        return Some(value = TyPrim(pt = PtInt))
+      }
       None
     }
     case _ -> None
@@ -4227,6 +4233,24 @@ func isStdEmptyCollectionCtor(sig: in ResolvedSignature, fn: in Expr): Bool {
 // `T.equals`-style signatures are not yet in `sigs` when the checker runs.
 func isUniversalMethodName(name: in String): Bool {
   name == "toString" or name == "equals" or name == "hash" or name == "show" or name == "compare" or name == "toJson"
+}
+
+// The result of a universal method (`isUniversalMethodName`) called on a
+// receiver whose type declares no such method: `toString()` is a codegen
+// intrinsic on every receiver, and `equals(other)` / `hash()` are what the
+// `Equals` / `Hash` derives synthesise (`Bool`, `Int`), which run after the
+// checker.  Any other name or arity has no rule and stays untyped.
+func universalMethodResultType(name: in String, argc: in Int): Type {
+  if name == "toString" and argc == 0 {
+    return TyPrim(pt = PtString)
+  }
+  if name == "equals" and argc == 1 {
+    return TyPrim(pt = PtBool)
+  }
+  if name == "hash" and argc == 0 {
+    return TyPrim(pt = PtInt)
+  }
+  TyError
 }
 
 // Substitute the receiver into a stored method signature: `Self` becomes the
@@ -18278,7 +18302,11 @@ func inferExprCore(
                             )
                             case None -> tyErrorSilent()
                           }
-                          case None -> tyErrorSilent()
+                          case None -> if isMemberCallee {
+                            universalMethodResultType(memberName, args.count)
+                          } else {
+                            tyErrorSilent()
+                          }
                         }
                       }
                     }
