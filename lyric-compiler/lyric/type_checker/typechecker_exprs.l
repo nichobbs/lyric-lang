@@ -16753,6 +16753,9 @@ func noteUnsolvedCall(
     if (ai < argTypes.count and typeIsHole(argTypes[ai])) or openSiteOfExpr(sc, ae) != "" {
       indeterminate = true
     }
+    if ai < argTypes.count and typeHasUnsolved(argTypes[ai]) and argIsReadOfOpenType(sc, ae) {
+      indeterminate = true
+    }
     ai = ai + 1
   }
   val key = recordCopySiteKey(fn.span)
@@ -16770,6 +16773,20 @@ func noteUnsolvedCall(
         indeterminate = indeterminate
       )
     )
+  }
+}
+
+// An argument that reads a value the checker could only type with a hole in
+// it: a local (a loop variable of a generic body), a member read (`s.tree`) or
+// an index (`children[0]`).  The hole is the checker's lost information, not
+// the user's omission, so a call it feeds is not judged (D339).  A construction
+// (`None`, `Ok(value = 7)`, a call) is the user's omission and is judged.
+func argIsReadOfOpenType(sc: in Scope, e: in Expr): Bool {
+  match stripExprParens(e).kind {
+    case EMember(_, _) -> true
+    case EIndex(_, _) -> true
+    case EPath(p) -> if p.segments.count == 1 { scopeHasName(sc, p.segments[0]) } else { false }
+    case _ -> false
   }
 }
 
