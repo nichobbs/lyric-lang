@@ -1,4 +1,4 @@
-# D341 - Every type parameter has a binder, and an empty one is an internal error (docs/70 phase 3a, #8747)
+# D343 - Every type parameter has a binder, and an empty one is an internal error (docs/70 phase 3a, #8747)
 
 **Status:** shipped. Completes the threading D337 began and removes the
 transitional "empty owner matches any binder" rule.

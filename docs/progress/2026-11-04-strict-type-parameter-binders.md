@@ -1,6 +1,6 @@
 # Every type parameter has a binder; an empty owner is I0001 (docs/70 phase 3a, #8747)
 
-D341. Step two of the `TyParam.owner` threading (step one: D337).
+D343. Step two of the `TyParam.owner` threading (step one: D337).
 
 - Union-case and constructor field resolution, the field- and parameter-default
   checks, the definite-assignment pass and the interface builder now push their
