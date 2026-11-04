@@ -14844,3 +14844,19 @@ test ".new on an extern type is that type, and default() adopts its expected typ
     "default() adopts the annotation"
   )
 }
+
+test "an extern alias of the host string type constructs a String, and a user default() is an ordinary call" {
+  val ext = "package P\nextern type JString = \"java.lang.String\"\n"
+  assertEqual(
+    diagCodesOf(parseCheck(ext + "func f(): String {\n  JString.new(\"x\")\n}\n")),
+    "",
+    "JString.new(...) is a String"
+  )
+  assertTrue(
+    diagCodesOf(
+      parseCheck("package P\nfunc default(): String {\n  \"s\"\n}\nfunc f(): Int {\n  var v: Int = default()\n  v\n}\n")
+    ) !=
+      "",
+    "a user-defined default() keeps its own result type"
+  )
+}

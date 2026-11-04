@@ -4251,6 +4251,12 @@ func universalMethodResultType(name: in String, argc: in Int): Type {
   tyErrorSilent()
 }
 
+// The host's own string type is Lyric's `String` (an `extern type` alias of it
+// constructs one: `JString.new(bytes, "UTF-8")`).
+func isHostStringTypeName(clrName: in String): Bool {
+  clrName == "java.lang.String" or clrName == "System.String"
+}
+
 // The result of a member call whose receiver declares no signature for it:
 // `T.new(args)` on an `extern type T` (docs/48) constructs a `T`; a universal
 // method has its fixed result type.  Anything else has no rule.
@@ -4261,7 +4267,11 @@ func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in St
         case EPath(p) -> if p.segments.count == 1 {
           match symTableTryFindOne(tbl, p.segments[0]) {
             case Some(sym) -> match sym.kind {
-              case DKExternType(tid, d) -> return TyUser(id = tid, name = d.name, args = newList())
+              case DKExternType(tid, d) -> return if isHostStringTypeName(d.clrName) {
+                TyPrim(pt = PtString)
+              } else {
+                TyUser(id = tid, name = d.name, args = newList())
+              }
               case _ -> ()
             }
             case None -> ()
