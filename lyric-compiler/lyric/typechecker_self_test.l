@@ -14576,6 +14576,7 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(typeEquiv(t, TyPrim(pt = PtInt)), "TyError still suppresses cascades")
   assertTrue(typeEquiv(tyErrorSilent(), t), "both kinds of TyError are equivalent")
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
+}
 
 // ─── Silent TyError sites typed (docs/70 §5.3, D338, #8613) ────────────────
 test "a universal method's result is typed when the receiver declares none" {
