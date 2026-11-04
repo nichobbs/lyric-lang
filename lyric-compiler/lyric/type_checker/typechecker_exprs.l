@@ -22256,6 +22256,7 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         // `Type.f(...)`: a dot-named function of the type, registered as
         // `Type.f` in its declaring package.
         name = segs[0] + "." + member
+        allowArity = true
       } else {
         return
       }
