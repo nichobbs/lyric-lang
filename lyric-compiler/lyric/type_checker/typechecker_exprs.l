@@ -1568,7 +1568,7 @@ func nativeIntrinsicCallType(
   val arity = if name == "nativeNullPtr" { 0 } else { 1 }
   if args.count != arity {
     diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   if name == "nativeNullPtr" {
     return nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte))
@@ -1626,7 +1626,7 @@ func externUpcastCallType(
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   match argTypes[0] {
     case TyError(_) -> return Some(value = tyErrorSilent())
@@ -1638,7 +1638,7 @@ func externUpcastCallType(
           span
         )
       )
-      return Some(value = tyErrorSilent())
+      return Some(value = tyErrorFor(diag))
     }
     case other -> {
       diag.add(
@@ -1648,7 +1648,7 @@ func externUpcastCallType(
           span
         )
       )
-      return Some(value = tyErrorSilent())
+      return Some(value = tyErrorFor(diag))
     }
   }
   if checkingForNative(tbl) {
@@ -1659,7 +1659,7 @@ func externUpcastCallType(
         span
       )
     )
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   match rootExternObjectType(tbl) {
     case Some(t) -> Some(value = t)
@@ -1671,7 +1671,7 @@ func externUpcastCallType(
           span
         )
       )
-      Some(value = tyErrorSilent())
+      Some(value = tyErrorFor(diag))
     }
   }
 }
@@ -1743,11 +1743,11 @@ func bufferPointerCallType(
     diag.add(
       errorDiagnostic("T0175", name + " lends a buffer's address to C code and exists only on --target native", span)
     )
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   val argE = callArgExpr(args[0])
   if not isAnnotatedPointerLambda(argE) {
@@ -1758,7 +1758,7 @@ func bufferPointerCallType(
         argE.span
       )
     )
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   if name == "withMutPointer" and not arrayPlaceWritable(sc, tbl, sigs, recv) {
     diag.add(
@@ -1828,7 +1828,7 @@ func nativeByteAccessType(
   }
   if args.count != arity {
     diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
     case Some(t) -> t
@@ -1871,7 +1871,7 @@ func nativeCallbackPinType(
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = tyErrorSilent())
+    return Some(value = tyErrorFor(diag))
   }
   val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
     case Some(t) -> t
@@ -2761,7 +2761,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
       } else if isUnsignedConvReceiver(inner) {
         diag.add(errorDiagnostic("T0147", unsignedNegationMessageFor(inner), span))
-        return tyErrorSilent()
+        return tyErrorFor(diag)
       } else if isPrimOf(inner, PtNat) {
         diag.add(
           errorDiagnostic(
@@ -2771,7 +2771,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
             span
           )
         )
-        return tyErrorSilent()
+        return tyErrorFor(diag)
       }
       inner
     }
@@ -3855,7 +3855,7 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
         span
       )
     )
-    return tyErrorSilent()
+    return tyErrorFor(diag)
   }
   // Each branch may leave a different type argument open (`if c { Err(error
   // = "z") } else { Ok(value = "abc") }`): the join takes each from whichever
@@ -5540,7 +5540,7 @@ func inferMember(
             span
           )
         )
-        return tyErrorSilent()
+        return tyErrorFor(diag)
       }
       // #6630: a receiver that structurally LOOKS like `Result[T, E]` /
       // `Option[T]` (same reserved bare name + arity), and `name` is one of
@@ -5588,7 +5588,7 @@ func inferMember(
               span
             )
           )
-          return tyErrorSilent()
+          return tyErrorFor(diag)
         }
         case None -> {
         }
@@ -6838,7 +6838,7 @@ func resolveExprPath(
           span
         )
       )
-      return tyErrorSilent()
+      return tyErrorFor(diag)
     }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) and not packageReexportsMember(tbl, pkg, name) {
@@ -6887,7 +6887,7 @@ func resolveExprPath(
             span
           )
         )
-        return tyErrorSilent()
+        return tyErrorFor(diag)
       }
       // #1484: a function resolves via `sigs` (no visibility there) — consult
       // the symbol table for the same name to enforce cross-package visibility.
@@ -6913,7 +6913,7 @@ func resolveExprPath(
                     span
                   )
                 )
-                return tyErrorSilent()
+                return tyErrorFor(diag)
               }
               match pkgFuncSig(sigs, sym.originPackage, name, fd.params.count) {
                 case Some(scopedSig) -> {
@@ -6933,7 +6933,7 @@ func resolveExprPath(
           val hint = symTableHiddenImportHint(tbl, name)
           if hint.length > 0 {
             diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
-            return tyErrorSilent()
+            return tyErrorFor(diag)
           }
         }
       }
@@ -9117,7 +9117,7 @@ func inferConstructionExpected(
               span
             )
           )
-          return tyErrorSilent()
+          return tyErrorFor(diag)
         }
       }
       vi = vi + 1
@@ -9154,7 +9154,7 @@ func inferConstructionExpected(
       }
       msg = msg + " could not be inferred from the supplied arguments"
       diag.add(errorDiagnostic("T0110", msg, span))
-      return tyErrorSilent()
+      return tyErrorFor(diag)
     }
     val inferredTy = match symbolTypeIdOpt(sym) {
       case Some(tid) -> TyUser(id = tid, name = sym.name, args = targs)
@@ -17022,7 +17022,7 @@ func distinctMemberType(
                   span
                 )
               )
-              return Some(value = tyErrorSilent())
+              return Some(value = tyErrorFor(diag))
             }
           }
           case _ -> ()
@@ -17418,7 +17418,7 @@ func inferExprCore(
                   recvE.span
                 )
               )
-              return tyErrorSilent()
+              return tyErrorFor(diag)
             }
             case TyError(_) -> return tyErrorSilent()
             case _ -> ()
@@ -17462,7 +17462,7 @@ func inferExprCore(
               diag.add(
                 errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)
               )
-              return tyErrorSilent()
+              return tyErrorFor(diag)
             }
             match rt {
               case TyError(_) -> return tyErrorSilent()
@@ -17495,7 +17495,7 @@ func inferExprCore(
                   e.span
                 )
               )
-              return tyErrorSilent()
+              return tyErrorFor(diag)
             }
             if arity == 1 {
               val argE = callArgExpr(args[0])
@@ -17528,7 +17528,7 @@ func inferExprCore(
           if isConcreteIntType(bt) {
             if args.count != 1 {
               diag.add(errorDiagnostic("T0042", "'" + bName + "' expects 1 argument(s), got " + toString(args.count), e.span))
-              return tyErrorSilent()
+              return tyErrorFor(diag)
             }
             val wantArg = if bName == "shl" or bName == "shr" { TyPrim(pt = PtInt) } else { unrefine(bt) }
             val argE = callArgExpr(args[0])
@@ -18207,7 +18207,7 @@ func inferExprCore(
                   "' by its type name; a union or enum is built through one of its cases, not the type itself"
                 val fullMsg = if ctorHint == "" { baseMsg } else { baseMsg + " (cases: " + ctorHint + ")" }
                 diag.add(errorDiagnostic("T0125", fullMsg, e.span))
-                tyErrorSilent()
+                tyErrorFor(diag)
               }
               case None -> match methodPick {
                 case Some(mp) -> {
@@ -18438,7 +18438,7 @@ func inferExprCore(
                     }
                     case _ -> {
                       diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
-                      tyErrorSilent()
+                      tyErrorFor(diag)
                     }
                   }
                 }
@@ -18476,7 +18476,7 @@ func inferExprCore(
               case Some(t) -> return t
               case None -> {
                 diag.add(errorDiagnostic("T0020", "unknown name 'self." + name + "'", e.span))
-                return tyErrorSilent()
+                return tyErrorFor(diag)
               }
             }
           }
@@ -18583,7 +18583,7 @@ func inferExprCore(
               e.span
             )
           )
-          return tyErrorSilent()
+          return tyErrorFor(diag)
         }
         case _ -> ()
       }
@@ -18607,7 +18607,7 @@ func inferExprCore(
                     e.span
                   )
                 )
-                return tyErrorSilent()
+                return tyErrorFor(diag)
               }
               case _ -> ()
             }

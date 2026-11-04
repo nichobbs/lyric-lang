@@ -246,7 +246,7 @@ func resolveLengthArg(
           asp
         )
       )
-      tyErrorSilent()
+      tyErrorFor(diag)
     }
   }
 }
@@ -545,7 +545,7 @@ func symbolToType(
       }
       case None -> {
         diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span))
-        tyErrorSilent()
+        tyErrorFor(diag)
       }
     }
   }
@@ -687,7 +687,7 @@ func resolveAliasPath(
           diag.add(
             errorDiagnostic("T0017", "type alias '" + d2.name + "' is part of a cycle and does not resolve to a type", span)
           )
-          return tyErrorSilent()
+          return tyErrorFor(diag)
         }
         return resolveAliasRhs(tbl, ctx, diag, d2, depth + 1, args, span)
       }
@@ -698,10 +698,10 @@ func resolveAliasPath(
   }
   if all.count == 0 {
     diag.add(errorDiagnostic("T0010", "unknown type name '" + last + "'" + symTableHiddenImportHint(tbl, last), span))
-    return tyErrorSilent()
+    return tyErrorFor(diag)
   }
   diag.add(errorDiagnostic("T0013", "'" + last + "' is not a type", span))
-  tyErrorSilent()
+  tyErrorFor(diag)
 }
 
 // #7548: type-position counterpart of `checkQualifiedPackageRef`
@@ -812,7 +812,7 @@ func resolveQualifiedAliasPath(
               diag.add(
                 errorDiagnostic("T0017", "type alias '" + d2.name + "' is part of a cycle and does not resolve to a type", span)
               )
-              return tyErrorSilent()
+              return tyErrorFor(diag)
             }
             return resolveAliasRhs(tbl, ctx, diag, d2, depth + 1, args, span)
           }
@@ -829,7 +829,7 @@ func resolveQualifiedAliasPath(
       span
     )
   )
-  tyErrorSilent()
+  tyErrorFor(diag)
 }
 
 // Whether `Task[X]` names the built-in task type here (docs/68 §3): the bare
@@ -888,7 +888,7 @@ func resolveTypePath(
 ): Type {
   if path.segments.count == 0 {
     diag.add(errorDiagnostic("T0010", "empty module path in type position", span))
-    return tyErrorSilent()
+    return tyErrorFor(diag)
   }
   if path.segments.count == 1 {
     val name = path.segments[0]
@@ -936,7 +936,7 @@ func resolveTypePath(
       }
       case None -> {
         diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'" + symTableHiddenImportHint(tbl, name), span))
-        return tyErrorSilent()
+        return tyErrorFor(diag)
       }
     }
   }
@@ -1025,7 +1025,7 @@ func resolveTypePath(
       diag.add(
         errorDiagnostic("T0014", "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span)
       )
-      tyErrorSilent()
+      tyErrorFor(diag)
     }
   }
 }
