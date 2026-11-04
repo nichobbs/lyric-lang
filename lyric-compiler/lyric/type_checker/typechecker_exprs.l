@@ -11660,14 +11660,16 @@ pub func inferExpr(
     case _ -> ()
   }
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
-  if tyErrorCensusOn and diag.count == diagsBefore {
+  if diag.count == diagsBefore {
     match t {
-      case TyError -> Console.error(
-        "TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" +
-          toString(e.span.startPos.fileId) +
-          ":" +
-          toString(e.span.startPos.offset)
-      )
+      case TyError -> if tyErrorCensusOn() {
+        Console.error(
+          "TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" +
+            toString(e.span.startPos.fileId) +
+            ":" +
+            toString(e.span.startPos.offset)
+        )
+      }
       case _ -> ()
     }
   }
@@ -11678,7 +11680,9 @@ pub func inferExpr(
 // checker logs every expression it types `TyError` without reporting an error,
 // as `TYERR<TAB>package<TAB>kind`, so the sites the gate must classify can be
 // counted per package.  It is removed with the gate.
-val tyErrorCensusOn: Bool = getVarOrDefault("LYRIC_TYERR_CENSUS", "") == "1"
+func tyErrorCensusOn(): Bool {
+  getVarOrDefault("LYRIC_TYERR_CENSUS", "") == "1"
+}
 
 // The name an expression is spelled with, for the census: a path, the callee
 // path of a call, or a member.
