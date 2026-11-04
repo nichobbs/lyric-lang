@@ -769,9 +769,12 @@ builder (I0002) rather than on the current checker.
   calls the tiers bound to a package-private function of another package.
   Specialised generic calls and `Type.f(x)` calls keep their site too, and
   MSIL's bundle-wide name search (`findBundleFqnByName`) is deleted. Still
-  open: the calls with no site (distinct-type factories, synthesised
-  `__lyric_checked_` helpers, function values) that keep
-  `findBareImportedFqnMsil`; the JVM binds a call to its site before its
+  open: MSIL's bare-import search (`findBareImportedFqnMsil`) is narrowed to
+  the fallback for a call with no site (aspect-template splices,
+  weaver-synthesised calls, calls in an imported generic whose package
+  recorded none); `pkgImportAliases` is deleted, a copy of another package's
+  generic reads that package's sites (`<package>|<key>`), and defaults mean
+  the declaring package's names; the JVM binds a call to its site before its
   bare-name keys, which stay for the calls with no site, the JVM and native
   bridges, #8752 and #8690.
 

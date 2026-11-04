@@ -3352,6 +3352,34 @@ test "emitProject a specialised generic's bare call honours its package's select
   assertEqual(Str.trim(result.stdout), "101", "origincall MSIL: output")
 }
 
+// A record field's default is lowered in whichever package builds the record
+// but means the names of the package that declares it: `EPFd.Lib.seven` is
+// not in `EPFd.App`'s scope, which imports only `EPFd.Lib.{Opts}`.
+func fieldDefaultCalleePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPFd.Lib",
+      "package EPFd.Lib\n" + "\n" + "pub func seven(): Int {\n" + "  7\n" + "}\n" + "\n" + "pub record Opts {\n" +
+        "  n: Int = seven()\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPFd.App",
+      "package EPFd.App\n" + "\n" + "import EPFd.Lib.{Opts}\n" + "\n" + "func main(): Unit {\n" +
+        "  val o = Opts()\n" + "  println(o.n)\n" + "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a record field default calls the declaring package's function (MSIL)" {
+  val result = runEmitProject("emitproj-fielddefault", fieldDefaultCalleePkgs(), "EPFd")
+  assertEqualInt(result.exitCode, 0, "fielddefault MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "7", "fielddefault MSIL: output")
+}
+
 // The entry package registers first, before the packages it reaches (#7571):
 // `f` is found through `EPEo.Mid`'s re-export of `EPEo.Base`.
 func entryFirstChainPkgs(): List[Emitter.ProjectPackage] {
