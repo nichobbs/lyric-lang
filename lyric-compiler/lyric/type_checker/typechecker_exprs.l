@@ -16563,9 +16563,7 @@ func genericBoundByArgs(
     val ai = srcIdx[k]
     if ai >= 0 and ai < argTypes.count {
       match findGenericInPair(name, sig.params[k].ty, argTypes[ai]) {
-        case Some(v) -> if typeIsSolution(v, callerGenerics) {
-          return true
-        }
+        case Some(v) -> if typeIsSolution(v, callerGenerics) { return true }
         case None -> ()
       }
     }
@@ -16599,10 +16597,7 @@ func noteNestedCallFlow(
     val ai = srcIdx[k]
     if ai >= 0 and ai < args.count {
       val child = stripExprParens(callArgExpr(args[ai]))
-      val isCall = match child.kind {
-        case ECall(_, _) -> true
-        case _ -> false
-      }
+      val isCall = match child.kind { case ECall(_, _) -> true; case _ -> false }
       if isCall {
         if not computed {
           val noRecv: Option[Type] = None
@@ -16635,9 +16630,7 @@ func noteNestedCallFlow(
 // solved from its own expected type.
 func effectiveCallExpected(tbl: in SymbolTable, key: in String, depth: in Int): Option[Type] {
   match mapGet(tbl.callExpectedSeen, key) {
-    case Some(seen) -> if not typeHasUnsolved(seen) {
-      return Some(value = seen)
-    }
+    case Some(seen) -> if not typeHasUnsolved(seen) { return Some(value = seen) }
     case None -> ()
   }
   if depth > 8 {
