@@ -439,16 +439,16 @@ test "a type-qualified call binds to the checker's dot-named callee (D336)" {
   packages.add(
     mkPkg(
       "XType.Priv",
-      "package XType.Priv\n" + "\n" + "type Box = Int\n" + "\n" +
+      "package XType.Priv\n" + "\n" + "record Box { n: Int }\n" + "\n" +
         "func Box.describe(b: in Box): String { \"priv\" }\n" + "\n" +
-        "pub func other(): String { Box.describe(1) }\n"
+        "pub func other(): String { Box.describe(Box(n = 1)) }\n"
     )
   )
   packages.add(
     mkPkg(
       "XType.Pub",
-      "package XType.Pub\n" + "\n" + "pub type Box = Int\n" + "\n" + "pub func Box.describe(b: in Box): String { \"pub\" }\n" + "\n" +
-        "pub func make(): Box { 7 }\n"
+      "package XType.Pub\n" + "\n" + "pub record Box { n: Int }\n" + "\n" + "pub func Box.describe(b: in Box): String { \"pub\" }\n" + "\n" +
+        "pub func make(): Box { Box(n = 7) }\n"
     )
   )
   packages.add(
