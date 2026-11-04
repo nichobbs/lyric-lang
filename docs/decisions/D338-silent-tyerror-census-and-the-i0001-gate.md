@@ -24,8 +24,7 @@ compared the diagnostic count before and after, and when the result was
 closure. It is not merged because adding it to `typechecker_exprs.l` made the
 per-package typechecker DLL throw `Unable to cast List<Object> to
 List<Symbol>` in the CI job that runs `typechecker_self_test.l` against
-per-package output (1069 of 1075 cases); the cause is tracked in a separate
-issue. The numbers below are from that run.
+per-package output (1069 of 1075 cases); the cause is tracked in #8765. The numbers below are from that run.
 
 **Result: 11,654 distinct sites** (Lyric 8,682, Std 1,682, Msil 789, Jvm 501):
 
