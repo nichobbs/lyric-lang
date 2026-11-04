@@ -11665,6 +11665,40 @@ func closePropagateBranch(
   }
 }
 
+// Census of silent `TyError`s (D338, #8613): with `LYRIC_TYERR_CENSUS=1` every
+// expression typed `TyError` with no diagnostic added while it was typed is
+// logged to stderr as `TYERR<TAB>kind<TAB>name<TAB>file:offset`. Off by default.
+func censusLogSilentTyError(e: in Expr, t: in Type): Unit {
+  val isErr = match t { case TyError -> true; case _ -> false }
+  if not isErr {
+    return
+  }
+  if Std.Environment.getVarOrDefault("LYRIC_TYERR_CENSUS", "") != "1" {
+    return
+  }
+  Std.Console.error("TYERR\t" + exprKindTag(e) + "\t" + censusExprName(e) + "\t" +
+    e.span.startPos.fileId.toString() + ":" + e.span.startPos.offset.toString())
+}
+
+func censusExprName(e: in Expr): String {
+  match e.kind {
+    case ECall(fn, _) -> exprKindTag(fn) + ":" + censusExprName(fn)
+    case EMember(_, n) -> n
+    case EPath(p) -> censusJoinSegments(p.segments)
+    case _ -> ""
+  }
+}
+
+func censusJoinSegments(xs: in List[String]): String {
+  var out2 = ""
+  var i = 0
+  while i < xs.count {
+    out2 = out2 + (if i == 0 { "" } else { "." }) + xs.get(i)
+    i = i + 1
+  }
+  out2
+}
+
 pub func inferExpr(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11672,7 +11706,11 @@ pub func inferExpr(
   diag: in List[Diagnostic],
   e: in Expr,
 ): Type {
+  val diagsBefore = diag.count
   val t = inferExprCore(sc, tbl, sigs, diag, e)
+  if diag.count == diagsBefore {
+    censusLogSilentTyError(e, t)
+  }
   match e.kind {
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
