@@ -58,13 +58,19 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    that name in its declaring package) the same way, found in a dependency by
    name and arity; MSIL routes it through the site, ahead of the import-order
    search for `Type.f`.
-4. **The name tiers stay for the calls with no site.** They are not deleted
-   here: a census of the stdlib, compiler and ecosystem build shows the calls
-   still without a site are builtins (`println`), dot-named type functions
-   (`IOError.message`, `StringBuilder.new`) and monomorphised specialisations.
-   Each needs the channel extended (mono recording the specialised callee's
-   site, a site for a type-qualified call) before `findBundleFqnByName` and
-   `findBareImportedFqnMsil` can go, which is tracked on #8612.
+4. **MSIL's bundle-wide name search is deleted.** `findBundleFqnByName` and
+   `bundleFuncFqnByName` are gone. The calls that still reached it were the
+   `println` / `print` builtins (now an explicit rule: the function in scope,
+   else `Std.Console`), the async pre-scan's duplicate of the call resolution
+   (`resolveQualifiedFreeCallRetTypePB`, now given the call's site key), and a
+   default expression spliced from another package: a function's defaults are
+   lowered in its callers' packages but mean the declaring package's names, so
+   each package registers its defaults qualified with its own recorded
+   callees (`qualifyDefaultCalleesMsil`), and the bridge loads a package's
+   sites before registering its tokens.
+5. **`findBareImportedFqnMsil` stays** for the calls with no site (synthesised
+   `__lyric_checked_*` helpers, distinct-type factories such as
+   `Type.tryFrom`, function values), tracked on #8612.
 
 ## Consequences
 
