@@ -5725,11 +5725,11 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
       }
       // A length that is a value generic parameter is spelled by its name;
       // each specialisation substitutes the bound length (D169).
-      case None -> if sv.length > 0 {
+      case None -> if hasSizeVar(sv) {
         match typeExprForRefV(tbl, e, sp, vars) {
           case Some(te) -> {
             val nsegs: List[String] = newList()
-            nsegs.add(sv)
+            nsegs.add(sizeVarName(sv))
             val lenTe = TypeExpr(kind = TRef(path = refTypePath(nsegs, sp)), span = sp)
             Some(value = TypeExpr(kind = TArray(size = TAType(ty = lenTe), element = te), span = sp))
           }
@@ -6091,7 +6091,7 @@ func noteCaseRangeAgainstExpected(
           return
         }
         val scratch: List[Diagnostic] = newList()
-        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, decl.name, gnames, caseSym.originPackage)
         val order = argIndicesInParamOrder(args, unionCaseSlotNames(uc))
         var k = 0
         while k < ftypes.count and k < order.count {
@@ -7944,7 +7944,7 @@ func isZeroFillField(t: in Type, dflt: in Option[Expr]): Bool {
     // like a type parameter, once the arguments are known (D169).
     case None -> match unrefine(t) {
       case TyArray(Some(_), _, _) -> true
-      case TyArray(None, _, sv) -> sv.length > 0
+      case TyArray(None, _, sv) -> hasSizeVar(sv)
       case _ -> false
     }
   }
@@ -8126,6 +8126,18 @@ func ctorIsOpaque(sym: in Symbol): Bool {
 
 // Extract the ordered generic parameter names from a record/exposed-record/opaque
 // constructor symbol.  Returns an empty list for non-generic types.
+// The binder key of a constructor symbol's own type parameters: the declared
+// name, as the signature and declaration checks key them (D337).
+func ctorBinderKey(sym: in Symbol): String {
+  match sym.kind {
+    case DKRecord(_, rd) -> rd.name
+    case DKExposedRec(_, rd) -> rd.name
+    case DKOpaque(_, od) -> od.name
+    case DKProtected(_, pd) -> pd.name
+    case _ -> sym.name
+  }
+}
+
 func ctorGenericNames(sym: in Symbol): List[String] {
   val names: List[String] = newList()
   val gOpt = match sym.kind {
@@ -8243,7 +8255,7 @@ func ctorAllFields(sym: in Symbol): List[FieldDecl] {
 // inference in `inferConstruction`.
 func ctorFieldTypes(tbl: in SymbolTable, sym: in Symbol, genericNames: in List[String]): List[Type] {
   val ctx = newGenericContext()
-  gctxPush(ctx, genericNames)
+  gctxPushOwned(ctx, genericNames, ctorBinderKey(sym))
   // Resolution diagnostics are discarded here; `surfaceCtorFieldTypeErrors`
   // reports genuine field-type errors when inference fails.
   val scratch: List[Diagnostic] = newList()
@@ -8279,7 +8291,7 @@ func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
       false
     }
     case TySlice(e) -> fieldTypeUsesVar(name, e)
-    case TyArray(_, e, sv) -> sv == name or fieldTypeUsesVar(name, e)
+    case TyArray(_, e, sv) -> sizeVarName(sv) == name or fieldTypeUsesVar(name, e)
     case TyNullable(inner) -> fieldTypeUsesVar(name, inner)
     case TyTuple(elems) -> {
       var i = 0
@@ -8335,7 +8347,7 @@ func surfaceCtorFieldTypeErrors(tbl: in SymbolTable, sym: in Symbol, diag: in Li
   val ctx = newGenericContext()
   val gnames = ctorGenericNames(sym)
   if gnames.count > 0 {
-    gctxPush(ctx, gnames)
+    gctxPushOwned(ctx, gnames, ctorBinderKey(sym))
   }
   val fields = ctorAllFields(sym)
   // Report in the declaring package's scope, as the field types are resolved
@@ -8706,7 +8718,7 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   // scope to see.
   val vnames = ctorValueGenericNames(sym)
   if vnames.count > 0 {
-    gctxPush(ctx, vnames)
+    gctxPushOwned(ctx, vnames, ctorBinderKey(sym))
   }
   val scratch: List[Diagnostic] = newList()
   val saved = enterDeclaringScope(tbl, sym)
@@ -10139,11 +10151,12 @@ func unionCaseFieldTypes(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
   uc: in UnionCase,
+  owner: in String,
   genericNames: in List[String],
   originPackage: in String,
 ): List[Type] {
   val ctx = newGenericContext()
-  gctxPush(ctx, genericNames)
+  gctxPushOwned(ctx, genericNames, owner)
   val savedPkg: List[String] = newList()
   var spi = 0
   while spi < tbl.scopePkg.count {
@@ -10382,7 +10395,7 @@ func inferUnionCaseConstruction(
           }
         }
         val gnames = unionDeclGenericNames(decl)
-        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, decl.name, gnames, caseSym.originPackage)
         // Named arguments bind by field name, in any order (#7844).
         val orderedArgTypes = argTypesInFieldOrder(args, argTypes, unionCaseSlotNames(uc))
         val targs = inferGenericArgs(gnames, ftypes, orderedArgTypes)
@@ -10407,7 +10420,7 @@ func inferUnionCaseConstruction(
 // Replace generic type variables in `t`: each `TyParam(names[i], owners[i])`
 // becomes `args[i]`.  A parameter of the same name bound by another declaration
 // is left alone (docs/70 §5.1); `owners` shorter than `names` matches by name.
-func substituteTyParamsOwned(t: in Type, names: in List[String], owners: in List[String], args: in List[Type]): Type {
+pub func substituteTyParamsOwned(t: in Type, names: in List[String], owners: in List[String], args: in List[Type]): Type {
   match t {
     case TyParam(nm, own) -> {
       var i = 0
@@ -10435,10 +10448,17 @@ func substituteTyParamsOwned(t: in Type, names: in List[String], owners: in List
       // known length (`TyLen`) or another parameter (D169).
       match sz {
         case Some(_) -> TyArray(size = sz, element = elem, sizeVar = sv)
-        case None -> match substituteTyParamsOwned(TyParam(name = sv, owner = ""), names, owners, args) {
-          case TyLen(n) -> TyArray(size = Some(value = n), element = elem, sizeVar = "")
-          case TyParam(m, _) -> TyArray(size = None, element = elem, sizeVar = m)
-          case _ -> TyArray(size = None, element = elem, sizeVar = sv)
+        case None -> match sv {
+          case Some(p) -> match substituteTyParamsOwned(p, names, owners, args) {
+            case TyLen(n) -> TyArray(size = Some(value = n), element = elem, sizeVar = None)
+            case TyParam(m, o) -> TyArray(
+              size = None,
+              element = elem,
+              sizeVar = Some(value = TyParam(name = m, owner = o))
+            )
+            case _ -> TyArray(size = None, element = elem, sizeVar = sv)
+          }
+          case None -> TyArray(size = None, element = elem, sizeVar = None)
         }
       }
     }
@@ -10491,10 +10511,10 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
     case TyArray(_, pe, psv) -> match unrefine(argTy) {
       // A length that is the value generic parameter `name` binds to the
       // argument's length (D169).
-      case TyArray(asz, ae, asv) -> if psv == name {
+      case TyArray(asz, ae, asv) -> if sizeVarName(psv) == name {
         match asz {
           case Some(n) -> Some(value = TyLen(n = n))
-          case None -> if asv.length > 0 { Some(value = TyParam(name = asv, owner = "")) } else { None }
+          case None -> asv
         }
       } else {
         findGenericInPair(name, pe, ae)
@@ -10836,7 +10856,7 @@ func caseFieldTypesInstantiated(
     case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
       case Some(decl) -> {
         val gnames = unionDeclGenericNames(decl)
-        val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
+        val ftypes = unionCaseFieldTypes(tbl, diag, uc, decl.name, gnames, caseSym.originPackage)
         val targs = match unrefine(scrutTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
         val result: List[Type] = newList()
         var i = 0
@@ -12399,7 +12419,7 @@ func bindOpenCasePatternAt(
                   return
                 }
                 val scratch: List[Diagnostic] = newList()
-                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, decl.name, gnames, caseSym.originPackage)
                 var i = 0
                 while i < pargs.count and i < ftypes.count {
                   bindOpenCaseArg(sc, tbl, key, site, pargs[i], ftypes[i], gnames, siteTargs)
@@ -12910,9 +12930,9 @@ func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typePa
           val lenLit = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
           Some(value = TypeExpr(kind = TArray(size = TAValue(expr = lenLit), element = te), span = sp))
         }
-        case None -> if sv.length > 0 {
+        case None -> if hasSizeVar(sv) {
           val nsegs: List[String] = newList()
-          nsegs.add(sv)
+          nsegs.add(sizeVarName(sv))
           val lenTe = TypeExpr(kind = TRef(path = refTypePath(nsegs, sp)), span = sp)
           Some(value = TypeExpr(kind = TArray(size = TAType(ty = lenTe), element = te), span = sp))
         } else {
@@ -13074,7 +13094,7 @@ func ctorArgExpectedTypes(
               case Some(decl) -> {
                 val gnames = unionDeclGenericNames(decl)
                 val scratch: List[Diagnostic] = newList()
-                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+                val ftypes = unionCaseFieldTypes(tbl, scratch, uc, decl.name, gnames, caseSym.originPackage)
                 val fnames: List[String] = newList()
                 var fi = 0
                 while fi < uc.fields.count {
@@ -14147,7 +14167,7 @@ func shapedCollectionType(tbl: in SymbolTable, own: in Type, expected: in Type):
         value = TyArray(
           size = Some(value = n),
           element = shapedElemType(ownElem, et),
-          sizeVar = ""
+          sizeVar = None
         )
       )
       case None -> None
@@ -14336,7 +14356,7 @@ func hoistedRecvType(
       val vars: List[Type] = newList()
       var vi = 0
       while vi < targs.count {
-        vars.add(TyParam(name = recvTypeVarName(vi), owner = ""))
+        vars.add(TyParam(name = recvTypeVarName(vi), owner = receiverPatternOwner()))
         vi = vi + 1
       }
       TyUser(id = tid, name = tname, args = vars)
@@ -14436,6 +14456,12 @@ func recvTypeVarNames(pattern: in Type): List[String] {
     ni = ni + 1
   }
   names
+}
+
+// The reserved owner of the fresh variables of a receiver pattern
+// (`recvTypeVarName`): they are bound by the pattern, not by a declaration.
+func receiverPatternOwner(): String {
+  "$receiver"
 }
 
 func recvTypeVarName(i: in Int): String {
@@ -17279,7 +17305,7 @@ func inferExprCore(
             case EList(elems) -> if elems.count > 0 {
               match inferExpr(sc, tbl, sigs, diag, recvE) {
                 case TySlice(el) -> {
-                  val arrT = TyArray(size = Some(value = elems.count), element = el, sizeVar = "")
+                  val arrT = TyArray(size = Some(value = elems.count), element = el, sizeVar = None)
                   noteArrayLiteralType(tbl, recvE, arrT)
                   cachedRecvType = Some(value = arrT)
                 }
@@ -19240,7 +19266,7 @@ func unionCaseArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[Ca
     case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
       case Some(decl) -> {
         val scratch: List[Diagnostic] = newList()
-        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, unionDeclGenericNames(decl), caseSym.originPackage)
+        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, decl.name, unionDeclGenericNames(decl), caseSym.originPackage)
         val names = unionCaseSlotNames(uc)
         var pos = 0
         var i = 0
@@ -19397,7 +19423,7 @@ func adoptCtorLiteralArgs(
           case Some(decl) -> {
             val scratch: List[Diagnostic] = newList()
             val generics = unionDeclGenericNames(decl)
-            val tys = unionCaseFieldTypes(tbl, scratch, uc, generics, caseSym.originPackage)
+            val tys = unionCaseFieldTypes(tbl, scratch, uc, decl.name, generics, caseSym.originPackage)
             adoptLiteralArgsOver(
               sc,
               tbl,
@@ -19695,7 +19721,7 @@ func caseCtorArgsExpected(
             // Field-type resolution errors are reported by the construction
             // itself (`inferUnionCaseConstruction`).
             val scratch: List[Diagnostic] = newList()
-            val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+            val ftypes = unionCaseFieldTypes(tbl, scratch, uc, decl.name, gnames, caseSym.originPackage)
             ctorArgsExpected(cargs, unionCaseSlotNames(uc), ftypes, gnames, eargs)
           }
           case None -> none
@@ -20150,12 +20176,12 @@ func inferExprExpectedCore(
         }
         val litKey = recordCopySiteKey(e.span)
         if not tbl.arrayLiteralSites.containsKey(litKey) {
-          match typeExprForRef(tbl, TyArray(size = Some(value = n), element = elemTy, sizeVar = ""), e.span) {
+          match typeExprForRef(tbl, TyArray(size = Some(value = n), element = elemTy, sizeVar = None), e.span) {
             case Some(arrTe) -> tbl.arrayLiteralSites.add(litKey, arrTe)
             case None -> ()
           }
         }
-        TyArray(size = Some(value = n), element = elemTy, sizeVar = "")
+        TyArray(size = Some(value = n), element = elemTy, sizeVar = None)
       }
       // A bracket literal where a numeric `slice[T]` is expected: each
       // element initialises a `T`, so it widens like an initialiser (docs/01
@@ -21596,7 +21622,7 @@ func covariantCtors(tbl: in SymbolTable, tid: in SymbolId, args: in List[Type]):
         val gnames = unionDeclGenericNames(decl)
         val scratch: List[Diagnostic] = newList()
         for uc in decl.cases {
-          val raw = unionCaseFieldTypes(tbl, scratch, uc, gnames, sym.originPackage)
+          val raw = unionCaseFieldTypes(tbl, scratch, uc, decl.name, gnames, sym.originPackage)
           val names: List[String] = newList()
           val tys: List[Type] = newList()
           var i = 0

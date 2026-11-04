@@ -71,7 +71,7 @@ func withFrame(frames: in List[ConvFrame], f: in ConvFrame): List[ConvFrame] {
 func resolveTy(bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty], te: in TypeExpr, what: in String): Ty {
   val ctx = newGenericContext()
   for f in frames {
-    gctxPush(ctx, f.names)
+    gctxPushOwned(ctx, f.names, "#" + toString(f.owner.id))
   }
   val diag: List[Diagnostic] = newList()
   val t = resolveType(bc.tbl, ctx, diag, te)
