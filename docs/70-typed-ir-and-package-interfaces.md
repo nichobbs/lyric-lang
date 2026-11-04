@@ -771,7 +771,8 @@ builder (I0002) rather than on the current checker.
   MSIL's bundle-wide name search (`findBundleFqnByName`) is deleted. Still
   open: the calls with no site (distinct-type factories, synthesised
   `__lyric_checked_` helpers, function values) that keep
-  `findBareImportedFqnMsil`, the JVM and native
+  `findBareImportedFqnMsil`; the JVM binds a call to its site before its
+  bare-name keys, which stay for the calls with no site, the JVM and native
   bridges, #8752 and #8690.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.

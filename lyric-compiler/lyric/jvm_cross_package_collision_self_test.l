@@ -589,6 +589,29 @@ test "qualified call to an internal cross-package function resolves (JVM, #6580)
   )
 }
 
+// D336: a bare call binds to the function the checker resolved it to.
+// `XJSite.Priv` is imported first and declares a package-private `pick` (not
+// visible to `XJSite.App`) beside a `pub` caller of it; `XJSite.Pub` declares
+// the `pub` `pick` the call means.
+test "a bare call binds to the checker's callee, not a same-named private function (JVM, D336)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add(
+    "package XJSite.Priv\n" + "\n" + "func pick(x: in Int): Int { x + 100 }\n" + "\n" +
+      "pub func other(x: in Int): Int { pick(x) }\n"
+  )
+  pkgSrcs.add("package XJSite.Pub\n" + "\n" + "pub func pick(x: in Int): Int { x + 1 }\n")
+  pkgSrcs.add(
+    "package XJSite.App\n" + "\n" + "import XJSite.Priv\n" + "import XJSite.Pub\n" + "\n" + "func main(): Int {\n" +
+      "  println(pick(1))\n" +
+      "  println(other(1))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("site-callee-jvm", pkgSrcs, "XJSite.App")
+  assertEqualInt(result.exitCode, 0, "site_callee_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2\n101", "site_callee_jvm: pick is the pub one, other reaches its own private pick")
+}
+
 // Issue #6853: the bundle-wide bare-call fallback (`ctx.funcSigs`'s unscoped
 // bare-name keys, consulted by `resolveGeneralFuncSig`, `04_calls.l`) must
 // NEVER select a package-private function in an unrelated, unimported

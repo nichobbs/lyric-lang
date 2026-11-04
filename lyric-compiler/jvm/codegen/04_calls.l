@@ -8,7 +8,6 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Console as DbgConsoleJvm
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4465,13 +4464,7 @@ pub func resolveGeneralFuncSig(
     case Some(_) -> return sited
     case None -> ()
   }
-  val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
-  // TEMP-AUDIT (D336)
-  match byName {
-    case Some(sig) -> DbgConsoleJvm.error("CALLEE-AUDIT jvm byname in " + ctx.pkgName + ": " + funcName + " -> " + sig.owner)
-    case None -> ()
-  }
-  byName
+  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
 }
 
 // The signature of the function the checker resolved the call at `path` to

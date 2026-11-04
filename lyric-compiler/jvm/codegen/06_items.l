@@ -5302,7 +5302,7 @@ pub func collectFileSigsSeeded(
         // from an UNRELATED, unimported package silently resolve to it — a
         // candidate the type checker's own `checkImportedVisibility`/T0097
         // gate would reject — mirroring the MSIL fix for the identical gap
-        // (`Msil.Codegen`'s `bundleFuncFqnByName` seeding, #6851).
+        // (the visibility gate MSIL's former bundle-wide name map had, #6851).
         val bundleCallable = match decl.visibility { case Some(_) -> true; case None -> false }
         // Another package's bare-name overlay never re-points at a
         // package-private function (`Jvm.Bridge.overlayOwnerNamesJvm`): the

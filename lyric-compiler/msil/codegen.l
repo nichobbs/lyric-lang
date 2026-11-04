@@ -21782,8 +21782,9 @@ func lowerBuiltinOrStaticCallMsil(
             // functions, then its imports (D-progress-946).
             val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
             // `println` and `print` are language builtins the checker types
-            // itself; with a function of the same name in scope the call is
-            // that function (the tiers above), else the stdlib console one.
+            // itself, so a call has no recorded callee.  With a function of the
+            // same name in scope the call is that function (the tiers above:
+            // a user function shadows the builtin), else the stdlib console one.
             val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
               "Std.Console." + funcName
             } else {
