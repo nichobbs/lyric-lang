@@ -39,7 +39,7 @@ func bindPattern(
       val telems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
       while i < patterns.count {
-        val et = if i < telems.count { telems[i] } else { TyError }
+        val et = if i < telems.count { telems[i] } else { tyErrorSilent() }
         bindPattern(sc, tbl, sigs, patterns[i], et)
         i = i + 1
       }
@@ -115,11 +115,11 @@ func forRangeElemType(
     )
     case RBLowerOpen(hi) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, hi)
-      TyError
+      tyErrorSilent()
     }
     case RBUpperOpen(lo) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, lo)
-      TyError
+      tyErrorSilent()
     }
   }
 }
@@ -132,14 +132,14 @@ func forRangeElemType(
 // mismatched high bound (Int lo with Long hi or vice versa) degrades to
 // `TyError` rather than claiming a type for a loop codegen cannot lower.
 func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
-  val hiUnknown = match hiTy { case TyError -> true; case TyParam(_, _) -> true; case _ -> false }
+  val hiUnknown = match hiTy { case TyError(_) -> true; case TyParam(_, _) -> true; case _ -> false }
   if unrefinesToInt(loTy) and (unrefinesToInt(hiTy) or hiUnknown) {
     return TyPrim(pt = PtInt)
   }
   if unrefinesToLong(loTy) and (unrefinesToLong(hiTy) or hiUnknown) {
     return TyPrim(pt = PtLong)
   }
-  TyError
+  tyErrorSilent()
 }
 
 // When a binding is declared with an inline refined type (`Int range lo .. hi`)
@@ -384,7 +384,7 @@ pub func checkStatement(
             case _ -> ""
           }
           val openKey = if openName != "" { registerOpenBindingSite(sc, tbl, init, initType) } else { "" }
-          val bindTy = if checkLocalValPattern(tbl, diag, pat, initType) { TyError } else { initType }
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, initType) { tyErrorSilent() } else { initType }
           if openKey != "" {
             scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
           } else {
@@ -419,7 +419,7 @@ pub func checkStatement(
           }
           recordUnsignedWidening(tbl, declT, initType, init)
           checkRefinedLiteralBound(declT, init, diag)
-          val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
+          val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { tyErrorSilent() } else { declT }
           bindPattern(sc, tbl, sigs, pat, bindTy)
           recordTuplePatternBindings(tbl, pat, bindTy, false, sc.genericNames)
         }
@@ -427,7 +427,7 @@ pub func checkStatement(
       case LBVar(name, tyOpt, initOpt) -> match tyOpt {
         case None -> {
           val initType = match initOpt {
-            case None -> TyError
+            case None -> tyErrorSilent()
             case Some(e) -> {
               val t = inferExpr(sc, tbl, sigs, diag, e)
               noteArrayStore(tbl, e, t)
@@ -574,7 +574,7 @@ pub func checkStatement(
                 )
               )
             } else {
-              val sameParam = match valueType { case TyParam(vn, _) -> vn == tvName; case TyError -> true; case _ -> false }
+              val sameParam = match valueType { case TyParam(vn, _) -> vn == tvName; case TyError(_) -> true; case _ -> false }
               if not sameParam {
                 diag.add(
                   errorDiagnostic(
@@ -663,7 +663,7 @@ pub func checkStatement(
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
-        if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError -> true; case _ -> false }) {
+        if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError(_) -> true; case _ -> false }) {
           tbl.lambdaReturnFrames[tbl.lambdaReturnFrames.count - 1].add(t)
         }
         // A returned value initialises the result, so it widens like an
@@ -700,7 +700,7 @@ pub func checkStatement(
           // T0095: yield value must match the generator's declared element type.
           val innerTy = inferExpr(sc, tbl, sigs, diag, inner)
           val isNever = match innerTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
-          val isErr = match innerTy { case TyError -> true; case _ -> false }
+          val isErr = match innerTy { case TyError(_) -> true; case _ -> false }
           if not isNever and not isErr and not typeEquiv(innerTy, returnTy) {
             diag.add(
               errorDiagnostic(
@@ -720,15 +720,15 @@ pub func checkStatement(
 
     case SDefer(body) -> {
       checkNoYieldInHandler(diag, body, "a `defer` block", stmt.span)
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
     }
 
     case SScope(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
     }
 
     case SLoop(_, body) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
     }
 
     case SFor(_, pat, iter, body) -> {
@@ -798,7 +798,7 @@ pub func checkStatement(
         forIterIsGeneratorCall(tbl, iter) or forIterIsExternHostLoop(tbl, iter, elemType),
         sc.genericNames
       )
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
       scopePop(sc)
     }
 
@@ -808,11 +808,11 @@ pub func checkStatement(
       if not typeIsBoolOperand(condT) {
         diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
     }
 
     case STry(body, catches, finally_) -> {
-      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+      val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
       var i = 0
       while i < catches.count {
         val c = catches[i]
@@ -825,7 +825,7 @@ pub func checkStatement(
           }
         }
         checkNoYieldInHandler(diag, c.body, "a `catch` block", c.span)
-        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false, TyError)
+        val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, false, tyErrorSilent())
         scopePop(sc)
         i = i + 1
       }
@@ -834,7 +834,7 @@ pub func checkStatement(
         }
         case Some(fb) -> {
           checkNoYieldInHandler(diag, fb, "a `finally` block", fb.span)
-          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
+          val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, tyErrorSilent())
         }
       }
     }
@@ -1154,8 +1154,8 @@ func checkTryHandlerType(
     return
   }
   val anyError = match handlerTy {
-    case TyError -> true
-    case _ -> match bodyTy { case TyError -> true; case _ -> false }
+    case TyError(_) -> true
+    case _ -> match bodyTy { case TyError(_) -> true; case _ -> false }
   }
   if anyError {
     return
@@ -1244,7 +1244,7 @@ pub func checkBlock(
         // #7696: this statement's own tail-expected type — `tailExpected`
         // only when it is genuinely both value-position AND trailing, `TyError`
         // otherwise, exactly like every other tail-chain continuation below.
-        val stmtTailExpected = if valuePos and isLast { tailExpected } else { TyError }
+        val stmtTailExpected = if valuePos and isLast { tailExpected } else { tyErrorSilent() }
         match e.kind {
           case EBlock(innerBlk) -> {
             lastExprType = checkBlock(
@@ -1309,7 +1309,7 @@ pub func checkBlock(
         // #7696: same "tail chain continues" reasoning as above — a
         // value-position, trailing `try`'s own body/handler literal can still
         // be the function's return value.
-        val tryTailExpected = if tryValuePos { tailExpected } else { TyError }
+        val tryTailExpected = if tryValuePos { tailExpected } else { tyErrorSilent() }
         var resultTy = checkBlock(
           sc,
           tbl,
@@ -1354,7 +1354,7 @@ pub func checkBlock(
           case Some(fb) -> {
             // The `finally` block's value is always discarded.
             checkNoYieldInHandler(diag, fb, "a `finally` block", fb.span)
-            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, TyError)
+            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, tyErrorSilent())
           }
         }
         lastExprType = resultTy
@@ -1369,7 +1369,7 @@ pub func checkBlock(
       // lets a trailing `scope` correctly propagate divergence to the
       // enclosing block instead of defaulting to `Unit`.
       case SScope(_, body) -> {
-        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, TyError)
+        val bodyTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, body, false, tyErrorSilent())
         val isNever = match bodyTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
         lastExprType = if isNever { bodyTy } else { TyPrim(pt = PtUnit) }
       }
@@ -1679,7 +1679,7 @@ func checkContractClauses(
         sc.contractDepth.add(0)
         val t = inferExpr(sc, tbl, sigs, diag, e)
         sc.contractDepth.removeAt(sc.contractDepth.count - 1)
-        val lenient = match t { case TyError -> true; case _ -> false }
+        val lenient = match t { case TyError(_) -> true; case _ -> false }
         if not isConcreteIntType(t) and not lenient {
           diag.add(errorDiagnostic("T0132", "a decreases: measure must be an integer (got " + renderType(t) + ")", sp))
         }
@@ -1837,7 +1837,8 @@ func checkFunctionBodyAt(
   // above), `extern func` / interface method signatures (different item
   // kinds, never routed through this function).  A `TyError` return type is
   // already diagnosed at the declaration; skip to avoid a cascade.
-  val returnNeedsBody = not isUnitType(sig.returnTy) and (match sig.returnTy { case TyError -> false; case _ -> true }) and
+  val returnNeedsBody = not isUnitType(sig.returnTy) and
+    (match sig.returnTy { case TyError(_) -> false; case _ -> true }) and
     not fnHasAnnotation(fn, "axiom")
   if returnNeedsBody {
     val bodyMissing = match fn.body {
@@ -2054,7 +2055,7 @@ func localValRefutableHint(p: in Pattern): String {
 func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in List[Type]): String {
   var i = 0
   while i < ps.count {
-    val problem = localValPatternProblem(tbl, ps[i], if i < tys.count { tys[i] } else { TyError })
+    val problem = localValPatternProblem(tbl, ps[i], if i < tys.count { tys[i] } else { tyErrorSilent() })
     if problem.length > 0 {
       return problem
     }
@@ -2143,7 +2144,7 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
       val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
       while i < ps.count {
-        checkLocalValRecordHeads(tbl, diag, ps[i], if i < elems.count { elems[i] } else { TyError })
+        checkLocalValRecordHeads(tbl, diag, ps[i], if i < elems.count { elems[i] } else { tyErrorSilent() })
         i = i + 1
       }
     }
@@ -2173,7 +2174,7 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
       }
       var i = 0
       while i < args.count {
-        checkLocalValRecordHeads(tbl, diag, args[i], if i < fieldTys.count { fieldTys[i] } else { TyError })
+        checkLocalValRecordHeads(tbl, diag, args[i], if i < fieldTys.count { fieldTys[i] } else { tyErrorSilent() })
         i = i + 1
       }
     }
@@ -2183,7 +2184,7 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
 
 func localValShapeUnknown(t: in Type): Bool {
   match t {
-    case TyError -> true
+    case TyError(_) -> true
     case TyParam(_, _) -> true
     case TySelf -> true
     case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
@@ -2280,9 +2281,9 @@ func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Typ
 // iterable is not decidable here.
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
-    case TyError -> TyError
-    case TyParam(_, _) -> TyError
-    case TySelf -> TyError
+    case TyError(_) -> tyErrorSilent()
+    case TyParam(_, _) -> tyErrorSilent()
+    case TySelf -> tyErrorSilent()
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e
     case TyUser(iterId, _, iterArgs) -> {
@@ -2318,7 +2319,7 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
       }
     }
     case TyPrim(pt) -> match pt {
-      case PtNever -> TyError
+      case PtNever -> tyErrorSilent()
       // D-progress-1006: a `String`'s elements would have to be UTF-16 code
       // units, and a surrogate half is not a `Char` (docs/01 §2.1), so name
       // the two explicit views instead.
@@ -2494,9 +2495,9 @@ func externIterLoopElem(
   iterArgs: in List[Type],
 ): Type {
   match symTableExternDeclOf(tbl, iterId) {
-    case None -> TyError
+    case None -> tyErrorSilent()
     case Some(decl) -> match externIterInfoFor(tbl, decl) {
-      case None -> TyError
+      case None -> tyErrorSilent()
       case Some(info) -> match info {
         case EIINone -> reportNotIterable(
           diag,
@@ -2528,7 +2529,7 @@ func externIterLoopElem(
             case None -> if missing.count > 0 {
               reportExternIterElemUnbound(diag, iter, iterType, "the host type '" + missing[0] + "'")
             } else {
-              TyError
+              tyErrorSilent()
             }
           }
         }
@@ -2574,7 +2575,7 @@ func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterT
       iter.span
     )
   )
-  TyError
+  tyErrorSilent()
 }
 
 // True when a `for` iterates an extern type through the host's own protocol
@@ -2584,7 +2585,7 @@ func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterT
 // collections (`List`, `MapKeyCollection`, ...) keep their lowerings.
 func forIterIsExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Type): Bool {
   match elemType {
-    case TyError -> return false
+    case TyError(_) -> return false
     case _ -> ()
   }
   match iter.kind {
@@ -2599,7 +2600,7 @@ func forIterIsExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Ty
 
 func reportNotIterable(diag: in List[Diagnostic], iter: in Expr, message: in String): Type {
   diag.add(errorDiagnostic("T0126", message, iter.span))
-  TyError
+  tyErrorSilent()
 }
 
 // A note for T0126 on a distinct type: its value is a wrapper, not the

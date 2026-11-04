@@ -14556,3 +14556,24 @@ test "formatN takes a String template and N arguments of any type" {
     "the template is a String"
   )
 }
+
+test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
+  assertTrue(isSilentTyError(tyErrorSilent()), "tyErrorSilent records no diagnostic")
+  val diags: List[Diagnostic] = newList()
+  diags.add(
+    errorDiagnostic(
+      "T0001",
+      "boom",
+      makeSpan(Position(offset = 0, line = 1, column = 1), Position(offset = 1, line = 1, column = 2))
+    )
+  )
+  val t = tyErrorFor(diags)
+  assertTrue(not isSilentTyError(t), "tyErrorFor names the diagnostic just added")
+  assertTrue(
+    (match t { case TyError(d) -> d.index; case _ -> -1 }) == 1,
+    "the id is the 1-based position of the diagnostic"
+  )
+  assertTrue(typeEquiv(t, TyPrim(pt = PtInt)), "TyError still suppresses cascades")
+  assertTrue(typeEquiv(tyErrorSilent(), t), "both kinds of TyError are equivalent")
+  assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
+}

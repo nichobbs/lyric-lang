@@ -325,8 +325,8 @@ func showElementType(tbl: in SymbolTable, ty: in Type): Type {
   match unrefine(ty) {
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e
-    case TyUser(_, _, targs) -> if targs.count > 0 { targs[0] } else { TyError }
-    case _ -> TyError
+    case TyUser(_, _, targs) -> if targs.count > 0 { targs[0] } else { tyErrorSilent() }
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -373,8 +373,8 @@ func showTypedPart(
 }
 
 func showMapBody(tbl: in SymbolTable, ty: in Type, stmts: in List[Statement], sp: in Span): Unit {
-  val kt = match unrefine(ty) { case TyUser(_, _, a) -> a[0]; case _ -> TyError }
-  val vt = match unrefine(ty) { case TyUser(_, _, a) -> a[1]; case _ -> TyError }
+  val kt = match unrefine(ty) { case TyUser(_, _, a) -> a[0]; case _ -> tyErrorSilent() }
+  val vt = match unrefine(ty) { case TyUser(_, _, a) -> a[1]; case _ -> tyErrorSilent() }
   val noArgs: List[Expr] = newList()
   val stringList = showListOfStringTe(sp)
   stmts.add(showValLocal("ks", stringList, showCall("newList", noArgs, sp), sp))

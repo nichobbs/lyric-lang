@@ -152,7 +152,7 @@ pub func tyOf(bc: in BuildCtx, frames: in List[ConvFrame], selfTy: in Option[Ty]
       buildFail(bc, what + ": an inference variable reached the interface")
       TNever
     }
-    case TyError -> {
+    case TyError(_) -> {
       buildFail(bc, what + ": the type did not resolve")
       TNever
     }

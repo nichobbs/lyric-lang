@@ -108,7 +108,7 @@ func instantiateBuiltinCall(fnT: in Type, argTypes: in List[Type]): Type {
         match ps[k] {
           case TyParam(_, owner) -> if owner == builtinParamOwner() {
             any = true
-            bound.add(if k < argTypes.count { argTypes[k] } else { TyError })
+            bound.add(if k < argTypes.count { argTypes[k] } else { tyErrorSilent() })
           } else {
             bound.add(ps[k])
           }
@@ -145,7 +145,7 @@ func codegenBuiltinType(name: in String): Option[Type] {
   }
   if name == "default" {
     val ps: List[Type] = newList()
-    return Some(value = TyFunction(params = ps, ret = TyError, isAsync = false))
+    return Some(value = TyFunction(params = ps, ret = tyErrorSilent(), isAsync = false))
   }
   if name == "expect" {
     val ps: List[Type] = newList()
@@ -228,7 +228,7 @@ func isNumericType(t: in Type): Bool {
     // A range subtype is numeric/ordered when its underlying representation is —
     // otherwise arithmetic / comparison on a range-typed value would spuriously fail T0030/T0033.
     case TyRefined(u, _, _, _, _) -> isNumericType(u)
-    case TyError -> true
+    case TyError(_) -> true
     case _ -> false
   }
 }
@@ -674,7 +674,7 @@ func checkMatchExhaustive(
 ): Unit {
   val st = unrefine(st0)
   match st {
-    case TyError -> {
+    case TyError(_) -> {
     }
     // scrutinee type unknown — already diagnosed
     case TyParam(_, _) -> {
@@ -847,7 +847,7 @@ func caseFullyCoveredBy(p: in Pattern, caseNames: in List[String]): Option[Strin
 func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: in Type, arms: in List[MatchArm]): Unit {
   val st = unrefine(st0)
   match st {
-    case TyError -> {
+    case TyError(_) -> {
       return
     }
     case TyParam(_, _) -> {
@@ -1568,7 +1568,7 @@ func nativeIntrinsicCallType(
   val arity = if name == "nativeNullPtr" { 0 } else { 1 }
   if args.count != arity {
     diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   if name == "nativeNullPtr" {
     return nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte))
@@ -1626,10 +1626,10 @@ func externUpcastCallType(
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   match argTypes[0] {
-    case TyError -> return Some(value = TyError)
+    case TyError(_) -> return Some(value = tyErrorSilent())
     case TyUser(id, name, _) -> if not symTableIsExternTypeId(tbl, id) {
       diag.add(
         errorDiagnostic(
@@ -1638,7 +1638,7 @@ func externUpcastCallType(
           span
         )
       )
-      return Some(value = TyError)
+      return Some(value = tyErrorSilent())
     }
     case other -> {
       diag.add(
@@ -1648,7 +1648,7 @@ func externUpcastCallType(
           span
         )
       )
-      return Some(value = TyError)
+      return Some(value = tyErrorSilent())
     }
   }
   if checkingForNative(tbl) {
@@ -1659,7 +1659,7 @@ func externUpcastCallType(
         span
       )
     )
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   match rootExternObjectType(tbl) {
     case Some(t) -> Some(value = t)
@@ -1671,7 +1671,7 @@ func externUpcastCallType(
           span
         )
       )
-      Some(value = TyError)
+      Some(value = tyErrorSilent())
     }
   }
 }
@@ -1743,11 +1743,11 @@ func bufferPointerCallType(
     diag.add(
       errorDiagnostic("T0175", name + " lends a buffer's address to C code and exists only on --target native", span)
     )
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   val argE = callArgExpr(args[0])
   if not isAnnotatedPointerLambda(argE) {
@@ -1758,7 +1758,7 @@ func bufferPointerCallType(
         argE.span
       )
     )
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   if name == "withMutPointer" and not arrayPlaceWritable(sc, tbl, sigs, recv) {
     diag.add(
@@ -1771,11 +1771,11 @@ func bufferPointerCallType(
   }
   val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", elem) {
     case Some(t) -> t
-    case None -> return Some(value = TyError)
+    case None -> return Some(value = tyErrorSilent())
   }
   val params: List[Type] = newList()
   params.add(ptrTy)
-  val want = TyFunction(params = params, ret = TyError, isAsync = false)
+  val want = TyFunction(params = params, ret = tyErrorSilent(), isAsync = false)
   val got = inferExprExpected(sc, tbl, sigs, diag, argE, want)
   match got {
     case TyFunction(ps, ret, _) -> {
@@ -1804,7 +1804,7 @@ func bufferPointerCallType(
       }
       Some(value = ret)
     }
-    case _ -> Some(value = TyError)
+    case _ -> Some(value = tyErrorSilent())
   }
 }
 
@@ -1828,7 +1828,7 @@ func nativeByteAccessType(
   }
   if args.count != arity {
     diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
     case Some(t) -> t
@@ -1871,7 +1871,7 @@ func nativeCallbackPinType(
   }
   if args.count != 1 {
     diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
     case Some(t) -> t
@@ -1880,7 +1880,7 @@ func nativeCallbackPinType(
   if name == "nativeKeepCallback" {
     match unrefine(argTypes[0]) {
       case TyFunction(_, _, _) -> ()
-      case TyError -> ()
+      case TyError(_) -> ()
       case _ -> diag.add(
         errorDiagnostic(
           "T0043",
@@ -2380,9 +2380,9 @@ func boundedOperandsClash(sc: in Scope, op: in BinOp, lhs: in Type, rhs: in Type
     return false
   }
   match lhs {
-    case TyParam(ln, _) -> match rhs { case TyParam(rn, _) -> ln != rn; case TyError -> false; case _ -> true }
-    case TyError -> false
-    case _ -> match rhs { case TyError -> false; case _ -> true }
+    case TyParam(ln, _) -> match rhs { case TyParam(rn, _) -> ln != rn; case TyError(_) -> false; case _ -> true }
+    case TyError(_) -> false
+    case _ -> match rhs { case TyError(_) -> false; case _ -> true }
   }
 }
 
@@ -2720,7 +2720,7 @@ func inferBinop(
           }
           inner
         }
-        case TyError -> TyError
+        case TyError(_) -> tyErrorSilent()
         case _ -> {
           diag.add(errorDiagnostic("T0035", "?? LHS must be a nullable type (got " + renderType(lhs) + ")", span))
           rhs
@@ -2761,7 +2761,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
       } else if isUnsignedConvReceiver(inner) {
         diag.add(errorDiagnostic("T0147", unsignedNegationMessageFor(inner), span))
-        return TyError
+        return tyErrorSilent()
       } else if isPrimOf(inner, PtNat) {
         diag.add(
           errorDiagnostic(
@@ -2771,7 +2771,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
             span
           )
         )
-        return TyError
+        return tyErrorSilent()
       }
       inner
     }
@@ -3217,7 +3217,7 @@ func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
   match unrefine(recvRaw) {
     case TySlice(elem) -> elem
     case TyArray(_, elem, _) -> elem
-    case TyPrim(pt) -> match pt { case PtString -> TyPrim(pt = PtChar); case _ -> TyError }
+    case TyPrim(pt) -> match pt { case PtString -> TyPrim(pt = PtChar); case _ -> tyErrorSilent() }
     case TyUser(tid, _, targs) -> {
       // Keyed on the stdlib collections' identity, not their bare names
       // (#7737): both backends lower an index on these receivers as the
@@ -3231,10 +3231,10 @@ func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
       } else if targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map") {
         targs[1]
       } else {
-        TyError
+        tyErrorSilent()
       }
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -3307,7 +3307,7 @@ func fieldEntryType(fields: in List[FieldEntry], name: in String): Type {
     }
     i = i + 1
   }
-  TyError
+  tyErrorSilent()
 }
 
 func recordDeclGenericNames(rd: in RecordDecl): List[String] {
@@ -3400,9 +3400,9 @@ func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, ge
         }
         i = i + 1
       }
-      TyError
+      tyErrorSilent()
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -3671,7 +3671,7 @@ func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
 func typeIsClosed(t: in Type): Bool {
   match t {
     case TyParam(_, _) -> false
-    case TyError -> false
+    case TyError(_) -> false
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosed(args)
     case TySlice(e) -> typeIsClosed(e)
@@ -3727,7 +3727,7 @@ func branchesAgainstExpected(tbl: in SymbolTable, branchTypes: in List[Type], ex
   while i < branchTypes.count {
     val bt = branchTypes[i]
     if not isNeverType(bt) {
-      val isErr = match bt { case TyError -> true; case _ -> false }
+      val isErr = match bt { case TyError(_) -> true; case _ -> false }
       if not isErr and not argSatisfiesParam(tbl, expected, bt) {
         return None
       }
@@ -3826,14 +3826,14 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
     return a
   }
   match a {
-    case TyError -> {
+    case TyError(_) -> {
       return b
     }
     case _ -> {
     }
   }
   match b {
-    case TyError -> {
+    case TyError(_) -> {
       return a
     }
     case _ -> {
@@ -3855,7 +3855,7 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
         span
       )
     )
-    return TyError
+    return tyErrorSilent()
   }
   // Each branch may leave a different type argument open (`if c { Err(error
   // = "z") } else { Ok(value = "abc") }`): the join takes each from whichever
@@ -3876,7 +3876,7 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
         // Yield `TyError` (the universal unifier), not one arm's type, so the
         // containing expression context does not cascade follow-on diagnostics off
         // an arbitrary pick (#2099).
-        TyError
+        tyErrorSilent()
       }
     }
   }
@@ -4039,10 +4039,10 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       // — consulted after fields so a same-named user field wins.
       match builtinMember(tbl, recv, name) {
         case Some(t) -> t
-        case None -> TyError
+        case None -> tyErrorSilent()
       }
     }
-    case TyError -> TyError
+    case TyError(_) -> tyErrorSilent()
     case _ -> {
       // `slice[T].toList()` (#2050 gotcha, cloud-agents docs/lyric/gotchas.md):
       // the round-trip shuttle back from `List[T].toArray()`.  Its result
@@ -4114,7 +4114,7 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       }
       match builtinMember(tbl, recv, name) {
         case Some(t) -> t
-        case None -> TyError
+        case None -> tyErrorSilent()
       }
     }
   }
@@ -5479,7 +5479,7 @@ func inferMember(
 ): Type {
   val base = inferMemberBase(tbl, recvRaw, name)
   match base {
-    case TyError -> {
+    case TyError(_) -> {
     }
     case _ -> {
       return base
@@ -5540,7 +5540,7 @@ func inferMember(
             span
           )
         )
-        return TyError
+        return tyErrorSilent()
       }
       // #6630: a receiver that structurally LOOKS like `Result[T, E]` /
       // `Option[T]` (same reserved bare name + arity), and `name` is one of
@@ -5566,7 +5566,7 @@ func inferMember(
       match monadAccessorShapeMismatchDiag(tbl, recvRaw, name, span) {
         case Some(d) -> {
           diag.add(d)
-          return TyError
+          return tyErrorSilent()
         }
         case None -> {
         }
@@ -5588,15 +5588,15 @@ func inferMember(
               span
             )
           )
-          return TyError
+          return tyErrorSilent()
         }
         case None -> {
         }
       }
       maybeUnknownMemberDiag(tbl, sigs, diag, recvRaw, name, span, false)
-      TyError
+      tyErrorSilent()
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -6166,13 +6166,13 @@ func rangeReceiverName(sc: in Scope, recv: in Expr): String {
     case EPath(p) -> if p.segments.count == 1 {
       match scopeTryFind(sc, p.segments[0]) {
         case Some(b) -> b.ty
-        case None -> TyError
+        case None -> tyErrorSilent()
       }
     } else {
-      TyError
+      tyErrorSilent()
     }
     case ESelf -> sc.selfType
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
   match unrefine(t) {
     case TyUser(_, n, _) -> n
@@ -6308,7 +6308,7 @@ func ctorArgsExpected(
   val exps: List[Type] = newList()
   var i = 0
   while i < args.count {
-    exps.add(TyError)
+    exps.add(tyErrorSilent())
     i = i + 1
   }
   if eargs.count != gnames.count or slotNames.count != slotTypes.count {
@@ -6343,7 +6343,7 @@ func inferCtorArgsExpected(
   var i = 0
   while i < args.count {
     val argE = callArgExpr(args[i])
-    val exp = if i < exps.count { exps[i] } else { TyError }
+    val exp = if i < exps.count { exps[i] } else { tyErrorSilent() }
     if typeIsHole(exp) {
       tys.add(inferExpr(sc, tbl, sigs, diag, argE))
     } else {
@@ -6727,7 +6727,7 @@ func resolveQualifiedFuncValue(
         )
       )
     }
-    return Some(value = TyError)
+    return Some(value = tyErrorSilent())
   }
   val sym = chosen[0]
   checkImportedVisibility(tbl, sym, sp, diag)
@@ -6736,7 +6736,7 @@ func resolveQualifiedFuncValue(
     case Some(sig) -> if recordFuncRefSite(tbl, diag, sig, name, sp) {
       Some(value = funcValueType(sig))
     } else {
-      Some(value = TyError)
+      Some(value = tyErrorSilent())
     }
     case None -> None
   }
@@ -6796,7 +6796,7 @@ func resolveExprPath(
     // rather than something codegen might still resolve, so it must be
     // flagged instead of silently falling through to `TyError`.
     if path.segments.count == 0 {
-      return TyError
+      return tyErrorSilent()
     }
     val name = path.segments[path.segments.count - 1]
     val prefix: List[String] = newList()
@@ -6838,13 +6838,13 @@ func resolveExprPath(
           span
         )
       )
-      return TyError
+      return tyErrorSilent()
     }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) and not packageReexportsMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
     }
-    return TyError
+    return tyErrorSilent()
   }
   val name = path.segments[0]
   match scopeTryFind(sc, name) {
@@ -6876,7 +6876,7 @@ func resolveExprPath(
       // bare callee name (see `constructorSymbolOf`'s comment above, which
       // depends on that being true).
       if checkBareNameAmbiguity(tbl, diag, name, span) {
-        return TyError
+        return tyErrorSilent()
       }
       if not tbl.funcRefCallees.containsKey(recordCopySiteKey(span)) and localShadowsImportedArity(tbl, name) {
         diag.add(
@@ -6887,7 +6887,7 @@ func resolveExprPath(
             span
           )
         )
-        return TyError
+        return tyErrorSilent()
       }
       // #1484: a function resolves via `sigs` (no visibility there) — consult
       // the symbol table for the same name to enforce cross-package visibility.
@@ -6913,12 +6913,12 @@ func resolveExprPath(
                     span
                   )
                 )
-                return TyError
+                return tyErrorSilent()
               }
               match pkgFuncSig(sigs, sym.originPackage, name, fd.params.count) {
                 case Some(scopedSig) -> {
                   if not recordFuncRefSite(tbl, diag, scopedSig, name, span) {
-                    return TyError
+                    return tyErrorSilent()
                   }
                   return funcValueType(scopedSig)
                 }
@@ -6933,7 +6933,7 @@ func resolveExprPath(
           val hint = symTableHiddenImportHint(tbl, name)
           if hint.length > 0 {
             diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
-            return TyError
+            return tyErrorSilent()
           }
         }
       }
@@ -6941,7 +6941,7 @@ func resolveExprPath(
         val byRef = firstByRefParamName(sig)
         if byRef.length > 0 {
           diag.add(byRefFuncValueDiag(name, byRef, span))
-          return TyError
+          return tyErrorSilent()
         }
       }
       val pts: List[Type] = newList()
@@ -6966,7 +6966,7 @@ func resolveExprPath(
   // ambiguous across two-or-more imported packages must be qualified, not
   // silently resolved to whichever package's symbol was registered last.
   if checkBareNameAmbiguity(tbl, diag, name, span) {
-    return TyError
+    return tyErrorSilent()
   }
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
@@ -7022,7 +7022,7 @@ func resolveExprPath(
       diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + symTableHiddenImportHint(tbl, name), span))
     }
   }
-  TyError
+  tyErrorSilent()
 }
 
 // The enum a qualified case value `Color.Red` / `Pkg.Color.Red` is a value of
@@ -7109,7 +7109,7 @@ func typeIsBoolOperand(t: in Type): Bool {
 // already in error, or one that never yields, was reported where it fails.
 func requireQuantifierBool(diag: in List[Diagnostic], kw: in String, part: in String, t: in Type, sp: in Span): Unit {
   val reported = match t {
-    case TyError -> true
+    case TyError(_) -> true
     case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
     case _ -> false
   }
@@ -7330,10 +7330,10 @@ func propagateUnwrap(t: in Type): Type {
       } else if name == "Option" and args.count >= 1 {
         args[0]
       } else {
-        TyError
+        tyErrorSilent()
       }
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -7390,7 +7390,7 @@ func inferPropagate(
       if tbl.openPropagateOperands.containsKey(key) {
         tbl.openPropagateOperands.remove(key)
       }
-      recordHoistOperandTypeOver(tbl, sc.genericNames, inner, closed, TyError)
+      recordHoistOperandTypeOver(tbl, sc.genericNames, inner, closed, tyErrorSilent())
     }
   } else if takesContext and hoistBindsOperand(sc, inner) {
     if not tbl.hoistOperandTypeSites.containsKey(key) and not tbl.openPropagateOperands.containsKey(key) {
@@ -7597,7 +7597,7 @@ func dropPropagateFallback(tbl: in SymbolTable, e: in Expr): Unit {
           tbl.openPropagateOperands.remove(key)
           tbl.openPropagateOperands.add(
             key,
-            OpenPropagateOperand(operand = op.operand, fallback = TyError, typeParams = op.typeParams)
+            OpenPropagateOperand(operand = op.operand, fallback = tyErrorSilent(), typeParams = op.typeParams)
           )
         }
         case None -> ()
@@ -7619,7 +7619,7 @@ func recordPropagateOperandType(
     match typeExprForOpenBinding(tbl, t, operand.span, typeParams) {
       case Some(_) -> {
         tbl.openPropagateOperands.remove(key)
-        recordHoistOperandTypeOver(tbl, typeParams, operand, t, TyError)
+        recordHoistOperandTypeOver(tbl, typeParams, operand, t, tyErrorSilent())
       }
       case None -> ()
     }
@@ -7637,7 +7637,7 @@ func propagateOperandContext(own: in Type, ret: in Type, succ: in Type): Type {
       case TyUser(rid, _, rargs) -> {
         val isMonad = (oname == "Result" and oargs.count == 2) or (oname == "Option" and oargs.count == 1)
         if not isMonad or not symbolIdEq(oid, rid) or rargs.count != oargs.count {
-          return TyError
+          return tyErrorSilent()
         }
         val args: List[Type] = newList()
         args.add(succ)
@@ -7648,9 +7648,9 @@ func propagateOperandContext(own: in Type, ret: in Type, succ: in Type): Type {
         }
         TyUser(id = oid, name = oname, args = args)
       }
-      case _ -> TyError
+      case _ -> tyErrorSilent()
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -7774,7 +7774,7 @@ func resolvePropagateCallArgs(
     case ECall(fn, cargs) -> {
       val holes: List[Type] = newList()
       for a in cargs {
-        holes.add(TyError)
+        holes.add(tyErrorSilent())
       }
       match findDirectSig(sc, tbl, sigs, fn, cargs, holes) {
         case Some(sig) -> {
@@ -7785,7 +7785,7 @@ func resolvePropagateCallArgs(
               val boundArgTys: List[Type] = newList()
               var bi = 0
               while bi < cargs.count {
-                boundArgTys.add(genericArgFromResultExpected(sig, cargs, bi, TyError, resultExpected))
+                boundArgTys.add(genericArgFromResultExpected(sig, cargs, bi, tyErrorSilent(), resultExpected))
                 bi = bi + 1
               }
               recordGenericCallTypeArgs(
@@ -7804,7 +7804,7 @@ func resolvePropagateCallArgs(
           while ai < cargs.count {
             val ae = callArgExpr(cargs[ai])
             if argIsPropagate(ae) or argIsPropagateCall(tbl, ae) {
-              val pTy = genericArgFromResultExpected(sig, cargs, ai, TyError, resultExpected)
+              val pTy = genericArgFromResultExpected(sig, cargs, ai, tyErrorSilent(), resultExpected)
               if argIsPropagate(ae) {
                 resolvePropagateOperand(sc, tbl, ae, pTy)
               } else {
@@ -8315,7 +8315,7 @@ func anyFieldArgIsLenientForParam(name: in String, fieldTypes: in List[Type], or
   while i < fieldTypes.count and i < orderedArgTypes.count {
     if fieldTypeUsesVar(name, fieldTypes[i]) {
       match orderedArgTypes[i] {
-        case TyError -> return true
+        case TyError(_) -> return true
         case _ -> {
         }
       }
@@ -8394,14 +8394,14 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
   val occupied: List[Bool] = newList()
   var fi = 0
   while fi < fieldNames.count {
-    result.add(TyError)
+    result.add(tyErrorSilent())
     occupied.add(false)
     fi = fi + 1
   }
   // Place named args at their declared slot first.
   var i = 0
   while i < args.count {
-    val ty = if i < argTypes.count { argTypes[i] } else { TyError }
+    val ty = if i < argTypes.count { argTypes[i] } else { tyErrorSilent() }
     match args[i] {
       case CANamed(nm, _, _) -> {
         var j = 0
@@ -8424,7 +8424,7 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
   var posIdx = 0
   var i2 = 0
   while i2 < args.count {
-    val ty = if i2 < argTypes.count { argTypes[i2] } else { TyError }
+    val ty = if i2 < argTypes.count { argTypes[i2] } else { tyErrorSilent() }
     match args[i2] {
       case CAPositional(_) -> {
         // Advance posIdx past any slots already filled by named args.
@@ -8618,7 +8618,7 @@ func fieldTypeByName(fields: in List[CtorField], name: in String): Type {
     }
     i = i + 1
   }
-  TyError
+  tyErrorSilent()
 }
 
 // Append the constructor fields of a record/opaque member list to `out`
@@ -8861,11 +8861,11 @@ func reportMissingCtorFields(
 
 func ctorResultType(sym: in Symbol): Type {
   if ctorIsGeneric(sym) {
-    return TyError
+    return tyErrorSilent()
   }
   match symbolTypeIdOpt(sym) {
     case Some(tid) -> TyUser(id = tid, name = sym.name, args = newList())
-    case None -> TyError
+    case None -> tyErrorSilent()
   }
 }
 
@@ -9043,7 +9043,7 @@ func inferConstruction(
   argTypes: in List[Type],
   span: in Span,
 ): Type {
-  inferConstructionExpected(tbl, diag, sym, args, argTypes, span, TyError)
+  inferConstructionExpected(tbl, diag, sym, args, argTypes, span, tyErrorSilent())
 }
 
 // As `inferConstruction`, with the type the construction's position expects
@@ -9075,7 +9075,7 @@ func inferConstructionExpected(
     val _ = collectCtorFields(tbl, sym, prelimFields)
     val _ = reportRepeatedCallArgs(diag, "T0104", "field", args, fieldNames)
     if reportMissingCtorFields(prelimFields, args, sym, span, diag) {
-      return TyError
+      return tyErrorSilent()
     }
     // Collect field types with generic names in context so type-param fields
     // resolve to TyParam("T") (not TyError), enabling inference from arg types.
@@ -9089,7 +9089,7 @@ func inferConstructionExpected(
         case Some(tid) -> if symbolIdEq(eid, tid) and eargs.count == gnames.count {
           var ei = 0
           while ei < gnames.count {
-            val unbound = match targs[ei] { case TyError -> true; case _ -> false }
+            val unbound = match targs[ei] { case TyError(_) -> true; case _ -> false }
             if unbound {
               targs[ei] = eargs[ei]
             }
@@ -9104,7 +9104,7 @@ func inferConstructionExpected(
     // (D169) is T0043, as for a value-generic function's arguments.
     var vi = 0
     while vi < gnames.count {
-      val isErr = match targs[vi] { case TyError -> true; case _ -> false }
+      val isErr = match targs[vi] { case TyError(_) -> true; case _ -> false }
       if isErr {
         val lens = valueParamLengths(gnames[vi], fieldTypes, orderedArgTypes)
         if lens.count > 1 {
@@ -9117,7 +9117,7 @@ func inferConstructionExpected(
               span
             )
           )
-          return TyError
+          return tyErrorSilent()
         }
       }
       vi = vi + 1
@@ -9126,7 +9126,7 @@ func inferConstructionExpected(
     val unresolved: List[String] = newList()
     var gi = 0
     while gi < gnames.count {
-      val isErr = match targs[gi] { case TyError -> true; case _ -> false }
+      val isErr = match targs[gi] { case TyError(_) -> true; case _ -> false }
       if isErr {
         // Suppress T0110 for this param when the inference failure is due to
         // an erased type variable (TyError from eraseTyParams in bindPatternTyped).
@@ -9154,11 +9154,11 @@ func inferConstructionExpected(
       }
       msg = msg + " could not be inferred from the supplied arguments"
       diag.add(errorDiagnostic("T0110", msg, span))
-      return TyError
+      return tyErrorSilent()
     }
     val inferredTy = match symbolTypeIdOpt(sym) {
       case Some(tid) -> TyUser(id = tid, name = sym.name, args = targs)
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
     noteValueRecordCtor(tbl, diag, sym, targs, span)
     // #1485: an opaque type's representation is hidden.
@@ -9179,7 +9179,7 @@ func inferConstructionExpected(
     var posIdx = 0
     var i = 0
     while i < args.count {
-      val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
+      val argTy = if i < argTypes.count { argTypes[i] } else { tyErrorSilent() }
       match args[i] {
         case CANamed(nm, valE, asp) -> {
           if not fieldHasName(fields, nm) {
@@ -9265,7 +9265,7 @@ func inferConstructionExpected(
   // omitting a required field from an all-named-args construction used to
   // type-check silently and emit invalid IL at the MSIL/JVM boundary.
   if reportMissingCtorFields(fields, args, sym, span, diag) {
-    return TyError
+    return tyErrorSilent()
   }
   // C2: validate argument names, arity, and value types.
   // First pass: named-arg field-name and value-type check.
@@ -9273,7 +9273,7 @@ func inferConstructionExpected(
   var posIdx = 0
   var i = 0
   while i < args.count {
-    val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
+    val argTy = if i < argTypes.count { argTypes[i] } else { tyErrorSilent() }
     match args[i] {
       case CANamed(nm, valE, asp) -> {
         if not fieldHasName(fields, nm) {
@@ -10265,7 +10265,7 @@ func recordGenericArgWidenings(
   while k < srcIdx.count {
     paramTys.add(sig.params[k + offset].ty)
     val ai = srcIdx[k]
-    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() })
     k = k + 1
   }
   val targs = inferGenericArgsForSig(sig, paramTys, slotTys)
@@ -10323,7 +10323,7 @@ func collectUnionCaseFields(uc: in UnionCase, acc: in List[CtorField]): Unit {
   var i = 0
   while i < uc.fields.count {
     match uc.fields[i] {
-      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false, zeroFill = false))
+      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = tyErrorSilent(), hasDefault = false, zeroFill = false))
       case UFPos(_, _) -> {
       }
     }
@@ -10361,7 +10361,7 @@ func inferUnionCaseConstruction(
           collectUnionCaseFields(uc, prelimFields)
           val _ = reportRepeatedCallArgs(diag, "T0104", "field", args, unionCaseSlotNames(uc))
           if reportMissingCtorFields(prelimFields, args, caseSym, span, diag) {
-            return TyError
+            return tyErrorSilent()
           }
           // #7752: a named argument must name one of the case's fields, as
           // for a record constructor (T0101).  `reportMissingCtorFields`
@@ -10391,9 +10391,9 @@ func inferUnionCaseConstruction(
         val _ = noteValueUnionCtor(tbl, caseTy, span, false)
         caseTy
       }
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -10563,7 +10563,7 @@ func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTy
 // Infer the binding for a single generic `name` across all parameter/argument
 // pairs, returning `TyError` when unbound or when two occurrences disagree.
 func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
-  var bound: Type = TyError
+  var bound: Type = tyErrorSilent()
   var haveBinding = false
   // Whether every occurrence behind `bound` is a bare `T` parameter, whose
   // argument widens at the call like any numeric argument.
@@ -10588,9 +10588,9 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
               bound = v
               boundBare = bare
             } else {
-              return TyError
+              return tyErrorSilent()
             }
-            case None -> return TyError
+            case None -> return tyErrorSilent()
           }
         } else if typeIsUnsolved(bound) {
           // An argument that left the parameter open (`None` for an
@@ -10639,7 +10639,7 @@ func inferGenericArgsForSig(sig: in ResolvedSignature, paramTys: in List[Type], 
 
 func typeIsHole(t: in Type): Bool {
   match t {
-    case TyError -> true
+    case TyError(_) -> true
     case _ -> false
   }
 }
@@ -10648,7 +10648,7 @@ func typeIsHole(t: in Type): Bool {
 // (`TyInfer`) not yet solved.
 func typeIsUnsolved(t: in Type): Bool {
   match t {
-    case TyError -> true
+    case TyError(_) -> true
     case TyInfer(_) -> true
     case _ -> false
   }
@@ -10755,7 +10755,7 @@ func checkBoundsSatisfied(
     if idx >= 0 and idx < targs.count {
       val concreteTy = targs[idx]
       match concreteTy {
-        case TyError -> {
+        case TyError(_) -> {
         }
         case TyParam(_, _) -> {
         }
@@ -10977,7 +10977,7 @@ func checkConstRefPattern(
                   case None -> {
                     val noRte: Option[TypeExpr] = None
                     val noSelfFields: Map[String, Type] = newMap()
-                    val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
+                    val emptyScope = newScopeForFunction(tyErrorSilent(), newList(), noRte, noSelfFields, false, tyErrorSilent())
                     // Its errors are the declaration's to report (#7777).
                     val readDiag: List[Diagnostic] = newList()
                     inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
@@ -11050,7 +11050,7 @@ func checkConstRefPattern(
       }
       var i = 0
       while i < args.count {
-        val at = if i < ftypes.count { ftypes[i] } else { TyError }
+        val at = if i < ftypes.count { ftypes[i] } else { tyErrorSilent() }
         checkConstRefPattern(tbl, sigs, diag, args[i], at)
         i = i + 1
       }
@@ -11059,7 +11059,7 @@ func checkConstRefPattern(
       val elems = match unrefine(scrutineeTy) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
       while i < patterns.count {
-        val et = if i < elems.count { elems[i] } else { TyError }
+        val et = if i < elems.count { elems[i] } else { tyErrorSilent() }
         checkConstRefPattern(tbl, sigs, diag, patterns[i], et)
         i = i + 1
       }
@@ -11098,7 +11098,7 @@ func checkConstRefPattern(
 // `where V: Add`-style bounds that make such uses valid.
 func eraseTyParams(t: in Type): Type {
   match t {
-    case TyParam(_, _) -> TyError
+    case TyParam(_, _) -> tyErrorSilent()
     case TyUser(id, name, targs) -> {
       val na: List[Type] = newList()
       var i = 0
@@ -11211,7 +11211,7 @@ func bindPatternTyped(
       }
       var i = 0
       while i < args.count {
-        val at = if i < ftypes.count { ftypes[i] } else { TyError }
+        val at = if i < ftypes.count { ftypes[i] } else { tyErrorSilent() }
         bindPatternTyped(sc, tbl, sigs, diag, args[i], at, bindingOnly)
         i = i + 1
       }
@@ -11245,7 +11245,7 @@ func bindPatternTyped(
       }
       var i = 0
       while i < patterns.count {
-        val et = if i < elems.count { elems[i] } else { TyError }
+        val et = if i < elems.count { elems[i] } else { tyErrorSilent() }
         bindPatternTyped(sc, tbl, sigs, diag, patterns[i], et, bindingOnly)
         i = i + 1
       }
@@ -11416,7 +11416,7 @@ func inferIfExpr(
   val condT = inferExpr(sc, tbl, sigs, diag, cond)
   resolvePropagateOperand(sc, tbl, cond, TyPrim(pt = PtBool))
   match condT {
-    case TyError -> {
+    case TyError(_) -> {
     }
     case TyPrim(pt) -> match pt {
       case PtBool -> {
@@ -11552,7 +11552,7 @@ func inferMatchExpr(
         val guardT = inferExpr(sc, tbl, sigs, diag, g)
         resolvePropagateOperand(sc, tbl, g, TyPrim(pt = PtBool))
         match guardT {
-          case TyError -> {
+          case TyError(_) -> {
           }
           case TyPrim(pt) -> match pt {
             case PtBool -> {
@@ -11595,7 +11595,7 @@ func inferMatchExpr(
       case None -> ()
     }
   }
-  var acc: Type = TyError
+  var acc: Type = tyErrorSilent()
   var ui = 0
   while ui < armTypes.count {
     acc = unifyBranchTypes(acc, armTypes[ui], armSpans[ui], diag, isValuePosition)
@@ -12371,7 +12371,7 @@ func bindOpenCaseArg(
           argKey,
           OpenBindingSite(
             initSpan = argPat.span,
-            initTy = TyError,
+            initTy = tyErrorSilent(),
             sinkTy = newList(),
             sinkTe = newList(),
             storeTy = newList(),
@@ -12673,7 +12673,7 @@ func noteOpenBindingType(
         // The site of a name a constructor pattern binds to a type argument
         // (`bindOpenCasePattern`) has no constructor of its own: any closed
         // type is the argument.
-        case TyError -> true
+        case TyError(_) -> true
         case _ -> false
       }
       if not sameCtor {
@@ -12709,7 +12709,7 @@ func noteOpenBindingType(
 func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
   match t {
     case TyParam(n, _) -> typeParams.contains(n)
-    case TyError -> false
+    case TyError(_) -> false
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosedOver(args, typeParams)
     case TySlice(e) -> typeIsClosedOver(e, typeParams)
@@ -12743,7 +12743,7 @@ func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, name
       }
       match e {
         case TyParam(_, _) -> false
-        case TyError -> false
+        case TyError(_) -> false
         case TySelf -> false
         case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid) and not symTableIsExternTypeId(tbl, eid)
         case TyPrim(ept) -> match ept { case PtNever -> false; case _ -> true }
@@ -13093,7 +13093,7 @@ func argTypesAgainstFields(
     if slot >= 0 and slot < ftypes.count {
       expected.add(substituteTyParams(ftypes[slot], gnames, targs))
     } else {
-      expected.add(TyError)
+      expected.add(tyErrorSilent())
     }
     k = k + 1
   }
@@ -13176,10 +13176,10 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
       } else if intResult {
         TyPrim(pt = PtInt)
       } else {
-        TyError
+        tyErrorSilent()
       }
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -13946,7 +13946,7 @@ func hoistTypeAt(ts: in List[Type], i: in Int): Type {
   if i < ts.count {
     ts[i]
   } else {
-    TyError
+    tyErrorSilent()
   }
 }
 
@@ -13976,7 +13976,7 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   val holes: List[Type] = newList()
   var i = 0
   while i < n {
-    holes.add(TyError)
+    holes.add(tyErrorSilent())
     i = i + 1
   }
   holes
@@ -14117,9 +14117,9 @@ func collectionElemType(tbl: in SymbolTable, t: in Type): Type {
     case TyUser(id, _, args) -> if args.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
       args[0]
     } else {
-      TyError
+      tyErrorSilent()
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -14239,7 +14239,7 @@ func hoistedRecvType(
       case Some(fullS) -> return methodRecvTypeFromSig(fullS, recvTy, args, argTypes, resultExpected)
       case None -> ()
     }
-    case None -> match collMemberParams { case Some(_) -> (); case None -> return TyError }
+    case None -> match collMemberParams { case Some(_) -> (); case None -> return tyErrorSilent() }
   }
   // A method of the receiver's own type, or a stdlib collection member: the
   // receiver's type arguments are left as fresh variables, which the
@@ -14247,7 +14247,7 @@ func hoistedRecvType(
   val pattern = match unrefine(recvTy) {
     case TyUser(tid, tname, targs) -> {
       if targs.count == 0 {
-        return TyError
+        return tyErrorSilent()
       }
       val vars: List[Type] = newList()
       var vi = 0
@@ -14257,7 +14257,7 @@ func hoistedRecvType(
       }
       TyUser(id = tid, name = tname, args = vars)
     }
-    case _ -> return TyError
+    case _ -> return tyErrorSilent()
   }
   match methodPick {
     case Some(_) -> {
@@ -14265,7 +14265,7 @@ func hoistedRecvType(
       // through more than one registration) must give the receiver the same
       // type.
       val cands = methodCandidatesFor(tbl, pattern, name)
-      var found: Type = TyError
+      var found: Type = tyErrorSilent()
       var any = false
       var ci = 0
       while ci < cands.count {
@@ -14276,7 +14276,7 @@ func hoistedRecvType(
             found = t
             any = true
           } else if renderType(t) != renderType(found) {
-            return TyError
+            return tyErrorSilent()
           }
         }
         ci = ci + 1
@@ -14298,7 +14298,7 @@ func hoistedRecvType(
         slotTys.add(recvTy)
         substituteTyParams(pattern, names, inferGenericArgsDeep(names, paramTys, slotTys))
       }
-      case None -> TyError
+      case None -> tyErrorSilent()
     }
   }
 }
@@ -14394,7 +14394,7 @@ func methodRecvTypeFromSig(
   resultExpected: in Type,
 ): Type {
   if fullS.params.count == 0 or args.count > fullS.params.count - 1 {
-    return TyError
+    return tyErrorSilent()
   }
   val selfTy = fullS.params[0].ty
   if fullS.generics.count == 0 {
@@ -14559,7 +14559,7 @@ func adoptLiteralArgsOver(
   while i < args.count {
     if argIsListLiteral(callArgExpr(args[i])) {
       any = true
-      current.add(TyError)
+      current.add(tyErrorSilent())
     } else {
       current.add(argTypes[i])
     }
@@ -14577,7 +14577,7 @@ func adoptLiteralArgsOver(
         var j = 0
         while j < srcIdx.count {
           val aj = srcIdx[j]
-          slots.add(if aj >= 0 and aj < current.count { current[aj] } else { TyError })
+          slots.add(if aj >= 0 and aj < current.count { current[aj] } else { tyErrorSilent() })
           j = j + 1
         }
         val fromArgs = inferGenericArgsDeep(generics, paramTys, slots)
@@ -14607,7 +14607,7 @@ func adoptLiteralArgsOver(
             lit.span
           )
         )
-        argTypes[ai] = TyError
+        argTypes[ai] = tyErrorSilent()
       }
     }
     k = k + 1
@@ -14639,7 +14639,7 @@ func adoptLiteralAt(
   own: in Type,
   expected: in Type,
 ): LiteralAdoption {
-  val none = LiteralAdoption(ty = own, adopted = false, failed = false, target = TyError)
+  val none = LiteralAdoption(ty = own, adopted = false, failed = false, target = tyErrorSilent())
   val target = match unrefine(expected) {
     case TyUser(lid, lname, largs) -> if largs.count == 1 and isStdCollectionsHostType(tbl, lid, "List") {
       val elemArgs: List[Type] = newList()
@@ -14685,18 +14685,18 @@ func literalFitsType(tbl: in SymbolTable, lit: in Expr, own: in Type, target: in
   }
   val targetElem = collectionElemType(tbl, unrefine(target))
   match targetElem {
-    case TyError -> return false
+    case TyError(_) -> return false
     case _ -> ()
   }
   val ownElem = collectionElemType(tbl, unrefine(own))
   for el in elems {
     val fits = match bracketLiteralOf(el) {
       case Some(inner) -> match ownElem {
-        case TyError -> true
+        case TyError(_) -> true
         case _ -> literalFitsType(tbl, inner, ownElem, unrefine(targetElem))
       }
       case None -> match ownElem {
-        case TyError -> true
+        case TyError(_) -> true
         case _ -> argSatisfiesParam(tbl, targetElem, ownElem) or
           literalElementAdopts(el, targetElem)
       }
@@ -14934,8 +14934,8 @@ func recordArgOrderSite(
   i = 0
   while i < args.count {
     if bound[i] {
-      val own = if i < argTypes.count { argTypes[i] } else { TyError }
-      val want = if i < expected.count { expected[i] } else { TyError }
+      val own = if i < argTypes.count { argTypes[i] } else { tyErrorSilent() }
+      val want = if i < expected.count { expected[i] } else { tyErrorSilent() }
       recordHoistOperandType(sc, tbl, callArgExpr(args[i]), own, want)
     }
     i = i + 1
@@ -14945,7 +14945,7 @@ func recordArgOrderSite(
     case EMember(recv, _) -> match recvTy {
       case Some(rt) -> if not argIsInert(sc, recv) and not argIsPlace(recv) {
         bindRecv = true
-        recordHoistOperandType(sc, tbl, recv, rt, TyError)
+        recordHoistOperandType(sc, tbl, recv, rt, tyErrorSilent())
       }
       case None -> ()
     }
@@ -15201,7 +15201,7 @@ func sigExpectedArgTypes(
   val expected: List[Type] = newList()
   var ei = 0
   while ei < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     ei = ei + 1
   }
   val offset = match recvTy { case Some(_) -> 1; case None -> 0 }
@@ -15360,7 +15360,7 @@ func recordExplicitTypeArgCall(
   val expected: List[Type] = newList()
   var ei = 0
   while ei < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     ei = ei + 1
   }
   val paramNames: List[String] = newList()
@@ -15469,7 +15469,7 @@ func sigCallTypeArgsInOrder(
   while k < srcIdx.count {
     paramTys.add(sig.params[k + offset].ty)
     val ai = srcIdx[k]
-    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() })
     k = k + 1
   }
   inferGenericArgsForSig(sig, paramTys, slotTys)
@@ -15917,7 +15917,7 @@ func elementByRefProblem(sc: in Scope, tbl: in SymbolTable, sigs: in Map[String,
       val scratch: List[Diagnostic] = newList()
       val rt = inferExpr(sc, tbl, sigs, scratch, recv)
       match unrefine(rt) {
-        case TyError -> ""
+        case TyError(_) -> ""
         case TyArray(_, _, _) -> ""
         case _ -> "an element of " + renderType(rt) +
           " is not a place a call can write by reference (only an element of an `array[N, T]` is); copy it into a `var`, pass that, and store it back"
@@ -16127,7 +16127,7 @@ func bindValueGenericCall(
           )
         }
       }
-      return TyError
+      return tyErrorSilent()
     }
     return instRet
   }
@@ -16311,7 +16311,7 @@ func checkExplicitTypeArgCall(
 func anyErrorType(ts: in List[Type]): Bool {
   for t in ts {
     match t {
-      case TyError -> return true
+      case TyError(_) -> return true
       case _ -> ()
     }
   }
@@ -16658,7 +16658,7 @@ func moduleValReadType(
       // shadowing module-level names referenced in vd.init.
       val noRte: Option[TypeExpr] = None
       val noSelfFields: Map[String, Type] = newMap()
-      val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
+      val emptyScope = newScopeForFunction(tyErrorSilent(), newList(), noRte, noSelfFields, false, tyErrorSilent())
       inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
     }
   }
@@ -16781,7 +16781,7 @@ func distinctMemberType(
                   span
                 )
               )
-              return Some(value = TyError)
+              return Some(value = tyErrorSilent())
             }
           }
           case _ -> ()
@@ -16921,13 +16921,13 @@ func inferExprCore(
         ts.add(inferExpr(sc, tbl, sigs, diag, elems[i]))
         i = i + 1
       }
-      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(TyError, elems.count))
+      recordHoistedOperands(sc, tbl, elems, ts, hoistTupleElemTypes(tyErrorSilent(), elems.count))
       TyTuple(elems = ts)
     }
 
     case EList(elems) -> {
       if elems.count == 0 {
-        return TySlice(element = TyError)
+        return TySlice(element = tyErrorSilent())
       }
       val elemTs: List[Type] = newList()
       var i = 0
@@ -17177,9 +17177,9 @@ func inferExprCore(
                   recvE.span
                 )
               )
-              return TyError
+              return tyErrorSilent()
             }
-            case TyError -> return TyError
+            case TyError(_) -> return tyErrorSilent()
             case _ -> ()
           }
           cachedRecvType = Some(value = urt)
@@ -17213,7 +17213,7 @@ func inferExprCore(
             val rt = inferExpr(sc, tbl, sigs, diag, recvE)
             if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) {
               if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname, e.span) {
-                return TyError
+                return tyErrorSilent()
               }
               return TyPrim(pt = target)
             }
@@ -17221,10 +17221,10 @@ func inferExprCore(
               diag.add(
                 errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)
               )
-              return TyError
+              return tyErrorSilent()
             }
             match rt {
-              case TyError -> return TyError
+              case TyError(_) -> return tyErrorSilent()
               case _ -> {
               }
             }
@@ -17254,12 +17254,12 @@ func inferExprCore(
                   e.span
                 )
               )
-              return TyError
+              return tyErrorSilent()
             }
             if arity == 1 {
               val argE = callArgExpr(args[0])
               val at = inferExprExpected(sc, tbl, sigs, diag, argE, wt)
-              if not typeEquiv(unrefine(at), unrefine(wt)) and not typeEquiv(at, TyError) {
+              if not typeEquiv(unrefine(at), unrefine(wt)) and not typeEquiv(at, tyErrorSilent()) {
                 diag.add(
                   errorDiagnostic(
                     "T0043",
@@ -17287,7 +17287,7 @@ func inferExprCore(
           if isConcreteIntType(bt) {
             if args.count != 1 {
               diag.add(errorDiagnostic("T0042", "'" + bName + "' expects 1 argument(s), got " + toString(args.count), e.span))
-              return TyError
+              return tyErrorSilent()
             }
             val wantArg = if bName == "shl" or bName == "shr" { TyPrim(pt = PtInt) } else { unrefine(bt) }
             val argE = callArgExpr(args[0])
@@ -17512,7 +17512,7 @@ func inferExprCore(
         }
         case None -> if isMemberCallee {
           match fnT {
-            case TyError -> match memberRecvTy {
+            case TyError(_) -> match memberRecvTy {
               case Some(rt3) -> {
                 methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes, ambiguousPick)
               }
@@ -17533,7 +17533,7 @@ func inferExprCore(
         case None -> match methodPick {
           case Some(_) -> None
           case None -> match fnT {
-            case TyError -> match memberRecvTy {
+            case TyError(_) -> match memberRecvTy {
               case Some(crt) -> if isMemberCallee {
                 stdCollectionMemberParams(tbl, crt, memberName, args.count)
               } else {
@@ -17550,7 +17550,7 @@ func inferExprCore(
         case None -> match methodPick {
           case Some(_) -> ()
           case None -> match fnT {
-            case TyError -> match memberRecvTy {
+            case TyError(_) -> match memberRecvTy {
               case Some(crt0) -> if isMemberCallee {
                 checkStdCollectionMemberArity(tbl, diag, crt0, memberName, args.count, e.span)
               }
@@ -17575,7 +17575,7 @@ func inferExprCore(
       // A bracket literal given to a record field of array type is typed
       // against the field (D167); a generic record's field is instantiated
       // at what the other arguments, and the literal's elements, bind.
-      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, TyError)
+      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, tyErrorSilent())
       if anyDeferredLambda or anyCaseCtorArg or anyPropagateArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
@@ -17605,7 +17605,7 @@ func inferExprCore(
                   pExp,
                   match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
                     case Some(rx) -> rx
-                    case None -> TyError
+                    case None -> tyErrorSilent()
                   }
                 )
                 case None -> pExp
@@ -17652,7 +17652,7 @@ func inferExprCore(
             // Typed against the parameter or field only when that is an
             // array (D167); a `List` or `slice` parameter keeps the plain
             // literal type and the literal-argument rule.
-            val expectedArr = match ctorFieldTys[di] { case TyError -> expectedArgTys[di]; case ft -> ft }
+            val expectedArr = match ctorFieldTys[di] { case TyError(_) -> expectedArgTys[di]; case ft -> ft }
             argTypes[di] = if isArrayType(expectedArr) {
               inferExprExpected(sc, tbl, sigs, diag, dae, expectedArr)
             } else {
@@ -17733,7 +17733,7 @@ func inferExprCore(
             case Some(hoistRecvTy) -> {
               val resultExpected = match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
                 case Some(rx) -> rx
-                case None -> TyError
+                case None -> tyErrorSilent()
               }
               val recvExpected = hoistedRecvType(
                 tbl,
@@ -17897,13 +17897,13 @@ func inferExprCore(
               // an extension is called through the package declaring it,
               // and a function declared through an alias by the aliased
               // type's name, which it is compiled under.
-              val dotRecv = if argTypes.count > 0 { argTypes[0] } else { TyError }
+              val dotRecv = if argTypes.count > 0 { argTypes[0] } else { tyErrorSilent() }
               val restArgs = tailArgs(args)
               val restTypes = tailTypes(argTypes)
               val member = memberOfDotted(fn)
               val viaType = dottedPathName(fn).length > 0
               if viaType and reportAmbiguousDotNamed(tbl, sigs, diag, dotRecv, member, args.count - 1, restArgs, restTypes, fn.span) {
-                instRet = TyError
+                instRet = tyErrorSilent()
               }
               val written = qualifiedDottedName(fn)
               val canonical = canonicalDottedName(tbl, fn)
@@ -17965,7 +17965,7 @@ func inferExprCore(
                   "' by its type name; a union or enum is built through one of its cases, not the type itself"
                 val fullMsg = if ctorHint == "" { baseMsg } else { baseMsg + " (cases: " + ctorHint + ")" }
                 diag.add(errorDiagnostic("T0125", fullMsg, e.span))
-                TyError
+                tyErrorSilent()
               }
               case None -> match methodPick {
                 case Some(mp) -> {
@@ -18003,8 +18003,8 @@ func inferExprCore(
                             case EMember(fr, _) -> fullArgs.add(CAPositional(expr = fr))
                             case _ -> ()
                           }
-                          fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> TyError })
-                          fullExpected.add(TyError)
+                          fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> tyErrorSilent() })
+                          fullExpected.add(tyErrorSilent())
                           for a in args {
                             fullArgs.add(a)
                           }
@@ -18057,7 +18057,7 @@ func inferExprCore(
                       val extArgs: List[Type] = newList()
                       match memberRecvTy {
                         case Some(rt4) -> extArgs.add(rt4)
-                        case None -> extArgs.add(TyError)
+                        case None -> extArgs.add(tyErrorSilent())
                       }
                       var xi = 0
                       while xi < argTypes.count {
@@ -18079,7 +18079,7 @@ func inferExprCore(
                         case None -> false
                       }
                       if ambiguous {
-                        TyError
+                        tyErrorSilent()
                       } else {
                         dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
                       }
@@ -18094,7 +18094,7 @@ func inferExprCore(
                   val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, noSlots)
                   if isMemberCallee {
                     match fnT {
-                      case TyError -> match memberRecvTy {
+                      case TyError(_) -> match memberRecvTy {
                         case Some(rt5) -> {
                           maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
                           maybeUnknownTypeParamMethodDiag(sc, tbl, sigs, diag, rt5, memberName, fn.span)
@@ -18176,7 +18176,7 @@ func inferExprCore(
                       }
                       ret
                     }
-                    case TyError -> match explicitValueGenericTy {
+                    case TyError(_) -> match explicitValueGenericTy {
                       case Some(vt) -> vt
                       case None -> match explicitTypeArgCallType(sc, tbl, sigs, fn, args, argTypes) {
                         case Some(et) -> et
@@ -18188,15 +18188,15 @@ func inferExprCore(
                               memberName,
                               args.count
                             )
-                            case None -> TyError
+                            case None -> tyErrorSilent()
                           }
-                          case None -> TyError
+                          case None -> tyErrorSilent()
                         }
                       }
                     }
                     case _ -> {
                       diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
-                      TyError
+                      tyErrorSilent()
                     }
                   }
                 }
@@ -18234,7 +18234,7 @@ func inferExprCore(
               case Some(t) -> return t
               case None -> {
                 diag.add(errorDiagnostic("T0020", "unknown name 'self." + name + "'", e.span))
-                return TyError
+                return tyErrorSilent()
               }
             }
           }
@@ -18341,7 +18341,7 @@ func inferExprCore(
               e.span
             )
           )
-          return TyError
+          return tyErrorSilent()
         }
         case _ -> ()
       }
@@ -18351,7 +18351,7 @@ func inferExprCore(
       // itself (#8018).  The field read alone keeps its erased type: typing
       // it `T` would send closures over it down the strongly typed path.
       match unrefine(rt) {
-        case TyError -> match recv.kind {
+        case TyError(_) -> match recv.kind {
           case EMember(innerRecv, innerName) -> {
             val scratch: List[Diagnostic] = newList()
             val innerRecvTy = inferExpr(sc, tbl, sigs, scratch, innerRecv)
@@ -18365,7 +18365,7 @@ func inferExprCore(
                     e.span
                   )
                 )
-                return TyError
+                return tyErrorSilent()
               }
               case _ -> ()
             }
@@ -18377,14 +18377,14 @@ func inferExprCore(
       checkProtectedFieldAccess(sc, tbl, diag, rt, name, e.span)
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       val readTy = match memberTy {
-        case TyError -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
+        case TyError(_) -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
         case _ -> memberTy
       }
       recordResultTypeAt(tbl, readTy, e.span)
       readTy
     }
 
-    case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, TyError)
+    case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, tyErrorSilent())
 
     // `await t` on a `Task[R]` handle yields `R`; any other operand keeps its
     // own type (a direct async call is already its result, docs/01 §7.1).
@@ -18442,7 +18442,7 @@ func inferExprCore(
       var hoistIdx = 0
       while hoistIdx < indices.count {
         if HoistEngine.exprHasHoistHazard(indices[hoistIdx]) {
-          recordHoistOperandType(sc, tbl, recvE, rt, TyError)
+          recordHoistOperandType(sc, tbl, recvE, rt, tyErrorSilent())
           hoistIdx = indices.count
         } else {
           hoistIdx = hoistIdx + 1
@@ -18555,11 +18555,11 @@ func inferExprCore(
       thenBranch,
       elseBranch,
       true,
-      TyError
+      tyErrorSilent()
     )
     // Reached only via a plain `inferExpr` dispatch (see the `EIf` case
     // above) — always value position (#3362).
-    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true, TyError)
+    case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true, tyErrorSilent())
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.
@@ -18577,7 +18577,7 @@ func inferExprCore(
       diag,
       blk,
       true,
-      TyError
+      tyErrorSilent()
     )
     case EUnsafe(blk) -> checkBlock(
       sc,
@@ -18589,9 +18589,9 @@ func inferExprCore(
       diag,
       blk,
       true,
-      TyError
+      tyErrorSilent()
     )
-    case ETry(_) -> TyError
+    case ETry(_) -> tyErrorSilent()
     // EForall/EExists: quantifier expressions used in contracts.  Bind the
     // quantified variables into a fresh scope, infer the optional `where`
     // filter and the body predicate, then return Bool — quantifiers always
@@ -18677,7 +18677,7 @@ func inferExprCore(
       }
       TyPrim(pt = PtUnit)
     }
-    case ERange(_) -> TyError
+    case ERange(_) -> tyErrorSilent()
     case EInterpolated(segs) -> {
       for seg in segs {
         match seg {
@@ -18691,7 +18691,7 @@ func inferExprCore(
       }
       TyPrim(pt = PtString)
     }
-    case EError -> TyError
+    case EError -> tyErrorSilent()
   }
 }
 
@@ -18766,7 +18766,7 @@ func inferLambda(
   while li < lambdaParams.count {
     val lp = lambdaParams[li]
     val pTy = match lp.ty {
-      case None -> if useExpected { eraseTyParams(expectedParams[li]) } else { TyError }
+      case None -> if useExpected { eraseTyParams(expectedParams[li]) } else { tyErrorSilent() }
       case Some(te) -> resolveType(tbl, lctx, diag, te)
     }
     paramTypes.add(pTy)
@@ -18802,7 +18802,7 @@ func inferLambda(
   val lsc = Scope(
     bindings = sc.bindings,
     frameStarts = sc.frameStarts,
-    returnTy = match declaredRet { case Some(rt) -> rt; case None -> TyError },
+    returnTy = match declaredRet { case Some(rt) -> rt; case None -> tyErrorSilent() },
     genericNames = sc.genericNames,
     genericOwners = sc.genericOwners,
     returnTyExpr = noLambdaRte,
@@ -18822,7 +18822,18 @@ func inferLambda(
     case None -> {
       val returned: List[Type] = newList()
       tbl.lambdaReturnFrames.add(returned)
-      val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos, TyError)
+      val bodyTy = checkBlock(
+        lsc,
+        tbl,
+        sigs,
+        sc.genericNames,
+        tyErrorSilent(),
+        noLambdaRte,
+        diag,
+        body,
+        bodyValuePos,
+        tyErrorSilent()
+      )
       tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
       scopePop(sc)
       // A body whose every path `return`s has the type `Never`; the lambda's
@@ -19084,7 +19095,7 @@ func argIsListHoldingTuple(e: in Expr): Bool {
 func callResultExpected(tbl: in SymbolTable, e: in Expr): Type {
   match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
     case Some(rx) -> rx
-    case None -> TyError
+    case None -> tyErrorSilent()
   }
 }
 
@@ -19197,7 +19208,7 @@ func ctorArrayFieldTypes(
   }
   var k = 0
   while k < args.count {
-    tys.add(TyError)
+    tys.add(tyErrorSilent())
     k = k + 1
   }
   if not any {
@@ -19280,7 +19291,21 @@ func adoptCtorLiteralArgs(
           tys.add(f.ty)
         }
       }
-      adoptLiteralArgsOver(sc, tbl, sigs, diag, generics, names, tys, args, argTypes, "T0104", "field", TyError, TyError)
+      adoptLiteralArgsOver(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        generics,
+        names,
+        tys,
+        args,
+        argTypes,
+        "T0104",
+        "field",
+        tyErrorSilent(),
+        tyErrorSilent()
+      )
     }
     case None -> match unionCaseSymbolOf(tbl, fn) {
       case Some(caseSym) -> match caseSym.kind {
@@ -19301,8 +19326,8 @@ func adoptCtorLiteralArgs(
               argTypes,
               "T0104",
               "field",
-              TyError,
-              TyError
+              tyErrorSilent(),
+              tyErrorSilent()
             )
           }
           case None -> ()
@@ -19484,7 +19509,7 @@ func inferGenericRecordCtorArgsExpected(
   var ai = 0
   while ai < cargs.count and ai < arrTys.count {
     match arrTys[ai] {
-      case TyError -> ()
+      case TyError(_) -> ()
       // A literal already checked against this field type needs no second
       // pass; one whose field the expectation left open is checked here.
       case at -> if typeIsHole(exps[ai]) or not typeEquiv(at, exps[ai]) {
@@ -19571,7 +19596,7 @@ func caseCtorArgsExpected(
   val none: List[Type] = newList()
   var i = 0
   while i < cargs.count {
-    none.add(TyError)
+    none.add(tyErrorSilent())
     i = i + 1
   }
   if not typeIsClosed(expected) {
@@ -19798,7 +19823,7 @@ func inferExprExpectedCore(
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
           case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, expected)
           case None -> if diag.count > diagCountBefore {
-            TyError
+            tyErrorSilent()
           } else if callHasPropagateArg(tbl, cargs) {
             // A `?` argument that fixes no success type may take it from a
             // generic parameter the expected result binds (#8181).
@@ -20363,7 +20388,7 @@ func reportGenericBindingConflicts(
   srcIdx: in List[Int],
 ): Unit {
   for g in sig.generics {
-    var bound: Type = TyError
+    var bound: Type = tyErrorSilent()
     var boundArg = -1
     var k = 0
     var reported = false
@@ -20412,7 +20437,7 @@ func instantiateSigForArgs(sig: in ResolvedSignature, argTypes: in List[Type], s
   var k = 0
   while k < sig.params.count {
     val ai = if k < srcIdx.count { srcIdx[k] } else { -1 }
-    ordered.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    ordered.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() })
     k = k + 1
   }
   instantiateSigOrdered(sig, ordered)
@@ -20472,7 +20497,7 @@ func checkPairedCallArgs(
     val p = sig.params[k]
     val ai = srcIdx[k]
     if ai >= 0 {
-      val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+      val argTy = if ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() }
       noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
       if (match p.mode { case PMIn -> true; case _ -> false }) {
         recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
@@ -20557,7 +20582,7 @@ func expectedCallArgTypes(
   val expected: List[Type] = newList()
   var i = 0
   while i < args.count {
-    expected.add(TyError)
+    expected.add(tyErrorSilent())
     i = i + 1
   }
   match directSig {
@@ -20578,7 +20603,7 @@ func expectedCallArgTypes(
           while k < sig.params.count {
             paramTys.add(sig.params[k].ty)
             val ai = srcIdx[k]
-            var slotTy: Type = TyError
+            var slotTy: Type = tyErrorSilent()
             if ai >= 0 and ai < argTypes.count {
               val slotExpr = callArgExpr(args[ai])
               if not lambdaHasUnannotatedParam(slotExpr) and not argIsAmbiguousUnionCaseCtor(tbl, slotExpr) {
@@ -20885,7 +20910,7 @@ func literalArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in T
         if isStdList and pArgs.count == 1 {
           noteListLiteralInListContext(tbl, argExpr)
           match unrefine(elemTy) {
-            case TyError -> true
+            case TyError(_) -> true
             case _ -> argSatisfiesParam(tbl, pArgs[0], elemTy)
           }
         } else {
@@ -21006,10 +21031,10 @@ func monadPayloadAt(t: in Type, helper: in String): Type {
       if idx < targs.count {
         targs[idx]
       } else {
-        TyError
+        tyErrorSilent()
       }
     }
-    case _ -> TyError
+    case _ -> tyErrorSilent()
   }
 }
 
@@ -21270,7 +21295,7 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // accept it.
   match argTy {
     case TySlice(elemTy) -> match unrefine(elemTy) {
-      case TyError -> match unrefine(paramTy) {
+      case TyError(_) -> match unrefine(paramTy) {
         case TyUser(pid, _, pArgs) -> {
           val isStdList = isStdCollectionsHostType(tbl, pid, "List")
           if isStdList and pArgs.count == 1 {
@@ -21494,7 +21519,7 @@ func covariantCtors(tbl: in SymbolTable, tid: in SymbolId, args: in List[Type]):
           while i < uc.fields.count {
             val fname: String = match uc.fields[i] { case UFNamed(nm, _, _) -> nm; case UFPos(_, _) -> "" }
             names.add(fname)
-            val fty: Type = if i < raw.count { substituteTyParams(raw[i], gnames, args) } else { TyError }
+            val fty: Type = if i < raw.count { substituteTyParams(raw[i], gnames, args) } else { tyErrorSilent() }
             tys.add(fty)
             i = i + 1
           }
@@ -21634,7 +21659,7 @@ func covariantFlow(tbl: in SymbolTable, expected: in Type, actual: in Type, e: i
 // True when `t` mentions a slot nothing has fixed (`TyError`) anywhere.
 func typeHasOpenSlot(t: in Type): Bool {
   match t {
-    case TyError -> true
+    case TyError(_) -> true
     case TyUser(_, _, args) -> {
       for a in args {
         if typeHasOpenSlot(a) {

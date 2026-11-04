@@ -95,10 +95,39 @@ pub union Type {
   case TyParam(name: String, owner: String)
   // An inference variable, alive only while one call or binding is solved.
   case TyInfer(id: Int)
-  case TyError
+  // A type the checker could not give.  `diag` names the diagnostic that
+  // caused it (docs/70 §5.1): a `DiagId` whose `index` is the 1-based position
+  // of that diagnostic in the checker's diagnostic list, or 0 for a `TyError`
+  // built with no diagnostic (`tyErrorSilent`), which the I0001 gate counts.
+  case TyError(diag: DiagId)
   case TyException
   // Strip any refinement layers, yielding the underlying representation
   // type.  Refinements are transparent for equivalence and most queries.
+}
+
+/// The diagnostic behind a `TyError`: `index` is its 1-based position in the
+/// checker's diagnostic list, 0 for none.
+pub record DiagId {
+  index: Int
+}
+
+/// A `TyError` with no recorded diagnostic.  Every such construction is a site
+/// the I0001 gate and the silent-`TyError` census can find by name.
+pub func tyErrorSilent(): Type {
+  TyError(diag = DiagId(index = 0))
+}
+
+/// A `TyError` caused by the diagnostic most recently added to `diags`.
+pub func tyErrorFor(diags: in List[Diagnostic]): Type {
+  TyError(diag = DiagId(index = diags.count))
+}
+
+/// True for a `TyError` that records no diagnostic.
+pub func isSilentTyError(t: in Type): Bool {
+  match t {
+    case TyError(d) -> d.index == 0
+    case _ -> false
+  }
 }
 
 pub func unrefine(t: in Type): Type {
@@ -252,16 +281,16 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
   val ua = unrefine(a)
   val ub = unrefine(b)
   match ua {
-    case TyError -> true
+    case TyError(_) -> true
     case TyInfer(_) -> true
     case TyParam(na, oa) -> match ub {
-      case TyError -> true
+      case TyError(_) -> true
       case TyInfer(_) -> true
       case TyParam(nb, ob) -> na == nb and tyParamOwnersMatch(oa, ob)
       case _ -> false
     }
     case _ -> match ub {
-      case TyError -> true
+      case TyError(_) -> true
       case TyInfer(_) -> true
       case TyParam(_, _) -> false
       case _ -> typeEquivCore(ua, ub)
@@ -271,11 +300,11 @@ pub func typeEquiv(a: in Type, b: in Type): Bool {
 
 func typeEquivCore(a: in Type, b: in Type): Bool {
   match a {
-    case TyError -> true
+    case TyError(_) -> true
     case TyParam(na, oa) -> match b {
       case TyParam(nb, ob) -> na == nb and tyParamOwnersMatch(oa, ob)
       case TyInfer(_) -> true
-      case TyError -> true
+      case TyError(_) -> true
       case _ -> false
     }
     case TyInfer(_) -> true
@@ -350,7 +379,7 @@ func optIntEq(a: in Option[Int], b: in Option[Int]): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func renderType(t: in Type): String {
   match t {
-    case TyError -> "<error>"
+    case TyError(_) -> "<error>"
     case TyException -> "Exception"
     case TySelf -> "Self"
     case TyLen(n) -> toString(n)
