@@ -7,7 +7,6 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Std.Console as DbgConsole
 import Lyric.HoistEngine as HoistEngine
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
@@ -17327,11 +17326,6 @@ func inferExprCore(
       // Try direct-sig lookup first.
       val ambiguousPick: List[ResolvedSignature] = newList()
       val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
-      // TEMP-DEBUG
-      match fn.kind {
-        case EMember(_, mm) -> DbgConsole.error("SITE-DEBUG ecall member=" + mm + " direct=" + toString(isSome(directSig)))
-        case _ -> ()
-      }
       match directSig {
         case Some(ds) -> {
           noteBareCalleeFunc(tbl, fn, ds.originPackage)
@@ -17804,7 +17798,6 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
-                  DbgConsole.error("SITE-DEBUG methodPick member=" + memberName + " dotNamed=" + toString(isSome(mp.fullSig)))
                   val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
                   recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
@@ -22239,10 +22232,6 @@ func reportAmbiguousDefaultCall(
 // or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
 // replaces what an earlier inference recorded.
 func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
-  match fn.kind {
-    case EMember(_, mm) -> DbgConsole.error("SITE-DEBUG recordCalleeSite member=" + mm + " origin=" + sig.originPackage)
-    case _ -> ()
-  }
   if isNoSourceSpan(fn.span) {
     return
   }
@@ -22258,10 +22247,22 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     }
     case EMember(recv, member) -> {
       val segs: List[String] = newList()
-      if not calleeSegments(recv, segs) or modulePathJoin(segs) != sig.originPackage {
+      if not calleeSegments(recv, segs) {
         return
       }
-      name = member
+      if modulePathJoin(segs) == sig.originPackage {
+        name = member
+      } else if segs.count == 1 and startsUppercase(segs[0]) {
+        // `Type.f(x)` or the constructor shorthand `Type.new(...)`: a
+        // dot-named function of the type, registered as `Type.f` in its
+        // declaring package, so the name is exact and a dependency's
+        // declaration (whose span the signature does not carry) is found by
+        // name and arity.
+        name = segs[0] + "." + member
+        allowArity = true
+      } else {
+        return
+      }
     }
     case _ -> return
   }
