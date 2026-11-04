@@ -8,6 +8,7 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Console as DbgConsoleJvm
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4457,6 +4458,71 @@ func lowerVirtualCallWithHolders(
 // concrete type and checkcast a real `Std.Regex.RegexError$InvalidPattern`
 // value against `Std.RegexSafe.RegexError` at the bind site.
 pub func resolveGeneralFuncSig(
+  ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
+): Option[JvmFuncSig] {
+  val sited = siteFuncSigJvm(ctx, funcName, path, argc)
+  match sited {
+    case Some(_) -> return sited
+    case None -> ()
+  }
+  // TEMP-AUDIT (D336)
+  DbgConsoleJvm.error("CALLEE-AUDIT jvm nosite in " + ctx.pkgName + ": " + funcName)
+  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
+}
+
+// The signature of the function the checker resolved the call at `path` to
+// (`~callee~<site key>`, a rendered `Pkg::name(P1,P2)`), when it is the
+// function `funcName` being lowered, or the specialisation Mono renamed it to
+// (`f__Int`), which lives in the declaring package or in the calling one
+// (D336).  Dot-named functions are keyed by their class and are not looked up
+// here.
+func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Option[JvmFuncSig] {
+  val dp = match mapGet(ctx.externTypes, "~callee~" + recordCopySiteKey(path.span)) {
+    case Some(d) -> d
+    case None -> return None
+  }
+  val sep = match dp.indexOf("::") { case Some(i) -> i; case None -> return None }
+  val pkg = dp.substring(0, sep)
+  val rest = dp.substring(sep + 2, dp.length - sep - 2)
+  val name = match rest.indexOf("(") { case Some(j) -> rest.substring(0, j); case None -> rest }
+  if name.length == 0 or name.contains(".") {
+    return None
+  }
+  val owners: List[String] = newList()
+  if name == funcName {
+    owners.add(pkg.replace(".", "/"))
+  } else if funcName.startsWith(name + "__") {
+    owners.add(pkg.replace(".", "/"))
+    owners.add(ctx.pkgName)
+  } else {
+    return None
+  }
+  val argcText = match mapGet(ctx.externTypes, "~arity~" + methodCallPathKey(path)) {
+    case Some(n) -> if n.startsWith("-") { toString(argc) } else { n }
+    case None -> toString(argc)
+  }
+  for owner in owners {
+    val keys: List[String] = newList()
+    if owner == ctx.pkgName {
+      keys.add(ctx.pkgName + "::" + funcName)
+    }
+    keys.add(owner + "/" + funcName)
+    for k in keys {
+      match mapGet(ctx.funcSigs, k + "@" + argcText) {
+        case Some(sig) -> return Some(value = sig)
+        case None -> ()
+      }
+      match mapGet(ctx.funcSigs, k) {
+        case Some(sig) -> return Some(value = sig)
+        case None -> ()
+      }
+    }
+  }
+  None
+}
+
+// The by-name resolution `resolveGeneralFuncSig` falls back to.
+func resolveGeneralFuncSigByName(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
   // A call that leaves out defaulted arguments binds the overload the type

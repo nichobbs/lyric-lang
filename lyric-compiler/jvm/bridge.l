@@ -407,6 +407,7 @@ pub func compileToJar(
   val optsCheckedOut: List[SourceFile] = newList()
   val recvClasses: Map[String, String] = newMap()
   val callArities: Map[String, Int] = newMap()
+  val callees: Map[String, String] = newMap()
   val opts = MiddleEndOptions(
     externIterResolver = jvmIterResolver(newJvmHostIterIndex(buildAutoFfiCtx())),
     tcFatal = true,
@@ -420,6 +421,7 @@ pub func compileToJar(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses,
     methodCallAritiesOut = callArities,
+    calleeSitesOut = callees,
     typeArgCalleesOut = newMap(),
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
@@ -434,7 +436,7 @@ pub func compileToJar(
   }
 
   val noSeed: Map[String, String] = newMap()
-  val pkg = codegenPackage(file, withRecvClasses(noSeed, recvClasses, callArities))
+  val pkg = codegenPackage(file, withRecvClasses(noSeed, recvClasses, callArities, callees))
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
 
@@ -690,6 +692,7 @@ func runMiddleEnd(
   externIter: in List[ExternIterResolver] = newList(),
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
   buildInterface: in Bool = false,
+  calleesOut: in Map[String, String] = newMap(),
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   val opts = jvmMiddleEndOptions(
@@ -705,7 +708,8 @@ func runMiddleEnd(
     sink,
     externIter,
     ifaceOut,
-    buildInterface
+    buildInterface,
+    calleesOut
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
@@ -731,6 +735,7 @@ func jvmMiddleEndOptions(
   externIter: in List[ExternIterResolver] = newList(),
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
   buildInterface: in Bool = false,
+  calleesOut: in Map[String, String] = newMap(),
 ): MiddleEndOptions {
   // #7198: see the other `MiddleEndOptions` construction site in this file.
   MiddleEndOptions(
@@ -746,6 +751,7 @@ func jvmMiddleEndOptions(
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
+    calleeSitesOut = calleesOut,
     typeArgCalleesOut = newMap(),
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
@@ -1008,11 +1014,15 @@ func collectStdlibNonGenericFuncsJvm(files: in List[SourceFile]): List[FunctionD
 // out of every type-name lookup (#7378).  Also the parameter count of the
 // method each call leaving out a defaulted argument resolved to, as
 // `~arity~<methodCallSiteKey>` -> count (`Jvm.Codegen.methodCallArityJvm`,
-// #7828).
+// #7828), and the function each call resolved to as `~callee~<site key>` ->
+// rendered DefPath (`Jvm.Codegen.siteFuncSigJvm`, D336).
 func withRecvClasses(
-  seed: in Map[String, String], recvClasses: in Map[String, String], arities: in Map[String, Int]
+  seed: in Map[String, String],
+  recvClasses: in Map[String, String],
+  arities: in Map[String, Int],
+  callees: in Map[String, String] = newMap(),
 ): Map[String, String] {
-  if recvClasses.count == 0 and arities.count == 0 {
+  if recvClasses.count == 0 and arities.count == 0 and callees.count == 0 {
     return seed
   }
   val merged: Map[String, String] = newMap()
@@ -1031,6 +1041,12 @@ func withRecvClasses(
   for ak in mapKeys(arities) {
     match mapGet(arities, ak) {
       case Some(n) -> merged.add("~arity~" + ak, toString(n))
+      case None -> ()
+    }
+  }
+  for ck in mapKeys(callees) {
+    match mapGet(callees, ck) {
+      case Some(dp) -> merged.add("~callee~" + ck, dp)
       case None -> ()
     }
   }
@@ -4206,8 +4222,9 @@ pub func compileProjectToJarBundledWithRestored(
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
   val userCallArities: Map[String, Int] = newMap()
+  val userCallees: Map[String, String] = newMap()
   val userIface: List[IfaceBuild.IfaceOutcome] = newList()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx), userIface, true) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgFiles, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled, false, sink, jvmIterResolver(hostIterIx), userIface, true, calleesOut = userCallees) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -4315,7 +4332,8 @@ pub func compileProjectToJarBundledWithRestored(
         withRecvClasses(
           externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
           userRecvClasses,
-          userCallArities
+          userCallArities,
+          userCallees
         ),
         userFileName,
         unsafeFieldLockNames
@@ -4377,12 +4395,13 @@ pub func compileProjectToJarBundledWithRestored(
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
       val siblingCallArities: Map[String, Int] = newMap()
+      val siblingCallees: Map[String, String] = newMap()
       val siblingIface: List[IfaceBuild.IfaceOutcome] = newList()
       // Stdlib contracts are always enabled (#7748);
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx), siblingIface, isProjectPkg) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, true, siblingPkgLabel, siblingPkgFiles, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName) or not isProjectPkg, sink, jvmIterResolver(hostIterIx), siblingIface, isProjectPkg, calleesOut = siblingCallees) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -4470,7 +4489,8 @@ pub func compileProjectToJarBundledWithRestored(
             withRecvClasses(
               externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
               siblingRecvClasses,
-              siblingCallArities
+              siblingCallArities,
+              siblingCallees
             ),
             bundledFileName,
             unsafeFieldLockNames
