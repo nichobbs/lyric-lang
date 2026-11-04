@@ -4276,21 +4276,16 @@ func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in St
 }
 
 // `default()` has the type its context expects (docs/01): with a known
-// expected type the call adopts it; without one it stays untyped.
-func adoptDefaultCallType(e: in Expr, t: in Type, expected: in Type): Type {
-  if not isSilentTyError(t) or typeIsHole(expected) {
-    return t
-  }
+// expected type the call adopts it; without one it stays untyped.  A user
+// function named `default` is an ordinary call.
+func isBuiltinDefaultCall(sigs: in Map[String, ResolvedSignature], e: in Expr): Bool {
   match e.kind {
     case ECall(fn, cargs) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "default" and cargs.count == 0 {
-        expected
-      } else {
-        t
-      }
-      case _ -> t
+      case EPath(p) -> p.segments.count == 1 and p.segments[0] == "default" and cargs.count == 0 and
+        not sigs.containsKey("default")
+      case _ -> false
     }
-    case _ -> t
+    case _ -> false
   }
 }
 
@@ -20193,7 +20188,7 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
-  val t = adoptDefaultCallType(e, inferExprExpectedCore(sc, tbl, sigs, diag, e, expected), expected)
+  val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   t
 }
@@ -20207,6 +20202,9 @@ func inferExprExpectedCore(
   expected: in Type,
 ): Type {
   noteExpectedFlow(sc, tbl, e, expected)
+  if not typeIsHole(expected) and isBuiltinDefaultCall(sigs, e) {
+    return expected
+  }
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {
     return adoptFloatLiteralType(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
   }
