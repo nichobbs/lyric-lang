@@ -1537,11 +1537,6 @@ func jvmIterWalk(ctx: in AutoFfiCtx, binaryName: in String, args: in List[GenSig
   best
 }
 
-/// How the JVM class an `extern type` spells (`clrName`, a dotted or slashed
-/// binary name, with `arity` type parameters) iterates.  The element is
-/// written over `GSVar("#i")` for the i-th type parameter.  A class whose
-/// type parameter count differs from a non-zero `arity` is `unresolved`; an
-/// `arity` of 0 on a generic class is a raw use, whose elements are `Object`.
 /// Every supertype (superclass chain and interfaces, transitively) of the JVM
 /// class `binaryName` (`java/io/ByteArrayInputStream`), as dotted host names
 /// (`java.io.InputStream`), nearest first (docs/70 5.3, #8787).  None when the
@@ -1574,6 +1569,11 @@ pub func hostSupertypesOfExternJvm(ctx: in AutoFfiCtx, binaryName: in String): O
   Some(value = acc)
 }
 
+/// How the JVM class an `extern type` spells (`clrName`, a dotted or slashed
+/// binary name, with `arity` type parameters) iterates.  The element is
+/// written over `GSVar("#i")` for the i-th type parameter.  A class whose
+/// type parameter count differs from a non-zero `arity` is `unresolved`; an
+/// `arity` of 0 on a generic class is a raw use, whose elements are `Object`.
 pub func iterProtocolOfExternJvm(ctx: in AutoFfiCtx, clrName: in String, arity: in Int): JvmIterSig {
   val root = match loadClass(ctx, clrName) { case Some(c) -> c; case None -> return jvmIterUnresolved() }
   val names: List[String] = if root.signature.length > 0 {

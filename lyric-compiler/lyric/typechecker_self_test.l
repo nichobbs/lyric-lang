@@ -14885,7 +14885,7 @@ test "default() adopts its expected type, and a user default() is an ordinary ca
 // A fake host: `java.io.ByteArrayInputStream` extends `java.io.InputStream`,
 // `java.lang.Unlocatable` is a type the bridge cannot find.
 record FakeHostHierarchy {
-  asked: Map[String, Bool]
+  known: Map[String, List[String]]
 }
 
 impl ExternIterResolver for FakeHostHierarchy {
@@ -14894,19 +14894,20 @@ impl ExternIterResolver for FakeHostHierarchy {
   }
 
   func resolveBases(clrName: in String): Option[List[String]] {
-    if clrName == "java.io.ByteArrayInputStream" {
-      val bases: List[String] = newList()
-      bases.add("java.io.InputStream")
-      bases.add("java.lang.Object")
-      Some(value = bases)
-    } else if clrName == "java.io.InputStream" {
-      val bases: List[String] = newList()
-      bases.add("java.lang.Object")
-      Some(value = bases)
-    } else {
-      None
-    }
+    mapGet(self.known, clrName)
   }
+}
+
+func fakeHostHierarchy(): FakeHostHierarchy {
+  val known: Map[String, List[String]] = newMap()
+  val streamBases: List[String] = newList()
+  streamBases.add("java.lang.Object")
+  known.add("java.io.InputStream", streamBases)
+  val bytesBases: List[String] = newList()
+  bytesBases.add("java.io.InputStream")
+  bytesBases.add("java.lang.Object")
+  known.add("java.io.ByteArrayInputStream", bytesBases)
+  FakeHostHierarchy(known = known)
 }
 
 func parseCheckWithHost(src: in String): CheckResult {
@@ -14914,7 +14915,7 @@ func parseCheckWithHost(src: in String): CheckResult {
   val noPkgs: List[ImportedPackage] = newList()
   val iter: Map[String, ExternIterInfo] = newMap()
   val rs: List[ExternIterResolver] = newList()
-  rs.add(FakeHostHierarchy(asked = newMap()))
+  rs.add(fakeHostHierarchy())
   checkWithImportedPackagesExternIter(pr.file, noPkgs, false, iter, rs)
 }
 
@@ -14955,5 +14956,14 @@ test "an extern alias of the host string type constructs a String; without a hos
     diagCodesOf(parseCheck(head + "func f(): Int {\n  JBytes.new(\"x\")\n}\n")),
     "",
     "with no host resolver the constructor result is left unchecked"
+  )
+}
+
+test "a type the host cannot locate leaves an extern assignment unchecked" {
+  val head = externHierarchyHead() + "extern type JMystery = \"com.example.Mystery\"\n"
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(m: in JMystery): JInputStream {\n  m\n}\n")),
+    "",
+    "no verdict from the host means no diagnostic"
   )
 }

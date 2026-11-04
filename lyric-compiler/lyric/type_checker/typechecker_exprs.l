@@ -21651,9 +21651,6 @@ func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
   }
 }
 
-// docs/68 §3: a `Task[R]` handle satisfies the bare `Task` extern (every
-// `Task<R>` is a `Task`), and the bare `Task` satisfies `Task[Unit]` (the bare
-// name stands for `Task[Unit]`, as `Std.Task.delay`'s result does).
 // The `extern type` declaration behind a type of no type arguments.
 func externDeclOfType(tbl: in SymbolTable, t: in Type): Option[ExternTypeDecl] {
   match unrefine(t) {
@@ -21701,6 +21698,9 @@ func externAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): 
   }
 }
 
+// docs/68 §3: a `Task[R]` handle satisfies the bare `Task` extern (every
+// `Task<R>` is a `Task`), and the bare `Task` satisfies `Task[Unit]` (the bare
+// name stands for `Task[Unit]`, as `Std.Task.delay`'s result does).
 func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
   match taskResultType(actual) {
     case Some(_) -> isBareTaskType(tbl, expected)
