@@ -16536,7 +16536,7 @@ func noteUnsolvedCall(
     tbl.unsolvedCallSites.add(
       key,
       UnsolvedCallSite(
-        fname = fname,
+        fname = fname + " DEBUG " + dbgTypes(argTypes) + " PARAMS " + dbgSigParams(sig),
         unsolved = unsolved,
         generics = sig.generics,
         returnTy = sig.returnTy,
@@ -16547,6 +16547,22 @@ func noteUnsolvedCall(
       )
     )
   }
+}
+
+func dbgTypes(ts: in List[Type]): String {
+  var r = ""
+  for t in ts {
+    r = r + renderType(t) + " | "
+  }
+  r
+}
+
+func dbgSigParams(sig: in ResolvedSignature): String {
+  var r = ""
+  for p in sig.params {
+    r = r + renderType(p.ty) + " | "
+  }
+  r
 }
 
 // Whether some argument binds the type parameter `name` of `sig` to a closed
