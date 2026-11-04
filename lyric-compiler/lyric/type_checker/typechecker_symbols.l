@@ -1738,15 +1738,6 @@ func declPkgOf(ctx: in ResolverContext, id: in SymbolId): String {
   }
 }
 
-/// The rendered DefPath of the function `sym` declares, None for any other
-/// symbol.
-pub func funcSymbolDefPathKey(sym: in Symbol): Option[String] {
-  match sym.kind {
-    case DKFunc(decl) -> Some(value = defPathKey(funcDefPath(sym.originPackage, sym.name, decl.params)))
-    case _ -> None
-  }
-}
-
 /// The rendered DefPath of the function `sig` is the signature of, named
 /// `name` in its declaring package: the declaration whose span is the
 /// signature's.  None for a signature with no declaration of that name and

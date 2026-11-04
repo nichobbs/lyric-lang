@@ -17197,7 +17197,7 @@ func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in Strin
         return ""
       }
       val cands: List[String] = newList()
-      if name == funcName or String.endsWith(name, "." + funcName) {
+      if name == funcName {
         cands.add(pkg + "." + name)
       } else if String.startsWith(funcName, name + "__") {
         cands.add(pkg + "." + funcName)
@@ -21925,10 +21925,6 @@ func lowerBuiltinOrStaticCallMsil(
               bundleFqn
             } else {
               ""
-            }
-            // TEMP-AUDIT (D336)
-            if sitedFqn.length == 0 and resolvedFqn.length > 0 {
-              Console.error("CALLEE-AUDIT nosite in " + fctx.pkgName + ": " + resolvedFqn)
             }
             if resolvedFqn.length > 0 {
               // Narrow to the arity-qualified token (#1536): a package may
