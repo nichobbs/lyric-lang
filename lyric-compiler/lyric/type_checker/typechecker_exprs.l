@@ -4248,7 +4248,7 @@ func universalMethodResultType(name: in String, argc: in Int): Type {
   if name == "hash" and argc == 0 {
     return TyPrim(pt = PtInt)
   }
-  TyError
+  tyErrorSilent()
 }
 
 // Substitute the receiver into a stored method signature: `Self` becomes the
@@ -11693,7 +11693,7 @@ func closePropagateBranch(
 // expression typed `TyError` with no diagnostic added while it was typed is
 // logged to stderr as `TYERR<TAB>kind<TAB>name<TAB>file:offset`. Off by default.
 func censusLogSilentTyError(e: in Expr, t: in Type): Unit {
-  val isErr = match t { case TyError -> true; case _ -> false }
+  val isErr = match t { case TyError(_) -> true; case _ -> false }
   if not isErr {
     return
   }
@@ -11734,7 +11734,7 @@ func censusJoinSegments(xs: in List[String]): String {
 // names qualifies.
 func qualifiedBuiltinCalleeType(tbl: in SymbolTable, fn: in Expr, fnT: in Type): Type {
   match fnT {
-    case TyError -> ()
+    case TyError(_) -> ()
     case _ -> return fnT
   }
   match fn.kind {
