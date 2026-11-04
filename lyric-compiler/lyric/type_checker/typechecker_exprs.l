@@ -11662,7 +11662,12 @@ pub func inferExpr(
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
   if tyErrorCensusOn and diag.count == diagsBefore {
     match t {
-      case TyError -> Console.error("TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" + toString(e.span.startPos.fileId) + ":" + toString(e.span.startPos.offset))
+      case TyError -> Console.error(
+        "TYERR\t" + symTableScopePkg(tbl) + "\t" + exprKindTag(e) + "\t" + exprKindName(e) + "\t" +
+          toString(e.span.startPos.fileId) +
+          ":" +
+          toString(e.span.startPos.offset)
+      )
       case _ -> ()
     }
   }
