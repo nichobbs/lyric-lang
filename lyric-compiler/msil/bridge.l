@@ -1454,6 +1454,8 @@ pub record MsilHostIterIndex {
   ready: List[Bool]
   answered: Map[String, Bool]
   known: Map[String, ExternIterInfo]
+  bases: Map[String, List[String]]
+  basesAnswered: Map[String, Bool]
 }
 
 pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
@@ -1465,7 +1467,9 @@ pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
     extraDlls = extraDlls,
     ready = newList(),
     answered = newMap(),
-    known = newMap()
+    known = newMap(),
+    bases = newMap(),
+    basesAnswered = newMap()
   )
 }
 
@@ -1509,6 +1513,18 @@ impl ExternIterResolver for MsilHostIterIndex {
       }
     }
     mapGet(self.known, clrName)
+  }
+
+  func resolveBases(clrName: in String): Option[List[String]] {
+    if not self.basesAnswered.containsKey(clrName) {
+      self.basesAnswered.add(clrName, true)
+      ensureMsilHostIterIndex(self)
+      match Mdr.hostSupertypesOfExtern(self.parsedPaths, self.parsed, self.typeIndex, self.pathIndex, clrName) {
+        case Some(names) -> self.bases.add(clrName, names)
+        case None -> ()
+      }
+    }
+    mapGet(self.bases, clrName)
   }
 }
 

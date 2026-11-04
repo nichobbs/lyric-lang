@@ -4233,6 +4233,45 @@ func isUniversalMethodName(name: in String): Bool {
   name == "toString" or name == "equals" or name == "hash" or name == "show" or name == "compare" or name == "toJson"
 }
 
+// The host's own string type is Lyric's `String` (an `extern type` alias of it
+// constructs one: `JString.new(bytes, "UTF-8")`).
+func isHostStringTypeName(clrName: in String): Bool {
+  clrName == "java.lang.String" or clrName == "System.String"
+}
+
+// The result of a member call whose receiver declares no signature for it:
+// `T.new(args)` on an `extern type T` (docs/48) constructs a `T` once the
+// bridge can say what `T` is assignable to (`externAssignable`); without a
+// host resolver it stays untyped.  A universal method has its fixed type.
+func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in String, argc: in Int): Type {
+  if memberName == "new" and tbl.externIterResolver.count > 0 {
+    match fn.kind {
+      case EMember(recv, _) -> match recv.kind {
+        case EPath(p) -> if p.segments.count == 1 {
+          match symTableTryFindOne(tbl, p.segments[0]) {
+            case Some(sym) -> match sym.kind {
+              case DKExternType(tid, d) -> {
+                if isHostStringTypeName(d.clrName) {
+                  return TyPrim(pt = PtString)
+                }
+                match d.generics {
+                  case None -> return TyUser(id = tid, name = d.name, args = newList())
+                  case Some(_) -> ()
+                }
+              }
+              case _ -> ()
+            }
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+  }
+  universalMethodResultType(memberName, argc)
+}
+
 // The result of a universal method (`isUniversalMethodName`) called on a
 // receiver whose type declares no such method: `toString()` is a codegen
 // intrinsic on every receiver, and `equals(other)` / `hash()` are what the
@@ -18605,7 +18644,7 @@ func inferExprCore(
                             case None -> tyErrorSilent()
                           }
                           case None -> if isMemberCallee {
-                            universalMethodResultType(memberName, args.count)
+                            untypedMemberCallResult(tbl, fn, memberName, args.count)
                           } else {
                             tyErrorSilent()
                           }
@@ -21615,6 +21654,53 @@ func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
 // docs/68 §3: a `Task[R]` handle satisfies the bare `Task` extern (every
 // `Task<R>` is a `Task`), and the bare `Task` satisfies `Task[Unit]` (the bare
 // name stands for `Task[Unit]`, as `Std.Task.delay`'s result does).
+// The `extern type` declaration behind a type of no type arguments.
+func externDeclOfType(tbl: in SymbolTable, t: in Type): Option[ExternTypeDecl] {
+  match unrefine(t) {
+    case TyUser(id, _, targs) -> {
+      if targs.count > 0 {
+        return None
+      }
+      var i = 0
+      while i < tbl.symbols.count {
+        match tbl.symbols[i].kind {
+          case DKExternType(tid, d) -> if symbolIdEq(tid, id) { return Some(value = d) }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// One extern type is assignable to another when the host's own hierarchy says
+// so (docs/70 5.3, #8787): the bridge's resolver reads the base classes and
+// interfaces of the actual type from host metadata, and the expected type's
+// host name must be among them.  A bridge that cannot locate the type leaves
+// the assignment unchecked, as an iteration it cannot resolve is.  Without a
+// resolver (no host metadata at all) nothing is assignable here.
+func externAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
+  if tbl.externIterResolver.count == 0 {
+    return false
+  }
+  val ed = match externDeclOfType(tbl, expected) { case Some(d) -> d; case None -> return false }
+  val ad = match externDeclOfType(tbl, actual) { case Some(d) -> d; case None -> return false }
+  match tbl.externIterResolver[0].resolveBases(ad.clrName) {
+    case None -> true
+    case Some(bases) -> {
+      val want = externHostBase(ed.clrName)
+      for b in bases {
+        if externHostBase(b) == want {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
 func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
   match taskResultType(actual) {
     case Some(_) -> isBareTaskType(tbl, expected)
@@ -21678,6 +21764,9 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case _ -> ()
   }
   if taskHandleAssignable(tbl, paramTy, argTy) {
+    return true
+  }
+  if externAssignable(tbl, paramTy, argTy) {
     return true
   }
   if nativeVoidPtrConvertible(tbl, paramTy, argTy) {
@@ -21812,6 +21901,9 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
     return true
   }
   if taskHandleAssignable(tbl, expected, actual) {
+    return true
+  }
+  if externAssignable(tbl, expected, actual) {
     return true
   }
   match unrefine(expected) {

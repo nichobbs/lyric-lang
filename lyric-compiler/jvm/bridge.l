@@ -601,10 +601,12 @@ pub record JvmHostIterIndex {
   ctx: AutoFfiCtx
   answered: Map[String, Bool]
   known: Map[String, ExternIterInfo]
+  bases: Map[String, List[String]]
+  basesAnswered: Map[String, Bool]
 }
 
 pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
-  JvmHostIterIndex(ctx = ctx, answered = newMap(), known = newMap())
+  JvmHostIterIndex(ctx = ctx, answered = newMap(), known = newMap(), bases = newMap(), basesAnswered = newMap())
 }
 
 impl ExternIterResolver for JvmHostIterIndex {
@@ -621,6 +623,17 @@ impl ExternIterResolver for JvmHostIterIndex {
       }
     }
     mapGet(self.known, clrName)
+  }
+
+  func resolveBases(clrName: in String): Option[List[String]] {
+    if not self.basesAnswered.containsKey(clrName) {
+      self.basesAnswered.add(clrName, true)
+      match hostSupertypesOfExternJvm(self.ctx, externHostBase(clrName)) {
+        case Some(names) -> self.bases.add(clrName, names)
+        case None -> ()
+      }
+    }
+    mapGet(self.bases, clrName)
   }
 }
 

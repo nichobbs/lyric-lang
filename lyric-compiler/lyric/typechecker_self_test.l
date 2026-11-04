@@ -14880,3 +14880,80 @@ test "default() adopts its expected type, and a user default() is an ordinary ca
     "a user-defined default() keeps its own result type"
   )
 }
+
+// ─── Extern assignability from the host's hierarchy (docs/70 5.3, #8787) ────
+// A fake host: `java.io.ByteArrayInputStream` extends `java.io.InputStream`,
+// `java.lang.Unlocatable` is a type the bridge cannot find.
+record FakeHostHierarchy {
+  asked: Map[String, Bool]
+}
+
+impl ExternIterResolver for FakeHostHierarchy {
+  func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo] {
+    None
+  }
+
+  func resolveBases(clrName: in String): Option[List[String]] {
+    if clrName == "java.io.ByteArrayInputStream" {
+      val bases: List[String] = newList()
+      bases.add("java.io.InputStream")
+      bases.add("java.lang.Object")
+      Some(value = bases)
+    } else if clrName == "java.io.InputStream" {
+      val bases: List[String] = newList()
+      bases.add("java.lang.Object")
+      Some(value = bases)
+    } else {
+      None
+    }
+  }
+}
+
+func parseCheckWithHost(src: in String): CheckResult {
+  val pr = parse(src)
+  val noPkgs: List[ImportedPackage] = newList()
+  val iter: Map[String, ExternIterInfo] = newMap()
+  val rs: List[ExternIterResolver] = newList()
+  rs.add(FakeHostHierarchy(asked = newMap()))
+  checkWithImportedPackagesExternIter(pr.file, noPkgs, false, iter, rs)
+}
+
+func externHierarchyHead(): String {
+  "package P\nextern type JInputStream = \"java.io.InputStream\"\nextern type JBytes = \"java.io.ByteArrayInputStream\"\nextern type JString = \"java.lang.String\"\n"
+}
+
+test "an extern constructor result is assignable to the host's base type, and only to it" {
+  val head = externHierarchyHead()
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in slice[Byte]): JInputStream {\n  JBytes.new(b)\n}\n")),
+    "",
+    "a subclass is assignable to its base class"
+  )
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in slice[Byte]): JBytes {\n  JBytes.new(b)\n}\n")),
+    "",
+    "the same type is assignable"
+  )
+  assertTrue(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JInputStream): JBytes {\n  b\n}\n")) != "",
+    "a base class is not assignable to its subclass"
+  )
+  assertTrue(
+    diagCodesOf(parseCheckWithHost(head + "func f(): Int {\n  JBytes.new(\"x\")\n}\n")) != "",
+    "an extern constructor result is not an Int"
+  )
+}
+
+test "an extern alias of the host string type constructs a String; without a host resolver .new stays untyped" {
+  val head = externHierarchyHead()
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(): String {\n  JString.new(\"x\")\n}\n")),
+    "",
+    "JString.new(...) is a String"
+  )
+  assertEqual(
+    diagCodesOf(parseCheck(head + "func f(): Int {\n  JBytes.new(\"x\")\n}\n")),
+    "",
+    "with no host resolver the constructor result is left unchecked"
+  )
+}

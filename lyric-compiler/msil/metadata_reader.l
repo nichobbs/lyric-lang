@@ -4755,6 +4755,53 @@ func directSuperTokens(img: in PeImage, layout: in TableLayout, th: in TablesHea
   toks
 }
 
+// Every supertype of `fqn` (base classes and interfaces, transitively, across
+// assemblies), nearest first, as host names (docs/70 5.3, #8787).  None when
+// the type or one of its supertypes cannot be located in the assemblies given,
+// so a missing reference pack is "cannot say", not "no supertypes".
+pub func hostSupertypesOfExtern(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  fqn: in String,
+): Option[List[String]] {
+  val acc: List[String] = newList()
+  val queue: List[String] = newList()
+  queue.add(fqn)
+  var qi = 0
+  while qi < queue.count and qi < 256 {
+    val cur = queue[qi]
+    qi = qi + 1
+    val asmName = match assemblyForType(typeIndex, cur) { case Some(n) -> n; case None -> return None }
+    val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return None }
+    val parsed = match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+      case Some(pa) -> pa
+      case None -> return None
+    }
+    val typeRow = findTypeDefByFqn(parsed.img, parsed.layout, parsed.th, cur)
+    if typeRow < 0 {
+      return None
+    }
+    val toks = directSuperTokens(parsed.img, parsed.layout, parsed.th, typeRow)
+    var i = 0
+    while i < toks.count {
+      match parentSigOfToken(parsed.img, parsed.layout, parsed.th, toks[i]) {
+        case None -> return None
+        case Some(sig) -> {
+          val f = match sig { case STNamed(n, _) -> n; case STNamedGenericInst(n, _, _) -> n; case _ -> "" }
+          if f.length > 0 and not listContainsString(acc, f) {
+            acc.add(f)
+            queue.add(f)
+          }
+        }
+      }
+      i = i + 1
+    }
+  }
+  Some(value = acc)
+}
+
 func iterWalk(
   cachePaths: in List[String],
   cacheParsed: in List[MdrParsedAssembly],
