@@ -466,6 +466,13 @@ pub record SymbolTable {
   /// by its own span; a name a pattern binds to a sub-tuple holding open
   /// elements, by the name's span (#7863).
   openBindingSites: Map[String, OpenBindingSite]
+  /// Calls to an imported generic with a type argument the arguments leave
+  /// unsolved (see `UnsolvedCallSite`, D339), keyed by `recordCopySiteKey` of
+  /// the callee's span.
+  unsolvedCallSites: Map[String, UnsolvedCallSite]
+  /// The type expected of each call, keyed by `recordCopySiteKey` of the
+  /// call's span, as `noteExpectedFlow` saw it (D339).
+  callExpectedSeen: Map[String, Type]
   /// Each call through a function value, keyed by `recordCopySiteKey` of the
   /// call's span (see `Lyric.Parser.FuncValueCallSite`, #7716).
   funcValueCallSites: Map[String, FuncValueCallSite]
@@ -801,6 +808,25 @@ pub record SymbolTable {
 /// (`xs.add(x)`, `xs.add(i, x)`, `m.add(k, v)`, `xs[i] = x`, `o = Some(x)`).
 /// `resolveOpenBindingSites` turns them into the binding's annotation.  Each
 /// `List` field is a mutable 0/1-element box.
+/// A call to an imported generic whose arguments left a type argument
+/// unsolved (D339), keyed in `SymbolTable.unsolvedCallSites` by
+/// `recordCopySiteKey` of the callee's span.  The call's expected type, a
+/// recorded `genericCallTypeArgSites` entry or an open binding fixes it later;
+/// `reportUnsolvedTypeArgs` reports what is still open at the end of the file.
+pub record UnsolvedCallSite {
+  fname: String
+  /// The type parameters of the call's type-argument list left open.
+  unsolved: List[String]
+  /// The callee's generics (type and value) and declared result, to unify
+  /// against the call's expected type.
+  generics: List[String]
+  returnTy: Type
+  /// `recordCopySiteKey` of the whole call's span, the key of an open
+  /// binding that has the call as its initializer.
+  callKey: String
+  span: Span
+}
+
 pub record OpenBindingSite {
   /// The initializer's span; the resolved annotation carries it, so
   /// `Lyric.Mono.desugarCheckedFile` finds the binding it belongs to.
@@ -919,6 +945,8 @@ pub func newSymbolTable(): SymbolTable {
     callResultTypes = newMap(),
     localBindingTypeSites = newMap(),
     openBindingSites = newMap(),
+    unsolvedCallSites = newMap(),
+    callExpectedSeen = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),

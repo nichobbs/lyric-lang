@@ -4572,6 +4572,53 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
   assertEqualInt(impCr.symbols.typeArgCalleeSites.count, 0, "an imported val is a value")
 }
 
+// D339: a call to an imported generic whose type argument nothing fixes is W0035
+// from the checker; the call's expected type, another argument or a written
+// type argument fixes it.
+func unsolvedLib(): List[ImportedPackage] {
+  val lib = parse(
+    "package Lib\nunion Option[T] { case Some(value: T); case None }\n" + "pub func none[T](): Option[T] { None }\n" +
+      "pub func isNone[T](o: in Option[T]): Bool { true }\n" +
+      "pub func orElse[T](o: in Option[T], d: in T): T { d }\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  pkgs
+}
+
+func unsolvedWarnings(body: in String): Int {
+  val src = "package App\nimport Lib\n" + body
+  val cr = checkWithImportedPackages(parse(src).file, unsolvedLib())
+  var n = 0
+  for d in cr.diagnostics {
+    if d.code == "W0035" {
+      n = n + 1
+    }
+  }
+  n
+}
+
+test "an imported generic call nothing fixes is W0035 (D339)" {
+  val cr = checkWithImportedPackages(parse("package App\nimport Lib\nfunc f(): Bool { isNone(none()) }\n").file, unsolvedLib())
+  assertEqualInt(cr.symbols.unsolvedCallSites.count, 1, "sites " + toString(cr.symbols.genericCallTypeArgSites.count) + toString(cr.symbols.callExpectedSeen.count) + diagCodesOf(cr))
+  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 1, "none() inside isNone(...) fixes nothing")
+}
+
+test "an expected type, another argument or a written type argument fixes the call (D339)" {
+  assertEqualInt(unsolvedWarnings("func f(): Option[Int] { none() }\n"), 0, "the declared result type")
+  assertEqualInt(unsolvedWarnings("func f(): Option[Int] {\n  val x: Option[Int] = none()\n  x\n}\n"), 0, "a val annotation")
+  assertEqualInt(unsolvedWarnings("func f(): Int { orElse(none(), 5) }\n"), 0, "a later argument fixes the other")
+  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments")
+  assertEqualInt(unsolvedWarnings("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"), 0, "a parameter type")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.

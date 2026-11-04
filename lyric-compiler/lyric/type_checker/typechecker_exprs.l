@@ -12904,6 +12904,7 @@ func exprMayCarryOpenBinding(sc: in Scope, e: in Expr): Bool {
 // `if`/`match`/block are checked against the same expected type through
 // `inferExprExpected`, which calls this for each of them.
 pub func noteExpectedFlow(sc: in Scope, tbl: in SymbolTable, e: in Expr, expected: in Type): Unit {
+  noteCallExpected(tbl, e, expected)
   if tbl.openBindingSites.count == 0 or not typeIsClosed(expected) {
     return
   }
@@ -16407,6 +16408,148 @@ func recordGenericCallTypeArgs(
   }
 }
 
+// The type expected of the call `e` (D339): `noteExpectedFlow` is called for
+// every position that has a declared type, before or after the call itself is
+// checked, so the type is kept by the call's span and read when the file ends.
+func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit {
+  if typeIsUnsolved(expected) {
+    return
+  }
+  match e.kind {
+    case EParen(inner) -> noteCallExpected(tbl, inner, expected)
+    case ECall(_, _) -> {
+      val key = recordCopySiteKey(e.span)
+      if not tbl.callExpectedSeen.containsKey(key) {
+        tbl.callExpectedSeen.add(key, expected)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// A call to an imported, non-extern generic whose arguments leave a type
+// argument unsolved is kept in `SymbolTable.unsolvedCallSites` for
+// `reportUnsolvedTypeArgs` (D339).  Mono exempts three calls and so does this:
+// an `@externTarget` generic, a name the local scope binds, and a call without
+// a source position.
+func noteUnsolvedCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  if sig.generics.count == 0 or sig.isExternFunc or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+    return
+  }
+  if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
+    return
+  }
+  val fname = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return }
+    case _ -> return
+  }
+  if scopeHasName(sc, fname) {
+    return
+  }
+  val valueParams = valueGenericParamsOf(tbl, fn, args.count)
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  val noRecv: Option[Type] = None
+  val allTargs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
+  if allTargs.count != sig.generics.count {
+    return
+  }
+  val unsolved: List[String] = newList()
+  var gi = 0
+  while gi < sig.generics.count {
+    if not valueParams.contains(sig.generics[gi]) and typeIsUnsolved(allTargs[gi]) {
+      unsolved.add(sig.generics[gi])
+    }
+    gi = gi + 1
+  }
+  if unsolved.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if not tbl.unsolvedCallSites.containsKey(key) {
+    tbl.unsolvedCallSites.add(
+      key,
+      UnsolvedCallSite(
+        fname = fname,
+        unsolved = unsolved,
+        generics = sig.generics,
+        returnTy = sig.returnTy,
+        callKey = recordCopySiteKey(callSpan),
+        span = fn.span
+      )
+    )
+  }
+}
+
+// W0035 (D339): a call recorded by `noteUnsolvedCall` whose type argument
+// neither the call's expected type, a recorded type-argument site nor an open
+// binding fixed.  Mono reports the same call as T0224 until the checker owns
+// the rule.
+pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
+  val keys = mapKeys(tbl.unsolvedCallSites)
+  var i = 0
+  while i < keys.count {
+    match mapGet(tbl.unsolvedCallSites, keys[i]) {
+      case Some(site) -> if not unsolvedCallFixed(tbl, keys[i], site) {
+        diag.add(
+          warningDiagnostic(
+            "W0035",
+            "cannot infer type argument(s) " + quoteJoinNames(site.unsolved) + " of '" + site.fname +
+              "' from the call's arguments or its expected type; write '" +
+              site.fname +
+              "[...](...)' or give the call an expected type",
+            site.span
+          )
+        )
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+}
+
+func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCallSite): Bool {
+  if tbl.genericCallTypeArgSites.containsKey(key) or tbl.openBindingSites.containsKey(site.callKey) {
+    return true
+  }
+  match mapGet(tbl.callExpectedSeen, site.callKey) {
+    case Some(expected) -> {
+      val retTys: List[Type] = newList()
+      retTys.add(site.returnTy)
+      val expTys: List[Type] = newList()
+      expTys.add(expected)
+      val solved = inferGenericArgsDeep(site.generics, retTys, expTys)
+      var gi = 0
+      while gi < site.generics.count {
+        if site.unsolved.contains(site.generics[gi]) and typeIsUnsolved(solved[gi]) {
+          return false
+        }
+        gi = gi + 1
+      }
+      true
+    }
+    case None -> false
+  }
+}
+
+func quoteJoinNames(names: in List[String]): String {
+  val q: List[String] = newList()
+  for n in names {
+    q.add("'" + n + "'")
+  }
+  joinStrs(q, ", ")
+}
+
 // Whether `t` is or contains an instantiation of a generic type.
 func typeMentionsGenericInst(t: in Type): Bool {
   match t {
@@ -17681,15 +17824,18 @@ func inferExprCore(
           }
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           match fn.kind {
-            case EPath(_) -> recordGenericCallTypeArgs(
-              tbl,
-              sc.genericNames,
-              sig,
-              valueGenericParamsOf(tbl, fn, args.count),
-              args,
-              argTypes,
-              fn.span
-            )
+            case EPath(_) -> {
+              recordGenericCallTypeArgs(
+                tbl,
+                sc.genericNames,
+                sig,
+                valueGenericParamsOf(tbl, fn, args.count),
+                args,
+                argTypes,
+                fn.span
+              )
+              noteUnsolvedCall(sc, tbl, fn, sig, args, argTypes, e.span)
+            }
             case _ -> ()
           }
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
