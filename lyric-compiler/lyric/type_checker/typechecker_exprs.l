@@ -4251,6 +4251,49 @@ func universalMethodResultType(name: in String, argc: in Int): Type {
   tyErrorSilent()
 }
 
+// The result of a member call whose receiver declares no signature for it:
+// `T.new(args)` on an `extern type T` (docs/48) constructs a `T`; a universal
+// method has its fixed result type.  Anything else has no rule.
+func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in String, argc: in Int): Type {
+  if memberName == "new" {
+    match fn.kind {
+      case EMember(recv, _) -> match recv.kind {
+        case EPath(p) -> if p.segments.count == 1 {
+          match symTableTryFindOne(tbl, p.segments[0]) {
+            case Some(sym) -> match sym.kind {
+              case DKExternType(tid, d) -> return TyUser(id = tid, name = d.name, args = newList())
+              case _ -> ()
+            }
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+  }
+  universalMethodResultType(memberName, argc)
+}
+
+// `default()` has the type its context expects (docs/01): with a known
+// expected type the call adopts it; without one it stays untyped.
+func adoptDefaultCallType(e: in Expr, t: in Type, expected: in Type): Type {
+  if not isSilentTyError(t) or typeIsHole(expected) {
+    return t
+  }
+  match e.kind {
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 and p.segments[0] == "default" and cargs.count == 0 {
+        expected
+      } else {
+        t
+      }
+      case _ -> t
+    }
+    case _ -> t
+  }
+}
+
 // Substitute the receiver into a stored method signature: `Self` becomes the
 // receiver type, and the owner's generic params are replaced by the
 // receiver's type args when the arities line up (a raw/under-instantiated
@@ -18303,7 +18346,7 @@ func inferExprCore(
                             case None -> tyErrorSilent()
                           }
                           case None -> if isMemberCallee {
-                            universalMethodResultType(memberName, args.count)
+                            untypedMemberCallResult(tbl, fn, memberName, args.count)
                           } else {
                             tyErrorSilent()
                           }
@@ -19880,7 +19923,7 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
-  val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  val t = adoptDefaultCallType(e, inferExprExpectedCore(sc, tbl, sigs, diag, e, expected), expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   t
 }
