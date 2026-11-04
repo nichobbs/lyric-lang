@@ -7,6 +7,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
+import Std.Console as DbgConsole
 import Lyric.HoistEngine as HoistEngine
 
 // `s += <rhs>` onto a String target accepts any RHS type, mirroring binary
@@ -22264,6 +22265,11 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     case _ -> return
   }
   val key = calleeKey(fn)
+  // TEMP-DEBUG
+  match fn.kind {
+    case EMember(_, _) -> DbgConsole.error("SITE-DEBUG member name=" + name + " origin=" + sig.originPackage + " found=" + toString(isSome(symTableFuncDefPathKey(tbl, sig, name, allowArity))))
+    case _ -> ()
+  }
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> {
       if tbl.calleeSites.containsKey(key) {
