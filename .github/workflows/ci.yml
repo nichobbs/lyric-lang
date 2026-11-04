@@ -539,16 +539,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LYRIC_BOOTSTRAP_USE_DOTNET_TOOL: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
-          # W0036 (D341): list every silent TyError site in the compiler and
-          # stdlib closure; this job's log is the census for the I0001 gate.
-          LYRIC_TYERR_GATE: "1"
         run: ./scripts/bootstrap.sh --stage 2
-
-      - name: Silent TyError census (W0036, D341)
-        run: |
-          n=$(grep -c 'W0036' .bootstrap/stage2-emit.log || true)
-          echo "::notice::W0036 silent TyError sites in the compiler and stdlib closure: ${n}"
-          grep 'W0036' .bootstrap/stage2-emit.log | sort -u | head -2000
 
       - name: Verify stage-2 toolchain runs
         run: |

@@ -21,9 +21,10 @@ error I0001) waits for the non-callee census to reach zero.
    `pipeVerifyTir` reuses the checker's existing diagnostic gating
    (`tcFatal`/advisory) instead of duplicating it in the pipeline.
 4. **Opt in.** W0036 is listed only with `LYRIC_TYERR_GATE=1`: until the typing
-   work lands, ordinary builds would warn about every `x.toString()`. CI sets it
-   on the stage 2 step, so that job's log is the census of the compiler and
-   stdlib closure. This is a transitional census switch, not a user-facing
+   work lands, ordinary builds would warn about every `x.toString()`. `scripts/bootstrap.sh` sets it for the stage 2 closure emit and prints the
+   sites (`scripts/ci/tyerr-census.sh`), so the CI stage 2 log is the census of
+   the compiler and stdlib closure. (The workflow file is at its size ceiling,
+   `check-workflow-size.sh`, so the wiring lives in the script.) This is a transitional census switch, not a user-facing
    off-switch: it is removed when W0036 becomes the always-on error I0001.
 5. **Next.** When the census on `origin/main` has no non-callee site, W0036
    becomes the error I0001 (always on, no switch), as D338 decided.
