@@ -14617,15 +14617,8 @@ test "Map and Set size members are Int" {
 
 test ".new on an extern type is that type, and default() adopts its expected type" {
   val ext = "package P\nextern type SB = \"System.Text.StringBuilder\"\n"
-  assertEqual(
-    diagCodesOf(parseCheck(ext + "func f(): SB {\n  SB.new()\n}\n")),
-    "",
-    "SB.new() is an SB"
-  )
-  assertTrue(
-    diagCodesOf(parseCheck(ext + "func f(): Int {\n  SB.new()\n}\n")) != "",
-    "SB.new() is not an Int"
-  )
+  assertEqual(diagCodesOf(parseCheck(ext + "func f(): SB {\n  SB.new()\n}\n")), "", "SB.new() is an SB")
+  assertTrue(diagCodesOf(parseCheck(ext + "func f(): Int {\n  SB.new()\n}\n")) != "", "SB.new() is not an Int")
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(): Int {\n  var v: Int = default()\n  v\n}\n")),
     "",
