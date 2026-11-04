@@ -21926,10 +21926,6 @@ func lowerBuiltinOrStaticCallMsil(
             } else {
               ""
             }
-            // TEMP-AUDIT (D336)
-            if sitedFqn.length == 0 and bundleFqn.length > 0 and resolvedFqn == bundleFqn and funcName != "println" and funcName != "print" {
-              Console.error("CALLEE-AUDIT bundle in " + fctx.pkgName + ": " + bundleFqn)
-            }
             if resolvedFqn.length > 0 {
               // Narrow to the arity-qualified token (#1536): a package may
               // declare overloads sharing `resolvedFqn` but registered under
