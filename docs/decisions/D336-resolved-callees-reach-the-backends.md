@@ -48,6 +48,11 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    checker's resolved arity (`methodCallArities`, #7828) and its own argument
    matching, as before. The DefPath's parameter list is recorded for
    phase 4, where `Callee` carries the full identity.
+   A call's site is keyed by its span alone for a path callee, so a call Mono
+   renames to a specialisation (`f` to `f__Int`) keeps it; MSIL then looks the
+   specialisation up in the declaring package, then the calling one. A
+   specialised copy of another package's generic carries that package's spans
+   and never consults this package's sites.
 4. **The name tiers stay for the calls with no site.** They are not deleted
    here: a census of the stdlib, compiler and ecosystem build shows the calls
    still without a site are builtins (`println`), dot-named type functions

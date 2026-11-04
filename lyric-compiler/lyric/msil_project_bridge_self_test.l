@@ -401,6 +401,34 @@ test "an aliased package-qualified call binds to the checker's callee (D336)" {
   )
 }
 
+// D336: a call Mono renamed to a specialisation (`tag` to `tag__Int`) keeps
+// the checker's callee.  `XSpec.Priv` is imported first and declares a
+// package-private generic `tag` (not visible to `XSpec.App`) beside a `pub`
+// caller of it; `XSpec.Pub` declares the `pub` generic `tag` the call means.
+test "a specialised generic call binds to the checker's callee, not a same-named private generic (D336)" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "XSpec.Priv",
+      "package XSpec.Priv\n" + "\n" + "func tag[T](x: in T): String { \"priv\" }\n" + "\n" +
+        "pub func other(): String { tag(1) }\n"
+    )
+  )
+  packages.add(mkPkg("XSpec.Pub", "package XSpec.Pub\n" + "\n" + "pub func tag[T](x: in T): String { \"pub\" }\n"))
+  packages.add(
+    mkPkg(
+      "XSpec.App",
+      "package XSpec.App\n" + "\n" + "import XSpec.Priv\n" + "import XSpec.Pub\n" + "\n" + "func main(): Unit {\n" +
+        "  println(tag(1))\n" +
+        "  println(other())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("xspec", packages, "XSpec")
+  assertEqualInt(result.exitCode, 0, "spec_site_callee: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "pub\npriv", "spec_site_callee: tag is the pub one, other reaches its own private tag")
+}
+
 // Issue #6850 review follow-up: `findBundleFqnByName`'s same-package /
 // direct-import tie-break tiers must key on EXACT package identity, not a
 // string prefix. `XNest.App.Inner` is a nested SUB-package of the caller

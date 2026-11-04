@@ -22254,7 +22254,7 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     }
     case _ -> return
   }
-  val key = methodCallSiteKey(fn)
+  val key = calleeKey(fn)
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> {
       if tbl.calleeSites.containsKey(key) {
@@ -22263,6 +22263,16 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
       tbl.calleeSites.add(key, dp)
     }
     case None -> ()
+  }
+}
+
+// The `calleeSites` key of the callee `fn`: a path by its span alone, so a
+// call Mono renames to a specialisation (`f` to `f__Int`) keeps its site; a
+// member of a package by `methodCallSiteKey`.
+func calleeKey(fn: in Expr): String {
+  match fn.kind {
+    case EPath(path) -> recordCopySiteKey(path.span)
+    case _ -> methodCallSiteKey(fn)
   }
 }
 
