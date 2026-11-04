@@ -4641,6 +4641,28 @@ test "more positions that fix a call, and the cases the checker cannot decide (D
   assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 2, "still reported when nothing fixes either call")
 }
 
+test "a type parameter one argument binds to an interface is solved though another binds a record (D339)" {
+  val lib = parse(
+    "package Lib\npub union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+      "pub func unwrapResultOr[T, E](r: in Result[T, E], default: in T): T { default }\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val src = "package App\nimport Lib\ninterface Shape { func area(self: in Self): Int }\nrecord Square { side: Int }\n" +
+    "impl Shape for Square { func area(self: in Self): Int { self.side } }\n" +
+    "func sq(): Result[Shape, String] { return Ok(Square(side = 4)) }\n" +
+    "func f(): Int {\n  val r = sq()\n  val s = unwrapResultOr(r, Square(side = 0))\n  s.area()\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, pkgs)
+  assertEqual(diagCodesOf(cr), "", "unwrapResultOr(r, Square(...)) over a Result[Shape, String]")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.
