@@ -3528,6 +3528,20 @@ test "where bound satisfied ok" {
   assertTrue(not hasDiagCode(cr, "T0108"), "where-bound Add satisfied by @derive(Add): no T0108")
 }
 
+// An unsupplied parameter is padded with an inference variable, not the hole:
+// it binds nothing, so a later or earlier argument still fixes the type
+// parameter and the call's result is the concrete type.
+test "a defaulted generic parameter left unsupplied binds nothing" {
+  val src = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](a: in T, b: in Option[T] = None): T { a }\n" +
+    "func f(): Int { pick(5) }\nfunc g(): String { pick(\"x\") }\n"
+  assertEqual(diagCodesOf(parseCheck(src)), "", "pick(5) is Int and pick(\"x\") is String")
+  val bad = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc pick[T](a: in T, b: in Option[T] = None): T { a }\nfunc f(): String { pick(5) }\n"
+  assertTrue(diagCount(parseCheck(bad)) > 0, "pick(5) is not a String")
+  val open = "package P\nunion Option[T] { case Some(value: T); case None }\nfunc both[T](a: in Option[T], b: in T): T { b }\n" +
+    "func f(): Int { both(None, 5) }\n"
+  assertEqual(diagCodesOf(parseCheck(open)), "", "both(None, 5) is Int: the later argument fixes T")
+}
+
 // Component-wise derives on records (D155): only Add and Sub, only on a
 // non-generic record whose fields share one numeric primitive type and which
 // has no invariant (T0152).
