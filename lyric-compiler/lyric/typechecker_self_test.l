@@ -4663,15 +4663,31 @@ test "a package function that shadows an imported one is W0037 (D350)" {
 }
 
 test "a selective import is shadowed too, and a type shadows a type (D350)" {
-  assertEqualInt(shadowWarnings("package App\nimport Lib.{twice}\nfunc twice(x: in Int): Int { x }\n").count, 1, "selective")
+  assertEqualInt(
+    shadowWarnings("package App\nimport Lib.{twice}\nfunc twice(x: in Int): Int { x }\n").count,
+    1,
+    "selective"
+  )
   assertEqualInt(shadowWarnings("package App\nimport Lib\nrecord Box { w: Int }\n").count, 1, "a type")
 }
 
 test "no W0037 without an import, for a different name, or across kinds (D350)" {
   assertEqualInt(shadowWarnings("package App\nfunc twice(x: in Int): Int { x }\n").count, 0, "not imported")
-  assertEqualInt(shadowWarnings("package App\nimport Lib\nfunc mine(x: in Int): Int { x }\n").count, 0, "different name")
-  assertEqualInt(shadowWarnings("package App\nimport Lib.{other}\nfunc twice(x: in Int): Int { x }\n").count, 0, "an unlisted name")
-  assertEqualInt(shadowWarnings("package App\nimport Lib\nrecord twice { w: Int }\n").count, 0, "a type against a function")
+  assertEqualInt(
+    shadowWarnings("package App\nimport Lib\nfunc mine(x: in Int): Int { x }\n").count,
+    0,
+    "different name"
+  )
+  assertEqualInt(
+    shadowWarnings("package App\nimport Lib.{other}\nfunc twice(x: in Int): Int { x }\n").count,
+    0,
+    "an unlisted name"
+  )
+  assertEqualInt(
+    shadowWarnings("package App\nimport Lib\nrecord twice { w: Int }\n").count,
+    0,
+    "a type against a function"
+  )
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type
@@ -5056,7 +5072,7 @@ test "alias target prefers current package over import" {
   )
   val src = "package P\nimport Q\nrecord Random {\n  x: Int\n}\nalias R = Random\nfunc f(): R { Random(x = 1) }\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
-  assertEqualInt(diagCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
+  assertEqualInt(errorCount(cr), 0, "alias target: current-package Random wins over imported Q.Random")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5735,7 +5751,7 @@ test "for over a package-local non-generator sharing an imported generator's nam
   val src = "package App\nimport Gen\nfunc each(xs: in slice[Int]): slice[Int] { xs }\n" +
     "func f(xs: in slice[Int]): Int {\n  var s = 0\n  for v in each(xs) {\n    val y: Int = v\n    s = s + y\n  }\n  s\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, gen)
-  assertEqualInt(diagCount(cr), 0, "local non-generator each: loop variable is Int; " + diagCodesOf(cr))
+  assertEqualInt(errorCount(cr), 0, "local non-generator each: loop variable is Int; " + diagCodesOf(cr))
 }
 
 test "for over a qualified non-generator sharing a local generator's name and arity" {
@@ -5745,7 +5761,7 @@ test "for over a qualified non-generator sharing a local generator's name and ar
     "func f(xs: in slice[Int]): Int {\n  var s = 0\n  for v in Lists.each(xs) {\n    s = s + v\n  }\n  for g in each(xs) {\n" +
     "    s = s + g\n  }\n  s\n}\n"
   val cr = checkWithImportedPackages(rewriteFile(parse(src).file), lists)
-  assertEqualInt(diagCount(cr), 0, "Lists.each(xs) iterates its slice[Int]; " + diagCodesOf(cr))
+  assertEqualInt(errorCount(cr), 0, "Lists.each(xs) iterates its slice[Int]; " + diagCodesOf(cr))
 }
 
 test "for over a method named like a generator types the loop variable from the method" {
@@ -7151,7 +7167,7 @@ test "local declaration shadows an ambiguous import collision, no T0123" {
   )
   val src = "package App\nimport PkgA\nimport PkgB\nval GREETING: String = \"local\"\nfunc f(): String { GREETING }\n"
   assertEqualInt(
-    diagCount(checkWithImportedPackages(parse(src).file, packages)),
+    errorCount(checkWithImportedPackages(parse(src).file, packages)),
     0,
     "App's own GREETING wins outright over the PkgA/PkgB collision: no T0123"
   )

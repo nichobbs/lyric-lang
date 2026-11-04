@@ -103,15 +103,7 @@ pub func shadowedImports(ctx: in ResolverContext): List[ShadowedImport] {
             match firstShadowed(tbl, fsc, own.name, cls) {
               case Some(s) -> {
                 found = true
-                acc.add(
-                  ShadowedImport(
-                    name = s.name,
-                    what = s.what,
-                    span = own.span,
-                    importedPkg = s.importedPkg,
-                    via = s.via
-                  )
-                )
+                acc.add(ShadowedImport(name = s.name, what = s.what, span = own.span, importedPkg = s.importedPkg, via = s.via))
               }
               case None -> ()
             }

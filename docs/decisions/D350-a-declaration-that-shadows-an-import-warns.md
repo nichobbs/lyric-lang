@@ -1,7 +1,7 @@
 # D350 - A declaration that shadows an import is W0037 (docs/70 phase 3a, #8767)
 
-**Status:** warning step in progress; the census decides whether it stays a
-warning.
+**Status:** shipped as a warning; the CI logs of the PR that carries it are the
+complete census.
 
 ## Context
 
@@ -29,3 +29,12 @@ of `Lyric.Parser.exprKindTag` with no diagnostic.
    logs are the complete census), then decide whether intentional shadowing
    needs an opt-out before it could become an error. It is not made an error in
    this entry.
+
+## Census
+
+`./scripts/bootstrap.sh --stage 2` (the compiler and stdlib closure): 26
+declarations, all intentional-looking (`maxInt`, `listContains`, `syntheticSpan`
+and the `doc.l` printers redeclared beside the import that has them, a
+`LocalBinding` and a `Random` type beside imported ones). They stay warnings.
+Renaming them, or an opt-out if some are meant to stay, is a follow-up; this
+entry does not make the warning an error.
