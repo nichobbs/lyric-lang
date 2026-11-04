@@ -16863,22 +16863,13 @@ func noteUnsolvedCaseCtor(
   if scopeHasName(sc, fname) {
     return
   }
-  val parentId = match caseSym.kind {
-    case DKUnionCase(pid, _) -> pid
-    case _ -> return
-  }
-  val decl = match parentUnionDeclOf(tbl, parentId) {
-    case Some(d) -> d
-    case None -> return
-  }
+  val parentId = match caseSym.kind { case DKUnionCase(pid, _) -> pid; case _ -> return }
+  val decl = match parentUnionDeclOf(tbl, parentId) { case Some(d) -> d; case None -> return }
   val gnames = unionDeclGenericNames(decl)
   if gnames.count == 0 {
     return
   }
-  val targs = match caseTy {
-    case TyUser(_, _, a) -> a
-    case _ -> return
-  }
+  val targs = match caseTy { case TyUser(_, _, a) -> a; case _ -> return }
   if targs.count != gnames.count {
     return
   }
@@ -17088,7 +17079,9 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
   // A function call held by an open binding is judged by the binding's own
   // site; a construction is fixed only once the binding got an annotation.
   if site.ctor {
-    if tbl.localBindingTypeSites.containsKey(site.callKey) {
+    // A `?` operand never yields a value, so its success type stays open by
+    // design (`Err(error = e)?`); the propagate tables hold it (#8181).
+    if tbl.localBindingTypeSites.containsKey(site.callKey) or tbl.openPropagateOperands.containsKey(site.callKey) or tbl.hoistOperandTypeSites.containsKey(site.callKey) {
       return true
     }
   } else if tbl.openBindingSites.containsKey(site.callKey) {
