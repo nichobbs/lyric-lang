@@ -8,7 +8,7 @@ import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{DepPackage, buildResolverContext}
+import Lyric.Resolve.{DepPackage, buildResolverContext, shadowedImports}
 import Std.Environment.{getVarOrDefault}
 import Lyric.Fmt as Fmt
 
@@ -7362,7 +7362,24 @@ func checkWithImportedPackagesCore(
   // From here on, resolve under the user package's scope by default: the
   // user's own declarations win, then its imports, then last-registered.
   symTableSetScope(tbl, userPkg, userImports)
-  tbl.resolveCtx.add(buildResolverContext(resolveDeps, file, tbl.interner))
+  val resolveContext = buildResolverContext(resolveDeps, file, tbl.interner)
+  tbl.resolveCtx.add(resolveContext)
+  // W0037 (D350): a declaration of the package that hides an imported name.
+  for sh in shadowedImports(resolveContext) {
+    diag.add(
+      warningDiagnostic(
+        "W0037",
+        "'" + sh.name + "' declared here shadows the " + sh.what + " '" + sh.name + "' this package imports from '" +
+          sh.importedPkg +
+          "' (" +
+          sh.via +
+          "); calls of '" +
+          sh.name +
+          "' in files that import it bind to this declaration (docs/70 section 4.3)",
+        sh.span
+      )
+    )
+  }
 
   // T2.5: validate range subtypes.
   var k = 0
