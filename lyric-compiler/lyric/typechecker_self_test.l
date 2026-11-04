@@ -594,6 +594,13 @@ test "a type parameter is equal to itself and instantiates at a call" {
   assertEqualInt(diagCount(parseCheck(src)), 0, "rigid: identity over T and over Int is clean")
 }
 
+// An invariant of a generic type is checked in a scope whose parameters carry
+// the type's binder; an explicit type argument in it resolves `T` against it.
+test "a generic record invariant names the record's parameter" {
+  val src = "package P\nfunc same[U](a: in U, b: in U): Bool {\n  true\n}\ngeneric[T] record H {\n  v: T\n  invariant: forall (k: Byte) { same[T](v, v) }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "owner: T in a record invariant resolves to the record's T")
+}
+
 // D337: a type parameter belongs to the declaration that binds it.  Two
 // declarations that each bind a `T` do not share it.
 test "same-named parameters of different binders are distinct" {

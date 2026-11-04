@@ -3954,7 +3954,7 @@ func checkProtectedMemberBodies(
         for vp in valueGenericNames(decl.generics) {
           invLocals.add(LocalBinding(name = vp, ty = TyPrim(pt = PtInt), isMutable = false))
         }
-        checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, invLocals, selfTy)
+        checkProtectedInvariant(tbl, sigs, diag, inv, decl.name, ownerGenerics, invLocals, selfTy)
       }
       case _ -> {
       }
@@ -3973,11 +3973,12 @@ func checkProtectedInvariant(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   inv: in InvariantClause,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
 ): Unit {
-  checkInvariantExpr(tbl, sigs, diag, inv.expr, inv.span, ownerGenerics, fieldLocals, selfTy)
+  checkInvariantExpr(tbl, sigs, diag, inv.expr, inv.span, ownerKey, ownerGenerics, fieldLocals, selfTy)
 }
 
 // An `invariant:` expression, checked as `Bool` with the type's fields bound
@@ -3988,6 +3989,7 @@ func checkInvariantExpr(
   diag: in List[Diagnostic],
   expr: in Expr,
   sp: in Span,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
@@ -3998,6 +4000,7 @@ func checkInvariantExpr(
   }
   val noRet: Option[TypeExpr] = None
   val sc = newScopeForFunction(TyPrim(pt = PtBool), ownerGenerics, noRet, selfFields, true, selfTy)
+  scopeSetGenericOwners(sc, ownersOfKey(ownerGenerics, ownerKey))
   for f in fieldLocals {
     scopeAdd(sc, f)
   }
@@ -4014,6 +4017,7 @@ func checkQuantifiedInvariantConjuncts(
   sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   inv: in InvariantClause,
+  ownerKey: in String,
   ownerGenerics: in List[String],
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
@@ -4022,7 +4026,7 @@ func checkQuantifiedInvariantConjuncts(
   collectInvariantConjuncts(inv.expr, parts)
   for part in parts {
     if exprHasQuantifier(part) {
-      checkInvariantExpr(tbl, sigs, diag, part, part.span, ownerGenerics, fieldLocals, selfTy)
+      checkInvariantExpr(tbl, sigs, diag, part, part.span, ownerKey, ownerGenerics, fieldLocals, selfTy)
     }
   }
 }
@@ -4076,7 +4080,16 @@ func checkOpaqueInvariants(
   val selfTy = opaqueSelfType(tbl, decl.name, ownerGenerics)
   for m in decl.members {
     match m {
-      case OMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case OMInvariant(inv) -> checkQuantifiedInvariantConjuncts(
+        tbl,
+        sigs,
+        diag,
+        inv,
+        decl.name,
+        ownerGenerics,
+        fieldLocals,
+        selfTy
+      )
       case OMField(_) -> ()
     }
   }
@@ -4415,7 +4428,16 @@ func checkRecordMemberBodies(
           selfTy
         )
       }
-      case RMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case RMInvariant(inv) -> checkQuantifiedInvariantConjuncts(
+        tbl,
+        sigs,
+        diag,
+        inv,
+        decl.name,
+        ownerGenerics,
+        fieldLocals,
+        selfTy
+      )
       case _ -> {
       }
     }
