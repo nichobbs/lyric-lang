@@ -17154,33 +17154,61 @@ func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in Li
   candidates[0]
 }
 
-// The `Pkg.name` the checker's rendered callee DefPath (`Pkg::name(P1,P2)`)
-// names, "" when `dp` is not of that form (D336).
-func calleeFqnOfDefPathMsil(dp: in String): String {
+// The package and the declared name in the checker's rendered callee DefPath
+// (`Pkg::name(P1,P2)`), "" when `dp` is not of that form (D336).
+func calleePkgOfDefPathMsil(dp: in String): String {
+  match String.indexOf(dp, "::") {
+    case None -> ""
+    case Some(i) -> String.substring(dp, 0, i)
+  }
+}
+
+func calleeNameOfDefPathMsil(dp: in String): String {
   match String.indexOf(dp, "::") {
     case None -> ""
     case Some(i) -> {
-      val pkg = String.substring(dp, 0, i)
       val rest = String.substring(dp, i + 2, dp.length - i - 2)
-      val name = match String.indexOf(rest, "(") { case Some(j) -> String.substring(rest, 0, j); case None -> rest }
-      pkg + "." + name
+      match String.indexOf(rest, "(") {
+        case Some(j) -> String.substring(rest, 0, j)
+        case None -> rest
+      }
     }
   }
 }
 
-// The function the checker resolved the call at `siteKey` to when it is the
-// function `funcName` (so a call a later pass renamed does not match) and the
-// bundle has it, else "" (D336).
-func sitedCalleeFqnMsil(cctx: in CodegenCtx, siteKey: in String, funcName: in String): String {
+// The function the checker resolved the call at `siteKey` to, as the FQN the
+// bundle registers it under, when it is the function being lowered, else ""
+// (D336).  `funcName` is the name the call now carries: the declared name, the
+// member of a dot-named function (`message` for `IOError.message`), or a
+// specialisation Mono renamed it to (`f__Int`), which lives in the declaring
+// package or in the calling one.  A specialised copy of another package's
+// generic carries that package's spans, which this package's sites do not
+// describe, so it is never looked up here.
+func sitedCalleeFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, funcName: in String): String {
+  if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    return ""
+  }
   match mapGet(cctx.calleeSites, siteKey) {
     case None -> ""
     case Some(dp) -> {
-      val fqn = calleeFqnOfDefPathMsil(dp)
-      if fqn.length > 0 and String.endsWith(fqn, "." + funcName) and cctx.funcTokens.containsKey(fqn) {
-        fqn
-      } else {
-        ""
+      val pkg = calleePkgOfDefPathMsil(dp)
+      val name = calleeNameOfDefPathMsil(dp)
+      if pkg.length == 0 or name.length == 0 {
+        return ""
       }
+      val cands: List[String] = newList()
+      if name == funcName or String.endsWith(name, "." + funcName) {
+        cands.add(pkg + "." + name)
+      } else if String.startsWith(funcName, name + "__") {
+        cands.add(pkg + "." + funcName)
+        cands.add(fctx.pkgName + "." + funcName)
+      }
+      for c in cands {
+        if cctx.funcTokens.containsKey(c) {
+          return c
+        }
+      }
+      ""
     }
   }
 }
@@ -21880,7 +21908,7 @@ func lowerBuiltinOrStaticCallMsil(
             // declaring package's own, whatever tier below would have found.
             // Empty for a call the checker did not record, and for one a
             // later pass renamed (a monomorphised copy), which keep the tiers.
-            val sitedFqn = sitedCalleeFqnMsil(cctx, methodCallPathKey(path), funcName)
+            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
             val resolvedFqn = if bareSiblingHit {
               ""
             } else if sitedFqn.length > 0 {
@@ -21897,6 +21925,10 @@ func lowerBuiltinOrStaticCallMsil(
               bundleFqn
             } else {
               ""
+            }
+            // TEMP-AUDIT (D336)
+            if sitedFqn.length == 0 and resolvedFqn.length > 0 {
+              Console.error("CALLEE-AUDIT nosite in " + fctx.pkgName + ": " + resolvedFqn)
             }
             if resolvedFqn.length > 0 {
               // Narrow to the arity-qualified token (#1536): a package may
@@ -23130,7 +23162,7 @@ func lowerMethodCallMsil(
     // A call through a package qualifier the checker resolved (`Alias.f`,
     // `Pkg.f`): the declaring package's function, whatever the qualifier
     // spells (D336).
-    val sitedMemberFqn = sitedCalleeFqnMsil(cctx, siteKey, memberName)
+    val sitedMemberFqn = sitedCalleeFqnMsil(cctx, fctx, siteKey, memberName)
     if sitedMemberFqn.length > 0 and not fctx.slots.containsKey(recvSegs[0]) {
       val sitedSegs = String.split(sitedMemberFqn, ".")
       val sitedPath: List[String] = newList()

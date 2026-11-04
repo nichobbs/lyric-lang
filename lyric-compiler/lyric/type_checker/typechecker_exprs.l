@@ -17331,7 +17331,7 @@ func inferExprCore(
           noteBareCalleeFunc(tbl, fn, ds.originPackage)
           recordCalleeSite(tbl, fn, ds)
         }
-        case None -> ()
+        case None -> recordBareFuncCalleeSite(sc, tbl, fn)
       }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
@@ -22247,20 +22247,66 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
     }
     case EMember(recv, member) -> {
       val segs: List[String] = newList()
-      if not calleeSegments(recv, segs) or modulePathJoin(segs) != sig.originPackage {
+      if not calleeSegments(recv, segs) {
         return
       }
-      name = member
+      if modulePathJoin(segs) == sig.originPackage {
+        name = member
+      } else if segs.count == 1 and startsUppercase(segs[0]) {
+        // `Type.f(...)`: a dot-named function of the type, registered as
+        // `Type.f` in its declaring package.
+        name = segs[0] + "." + member
+      } else {
+        return
+      }
     }
     case _ -> return
   }
-  val key = methodCallSiteKey(fn)
+  val key = calleeKey(fn)
   match symTableFuncDefPathKey(tbl, sig, name, allowArity) {
     case Some(dp) -> {
       if tbl.calleeSites.containsKey(key) {
         tbl.calleeSites.remove(key)
       }
       tbl.calleeSites.add(key, dp)
+    }
+    case None -> ()
+  }
+}
+
+// The `calleeSites` key of the callee `fn`: a path by its span alone, so a
+// call Mono renames to a specialisation (`f` to `f__Int`) keeps its site; a
+// member of a package by `methodCallSiteKey`.
+func calleeKey(fn: in Expr): String {
+  match fn.kind {
+    case EPath(path) -> recordCopySiteKey(path.span)
+    case _ -> methodCallSiteKey(fn)
+  }
+}
+
+// Record the function a bare call `f(...)` means when no signature was found
+// for it (a built-in the checker types itself, such as `println`): the one
+// function the file's imports give the name (`symTableTryFindOne`, the
+// resolver's answer), never a local or a field of the implicit receiver.
+func recordBareFuncCalleeSite(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Unit {
+  val path = match fn.kind { case EPath(p) -> p; case _ -> return }
+  if path.segments.count != 1 or isNoSourceSpan(fn.span) {
+    return
+  }
+  val head = path.segments[0]
+  if scopeHasName(sc, head) or sc.selfFields.containsKey(head) {
+    return
+  }
+  match symTableTryFindOne(tbl, head) {
+    case Some(sym) -> match funcSymbolDefPathKey(sym) {
+      case Some(dp) -> {
+        val key = calleeKey(fn)
+        if tbl.calleeSites.containsKey(key) {
+          tbl.calleeSites.remove(key)
+        }
+        tbl.calleeSites.add(key, dp)
+      }
+      case None -> ()
     }
     case None -> ()
   }
