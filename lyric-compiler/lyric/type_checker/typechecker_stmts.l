@@ -1837,7 +1837,8 @@ func checkFunctionBodyAt(
   // above), `extern func` / interface method signatures (different item
   // kinds, never routed through this function).  A `TyError` return type is
   // already diagnosed at the declaration; skip to avoid a cascade.
-  val returnNeedsBody = not isUnitType(sig.returnTy) and (match sig.returnTy { case TyError(_) -> false; case _ -> true }) and
+  val returnNeedsBody = not isUnitType(sig.returnTy) and
+    (match sig.returnTy { case TyError(_) -> false; case _ -> true }) and
     not fnHasAnnotation(fn, "axiom")
   if returnNeedsBody {
     val bodyMissing = match fn.body {

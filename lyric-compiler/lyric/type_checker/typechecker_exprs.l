@@ -18658,7 +18658,18 @@ func inferLambda(
     case None -> {
       val returned: List[Type] = newList()
       tbl.lambdaReturnFrames.add(returned)
-      val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, tyErrorSilent(), noLambdaRte, diag, body, bodyValuePos, tyErrorSilent())
+      val bodyTy = checkBlock(
+        lsc,
+        tbl,
+        sigs,
+        sc.genericNames,
+        tyErrorSilent(),
+        noLambdaRte,
+        diag,
+        body,
+        bodyValuePos,
+        tyErrorSilent()
+      )
       tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
       scopePop(sc)
       // A body whose every path `return`s has the type `Never`; the lambda's
@@ -19116,7 +19127,21 @@ func adoptCtorLiteralArgs(
           tys.add(f.ty)
         }
       }
-      adoptLiteralArgsOver(sc, tbl, sigs, diag, generics, names, tys, args, argTypes, "T0104", "field", tyErrorSilent(), tyErrorSilent())
+      adoptLiteralArgsOver(
+        sc,
+        tbl,
+        sigs,
+        diag,
+        generics,
+        names,
+        tys,
+        args,
+        argTypes,
+        "T0104",
+        "field",
+        tyErrorSilent(),
+        tyErrorSilent()
+      )
     }
     case None -> match unionCaseSymbolOf(tbl, fn) {
       case Some(caseSym) -> match caseSym.kind {
