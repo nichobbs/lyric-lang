@@ -115,3 +115,28 @@ proposed: the checker records only a single-segment callee, and Mono's
 site would let an unrecorded imported call fall through unspecialised and be
 dropped by code generation (#5604). It goes when the checker's table covers
 qualified and member callees.
+
+## Step three, part one: the exemptions are one predicate
+
+Mono's three exemptions are now `unpinnedCallKeepsErasedDefault` in `mono.l`
+(behaviour unchanged), and the checker's `noteUnsolvedCall` exempts the same
+three, so the two agree on what T0224 covers. Revisited:
+
+- **An `@externTarget` generic** stays exempt: its type arguments are erased by
+  the host boundary and the extern signature, not the call, fixes them. Reading
+  them from the extern signature belongs with the metadata-resolution work
+  (docs/42).
+- **A name the local environment binds** stays exempt: it is a function value,
+  not a named generic, and has no type-argument list to write.
+- **A call without a source position** stays exempt for now. Derives, wire and
+  plugin expansion should carry their own type arguments; which expansions
+  still produce an unpinned generic call is not yet measured, and measuring it
+  needs a count of exempt calls per origin. Tracked on #8760.
+
+Still open: Mono's two `Object` fills in result-type inference (`ctorFill`
+for a standalone union-case constructor, `importedFill` for an imported
+generic) cannot go before the checker reports a standalone constructor whose
+type argument nothing fixes (`val r = Ok(value = 7)`): the checker's table
+holds function calls only. That is the next slice: record constructor calls,
+warn, census, then error and delete the fills.
+
