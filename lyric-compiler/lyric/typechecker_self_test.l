@@ -4781,6 +4781,40 @@ test "no W0037 without an import, for a different name, or across kinds (D350)" 
   )
 }
 
+test "a call fed by a read of an open-typed value is not judged, a construction is (D339)" {
+  val lib = parse(
+    "package Lib\npub record Handler[M] { name: String }\npub func nameOf[M](h: in Handler[M]): String { h.name }\n" +
+      "pub union Option[T] { case Some(value: T); case None }\npub func isNone[T](o: in Option[T]): Bool { true }\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val count = { src: String ->
+    val cr = checkWithImportedPackages(parse("package App\nimport Lib\n" + src).file, pkgs)
+    var n = 0
+    for d in cr.diagnostics {
+      if d.code == "W0035" {
+        n = n + 1
+      }
+    }
+    n
+  }
+  assertEqualInt(
+    count(
+      "func f[M](hs: in List[Handler[M]]): Int {\n  var n = 0\n  for h in hs {\n    n = n + nameOf(h).length\n  }\n  n\n}\n"
+    ),
+    0,
+    "a loop variable of a generic body"
+  )
+  assertEqualInt(count("func f(): Bool { isNone(None) }\n"), 1, "a bare case construction is still judged")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.

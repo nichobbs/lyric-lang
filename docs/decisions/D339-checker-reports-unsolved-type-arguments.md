@@ -74,6 +74,20 @@ compiler and stdlib, and the fixed shapes verified by the self-test cases and by
 `stdlib_generic_iface_self_test.l`. The CI run of the PR that carries this
 amendment is the census for the rest; the error step reads it first.
 
+## Third round: reads of an open-typed value (CI census of the second round)
+
+The second PR's CI logs still showed ten sites: three `core_tests.l` calls that
+are true positives (migrated by writing the first `Result` as an annotated
+`val`, in the T0224 step) and seven in `lyric-ui` and `lyric-ws` where the
+argument is a read of a value the checker could only type with a hole in it: a
+loop variable of a generic body (`eventName(h)` over `List[Handler[Msg]]`), a
+member read (`replaceAll(s.tree)`, `mapGet(dict.items, key)`) or an index
+(`viewOf(children[0])`). The hole is the checker's lost information, not the
+user's omission, so a call such an argument feeds is `indeterminate` (never
+reported); a construction (`None`, `Ok(value = 7)`) or a call is the user's
+omission and is still judged. This is the same class the silent-`TyError` work
+closes (D338, D340), after which the exemption can go.
+
 ## Order of work
 
 W0035 (this entry), then T0224 from the checker with Mono's site deleted, then
