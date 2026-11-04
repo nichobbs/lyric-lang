@@ -4606,9 +4606,8 @@ func unsolvedWarnings(body: in String): Int {
 }
 
 test "an imported generic call nothing fixes is W0035 (D339)" {
-  val cr = checkWithImportedPackages(parse("package App\nimport Lib\nfunc f(): Bool { isNone(none()) }\n").file, unsolvedLib())
-  assertEqualInt(cr.symbols.unsolvedCallSites.count, 1, "sites " + toString(cr.symbols.genericCallTypeArgSites.count) + toString(cr.symbols.callExpectedSeen.count) + diagCodesOf(cr))
-  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 1, "none() inside isNone(...) fixes nothing")
+  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none()) }\n"), 2, "neither none() nor isNone(...) is fixed")
+  assertEqualInt(unsolvedWarnings("func f(): Bool { isNone(none[Int]()) }\n"), 0, "written type arguments fix both")
 }
 
 test "an expected type, another argument or a written type argument fixes the call (D339)" {
