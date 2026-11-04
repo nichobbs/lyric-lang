@@ -5,4 +5,7 @@ log="${1:-.bootstrap/stage2-emit.log}"
 [[ -f "$log" ]] || { echo "tyerr-census: missing $log" >&2; exit 1; }
 n=$(grep -c 'W0036' "$log" || true)
 echo "::notice::W0036 silent TyError sites in the compiler and stdlib closure: ${n}"
-grep 'W0036' "$log" | sort -u | head -2000 || true
+sites=$(grep 'W0036' "$log" | sort -u || true)
+printf '%s\n' "$sites" | head -2000
+total=$(printf '%s\n' "$sites" | grep -c . || true)
+if [[ "$total" -gt 2000 ]]; then echo "tyerr-census: $((total - 2000)) more sites not printed"; fi

@@ -2575,7 +2575,7 @@ func reportExternIterElemUnbound(diag: in List[Diagnostic], iter: in Expr, iterT
       iter.span
     )
   )
-  tyErrorSilent()
+  tyErrorFor(diag)
 }
 
 // True when a `for` iterates an extern type through the host's own protocol
@@ -2600,7 +2600,7 @@ func forIterIsExternHostLoop(tbl: in SymbolTable, iter: in Expr, elemType: in Ty
 
 func reportNotIterable(diag: in List[Diagnostic], iter: in Expr, message: in String): Type {
   diag.add(errorDiagnostic("T0126", message, iter.span))
-  tyErrorSilent()
+  tyErrorFor(diag)
 }
 
 // A note for T0126 on a distinct type: its value is a wrapper, not the
