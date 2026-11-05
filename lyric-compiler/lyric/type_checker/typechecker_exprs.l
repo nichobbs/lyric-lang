@@ -4273,25 +4273,20 @@ func untypedMemberCallResult(
   }
   if memberName == "new" and tbl.externIterResolver.count > 0 {
     match fn.kind {
-      case EMember(recv, _) -> match recv.kind {
-        case EPath(p) -> if p.segments.count == 1 {
-          match symTableTryFindOne(tbl, p.segments[0]) {
-            case Some(sym) -> match sym.kind {
-              case DKExternType(tid, d) -> {
-                if isHostStringTypeName(d.clrName) {
-                  return TyPrim(pt = PtString)
-                }
-                match d.generics {
-                  case None -> return TyUser(id = tid, name = d.name, args = newList())
-                  case Some(_) -> ()
-                }
-              }
-              case _ -> ()
+      case EMember(recv, _) -> match externTypeSymbolOfExpr(tbl, recv) {
+        case Some(sym) -> match sym.kind {
+          case DKExternType(tid, d) -> {
+            if isHostStringTypeName(d.clrName) {
+              return TyPrim(pt = PtString)
             }
-            case None -> ()
+            match d.generics {
+              case None -> return TyUser(id = tid, name = d.name, args = newList())
+              case Some(_) -> ()
+            }
           }
+          case _ -> ()
         }
-        case _ -> ()
+        case None -> ()
       }
       case _ -> ()
     }
@@ -4314,7 +4309,7 @@ func untypedMemberCallResult(
   }
   // A member of a value that is itself untyped is as untyped as the value.
   match recvTy {
-    case Some(TyError(d)) -> return TyError(diag = d)
+    case Some(TyError(d)) -> return if d.index == 0 { tyErrorUnresolved() } else { TyError(diag = d) }
     case _ -> ()
   }
   val universal = universalMethodResultType(memberName, argc)
@@ -4339,19 +4334,61 @@ func externMemberReceiver(tbl: in SymbolTable, recv: in Expr, recvTy: in Type): 
     }
     case _ -> ()
   }
-  match recv.kind {
-    case EPath(p) -> if p.segments.count == 1 {
-      match symTableTryFindOne(tbl, p.segments[0]) {
-        case Some(sym) -> match sym.kind {
-          case DKExternType(_, d) -> return Some(value = ExternReceiver(decl = d, targs = newList()))
-          case _ -> ()
-        }
-        case None -> ()
-      }
+  match externTypeSymbolOfExpr(tbl, recv) {
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, d) -> return Some(value = ExternReceiver(decl = d, targs = newList()))
+      case _ -> ()
     }
-    case _ -> ()
+    case None -> ()
   }
   None
+}
+
+// The `extern type` an expression names as a qualifier: a bare `T`, or a
+// package-qualified `Pkg.T` (`MailKernel.MailMessage.new()`), where `T` is the
+// only extern type of that name or `Pkg` is the package declaring it.  A name a
+// local binds is a value, never the type.
+func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
+  }
+  val last = segs[segs.count - 1]
+  if segs.count == 1 {
+    match symTableTryFindOne(tbl, last) {
+      case Some(sym) -> match sym.kind {
+        case DKExternType(_, _) -> return Some(value = sym)
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    return None
+  }
+  val quals: List[String] = newList()
+  var qi = 0
+  while qi < segs.count - 1 {
+    quals.add(segs[qi])
+    qi = qi + 1
+  }
+  match symTableTryFindInPackage(tbl, modulePathJoin(quals), last) {
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, _) -> return Some(value = sym)
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  var only: Option[Symbol] = None
+  var n = 0
+  for cand in symTableTryFindAllNamed(tbl, last) {
+    match cand.kind {
+      case DKExternType(_, _) -> {
+        only = Some(value = cand)
+        n = n + 1
+      }
+      case _ -> ()
+    }
+  }
+  if n == 1 { only } else { None }
 }
 
 // A host class result.  A host method returns a reference the language cannot
@@ -18852,6 +18889,11 @@ func inferExprCore(
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
             recordResultTypeAt(tbl, instRet, e.span)
+            // A result no argument fixes (`default()`, typed by where it is
+            // used) is an erased generic value, not an unreported error.
+            if isSilentTyError(instRet) {
+              return tyErrorGeneric()
+            }
           }
           instRet
         }
@@ -19344,7 +19386,11 @@ func inferExprCore(
       val typedRead = if isSilentTyError(readTy) and not tbl.calleePositionSites.containsKey(recordCopySiteKey(e.span)) {
         match externMemberReceiver(tbl, recv, rt) {
           case Some(er) -> externMemberResult(tbl, er, name, 0, true)
-          case None -> match rt { case TyError(d) -> TyError(diag = d); case _ -> readTy }
+          case None -> match unrefine(rt) {
+            case TyError(d) -> TyError(diag = d)
+            case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
+            case _ -> readTy
+          }
         }
       } else {
         readTy
