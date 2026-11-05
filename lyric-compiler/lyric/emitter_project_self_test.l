@@ -3408,6 +3408,12 @@ func originSitedCallPkgs(): List[Emitter.ProjectPackage] {
   pkgs
 }
 
+test "emitProject a specialised generic's callee is the declaring package's, not a same-named export of the caller's imports (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-originsited-jvm", originSitedCallPkgs(), "EPOs")
+  assertEqualInt(result.exitCode, 0, "originsited JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "originsited JVM: output")
+}
+
 test "emitProject a specialised generic's callee is the declaring package's, not a same-named export of the caller's imports (MSIL)" {
   val result = runEmitProject("emitproj-originsited", originSitedCallPkgs(), "EPOs")
   assertEqualInt(result.exitCode, 0, "originsited MSIL: exit 0 (stderr=" + result.stderr + ")")

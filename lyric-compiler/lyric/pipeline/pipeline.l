@@ -2214,6 +2214,14 @@ pub func pipeCheckAndMono(
       opts.memberRecvClassesOut
     )
   }
+  foreignCalleeSites(
+    monoRes0.foreignSpecs,
+    file0,
+    importedPkgs,
+    monoGenFuncs,
+    opts.nativeIntrinsics,
+    opts.calleeSitesOut
+  )
   val foreignUnitSites = foreignUnitLambdaSites(
     monoRes0.foreignSpecs,
     file0,
@@ -2460,8 +2468,17 @@ func addOriginScope(
       for it in ip.items {
         items.add(signatureOnlyItem(it))
       }
-      for dep in ip.imports {
-        imports.add(wholeImportDecl(dep, file0.span))
+      // The imports as the package declared them, so a selective import
+      // (`import P.{g}`) hides the rest of `P` in its generics' bodies; a
+      // package known by name only has them whole.
+      if ip.importDecls.count > 0 {
+        for d in ip.importDecls {
+          imports.add(d)
+        }
+      } else {
+        for dep in ip.imports {
+          imports.add(wholeImportDecl(dep, file0.span))
+        }
       }
     } else {
       checkPkgs.add(ip)
@@ -2582,6 +2599,60 @@ pub func foreignMemberRecvClasses(
             if not acc.containsKey(origin + "|" + k) {
               match mapGet(res.symbols.memberRecvClasses, k) {
                 case Some(cls) -> acc.add(origin + "|" + k, cls)
+                case None -> ()
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+}
+
+// The callees (`SymbolTable.calleeSites`, D336) of the bodies of `specs`,
+// specialisations of other packages' generics, resolved in the scope of the
+// package declaring each generic and recorded in `acc` under
+// `<origin>|<siteKey>`.  A call in a generic body resolves to the same
+// declaration for every specialisation, so one specialisation of each generic
+// stands for all; each backend looks a call in a body specialised from
+// `origin` up under that key.
+pub func foreignCalleeSites(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, String],
+): Unit {
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    if sp.originPkg.length == 0 {
+      continue
+    }
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+        case Some(res) -> {
+          for k in mapKeys(res.symbols.calleeSites) {
+            if not acc.containsKey(origin + "|" + k) {
+              match mapGet(res.symbols.calleeSites, k) {
+                case Some(dp) -> acc.add(origin + "|" + k, dp)
                 case None -> ()
               }
             }
