@@ -51,6 +51,12 @@ D-N-023); the process leaf pumped its pipes on a 1 ms sleep.
    reachability walk keeps a twin alive whenever its synchronous function is). Results and errors
    are the synchronous functions'; a timeout set with `hostSetIoTimeout` bounds the wait as it
    bounds the blocking read, and a stopped listener ends an async accept as it ends a blocking one.
+   On POSIX the try-ops pass `MSG_DONTWAIT`. Winsock has no per-call flag and `FIONBIO` belongs
+   to the socket, so switching it for one call and back would race with another task using the
+   same connection: the first try-op leaves the connection non-blocking, and the blocking read and
+   write wait in `WSAPoll` (bounded by the socket's timeout) when a call would block, so they
+   behave the same in either mode. One try-write copies and sends at most 64 KiB
+   (`LYRIC_SOCK_TRY_WRITE_CHUNK`), so a large write to a slow peer costs linear copying.
 6. **Evidence.** `lyric_async_mt_test.c` parks 256 tasks on pipes written only after every task
    has parked, mixes reactor timeouts with sleepers, checks that busy threads still poll, and runs
    both schedulers, plain and under ThreadSanitizer and AddressSanitizer.

@@ -717,6 +717,9 @@ int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset)
     if (n <= 0) {
         return 0;
     }
+    if (n > LYRIC_SOCK_TRY_WRITE_CHUNK) {
+        n = LYRIC_SOCK_TRY_WRITE_CHUNK;
+    }
     uint8_t* buf = (uint8_t*)malloc((size_t)n);
     if (!buf) {
         set_err("out of memory");

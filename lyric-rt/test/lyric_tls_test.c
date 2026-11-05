@@ -1333,12 +1333,96 @@ static void test_tls_write_after_peer_close(void) {
 }
 #endif /* !_WIN32: Windows has no SIGPIPE */
 
+/* ── Non-blocking twins for the async I/O reactor (#8494, D405) ────────── */
+
+typedef struct {
+    int fd;
+    int64_t want;
+    int64_t got;
+} DrainArgs;
+
+static void* drain_peer(void* arg) {
+    DrainArgs* a = (DrainArgs*)arg;
+    uint8_t buf[16384];
+    while (a->got < a->want) {
+        int64_t n = lyric_sock_read(a->fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        a->got += n;
+    }
+    return NULL;
+}
+
+/* A try-write sends at most LYRIC_SOCK_TRY_WRITE_CHUNK bytes and reports a full
+ * send buffer as -2; a try-read with nothing to read reports 2.  The try-ops
+ * may leave the socket non-blocking (Winsock), so the blocking forms must
+ * still wait, write everything and read on the same socket afterwards. */
+static void test_sock_try_ops(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    int client = lyric_sock_connect("127.0.0.1", port);
+    CHECK(client >= 0);
+    int server = lyric_sock_accept(listen_fd);
+    CHECK(server >= 0);
+    set_timeout(client);
+    set_timeout(server);
+
+    int32_t status = -1;
+    LyricList* none = lyric_sock_try_read_bytes(server, 64, &status);
+    CHECK(status == 2);
+    CHECK(none->len == 0);
+    lyric_release(none);
+
+    LyricList* big = lyric_list_new(0);
+    for (int i = 0; i < 4 * LYRIC_SOCK_TRY_WRITE_CHUNK; i++) lyric_list_push(big, (int64_t)(i & 0xff));
+    int64_t first = lyric_sock_try_write_bytes(server, big, 0);
+    CHECK(first > 0 && first <= LYRIC_SOCK_TRY_WRITE_CHUNK);
+    /* Nobody reads the client side: the send buffer fills. */
+    int64_t sent = first;
+    int full = 0;
+    for (int i = 0; i < 100000 && !full; i++) {
+        int64_t w = lyric_sock_try_write_bytes(server, big, 0);
+        CHECK(w != -1);
+        if (w == -2) {
+            full = 1;
+        } else {
+            CHECK(w <= LYRIC_SOCK_TRY_WRITE_CHUNK);
+            sent += w;
+        }
+    }
+    CHECK(full);
+
+    /* A blocking write on the same socket waits for the peer instead of failing. */
+    enum { TAIL = 100000 };
+    static uint8_t tail[TAIL];
+    memset(tail, 7, sizeof tail);
+    DrainArgs d = {client, sent + TAIL, 0};
+    int64_t th = 0;
+    lyric_thread_create(&th, drain_peer, &d);
+    CHECK(lyric_sock_write(server, tail, TAIL) == TAIL);
+    lyric_thread_join(th, NULL);
+    CHECK(d.got == sent + TAIL);
+
+    /* And a blocking read on it still waits for data. */
+    const char* ping = "ping";
+    CHECK(lyric_sock_write(client, (const uint8_t*)ping, 4) == 4);
+    uint8_t buf[8];
+    CHECK(lyric_sock_read(server, buf, sizeof buf) == 4);
+    CHECK(memcmp(buf, ping, 4) == 0);
+
+    lyric_release(big);
+    lyric_sock_close(client);
+    lyric_sock_close(server);
+    lyric_sock_close(listen_fd);
+}
+
 int main(void) {
     test_plain_roundtrip();
     test_sock_peer_string();
     test_alpn_string_null_conn();
     test_sock_bytes_roundtrip();
     test_sock_write_bytes_edge_cases();
+    test_sock_try_ops();
     test_accept_interruptible_normal();
     test_accept_interruptible_wakeup();
     test_accept_interruptible_presignaled();

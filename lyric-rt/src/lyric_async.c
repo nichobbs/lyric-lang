@@ -395,13 +395,13 @@ static int32_t io_poll_to_result(int revents) {
     return r;
 }
 
-/* Milliseconds for poll from nanoseconds (-1: forever), rounded up so a poll
- * never returns just before the deadline it waits for. */
 /* The monotonic deadline `ms` milliseconds after `now`, saturating at INT64_MAX. */
 static inline int64_t deadline_after_ms(int64_t now, int64_t ms) {
     return ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + ms * 1000000;
 }
 
+/* Milliseconds for poll from nanoseconds (-1: forever), rounded up so a poll
+ * never returns just before the deadline it waits for. */
 static int io_timeout_ms(int64_t ns) {
     if (ns < 0) {
         return -1;

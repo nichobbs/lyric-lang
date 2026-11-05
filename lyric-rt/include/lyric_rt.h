@@ -1236,6 +1236,9 @@ LyricString* lyric_sock_peer_string(int32_t fd);
  * or -1 for none. */
 int32_t lyric_sock_try_accept(int32_t listen_fd);
 LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* status);
+/* The most bytes one lyric_sock_try_write_bytes attempt copies and sends, so a
+ * large write that the peer drains slowly costs linear, not quadratic, copying. */
+#define LYRIC_SOCK_TRY_WRITE_CHUNK 65536
 int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset);
 int32_t lyric_sock_io_timeout_ms(int32_t fd);
 LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok);
