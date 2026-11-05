@@ -861,6 +861,11 @@ typedef struct LyricTask {
     struct LyricTask* park_dep; /* the task a PARK_AWAIT registration waits on */
     int32_t counted;           /* multi-threaded: included in the scheduler's ready-or-running count */
     _Atomic int32_t joined;    /* multi-threaded: a lyric_task_block_on caller may be parked waiting for it */
+    int64_t io_fd;             /* the descriptor a task waiting on the reactor waits on */
+    int32_t io_events;         /* LYRIC_IO_READ / LYRIC_IO_WRITE it waits for */
+    int64_t io_fd2;            /* a second descriptor it also waits on, or -1 */
+    int32_t io_events2;
+    int32_t io_result;         /* what the reactor saw: LYRIC_IO_* bits, 0 on timeout */
 } LyricTask;
 
 /* Fresh rc=1 RUNNING task (called in the coroutine prologue). */
@@ -873,6 +878,27 @@ void       lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_r
 /* Park the RUNNING task on `dep` / on a timer; suspend right after. */
 void       lyric_async_await(LyricTask* waiter, LyricTask* dep);
 void       lyric_async_sleep(LyricTask* t, int64_t ms);
+/* The I/O reactor (#8494).  lyric_async_wait_fd parks the RUNNING task until
+ * `fd` (a socket, or on POSIX any pollable descriptor) is ready for `events`
+ * (LYRIC_IO_READ, LYRIC_IO_WRITE or both), or `timeout_ms` passes (negative:
+ * no timeout); the caller suspends right after, as for lyric_async_sleep, and
+ * reads the outcome with lyric_async_wait_fd_result once resumed: the ready
+ * LYRIC_IO_* bits (LYRIC_IO_ERROR for an error or hang-up, which a read or
+ * write then reports), or 0 on timeout.  lyric_fd_wait is the blocking form
+ * for synchronous callers, with the same result.  Not available on wasm32. */
+#define LYRIC_IO_READ  1
+#define LYRIC_IO_WRITE 2
+#define LYRIC_IO_ERROR 4
+/* lyric_async_wait_fd2 / lyric_fd_wait2 also wait on `fd2` for `events2`
+ * (an accept that a stop request on a wake pipe must interrupt); its bits come
+ * back shifted left by LYRIC_IO_SECOND_SHIFT. */
+#define LYRIC_IO_SECOND_SHIFT 4
+void       lyric_async_wait_fd(LyricTask* t, int64_t fd, int32_t events, int64_t timeout_ms);
+void       lyric_async_wait_fd2(LyricTask* t, int64_t fd, int32_t events, int64_t fd2, int32_t events2,
+                                int64_t timeout_ms);
+int32_t    lyric_async_wait_fd_result(LyricTask* t);
+int32_t    lyric_fd_wait(int64_t fd, int32_t events, int64_t timeout_ms);
+int32_t    lyric_fd_wait2(int64_t fd, int32_t events, int64_t fd2, int32_t events2, int64_t timeout_ms);
 /* Multi-threaded scheduler (LYRIC_ASYNC_THREADS=N, N >= 2; docs/67 G8, D217).  A `spawn` call
  * site raises the hint, the callee's prologue asks whether to start deferred on a worker, and
  * every async call is followed by lyric_ramp_done so a registration recorded inside the ramp is
@@ -1198,6 +1224,20 @@ LyricString* lyric_sock_peer_string(int32_t fd);
  * parameter as `slice[Byte]` directly (the same shape
  * `_kernel_native/file_host.l`'s `rtWriteBytes(data: List[Byte], ...)`
  * already uses), so no Lyric-side byte marshaling is needed either way. */
+/* Non-blocking forms for the async I/O reactor (#8494), the socket leaves an
+ * `async func` uses with lyric_async_wait_fd.  lyric_sock_try_accept returns
+ * the accepted descriptor, -2 when no connection is pending, or -1 on error
+ * (accept errno and class recorded as for lyric_sock_accept).
+ * lyric_sock_try_read_bytes sets *status to 1 with the bytes read (empty at end
+ * of stream), 2 when nothing is available yet, 0 on error.
+ * lyric_sock_try_write_bytes writes what it can of the bytes from `offset` on:
+ * the count, -2 when the send buffer is full, -1 on error.
+ * lyric_sock_io_timeout_ms is the receive timeout lyric_sock_set_timeouts set,
+ * or -1 for none. */
+int32_t lyric_sock_try_accept(int32_t listen_fd);
+LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* status);
+int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset);
+int32_t lyric_sock_io_timeout_ms(int32_t fd);
 LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok);
 int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list);
 

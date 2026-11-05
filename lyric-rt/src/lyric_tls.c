@@ -647,6 +647,118 @@ int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list) {
     return rc;
 }
 
+/* ── Non-blocking forms for the async I/O reactor (#8494) ─────────────── */
+
+/* One accept attempt that never blocks (the listener is O_NONBLOCK): the new
+ * descriptor (made blocking, as lyric_sock_accept does), -2 when no
+ * connection is pending, or -1 with the accept error recorded. */
+int32_t lyric_sock_try_accept(int32_t listen_fd) {
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd >= 0) {
+            accepted_fd_blocking(fd);
+            g_sock_accept_errno = 0;
+            return (int32_t)fd;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -2;
+        }
+        g_sock_accept_errno = errno;
+        set_err("accept: %s", strerror(errno));
+        return -1;
+    }
+}
+
+/* One read attempt that never blocks: *status is 1 with the bytes read (an
+ * empty list at end of stream), 2 when nothing is available yet, 0 on error. */
+LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* status) {
+    LyricList* list = lyric_list_new(0);
+    if (max_bytes <= 0) {
+        *status = 1;
+        return list;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)max_bytes);
+    if (!buf) {
+        set_err("out of memory");
+        *status = 0;
+        return list;
+    }
+    ssize_t got;
+    do {
+        got = recv(fd, buf, (size_t)max_bytes, MSG_DONTWAIT);
+    } while (got < 0 && errno == EINTR);
+    if (got < 0) {
+        free(buf);
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            *status = 2;
+        } else {
+            set_err("read: %s", strerror(errno));
+            *status = 0;
+        }
+        return list;
+    }
+    for (ssize_t i = 0; i < got; i++) {
+        lyric_list_push(list, (int64_t)buf[i]);
+    }
+    free(buf);
+    *status = 1;
+    return list;
+}
+
+/* One write attempt that never blocks, of the bytes from `offset` on: the
+ * number written (0 when there is nothing left), -2 when the send buffer is
+ * full, -1 on error. */
+int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = (list ? list->len : 0) - offset;
+    if (n <= 0) {
+        return 0;
+    }
+    uint8_t* buf = (uint8_t*)malloc((size_t)n);
+    if (!buf) {
+        set_err("out of memory");
+        return -1;
+    }
+    for (int64_t i = 0; i < n; i++) {
+        buf[i] = (uint8_t)(list->data[offset + i] & 0xff);
+    }
+    int flags = MSG_DONTWAIT;
+#if defined(MSG_NOSIGNAL)
+    flags |= MSG_NOSIGNAL;
+#endif
+    ssize_t w;
+    do {
+        w = send(fd, buf, (size_t)n, flags);
+    } while (w < 0 && errno == EINTR);
+    free(buf);
+    if (w < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -2;
+        }
+        set_err("write: %s", strerror(errno));
+        return -1;
+    }
+    return (int64_t)w;
+}
+
+/* The receive timeout lyric_sock_set_timeouts gave `fd`, in milliseconds,
+ * or -1 for none. */
+int32_t lyric_sock_io_timeout_ms(int32_t fd) {
+    struct timeval tv;
+    socklen_t len = sizeof tv;
+    if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, &len) != 0) {
+        return -1;
+    }
+    int64_t ms = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    if (ms <= 0) {
+        return -1;
+    }
+    return ms > 2147483647 ? 2147483647 : (int32_t)ms;
+}
+
 /* ── OpenSSL 3.x dynamic binding ──────────────────────────────────────── */
 
 /* Opaque OpenSSL types (we only ever hold pointers). */

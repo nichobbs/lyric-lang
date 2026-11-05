@@ -118,6 +118,28 @@ int64_t lyric_sock_write_bytes(int32_t fd, void* bytes_list) {
     return fail_sock();
 }
 
+int32_t lyric_sock_try_accept(int32_t listen_fd) {
+    (void)listen_fd;
+    return fail_sock();
+}
+
+LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* status) {
+    (void)fd; (void)max_bytes;
+    *status = 0;
+    (void)fail_sock();
+    return lyric_list_new(0);
+}
+
+int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset) {
+    (void)fd; (void)bytes_list; (void)offset;
+    return fail_sock();
+}
+
+int32_t lyric_sock_io_timeout_ms(int32_t fd) {
+    (void)fd;
+    return -1;
+}
+
 int32_t lyric_tls_available(void) {
     return 0;
 }

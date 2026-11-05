@@ -146,7 +146,7 @@ loop:
 Phase 2 can replace this with a work-stealing multi-threaded scheduler (like
 Tokio's or Go's runtime) without changing the compiler's coro emission.
 
-> **Status (D202, D217, D403):** the default scheduler is still this single-threaded one.  Multi-threaded
+> **Status (D202, D217, D403, D405):** the default scheduler is still this single-threaded one.  Multi-threaded
 > data parallelism shipped as a worker pool in `lyric_parallel.c` behind `Std.Parallel` (D202,
 > docs/67 G8).  The Phase 2 coroutine scheduler shipped in D217 as an opt-in mode of
 > `lyric_async.c`: `LYRIC_ASYNC_THREADS=N` (N >= 2) starts N-1 workers that, with every thread
@@ -157,7 +157,10 @@ Tokio's or Go's runtime) without changing the compiler's coro emission.
 > (`lyric_task_defer_start`) turns into a first suspend point, so the body runs on a worker; the
 > await/sleep registration is published only after the coroutine function has returned
 > (`lyric_ramp_done`, `run_one`), because LLVM stores the resume index at the suspend point.  A
-> compile-time `Send` check (#8492) and an async I/O reactor (#8494) are tracked follow-ups.
+> compile-time `Send` check is #8492.  Since D405 an I/O reactor (`poll`/`WSAPoll`, one poller
+> at a time, a wake pipe) parks tasks on sockets: `lyric_async_wait_fd` is the leaf, and inside a
+> coroutine `Std.TcpHost`'s accept/read/write lower to non-blocking twins over it; TLS, connect and
+> file I/O are #8811.
 
 ---
 

@@ -117,6 +117,13 @@
 #define _DEFAULT_SOURCE
 #endif
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#endif
+
 #include "lyric_rt.h"
 
 #include <stddef.h>
@@ -124,6 +131,13 @@
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
+
+#if !defined(_WIN32) && !defined(__wasi__)
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <unistd.h>
+#endif
 
 /* Defined by generated LLVM IR in async programs (thin llvm.coro.*
  * wrappers); defined by the test harness for the C unit tests. */
@@ -146,6 +160,7 @@ enum {
     PARK_AWAIT = 1, /* park on park_dep's waiter stack */
     PARK_SLEEP = 2, /* park in the sleeper list at wake_deadline_ns */
     PARK_YIELD = 3, /* deferred spawn start: straight to a deque */
+    PARK_IO = 4,    /* park on the reactor until io_fd is ready or the deadline passes */
 };
 
 /* The waiter stack of a completed task: pushes that find it go to a deque. */
@@ -175,6 +190,14 @@ static LyricTask* g_ready_head = NULL;
 static LyricTask* g_ready_tail = NULL;
 static _Atomic int64_t g_inject_n = 0;
 static LyricTask* g_sleepers = NULL; /* singly linked, deadline-ascending; g_mu */
+/* The reactor (#8494): tasks parked on a descriptor, singly linked through
+ * `next` in no particular order; g_mu.  g_io_count is also read without the
+ * lock as a hint.  At most one thread blocks in the poll at a time
+ * (g_polling); the wake pipe interrupts it. */
+static LyricTask* g_io_head = NULL;
+static _Atomic int64_t g_io_count = 0;
+static int g_polling = 0;
+static int32_t g_cond_waiters = 0; /* threads in lyric_cond_wait/timedwait on g_cv; g_mu */
 static _Atomic int64_t g_host_pending = 0; /* host tasks created and not yet finished */
 
 /* Multi-threaded mode.  g_mt is written once, by sched_init, before any
@@ -208,6 +231,7 @@ static _Thread_local WorkDeque* tl_deque = NULL;
 static _Thread_local int tl_deque_tried = 0;
 static _Thread_local uint32_t tl_pops = 0;
 static _Thread_local uint32_t tl_rng = 0;
+static _Thread_local uint32_t tl_io_tick = 0;
 
 static inline int mt(void) {
     return atomic_load_explicit(&g_mt, memory_order_acquire);
@@ -240,6 +264,147 @@ static int detect_async_threads(void) {
 #endif
 }
 
+/* ── The poll system call and the wake pipe ─────────────────────────── */
+
+#if defined(__wasi__)
+typedef struct io_pollfd {
+    int fd;
+    short events;
+    short revents;
+} io_pollfd;
+#define IO_POLLIN 1
+#define IO_POLLOUT 4
+#define IO_POLLERR 8
+static int io_sys_poll(io_pollfd* fds, int n, int timeout_ms) {
+    (void)fds;
+    (void)n;
+    (void)timeout_ms;
+    return 0;
+}
+static void io_set_fd(io_pollfd* p, int64_t fd) {
+    p->fd = (int)fd;
+}
+static void io_wake_init(void) {
+}
+static void io_wake(void) {
+}
+static void io_wake_drain(void) {
+}
+static int64_t io_wake_fd(void) {
+    return -1;
+}
+#elif defined(_WIN32)
+typedef WSAPOLLFD io_pollfd;
+#define IO_POLLIN POLLRDNORM
+#define IO_POLLOUT POLLWRNORM
+#define IO_POLLERR (POLLERR | POLLHUP | POLLNVAL)
+static int32_t g_wake_r = -1;
+static int32_t g_wake_w = -1;
+static int io_sys_poll(io_pollfd* fds, int n, int timeout_ms) {
+    return WSAPoll(fds, (ULONG)n, timeout_ms);
+}
+static void io_set_fd(io_pollfd* p, int64_t fd) {
+    p->fd = (SOCKET)(intptr_t)fd;
+}
+static void io_wake_init(void) {
+    if (lyric_sock_wake_pipe_new(&g_wake_r, &g_wake_w) != 0) {
+        lyric_panic_msg("the async I/O reactor could not create its wake socket pair", "lyric_async.c", __LINE__);
+    }
+    u_long on = 1;
+    (void)ioctlsocket((SOCKET)(intptr_t)g_wake_r, FIONBIO, &on);
+}
+static void io_wake(void) {
+    (void)lyric_sock_wake_pipe_signal(g_wake_w);
+}
+static void io_wake_drain(void) {
+    char buf[64];
+    while (recv((SOCKET)(intptr_t)g_wake_r, buf, (int)sizeof buf, 0) > 0) {
+    }
+}
+static int64_t io_wake_fd(void) {
+    return g_wake_r;
+}
+#else
+typedef struct pollfd io_pollfd;
+#define IO_POLLIN POLLIN
+#define IO_POLLOUT POLLOUT
+#define IO_POLLERR (POLLERR | POLLHUP | POLLNVAL)
+static int g_wake_r = -1;
+static int g_wake_w = -1;
+static int io_sys_poll(io_pollfd* fds, int n, int timeout_ms) {
+    int rc;
+    do {
+        rc = poll(fds, (nfds_t)n, timeout_ms);
+    } while (rc < 0 && errno == EINTR && timeout_ms < 0);
+    return rc;
+}
+static void io_set_fd(io_pollfd* p, int64_t fd) {
+    p->fd = (int)fd;
+}
+static void io_wake_init(void) {
+    int fds[2];
+    if (pipe(fds) != 0) {
+        lyric_panic_msg("the async I/O reactor could not create its wake pipe", "lyric_async.c", __LINE__);
+    }
+    for (int i = 0; i < 2; i++) {
+        (void)fcntl(fds[i], F_SETFL, fcntl(fds[i], F_GETFL) | O_NONBLOCK);
+        (void)fcntl(fds[i], F_SETFD, FD_CLOEXEC);
+    }
+    g_wake_r = fds[0];
+    g_wake_w = fds[1];
+}
+static void io_wake(void) {
+    char b = 1;
+    ssize_t w;
+    do {
+        w = write(g_wake_w, &b, 1);
+    } while (w < 0 && errno == EINTR); /* EAGAIN: a wake byte is already pending */
+}
+static void io_wake_drain(void) {
+    char buf[64];
+    while (read(g_wake_r, buf, sizeof buf) > 0) {
+    }
+}
+static int64_t io_wake_fd(void) {
+    return g_wake_r;
+}
+#endif
+
+static int io_events_to_poll(int32_t events) {
+    int e = 0;
+    if (events & LYRIC_IO_READ) {
+        e |= IO_POLLIN;
+    }
+    if (events & LYRIC_IO_WRITE) {
+        e |= IO_POLLOUT;
+    }
+    return e;
+}
+
+static int32_t io_poll_to_result(int revents) {
+    int32_t r = 0;
+    if (revents & IO_POLLIN) {
+        r |= LYRIC_IO_READ;
+    }
+    if (revents & IO_POLLOUT) {
+        r |= LYRIC_IO_WRITE;
+    }
+    if (revents & IO_POLLERR) {
+        r |= LYRIC_IO_ERROR;
+    }
+    return r;
+}
+
+/* Milliseconds for poll from nanoseconds (-1: forever), rounded up so a poll
+ * never returns just before the deadline it waits for. */
+static int io_timeout_ms(int64_t ns) {
+    if (ns < 0) {
+        return -1;
+    }
+    int64_t ms = (ns + 999999) / 1000000;
+    return ms > 2147483647 ? 2147483647 : (int)ms;
+}
+
 static void sched_init(void) {
     int n = detect_async_threads();
     if (n >= 2) {
@@ -247,6 +412,7 @@ static void sched_init(void) {
         lyric_mutex_init(g_mu);
         g_cv = lyric_alloc((uint64_t)lyric_cond_size());
         lyric_cond_init(g_cv);
+        io_wake_init();
         atomic_store_explicit(&g_mt, 1, memory_order_release);
         for (int i = 1; i < n; i++) {
             if (lyric_thread_spawn_detached(async_worker_main, NULL) != 0) {
@@ -307,6 +473,11 @@ static LyricTask* task_alloc(void* coro_handle) {
     t->park_dep = NULL;
     t->counted = 0;
     atomic_store_explicit(&t->joined, 0, memory_order_relaxed);
+    t->io_fd = -1;
+    t->io_events = 0;
+    t->io_fd2 = -1;
+    t->io_events2 = 0;
+    t->io_result = 0;
     return t;
 }
 
@@ -315,11 +486,18 @@ static LyricTask* task_alloc(void* coro_handle) {
 /* A thread searching for work will find a task just made ready without being
  * signalled (it re-checks every deque before it parks, rule 6), so a parked one
  * is woken only when nobody is searching. */
+/* An idle thread is either waiting on g_cv or blocked in the reactor's poll;
+ * a parked one is woken by the condition variable when there is one, else the
+ * poller by the wake pipe. */
 static inline void wake_one_idle(void) {
     if (atomic_load_explicit(&g_searching, memory_order_seq_cst) == 0 &&
         atomic_load_explicit(&g_idle, memory_order_seq_cst) > 0) {
         lyric_mutex_lock(g_mu);
-        lyric_cond_signal(g_cv);
+        if (g_cond_waiters > 0) {
+            lyric_cond_signal(g_cv);
+        } else if (g_polling) {
+            io_wake();
+        }
         lyric_mutex_unlock(g_mu);
     }
 }
@@ -327,6 +505,9 @@ static inline void wake_one_idle(void) {
 static inline void wake_all_idle(void) {
     if (atomic_load_explicit(&g_idle, memory_order_seq_cst) > 0) {
         lyric_mutex_lock(g_mu);
+        if (g_polling) {
+            io_wake();
+        }
         lyric_cond_broadcast(g_cv);
         lyric_mutex_unlock(g_mu);
     }
@@ -641,6 +822,129 @@ static int64_t wake_expired_sleepers(void) {
     return g_sleepers ? g_sleepers->wake_deadline_ns : -1;
 }
 
+/* ── The reactor (g_mu held in multi-threaded mode) ──────────────────── */
+
+/* Parks `t` (its io_* fields and wake_deadline_ns set) on the reactor. */
+static void io_register(LyricTask* t) {
+    set_state(t, LYRIC_TASK_WAITING);
+    t->io_result = -1;
+    t->next = g_io_head;
+    g_io_head = t;
+    atomic_fetch_add_explicit(&g_io_count, 1, memory_order_seq_cst);
+    if (mt()) {
+        if (g_polling) {
+            io_wake(); /* the poller must add this descriptor */
+        } else if (g_cond_waiters > 0) {
+            lyric_cond_signal(g_cv); /* a parked thread becomes the poller */
+        }
+    }
+}
+
+static io_pollfd* g_io_fds = NULL;
+static LyricTask** g_io_tasks = NULL; /* the task each entry of g_io_fds belongs to */
+static int32_t* g_io_shift = NULL;    /* 0 for its first descriptor, LYRIC_IO_SECOND_SHIFT for its second */
+static int64_t g_io_cap = 0;
+
+/* Polls every parked descriptor (and, multi-threaded, the wake pipe) for up to
+ * `timeout_ns` (-1: until something happens; capped by the earliest reactor
+ * deadline), then makes every ready or timed-out waiter READY.  Multi-threaded,
+ * the caller holds g_mu and no other thread is polling; the lock is released
+ * around the system call. */
+static void io_poll(int64_t timeout_ns) {
+    int64_t n = 2 * atomic_load_explicit(&g_io_count, memory_order_relaxed);
+    if (n + 1 > g_io_cap) {
+        int64_t cap = g_io_cap ? g_io_cap : 64;
+        while (cap < n + 1) {
+            cap *= 2;
+        }
+        if (g_io_fds) {
+            lyric_free(g_io_fds);
+            lyric_free(g_io_tasks);
+            lyric_free(g_io_shift);
+        }
+        g_io_fds = (io_pollfd*)lyric_alloc((uint64_t)cap * sizeof(io_pollfd));
+        g_io_tasks = (LyricTask**)lyric_alloc((uint64_t)cap * sizeof(LyricTask*));
+        g_io_shift = (int32_t*)lyric_alloc((uint64_t)cap * sizeof(int32_t));
+        g_io_cap = cap;
+    }
+    int64_t now = lyric_monotonic_nanos();
+    int64_t k = 0;
+    for (LyricTask* t = g_io_head; t; t = t->next) {
+        io_set_fd(&g_io_fds[k], t->io_fd);
+        g_io_fds[k].events = (short)io_events_to_poll(t->io_events);
+        g_io_fds[k].revents = 0;
+        g_io_tasks[k] = t;
+        g_io_shift[k] = 0;
+        k++;
+        if (t->io_fd2 >= 0) {
+            io_set_fd(&g_io_fds[k], t->io_fd2);
+            g_io_fds[k].events = (short)io_events_to_poll(t->io_events2);
+            g_io_fds[k].revents = 0;
+            g_io_tasks[k] = t;
+            g_io_shift[k] = LYRIC_IO_SECOND_SHIFT;
+            k++;
+        }
+        if (t->wake_deadline_ns != INT64_MAX) {
+            int64_t left = t->wake_deadline_ns - now;
+            if (left < 0) {
+                left = 0;
+            }
+            if (timeout_ns < 0 || left < timeout_ns) {
+                timeout_ns = left;
+            }
+        }
+    }
+    int64_t nfds = k;
+    if (mt()) {
+        io_set_fd(&g_io_fds[nfds], io_wake_fd());
+        g_io_fds[nfds].events = IO_POLLIN;
+        g_io_fds[nfds].revents = 0;
+        nfds++;
+        g_polling = 1;
+        lyric_mutex_unlock(g_mu);
+    }
+    int rc = io_sys_poll(g_io_fds, (int)nfds, io_timeout_ms(timeout_ns));
+    if (mt()) {
+        lyric_mutex_lock(g_mu);
+        g_polling = 0;
+        if (g_io_fds[nfds - 1].revents) {
+            io_wake_drain();
+        }
+    }
+    if (rc > 0) {
+        for (int64_t i = 0; i < k; i++) {
+            if (g_io_fds[i].revents) {
+                LyricTask* t = g_io_tasks[i];
+                int32_t bits = io_poll_to_result(g_io_fds[i].revents) << g_io_shift[i];
+                t->io_result = (t->io_result < 0 ? 0 : t->io_result) | bits;
+            }
+        }
+    }
+    /* Only the poller removes waiters, so every snapshotted task is still
+     * parked; registrations made during the poll are at the head. */
+    now = lyric_monotonic_nanos();
+    LyricTask** slot = &g_io_head;
+    while (*slot) {
+        LyricTask* t = *slot;
+        int done = t->io_result >= 0;
+        if (!done && t->wake_deadline_ns <= now) {
+            t->io_result = 0;
+            done = 1;
+        }
+        if (done) {
+            *slot = t->next;
+            atomic_fetch_sub_explicit(&g_io_count, 1, memory_order_seq_cst);
+            if (mt()) {
+                active_add(1);
+                t->counted = 1;
+            }
+            ready_push(t); /* keeps the sched ref it took when it parked */
+        } else {
+            slot = &t->next;
+        }
+    }
+}
+
 /* ── Task lifecycle ──────────────────────────────────────────────────── */
 
 /* Publish the registration the running coroutine recorded, now that its
@@ -673,9 +977,21 @@ static void settle_pending(void) {
         break;
     case PARK_SLEEP:
         lyric_mutex_lock(g_mu);
-        if (sleepers_insert(t) && atomic_load_explicit(&g_idle, memory_order_seq_cst) > 0) {
-            lyric_cond_broadcast(g_cv); /* a new earliest deadline: re-time the idle waiters */
+        if (sleepers_insert(t)) {
+            /* A new earliest deadline: re-time the idle waiters and the poller. */
+            if (g_polling) {
+                io_wake();
+            }
+            if (atomic_load_explicit(&g_idle, memory_order_seq_cst) > 0) {
+                lyric_cond_broadcast(g_cv);
+            }
         }
+        lyric_mutex_unlock(g_mu);
+        uncount(t, was_counted);
+        break;
+    case PARK_IO:
+        lyric_mutex_lock(g_mu);
+        io_register(t);
         lyric_mutex_unlock(g_mu);
         uncount(t, was_counted);
         break;
@@ -863,6 +1179,102 @@ void lyric_async_sleep(LyricTask* t, int64_t ms) {
     sleepers_insert(t);
 }
 
+/* Register the currently-RUNNING task as waiting until `fd` is ready for
+ * `events` or `timeout_ms` passes (negative: no timeout); the caller must
+ * suspend immediately after and read lyric_async_wait_fd_result on resume. */
+void lyric_async_wait_fd(LyricTask* t, int64_t fd, int32_t events, int64_t timeout_ms) {
+    lyric_async_wait_fd2(t, fd, events, -1, 0, timeout_ms);
+}
+
+void lyric_async_wait_fd2(LyricTask* t, int64_t fd, int32_t events, int64_t fd2, int32_t events2,
+                          int64_t timeout_ms) {
+#if defined(__wasi__)
+    (void)t;
+    (void)fd;
+    (void)events;
+    (void)fd2;
+    (void)events2;
+    (void)timeout_ms;
+    lyric_panic_msg("waiting on a descriptor is not supported on wasm32", "lyric_async.c", __LINE__);
+#else
+    if (mt()) {
+        settle_pending();
+    }
+    lyric_retain(t); /* the sched ref, held while parked */
+    t->io_fd = fd;
+    t->io_events = events;
+    t->io_fd2 = fd2;
+    t->io_events2 = events2;
+    t->io_result = -1;
+    if (timeout_ms < 0) {
+        t->wake_deadline_ns = INT64_MAX;
+    } else {
+        int64_t now = lyric_monotonic_nanos();
+        t->wake_deadline_ns = timeout_ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + timeout_ms * 1000000;
+    }
+    if (mt()) {
+        t->park_kind = PARK_IO;
+        tl_pending = t;
+        return;
+    }
+    io_register(t);
+#endif
+}
+
+int32_t lyric_async_wait_fd_result(LyricTask* t) {
+    return t->io_result < 0 ? 0 : t->io_result;
+}
+
+int32_t lyric_fd_wait(int64_t fd, int32_t events, int64_t timeout_ms) {
+    return lyric_fd_wait2(fd, events, -1, 0, timeout_ms);
+}
+
+int32_t lyric_fd_wait2(int64_t fd, int32_t events, int64_t fd2, int32_t events2, int64_t timeout_ms) {
+#if defined(__wasi__)
+    (void)fd;
+    (void)events;
+    (void)fd2;
+    (void)events2;
+    (void)timeout_ms;
+    lyric_panic_msg("waiting on a descriptor is not supported on wasm32", "lyric_async.c", __LINE__);
+    return 0;
+#else
+    io_pollfd p[2];
+    io_set_fd(&p[0], fd);
+    p[0].events = (short)io_events_to_poll(events);
+    p[0].revents = 0;
+    int nfds = 1;
+    if (fd2 >= 0) {
+        io_set_fd(&p[1], fd2);
+        p[1].events = (short)io_events_to_poll(events2);
+        p[1].revents = 0;
+        nfds = 2;
+    }
+    int64_t deadline = timeout_ms < 0 ? -1 : lyric_monotonic_nanos() + timeout_ms * 1000000;
+    for (;;) {
+        int64_t left = deadline < 0 ? -1 : deadline - lyric_monotonic_nanos();
+        if (deadline >= 0 && left < 0) {
+            left = 0;
+        }
+        int rc = io_sys_poll(p, nfds, io_timeout_ms(left));
+        if (rc > 0) {
+            int32_t r = io_poll_to_result(p[0].revents);
+            if (nfds == 2) {
+                r |= io_poll_to_result(p[1].revents) << LYRIC_IO_SECOND_SHIFT;
+            }
+            return r;
+        }
+        if (rc == 0) {
+            return 0;
+        }
+        /* An interrupted timed poll: go round with the time that is left. */
+        if (deadline >= 0 && lyric_monotonic_nanos() >= deadline) {
+            return 0;
+        }
+    }
+#endif
+}
+
 /* `spawn` call sites raise the hint just before the call; the callee's
  * prologue consumes it.  Only meaningful with several scheduler threads. */
 void lyric_spawn_hint(void) {
@@ -936,6 +1348,27 @@ static void panic_no_progress(void) {
                     __LINE__);
 }
 
+/* While threads stay busy nobody blocks in the reactor, so a thread that has
+ * just run a task polls it without waiting every FAIR_INTERVAL tasks. */
+static void io_poll_if_due(void) {
+    if (++tl_io_tick < FAIR_INTERVAL) {
+        return;
+    }
+    tl_io_tick = 0;
+    if (atomic_load_explicit(&g_io_count, memory_order_relaxed) == 0) {
+        return;
+    }
+    if (!mt()) {
+        io_poll(0);
+        return;
+    }
+    lyric_mutex_lock(g_mu);
+    if (!g_polling && g_io_head) {
+        io_poll(0);
+    }
+    lyric_mutex_unlock(g_mu);
+}
+
 /* Multi-threaded drive loop, for the worker threads (root == NULL, never
  * returns) and for lyric_task_block_on (returns once `root` completes). */
 static void sched_loop(LyricTask* root) {
@@ -961,6 +1394,7 @@ static void sched_loop(LyricTask* root) {
                 }
             }
             run_one(t);
+            io_poll_if_due();
             continue;
         }
         if (spins < IDLE_SPINS) {
@@ -993,18 +1427,28 @@ static void sched_loop(LyricTask* root) {
         int runnable = (root && state_of(root) == LYRIC_TASK_COMPLETE) ||
                        atomic_load_explicit(&g_inject_n, memory_order_seq_cst) > 0 || any_deque_nonempty();
         if (!runnable) {
-            if (root && next_deadline < 0 && atomic_load_explicit(&g_active, memory_order_seq_cst) == 0) {
+            if (root && next_deadline < 0 && atomic_load_explicit(&g_active, memory_order_seq_cst) == 0 &&
+                atomic_load_explicit(&g_io_count, memory_order_seq_cst) == 0) {
                 atomic_fetch_sub_explicit(&g_idle, 1, memory_order_seq_cst);
                 lyric_mutex_unlock(g_mu);
                 panic_no_progress();
             }
-            if (next_deadline >= 0) {
-                int64_t wait_ns = next_deadline - lyric_monotonic_nanos();
+            int64_t wait_ns = next_deadline >= 0 ? next_deadline - lyric_monotonic_nanos() : -1;
+            if (wait_ns < 0 && next_deadline >= 0) {
+                wait_ns = 0;
+            }
+            if (g_io_head && !g_polling) {
+                io_poll(wait_ns); /* this thread is the poller until something is ready */
+            } else if (next_deadline >= 0) {
                 if (wait_ns > 0) {
+                    g_cond_waiters++;
                     (void)lyric_cond_timedwait(g_cv, g_mu, wait_ns);
+                    g_cond_waiters--;
                 }
             } else {
+                g_cond_waiters++;
                 lyric_cond_wait(g_cv, g_mu);
+                g_cond_waiters--;
             }
         }
         atomic_fetch_sub_explicit(&g_idle, 1, memory_order_seq_cst);
@@ -1036,10 +1480,16 @@ void lyric_task_block_on(LyricTask* root) {
         LyricTask* t = take_task();
         if (t) {
             run_one(t);
+            io_poll_if_due();
             continue;
         }
         int64_t next_deadline = wake_expired_sleepers();
         if (g_ready_head) {
+            continue;
+        }
+        if (g_io_head) {
+            int64_t wait_ns = next_deadline < 0 ? -1 : next_deadline - lyric_monotonic_nanos();
+            io_poll(next_deadline >= 0 && wait_ns < 0 ? 0 : wait_ns);
             continue;
         }
         if (next_deadline < 0) {

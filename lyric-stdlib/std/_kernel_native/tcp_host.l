@@ -140,6 +140,7 @@ package Std.TcpHost
 import Std.Core
 import Std.Tls as Tls
 import Std.TlsHost as TlsHost
+import Std.IoWait as IoWait
 
 // =====================================================================
 // Public error + connection types.
@@ -301,6 +302,15 @@ extern func rtShutdown(fd: Int, how: Int): Int = "lyric_sock_shutdown"
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"
 
 extern func rtSockWriteBytes(fd: Int, bytes: slice[Byte]): Long = "lyric_sock_write_bytes"
+
+// The non-blocking forms behind the asynchronous twins (#8494).
+extern func rtSockTryAccept(listenFd: Int): Int = "lyric_sock_try_accept"
+
+extern func rtSockTryReadBytes(fd: Int, maxBytes: Long, statusOut: NativePtr[Int]): slice[Byte] = "lyric_sock_try_read_bytes"
+
+extern func rtSockTryWriteBytes(fd: Int, bytes: slice[Byte], offset: Long): Long = "lyric_sock_try_write_bytes"
+
+extern func rtSockIoTimeoutMs(fd: Int): Int = "lyric_sock_io_timeout_ms"
 
 // A bare `NativePtr[T]` record field is rejected by the N0100 mode checker, so
 // long-lived handles are stored as `Long`; the externs below take the pointer
@@ -803,6 +813,89 @@ pub func hostWrite(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
   } else {
     Ok(value = ())
   }
+}
+
+// ── Asynchronous twins (the async I/O reactor, #8494, D405) ─────────────────
+// Inside an `async func`, the code generator lowers an awaited call of
+// `hostAccept`, `hostRead` or `hostWrite` as a call of the twin below
+// (`Lyric.LlvmCodegen.nativeAsyncTwin`).  Each tries the operation without
+// blocking and, while the socket is not ready, parks only the calling task on
+// the reactor (`Std.IoWait.waitFd`), so a scheduler thread is never held by a
+// connection that has nothing to say.  Results and errors are the synchronous
+// functions'.  A TLS connection keeps the synchronous path: a readable socket
+// does not mean a whole TLS record is there (#8811).
+/// `hostAccept` for a coroutine: waits on the listening socket and on the
+/// listener's wake pipe, so `hostStopListener` still ends the accept loop.
+pub async func hostAcceptAsync(l: in Listener): Result[Conn, TcpError] {
+  while true {
+    val fd = rtSockTryAccept(l.fd)
+    if fd >= 0 {
+      return Ok(value = Conn(fd = fd, tlsConnHandle = 0i64, alpn = ""))
+    }
+    if fd != 0 - 2 {
+      val rawErrno = rtSockAcceptErrno()
+      val kind = acceptFailureKindFromClass(rtSockAcceptErrorClass())
+      return Err(error = AcceptFailed(message = rtLastErrorString(), errno = rawErrno, kind = kind))
+    }
+    val ready = IoWait.waitFd2(l.fd, IoWait.ioRead, l.wakeReadFd, IoWait.ioRead, 0 - 1)
+    if ready.shr(IoWait.ioSecondShift) != 0 {
+      // hostStopListener signalled the wake pipe: the same AcceptFatal the
+      // synchronous accept reports for its interrupt sentinel.
+      return Err(error = AcceptFailed(message = "the listener was stopped", errno = 0, kind = AcceptFatal))
+    }
+  }
+  Err(error = AcceptFailed(message = "the listener was stopped", errno = 0, kind = AcceptFatal))
+}
+
+/// `hostRead` for a coroutine.  The timeout `hostSetIoTimeout` gave the
+/// connection bounds the wait, as it bounds the synchronous read.
+@unsafe_ffi
+pub async func hostReadAsync(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
+  requires: maxBytes > 0
+{
+  if c.tlsConnHandle != 0i64 {
+    return hostRead(c, maxBytes)
+  }
+  val timeoutMs = rtSockIoTimeoutMs(c.fd)
+  while true {
+    var status: Int = 0
+    val bytes = rtSockTryReadBytes(c.fd, maxBytes.toLong(), nativeAddrOf(status))
+    if status == 1 {
+      return Ok(value = bytes)
+    }
+    if status == 0 {
+      return Err(error = TransportFailed(message = rtLastErrorString()))
+    }
+    if IoWait.waitFd(c.fd, IoWait.ioRead, timeoutMs) == 0 {
+      return Err(error = TransportFailed(message = "read: timed out"))
+    }
+  }
+  Err(error = TransportFailed(message = "read: timed out"))
+}
+
+/// `hostWrite` for a coroutine: writes what the socket takes and waits for
+/// room for the rest.
+pub async func hostWriteAsync(c: in Conn, bytes: in slice[Byte]): Result[Unit, TcpError] {
+  if c.tlsConnHandle != 0i64 {
+    return hostWrite(c, bytes)
+  }
+  val timeoutMs = rtSockIoTimeoutMs(c.fd)
+  var offset: Long = 0i64
+  val total = bytes.length.toLong()
+  while offset < total {
+    val n = rtSockTryWriteBytes(c.fd, bytes, offset)
+    if n == 0i64 - 1i64 {
+      return Err(error = TransportFailed(message = rtLastErrorString()))
+    }
+    if n == 0i64 - 2i64 {
+      if IoWait.waitFd(c.fd, IoWait.ioWrite, timeoutMs) == 0 {
+        return Err(error = TransportFailed(message = "write: timed out"))
+      }
+    } else {
+      offset = offset + n
+    }
+  }
+  Ok(value = ())
 }
 
 /// Close the connection, releasing the socket and (for a TLS connection)

@@ -665,6 +665,98 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
     return n;
 }
 
+/* ── Non-blocking forms for the async I/O reactor (#8494) ─────────────── */
+
+/* The listener is non-blocking (see lyric_sock_accept): one attempt. */
+int32_t lyric_sock_try_accept(int32_t listen_fd) {
+    SOCKET l = to_socket(listen_fd);
+    for (;;) {
+        SOCKET c = accept(l, NULL, NULL);
+        if (c != INVALID_SOCKET) return accepted(c);
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e == WSAEWOULDBLOCK) return -2;
+        g_sock_accept_errno = e;
+        set_wsa_err("accept", e);
+        return -1;
+    }
+}
+
+/* Winsock has no per-call MSG_DONTWAIT: the connection is switched to
+ * non-blocking for the one call and back, so the blocking forms are unchanged. */
+static void sock_set_nonblocking(SOCKET s, int on) {
+    u_long v = on ? 1 : 0;
+    (void)ioctlsocket(s, FIONBIO, &v);
+}
+
+LyricList* lyric_sock_try_read_bytes(int32_t fd, int64_t max_bytes, int32_t* status) {
+    LyricList* list = lyric_list_new(0);
+    if (max_bytes <= 0) {
+        *status = 1;
+        return list;
+    }
+    int cap = max_bytes > 0x7fffffff ? 0x7fffffff : (int)max_bytes;
+    char* buf = (char*)malloc((size_t)cap);
+    if (!buf) {
+        lyric_net_set_err("out of memory");
+        *status = 0;
+        return list;
+    }
+    SOCKET s = to_socket(fd);
+    sock_set_nonblocking(s, 1);
+    int got = recv(s, buf, cap, 0);
+    int e = got == SOCKET_ERROR ? WSAGetLastError() : 0;
+    sock_set_nonblocking(s, 0);
+    if (got == SOCKET_ERROR) {
+        free(buf);
+        if (e == WSAEWOULDBLOCK) {
+            *status = 2;
+        } else {
+            set_wsa_err("read", e);
+            *status = 0;
+        }
+        return list;
+    }
+    for (int i = 0; i < got; i++) lyric_list_push(list, (int64_t)(uint8_t)buf[i]);
+    free(buf);
+    *status = 1;
+    return list;
+}
+
+int64_t lyric_sock_try_write_bytes(int32_t fd, void* bytes_list, int64_t offset) {
+    LyricList* list = (LyricList*)bytes_list;
+    int64_t n = (list ? list->len : 0) - offset;
+    if (n <= 0) return 0;
+    if (n > 0x7fffffff) n = 0x7fffffff;
+    char* buf = (char*)malloc((size_t)n);
+    if (!buf) {
+        lyric_net_set_err("out of memory");
+        return -1;
+    }
+    for (int64_t i = 0; i < n; i++) buf[i] = (char)(list->data[offset + i] & 0xff);
+    SOCKET s = to_socket(fd);
+    sock_set_nonblocking(s, 1);
+    int w = send(s, buf, (int)n, 0);
+    int e = w == SOCKET_ERROR ? WSAGetLastError() : 0;
+    sock_set_nonblocking(s, 0);
+    free(buf);
+    if (w == SOCKET_ERROR) {
+        if (e == WSAEWOULDBLOCK) return -2;
+        set_wsa_err("write", e);
+        return -1;
+    }
+    return (int64_t)w;
+}
+
+int32_t lyric_sock_io_timeout_ms(int32_t fd) {
+    DWORD ms = 0;
+    int len = (int)sizeof ms;
+    if (getsockopt(to_socket(fd), SOL_SOCKET, SO_RCVTIMEO, (char*)&ms, &len) != 0 || ms == 0) {
+        return -1;
+    }
+    return ms > 0x7fffffff ? 0x7fffffff : (int32_t)ms;
+}
+
 /* LyricList[Byte] bridging, as in lyric_tls.c (one byte per 64-bit slot). */
 LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok) {
     LyricList* list = lyric_list_new(0);

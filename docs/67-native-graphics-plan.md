@@ -27,7 +27,8 @@ and a Breakout sample whose recorded session is replayed headless, in a window u
 clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
 tasks has an opt-in multi-threaded mode (D217: `LYRIC_ASYNC_THREADS=N`, `spawn` started
 on workers, ThreadSanitizer and AddressSanitizer clean; D403: per-thread deques with work stealing and a
-task-throughput benchmark; a compile-time sendability check is a follow-up). G10 is implemented except accessibility (D203, D268: the native
+task-throughput benchmark; D405: an I/O reactor so socket waits park only their task; a compile-time
+sendability check is a follow-up). G10 is implemented except accessibility (D203, D268: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
 the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional text in single-line inputs, #8497, and

@@ -114,6 +114,8 @@ lyric-rt/build-wasm32-wasi/
 lyric-rt/build-x86_64-pc-windows-msvc/
 lyric-rt/build-tsan/
 lyric-rt/build-tsan-async/
+lyric-rt/build-thread-io/
+lyric-rt/build-address-io/
 
 # Ephemeral lyric build/check output
 .lyric-check/

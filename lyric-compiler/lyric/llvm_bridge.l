@@ -3128,6 +3128,20 @@ func reachKey(
   // its body pulls in) reachable whenever either is.
   // Arity-coupled to the intercept in llvm_codegen.l — change
   // both together (#5108).
+  // The socket twins of the async I/O reactor (#8494), the same way.
+  val twinKey = nativeAsyncTwinKey(target)
+  if twinKey != "" {
+    match mapGet(canonical, twinKey) {
+      case Some(seam) -> {
+        if not reachable.containsKey(seam) {
+          reachable.add(seam, true)
+          fnWorklist.add(seam)
+        }
+      }
+      case None -> {
+      }
+    }
+  }
   if target == "Std.Process.runCapture/3" or target == "Std.Process.runCaptureWithInput/4" {
     match mapGet(canonical, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
       case Some(seam) -> {

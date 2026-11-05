@@ -2090,6 +2090,11 @@ the spawner's queue already holds work to take, a `spawn` runs its body
 on the spawner until its first suspension, as the cooperative scheduler
 does. Which thread runs a task, and in what order ready tasks run, is
 unspecified.
+Inside an `async func`, a socket accept, read or write through
+`Std.TcpHost` (plain TCP) waits on the scheduler's I/O reactor (D405):
+only the calling task waits for the socket to become ready, so idle
+connections do not hold scheduler threads. TLS connections, connect, file
+I/O and `when:` barrier waits still block their thread (#8811).
 Tasks running at the same time may share mutable state only through
 `protected` types; collections and record `var` fields are
 unsynchronised. Unset or `1` keeps the cooperative single-threaded
