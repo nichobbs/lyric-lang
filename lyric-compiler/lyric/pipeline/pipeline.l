@@ -2480,7 +2480,9 @@ func addOriginScope(
       }
       // The imports as the package declared them, so a selective import
       // (`import P.{g}`) hides the rest of `P` in its generics' bodies; a
-      // package known by name only has them whole.
+      // package known by name only has them whole.  A package that declares
+      // no imports has an empty `importDecls` and an empty `imports`, so
+      // taking the second branch adds nothing.
       if ip.importDecls.count > 0 {
         for d in ip.importDecls {
           imports.add(d)
