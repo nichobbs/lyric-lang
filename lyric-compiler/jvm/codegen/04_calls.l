@@ -8,7 +8,6 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Console as CensusConsole
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4434,111 +4433,26 @@ func lowerVirtualCallWithHolders(
 }
 
 // Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
-// cross-package function registry.  Two-stage lookup: a qualified call site
-// (`Std.Testing.assertEqualInt`, or an aliased import already expanded to its
-// real package by `Lyric.AliasRewriter`) tries the `owner/funcName` key
-// first, so it resolves to the explicit package even when another package in
-// the bundle exports the same short name; an unqualified call falls back to
-// the bare-name key (the legacy single-package shape, #1680). Exact-arity
-// keys (`…@<argc>`) are tried before the name keys so same-name overloads
-// pick the descriptor matching this call's argument count; a call that
-// relies on parameter defaults misses the arity key and falls back to the
-// name key exactly as before.
+// cross-package function registry, by keys that identify one declaration
+// (D336): the function the type checker resolved the call to (its site), the
+// calling package's own package-scoped key (a package-private function
+// included, #7147), or the `Pkg/name` key of the package a qualified path
+// names (an aliased import is already expanded to its real package by
+// `Lyric.AliasRewriter`).  Exact-arity keys (`...@<argc>`) are tried before
+// the name keys so same-name overloads pick the descriptor matching this
+// call's argument count; a call that relies on parameter defaults misses the
+// arity key and takes the name key.  A bare name is never searched across the
+// bundle: a call with none of these keys is unresolved (an extern member, an
+// intrinsic or an unknown name).
 //
 // Shared by `lowerGeneralStaticCall` (the actual call site) and
 // `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a
 // `match callee(...) { … }` scrutinee) so both agree on which package's
-// signature a qualified call resolves to (#5976 follow-up): before this was
-// extracted, `scrutineeGenericArgs` had its OWN, bare-name-only lookup
-// (`mapGet(ctx.funcSigs, lastSegment(path))`) that ignored the call's own
-// qualifier entirely — two same-simple-name functions in different packages
-// (`Std.Regex.tryCompile` / `Std.RegexSafe.tryCompile`) raced for the SAME
-// bare `funcSigs` key, so a `match Rx.tryCompile(...) { case Err(e) -> … }`
-// could recover the WRONG package's `retGenericArgs` for the `Err` payload's
-// concrete type and checkcast a real `Std.Regex.RegexError$InvalidPattern`
-// value against `Std.RegexSafe.RegexError` at the bind site.
+// signature a qualified call resolves to (#5976 follow-up).
 pub func resolveGeneralFuncSig(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
-  val sited = siteFuncSigJvm(ctx, funcName, path, argc)
-  match sited {
-    case Some(_) -> return sited
-    case None -> ()
-  }
-  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
-}
-
-// The signature of the function the checker resolved the call at `path` to
-// (`~callee~<site key>`, a rendered `Pkg::name(P1,P2)`), when it is the
-// function `funcName` being lowered, or the specialisation Mono renamed it to
-// (`f__Int`), which lives in the declaring package or in the calling one
-// (D336).  Dot-named functions are keyed by their class and are not looked up
-// here.
-func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Option[JvmFuncSig] {
-  val dp = match mapGet(ctx.externTypes, "~callee~" + recordCopySiteKey(path.span)) {
-    case Some(d) -> d
-    case None -> return None
-  }
-  val sep = match dp.indexOf("::") { case Some(i) -> i; case None -> return None }
-  val pkg = dp.substring(0, sep)
-  val rest = dp.substring(sep + 2, dp.length - sep - 2)
-  val name = match rest.indexOf("(") { case Some(j) -> rest.substring(0, j); case None -> rest }
-  if name.length == 0 or name.contains(".") {
-    return None
-  }
-  val owners: List[String] = newList()
-  if name == funcName {
-    owners.add(pkg.replace(".", "/"))
-  } else if funcName.startsWith(name + "__") {
-    owners.add(pkg.replace(".", "/"))
-    owners.add(ctx.pkgName)
-  } else {
-    return None
-  }
-  val argcText = match mapGet(ctx.externTypes, "~arity~" + methodCallPathKey(path)) {
-    case Some(n) -> if n.startsWith("-") { toString(argc) } else { n }
-    case None -> toString(argc)
-  }
-  for owner in owners {
-    val keys: List[String] = newList()
-    if owner == ctx.pkgName {
-      keys.add(ctx.pkgName + "::" + funcName)
-    }
-    keys.add(owner + "/" + funcName)
-    for k in keys {
-      match mapGet(ctx.funcSigs, k + "@" + argcText) {
-        case Some(sig) -> return Some(value = sig)
-        case None -> ()
-      }
-      match mapGet(ctx.funcSigs, k) {
-        case Some(sig) -> return Some(value = sig)
-        case None -> ()
-      }
-    }
-  }
-  None
-}
-
-// The by-name resolution `resolveGeneralFuncSig` falls back to: the exact
-// keys first (`resolveGeneralFuncSigExact`), then the bare-name keys, which
-// any package in the bundle may have registered.
-func resolveGeneralFuncSigByName(
-  ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
-): Option[JvmFuncSig] {
-  match resolveGeneralFuncSigExact(ctx, funcName, path, argc) {
-    case Some(sig) -> return Some(value = sig)
-    case None -> ()
-  }
-  val argcSuffix = "@" + callArityText(ctx, path, argc)
-  val bare = match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-    case Some(sig) -> Some(value = sig)
-    case None -> mapGet(ctx.funcSigs, funcName)
-  }
-  match bare {
-    case Some(_) -> CensusConsole.error("JVMCENSUS-BARE " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span))
-    case None -> ()
-  }
-  bare
+  resolveGeneralFuncSigExact(ctx, funcName, path, argc)
 }
 
 // The parameter count a call binds: the overload the type checker resolved it
@@ -6838,27 +6752,4 @@ func emitErasedUnsignedJvm(ctx: in FuncCtx, insns: in List[LInsn], toULong: in B
   insns.add(LLabel(name = doneL))
   emitLoad(insns, resSlot, resTy)
   resTy
-}
-
-func stemOf(n: in String): String {
-  match n.indexOf("__") {
-    case Some(i) -> n.substring(0, i)
-    case None -> n
-  }
-}
-
-func censusCandidates(ctx: in FuncCtx, funcName: in String): String {
-  var acc = ""
-  val stem = "::" + stemOf(funcName) + "("
-  for k in mapKeys(ctx.externTypes) {
-    if k.startsWith("~callee~") {
-      match mapGet(ctx.externTypes, k) {
-        case Some(v) -> if v.contains(stem) {
-          acc = acc + k + ";"
-        }
-        case None -> ()
-      }
-    }
-  }
-  acc
 }
