@@ -427,4 +427,7 @@ test "a position between two pieces has two places, and Left and Right visit bot
   val moved = Interact.placeCaret(value, Interact.emptyEdit(), click, false)
   assertTrue(moved.downstream, "the edit keeps the affinity")
   assertFalse(Interact.moveCaret(value, moved, 4, false).downstream, "any other move is upstream")
+  val word = Interact.moveWord(value, moved, 1, false, false)
+  assertFalse(word.downstream, "a word move is upstream too")
+  assertEqualInt(word.caret, 6, "Ctrl+Right ends the Hebrew word")
 }
