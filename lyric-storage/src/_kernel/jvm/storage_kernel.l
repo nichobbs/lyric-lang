@@ -160,7 +160,7 @@ pub func hostFileExists(path: in String): Bool {
 
 pub func hostDeleteFile(path: in String): Unit {
   val f = JFile.new(path)
-  f.delete()
+  val _ = f.delete()
 }
 
 // ── Directory operations ──────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ pub func hostDirectoryExists(path: in String): Bool {
 /// BCL's `DirectoryInfo`, likewise discarded).
 pub func hostCreateDirectory(path: in String): Unit {
   val f = JFile.new(path)
-  f.mkdirs()
+  val _ = f.mkdirs()
 }
 
 pub func hostGetFiles(path: in String): slice[String] {
