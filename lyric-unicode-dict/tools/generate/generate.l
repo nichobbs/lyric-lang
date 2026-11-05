@@ -253,6 +253,10 @@ pub func tablesOf(name: in String, table: in String, words: in List[String]): Re
       count = count + 1
     }
   }
+  if count == 0 {
+    // Unicode.Dictionary's search reads the first chunk of every list.
+    return Err(error = name + " has no words")
+  }
   chunks.add(current)
   var alphabetHex = ""
   for cp in alphabet {
