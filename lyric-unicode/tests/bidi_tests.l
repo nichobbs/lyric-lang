@@ -164,7 +164,7 @@ test "mirroring pairs the brackets and the angle quotes" {
   assertEqualInt(UnicodeData.pairedBracketOf(123), 125, "{ pairs with }")
 }
 
-test "the character properties are Unicode 15.1" {
+test "the character properties are Unicode 16.0" {
   assertEqualInt(UnicodeData.bidiClassOf(97), 0, "a is L")
   assertEqualInt(UnicodeData.bidiClassOf(1488), 1, "alef is R")
   assertEqualInt(UnicodeData.bidiClassOf(1575), 13, "Arabic alef is AL")
@@ -173,6 +173,7 @@ test "the character properties are Unicode 15.1" {
   assertEqualInt(UnicodeData.bidiClassOf(32), 9, "space is WS")
   assertEqualInt(UnicodeData.bidiClassOf(9), 8, "tab is S")
   assertEqualInt(UnicodeData.bidiClassOf(8294), 20, "LRI")
+  assertEqualInt(UnicodeData.lineBreakValueOf(6992).and(63), 45, "Balinese digit zero is AS since Unicode 16.0")
 }
 
 // The text of a vector is "paragraph level|code points in hex|levels|visual order", made by running

@@ -1,5 +1,5 @@
 //! main.l - Unicode.Conformance.Main: Unicode's BidiCharacterTest.txt and LineBreakTest.txt
-//! (Unicode 15.1) on any target, for `--target native`, where `lyric test` does not run manifest
+//! (Unicode 16.0) on any target, for `--target native`, where `lyric test` does not run manifest
 //! suites (scripts/ci/ui-native-e2e.sh builds and runs it).  Prints one line per suite and exits 1
 //! when one of them does not pass.
 package Unicode.Conformance.Main

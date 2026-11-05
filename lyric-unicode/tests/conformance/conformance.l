@@ -1,16 +1,15 @@
 //! conformance.l - Unicode.Conformance: Unicode's own conformance suites for
-//! `Unicode.Bidi` (UAX #9) and `Unicode.LineBreak` (UAX #14), Unicode 15.1 (#8498).
+//! `Unicode.Bidi` (UAX #9) and `Unicode.LineBreak` (UAX #14), Unicode 16.0 (#8498).
 //!
 //! The suites are vendored, unchanged, next to this file with the Unicode licence
 //! (`LICENSE-UNICODE.txt`), and pinned here by SHA-256, so a run never fetches anything:
 //!
-//!   BidiCharacterTest.txt  https://www.unicode.org/Public/15.1.0/ucd/BidiCharacterTest.txt
-//!   LineBreakTest.txt      https://www.unicode.org/Public/15.1.0/ucd/auxiliary/LineBreakTest.txt
+//!   BidiCharacterTest.txt  https://www.unicode.org/Public/16.0.0/ucd/BidiCharacterTest.txt
+//!   LineBreakTest.txt      https://www.unicode.org/Public/16.0.0/ucd/auxiliary/LineBreakTest.txt
 //!
 //! Every line of both files is run.  For `BidiCharacterTest.txt` that is the paragraph level, the
 //! level of every character after rule L1 (characters X9 removes are `x` and not compared) and the
-//! visual order of the line.  `LineBreakTest.txt` follows the number tailoring of UAX #14 section 8.2
-//! example 7, which `LineBreak.breaksIn` implements.  `conformance_tests.l` runs the suites on dotnet
+//! visual order of the line.  `conformance_tests.l` runs the suites on dotnet
 //! and the JVM (`lyric test`), `main.l` on `--target native`, where manifest test suites do not run.
 package Unicode.Conformance
 
@@ -26,16 +25,16 @@ import Unicode.Bidi
 import Unicode.LineBreak
 import Unicode.Data as UnicodeData
 
-/// The SHA-256 of the vendored `BidiCharacterTest.txt` (Unicode 15.1.0).
-pub val bidiCharacterTestSha256: String = "18507F7EC57EC8155B7771DBC88F3E3201AD08EBA4DBA70E4E095EF628020FA8"
+/// The SHA-256 of the vendored `BidiCharacterTest.txt` (Unicode 16.0.0).
+pub val bidiCharacterTestSha256: String = "D04A51A90052DCD71C4E91EE5B3A9D973EE35C12406B5A99875AC8163C8F2804"
 
-/// The SHA-256 of the vendored `LineBreakTest.txt` (Unicode 15.1.0).
-pub val lineBreakTestSha256: String = "AE7AF38CEB2D34E8382B43F08ABCE0835B1D44ABA3B98A1D17EA8F5252284376"
+/// The SHA-256 of the vendored `LineBreakTest.txt` (Unicode 16.0.0).
+pub val lineBreakTestSha256: String = "910759A611A479F37DF4F535D2E64D7589BE3C5AC5F7491CF1FB4FA4CDB211E9"
 
 /// The number of test lines in each vendored file.
 pub val bidiCharacterTestCases: Int = 91707
 
-pub val lineBreakTestCases: Int = 10274
+pub val lineBreakTestCases: Int = 16672
 
 // The most mismatches a report lists.
 val maxReported: Int = 12
@@ -85,7 +84,7 @@ pub func pinnedText(name: in String, sha256: in String): Result[String, String] 
   }
   val actual = sha256OfBytes(bytes)
   if actual != sha256 {
-    return Err(error = path + " has SHA-256 " + actual + ", not the pinned Unicode 15.1 revision " + sha256)
+    return Err(error = path + " has SHA-256 " + actual + ", not the pinned Unicode 16.0 revision " + sha256)
   }
   match readText(path) {
     case Ok(t) -> Ok(value = t)

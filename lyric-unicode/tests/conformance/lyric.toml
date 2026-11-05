@@ -1,7 +1,7 @@
 # Unicode's own conformance suites for lyric-unicode's text algorithms (#8498, D371).
 #
-#   BidiCharacterTest.txt  UAX #9, Unicode 15.1.0 (ucd/BidiCharacterTest.txt)
-#   LineBreakTest.txt      UAX #14, Unicode 15.1.0 (ucd/auxiliary/LineBreakTest.txt)
+#   BidiCharacterTest.txt  UAX #9, Unicode 16.0.0 (ucd/BidiCharacterTest.txt)
+#   LineBreakTest.txt      UAX #14, Unicode 16.0.0 (ucd/auxiliary/LineBreakTest.txt)
 #
 # Both are vendored unchanged under the Unicode licence (LICENSE-UNICODE.txt) and pinned by SHA-256 in
 # conformance.l.  `lyric test --manifest lyric-unicode/tests/conformance/lyric.toml` runs them on dotnet

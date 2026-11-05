@@ -1,4 +1,4 @@
-//! conformance_tests.l - runs Unicode's BidiCharacterTest.txt and LineBreakTest.txt (Unicode 15.1)
+//! conformance_tests.l - runs Unicode's BidiCharacterTest.txt and LineBreakTest.txt (Unicode 16.0)
 //! against `Unicode.Bidi` and `Unicode.LineBreak` on dotnet and the JVM (#8498); `main.l` runs
 //! the same suites on `--target native`.  See `conformance.l` for the files and their checksums.
 @test_module

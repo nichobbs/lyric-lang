@@ -1,7 +1,7 @@
 # lyric-unicode - the Unicode algorithms and properties text layout needs, in plain Lyric over code
 # points, so they build and run on every target (docs/67 G6 and G10, #8496).
 #
-#   Unicode.Data       Unicode 15.1 character properties (Bidi_Class, Line_Break with East Asian Width
+#   Unicode.Data       Unicode 16.0 character properties (Bidi_Class, Line_Break with East Asian Width
 #                      and the other flags line breaking reads, Bidi_Mirroring_Glyph, paired brackets),
 #                      as sorted tables in strings, written by tools/generate from the UCD files
 #                      pinned in ucd/
