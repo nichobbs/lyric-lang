@@ -73,6 +73,14 @@ pub record Piece {
   textX: Float
 }
 
+/// A place a caret can be drawn: a logical position, and at a boundary of two pieces which of the
+/// two places it is (`downstream` false: the trailing edge of the character before, true: the
+/// leading edge of the character after).
+pub record CaretPlace {
+  position: Int
+  downstream: Bool
+}
+
 /// A rectangle of a selection on line `row`, from `x0` to `x1` pixels from the left of the box.
 pub record Band {
   row: Int
@@ -250,6 +258,20 @@ pub func wrapLines(value: in String, maxWidth: in Float, widthOf: in (String) ->
   lines
 }
 
+/// The one line of a single-line input showing `value` in a box `boxWidth` pixels wide: never cut,
+/// laid out like a paragraph of `wrapLines` (pieces in visual order, a right to left value against
+/// the right edge when it fits).
+pub func singleLine(value: in String, boxWidth: in Float, widthOf: in (String) -> Float): List[VisualLine] {
+  val cps = codePoints(value)
+  val n = cps.length
+  val bidi = Bidi.needsBidi(cps, 0, n)
+  val paraLevel = if bidi { Bidi.paragraphLevelOf(cps, 0, n) } else { 0 }
+  val levels: List[Int] = if bidi { Bidi.resolveLevels(cps, 0, n, paraLevel) } else { newList() }
+  val lines: List[VisualLine] = newList()
+  lines.add(makeLine(cps, 0, levels, paraLevel, 0, n, false, boxWidth))
+  lines
+}
+
 /// The line a caret at code point `caret` is shown on.
 pub func lineIndexOf(lines: in List[VisualLine], caret: in Int): Int {
   var i = 0
@@ -362,7 +384,27 @@ func emptyOrigin(l: VisualLine): Float {
 
 // The x offset of the logical position `c` (see the module comment for which edge it is).
 func positionX(cps: slice[Int], l: VisualLine, pieces: List[Piece], c: Int, widthOf: (String) -> Float): Float {
+  placeX(cps, l, pieces, c, false, widthOf)
+}
+
+// The x offset of position `c` drawn upstream (the trailing edge of the character before it) or
+// downstream (the leading edge of the character after it); the two differ only where `c` is the
+// boundary of two pieces.
+func placeX(
+  cps: slice[Int], l: VisualLine, pieces: List[Piece], c: Int, downstream: Bool, widthOf: (String) -> Float
+): Float {
   val cc = if c < l.from { l.from } else if c > l.to { l.to } else { c }
+  if downstream and cc > l.from and cc < l.visibleTo {
+    for p in pieces {
+      if p.from <= cc and cc < p.to {
+        return if p.level % 2 == 1 {
+          p.x + spanWidth(cps, cc, p.to, widthOf)
+        } else {
+          p.x + spanWidth(cps, p.from, cc, widthOf)
+        }
+      }
+    }
+  }
   if cc > l.visibleTo {
     val hang = spanWidth(cps, l.visibleTo, cc, widthOf)
     if l.rtl {
@@ -396,12 +438,24 @@ func positionX(cps: slice[Int], l: VisualLine, pieces: List[Piece], c: Int, widt
 }
 
 /// The x offset, from the left edge of the box, of code point `position` on line `row` (clamped to
-/// the line).
+/// the line), drawn upstream (see `CaretPlace`).
 pub func offsetInRow(
   value: in String,
   lines: in List[VisualLine],
   row: in Int,
   position: in Int,
+  widthOf: in (String) -> Float,
+): Float {
+  offsetInRowAt(value, lines, row, position, false, widthOf)
+}
+
+/// The x offset of a caret place on line `row`: `position` drawn upstream or `downstream`.
+pub func offsetInRowAt(
+  value: in String,
+  lines: in List[VisualLine],
+  row: in Int,
+  position: in Int,
+  downstream: in Bool,
   widthOf: in (String) -> Float,
 ): Float {
   if lines.count == 0 {
@@ -413,7 +467,7 @@ pub func offsetInRow(
     val c = if position < l.from { l.from } else if position > l.to { l.to } else { position }
     return spanWidth(cps, l.from, c, widthOf)
   }
-  positionX(cps, l, buildPieces(cps, l, widthOf), position, widthOf)
+  placeX(cps, l, buildPieces(cps, l, widthOf), position, downstream, widthOf)
 }
 
 /// The x offset, from the left edge of the box, of a caret at code point `caret`.
@@ -429,8 +483,16 @@ pub func positionAt(
   x: in Float,
   widthOf: in (String) -> Float,
 ): Int {
+  placeAt(value, lines, row, x, widthOf).position
+}
+
+/// The caret place on line `row` nearest to `x` pixels from the left edge of the box: where a click
+/// puts the caret, on whichever side of a boundary between two pieces it is nearer.
+pub func placeAt(
+  value: in String, lines: in List[VisualLine], row: in Int, x: in Float, widthOf: in (String) -> Float
+): CaretPlace {
   if lines.count == 0 {
-    return 0
+    return CaretPlace(position = 0, downstream = false)
   }
   val r = clampRow(lines, row)
   val l = lines[r]
@@ -439,18 +501,24 @@ pub func positionAt(
   val plain = isPlain(l)
   val pieces: List[Piece] = if plain { newList() } else { buildPieces(cps, l, widthOf) }
   var best = l.from
+  var bestDownstream = false
   var bestDist = 1000000.0f32
   var c = l.from
   while c <= last {
-    val w = if plain { spanWidth(cps, l.from, c, widthOf) } else { positionX(cps, l, pieces, c, widthOf) }
-    val d = if w > x { w - x } else { x - w }
-    if d < bestDist {
-      bestDist = d
-      best = c
+    for downstream in [false, true] {
+      if not downstream or (not plain and c > l.from and c < l.visibleTo) {
+        val w = if plain { spanWidth(cps, l.from, c, widthOf) } else { placeX(cps, l, pieces, c, downstream, widthOf) }
+        val d = if w > x { w - x } else { x - w }
+        if d < bestDist - 0.01f32 {
+          bestDist = d
+          best = c
+          bestDownstream = downstream
+        }
+      }
     }
     c = c + 1
   }
-  best
+  CaretPlace(position = best, downstream = bestDownstream)
 }
 
 /// True when the line `caret` is on has right to left text in it or belongs to a right to left
@@ -484,11 +552,8 @@ func pieceOfCaret(pieces: List[Piece], l: VisualLine, c: Int): Int {
   }
 }
 
-/// The caret position one step left (`delta` -1) or right (1) of `caret` on screen, on its line.
-/// Places that are drawn at the same x are not told apart: the one in the piece the caret is
-/// already in wins, so that stepping through a word in the other direction stays in it.  At the
-/// edge of the line the caret moves on in the text, by one in the order of the line's paragraph,
-/// to the neighbouring line.  For a line that is all left to right this is a step in the text.
+/// The caret position one step left (`delta` -1) or right (1) of an upstream caret at `caret` on
+/// screen (see `stepVisualPlace`).
 pub func stepVisual(
   value: in String,
   lines: in List[VisualLine],
@@ -496,40 +561,72 @@ pub func stepVisual(
   delta: in Int,
   widthOf: in (String) -> Float,
 ): Int {
+  stepVisualPlace(value, lines, CaretPlace(position = caret, downstream = false), delta, widthOf).position
+}
+
+/// The caret place one step left (`delta` -1) or right (1) of `from` on screen, on its line.  Every
+/// place a caret can be drawn is a stop, so a position at the boundary of two pieces is visited on
+/// both sides of it.  Places drawn at the same x are not told apart: the one in the piece the caret
+/// is already in wins, so that stepping through a word in the other direction stays in it.  At the
+/// edge of the line the caret moves on in the text, by one in the order of the line's paragraph, to
+/// the neighbouring line.  For a line that is all left to right this is a step in the text.
+pub func stepVisualPlace(
+  value: in String,
+  lines: in List[VisualLine],
+  from: in CaretPlace,
+  delta: in Int,
+  widthOf: in (String) -> Float,
+): CaretPlace {
   val cps = codePoints(value)
   val n = cps.length
+  val caret = from.position
   if lines.count == 0 {
-    return if caret + delta < 0 { 0 } else if caret + delta > n { n } else { caret + delta }
+    return CaretPlace(
+      position = if caret + delta < 0 { 0 } else if caret + delta > n { n } else { caret + delta },
+      downstream = false
+    )
   }
   val r = lineIndexOf(lines, caret)
   val l = lines[r]
   val pieces = buildPieces(cps, l, widthOf)
-  val here = positionX(cps, l, pieces, caret, widthOf)
-  val herePiece = pieceOfCaret(pieces, l, caret)
+  val here = placeX(cps, l, pieces, caret, from.downstream, widthOf)
+  val herePiece = if from.downstream and caret > l.from and caret < l.visibleTo {
+    pieceOfChar(pieces, caret)
+  } else {
+    pieceOfCaret(pieces, l, caret)
+  }
   val last = lastCaret(lines, r)
   var best = caret
+  var bestDownstream = from.downstream
   var bestDist = 1000000.0f32
   var bestSamePiece = false
+  var found = false
   var c = l.from
   while c <= last {
-    val x = positionX(cps, l, pieces, c, widthOf)
-    val ahead = if delta < 0 { here - x } else { x - here }
-    if ahead > 0.01f32 {
-      val samePiece = pieceOfCaret(pieces, l, c) == herePiece
-      if ahead < bestDist - 0.01f32 or (ahead < bestDist + 0.01f32 and samePiece and not bestSamePiece) {
-        bestDist = ahead
-        best = c
-        bestSamePiece = samePiece
+    for downstream in [false, true] {
+      if not downstream or (c > l.from and c < l.visibleTo) {
+        val x = placeX(cps, l, pieces, c, downstream, widthOf)
+        val ahead = if delta < 0 { here - x } else { x - here }
+        if ahead > 0.01f32 {
+          val samePiece = (if downstream { pieceOfChar(pieces, c) } else { pieceOfCaret(pieces, l, c) }) == herePiece
+          if ahead < bestDist - 0.01f32 or (ahead < bestDist + 0.01f32 and samePiece and not bestSamePiece) {
+            bestDist = ahead
+            best = c
+            bestDownstream = downstream
+            bestSamePiece = samePiece
+            found = true
+          }
+        }
       }
     }
     c = c + 1
   }
-  if best == caret {
+  if not found {
     val logical = if l.rtl { 0 - delta } else { delta }
     val moved = caret + logical
-    return if moved < 0 { 0 } else if moved > n { n } else { moved }
+    return CaretPlace(position = if moved < 0 { 0 } else if moved > n { n } else { moved }, downstream = false)
   }
-  best
+  CaretPlace(position = best, downstream = bestDownstream)
 }
 
 /// The line under `y` pixels from the top of the text, clamped to the first and last line.

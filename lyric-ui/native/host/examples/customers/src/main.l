@@ -315,6 +315,91 @@ func bidiScenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, 
   compare("bidi", dir, update, frame)
 }
 
+func caretX(hl: Native.Headless): Float {
+  match Native.caretArea(hl.host) {
+    case Some(c) -> c.x
+    case None -> -1.0f32
+  }
+}
+
+// A single-line input with Hebrew and a number in an English name: Ctrl+Left moves by word, Right
+// moves the drawn caret right at every press and visits a position at a boundary between pieces at
+// both its places, and a frame shows the pieces in visual order ("Zed 2026 <Hebrew> Industries": the
+// number belongs to the right to left run) with a selection made by Shift+Right.  The name is put back afterwards, so the rest of the run is unchanged.
+func inputScenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
+  match Native.findByText(hl, "textInput", "Zed Industries") {
+    case None -> return Err(error = "no name input")
+    case Some(input) -> click(hl, input)
+  }
+  key(hl, 97, 0x40)
+  val name = "Zed " + shalom + " 2026 Industries"
+  typed(hl, name)
+  val n = Interact.cpCount(name)
+  val stops: List[Int] = newList()
+  var k = 0
+  while k < 4 {
+    key(hl, 1073741904, 0x40)
+    stops.add(Native.caretOf(hl))
+    k = k + 1
+  }
+  val got = stops[0].toString() + " " + stops[1].toString() + " " + stops[2].toString() + " " + stops[3].toString()
+  match verify(got == "14 9 4 0", "Ctrl+Left stops at the start of each word, Hebrew and digits included (" + got + ")") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741903, 0x0100)
+  match verify(Native.caretOf(hl) == 3, "Alt+Right goes to the end of the first word") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741898, 0)
+  var presses = 0
+  var lastX = caretX(hl)
+  var monotonic = true
+  val visited: List[Int] = newList()
+  var twice = false
+  while Native.caretOf(hl) != n and presses < 3 * n {
+    key(hl, 1073741903, 0)
+    val x = caretX(hl)
+    if x <= lastX {
+      monotonic = false
+    }
+    lastX = x
+    for v in visited {
+      if v == Native.caretOf(hl) {
+        twice = true
+      }
+    }
+    visited.add(Native.caretOf(hl))
+    presses = presses + 1
+  }
+  match verify(monotonic and Native.caretOf(hl) == n, "every Right moves the drawn caret right, to the end of the text") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + " (" + presses.toString() + " presses)")
+  }
+  match verify(twice, "Right stops at both places of a position at a boundary between pieces") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  // Six places right of the start, then two more with Shift held.
+  key(hl, 1073741898, 0)
+  k = 0
+  while k < 6 {
+    key(hl, 1073741903, 0)
+    k = k + 1
+  }
+  key(hl, 1073741903, 1)
+  key(hl, 1073741903, 1)
+  val frame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  match compare("input-bidi", dir, update, frame) {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 97, 0x40)
+  typed(hl, "Zed Industries")
+  verify(contains(Native.screenText(hl), "<Zed Industries>"), "the name is back")
+}
+
 func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
   Native.settle(hl, 150, 5000)
   val listFrame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
@@ -393,6 +478,10 @@ func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, Stri
     case Err(m) -> return Err(error = m)
   }
   match bidiScenario(hl, dir, update) {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match inputScenario(hl, dir, update) {
     case Ok(_) -> ()
     case Err(m) -> return Err(error = m)
   }

@@ -8,7 +8,8 @@
 #   - the customers example is built for --target native from its own, unchanged packages;
 #   - `--check` drives it headless with scripted window events (a link click, typing over a
 #     selection, clipboard copy and paste, an input-method composition, a text area of Hebrew and
-#     Arabic text with a visual caret and a selection, saving, the toast) and
+#     Arabic text with a visual caret and a selection, a name input with Hebrew and a number in it
+#     stepped through by screen position and by word, saving, the toast) and
 #     compares frames drawn by wgpu-native on lavapipe with the golden images;
 #   - it then runs in a window on an X server (Xvfb): a screenshot shows the customer list, a real
 #     mouse click on a customer opens the edit screen, and real typing changes the name.

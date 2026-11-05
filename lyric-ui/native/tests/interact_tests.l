@@ -9,6 +9,7 @@ import Ui.Diff.{toWire}
 import Ui.Widgets
 import Ui.Native.Layout.{Box, layoutTree, testEnv}
 import Ui.Native.Interact
+import Ui.Native.Wrap
 
 union Msg {
   case Hit
@@ -130,11 +131,12 @@ test "text editing counts code points, not UTF-16 units" {
   assertEqual(b.value, "ab", "the emoji is deleted whole")
 }
 
-test "caret placement by pixel picks the nearest boundary" {
+test "caret placement by pixel in a single-line input picks the nearest boundary" {
   val width = { t: String -> t.length.toFloat() * 8.0f32 }
-  assertEqualInt(Interact.caretAt("hello", 0.0f32, width), 0, "left edge")
-  assertEqualInt(Interact.caretAt("hello", 21.0f32, width), 3, "nearest the boundary after l")
-  assertEqualInt(Interact.caretAt("hello", 500.0f32, width), 5, "past the end")
+  val lines = Wrap.singleLine("hello", 100.0f32, width)
+  assertEqualInt(Wrap.positionAt("hello", lines, 0, 0.0f32, width), 0, "left edge")
+  assertEqualInt(Wrap.positionAt("hello", lines, 0, 21.0f32, width), 3, "nearest the boundary after l")
+  assertEqualInt(Wrap.positionAt("hello", lines, 0, 500.0f32, width), 5, "past the end")
 }
 
 test "grid scroll is clamped to the rows and the viewport it needs is reported" {
@@ -191,4 +193,28 @@ test "a double click selects the word under it" {
   val last = Interact.wordAt("end", 99)
   assertEqual(Interact.selectedText("end", last), "end", "past the end selects the last word")
   assertEqualInt(Interact.cpCount(Interact.selectedText("", Interact.wordAt("", 0))), 0, "empty text")
+}
+
+test "a double click selects a word without the punctuation next to it" {
+  val v = "hello, world. can't"
+  assertEqual(Interact.selectedText(v, Interact.wordAt(v, 2)), "hello", "the comma is not part of the word")
+  assertEqual(Interact.selectedText(v, Interact.wordAt(v, 5)), ",", "a click on the comma selects it")
+  assertEqual(Interact.selectedText(v, Interact.wordAt(v, 16)), "can't", "an apostrophe inside a word is")
+  assertEqual(Interact.selectedText("漢字", Interact.wordAt("漢字", 1)), "字", "one ideograph")
+}
+
+test "Ctrl+Left and Ctrl+Right move by word, in the direction the paragraph reads" {
+  val v = "one two, three"
+  val start = Interact.moveCaret(v, Interact.emptyEdit(), 0, false)
+  val r1 = Interact.moveWord(v, start, 1, false, false)
+  assertEqualInt(r1.caret, 3, "to the end of one")
+  val r2 = Interact.moveWord(v, r1, 1, false, false)
+  assertEqualInt(r2.caret, 7, "to the end of two, before the comma")
+  val l1 = Interact.moveWord(v, r2, -1, false, false)
+  assertEqualInt(l1.caret, 4, "back to the start of two")
+  val selected = Interact.moveWord(v, start, 1, false, true)
+  assertEqualInt(selected.anchor, 0, "with Shift the selection grows")
+  assertEqualInt(selected.caret, 3, "to the word's end")
+  val rtl = Interact.moveWord(v, start, -1, true, false)
+  assertEqualInt(rtl.caret, 3, "in a right to left paragraph Left goes forward in the text")
 }
