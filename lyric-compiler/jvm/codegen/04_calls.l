@@ -4467,7 +4467,8 @@ pub func resolveGeneralFuncSig(
   }
   val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
   match byName {
-    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count))
+    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span) + " cands=" + joinSegments(mapKeys(ctx.externTypes).filter({ k: String ->
+      k.startsWith("~callee~") and (match mapGet(ctx.externTypes, k) { case Some(v) -> v.contains("::" + stemOf(funcName) + "("); case None -> false }) }), ","))
     case None -> ()
   }
   byName
@@ -6839,4 +6840,11 @@ func emitErasedUnsignedJvm(ctx: in FuncCtx, insns: in List[LInsn], toULong: in B
   insns.add(LLabel(name = doneL))
   emitLoad(insns, resSlot, resTy)
   resTy
+}
+
+func stemOf(n: in String): String {
+  match n.indexOf("__") {
+    case Some(i) -> n.substring(0, i)
+    case None -> n
+  }
 }
