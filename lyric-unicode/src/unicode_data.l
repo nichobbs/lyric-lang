@@ -3,19 +3,19 @@
 //! (docs/67 G6 and G10, #8410, #8496).
 //!
 //! Every table is a list of strings holding fixed-width upper-case hex records (the same number in
-//! each string but the last), sorted by code point, searched by bisection with `codeUnitAt`, so there is nothing to parse at start-up.  They were generated
-//! from ICU 74 (Unicode 15.1) with `u_charDirection` (Bidi_Class), `u_getIntPropertyValue` of
-//! `UCHAR_LINE_BREAK`, `UCHAR_EAST_ASIAN_WIDTH`, `UCHAR_EXTENDED_PICTOGRAPHIC` and the general
-//! category, `u_charMirror` (Bidi_Mirroring_Glyph) and `u_getBidiPairedBracket`, and are checked
-//! against FriBidi and libunibreak by the vectors in the tests.  To update them, regenerate all four
-//! from a newer ICU in the same record layout: a small C program loops over U+0000..U+10FFFF, calls the
-//! functions above and writes a record whenever the value changes (bidi, line break) or the mirror or
-//! bracket property is set; the records are cut into strings of 64 and written as the `val`s below.
-//! The generator is not in the repository (a Lyric one is tracked in #8497).
+//! each string but the last), sorted by code point, searched by bisection with `codeUnitAt`, so there
+//! is nothing to parse at start-up.  The four table lines are written by the generator in
+//! `tools/generate/` from the Unicode Character Database files pinned (by version and SHA-256) in
+//! `ucd/`; never edit them by hand.  CI runs the generator with `--check`, so the tables always match
+//! the pinned files.  To move to another Unicode version, replace the files in `ucd/`, update the
+//! version and checksums in `tools/generate/generate.l`, and run
+//! `lyric run --manifest lyric-unicode/tools/generate/lyric.toml`.  The class numbers are the ones
+//! `Unicode.Bidi` and `Unicode.LineBreak` use (ICU's `UCharDirection` and `ULineBreak` order, in which
+//! the first tables were made).
 //!
-//!   bidi     9 characters: first code point of a run (6 hex), Bidi_Class (3 hex, ICU's UCharDirection)
-//!   lineBreak 9 characters: first code point of a run (6 hex), then 3 hex digits holding the ICU
-//!            ULineBreak value in bits 0-5, East Asian Width F/W/H in bit 6, Extended_Pictographic
+//!   bidi     9 characters: first code point of a run (6 hex), Bidi_Class (3 hex)
+//!   lineBreak 9 characters: first code point of a run (6 hex), then 3 hex digits holding the
+//!            Line_Break class in bits 0-5, East Asian Width F/W/H in bit 6, Extended_Pictographic
 //!            and unassigned in bit 7, general category Pi in bit 8, Pf in bit 9 and Mn or Mc in bit 10
 //!   mirror   12 characters: code point (6 hex), its mirror image (6 hex)
 //!   bracket  13 characters: code point (6 hex), its pair (6 hex), 1 for an opening and 2 for a

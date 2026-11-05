@@ -3,7 +3,8 @@
 #
 #   Unicode.Data       Unicode 15.1 character properties (Bidi_Class, Line_Break with East Asian Width
 #                      and the other flags line breaking reads, Bidi_Mirroring_Glyph, paired brackets),
-#                      as sorted tables in strings
+#                      as sorted tables in strings, written by tools/generate from the UCD files
+#                      pinned in ucd/
 #   Unicode.Bidi       the Unicode Bidirectional Algorithm (UAX #9): levels, runs in visual order
 #   Unicode.LineBreak  the Unicode line breaking algorithm (UAX #14)
 #

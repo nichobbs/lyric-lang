@@ -13,6 +13,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 : "${LYRIC_CLI_PATH:?LYRIC_CLI_PATH must name the lyric binary}"
 
+# The tables of Unicode.Data are the ones its generator makes from the pinned UCD files (D373).
+"$LYRIC_CLI_PATH" run --manifest lyric-unicode/tools/generate/lyric.toml -- --check
 for target in dotnet jvm; do
   for manifest in lyric-unicode/lyric.toml lyric-unicode/tests/conformance/lyric.toml; do
     echo "=== $manifest ($target) ==="

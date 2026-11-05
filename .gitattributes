@@ -14,6 +14,8 @@ docs/03-decision-log.md merge=union
 # recording with a fresh one, so a Windows checkout must not convert them to CRLF.
 *.replay text eol=lf
 
-# Unicode's conformance suites are pinned by SHA-256 (lyric-unicode/tests/conformance/conformance.l), so a
-# checkout must keep their bytes exactly.
+# Unicode's conformance suites and Character Database files are pinned by SHA-256
+# (lyric-unicode/tests/conformance/conformance.l, lyric-unicode/tools/generate/generate.l), so a checkout
+# must keep their bytes exactly.
 lyric-unicode/tests/conformance/*.txt -text
+lyric-unicode/ucd/*.txt -text
