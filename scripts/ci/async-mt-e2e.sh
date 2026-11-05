@@ -7,7 +7,10 @@
 #     compiled with ThreadSanitizer: the generated LLVM IR gets `sanitize_thread` on every function
 #     (clang does not add it for an .ll input) and links the runtime built from source with
 #     -fsanitize=thread, so a race in generated code or in the scheduler fails the run;
-#   - the same driver as a plain build at LYRIC_ASYNC_THREADS = 1 (the cooperative default), 2, 4 and 8.
+#   - the same driver as a plain build at LYRIC_ASYNC_THREADS = 1 (the cooperative default), 2, 4 and 8;
+#   - task throughput (`benchmarks/bench_async_tasks.l`, #8493): tasks per second for fork-join `fib(25)`,
+#     100k empty spawns and 1024 sleeping leaves woken together at LYRIC_ASYNC_THREADS = 1, 2, 4 and all cores, failing
+#     when the fastest fork-join run on all cores is slower than the fastest on one thread.
 #
 # `llvm_self_test_async_mt.l` (real programs under the multi-threaded scheduler and ASan) runs from
 # `native-backend-self-tests.sh` with the other compiler-hosted native self-tests.
@@ -42,4 +45,43 @@ clang -O1 -g -fsanitize=thread -Wno-override-module "$work/mt_main.tsan.ll" lyri
 for threads in 2 4; do
   LYRIC_ASYNC_THREADS=$threads TSAN_OPTIONS="halt_on_error=1 exitcode=66" "$work/mt_main_tsan"
 done
+cores="$(getconf _NPROCESSORS_ONLN)"
+echo "=== task throughput (benchmarks/bench_async_tasks.l) ==="
+bench_at() {
+  LYRIC_ASYNC_THREADS="$1" "$LYRIC_BIN" bench --target native benchmarks/bench_async_tasks.l --runs 10 --warmup 2 2>&1 |
+    tee "$work/bench_$1.txt"
+}
+for threads in $(printf "%s\n" 1 2 4 "$cores" | sort -nu); do
+  bench_at "$threads" > /dev/null
+done
+python3 -I - "$work" "$cores" <<'PY'
+import re, sys
+work, cores = sys.argv[1], int(sys.argv[2])
+# Tasks each bench runs (see the header of benchmarks/bench_async_tasks.l).
+tasks = {"benchForkJoinFib": 242785, "benchSpawnEmpty": 110001, "benchFanIn": 61421}
+scale = {"s": 1000.0, "ms": 1.0, "µs": 0.001, "us": 0.001}
+def stat(threads, which):
+    out = {}
+    with open("%s/bench_%s.txt" % (work, threads), encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"(bench\w+)\b.*\b" + which + r"=([0-9.]+)(ms|s|µs|us)", line)
+            if m and m.group(1) in tasks:
+                out[m.group(1)] = float(m.group(2)) * scale[m.group(3)]
+    missing = sorted(set(tasks) - set(out))
+    if missing:
+        sys.exit("bench_async_tasks: no %s for %s at %s threads" % (which, ", ".join(missing), threads))
+    return out
+counts = sorted({1, 2, 4, cores})
+results = {t: stat(t, "mean") for t in counts}
+fastest = {t: stat(t, "min") for t in counts}
+for name in tasks:
+    row = ", ".join("%d: %.0f tasks/s" % (t, tasks[name] / (results[t][name] / 1000.0)) for t in counts)
+    print("%-17s %s" % (name, row))
+if cores >= 2:
+    # The gate compares the fastest of ten runs, which a busy CI host perturbs least.
+    one, alln = fastest[1]["benchForkJoinFib"], fastest[cores]["benchForkJoinFib"]
+    print("fork-join (fastest run): %.1f ms on 1 thread, %.1f ms on %d threads" % (one, alln, cores))
+    if alln > one:
+        sys.exit("fork-join fib(25) is slower on %d scheduler threads than on 1" % cores)
+PY
 echo "async multi-threaded scheduler e2e passed"

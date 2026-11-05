@@ -16,6 +16,7 @@
 #include <poll.h>
 #if !defined(__wasi__)
 #include <pthread.h>
+#include <sched.h>
 #endif
 #include <stdlib.h>
 #include <string.h>
@@ -270,6 +271,12 @@ int32_t lyric_mkdir(const char* path, int32_t mode) {
 
 int32_t lyric_rmdir(const char* path) {
     return (int32_t)rmdir(path);
+}
+
+void lyric_thread_yield(void) {
+#if !defined(__wasi__)
+    sched_yield();
+#endif
 }
 
 void lyric_sleep_nanos(int64_t ns) {
