@@ -2027,6 +2027,31 @@ pub foreign record WGPUWaylandDisplayHandle {
   display: NativePtr[Byte]
 }
 
+/// C union of xlib (WGPUXlibDisplayHandle), xcb (WGPUXcbDisplayHandle), wayland (WGPUWaylandDisplayHandle): 16 bytes aligned to 8; write the member in use at offset 0.
+pub foreign record WGPUNativeDisplayHandle_data {
+  storage: array[2, Long]
+}
+
+pub foreign record WGPUNativeDisplayHandle {
+  type_: Int
+  data: WGPUNativeDisplayHandle_data
+}
+
+pub foreign record WGPUInstanceExtras {
+  chain: WGPUChainedStruct
+  backends: Long
+  flags: Long
+  dx12ShaderCompiler: Int
+  gles3MinorVersion: Int
+  glFenceBehaviour: Int
+  dxcPath: WGPUStringView
+  dxcMaxShaderModel: Int
+  dx12PresentationSystem: Int
+  budgetForDeviceCreation: NativePtr[Byte]
+  budgetForDeviceLoss: NativePtr[Byte]
+  displayHandle: WGPUNativeDisplayHandle
+}
+
 pub foreign record WGPUDeviceExtras {
   chain: WGPUChainedStruct
   tracePath: WGPUStringView
@@ -2106,6 +2131,9 @@ pub extern func wgpuGetInstanceLimits(limits: NativePtr[WGPUInstanceLimits]): In
 
 @library("wgpu_native-release")
 pub extern func wgpuHasInstanceFeature(feature: Int): Int = "wgpuHasInstanceFeature"
+
+@library("wgpu_native-release")
+pub extern func wgpuGetProcAddress(procName: WGPUStringView): NativePtr[Byte] = "wgpuGetProcAddress"
 
 @library("wgpu_native-release")
 pub extern func wgpuAdapterGetFeatures(adapter: NativePtr[Byte], features: NativePtr[WGPUSupportedFeatures]): Unit = "wgpuAdapterGetFeatures"

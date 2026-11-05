@@ -375,8 +375,8 @@ func shapeRange(f: Font, u: Utf8, start: Int, stop: Int, dir: Int): List[ShapedG
   Hb.hb_buffer_guess_segment_properties(buf)
   Hb.hb_shape(longToPtr(f.hb), buf, nativeNullPtr(), 0)
   val count = Hb.hb_buffer_get_length(buf)
-  val infos = Hb.hb_buffer_get_glyph_infos(buf, nativeNullPtr())
-  val positions = Hb.hb_buffer_get_glyph_positions(buf, nativeNullPtr())
+  val infos: NativePtr[Byte] = Hb.hb_buffer_get_glyph_infos(buf, nativeNullPtr())
+  val positions: NativePtr[Byte] = Hb.hb_buffer_get_glyph_positions(buf, nativeNullPtr())
   val placed: List[ShapedGlyph] = newList()
   var i = 0
   while i < count {
