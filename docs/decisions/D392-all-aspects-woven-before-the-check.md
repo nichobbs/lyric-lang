@@ -65,3 +65,13 @@ that still needs of a template:
 
 A third-party template that does neither now fails at the consuming aspect with
 T0020 or T0123 and "in code generated for this declaration".
+
+## The T0115 backstop route is closed
+
+`scripts/ci/t0115-backstop-e2e.sh` used a path-dependency aspect template whose
+advice names an undefined qualifier as "the one legitimate route that bypasses
+the type checker" to reach the backend's exhausted-tail T0115. The spliced body
+is now checked in the consuming package, so the checker reports T0020 at the
+consuming aspect ("in code generated for this declaration") and the script pins
+that instead; the backend's T0115 remains as defence and the script asserts it
+is not reached.
