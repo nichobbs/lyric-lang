@@ -32,6 +32,7 @@ name = "Lyric.Ui.Native.Examples.Customers"
 "Lyric.Ui"             = { path = "../../../.." }
 "Ui.Routes"            = { path = "../../../../routes" }
 "Lyric.Ui.Native.Core" = { path = "../../.." }
+"Lyric.Unicode"        = { path = "../../../../../lyric-unicode" }
 "Lyric.Ui.Native"      = { path = "../.." }
 "Lyric.Window"         = { path = "../../../../../lyric-window" }
 "Lyric.Gpu"            = { path = "../../../../../lyric-gpu" }

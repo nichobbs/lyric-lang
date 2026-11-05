@@ -7,13 +7,13 @@
 //! a glyph for it.
 //!
 //! Shaping is HarfBuzz's: ligatures, kerning, Arabic joining and Indic reordering come from the
-//! font's own tables.  Layout is a greedy line breaker over simplified break opportunities
-//! (after a space or hyphen, and between ideographs, kana and Hangul syllables).  A paragraph has
-//! one base direction, taken from its first strong character; right-to-left paragraphs lay their
-//! words out right to left.  Text that mixes directions inside one paragraph is not reordered by
-//! `layoutText`: the caller splits it into runs of one direction with the Unicode Bidirectional
-//! Algorithm (`Ui.Native.Bidi`, used by the native lyric-ui host's text areas) and lays each out
-//! with `layoutRun`, which takes the direction instead of guessing it (#8410).
+//! font's own tables.  Layout is a greedy line breaker over the line break opportunities of UAX #14,
+//! and each paragraph is reordered with the Unicode Bidirectional Algorithm (UAX #9): a Latin word
+//! or a number inside Arabic or Hebrew text, and the reverse, keeps its own order, and right to left
+//! runs are shaped from their reading order with mirrored brackets.  Both algorithms come from
+//! lyric-unicode (`Unicode.Bidi`, `Unicode.LineBreak`, #8496).  `layoutRun` lays out one run in a
+//! direction the caller gives, for callers that reorder text themselves (the native lyric-ui host's
+//! text areas, which also place a caret and selection in it).
 //!
 //! Glyphs rasterise to 8-bit coverage bitmaps and pack into a CPU-side `Atlas` that a renderer
 //! uploads as an R8 texture.
@@ -26,6 +26,9 @@ import Std.Buffer as Buf
 import Std.Ffi as Ffi
 import Text.Kernel.Freetype as Ft
 import Text.Kernel.Harfbuzz as Hb
+import Unicode.Bidi
+import Unicode.LineBreak
+import Unicode.Data as UnicodeData
 
 // FT_LOAD_NO_HINTING: advances and outlines at the exact scale, so shaping and rasterising agree.
 val dirGuess: Int = 0
@@ -557,31 +560,6 @@ func isSpaceCp(cp: Int): Bool {
   cp == 32 or cp == 9
 }
 
-func isCjkCp(cp: Int): Bool {
-  (cp >= 12352 and cp <= 12543) or (cp >= 13312 and cp <= 19903) or (cp >= 19968 and cp <= 40959) or
-    (cp >= 44032 and cp <= 55215) or
-    (cp >= 63744 and cp <= 64255) or
-    (cp >= 65280 and cp <= 65519) or
-    (cp >= 12288 and cp <= 12351)
-}
-
-// Closing punctuation never starts a line, opening punctuation never ends one.
-func noBreakBeforeCp(cp: Int): Bool {
-  cp == 12289 or cp == 12290 or cp == 65292 or cp == 65294 or cp == 65289 or cp == 12301 or cp == 12303 or cp == 12305 or
-    cp == 65281 or
-    cp == 65311 or
-    cp == 65306 or
-    cp == 65307
-}
-
-func noBreakAfterCp(cp: Int): Bool {
-  cp == 12300 or cp == 12302 or cp == 12304 or cp == 65288
-}
-
-func isRtlCp(cp: Int): Bool {
-  (cp >= 1424 and cp <= 2303) or (cp >= 64285 and cp <= 65023) or (cp >= 65136 and cp <= 65279)
-}
-
 // A character that takes the font of the one before it: spaces, joiners, combining marks.
 func isNeutralCp(cp: Int): Bool {
   cp <= 32 or cp == 160 or (cp >= 768 and cp <= 879) or (cp >= 1552 and cp <= 1562) or (cp >= 1611 and cp <= 1631) or
@@ -590,8 +568,13 @@ func isNeutralCp(cp: Int): Bool {
     (cp >= 65024 and cp <= 65039)
 }
 
-func isLetterCp(cp: Int): Bool {
-  (cp >= 65 and cp <= 90) or (cp >= 97 and cp <= 122) or cp >= 192
+// The characters rule L1 of UAX #9 may give the paragraph's level at the end of a line or before a
+// tab: whitespace, separators, isolate controls, and those rule X9 removes.  Shaped runs never mix
+// them with other characters, so every run of a line has one level.
+func resetByL1(cls: Int): Bool {
+  cls == 7 or cls == 8 or cls == 9 or (cls >= 19 and cls <= 22) or cls == 11 or cls == 12 or cls == 14 or cls == 15 or
+    cls == 16 or
+    cls == 18
 }
 
 @unsafe_ffi
@@ -604,31 +587,77 @@ func scalarEnd(u: Utf8, i: Int): Int {
   }
 }
 
-func paragraphIsRtl(u: Utf8, start: Int, stop: Int): Bool {
-  var i = start
-  while i < stop {
-    val cp = codepointAt(u, i)
-    if isRtlCp(cp) {
-      return true
-    }
-    if isLetterCp(cp) {
-      return false
-    }
-    i = scalarEnd(u, i)
-  }
-  false
+// One paragraph as code points: `cps[k]` starts at byte `bytes[k]` of the text, and `bytes[n]` is the
+// paragraph's end.  `levels` are the embedding levels of UAX #9 (all `paraLevel` when nothing in the
+// paragraph can reorder, `reorders` false), and `l1` marks the characters rule L1 may reset.
+record Paragraph {
+  cps: slice[Int]
+  bytes: List[Int]
+  levels: List[Int]
+  l1: List[Bool]
+  paraLevel: Int
+  reorders: Bool
 }
 
+func paragraphOf(u: Utf8, start: Int, stop: Int, dir: Int): Paragraph {
+  val cpList: List[Int] = newList()
+  val bytes: List[Int] = newList()
+  var i = start
+  while i < stop {
+    bytes.add(i)
+    cpList.add(codepointAt(u, i))
+    i = scalarEnd(u, i)
+  }
+  bytes.add(stop)
+  val cps = cpList.toArray()
+  val n = cps.length
+  val reorders = dir == dirGuess and Bidi.needsBidi(cps, 0, n)
+  val paraLevel = if dir == dirRtl {
+    1
+  } else if dir == dirLtr {
+    0
+  } else if reorders {
+    Bidi.paragraphLevelOf(cps, 0, n)
+  } else {
+    0
+  }
+  val l1: List[Bool] = newList()
+  var levels: List[Int] = newList()
+  if reorders {
+    levels = Bidi.resolveLevels(cps, 0, n, paraLevel)
+    for cp in cps {
+      l1.add(resetByL1(UnicodeData.bidiClassOf(cp)))
+    }
+  } else {
+    var k = 0
+    while k < n {
+      levels.add(paraLevel)
+      l1.add(false)
+      k = k + 1
+    }
+  }
+  Paragraph(cps = cps, bytes = bytes, levels = levels, l1 = l1, paraLevel = paraLevel, reorders = reorders)
+}
+
+// A stretch `from ..< to` of a paragraph's code points shaped with one font in one direction.
 record Run {
   font: Int
   glyphs: List[ShapedGlyph]
   width: Float
+  from: Int
+  to: Int
+  level: Int
 }
 
+// A word (the text up to the next line break opportunity, without its trailing spaces) or the
+// spaces after one.  `forced` is a required break before it inside the paragraph.
 record Seg {
   runs: List[Run]
   width: Float
   isSpace: Bool
+  from: Int
+  to: Int
+  forced: Bool
 }
 
 func fontFor(fonts: List[Font], cp: Int): Int {
@@ -642,82 +671,95 @@ func fontFor(fonts: List[Font], cp: Int): Int {
   0
 }
 
-// Shapes the byte range as one segment, split into runs where the chain's font changes.
-func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bool, dir: Int): Seg {
+func directionOf(level: Int): Int {
+  if level % 2 == 1 {
+    dirRtl
+  } else {
+    dirLtr
+  }
+}
+
+// Shapes the code points `from ..< to` of the paragraph as one segment, in runs that change where
+// the chain's font, the embedding level or rule L1's class does.
+func shapeSegment(fonts: List[Font], u: Utf8, p: Paragraph, from: Int, to: Int, isSpace: Bool, forced: Bool): Seg {
   val runs: List[Run] = newList()
-  var runStart = start
+  var runStart = from
   var runFont = -1
-  var i = start
-  while i < stop {
-    val cp = codepointAt(u, i)
+  var i = from
+  while i < to {
+    val cp = p.cps[i]
     val f = if isNeutralCp(cp) and runFont >= 0 { runFont } else { fontFor(fonts, cp) }
-    if runFont >= 0 and f != runFont {
-      val g = shapeRange(fonts[runFont], u, runStart, i, dir)
-      runs.add(Run(font = runFont, glyphs = g, width = runWidth(g)))
+    if runFont >= 0 and (f != runFont or p.levels[i] != p.levels[runStart] or p.l1[i] != p.l1[runStart]) {
+      runs.add(shapeRun(fonts, u, p, runFont, runStart, i))
       runStart = i
     }
     runFont = f
-    i = scalarEnd(u, i)
+    i = i + 1
   }
   if runFont < 0 {
     runFont = 0
   }
-  if stop > runStart or runs.count == 0 {
-    val g = shapeRange(fonts[runFont], u, runStart, stop, dir)
-    runs.add(Run(font = runFont, glyphs = g, width = runWidth(g)))
+  if to > runStart {
+    runs.add(shapeRun(fonts, u, p, runFont, runStart, to))
   }
   var w = 0.0f32
   for r in runs {
     w = w + r.width
   }
-  Seg(runs = runs, width = w, isSpace = isSpace)
+  Seg(runs = runs, width = w, isSpace = isSpace, from = from, to = to, forced = forced)
 }
 
-// Splits a paragraph at break opportunities into words and space runs, shaped.
-func segmentParagraph(fonts: List[Font], u: Utf8, start: Int, stop: Int, dir: Int): List[Seg] {
+func shapeRun(fonts: List[Font], u: Utf8, p: Paragraph, font: Int, from: Int, to: Int): Run {
+  val level = p.levels[from]
+  val g = shapeRange(fonts[font], u, p.bytes[from], p.bytes[to], directionOf(level))
+  Run(font = font, glyphs = g, width = runWidth(g), from = from, to = to, level = level)
+}
+
+// Cuts a paragraph at the line break opportunities of UAX #14 into words and the spaces after them,
+// shaped.  Required breaks inside the paragraph (a line separator) are kept only when `wrapForced`.
+func segmentParagraph(fonts: List[Font], u: Utf8, p: Paragraph, wrapForced: Bool): List[Seg] {
   val segs: List[Seg] = newList()
-  var segStart = start
-  var prevCp = -1
-  var i = start
-  while i < stop {
-    val cp = codepointAt(u, i)
-    if prevCp >= 0 {
-      val spaceChange = isSpaceCp(prevCp) != isSpaceCp(cp)
-      val afterHyphen = prevCp == 45 and not isSpaceCp(cp)
-      val cjkBreak = (isCjkCp(prevCp) or isCjkCp(cp)) and not noBreakBeforeCp(cp) and not noBreakAfterCp(prevCp) and
-        not isSpaceCp(prevCp) and
-        not isSpaceCp(cp)
-      if spaceChange or afterHyphen or cjkBreak {
-        segs.add(shapeSegment(fonts, u, segStart, i, isSpaceCp(prevCp), dir))
-        segStart = i
-      }
-    }
-    prevCp = cp
-    i = scalarEnd(u, i)
+  val n = p.cps.length
+  if n == 0 {
+    return segs
   }
-  if stop > segStart {
-    segs.add(shapeSegment(fonts, u, segStart, stop, isSpaceCp(prevCp), dir))
+  val breaks = LineBreak.breaksIn(p.cps, 0, n)
+  var s = 0
+  while s < n {
+    var e = s + 1
+    while e < n and breaks[e] == LineBreak.noBreak {
+      e = e + 1
+    }
+    var w = e
+    while w > s and isSpaceCp(p.cps[w - 1]) {
+      w = w - 1
+    }
+    val forced = wrapForced and s > 0 and breaks[s] == LineBreak.breakRequired
+    if w > s {
+      segs.add(shapeSegment(fonts, u, p, s, w, false, forced))
+    }
+    if e > w {
+      segs.add(shapeSegment(fonts, u, p, w, e, true, forced and w == s))
+    }
+    s = e
   }
   segs
 }
 
-func placeSeg(placed: List[PlacedGlyph], seg: Seg, startX: Float, baseline: Float, lineIndex: Int, rtl: Bool): Float {
+func placeRun(placed: List[PlacedGlyph], run: Run, startX: Float, baseline: Float, lineIndex: Int): Float {
   var x = startX
-  var r = 0
-  while r < seg.runs.count {
-    val run = if rtl { seg.runs[seg.runs.count - 1 - r] } else { seg.runs[r] }
-    for g in run.glyphs {
-      placed.add(
-        PlacedGlyph(font = run.font, glyph = g.glyph, x = x + g.xOffset, y = baseline - g.yOffset, line = lineIndex)
-      )
-      x = x + g.xAdvance
-    }
-    r = r + 1
+  for g in run.glyphs {
+    placed.add(
+      PlacedGlyph(font = run.font, glyph = g.glyph, x = x + g.xOffset, y = baseline - g.yOffset, line = lineIndex)
+    )
+    x = x + g.xAdvance
   }
   x
 }
 
-// Places one line's segments (logical order) and returns its width.
+// Places one line (its segments in logical order, `lineWidth` wide): its runs in the visual order of
+// UAX #9 (rules L1 and L2), a run's glyphs in the order HarfBuzz gives them, and a right to left
+// paragraph against the right edge of the column.
 func placeLine(
   placed: List[PlacedGlyph],
   line: List[Seg],
@@ -725,23 +767,48 @@ func placeLine(
   maxWidth: Float,
   baseline: Float,
   lineIndex: Int,
-  rtl: Bool,
+  p: Paragraph,
 ): Unit {
-  var x = if rtl and maxWidth > 0.0f32 { maxWidth - lineWidth } else { 0.0f32 }
-  var s = 0
-  while s < line.count {
-    val seg = if rtl { line[line.count - 1 - s] } else { line[s] }
-    x = placeSeg(placed, seg, x, baseline, lineIndex, rtl)
-    s = s + 1
+  if line.count == 0 {
+    return
+  }
+  val runs: List[Run] = newList()
+  for seg in line {
+    for r in seg.runs {
+      runs.add(r)
+    }
+  }
+  val lineFrom = line[0].from
+  val lineTo = line[line.count - 1].to
+  val visual = if p.reorders {
+    Bidi.lineRuns(p.cps, 0, p.levels, lineFrom, lineTo, p.paraLevel)
+  } else {
+    val one: List[Bidi.BidiRun] = newList()
+    one.add(Bidi.BidiRun(from = lineFrom, to = lineTo, level = p.paraLevel))
+    one
+  }
+  var x = if p.paraLevel == 1 and maxWidth > 0.0f32 { maxWidth - lineWidth } else { 0.0f32 }
+  for v in visual {
+    val rtl = v.level % 2 == 1
+    var k = 0
+    while k < runs.count {
+      val r = if rtl { runs[runs.count - 1 - k] } else { runs[k] }
+      if r.from >= v.from and r.to <= v.to {
+        x = placeRun(placed, r, x, baseline, lineIndex)
+      }
+      k = k + 1
+    }
   }
 }
 
-/// Lays `text` out in a column `maxWidth` pixels wide (no wrapping when it is not positive),
-/// breaking lines at spaces, hyphens and between ideographs, and at `\n`.  `fonts` is the
-/// fallback chain, its first font setting the line height.  Each paragraph has the direction of its
-/// first strong character; text that mixes directions inside a paragraph is reordered by the caller
-/// (`Ui.Native.Wrap` does it with the Unicode Bidirectional Algorithm) and drawn a run at a time with
-/// `layoutRun`.
+/// Lays `text` out in a column `maxWidth` pixels wide (no wrapping when it is not positive).  Lines
+/// break at `\n`, at the other required breaks of UAX #14 (a line separator), and, to fit the column,
+/// at the line break opportunities of UAX #14 (after spaces and hyphens, between ideographs, the
+/// kinsoku and number rules); spaces at the start and end of a line are not placed.  Each paragraph is
+/// reordered by the Unicode Bidirectional Algorithm: its direction is that of its first strong
+/// character, each line's runs are placed in visual order, a right to left run is shaped from its
+/// reading order with its brackets mirrored, and a right to left paragraph is aligned to the right
+/// of the column.  `fonts` is the fallback chain, its first font setting the line height.
 @unsafe_ffi
 pub func layoutText(fonts: List[Font], text: String, maxWidth: Float): TextLayout
   requires: fonts.count > 0
@@ -784,13 +851,24 @@ func layoutDirected(fonts: List[Font], text: String, maxWidth: Float, dir: Int):
     while pe < u.length and nativeLoadByte(longToPtr(u.ptr), pe.toLong()) != 10u8 {
       pe = pe + 1
     }
-    val rtl = if dir == dirGuess { paragraphIsRtl(u, ps, pe) } else { dir == dirRtl }
-    val segs = segmentParagraph(fonts, u, ps, pe, dir)
+    val para = paragraphOf(u, ps, pe, dir)
+    val segs = segmentParagraph(fonts, u, para, dir == dirGuess)
     var line: List[Seg] = newList()
     var lineWidth = 0.0f32
     var pendingSpace: List[Seg] = newList()
     var pendingWidth = 0.0f32
     for seg in segs {
+      if seg.forced {
+        placeLine(placed, line, lineWidth, maxWidth, lead.ascent + lead.lineHeight * lineIndex.toFloat(), lineIndex, para)
+        if lineWidth > widest {
+          widest = lineWidth
+        }
+        lineIndex = lineIndex + 1
+        line = newList()
+        lineWidth = 0.0f32
+        pendingSpace = newList()
+        pendingWidth = 0.0f32
+      }
       if seg.isSpace {
         if line.count > 0 {
           pendingSpace.add(seg)
@@ -799,7 +877,7 @@ func layoutDirected(fonts: List[Font], text: String, maxWidth: Float, dir: Int):
       } else {
         val needed = lineWidth + pendingWidth + seg.width
         if maxWidth > 0.0f32 and line.count > 0 and needed > maxWidth {
-          placeLine(placed, line, lineWidth, maxWidth, lead.ascent + lead.lineHeight * lineIndex.toFloat(), lineIndex, rtl)
+          placeLine(placed, line, lineWidth, maxWidth, lead.ascent + lead.lineHeight * lineIndex.toFloat(), lineIndex, para)
           if lineWidth > widest {
             widest = lineWidth
           }
@@ -818,7 +896,7 @@ func layoutDirected(fonts: List[Font], text: String, maxWidth: Float, dir: Int):
         lineWidth = lineWidth + seg.width
       }
     }
-    placeLine(placed, line, lineWidth, maxWidth, lead.ascent + lead.lineHeight * lineIndex.toFloat(), lineIndex, rtl)
+    placeLine(placed, line, lineWidth, maxWidth, lead.ascent + lead.lineHeight * lineIndex.toFloat(), lineIndex, para)
     if lineWidth > widest {
       widest = lineWidth
     }

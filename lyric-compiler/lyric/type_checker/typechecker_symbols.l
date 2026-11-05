@@ -486,6 +486,9 @@ pub record SymbolTable {
   /// Each call that is an argument of a generic call, keyed by
   /// `recordCopySiteKey` of the argument call's span (see `CallParent`, D339).
   callParents: Map[String, CallParent]
+  /// Constructions that are branches of an `if`/`match` used as a `?` operand
+  /// (D380), keyed like `callParents`.
+  operandBranchCtors: Map[String, Bool]
   /// The type expected of each call, keyed by `recordCopySiteKey` of the
   /// call's span, as `noteExpectedFlow` saw it (D339).
   callExpectedSeen: Map[String, Type]
@@ -1003,6 +1006,7 @@ pub func newSymbolTable(): SymbolTable {
     openBindingSites = newMap(),
     unsolvedCallSites = newMap(),
     callParents = newMap(),
+    operandBranchCtors = newMap(),
     callExpectedSeen = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),

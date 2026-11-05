@@ -2084,6 +2084,12 @@ aborts the process (panics abort, D-N-003).
 spawner, an awaited call still runs hot on the caller, and a suspended
 coroutine resumes on whichever thread completes what it waits for.
 `scope`, `await` and the completion-before-exit rule are unchanged.
+Each scheduler thread keeps its own queue of ready tasks and idle
+threads take work from the others (D403); when every thread is busy and
+the spawner's queue already holds work to take, a `spawn` runs its body
+on the spawner until its first suspension, as the cooperative scheduler
+does. Which thread runs a task, and in what order ready tasks run, is
+unspecified.
 Tasks running at the same time may share mutable state only through
 `protected` types; collections and record `var` fields are
 unsynchronised. Unset or `1` keeps the cooperative single-threaded

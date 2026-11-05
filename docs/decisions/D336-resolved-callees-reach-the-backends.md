@@ -119,6 +119,30 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    reads these as `<origin>|<key>` entries (`foreignCalleeSites`,
    `Jvm.Codegen.originScopedExternTypes`). `emitter_project_self_test.l` has
    the selective-import and same-named-export cases on both targets.
+8. **The JVM resolves a call by its site, its package's scoped key or its
+   qualified key, and no longer by a bare name.** `resolveGeneralFuncSig`
+   is `resolveGeneralFuncSigExact`: the checker's site, then
+   `<package>::<name>` (a package-private function included), then the
+   `Pkg/name` key of the qualified path. The bundle-wide bare-name search is
+   deleted (the keys stay registered for the secondary readers listed on
+   #8612: `closureInvokeRetType`, `funcSigRetType`, the dot-named lookups).
+   The `println`/`print` and collection-intrinsic override check
+   (`hasFuncOverrideJvm`) uses the same exact stage: a `Std.*` result never
+   overrides an intrinsic, so a user function overrides one only when its
+   site, its own package's scoped key or a qualified path names it. A census
+   over the JVM self-tests (`lyric-compiler/jvm/`, the bitwise, aspect-weave,
+   async-spawn, block-shadow, pattern-lowering and kernel tests) and the
+   auth, cache, validation and resilience libraries found the bare keys used
+   only by a specialised generic's call (the Mono-renamed callee carried the
+   whole expression's span, not the path's the checker keyed the site by), a
+   specialisation and a weaver-synthesised function registered without the
+   package-scoped key, and the intrinsic override check itself. Mono's
+   renamed callee now keeps the path's span (`renamedCalleeExpr`), which
+   also makes MSIL's sites for alias-qualified generic calls hit instead of
+   its fallback; both registrations add the scoped keys. Calls that remain
+   unresolved by site are the function-value forwarding lambdas (an exact
+   `Pkg.f` path) and calls in generated code (span 0:0), both resolved by
+   the exact keys.
 
 ## Consequences
 

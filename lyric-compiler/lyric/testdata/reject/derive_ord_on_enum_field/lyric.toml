@@ -1,0 +1,7 @@
+[package]
+name = "reject-derive-ord-enum"
+version = "0.1.0"
+[project]
+name = "RejectDeriveOrdEnum"
+[project.packages]
+"App" = "app"

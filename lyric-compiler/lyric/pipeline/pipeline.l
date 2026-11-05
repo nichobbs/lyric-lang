@@ -2089,6 +2089,9 @@ pub func pipeCheckAndMono(
 ): Option[SourceFile] {
   // Derives run first, so the checker sees (and checks) what they generate
   // like code the user wrote (D370).
+  // `opts.sink` must be the sink every later gate of this build uses: the
+  // derive records the spans it generates in `opts.sink.origins`, and a gate
+  // given another sink would not relocate a diagnostic found in them.
   val file0 = deriveFileWithImports(fileIn, deriveImports, opts.sink.origins)
   val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
@@ -2654,7 +2657,11 @@ pub func foreignCalleeSites(
   }
   for origin in mapKeys(byOrigin) {
     match mapGet(byOrigin, origin) {
+<<<<<<< HEAD
       case Some(decls) -> match checkGenericsInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+=======
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+>>>>>>> origin/main
         case Some(res) -> {
           for k in mapKeys(res.symbols.calleeSites) {
             if not acc.containsKey(origin + "|" + k) {

@@ -17,9 +17,9 @@ import Window
 import Ui.Native.Run as Native
 import Ui.Native.Layout.{Box}
 import Ui.Native.Interact as Interact
-import Ui.Native.Bidi
-import Ui.Native.LineBreak
-import Ui.Native.UnicodeData
+import Unicode.Bidi
+import Unicode.LineBreak
+import Unicode.Data as UnicodeData
 import Customers.Store
 import Customers.App.{route}
 

@@ -116,7 +116,6 @@ pub record CodegenCtx {
   tokIListCast: Int  // castclass System.Collections.IList (TypeRef token)
   tokIListClear: Int  // IList.Clear(): void  callvirt
   tokIListGetItem: Int  // IList.get_Item(int32): object  callvirt
-  tokIListSetItem: Int  // IList.set_Item(int32, object): void  callvirt
   // System.Array.Copy(Array, int32, Array, int32, int32): void — bulk copy
   // between two genuine CLI arrays, used by the `slice[T]` copy fast path
   // (`emitSliceCopyLoopMsil`, #7259).
@@ -1363,22 +1362,6 @@ pub func newCodegenCtx(
       )
     )
   val tokIDictCast = 0x01000000 + trIDictionary
-  // IList.set_Item(int32, object): void — the write-side counterpart of
-  // `tokIListGetItem`, used to store through a genuine `T[]` array (a
-  // `slice[T]` value that is a real CLI array rather than a `List`-backed
-  // slice) without a `castclass List<object>` that faults on an array
-  // receiver (#5842).
-  val ilistSetPs: List[MsilType] = newList()
-  ilistSetPs.add(MInt)
-  ilistSetPs.add(MObject)
-  val tokIListSetItem = 0x0A000000 +
-    ctxAddMemberRef(
-      lctx,
-      trIList,
-      "set_Item",
-      "ilist_setitem",
-      buildInstanceMethodSig(ilistSetPs, MVoid)
-    )
   val tokIListCast = 0x01000000 + trIList
   // System.Array.Copy(Array, int32, Array, int32, int32): void (#7259).
   val trArray = ctxAddTypeRef(lctx, "System", "Array", lctx.arRuntime)
@@ -2407,7 +2390,6 @@ pub func newCodegenCtx(
     tokIListCast = tokIListCast,
     tokIListClear = tokIListClear,
     tokIListGetItem = tokIListGetItem,
-    tokIListSetItem = tokIListSetItem,
     tokArrayCopy = tokArrayCopy,
     tokICollGetCount = tokICollGetCount,
     tokIDictContains = tokIDictContains,
@@ -7876,72 +7858,6 @@ func emitCompoundCombineSlotMsil(
   }
 }
 
-// `xs[i] op= v` on a `slice[elem]` whose element has a typed-array spec
-// (#7343, the compound counterpart of #7259's plain-store fast path).  A
-// genuine `elem[]` receiver reads and writes the element with `ldelem` /
-// `stelem`, no boxing; a `List`-backed slice falls back to the `IList`
-// get_Item / set_Item pair.  The receiver, index and rhs are each evaluated
-// once, in source order.  The receiver is already on the stack.
-func emitSliceCompoundAssignMsil(
-  cctx: in CodegenCtx,
-  fctx: in FuncCtx,
-  insns: in List[MInsn],
-  op: in AssignOp,
-  recvTy: in MsilType,
-  elem: in MsilType,
-  specTok: in Int,
-  index: in Expr,
-  value: in Expr,
-): Unit {
-  val tick = toString(fctx.slotTicker.count)
-  val recvSlot = allocSlotMsil(fctx, "__slicecas_recv_" + tick, MObject)
-  emitStoreSlot(insns, recvSlot, fctx.paramCount)
-  lowerExprMsil(cctx, fctx, insns, index)
-  val idxSlot = allocSlotMsil(fctx, "__slicecas_i_" + tick, MInt)
-  emitStoreSlot(insns, idxSlot, fctx.paramCount)
-  val rTy = lowerExprMsil(cctx, fctx, insns, value)
-  val rSlot = allocSlotMsil(fctx, "__slicecas_r_" + tick, rTy)
-  emitStoreSlot(insns, rSlot, fctx.paramCount)
-  val unsignedRhs = spellsUnsigned(value)
-  val elemTok = match arrayElemTokenOpt(cctx, elem) {
-    case Some(t) -> t
-    case None -> panic(
-      "Msil.Codegen: slice compound fast path has no element token (invariant violation)"
-    )
-  }
-  val arrSlot = allocSlotMsil(fctx, "__slicecas_arr_" + tick, MArray(elemTy = elem))
-  val slowL = freshLabelMsil(fctx)
-  val doneL = freshLabelMsil(fctx)
-  emitLoadSlot(insns, recvSlot, fctx.paramCount)
-  insns.add(MIsinst(typeToken = specTok))
-  emitStoreSlot(insns, arrSlot, fctx.paramCount)
-  emitLoadSlot(insns, arrSlot, fctx.paramCount)
-  insns.add(MBrFalse(label = slowL))
-  // arr[i] = arr[i] op v
-  emitLoadSlot(insns, arrSlot, fctx.paramCount)
-  emitLoadSlot(insns, idxSlot, fctx.paramCount)
-  emitLoadSlot(insns, arrSlot, fctx.paramCount)
-  emitLoadSlot(insns, idxSlot, fctx.paramCount)
-  emitTypedLdelemMsil(insns, elem)
-  emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
-  emitArrayElemStoreMsil(insns, elem, elemTok)
-  insns.add(MBr(label = doneL))
-  // List-backed slice: IList get_Item / set_Item on boxed elements.
-  insns.add(MLabel(id = slowL))
-  emitLoadSlot(insns, recvSlot, fctx.paramCount)
-  emitListCastRecv(cctx, insns, recvTy)
-  emitLoadSlot(insns, idxSlot, fctx.paramCount)
-  emitLoadSlot(insns, recvSlot, fctx.paramCount)
-  emitListCastRecv(cctx, insns, recvTy)
-  emitLoadSlot(insns, idxSlot, fctx.paramCount)
-  emitListGetItem(cctx, insns, recvTy)
-  materializeBoxedElemMsil(cctx, insns, elem)
-  emitCompoundCombineSlotMsil(cctx, fctx, insns, op, elem, rTy, rSlot, unsignedRhs)
-  collBoxIfNeeded(cctx, insns, elem, recvTy)
-  emitListSetItem(cctx, insns, recvTy)
-  insns.add(MLabel(id = doneL))
-}
-
 // The declared parameter modes, index-aligned with `params`.
 func paramModesOf(params: in List[Param]): List[ParamMode] {
   val acc: List[ParamMode] = newList()
@@ -11287,15 +11203,17 @@ func emitListGetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msil
   }
 }
 
+// A slice's element is never written: the checker rejects `xs[i] = v` and
+// `xs[i] op= v` on a `slice[T]` (T0157, docs/01 section 2.7), so an `MArray`
+// receiver at an element store is a compiler bug, not a program to lower
+// (#8729).
+func sliceElementStorePanicMsil(): String {
+  "Msil.Codegen: an element store on a slice reached codegen; the checker rejects it (T0157)"
+}
+
 func emitListSetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoSetItem, elemTy = e))
-    // `MArray` slice: store through `IList.set_Item` so a genuine array
-    // receiver (a primitive-element `slice[T]` value, encoded as a real
-    // CLI `T[]` — #2592) works alongside a `List`-backed slice, instead of
-    // faulting with `InvalidCastException` against the `List<object>`-
-    // specific TypeSpec (#5842).
-    case MArray(_) -> insns.add(MCallvirt(methodToken = cctx.tokIListSetItem))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
   }
 }
@@ -16020,66 +15938,7 @@ func lowerAssignExprMsil(
                 collBoxIfNeeded(cctx, insns, vTy, recvTy)
                 emitListSetItem(cctx, insns, recvTy)
               }
-              case MArray(_) -> {
-                // `slice[T]` receiver store: a primitive-element slice value
-                // is a genuine CLI `T[]` at runtime (#2592), so `castclass
-                // List<object>` (the `case _` fallback below) faults with
-                // `InvalidCastException`.  Route through the non-generic
-                // `IList`, implemented by both a real array and a
-                // `List`-backed slice (mirrors the read-side EIndex `MArray`
-                // arm and `emitListCastRecv`/`emitListSetItem`).  #5842.
-                val elem = match recvTy { case MArray(e) -> e; case _ -> MObject }
-                match sliceArraySpecTokenOpt(cctx, elem) {
-                  case Some(specTok) -> {
-                    // #7259: store into a genuine `elem[]` with `stelem`, no
-                    // box; a `List`-backed slice keeps the `IList` path.
-                    val recvSlot = allocSlotMsil(fctx, "__sliceset_recv_" + toString(fctx.slotTicker.count), MObject)
-                    emitStoreSlot(insns, recvSlot, fctx.paramCount)
-                    lowerExprMsil(cctx, fctx, insns, indices[0])
-                    val idxSlot = allocSlotMsil(fctx, "__sliceset_i_" + toString(fctx.slotTicker.count), MInt)
-                    emitStoreSlot(insns, idxSlot, fctx.paramCount)
-                    val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elem)
-                    // M6 numeric widening (`xs[i] = 4` on a `slice[Long]`,
-                    // #5254): convert to the element width before the value
-                    // is stored in its element-typed temporary, so both paths
-                    // below store a correctly-sized element.
-                    coerceCallArgMsil(cctx, insns, vTy, elem)
-                    val valSlot = allocSlotMsil(fctx, "__sliceset_v_" + toString(fctx.slotTicker.count), elem)
-                    emitStoreSlot(insns, valSlot, fctx.paramCount)
-                    val arrSlot = allocSlotMsil(fctx, "__sliceset_arr_" + toString(fctx.slotTicker.count), MArray(elemTy = elem))
-                    val slowL = freshLabelMsil(fctx)
-                    val doneL = freshLabelMsil(fctx)
-                    emitLoadSlot(insns, recvSlot, fctx.paramCount)
-                    insns.add(MIsinst(typeToken = specTok))
-                    emitStoreSlot(insns, arrSlot, fctx.paramCount)
-                    emitLoadSlot(insns, arrSlot, fctx.paramCount)
-                    insns.add(MBrFalse(label = slowL))
-                    emitLoadSlot(insns, arrSlot, fctx.paramCount)
-                    emitLoadSlot(insns, idxSlot, fctx.paramCount)
-                    emitLoadSlot(insns, valSlot, fctx.paramCount)
-                    match arrayElemTokenOpt(cctx, elem) {
-                      case Some(tok) -> emitArrayElemStoreMsil(insns, elem, tok)
-                      case None -> panic("Msil.Codegen: slice store fast path has no element token (invariant violation)")
-                    }
-                    insns.add(MBr(label = doneL))
-                    insns.add(MLabel(id = slowL))
-                    emitLoadSlot(insns, recvSlot, fctx.paramCount)
-                    emitListCastRecv(cctx, insns, recvTy)
-                    emitLoadSlot(insns, idxSlot, fctx.paramCount)
-                    emitLoadSlot(insns, valSlot, fctx.paramCount)
-                    collBoxIfNeeded(cctx, insns, elem, recvTy)
-                    emitListSetItem(cctx, insns, recvTy)
-                    insns.add(MLabel(id = doneL))
-                  }
-                  case None -> {
-                    emitListCastRecv(cctx, insns, recvTy)
-                    lowerExprMsil(cctx, fctx, insns, indices[0])
-                    val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elem)
-                    collBoxIfNeeded(cctx, insns, vTy, recvTy)
-                    emitListSetItem(cctx, insns, recvTy)
-                  }
-                }
-              }
+              case MArray(_) -> panic(sliceElementStorePanicMsil())
               case _ -> {
                 // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
                 insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
@@ -16116,13 +15975,7 @@ func lowerAssignExprMsil(
             // container type is sound to unbox/re-box against.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
             match recvTy {
-              case MArray(se) -> match sliceArraySpecTokenOpt(cctx, se) {
-                case Some(specTok) -> {
-                  emitSliceCompoundAssignMsil(cctx, fctx, insns, op, recvTy, se, specTok, indices[0], value)
-                  return MVoid
-                }
-                case None -> ()
-              }
+              case MArray(_) -> panic(sliceElementStorePanicMsil())
               case _ -> ()
             }
             val isMap = match recvTy { case MMapOf(_, _) -> true; case MConcreteMap(_, _) -> true; case _ -> false }

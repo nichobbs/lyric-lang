@@ -136,10 +136,12 @@ grep -q '^presented' "$work/window.out" || { echo "::error::the window example n
 
 echo "=== lyric-text shape (G6) ==="
 build lyric-text/examples/shape/lyric.toml "$work/shape"
-out="$(LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm "$work/shape" | tr -d '\r')"
+out="$(LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm \
+  LYRIC_TEXT_GOLDEN_BIDI=lyric-text/examples/shape/golden/bidi-384x224.pgm "$work/shape" | tr -d '\r')"
 echo "$out"
-echo "$out" | grep -q "fallback + wrap ok"
+echo "$out" | grep -q "fallback + wrap ok, runs ok, mixed directions ok"
 echo "$out" | grep -q "^golden: "
+echo "$out" | grep -q "^golden bidi: "
 
 echo "=== lyric-draw scene (G6) ==="
 build lyric-draw/examples/scene/lyric.toml "$work/scene"

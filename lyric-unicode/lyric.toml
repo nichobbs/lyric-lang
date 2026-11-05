@@ -1,0 +1,32 @@
+# lyric-unicode - the Unicode algorithms and properties text layout needs, in plain Lyric over code
+# points, so they build and run on every target (docs/67 G6 and G10, #8496).
+#
+#   Unicode.Data       Unicode 15.1 character properties (Bidi_Class, Line_Break with East Asian Width
+#                      and the other flags line breaking reads, Bidi_Mirroring_Glyph, paired brackets),
+#                      as sorted tables in strings
+#   Unicode.Bidi       the Unicode Bidirectional Algorithm (UAX #9): levels, runs in visual order
+#   Unicode.LineBreak  the Unicode line breaking algorithm (UAX #14)
+#
+# Both the native lyric-ui host's text areas (lyric-ui/native, Ui.Native.Wrap) and lyric-text's
+# layoutText build on them.  Unicode's own conformance suites run against them in
+# tests/conformance (D371).
+[package]
+name        = "Lyric.Unicode"
+version     = "0.1.0"
+description = "Unicode properties, bidirectional reordering (UAX #9) and line breaking (UAX #14) for every target."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Unicode"
+output          = "single"
+output_assembly = "Lyric.Unicode.dll"
+
+[project.packages]
+"Unicode.Data"      = "src/unicode_data.l"
+"Unicode.Bidi"      = "src/bidi.l"
+"Unicode.LineBreak" = "src/linebreak.l"
+
+[project.tests]
+"Unicode.BidiTests"      = "tests/bidi_tests.l"
+"Unicode.LineBreakTests" = "tests/linebreak_tests.l"

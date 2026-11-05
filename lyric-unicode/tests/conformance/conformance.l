@@ -1,5 +1,5 @@
-//! conformance.l - Ui.Native.UnicodeConformance: Unicode's own conformance suites for
-//! `Ui.Native.Bidi` (UAX #9) and `Ui.Native.LineBreak` (UAX #14), Unicode 15.1 (#8498).
+//! conformance.l - Unicode.Conformance: Unicode's own conformance suites for
+//! `Unicode.Bidi` (UAX #9) and `Unicode.LineBreak` (UAX #14), Unicode 15.1 (#8498).
 //!
 //! The suites are vendored, unchanged, next to this file with the Unicode licence
 //! (`LICENSE-UNICODE.txt`), and pinned here by SHA-256, so a run never fetches anything:
@@ -12,7 +12,7 @@
 //! visual order of the line.  `LineBreakTest.txt` follows the number tailoring of UAX #14 section 8.2
 //! example 7, which `LineBreak.breaksIn` implements.  `conformance_tests.l` runs the suites on dotnet
 //! and the JVM (`lyric test`), `main.l` on `--target native`, where manifest test suites do not run.
-package Ui.Native.UnicodeConformance
+package Unicode.Conformance
 
 import Std.Core
 import Std.Collections
@@ -22,9 +22,9 @@ import Std.Path
 import Std.Hash
 import Std.Environment
 import Std.Errors.{IOError}
-import Ui.Native.Bidi
-import Ui.Native.LineBreak
-import Ui.Native.UnicodeData
+import Unicode.Bidi
+import Unicode.LineBreak
+import Unicode.Data as UnicodeData
 
 /// The SHA-256 of the vendored `BidiCharacterTest.txt` (Unicode 15.1.0).
 pub val bidiCharacterTestSha256: String = "18507F7EC57EC8155B7771DBC88F3E3201AD08EBA4DBA70E4E095EF628020FA8"
@@ -47,10 +47,10 @@ pub record SuiteResult {
   report: String
 }
 
-val dataDir: String = "lyric-ui/native/tests/unicode"
+val dataDir: String = "lyric-unicode/tests/conformance"
 
 /// The path of a vendored file: in the directory the run started in, or below it or one of its
-/// parents at `lyric-ui/native/tests/unicode`, so a run works from this directory, from
+/// parents at `lyric-unicode/tests/conformance`, so a run works from this directory, from
 /// `lyric-ui/native` and from the repository root.
 pub func dataPath(name: in String): Result[String, String] {
   if fileExists(name) {
@@ -60,7 +60,7 @@ pub func dataPath(name: in String): Result[String, String] {
   var dir = start
   var steps = 0
   while steps < 32 {
-    for rel in [dataDir, "tests/unicode"] {
+    for rel in [dataDir, "tests/conformance"] {
       val candidate = Path.join(dir, Path.join(rel, name))
       if fileExists(candidate) {
         return Ok(value = candidate)
@@ -175,7 +175,7 @@ pub func bidiOutcome(cps: in slice[Int], direction: in Int): String {
   fromInt(para) + ";" + shown + ";" + joinInts(order)
 }
 
-/// Every line of `BidiCharacterTest.txt` (its text) through `Ui.Native.Bidi`.
+/// Every line of `BidiCharacterTest.txt` (its text) through `Unicode.Bidi`.
 pub func runBidiCharacterTest(text: in String): SuiteResult {
   var cases = 0
   var failures = 0
@@ -202,7 +202,7 @@ pub func runBidiCharacterTest(text: in String): SuiteResult {
   SuiteResult(cases = cases, failures = failures, report = report)
 }
 
-/// Every line of `LineBreakTest.txt` (its text) through `Ui.Native.LineBreak`.
+/// Every line of `LineBreakTest.txt` (its text) through `Unicode.LineBreak`.
 pub func runLineBreakTest(text: in String): SuiteResult {
   var cases = 0
   var failures = 0
