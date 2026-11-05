@@ -421,6 +421,11 @@ pub record SymbolTable {
   /// bind the call to it instead of searching the bundle by name (docs/70
   /// phase 2d, D336).
   calleeSites: Map[String, String]
+  /// The type of every expression the checker typed, keyed by the expression's
+  /// `NodeId` (docs/70 §6.3, D360).  An expression inferred again (speculative
+  /// checking, an expected-type retry) replaces its earlier entry.  The type
+  /// is the checker's own `Type`; `Lyric.Tir.Build` converts it to `Ty`.
+  exprTypes: Map[Int, Type]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -985,6 +990,7 @@ pub func newSymbolTable(): SymbolTable {
     ownFuncValueSites = newMap(),
     typeArgCalleeSites = newMap(),
     calleeSites = newMap(),
+    exprTypes = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),

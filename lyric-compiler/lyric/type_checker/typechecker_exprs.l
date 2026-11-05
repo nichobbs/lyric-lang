@@ -11868,7 +11868,20 @@ pub func inferExpr(
   }
   noteArrayPlaceRead(sc, tbl, sigs, e, t)
   noteSilentTyError(tbl, e, t, diag.count == diagsBefore)
+  recordExprType(tbl, e, t)
   t
+}
+
+// Record `t` as the type of `e` under its `NodeId` (`SymbolTable.exprTypes`,
+// D360).  A node the parser or a pass left unnumbered (id 0) has no entry.
+func recordExprType(tbl: in SymbolTable, e: in Expr, t: in Type): Unit {
+  if e.nodeId <= 0 {
+    return
+  }
+  if tbl.exprTypes.containsKey(e.nodeId) {
+    tbl.exprTypes.remove(e.nodeId)
+  }
+  tbl.exprTypes.add(e.nodeId, t)
 }
 
 // Mark the callee of a call (and the base of a `callee[T]` type-argument list)

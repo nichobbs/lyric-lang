@@ -54,6 +54,8 @@ package Lyric.Pipeline
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Environment as Environment
+import Std.Console as Console
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -77,6 +79,8 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.PackageMerge as PM
 import Lyric.Tir as Tir
 import Lyric.Tir.Verify as TirVerify
+import Lyric.Tir.Build as TirBuild
+import Lyric.Resolve as Resolve
 import Lyric.IfaceBuild as IfaceBuild
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
@@ -1700,16 +1704,51 @@ pub record CheckFront {
   checked: SourceFile
 }
 
+func tirVerifyIrEnabled(): Bool {
+  Environment.getVarOrDefault("LYRIC_VERIFY_IR", "") == "1"
+}
+
+func errorCount(ds: in List[Diagnostic]): Int {
+  var n = 0
+  for d in ds {
+    if d.severity == DiagError {
+      n = n + 1
+    }
+  }
+  n
+}
+
+/// The I0002 census of a type-checked file: how many of its expressions the
+/// checker recorded no usable type for (docs/70 §12.2, D360).  Printed to
+/// stderr as `I0002 census [<package>]: <n> of <m> expressions`, then the
+/// first few messages.
+func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckResult): Unit {
+  val ctx = TirBuild.newTyConvCtx(tcRes.symbols)
+  val ids = TirBuild.exprNodeIds(file)
+  val bad = TirBuild.exprTypeCensus(ctx, ids)
+  Console.error("I0002 census [" + label + "]: " + toString(bad.count) + " of " + toString(ids.count) + " expressions")
+  var i = 0
+  while i < bad.count and i < 5 {
+    Console.error("  " + bad[i])
+    i = i + 1
+  }
+}
+
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
 /// check, with its diagnostics sent to `sink`.  None after an error.
 /// `lyric prove` runs exactly this, so it rejects what a build rejects up to
 /// the mode check (#8227).
 pub func pipeCheckFront(
-  file0: in SourceFile,
+  file00: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   opts: in MiddleEndOptions,
   sink: in DiagSink,
 ): Option[CheckFront] {
+  // `LYRIC_VERIFY_IR` (docs/70 §6.4, D360): number the file's nodes so the
+  // checker records a type per expression, and report the I0002 census after
+  // the check.  Off by default: no extra copy of the tree.
+  val verifyIr = tirVerifyIrEnabled()
+  val file0 = if verifyIr { Resolve.renumberNodeIds(file00).file } else { file00 }
   val noIterElems: Map[String, ExternIterInfo] = newMap()
   val tcRes = checkWithImportedPackagesForTargetIter(
     file0,
@@ -1719,6 +1758,9 @@ pub func pipeCheckFront(
     noIterElems,
     opts.externIterResolver
   )
+  if verifyIr and errorCount(tcRes.diagnostics) == 0 {
+    pipeReportTirCensus(opts.pkgLabel, file0, tcRes)
+  }
   if opts.tcFatal {
     if gateTo(sink, opts.pkgLabel, opts.filePaths, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None

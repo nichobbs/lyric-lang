@@ -1,0 +1,257 @@
+//! build.l - Lyric.Tir.Build: the TIR builder (docs/70 §6.3, D360).
+//!
+//! The builder turns a type-checked package into `Lyric.Tir`, reading what the
+//! checker recorded per `NodeId` (`SymbolTable.exprTypes`) and failing with
+//! I0002 on any node with no entry.  This file holds the type conversion every
+//! node needs: the checker's `Type` to `Lyric.Tir.Ty`, which has no error and
+//! no inference case, so a type the checker could not give is an I0002 here
+//! and never a wildcard in TIR.
+package Lyric.Tir.Build
+
+import Std.Core
+import Std.Collections
+import Lyric.Symbols
+import Lyric.Parser
+import Lyric.TypeChecker
+import Lyric.Tir
+import Lyric.Tir as TirT
+import Lyric.ContractElaborator
+
+/// What type conversion needs beyond the type: the checker's table for
+/// extern types, and the binders of the generic parameters in scope.  A
+/// `TyParam`'s owner is the checker's binder key (D337); `ownerSyms` maps it to
+/// the declaring symbol and `ownerParams` to the parameter names in
+/// declaration order, which is the parameter's index.  `selfIface` is the
+/// interface whose body is being converted, for `Self`.
+pub record TyConvCtx {
+  tbl: SymbolTable
+  ownerSyms: Map[String, SymbolId]
+  ownerParams: Map[String, List[String]]
+  selfIface: Option[SymbolId]
+}
+
+pub func newTyConvCtx(tbl: in SymbolTable): TyConvCtx {
+  TyConvCtx(tbl = tbl, ownerSyms = newMap(), ownerParams = newMap(), selfIface = None)
+}
+
+/// Register the binder `key`: declared by `sym` with parameters `names`.
+pub func tyConvBind(ctx: in TyConvCtx, key: in String, sym: in SymbolId, names: in List[String]): Unit {
+  if ctx.ownerSyms.containsKey(key) {
+    ctx.ownerSyms.remove(key)
+    ctx.ownerParams.remove(key)
+  }
+  ctx.ownerSyms.add(key, sym)
+  ctx.ownerParams.add(key, names)
+}
+
+/// The I0002 message for a type that cannot be converted.
+func i0002Type(what: in String, t: in Type): String {
+  "I0002: the checker gave no usable type for " + what + ": " + renderType(t)
+}
+
+func primOf(p: in PrimType): Ty {
+  match p {
+    case PtBool -> TPrim(kind = TPBool)
+    case PtByte -> TPrim(kind = TPByte)
+    case PtInt -> TPrim(kind = TPInt)
+    case PtLong -> TPrim(kind = TPLong)
+    case PtUInt -> TPrim(kind = TPUInt)
+    case PtULong -> TPrim(kind = TPULong)
+    case PtNat -> TPrim(kind = TPNat)
+    case PtFloat -> TPrim(kind = TPFloat)
+    case PtDouble -> TPrim(kind = TPDouble)
+    case PtChar -> TPrim(kind = TPChar)
+    case PtString -> TPrim(kind = TPString)
+    case PtUnit -> TPrim(kind = TPUnit)
+    case PtNever -> TirT.TNever
+  }
+}
+
+func convList(ctx: in TyConvCtx, ts: in List[Type]): Result[List[Ty], String] {
+  val res: List[Ty] = newList()
+  for t in ts {
+    match tyOfType(ctx, t) {
+      case Ok(v) -> res.add(v)
+      case Err(e) -> return Err(error = e)
+    }
+  }
+  Ok(value = res)
+}
+
+func paramIndex(ctx: in TyConvCtx, name: in String, owner: in String): Option[Int] {
+  match mapGet(ctx.ownerParams, owner) {
+    case Some(names) -> {
+      var i = 0
+      while i < names.count {
+        if names[i] == name {
+          return Some(value = i)
+        }
+        i = i + 1
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
+/// The `Lyric.Tir` type of the checker's `t`, or the I0002 message saying why
+/// it has none: a `TyError`, a `TyInfer` the call did not solve, or a
+/// `TyParam` whose binder the builder has not registered.
+pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
+  match t {
+    case TyPrim(p) -> Ok(value = primOf(p))
+    case TyTuple(elems) -> match convList(ctx, elems) {
+      case Ok(xs) -> Ok(value = TirT.TTuple(elems = xs))
+      case Err(e) -> Err(error = e)
+    }
+    case TyNullable(inner) -> match tyOfType(ctx, inner) {
+      case Ok(x) -> Ok(value = TirT.TNullable(inner = x))
+      case Err(e) -> Err(error = e)
+    }
+    // The checker's function type has no parameter modes (D360), so each is `in`.
+    case TyFunction(params, ret, isAsync) -> {
+      val ps: List[TParamTy] = newList()
+      for p in params {
+        match tyOfType(ctx, p) {
+          case Ok(x) -> ps.add(TParamTy(mode = TMIn, ty = x))
+          case Err(e) -> return Err(error = e)
+        }
+      }
+      match tyOfType(ctx, ret) {
+        case Ok(r) -> Ok(value = TFunc(params = ps, ret = r, isAsync = isAsync))
+        case Err(e) -> Err(error = e)
+      }
+    }
+    case TyArray(size, element, sizeVar) -> match tyOfType(ctx, element) {
+      case Err(e) -> Err(error = e)
+      case Ok(el) -> match size {
+        case Some(n) -> Ok(
+          value = TirT.TArray(
+            len = ALKnown(n = n),
+            element = el
+          )
+        )
+        case None -> match sizeVar {
+          case None -> Ok(
+            value = TirT.TArray(
+              len = ALUnsized,
+              element = el
+            )
+          )
+          case Some(sv) -> match sv {
+            case TyParam(name, owner) -> match mapGet(ctx.ownerSyms, owner) {
+              case Some(osym) -> match paramIndex(ctx, name, owner) {
+                case Some(i) -> Ok(
+                  value = TirT.TArray(
+                    len = ALParam(
+                      owner = osym,
+                      index = i
+                    ),
+                    element = el
+                  )
+                )
+                case None -> Err(
+                  error = i0002Type(
+                    "an array length parameter",
+                    sv
+                  )
+                )
+              }
+              case None -> Err(
+                error = i0002Type(
+                  "an array length parameter",
+                  sv
+                )
+              )
+            }
+            case _ -> Err(
+              error = i0002Type(
+                "an array length",
+                sv
+              )
+            )
+          }
+        }
+      }
+    }
+    case TySlice(element) -> match tyOfType(ctx, element) {
+      case Ok(x) -> Ok(value = TirT.TSlice(element = x))
+      case Err(e) -> Err(error = e)
+    }
+    case TyUser(id, _, args) -> match convList(ctx, args) {
+      case Err(e) -> Err(error = e)
+      case Ok(xs) -> match symTableExternDeclOf(ctx.tbl, id) {
+        case Some(decl) -> Ok(
+          value = TExtern(
+            host = HostTypeRef(
+              name = decl.clrName,
+              args = xs
+            )
+          )
+        )
+        case None -> Ok(value = TNamed(sym = id, args = xs))
+      }
+    }
+    case TyRefined(underlying, lo, hi, hiInclusive, _) -> match tyOfType(ctx, underlying) {
+      case Ok(x) -> Ok(
+        value = TirT.TRefined(
+          underlying = x,
+          lo = lo,
+          hi = hi,
+          hiInclusive = hiInclusive
+        )
+      )
+      case Err(e) -> Err(error = e)
+    }
+    case TySelf -> match ctx.selfIface {
+      case Some(i) -> Ok(value = tySelfOf(i))
+      case None -> Err(error = i0002Type("`Self` outside an interface", t))
+    }
+    case TyLen(n) -> Ok(value = TLen(n = n))
+    case TyParam(name, owner) -> match mapGet(ctx.ownerSyms, owner) {
+      case None -> Err(error = i0002Type("a type parameter with no registered binder", t))
+      case Some(osym) -> match paramIndex(ctx, name, owner) {
+        case Some(i) -> Ok(value = TParam(owner = osym, index = i))
+        case None -> Err(
+          error = i0002Type(
+            "a type parameter its binder does not declare",
+            t
+          )
+        )
+      }
+    }
+    case TyInfer(_) -> Err(error = i0002Type("an unsolved inference variable", t))
+    case TyError(_) -> Err(error = i0002Type("an expression the checker could not type", t))
+    case TyException -> Ok(value = TException)
+  }
+}
+
+/// The type the checker recorded for the expression numbered `node`, as `Ty`,
+/// or the I0002 message: no entry (the checker never typed the node) or an
+/// entry with no `Ty`.
+pub func exprTy(ctx: in TyConvCtx, node: in Int): Result[Ty, String] {
+  match mapGet(ctx.tbl.exprTypes, node) {
+    case None -> Err(error = "I0002: the checker recorded no type for expression node #" + toString(node))
+    case Some(t) -> tyOfType(ctx, t)
+  }
+}
+
+/// The nodes of `exprIds` with no usable recorded type, as I0002 messages, in
+/// the order given.  The census the `--verify-ir` flag reports.
+pub func exprTypeCensus(ctx: in TyConvCtx, exprIds: in List[Int]): List[String] {
+  val res: List[String] = newList()
+  for id in exprIds {
+    match exprTy(ctx, id) {
+      case Ok(_) -> ()
+      case Err(e) -> res.add(e)
+    }
+  }
+  res
+}
+
+/// Every expression node id of `file`, in traversal order.
+pub func exprNodeIds(file: in SourceFile): List[Int] {
+  val ids: List[Int] = newList()
+  mapFileNodes(file, { e: Expr -> ids.add(e.nodeId); e }, { s: Statement -> s }, { p: Pattern -> p })
+  ids
+}
