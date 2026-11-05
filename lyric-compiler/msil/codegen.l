@@ -21721,18 +21721,23 @@ func lowerBuiltinOrStaticCallMsil(
             // (full path, or trailing segment(s) of an `import A.B`), never
             // every import by bare name — that silently bound
             // `Widgets.field(...)` to another package's `field` (D-progress-946).
-            val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
+            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
+            val importedFqn = if sitedFqn.length > 0 {
+              ""
+            } else {
+              match mapGet(cctx.pkgImports, fctx.pkgName) {
               case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
                 findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
               } else {
                 findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
               }
               case None -> ""
+              }
             }
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
-            val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
+            val originFqn = if sitedFqn.length > 0 { "" } else { originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint) }
             // `println` and `print` are language builtins the checker types
             // itself, so a call has no recorded callee.  With a function of the
             // same name in scope the call is that function (the tiers above:
@@ -21759,7 +21764,6 @@ func lowerBuiltinOrStaticCallMsil(
             // declaring package's own, whatever tier below would have found.
             // Empty for a call the checker did not record, and for one a
             // later pass renamed (a monomorphised copy), which keep the tiers.
-            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
             val resolvedFqn = if bareSiblingHit {
               ""
             } else if sitedFqn.length > 0 {
@@ -32278,6 +32282,18 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // spawnNms/spawnTys are parallel lists tracking `val x = spawn f()` bindings:
 // spawnNms[i] is the local name, spawnTys[i] is its Task<T> type.
 // This lets `await x` resolve to the correct TaskAwaiter<T> field.
+// Whether some candidate FQN already has a registered return type for a call
+// of `cnt` arguments: the first that does decides the call's type, so the
+// bare-import search only matters when none does.
+func anyCandidateRetRegisteredMsil(cctx: in CodegenCtx, candidates: in List[String], cnt: in Int): Bool {
+  for c in candidates {
+    if cctx.funcRetTypes.containsKey(c + "/" + toString(cnt)) or cctx.funcRetTypes.containsKey(c) {
+      return true
+    }
+  }
+  false
+}
+
 // Resolve a qualified free-function call's return type by mirroring the
 // call-EMISSION resolution order (qualified path -> current package ->
 // imported package). The imported fallback is essential for cross-package
@@ -32329,9 +32345,11 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
-  if bareImp.length > 0 {
-    candidates.add(bareImp)
+  if not anyCandidateRetRegisteredMsil(cctx, candidates, cnt) {
+    val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
+    if bareImp.length > 0 {
+      candidates.add(bareImp)
+    }
   }
   var result = MObject
   var ci = 0
@@ -32619,9 +32637,11 @@ func inferCallReturnTypePB(
                 case None -> ()
               }
               candidates.add(pkgName + "." + field)
-              val bareImp = findBareImportedFqnMsil(cctx, pkgName, field, cnt, MObject)
-              if bareImp.length > 0 {
-                candidates.add(bareImp)
+              if not anyCandidateRetRegisteredMsil(cctx, candidates, cnt) {
+                val bareImp = findBareImportedFqnMsil(cctx, pkgName, field, cnt, MObject)
+                if bareImp.length > 0 {
+                  candidates.add(bareImp)
+                }
               }
               var result = MObject
               var ci = 0
