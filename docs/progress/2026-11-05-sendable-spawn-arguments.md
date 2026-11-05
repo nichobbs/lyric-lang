@@ -31,6 +31,7 @@ A sweep of every file that spawns, on `--target dotnet` and `--target jvm`, foun
 state only in tests, which were rewritten: native self-tests that logged from several spawned
 tasks into one `List` (now a protected log), a spawned lambda that polled a `var` the scope body
 wrote (now a protected flag), and an `inout` place passed to a spawned task (removed). Tests:
-`typechecker_self_test.l` (T0225, T0226, T0227, `Send` bounds, T0172), and
+`typechecker_self_test.l` (T0225, T0226, T0227, `Send` bounds, T0172), the compile-fail corpus
+(`testdata/reject/spawn_argument_not_send`, `spawn_reads_module_state`, on dotnet and the JVM), and
 `llvm_self_test_async_mt.l` now runs fork-join, sleepers, the contended counter and the rendezvous
 with the default thread count, and keeps the cooperative case under `LYRIC_ASYNC_THREADS=1`.
