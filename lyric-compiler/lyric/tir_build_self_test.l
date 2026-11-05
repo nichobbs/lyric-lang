@@ -73,7 +73,7 @@ test "composite types convert structurally" {
   elems.add(TyNullable(inner = TyPrim(pt = PtString)))
   match tyOfType(ctx, TyTuple(elems = elems)) {
     case Ok(t) -> match t {
-      case TTuple(xs) -> {
+      case Lyric.Tir.TTuple(xs) -> {
         assertEqualInt(xs.count, 2, "two elements")
         assertTrue(tyEq(xs[0], TPrim(kind = TPInt)), "first is Int")
       }
@@ -82,7 +82,7 @@ test "composite types convert structurally" {
     case Err(e) -> assertTrue(false, e)
   }
   match tyOfType(ctx, TyPrim(pt = PtNever)) {
-    case Ok(t) -> assertTrue(tyEq(t, TNever), "Never")
+    case Ok(t) -> assertTrue(tyEq(t, Lyric.Tir.TNever), "Never")
     case Err(e) -> assertTrue(false, e)
   }
 }

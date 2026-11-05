@@ -62,7 +62,7 @@ func primOf(p: in PrimType): Ty {
     case PtChar -> TPrim(kind = TPChar)
     case PtString -> TPrim(kind = TPString)
     case PtUnit -> TPrim(kind = TPUnit)
-    case PtNever -> TNever
+    case PtNever -> Lyric.Tir.TNever
   }
 }
 
@@ -100,11 +100,11 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
   match t {
     case TyPrim(p) -> Ok(value = primOf(p))
     case TyTuple(elems) -> match convList(ctx, elems) {
-      case Ok(xs) -> Ok(value = TTuple(elems = xs))
+      case Ok(xs) -> Ok(value = Lyric.Tir.TTuple(elems = xs))
       case Err(e) -> Err(error = e)
     }
     case TyNullable(inner) -> match tyOfType(ctx, inner) {
-      case Ok(x) -> Ok(value = TNullable(inner = x))
+      case Ok(x) -> Ok(value = Lyric.Tir.TNullable(inner = x))
       case Err(e) -> Err(error = e)
     }
     case TyFunction(params, ret, isAsync) -> {
@@ -124,14 +124,14 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
       case Err(e) -> Err(error = e)
       case Ok(el) -> match size {
         case Some(n) -> Ok(
-          value = TArray(
+          value = Lyric.Tir.TArray(
             len = ALKnown(n = n),
             element = el
           )
         )
         case None -> match sizeVar {
           case None -> Ok(
-            value = TArray(
+            value = Lyric.Tir.TArray(
               len = ALUnsized,
               element = el
             )
@@ -140,7 +140,7 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
             case TyParam(name, owner) -> match mapGet(ctx.ownerSyms, owner) {
               case Some(osym) -> match paramIndex(ctx, name, owner) {
                 case Some(i) -> Ok(
-                  value = TArray(
+                  value = Lyric.Tir.TArray(
                     len = ALParam(
                       owner = osym,
                       index = i
@@ -173,7 +173,7 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
       }
     }
     case TySlice(element) -> match tyOfType(ctx, element) {
-      case Ok(x) -> Ok(value = TSlice(element = x))
+      case Ok(x) -> Ok(value = Lyric.Tir.TSlice(element = x))
       case Err(e) -> Err(error = e)
     }
     case TyUser(id, _, args) -> match convList(ctx, args) {
@@ -192,7 +192,7 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
     }
     case TyRefined(underlying, lo, hi, hiInclusive, _) -> match tyOfType(ctx, underlying) {
       case Ok(x) -> Ok(
-        value = TRefined(
+        value = Lyric.Tir.TRefined(
           underlying = x,
           lo = lo,
           hi = hi,
