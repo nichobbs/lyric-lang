@@ -45,3 +45,26 @@ preconditions, annotation rule, a shadowed `buffer`), `for` over each
 sequence kind (bounds, element ranges, invariants established and preserved,
 the snapshot, the checked index step, ranges and `break` failing closed),
 nested writes (read back, frame, bounds at both levels, inner range).
+
+## G2 exit criteria (#7941)
+
+Write isolation: `buffer_self_test.l` (26 tests) and `buffer_spawn_self_test.l`
+(7, `spawn` captures) run in CI on dotnet (`compiler-self-tests-batch.sh`),
+the JVM (`jvm-generics-self-tests-batch.sh`) and native
+(`native-backend-self-tests.sh`), and pass on all three locally.
+
+Per-write cost: `benchmarks/bench_buffer.l` gains `benchArrayInPlaceWrites`,
+the same loop of 1,000,000 read-add-writes over an `array[10000, Int]`, whose
+writes have no shared-storage check. `lyric bench`, min of 100 runs, one
+machine:
+
+| target | buffer | array | extra per write | buffer alloc per run |
+|---|---|---|---|---|
+| dotnet | 2.75 ms | 2.18 ms | ~0.6 ns | 263 KB |
+| JVM | 6.44 ms | 0.31 ms | ~6 ns | 16 MB |
+| native | 0.65 ms | 0.08 ms | ~0.6 ns | 302 KB (the `filled` buffer) |
+
+dotnet and native meet the criterion. The JVM does not: a managed buffer's
+storage is a `List[T]` (D226), an `ArrayList<Object>` on the JVM, so each
+write boxes its `Int`. That is the representation, not the shared-mark check;
+it is #8821, and #7941 stays open on it.
