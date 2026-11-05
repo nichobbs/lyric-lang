@@ -86,6 +86,7 @@ pub func hostSetEnvironmentVariable(key: in String, value: in String): Unit {
 // see Never because Environment.Exit does not return in practice.
 pub func hostExit(code: in Int): Never {
   NetEnvironment.Exit(code)
+  panic("Environment.Exit returned")
 }
 
 // =====================================================================

@@ -2728,7 +2728,7 @@ func inferBinop(
           }
           inner
         }
-        case TyError(_) -> tyErrorSilent()
+        case TyError(d) -> TyError(diag = d)
         case _ -> {
           diag.add(errorDiagnostic("T0035", "?? LHS must be a nullable type (got " + renderType(lhs) + ")", span))
           rhs
@@ -4249,7 +4249,28 @@ func isHostStringTypeName(clrName: in String): Bool {
 // `T.new(args)` on an `extern type T` (docs/48) constructs a `T` once the
 // bridge can say what `T` is assignable to (`externAssignable`); without a
 // host resolver it stays untyped.  A universal method has its fixed type.
-func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in String, argc: in Int): Type {
+func untypedMemberCallResult(
+  tbl: in SymbolTable,
+  fn: in Expr,
+  memberName: in String,
+  argc: in Int,
+  recvTy: in Option[Type],
+): Type {
+  match recvTy {
+    case Some(rt) -> {
+      val coll = stdCollectionMemberResult(tbl, rt, memberName, argc)
+      if not isSilentTyError(coll) {
+        return coll
+      }
+    }
+    case None -> ()
+  }
+  if argc == 0 and (memberName == "isOk" or memberName == "isErr" or memberName == "isSome" or memberName == "isNone") {
+    match recvTy {
+      case Some(rt) -> match monadAccessorType(tbl, rt, memberName) { case Some(t) -> return t; case None -> () }
+      case None -> ()
+    }
+  }
   if memberName == "new" and tbl.externIterResolver.count > 0 {
     match fn.kind {
       case EMember(recv, _) -> match recv.kind {
@@ -4275,7 +4296,123 @@ func untypedMemberCallResult(tbl: in SymbolTable, fn: in Expr, memberName: in St
       case _ -> ()
     }
   }
-  universalMethodResultType(memberName, argc)
+  if isUniversalMethodName(memberName) {
+    return universalMethodResultType(memberName, argc)
+  }
+  match fn.kind {
+    case EMember(recvE, _) -> match recvTy {
+      case Some(rt) -> match externMemberReceiver(tbl, recvE, rt) {
+        case Some(er) -> return externMemberResult(tbl, er, memberName, argc, false)
+        case None -> ()
+      }
+      case None -> match externMemberReceiver(tbl, recvE, tyErrorSilent()) {
+        case Some(er) -> return externMemberResult(tbl, er, memberName, argc, false)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  // A member of a value that is itself untyped is as untyped as the value.
+  match recvTy {
+    case Some(TyError(d)) -> return TyError(diag = d)
+    case _ -> ()
+  }
+  val universal = universalMethodResultType(memberName, argc)
+  if isSilentTyError(universal) {
+    return tyErrorUnresolved()
+  }
+  universal
+}
+
+// The extern type a member is read from, and the type arguments of the
+// receiver value (empty for a static member named through the type).
+record ExternReceiver {
+  decl: ExternTypeDecl
+  targs: List[Type]
+}
+
+func externMemberReceiver(tbl: in SymbolTable, recv: in Expr, recvTy: in Type): Option[ExternReceiver] {
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> match symTableExternDeclOf(tbl, id) {
+      case Some(d) -> return Some(value = ExternReceiver(decl = d, targs = targs))
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match symTableTryFindOne(tbl, p.segments[0]) {
+        case Some(sym) -> match sym.kind {
+          case DKExternType(_, d) -> return Some(value = ExternReceiver(decl = d, targs = newList()))
+          case _ -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  None
+}
+
+// A host class result.  A host method returns a reference the language cannot
+// say is non-null or exactly the type a caller binds it at (a kernel binds
+// `generateCertificate`'s `Certificate` as an `X509Certificate`, a downcast the
+// backends check where the value is bound), so a class result is left
+// unchecked rather than typed as the extern type nearest its name.
+func isHostClassElem(e: in ExternIterElem): Bool {
+  match e {
+    case EIEHost(_, _) -> true
+    case _ -> false
+  }
+}
+
+// Host types the checker does not give a member result: the root object type
+// (the boundary's dynamic type, which the backends convert to whatever the Lyric
+// side declares, `e.Current` read as a `String`), the host string (it may be
+// null, and an `extern type` alias of it is Lyric's `String`), and the
+// primitives Lyric has no type for (`Int16`, `UInt32`, `Single`, ...), which
+// the backends widen by sign.
+func isHostObjectElem(e: in ExternIterElem): Bool {
+  match e {
+    case EIEHost(h, _) -> h == "System.Object" or h == "java.lang.Object" or isHostStringTypeName(h) or
+      h == "System.SByte" or
+      h == "System.Int16" or
+      h == "System.UInt16" or
+      h == "System.UInt32" or
+      h == "System.UInt64" or
+      h == "System.Single" or
+      h == "System.IntPtr" or
+      h == "System.UIntPtr"
+    case _ -> false
+  }
+}
+
+// The type of a member of an `extern type`, from the host's metadata through
+// the bridge (docs/70 5.3, #8613): a `void` method is `Unit`, a host type with
+// an `extern type` in scope is that type, a host primitive is its Lyric
+// primitive.  Anything the host does not say (no resolver, a type or member the
+// bridge cannot read, disagreeing overloads, a host result no `extern type`
+// names) is left unchecked, explicitly (`tyErrorHost`), never guessed.
+func externMemberResult(
+  tbl: in SymbolTable, er: in ExternReceiver, member: in String, argc: in Int, isProperty: in Bool
+): Type {
+  if tbl.externIterResolver.count == 0 {
+    return tyErrorHost()
+  }
+  match tbl.externIterResolver[0].resolveMember(er.decl.clrName, member, argc, isProperty) {
+    case None -> tyErrorHost()
+    case Some(EMTVoid) -> TyPrim(pt = PtUnit)
+    case Some(EMTType(elem)) -> {
+      if isHostObjectElem(elem) or isHostClassElem(elem) {
+        return tyErrorHost()
+      }
+      val missing: List[String] = newList()
+      match externIterElemToType(tbl, er.targs, elem, missing) {
+        case Some(t) -> t
+        case None -> tyErrorHost()
+      }
+    }
+  }
 }
 
 // The result of a universal method (`isUniversalMethodName`) called on a
@@ -6929,6 +7066,14 @@ func resolveExprPath(
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) and not packageReexportsMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
+    }
+    // A union case named through its package (`Emitter.Jvm`), read as a value.
+    match symTableTryFindInPackage(tbl, pkg, name) {
+      case Some(csym) -> match csym.kind {
+        case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
+        case _ -> ()
+      }
+      case None -> ()
     }
     return tyErrorSilent()
   }
@@ -11294,7 +11439,7 @@ func checkConstRefPattern(
 // `where V: Add`-style bounds that make such uses valid.
 func eraseTyParams(t: in Type): Type {
   match t {
-    case TyParam(_, _) -> tyErrorSilent()
+    case TyParam(_, _) -> tyErrorGeneric()
     case TyUser(id, name, targs) -> {
       val na: List[Type] = newList()
       var i = 0
@@ -11953,7 +12098,7 @@ pub func inferExpr(
   e: in Expr,
 ): Type {
   val diagsBefore = diag.count
-  noteCalleePosition(tbl, e)
+  noteCalleePosition(sc, tbl, e)
   val t = inferExprCore(sc, tbl, sigs, diag, e)
   if diag.count == diagsBefore {
     censusLogSilentTyError(e, t)
@@ -11983,10 +12128,15 @@ func recordExprType(tbl: in SymbolTable, e: in Expr, t: in Type): Unit {
 // Mark the callee of a call (and the base of a `callee[T]` type-argument list)
 // as a callee position before it is typed, so the silent-`TyError` gate can
 // exempt it (D341).
-func noteCalleePosition(tbl: in SymbolTable, e: in Expr): Unit {
+func noteCalleePosition(sc: in Scope, tbl: in SymbolTable, e: in Expr): Unit {
   match e.kind {
+    case EMember(recv, _) -> markQualifierPosition(sc, tbl, recv)
     case ECall(fn, _) -> {
       markCalleePosition(tbl, fn)
+      match fn.kind {
+        case EMember(recv, _) -> markQualifierPosition(sc, tbl, recv)
+        case _ -> ()
+      }
       match fn.kind {
         case EIndex(base, _) -> markCalleePosition(tbl, base)
         case EParen(inner) -> markCalleePosition(tbl, inner)
@@ -11994,6 +12144,30 @@ func noteCalleePosition(tbl: in SymbolTable, e: in Expr): Unit {
       }
     }
     case _ -> ()
+  }
+}
+
+// The receiver of a member that names a type or package (`IOError.message(e)`,
+// `Mf.ManifestError.message(e)`, `NetMath.Min(a, b)`) is a qualifier, not a
+// value: it has no type to give, so the gate exempts it like a callee.  The
+// module/type naming convention (an UpperCamelCase head that no local shadows)
+// is the rule the member case uses for its receiver already.
+func markQualifierPosition(sc: in Scope, tbl: in SymbolTable, recv: in Expr): Unit {
+  if isQualifierShape(sc, recv) {
+    markCalleePosition(tbl, recv)
+    match recv.kind {
+      case EMember(inner, _) -> markQualifierPosition(sc, tbl, inner)
+      case _ -> ()
+    }
+  }
+}
+
+func isQualifierShape(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EPath(p) -> p.segments.count >= 1 and startsUppercase(p.segments[0]) and
+      (match scopeTryFind(sc, p.segments[0]) { case Some(_) -> false; case None -> true })
+    case EMember(inner, n) -> startsUppercase(n) and isQualifierShape(sc, inner)
+    case _ -> false
   }
 }
 
@@ -13535,10 +13709,14 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
     case TyUser(id, _, targs) -> {
       val isList = targs.count == 1 and isStdCollectionsHostType(tbl, id, "List")
       val isMap = targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map")
+      val isSet = targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set")
+      // `Set.add` is `Unit` too: the backends discard the host's "newly
+      // inserted" flag (`HashSet.Add` / `Set.add`), as the MSIL lowering notes.
       val unitResult = (isList and name == "add" and (argCount == 1 or argCount == 2)) or
         (isList and name == "removeAt" and argCount == 1) or
-        (isMap and name == "add" and argCount == 2)
-      val isSet = targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set")
+        (isMap and name == "add" and argCount == 2) or
+        (isSet and name == "add" and argCount == 1) or
+        ((isList or isMap or isSet) and name == "clear" and argCount == 0)
       // Membership tests and `remove` (true iff something was removed) are
       // `Bool` and positions `Int` on every backend, so a mistyped use
       // (`val s: String = xs.contains(x)`) is reported (#7978).
@@ -18903,7 +19081,7 @@ func inferExprCore(
                             case None -> tyErrorSilent()
                           }
                           case None -> if isMemberCallee {
-                            untypedMemberCallResult(tbl, fn, memberName, args.count)
+                            untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
                           } else {
                             tyErrorSilent()
                           }
@@ -19043,6 +19221,19 @@ func inferExprCore(
           }
         }
       }
+      match unrefine(rt) {
+        case TySlice(_) -> if name == "count" {
+          diag.add(
+            warningDiagnostic(
+              "W0042",
+              "'slice' has no member 'count'; use '.length' (only List, Map and Set have '.count'); this becomes an error",
+              e.span
+            )
+          )
+          return TyPrim(pt = PtInt)
+        }
+        case _ -> ()
+      }
       match distinctMemberType(tbl, diag, rt, name, e.span) {
         case Some(dt) -> return dt
         case None -> ()
@@ -19096,8 +19287,16 @@ func inferExprCore(
         case TyError(_) -> rigidTypeParamField(tbl, rt, name, sc.genericNames)
         case _ -> memberTy
       }
-      recordResultTypeAt(tbl, readTy, e.span)
-      readTy
+      val typedRead = if isSilentTyError(readTy) and not tbl.calleePositionSites.containsKey(recordCopySiteKey(e.span)) {
+        match externMemberReceiver(tbl, recv, rt) {
+          case Some(er) -> externMemberResult(tbl, er, name, 0, true)
+          case None -> match rt { case TyError(d) -> TyError(diag = d); case _ -> readTy }
+        }
+      } else {
+        readTy
+      }
+      recordResultTypeAt(tbl, typedRead, e.span)
+      typedRead
     }
 
     case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, tyErrorSilent())
@@ -19195,6 +19394,11 @@ func inferExprCore(
           case _ -> false
         }
         if not isPrimTypeIndex {
+          // A type name given as a type argument (`newList[SignedFile]()`) is
+          // a qualifier like a type receiver, not a value.
+          if isQualifierShape(sc, indices[ii]) {
+            markCalleePosition(tbl, indices[ii])
+          }
           inferExpr(sc, tbl, sigs, diag, indices[ii])
         }
         ii = ii + 1
@@ -19227,6 +19431,10 @@ func inferExprCore(
             e.span
           )
         )
+      }
+      match rt {
+        case TyError(d) -> return TyError(diag = d)
+        case _ -> ()
       }
       indexElementType(tbl, rt)
     }
@@ -19482,7 +19690,7 @@ func inferLambda(
   while li < lambdaParams.count {
     val lp = lambdaParams[li]
     val pTy = match lp.ty {
-      case None -> if useExpected { eraseTyParams(expectedParams[li]) } else { tyErrorSilent() }
+      case None -> if useExpected { eraseTyParams(expectedParams[li]) } else { tyErrorGeneric() }
       case Some(te) -> resolveType(tbl, lctx, diag, te)
     }
     paramTypes.add(pTy)
@@ -21932,10 +22140,16 @@ func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
 // The `extern type` declaration behind a type of no type arguments.
 func externDeclOfType(tbl: in SymbolTable, t: in Type): Option[ExternTypeDecl] {
   match unrefine(t) {
-    case TyUser(id, _, targs) -> {
-      if targs.count > 0 {
-        return None
-      }
+    case TyUser(_, _, targs) -> if targs.count > 0 { return None }
+    case _ -> ()
+  }
+  externDeclOfAnyType(tbl, t)
+}
+
+// The `extern type` declaration behind a type, type arguments or not.
+func externDeclOfAnyType(tbl: in SymbolTable, t: in Type): Option[ExternTypeDecl] {
+  match unrefine(t) {
+    case TyUser(id, _, _) -> {
       var i = 0
       while i < tbl.symbols.count {
         match tbl.symbols[i].kind {
@@ -21960,8 +22174,15 @@ func externAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): 
   if tbl.externIterResolver.count == 0 {
     return false
   }
-  val ed = match externDeclOfType(tbl, expected) { case Some(d) -> d; case None -> return false }
-  val ad = match externDeclOfType(tbl, actual) { case Some(d) -> d; case None -> return false }
+  val ed = match externDeclOfAnyType(tbl, expected) { case Some(d) -> d; case None -> return false }
+  val ad = match externDeclOfAnyType(tbl, actual) { case Some(d) -> d; case None -> return false }
+  // Two spellings of one host class (`extern type JSet = "java.util.Set"` and
+  // `extern type KeyView[K, V] = "java.util.Set"`) are the same host type: a
+  // member result is typed by host name and may meet a differently named
+  // alias.  The host's type arguments are not compared.
+  if externHostBase(ed.clrName) == externHostBase(ad.clrName) {
+    return true
+  }
   match tbl.externIterResolver[0].resolveBases(ad.clrName) {
     case None -> true
     case Some(bases) -> {

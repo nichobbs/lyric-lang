@@ -12424,7 +12424,7 @@ test "toSlice on an array is called, not referenced" {
   val cr = parseCheck(bare)
   assertEqualInt(countDiagCode(cr, "T0113"), 1, "a bare toSlice (" + diagCodesOf(cr) + ")")
   assertTrue(Str.contains(diagCodesOf(cr), "is called, not referenced"), "the message says to call it")
-  val wrapped = "package P\nfunc f(a: in array[3, Int]): Int {\n  val g = { -> a.toSlice() }\n  g().count\n}\n"
+  val wrapped = "package P\nfunc f(a: in array[3, Int]): Int {\n  val g = { -> a.toSlice() }\n  g().length\n}\n"
   val wcr = parseCheck(wrapped)
   assertEqualInt(diagCount(wcr), 0, "a lambda that calls it (" + diagCodesOf(wcr) + ")")
 }
@@ -14841,9 +14841,9 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
 }
 
-// A call whose result no rule types yet: a host method on an extern type.
+// A call whose result no rule types yet: `default()` with no expected type.
 func silentHostCallSource(): String {
-  "package P\nextern type Sb = \"System.Text.StringBuilder\"\nfunc f(b: in Sb): Unit {\n  val s = b.Clear()\n}\n"
+  "package P\nfunc f(): Unit {\n  val d = default()\n}\n"
 }
 
 func silentSiteKinds(cr: in CheckResult): String {
@@ -14870,8 +14870,8 @@ test "a fully typed program has no silent TyError site (D341)" {
 test "a callee typed TyError is exempt, its call result is not (D338, D341)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
-  assertTrue(not Str.contains(kinds, "EMember"), "the callee b.Clear is exempt: " + kinds)
-  assertTrue(Str.contains(kinds, "ECall"), "the call result b.Clear() is a silent site: " + kinds)
+  assertTrue(not Str.contains(kinds, "EPath"), "the callee default is exempt: " + kinds)
+  assertTrue(Str.contains(kinds, "ECall"), "the call result default() is a silent site: " + kinds)
 }
 
 test "W0036 reports each silent site and is silent after an error (D341)" {
@@ -14894,6 +14894,17 @@ test "W0036 reports each silent site and is silent after an error (D341)" {
 }
 
 // ─── Silent TyError sites typed (docs/70 §5.3, D338, #8613) ────────────────
+test "clear and Set.add are Unit members of the stdlib collections" {
+  val none = ""
+  for body in ["xs.clear()", "m.clear()", "s.clear()", "s.add(it)"] {
+    val cr = checkCollectionCall("xs: in List[Item], m: in Map[String, Item], s: in Set[Item], it: in Item", body)
+    assertEqual(silentSiteKinds(cr), none, body + " has no silent site")
+    assertEqualInt(diagCount(cr), 0, body + ": clean (" + diagCodesOf(cr) + ")")
+  }
+  val used = checkCollectionCall("xs: in List[Item]", "val n: Int = xs.clear()")
+  assertTrue(diagCount(used) > 0, "a Unit result is not an Int")
+}
+
 test "a universal method's result is typed when the receiver declares none" {
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(n: in Int): String {\n  n.toString()\n}\n")),
@@ -14963,11 +14974,16 @@ test "default() adopts its expected type, and a user default() is an ordinary ca
 // `java.lang.Unlocatable` is a type the bridge cannot find.
 record FakeHostHierarchy {
   known: Map[String, List[String]]
+  members: Map[String, ExternMemberType]
 }
 
 impl ExternIterResolver for FakeHostHierarchy {
   func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo] {
     None
+  }
+
+  func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
+    mapGet(self.members, clrName + "#" + member + "#" + toString(argc) + "#" + (if isProperty { "p" } else { "m" }))
   }
 
   func resolveBases(clrName: in String): Option[List[String]] {
@@ -14984,7 +15000,24 @@ func fakeHostHierarchy(): FakeHostHierarchy {
   bytesBases.add("java.io.InputStream")
   bytesBases.add("java.lang.Object")
   known.add("java.io.ByteArrayInputStream", bytesBases)
-  FakeHostHierarchy(known = known)
+  val members: Map[String, ExternMemberType] = newMap()
+  val noArgs: List[ExternIterElem] = newList()
+  members.add("java.io.ByteArrayInputStream#available#0#m", EMTType(elem = EIEPrim(name = "Int")))
+  members.add("java.io.ByteArrayInputStream#close#0#m", EMTVoid)
+  members.add("java.io.ByteArrayInputStream#size#0#p", EMTType(elem = EIEPrim(name = "Int")))
+  members.add(
+    "java.io.ByteArrayInputStream#name#0#p",
+    EMTType(elem = EIEHost(hostName = "java.lang.String", args = noArgs))
+  )
+  members.add(
+    "java.io.ByteArrayInputStream#base#0#m",
+    EMTType(elem = EIEHost(hostName = "java.io.InputStream", args = noArgs))
+  )
+  members.add(
+    "java.io.ByteArrayInputStream#proxy#0#m",
+    EMTType(elem = EIEHost(hostName = "java.net.Unbound", args = noArgs))
+  )
+  FakeHostHierarchy(known = known, members = members)
 }
 
 func parseCheckWithHost(src: in String): CheckResult {
@@ -15020,6 +15053,103 @@ test "an extern constructor result is assignable to the host's base type, and on
     diagCodesOf(parseCheckWithHost(head + "func f(): Int {\n  JBytes.new(\"x\")\n}\n")) != "",
     "an extern constructor result is not an Int"
   )
+}
+
+// ─── Extern members through host metadata (docs/70 5.3, #8613) ─────────────
+test "an extern member call or property read has the type the host declares" {
+  val head = externHierarchyHead()
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): Int {\n  b.available()\n}\n")),
+    "",
+    "a host int method is an Int"
+  )
+  assertTrue(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): String {\n  b.available()\n}\n")) != "",
+    "and not a String"
+  )
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): Unit {\n  b.close()\n}\n")),
+    "",
+    "a void method is a Unit"
+  )
+  assertTrue(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): Int {\n  b.close()\n}\n")) != "",
+    "and not an Int"
+  )
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): Int {\n  b.size\n}\n")),
+    "",
+    "a host int property is an Int"
+  )
+  assertTrue(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): String {\n  b.size\n}\n")) != "",
+    "and not a String"
+  )
+  assertEqual(
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): JBytes {\n  b.base()\n}\n")),
+    "",
+    "a host class result is unchecked: bound at a subtype, as a kernel binds a host downcast"
+  )
+}
+
+test "an erased generic value and a type qualifier are named, not silent" {
+  val genericCr = parseCheck(
+    "package P\nfunc pick[T](xs: in slice[T], d: in T): T {\n  for x in xs {\n    return x\n  }\n  d\n}\n"
+  )
+  assertEqual(silentSiteKinds(genericCr), "", "a loop variable of a generic body is not silent")
+  val qualifier = parseCheck(
+    "package P\nextern type NetM = \"System.Math\"\nfunc f(a: in Int, b: in Int): Int {\n  NetM.Max(a, b)\n}\n"
+  )
+  assertEqual(silentSiteKinds(qualifier), "", "the type receiver of a static member is not a value")
+}
+
+test "count on a slice is W0042, length is the slice's size" {
+  assertEqual(
+    diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.length\n}\n")),
+    "",
+    "slice.length is fine"
+  )
+  assertTrue(
+    Str.contains(diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")), "W0042"),
+    "slice.count is W0042"
+  )
+}
+
+test "overloads of one arity that disagree on the result leave the member unchecked" {
+  val int1: List[ExternMemberType] = newList()
+  int1.add(EMTType(elem = EIEPrim(name = "Int")))
+  int1.add(EMTType(elem = EIEPrim(name = "Int")))
+  assertTrue(isSome(externMemberAgreed(int1)), "overloads that agree are one answer")
+  val mixed: List[ExternMemberType] = newList()
+  mixed.add(EMTType(elem = EIEPrim(name = "Int")))
+  mixed.add(EMTType(elem = EIEPrim(name = "Long")))
+  assertTrue(isNone(externMemberAgreed(mixed)), "Int and Long disagree")
+  val voidAndInt: List[ExternMemberType] = newList()
+  voidAndInt.add(EMTVoid)
+  voidAndInt.add(EMTType(elem = EIEPrim(name = "Int")))
+  assertTrue(isNone(externMemberAgreed(voidAndInt)), "void and Int disagree")
+  val none: List[ExternMemberType] = newList()
+  assertTrue(isNone(externMemberAgreed(none)), "no candidate is no answer")
+  assertTrue(
+    externMemberCacheKey("A", "b#c", 1, true) != externMemberCacheKey("A#b", "c", 1, true),
+    "a # in a name does not collide keys"
+  )
+  assertTrue(isNamedUncheckedTyError(tyErrorHost()), "host is named")
+  assertTrue(isNamedUncheckedTyError(tyErrorGeneric()), "generic is named")
+  assertTrue(isNamedUncheckedTyError(tyErrorUnresolved()), "unresolved is named")
+  assertTrue(not isNamedUncheckedTyError(tyErrorSilent()), "silent is not named")
+}
+
+test "a host member the bridge cannot say is unchecked and not silent" {
+  val head = externHierarchyHead()
+  for body in ["b.mystery()", "b.proxy()", "b.nothing", "b.name"] {
+    val cr = parseCheckWithHost(head + "func f(b: in JBytes): Unit {\n  val x = " + body + "\n}\n")
+    assertEqual(diagCodesOf(cr), "", body + ": no diagnostic")
+    assertEqual(silentSiteKinds(cr), "", body + ": not a silent site")
+  }
+  val hostless = parseCheck(head + "func f(b: in JBytes): Unit {\n  val x = b.available()\n}\n")
+  assertEqual(diagCodesOf(hostless), "", "without a resolver: no diagnostic")
+  assertEqual(silentSiteKinds(hostless), "", "without a resolver the member is unchecked, not silent")
 }
 
 test "an extern alias of the host string type constructs a String; without a host resolver .new stays untyped" {

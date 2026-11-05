@@ -59,7 +59,7 @@ test "Url.tryFrom rejects a missing host, spaces and control characters" {
     "http://example.com/\t"
   ]
   var i = 0
-  while i < bad.count {
+  while i < bad.length {
     match Url.tryFrom(bad[i]) {
       case Ok(_) -> panic("expected InvalidUrl for: " + bad[i])
       case Err(InvalidUrl(_)) -> ()
@@ -78,7 +78,7 @@ test "Url.tryFrom accepts userinfo, ports, queries and fragments" {
     "http://[::1]:80/"
   ]
   var i = 0
-  while i < good.count {
+  while i < good.length {
     match Url.tryFrom(good[i]) {
       case Ok(url) -> assertEqual(Url.toString(url), good[i], "URL round-trips")
       case Err(e) -> panic("expected Ok for " + good[i] + ", got: " + HttpError.message(e))

@@ -4802,6 +4802,69 @@ pub func hostSupertypesOfExtern(
   Some(value = acc)
 }
 
+// The result types of the members of `fqn` named `member`, looked up on the
+// type and every supertype (docs/70 5.3): methods taking `argc` arguments, or,
+// with `isProperty`, the `get_<member>` accessor and a field of that name.
+// One entry per candidate overload, `STPrim(0x01)` for `void`.  None when the
+// type or a supertype cannot be located, or a candidate is a generic method
+// whose result mentions its own type parameters.  An empty list means no
+// member of that shape was found.
+pub func hostMemberReturnsOfExtern(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  fqn: in String,
+  member: in String,
+  argc: in Int,
+  isProperty: in Bool,
+): Option[List[SigType]] {
+  val chain: List[String] = newList()
+  chain.add(fqn)
+  match hostSupertypesOfExtern(cachePaths, cacheParsed, typeIndex, pathIndex, fqn) {
+    case Some(supers) -> {
+      for sup in supers {
+        chain.add(sup)
+      }
+    }
+    case None -> return None
+  }
+  val getter = "get_" + member
+  val found: List[SigType] = newList()
+  for cur in chain {
+    val asmName = match assemblyForType(typeIndex, cur) { case Some(n) -> n; case None -> return None }
+    val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return None }
+    val parsed = match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+      case Some(pa) -> pa
+      case None -> return None
+    }
+    val methods = match allMethodSigsOn(parsed.img, parsed.layout, parsed.th, cur) {
+      case Some(ms) -> ms
+      case None -> return None
+    }
+    for m in methods {
+      val wanted = if isProperty {
+        m.name == getter and m.paramTypes.count == 0
+      } else {
+        m.name == member and m.paramTypes.count == argc
+      }
+      if wanted {
+        if sigMentionsMVar(m.returnType) {
+          return None
+        }
+        found.add(m.returnType)
+      }
+    }
+    if isProperty {
+      match findFieldExternIn(parsed.img, parsed.layout, parsed.th, cur, member) {
+        case Some(fi) -> found.add(fi.fieldType)
+        case None -> ()
+      }
+    }
+  }
+  Some(value = found)
+}
+
 func iterWalk(
   cachePaths: in List[String],
   cacheParsed: in List[MdrParsedAssembly],

@@ -178,7 +178,7 @@ test "for over an unannotated literal of Some only" {
 
 test "an unannotated literal bound to a val, indexed and counted" {
   val xs = [Some(1), None, Some(3)]
-  assertEqualInt(xs.count, 3, ".count")
+  assertEqualInt(xs.length, 3, ".count")
   match xs[2] {
     case Some(v) -> assertEqualInt(v + 1, 4, "xs[2] payload")
     case None -> assertTrue(false, "xs[2] should be Some")

@@ -338,7 +338,7 @@ func charsOfExplicit(codePoint: in Int): slice[Char] {
 
 test "Character.toChars(int) char[] tail-expression return coerces to slice[Char]" {
   val cs = charsOfTail(65)
-  assertEqualInt(cs.count, 1, "toChars(65) yields one char")
+  assertEqualInt(cs.length, 1, "toChars(65) yields one char")
   // Round-trip back through the argument-side unbox (String.copyValueOf(char[]),
   // NOT the String(char[]) constructor -- String also declares String(byte[]),
   // so a slice[Char] argument ties both overloads at equal score and is
@@ -353,7 +353,7 @@ test "Character.toChars(int) char[] tail-expression return coerces to slice[Char
 
 test "Character.toChars(int) char[] explicit return coerces to slice[Char]" {
   val cs = charsOfExplicit(66)
-  assertEqualInt(cs.count, 1, "toChars(66) yields one char")
+  assertEqualInt(cs.length, 1, "toChars(66) yields one char")
   val s = JString.copyValueOf(cs)
   assertEqual(s, "B", "toChars(66) round-trips through String.copyValueOf(char[]) as \"B\"")
 }
@@ -410,7 +410,7 @@ func growIntsExplicit(src: in slice[Int], newLen: in Int): slice[Int] {
 test "Arrays.copyOf(int[],int) GROWN tail-expression return zero-pads new slots" {
   val src: slice[Int] = [1, 2, 3]
   val grown = growIntsTail(src, 5)
-  assertEqualInt(grown.count, 5, "copyOf(int[],5) grows to newLen")
+  assertEqualInt(grown.length, 5, "copyOf(int[],5) grows to newLen")
   assertEqualInt(grown[0], 1, "element 0 preserved")
   assertEqualInt(grown[1], 2, "element 1 preserved")
   assertEqualInt(grown[2], 3, "element 2 preserved")

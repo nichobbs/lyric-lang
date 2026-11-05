@@ -239,7 +239,7 @@ test "assignment to a local named 'result' is observed" {
   val parts = ["a", "b", "c"]
   var result = ""
   var i = 0
-  while i < parts.count {
+  while i < parts.length {
     if i > 0 {
       result = result + " "
     }
@@ -263,7 +263,7 @@ test "reassignment of an Int local named 'result' is stored" {
 //    [Ljava/lang/Object;").
 // ─────────────────────────────────────────────────────────────────────────────
 func sliceParamLen(parts: slice[String]): Int {
-  parts.count
+  parts.length
 }
 
 test "slice literal coerces to a slice[T] parameter" {

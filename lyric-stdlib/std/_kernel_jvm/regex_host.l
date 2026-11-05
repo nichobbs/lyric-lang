@@ -200,12 +200,10 @@ pub func hostMatchOne(r: in Regex, input: in String): Match {
   m
 }
 
-// The find() result is deliberately consumed by the tail-position
-// Bool-to-Unit coercion (the same pattern as process_host.l hostWait —
-// a non-tail discarded auto-FFI call would be elided entirely, #5379);
-// "no match found" is observable on the Matcher itself.
+// The find() result is bound to `_` (a bare discarded call would be elided
+// entirely, #5379); "no match found" is observable on the Matcher itself.
 func advanceToFirstMatch(m: in Match): Unit {
-  m.find()
+  val _ = m.find()
 }
 
 /// Replace every match of `r` in `input`: Pattern.matcher + replaceAll,

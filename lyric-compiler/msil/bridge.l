@@ -1456,6 +1456,8 @@ pub record MsilHostIterIndex {
   known: Map[String, ExternIterInfo]
   bases: Map[String, List[String]]
   basesAnswered: Map[String, Bool]
+  members: Map[String, ExternMemberType]
+  membersAnswered: Map[String, Bool]
 }
 
 pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
@@ -1469,7 +1471,9 @@ pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
     answered = newMap(),
     known = newMap(),
     bases = newMap(),
-    basesAnswered = newMap()
+    basesAnswered = newMap(),
+    members = newMap(),
+    membersAnswered = newMap()
   )
 }
 
@@ -1525,6 +1529,39 @@ impl ExternIterResolver for MsilHostIterIndex {
       }
     }
     mapGet(self.bases, clrName)
+  }
+
+  func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
+    val key = externMemberCacheKey(clrName, member, argc, isProperty)
+    if not self.membersAnswered.containsKey(key) {
+      self.membersAnswered.add(key, true)
+      ensureMsilHostIterIndex(self)
+      match Mdr.hostMemberReturnsOfExtern(self.parsedPaths, self.parsed, self.typeIndex, self.pathIndex, clrName, member, argc, isProperty) {
+        case Some(sigs) -> {
+          val results: List[ExternMemberType] = newList()
+          for sg in sigs {
+            match sg {
+              case Mdr.STPrim(b) -> if b == 0x01 {
+                results.add(EMTVoid)
+              } else if b == 0x03 {
+                results.add(EMTType(elem = EIEPrim(name = "Char")))
+              } else if b == 0x0E {
+                results.add(EMTType(elem = EIEHost(hostName = "System.String", args = newList())))
+              } else {
+                results.add(EMTType(elem = iterElemOfSig(sg)))
+              }
+              case _ -> results.add(EMTType(elem = iterElemOfSig(sg)))
+            }
+          }
+          match externMemberAgreed(results) {
+            case Some(m) -> self.members.add(key, m)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    mapGet(self.members, key)
   }
 }
 

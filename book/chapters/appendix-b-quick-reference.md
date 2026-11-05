@@ -1638,6 +1638,7 @@ Syntax errors reported while parsing.  Most name the token they expected; the on
 | `W0038` | warning | A union-case construction whose arguments leave a type parameter of its union unsolved (`val r = Ok(value = 7)`), when neither its expected type, nor a `?` operand context fixes it. It becomes an error in a later step of D353. |
 | `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
 | `W0041` | retired | Formerly: a `pub async func` exported from a `--shape component` build was a blocking WIT function. Since D184 it is a WIT `async func`, so the warning is no longer issued. |
+| `W0042` | warning | `.count` on a `slice[T]`. Only `List`, `Map` and `Set` have `.count`; a slice sizes with `.length`, as the JVM already required. The read is typed `Int` and still builds on `--target dotnet`; it will become an error. |
 
 ### Emitter (E-series)
 

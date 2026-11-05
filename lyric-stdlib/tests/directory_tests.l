@@ -68,7 +68,7 @@ test "enumerate lists both files and subdirectories" {
   val _ = create(dir + "/sub")
 
   match enumerate(dir) {
-    case Ok(entries) -> assertEqualInt(entries.count, 2, "enumerate finds the file and the subdirectory")
+    case Ok(entries) -> assertEqualInt(entries.length, 2, "enumerate finds the file and the subdirectory")
     case Err(e) -> panic("enumerate failed: " + IOError.message(e))
   }
   val _ = deleteRecursive(dir)
@@ -91,7 +91,7 @@ test "enumerateFiles excludes subdirectories" {
   val _ = create(dir + "/sub")
 
   match enumerateFiles(dir) {
-    case Ok(files) -> assertEqualInt(files.count, 2, "enumerateFiles excludes the subdirectory")
+    case Ok(files) -> assertEqualInt(files.length, 2, "enumerateFiles excludes the subdirectory")
     case Err(e) -> panic("enumerateFiles failed: " + IOError.message(e))
   }
   val _ = deleteRecursive(dir)
@@ -105,7 +105,7 @@ test "enumerateDirectories excludes files" {
   val _ = create(dir + "/sub2")
 
   match enumerateDirectories(dir) {
-    case Ok(dirs) -> assertEqualInt(dirs.count, 2, "enumerateDirectories excludes the file")
+    case Ok(dirs) -> assertEqualInt(dirs.length, 2, "enumerateDirectories excludes the file")
     case Err(e) -> panic("enumerateDirectories failed: " + IOError.message(e))
   }
   val _ = deleteRecursive(dir)

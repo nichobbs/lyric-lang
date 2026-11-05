@@ -270,6 +270,70 @@ pub interface ExternIterResolver {
   /// the bridge cannot say (a type it cannot locate): the checker then leaves
   /// the assignment unchecked, as it does an iteration it cannot resolve.
   func resolveBases(clrName: in String): Option[List[String]]
+
+  /// The type a member of the host type behind an `extern type` has, read from
+  /// the host's metadata (docs/70 5.3): a method called with `argc` arguments
+  /// (`isProperty` false), or a property or field read (`isProperty` true),
+  /// looked up on the type and its supertypes.  None when the bridge cannot
+  /// say: the type or a supertype is not located, no member of that name and
+  /// shape exists, a generic method's result depends on its type arguments, or
+  /// the overloads of that arity disagree on the result.  The checker then
+  /// leaves the member's value unchecked.
+  func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType]
+}
+
+/// What a host member yields.
+pub union ExternMemberType {
+  /// A `void` method: the call is a `Unit`.
+  case EMTVoid
+  /// A value of this host type, written like an iteration element.
+  case EMTType(elem: ExternIterElem)
+}
+
+/// The cache key of one member question, for a bridge's answer cache.  The
+/// unit separator cannot occur in a host type or member name.
+pub func externMemberCacheKey(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): String {
+  clrName + "\u{001f}" + member + "\u{001f}" + toString(argc) + "\u{001f}" + (if isProperty { "p" } else { "m" })
+}
+
+/// The one result every overload of a host member agrees on, or None when
+/// there is no candidate or they differ (the bridge cannot say).
+pub func externMemberAgreed(results: in List[ExternMemberType]): Option[ExternMemberType] {
+  if results.count == 0 {
+    return None
+  }
+  val first = externMemberKey(results[0])
+  var i = 1
+  while i < results.count {
+    if externMemberKey(results[i]) != first {
+      return None
+    }
+    i = i + 1
+  }
+  Some(value = results[0])
+}
+
+func externMemberKey(m: in ExternMemberType): String {
+  match m {
+    case EMTVoid -> "void"
+    case EMTType(e) -> externIterElemKey(e)
+  }
+}
+
+/// A comparable spelling of a host element type, so a bridge can check that
+/// every overload of a member agrees on its result.
+pub func externIterElemKey(e: in ExternIterElem): String {
+  match e {
+    case EIEArg(i) -> "#" + toString(i)
+    case EIEPrim(n) -> n
+    case EIEHost(h, args) -> {
+      var acc = h + "["
+      for a in args {
+        acc = acc + externIterElemKey(a) + ","
+      }
+      acc + "]"
+    }
+  }
 }
 
 /// How a host type iterates: what a bridge found in its metadata.

@@ -116,7 +116,7 @@ func testAstralNumericEntities(): Unit {
   // #7251: a reference must name an XML 1.0 Char.
   val illegal = ["&#0;", "&#x0;", "&#1;", "&#x1F;", "&#xD800;", "&#xFFFE;", "&#xFFFF;"]
   var i = 0
-  while i < illegal.count {
+  while i < illegal.length {
     match parseXml("<e>" + illegal[i] + "</e>") {
       case Err(_) -> assertTrue(true, "non-Char entity rejected")
       case Ok(_) -> assertTrue(false, "non-Char entity should be rejected: " + illegal[i])
@@ -133,7 +133,7 @@ func testAstralNumericEntities(): Unit {
   // a high+low pair and a reversed pair are all rejected (#7252).
   val surrogateRefs = ["&#xD83D;", "&#xDE00;", "&#xD83D;&#xDE00;", "&#xDE00;&#xD83D;"]
   var j = 0
-  while j < surrogateRefs.count {
+  while j < surrogateRefs.length {
     match parseXml("<e>" + surrogateRefs[j] + "</e>") {
       case Err(_) -> assertTrue(true, "surrogate entity rejected")
       case Ok(_) -> assertTrue(false, "surrogate entity should be rejected: " + surrogateRefs[j])

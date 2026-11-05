@@ -60,7 +60,7 @@ test "String slice literal binds as String[] across the F# stdlib boundary" {
 func sumLongSlice(xs: in slice[Long]): Long {
   var acc = 0i64
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     acc = acc + xs[i]
     i = i + 1
   }
@@ -70,7 +70,7 @@ func sumLongSlice(xs: in slice[Long]): Long {
 func sumDoubleSlice(xs: in slice[Double]): Double {
   var acc = 0.0
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     acc = acc + xs[i]
     i = i + 1
   }
@@ -80,7 +80,7 @@ func sumDoubleSlice(xs: in slice[Double]): Double {
 func countTrueSlice(xs: in slice[Bool]): Int {
   var c = 0
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     if xs[i] {
       c = c + 1
     }
@@ -92,7 +92,7 @@ func countTrueSlice(xs: in slice[Bool]): Int {
 func sumCharCodesSlice(xs: in slice[Char]): Int {
   var acc = 0
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     acc = acc + xs[i].toInt()
     i = i + 1
   }
@@ -102,7 +102,7 @@ func sumCharCodesSlice(xs: in slice[Char]): Int {
 func sumByteSlice(xs: in slice[Byte]): Int {
   var acc = 0
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     acc = acc + xs[i].toInt()
     i = i + 1
   }
@@ -150,14 +150,14 @@ func firstCharCode(xs: in slice[Char]): Int {
 
 test "Char slice literal element write (EList MArray branch, #5563)" {
   val cs: slice[Char] = ['a', 'b', 'c']
-  assertEqualInt(cs.count, 3, "3-element Char slice")
+  assertEqualInt(cs.length, 3, "3-element Char slice")
   assertEqualInt(firstCharCode(cs), 97, "cs[0] == 'a' (97)")
 }
 
 test "slice[Char].append builds a new Char[] via stelem (#5563)" {
   val cs: slice[Char] = ['x', 'y']
   val cs2 = cs.append('z')
-  assertEqualInt(cs2.count, 3, "appended slice has 3 elements")
+  assertEqualInt(cs2.length, 3, "appended slice has 3 elements")
   assertEqualInt(cs2[0].toInt(), 120, "cs2[0] == 'x'")
   assertEqualInt(cs2[2].toInt(), 122, "cs2[2] == 'z' (appended element)")
 }
@@ -234,7 +234,7 @@ func makeHolder6332(n: in Int): Holder6332 {
 func passThrough6332(xs: in slice[Item6332]): slice[Item6332] {
   var acc: slice[Item6332] = []
   var i = 0
-  while i < xs.count {
+  while i < xs.length {
     acc = acc.append(xs[i])
     i = i + 1
   }
@@ -247,7 +247,7 @@ func exerciseFieldParamReturn6332(total: in Int): Int {
   while i < total {
     val h = makeHolder6332(i)
     val ys = passThrough6332(h.items)
-    lastCount = ys.count
+    lastCount = ys.length
     i = i + 1
   }
   lastCount
@@ -255,14 +255,14 @@ func exerciseFieldParamReturn6332(total: in Int): Int {
 
 test "#6332: slice[record] record field round-trips through construction and read" {
   val h = makeHolder6332(1)
-  assertEqualInt(h.items.count, 1, "Holder6332.items has one element")
+  assertEqualInt(h.items.length, 1, "Holder6332.items has one element")
   assertEqual(h.items[0].note, "item1", "Holder6332.items[0].note")
 }
 
 test "#6332: slice[record] function parameter and return type round-trip" {
   val h = makeHolder6332(2)
   val ys = passThrough6332(h.items)
-  assertEqualInt(ys.count, 1, "passThrough6332 returns a 1-element slice")
+  assertEqualInt(ys.length, 1, "passThrough6332 returns a 1-element slice")
   assertEqual(ys[0].note, "item2", "passThrough6332[0].note")
 }
 
