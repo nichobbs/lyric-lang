@@ -138,3 +138,23 @@ test "a long run of combining marks stays one word" {
   assertTrue(bounds[20001] and bounds[20002], "a boundary on each side of the space")
   assertEqualInt(WordBreak.nextWordEnd(all, 0), 20001, "Ctrl+Right goes past every mark")
 }
+
+test "a long run of regional indicators pairs up from its start" {
+  val sb = StringBuilder.new()
+  var i = 0
+  while i < 4001 {
+    StringBuilder.append(sb, codepointToString(0x1F1E6 + i % 26))
+    i = i + 1
+  }
+  val all = codePoints(StringBuilder.toString(sb))
+  val bounds = WordBreak.boundariesIn(all, 0, all.length)
+  var wrong = 0
+  var k = 1
+  while k < 4001 {
+    if bounds[k] != (k % 2 == 0) {
+      wrong = wrong + 1
+    }
+    k = k + 1
+  }
+  assertEqualInt(wrong, 0, "a boundary after every second indicator and nowhere else")
+}

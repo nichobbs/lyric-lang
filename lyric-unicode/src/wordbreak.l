@@ -103,7 +103,8 @@ func isMidNumLetQ(c: Int): Bool {
 // Whether there is a word boundary before index `i`, 0 < i < n.  `base[k]` is the character rule
 // WB4 folds `k` into (an Extend, Format or ZWJ character joins the one before it, unless that is a
 // newline or the start of the text; then it stands for itself), `eff[k]` that character's class,
-// and `after[k]` the index of the first character after `k` that WB4 does not fold, or `n`.
+// `after[k]` the index of the first character after `k` that WB4 does not fold, or `n`, and
+// `riRun[k]` how many regional indicators end at `k`, counted back over the folded characters.
 func boundaryAt(
   i: Int,
   n: Int,
@@ -112,6 +113,7 @@ func boundaryAt(
   base: buffer[Int],
   eff: buffer[Int],
   after: buffer[Int],
+  riRun: buffer[Int],
 ): Bool {
   val prevRaw = cls[i - 1]
   val curRaw = cls[i]
@@ -186,16 +188,8 @@ func boundaryAt(
     return false
   }
   // WB15, WB16: regional indicators pair up, counted back over the characters WB4 folds away.
-  if a == wbRI and b == wbRI {
-    var count = 0
-    var k = aIdx
-    while k >= 0 and eff[k] == wbRI {
-      count = count + 1
-      k = if k > 0 { base[k - 1] } else { -1 }
-    }
-    if count % 2 == 1 {
-      return false
-    }
+  if a == wbRI and b == wbRI and riRun[aIdx] % 2 == 1 {
+    return false
   }
   // WB999
   true
@@ -216,6 +210,7 @@ pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] 
   var pict = Buf.filled(n, 0)
   var base = Buf.filled(n, 0)
   var eff = Buf.filled(n, 0)
+  var riRun = Buf.filled(n, 0)
   var i = 0
   while i < n {
     val v = UnicodeData.wordBreakValueOf(cps[from + i])
@@ -227,6 +222,13 @@ pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] 
       base[i] = i
     }
     eff[i] = cls[base[i]]
+    riRun[i] = if base[i] != i {
+      riRun[base[i]]
+    } else if eff[i] == wbRI {
+      1 + (if i > 0 { riRun[base[i - 1]] } else { 0 })
+    } else {
+      0
+    }
     i = i + 1
   }
   // Filled from the end so the whole pass stays linear however long a run of folded characters is.
@@ -239,7 +241,7 @@ pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] 
   result.add(true)
   i = 1
   while i < n {
-    result.add(boundaryAt(i, n, cls, pict, base, eff, after))
+    result.add(boundaryAt(i, n, cls, pict, base, eff, after, riRun))
     i = i + 1
   }
   result.add(true)
