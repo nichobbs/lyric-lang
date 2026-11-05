@@ -563,6 +563,7 @@ static void test_fd_wait_sync(void) {
     char x = 1;
     CHECK(write(p[1], &x, 1) == 1);
     CHECK((lyric_fd_wait(p[0], LYRIC_IO_READ, -1) & LYRIC_IO_READ) != 0);
+    CHECK((lyric_fd_wait(p[0], LYRIC_IO_READ, INT64_MAX) & LYRIC_IO_READ) != 0); /* the deadline saturates */
     close(p[0]);
     close(p[1]);
 }

@@ -397,6 +397,11 @@ static int32_t io_poll_to_result(int revents) {
 
 /* Milliseconds for poll from nanoseconds (-1: forever), rounded up so a poll
  * never returns just before the deadline it waits for. */
+/* The monotonic deadline `ms` milliseconds after `now`, saturating at INT64_MAX. */
+static inline int64_t deadline_after_ms(int64_t now, int64_t ms) {
+    return ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + ms * 1000000;
+}
+
 static int io_timeout_ms(int64_t ns) {
     if (ns < 0) {
         return -1;
@@ -1210,7 +1215,7 @@ void lyric_async_wait_fd2(LyricTask* t, int64_t fd, int32_t events, int64_t fd2,
         t->wake_deadline_ns = INT64_MAX;
     } else {
         int64_t now = lyric_monotonic_nanos();
-        t->wake_deadline_ns = timeout_ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + timeout_ms * 1000000;
+        t->wake_deadline_ns = deadline_after_ms(now, timeout_ms);
     }
     if (mt()) {
         t->park_kind = PARK_IO;
@@ -1250,7 +1255,7 @@ int32_t lyric_fd_wait2(int64_t fd, int32_t events, int64_t fd2, int32_t events2,
         p[1].revents = 0;
         nfds = 2;
     }
-    int64_t deadline = timeout_ms < 0 ? -1 : lyric_monotonic_nanos() + timeout_ms * 1000000;
+    int64_t deadline = timeout_ms < 0 ? -1 : deadline_after_ms(lyric_monotonic_nanos(), timeout_ms);
     for (;;) {
         int64_t left = deadline < 0 ? -1 : deadline - lyric_monotonic_nanos();
         if (deadline >= 0 && left < 0) {
