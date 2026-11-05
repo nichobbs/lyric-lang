@@ -38,4 +38,4 @@ single-line-input, caret-affinity and word-movement items of D216's "Not done"
 
 - Dictionary-based segmentation of Thai, Lao, Khmer and Myanmar for line breaking and word movement (#8497).
 - Single-line inputs do not scroll horizontally yet (`TextEdit.scrollX` is never moved): a value wider than
-  the input is clipped at its right edge, as before this change.
+  the input is clipped at its right edge, as before this change (#8813).
