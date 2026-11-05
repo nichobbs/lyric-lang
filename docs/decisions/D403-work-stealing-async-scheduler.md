@@ -1,4 +1,4 @@
-# D372 - Per-thread work deques with stealing in the native async scheduler (#8493)
+# D403 - Per-thread work deques with stealing in the native async scheduler (#8493)
 
 **Status:** accepted, implemented (docs/67 phase G8); builds on D217, which it amends only in where a
 ready task is queued and which lock guards what. The ready-queue placement in D217 rule 4 is

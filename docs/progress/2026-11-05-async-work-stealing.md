@@ -1,6 +1,6 @@
 # Native async scheduler: per-thread deques with work stealing, and a task-throughput benchmark (#8493)
 
-D372. The multi-threaded mode of `lyric-rt/src/lyric_async.c` (`LYRIC_ASYNC_THREADS=N`, D217) no
+D403. The multi-threaded mode of `lyric-rt/src/lyric_async.c` (`LYRIC_ASYNC_THREADS=N`, D217) no
 longer keeps every ready task in one queue under one lock:
 
 - each scheduler thread owns a work deque; spawns, woken waiters and expired sleepers go on the

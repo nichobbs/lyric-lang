@@ -146,11 +146,11 @@ loop:
 Phase 2 can replace this with a work-stealing multi-threaded scheduler (like
 Tokio's or Go's runtime) without changing the compiler's coro emission.
 
-> **Status (D202, D217, D372):** the default scheduler is still this single-threaded one.  Multi-threaded
+> **Status (D202, D217, D403):** the default scheduler is still this single-threaded one.  Multi-threaded
 > data parallelism shipped as a worker pool in `lyric_parallel.c` behind `Std.Parallel` (D202,
 > docs/67 G8).  The Phase 2 coroutine scheduler shipped in D217 as an opt-in mode of
 > `lyric_async.c`: `LYRIC_ASYNC_THREADS=N` (N >= 2) starts N-1 workers that, with every thread
-> blocked in `lyric_task_block_on`, run ready coroutines; since D372 each scheduler thread owns a
+> blocked in `lyric_task_block_on`, run ready coroutines; since D403 each scheduler thread owns a
 > work deque (the owner takes the newest end, idle threads steal the oldest end of another thread's
 > deque) and waiter lists are lock-free stacks, so spawn, await and completion take no shared lock.
 > `spawn` call sites raise a thread-local hint that the callee's prologue

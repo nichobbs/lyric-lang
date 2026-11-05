@@ -26,7 +26,7 @@ and a Breakout sample whose recorded session is replayed headless, in a window u
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
 clean, which also fixed a race in the protected-type monitor), and the coroutine scheduler for `async`
 tasks has an opt-in multi-threaded mode (D217: `LYRIC_ASYNC_THREADS=N`, `spawn` started
-on workers, ThreadSanitizer and AddressSanitizer clean; D372: per-thread deques with work stealing and a
+on workers, ThreadSanitizer and AddressSanitizer clean; D403: per-thread deques with work stealing and a
 task-throughput benchmark; a compile-time sendability check is a follow-up). G10 is implemented except accessibility (D203, D268: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
