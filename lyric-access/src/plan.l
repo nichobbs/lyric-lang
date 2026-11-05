@@ -57,10 +57,6 @@ pub func resolveNumber(n: in Numbering, num: in Long): Option[String] {
 
 /// Forgets the numbers of ids not in `live`.
 pub func retainOnly(n: in Numbering, live: in List[String]): Unit {
-  val keep: Map[String, Bool] = newMap()
-  for id in live {
-    keep.add(id, true)
-  }
   val byId: Map[String, Long] = newMap()
   val byNumber: Map[Long, String] = newMap()
   for id in live {
