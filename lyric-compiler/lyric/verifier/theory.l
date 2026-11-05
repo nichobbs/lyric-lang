@@ -658,6 +658,8 @@ pub func valueFactsForTerm(v: in Term, info: in SortInfo): List[Term] {
   if isSequenceSort(info.sort) {
     val len = lengthTerm(v)
     facts.add(TBuiltin(op = BOpGte, args = termList2(len, TLit(value = VLInt(n = 0i64), sort = SInt))))
+    // A length is an `Int` (#8394).
+    facts.add(TBuiltin(op = BOpLte, args = termList2(len, TLit(value = VLInt(n = 2147483647i64), sort = SInt))))
     if info.fixedLen >= 0 {
       facts.add(TBuiltin(op = BOpEq, args = termList2(len, TLit(value = VLInt(n = info.fixedLen.toLong()), sort = SInt))))
     }

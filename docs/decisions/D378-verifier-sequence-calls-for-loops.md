@@ -47,7 +47,8 @@ parameters, which no `Std.Buffer` function is.
    the variables around the loop; a progress property needs a `while`. This
    replaces docs/15's `(remaining, processed)` sketch, which needed sequence
    concatenation the model does not have; the two are equivalent where both
-   apply. Ranges, `List` and `Map` iteration, and `break`/`continue` in the
+   apply. A sequence's length is an `Int`, so it carries `length <=
+   2147483647` as a fact and the index step `k + 1` never overflows. Ranges, `List` and `Map` iteration, and `break`/`continue` in the
    body, stay `V0026`.
 5. **Nested element writes.** `a[i][j] = v` on an array or buffer of arrays
    stores the changed inner array back, with bounds at each level and the
@@ -60,8 +61,10 @@ parameters, which no `Std.Buffer` function is.
    `assert`'s claim, a callee's `ensures:`, an element read's range, a
    binding's range) now guard the side goals of the statements after it, as
    they already did the postcondition. Before, a side goal saw only the
-   parameters and the precondition, so `assert(i < x.length); x[i]`, or a
-   bound that follows from a `Std.Buffer` result's length, did not discharge.
+   parameters and the precondition, so a divisor that follows from a callee's
+   `ensures:`, or a bound that follows from a `Std.Buffer` result's length,
+   did not discharge. Each goal takes a copy of the facts in force where it
+   arises, never a fact a later statement establishes.
    The facts are about immutable SMT values, so they hold wherever a later
    statement's obligation is evaluated.
 

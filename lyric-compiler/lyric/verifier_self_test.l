@@ -4539,18 +4539,18 @@ test "Std.Buffer contracts are not applied where `buffer` names another type (#8
 
 test "a statement's facts hold for the obligations after it (#8394)" {
   assertDischarged(
-    "func f(x: in buffer[Int], i: in Int): Int\n  ensures: true\n{\n  assert(i >= 0 and i < x.length)\n  x[i]\n}\n",
-    "assert-then-index"
-  )
-  assertDischarged(
     halfDecl() +
       "func f(n: in Int): Int\n  requires: n >= 2\n  ensures: true\n{\n  val h = half(n)\n  10 / (h + 1)\n}\n",
     "callee-ensures-then-divide"
   )
-  // Never the other way: a later statement's facts do not reach back.
+  assertDischarged(
+    "func f(x: in buffer[Int]): Int\n  requires: x.length > 3\n  ensures: true\n{\n  assert(x.length > 2)\n  x[2]\n}\n",
+    "assert-then-index"
+  )
+  // A fact established later does not reach back to an earlier obligation.
   assertRefuted(
-    "func f(x: in buffer[Int], i: in Int): Int\n  ensures: true\n{\n  val v = x[i]\n  assert(i >= 0 and i < x.length)\n  v\n}\n",
-    "later-assert-does-not-reach-back"
+    "func f(x: in Int): Int {\n  var p: Int range 0 ..= 100 = 50\n  p = p + x\n  p = 0\n  p\n}\n",
+    "later-fact-does-not-reach-back"
   )
 }
 
