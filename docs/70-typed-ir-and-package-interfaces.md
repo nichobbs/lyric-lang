@@ -806,7 +806,7 @@ bare-name resolution) read each file's own or receive resolved symbols
 - **3b** Declaration expansion before body check: derives and the weaver
   (§7.1).
 
-  Status: designed in D370 (one `pipeExpandDeclarations` step before the check; generated nodes take allocator spans mapped back to the causing declaration until the tables are keyed by `NodeId`; slices S1 derives, S2 weaver wrappers, S3 templates and B′-mode, S4 cleanup). No slice has shipped.
+  Status: designed in D370 (one `pipeExpandDeclarations` step before the check; generated nodes take allocator spans mapped back to the causing declaration until the tables are keyed by `NodeId`; slices S1 derives, S2 weaver wrappers, S3 templates and B′-mode, S4 cleanup). S1 (derives before the check) shipped in D390.
 - **3c** TIR passes: contract elaboration (declaration step only; caller
   checks come in phase 6), propagation, typed lowerings, monomorphisation on
   TIR, await hoisting.

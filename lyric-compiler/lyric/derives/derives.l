@@ -52,6 +52,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Expand
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Annotation predicates.
@@ -1791,10 +1792,14 @@ func strEndsWith(s: in String, suffix: in String): Bool {
 }
 
 func importsStdJson(imports: in List[ImportDecl]): Bool {
+  importsStdPackage(imports, "Json")
+}
+
+func importsStdPackage(imports: in List[ImportDecl], name: in String): Bool {
   var i = 0
   while i < imports.count {
     val segs = imports[i].path.segments
-    if segs.count == 2 and segs[0] == "Std" and segs[1] == "Json" {
+    if segs.count == 2 and segs[0] == "Std" and segs[1] == name {
       return true
     }
     i = i + 1
@@ -1803,9 +1808,13 @@ func importsStdJson(imports: in List[ImportDecl]): Bool {
 }
 
 func stdJsonImportDecl(): ImportDecl {
+  stdPackageImportDecl("Json")
+}
+
+func stdPackageImportDecl(name: in String): ImportDecl {
   val segs: List[String] = newList()
   segs.add("Std")
-  segs.add("Json")
+  segs.add(name)
   ImportDecl(
     path = ModulePath(segments = segs, span = sp()),
     selector = None,
@@ -1816,7 +1825,11 @@ func stdJsonImportDecl(): ImportDecl {
   )
 }
 
-pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]): SourceFile {
+pub func deriveFileWithImports(
+  file: in SourceFile,
+  importedItems: in List[Item],
+  origins: in Map[String, Span] = newMap(),
+): SourceFile {
   // Distinct-type declarations (name -> underlying type's head name).  Same-file
   // declarations win over imported ones on name collision because
   // `collectDistinctsFromItems` skips names already present and the current
@@ -1826,9 +1839,22 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
   collectDistinctsFromItems(importedItems, distincts)
   val jsonTypes = jsonElementTypesFor(file.items, importedItems)
   val synths: List[Item] = newList()
+  // Each derived item takes spans of its own, mapped back to the type that
+  // caused it (D370), so the checker can tell generated nodes apart and a
+  // diagnostic in one is reported at the `@derive`.
+  val spanBase = generatedSpanBase(file)
   var i = 0
   while i < file.items.count {
-    deriveItem(file.items[i], file.items, synths, distincts, jsonTypes)
+    val batch: List[Item] = newList()
+    deriveItem(file.items[i], file.items, batch, distincts, jsonTypes)
+    if batch.count > 0 {
+      val respanned = respanGenerated(file, batch, spanBase, file.items[i].span, origins)
+      var r = 0
+      while r < respanned.count {
+        synths.add(respanned[r])
+        r = r + 1
+      }
+    }
     i = i + 1
   }
   if synths.count == 0 {
@@ -1857,6 +1883,11 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
   }
   if synthsUseJson(synths) and not importsStdJson(file.imports) {
     newImports.add(stdJsonImportDecl())
+  }
+  // The decoders name `Std.JsonHost.JsonElement` by its package, which the
+  // checker resolves only through an import now that it sees this code (D390).
+  if synthsUseJson(synths) and not importsStdPackage(file.imports, "JsonHost") {
+    newImports.add(stdPackageImportDecl("JsonHost"))
   }
   SourceFile(
     moduleDoc = file.moduleDoc,
