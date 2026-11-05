@@ -125,6 +125,7 @@ test: $(BUILD)/lyric_rt.a
 	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test
 	$(CC) $(CFLAGS) -Iinclude test/lyric_async_mt_test.c $(BUILD)/lyric_rt.a $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test
 	$(BUILD)/lyric_async_mt_test
+	LYRIC_ASYNC_THREADS=1 $(BUILD)/lyric_async_mt_test
 
 # ThreadSanitizer run of the worker pool (docs/67 G8): the pool and its test are compiled from source
 # with -fsanitize=thread, so a missing happens-before edge between a worker's writes and the caller's
@@ -136,6 +137,7 @@ test-tsan: | $(BUILD)
 	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test_tsan
 	$(SAN_CC) $(CFLAGS) -fsanitize=thread -Iinclude test/lyric_async_mt_test.c $(ASYNC_SANITIZED_SRCS) $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test_tsan
 	TSAN_OPTIONS="halt_on_error=1 exitcode=66" $(BUILD)/lyric_async_mt_test_tsan
+	LYRIC_ASYNC_THREADS=1 TSAN_OPTIONS="halt_on_error=1 exitcode=66" $(BUILD)/lyric_async_mt_test_tsan
 
 # AddressSanitizer run of the multi-threaded coroutine scheduler (docs/67 G8, D217): a frame
 # destroyed while running, a task freed while still queued, or a leaked task fails the run.
@@ -143,6 +145,7 @@ test-tsan: | $(BUILD)
 test-asan-async: | $(BUILD)
 	$(SAN_CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_async_mt_test.c $(ASYNC_SANITIZED_SRCS) $(TEST_LIBS) -o $(BUILD)/lyric_async_mt_test_asan
 	$(BUILD)/lyric_async_mt_test_asan
+	LYRIC_ASYNC_THREADS=1 $(BUILD)/lyric_async_mt_test_asan
 
 # ASan variant of the TLS seam test, kept OUT of the default `test` target
 # because it needs the compiler's AddressSanitizer runtime, which is not

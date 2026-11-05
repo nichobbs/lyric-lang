@@ -39,7 +39,7 @@
         }                                                                                  \
     } while (0)
 
-enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3, K_FIB = 4 };
+enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3, K_FIB = 4, K_IO = 5 };
 
 typedef struct FakeCo {
     LyricTask* task;
@@ -52,6 +52,8 @@ typedef struct FakeCo {
     int sleep_ms;
     int work_us;
     struct FakeCo* kids[2]; /* K_FIB: the two spawned subproblems */
+    int io_fd;              /* K_IO: the descriptor to wait on */
+    int io_timeout_ms;      /* K_IO: the reactor timeout (negative: none) */
     pthread_t creator;
 } FakeCo;
 
@@ -133,6 +135,24 @@ static void body(FakeCo* c) {
         lyric_task_block_on(c->dep->task);
         lyric_task_complete(c->task, lyric_task_result(c->dep->task) + 100, 0);
         c->step = -1;
+        return;
+    case K_IO:
+        /* Wait until the pipe is readable (or the timeout passes), then read what arrived. */
+        if (c->step == 0) {
+            c->step = 1;
+            lyric_async_wait_fd(c->task, c->io_fd, LYRIC_IO_READ, c->io_timeout_ms);
+            return;
+        }
+        {
+            int32_t r = lyric_async_wait_fd_result(c->task);
+            char b = 0;
+            int64_t got = 0;
+            if (r & LYRIC_IO_READ) {
+                got = read(c->io_fd, &b, 1) == 1 ? (int64_t)b : -1;
+            }
+            lyric_task_complete(c->task, r == 0 ? -100 : got, 0);
+            c->step = -1;
+        }
         return;
     case K_FIB:
         /* Recursive fork-join: spawn fib(n-1) and fib(n-2), await both.  Most children are
@@ -426,9 +446,141 @@ static void test_fork_join_steal(void) {
     }
 }
 
+/* Tasks parked on descriptors (the I/O reactor, #8494): every one of N pipes is written only
+ * after all N tasks have parked, so each task must be woken by readiness, not run past it. */
+static void test_io_wake(int spawn) {
+    enum { N = 256 };
+    FakeCo* cos = (FakeCo*)calloc(N, sizeof(FakeCo));
+    int (*pipes)[2] = calloc(N, sizeof *pipes);
+    LyricTask* tasks[N];
+    reset_counters();
+    for (int i = 0; i < N; i++) {
+        CHECK(pipe(pipes[i]) == 0);
+        co_init(&cos[i], K_IO, NULL, 0, 0, 0);
+        cos[i].io_fd = pipes[i][0];
+        cos[i].io_timeout_ms = -1;
+        tasks[i] = co_call(&cos[i], spawn);
+    }
+    for (int i = 0; i < N; i++) {
+        CHECK(!lyric_task_is_complete(tasks[i])); /* nothing written yet */
+    }
+    for (int i = 0; i < N; i++) {
+        char b = (char)(i % 100);
+        CHECK(write(pipes[i][1], &b, 1) == 1);
+    }
+    for (int i = 0; i < N; i++) {
+        lyric_task_block_on(tasks[i]);
+        CHECK(lyric_task_result(tasks[i]) == i % 100);
+        lyric_release(tasks[i]);
+    }
+    CHECK(wait_destroyed(N));
+    for (int i = 0; i < N; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+    free(pipes);
+    free(cos);
+}
+
+/* A reactor wait with a timeout on a descriptor nobody writes resumes with 0; one that is
+ * written first resumes ready, and a sleeper alongside them still wakes on time. */
+static void test_io_timeout(void) {
+    int quiet[2], loud[2];
+    CHECK(pipe(quiet) == 0);
+    CHECK(pipe(loud) == 0);
+    FakeCo a, b, nap;
+    reset_counters();
+    co_init(&a, K_IO, NULL, 0, 0, 0);
+    a.io_fd = quiet[0];
+    a.io_timeout_ms = 15;
+    co_init(&b, K_IO, NULL, 0, 0, 0);
+    b.io_fd = loud[0];
+    b.io_timeout_ms = 5000;
+    co_init(&nap, K_LEAF, NULL, 9, 5, 0);
+    int64_t t0 = now_ms();
+    LyricTask* ta = co_call(&a, 1);
+    LyricTask* tb = co_call(&b, 1);
+    LyricTask* tn = co_call(&nap, 1);
+    char x = 42;
+    CHECK(write(loud[1], &x, 1) == 1);
+    lyric_task_block_on(tb);
+    CHECK(lyric_task_result(tb) == 42);
+    lyric_task_block_on(tn);
+    CHECK(lyric_task_result(tn) == 9);
+    lyric_task_block_on(ta);
+    CHECK(lyric_task_result(ta) == -100); /* timed out */
+    int64_t elapsed = now_ms() - t0;
+    CHECK(elapsed >= 14 && elapsed < 2000);
+    lyric_release(ta);
+    lyric_release(tb);
+    lyric_release(tn);
+    CHECK(wait_destroyed(3));
+    close(quiet[0]);
+    close(quiet[1]);
+    close(loud[0]);
+    close(loud[1]);
+}
+
+/* While every thread is busy with compute-bound tasks, a descriptor that becomes ready is
+ * still noticed: busy threads poll the reactor between tasks. */
+static void test_io_while_busy(void) {
+    enum { WORK = 64 };
+    FakeCo* work = (FakeCo*)calloc(WORK, sizeof(FakeCo));
+    LyricTask* wt[WORK];
+    int p[2];
+    CHECK(pipe(p) == 0);
+    FakeCo io;
+    reset_counters();
+    co_init(&io, K_IO, NULL, 0, 0, 0);
+    io.io_fd = p[0];
+    io.io_timeout_ms = -1;
+    LyricTask* it = co_call(&io, 1);
+    for (int i = 0; i < WORK; i++) {
+        co_init(&work[i], K_LEAF, NULL, 1, 0, 3000);
+        wt[i] = co_call(&work[i], 1);
+    }
+    char x = 7;
+    CHECK(write(p[1], &x, 1) == 1);
+    lyric_task_block_on(it);
+    CHECK(lyric_task_result(it) == 7);
+    for (int i = 0; i < WORK; i++) {
+        lyric_task_block_on(wt[i]);
+        lyric_release(wt[i]);
+    }
+    lyric_release(it);
+    CHECK(wait_destroyed(WORK + 1));
+    close(p[0]);
+    close(p[1]);
+    free(work);
+}
+
+/* The blocking form for synchronous callers. */
+static void test_fd_wait_sync(void) {
+    int p[2];
+    CHECK(pipe(p) == 0);
+    CHECK(lyric_fd_wait(p[0], LYRIC_IO_READ, 10) == 0);
+    CHECK((lyric_fd_wait(p[1], LYRIC_IO_WRITE, 10) & LYRIC_IO_WRITE) != 0);
+    char x = 1;
+    CHECK(write(p[1], &x, 1) == 1);
+    CHECK((lyric_fd_wait(p[0], LYRIC_IO_READ, -1) & LYRIC_IO_READ) != 0);
+    CHECK((lyric_fd_wait(p[0], LYRIC_IO_READ, INT64_MAX) & LYRIC_IO_READ) != 0); /* the deadline saturates */
+    close(p[0]);
+    close(p[1]);
+}
+
 int main(void) {
-    setenv("LYRIC_ASYNC_THREADS", "4", 1);
-    CHECK(lyric_async_threads() == 1);
+    /* LYRIC_ASYNC_THREADS=1 in the environment runs the reactor tests under the cooperative
+     * scheduler instead; the rest need several threads. */
+    setenv("LYRIC_ASYNC_THREADS", "4", 0);
+    if (lyric_async_threads() == 0) {
+        test_fd_wait_sync();
+        test_io_wake(0);
+        test_io_wake(1);
+        test_io_timeout();
+        test_io_while_busy();
+        printf("lyric_async_mt_test: reactor tests passed (cooperative scheduler)\n");
+        return 0;
+    }
     test_hot_without_hint();
     test_fan_out();
     test_fan_in();
@@ -437,6 +589,11 @@ int main(void) {
     test_nested_block_on();
     test_dropped_handles();
     test_fork_join_steal();
+    test_fd_wait_sync();
+    test_io_wake(0);
+    test_io_wake(1);
+    test_io_timeout();
+    test_io_while_busy();
     printf("lyric_async_mt_test: all tests passed\n");
     return 0;
 }

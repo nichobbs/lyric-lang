@@ -22,6 +22,7 @@ on:
       - 'lyric-compiler/lyric/emitter.l'
       - 'lyric-compiler/lyric/cli/**'
       - 'lyric-stdlib/std/_kernel_native/**'
+      - 'lyric-stdlib/tests/async_echo_main.l'
       - 'scripts/ci/native-platform-tests.sh'
       - 'scripts/ci/macos-graphics-e2e.sh'
       - 'lyric-gpu/**'
@@ -44,6 +45,7 @@ on:
       - 'scripts/ci/parallel-e2e.sh'
       - 'scripts/ci/async-mt-e2e.sh'
       - 'scripts/ci/native-plugin-e2e.sh'
+      - 'scripts/ci/async-io-e2e.sh'
       - 'scripts/ci/plugin-e2e.sh'
       - 'scripts/ci/plugin-protocol-e2e.sh'
       - 'scripts/ci/plugin-trusted-e2e.sh'
@@ -234,6 +236,11 @@ jobs:
         shell: bash
         run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-mt-e2e.sh
 
+      - name: Async I/O reactor, an echo server with 1000 idle connections (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-io-e2e.sh
+
       - name: Plugins with a native host or plugin, dotnet sides included (arm64-apple-darwin)
         if: always()
         shell: bash
@@ -377,6 +384,10 @@ jobs:
       - name: Multi-threaded async scheduler under ThreadSanitizer and AddressSanitizer
         if: always()
         run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-mt-e2e.sh
+
+      - name: Async I/O reactor, an echo server with 1000 idle connections
+        if: always()
+        run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/async-io-e2e.sh
 
       - name: Plugins with a native host or plugin, dotnet sides included
         if: always()

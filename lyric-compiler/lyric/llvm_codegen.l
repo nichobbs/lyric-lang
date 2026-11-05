@@ -5773,6 +5773,10 @@ func lowerResolvedSigCall(
   if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
     return emitAsyncSleep(ctx, insns, callArgs)
   }
+  match tryEmitIoLeaf(ctx, insns, sig, callArgs, wantTask) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   // The async process leaf (D-N-023).  Only for awaited-in-place calls:
   // a direct `spawn runCapture(...)` keeps the blocking sync path (spawn
   // an async wrapper function to overlap captures).  Arity-coupled to
@@ -6480,6 +6484,10 @@ func lowerUfcsCall(
   val callArgs = lowerCallArgsWithReceiver(ctx, insns, sig, recv, args)
   if ctx.curAsyncTask.count > 0 and sig.irName == "Std.Time.sleepMillis" and callArgs.count == 1 {
     return emitAsyncSleep(ctx, insns, callArgs)
+  }
+  match tryEmitIoLeaf(ctx, insns, sig, callArgs, wantTask) {
+    case Some(v) -> return v
+    case None -> ()
   }
   if sig.isAsync {
     return emitAsyncCall(ctx, insns, sig.irName, callArgs, sigRetTypeToN(ctx, sig), wantTask)
@@ -9569,6 +9577,94 @@ func emitAsyncSleep(ctx: in Ctx, insns: in List[NInsn], callArgs: in List[NArg])
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_async_sleep"), args = arg2(NPtr(pointee = NI8), me, NI64, ms.value)))
   emitSuspendPoint(ctx, insns)
   NVal(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+/// The asynchronous twin of a synchronous socket kernel function (the async
+/// I/O reactor, #8494): inside a coroutine, an awaited call of the first is
+/// lowered as a call of the second, which takes the same arguments, returns
+/// the same type and parks only the calling task while the socket is not
+/// ready.  "" when `irName`/`arity` has none.  The bridge's reachability walk
+/// keeps the twin alive through the same table.
+pub func nativeAsyncTwin(irName: in String, arity: in Int): String {
+  if irName == "Std.TcpHost.hostAccept" and arity == 1 {
+    "Std.TcpHost.hostAcceptAsync"
+  } else if irName == "Std.TcpHost.hostRead" and arity == 2 {
+    "Std.TcpHost.hostReadAsync"
+  } else if irName == "Std.TcpHost.hostWrite" and arity == 2 {
+    "Std.TcpHost.hostWriteAsync"
+  } else {
+    ""
+  }
+}
+
+/// `nativeAsyncTwin` over the `Name/arity` keys of the bridge's reachability
+/// walk: the twin's key, or "".
+pub func nativeAsyncTwinKey(key: in String): String {
+  if key == "Std.TcpHost.hostAccept/1" {
+    "Std.TcpHost.hostAcceptAsync/1"
+  } else if key == "Std.TcpHost.hostRead/2" {
+    "Std.TcpHost.hostReadAsync/2"
+  } else if key == "Std.TcpHost.hostWrite/2" {
+    "Std.TcpHost.hostWriteAsync/2"
+  } else {
+    ""
+  }
+}
+
+/// `Std.IoWait.waitFd` / `waitFd2` inside a coroutine are the reactor leaf:
+/// park this task until the descriptor is ready instead of blocking the
+/// scheduler thread; and an awaited call with a `nativeAsyncTwin` goes to the
+/// twin.  `None` leaves the call to the ordinary lowering.
+func tryEmitIoLeaf(
+  ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, callArgs: in List[NArg], wantTask: in Bool
+): Option[NVal] {
+  if ctx.curAsyncTask.count == 0 {
+    return None
+  }
+  if sig.irName == "Std.IoWait.waitFd" and callArgs.count == 3 {
+    return Some(value = emitAsyncWaitFd(ctx, insns, sig, callArgs))
+  }
+  if sig.irName == "Std.IoWait.waitFd2" and callArgs.count == 5 {
+    return Some(value = emitAsyncWaitFd(ctx, insns, sig, callArgs))
+  }
+  if wantTask {
+    return None
+  }
+  val twin = nativeAsyncTwin(sig.irName, callArgs.count)
+  if twin == "" {
+    return None
+  }
+  match mapGet(ctx.sigs, twin + "/" + toString(callArgs.count)) {
+    case Some(tsig) -> Some(value = emitAsyncCall(ctx, insns, tsig.irName, callArgs, sigRetTypeToN(ctx, tsig), false))
+    case None -> None
+  }
+}
+
+// lyric_async_wait_fd(me, fd, events, timeoutMs) or lyric_async_wait_fd2(me,
+// fd, events, fd2, events2, timeoutMs), the suspend point, then the outcome.
+func emitAsyncWaitFd(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, callArgs: in List[NArg]): NVal {
+  val me = NLocal(name = ctx.curAsyncTask[0])
+  val wargs: List[NArg] = newList()
+  wargs.add(NArg(ty = NPtr(pointee = NI8), value = me))
+  val two = callArgs.count == 5
+  var i = 0
+  while i < callArgs.count {
+    // fd, events[, fd2, events2], timeoutMs: descriptors and the timeout are
+    // 64-bit, the event masks 32-bit.
+    val isMask = i == 1 or (two and i == 3)
+    val want = if isMask { NI32 } else { NI64 }
+    val v = coerceTo(ctx, insns, NVal(ty = callArgs[i].ty, value = callArgs[i].value), want)
+    wargs.add(NArg(ty = want, value = v.value))
+    i = i + 1
+  }
+  val fnName = if two { "lyric_async_wait_fd2" } else { "lyric_async_wait_fd" }
+  insns.add(NCallVoid(fn = NGlobal(name = fnName), args = wargs))
+  emitSuspendPoint(ctx, insns)
+  val rargs: List[NArg] = newList()
+  rargs.add(NArg(ty = NPtr(pointee = NI8), value = me))
+  val dest = freshTmp(ctx)
+  insns.add(NCall(dest = dest, retTy = NI32, fn = NGlobal(name = "lyric_async_wait_fd_result"), args = rargs))
+  coerceTo(ctx, insns, NVal(ty = NI32, value = NLocal(name = dest)), sigRetTypeToN(ctx, sig))
 }
 
 /// The index of a union case by name, or -1.
@@ -17950,6 +18046,21 @@ func asyncRuntimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_task_is_complete", NI32, p8))
   decls.add(mkDecl2("lyric_async_await", NVoid, p8, p8))
   decls.add(mkDecl2("lyric_async_sleep", NVoid, p8, NI64))
+  val waitFdTys: List[NType] = newList()
+  waitFdTys.add(p8)
+  waitFdTys.add(NI64)
+  waitFdTys.add(NI32)
+  waitFdTys.add(NI64)
+  decls.add(mkDeclN("lyric_async_wait_fd", NVoid, waitFdTys))
+  val waitFd2Tys: List[NType] = newList()
+  waitFd2Tys.add(p8)
+  waitFd2Tys.add(NI64)
+  waitFd2Tys.add(NI32)
+  waitFd2Tys.add(NI64)
+  waitFd2Tys.add(NI32)
+  waitFd2Tys.add(NI64)
+  decls.add(mkDeclN("lyric_async_wait_fd2", NVoid, waitFd2Tys))
+  decls.add(mkDecl1("lyric_async_wait_fd_result", NI32, p8))
   decls.add(mkDecl1("lyric_task_block_on", NVoid, p8))
   decls
 }
