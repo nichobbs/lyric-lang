@@ -395,10 +395,13 @@ static int32_t io_poll_to_result(int revents) {
     return r;
 }
 
-/* The monotonic deadline `ms` milliseconds after `now`, saturating at INT64_MAX. */
-static inline int64_t deadline_after_ms(int64_t now, int64_t ms) {
+#if !defined(__wasi__)
+/* The monotonic deadline `ms` milliseconds after `now`, saturating at INT64_MAX.
+ * Only the descriptor waits use it, and wasm32 has none. */
+static int64_t deadline_after_ms(int64_t now, int64_t ms) {
     return ms > (INT64_MAX - now) / 1000000 ? INT64_MAX : now + ms * 1000000;
 }
+#endif
 
 /* Milliseconds for poll from nanoseconds (-1: forever), rounded up so a poll
  * never returns just before the deadline it waits for. */
