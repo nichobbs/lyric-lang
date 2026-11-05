@@ -6,6 +6,7 @@ import Std.Collections
 import Std.String
 import Std.Encoding.{codepointToString}
 import Std.Testing
+import Unicode.Data as UnicodeData
 import Unicode.WordBreak
 
 // `s` with a bar at every word boundary inside it.
@@ -165,4 +166,33 @@ test "a long run of regional indicators pairs up from its start" {
     k = k + 1
   }
   assertEqualInt(wrong, 0, "a boundary after every second indicator and nowhere else")
+}
+
+// WordBreak names Line_Break values by their index in the generator's `lineBreakNames`; a UCD update
+// that reordered that list would silently change what they mean.
+test "the Line_Break values WordBreak tests are the ones Unicode.Data encodes" {
+  val expected: List[String] = [
+    "4E00 14 ID",
+    "0E01 24 SA",
+    "AC00 31 H2",
+    "AC01 32 H3",
+    "1100 33 JL",
+    "11A8 34 JT",
+    "1161 35 JV",
+    "3041 37 CJ",
+    "1B05 43 AK",
+    "1BC0 45 AS"
+  ]
+  val cps: List[Int] = [0x4E00, 0x0E01, 0xAC00, 0xAC01, 0x1100, 0x11A8, 0x1161, 0x3041, 0x1B05, 0x1BC0]
+  val values: List[Int] = [14, 24, 31, 32, 33, 34, 35, 37, 43, 45]
+  var i = 0
+  while i < cps.count {
+    assertEqualInt(UnicodeData.lineBreakValueOf(cps[i]).and(63), values[i], expected[i])
+    i = i + 1
+  }
+  // Each of these has Word_Break Other, so only its Line_Break value makes it word-like.
+  for cp in [0x4E00, 0x0E01, 0x3041] {
+    assertTrue(WordBreak.isWordLike([cp].toArray(), 0, 1), "U+" + cp.toString() + " is word-like")
+  }
+  assertFalse(WordBreak.isWordLike([0x3001].toArray(), 0, 1), "an ideographic comma is not")
 }
