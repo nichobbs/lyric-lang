@@ -1704,10 +1704,6 @@ pub record CheckFront {
   checked: SourceFile
 }
 
-/// The front of `pipeCheckAndMono`: everything up to and including the mode
-/// check, with its diagnostics sent to `sink`.  None after an error.
-/// `lyric prove` runs exactly this, so it rejects what a build rejects up to
-/// the mode check (#8227).
 func tirVerifyIrEnabled(): Bool {
   Environment.getVarOrDefault("LYRIC_VERIFY_IR", "") == "1"
 }
@@ -1738,6 +1734,10 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   }
 }
 
+/// The front of `pipeCheckAndMono`: everything up to and including the mode
+/// check, with its diagnostics sent to `sink`.  None after an error.
+/// `lyric prove` runs exactly this, so it rejects what a build rejects up to
+/// the mode check (#8227).
 pub func pipeCheckFront(
   file00: in SourceFile,
   importedPkgs: in List[ImportedPackage],

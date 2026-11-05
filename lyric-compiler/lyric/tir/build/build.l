@@ -15,7 +15,6 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.ContractElaborator
-import Lyric.Resolve
 
 /// What type conversion needs beyond the type: the checker's table for
 /// extern types, and the binders of the generic parameters in scope.  A
