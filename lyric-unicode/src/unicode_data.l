@@ -1,5 +1,6 @@
-//! unicode_data.l - Ui.Native.UnicodeData: the Unicode 15.1 character properties the native host's
-//! text layout needs, as sorted fixed-width records in strings (docs/67 G10, #8410).
+//! unicode_data.l - Unicode.Data: the Unicode 15.1 character properties text layout needs (the
+//! native lyric-ui host's text areas and lyric-text), as sorted fixed-width records in strings
+//! (docs/67 G6 and G10, #8410, #8496).
 //!
 //! Every table is a list of strings holding fixed-width upper-case hex records (the same number in
 //! each string but the last), sorted by code point, searched by bisection with `codeUnitAt`, so there is nothing to parse at start-up.  They were generated
@@ -20,7 +21,7 @@
 //!   bracket  13 characters: code point (6 hex), its pair (6 hex), 1 for an opening and 2 for a
 //!            closing bracket
 @pure
-package Ui.Native.UnicodeData
+package Unicode.Data
 
 import Std.Core
 import Std.String

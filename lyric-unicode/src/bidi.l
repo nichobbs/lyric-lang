@@ -1,5 +1,5 @@
-//! bidi.l - Ui.Native.Bidi: the Unicode Bidirectional Algorithm (UAX #9) for the native host's text
-//! (docs/67 G10, #8410).
+//! bidi.l - Unicode.Bidi: the Unicode Bidirectional Algorithm (UAX #9) (docs/67 G6 and G10, #8410,
+//! #8496).
 //!
 //! Text is analysed one paragraph at a time, in code points, like the caret: `paragraphLevelOf`
 //! picks the paragraph direction from its first strong character (rules P2 and P3), `resolveLevels`
@@ -8,17 +8,18 @@
 //! one line of the paragraph to its runs in visual order (rules L1 and L2).  Mirroring (rule L4) is
 //! `UnicodeData.mirrorOf`, applied by whoever draws a right-to-left run.
 //!
-//! The properties come from `Ui.Native.UnicodeData`, and the whole algorithm is checked against
-//! FriBidi on generated text by the vectors in the tests.  It is plain Lyric over code points, so
-//! it runs, and is tested, on every target, and the host-free text layout in `Ui.Native.Wrap`
-//! builds on it.
+//! The properties come from `Unicode.Data`.  The algorithm passes every line of Unicode's
+//! `BidiCharacterTest.txt` (`tests/conformance/`, D371), and is checked against FriBidi on generated
+//! text by the vectors in the tests.  It is plain Lyric over code points, so it runs, and is tested,
+//! on every target; the native lyric-ui host's text areas (`Ui.Native.Wrap`) and lyric-text's
+//! `layoutText` build on it.
 @pure
-package Ui.Native.Bidi
+package Unicode.Bidi
 
 import Std.Core
 import Std.Collections
 import Std.Buffer as Buf
-import Ui.Native.UnicodeData
+import Unicode.Data as UnicodeData
 
 /// A stretch `from ..< to` of code points (indices into the text analysed) of one embedding level;
 /// an odd level is drawn right to left.

@@ -1,12 +1,12 @@
 @test_module
-package Ui.Native.LineBreakTests
+package Unicode.LineBreakTests
 
 import Std.Core
 import Std.Collections
 import Std.String
 import Std.Encoding.{codepointToString}
 import Std.Testing
-import Ui.Native.LineBreak
+import Unicode.LineBreak
 
 // `s` with a bar at every position where a line may break (not at either end).
 func marked(s: String): String {

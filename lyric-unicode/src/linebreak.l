@@ -1,24 +1,24 @@
-//! linebreak.l - Ui.Native.LineBreak: the Unicode line breaking algorithm (UAX #14) for the native
-//! host's text (docs/67 G10, #8410).
+//! linebreak.l - Unicode.LineBreak: the Unicode line breaking algorithm (UAX #14) (docs/67 G6 and
+//! G10, #8410, #8496).
 //!
 //! `breaksIn` gives, for the text of one paragraph, whether a line may break before each code point:
 //! every rule LB2 to LB31 of Unicode 15.1, in order, over the line break classes of
-//! `Ui.Native.UnicodeData` (kinsoku and the other closing and opening punctuation rules, numbers
+//! `Unicode.Data` (kinsoku and the other closing and opening punctuation rules, numbers
 //! with their prefixes and suffixes by the tailoring of section 8.2 example 7 that Unicode's
 //! `LineBreakTest.txt` uses, quotation marks by their initial or final category, Hangul
 //! syllables, Brahmic orthographic syllables (LB28a), regional-indicator pairs, emoji modifiers,
-//! hyphens before Hebrew letters).  All of `LineBreakTest.txt` passes (`tests/unicode/`).  There is no
+//! hyphens before Hebrew letters).  All of `LineBreakTest.txt` passes (`tests/conformance/`).  There is no
 //! dictionary-based breaking of Thai, Lao, Khmer and Myanmar, which UAX #14 leaves to the
 //! implementation: such text breaks only at its spaces and punctuation.
 //!
 //! It is plain Lyric over code points, so it runs, and is tested, on every target.
 @pure
-package Ui.Native.LineBreak
+package Unicode.LineBreak
 
 import Std.Core
 import Std.Collections
 import Std.Buffer as Buf
-import Ui.Native.UnicodeData
+import Unicode.Data as UnicodeData
 
 /// A break is not allowed before the code point.
 pub val noBreak: Int = 0

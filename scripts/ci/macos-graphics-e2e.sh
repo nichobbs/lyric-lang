@@ -102,10 +102,12 @@ cc -fsyntax-only $(pkg-config --cflags freetype2 harfbuzz) lyric-text/native/tex
 
 echo "=== lyric-text shape (shaping, fallback, layout, golden scene) ==="
 shape="$(build lyric-text/examples/shape/lyric.toml shape)"
-out="$(LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm "$shape")"
+out="$(LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm \
+  LYRIC_TEXT_GOLDEN_BIDI=lyric-text/examples/shape/golden/bidi-384x224.pgm "$shape")"
 echo "$out"
-echo "$out" | grep -q "fallback + wrap ok, runs ok"
+echo "$out" | grep -q "fallback + wrap ok, runs ok, mixed directions ok"
 echo "$out" | grep -q "^golden: "
+echo "$out" | grep -q "^golden bidi: "
 
 echo "=== lyric-draw scene on Metal (golden image, then the text-heavy frame budget) ==="
 scene="$(build lyric-draw/examples/scene/lyric.toml scene)"

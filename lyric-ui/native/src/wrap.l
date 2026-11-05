@@ -3,7 +3,7 @@
 //!
 //! A value is cut into visual lines: at every newline, and again wherever a paragraph is wider than
 //! the box.  A paragraph breaks at the opportunities of the Unicode line breaking algorithm
-//! (`Ui.Native.LineBreak`: after spaces and hyphens, between ideographs, never before closing
+//! (`Unicode.LineBreak`: after spaces and hyphens, between ideographs, never before closing
 //! punctuation, and so on), after the last one that fits, and the spaces at the end of a line hang
 //! past its edge; a word wider than the box breaks between characters, never inside a combining
 //! sequence.  Everything here is in code points, like the caret, and takes the text's width from a
@@ -11,7 +11,7 @@
 //! the window with the real one.
 //!
 //! Text with right-to-left characters is laid out with the Unicode Bidirectional Algorithm
-//! (`Ui.Native.Bidi`).  A paragraph takes its direction from its first strong character, a right to
+//! (`Unicode.Bidi`).  A paragraph takes its direction from its first strong character, a right to
 //! left paragraph is aligned to the right of the box, and each line is a list of pieces in visual
 //! order, each in one direction.  The caret, a click, a selection and Left and Right all work on the
 //! pieces: a logical position is drawn at the trailing edge of the character before it (the leading
@@ -29,9 +29,9 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Std.Encoding.{codepointToString}
-import Ui.Native.Bidi
-import Ui.Native.LineBreak
-import Ui.Native.UnicodeData
+import Unicode.Bidi
+import Unicode.LineBreak
+import Unicode.Data as UnicodeData
 
 /// One visual line: the code points `from ..< to` of the value.  `hard` is true when a newline
 /// code point follows (at index `to`), so the next line starts at `to + 1`; false for a line that

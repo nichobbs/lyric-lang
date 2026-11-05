@@ -30,6 +30,7 @@ on:
       - 'lyric-game/**'
       - 'lyric-ui/native/**'
       - 'lyric-text/**'
+      - 'lyric-unicode/**'
       - 'lyric-draw/**'
       - 'benchmarks/**'
       - 'scripts/ci/build-sdl3.sh'
