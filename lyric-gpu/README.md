@@ -5,7 +5,10 @@ WebGPU compute and rendering for `--target native`, over wgpu-native (docs/67 G5
 - `Gpu.Kernel.Wgpu` is `lyric bindgen` output from `webgpu.h` and wgpu-native's `wgpu.h`; never edit it. Regenerate
   from `native/wgpu.allow` with the command in `scripts/ci/gpu-examples-e2e.sh`.
 - `Gpu` is the safe surface. Every GPU object is an opaque handle in a record; a `Device` lives for one `withDevice`
-  call; errors wgpu reports through its uncaptured-error callback come back as `Err` from the call that caused them.
+  call. Every call that can fail returns a `Result` and runs inside wgpu's validation and out-of-memory error scopes,
+  so its `Err` is the error that call caused. A shader that does not compile is an `Err` starting `WGSL:` with the
+  compiler's line and column. A lost device makes every later call return the reason (`deviceLost`). wgpu-native has
+  no internal-error scope, so internal errors and errors wgpu raises outside any call reach `takeError`.
 
 ## Build
 
@@ -23,5 +26,8 @@ a `[native.app]` table in its manifest; the examples all do.
 `createXlibSurface`, `createWaylandSurface`, `createWindowsSurface` and `createMetalSurface` take the handles
 `lyric-window` exposes; `GpuWindow.surfaceFor` in `lyric-gpu-window` picks the right one. Configure a surface with the
 window's `pixelSize`. Acquire frames with `tryAcquireFrame`: it returns no frame (not an error) for an occluded or
-not-yet-visible window, and `Err` only when the surface must be reconfigured (after a resize). `presentFrame` shows a
-frame; `discardFrame` releases one that was not drawn.
+not-yet-visible window, and a `FrameError` when the loop must act: `Outdated` (configure the surface again, as after a
+resize), `Lost` (create a new surface) or `Failed` (stop). `GpuWindow.recoverSurface` handles the first two for a
+window, and `GpuWindow.configuredSurfaceFor` creates and configures one. `presentFrame` shows a frame; `discardFrame`
+releases one that was not drawn. Frames present vsynced (`Fifo`); `withPresentMode` asks for `FifoRelaxed`, `Mailbox`
+or `Immediate`, and the configured surface's `presentMode` is the mode the surface accepted.

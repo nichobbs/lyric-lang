@@ -2,9 +2,11 @@
 //!
 //! Every GPU object is an opaque `Long` handle inside a record, so no `NativePtr`
 //! crosses this package's public surface.  A `Device` owns the instance, adapter,
-//! device and queue and lives for one `withDevice` call.  Failures wgpu reports through its
-//! uncaptured-error callback are collected on the device and returned as `Err` by the
-//! call that caused them.
+//! device and queue and lives for one `withDevice` call.  Every call that can fail runs
+//! inside wgpu error scopes (validation and out-of-memory), so the error it causes comes back
+//! as its own `Err`; a lost device makes every later call return `Err` with the reason
+//! (`deviceLost`).  wgpu-native has no internal-error scope, so an internal error reaches the
+//! uncaptured-error callback and `takeError`.
 //!
 //! Buffers move data as `buffer[Int]` or `buffer[Byte]`; a compute pass is a pipeline
 //! built from WGSL, a bind group of storage buffers, and a workgroup count.
@@ -50,12 +52,34 @@ pub record RenderTarget {
   format: Int
 }
 
-/// A window's drawable surface.  `format` and the size are set by `configureSurface`.
+/// A window's drawable surface.  `format`, the size and `presentMode` are set by
+/// `configureSurface`; `withPresentMode` asks for a present mode before configuring.
 pub record Surface {
   raw: Long
   format: Int
   width: Int
   height: Int
+  presentMode: PresentMode
+}
+
+/// How a surface's frames reach the screen.  `Fifo` waits for vertical sync and every surface
+/// supports it; `FifoRelaxed` shows a late frame at once; `Mailbox` keeps only the newest frame,
+/// without tearing; `Immediate` shows each frame at once and may tear.
+pub enum PresentMode {
+  case Fifo
+  case FifoRelaxed
+  case Mailbox
+  case Immediate
+}
+
+/// Why a surface has no frame to draw into.
+pub union FrameError {
+  /// The surface no longer matches its window (it was resized): configure it again.
+  case Outdated
+  /// The surface is gone: release it and create a new one for the window.
+  case Lost
+  /// The device ran out of memory, was lost or failed; drawing cannot continue.
+  case Failed(message: String)
 }
 
 /// A render pipeline drawing triangle lists into an RGBA8 target.
@@ -158,7 +182,19 @@ pub val vertexFloat32x3: Int = 30
 
 pub val vertexFloat32x4: Int = 31
 
-val errorCellSize: Long = 1032
+// The device's error cell, written by wgpu's callbacks: byte 0 counts the uncaptured errors
+// (to 255), byte 1 is set when the device is lost; the first uncaptured message is a
+// NUL-terminated string from `uncapturedAt`, the device-lost message one from `lostAt`.
+val errorCellSize: Long = 2056
+
+val uncapturedAt: Long = 8
+
+val lostAt: Long = 1032
+
+val cellText: Long = 1023
+
+// The longest message copied from wgpu into a Lyric string; WGSL errors carry the source excerpt.
+val messageLimit: Long = 65536
 
 val vertexAttributeSize: Long = 32
 
@@ -246,7 +282,7 @@ func stringOfView(v: WGPUStringView): String {
   }
   val bytes: List[Byte] = newList()
   var i: Long = 0
-  while i < v.length and i < 1000 {
+  while i < v.length and i < messageLimit {
     bytes.add(nativeLoadByte(v.data, i))
     i = i + 1
   }
@@ -256,26 +292,41 @@ func stringOfView(v: WGPUStringView): String {
   }
 }
 
+// Copies at most `cellText` bytes of `message` into the cell at `at`, NUL-terminated.
 @unsafe_ffi
-func onDeviceLost(device: NativePtr[NativePtr[Byte]], reason: Int, message: WGPUStringView, user: NativePtr[Byte]): Unit {
+func storeCellText(cell: NativePtr[Byte], at: Long, message: WGPUStringView): Unit {
+  var i: Long = 0
+  if message.data != nativeNullPtr() {
+    // A length of -1 (WGPU_STRLEN) is a NUL-terminated string.
+    while i < cellText and (if message.length < 0 then nativeLoadByte(message.data, i) != 0u8 else i < message.length) {
+      nativeStoreByte(cell, at + i, nativeLoadByte(message.data, i))
+      i = i + 1
+    }
+  }
+  nativeStoreByte(cell, at + i, 0u8)
 }
 
-// The uncaptured-error callback keeps the first message of a burst in the device's error
-// cell: byte 0 counts the errors, the message is a NUL-terminated string from byte 8.
+// Records a device lost while in use.  `Destroyed` is the device's own release in
+// `closeDevice`, and `CallbackCancelled` the instance going away; neither is a loss.
+@unsafe_ffi
+func onDeviceLost(device: NativePtr[NativePtr[Byte]], reason: Int, message: WGPUStringView, cell: NativePtr[Byte]): Unit {
+  if reason == WGPUDeviceLostReason_Destroyed or reason == WGPUDeviceLostReason_CallbackCancelled {
+    return
+  }
+  if nativeLoadByte(cell, 1) == 0u8 {
+    storeCellText(cell, lostAt, message)
+    nativeStoreByte(cell, 1, if reason == WGPUDeviceLostReason_FailedCreation then 2u8 else 1u8)
+  }
+}
+
+// An error outside every error scope: the first message is kept and the rest counted.
 @unsafe_ffi
 func onUncapturedError(
   device: NativePtr[NativePtr[Byte]], kind: Int, message: WGPUStringView, cell: NativePtr[Byte]
 ): Unit {
   val seen = nativeLoadByte(cell, 0)
   if seen == 0u8 {
-    var i: Long = 0
-    if message.data != nativeNullPtr() {
-      while i < message.length and i < 1000 {
-        nativeStoreByte(cell, 8 + i, nativeLoadByte(message.data, i))
-        i = i + 1
-      }
-    }
-    nativeStoreByte(cell, 8 + i, 0u8)
+    storeCellText(cell, uncapturedAt, message)
   }
   if seen < 255u8 {
     nativeStoreByte(cell, 0, seen + 1u8)
@@ -296,7 +347,10 @@ func waitSlot(instance: Long, device: Long, slot: Slot): Bool {
   slot.status != 0 - 1
 }
 
-/// The message of the first error the device has reported since the last call, or None.
+/// The message of the first error wgpu raised outside an error scope since the last
+/// `takeError`, with how many more followed it, or None.  Validation and out-of-memory errors a
+/// `Gpu` call causes are that call's `Err`, so this sees internal errors (wgpu-native has no
+/// scope for them) and errors wgpu raises on its own.
 @unsafe_ffi
 pub func takeError(d: Device): Option[String] {
   val cell = longToPtr(d.errors)
@@ -304,15 +358,102 @@ pub func takeError(d: Device): Option[String] {
   if seen == 0u8 {
     return None
   }
-  val text = match Ffi.tryFromCString(longToPtr(d.errors + 8)) { case Some(s) -> s; case None -> "unknown GPU error" }
+  val text = match Ffi.tryFromCString(longToPtr(d.errors + uncapturedAt)) {
+    case Some(s) -> s
+    case None -> "unknown GPU error"
+  }
   nativeStoreByte(cell, 0, 0u8)
-  Some(value = text)
+  if seen == 1u8 {
+    return Some(value = text)
+  }
+  val more = if seen == 255u8 then "at least 254 more errors" else (seen.toInt() - 1).toString() + " more errors"
+  Some(value = text + " (and " + more + ")")
+}
+
+/// Why the device was lost, once it has been: the driver reset or crashed, or the GPU was
+/// removed.  Every call on a lost device returns this as its `Err`; a program recovers by
+/// leaving `withDevice` and opening a new device.
+@unsafe_ffi
+pub func deviceLost(d: Device): Option[String] {
+  val cell = longToPtr(d.errors)
+  val flag = nativeLoadByte(cell, 1)
+  if flag == 0u8 {
+    return None
+  }
+  val detail = match Ffi.tryFromCString(longToPtr(d.errors + lostAt)) { case Some(s) -> s; case None -> "" }
+  val head = if flag == 2u8 then "the GPU device could not be created" else "the GPU device was lost"
+  Some(value = if Str.isEmpty(detail) then head else head + ": " + detail)
+}
+
+// Opens the error scopes a call's errors are caught in; `closeScope` pops them.  wgpu-native
+// panics on `WGPUErrorFilter_Internal`, so internal errors are left to the uncaptured-error
+// callback.
+@unsafe_ffi
+func openScope(d: Device): Unit {
+  val dev = longToPtr(d.device)
+  wgpuDevicePushErrorScope(dev, WGPUErrorFilter_OutOfMemory)
+  wgpuDevicePushErrorScope(dev, WGPUErrorFilter_Validation)
+}
+
+@unsafe_ffi
+func popScope(d: Device): Option[String] {
+  val slot = Slot(status = 0 - 1, handle = 0, message = "")
+  val onPop: (Int, Int, WGPUStringView, NativePtr[Byte]) -> Unit = { status: Int, kind: Int, message: WGPUStringView, user: NativePtr[Byte] ->
+    slot.handle = kind.toLong()
+    slot.message = stringOfView(message)
+    slot.status = status
+  }
+  val info = WGPUPopErrorScopeCallbackInfo(
+    nextInChain = nativeNullPtr(),
+    mode = WGPUCallbackMode_AllowProcessEvents,
+    callback = onPop,
+    userdata1 = onPop,
+    userdata2 = nativeNullPtr()
+  )
+  val _f = wgpuDevicePopErrorScope(longToPtr(d.device), info)
+  if not waitSlot(d.instance, d.device, slot) {
+    return Some(value = "wgpu: waiting for the call's errors timed out")
+  }
+  if slot.status != WGPUPopErrorScopeStatus_Success {
+    return Some(value = "wgpu: cannot read the call's errors: " + slot.message)
+  }
+  val kind = slot.handle.toInt()
+  if kind == WGPUErrorType_NoError {
+    None
+  } else if kind == WGPUErrorType_OutOfMemory {
+    Some(value = "the GPU is out of memory: " + slot.message)
+  } else {
+    Some(value = slot.message)
+  }
+}
+
+// Pops the scopes `openScope` pushed and returns the first error they caught, or the reason
+// the device was lost.
+@unsafe_ffi
+func closeScope(d: Device): Option[String] {
+  val validation = popScope(d)
+  val memory = popScope(d)
+  match deviceLost(d) {
+    case Some(reason) -> Some(value = reason)
+    case None -> match validation { case Some(m) -> Some(value = m); case None -> memory }
+  }
+}
+
+// `closeScope` as a `Result`.
+@unsafe_ffi
+func scopeResult(d: Device): Result[Unit, String] {
+  match closeScope(d) {
+    case Some(message) -> Err(error = message)
+    case None -> Ok(value = ())
+  }
 }
 
 /// Opens the first available adapter's device and its queue, runs `body` with it, then
 /// releases everything.  wgpu keeps the device's error and device-lost callbacks for the
 /// device's whole life and native closures are reference-counted, so the device lives only
-/// as long as this call: the closures are alive until `body` has returned.
+/// as long as this call: the closures are alive until `body` has returned.  An `Err` means no
+/// device could be opened; everything acquired on the way is released first.  A panic in
+/// `body` ends the program without releasing the device, which the operating system reclaims.
 @unsafe_ffi
 pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   val inst = wgpuCreateInstance(nativeNullPtr())
@@ -336,14 +477,21 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   )
   val _f = wgpuInstanceRequestAdapter(inst, nativeNullPtr(), adapterInfo)
   if not waitSlot(instance, 0, adapterSlot) {
+    // Releasing the instance cancels the request, so its callback cannot run after this call.
+    wgpuInstanceRelease(inst)
     return Err(error = "wgpu: requesting an adapter timed out")
   }
   if adapterSlot.status != 1 or adapterSlot.handle == 0 {
+    if adapterSlot.handle != 0 {
+      wgpuAdapterRelease(longToPtr(adapterSlot.handle))
+    }
+    wgpuInstanceRelease(inst)
     return Err(error = "wgpu: no adapter available: " + adapterSlot.message)
   }
 
   val errorCell = Ffi.allocate(errorCellSize)
   nativeStoreByte(errorCell, 0, 0u8)
+  nativeStoreByte(errorCell, 1, 0u8)
 
   val deviceSlot = Slot(status = 0 - 1, handle = 0, message = "")
   val onDevice: (Int, NativePtr[Byte], WGPUStringView, NativePtr[Byte]) -> Unit = { status: Int, dev: NativePtr[Byte], message: WGPUStringView, user: NativePtr[Byte] ->
@@ -365,7 +513,7 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
       mode = WGPUCallbackMode_AllowSpontaneous,
       callback = lostCb,
       userdata1 = lostCb,
-      userdata2 = nativeNullPtr()
+      userdata2 = errorCell
     ),
     uncapturedErrorCallbackInfo = WGPUUncapturedErrorCallbackInfo(
       nextInChain = nativeNullPtr(),
@@ -382,11 +530,17 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
     userdata2 = nativeNullPtr()
   )
   val _g = wgpuAdapterRequestDevice(longToPtr(adapterSlot.handle), nativeAddrOf(deviceDesc), deviceInfo)
-  if not waitSlot(instance, 0, deviceSlot) {
-    return Err(error = "wgpu: requesting a device timed out")
-  }
-  if deviceSlot.status != 1 or deviceSlot.handle == 0 {
-    return Err(error = "wgpu: cannot open a device: " + deviceSlot.message)
+  val opened = waitSlot(instance, 0, deviceSlot)
+  if not opened or deviceSlot.status != 1 or deviceSlot.handle == 0 {
+    if deviceSlot.handle != 0 {
+      wgpuDeviceRelease(longToPtr(deviceSlot.handle))
+    }
+    wgpuAdapterRelease(longToPtr(adapterSlot.handle))
+    wgpuInstanceRelease(inst)
+    Ffi.release(errorCell)
+    return Err(
+      error = if not opened then "wgpu: requesting a device timed out" else "wgpu: cannot open a device: " + deviceSlot.message
+    )
   }
   val queue = wgpuDeviceGetQueue(longToPtr(deviceSlot.handle))
   val device = Device(
@@ -401,7 +555,8 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   Ok(value = result)
 }
 
-/// Releases the device, its queue, the adapter and the instance.
+/// Releases the device, its queue, the adapter and the instance.  The error cell goes last:
+/// the device-lost callback can still run while the device is released.
 @unsafe_ffi
 func closeDevice(d: Device): Unit {
   wgpuQueueRelease(longToPtr(d.queue))
@@ -412,8 +567,14 @@ func closeDevice(d: Device): Unit {
 }
 
 /// A buffer of `size` bytes with the given usage flags (`usageStorage`, `usageCopyDst`, ...).
+/// An `Err` is an invalid combination of flags, a size over the device's limit or a size
+/// that is not a multiple of 4 for a mappable buffer, or the GPU out of memory.
 @unsafe_ffi
-pub func createBuffer(d: Device, size: Long, usage: Long): Buffer {
+pub func createBuffer(d: Device, size: Long, usage: Long): Result[Buffer, String] {
+  if size < 0 {
+    return Err(error = "a buffer needs a size of at least 0 bytes, not " + size.toString())
+  }
+  openScope(d)
   var desc = WGPUBufferDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
@@ -422,7 +583,32 @@ pub func createBuffer(d: Device, size: Long, usage: Long): Buffer {
     mappedAtCreation = 0
   )
   val raw = wgpuDeviceCreateBuffer(longToPtr(d.device), nativeAddrOf(desc))
-  Buffer(raw = ptrToLong(raw), size = size)
+  match closeScope(d) {
+    case Some(message) -> {
+      wgpuBufferRelease(raw)
+      Err(error = message)
+    }
+    case None -> Ok(value = Buffer(raw = ptrToLong(raw), size = size))
+  }
+}
+
+// Checks that `bytes` bytes written at `offset` fit in the buffer and keep WebGPU's
+// 4-byte alignment for queue writes.
+func checkWrite(b: Buffer, offset: Long, bytes: Long): Result[Unit, String] {
+  if offset < 0 or offset % 4 != 0 {
+    return Err(error = "a buffer write needs an offset that is a multiple of 4, not " + offset.toString())
+  }
+  if bytes % 4 != 0 {
+    return Err(error = "a buffer write needs a multiple of 4 bytes, not " + bytes.toString())
+  }
+  if offset + bytes > b.size {
+    return Err(
+      error = "writing " + bytes.toString() + " bytes at offset " + offset.toString() + " overruns a buffer of " +
+        b.size.toString() +
+        " bytes"
+    )
+  }
+  Ok(value = ())
 }
 
 @unsafe_ffi
@@ -430,34 +616,52 @@ pub func releaseBuffer(b: Buffer): Unit {
   wgpuBufferRelease(longToPtr(b.raw))
 }
 
-/// Copies `values` into the buffer at `offset` bytes.
+/// Copies `values` into the buffer at `offset` bytes.  The buffer needs
+/// `usageCopyDst`; the offset and the byte count must be multiples of 4 and fit in the buffer.
 @unsafe_ffi
-pub func writeInts(d: Device, b: Buffer, offset: Long, values: buffer[Int]): Unit {
+pub func writeInts(d: Device, b: Buffer, offset: Long, values: buffer[Int]): Result[Unit, String] {
+  val bytes = values.length.toLong() * 4
+  match checkWrite(b, offset, bytes) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
+  openScope(d)
   values.withPointer(
-    { p: NativePtr[Int] ->
-      wgpuQueueWriteBufferInts(longToPtr(d.queue), longToPtr(b.raw), offset, p, values.length.toLong() * 4)
-    }
+    { p: NativePtr[Int] -> wgpuQueueWriteBufferInts(longToPtr(d.queue), longToPtr(b.raw), offset, p, bytes) }
   )
+  scopeResult(d)
 }
 
-/// Copies `values` into the buffer at `offset` bytes.
+/// Copies `values` into the buffer at `offset` bytes.  The buffer needs
+/// `usageCopyDst`; the offset and the byte count must be multiples of 4 and fit in the buffer.
 @unsafe_ffi
-pub func writeBytes(d: Device, b: Buffer, offset: Long, values: buffer[Byte]): Unit {
+pub func writeBytes(d: Device, b: Buffer, offset: Long, values: buffer[Byte]): Result[Unit, String] {
+  val bytes = values.length.toLong()
+  match checkWrite(b, offset, bytes) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
+  openScope(d)
   values.withPointer(
-    { p: NativePtr[Byte] ->
-      wgpuQueueWriteBufferBytes(longToPtr(d.queue), longToPtr(b.raw), offset, p, values.length.toLong())
-    }
+    { p: NativePtr[Byte] -> wgpuQueueWriteBufferBytes(longToPtr(d.queue), longToPtr(b.raw), offset, p, bytes) }
   )
+  scopeResult(d)
 }
 
-/// Copies `values` (32-bit floats) into the buffer at `offset` bytes.
+/// Copies `values` (32-bit floats) into the buffer at `offset` bytes.  The buffer needs
+/// `usageCopyDst`; the offset and the byte count must be multiples of 4 and fit in the buffer.
 @unsafe_ffi
-pub func writeFloats(d: Device, b: Buffer, offset: Long, values: buffer[Float]): Unit {
+pub func writeFloats(d: Device, b: Buffer, offset: Long, values: buffer[Float]): Result[Unit, String] {
+  val bytes = values.length.toLong() * 4
+  match checkWrite(b, offset, bytes) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
+  openScope(d)
   values.withPointer(
-    { p: NativePtr[Float] ->
-      wgpuQueueWriteBufferFloats(longToPtr(d.queue), longToPtr(b.raw), offset, p, values.length.toLong() * 4)
-    }
+    { p: NativePtr[Float] -> wgpuQueueWriteBufferFloats(longToPtr(d.queue), longToPtr(b.raw), offset, p, bytes) }
   )
+  scopeResult(d)
 }
 
 @unsafe_ffi
@@ -472,11 +676,18 @@ func submit(d: Device, encoder: NativePtr[Byte]): Unit {
 @unsafe_ffi
 pub func readInts(d: Device, b: Buffer, count: Int): Result[buffer[Int], String] {
   val bytes = count.toLong() * 4
-  val staging = createBuffer(d, bytes, usageMapRead + usageCopyDst)
+  if count < 0 or bytes > b.size {
+    return Err(error = "cannot read " + count.toString() + " Ints from a buffer of " + b.size.toString() + " bytes")
+  }
+  val staging = match createBuffer(d, bytes, usageMapRead + usageCopyDst) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = e)
+  }
+  openScope(d)
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   wgpuCommandEncoderCopyBufferToBuffer(encoder, longToPtr(b.raw), 0, longToPtr(staging.raw), 0, bytes)
   submit(d, encoder)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       releaseBuffer(staging)
       return Err(error = message)
@@ -513,11 +724,12 @@ pub func readInts(d: Device, b: Buffer, count: Int): Result[buffer[Int], String]
   Ok(value = result)
 }
 
-/// A compute pipeline for the WGSL `source`'s `entry` point, with its bindings inferred.
+// A shader module from WGSL `source`.  It is created in a scope of its own, so a WGSL error
+// comes back as "WGSL: " and the compiler's message, which names the line and column, apart
+// from errors in the pipeline built from it.
 @unsafe_ffi
-pub func createComputePipeline(d: Device, source: String, entry: String): Result[ComputePipeline, String] {
+func createShader(d: Device, source: String): Result[NativePtr[Byte], String] {
   val wgsl = Ffi.toCString(source)
-  val entryName = Ffi.toCString(entry)
   var chained = WGPUShaderSourceWGSL(
     chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_ShaderSourceWGSL),
     code = cString(wgsl)
@@ -525,7 +737,26 @@ pub func createComputePipeline(d: Device, source: String, entry: String): Result
   // The chain header is the first member, so the struct's address is its chain's address.
   val chainHead: NativePtr[Byte] = nativeAddrOf(chained)
   var moduleDesc = WGPUShaderModuleDescriptor(nextInChain = chainHead, label = noString())
+  openScope(d)
   val shader = wgpuDeviceCreateShaderModule(longToPtr(d.device), nativeAddrOf(moduleDesc))
+  val failure = closeScope(d)
+  Ffi.release(wgsl)
+  match failure {
+    case Some(message) -> {
+      wgpuShaderModuleRelease(shader)
+      Err(error = "WGSL: " + message)
+    }
+    case None -> Ok(value = shader)
+  }
+}
+
+/// A compute pipeline for the WGSL `source`'s `entry` point, with its bindings inferred.  An
+/// `Err` starting "WGSL: " is a shader that does not compile; any other is a pipeline the shader
+/// cannot make, such as a missing entry point.
+@unsafe_ffi
+pub func createComputePipeline(d: Device, source: String, entry: String): Result[ComputePipeline, String] {
+  val shader = match createShader(d, source) { case Ok(m) -> m; case Err(e) -> return Err(error = e) }
+  val entryName = Ffi.toCString(entry)
   var pipelineDesc = WGPUComputePipelineDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
@@ -538,11 +769,11 @@ pub func createComputePipeline(d: Device, source: String, entry: String): Result
       constants = nativeNullPtr()
     )
   )
+  openScope(d)
   val pipeline = wgpuDeviceCreateComputePipeline(longToPtr(d.device), nativeAddrOf(pipelineDesc))
   wgpuShaderModuleRelease(shader)
-  Ffi.release(wgsl)
   Ffi.release(entryName)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       wgpuComputePipelineRelease(pipeline)
       Err(error = message)
@@ -592,10 +823,11 @@ func buildBindGroup(d: Device, layout: NativePtr[Byte], bindings: List[Binding])
     entryCount = count.toLong(),
     entries = entries
   )
+  openScope(d)
   val group = wgpuDeviceCreateBindGroup(longToPtr(d.device), nativeAddrOf(desc))
   wgpuBindGroupLayoutRelease(layout)
   Ffi.release(entries)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       wgpuBindGroupRelease(group)
       Err(error = message)
@@ -619,6 +851,7 @@ pub func createRenderBindGroup(d: Device, pipeline: RenderPipeline, bindings: Li
 /// Runs the pipeline over `x * y * z` workgroups with the bind group, waiting for the queue.
 @unsafe_ffi
 pub func dispatch(d: Device, pipeline: ComputePipeline, group: BindGroup, x: Int, y: Int, z: Int): Result[Unit, String] {
+  openScope(d)
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   val pass = wgpuCommandEncoderBeginComputePass(encoder, nativeNullPtr())
   wgpuComputePassEncoderSetPipeline(pass, longToPtr(pipeline.raw))
@@ -627,7 +860,7 @@ pub func dispatch(d: Device, pipeline: ComputePipeline, group: BindGroup, x: Int
   wgpuComputePassEncoderEnd(pass)
   wgpuComputePassEncoderRelease(pass)
   submit(d, encoder)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> Err(error = message)
     case None -> Ok(value = ())
   }
@@ -643,9 +876,14 @@ pub func releaseBindGroup(g: BindGroup): Unit {
   wgpuBindGroupRelease(longToPtr(g.raw))
 }
 
-/// An RGBA8 colour target that a render pass can draw into and `readPixels` can read.
+/// An RGBA8 colour target that a render pass can draw into and `readPixels` can read.  An `Err`
+/// is a size that is not positive or over the device's limit, or the GPU out of memory.
 @unsafe_ffi
-pub func createRenderTarget(d: Device, width: Int, height: Int): RenderTarget {
+pub func createRenderTarget(d: Device, width: Int, height: Int): Result[RenderTarget, String] {
+  if width <= 0 or height <= 0 {
+    return Err(error = "a render target needs a positive size, not " + width.toString() + "x" + height.toString())
+  }
+  openScope(d)
   var desc = WGPUTextureDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
@@ -660,13 +898,22 @@ pub func createRenderTarget(d: Device, width: Int, height: Int): RenderTarget {
   )
   val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
   val view = wgpuTextureCreateView(texture, nativeNullPtr())
-  RenderTarget(
-    texture = ptrToLong(texture),
-    view = ptrToLong(view),
-    width = width,
-    height = height,
-    format = WGPUTextureFormat_RGBA8Unorm
-  )
+  match closeScope(d) {
+    case Some(message) -> {
+      wgpuTextureViewRelease(view)
+      wgpuTextureRelease(texture)
+      Err(error = message)
+    }
+    case None -> Ok(
+      value = RenderTarget(
+        texture = ptrToLong(texture),
+        view = ptrToLong(view),
+        width = width,
+        height = height,
+        format = WGPUTextureFormat_RGBA8Unorm
+      )
+    )
+  }
 }
 
 @unsafe_ffi
@@ -691,16 +938,9 @@ pub func createRenderPipeline(
   format: Int,
   blend: Bool,
 ): Result[RenderPipeline, String] {
-  val wgsl = Ffi.toCString(source)
+  val shader = match createShader(d, source) { case Ok(m) -> m; case Err(e) -> return Err(error = e) }
   val vertexName = Ffi.toCString(vertexEntry)
   val fragmentName = Ffi.toCString(fragmentEntry)
-  var chained = WGPUShaderSourceWGSL(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_ShaderSourceWGSL),
-    code = cString(wgsl)
-  )
-  val chainHead: NativePtr[Byte] = nativeAddrOf(chained)
-  var moduleDesc = WGPUShaderModuleDescriptor(nextInChain = chainHead, label = noString())
-  val shader = wgpuDeviceCreateShaderModule(longToPtr(d.device), nativeAddrOf(moduleDesc))
   val layoutCount = layouts.count
   val layoutArray = Ffi.allocate(vertexLayoutSize * (if layoutCount > 0 then layoutCount.toLong() else 1))
   val attributeArrays: List[Long] = newList()
@@ -795,16 +1035,16 @@ pub func createRenderPipeline(
     ),
     fragment = nativeAddrOf(fragment)
   )
+  openScope(d)
   val pipeline = wgpuDeviceCreateRenderPipeline(longToPtr(d.device), nativeAddrOf(desc))
   wgpuShaderModuleRelease(shader)
-  Ffi.release(wgsl)
   Ffi.release(vertexName)
   Ffi.release(fragmentName)
   Ffi.release(layoutArray)
   for address in attributeArrays {
     Ffi.release(longToPtr(address))
   }
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       wgpuRenderPipelineRelease(pipeline)
       Err(error = message)
@@ -824,6 +1064,7 @@ pub func releaseRenderPipeline(p: RenderPipeline): Unit {
 pub func render(
   d: Device, target: RenderTarget, red: Float, green: Float, blue: Float, alpha: Float, draws: List[Draw]
 ): Result[Unit, String] {
+  openScope(d)
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   var attachment = WGPURenderPassColorAttachment(
     nextInChain = nativeNullPtr(),
@@ -865,7 +1106,7 @@ pub func render(
   wgpuRenderPassEncoderEnd(pass)
   wgpuRenderPassEncoderRelease(pass)
   submit(d, encoder)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> Err(error = message)
     case None -> Ok(value = ())
   }
@@ -927,10 +1168,11 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
     viewFormatCount = 0,
     viewFormats = nativeNullPtr()
   )
+  openScope(d)
   val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
   writePixels(d, texture, width, height, pixels)
   val view = wgpuTextureCreateView(texture, nativeNullPtr())
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       wgpuTextureViewRelease(view)
       wgpuTextureRelease(texture)
@@ -958,8 +1200,9 @@ pub func writeTexture(d: Device, t: Texture, pixels: buffer[Byte]): Result[Unit,
         pixels.length.toString()
     )
   }
+  openScope(d)
   writePixels(d, longToPtr(t.raw), t.width, t.height, pixels)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> Err(error = message)
     case None -> Ok(value = ())
   }
@@ -968,7 +1211,7 @@ pub func writeTexture(d: Device, t: Texture, pixels: buffer[Byte]): Result[Unit,
 /// A sampler that clamps to the texture's edge and filters linearly (`linear`) or takes the
 /// nearest texel.
 @unsafe_ffi
-pub func createSampler(d: Device, linear: Bool): Sampler {
+pub func createSampler(d: Device, linear: Bool): Result[Sampler, String] {
   val filter = if linear then WGPUFilterMode_Linear else WGPUFilterMode_Nearest
   var desc = WGPUSamplerDescriptor(
     nextInChain = nativeNullPtr(),
@@ -984,7 +1227,15 @@ pub func createSampler(d: Device, linear: Bool): Sampler {
     compare = WGPUCompareFunction_Undefined,
     maxAnisotropy = [1u8, 0u8]
   )
-  Sampler(raw = ptrToLong(wgpuDeviceCreateSampler(longToPtr(d.device), nativeAddrOf(desc))))
+  openScope(d)
+  val raw = wgpuDeviceCreateSampler(longToPtr(d.device), nativeAddrOf(desc))
+  match closeScope(d) {
+    case Some(message) -> {
+      wgpuSamplerRelease(raw)
+      Err(error = message)
+    }
+    case None -> Ok(value = Sampler(raw = ptrToLong(raw)))
+  }
 }
 
 @unsafe_ffi
@@ -997,7 +1248,11 @@ pub func releaseSampler(s: Sampler): Unit {
 pub func readPixels(d: Device, target: RenderTarget): Result[buffer[Byte], String] {
   val rowBytes = target.width * 4
   val paddedRow = (rowBytes + 255) / 256 * 256
-  val staging = createBuffer(d, paddedRow.toLong() * target.height.toLong(), usageMapRead + usageCopyDst)
+  val staging = match createBuffer(d, paddedRow.toLong() * target.height.toLong(), usageMapRead + usageCopyDst) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = e)
+  }
+  openScope(d)
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   var source = WGPUTexelCopyTextureInfo(
     texture = longToPtr(target.texture),
@@ -1016,7 +1271,7 @@ pub func readPixels(d: Device, target: RenderTarget): Result[buffer[Byte], Strin
   var size = WGPUExtent3D(width = target.width, height = target.height, depthOrArrayLayers = 1)
   wgpuCommandEncoderCopyTextureToBuffer(encoder, nativeAddrOf(source), nativeAddrOf(destination), nativeAddrOf(size))
   submit(d, encoder)
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> {
       releaseBuffer(staging)
       return Err(error = message)
@@ -1063,15 +1318,17 @@ pub func readPixels(d: Device, target: RenderTarget): Result[buffer[Byte], Strin
 
 @unsafe_ffi
 func finishSurface(d: Device, raw: NativePtr[Byte]): Result[Surface, String] {
-  match takeError(d) {
-    case Some(message) -> {
-      wgpuSurfaceRelease(raw)
-      Err(error = message)
+  match deviceLost(d) {
+    case Some(reason) -> {
+      if ptrToLong(raw) != 0 {
+        wgpuSurfaceRelease(raw)
+      }
+      Err(error = reason)
     }
     case None -> if ptrToLong(raw) == 0 {
       Err(error = "wgpu could not create a surface for this window")
     } else {
-      Ok(value = Surface(raw = ptrToLong(raw), format = 0, width = 0, height = 0))
+      Ok(value = Surface(raw = ptrToLong(raw), format = 0, width = 0, height = 0, presentMode = PresentMode.Fifo))
     }
   }
 }
@@ -1131,10 +1388,36 @@ pub func createMetalSurface(d: Device, layer: Long): Result[Surface, String] {
   finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
 }
 
+/// `s` asking for `mode` the next time it is configured.  `configureSurface` falls back to
+/// `Fifo`, which every surface supports, when the surface does not offer `mode`; the
+/// configured surface's `presentMode` is the mode in use.
+pub func withPresentMode(s: Surface, mode: PresentMode): Surface {
+  s.copy(presentMode = mode)
+}
+
+func presentModeCode(mode: PresentMode): Int {
+  match mode {
+    case Fifo -> WGPUPresentMode_Fifo
+    case FifoRelaxed -> WGPUPresentMode_FifoRelaxed
+    case Mailbox -> WGPUPresentMode_Mailbox
+    case Immediate -> WGPUPresentMode_Immediate
+  }
+}
+
 /// Sets the surface's size in pixels (call it again when the window is resized) and picks its
-/// format: RGBA8 when the surface offers it, else BGRA8, else its first format.  The two unorm formats are preferred over their sRGB twins so that colours written by a shader appear as written, as they do in an offscreen `formatRgba8` target.  Presentation is vsynced.
+/// format: RGBA8 when the surface offers it, else BGRA8, else its first format.  The two unorm
+/// formats are preferred over their sRGB twins so that colours written by a shader appear as
+/// written, as they do in an offscreen `formatRgba8` target.  Frames are presented with the
+/// surface's `presentMode` (`withPresentMode`) when the surface offers it, else `Fifo` (vsync).
 @unsafe_ffi
 pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Result[Surface, String] {
+  if width <= 0 or height <= 0 {
+    return Err(error = "a surface needs a positive size, not " + width.toString() + "x" + height.toString())
+  }
+  match deviceLost(d) {
+    case Some(reason) -> return Err(error = reason)
+    case None -> ()
+  }
   var caps = WGPUSurfaceCapabilities(
     nextInChain = nativeNullPtr(),
     usages = 0,
@@ -1169,7 +1452,22 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
     }
     i = i + 1
   }
+  val wanted = presentModeCode(s.presentMode)
+  var modesAddress: Long = 0
+  var modes = caps.presentModes
+  val _m = memcpyIntPointerToLong(nativeAddrOf(modesAddress), nativeAddrOf(modes), 8)
+  var offered = false
+  var mi: Long = 0
+  while mi < caps.presentModeCount {
+    var candidate = 0
+    val _c = memcpyFromBytes(nativeAddrOf(candidate), longToPtr(modesAddress + 4 * mi), 4)
+    if candidate == wanted {
+      offered = true
+    }
+    mi = mi + 1
+  }
   wgpuSurfaceCapabilitiesFreeMembers(caps)
+  val mode = if offered then s.presentMode else PresentMode.Fifo
   var config = WGPUSurfaceConfiguration(
     nextInChain = nativeNullPtr(),
     device = longToPtr(d.device),
@@ -1180,17 +1478,15 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
     viewFormatCount = 0,
     viewFormats = nativeNullPtr(),
     alphaMode = WGPUCompositeAlphaMode_Auto,
-    presentMode = WGPUPresentMode_Fifo
+    presentMode = presentModeCode(mode)
   )
+  openScope(d)
   wgpuSurfaceConfigure(longToPtr(s.raw), nativeAddrOf(config))
-  match takeError(d) {
+  match closeScope(d) {
     case Some(message) -> Err(error = message)
-    case None -> Ok(value = Surface(raw = s.raw, format = chosen, width = width, height = height))
+    case None -> Ok(value = Surface(raw = s.raw, format = chosen, width = width, height = height, presentMode = mode))
   }
 }
-
-/// wgpu-native's own extension of `WGPUSurfaceGetCurrentTextureStatus` (`wgpu.h`), checked against the header by `native/wgpu_layout_check.c`.
-val surfaceStatusOccluded: Int = 196609
 
 @unsafe_ffi
 func frameFrom(s: Surface, current: WGPUSurfaceTexture): RenderTarget {
@@ -1207,37 +1503,44 @@ func frameFrom(s: Surface, current: WGPUSurfaceTexture): RenderTarget {
 /// The surface's next frame as a render target, or `None` when no frame can be shown right now
 /// and the caller should skip this iteration without touching the surface: the window is
 /// occluded, minimized or not on screen yet (on macOS the first frames after `Window.show`), or the
-/// compositor timed out.  Draw into the target with `render`, then `presentFrame`.  An `Err`
-/// (the surface is outdated or lost, as after a resize) means reconfigure the surface and try
-/// again next frame.
+/// compositor timed out.  Draw into the target with `render`, then `presentFrame`.  An `Err` says
+/// what the loop must do: configure the surface again (`Outdated`, as after a resize), create a
+/// new surface (`Lost`), or stop (`Failed`).
 @unsafe_ffi
-pub func tryAcquireFrame(d: Device, s: Surface): Result[Option[RenderTarget], String] {
+pub func tryAcquireFrame(d: Device, s: Surface): Result[Option[RenderTarget], FrameError] {
+  match deviceLost(d) {
+    case Some(reason) -> return Err(error = Failed(message = reason))
+    case None -> ()
+  }
   var current = WGPUSurfaceTexture(nextInChain = nativeNullPtr(), texture = nativeNullPtr(), status = 0)
   wgpuSurfaceGetCurrentTexture(longToPtr(s.raw), nativeAddrOf(current))
   val status = current.status
   if status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal or status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal {
     return Ok(value = Some(value = frameFrom(s, current)))
   }
-  if status == WGPUSurfaceGetCurrentTextureStatus_Timeout or status == surfaceStatusOccluded {
+  if status == WGPUSurfaceGetCurrentTextureStatus_Timeout or status == WGPUSurfaceGetCurrentTextureStatus_Occluded {
     return Ok(value = None)
   }
-  Err(error = "no surface frame is available (status " + status.toString() + "); reconfigure the surface")
+  if status == WGPUSurfaceGetCurrentTextureStatus_Outdated {
+    return Err(error = Outdated)
+  }
+  if status == WGPUSurfaceGetCurrentTextureStatus_Lost {
+    return Err(error = Lost)
+  }
+  val detail = match deviceLost(d) {
+    case Some(reason) -> reason
+    case None -> "the surface has no frame (status " + status.toString() + ")"
+  }
+  Err(error = Failed(message = detail))
 }
 
-/// The surface's next frame as a render target.  Draw into it with `render`, then `presentFrame`.
-/// An `Err` here (the window was resized, minimized, occluded or lost) means reconfigure the
-/// surface and try again next frame; a loop that must tell an occluded window from a resize uses
-/// `tryAcquireFrame`.
-@unsafe_ffi
-pub func acquireFrame(d: Device, s: Surface): Result[RenderTarget, String] {
-  var current = WGPUSurfaceTexture(nextInChain = nativeNullPtr(), texture = nativeNullPtr(), status = 0)
-  wgpuSurfaceGetCurrentTexture(longToPtr(s.raw), nativeAddrOf(current))
-  if current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal {
-    return Err(
-      error = "no surface frame is available (status " + current.status.toString() + "); reconfigure the surface"
-    )
+/// A sentence describing a frame error, for a log or a message to the user.
+pub func frameErrorMessage(e: FrameError): String {
+  match e {
+    case Outdated -> "the surface no longer matches its window; configure it again"
+    case Lost -> "the surface was lost; create a new one"
+    case Failed(message) -> message
   }
-  Ok(value = frameFrom(s, current))
 }
 
 /// Shows the frame on the window and releases it; use `discardFrame` instead when drawing failed.
@@ -1249,7 +1552,7 @@ pub func presentFrame(s: Surface, frame: RenderTarget): Result[Unit, String] {
   if status == WGPUStatus_Success then Ok(value = ()) else Err(error = "presenting the frame failed (status " + status.toString() + ")")
 }
 
-/// Releases a frame from `acquireFrame` without showing it, for when drawing into it failed.
+/// Releases a frame from `tryAcquireFrame` without showing it, for when drawing into it failed.
 @unsafe_ffi
 pub func discardFrame(frame: RenderTarget): Unit {
   wgpuTextureViewRelease(longToPtr(frame.view))
