@@ -7,7 +7,7 @@
 //! Run it from the repository root or from `lyric-unicode/`.  It reads the UCD files only after
 //! checking each against the SHA-256 pinned below, so the tables always come from one known
 //! Unicode version; updating Unicode means replacing the files in `ucd/`, the version and the
-//! checksums here, and running it.  It rewrites the four `val ...: slice[String]` lines of
+//! checksums here, and running it.  It rewrites the `val ...: slice[String]` table lines of
 //! `unicode_data.l` and nothing else, in the record layout that file's module comment describes:
 //!
 //!   bidiRuns       Bidi_Class (DerivedBidiClass.txt, with its @missing defaults), numbered as
@@ -18,6 +18,8 @@
 //!                  categories Pi, Pf, and Mn or Mc
 //!   mirrorPairs    Bidi_Mirroring_Glyph (BidiMirroring.txt)
 //!   bracketPairs   Bidi_Paired_Bracket and Bidi_Paired_Bracket_Type (BidiBrackets.txt)
+//!   wordBreakRuns  Word_Break (WordBreakProperty.txt) numbered as `Unicode.WordBreak` numbers the
+//!                  values, plus Extended_Pictographic (emoji-data.txt)
 package Unicode.Generate
 
 import Std.Core
@@ -47,7 +49,8 @@ pub func pinnedFiles(): List[String] {
     "DerivedGeneralCategory.txt 7676AB755A41EF82108460238569E60AD65C191DDAFE61B36C6765EC1353F293",
     "emoji-data.txt F1365A5173EEE18E1F98B240CDC492E84A25F1CE7E0C9D1094EB29C41A22696A",
     "BidiMirroring.txt D7AFDADD1BBD66F5A663AC0E8F7958F18FD9491FC0BC59EC5877CB82DB71DB7D",
-    "BidiBrackets.txt B8F32554C6F658821FB0EE742D21C5B1F2086B9BF13071FED04894B022F93D67"
+    "BidiBrackets.txt B8F32554C6F658821FB0EE742D21C5B1F2086B9BF13071FED04894B022F93D67",
+    "WordBreakProperty.txt 476464E71A4B7B779B8BA7C5671F4338FEA77DA8E6B6B05FB82B3FDD14603779"
   ]
 }
 
@@ -58,6 +61,11 @@ val bidiLongNames: List[String] = ["Left_To_Right", "Right_To_Left", "European_N
 
 // Line_Break values in the order `Unicode.LineBreak` numbers them.
 val lineBreakNames: List[String] = ["XX", "AI", "AL", "B2", "BA", "BB", "BK", "CB", "CL", "CM", "CR", "EX", "GL", "HY", "ID", "IN", "IS", "LF", "NS", "NU", "OP", "PO", "PR", "QU", "SA", "SG", "SP", "SY", "ZW", "NL", "WJ", "H2", "H3", "JL", "JT", "JV", "CP", "CJ", "HL", "RI", "EB", "EM", "ZWJ", "AK", "AP", "AS", "VF", "VI"]
+
+// Word_Break values in the order `Unicode.WordBreak` numbers them.
+val wordBreakNames: List[String] = ["Other", "CR", "LF", "Newline", "Extend", "ZWJ", "Regional_Indicator", "Format", "Katakana", "Hebrew_Letter", "ALetter", "Single_Quote", "Double_Quote", "MidNumLet", "MidLetter", "MidNum", "Numeric", "ExtendNumLet", "WSegSpace"]
+
+val flagWordPictographic: Int = 32
 
 val flagWide: Int = 64
 
@@ -236,6 +244,10 @@ func bidiNumber(value: String): Int {
   }
 }
 
+func wordBreakNumber(value: String): Int {
+  indexIn(wordBreakNames, value)
+}
+
 func lineBreakNumber(value: String): Int {
   indexIn(lineBreakNames, value)
 }
@@ -312,7 +324,7 @@ func runRecords(values: buffer[Int]): List[String] {
   acc
 }
 
-/// The four table lines, keyed by table name, made from the UCD files under `root`.
+/// The table lines, keyed by table name, made from the UCD files under `root`.
 pub func generateTables(root: in String): Result[Map[String, String], String] {
   val tables: Map[String, String] = newMap()
   // Bidi_Class.
@@ -417,6 +429,21 @@ pub func generateTables(root: in String): Result[Map[String, String], String] {
     }
   }
   tables.add("bracketPairs", tableLine("bracketPairs", sortedRecords(bracketRecords)))
+  // Word_Break, with Extended_Pictographic in bit 5 (rule WB3c).
+  val wbText = match readPinned(root, "WordBreakProperty.txt") { case Ok(t) -> t; case Err(e) -> return Err(error = e) }
+  var wb = Buf.filled(codeSpace, 0)
+  match fill("WordBreakProperty.txt", wbText, wb, wordBreakNumber) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = e)
+  }
+  c = 0
+  while c < codeSpace {
+    if pictographic[c] == 1 {
+      wb[c] = wb[c] + flagWordPictographic
+    }
+    c = c + 1
+  }
+  tables.add("wordBreakRuns", tableLine("wordBreakRuns", runRecords(wb)))
   Ok(value = tables)
 }
 
@@ -433,14 +460,17 @@ func sortedRecords(records: List[String]): List[String] {
   sorted
 }
 
-/// `source` (the text of `unicode_data.l`) with its four table lines replaced by `tables`.
+// The tables, by the name of their `val` in `unicode_data.l`.
+val tableNames: List[String] = ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs", "wordBreakRuns"]
+
+/// `source` (the text of `unicode_data.l`) with its table lines replaced by `tables`.
 pub func withTables(source: in String, tables: in Map[String, String]): Result[String, String] {
   val lines = split(source, "\n")
   val result: List[String] = newList()
   var replaced = 0
   for line in lines {
     var next = line
-    for name in ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs"] {
+    for name in tableNames {
       if startsWith(line, "val " + name + ": slice[String] = ") {
         next = match mapGet(tables, name) { case Some(t) -> t; case None -> return Err(error = "no table " + name) }
         replaced = replaced + 1
@@ -448,8 +478,11 @@ pub func withTables(source: in String, tables: in Map[String, String]): Result[S
     }
     result.add(next)
   }
-  if replaced != 4 {
-    return Err(error = "src/unicode_data.l has " + fromInt(replaced) + " of its 4 table lines; expected each once")
+  if replaced != tableNames.count {
+    return Err(
+      error = "src/unicode_data.l has " + fromInt(replaced) + " of its " + fromInt(tableNames.count) +
+        " table lines; expected each once"
+    )
   }
   Ok(value = joinList("\n", result))
 }
