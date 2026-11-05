@@ -7460,6 +7460,7 @@ func inferPropagate(
   val ownOpen = not typeIsClosedOver(own, sc.genericNames)
   val takesContext = propagateOperandTakesContext(tbl, sc, inner)
   val key = recordCopySiteKey(inner.span)
+  noteOperandBranchConstructions(tbl, inner)
   if typeIsClosedOver(closed, sc.genericNames) and (ownOpen or takesContext) {
     if ownOpen {
       // A local of an open type (`val r = Ok(value = 1)`) takes the closed
@@ -7482,6 +7483,46 @@ func inferPropagate(
     }
   }
   propagateUnwrap(closed)
+}
+
+// A construction that is a branch of an `if`/`match`/block used as the operand
+// of `?` (`(if c { Err(error = a) } else { Err(error = b) })?`): the `?` never
+// yields the operand's success value, so nothing the checker could fix there
+// is missing; `unsolvedCallFixed` reads `operandBranchCtors` (D380).
+func noteOperandBranchConstructions(tbl: in SymbolTable, operand: in Expr): Unit {
+  match stripExprParens(operand).kind {
+    case EIf(_, t, eo, _) -> {
+      noteOperandBranchOf(tbl, t)
+      match eo {
+        case Some(eb) -> noteOperandBranchOf(tbl, eb)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        noteOperandBranchOf(tbl, arm.body)
+      }
+    }
+    case EBlock(blk) -> noteOperandBranchOf(tbl, EOBBlock(block = blk))
+    case _ -> ()
+  }
+}
+
+func noteOperandBranchOf(tbl: in SymbolTable, b: in ExprOrBlock): Unit {
+  match branchValueExpr(b) {
+    case Some(ve) -> {
+      val v = stripExprParens(ve)
+      match v.kind {
+        case ECall(_, _) -> {
+          if not isNoSourceSpan(v.span) {
+            tbl.operandBranchCtors.add(recordCopySiteKey(v.span), true)
+          }
+        }
+        case _ -> noteOperandBranchConstructions(tbl, v)
+      }
+    }
+    case None -> ()
+  }
 }
 
 // T0195: the operand of `?` must be a `Result` or an `Option` (or a `T?`
@@ -10482,11 +10523,60 @@ func inferUnionCaseConstruction(
         recordCaseFieldWidenings(tbl, uc, ftypes, gnames, targs, args, argTypes)
         val caseTy = TyUser(id = parentId, name = decl.name, args = targs)
         val _ = noteValueUnionCtor(tbl, caseTy, span, false)
+        noteNestedCtorFlow(tbl, uc, decl.name, parentId, gnames, ftypes, targs, args, span)
         caseTy
       }
       case None -> tyErrorSilent()
     }
     case _ -> tyErrorSilent()
+  }
+}
+
+// A call that is an argument of a union-case construction (D380): its expected
+// type is the field it fills, once the construction's own holes are solved
+// from the type expected of the construction (`effectiveCallExpected`).
+func noteNestedCtorFlow(
+  tbl: in SymbolTable,
+  uc: in UnionCase,
+  unionName: in String,
+  parentId: in SymbolId,
+  gnames: in List[String],
+  ftypes: in List[Type],
+  targs: in List[Type],
+  args: in List[CallArg],
+  span: in Span,
+): Unit {
+  if gnames.count == 0 or isNoSourceSpan(span) or span.endPos.offset <= span.startPos.offset {
+    return
+  }
+  val srcIdx = argIndicesInParamOrder(args, unionCaseSlotNames(uc))
+  val selfArgs: List[Type] = newList()
+  for g in gnames {
+    selfArgs.add(TyParam(name = g, owner = ""))
+  }
+  var k = 0
+  while k < srcIdx.count and k < ftypes.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < args.count {
+      val child = stripExprParens(callArgExpr(args[ai]))
+      val isCall = match child.kind { case ECall(_, _) -> true; case _ -> false }
+      if isCall {
+        val ckey = recordCopySiteKey(child.span)
+        if not tbl.callParents.containsKey(ckey) {
+          tbl.callParents.add(
+            ckey,
+            CallParent(
+              parentKey = recordCopySiteKey(span),
+              generics = gnames,
+              returnTy = TyUser(id = parentId, name = unionName, args = selfArgs),
+              ownTargs = targs,
+              paramTy = ftypes[k]
+            )
+          )
+        }
+      }
+    }
+    k = k + 1
   }
 }
 
@@ -17058,7 +17148,6 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
   while i < keys.count {
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
       case Some(site) -> if site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
-        CensusConsole.error("DBGW " + site.callKey + " open=" + (if tbl.openBindingSites.containsKey(site.callKey) { "y" } else { "n" }) + " keys=" + joinStrs(mapKeys(tbl.openBindingSites), ";"))
         diag.add(
           warningDiagnostic(
             "W0038",
@@ -17095,6 +17184,9 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
   if site.ctor {
     // A `?` operand never yields a value, so its success type stays open by
     // design (`Err(error = e)?`); the propagate tables hold it (#8181).
+    if tbl.operandBranchCtors.containsKey(site.callKey) {
+      return true
+    }
     if tbl.localBindingTypeSites.containsKey(site.callKey) or tbl.openPropagateOperands.containsKey(site.callKey) or tbl.hoistOperandTypeSites.containsKey(site.callKey) {
       return true
     }
