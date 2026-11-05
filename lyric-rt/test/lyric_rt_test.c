@@ -4158,6 +4158,14 @@ static void test_key_hash_helpers(void) {
 }
 
 int main(void) {
+    /* The scheduler cases below check the cooperative scheduler (FIFO order, lyric_sched_poll),
+     * which the default (one thread per processor, D404) does not select.  Set before the first
+     * scheduler call reads it; _putenv because the CRT's getenv does not see SetEnvironmentVariable. */
+#if defined(_WIN32)
+    _putenv("LYRIC_ASYNC_THREADS=1");
+#elif !defined(__wasi__)
+    setenv("LYRIC_ASYNC_THREADS", "1", 1);
+#endif
     test_key_hash_helpers();
     test_char_classification();
 #if LYRIC_TEST_THREADS

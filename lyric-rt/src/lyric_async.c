@@ -1521,7 +1521,7 @@ void lyric_task_block_on(LyricTask* root) {
 int64_t lyric_sched_poll(void) {
     sched_ensure();
     if (mt()) {
-        lyric_panic_msg("lyric_sched_poll needs the single-threaded scheduler (unset LYRIC_ASYNC_THREADS)",
+        lyric_panic_msg("lyric_sched_poll needs the single-threaded scheduler (LYRIC_ASYNC_THREADS=1)",
                         "lyric_async.c", __LINE__);
     }
     for (;;) {
