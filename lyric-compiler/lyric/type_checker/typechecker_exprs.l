@@ -16828,6 +16828,19 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
   }
   match e.kind {
     case EParen(inner) -> noteCallExpected(tbl, inner, expected)
+    case EIf(_, tb, eo, _) -> {
+      noteBranchExpected(tbl, tb, expected)
+      match eo {
+        case Some(eb) -> noteBranchExpected(tbl, eb, expected)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        noteBranchExpected(tbl, arm.body, expected)
+      }
+    }
+    case EBlock(blk) -> noteBranchExpected(tbl, EOBBlock(block = blk), expected)
     case ETuple(elems) -> match unrefine(expected) {
       case TyTuple(ets) -> if ets.count == elems.count {
         var ti = 0
@@ -16849,6 +16862,15 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
       }
     }
     case _ -> ()
+  }
+}
+
+// The value of a branch of an `if`/`match`/block is a value of the type the
+// whole is expected to have (D380).
+func noteBranchExpected(tbl: in SymbolTable, b: in ExprOrBlock, expected: in Type): Unit {
+  match branchValueExpr(b) {
+    case Some(ve) -> noteCallExpected(tbl, ve, expected)
+    case None -> ()
   }
 }
 
@@ -16972,7 +16994,7 @@ func callArgsIndeterminate(sc: in Scope, args: in List[CallArg], argTypes: in Li
 // A union-case construction (`Ok(value = 7)`) whose arguments leave a type
 // argument of its union unsolved is kept in `SymbolTable.unsolvedCallSites`
 // like an unsolved function call (D353), as a constructor site: the warning
-// W0038 until the census of CI's logs says it is safe to make it the error.
+// the error T0224, like an unsolved function call (D381).
 // `caseTy` is the construction as `inferUnionCaseConstruction` typed it.
 func noteUnsolvedCaseCtor(
   sc: in Scope,
@@ -17181,8 +17203,8 @@ func effectiveCallExpected(tbl: in SymbolTable, key: in String, depth: in Int): 
   }
 }
 
-// T0224 (D339, docs/70 section 5.2): a call recorded by `noteUnsolvedCall`
-// whose type argument neither the call's expected type, a recorded
+// T0224 (D339, D381, docs/70 section 5.2): a call or a union-case construction
+// recorded by `noteUnsolvedCall` / `noteUnsolvedCaseCtor` whose type argument neither the call's expected type, a recorded
 // type-argument site nor an open binding fixed.  Mono keeps the same error as a
 // backstop for a call shape the checker does not record.
 pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
@@ -17192,8 +17214,8 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
       case Some(site) -> if site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
         diag.add(
-          warningDiagnostic(
-            "W0038",
+          errorDiagnostic(
+            "T0224",
             "cannot infer type argument(s) " + quoteJoinNames(site.unsolved) + " of '" + site.fname +
               "' from the construction's arguments or its expected type; give it an expected type " +
               "(an annotated binding, a parameter or a declared result)",

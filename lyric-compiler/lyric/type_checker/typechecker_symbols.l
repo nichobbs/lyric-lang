@@ -868,8 +868,7 @@ pub record UnsolvedCallSite {
   indeterminate: Bool
   /// A constructor call (`Ok(value = 7)`), not a function call: an open
   /// binding that holds it counts as fixing it only once the binding got an
-  /// annotation, and it is reported as W0038 while the function-call rule is
-  /// the error T0224 (D353).
+  /// annotation. Both are the error T0224 (D353, D381).
   ctor: Bool
 }
 

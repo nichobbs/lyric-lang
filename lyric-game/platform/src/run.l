@@ -365,7 +365,10 @@ pub func renderRecording[S](
     Draw.beginFrame(painter, width, height)
     game.render(prev, cur, 1.0f32, painter, v)
     val drawn = Draw.finish(painter, target, config.clear)
-    val pixels = match drawn { case Ok(_) -> Gpu.readPixels(d, target); case Err(m) -> Err(error = m) }
+    val pixels: Result[buffer[Byte], String] = match drawn {
+      case Ok(_) -> Gpu.readPixels(d, target)
+      case Err(m) -> Err(error = m)
+    }
     Draw.releasePainter(painter)
     Gpu.releaseRenderTarget(target)
     match pixels {
