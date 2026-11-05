@@ -71,6 +71,7 @@ import Lyric.WireExpand as WireExpand
 import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
+import Lyric.Expand as Expand
 import Lyric.Weaver as Weaver
 import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
@@ -1588,6 +1589,10 @@ pub func renameAliasDotNamed(file: in SourceFile, renames: in Map[String, String
 pub record DiagSink {
   collect: Bool
   located: List[DiagUtil.LocatedDiagnostic]
+  /// The spans declaration expansion generated, each mapped to the span of the
+  /// declaration that caused it (D370): a diagnostic in generated code is
+  /// reported there, and only when it is an error.
+  origins: Map[String, Span] = newMap()
 }
 
 /// A sink that prints.
@@ -1601,7 +1606,8 @@ pub func collectDiagnostics(located: in List[DiagUtil.LocatedDiagnostic]): DiagS
 }
 
 // `gate` into `sink`: whether any of `diags` is an error.
-func gateTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Bool {
+func gateTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags0: in List[Diagnostic]): Bool {
+  val diags = Expand.relocateDiagnostics(sink.origins, diags0)
   if sink.collect {
     return DiagUtil.diagLocateAll(pkgLabel, files, diags, sink.located)
   }
@@ -1683,7 +1689,8 @@ func withoutWarningsIf(quiet: in Bool, diags: in List[Diagnostic]): List[Diagnos
 }
 
 // Report `diags` into `sink` without their deciding anything.
-func reportTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags: in List[Diagnostic]): Unit {
+func reportTo(sink: in DiagSink, pkgLabel: in String, files: in List[String], diags0: in List[Diagnostic]): Unit {
+  val diags = Expand.relocateDiagnostics(sink.origins, diags0)
   if sink.collect {
     val _ = DiagUtil.diagLocateAll(pkgLabel, files, diags, sink.located)
   } else {
@@ -2030,7 +2037,7 @@ func qualifyEnumCasePattern(p: in Pattern, sites: in Map[String, String]): Patte
 }
 
 pub func pipeCheckAndMono(
-  file0: in SourceFile,
+  fileIn: in SourceFile,
   importedPkgs: in List[ImportedPackage],
   deriveImports: in List[Item],
   monoGenFuncs: in List[FunctionDecl],
@@ -2038,6 +2045,9 @@ pub func pipeCheckAndMono(
   monoRecordDecls: in List[RecordDecl],
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
+  // Derives run first, so the checker sees (and checks) what they generate
+  // like code the user wrote (D370).
+  val file0 = deriveFileWithImports(fileIn, deriveImports, opts.sink.origins)
   val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
   val valueSites = front.valueSites
@@ -2091,10 +2101,7 @@ pub func pipeCheckAndMono(
   // package's generic functions are exported to its siblings and mono.  A
   // lambda whose checked type returns `Unit` ends in `()` before then too, so
   // the specialisations another package makes of a generic carry it (#8299).
-  val derived = deriveFileWithImports(
-    endUnitLambdasInUnit(renameByRefReceivers(propRes.file), tcRes.symbols.lambdaUnitSites),
-    deriveImports
-  )
+  val derived = endUnitLambdasInUnit(renameByRefReceivers(propRes.file), tcRes.symbols.lambdaUnitSites)
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)

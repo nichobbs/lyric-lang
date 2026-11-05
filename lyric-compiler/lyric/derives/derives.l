@@ -52,6 +52,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Expand
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Annotation predicates.
@@ -1816,7 +1817,11 @@ func stdJsonImportDecl(): ImportDecl {
   )
 }
 
-pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]): SourceFile {
+pub func deriveFileWithImports(
+  file: in SourceFile,
+  importedItems: in List[Item],
+  origins: in Map[String, Span] = newMap(),
+): SourceFile {
   // Distinct-type declarations (name -> underlying type's head name).  Same-file
   // declarations win over imported ones on name collision because
   // `collectDistinctsFromItems` skips names already present and the current
@@ -1826,9 +1831,22 @@ pub func deriveFileWithImports(file: in SourceFile, importedItems: in List[Item]
   collectDistinctsFromItems(importedItems, distincts)
   val jsonTypes = jsonElementTypesFor(file.items, importedItems)
   val synths: List[Item] = newList()
+  // Each derived item takes spans of its own, mapped back to the type that
+  // caused it (D370), so the checker can tell generated nodes apart and a
+  // diagnostic in one is reported at the `@derive`.
+  val alloc = newSpanAllocator(file)
   var i = 0
   while i < file.items.count {
-    deriveItem(file.items[i], file.items, synths, distincts, jsonTypes)
+    val batch: List[Item] = newList()
+    deriveItem(file.items[i], file.items, batch, distincts, jsonTypes)
+    if batch.count > 0 {
+      val respanned = respanGenerated(file, batch, alloc, file.items[i].span, origins)
+      var r = 0
+      while r < respanned.count {
+        synths.add(respanned[r])
+        r = r + 1
+      }
+    }
     i = i + 1
   }
   if synths.count == 0 {

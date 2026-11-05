@@ -10,7 +10,9 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Derives
+import Lyric.Expand
 import Lyric.Mono
+import Lyric.ContractElaborator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -1200,4 +1202,58 @@ test "mono retains derived helpers" {
   assertTrue(findFuncInFile(mr.file, "Point.equals"), "mono-retain: monoFile keeps Point.equals (#1796)")
   assertTrue(findFuncInFile(mr.file, "Point.hash"), "mono-retain: monoFile keeps Point.hash (#1796)")
   assertTrue(findFuncInFile(mr.file, "Point.show"), "mono-retain: monoFile keeps Point.show (#1796)")
+}
+
+test "derived items take unique spans mapped back to the deriving type (D370)" {
+  val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n" + "record Point { x: Int; y: Int }\n"
+  val pr = parse(src)
+  val origins: Map[String, Span] = newMap()
+  val sf = deriveFileWithImports(pr.file, newList(), origins)
+  val seen: Map[String, Bool] = newMap()
+  var derived = 0
+  var i = 0
+  while i < sf.items.count {
+    val it = sf.items[i]
+    if i > 0 {
+      derived = derived + 1
+      val k = spanKey(it.span)
+      assertFalse(seen.containsKey(k), "derived item span key is unique")
+      seen.add(k, true)
+      assertTrue(origins.containsKey(k), "derived item span is recorded in origins")
+      match mapGet(origins, k) {
+        case Some(cause) -> assertTrue(sameSpan(cause, pr.file.items[0].span), "origin is the deriving record")
+        case None -> ()
+      }
+      assertTrue(it.span.startPos.offset > pr.file.span.endPos.offset, "derived span lies beyond the source")
+    }
+    i = i + 1
+  }
+  assertEqualInt(derived, 2, "two helpers derived")
+  val derivedItems: List[Item] = newList()
+  var d = 1
+  while d < sf.items.count {
+    derivedItems.add(sf.items[d])
+    d = d + 1
+  }
+  val derivedOnly = sf.copy(items = derivedItems)
+  assertFalse(
+    anyExprInFile(derivedOnly, { e: Expr -> not origins.containsKey(spanKey(e.span)) }),
+    "every derived expression span is a generated one"
+  )
+}
+
+test "a diagnostic in derived code is reported at the deriving type, a warning there is dropped (D370)" {
+  val src = "package P\n" + "@derive(Equals)\n" + "record Point { x: Int; y: Int }\n"
+  val pr = parse(src)
+  val origins: Map[String, Span] = newMap()
+  val sf = deriveFileWithImports(pr.file, newList(), origins)
+  val gen = sf.items[1].span
+  val err = errorDiagnostic("T0001", "boom", gen)
+  val warn = Diagnostic(severity = DiagWarning, code = "W0001", message = "meh", span = gen)
+  val real = errorDiagnostic("T0002", "mine", pr.file.items[0].span)
+  val out = relocateDiagnostics(origins, [err, warn, real])
+  assertEqualInt(out.count, 2, "the warning in generated code is dropped")
+  assertTrue(sameSpan(out[0].span, pr.file.items[0].span), "the error is reported at the record")
+  assertTrue(out[0].message.contains("generated"), "the message says it is generated code")
+  assertEqual(out[1].code, "T0002", "a diagnostic in user code is untouched")
 }
