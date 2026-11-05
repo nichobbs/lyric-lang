@@ -2657,11 +2657,7 @@ pub func foreignCalleeSites(
   }
   for origin in mapKeys(byOrigin) {
     match mapGet(byOrigin, origin) {
-<<<<<<< HEAD
       case Some(decls) -> match checkGenericsInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
-=======
-      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
->>>>>>> origin/main
         case Some(res) -> {
           for k in mapKeys(res.symbols.calleeSites) {
             if not acc.containsKey(origin + "|" + k) {
