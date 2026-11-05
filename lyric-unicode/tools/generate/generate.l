@@ -29,6 +29,7 @@ import Std.Hash
 import Std.Buffer as Buf
 import Std.Console as Console
 import Std.Environment as Environment
+import Std.Errors.{IOError}
 
 /// The Unicode version of the vendored files.
 pub val unicodeVersion: String = "15.1.0"
