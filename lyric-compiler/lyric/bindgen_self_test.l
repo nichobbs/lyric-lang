@@ -162,6 +162,45 @@ test "a function-pointer struct member becomes a callback-typed field of a forei
   assertTrue(Str.contains(r.source, "pub extern func request(info: Info): Unit"), "the struct goes by value")
 }
 
+test "a union member becomes storage of the union's size and alignment, and its record stays by pointer" {
+  val src = "typedef struct { void* display; int screen; } Xlib;\n" + "typedef struct { void* display; } Wl;\n" +
+    "typedef struct Handle { int type; union { Xlib xlib; Wl wayland; } data; } Handle;\n" +
+    "typedef union { int i; char c[6]; } Small;\n" +
+    "typedef struct { Small s; Handle h; } Extras;\n" +
+    "void use_handle(const Handle* h);\n" +
+    "void use_extras(const Extras* e);\n" +
+    "void by_value(Handle h);\n"
+  val ast = astOf(src)
+  val r = generateBindings(ast, configOf(allowOf(["use_handle", "use_extras"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(Str.contains(r.source, "pub foreign record Handle {"), "the record holding the union: " + r.source)
+  assertTrue(Str.contains(r.source, "  data: Handle_data"), "the unnamed union is named after its member")
+  assertTrue(
+    Str.contains(r.source, "pub foreign record Handle_data {\n  storage: array[2, Long]\n}"),
+    "16 bytes aligned to 8: " + r.source
+  )
+  assertTrue(Str.contains(r.source, "pub foreign record Xlib {"), "a member record is bound too")
+  assertTrue(Str.contains(r.source, "pub foreign record Small {\n  storage: array[2, Int]\n}"), "8 bytes aligned to 4")
+  assertTrue(Str.contains(r.source, "pub extern func use_handle(h: NativePtr[Handle]): Unit"), "by pointer")
+  val byValue = generateBindings(ast, configOf(allowOf(["by_value"])))
+  assertTrue(byValue.errors.count > 0, "a record holding a union is not passed by value")
+  assertTrue(
+    Str.contains(Str.joinList("; ", byValue.errors), "holds a union"),
+    "the reason names the union: " + Str.joinList("; ", byValue.errors)
+  )
+}
+
+test "a function pointer result is an address" {
+  val src = "typedef void (*Proc)(void);\n" + "Proc get_proc(const char* name);\n"
+  val ast = astOf(src)
+  val r = generateBindings(ast, configOf(allowOf(["get_proc"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(
+    Str.contains(r.source, "pub extern func get_proc(name: NativePtr[Byte]): NativePtr[Byte] = \"get_proc\""),
+    "the result is a NativePtr[Byte]: " + r.source
+  )
+}
+
 test "static const integers (flag bits) become constants of their width" {
   val src = "typedef unsigned long long Flags64;\ntypedef unsigned int Flags32;\n" +
     "static const Flags64 Usage_Read = 0x0000000000000001;\nstatic const Flags64 Usage_Both = 0x0000000000000003;\n" +
