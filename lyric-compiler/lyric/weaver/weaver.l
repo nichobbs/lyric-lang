@@ -2549,7 +2549,7 @@ pub record GeneratedRun {
 /// lowered the aspect's own contracts into the wrapper body, so neither the
 /// contract elaborator nor a later weave touches it (D391).
 pub func wovenAnnotationName(): String {
-  "woven"
+  "__lyric_woven"
 }
 
 /// Compute the package path string from a SourceFile's package decl,
@@ -2734,7 +2734,7 @@ func oneNameList(name: in String): List[String] {
 }
 
 /// Whether `fn` is a wrapper or target an earlier weave generated: the
-/// outermost wrapper carries `@woven`, the renamed target and the inner
+/// outermost wrapper carries `@__lyric_woven`, the renamed target and the inner
 /// wrappers carry `__aspect_` in their names.
 pub func isWeaverGenerated(fn: in FunctionDecl): Bool {
   if Str.contains(fn.name, "__aspect_") {
@@ -2745,25 +2745,6 @@ pub func isWeaverGenerated(fn: in FunctionDecl): Bool {
     val segs = fn.annotations[i].name.segments
     if segs.count == 1 and segs[0] == wovenAnnotationName() {
       return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-/// Whether an aspect declared with `from` (an instantiation of a library
-/// template) matches `fn`.
-func matchedByFromInstance(items: in List[Item], fn: in FunctionDecl): Bool {
-  var i = 0
-  while i < items.count {
-    match items[i].kind {
-      case IAspect(a) -> {
-        val isFrom = match a.from { case Some(_) -> true; case None -> false }
-        if isFrom and not isOptedOut(fn, a.name) and not nameListContains(a.exceptNames, fn.name) and matchesPredicates(a.matches, fn) {
-          return true
-        }
-      }
-      case _ -> ()
     }
     i = i + 1
   }
@@ -2859,11 +2840,8 @@ func weaveItemsCore(
           }
           ai = ai + 1
         }
-        // The early weave (D391) wraps a function only for aspects declared in
-        // this package; a function a `from`-instance also matches is left to
-        // the late weave, and a wrapper or target a weave already made is
-        // never woven again.
-        if matched.count == 0 or isWeaverGenerated(fn) or (early and matchedByFromInstance(items, fn)) {
+        // A wrapper or target a weave already made is never woven again.
+        if matched.count == 0 or isWeaverGenerated(fn) {
           result.add(item)
         } else {
           val ordered = sortAspects(matched)
@@ -3058,6 +3036,8 @@ pub func weaveFile(file: in SourceFile): SourceFile {
 pub record WeaveFileResult {
   file: SourceFile
   diagnostics: List[Diagnostic]
+  /// The runs of `file.items` an early weave generated (see `WeaveResult`).
+  generated: List[GeneratedRun] = newList()
 }
 
 /// Weave a SourceFile and return any diagnostics raised during the
@@ -5050,29 +5030,6 @@ func collectBModeArgsFieldDiags(items: in List[Item]): List[Diagnostic] {
   diags
 }
 
-/// The result of `weaveFileEarly`.
-pub record WeaveEarlyResult {
-  file: SourceFile
-  diagnostics: List[Diagnostic]
-  generated: List[GeneratedRun]
-}
-
-/// The weave that runs before the type check (docs/70 section 7.1, D391): it
-/// wraps every function that only aspects declared in this package match,
-/// keeps the aspect declarations and the functions a `from`-instance also
-/// matches for the late weave (`weaveFileWithDiagsAndTemplates`), and reports
-/// the runs of items it generated so the caller can give them spans of their
-/// own. Its wrapper bodies hold the aspect's own contracts already lowered.
-pub func weaveFileEarly(
-  file: in SourceFile, typeIndex: in TypeOwnerIndex, contractsEnabled: in Bool = true
-): WeaveEarlyResult {
-  val file0 = injectWeaveImports(file)
-  val pkgPath = packagePathString(file0)
-  val noOrigins: Map[String, CollectedTemplate] = newMap()
-  val wr = weaveItemsCore(file0.items, pkgPath, file0.imports, noOrigins, typeIndex, contractsEnabled, true)
-  WeaveEarlyResult(file = file0.copy(items = wr.items), diagnostics = wr.diagnostics, generated = wr.generated)
-}
-
 /// Weave a SourceFile with cross-package aspect template resolution (#3414).
 /// Before running the standard weave, resolves `from`-instance aspects whose
 /// templates are found in `templates` by synthesising concrete `AspectDecl`
@@ -5087,6 +5044,7 @@ pub func weaveFileWithDiagsAndTemplates(
   templates: in Map[String, CollectedTemplate],
   typeIndex: in TypeOwnerIndex,
   contractsEnabled: in Bool = true,
+  early: in Bool = false,
 ): WeaveFileResult {
   val file0 = injectWeaveImports(file)
   val pkgPath = packagePathString(file0)
@@ -5099,7 +5057,7 @@ pub func weaveFileWithDiagsAndTemplates(
     rangeDiags.add(d)
   }
   val bmodeArgsDiags = collectBModeArgsFieldDiags(resolvedItems)
-  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex, contractsEnabled)
+  val wr = weaveItemsCore(resolvedItems, pkgPath, file0.imports, resolvedFI.origins, typeIndex, contractsEnabled, early)
   val allDiags: List[Diagnostic] = newList()
   var ui = 0
   while ui < unresolvedDiags.count {
@@ -5130,5 +5088,5 @@ pub func weaveFileWithDiagsAndTemplates(
     items = wr.items,
     span = file0.span
   )
-  WeaveFileResult(file = newFile, diagnostics = allDiags)
+  WeaveFileResult(file = newFile, diagnostics = allDiags, generated = wr.generated)
 }

@@ -191,6 +191,14 @@ pub record MiddleEndOptions {
   /// generic of its own package (#8417).  Other backends pass a list and
   /// ignore it.
   genericItemsOut: List[Item]
+  /// The `pub` aspect templates every package of the build declares (and
+  /// those of path-dependency template sources), collected from the files
+  /// before any is checked: the early weave resolves a `from`-instance
+  /// against them (D392). Empty on a build that has none.
+  weaveTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
+  /// Which package declares each type name, for the weaver's A0047 row-type
+  /// check (#7496); `None` builds one from the imported packages.
+  weaveTypeIndex: Option[Weaver.TypeOwnerIndex] = None
   /// Receives, on native, each specialisation of another package's
   /// value-generic record this package uses (D173 item 3), with the package
   /// that declares the record.  The bridge adds it to that package's output
@@ -2081,11 +2089,16 @@ func qualifyEnumCasePattern(p: in Pattern, sites: in Map[String, String]): Patte
   }
 }
 
-/// The early weave (D391): wrappers for the package's own aspects, each
-/// generated run given spans of its own that map back to the function it wraps.
-func pipeWeaveEarly(file: in SourceFile, opts: in MiddleEndOptions): Option[SourceFile] {
+/// The weave, before the type check (D391, D392): wrappers for every aspect,
+/// including `from`-instances of library templates (`opts.weaveTemplates`),
+/// each generated run given spans of its own that map back to the function it
+/// wraps.
+func pipeWeaveEarly(
+  file: in SourceFile, importedPkgs: in List[ImportedPackage], opts: in MiddleEndOptions
+): Option[SourceFile] {
   val enabled = if ContractElaborator.isProofRequired(file.fileAnnotations) { true } else { opts.contractsEnabled }
-  val res = Weaver.weaveFileEarly(file, Weaver.newTypeOwnerIndex(), enabled)
+  val typeIndex = match opts.weaveTypeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) }
+  val res = Weaver.weaveFileWithDiagsAndTemplates(file, opts.weaveTemplates, typeIndex, enabled, true)
   if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, res.diagnostics) {
     return None
   }
@@ -2132,10 +2145,9 @@ pub func pipeCheckAndMono(
   // derive records the spans it generates in `opts.sink.origins`, and a gate
   // given another sink would not relocate a diagnostic found in them.
   val derivedFile = deriveFileWithImports(fileIn, deriveImports, opts.sink.origins)
-  // Then the weave for aspects declared in this package, so the checker sees
-  // and checks the wrappers like code the user wrote (D391); the aspects a
-  // `from`-instance names are woven after mono, as before.
-  val file0 = match pipeWeaveEarly(derivedFile, opts) { case Some(f) -> f; case None -> return None }
+  // Then the weave, so the checker sees and checks the wrappers like code the
+  // user wrote (D391, D392).
+  val file0 = match pipeWeaveEarly(derivedFile, importedPkgs, opts) { case Some(f) -> f; case None -> return None }
   val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
   val valueSites = front.valueSites
@@ -5196,36 +5208,37 @@ func isSignedIntSuffix(sfx: in IntSuffix): Bool {
 /// `typeArgCallees` is the type checker's `typeArgCalleeSites` for `file`
 /// (`MiddleEndOptions.typeArgCalleesOut`): callees under explicit type
 /// arguments, which the await hoist leaves in their calls (#8279).
-pub func pipeWeave(
+pub func pipeFinishWeave(
   file: in SourceFile,
-  templates: in Map[String, Weaver.CollectedTemplate],
-  typeIndex: in Weaver.TypeOwnerIndex,
   pkgLabel: in String,
   files: in List[String],
   extraRecordDecls: in List[RecordDecl],
   typeArgCallees: in Map[String, Bool],
-  contractsEnabled: in Bool = true,
   wovenGenerics: in List[FunctionDecl] = newList(),
   sink: in DiagSink = printDiagnostics(),
 ): Option[SourceFile] {
-  // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
-  val effectiveContractsEnabled = if ContractElaborator.isProofRequired(file.fileAnnotations) {
-    true
-  } else {
-    contractsEnabled
-  }
-  val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(file, templates, typeIndex, effectiveContractsEnabled)
-  if gateTo(sink, pkgLabel, files, weaveRes.diagnostics) {
-    return None
-  }
+  // The aspect declarations stay through the check, which checks them, and go
+  // here: nothing after the check reads one.
+  val woven = file.copy(items = pipeWithoutAspects(file.items))
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
-  val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
+  val formatted = mapExprsInFile(woven, lowerFormatBuiltin)
   val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files, sink) {
     case Some(f) -> f
     case None -> return None
   }
   Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(specialised, extraRecordDecls, typeArgCallees))
+}
+
+func pipeWithoutAspects(items: in List[Item]): List[Item] {
+  val kept: List[Item] = newList()
+  for it in items {
+    match it.kind {
+      case IAspect(_) -> ()
+      case _ -> kept.add(it)
+    }
+  }
+  kept
 }
 
 /// The generics a woven wrapper's aspect contract can call (#7530): every
@@ -5835,16 +5848,22 @@ pub func pipeMiddleEnd(
   opts: in MiddleEndOptions,
   typeIndex: in Option[Weaver.TypeOwnerIndex],
 ): Option[SourceFile] {
-  match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, opts) {
-    case Some(monoFile) -> pipeWeave(
+  val woveOpts = opts.copy(
+    weaveTemplates = templates,
+    weaveTypeIndex = Some(
+      value = match typeIndex {
+        case Some(ix) -> ix
+        case None -> pipeTypeOwnerIndex(importedPkgs)
+      }
+    )
+  )
+  match pipeCheckAndMono(file0, importedPkgs, deriveImports, monoGenFuncs, monoIfaceDecls, monoRecordDecls, woveOpts) {
+    case Some(monoFile) -> pipeFinishWeave(
       monoFile,
-      templates,
-      match typeIndex { case Some(ix) -> ix; case None -> pipeTypeOwnerIndex(importedPkgs) },
       opts.pkgLabel,
       opts.filePaths,
       monoRecordDecls,
       opts.typeArgCalleesOut,
-      opts.contractsEnabled,
       pipeWovenGenerics(monoGenFuncs, opts.genericItemsOut),
       opts.sink
     )
