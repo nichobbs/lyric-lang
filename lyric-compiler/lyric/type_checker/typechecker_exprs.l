@@ -16800,18 +16800,7 @@ func noteUnsolvedCall(
   if unsolved.count == 0 {
     return
   }
-  var indeterminate = false
-  var ai = 0
-  while ai < args.count {
-    val ae = callArgExpr(args[ai])
-    if (ai < argTypes.count and typeIsHole(argTypes[ai])) or openSiteOfExpr(sc, ae) != "" {
-      indeterminate = true
-    }
-    if ai < argTypes.count and typeHasUnsolved(argTypes[ai]) and argIsReadOfOpenType(sc, ae) {
-      indeterminate = true
-    }
-    ai = ai + 1
-  }
+  val indeterminate = callArgsIndeterminate(sc, args, argTypes)
   val key = recordCopySiteKey(fn.span)
   if not tbl.unsolvedCallSites.containsKey(key) {
     tbl.unsolvedCallSites.add(
@@ -16824,7 +16813,93 @@ func noteUnsolvedCall(
         callKey = recordCopySiteKey(callSpan),
         span = fn.span,
         callerGenerics = sc.genericNames,
-        indeterminate = indeterminate
+        indeterminate = indeterminate,
+        ctor = false
+      )
+    )
+  }
+}
+
+// Whether the checker cannot tell if a call's arguments leave a type argument
+// open: an argument it typed `TyError`, one that passes an open binding, or a
+// read of an open-typed value.
+func callArgsIndeterminate(sc: in Scope, args: in List[CallArg], argTypes: in List[Type]): Bool {
+  var ai = 0
+  while ai < args.count {
+    val ae = callArgExpr(args[ai])
+    if (ai < argTypes.count and typeIsHole(argTypes[ai])) or openSiteOfExpr(sc, ae) != "" {
+      return true
+    }
+    if ai < argTypes.count and typeHasUnsolved(argTypes[ai]) and argIsReadOfOpenType(sc, ae) {
+      return true
+    }
+    ai = ai + 1
+  }
+  false
+}
+
+// A union-case construction (`Ok(value = 7)`) whose arguments leave a type
+// argument of its union unsolved is kept in `SymbolTable.unsolvedCallSites`
+// like an unsolved function call (D353), as a constructor site: the warning
+// W0038 until the census of CI's logs says it is safe to make it the error.
+// `caseTy` is the construction as `inferUnionCaseConstruction` typed it.
+func noteUnsolvedCaseCtor(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  caseSym: in Symbol,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  caseTy: in Type,
+  callSpan: in Span,
+): Unit {
+  if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset {
+    return
+  }
+  val fname = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return }
+    case _ -> return
+  }
+  if scopeHasName(sc, fname) {
+    return
+  }
+  val parentId = match caseSym.kind { case DKUnionCase(pid, _) -> pid; case _ -> return }
+  val decl = match parentUnionDeclOf(tbl, parentId) { case Some(d) -> d; case None -> return }
+  val gnames = unionDeclGenericNames(decl)
+  if gnames.count == 0 {
+    return
+  }
+  val targs = match caseTy { case TyUser(_, _, a) -> a; case _ -> return }
+  if targs.count != gnames.count {
+    return
+  }
+  val unsolved: List[String] = newList()
+  val selfArgs: List[Type] = newList()
+  var gi = 0
+  while gi < gnames.count {
+    if not typeIsSolution(targs[gi], sc.genericNames) {
+      unsolved.add(gnames[gi])
+    }
+    selfArgs.add(TyParam(name = gnames[gi], owner = ""))
+    gi = gi + 1
+  }
+  if unsolved.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if not tbl.unsolvedCallSites.containsKey(key) {
+    tbl.unsolvedCallSites.add(
+      key,
+      UnsolvedCallSite(
+        fname = fname,
+        unsolved = unsolved,
+        generics = gnames,
+        returnTy = TyUser(id = parentId, name = decl.name, args = selfArgs),
+        callKey = recordCopySiteKey(callSpan),
+        span = fn.span,
+        callerGenerics = sc.genericNames,
+        indeterminate = callArgsIndeterminate(sc, args, argTypes),
+        ctor = true
       )
     )
   }
@@ -16969,7 +17044,17 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
   var i = 0
   while i < keys.count {
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
-      case Some(site) -> if not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
+      case Some(site) -> if site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
+        diag.add(
+          warningDiagnostic(
+            "W0038",
+            "cannot infer type argument(s) " + quoteJoinNames(site.unsolved) + " of '" + site.fname +
+              "' from the construction's arguments or its expected type; give it an expected type " +
+              "(an annotated binding, a parameter or a declared result)",
+            site.span
+          )
+        )
+      } else if not site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
         diag.add(
           errorDiagnostic(
             "T0224",
@@ -16988,7 +17073,18 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
 }
 
 func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCallSite): Bool {
-  if tbl.genericCallTypeArgSites.containsKey(key) or tbl.openBindingSites.containsKey(site.callKey) {
+  if tbl.genericCallTypeArgSites.containsKey(key) {
+    return true
+  }
+  // A function call held by an open binding is judged by the binding's own
+  // site; a construction is fixed only once the binding got an annotation.
+  if site.ctor {
+    // A `?` operand never yields a value, so its success type stays open by
+    // design (`Err(error = e)?`); the propagate tables hold it (#8181).
+    if tbl.localBindingTypeSites.containsKey(site.callKey) or tbl.openPropagateOperands.containsKey(site.callKey) or tbl.hoistOperandTypeSites.containsKey(site.callKey) {
+      return true
+    }
+  } else if tbl.openBindingSites.containsKey(site.callKey) {
     return true
   }
   match effectiveCallExpected(tbl, site.callKey, 0) {
@@ -18385,6 +18481,7 @@ func inferExprCore(
           case Some(caseSym) -> {
             noteBareCalleeSym(tbl, fn, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
+            noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, args, argTypes, caseTy, e.span)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
             recordCtorArgOrderSite(sc, tbl, e.span, fn, args, argTypes, caseSym, caseTy)
@@ -20005,6 +20102,7 @@ func inferCaseCtorExpected(
     inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, span, true),
     expected
   )
+  noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, cargs, cargTypes, caseTy, span)
   recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
   caseTy
 }
