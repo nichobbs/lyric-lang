@@ -153,7 +153,7 @@ func codegenBuiltinType(name: in String): Option[Type] {
   }
   if name == "default" {
     val ps: List[Type] = newList()
-    return Some(value = TyFunction(params = ps, ret = tyErrorSilent(), isAsync = false))
+    return Some(value = TyFunction(params = ps, ret = tyErrorGeneric(), isAsync = false))
   }
   if name == "expect" {
     val ps: List[Type] = newList()
@@ -7375,6 +7375,46 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
     }
     case None -> None
   }
+}
+
+// The case symbol of `Union.Case` read as a value (`PluginIssueKind.BadContributions`):
+// `recv` names a union (bare, or through its package) and `name` is one of its
+// cases.  A name a local binds is a value, never the union.
+func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Symbol] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
+  }
+  match scopeTryFind(sc, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val typeName = segs[segs.count - 1]
+  var usym: Option[Symbol] = None
+  if segs.count == 1 {
+    usym = symTableTryFindOne(tbl, typeName)
+  } else {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < segs.count - 1 {
+      quals.add(segs[qi])
+      qi = qi + 1
+    }
+    usym = symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+  }
+  val uid = match usym {
+    case Some(u) -> match u.kind { case DKUnion(id, _) -> id; case _ -> return None }
+    case None -> return None
+  }
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    match cand.kind {
+      case DKUnionCase(pid, _) -> if symbolIdEq(pid, uid) {
+        return Some(value = cand)
+      }
+      case _ -> ()
+    }
+  }
+  None
 }
 
 // True when `t` can stand where a `Bool` is required.  `typeEquiv` treats a
@@ -19222,6 +19262,10 @@ func inferExprCore(
       checkQualifiedMemberRef(tbl, sc, recv, name, e.span, diag)
       match qualifiedEnumCaseType(sc, tbl, recv, name) {
         case Some(enumTy) -> return enumTy
+        case None -> ()
+      }
+      match qualifiedUnionCaseSymbol(sc, tbl, recv, name) {
+        case Some(csym) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), e.span, false)
         case None -> ()
       }
       // A package-qualified module-level `val` (`Pkg.v`, the file's own
