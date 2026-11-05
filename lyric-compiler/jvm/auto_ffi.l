@@ -1537,6 +1537,38 @@ func jvmIterWalk(ctx: in AutoFfiCtx, binaryName: in String, args: in List[GenSig
   best
 }
 
+/// Every supertype (superclass chain and interfaces, transitively) of the JVM
+/// class `binaryName` (`java/io/ByteArrayInputStream`), as dotted host names
+/// (`java.io.InputStream`), nearest first (docs/70 5.3, #8787).  None when the
+/// class or one of its supertypes cannot be loaded, so a missing classpath is
+/// "cannot say", not "no supertypes".
+pub func hostSupertypesOfExternJvm(ctx: in AutoFfiCtx, binaryName: in String): Option[List[String]] {
+  val acc: List[String] = newList()
+  val queue: List[String] = newList()
+  queue.add(binaryName)
+  var qi = 0
+  while qi < queue.count and qi < 256 {
+    val cur = queue[qi]
+    qi = qi + 1
+    val ci = match loadClass(ctx, cur) { case Some(c) -> c; case None -> return None }
+    val direct: List[String] = newList()
+    if ci.superName.length > 0 {
+      direct.add(ci.superName)
+    }
+    for iface in ci.interfaces {
+      direct.add(iface)
+    }
+    for d in direct {
+      val dotted = d.replace("/", ".")
+      if not acc.contains(dotted) {
+        acc.add(dotted)
+        queue.add(d)
+      }
+    }
+  }
+  Some(value = acc)
+}
+
 /// How the JVM class an `extern type` spells (`clrName`, a dotted or slashed
 /// binary name, with `arity` type parameters) iterates.  The element is
 /// written over `GSVar("#i")` for the i-th type parameter.  A class whose

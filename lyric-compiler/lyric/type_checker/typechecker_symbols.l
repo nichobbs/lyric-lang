@@ -262,6 +262,14 @@ pub union ExternIterElem {
 /// unchecked.
 pub interface ExternIterResolver {
   func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo]
+
+  /// Every host supertype (base classes and interfaces, transitively) of the
+  /// host type behind an `extern type`, as host names (`java.io.InputStream`,
+  /// `System.IO.Stream`), nearest first.  The checker asks it whether one
+  /// extern type is assignable to another (docs/70 5.3, #8787).  None means
+  /// the bridge cannot say (a type it cannot locate): the checker then leaves
+  /// the assignment unchecked, as it does an iteration it cannot resolve.
+  func resolveBases(clrName: in String): Option[List[String]]
 }
 
 /// How a host type iterates: what a bridge found in its metadata.
