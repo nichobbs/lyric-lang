@@ -87,15 +87,15 @@ pub func respanGenerated(
     { s: Statement -> s.copy(span = freshSpan(alloc, cause, origins)) },
     { p: Pattern -> p.copy(span = freshSpan(alloc, cause, origins)) }
   )
-  val out: List[Item] = newList()
+  val res: List[Item] = newList()
   for it in mapped.items {
     val sp = freshSpan(alloc, cause, origins)
     match it.kind {
-      case IFunc(d) -> out.add(it.copy(kind = IFunc(decl = respanFunc(d, sp)), span = sp))
-      case _ -> out.add(it.copy(span = sp))
+      case IFunc(d) -> res.add(it.copy(kind = IFunc(decl = respanFunc(d, sp)), span = sp))
+      case _ -> res.add(it.copy(span = sp))
     }
   }
-  out
+  res
 }
 
 /// `diags` with a diagnostic found in generated code (its span a key of
@@ -106,16 +106,16 @@ pub func relocateDiagnostics(origins: in Map[String, Span], diags: in List[Diagn
   if origins.count == 0 {
     return diags
   }
-  val out: List[Diagnostic] = newList()
+  val res: List[Diagnostic] = newList()
   for d in diags {
     match mapGet(origins, spanKey(d.span)) {
       case Some(cause) -> {
         if d.severity == DiagError {
-          out.add(d.copy(span = cause, message = d.message + " (in code generated for this declaration)"))
+          res.add(d.copy(span = cause, message = d.message + " (in code generated for this declaration)"))
         }
       }
-      case None -> out.add(d)
+      case None -> res.add(d)
     }
   }
-  out
+  res
 }
