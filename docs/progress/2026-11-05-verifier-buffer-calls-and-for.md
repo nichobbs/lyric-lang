@@ -1,6 +1,6 @@
 # Verifier: Std.Buffer results, `for` over sequences, nested element writes (#8394, #8753)
 
-D372. `lyric prove` now proves code that builds buffers with `Std.Buffer`,
+D378. `lyric prove` now proves code that builds buffers with `Std.Buffer`,
 iterates arrays, slices and buffers with `for`, and writes `a[i][j]`.
 
 - **Imported callees** (`driver.l` `importedCallee`, `vcgen_register.l`):

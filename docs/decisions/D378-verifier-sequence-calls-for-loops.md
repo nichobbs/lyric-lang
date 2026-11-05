@@ -1,4 +1,4 @@
-# D372 - The verifier applies Std.Buffer contracts and proves `for` over sequences (#8394, #8753)
+# D378 - The verifier applies Std.Buffer contracts and proves `for` over sequences (#8394, #8753)
 
 **Status:** shipped
 
