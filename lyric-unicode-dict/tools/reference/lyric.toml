@@ -1,0 +1,25 @@
+# The reference for Unicode.Dictionary's conformance suite (#8497, D414): runs ICU 74.2's line and
+# word break iterators over text made from the library's word lists, and writes
+# lyric-unicode-dict/tests/conformance/DictionaryBreakTest.txt.  --target native only, on a machine
+# with ICU 74.2 (pkg-config icu-uc).
+#
+#   lyric build --target native --manifest lyric-unicode-dict/tools/reference/lyric.toml -o reference
+#   ./reference            rewrite the suite
+#   ./reference --check    fail when it differs
+[package]
+name    = "Lyric.Unicode.Dictionary.Reference"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[project]
+name = "Lyric.Unicode.Dictionary.Reference"
+
+[project.packages]
+"Unicode.Dictionary.Reference" = "reference.l"
+
+[dependencies]
+"Lyric.Unicode.Dictionary" = { path = "../.." }
+
+[native.libs.icuuc]
+version    = "74.2"
+pkg_config = "icu-uc"

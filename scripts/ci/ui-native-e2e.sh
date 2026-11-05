@@ -3,7 +3,8 @@
 # ui-native-e2e.sh: the native lyric-ui host on examples/ui-customers (docs/67 G10, D203).
 #   - the host-free core (layout, protocol client, interaction) is tested with `lyric test`, Unicode's
 #     BidiCharacterTest.txt and LineBreakTest.txt run against lyric-unicode's algorithms on
-#     --target native (lyric-unicode/tests/conformance; dotnet and the JVM in ci.yml), and the
+#     --target native (lyric-unicode/tests/conformance; dotnet and the JVM in ci.yml), as do ICU
+#     74.2's dictionary breaks against lyric-unicode-dict (lyric-unicode-dict/tests/conformance), and the
 #     customers example (whose composition now lives in Customers.App) still builds and tests;
 #   - the customers example is built for --target native from its own, unchanged packages;
 #   - `--check` drives it headless with scripted window events (a link click, typing over a
@@ -48,6 +49,9 @@ echo "=== Ui.Native.Core tests ==="
 echo "=== lyric-unicode: Unicode's conformance suites (BidiCharacterTest.txt, LineBreakTest.txt 15.1) on native ==="
 "$LYRIC_BIN" build --target native --manifest lyric-unicode/tests/conformance/lyric.toml -o "$work/unicode-conformance"
 "$work/unicode-conformance"
+echo "=== lyric-unicode-dict: ICU 74.2's dictionary line and word breaks on native ==="
+"$LYRIC_BIN" build --target native --manifest lyric-unicode-dict/tests/conformance/lyric.toml -o "$work/dictionary-conformance"
+"$work/dictionary-conformance"
 echo "=== examples/ui-customers tests (composition in Customers.App) ==="
 "$LYRIC_BIN" test --manifest examples/ui-customers/lyric.toml
 

@@ -1,0 +1,22 @@
+# The conformance suite of lyric-unicode-dict (#8497, D414): DictionaryBreakTest.txt, ICU 74.2's own
+# line and word breaks over Thai, Lao, Khmer and Myanmar text, written by ../../tools/reference and
+# pinned by SHA-256 in conformance.l.  `lyric test --manifest lyric-unicode-dict/tests/conformance/lyric.toml`
+# runs it on dotnet (and with --target jvm on the JVM); `lyric build --target native` builds main.l,
+# which runs it on the native backend.
+[package]
+name    = "Lyric.Unicode.Dictionary.Conformance"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[project]
+name = "Lyric.Unicode.Dictionary.Conformance"
+
+[project.packages]
+"Unicode.Dictionary.Conformance"      = "conformance.l"
+"Unicode.Dictionary.Conformance.Main" = "main.l"
+
+[project.tests]
+"Unicode.Dictionary.ConformanceTests" = "conformance_tests.l"
+
+[dependencies]
+"Lyric.Unicode.Dictionary" = { path = "../.." }
