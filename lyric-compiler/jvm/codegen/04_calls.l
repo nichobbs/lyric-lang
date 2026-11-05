@@ -8,7 +8,6 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Console as Console
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4475,13 +4474,6 @@ pub func resolveGeneralFuncSig(
 // (D336).  Dot-named functions are keyed by their class and are not looked up
 // here.
 func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Option[JvmFuncSig] {
-  if funcName == "pick" {
-    var cs = ""
-    for k in mapKeys(ctx.externTypes) {
-      if k.startsWith("~callee~") { cs = cs + k + "=" + unwrapOr(mapGet(ctx.externTypes, k), "") + ";" }
-    }
-    Console.error("DBGJ pick pkg=" + ctx.pkgName + " key=" + recordCopySiteKey(path.span) + " callees=" + cs)
-  }
   val dp = match mapGet(ctx.externTypes, "~callee~" + recordCopySiteKey(path.span)) {
     case Some(d) -> d
     case None -> return None
