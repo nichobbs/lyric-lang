@@ -145,6 +145,6 @@ test "nested calls and a call inside a lambda argument each have their callee re
   val ctx = newTyConvCtx(cr.symbols)
   val calls = callSitesOf(file)
   val missing = calleeCensus(ctx, calls)
-  assertEqualInt(calls.count, 5, "f(1), apply(..), g(..), g(..) and the lambda's two g calls")
+  assertEqualInt(calls.count, 4, "f(1), apply(..) and the lambda's outer and inner g calls")
   assertEqualInt(missing.count, 1, "only the call through the function value f(1) has no callee yet")
 }
