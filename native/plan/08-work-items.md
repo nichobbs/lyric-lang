@@ -1,6 +1,6 @@
 # 08 — Work Items
 
-> **Status (2026-10-21):** N0-N7 shipped in substance, N8 (async, defer, spawn, process) shipped, N9.1-N9.10 (HTTP/TLS) shipped. This file lists 48 base items (N0-N7) plus N8 and N9, not 43. Paths below naming `lyric-compiler/llvm/` are superseded by D-N-014: the backend is `lyric-compiler/lyric/llvm_*.l` (`Lyric.Llvm*`). The N9.5 "BLOCKED" heading is stale: its blockers (inout/out, native `Std.Char`, multi-package native builds) all shipped and `serveTls` is `@cfg`-gated for native. Open: 3-OS and ARM native CI (N7.1 is one Ubuntu job), HPACK encode (#6237, verify), Windows (docs/67 G9), multi-threaded scheduler (G8), generic/default/async interface methods.
+> **Status (2026-10-21):** N0-N7 shipped in substance, N8 (async, defer, spawn, process) shipped, N9.1-N9.10 (HTTP/TLS) shipped. This file lists 48 base items (N0-N7) plus N8 and N9, not 43. Paths below naming `lyric-compiler/llvm/` are superseded by D-N-014: the backend is `lyric-compiler/lyric/llvm_*.l` (`Lyric.Llvm*`). The N9.5 "BLOCKED" heading is stale: its blockers (inout/out, native `Std.Char`, multi-package native builds) all shipped and `serveTls` is `@cfg`-gated for native. N7.1's 3-OS matrix shipped as `.github/workflows/native-platforms.yml` (macOS arm64 and Linux arm64 beside the Linux x86-64 job; #8419, #8563). Open: HPACK encode (#6237, verify), Windows (docs/67 G9), multi-threaded scheduler (G8), generic/default/async interface methods.
 
 Ordered task list for implementing the native backend. Each item is self-contained
 enough for an agent to execute without design decisions to make. All decisions are
@@ -1046,10 +1046,15 @@ suite, and now also compiles+runs a real `--target native` test module (pass
 and fail cases). It was split out of `compiler-self-tests-dotnet-a` into its
 own job so its ~124 sequential `clang`/ASan-linked subprocess invocations get
 a dedicated runner instead of competing for CPU with that job's other
-concurrent self-test steps. The originally envisioned dedicated
-`native-ci.yml` workflow and 3-OS matrix (`ubuntu-24.04-arm`, `macos-14`) are
-**not** shipped — deferred as a follow-up; the single-OS job is the
-production gate today.
+concurrent self-test steps. The other two legs of the 3-OS matrix shipped
+as a separate workflow, `.github/workflows/native-platforms.yml` (not
+`native-ci.yml`; ci.yml is at its size ceiling): `macos-latest` (arm64) and
+`ubuntu-24.04-arm` NativeAOT-link `lyric` from managed stage-2 DLLs built once
+on Linux x86-64, then run the native suite, the e2e programs, the graphics
+examples and goldens, the sanitizer runs, every plugin run with a native side
+(`scripts/ci/native-plugin-e2e.sh`, dotnet hosts and payloads included) and the
+Vec3 allocation bench (#8419, #8563, D320). The matrix below is the original
+plan, kept for reference.
 
 **Files to create:** `.github/workflows/native-ci.yml`
 
