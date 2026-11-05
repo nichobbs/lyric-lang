@@ -1,4 +1,4 @@
-# lyric-gpu: error scopes, device loss, frame errors and present modes (D371)
+# lyric-gpu: error scopes, device loss, frame errors and present modes (D374)
 
 docs/67 G5, #8404. Every fallible `Gpu` call runs inside wgpu's validation and out-of-memory error scopes and returns
 the error it caused as its own `Err`; `createBuffer`, `createRenderTarget`, `createSampler` and the buffer writes now

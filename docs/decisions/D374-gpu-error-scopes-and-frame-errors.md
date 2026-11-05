@@ -1,4 +1,4 @@
-# D371 - `lyric-gpu`: error scopes, device loss, frame errors and present modes
+# D374 - `lyric-gpu`: error scopes, device loss, frame errors and present modes
 
 **Status:** accepted, implemented for `--target native` (docs/67 phase G5, #8404); extends D194, D196, D197 and D317,
 supersedes D197 item 2 and D317 item 5's "`acquireFrame` keeps its behaviour"
