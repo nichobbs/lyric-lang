@@ -6849,17 +6849,17 @@ func stemOf(n: in String): String {
 }
 
 func censusCandidates(ctx: in FuncCtx, funcName: in String): String {
-  var out = ""
+  var acc = ""
   val stem = "::" + stemOf(funcName) + "("
   for k in mapKeys(ctx.externTypes) {
     if k.startsWith("~callee~") {
       match mapGet(ctx.externTypes, k) {
         case Some(v) -> if v.contains(stem) {
-          out = out + k + ";"
+          acc = acc + k + ";"
         }
         case None -> ()
       }
     }
   }
-  out
+  acc
 }
