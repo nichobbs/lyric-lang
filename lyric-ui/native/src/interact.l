@@ -373,13 +373,7 @@ pub func shownValue(b: in Box, value: in String): String {
   if not isMasked(b) {
     return value
   }
-  val sb = StringBuilder.new()
-  var i = cpCount(value)
-  while i > 0 {
-    StringBuilder.append(sb, "•")
-    i = i - 1
-  }
-  StringBuilder.toString(sb)
+  repeat("•", cpCount(value))
 }
 
 pub func selectAll(value: in String, e: in TextEdit): TextEdit {
