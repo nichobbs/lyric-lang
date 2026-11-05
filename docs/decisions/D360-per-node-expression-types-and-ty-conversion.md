@@ -32,9 +32,13 @@ vocabulary for the phase 5a interfaces that reuse `Ty`.
    `TyConvCtx.ownerSyms` maps a key to the declaring `SymbolId` and
    `ownerParams` to the parameter names in declaration order, which is the
    `TParam` index. The builder registers a binder as it enters a declaration.
-4. **Extern types** convert to `TExtern(HostTypeRef(clrName, args))`; every
+4. **Function types.** The checker's `TyFunction` carries no parameter modes, so
+   its parameters convert as `TMIn`. That is deliberate: a mode lives on a
+   declaration's parameters, which the builder reads from the declaration
+   (`TParamDecl.mode`), not from a function value's type.
+5. **Extern types** convert to `TExtern(HostTypeRef(clrName, args))`; every
    other `TyUser` is `TNamed`.
-5. **Census.** With `LYRIC_VERIFY_IR=1`, `pipeCheckFront` numbers the file
+6. **Census.** With `LYRIC_VERIFY_IR=1`, `pipeCheckFront` numbers the file
    (`Lyric.Resolve.renumberNodeIds`) before checking and, if the check had no
    errors, prints `I0002 census [<package>]: <n> of <m> expressions` and the
    first messages to stderr. Off by default, so a normal build neither numbers
