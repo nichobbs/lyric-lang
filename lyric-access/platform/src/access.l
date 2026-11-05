@@ -491,6 +491,21 @@ func attachPlatform(win: Window.Window, base: Adapter): Result[Adapter, String] 
   )
 }
 
+// windows.h declares HWND as a pointer to a complete struct, so the binding takes NativePtr[HWND__].
+@cfg(target_os = "windows")
+@library("c")
+@unsafe_ffi
+extern func memcpyToHwnd(dst: NativePtr[NativePtr[HWND__]], src: NativePtr[Long], n: Long): NativePtr[Byte] = "memcpy"
+
+@cfg(target_os = "windows")
+@unsafe_ffi
+func hwndOf(v: Long): NativePtr[HWND__] {
+  var src = v
+  var dst: NativePtr[HWND__] = nativeNullPtr()
+  val _ = memcpyToHwnd(nativeAddrOf(dst), nativeAddrOf(src), 8)
+  dst
+}
+
 @cfg(target_os = "windows")
 @unsafe_ffi
 func attachPlatform(win: Window.Window, base: Adapter): Result[Adapter, String] {
@@ -506,7 +521,7 @@ func attachPlatform(win: Window.Window, base: Adapter): Result[Adapter, String] 
   val onAction: (NativePtr[Byte]) -> Unit = { request: NativePtr[Byte] -> receive(shared, request) }
   val ka = nativeKeepCallback(onActivate)
   val kb = nativeKeepCallback(onAction)
-  val handle = accesskit_windows_subclassing_adapter_new(longToPtr(hwnd), onActivate, ka, onAction, kb)
+  val handle = accesskit_windows_subclassing_adapter_new(hwndOf(hwnd), onActivate, ka, onAction, kb)
   if handle == nativeNullPtr() {
     nativeReleaseCallback(ka)
     nativeReleaseCallback(kb)

@@ -480,6 +480,10 @@ pub foreign record accesskit_tree_id {
   bytes: array[16, Byte]
 }
 
+pub foreign record HWND__ {
+  unused: Int
+}
+
 @library("accesskit")
 pub extern func accesskit_node_add_action(node: NativePtr[Byte], action: Byte): Unit = "accesskit_node_add_action"
 
@@ -574,7 +578,7 @@ pub extern func accesskit_action_request_free(request: NativePtr[Byte]): Unit = 
 pub extern func accesskit_windows_queued_events_raise(events: NativePtr[Byte]): Unit = "accesskit_windows_queued_events_raise"
 
 @library("accesskit")
-pub extern func accesskit_windows_subclassing_adapter_new(hwnd: NativePtr[Byte], activation_handler: (NativeUserdata) -> NativePtr[Byte], activation_handler_userdata: NativePtr[Byte], action_handler: (NativePtr[Byte], NativeUserdata) -> Unit, action_handler_userdata: NativePtr[Byte]): NativePtr[Byte] = "accesskit_windows_subclassing_adapter_new"
+pub extern func accesskit_windows_subclassing_adapter_new(hwnd: NativePtr[HWND__], activation_handler: (NativeUserdata) -> NativePtr[Byte], activation_handler_userdata: NativePtr[Byte], action_handler: (NativePtr[Byte], NativeUserdata) -> Unit, action_handler_userdata: NativePtr[Byte]): NativePtr[Byte] = "accesskit_windows_subclassing_adapter_new"
 
 @library("accesskit")
 pub extern func accesskit_windows_subclassing_adapter_free(adapter: NativePtr[Byte]): Unit = "accesskit_windows_subclassing_adapter_free"
