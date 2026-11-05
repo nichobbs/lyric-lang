@@ -13,3 +13,7 @@ docs/03-decision-log.md merge=union
 # Replay recordings are LF text by format (Game.Replay.encode), and CI byte-compares a checked-in
 # recording with a fresh one, so a Windows checkout must not convert them to CRLF.
 *.replay text eol=lf
+
+# Unicode's conformance suites are pinned by SHA-256 (lyric-ui/native/tests/unicode/conformance.l), so a
+# checkout must keep their bytes exactly.
+lyric-ui/native/tests/unicode/*.txt -text

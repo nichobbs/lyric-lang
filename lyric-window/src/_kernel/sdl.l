@@ -41,6 +41,410 @@ pub foreign record SDL_Rect {
   h: Int
 }
 
+pub foreign record SDL_CommonEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+}
+
+pub foreign record SDL_DisplayEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  displayID: Int
+  data1: Int
+  data2: Int
+}
+
+pub foreign record SDL_WindowEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  data1: Int
+  data2: Int
+}
+
+pub foreign record SDL_KeyboardDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+}
+
+pub foreign record SDL_KeyboardEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  scancode: Int
+  key: Int
+  mod: array[2, Byte]
+  raw: array[2, Byte]
+  down: Byte
+  repeat: Byte
+}
+
+pub foreign record SDL_TextEditingEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  text: NativePtr[Byte]
+  start: Int
+  length: Int
+}
+
+pub foreign record SDL_TextEditingCandidatesEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  candidates: NativePtr[NativePtr[Byte]]
+  num_candidates: Int
+  selected_candidate: Int
+  horizontal: Byte
+  padding1: Byte
+  padding2: Byte
+  padding3: Byte
+}
+
+pub foreign record SDL_TextInputEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  text: NativePtr[Byte]
+}
+
+pub foreign record SDL_MouseDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+}
+
+pub foreign record SDL_MouseMotionEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  state: Int
+  x: Float
+  y: Float
+  xrel: Float
+  yrel: Float
+}
+
+pub foreign record SDL_MouseButtonEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  button: Byte
+  down: Byte
+  clicks: Byte
+  padding: Byte
+  x: Float
+  y: Float
+}
+
+pub foreign record SDL_MouseWheelEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  x: Float
+  y: Float
+  direction: Int
+  mouse_x: Float
+  mouse_y: Float
+  integer_x: Int
+  integer_y: Int
+}
+
+pub foreign record SDL_JoyDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+}
+
+pub foreign record SDL_JoyAxisEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  axis: Byte
+  padding1: Byte
+  padding2: Byte
+  padding3: Byte
+  value: array[2, Byte]
+  padding4: array[2, Byte]
+}
+
+pub foreign record SDL_JoyBallEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  ball: Byte
+  padding1: Byte
+  padding2: Byte
+  padding3: Byte
+  xrel: array[2, Byte]
+  yrel: array[2, Byte]
+}
+
+pub foreign record SDL_JoyHatEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  hat: Byte
+  value: Byte
+  padding1: Byte
+  padding2: Byte
+}
+
+pub foreign record SDL_JoyButtonEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  button: Byte
+  down: Byte
+  padding1: Byte
+  padding2: Byte
+}
+
+pub foreign record SDL_JoyBatteryEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  state: Int
+  percent: Int
+}
+
+pub foreign record SDL_GamepadDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+}
+
+pub foreign record SDL_GamepadAxisEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  axis: Byte
+  padding1: Byte
+  padding2: Byte
+  padding3: Byte
+  value: array[2, Byte]
+  padding4: array[2, Byte]
+}
+
+pub foreign record SDL_GamepadButtonEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  button: Byte
+  down: Byte
+  padding1: Byte
+  padding2: Byte
+}
+
+pub foreign record SDL_GamepadTouchpadEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  touchpad: Int
+  finger: Int
+  x: Float
+  y: Float
+  pressure: Float
+}
+
+pub foreign record SDL_GamepadSensorEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  sensor: Int
+  data: array[3, Float]
+  sensor_timestamp: Long
+}
+
+pub foreign record SDL_AudioDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  recording: Byte
+  padding1: Byte
+  padding2: Byte
+  padding3: Byte
+}
+
+pub foreign record SDL_CameraDeviceEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+}
+
+pub foreign record SDL_SensorEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  which: Int
+  data: array[6, Float]
+  sensor_timestamp: Long
+}
+
+pub foreign record SDL_QuitEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+}
+
+pub foreign record SDL_UserEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  code: Int
+  data1: NativePtr[Byte]
+  data2: NativePtr[Byte]
+}
+
+pub foreign record SDL_TouchFingerEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  touchID: Long
+  fingerID: Long
+  x: Float
+  y: Float
+  dx: Float
+  dy: Float
+  pressure: Float
+  windowID: Int
+}
+
+pub foreign record SDL_PinchFingerEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  scale: Float
+  windowID: Int
+}
+
+pub foreign record SDL_PenProximityEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  pen_state: Int
+  device_type: Int
+}
+
+pub foreign record SDL_PenTouchEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  pen_state: Int
+  x: Float
+  y: Float
+  eraser: Byte
+  down: Byte
+  device_type: Int
+}
+
+pub foreign record SDL_PenMotionEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  pen_state: Int
+  x: Float
+  y: Float
+  device_type: Int
+}
+
+pub foreign record SDL_PenButtonEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  pen_state: Int
+  x: Float
+  y: Float
+  button: Byte
+  down: Byte
+  device_type: Int
+}
+
+pub foreign record SDL_PenAxisEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  which: Int
+  pen_state: Int
+  x: Float
+  y: Float
+  axis: Int
+  value: Float
+  device_type: Int
+}
+
+pub foreign record SDL_RenderEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+}
+
+pub foreign record SDL_DropEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  windowID: Int
+  x: Float
+  y: Float
+  source: NativePtr[Byte]
+  data: NativePtr[Byte]
+}
+
+pub foreign record SDL_ClipboardEvent {
+  type_: Int
+  reserved: Int
+  timestamp: Long
+  owner: Byte
+  num_mime_types: Int
+  mime_types: NativePtr[NativePtr[Byte]]
+}
+
+/// C union of type, common (SDL_CommonEvent), display (SDL_DisplayEvent), window (SDL_WindowEvent), kdevice (SDL_KeyboardDeviceEvent), key (SDL_KeyboardEvent), edit (SDL_TextEditingEvent), edit_candidates (SDL_TextEditingCandidatesEvent), text (SDL_TextInputEvent), mdevice (SDL_MouseDeviceEvent), motion (SDL_MouseMotionEvent), button (SDL_MouseButtonEvent), wheel (SDL_MouseWheelEvent), jdevice (SDL_JoyDeviceEvent), jaxis (SDL_JoyAxisEvent), jball (SDL_JoyBallEvent), jhat (SDL_JoyHatEvent), jbutton (SDL_JoyButtonEvent), jbattery (SDL_JoyBatteryEvent), gdevice (SDL_GamepadDeviceEvent), gaxis (SDL_GamepadAxisEvent), gbutton (SDL_GamepadButtonEvent), gtouchpad (SDL_GamepadTouchpadEvent), gsensor (SDL_GamepadSensorEvent), adevice (SDL_AudioDeviceEvent), cdevice (SDL_CameraDeviceEvent), sensor (SDL_SensorEvent), quit (SDL_QuitEvent), user (SDL_UserEvent), tfinger (SDL_TouchFingerEvent), pinch (SDL_PinchFingerEvent), pproximity (SDL_PenProximityEvent), ptouch (SDL_PenTouchEvent), pmotion (SDL_PenMotionEvent), pbutton (SDL_PenButtonEvent), paxis (SDL_PenAxisEvent), render (SDL_RenderEvent), drop (SDL_DropEvent), clipboard (SDL_ClipboardEvent), padding: 128 bytes aligned to 8; write the member in use at offset 0.
+pub foreign record SDL_Event {
+  storage: array[16, Long]
+}
+
 @library("SDL3")
 pub extern func SDL_free(mem: NativePtr[Byte]): Unit = "SDL_free"
 
@@ -147,13 +551,13 @@ pub extern func SDL_SetTextInputArea(window: NativePtr[Byte], rect: NativePtr[SD
 pub extern func SDL_PumpEvents(): Unit = "SDL_PumpEvents"
 
 @library("SDL3")
-pub extern func SDL_PollEvent(event: NativePtr[Byte]): Byte = "SDL_PollEvent"
+pub extern func SDL_PollEvent(event: NativePtr[SDL_Event]): Byte = "SDL_PollEvent"
 
 @library("SDL3")
-pub extern func SDL_WaitEventTimeout(event: NativePtr[Byte], timeoutMS: Int): Byte = "SDL_WaitEventTimeout"
+pub extern func SDL_WaitEventTimeout(event: NativePtr[SDL_Event], timeoutMS: Int): Byte = "SDL_WaitEventTimeout"
 
 @library("SDL3")
-pub extern func SDL_PushEvent(event: NativePtr[Byte]): Byte = "SDL_PushEvent"
+pub extern func SDL_PushEvent(event: NativePtr[SDL_Event]): Byte = "SDL_PushEvent"
 
 @library("SDL3")
 pub extern func SDL_Init(flags: Int): Byte = "SDL_Init"

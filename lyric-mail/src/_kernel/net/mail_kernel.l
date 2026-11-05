@@ -75,9 +75,15 @@ pub extern type MemoryStream = "System.IO.MemoryStream"
 @externTarget("System.Convert.FromBase64String")
 pub func base64Decode(s: in String): slice[Byte] = ()
 
-@axiom("new System.IO.MemoryStream(byte[]) — wrap a byte array in a MemoryStream")
+// Read-only (`writable = false`): a write through the stream would change the
+// slice's elements, which nothing may do (T0157, #8730).
+@axiom("new System.IO.MemoryStream(byte[], bool writable) — a read-only MemoryStream over a byte array")
 @externTarget("System.IO.MemoryStream..ctor")
-pub func newMemoryStream(buf: in slice[Byte]): MemoryStream = ()
+func newMemoryStreamOver(buf: in slice[Byte], writable: in Bool): MemoryStream = ()
+
+pub func newMemoryStream(buf: in slice[Byte]): MemoryStream {
+  newMemoryStreamOver(buf, false)
+}
 
 @axiom("new System.Net.Mail.Attachment(Stream, String, String) — create MIME attachment from stream with filename and content-type")
 @externTarget("System.Net.Mail.Attachment..ctor")

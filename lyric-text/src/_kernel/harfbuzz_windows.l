@@ -11,6 +11,27 @@ pub func toCLong(x: in Long): Int = x.toInt()
 /// A C `long` or `unsigned long` of this target as a `Long`.
 pub func fromCLong(x: in Int): Long = x.toLong()
 
+/// C union of u32, i32, u16, i16, u8, i8: 4 bytes aligned to 4; write the member in use at offset 0.
+pub foreign record hb_var_int_t {
+  storage: array[1, Int]
+}
+
+pub foreign record hb_glyph_info_t {
+  codepoint: Int
+  mask: Int
+  cluster: Int
+  var1: hb_var_int_t
+  var2: hb_var_int_t
+}
+
+pub foreign record hb_glyph_position_t {
+  x_advance: Int
+  y_advance: Int
+  x_offset: Int
+  y_offset: Int
+  var_: hb_var_int_t
+}
+
 pub foreign record hb_feature_t {
   tag: Int
   value: Int
@@ -90,6 +111,11 @@ pub foreign record FT_SizeRec {
   internal_: NativePtr[Byte]
 }
 
+/// C union of value, pointer: 8 bytes aligned to 8; write the member in use at offset 0.
+pub foreign record FT_StreamDesc {
+  storage: array[1, Long]
+}
+
 pub foreign record FT_ListNodeRec {
   prev: NativePtr[FT_ListNodeRec]
   next: NativePtr[FT_ListNodeRec]
@@ -157,10 +183,10 @@ pub extern func hb_buffer_add_utf8(buffer: NativePtr[Byte], text: NativePtr[Byte
 pub extern func hb_buffer_get_length(buffer: NativePtr[Byte]): Int = "hb_buffer_get_length"
 
 @library("harfbuzz")
-pub extern func hb_buffer_get_glyph_infos(buffer: NativePtr[Byte], length: NativePtr[Int]): NativePtr[Byte] = "hb_buffer_get_glyph_infos"
+pub extern func hb_buffer_get_glyph_infos(buffer: NativePtr[Byte], length: NativePtr[Int]): NativePtr[hb_glyph_info_t] = "hb_buffer_get_glyph_infos"
 
 @library("harfbuzz")
-pub extern func hb_buffer_get_glyph_positions(buffer: NativePtr[Byte], length: NativePtr[Int]): NativePtr[Byte] = "hb_buffer_get_glyph_positions"
+pub extern func hb_buffer_get_glyph_positions(buffer: NativePtr[Byte], length: NativePtr[Int]): NativePtr[hb_glyph_position_t] = "hb_buffer_get_glyph_positions"
 
 @library("harfbuzz")
 pub extern func hb_shape(font: NativePtr[Byte], buffer: NativePtr[Byte], features: NativePtr[hb_feature_t], num_features: Int): Unit = "hb_shape"

@@ -1211,8 +1211,10 @@ func readToEnd(
     } else if n == 0 {
       awaitReady(selector, key, OP_READ, deadlineNanos)
     } else {
-      val array: slice[Byte] = buf.array()
-      sink.write(array, 0, n)
+      // The buffer's backing array goes straight to the sink: the next
+      // `channel.read` writes it in place, so no `slice[Byte]` binding may
+      // hold it (#8730).
+      sink.write(buf.array(), 0, n)
     }
   }
   sink.toByteArray()

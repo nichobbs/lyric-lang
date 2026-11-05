@@ -1655,6 +1655,7 @@ func dotOwnerIsAlias(tbl: in SymbolTable, name: in String): Bool {
 func isCodegenBuiltinName(name: in String): Bool {
   name == "println" or name == "print" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
     name == "assert" or
+    name == "hashCode" or
     name == "format1" or
     name == "format2" or
     name == "format3" or
@@ -1682,8 +1683,7 @@ func isReservedBuiltinFuncName(name: in String): Bool {
   // intercepted by the backends, so the one list lives in
   // `isCodegenBuiltinName`; the names below are backend intrinsics with no
   // polymorphic checker signature (#7682).
-  isCodegenBuiltinName(name) or name == "hashCode" or name == "__lyric_protected_wait" or
-    name == "__lyric_protected_notify" or
+  isCodegenBuiltinName(name) or name == "__lyric_protected_wait" or name == "__lyric_protected_notify" or
     name == "externAsObject"
 }
 
