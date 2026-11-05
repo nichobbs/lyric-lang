@@ -1,0 +1,19 @@
+# The generator of Unicode.Data's tables (#8497): reads the Unicode Character Database files pinned
+# in lyric-unicode/ucd/ and rewrites the four table lines of lyric-unicode/src/unicode_data.l.
+#
+#   lyric run --manifest lyric-unicode/tools/generate/lyric.toml            rewrite the tables
+#   lyric run --manifest lyric-unicode/tools/generate/lyric.toml -- --check  fail when they differ
+#   lyric test --manifest lyric-unicode/tools/generate/lyric.toml           its parser and rewriter tests
+[package]
+name    = "Lyric.Unicode.Generate"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[project]
+name = "Lyric.Unicode.Generate"
+
+[project.packages]
+"Unicode.Generate" = "generate.l"
+
+[project.tests]
+"Unicode.GenerateTests" = "tests/generate_tests.l"
