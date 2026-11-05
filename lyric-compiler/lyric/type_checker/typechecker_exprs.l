@@ -17097,6 +17097,14 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
     if tbl.localBindingTypeSites.containsKey(site.callKey) or tbl.openPropagateOperands.containsKey(site.callKey) or tbl.hoistOperandTypeSites.containsKey(site.callKey) {
       return true
     }
+    // An element of an open tuple is fixed once its uses fixed the element's
+    // type (the tuple's annotation carries it, D380).
+    if tbl.openBindingSites.containsKey(site.callKey) {
+      match openSiteResolvedType(tbl, site.callKey) {
+        case Some(_) -> return true
+        case None -> ()
+      }
+    }
   } else if tbl.openBindingSites.containsKey(site.callKey) {
     return true
   }
@@ -17518,6 +17526,11 @@ func inferExprCore(
         k = k + 1
       }
       recordListLiteralType(sc, tbl, e, TySlice(element = joined))
+      var ni = 0
+      while ni < elems.count {
+        noteCallExpected(tbl, elems[ni], joined)
+        ni = ni + 1
+      }
       val joinedAt: List[Type] = newList()
       var ji = 0
       while ji < elems.count {

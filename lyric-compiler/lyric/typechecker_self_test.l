@@ -4868,13 +4868,13 @@ test "the join of a try body and its catch fixes a construction (D380)" {
 
 test "contexts that already fix a construction are not W0038 (D380)" {
   assertEqualInt(
-    unsolvedCtorWarnings("func f(c: in Bool): Int {\n  val t = (Ok2(value = 2), Err2(error = \"abc\"))\n  1\n}\n"),
+    unsolvedCtorWarnings("func pair(t: in (Res[Int, String], Res[Int, String])): Int { 1 }\nfunc f(c: in Bool): Int {\n  val t = (Ok2(value = 2), Err2(error = \"abc\"))\n  pair(t)\n}\n"),
     0,
     "tuple elements"
   )
   assertEqualInt(
     unsolvedCtorWarnings(
-      "func f(c: in Bool): Int {\n  val l = [Ok2(value = 1), Err2(error = \"ab\"), Ok2(value = 3)]\n  1\n}\n"
+      "func f(c: in Bool): Int {\n  val l = [Ok2(value = 1), Err2(error = \"ab\"), Ok2(value = 3)]\n  l.count\n}\n"
     ),
     0,
     "list literal"
