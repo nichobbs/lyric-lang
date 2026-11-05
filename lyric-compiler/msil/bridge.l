@@ -1532,7 +1532,7 @@ impl ExternIterResolver for MsilHostIterIndex {
   }
 
   func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
-    val key = clrName + "#" + member + "#" + toString(argc) + "#" + (if isProperty { "p" } else { "m" })
+    val key = externMemberCacheKey(clrName, member, argc, isProperty)
     if not self.membersAnswered.containsKey(key) {
       self.membersAnswered.add(key, true)
       ensureMsilHostIterIndex(self)

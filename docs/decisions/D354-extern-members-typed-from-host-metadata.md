@@ -75,4 +75,4 @@ logs of this change are the census of the ecosystem libraries, tests and
 programs). The three named classes above are what typing leaves.
 
 The native bridge still has no resolver, so a native build keeps the unchecked
-marker for every extern member (docs/70 phase 3a item 3).
+marker for every extern member (docs/70 phase 3a item 3, tracked in #8825).

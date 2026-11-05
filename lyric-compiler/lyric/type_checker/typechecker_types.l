@@ -166,6 +166,16 @@ pub func tyErrorUnresolved(): Type {
   TyError(diag = DiagId(index = -3))
 }
 
+/// True for a `TyError` the checker leaves unchecked on purpose and says so
+/// (`tyErrorHost`, `tyErrorGeneric`, `tyErrorUnresolved`: a negative `DiagId`),
+/// which the I0001 gate does not count.
+pub func isNamedUncheckedTyError(t: in Type): Bool {
+  match t {
+    case TyError(d) -> d.index < 0
+    case _ -> false
+  }
+}
+
 /// True for a `TyError` that records no diagnostic.
 pub func isSilentTyError(t: in Type): Bool {
   match t {

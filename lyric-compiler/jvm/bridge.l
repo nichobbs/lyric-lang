@@ -636,6 +636,8 @@ func jvmMemberTypeOfDesc(desc: in String): Option[ExternMemberType] {
     Some(value = EMTType(elem = EIEPrim(name = "Bool")))
   } else if desc == "C" {
     Some(value = EMTType(elem = EIEPrim(name = "Char")))
+  } else if desc == "B" {
+    Some(value = EMTType(elem = EIEPrim(name = "Byte")))
   } else if desc == "D" {
     Some(value = EMTType(elem = EIEPrim(name = "Double")))
   } else if desc == "Ljava/lang/String;" {
@@ -676,7 +678,7 @@ impl ExternIterResolver for JvmHostIterIndex {
   }
 
   func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
-    val key = clrName + "#" + member + "#" + toString(argc) + "#" + (if isProperty { "p" } else { "m" })
+    val key = externMemberCacheKey(clrName, member, argc, isProperty)
     if not self.membersAnswered.containsKey(key) {
       self.membersAnswered.add(key, true)
       match hostMemberDescsOfExternJvm(self.ctx, externHostBase(clrName), member, argc, isProperty) {

@@ -15115,6 +15115,31 @@ test "count on a slice is W0042, length is the slice's size" {
   )
 }
 
+test "overloads of one arity that disagree on the result leave the member unchecked" {
+  val int1: List[ExternMemberType] = newList()
+  int1.add(EMTType(elem = EIEPrim(name = "Int")))
+  int1.add(EMTType(elem = EIEPrim(name = "Int")))
+  assertTrue(isSome(externMemberAgreed(int1)), "overloads that agree are one answer")
+  val mixed: List[ExternMemberType] = newList()
+  mixed.add(EMTType(elem = EIEPrim(name = "Int")))
+  mixed.add(EMTType(elem = EIEPrim(name = "Long")))
+  assertTrue(isNone(externMemberAgreed(mixed)), "Int and Long disagree")
+  val voidAndInt: List[ExternMemberType] = newList()
+  voidAndInt.add(EMTVoid)
+  voidAndInt.add(EMTType(elem = EIEPrim(name = "Int")))
+  assertTrue(isNone(externMemberAgreed(voidAndInt)), "void and Int disagree")
+  val none: List[ExternMemberType] = newList()
+  assertTrue(isNone(externMemberAgreed(none)), "no candidate is no answer")
+  assertTrue(
+    externMemberCacheKey("A", "b#c", 1, true) != externMemberCacheKey("A#b", "c", 1, true),
+    "a # in a name does not collide keys"
+  )
+  assertTrue(isNamedUncheckedTyError(tyErrorHost()), "host is named")
+  assertTrue(isNamedUncheckedTyError(tyErrorGeneric()), "generic is named")
+  assertTrue(isNamedUncheckedTyError(tyErrorUnresolved()), "unresolved is named")
+  assertTrue(not isNamedUncheckedTyError(tyErrorSilent()), "silent is not named")
+}
+
 test "a host member the bridge cannot say is unchecked and not silent" {
   val head = externHierarchyHead()
   for body in ["b.mystery()", "b.proxy()", "b.nothing", "b.name"] {

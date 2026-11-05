@@ -290,6 +290,12 @@ pub union ExternMemberType {
   case EMTType(elem: ExternIterElem)
 }
 
+/// The cache key of one member question, for a bridge's answer cache.  The
+/// unit separator cannot occur in a host type or member name.
+pub func externMemberCacheKey(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): String {
+  clrName + "\u{001f}" + member + "\u{001f}" + toString(argc) + "\u{001f}" + (if isProperty { "p" } else { "m" })
+}
+
 /// The one result every overload of a host member agrees on, or None when
 /// there is no candidate or they differ (the bridge cannot say).
 pub func externMemberAgreed(results: in List[ExternMemberType]): Option[ExternMemberType] {
