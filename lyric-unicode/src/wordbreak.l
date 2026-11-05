@@ -238,8 +238,9 @@ pub func nextWordEnd(cps: in slice[Int], position: in Int): Int {
   if position >= n {
     return n
   }
+  val p = if position < 0 { 0 } else { position }
   val bounds = boundariesIn(cps, 0, n)
-  var start = position
+  var start = p
   while start > 0 and not bounds[start] {
     start = start - 1
   }
@@ -248,7 +249,7 @@ pub func nextWordEnd(cps: in slice[Int], position: in Int): Int {
     while stop < n and not bounds[stop] {
       stop = stop + 1
     }
-    if stop > position and isWordLike(cps, start, stop) {
+    if stop > p and isWordLike(cps, start, stop) {
       return stop
     }
     start = stop

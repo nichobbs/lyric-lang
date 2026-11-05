@@ -104,6 +104,8 @@ test "a caret inside a word moves to that word's edges" {
   assertEqualInt(WordBreak.previousWordStart(cps, 8), 6, "to the start of beta")
   assertEqualInt(WordBreak.previousWordStart(cps, 6), 0, "from the start of beta to the start of alpha")
   assertEqualInt(WordBreak.nextWordEnd(cps, 5), 10, "from the end of alpha to the end of beta")
+  assertEqualInt(WordBreak.nextWordEnd(cps, -3), 5, "a position before the text counts as its start")
+  assertEqualInt(WordBreak.previousWordStart(cps, 99), 6, "and one past its end as its end")
 }
 
 test "an empty text has no boundaries to move to" {
