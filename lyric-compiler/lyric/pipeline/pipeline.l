@@ -240,7 +240,7 @@ pub record MiddleEndOptions {
   /// specialised copy carries the declaring package's spans, which this
   /// package's own check never saw (#7868).
   foreignRecvClasses: Bool = false
-  /// Leave the type checker's warnings unreported: a dependency compiled
+  /// Leave the type checker's warnings and W0002 unreported: a dependency compiled
   /// from source into a consumer's build was already reported when the
   /// dependency itself was built.
   quietWarnings: Bool = false
@@ -1934,8 +1934,11 @@ pub func pipeCheckFront(
 
   // W0002 for every contract quantifier the elaborator will drop (#7228).
   // In a `@proof_required` file a quantifier is an obligation for `lyric
-  // prove`, so the warning would only repeat what the annotation says.
-  if not vlIsProofRequired(mcRes.level) {
+  // prove`, so the warning would only repeat what the annotation says.  A
+  // dependency compiled from source into a consumer's build (`quietWarnings`)
+  // was warned about when it was built itself (`Std.Buffer`'s element
+  // clauses, #8753).
+  if not vlIsProofRequired(mcRes.level) and not opts.quietWarnings {
     val _ = gateTo(sink, opts.pkgLabel, opts.filePaths, runtimeQuantifierWarnings(checked))
   }
   Some(value = CheckFront(tcRes = tcRes, valueSites = valueSites, checked = checked))

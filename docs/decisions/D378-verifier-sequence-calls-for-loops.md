@@ -33,12 +33,14 @@ parameters, which no `Std.Buffer` function is.
    build skips a quantified conjunct (W0002) and still checks the lengths.
    `result` is a stable buffer receiver for T0174, since the contract
    elaborator binds it to a local.
-3. **Unknown element types fail closed on writes.** A sort does not show a
-   range subtype, so a binding a call initialises has an unknown element type
-   (`SortInfo.elem` empty), and an element write of a number into it fails
-   closed (`V0026`) instead of omitting the range check the runtime makes. An
-   annotation on the binding gives the type. This also closes the same gap for
-   a local generic or non-generic callee returning an array of a range type.
+3. **Unknown element types fail closed on array writes.** A sort does not
+   show a range subtype, so an array binding a call initialises has an
+   unknown element type (`SortInfo.elem` empty), and an element write of a
+   number into it fails closed (`V0026`) instead of omitting the range check
+   the runtime makes. An annotation on the binding gives the type. This
+   closes a gap that predates this change, for any callee returning an array
+   of a range type. A buffer is exempt: its elements are `Plain`, which no
+   range subtype is (T0173).
 4. **`for` is a `while` over a hidden index.** `for x in a { invariant: ι; S }`
    over an array, slice or buffer is `val s = a; var k = 0; while k < s.length
    { invariant: 0 <= k <= s.length and ι; val x = s[k]; S; k = k + 1 }`, with

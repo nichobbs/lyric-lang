@@ -4448,22 +4448,31 @@ test "a buffer Std.Buffer returns is the buffer its contract describes (#8753)" 
     "func g(s: in slice[Int]): Int\n  ensures: result == s.length\n{\n  val b = fromSlice(s)\n  b.length\n}\n",
     "from-slice-length"
   )
-  // A write to the returned buffer is a write to that value alone.
+  // A write to the returned buffer is a write to that value alone.  A
+  // buffer's elements are `Plain`, never a range subtype (T0173), so the
+  // binding needs no annotation.
   assertBufferDischarged(
-    sig + "  ensures: result == 5\n{\n  var b: buffer[Int] = grow(x, 3, 0)\n  b[0] = 5\n  b[0] + x[0] * 0\n}\n",
-    "write-to-an-annotated-result"
+    sig + "  ensures: result == 5\n{\n  var b = grow(x, 3, 0)\n  b[0] = 5\n  b[0] + x[0] * 0\n}\n",
+    "write-to-a-result"
   )
+}
+
+test "an element write to an array a call returns needs the array's type (#8753)" {
   // Unannotated, the element type may be a range type the call's sorts do
   // not show, whose check on the store the verifier cannot state.
-  val unknown = proveWithBuffer(
-    "type Small = Int range 0 ..= 10\nfunc g(s: in Small): Int\n  ensures: true\n{\n  var b = filled(3, s)\n  b[0] = 99\n  0\n}\n"
+  val mk = "type Small = Int range 0 ..= 10\nfunc mk(s: in Small): array[2, Small]\n  ensures: true\n{\n  [s, s]\n}\n"
+  assertFailsClosed(
+    mk + "func g(s: in Small): Int\n  ensures: true\n{\n  var a = mk(s)\n  a[0] = 99\n  0\n}\n",
+    "V0026",
+    "unknown-element-type"
   )
-  assertTrue(summaryHasDiagCode(unknown, "V0026"), "unknown-element-type: V0026")
-  assertTrue(summaryHasErrorDiag(unknown), "unknown-element-type: the proof fails closed")
-  assertBufferRefuted(
-    "type Small = Int range 0 ..= 10\nfunc g(s: in Small): Int\n  ensures: true\n{\n  var b: buffer[Small] = filled(3, s)\n" +
-      "  b[0] = 99\n  0\n}\n",
+  assertRefuted(
+    mk + "func g(s: in Small): Int\n  ensures: true\n{\n  var a: array[2, Small] = mk(s)\n  a[0] = 99\n  0\n}\n",
     "annotated-range-element"
+  )
+  assertDischarged(
+    mk + "func g(s: in Small): Int\n  ensures: true\n{\n  var a: array[2, Small] = mk(s)\n  a[0] = 9\n  0\n}\n",
+    "annotated-in-range"
   )
 }
 
@@ -4481,9 +4490,9 @@ test "for over an array, slice or buffer is a loop over a hidden index (#8394)" 
     "slice-element-range"
   )
   assertDischarged(
-    small + "func f(x: in buffer[Small]): Int\n  ensures: result >= 0\n{\n  var t = 0\n  for v in x\n" +
-      "    invariant: t >= 0\n  {\n    t = t + v\n  }\n  t\n}\n",
-    "buffer-sum-non-negative"
+    small + "func f(x: in array[3, Small]): Int\n  ensures: result >= 0\n{\n  var t = 0\n  for v in x\n" +
+      "    invariant: t >= 0\n  {\n    t = t + v.value\n  }\n  t\n}\n",
+    "array-sum-non-negative"
   )
   assertRefuted(
     "func f(x: in buffer[Int]): Int\n  ensures: result >= 0\n{\n  var t = 0\n  for v in x\n" +
@@ -4515,7 +4524,7 @@ test "for over an array, slice or buffer is a loop over a hidden index (#8394)" 
   // The hidden index's step never overflows: it stays below the length.
   assertCheckedDischarged(
     small +
-      "func f(x: in buffer[Small]): Int\n{\n  for v in x\n    invariant: true\n  {\n    assert(v <= 10)\n  }\n  0\n}\n",
+      "func f(x: in array[3, Small]): Int\n{\n  for v in x\n    invariant: true\n  {\n    assert(v <= 10)\n  }\n  0\n}\n",
     "checked-step"
   )
   assertFailsClosed(

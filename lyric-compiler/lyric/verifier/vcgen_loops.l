@@ -212,9 +212,10 @@ func withoutParens(e: in Expr): Expr {
 // with that element replaced, a nested write storing the changed inner
 // array back into the outer one (#8394).  A buffer's copies are values of
 // their own (docs/01 §2.7), so the store changes this variable alone.  An
-// element type the verifier does not know (a binding a call initialises)
-// may be a range type whose check it cannot state, so a write of a number
-// into one fails closed; an annotation on the binding gives it (#8753).
+// array element type the verifier does not know (a binding a call
+// initialises) may be a range type whose check it cannot state, so a write
+// of a number into one fails closed; an annotation on the binding gives it
+// (#8753).
 func wpAssignElement(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -252,7 +253,10 @@ func wpAssignElement(
   }
   val elemInfo = levelInfo
   val innermost = levels[levels.count - 1]
-  if not elementTypeKnown(innermost) and sortMayCarryRange(elemInfo.sort) {
+  // A buffer's elements are `Plain`, which no range subtype is (T0173), so
+  // only an array's element type can hide a range.
+  val inBuffer = match info.sort { case SBuffer(_) -> true; case _ -> false }
+  if not inBuffer and not elementTypeKnown(innermost) and sortMayCarryRange(elemInfo.sort) {
     return unsupportedWp(
       "an element write to '" + name +
         "', whose element type the verifier does not know (annotate the binding with its type)",
