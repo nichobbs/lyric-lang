@@ -8,6 +8,7 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Console as CensusConsole
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4464,7 +4465,12 @@ pub func resolveGeneralFuncSig(
     case Some(_) -> return sited
     case None -> ()
   }
-  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
+  val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
+  match byName {
+    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count))
+    case None -> ()
+  }
+  byName
 }
 
 // The signature of the function the checker resolved the call at `path` to
