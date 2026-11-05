@@ -51,3 +51,19 @@ slice has to settle before the weave can move ahead of the checker:
   `__aspect_target` function.
 - `from`-instance aspects (S3) and `specialiseWovenContracts` for woven
   generics are unchanged.
+
+## Effects found by the census
+
+- **Aspect contracts are checked in the receiving package.** An aspect's own
+  `requires:`/`ensures:` now go through the checker as part of the wrapper, so
+  the existing rule that a contract clause calls only `@pure` functions (T0133)
+  applies to them; no library or example in the repository was affected.
+- **D304's M0009 no longer applies to local aspects.** A generic call in a local
+  aspect's contract is specialised by ordinary mono with the unsigned and
+  equality re-checks, which is what D304 said removing the restriction needed.
+  The reject case `woven_contract_unsigned_generic` is replaced by a runtime
+  case in `aspect_weave_self_test.l` (a `ULong` compared unsigned, both
+  targets). A contract of a `from`-instance aspect still gets M0009 until S3.
+- Advice bodies are type-checked at the woven function: an error in one is
+  reported there with "(in code generated for this declaration)", where it was
+  accepted before.
