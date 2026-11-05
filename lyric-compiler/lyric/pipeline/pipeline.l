@@ -2090,6 +2090,7 @@ func pipeWeaveEarly(file: in SourceFile, opts: in MiddleEndOptions): Option[Sour
     return Some(value = res.file)
   }
   val base = Expand.generatedSpanBase(res.file)
+  // The runs are in item order and do not overlap, so one cursor walks them.
   val items: List[Item] = newList()
   var cursor = 0
   for run in res.generated {
@@ -2102,7 +2103,7 @@ func pipeWeaveEarly(file: in SourceFile, opts: in MiddleEndOptions): Option[Sour
       batch.add(res.file.items[cursor])
       cursor = cursor + 1
     }
-    for g in Expand.respanGenerated(res.file, batch, base, run.cause, opts.sink.origins) {
+    for g in Expand.respanGenerated(res.file, batch, base, run.cause, opts.sink.origins, true) {
       items.add(g)
     }
   }

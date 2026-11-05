@@ -67,3 +67,14 @@ slice has to settle before the weave can move ahead of the checker:
 - Advice bodies are type-checked at the woven function: an error in one is
   reported there with "(in code generated for this declaration)", where it was
   accepted before.
+
+## Line tables
+
+Generated items take unique spans (D390). For the weave they keep the source
+position of a node that has one (an advice statement copied from the aspect
+keeps its own line, so a Java stack trace and a line breakpoint land on the
+advice), and a synthesised node takes the woven function's line with column 0.
+`Lyric.Lexer.isGeneratedSpan` reads that as "no line-table row", and the JVM
+statement lowering skips it, so `assert-jvm-line-numbers.sh` still sees exactly
+the advice line in a wrapper (#6285). The checker still records sites for the
+node because its line is above 0.

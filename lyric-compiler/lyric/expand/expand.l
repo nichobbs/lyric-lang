@@ -49,13 +49,22 @@ pub func generatedSpanKey(sp: in Span): String {
 }
 
 /// A fresh span for a node generated because of the declaration at `cause`;
-/// records `cause` as its origin.
-func freshSpan(base: in Int, cause: in Span, origins: in Map[String, Span]): Span {
+/// records `cause` as its origin. With `keepSourceLines` a node that has a
+/// source position of its own (advice copied from an aspect) keeps its line,
+/// column and file, and a node without one takes the cause's line with column
+/// 0, which `isGeneratedSpan` reads as "no line-table row". Without it every
+/// node takes the cause's line and column.
+func freshSpan(
+  base: in Int, like: in Span, cause: in Span, origins: in Map[String, Span], keepSourceLines: in Bool
+): Span {
   val n = base + 2 * origins.count
-  val fid = cause.startPos.fileId
+  val own = keepSourceLines and like.startPos.line > 0
+  val src = if own { like } else { cause }
+  val col = if keepSourceLines and not own { 0 } else { src.startPos.column }
+  val fid = src.startPos.fileId
   val sp = Span(
-    startPos = Position(offset = n, line = cause.startPos.line, column = cause.startPos.column, fileId = fid),
-    endPos = Position(offset = n + 1, line = cause.startPos.line, column = cause.startPos.column, fileId = fid)
+    startPos = Position(offset = n, line = src.startPos.line, column = col, fileId = fid),
+    endPos = Position(offset = n + 1, line = src.startPos.line, column = col, fileId = fid)
   )
   origins.add(spanKey(sp), cause)
   sp
@@ -75,16 +84,17 @@ pub func respanGenerated(
   base: in Int,
   cause: in Span,
   origins: in Map[String, Span],
+  keepSourceLines: in Bool = false,
 ): List[Item] {
   val mapped = mapFileNodes(
     file.copy(items = items),
-    { e: Expr -> e.copy(span = freshSpan(base, cause, origins)) },
-    { s: Statement -> s.copy(span = freshSpan(base, cause, origins)) },
-    { p: Pattern -> p.copy(span = freshSpan(base, cause, origins)) }
+    { e: Expr -> e.copy(span = freshSpan(base, e.span, cause, origins, keepSourceLines)) },
+    { s: Statement -> s.copy(span = freshSpan(base, s.span, cause, origins, keepSourceLines)) },
+    { p: Pattern -> p.copy(span = freshSpan(base, p.span, cause, origins, keepSourceLines)) }
   )
   val res: List[Item] = newList()
   for it in mapped.items {
-    val sp = freshSpan(base, cause, origins)
+    val sp = freshSpan(base, it.span, cause, origins, keepSourceLines)
     match it.kind {
       case IFunc(d) -> res.add(it.copy(kind = IFunc(decl = respanFunc(d, sp)), span = sp))
       case _ -> res.add(it.copy(span = sp))

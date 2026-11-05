@@ -143,6 +143,16 @@ pub func isNoSourceSpan(s: in Span): Bool {
   s.startPos.line <= 0
 }
 
+/// Whether `s` marks code a declaration-expansion pass generated (derives,
+/// the weaver; docs/70 section 7.1): it carries the line of the declaration
+/// that caused it, so the checker records the sites it needs, but column 0,
+/// which no real position has, so a line table gets no row for it.
+@pure
+@stable(since = "0.1")
+pub func isGeneratedSpan(s: in Span): Bool {
+  s.startPos.line > 0 and s.startPos.column == 0
+}
+
 @pure
 @stable(since = "0.1")
 pub func spanLength(s: in Span): Int {

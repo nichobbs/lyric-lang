@@ -2719,8 +2719,6 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
   diags
 }
 
-/// Core weave loop.  Used by both `weaveItems` (drops diagnostics, for
-/// back-compat) and `weaveItemsWithDiags` / `weaveFileWithDiags`.
 func wovenAnnotations(sp: in Span): List[Annotation] {
   val anns: List[Annotation] = newList()
   anns.add(
@@ -2772,6 +2770,8 @@ func matchedByFromInstance(items: in List[Item], fn: in FunctionDecl): Bool {
   false
 }
 
+/// Core weave loop.  Used by both `weaveItems` (drops diagnostics, for
+/// back-compat) and `weaveItemsWithDiags` / `weaveFileWithDiags`.
 func weaveItemsCore(
   items: in List[Item],
   packagePath: in String,
