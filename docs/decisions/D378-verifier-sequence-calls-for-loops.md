@@ -28,8 +28,9 @@ parameters, which no `Std.Buffer` function is.
    `buffer[T]` is not applied where `buffer` names another type in the proved
    file's scope. This is the route #8753 preferred over verifier builtins: the
    facts live with the functions.
-2. **`Std.Buffer` states its elements.** `filled`, `grow` and `truncate`
-   gain `forall` `ensures:` clauses for their elements. A runtime-checked
+2. **`Std.Buffer` states its elements.** Every function gains `forall`
+   `ensures:` clauses for its result's elements; `fromSlice`, `view` and
+   `toSlice` can state theirs because a slice's elements never change (D400). A runtime-checked
    build skips a quantified conjunct (W0002) and still checks the lengths.
    `result` is a stable buffer receiver for T0174, since the contract
    elaborator binds it to a local.

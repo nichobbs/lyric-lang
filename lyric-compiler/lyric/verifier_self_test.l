@@ -4381,8 +4381,10 @@ func bufferLibScope(): PackageScope {
       "  ensures: forall (i: Int) where 0 <= i and i < count implies result[i] == value\n" +
       "{\n  val items: List[T] = newListWithCapacity(count)\n  items.__lyric_buffer_from_list()\n}\n" +
       "pub func fromSlice[T](items: in slice[T]): buffer[T]\n  where T: Plain\n  ensures: result.length == items.length\n" +
+      "  ensures: forall (i: Int) where 0 <= i and i < items.length implies result[i] == items[i]\n" +
       "{\n  val dst: List[T] = newListWithCapacity(items.length)\n  dst.__lyric_buffer_from_list()\n}\n" +
       "pub func toSlice[T](b: in buffer[T]): slice[T]\n  where T: Plain\n  ensures: result.length == b.length\n" +
+      "  ensures: forall (i: Int) where 0 <= i and i < b.length implies result[i] == b[i]\n" +
       "{\n  view(b, 0, b.length)\n}\n" +
       "pub func grow[T](b: in buffer[T], length: in Int, fill: in T): buffer[T]\n  where T: Plain\n" +
       "  requires: length >= b.length\n  ensures: result.length == length\n" +
@@ -4447,6 +4449,16 @@ test "a buffer Std.Buffer returns is the buffer its contract describes (#8753)" 
   assertBufferDischarged(
     "func g(s: in slice[Int]): Int\n  ensures: result == s.length\n{\n  val b = fromSlice(s)\n  b.length\n}\n",
     "from-slice-length"
+  )
+  // A slice's elements never change (D400), so the slice functions state
+  // theirs too.
+  assertBufferDischarged(
+    sig + "  ensures: result == x[1]\n{\n  val s = toSlice(x)\n  s[1]\n}\n",
+    "to-slice-elements"
+  )
+  assertBufferDischarged(
+    "func g(s: in slice[Int]): Int\n  requires: s.length > 0\n  ensures: result == s[0]\n{\n  val b = fromSlice(s)\n  b[0]\n}\n",
+    "from-slice-elements"
   )
   // A write to the returned buffer is a write to that value alone.  A
   // buffer's elements are `Plain`, never a range subtype (T0173), so the

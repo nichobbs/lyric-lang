@@ -10,8 +10,8 @@ iterates arrays, slices and buffers with `for`, and writes `a[i][j]`.
   variables in a clause are checked scope by scope (`namesOnlyIn`). A function
   over `buffer[T]` is skipped where the proved file's `buffer` is another
   type.
-- **`Std.Buffer`** (`lyric-stdlib/std/buffer.l`): `filled`, `grow` and
-  `truncate` state their elements with `forall` `ensures:` clauses (W0002 at
+- **`Std.Buffer`** (`lyric-stdlib/std/buffer.l`): every function states its
+  result's elements (the slice ones since D400 made slice reads `select`) with `forall` `ensures:` clauses (W0002 at
   runtime, lengths still checked). T0174 accepts `result` as a buffer
   receiver (`bufferReceiverIsStable`).
 - **Element types** (`theory.l` `SortInfo.elem`): a sequence's element

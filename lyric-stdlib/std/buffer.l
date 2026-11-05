@@ -14,8 +14,9 @@
 //! initialises a binding annotated with its `buffer[T]` type, which is where the
 //! dotnet and JVM lowering reads the element type from.
 //!
-//! The `ensures:` clauses state each result's length and, where the result
-//! is a buffer, its elements.  `lyric prove` applies them at a call (#8753);
+//! The `ensures:` clauses state each result's length and its elements; a
+//! slice's elements never change once it exists (D400), so a slice result's
+//! elements are stated too.  `lyric prove` applies them at a call (#8753);
 //! the element clauses quantify over indices, so a runtime-checked build
 //! skips them (W0002) and checks the lengths.
 @runtime_checked
@@ -47,6 +48,7 @@ pub func filled[T](count: in Int, value: in T): buffer[T]
 pub func fromSlice[T](items: in slice[T]): buffer[T]
   where T: Plain
   ensures: result.length == items.length
+  ensures: forall (i: Int) where 0 <= i and i < items.length implies result[i] == items[i]
 {
   val dst: List[T] = newListWithCapacity(items.length)
   var i = 0
@@ -65,6 +67,7 @@ pub func view[T](b: in buffer[T], lo: in Int, hi: in Int): slice[T]
   where T: Plain
   requires: lo >= 0 and lo <= hi and hi <= b.length
   ensures: result.length == hi - lo
+  ensures: forall (i: Int) where 0 <= i and i < hi - lo implies result[i] == b[lo + i]
 {
   val dst: List[T] = newListWithCapacity(hi - lo)
   var i = lo
@@ -80,6 +83,7 @@ pub func view[T](b: in buffer[T], lo: in Int, hi: in Int): slice[T]
 pub func toSlice[T](b: in buffer[T]): slice[T]
   where T: Plain
   ensures: result.length == b.length
+  ensures: forall (i: Int) where 0 <= i and i < b.length implies result[i] == b[i]
 {
   view(b, 0, b.length)
 }
