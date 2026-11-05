@@ -546,15 +546,16 @@ test "hint-less @externTarget instance method verified by metadata still compile
 }
 
 // ─── F0047: untyped module-level val whose type could not be predicted ──────
-// The pre-scan cannot predict an extern property read's type (the checker has
-// no rule for host properties yet), so it types
+// The pre-scan cannot predict the type of a host result the checker leaves
+// unchecked (a primitive Lyric has no type for, such as `Int16`), so it types
 // readers of `big0047` as `object` while the field is really `int32`.  That
 // disagreement across a value type used to be silent IL corruption (an
 // uncatchable AccessViolationException at the first unbox); it must now be a
-// positioned build diagnostic on the initializer.
+// positioned build diagnostic on the initializer.  A host result the checker
+// does type (`Sb.Length`, an `int`) is predicted correctly and compiles.
 test "F0047: untyped module-level val with an unpredictable value-type initializer fails cleanly" {
-  val src = "package F0047App\n" + "\n" + "extern type Sb0047 = \"System.Text.StringBuilder\"\n" +
-    "val big0047 = Sb0047.new().Length\n" +
+  val src = "package F0047App\n" + "\n" + "extern type Bc0047 = \"System.BitConverter\"\n" +
+    "val big0047 = Bc0047.ToInt16(Bc0047.GetBytes(1), 0)\n" +
     "\n" +
     "func main(): Unit {\n" +
     "  println(toString(big0047 + 1))\n" +
@@ -566,6 +567,19 @@ test "F0047: untyped module-level val with an unpredictable value-type initializ
     "an untyped module val whose initializer type cannot be predicted must be rejected, not compile to corrupt IL"
   )
   assertDiagAt(diags, "F0047", 4, 15, "F0047: chained-call initializer of an untyped module-level val")
+}
+
+test "an untyped module-level val initialised from a typed host property compiles (#8613)" {
+  val src = "package F0047HostApp\n" + "\n" + "extern type Sb0047h = \"System.Text.StringBuilder\"\n" +
+    "val big0047h = Sb0047h.new().Length\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(big0047h + 1))\n" +
+    "}\n"
+  assertTrue(
+    compiles("F0047Host", src),
+    "a host property typed from metadata is predicted as the Int the field holds, so no F0047"
+  )
 }
 
 // Companion "good" case: the same val with an explicit annotation compiles.

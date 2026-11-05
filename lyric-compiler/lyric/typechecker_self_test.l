@@ -15086,9 +15086,9 @@ test "an extern member call or property read has the type the host declares" {
     "and not a String"
   )
   assertEqual(
-    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): JInputStream {\n  b.base()\n}\n")),
+    diagCodesOf(parseCheckWithHost(head + "func f(b: in JBytes): JBytes {\n  b.base()\n}\n")),
     "",
-    "a host class with an extern type in scope is that type"
+    "a host class result is unchecked: bound at a subtype, as a kernel binds a host downcast"
   )
 }
 

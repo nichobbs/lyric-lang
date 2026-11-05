@@ -22,12 +22,16 @@ metadata is the signature, and only a backend bridge can read it.
    (`externMemberAgreed`); a generic method whose result mentions its own type
    parameters, a type the bridge cannot locate, or no candidate is "cannot say".
 2. **What a host result is.** `void` is `Unit`. `Int`, `Long`, `Bool`, `Byte`,
-   `Double` and `Char` are those Lyric primitives. A host class with an
-   `extern type` in scope is that type. Not typed, by design: a host `String`
-   (it may be null, and the backends wrap a null into the `Option` a kernel
-   declares), the host's root `Object` (the boundary's dynamic type, which a
-   kernel reads as whatever it declares), arrays, `Single` and `Int16`, and a host
-   class no `extern type` names.
+   `Double` and `Char` are those Lyric primitives, and a result that is the
+   receiver's own type argument (`List<T>.Dequeue(): T`) is that argument. Not
+   typed, by design: a host class (a reference the language cannot say is
+   non-null, and one a kernel may bind at a subtype, `generateCertificate`'s
+   `Certificate` as an `X509Certificate`, which both backends check where the
+   value is bound), the host `String`, the root `Object` (the boundary's dynamic
+   type), arrays, and `Single`, `Int16` and the other primitives Lyric has no
+   type for. Typing a class result as the `extern type` nearest its name was
+   tried and rejected: it broke host downcasts the backends accept, and
+   accepting downcasts would contradict D352.
 3. **Unchecked is named, not silent.** Three named markers stand for what the
    checker leaves untyped on purpose, each a `TyError` whose `DiagId` index is
    negative: `tyErrorHost()` (-1, the host boundary), `tyErrorGeneric()` (-2, a

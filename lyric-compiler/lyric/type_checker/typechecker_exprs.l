@@ -4354,6 +4354,18 @@ func externMemberReceiver(tbl: in SymbolTable, recv: in Expr, recvTy: in Type): 
   None
 }
 
+// A host class result.  A host method returns a reference the language cannot
+// say is non-null or exactly the type a caller binds it at (a kernel binds
+// `generateCertificate`'s `Certificate` as an `X509Certificate`, a downcast the
+// backends check where the value is bound), so a class result is left
+// unchecked rather than typed as the extern type nearest its name.
+func isHostClassElem(e: in ExternIterElem): Bool {
+  match e {
+    case EIEHost(_, _) -> true
+    case _ -> false
+  }
+}
+
 // Host types the checker does not give a member result: the root object type
 // (the boundary's dynamic type, which the backends convert to whatever the Lyric
 // side declares, `e.Current` read as a `String`), the host string (it may be
@@ -4391,7 +4403,7 @@ func externMemberResult(
     case None -> tyErrorHost()
     case Some(EMTVoid) -> TyPrim(pt = PtUnit)
     case Some(EMTType(elem)) -> {
-      if isHostObjectElem(elem) {
+      if isHostObjectElem(elem) or isHostClassElem(elem) {
         return tyErrorHost()
       }
       val missing: List[String] = newList()
