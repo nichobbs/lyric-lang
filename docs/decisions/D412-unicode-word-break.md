@@ -17,7 +17,11 @@
    Line_Break, since UAX #29 gives those no letter value); spaces and punctuation are not words.
    `nextWordEnd` moves to the end of the word the position is in or the next one, `previousWordStart` to
    the start of the word it is in or the one before: the Ctrl+Right and Ctrl+Left of an editor, at the same
-   stops in both directions. Scripts written without spaces (Thai, Lao, Khmer, Myanmar) are one segment per
-   run of letters until dictionary segmentation exists (#8497).
+   stops in both directions. Scripts written without spaces (Thai, Lao, Khmer, Myanmar and the other
+   Line_Break SA scripts) are one segment per run of letters: as in CLDR's and ICU's root word rules
+   (`$ALetterPlus`), an SA character whose Word_Break is not Extend is taken as ALetter. UAX #29 gives these
+   letters Other, so its default rules would put a boundary between every two of them, and leave their words
+   to a dictionary; `WordBreakTest.txt` holds no SA text, so it tests the rules without the tailoring. The
+   dictionary's boundaries come from `lyric-unicode-dict` (#8497).
 4. **Conformance.** Unicode's `WordBreakTest.txt` (16.0.0, 1826 lines, pinned by SHA-256) runs with the
    other two suites on dotnet, the JVM and native, and passes.

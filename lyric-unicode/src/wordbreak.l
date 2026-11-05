@@ -10,8 +10,11 @@
 //! boundaries is a segment; `isWordLike` tells a word (letters, digits, kana, ideographs, the
 //! letters of the scripts written without spaces) from a segment of spaces or punctuation, and
 //! `nextWordEnd` and `previousWordStart` are the moves of Ctrl+Right and Ctrl+Left.  Scripts written
-//! without spaces between words (Thai, Lao, Khmer, Myanmar) are one segment per run of letters, as
-//! UAX #29 leaves their words to a dictionary.
+//! without spaces between words (Thai, Lao, Khmer, Myanmar and the other Line_Break SA scripts) are
+//! one segment per run of letters: as in CLDR's and ICU's root rules, an SA character that is not
+//! Extend is taken as ALetter (UAX #29 gives it Other, a boundary between every two letters, and
+//! leaves the words to a dictionary).  WordBreakTest.txt has no SA text, so it tests the rules
+//! without this; `lyric-unicode-dict` (`Unicode.Dictionary`) adds the dictionary's boundaries.
 //!
 //! It is plain Lyric over code points, so it runs, and is tested, on every target.
 @pure
@@ -215,6 +218,9 @@ pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] 
   while i < n {
     val v = UnicodeData.wordBreakValueOf(cps[from + i])
     cls[i] = v.and(31)
+    if cls[i] == wbOther and UnicodeData.lineBreakValueOf(cps[from + i]).and(63) == lbSA {
+      cls[i] = wbALetter
+    }
     pict[i] = if v.and(flagPictographic) != 0 { 1 } else { 0 }
     if isIgnored(cls[i]) and i > 0 and not isNewlineClass(cls[base[i - 1]]) {
       base[i] = base[i - 1]

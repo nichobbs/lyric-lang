@@ -75,6 +75,13 @@ test "ideographs are one segment each, Katakana runs one" {
   assertEqual(marked("カタカナ"), "カタカナ", "Katakana")
 }
 
+test "a run of a script written without spaces is one segment" {
+  assertEqual(marked("ภาษาไทย ไทย"), "ภาษาไทย| |ไทย", "Thai, with its combining marks")
+  assertEqual(marked("ພາສາລາວ"), "ພາສາລາວ", "Lao")
+  assertEqual(marked("ភាសាខ្មែរ"), "ភាសាខ្មែរ", "Khmer")
+  assertEqual(marked("မြန်မာ"), "မြန်မာ", "Myanmar")
+}
+
 test "Hebrew letters keep their geresh and gershayim" {
   assertEqual(marked("צה\"ל"), "צה\"ל", "a gershayim written as a quotation mark")
 }
@@ -92,6 +99,7 @@ test "a segment is a word when it has a letter, digit, kana or ideograph" {
 
 test "Ctrl+Right goes to the end of each word, Ctrl+Left to the start" {
   assertEqual(rightStops("one two, three"), "3 7 14", "right")
+  assertEqual(rightStops("ภาษาไทย ไทย"), "7 11", "a Thai run is one word")
   assertEqual(leftStops("one two, three"), "9 4 0", "left")
   assertEqual(rightStops("  lead"), "6", "leading spaces are skipped")
   assertEqual(rightStops("end.  "), "3 6", "past the last word is the end of the text")
