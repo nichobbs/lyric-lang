@@ -1,4 +1,4 @@
-//! conformance_tests.l - runs Unicode's BidiCharacterTest.txt and LineBreakTest.txt (Unicode 16.0)
+//! conformance_tests.l - runs Unicode's BidiCharacterTest.txt, LineBreakTest.txt and WordBreakTest.txt (Unicode 16.0)
 //! against `Unicode.Bidi` and `Unicode.LineBreak` on dotnet and the JVM (#8498); `main.l` runs
 //! the same suites on `--target native`.  See `conformance.l` for the files and their checksums.
 @test_module
@@ -27,6 +27,13 @@ test "LineBreakTest.txt: every line agrees with Unicode.LineBreak" {
   val r = Conformance.runLineBreakTest(text)
   val expected = Conformance.lineBreakTestCases
   assertTrue(Conformance.passed(expected, r), Conformance.describe("LineBreakTest.txt", expected, r))
+}
+
+test "WordBreakTest.txt: every line agrees with Unicode.WordBreak" {
+  val text = suiteText("WordBreakTest.txt", Conformance.wordBreakTestSha256)
+  val r = Conformance.runWordBreakTest(text)
+  val expected = Conformance.wordBreakTestCases
+  assertTrue(Conformance.passed(expected, r), Conformance.describe("WordBreakTest.txt", expected, r))
 }
 
 test "the bidi outcome uses the file's notation" {

@@ -1,13 +1,15 @@
 //! conformance.l - Unicode.Conformance: Unicode's own conformance suites for
-//! `Unicode.Bidi` (UAX #9) and `Unicode.LineBreak` (UAX #14), Unicode 16.0 (#8498).
+//! `Unicode.Bidi` (UAX #9), `Unicode.LineBreak` (UAX #14) and `Unicode.WordBreak` (UAX #29), Unicode 16.0
+//! (#8498, #8497).
 //!
 //! The suites are vendored, unchanged, next to this file with the Unicode licence
 //! (`LICENSE-UNICODE.txt`), and pinned here by SHA-256, so a run never fetches anything:
 //!
 //!   BidiCharacterTest.txt  https://www.unicode.org/Public/16.0.0/ucd/BidiCharacterTest.txt
 //!   LineBreakTest.txt      https://www.unicode.org/Public/16.0.0/ucd/auxiliary/LineBreakTest.txt
+//!   WordBreakTest.txt      https://www.unicode.org/Public/16.0.0/ucd/auxiliary/WordBreakTest.txt
 //!
-//! Every line of both files is run.  For `BidiCharacterTest.txt` that is the paragraph level, the
+//! Every line of each file is run.  For `BidiCharacterTest.txt` that is the paragraph level, the
 //! level of every character after rule L1 (characters X9 removes are `x` and not compared) and the
 //! visual order of the line.  `conformance_tests.l` runs the suites on dotnet
 //! and the JVM (`lyric test`), `main.l` on `--target native`, where manifest test suites do not run.
@@ -21,8 +23,10 @@ import Std.Path
 import Std.Hash
 import Std.Environment
 import Std.Errors.{IOError}
+import Std.Encoding.{tryDecodeUtf8}
 import Unicode.Bidi
 import Unicode.LineBreak
+import Unicode.WordBreak
 import Unicode.Data as UnicodeData
 
 /// The SHA-256 of the vendored `BidiCharacterTest.txt` (Unicode 16.0.0).
@@ -31,10 +35,15 @@ pub val bidiCharacterTestSha256: String = "D04A51A90052DCD71C4E91EE5B3A9D973EE35
 /// The SHA-256 of the vendored `LineBreakTest.txt` (Unicode 16.0.0).
 pub val lineBreakTestSha256: String = "910759A611A479F37DF4F535D2E64D7589BE3C5AC5F7491CF1FB4FA4CDB211E9"
 
+/// The SHA-256 of the vendored `WordBreakTest.txt` (Unicode 16.0.0).
+pub val wordBreakTestSha256: String = "AD985D5721F3FA6B45495663DFE44180F2F68976100DEE0EA7451EF1A8F838E8"
+
 /// The number of test lines in each vendored file.
 pub val bidiCharacterTestCases: Int = 91707
 
 pub val lineBreakTestCases: Int = 16672
+
+pub val wordBreakTestCases: Int = 1826
 
 // The most mismatches a report lists.
 val maxReported: Int = 12
@@ -86,9 +95,9 @@ pub func pinnedText(name: in String, sha256: in String): Result[String, String] 
   if actual != sha256 {
     return Err(error = path + " has SHA-256 " + actual + ", not the pinned Unicode 16.0 revision " + sha256)
   }
-  match readText(path) {
-    case Ok(t) -> Ok(value = t)
-    case Err(e) -> Err(error = "cannot read " + path + ": " + IOError.message(e))
+  match tryDecodeUtf8(bytes) {
+    case Some(t) -> Ok(value = t)
+    case None -> Err(error = path + " is not UTF-8")
   }
 }
 
@@ -183,6 +192,14 @@ pub func runBidiCharacterTest(text: in String): SuiteResult {
     val content = contentOf(line)
     if content.length > 0 {
       val fields = split(content, ";")
+      if fields.length != 5 {
+        failures = failures + 1
+        cases = cases + 1
+        if failures <= maxReported {
+          report = report + "\n  not five fields separated by `;`: " + content
+        }
+        continue
+      }
       val cpsList: List[Int] = newList()
       for w in words(fields[0]) {
         cpsList.add(hexValue(w))
@@ -203,6 +220,26 @@ pub func runBidiCharacterTest(text: in String): SuiteResult {
 
 /// Every line of `LineBreakTest.txt` (its text) through `Unicode.LineBreak`.
 pub func runLineBreakTest(text: in String): SuiteResult {
+  runBoundaryTest(text, { cps: slice[Int] -> lineBreaksOf(cps) })
+}
+
+/// Every line of `WordBreakTest.txt` (its text) through `Unicode.WordBreak`.
+pub func runWordBreakTest(text: in String): SuiteResult {
+  runBoundaryTest(text, { cps: slice[Int] -> WordBreak.boundariesIn(cps, 0, cps.length) })
+}
+
+func lineBreaksOf(cps: slice[Int]): List[Bool] {
+  val acc: List[Bool] = newList()
+  for b in LineBreak.breaksIn(cps, 0, cps.length) {
+    acc.add(b != LineBreak.noBreak)
+  }
+  acc
+}
+
+// A suite in the notation of `LineBreakTest.txt` and `WordBreakTest.txt`: code points with `÷` at
+// every boundary and `×` where there is none.  `boundaries` gives, for the code points of a line,
+// one answer per position (start and end included; those are not compared).
+func runBoundaryTest(text: String, boundaries: (slice[Int]) -> List[Bool]): SuiteResult {
   var cases = 0
   var failures = 0
   var report = ""
@@ -211,6 +248,14 @@ pub func runLineBreakTest(text: in String): SuiteResult {
     if content.length > 0 {
       // Marks and code points in turn: "× 0023 ÷ 0020 × 0024 ÷".
       val tokens = words(content)
+      if tokens.count < 3 or tokens.count % 2 == 0 {
+        failures = failures + 1
+        cases = cases + 1
+        if failures <= maxReported {
+          report = report + "\n  not marks and code points in turn: " + content
+        }
+        continue
+      }
       val cpsList: List[Int] = newList()
       val expectBreak: List[Bool] = newList()
       var t = 0
@@ -223,16 +268,15 @@ pub func runLineBreakTest(text: in String): SuiteResult {
         t = t + 1
       }
       val cps = cpsList.toArray()
-      val breaks = LineBreak.breaksIn(cps, 0, cps.length)
+      val got = boundaries(cps)
       var ok = true
       var shown = ""
       var k = 0
       while k <= cps.length {
-        val got = breaks[k] != LineBreak.noBreak
-        if k > 0 and k < cps.length and got != expectBreak[k] {
+        if k > 0 and k < cps.length and got[k] != expectBreak[k] {
           ok = false
         }
-        shown = shown + (if got { "÷" } else { "×" })
+        shown = shown + (if got[k] { "÷" } else { "×" })
         if k < cps.length {
           shown = shown + " " + tokens[2 * k + 1] + " "
         }

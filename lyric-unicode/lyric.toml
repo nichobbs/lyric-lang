@@ -7,6 +7,7 @@
 #                      pinned in ucd/
 #   Unicode.Bidi       the Unicode Bidirectional Algorithm (UAX #9): levels, runs in visual order
 #   Unicode.LineBreak  the Unicode line breaking algorithm (UAX #14)
+#   Unicode.WordBreak  word boundaries (UAX #29) and the word movement of an editor
 #
 # Both the native lyric-ui host's text areas (lyric-ui/native, Ui.Native.Wrap) and lyric-text's
 # layoutText build on them.  Unicode's own conformance suites run against them in
@@ -27,7 +28,9 @@ output_assembly = "Lyric.Unicode.dll"
 "Unicode.Data"      = "src/unicode_data.l"
 "Unicode.Bidi"      = "src/bidi.l"
 "Unicode.LineBreak" = "src/linebreak.l"
+"Unicode.WordBreak" = "src/wordbreak.l"
 
 [project.tests]
 "Unicode.BidiTests"      = "tests/bidi_tests.l"
 "Unicode.LineBreakTests" = "tests/linebreak_tests.l"
+"Unicode.WordBreakTests"  = "tests/wordbreak_tests.l"
