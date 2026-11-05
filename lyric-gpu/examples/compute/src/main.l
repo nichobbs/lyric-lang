@@ -2,6 +2,7 @@ package Gpu.Examples.Compute
 
 import Std.Console as Console
 import Std.Buffer as Buf
+import Std.String as Str
 import Std.Collections
 import Gpu
 
@@ -21,8 +22,14 @@ func run(d: Gpu.Device): Int {
     i = i + 1
   }
   val bytes = n.toLong() * 4
-  val buf = Gpu.createBuffer(d, bytes, Gpu.usageStorage + Gpu.usageCopyDst + Gpu.usageCopySrc)
-  Gpu.writeInts(d, buf, 0, input)
+  val buf = match Gpu.createBuffer(d, bytes, Gpu.usageStorage + Gpu.usageCopyDst + Gpu.usageCopySrc) {
+    case Ok(b) -> b
+    case Err(e) -> return fail(e)
+  }
+  match Gpu.writeInts(d, buf, 0, input) {
+    case Ok(_) -> ()
+    case Err(e) -> return fail(e)
+  }
   val pipeline = match Gpu.createComputePipeline(d, shader, "main") { case Ok(p) -> p; case Err(e) -> return fail(e) }
   val bindings: List[Gpu.Binding] = newList()
   bindings.add(BufferBinding(buffer = buf))
@@ -40,14 +47,31 @@ func run(d: Gpu.Device): Int {
     }
     k = k + 1
   }
-  // The device's error callback is called long after `withDevice` set it up: a shader that does not compile
-  // must come back as an `Err`, not crash.
+  // Each failing call returns its own error: a shader that does not compile, a buffer with
+  // flags WebGPU forbids together, and a write past a buffer's end, and none of them leaves
+  // an error behind for a later call.
   match Gpu.createComputePipeline(d, "this is not WGSL", "main") {
     case Ok(_) -> return fail("invalid WGSL was accepted")
     case Err(message) -> Console.println(
       "invalid shader rejected: " +
-        (if message.length > 0 then "with a message" else "without a message")
+        (if Str.startsWith(message, "WGSL: ") and Str.contains(message, "1:") then "with a message" else "without a message: " + message)
     )
+  }
+  match Gpu.createBuffer(d, 16, Gpu.usageMapRead + Gpu.usageStorage) {
+    case Ok(_) -> return fail("a map-read storage buffer was accepted")
+    case Err(_) -> Console.println("invalid buffer rejected")
+  }
+  match Gpu.writeInts(d, buf, bytes - 4, input) {
+    case Ok(_) -> return fail("a write past the buffer's end was accepted")
+    case Err(_) -> Console.println("overrunning write rejected")
+  }
+  match Gpu.takeError(d) {
+    case Some(e) -> return fail("an error was left behind: " + e)
+    case None -> ()
+  }
+  match Gpu.deviceLost(d) {
+    case Some(e) -> return fail("the device was lost: " + e)
+    case None -> ()
   }
   Console.println("checked " + n.toString() + " values, wrong=" + bad.toString())
   if bad == 0 then 0 else 1

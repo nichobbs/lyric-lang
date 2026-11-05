@@ -71,14 +71,26 @@ func quadVertices(): buffer[Float] {
 }
 
 func draw(d: Gpu.Device): Result[buffer[Byte], String] {
-  val target = Gpu.createRenderTarget(d, size, size)
+  val target = match Gpu.createRenderTarget(d, size, size) { case Ok(t) -> t; case Err(e) -> return Err(error = e) }
   val texture = match Gpu.createTexture(d, 2, 2, texels()) { case Ok(t) -> t; case Err(e) -> return Err(error = e) }
-  val sampler = Gpu.createSampler(d, false)
+  val sampler = match Gpu.createSampler(d, false) { case Ok(s) -> s; case Err(e) -> return Err(error = e) }
 
-  val vertices = Gpu.createBuffer(d, 96, Gpu.usageVertex + Gpu.usageCopyDst)
-  Gpu.writeFloats(d, vertices, 0, quadVertices())
-  val tint = Gpu.createBuffer(d, 16, Gpu.usageUniform + Gpu.usageCopyDst)
-  Gpu.writeFloats(d, tint, 0, Buf.fromSlice([1.0f32, 1.0f32, 1.0f32, 1.0f32]))
+  val vertices = match Gpu.createBuffer(d, 96, Gpu.usageVertex + Gpu.usageCopyDst) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = e)
+  }
+  match Gpu.writeFloats(d, vertices, 0, quadVertices()) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = e)
+  }
+  val tint = match Gpu.createBuffer(d, 16, Gpu.usageUniform + Gpu.usageCopyDst) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = e)
+  }
+  match Gpu.writeFloats(d, tint, 0, Buf.fromSlice([1.0f32, 1.0f32, 1.0f32, 1.0f32])) {
+    case Ok(_) -> ()
+    case Err(e) -> return Err(error = e)
+  }
 
   val attributes: List[Gpu.VertexAttribute] = newList()
   attributes.add(Gpu.VertexAttribute(format = Gpu.vertexFloat32x2, offset = 0, location = 0))

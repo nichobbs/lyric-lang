@@ -1218,7 +1218,13 @@ func scaleOf(win: Window.Window): Float {
 
 func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Host): Int {
   var surface = surface0
-  val painter = match Draw.newPainter(d, surface.format) { case Ok(p) -> p; case Err(m) -> return fail(m) }
+  val painter = match Draw.newPainter(d, surface.format) {
+    case Ok(p) -> p
+    case Err(m) -> {
+      Gpu.releaseSurface(surface)
+      return fail(m)
+    }
+  }
   Draw.setScale(painter, h.scale)
   Window.startTextInput(win)
   val started = Time.nowEpochMillis()
@@ -1239,12 +1245,14 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
               h.width = sz.width.toFloat()
               h.height = sz.height.toFloat()
               val px = Window.pixelSize(win)
-              match Gpu.configureSurface(d, surface, px.width, px.height) {
-                case Ok(s) -> {
-                  surface = s
-                }
-                case Err(m) -> {
-                  failure = m
+              if px.width > 0 and px.height > 0 {
+                match Gpu.configureSurface(d, surface, px.width, px.height) {
+                  case Ok(s) -> {
+                    surface = s
+                  }
+                  case Err(m) -> {
+                    failure = m
+                  }
                 }
               }
             }
@@ -1256,9 +1264,8 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
     }
     pump(h)
     match Gpu.tryAcquireFrame(d, surface) {
-      case Err(_) -> {
-        val px = Window.pixelSize(win)
-        match Gpu.configureSurface(d, surface, px.width, px.height) {
+      case Err(e) -> {
+        match GpuWindow.recoverSurface(d, win, surface, e) {
           case Ok(s) -> {
             surface = s
           }
@@ -1300,6 +1307,7 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
   }
   Window.stopTextInput(win)
   Draw.releasePainter(painter)
+  Gpu.releaseSurface(surface)
   if failure.length > 0 then fail(failure) else 0
 }
 
@@ -1325,19 +1333,9 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
     return fail("the application has no screen for " + cfg.startPath)
   }
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.surfaceFor(d, win) {
+    match GpuWindow.configuredSurfaceFor(d, win, Gpu.PresentMode.Fifo) {
       case Err(m) -> fail(m)
-      case Ok(created) -> {
-        val px = Window.pixelSize(win)
-        match Gpu.configureSurface(d, created, px.width, px.height) {
-          case Err(m) -> fail(m)
-          case Ok(surface) -> {
-            val rc = loopWindow(d, win, surface, host)
-            Gpu.releaseSurface(surface)
-            rc
-          }
-        }
-      }
+      case Ok(surface) -> loopWindow(d, win, surface, host)
     }
   }
   val rc = match Gpu.withDevice(body) { case Err(m) -> fail(m); case Ok(code) -> code }
@@ -1382,7 +1380,7 @@ pub func withHeadless[T](
   val inner: (Gpu.Device) -> Result[T, String] = { d: Gpu.Device ->
     val px = (width.toFloat() * scale).toInt()
     val py = (height.toFloat() * scale).toInt()
-    val target = Gpu.createRenderTarget(d, px, py)
+    val target = match Gpu.createRenderTarget(d, px, py) { case Ok(t) -> t; case Err(m) -> return Err(error = m) }
     match Draw.newPainter(d, Gpu.formatRgba8) {
       case Err(m) -> Err(error = m)
       case Ok(painter) -> {

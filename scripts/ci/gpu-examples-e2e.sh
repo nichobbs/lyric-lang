@@ -55,6 +55,8 @@ out="$("$work/compute")"
 echo "$out"
 echo "$out" | grep -q "checked 1000 values, wrong=0"
 echo "$out" | grep -q "invalid shader rejected: with a message"
+echo "$out" | grep -q "invalid buffer rejected"
+echo "$out" | grep -q "overrunning write rejected"
 
 echo "=== lyric-gpu triangle ==="
 "$work/triangle" lyric-gpu/examples/triangle/golden/triangle-64.rgba

@@ -155,11 +155,11 @@ func drawFrame[S](
   prev: S,
   cur: S,
   alpha: Float,
-): Result[Bool, String] {
+): Result[Bool, Gpu.FrameError] {
   val target = match Gpu.tryAcquireFrame(d, surface) {
     case Ok(Some(t)) -> t
     case Ok(None) -> return Ok(value = false)
-    case Err(m) -> return Err(error = m)
+    case Err(e) -> return Err(error = e)
   }
   val v = fitViewport(target.width, target.height, config.viewWidth, config.viewHeight)
   Draw.beginFrame(painter, target.width, target.height)
@@ -167,18 +167,24 @@ func drawFrame[S](
   match Draw.finish(painter, target, config.clear) {
     case Err(m) -> {
       Gpu.discardFrame(target)
-      Err(error = m)
+      Err(error = Gpu.Failed(message = m))
     }
     case Ok(_) -> match Gpu.presentFrame(surface, target) {
       case Ok(_) -> Ok(value = true)
-      case Err(m) -> Err(error = m)
+      case Err(m) -> Err(error = Gpu.Failed(message = m))
     }
   }
 }
 
 func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, config: Config, game: Game[S]): Int {
   var surface = surface0
-  val painter = match Draw.newPainter(d, surface.format) { case Ok(p) -> p; case Err(m) -> return fail(m) }
+  val painter = match Draw.newPainter(d, surface.format) {
+    case Ok(p) -> p
+    case Err(m) -> {
+      Gpu.releaseSurface(surface)
+      return fail(m)
+    }
+  }
   val mixer = newMixer(audioRate)
   val audio: Option[Window.Audio] = match Window.openAudio(audioRate, 2) {
     case Ok(a) -> Some(value = a)
@@ -215,12 +221,14 @@ func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, conf
             running = false
           }
           match e {
-            case WindowResized(w, width, height) -> match Gpu.configureSurface(d, surface, size.width, size.height) {
-              case Ok(s) -> {
-                surface = s
-              }
-              case Err(m) -> {
-                failure = m
+            case WindowResized(w, width, height) -> if size.width > 0 and size.height > 0 {
+              match Gpu.configureSurface(d, surface, size.width, size.height) {
+                case Ok(s) -> {
+                  surface = s
+                }
+                case Err(m) -> {
+                  failure = m
+                }
               }
             }
             case _ -> ()
@@ -268,7 +276,7 @@ func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, conf
           Console.println("presented")
         }
       }
-      case Err(_) -> match Gpu.configureSurface(d, surface, size.width, size.height) {
+      case Err(e) -> match GpuWindow.recoverSurface(d, win, surface, e) {
         case Ok(s2) -> {
           surface = s2
         }
@@ -284,6 +292,7 @@ func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, conf
     case None -> ()
   }
   Draw.releasePainter(painter)
+  Gpu.releaseSurface(surface)
   if failure != "" {
     return fail(failure)
   }
@@ -317,19 +326,9 @@ pub func run[S](config: Config, game: Game[S]): Int {
   Window.show(win)
   Window.raise(win)
   val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.surfaceFor(d, win) {
+    match GpuWindow.configuredSurfaceFor(d, win, Gpu.PresentMode.Fifo) {
       case Err(m) -> fail(m)
-      case Ok(created) -> {
-        val px = Window.pixelSize(win)
-        match Gpu.configureSurface(d, created, px.width, px.height) {
-          case Err(m) -> fail(m)
-          case Ok(surface) -> {
-            val rc = frameLoop(d, win, surface, config, game)
-            Gpu.releaseSurface(surface)
-            rc
-          }
-        }
-      }
+      case Ok(surface) -> frameLoop(d, win, surface, config, game)
     }
   }
   val rc = match Gpu.withDevice(body) { case Err(m) -> fail(m); case Ok(code) -> code }
@@ -359,7 +358,7 @@ pub func renderRecording[S](
       prev = cur
       cur = game.update(cur, f, dt)
     }
-    val target = Gpu.createRenderTarget(d, width, height)
+    val target = match Gpu.createRenderTarget(d, width, height) { case Ok(t) -> t; case Err(m) -> return Err(error = m) }
     val painter = match Draw.newPainter(d, Gpu.formatRgba8) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
     val v = fitViewport(width, height, config.viewWidth, config.viewHeight)
     Draw.beginFrame(painter, width, height)
