@@ -94,9 +94,10 @@ scene="$(build lyric-draw/examples/scene/lyric.toml scene)"
 "$scene" lyric-draw/examples/scene/golden/scene-256x192.rgba
 "$scene" --stress
 
-echo "=== lyric-gpu triangle and quad on Metal ==="
+echo "=== lyric-gpu triangle, quad and layers on Metal ==="
 "$(build lyric-gpu/examples/triangle/lyric.toml triangle)" lyric-gpu/examples/triangle/golden/triangle-64.rgba
 "$(build lyric-gpu/examples/quad/lyric.toml quad)" lyric-gpu/examples/quad/golden/quad-64.rgba
+"$(build lyric-gpu/examples/layers/lyric.toml layers)" lyric-gpu/examples/layers/golden/layers-64.rgba
 
 echo "=== lyric-gpu window: a Cocoa window presents frames ==="
 window="$(build lyric-gpu/examples/window/lyric.toml window)"

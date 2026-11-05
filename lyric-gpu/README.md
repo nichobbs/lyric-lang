@@ -18,8 +18,18 @@ a `[native.app]` table in its manifest; the examples all do.
 
 ## Examples
 
-`examples/compute` (a compute pass), `triangle` and `quad` (offscreen render, checked against golden images) and
-`window` (a triangle in an SDL3 window). Headless runs need a Vulkan device on Linux (lavapipe in CI) and Metal on macOS.
+`examples/compute` (a compute pass), `triangle`, `quad` and `layers` (offscreen renders checked against golden images;
+`layers` covers indexed draws, a depth test, back-face culling and a mipmapped texture) and `window` (a triangle in an
+SDL3 window). Headless runs need a Vulkan device on Linux (lavapipe in CI) and Metal on macOS.
+
+## Drawing
+
+`render` clears a target and runs a list of `Draw`s. A draw reads its vertices from vertex buffers, or through 32-bit
+indices when its `indices` is set (`Indices`, a buffer with `usageIndex`). `createRenderPipeline` builds a pipeline
+without depth or culling; `createRenderPipelineFrom` takes a `RenderPipelineDesc` with `depthTest` (draw only nearer
+fragments, which needs `renderWithDepth` and a `createDepthTarget` of the target's size) and `cullBack` (skip
+clockwise triangles). `createMipmappedTexture` builds a texture's full mip chain on the CPU with a 2x2 box filter, and
+`writeTexture` rebuilds it; a `createSampler(d, true)` sampler blends between the levels.
 
 ## Surfaces
 

@@ -54,7 +54,8 @@ func render(d: Gpu.Device): Result[buffer[Byte], String] {
       vertexCount = 3,
       instanceCount = 1,
       firstInstance = 0,
-      scissor = None
+      scissor = None,
+      indices = None
     )
   )
   match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {

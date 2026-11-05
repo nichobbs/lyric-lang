@@ -115,8 +115,8 @@ if len(loud) < 24000:
 print("audio output: %d samples, %d of them the tone" % (len(samples), len(loud)))
 PY
 
-echo "=== lyric-gpu compute, triangle and quad (G5, WARP) ==="
-for example in compute triangle quad; do
+echo "=== lyric-gpu compute, triangle, quad and layers (G5, WARP) ==="
+for example in compute triangle quad layers; do
   build "lyric-gpu/examples/$example/lyric.toml" "$work/$example"
 done
 for f in "$work"/*.dll; do
@@ -126,8 +126,11 @@ out="$("$work/compute" | tr -d '\r')"
 echo "$out"
 echo "$out" | grep -q "checked 1000 values, wrong=0"
 echo "$out" | grep -q "invalid shader rejected: with a message"
+echo "$out" | grep -q "invalid buffer rejected"
+echo "$out" | grep -q "overrunning write rejected"
 "$work/triangle" lyric-gpu/examples/triangle/golden/triangle-64.rgba
 "$work/quad" lyric-gpu/examples/quad/golden/quad-64.rgba
+"$work/layers" lyric-gpu/examples/layers/golden/layers-64.rgba
 
 echo "=== lyric-gpu window: a Win32 window and its HWND surface ==="
 build lyric-gpu/examples/window/lyric.toml "$work/window"
