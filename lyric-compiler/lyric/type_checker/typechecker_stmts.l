@@ -1322,6 +1322,8 @@ pub func checkBlock(
           tryValuePos,
           tryTailExpected
         )
+        val bodyTyAlone = resultTy
+        val handlerTys: List[Type] = newList()
         var ci = 0
         while ci < catches.count {
           val c = catches[ci]
@@ -1335,6 +1337,7 @@ pub func checkBlock(
           }
           checkNoYieldInHandler(diag, c.body, "a `catch` block", c.span)
           val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, c.body, tryValuePos, tryTailExpected)
+          handlerTys.add(hTy)
           scopePop(sc)
           if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
             resultTy = hTy
@@ -1357,6 +1360,7 @@ pub func checkBlock(
             val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, returnTyExpr, diag, fb, false, tyErrorSilent())
           }
         }
+        joinTryBranches(sc, tbl, body, catches, bodyTyAlone, handlerTys, tryValuePos)
         lastExprType = resultTy
       }
       // #6603: `scope { }`'s own value is always discarded (it is a
@@ -1388,6 +1392,39 @@ pub func checkBlock(
     return TyPrim(pt = PtNever)
   }
   lastExprType
+}
+
+// A value-position `try` yields through one shared temp, so its body and
+// handlers join like the arms of an `if`/`match`: a construction leaving a type
+// argument open in one (`Ok(())`) takes it from another (`Err(e)`) (D380).
+func joinTryBranches(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  body: in Block,
+  catches: in List[CatchClause],
+  bodyTy: in Type,
+  handlerTys: in List[Type],
+  consumed: in Bool,
+): Unit {
+  if not consumed or catches.count == 0 or handlerTys.count != catches.count {
+    return
+  }
+  val scratch: List[Diagnostic] = newList()
+  var joined = bodyTy
+  for ht in handlerTys {
+    joined = unifyBranchTypes(joined, ht, body.span, scratch, true)
+  }
+  if scratch.count > 0 or not typeIsClosedOver(joined, sc.genericNames) {
+    return
+  }
+  closePropagateBranch(sc, tbl, EOBBlock(body), joined, true)
+  recordBranchConstructionType(sc, tbl, EOBBlock(body), bodyTy, joined, true)
+  var i = 0
+  while i < catches.count {
+    closePropagateBranch(sc, tbl, EOBBlock(catches[i].body), joined, true)
+    recordBranchConstructionType(sc, tbl, EOBBlock(catches[i].body), handlerTys[i], joined, true)
+    i = i + 1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

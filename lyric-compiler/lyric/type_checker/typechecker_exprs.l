@@ -7466,6 +7466,7 @@ func inferPropagate(
   val ownOpen = not typeIsClosedOver(own, sc.genericNames)
   val takesContext = propagateOperandTakesContext(tbl, sc, inner)
   val key = recordCopySiteKey(inner.span)
+  noteOperandBranchConstructions(tbl, inner)
   if typeIsClosedOver(closed, sc.genericNames) and (ownOpen or takesContext) {
     if ownOpen {
       // A local of an open type (`val r = Ok(value = 1)`) takes the closed
@@ -7488,6 +7489,46 @@ func inferPropagate(
     }
   }
   propagateUnwrap(closed)
+}
+
+// A construction that is a branch of an `if`/`match`/block used as the operand
+// of `?` (`(if c { Err(error = a) } else { Err(error = b) })?`): the `?` never
+// yields the operand's success value, so nothing the checker could fix there
+// is missing; `unsolvedCallFixed` reads `operandBranchCtors` (D380).
+func noteOperandBranchConstructions(tbl: in SymbolTable, operand: in Expr): Unit {
+  match stripExprParens(operand).kind {
+    case EIf(_, t, eo, _) -> {
+      noteOperandBranchOf(tbl, t)
+      match eo {
+        case Some(eb) -> noteOperandBranchOf(tbl, eb)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        noteOperandBranchOf(tbl, arm.body)
+      }
+    }
+    case EBlock(blk) -> noteOperandBranchOf(tbl, EOBBlock(block = blk))
+    case _ -> ()
+  }
+}
+
+func noteOperandBranchOf(tbl: in SymbolTable, b: in ExprOrBlock): Unit {
+  match branchValueExpr(b) {
+    case Some(ve) -> {
+      val v = stripExprParens(ve)
+      match v.kind {
+        case ECall(_, _) -> {
+          if not isNoSourceSpan(v.span) {
+            tbl.operandBranchCtors.add(recordCopySiteKey(v.span), true)
+          }
+        }
+        case _ -> noteOperandBranchConstructions(tbl, v)
+      }
+    }
+    case None -> ()
+  }
 }
 
 // T0195: the operand of `?` must be a `Result` or an `Option` (or a `T?`
@@ -10488,11 +10529,60 @@ func inferUnionCaseConstruction(
         recordCaseFieldWidenings(tbl, uc, ftypes, gnames, targs, args, argTypes)
         val caseTy = TyUser(id = parentId, name = decl.name, args = targs)
         val _ = noteValueUnionCtor(tbl, caseTy, span, false)
+        noteNestedCtorFlow(tbl, uc, decl.name, parentId, gnames, ftypes, targs, args, span)
         caseTy
       }
       case None -> tyErrorSilent()
     }
     case _ -> tyErrorSilent()
+  }
+}
+
+// A call that is an argument of a union-case construction (D380): its expected
+// type is the field it fills, once the construction's own holes are solved
+// from the type expected of the construction (`effectiveCallExpected`).
+func noteNestedCtorFlow(
+  tbl: in SymbolTable,
+  uc: in UnionCase,
+  unionName: in String,
+  parentId: in SymbolId,
+  gnames: in List[String],
+  ftypes: in List[Type],
+  targs: in List[Type],
+  args: in List[CallArg],
+  span: in Span,
+): Unit {
+  if gnames.count == 0 or isNoSourceSpan(span) or span.endPos.offset <= span.startPos.offset {
+    return
+  }
+  val srcIdx = argIndicesInParamOrder(args, unionCaseSlotNames(uc))
+  val selfArgs: List[Type] = newList()
+  for g in gnames {
+    selfArgs.add(TyParam(name = g, owner = ""))
+  }
+  var k = 0
+  while k < srcIdx.count and k < ftypes.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < args.count {
+      val child = stripExprParens(callArgExpr(args[ai]))
+      val isCall = match child.kind { case ECall(_, _) -> true; case _ -> false }
+      if isCall {
+        val ckey = recordCopySiteKey(child.span)
+        if not tbl.callParents.containsKey(ckey) {
+          tbl.callParents.add(
+            ckey,
+            CallParent(
+              parentKey = recordCopySiteKey(span),
+              generics = gnames,
+              returnTy = TyUser(id = parentId, name = unionName, args = selfArgs),
+              ownTargs = targs,
+              paramTy = ftypes[k]
+            )
+          )
+        }
+      }
+    }
+    k = k + 1
   }
 }
 
@@ -16573,6 +16663,18 @@ func checkExplicitTypeArgCall(
   match explicitCallTypeArgs(sc, tbl, fn, found) {
     case Some(targs) -> {
       val inst = instantiateSigAt(found, targs)
+      val instNames: List[String] = newList()
+      for ip in inst.params {
+        instNames.add(ip.name)
+      }
+      val instIdx = argIndicesInParamOrder(args, instNames)
+      var ik = 0
+      while ik < instIdx.count and ik < inst.params.count {
+        if instIdx[ik] >= 0 and instIdx[ik] < args.count {
+          noteCallExpected(tbl, callArgExpr(args[instIdx[ik]]), inst.params[ik].ty)
+        }
+        ik = ik + 1
+      }
       var deferred = false
       for a in args {
         val ae = callArgExpr(a)
@@ -16726,6 +16828,16 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
   }
   match e.kind {
     case EParen(inner) -> noteCallExpected(tbl, inner, expected)
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> if ets.count == elems.count {
+        var ti = 0
+        while ti < elems.count {
+          noteCallExpected(tbl, elems[ti], ets[ti])
+          ti = ti + 1
+        }
+      }
+      case _ -> ()
+    }
     case ECall(_, _) -> {
       val key = recordCopySiteKey(e.span)
       match mapGet(tbl.callExpectedSeen, key) {
@@ -16985,7 +17097,22 @@ func noteNestedCallFlow(
   while k < srcIdx.count and k < sig.params.count {
     val ai = srcIdx[k]
     if ai >= 0 and ai < args.count {
-      val child = stripExprParens(callArgExpr(args[ai]))
+      var child = stripExprParens(callArgExpr(args[ai]))
+      var childParamTy = sig.params[k].ty
+      // A lambda argument: its body's value fills the parameter's result.
+      match child.kind {
+        case ELambda(_, lbody) -> match unrefine(childParamTy) {
+          case TyFunction(_, lret, _) -> match blockValueExpr(lbody) {
+            case Some(lve) -> {
+              child = stripExprParens(lve)
+              childParamTy = lret
+            }
+            case None -> ()
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       val isCall = match child.kind { case ECall(_, _) -> true; case _ -> false }
       if isCall {
         if not computed {
@@ -17003,7 +17130,7 @@ func noteNestedCallFlow(
                 generics = sig.generics,
                 returnTy = sig.returnTy,
                 ownTargs = ownTargs,
-                paramTy = sig.params[k].ty
+                paramTy = childParamTy
               )
             )
           }
@@ -17100,8 +17227,19 @@ func unsolvedCallFixed(tbl: in SymbolTable, key: in String, site: in UnsolvedCal
   if site.ctor {
     // A `?` operand never yields a value, so its success type stays open by
     // design (`Err(error = e)?`); the propagate tables hold it (#8181).
+    if tbl.operandBranchCtors.containsKey(site.callKey) {
+      return true
+    }
     if tbl.localBindingTypeSites.containsKey(site.callKey) or tbl.openPropagateOperands.containsKey(site.callKey) or tbl.hoistOperandTypeSites.containsKey(site.callKey) {
       return true
+    }
+    // An element of an open tuple is fixed once its uses fixed the element's
+    // type (the tuple's annotation carries it, D380).
+    if tbl.openBindingSites.containsKey(site.callKey) {
+      match openSiteResolvedType(tbl, site.callKey) {
+        case Some(_) -> return true
+        case None -> ()
+      }
     }
   } else if tbl.openBindingSites.containsKey(site.callKey) {
     return true
@@ -17524,6 +17662,11 @@ func inferExprCore(
         k = k + 1
       }
       recordListLiteralType(sc, tbl, e, TySlice(element = joined))
+      var ni = 0
+      while ni < elems.count {
+        noteCallExpected(tbl, elems[ni], joined)
+        ni = ni + 1
+      }
       val joinedAt: List[Type] = newList()
       var ji = 0
       while ji < elems.count {
@@ -19409,6 +19552,17 @@ func inferLambda(
       )
       tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
       scopePop(sc)
+      // The body's value is a value of the declared result, even when the
+      // result names the enclosing function's type parameters (D380).
+      match expectedReturn {
+        case Some(ert) -> if bodyValuePos and typeIsClosedOver(unrefine(ert), sc.genericNames) {
+          match blockValueExpr(body) {
+            case Some(ve) -> noteCallExpected(tbl, ve, ert)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
       // A body whose every path `return`s has the type `Never`; the lambda's
       // result is then the type of the first value it returns.
       val bodyDiverges = match bodyTy {
@@ -20676,6 +20830,13 @@ func inferExprExpectedCore(
         }
         TySlice(element = elemTy)
       } else {
+        // The literal is typed bottom-up, but each element is still a value
+        // of the slice's element type (D380).
+        if typeIsClosed(elemTy) {
+          for el in elems {
+            noteCallExpected(tbl, el, elemTy)
+          }
+        }
         inferExpr(sc, tbl, sigs, diag, e)
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
