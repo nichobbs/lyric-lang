@@ -1792,10 +1792,14 @@ func strEndsWith(s: in String, suffix: in String): Bool {
 }
 
 func importsStdJson(imports: in List[ImportDecl]): Bool {
+  importsStdPackage(imports, "Json")
+}
+
+func importsStdPackage(imports: in List[ImportDecl], name: in String): Bool {
   var i = 0
   while i < imports.count {
     val segs = imports[i].path.segments
-    if segs.count == 2 and segs[0] == "Std" and segs[1] == "Json" {
+    if segs.count == 2 and segs[0] == "Std" and segs[1] == name {
       return true
     }
     i = i + 1
@@ -1804,9 +1808,13 @@ func importsStdJson(imports: in List[ImportDecl]): Bool {
 }
 
 func stdJsonImportDecl(): ImportDecl {
+  stdPackageImportDecl("Json")
+}
+
+func stdPackageImportDecl(name: in String): ImportDecl {
   val segs: List[String] = newList()
   segs.add("Std")
-  segs.add("Json")
+  segs.add(name)
   ImportDecl(
     path = ModulePath(segments = segs, span = sp()),
     selector = None,
@@ -1875,6 +1883,11 @@ pub func deriveFileWithImports(
   }
   if synthsUseJson(synths) and not importsStdJson(file.imports) {
     newImports.add(stdJsonImportDecl())
+  }
+  // The decoders name `Std.JsonHost.JsonElement` by its package, which the
+  // checker resolves only through an import now that it sees this code (D371).
+  if synthsUseJson(synths) and not importsStdPackage(file.imports, "JsonHost") {
+    newImports.add(stdPackageImportDecl("JsonHost"))
   }
   SourceFile(
     moduleDoc = file.moduleDoc,

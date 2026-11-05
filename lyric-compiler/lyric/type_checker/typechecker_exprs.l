@@ -140,6 +140,12 @@ func codegenBuiltinType(name: in String): Option[Type] {
     ps.add(builtinTyParam("T"))
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
   }
+  if name == "hashCode" {
+    // The backends' hash intrinsic (derived `Hash` calls it on each field).
+    val ps: List[Type] = newList()
+    ps.add(builtinTyParam("T"))
+    return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtInt), isAsync = false))
+  }
   if name == "panic" {
     val ps: List[Type] = newList()
     ps.add(TyPrim(pt = PtString))
