@@ -136,3 +136,15 @@ test "a method call has its callee recorded under the call's node id" {
   assertEqualInt(calls.count, 1, "one call")
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "its callee is recorded")
 }
+
+test "nested calls and a call inside a lambda argument each have their callee recorded" {
+  val src = "package App\nfunc g(x: Int): Int { x }\nfunc apply(f: in (Int) -> Int): Int { f(1) }\nfunc f(): Int { apply({ y: Int -> g(g(y)) }) }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  val missing = calleeCensus(ctx, calls)
+  assertEqualInt(calls.count, 5, "f(1), apply(..), g(..), g(..) and the lambda's two g calls")
+  assertEqualInt(missing.count, 1, "only the call through the function value f(1) has no callee yet")
+}
