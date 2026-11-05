@@ -124,3 +124,14 @@ test "a call the checker resolves another way is reported until its route record
   assertEqualInt(census.count, 1, "the built-in call has no callee yet")
   assertTrue(census[0].startsWith("I0002"), "reported as I0002")
 }
+
+test "a method call has its callee recorded under the call's node id" {
+  val src = "package App\nrecord P { x: Int }\nfunc P.get(self: in P): Int { self.x }\nfunc f(p: in P): Int { p.get() }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callNodeIds(file)
+  assertEqualInt(calls.count, 1, "one call")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "its callee is recorded")
+}
