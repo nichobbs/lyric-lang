@@ -426,6 +426,12 @@ pub record SymbolTable {
   /// checking, an expected-type retry) replaces its earlier entry.  The type
   /// is the checker's own `Type`; `Lyric.Tir.Build` converts it to `Ty`.
   exprTypes: Map[Int, Type]
+  /// The function each call resolved to, keyed by the call expression's
+  /// `NodeId` (docs/70 §6.3, D361): the `SymbolId` of its DefPath.  Filled at
+  /// the points that fill `calleeSites`, which it does not replace; a call the
+  /// checker resolved some other way (a built-in, a constructor, a method of a
+  /// type, a function value) has no entry yet.
+  calleeByNode: Map[Int, SymbolId]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -991,6 +997,7 @@ pub func newSymbolTable(): SymbolTable {
     typeArgCalleeSites = newMap(),
     calleeSites = newMap(),
     exprTypes = newMap(),
+    calleeByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),

@@ -102,3 +102,25 @@ test "a type parameter converts through its registered binder" {
   }
   assertTrue(tyOfType(ctx, TyParam(name = "V", owner = "id")).isErr(), "not declared by its binder")
 }
+
+test "a call to a declared function has its callee recorded under the call's node id" {
+  val src = "package App\nfunc g(): Int { 1 }\nfunc f(): Int { g() }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callNodeIds(file)
+  assertEqualInt(calls.count, 1, "one call")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "its callee is recorded")
+  assertEqualInt(cr.symbols.calleeByNode.count, 1, "one entry")
+}
+
+test "a call the checker resolves another way is reported until its route records a callee" {
+  val src = "package App\nfunc f(): Unit { println(\"x\") }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  val ctx = newTyConvCtx(cr.symbols)
+  val census = calleeCensus(ctx, callNodeIds(file))
+  assertEqualInt(census.count, 1, "the built-in call has no callee yet")
+  assertTrue(census[0].startsWith("I0002"), "reported as I0002")
+}

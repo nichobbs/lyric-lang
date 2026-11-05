@@ -255,3 +255,29 @@ pub func exprNodeIds(file: in SourceFile): List[Int] {
   mapFileNodes(file, { e: Expr -> ids.add(e.nodeId); e }, { s: Statement -> s }, { p: Pattern -> p })
   ids
 }
+
+/// Every call expression node id of `file`, in traversal order.
+pub func callNodeIds(file: in SourceFile): List[Int] {
+  val ids: List[Int] = newList()
+  mapFileNodes(
+    file,
+    { e: Expr -> match e.kind { case ECall(_, _) -> ids.add(e.nodeId); case _ -> () }; e },
+    { s: Statement -> s },
+    { p: Pattern -> p }
+  )
+  ids
+}
+
+/// The calls of `callIds` the checker recorded no resolved callee for
+/// (`SymbolTable.calleeByNode`), as I0002 messages.  Calls the checker
+/// resolves by another route (built-ins, constructors, methods, function
+/// values) are counted until each route records its callee (D361).
+pub func calleeCensus(ctx: in TyConvCtx, callIds: in List[Int]): List[String] {
+  val res: List[String] = newList()
+  for id in callIds {
+    if not ctx.tbl.calleeByNode.containsKey(id) {
+      res.add("I0002: the checker recorded no callee for call node #" + toString(id))
+    }
+  }
+  res
+}

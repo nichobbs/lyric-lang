@@ -18058,7 +18058,7 @@ func inferExprCore(
       match directSig {
         case Some(ds) -> {
           noteBareCalleeFunc(tbl, fn, ds.originPackage)
-          recordCalleeSite(tbl, fn, ds)
+          recordCalleeSite(tbl, fn, ds, e.nodeId)
         }
         case None -> ()
       }
@@ -23052,7 +23052,7 @@ func reportAmbiguousDefaultCall(
 // under `methodCallSiteKey` of the callee: a bare or package-qualified path,
 // or a member of a package (`Alias.f`, `Pkg.f`).  A call inferred again
 // replaces what an earlier inference recorded.
-func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Unit {
+func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature, callNode: in Int): Unit {
   if isNoSourceSpan(fn.span) {
     return
   }
@@ -23094,6 +23094,12 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
         tbl.calleeSites.remove(key)
       }
       tbl.calleeSites.add(key, dp)
+      if callNode > 0 {
+        if tbl.calleeByNode.containsKey(callNode) {
+          tbl.calleeByNode.remove(callNode)
+        }
+        tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, dp))
+      }
     }
     case None -> ()
   }
