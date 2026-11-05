@@ -4467,8 +4467,7 @@ pub func resolveGeneralFuncSig(
   }
   val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
   match byName {
-    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span) + " cands=" + joinSegments(mapKeys(ctx.externTypes).filter({ k: String ->
-      k.startsWith("~callee~") and (match mapGet(ctx.externTypes, k) { case Some(v) -> v.contains("::" + stemOf(funcName) + "("); case None -> false }) }), ","))
+    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span) + " cands=" + censusCandidates(ctx, funcName))
     case None -> ()
   }
   byName
@@ -6847,4 +6846,20 @@ func stemOf(n: in String): String {
     case Some(i) -> n.substring(0, i)
     case None -> n
   }
+}
+
+func censusCandidates(ctx: in FuncCtx, funcName: in String): String {
+  var out = ""
+  val stem = "::" + stemOf(funcName) + "("
+  for k in mapKeys(ctx.externTypes) {
+    if k.startsWith("~callee~") {
+      match mapGet(ctx.externTypes, k) {
+        case Some(v) -> if v.contains(stem) {
+          out = out + k + ";"
+        }
+        case None -> ()
+      }
+    }
+  }
+  out
 }
