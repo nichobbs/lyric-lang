@@ -83,6 +83,11 @@ pub foreign record FT_SizeRec {
   internal_: NativePtr[Byte]
 }
 
+/// C union of value, pointer: 8 bytes aligned to 8; write the member in use at offset 0.
+pub foreign record FT_StreamDesc {
+  storage: array[1, Long]
+}
+
 pub foreign record FT_ListNodeRec {
   prev: NativePtr[FT_ListNodeRec]
   next: NativePtr[FT_ListNodeRec]

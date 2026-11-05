@@ -99,6 +99,9 @@ record Index {
   tagToId: Map[String, String]
   recordNames: Map[String, String]
   enumTags: Map[String, Bool]
+  /// The type spelling of an unnamed struct or union member ("union (unnamed union at
+  /// h.h:3:5)") to the id of the nested record clang declares just before it.
+  anonTypes: Map[String, String]
   consts: List[ConstInfo]
   funcs: List[FuncInfo]
   longBits: Int
@@ -254,9 +257,20 @@ func addRecord(ix: in Index, node: in J.JsonValue): Unit {
   val tag = jstr(node, "name")
   val complete = jbool(node, "completeDefinition")
   val fields: List[FieldInfo] = newList()
+  // A struct or union declared inside this one is a record of its own; an unnamed one is
+  // reached through the type spelling of the member that follows it.
+  var nested = ""
   for ch in jinner(node) {
-    if jstr(ch, "kind") == "FieldDecl" {
-      fields.add(FieldInfo(name = jstr(ch, "name"), ty = jtype(ch), isBitfield = jbool(ch, "isBitfield")))
+    val kind = jstr(ch, "kind")
+    if kind == "RecordDecl" {
+      addRecord(ix, ch)
+      nested = jstr(ch, "id")
+    } else if kind == "FieldDecl" {
+      val ty = jtype(ch)
+      if nested.length > 0 and Str.contains(ty, "(unnamed ") and not ix.anonTypes.containsKey(ty) {
+        ix.anonTypes.add(ty, nested)
+      }
+      fields.add(FieldInfo(name = jstr(ch, "name"), ty = ty, isBitfield = jbool(ch, "isBitfield")))
     }
   }
   val info = RecordInfo(
@@ -453,6 +467,7 @@ func buildIndex(root: in J.JsonValue, longBits: in Int): Index {
     tagToId = newMap(),
     recordNames = newMap(),
     enumTags = newMap(),
+    anonTypes = newMap(),
     consts = newList(),
     funcs = newList(),
     longBits = longBits
@@ -597,6 +612,10 @@ func parseCType(ix: in Index, s0: in String, typedefName: in String, depth: in I
     return CBad(why = "type nests too deeply: " + s0)
   }
   val s = Str.trim(s0)
+  match mapGet(ix.anonTypes, s) {
+    case Some(id) -> return CRecordT(id = id)
+    case None -> ()
+  }
   val fp = Str.indexOfRaw(s, "(*)")
   if fp >= 0 {
     val ret = parseCType(ix, Str.substring(s, 0, fp), "", depth + 1)
@@ -767,7 +786,8 @@ func cLayout(ix: in Index, cfg: in BindgenConfig, ct: in CType, depth: in Int): 
           for f in r.fields {
             match cLayout(ix, cfg, parseCType(ix, f.ty, "", 0), depth + 1) {
               case Some(l) -> {
-                off = alignUp(off, l.align) + l.size
+                // A union's members all start at 0; a struct's follow one another.
+                off = if r.isUnion { if l.size > off then l.size else off } else { alignUp(off, l.align) + l.size }
                 if l.align > maxAlign {
                   maxAlign = l.align
                 }
@@ -820,9 +840,6 @@ func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id0: in String)
       if not r.complete {
         return No(why = "'" + name + "' is an incomplete type")
       }
-      if r.isUnion {
-        return No(why = "'" + name + "' is a union")
-      }
       match mapGet(em.recordState, id) {
         case Some(st) -> {
           if st == 2 {
@@ -836,6 +853,9 @@ func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id0: in String)
         case None -> ()
       }
       em.recordState.add(id, 1)
+      if r.isUnion {
+        return useUnion(ix, em, cfg, id, name, r)
+      }
       val lines: List[String] = newList()
       var failure = ""
       var cOff = 0
@@ -850,6 +870,13 @@ func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id0: in String)
           failure = "'" + name + "' has a bit-field"
         } else {
           val fct = parseCType(ix, f.ty, "", 0)
+          // An unnamed struct or union member is named after the record and the member.
+          match fct {
+            case CRecordT(cid) -> if recordNameOf(ix, canonRecord(ix, cid)).length == 0 {
+              ix.recordNames.add(canonRecord(ix, cid), name + "_" + identOf(f.name, "f" + Str.fromInt(fi)))
+            }
+            case _ -> ()
+          }
           match fieldType(ix, em, cfg, fct) {
             case Ok(t) -> lines.add("  " + identOf(f.name, "f" + Str.fromInt(fi)) + ": " + t)
             case No(why) -> {
@@ -908,6 +935,113 @@ func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id0: in String)
       em.recordOrder.add(id)
       Ok(text = name)
     }
+  }
+}
+
+// Marks the record `id` as one that has no binding, for `why`.
+func refuseRecord(em: in Emit, id: in String, why: in String): Mapped {
+  em.recordState.remove(id)
+  em.recordState.add(id, 2)
+  em.recordNote.add(id, why)
+  No(why = why)
+}
+
+/// A C union becomes a foreign record with one `storage` array of the union's size and
+/// alignment (Long, Int or Byte elements), since a Lyric record has no overlapping fields.  A
+/// program writes the member it uses at offset 0 (with `nativeStore*` through the storage's
+/// address, or a `memcpy` of the member's own record).  The member records are bound too, so
+/// that a member can be built as a record.
+func useUnion(
+  ix: in Index, em: in Emit, cfg: in BindgenConfig, id: in String, name: in String, r: in RecordInfo
+): Mapped {
+  val members: List[String] = newList()
+  var fi = 0
+  while fi < r.fields.count {
+    val f = r.fields[fi]
+    if f.isBitfield {
+      return refuseRecord(em, id, "'" + name + "' has a bit-field")
+    }
+    val fct = parseCType(ix, f.ty, "", 0)
+    match fct {
+      case CRecordT(cid) -> {
+        if recordNameOf(ix, canonRecord(ix, cid)).length == 0 {
+          ix.recordNames.add(canonRecord(ix, cid), name + "_" + identOf(f.name, "f" + Str.fromInt(fi)))
+        }
+        match useRecord(ix, em, cfg, cid) {
+          case Ok(n) -> members.add(f.name + " (" + n + ")")
+          case No(_) -> members.add(f.name)
+        }
+      }
+      case _ -> members.add(f.name)
+    }
+    fi = fi + 1
+  }
+  val layout = match cLayout(ix, cfg, CRecordT(id = id), 0) {
+    case Some(l) -> l
+    case None -> return refuseRecord(em, id, "the layout of union '" + name + "' cannot be computed")
+  }
+  if layout.size == 0 {
+    return refuseRecord(em, id, "'" + name + "' has no fields")
+  }
+  val elem = if layout.align == 8 {
+    "Long"
+  } else if layout.align == 4 {
+    "Int"
+  } else if layout.align == 1 {
+    "Byte"
+  } else {
+    ""
+  }
+  if elem.length == 0 {
+    return refuseRecord(
+      em,
+      id,
+      "union '" + name + "' is aligned to " + Str.fromInt(layout.align) + " bytes, which no Lyric element type has"
+    )
+  }
+  val text = "/// C union of " + Str.joinList(", ", members) + ": " + Str.fromInt(layout.size) + " bytes aligned to " +
+    Str.fromInt(layout.align) +
+    "; write the member in use at offset 0.\n" +
+    "pub foreign record " +
+    name +
+    " {\n  storage: array[" +
+    Str.fromInt(layout.size / layout.align) +
+    ", " +
+    elem +
+    "]\n}\n"
+  em.recordText.add(id, text)
+  em.recordOrder.add(id)
+  Ok(text = name)
+}
+
+/// Whether a value of the record `id` contains a union (directly, in a member record or in
+/// an array): such a value has no faithful by-value form for a C call, because the C ABI
+/// classifies a union by its members and the generated storage array has other members.
+func holdsUnion(ix: in Index, id: in String, depth: in Int): Bool {
+  if depth > 8 {
+    return false
+  }
+  match mapGet(ix.records, canonRecord(ix, id)) {
+    case None -> false
+    case Some(r) -> {
+      if r.isUnion {
+        return true
+      }
+      for f in r.fields {
+        if typeHoldsUnion(ix, parseCType(ix, f.ty, "", 0), depth + 1) {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+func typeHoldsUnion(ix: in Index, ct: in CType, depth: in Int): Bool {
+  match ct {
+    case CRecordT(id) -> holdsUnion(ix, id, depth)
+    case CArr(elem, _) -> typeHoldsUnion(ix, elem, depth)
+    case _ -> false
   }
 }
 
@@ -1027,8 +1161,20 @@ func externType(ix: in Index, em: in Emit, cfg: in BindgenConfig, ct: in CType, 
         case No(why) -> No(why = why)
       }
     }
-    case CRecordT(id) -> useRecord(ix, em, cfg, id)
-    case CFuncPtr(name, ret, params) -> callbackType(ix, em, cfg, name, ret, params)
+    case CRecordT(id) -> if holdsUnion(ix, id, 0) {
+      val n = recordNameOf(ix, canonRecord(ix, id))
+      val shown = if n.length > 0 { "'" + n + "'" } else { "an unnamed record" }
+      No(why = shown + " holds a union, which cannot be passed by value")
+    } else {
+      useRecord(ix, em, cfg, id)
+    }
+    // A function pointer a C function returns is an address to hand on (to C, or to a
+    // record field), not a Lyric callback: Lyric does not call through it.
+    case CFuncPtr(name, ret, params) -> if isResult {
+      Ok(text = "NativePtr[Byte]")
+    } else {
+      callbackType(ix, em, cfg, name, ret, params)
+    }
     case CArr(_, _) -> No(why = "an array parameter")
     case CBad(why) -> No(why = why)
     case _ -> scalarName(ct)
