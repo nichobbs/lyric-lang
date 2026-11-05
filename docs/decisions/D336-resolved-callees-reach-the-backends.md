@@ -105,6 +105,20 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    `CodegenCtx.defaultDeclPkg`), which also covers restored and stdlib
    packages, whose defaults have no sites. `emitter_project_self_test.l` has a
    record field default calling a function of its package.
+7. **A re-check in an origin package's scope uses that package's imports.**
+   A specialisation of another package's generic is checked as if inside its
+   declaring package (`Lyric.Pipeline.checkInOriginScope`). Two things leaked
+   the consumer's scope into it: `addOriginScope` made every import of the
+   origin a whole import (losing `import P.{g}`), and the check file carried
+   the consumer's per-file header table, from which the resolver builds the
+   file scopes, so the origin's bare `pick()` saw the consumer's `EPOs.P` as
+   well as its own `EPOs.Q`, reported T0123, and recorded no callee. The origin
+   check now uses the package's declared imports (`ImportedPackage.importDecls`)
+   and an empty header table. This corrects the scope of every `foreign*`
+   re-check (callee sites, arities, receiver classes, unit lambdas). The JVM
+   reads these as `<origin>|<key>` entries (`foreignCalleeSites`,
+   `Jvm.Codegen.originScopedExternTypes`). `emitter_project_self_test.l` has
+   the selective-import and same-named-export cases on both targets.
 
 ## Consequences
 
