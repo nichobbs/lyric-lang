@@ -150,7 +150,11 @@ pub opaque type Conn {
   // Reused by every `hostRead` on this connection (#7269), so a read costs one
   // allocation the size of the bytes actually received instead of a fresh
   // zeroed buffer of `maxBytes`. A connection is read from one thread at a time.
-  readBuf: slice[Byte]
+  // `Stream.Read` writes this stream's backing array in place, so the array is
+  // never bound as a `slice[Byte]`: nothing may write a slice that Lyric code
+  // holds (T0157, #8730). It is fetched as an extern argument, and the bytes a
+  // read returns leave as a fresh slice.
+  readBuf: MemStream
 }
 
 // =====================================================================
@@ -253,8 +257,8 @@ func newMemStreamCap(capacity: in Int): MemStream = ()
 @externTarget("System.IO.MemoryStream.GetBuffer")
 func memGetBuffer(m: in MemStream): slice[Byte] = ()
 
-func allocBuffer(n: in Int): slice[Byte] {
-  memGetBuffer(newMemStreamCap(n))
+func allocBuffer(n: in Int): MemStream {
+  newMemStreamCap(n)
 }
 
 // The per-connection read buffer size: one TLS record's maximum plaintext
@@ -723,9 +727,9 @@ pub func hostRead(c: in Conn, maxBytes: in Int): Result[slice[Byte], TcpError]
   requires: maxBytes > 0
 {
   try {
-    val want = if maxBytes < c.readBuf.length { maxBytes } else { c.readBuf.length }
-    val n = streamReadInto(c.stream, c.readBuf, 0, want)
-    Ok(value = c.readBuf.slice(0, n))
+    val want = if maxBytes < readBufferSize { maxBytes } else { readBufferSize }
+    val n = streamReadInto(c.stream, memGetBuffer(c.readBuf), 0, want)
+    Ok(value = memGetBuffer(c.readBuf).slice(0, n))
   } catch Bug as b {
     Err(error = TransportFailed(message = b.message))
   }

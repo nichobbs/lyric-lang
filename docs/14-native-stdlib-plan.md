@@ -474,6 +474,37 @@ declarations may follow the same shape provided the target is a
 static field of a public BCL type. Audit treats `@externTarget` field
 reads identically to method bindings — both count against Decision F.
 
+### 10.2 Slices at the extern boundary (D400)
+
+A kernel never lets a host method write the elements of a `slice[T]` that
+Lyric code holds. Lyric code cannot write a slice element (T0157, docs/01
+§2.7), and `lyric prove` models a slice element as `select` of the slice's
+elements on that basis, so two reads of `xs[i]` agree. A host method that
+fills an array in place (`System.IO.Stream.Read(byte[], int, int)`,
+`java.io.InputStream.read(byte[])`, `SecureRandom.nextBytes`, a C function
+writing through a pointer) therefore gets storage that is not a Lyric slice
+binding:
+
+- **dotnet.** Scratch storage is a host `MemoryStream`, held in a field of
+  type `MemStream`. Its backing array (`GetBuffer()`) is fetched as the
+  argument of the call that fills it, or read by index straight off that
+  call, and is never bound to a `slice[Byte]` variable or field. The bytes a
+  read produced leave as a copy (`.slice(0, n)`). `_kernel/tcp_host.l`,
+  `_kernel/console_host.l` and `_kernel/process_piped_host.l` follow this.
+  A `MemoryStream` wrapped around a caller's slice is read-only
+  (`MemoryStream(byte[], bool writable)` with `false`, as `lyric-mail` does).
+- **JVM.** Reads return a fresh array (`readNBytes`, `readAllBytes`,
+  `ByteArrayOutputStream.toByteArray`); a `ByteBuffer`'s backing array goes
+  straight to the consumer as an argument and is not bound
+  (`_kernel_jvm/http_host.l`). An array a JDK method fills
+  (`_kernel_jvm/secure_random_host.l`) is filled before Lyric receives it.
+- **native.** Reads return a fresh slice from `lyric-rt`
+  (`lyric_sock_read_bytes`, `lyric_tls_read_bytes`); data C code writes lives
+  in a `buffer[T]` lent through `withMutPointer` (D187).
+
+A new kernel that needs in-place host writes follows the same shape, or uses
+a `buffer[T]`.
+
 ---
 
 ## 11. Risk register

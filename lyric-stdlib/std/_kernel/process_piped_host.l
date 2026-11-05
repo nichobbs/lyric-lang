@@ -221,8 +221,11 @@ func newMemStream(): MemStream {
 @externTarget("System.IO.MemoryStream..ctor")
 func newMemStreamCap(capacity: in Int): MemStream = ()
 
-// The backing array itself, not a copy: indexing it reads the buffered bytes
-// in place.
+// The backing array itself, not a copy. `Stream.Read` and `MemoryStream.Write`
+// change it in place, so it is never bound as a `slice[Byte]`: nothing may
+// write a slice that Lyric code holds (T0157, #8730). Each use fetches it
+// afresh, as an extern argument or an indexed read, and bytes handed out are
+// copied with `.slice`.
 @externInstance
 @externTarget("System.IO.MemoryStream.GetBuffer")
 func memGetBuffer(m: in MemStream): slice[Byte] = ()
@@ -248,8 +251,9 @@ pub ref record PipedHandle {
   writer: ProcWriter
   stdin: Stream
   stdout: Stream
-  // Where every read of stdout lands; a background read writes nothing else.
-  chunk: slice[Byte]
+  // Where every read of stdout lands (its backing array); a background read
+  // writes nothing else.
+  chunk: MemStream
   // Buffered stdout bytes: `[head, len)` of `buf` have not been returned
   // yet, and the first `scanned` of those hold no `\n`. Touched only by the
   // calling thread.
@@ -306,7 +310,7 @@ pub func hostSpawnPiped(fileName: in String, arguments: in String): PipedHandle 
     writer = w,
     stdin = writerBaseStream(w),
     stdout = readerBaseStream(procStdoutReader(proc)),
-    chunk = memGetBuffer(newMemStreamCap(readChunkSize)),
+    chunk = newMemStreamCap(readChunkSize),
     buf = newMemStream(),
     len = 0,
     head = 0,
@@ -331,28 +335,26 @@ func appendChunk(p: in PipedHandle, n: in Int): Unit {
     p.len = p.len - p.head
     p.head = 0
   }
-  memWrite(p.buf, p.chunk, 0, n)
+  memWrite(p.buf, memGetBuffer(p.chunk), 0, n)
   p.len = p.len + n
 }
 
 // Bytes `[start, endExclusive)` of the buffer as text: UTF-8, with a `\r`
 // immediately before the cut dropped (CRLF line endings).
 func decodeBuffered(p: in PipedHandle, start: in Int, endExclusive: in Int): String {
-  val bytes = memGetBuffer(p.buf)
   var cut = endExclusive
-  if cut > start and bytes[cut - 1] == 13 {
+  if cut > start and memGetBuffer(p.buf)[cut - 1] == 13 {
     cut = cut - 1
   }
-  encGetString(utf8(), bytes, start, cut - start)
+  encGetString(utf8(), memGetBuffer(p.buf), start, cut - start)
 }
 
 // The next complete line in the buffer, if any. Scans only bytes not
 // already known to be free of `\n`.
 func takeBufferedLine(p: in PipedHandle): Option[String] {
-  val bytes = memGetBuffer(p.buf)
   var i = p.head + p.scanned
   while i < p.len {
-    if bytes[i] == 10 {
+    if memGetBuffer(p.buf)[i] == 10 {
       val line = decodeBuffered(p, p.head, i)
       p.head = i + 1
       p.scanned = 0
@@ -400,7 +402,7 @@ func ensureBackgroundRead(p: in PipedHandle): Unit {
   val h = p
   val work: () -> Unit = { ->
     try {
-      val n = streamReadInto(h.stdout, h.chunk, 0, h.chunk.length)
+      val n = streamReadInto(h.stdout, memGetBuffer(h.chunk), 0, readChunkSize)
       h.readError.add("")
       h.readCount.add(n)
     } catch Bug as b {
@@ -440,7 +442,7 @@ func readChunk(p: in PipedHandle, deadlineMs: in Long): Option[Result[Int, Strin
     if p.inflight.count > 0 {
       return joinBackgroundRead(p, 0 - 1)
     }
-    return Some(value = Ok(value = streamReadInto(p.stdout, p.chunk, 0, p.chunk.length)))
+    return Some(value = Ok(value = streamReadInto(p.stdout, memGetBuffer(p.chunk), 0, readChunkSize)))
   }
   ensureBackgroundRead(p)
   val left = deadlineMs - tickCountMs()
@@ -508,7 +510,7 @@ func readBytesUntil(p: in PipedHandle, deadlineMs: in Long): Result[HostPipedByt
         p.eof = true
         Ok(value = HostPipedBytesEof)
       } else {
-        Ok(value = HostPipedChunk(bytes = p.chunk.slice(0, n)))
+        Ok(value = HostPipedChunk(bytes = memGetBuffer(p.chunk).slice(0, n)))
       }
     }
   }
