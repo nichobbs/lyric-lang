@@ -8506,7 +8506,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
             // registered for it (D-progress-946).
             val qTarget = qualifiedGenTargetMono(state, path)
             if qTarget.length > 0 {
-              return rewriteExpr(state, env, Expr(kind = ECall(fn = singleSegPathExpr(qTarget, fn.span), args = args), span = s))
+              return rewriteExpr(state, env, Expr(kind = ECall(fn = renamedCalleeExpr(qTarget, fn), args = args), span = s))
             }
             // Otherwise (a generic with no recorded origin): try the last
             // segment as a generic so `Validation.toResult(42,[])` specialises
@@ -8580,7 +8580,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         state.funcDecls.add(qName, qSpecDecl)
                       }
                     }
-                    val qNewFn = singleSegPathExpr(qName, fn.span)
+                    val qNewFn = renamedCalleeExpr(qName, fn)
                     return Expr(kind = ECall(fn = qNewFn, args = newArgs), span = s)
                   }
                 }
