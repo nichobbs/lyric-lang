@@ -44,6 +44,16 @@ type items), so they go first.
 - Derived functions are type-checked, mode-checked and elaborated like user
   code, and the checker's callee sites cover the calls in them.
 - A derived body the checker rejects is now a compile error at the `@derive`.
-  The census (compiler, stdlib, ecosystem libraries, examples, book) found
-  no such body; see the PR.
+  The census (every `lyric.toml` built for dotnet with the old and new
+  compiler; the stdlib, compiler and benchmark programs that use derives, run
+  on both targets) found three classes, fixed here: `Hash` derives call the
+  `hashCode` backend intrinsic, which had no signature (now
+  `hashCode[T](x: T): Int`, a polymorphic builtin like `toString`);
+  `@generate(Json)` decoders name `Std.JsonHost.JsonElement` and need
+  `import Std.JsonHost`, which the derive now injects as it does `Std.Json`;
+  and `@derive(Ord)` on a field of an enum type, which already warned D0001
+  ("comparison will fail") and is now the error T0033 at the `@derive`. No
+  source in the repository does the last.
+- Known and not caused here: a union `@derive(Hash)` fails JVM verification
+  (`Shape$hash`, operand stack underflow) with the seed compiler too.
 - `derives_self_test.l` covers unique spans, origins and relocation.
