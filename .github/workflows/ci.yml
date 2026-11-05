@@ -6776,27 +6776,7 @@ jobs:
 
       - name: Run tests (session)
         if: matrix.id == 'session'
-        # lyric-session's dotnet/jvm features are not default (StackExchange.Redis
-        # is a genuine mandatory NuGet dep for the dotnet kernel, unlike
-        # lyric-auth/lyric-storage's NuGet-free dotnet default) — restore first,
-        # then activate the dotnet feature explicitly so Session.Kernel.Net and
-        # the Redis-dependent test files actually compile and run. The Cache.dll
-        # copy is needed because the runtimeconfig additionalProbingPaths only
-        # resolves NuGet-style versioned layouts, not plain path deps.
-        run: |
-          set -euo pipefail
-          mkdir -p lyric-session/.lyric-test
-          if [ -f lyric-cache/bin/Cache.dll ]; then
-            cp lyric-cache/bin/Cache.dll lyric-session/.lyric-test/
-          else
-            echo "::error::lyric-cache/bin/Cache.dll missing (should have been built as a path dependency above)"
-            exit 1
-          fi
-          if ! "$LYRIC_CLI_PATH" restore --manifest lyric-session/lyric.toml; then
-            echo "::error::failed to restore lyric-session NuGet dependencies"
-            exit 1
-          fi
-          "$LYRIC_CLI_PATH" test --manifest lyric-session/lyric.toml --features dotnet
+        run: bash scripts/ci/session-tests.sh
 
       - name: Run tests (health)
         if: matrix.id == 'health'
@@ -7042,8 +7022,8 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-testing/lyric.toml
 
-      - name: Set up Java 22 (game)
-        if: matrix.id == 'game'
+      - name: Set up Java 22 (game, unicode)
+        if: matrix.id == 'game' || matrix.id == 'unicode'
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
         with:
           distribution: temurin
@@ -7052,23 +7032,9 @@ jobs:
         if: matrix.id == 'game'
         run: bash scripts/ci/game-managed-tests.sh
 
-      # lyric-unicode: UAX #9 and UAX #14 unit tests and Unicode's own conformance suites
-      # (BidiCharacterTest.txt, LineBreakTest.txt; D371) on dotnet and the JVM. The native run is
-      # in scripts/ci/ui-native-e2e.sh.
-      - name: Set up Java 22 (unicode)
-        if: matrix.id == 'unicode'
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
-        with:
-          distribution: temurin
-          java-version: '22'
       - name: Run tests (unicode, dotnet and jvm)
         if: matrix.id == 'unicode'
-        run: |
-          set -euo pipefail
-          for target in dotnet jvm; do
-            "$LYRIC_CLI_PATH" test --manifest lyric-unicode/lyric.toml --target "$target"
-            "$LYRIC_CLI_PATH" test --manifest lyric-unicode/tests/conformance/lyric.toml --target "$target"
-          done
+        run: bash scripts/ci/unicode-tests.sh
 
   # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
   # was the longest step, ~3 min, run after everything else) so it runs on
