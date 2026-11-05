@@ -61,6 +61,10 @@ val slotSize: Int = 25
 
 val stPos: Int = 75
 
+// A word's position in a word list: its chunk times `chunkStride`, plus its offset in the chunk.  The
+// generator cuts chunks far shorter than this.
+val chunkStride: Int = 1048576
+
 val stSize: Int = 76
 
 func isSA(cp: Int): Bool {
@@ -133,6 +137,18 @@ func alphabetOf(engine: Int): String {
     Words.khmerAlphabet
   } else {
     Words.myanmarAlphabet
+  }
+}
+
+func longestWordOf(engine: Int): Int {
+  if engine == thai {
+    Words.thaiLongestWord
+  } else if engine == lao {
+    Words.laoLongestWord
+  } else if engine == khmer {
+    Words.khmerLongestWord
+  } else {
+    Words.myanmarLongestWord
   }
 }
 
@@ -262,10 +278,10 @@ func lowerBound(words: slice[String], key: buffer[Int], n: Int): Int {
     }
   }
   if a < s.length {
-    return c * 1048576 + a
+    return c * chunkStride + a
   }
   if c + 1 < words.length {
-    (c + 1) * 1048576
+    (c + 1) * chunkStride
   } else {
     -1
   }
@@ -273,13 +289,13 @@ func lowerBound(words: slice[String], key: buffer[Int], n: Int): Int {
 
 // The word after the one at `at` (as `lowerBound` gives it), or -1.
 func nextWord(words: slice[String], at: Int): Int {
-  val c = at / 1048576
+  val c = at / chunkStride
   val s = words[c]
-  val after = wordEnd(s, at % 1048576) + 1
+  val after = wordEnd(s, at % chunkStride) + 1
   if after < s.length {
-    c * 1048576 + after
+    c * chunkStride + after
   } else if c + 1 < words.length {
-    (c + 1) * 1048576
+    (c + 1) * chunkStride
   } else {
     -1
   }
@@ -295,7 +311,9 @@ func matches(
   val base = slot * slotSize
   val words = wordsOf(engine)
   val alphabet = alphabetOf(engine)
-  var key = Buf.filled(maxLength + 1, 0)
+  // No prefix longer than the longest word matches, so at most one character more is read.
+  val keyLength = if maxLength < longestWordOf(engine) + 1 { maxLength } else { longestWordOf(engine) + 1 }
+  var key = Buf.filled(keyLength + 1, 0)
   var count = 0
   var matched = 0
   var at = start
@@ -312,20 +330,20 @@ func matches(
     }
     key[matched - 1] = c
     val lb = lowerBound(words, key, matched)
-    if lb < 0 or not startsWith(words[lb / 1048576], lb % 1048576, key, matched) {
+    if lb < 0 or not startsWith(words[lb / chunkStride], lb % chunkStride, key, matched) {
       st[base + 1] = count
       st[base + 2] = matched
       return
     }
-    val s = words[lb / 1048576]
-    val isWord = wordEnd(s, lb % 1048576) - lb % 1048576 == matched
+    val s = words[lb / chunkStride]
+    val isWord = wordEnd(s, lb % chunkStride) - lb % chunkStride == matched
     if isWord {
       if count < maxCandidates {
         st[base + 5 + count] = matched
         count = count + 1
       }
       val nx = nextWord(words, lb)
-      if nx < 0 or not startsWith(words[nx / 1048576], nx % 1048576, key, matched) {
+      if nx < 0 or not startsWith(words[nx / chunkStride], nx % chunkStride, key, matched) {
         // A final value: no longer word starts with this one.
         st[base + 1] = count
         st[base + 2] = matched

@@ -30,7 +30,8 @@ import Std.Errors.{IOError}
 pub val icuRelease: String = "74.2"
 
 // The longest string literal the lists are cut into, in characters: well inside the JVM's 65535-byte
-// limit on a constant.
+// limit on a constant, and well under the 2^20 characters Unicode.Dictionary's word positions
+// (`chunkStride`) allow for one chunk.
 val maxChunk: Int = 16000
 
 /// The vendored dictionaries with the SHA-256 of each, and the name of their tables in
@@ -196,9 +197,9 @@ func pow16(shift: Int): Int {
   p
 }
 
-/// The two table lines of one dictionary: its alphabet (each code point as 4 hex digits, in order)
-/// and its sorted words, each followed by a space, cut into literals of at most `maxChunk`
-/// characters at word ends.
+/// The table lines of one dictionary: its alphabet (each code point as 4 hex digits, in order), the
+/// length of its longest word, and its sorted words, each followed by a space, cut into literals of
+/// at most `maxChunk` characters at word ends.
 pub func tablesOf(name: in String, table: in String, words: in List[String]): Result[List[String], String] {
   var rank = Buf.filled(65536, 0)
   for w in words {
@@ -237,8 +238,12 @@ pub func tablesOf(name: in String, table: in String, words: in List[String]): Re
   var current = ""
   var previous = ""
   var count = 0
+  var longest = 0
   for w in sorted {
     if count == 0 or w != previous {
+      if w.length > longest {
+        longest = w.length
+      }
       if current.length + w.length + 1 > maxChunk {
         chunks.add(current)
         current = ""
@@ -263,6 +268,9 @@ pub func tablesOf(name: in String, table: in String, words: in List[String]): Re
   val lines: List[String] = newList()
   lines.add("/// The " + alphabet.count.toString() + " code points of " + name + "'s " + count.toString() + " words.")
   lines.add("pub val " + table + "Alphabet: String = \"" + alphabetHex + "\"")
+  lines.add("")
+  lines.add("/// The code points in " + name + "'s longest word.")
+  lines.add("pub val " + table + "LongestWord: Int = " + longest.toString())
   lines.add("")
   lines.add("/// The words of " + name + ", sorted.")
   lines.add(listLine)
