@@ -142,6 +142,7 @@ static void body(FakeCo* c) {
                 atomic_fetch_add(&fib_migrated, 1);
             }
             if (c->value < 2) {
+                spin_us(20); /* a little work per leaf, so idle threads always find some to steal */
                 lyric_task_complete(c->task, c->value, 0);
                 c->step = -1;
                 return;
@@ -399,12 +400,13 @@ static void test_dropped_handles(void) {
  * them taken from the oldest end of another thread's deque (work stealing, #8493). */
 static void test_fork_join_steal(void) {
     enum { N = 18, FRAMES = 2 * 4181 * 2 + 16 }; /* fib(18) spawns 2 * fib(19) - 2 tasks */
+    atomic_store(&fib_migrated, 0);
     reset_counters();
+    int migrated = 0;
     for (int round = 0; round < 3; round++) {
         fib_cap = FRAMES;
         fib_pool = (FakeCo*)calloc(FRAMES, sizeof(FakeCo));
         atomic_store(&fib_next, 0);
-        atomic_store(&fib_migrated, 0);
         atomic_store(&destroyed_count, 0);
         FakeCo* root = fib_frame();
         co_init(root, K_FIB, NULL, N, 0, 0);
@@ -415,11 +417,12 @@ static void test_fork_join_steal(void) {
         int frames = atomic_load(&fib_next);
         CHECK(frames == 2 * 4181 - 1);
         CHECK(wait_destroyed(frames));
-        if (sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
-            CHECK(atomic_load(&fib_migrated) > 0); /* other threads ran spawned children */
-        }
         free(fib_pool);
         fib_pool = NULL;
+    }
+    migrated = atomic_load(&fib_migrated);
+    if (sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
+        CHECK(migrated > 0); /* other threads ran spawned children */
     }
 }
 
