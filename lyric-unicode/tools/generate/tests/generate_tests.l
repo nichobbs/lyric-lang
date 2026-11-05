@@ -55,7 +55,7 @@ func tablesOf(names: slice[String]): Map[String, String] {
 }
 
 test "only the table lines are rewritten" {
-  val names = ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs"]
+  val names = ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs", "wordBreakRuns"]
   var source = "// header\n"
   for n in names {
     source = source + "val " + n + ": slice[String] = [\"old\"]\n"
@@ -72,10 +72,10 @@ test "only the table lines are rewritten" {
 }
 
 test "a source missing a table line is refused" {
-  val names = ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs"]
+  val names = ["bidiRuns", "lineBreakRuns", "mirrorPairs", "bracketPairs", "wordBreakRuns"]
   val source = "val bidiRuns: slice[String] = []\nval mirrorPairs: slice[String] = []\n"
   match Generate.withTables(source, tablesOf(names)) {
     case Ok(_) -> assertTrue(false, "accepted a source with two of its table lines")
-    case Err(e) -> assertTrue(contains(e, "2 of its 4 table lines"), "names the count")
+    case Err(e) -> assertTrue(contains(e, "2 of its 5 table lines"), "names the count")
   }
 }
