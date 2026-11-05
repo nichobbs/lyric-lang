@@ -42,6 +42,26 @@ kept a second weave path to maintain.
 
 The calls the weaver synthesises and the template splices have checker callee
 sites keyed by spans of their own, so the name-based fallbacks of the MSIL and
-JVM backends for them (D336 item 6) can be deleted. A name a template body
-uses must resolve in the consuming package; the census below lists what that
-required.
+JVM backends for them (D336 item 6) can be deleted (the 2d session owns that).
+
+## Splices resolve in the consuming package
+
+A template body is checked where it is spliced, so the names it uses have to
+resolve there. The weave adds the template's own package and every package its
+file imports to the consuming file (`withTemplateScopeImports`: whole-package
+imports, `import extern` copied as written), as the consumer would have to
+write them. The census over every library's tests and the examples found what
+that still needs of a template:
+
+- **A value the body names must be `pub`.** `idempotencyLedger` and
+  `deadLetterStore` (lyric-mq) and `functionCacheStore` and `itemCacheStore`
+  (lyric-cache) were private module values that only a backend's bundle-wide
+  lookup reached from the consuming package; they are `pub` now, with a note that
+  the body is spliced elsewhere.
+- **A name that two imported packages both declare is written qualified.** The
+  consumer now imports `Resilience` and its kernel package, which both declare
+  `sleepMs`, `circuitIsOpen`, `circuitRecordSuccess` and `circuitRecordFailure`;
+  the Retry and CircuitBreaker bodies call them as `Resilience.<name>`.
+
+A third-party template that does neither now fails at the consuming aspect with
+T0020 or T0123 and "in code generated for this declaration".
