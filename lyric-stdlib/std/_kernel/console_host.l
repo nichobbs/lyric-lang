@@ -171,7 +171,11 @@ val stdinBufferSize: Int = 65536
 /// Raw-byte reader over this process's standard input.
 pub record StdinHandle {
   stream: Stream
-  buf: slice[Byte]
+  // Where every read of stdin lands; a background read writes nothing else.
+  // `Stream.Read` writes this stream's backing array in place, so the array is
+  // never bound as a `slice[Byte]` (T0157, #8730): it is fetched as an extern
+  // argument, and a read's bytes leave as a fresh slice.
+  buf: MemStream
   // The outstanding background read (zero or one element) and what it
   // recorded once complete: `readCount` holds the byte count (`0` at end of
   // stream, `-1` after a failure whose message is in `readError`). Written
@@ -192,7 +196,7 @@ pub union HostStdinRead {
 pub func hostOpenStdin(): StdinHandle {
   StdinHandle(
     stream = openStandardInput(),
-    buf = memGetBuffer(newMemStreamCap(stdinBufferSize)),
+    buf = newMemStreamCap(stdinBufferSize),
     inflight = newList(),
     readCount = newList(),
     readError = newList()
@@ -203,7 +207,7 @@ func stdinBytesOf(h: in StdinHandle, n: in Int): HostStdinRead {
   if n <= 0 {
     HostStdinEof
   } else {
-    HostStdinBytes(bytes = h.buf.slice(0, n))
+    HostStdinBytes(bytes = memGetBuffer(h.buf).slice(0, n))
   }
 }
 
@@ -214,7 +218,7 @@ func startStdinRead(h: in StdinHandle): Unit {
   val handle = h
   val work: () -> Unit = { ->
     try {
-      val n = streamReadInto(handle.stream, handle.buf, 0, handle.buf.length)
+      val n = streamReadInto(handle.stream, memGetBuffer(handle.buf), 0, stdinBufferSize)
       handle.readError.add("")
       handle.readCount.add(n)
     } catch Bug as b {
@@ -253,7 +257,7 @@ pub func hostStdinReadResult(h: in StdinHandle): Result[HostStdinRead, String] {
         case None -> Err(error = "background stdin read did not complete")
       }
     } else {
-      Ok(value = stdinBytesOf(h, streamReadInto(h.stream, h.buf, 0, h.buf.length)))
+      Ok(value = stdinBytesOf(h, streamReadInto(h.stream, memGetBuffer(h.buf), 0, stdinBufferSize)))
     }
   } catch Bug as b {
     Err(error = b.message)
