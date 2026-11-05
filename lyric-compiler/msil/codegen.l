@@ -19634,9 +19634,14 @@ func findBareImportedFqnMsil(
     retHint
   )
   if direct.length > 0 {
+    Console.error("MSILCENSUS direct " + pkg + " " + funcName + " -> " + direct)
     return direct
   }
-  findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, funcName), funcName, arity, retHint)
+  val viaClosure = findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, funcName), funcName, arity, retHint)
+  if viaClosure.length > 0 {
+    Console.error("MSILCENSUS closure " + pkg + " " + funcName + " -> " + viaClosure)
+  }
+  viaClosure
 }
 
 // `pkg`'s direct imports that admit `name` bare: whole imports and the
