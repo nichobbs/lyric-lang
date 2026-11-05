@@ -21,6 +21,7 @@ import Std.File
 import Std.Path
 import Std.Hash
 import Std.Environment
+import Std.Errors.{IOError}
 import Ui.Native.Bidi
 import Ui.Native.LineBreak
 import Ui.Native.UnicodeData
