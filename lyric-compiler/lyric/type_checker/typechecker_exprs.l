@@ -7282,6 +7282,9 @@ func resolveExprPath(
             val noArgs: List[Type] = newList()
             return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = noArgs)
           }
+          // A case name several enums share is told apart by the expected
+          // type, which an expression read on its own does not have.
+          return tyErrorUnresolved()
         }
         case _ -> {
         }
