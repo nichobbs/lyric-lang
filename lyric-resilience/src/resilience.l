@@ -440,7 +440,7 @@ pub aspect Retry {
               Std.Log.warn("Retry: attempt " + attempt.toString() + " of " + maxAttempts.toString() + " failed: " + msg)
             }
             val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs, jitterFraction)
-            sleepMs(delay)
+            Resilience.sleepMs(delay)
             ret = call.proceed()
             attempt = attempt + 1
           }
