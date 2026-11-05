@@ -2649,6 +2649,10 @@ pub func foreignCalleeSites(
     match mapGet(byOrigin, origin) {
       case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
         case Some(res) -> {
+          Console.error("DBGP origin=" + origin + " decls=" + toString(decls.count) + " sites=" + toString(res.symbols.calleeSites.count) + " diags=" + toString(res.diagnostics.count))
+          for dg in res.diagnostics {
+            Console.error("DBGP diag " + dg.code + " " + dg.message)
+          }
           for k in mapKeys(res.symbols.calleeSites) {
             if not acc.containsKey(origin + "|" + k) {
               match mapGet(res.symbols.calleeSites, k) {
