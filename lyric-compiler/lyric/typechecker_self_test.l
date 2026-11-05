@@ -5003,6 +5003,27 @@ test "the join of a try body and its catch fixes a construction (D380)" {
 test "contexts that already fix a construction are not T0224 (D380)" {
   assertEqualInt(
     unsolvedCtorErrors(
+      "func c[S](x: in S): Res[Option[S], String] {\n  val body: (Int) -> Res[Option[S], String] = { d: Int ->\n    if d == 0 { return Err2(error = \"x\") }\n    Ok2(value = Some(value = x))\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a return in a generic lambda"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
+      "record Game[S] { init: (Int) -> S }\nrecord Rendered[S] { state: S; width: Int }\nfunc c[S](game: Game[S]): Res[Rendered[S], String] {\n  val body: (Int) -> Res[Rendered[S], String] = { d: Int ->\n    val cur = game.init(1)\n    match d { case 0 -> Ok2(value = Rendered(state = cur, width = 1)); case _ -> Err2(error = \"x\") }\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a generic lambda whose tail is a match over constructions"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
+      "record Game[S] { init: (Int) -> S }\nrecord Rendered[S] { state: S; width: Int }\nfunc c[S](game: Game[S]): Res[Rendered[S], String] {\n  val body: (Int) -> Res[Rendered[S], String] = { d: Int ->\n    val cur = game.init(1)\n    if d == 0 { Ok2(value = Rendered(state = cur, width = 1)) } else { Err2(error = \"x\") }\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a generic lambda whose tail is an if over constructions"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
       "func g[S](x: in S): Res[Option[S], String] {\n  val body: () -> Res[Option[S], String] = { -> match true { case true -> Ok2(value = Some(value = x)); case false -> Err2(error = \"e\") } }\n  body()\n}\n"
     ),
     0,

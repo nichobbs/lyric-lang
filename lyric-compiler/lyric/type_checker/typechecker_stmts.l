@@ -662,6 +662,9 @@ pub func checkStatement(
         // `List[T]`-annotated binding's initialiser (docs/decisions/
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
+        if tbl.lambdaExpectedReturns.count > 0 and (match returnTy { case TyError(_) -> true; case _ -> false }) {
+          noteCallExpected(tbl, e, tbl.lambdaExpectedReturns[tbl.lambdaExpectedReturns.count - 1])
+        }
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
         if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError(_) -> true; case _ -> false }) {
           tbl.lambdaReturnFrames[tbl.lambdaReturnFrames.count - 1].add(t)

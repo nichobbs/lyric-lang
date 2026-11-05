@@ -635,6 +635,10 @@ pub record SymbolTable {
   /// ends in `return` has the type `Never`; its function type's result is the
   /// type of the returned values (`inferLambda`).
   lambdaReturnFrames: List[List[Type]]
+  /// The result type expected of each enclosing lambda without a closed declared
+  /// one (`TyError` when it has none), parallel to `lambdaReturnFrames`: a
+  /// `return e` in its body takes it as the expected type of `e` (D381).
+  lambdaExpectedReturns: List[Type]
   /// The type arguments of each call to a generic function whose type
   /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
   /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
@@ -1137,6 +1141,7 @@ pub func newSymbolTable(): SymbolTable {
     argOrderSites = newMap(),
     methodCallResultExpected = newMap(),
     lambdaReturnFrames = newList(),
+    lambdaExpectedReturns = newList(),
     genericCallTypeArgSites = newMap(),
     dottedGenericCallSites = newMap(),
     byRefDotCallSites = newMap(),

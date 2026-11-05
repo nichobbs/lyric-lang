@@ -7659,6 +7659,8 @@ func noteOperandBranchConstructions(tbl: in SymbolTable, operand: in Expr): Unit
   }
 }
 
+// Every call branch is recorded, not only constructions: `unsolvedCallFixed`
+// reads the table for construction sites alone.
 func noteOperandBranchOf(tbl: in SymbolTable, b: in ExprOrBlock): Unit {
   match branchValueExpr(b) {
     case Some(ve) -> {
@@ -17042,7 +17044,7 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
     case ECall(_, _) -> {
       val key = recordCopySiteKey(e.span)
       match mapGet(tbl.callExpectedSeen, key) {
-        case Some(prev) -> if typeIsClosed(expected) and not typeIsClosed(prev) {
+        case Some(prev) -> if (typeIsClosed(expected) and not typeIsClosed(prev)) or (typeHasUnsolved(prev) and not typeHasUnsolved(expected)) {
           tbl.callExpectedSeen.remove(key)
           tbl.callExpectedSeen.add(key, expected)
         }
@@ -17181,8 +17183,8 @@ func callArgsIndeterminate(sc: in Scope, args: in List[CallArg], argTypes: in Li
 
 // A union-case construction (`Ok(value = 7)`) whose arguments leave a type
 // argument of its union unsolved is kept in `SymbolTable.unsolvedCallSites`
-// like an unsolved function call (D353), as a constructor site: the warning
-// the error T0224, like an unsolved function call (D381).
+// like an unsolved function call (D353), as a constructor site; one that
+// nothing fixes is the error T0224, as for a function call (D381).
 // `caseTy` is the construction as `inferUnionCaseConstruction` typed it.
 func noteUnsolvedCaseCtor(
   sc: in Scope,
@@ -17392,8 +17394,9 @@ func effectiveCallExpected(tbl: in SymbolTable, key: in String, depth: in Int): 
 }
 
 // T0224 (D339, D381, docs/70 section 5.2): a call or a union-case construction
-// recorded by `noteUnsolvedCall` / `noteUnsolvedCaseCtor` whose type argument neither the call's expected type, a recorded
-// type-argument site nor an open binding fixed.  Mono keeps the same error as a
+// recorded by `noteUnsolvedCall` / `noteUnsolvedCaseCtor` whose type argument
+// neither the expected type, a recorded type-argument site nor an open binding
+// fixed.  Mono keeps the same error as a
 // backstop for a call shape the checker does not record.
 pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
   val keys = mapKeys(tbl.unsolvedCallSites)
@@ -19794,6 +19797,16 @@ func inferLambda(
     case None -> {
       val returned: List[Type] = newList()
       tbl.lambdaReturnFrames.add(returned)
+      tbl.lambdaExpectedReturns.add(
+        match expectedReturn {
+          case Some(ert) -> if bodyValuePos and typeIsClosedOver(unrefine(ert), sc.genericNames) {
+            ert
+          } else {
+            tyErrorSilent()
+          }
+          case None -> tyErrorSilent()
+        }
+      )
       val bodyTy = checkBlock(
         lsc,
         tbl,
@@ -19807,6 +19820,7 @@ func inferLambda(
         tyErrorSilent()
       )
       tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
+      tbl.lambdaExpectedReturns.removeAt(tbl.lambdaExpectedReturns.count - 1)
       scopePop(sc)
       // The body's value is a value of the declared result, even when the
       // result names the enclosing function's type parameters (D380).
