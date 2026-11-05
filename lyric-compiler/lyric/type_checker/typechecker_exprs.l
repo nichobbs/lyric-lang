@@ -4356,10 +4356,7 @@ func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] 
   val last = segs[segs.count - 1]
   if segs.count == 1 {
     match symTableTryFindOne(tbl, last) {
-      case Some(sym) -> match sym.kind {
-        case DKExternType(_, _) -> return Some(value = sym)
-        case _ -> ()
-      }
+      case Some(sym) -> match sym.kind { case DKExternType(_, _) -> return Some(value = sym); case _ -> () }
       case None -> ()
     }
     return None
@@ -4371,10 +4368,7 @@ func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] 
     qi = qi + 1
   }
   match symTableTryFindInPackage(tbl, modulePathJoin(quals), last) {
-    case Some(sym) -> match sym.kind {
-      case DKExternType(_, _) -> return Some(value = sym)
-      case _ -> ()
-    }
+    case Some(sym) -> match sym.kind { case DKExternType(_, _) -> return Some(value = sym); case _ -> () }
     case None -> ()
   }
   var only: Option[Symbol] = None
@@ -4388,7 +4382,11 @@ func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] 
       case _ -> ()
     }
   }
-  if n == 1 { only } else { None }
+  if n == 1 {
+    only
+  } else {
+    None
+  }
 }
 
 // A host class result.  A host method returns a reference the language cannot
@@ -7408,9 +7406,7 @@ func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, 
   }
   for cand in symTableTryFindAllNamed(tbl, name) {
     match cand.kind {
-      case DKUnionCase(pid, _) -> if symbolIdEq(pid, uid) {
-        return Some(value = cand)
-      }
+      case DKUnionCase(pid, _) -> if symbolIdEq(pid, uid) { return Some(value = cand) }
       case _ -> ()
     }
   }

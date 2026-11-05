@@ -15117,13 +15117,21 @@ test "ecosystem shapes are typed or named, not silent (D355)" {
   assertEqual(silentSiteKinds(unionCase), "", "a union case named through its type is typed")
   assertEqual(diagCodesOf(unionCase), "", "and is accepted as that union")
   val tryJoin = parseCheck(
-    "package P\nrecord E { message: String }\nfunc f(): Result[Unit, E] {\n  match try { Ok(()) } catch Bug as b { Err(E(message = b.message)) } {\n    case Err(e) -> return Err(e)\n    case Ok(_) -> ()\n  }\n  Ok(())\n}\n"
+    "package P\nunion Res[T, E] {\n  case Good(v: T)\n  case Bad(e: E)\n}\nfunc f(): Int {\n  match try { Good(v = 1) } catch Bug as b { Bad(e = b.message) } {\n    case Bad(e) -> 0\n    case Good(v) -> v\n  }\n}\n"
   )
-  assertEqual(silentSiteKinds(tryJoin), "", "a try body and its handler join their open type arguments")
+  val tryDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(tryJoin.symbols, tryDiags)
+  assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no W0036)")
   val genericCr = parseCheck(
-    "package P\nrecord Row[D] {\n  draft: D\n}\nfunc f[D](r: in Row[D]): Unit {\n  val d = r.draft\n}\nfunc g[T](o: in Option[T], d: in T): T {\n  match o {\n    case Some(x) -> x\n    case None -> d\n  }\n}\nfunc h(): Int {\n  val o: Option[Int] = None\n  g(o, default())\n}\n"
+    "package P\nrecord Row[D] {\n  draft: D\n}\nunion Opt[T] {\n  case Has(v: T)\n  case Nope\n}\nfunc f[D](r: in Row[D]): Unit {\n  val d = r.draft\n}\nfunc g[T](o: in Opt[T], d: in T): T {\n  match o {\n    case Has(x) -> x\n    case Nope -> d\n  }\n}\nfunc h(o: in Opt[Int]): Int {\n  g(o, default())\n}\n"
   )
-  assertEqual(silentSiteKinds(genericCr), "", "an erased generic field read and a context-typed generic call are named")
+  val genericDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(genericCr.symbols, genericDiags)
+  assertEqual(
+    genericDiags.count.toString(),
+    "0",
+    "an erased generic field read and a context-typed generic call are named"
+  )
 }
 
 test "count on a slice is W0042, length is the slice's size" {
