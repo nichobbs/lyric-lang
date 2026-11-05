@@ -17208,7 +17208,7 @@ func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, pkgName: in String, e: in Ex
         case ECall(fn, args) -> match fn.kind {
           case EPath(p) -> if p.segments.count == 1 {
             val cands = siteCalleeCandidatesMsil(cctx, "", recordCopySiteKey(p.span), p.segments[0])
-            if cands.count > 0 and String.startsWith(cands[0], pkgName + ".") {
+            if cands.count > 0 and calleeIsOwnFunctionMsil(cands[0], pkgName) {
               val parts = String.split(cands[0], ".")
               val segs: List[String] = newList()
               var qi = 0
@@ -17231,9 +17231,25 @@ func qualifyDefaultCalleesMsil(cctx: in CodegenCtx, pkgName: in String, e: in Ex
   )
 }
 
+// Whether `fqn` names a function declared directly in package `pkg` (not in a
+// sub-package such as `A.B` when `pkg` is `A`).  A dot-named function
+// (`Type.f`) is `pkg.Type.f`, so one further segment is allowed only when it
+// starts with an uppercase letter.
+func calleeIsOwnFunctionMsil(fqn: in String, pkg: in String): Bool {
+  if not String.startsWith(fqn, pkg + ".") {
+    return false
+  }
+  val rest = fqn.substring(pkg.length + 1, fqn.length - pkg.length - 1)
+  match rest.indexOf(".") {
+    case None -> true
+    case Some(i) -> i > 0 and rest[0] >= 'A' and rest[0] <= 'Z'
+  }
+}
+
 // `dflt`, registered under `key`, in the scope it was written in (see
-// `qualifyInDeclScopeMsil`); unchanged for a default of a package compiled in
-// this bundle, which is qualified when registered.
+// `qualifyInDeclScopeMsil`).  A default of a package compiled in this bundle
+// is already qualified where the checker recorded its callee; any bare callee
+// left (one with no site) is resolved here, in the declaring package.
 func declScopeDefaultMsil(cctx: in CodegenCtx, key: in String, dflt: in Expr): Expr {
   match mapGet(cctx.defaultDeclPkg, key) {
     case Some(pkg) -> qualifyInDeclScopeMsil(cctx, pkg, dflt)

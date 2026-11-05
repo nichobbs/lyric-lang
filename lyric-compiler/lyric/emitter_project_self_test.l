@@ -3361,14 +3361,16 @@ func fieldDefaultCalleePkgs(): List[Emitter.ProjectPackage] {
     mkProjectPkg(
       "EPFd.Lib",
       "package EPFd.Lib\n" + "\n" + "pub func seven(): Int {\n" + "  7\n" + "}\n" + "\n" + "pub record Opts {\n" +
-        "  n: Int = seven()\n" + "}\n"
+        "  n: Int = seven()\n" +
+        "}\n"
     )
   )
   pkgs.add(
     mkProjectPkg(
       "EPFd.App",
-      "package EPFd.App\n" + "\n" + "import EPFd.Lib.{Opts}\n" + "\n" + "func main(): Unit {\n" +
-        "  val o = Opts()\n" + "  println(o.n)\n" + "}\n"
+      "package EPFd.App\n" + "\n" + "import EPFd.Lib.{Opts}\n" + "\n" + "func main(): Unit {\n" + "  val o = Opts()\n" +
+        "  println(o.n)\n" +
+        "}\n"
     )
   )
   pkgs
@@ -3378,6 +3380,38 @@ test "emitProject a record field default calls the declaring package's function 
   val result = runEmitProject("emitproj-fielddefault", fieldDefaultCalleePkgs(), "EPFd")
   assertEqualInt(result.exitCode, 0, "fielddefault MSIL: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "7", "fielddefault MSIL: output")
+}
+
+// A bare call inside a specialised copy of another package's generic means
+// what it meant where the generic was written (D336): `EPOs.Origin` imports
+// only `EPOs.Q`, so its `pick()` is `EPOs.Q`'s, though `EPOs.P`, which the
+// consuming package imports and which registers first, exports a `pick` too.
+func originSitedCallPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPOs.P", "package EPOs.P\n" + "\n" + "pub func pick(): Int {\n" + "  1\n" + "}\n"))
+  pkgs.add(mkProjectPkg("EPOs.Q", "package EPOs.Q\n" + "\n" + "pub func pick(): Int {\n" + "  2\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPOs.Origin",
+      "package EPOs.Origin\n" + "\n" + "import EPOs.Q\n" + "\n" + "pub func wrap[T](x: in T): Int {\n" + "  pick()\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPOs.App",
+      "package EPOs.App\n" + "\n" + "import EPOs.P\n" + "import EPOs.Origin\n" + "\n" + "func main(): Unit {\n" +
+        "  println(wrap(1))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a specialised generic's callee is the declaring package's, not a same-named export of the caller's imports (MSIL)" {
+  val result = runEmitProject("emitproj-originsited", originSitedCallPkgs(), "EPOs")
+  assertEqualInt(result.exitCode, 0, "originsited MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "originsited MSIL: output")
 }
 
 // The entry package registers first, before the packages it reaches (#7571):
