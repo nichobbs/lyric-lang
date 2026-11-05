@@ -58,15 +58,30 @@ if [ "$mode" = probe ]; then
   exit 0
 fi
 
-# Echoes the path of the pinned WenQuanYi Zen Hei collection, downloading it once.
-WQY_DEB_URL="https://snapshot.debian.org/archive/debian/20260101T000000Z/pool/main/f/fonts-wqy-zenhei/fonts-wqy-zenhei_0.9.45-8_all.deb"
+# Echoes the path of the pinned WenQuanYi Zen Hei collection, downloading it once
+# (D320).  The package SHA-256 pins the bytes, so any mirror serving them will do:
+# snapshot.debian.org first (its URL never goes away), then the Debian pool while
+# 0.9.45-8 is still there.  A version bump changes the URLs and both digests.
+WQY_DEB_URLS=(
+  "https://snapshot.debian.org/archive/debian/20260101T000000Z/pool/main/f/fonts-wqy-zenhei/fonts-wqy-zenhei_0.9.45-8_all.deb"
+  "https://deb.debian.org/debian/pool/main/f/fonts-wqy-zenhei/fonts-wqy-zenhei_0.9.45-8_all.deb"
+)
 WQY_DEB_SHA256="cfed2c29164ff2f133e40ed2046610b172b8618d174840936ac4ec9b6fd668e7"
 WQY_TTC_SHA256="79c18ebe7b811951e8311bad7103ebeae8c337ed9988ea69e8a78a66cfe029b9"
 fetch_cjk_font() {
-  local dir="$work/wqy" ttc="$work/wqy/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+  local dir="$work/wqy" ttc="$work/wqy/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc" url got=""
   mkdir -p "$dir"
-  curl -fsSL --retry 3 -o "$dir/wqy.deb" "$WQY_DEB_URL" >&2
-  echo "$WQY_DEB_SHA256  $dir/wqy.deb" | shasum -a 256 -c - >&2
+  for url in "${WQY_DEB_URLS[@]}"; do
+    if curl -fsSL --retry 3 -o "$dir/wqy.deb" "$url" >&2 \
+      && echo "$WQY_DEB_SHA256  $dir/wqy.deb" | shasum -a 256 -c - >&2; then
+      got="$url"
+      break
+    fi
+    echo "::warning::could not fetch the pinned WenQuanYi Zen Hei package from $url" >&2
+  done
+  [ -n "$got" ] || { echo "::error::no mirror served the pinned WenQuanYi Zen Hei package" >&2; exit 1; }
+  # The 0.9.45-8 package carries its files as data.tar.xz; the package digest above
+  # guarantees that, but another version may use a different compression.
   (cd "$dir" && ar x wqy.deb && tar -xf data.tar.xz) >&2
   echo "$WQY_TTC_SHA256  $ttc" | shasum -a 256 -c - >&2
   echo "$ttc"
@@ -77,7 +92,10 @@ bold="${LYRIC_UI_FONT_BOLD:-$HOME/Library/Fonts/DejaVuSans-Bold.ttf}"
 [ -f "$latin" ] || { echo "::error::DejaVu Sans is not installed ($latin)"; exit 1; }
 [ -f "$bold" ] || { echo "::error::DejaVu Sans Bold is not installed ($bold)"; exit 1; }
 export LYRIC_TEXT_FONT_LATIN="$latin" LYRIC_UI_FONT="$latin" LYRIC_UI_FONT_BOLD="$bold"
-export LYRIC_TEXT_FONT_CJK="${LYRIC_TEXT_FONT_CJK:-$(fetch_cjk_font)}"
+if [ -z "${LYRIC_TEXT_FONT_CJK:-}" ]; then
+  LYRIC_TEXT_FONT_CJK="$(fetch_cjk_font)"
+fi
+export LYRIC_TEXT_FONT_CJK
 
 echo "=== lyric-text: struct offsets against the installed FreeType and HarfBuzz headers ==="
 cc -fsyntax-only $(pkg-config --cflags freetype2 harfbuzz) lyric-text/native/text_layout_check.c

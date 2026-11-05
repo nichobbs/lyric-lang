@@ -137,7 +137,8 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
   rewritten or closed); clang
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
-  Missing: arm64 and macOS native CI legs (#8419); Windows (docs/67 G9) runs the
+  macOS arm64 and Linux arm64 run the whole native lane in
+  `native-platforms.yml` (#8419, #8563); Windows (docs/67 G9) runs the
   core suite (D205), child processes (D208), sockets and TLS over Winsock and
   Schannel (D209), the compiler-hosted self-tests with AddressSanitizer (D213), and
   the graphics libraries and their examples (D219).
@@ -169,8 +170,7 @@ left is verification and release work, tracked in `docs/36`:
    pool (D202) and the native `lyric-ui` host (D203, D268) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
    Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), accessibility through AccessKit (G10, #8430) and pruning
-   dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
-   surfaces and the macOS `.app` bundles (#8401, #8419); `layoutText` reordering
+   dependency kernels from the link (#8429); `layoutText` reordering
    mixed-direction paragraphs itself (#8496, D216 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
    (#8395); explicit mutable-record marker (D157 follow-up, #7955).
 2. **Structured tasks (docs/68).**  `Std.Task` handle API (`waitFor`, `isDone`,
@@ -212,7 +212,7 @@ left is verification and release work, tracked in `docs/36`:
 
 - Stale epics: #4607 (native umbrella) and #7944 (G5, all three golden-image
   examples pass in CI) were closed on 2026-10-21; the native CI matrix residual
-  is #8419 and the G5 residual is #8404. Deliberately left open because their
+  (#8419, #8563) closed on 2026-11-05, and the G5 residual is #8404. Deliberately left open because their
   own exit criteria are unmet: #7945 (G6: no real-hardware frame-budget run,
   layoutText bidi in #8496), #7941 (G2: JVM `spawn` copy #8391, verifier array model
   #8394, copy-before-loop lint #8395), #8118 (NPM, items 2-8) and #8149
