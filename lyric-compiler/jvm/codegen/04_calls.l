@@ -1133,7 +1133,7 @@ func isReservedIntrinsicNameJvm(name: in String): Bool {
 // which does not link (`NoSuchMethodError`) — the fast intrinsic path is
 // both correct and required for it.
 func hasFuncOverrideJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int): Bool {
-  match resolveGeneralFuncSig(ctx, funcName, path, argc) {
+  match resolveGeneralFuncSigExact(ctx, funcName, path, argc) {
     case Some(sig) -> {
       if path.segments.count >= 2 and isReservedIntrinsicNameJvm(funcName) {
         true
@@ -4465,12 +4465,7 @@ pub func resolveGeneralFuncSig(
     case Some(_) -> return sited
     case None -> ()
   }
-  val byName = resolveGeneralFuncSigByName(ctx, funcName, path, argc)
-  match byName {
-    case Some(_) -> CensusConsole.error("JVMCENSUS " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span) + " cands=" + censusCandidates(ctx, funcName))
-    case None -> ()
-  }
-  byName
+  resolveGeneralFuncSigByName(ctx, funcName, path, argc)
 }
 
 // The signature of the function the checker resolved the call at `path` to
@@ -4524,19 +4519,52 @@ func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, a
   None
 }
 
-// The by-name resolution `resolveGeneralFuncSig` falls back to.
+// The by-name resolution `resolveGeneralFuncSig` falls back to: the exact
+// keys first (`resolveGeneralFuncSigExact`), then the bare-name keys, which
+// any package in the bundle may have registered.
 func resolveGeneralFuncSigByName(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
-  // A call that leaves out defaulted arguments binds the overload the type
-  // checker resolved it to (its parameter count, the `~arity~` seed entry
-  // under the callee's site key), not the one whose count equals the
-  // arguments written (#8355).
-  val argcText = match mapGet(ctx.externTypes, "~arity~" + methodCallPathKey(path)) {
+  match resolveGeneralFuncSigExact(ctx, funcName, path, argc) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  val argcSuffix = "@" + callArityText(ctx, path, argc)
+  val bare = match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+    case Some(sig) -> Some(value = sig)
+    case None -> mapGet(ctx.funcSigs, funcName)
+  }
+  match bare {
+    case Some(_) -> CensusConsole.error("JVMCENSUS-BARE " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count) + " key=" + recordCopySiteKey(path.span))
+    case None -> ()
+  }
+  bare
+}
+
+// The parameter count a call binds: the overload the type checker resolved it
+// to (its parameter count, the `~arity~` seed entry under the callee's site
+// key) when the call leaves out defaulted arguments (#8355), else the number
+// of arguments written.
+func callArityText(ctx: in FuncCtx, path: in ModulePath, argc: in Int): String {
+  match mapGet(ctx.externTypes, "~arity~" + methodCallPathKey(path)) {
     case Some(n) -> if n.startsWith("-") { toString(argc) } else { n }
     case None -> toString(argc)
   }
-  val argcSuffix = "@" + argcText
+}
+
+// The function a call names by keys that identify one declaration: the
+// checker's site (`resolveGeneralFuncSig`), the calling package's own
+// package-scoped key (a package-private function included, #7147), or the
+// `Pkg/name` key of the package a qualified path names.  Never a bare name.
+func resolveGeneralFuncSigExact(
+  ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
+): Option[JvmFuncSig] {
+  match siteFuncSigJvm(ctx, funcName, path, argc) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  val argcSuffix = "@" + callArityText(ctx, path, argc)
+  val scopedKey = ctx.pkgName + "::" + funcName
   if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
@@ -4545,61 +4573,32 @@ func resolveGeneralFuncSigByName(
       si = si + 1
     }
     val ownerKey = joinSegments(ownerSegs, "/")
-    val qkey = ownerKey + "/" + funcName
     // A call qualified with the current package's own name reaches the same
     // function as the bare call, including a package-private one, which only
     // the package-scoped key registers (#8634).
     if ownerKey == ctx.pkgName {
-      val ownKey = ctx.pkgName + "::" + funcName
-      match mapGet(ctx.funcSigs, ownKey + argcSuffix) {
+      match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
         case Some(sig) -> return Some(value = sig)
-        case None -> {
-          match mapGet(ctx.funcSigs, ownKey) {
-            case Some(sig) -> return Some(value = sig)
-            case None -> ()
-          }
-        }
+        case None -> ()
+      }
+      match mapGet(ctx.funcSigs, scopedKey) {
+        case Some(sig) -> return Some(value = sig)
+        case None -> ()
       }
     }
+    val qkey = ownerKey + "/" + funcName
     match mapGet(ctx.funcSigs, qkey + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> {
-        match mapGet(ctx.funcSigs, qkey) {
-          case Some(sig) -> Some(value = sig)
-          case None -> {
-            match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-              case Some(sig) -> Some(value = sig)
-              case None -> mapGet(ctx.funcSigs, funcName)
-            }
-          }
-        }
-      }
-    }
-  } else {
-    // Package-scoped keys (`owner::name[@arity]`, `06_items.l`) are registered
-    // unconditionally regardless of visibility, since same-package access to
-    // a package-private function is always legal. Consulted first, BARE
-    // CALLS ONLY (#7147 review follow-up: this must never run for a
-    // qualified call — `path.segments.count > 1` above already resolves
-    // those through the real owner, and letting this scoped check fire there
-    // too could silently redirect `Other.Pkg.helper(x)` to the caller's own
-    // same-named local `helper` instead of `Other.Pkg.helper`), so #6853's
-    // visibility gate on the bundle-wide bare keys below never breaks a
-    // same-package bare call to a package-private function.
-    val scopedKey = ctx.pkgName + "::" + funcName
-    match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
       case Some(sig) -> return Some(value = sig)
-      case None -> {
-        match mapGet(ctx.funcSigs, scopedKey) {
-          case Some(sig) -> return Some(value = sig)
-          case None -> ()
-        }
-      }
+      case None -> ()
     }
-    match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-      case Some(sig) -> Some(value = sig)
-      case None -> mapGet(ctx.funcSigs, funcName)
-    }
+    return mapGet(ctx.funcSigs, qkey)
+  }
+  // Package-scoped keys (`owner::name[@arity]`, `06_items.l`) are registered
+  // unconditionally regardless of visibility, since same-package access to
+  // a package-private function is always legal.
+  match mapGet(ctx.funcSigs, scopedKey + argcSuffix) {
+    case Some(sig) -> Some(value = sig)
+    case None -> mapGet(ctx.funcSigs, scopedKey)
   }
 }
 
