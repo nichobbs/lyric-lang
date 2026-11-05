@@ -338,8 +338,9 @@ pub record ScopeDecls {
   /// proof of the file reads (#8306).
   pub typeItems: List[Item]
   /// The public functions a proof of a file importing the package can apply
-  /// the contract and `@pure` body of (#7532): non-generic, over primitive
-  /// types, naming nothing but their own parameters.
+  /// the contract and `@pure` body of (#7532), as `importedCallee` admits
+  /// them: over primitive types, their own type parameters and sequences of
+  /// them (#8753), with contracts naming nothing but their own parameters.
   pub callees: List[FunctionDecl]
 }
 
@@ -406,8 +407,11 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
       }
       case IFunc(fn) -> {
         acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
-        if isPublicItem(it) and importedCalleeEligible(fn) {
-          acc.callees.add(fn)
+        if isPublicItem(it) {
+          match importedCallee(fn) {
+            case Some(d) -> acc.callees.add(d)
+            case None -> ()
+          }
         }
       }
       case IRecord(_) -> acc.typeItems.add(it)
@@ -460,17 +464,29 @@ func clauseExpr(c: in ContractClause): Option[Expr] {
 
 // A callee resolves its names in the PROVED file's scope, so one that reaches
 // a name of its own package — a function, a constant, a local — would read
-// the caller's.  Only a function whose contracts and body name nothing but
-// its parameters (and call methods on values) is applied.  A body that binds
-// a local (`val x = ...`) is turned away on purpose: the local is not a
-// parameter, and admitting it would let the name resolve in the caller.
-func importedCalleeEligible(fn: in FunctionDecl): Bool {
+// the caller's.  Only contracts that name nothing but the function's
+// parameters, `result` and the variables of their own quantifiers (and call
+// methods on values) are applied.  A body that reaches any other name (a
+// local, a call) is dropped and the function is applied by its contract
+// alone; a body-less callee is never unfolded.  The parameter and result
+// types are primitive, the function's own type parameters, or arrays,
+// slices and buffers of them (#8753), and every type parameter is fixed by
+// a parameter, so a call determines the instance it applies.
+func importedCallee(fn: in FunctionDecl): Option[FunctionDecl] {
+  val tparams: List[String] = newList()
   match fn.generics {
-    case Some(_) -> return false
+    case Some(gp) -> {
+      for g in gp.params {
+        match g {
+          case GPType(n, _) -> tparams.add(n)
+          case GPValue(_, _, _) -> return None
+        }
+      }
+    }
     case None -> ()
   }
   if fn.isAsync {
-    return false
+    return None
   }
   var pure = false
   for a in fn.annotations {
@@ -479,46 +495,172 @@ func importedCalleeEligible(fn: in FunctionDecl): Bool {
     }
   }
   if not pure and fn.contracts.count == 0 {
-    return false
+    return None
   }
   val names: List[String] = newList()
   for p in fn.params {
     match p.dflt {
-      case Some(_) -> return false
+      case Some(_) -> return None
       case None -> ()
     }
-    if not primitiveTypeName(p.ty) {
-      return false
+    if not calleeTypeAdmitted(p.ty, tparams) {
+      return None
     }
     match p.mode {
       case PMIn -> ()
-      case _ -> return false
+      case _ -> return None
     }
     names.add(p.name)
   }
   match fn.ret {
-    case Some(rt) -> if not primitiveTypeName(rt) { return false }
-    case None -> return false
+    case Some(rt) -> if not calleeTypeAdmitted(rt, tparams) { return None }
+    case None -> return None
   }
-  val foreign = { e: Expr ->
+  for tp in tparams {
+    var fixed = false
+    for p in fn.params {
+      if typeExprNames(p.ty, tp) {
+        fixed = true
+      }
+    }
+    if not fixed {
+      return None
+    }
+  }
+  for c in fn.contracts {
+    match clauseExpr(c) {
+      case Some(e) -> if not namesOnlyIn(e, names) { return None }
+      case None -> ()
+    }
+  }
+  val bodyOwn = match fn.body {
+    case Some(FBExpr(e)) -> namesOnlyIn(e, names)
+    case Some(FBBlock(blk)) -> not CE.anyInBlock(blk, foreignNamePredicate(names))
+    case None -> true
+  }
+  if bodyOwn {
+    return Some(value = fn)
+  }
+  if fn.contracts.count == 0 {
+    return None
+  }
+  Some(value = fn.copy(body = None))
+}
+
+// A name the clause or body reaches that is not one of `names`, or a call of
+// a function by name.
+func foreignNamePredicate(names: in List[String]): (Expr) -> Bool {
+  { e: Expr ->
     match e.kind {
       case EPath(path) -> not names.contains(path.segments[0])
       case ECall(callee, _) -> match callee.kind { case EPath(_) -> true; case _ -> false }
       case _ -> false
     }
   }
-  for c in fn.contracts {
-    match clauseExpr(c) {
-      case Some(e) -> if CE.anyInExpr(e, foreign) { return false }
+}
+
+// `e` names nothing but `names` and, inside a `forall`/`exists`, the
+// quantifier's own variables, each of a primitive type.  A quantifier nested
+// in another is also checked against `names` alone, so one naming an outer
+// quantifier's variable is turned away: conservative, never unsound.
+func namesOnlyIn(e: in Expr, names: in List[String]): Bool {
+  val quants: List[Expr] = newList()
+  val _ = CE.anyInExpr(
+    e,
+    { x: Expr ->
+      match x.kind {
+        case EForall(_, _, _, _) -> quants.add(x)
+        case EExists(_, _, _, _) -> quants.add(x)
+        case _ -> ()
+      }
+      false
+    }
+  )
+  val stripped = CE.mapExpr(
+    e,
+    { x: Expr ->
+      match x.kind {
+        case EForall(_, _, _, _) -> Expr(kind = ELiteral(LBool(value = true)), span = x.span)
+        case EExists(_, _, _, _) -> Expr(kind = ELiteral(LBool(value = true)), span = x.span)
+        case _ -> x
+      }
+    }
+  )
+  if CE.anyInExpr(stripped, foreignNamePredicate(names)) {
+    return false
+  }
+  for q in quants {
+    val (binders, whereOpt, body) = match q.kind {
+      case EForall(bs, w, b, _) -> (bs, w, b)
+      case EExists(bs, w, b, _) -> (bs, w, b)
+      case _ -> return false
+    }
+    val inner: List[String] = newList()
+    for n in names {
+      inner.add(n)
+    }
+    for b in binders {
+      if not primitiveTypeName(b.ty) {
+        return false
+      }
+      inner.add(b.name)
+    }
+    match whereOpt {
+      case Some(w) -> if not namesOnlyIn(w, inner) { return false }
       case None -> ()
     }
-  }
-  match fn.body {
-    case Some(FBExpr(e)) -> if CE.anyInExpr(e, foreign) { return false }
-    case Some(FBBlock(blk)) -> if CE.anyInBlock(blk, foreign) { return false }
-    case None -> ()
+    if not namesOnlyIn(body, inner) {
+      return false
+    }
   }
   true
+}
+
+// A parameter or result type an imported callee may have: a primitive, one
+// of its type parameters, or an array (of literal length), slice or buffer
+// of one.  `buffer` is the built-in buffer as the callee's package has it;
+// the caller's scope decides whether it is modelled (`builtinBufferKey`).
+func calleeTypeAdmitted(te: in TypeExpr, tparams: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> primitiveTypeName(te) or (path.segments.count == 1 and tparams.contains(path.segments[0]))
+    case TSlice(elt) -> calleeTypeAdmitted(elt, tparams)
+    case TArray(size, elt) -> match size {
+      case TAValue(sz) -> match sz.kind {
+        case ELiteral(_) -> calleeTypeAdmitted(elt, tparams)
+        case _ -> false
+      }
+      case TAType(_) -> false
+    }
+    case TGenericApp(head, args) -> {
+      if head.segments.count != 1 or head.segments[0] != "buffer" or args.count != 1 {
+        return false
+      }
+      match args[0] {
+        case TAType(elt) -> calleeTypeAdmitted(elt, tparams)
+        case TAValue(_) -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// `te` mentions the type parameter `tp`.
+func typeExprNames(te: in TypeExpr, tp: in String): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and path.segments[0] == tp
+    case TSlice(elt) -> typeExprNames(elt, tp)
+    case TArray(_, elt) -> typeExprNames(elt, tp)
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(t) -> if typeExprNames(t, tp) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
 }
 
 func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {

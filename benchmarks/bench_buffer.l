@@ -8,6 +8,10 @@
 //! writes follow; `benchBufferCopyOnFirstWrite` allocates one copy of the buffer
 //! per iteration, the write that meets a shared block.
 //!
+//! `benchArrayInPlaceWrites` runs the same loop over an `array[10000, Int]`,
+//! whose writes have no shared-storage check, so the difference between the
+//! two is that check's cost per write.
+//!
 //! `benchBufferPassIn` shows an `in` pass of a large buffer copying nothing, on
 //! every target.
 //!
@@ -34,6 +38,27 @@ pub func benchBufferInPlaceWrites(): Unit {
   }
   if b[9999] < 0 {
     println(toString(b[9999]))
+  }
+}
+
+// ─── The same loop over an array, which has no shared-storage check ───────────
+// The baseline for `benchBufferInPlaceWrites`: an array's writable place owns
+// its storage outright (D167), so a write is the bounds check and the store.
+// The difference between the two is the buffer's per-write check.
+@bench
+pub func benchArrayInPlaceWrites(): Unit {
+  var a: array[10000, Int]
+  var r = 0
+  while r < 100 {
+    var i = 0
+    while i < 10000 {
+      a[i] = a[i] + i
+      i = i + 1
+    }
+    r = r + 1
+  }
+  if a[9999] < 0 {
+    println(toString(a[9999]))
   }
 }
 

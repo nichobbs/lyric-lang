@@ -41,6 +41,13 @@ pub record SortInfo {
   // every element read has and every element write must keep (#8394).
   pub elemRange: RangeBoundKind = RBKNone
   pub elemIntBits: Int = 0
+  // For an array, slice or buffer, its element type's own info, one entry,
+  // when the verifier read that type: from a declaration, or a copy of a
+  // binding that has it.  Empty where the element type is not known (a
+  // binding a call initialises, whose element type may be a range type the
+  // call's sorts do not show, #8753), and for every other sort.  An element
+  // of an array of arrays has this info of its own (`a[i][j]`, #8394).
+  pub elem: List[SortInfo] = newList()
 }
 
 pub func sortInfoNoRange(s: in Sort): SortInfo {
@@ -222,13 +229,43 @@ pub func isArraySort(s: in Sort): Bool {
 // What is known of an element of an array, slice or buffer described by
 // `info`: its sort, and the range and width of its declared type.
 pub func elementSortInfo(info: in SortInfo): SortInfo {
+  if info.elem.count > 0 {
+    return info.elem[0]
+  }
   val element = match info.sort { case SSlice(e) -> e; case SArray(e) -> e; case SBuffer(e) -> e; case other -> other }
   SortInfo(sort = element, range = info.elemRange, intBits = info.elemIntBits)
 }
 
 // An array, slice or buffer whose elements are of the type `elem` describes.
 func sequenceSortInfo(sort: in Sort, elem: in SortInfo, fixedLen: in Int): SortInfo {
-  SortInfo(sort = sort, range = RBKNone, fixedLen = fixedLen, elemRange = elem.range, elemIntBits = elem.intBits)
+  val elems: List[SortInfo] = newList()
+  elems.add(elem)
+  SortInfo(
+    sort = sort,
+    range = RBKNone,
+    fixedLen = fixedLen,
+    elemRange = elem.range,
+    elemIntBits = elem.intBits,
+    elem = elems
+  )
+}
+
+// The element type of the array, slice or buffer `info` describes is known
+// (`SortInfo.elem`).
+pub func elementTypeKnown(info: in SortInfo): Bool {
+  info.elem.count > 0
+}
+
+// A sort a range subtype may have: an element store of it is range checked
+// at run time when the element type is one.
+pub func sortMayCarryRange(s: in Sort): Bool {
+  match s {
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case _ -> false
+  }
 }
 
 // Map a TypeExpr to a SortInfo.  Falls back to an uninterpreted sort for

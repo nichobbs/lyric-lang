@@ -4369,6 +4369,220 @@ test "a buffer's length is not kept where the variable may take another buffer (
   )
 }
 
+// `Std.Buffer` as the verifier reads it: the declarations and contracts of
+// lyric-stdlib/std/buffer.l, with bodies that reach other names, as the real
+// ones do, so the functions are applied by their contracts alone (#8753).
+func bufferLibScope(): PackageScope {
+  val lib: List[String] = newList()
+  lib.add(
+    "package Std.Buffer\nimport Std.Collections\n" +
+      "pub func filled[T](count: in Int, value: in T): buffer[T]\n  where T: Plain\n  requires: count >= 0\n" +
+      "  ensures: result.length == count\n" +
+      "  ensures: forall (i: Int) where 0 <= i and i < count implies result[i] == value\n" +
+      "{\n  val items: List[T] = newListWithCapacity(count)\n  items.__lyric_buffer_from_list()\n}\n" +
+      "pub func fromSlice[T](items: in slice[T]): buffer[T]\n  where T: Plain\n  ensures: result.length == items.length\n" +
+      "{\n  val dst: List[T] = newListWithCapacity(items.length)\n  dst.__lyric_buffer_from_list()\n}\n" +
+      "pub func toSlice[T](b: in buffer[T]): slice[T]\n  where T: Plain\n  ensures: result.length == b.length\n" +
+      "{\n  view(b, 0, b.length)\n}\n" +
+      "pub func grow[T](b: in buffer[T], length: in Int, fill: in T): buffer[T]\n  where T: Plain\n" +
+      "  requires: length >= b.length\n  ensures: result.length == length\n" +
+      "  ensures: forall (i: Int) where 0 <= i and i < b.length implies result[i] == b[i]\n" +
+      "  ensures: forall (i: Int) where b.length <= i and i < length implies result[i] == fill\n" +
+      "{\n  val dst: List[T] = newListWithCapacity(length)\n  dst.__lyric_buffer_from_list()\n}\n" +
+      "pub func truncate[T](b: in buffer[T], length: in Int): buffer[T]\n  where T: Plain\n" +
+      "  requires: length >= 0 and length <= b.length\n  ensures: result.length == length\n" +
+      "  ensures: forall (i: Int) where 0 <= i and i < length implies result[i] == b[i]\n" +
+      "{\n  val dst: List[T] = newListWithCapacity(length)\n  dst.__lyric_buffer_from_list()\n}\n"
+  )
+  val noSiblings: List[String] = newList()
+  withImportScope(packageScopeOf(noSiblings), importScopeWithPackage(coreScope(), "Std.Buffer", lib))
+}
+
+func proveWithBuffer(body: in String): ProofSummary {
+  proveSourceInScope("@proof_required\npackage U\nimport Std.Buffer\n" + body, false, bufferLibScope())
+}
+
+func assertBufferDischarged(body: in String, label: in String): Unit {
+  val s = proveWithBuffer(body)
+  assertTrue(summaryTotalCount(s) > 0, label + ": goals generated")
+  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics" + diagnosticMessages(s))
+  assertTrue(not summaryHasFailure(s), label + ": every goal discharged")
+}
+
+func assertBufferRefuted(body: in String, label: in String): Unit {
+  val s = proveWithBuffer(body)
+  assertTrue(summaryHasCounterexample(s), label + ": the solver finds a counterexample" + diagnosticMessages(s))
+  assertTrue(not summaryHasDiagCode(s, "V0033"), label + ": the obligation is translatable")
+}
+
+test "a buffer Std.Buffer returns is the buffer its contract describes (#8753)" {
+  assertBufferDischarged(
+    "func g(): Int\n  ensures: true\n{\n  val b: buffer[Int] = filled(3, 0)\n  if b.length > 0 {\n    b[0]\n  } else {\n    0\n  }\n}\n",
+    "filled-length"
+  )
+  assertBufferDischarged(
+    "func g(): Int\n  ensures: result == 7\n{\n  val b = filled(3, 7)\n  b[2]\n}\n",
+    "filled-elements"
+  )
+  assertBufferRefuted("func g(): Int\n  ensures: true\n{\n  val b = filled(3, 7)\n  b[3]\n}\n", "filled-out-of-range")
+  assertBufferRefuted(
+    "func g(n: in Int): Int\n  ensures: true\n{\n  val b = filled(n, 0)\n  0\n}\n",
+    "filled-negative-count"
+  )
+  val sig = "func g(x: in buffer[Int]): Int\n  requires: x.length == 2\n"
+  assertBufferDischarged(
+    sig + "  ensures: result == x[1]\n{\n  val b = grow(x, 4, 9)\n  b[1]\n}\n",
+    "grow-keeps-elements"
+  )
+  assertBufferDischarged(sig + "  ensures: result == 9\n{\n  val b = grow(x, 4, 9)\n  b[3]\n}\n", "grow-fills")
+  assertBufferRefuted(sig + "  ensures: true\n{\n  val b = grow(x, 1, 9)\n  0\n}\n", "grow-shorter")
+  assertBufferDischarged(
+    sig +
+      "  ensures: result == x[0]\n{\n  val b = truncate(x, 1)\n  if b.length == 1 {\n    b[0]\n  } else {\n    0\n  }\n}\n",
+    "truncate-keeps-elements"
+  )
+  assertBufferRefuted(sig + "  ensures: true\n{\n  val b = truncate(x, 1)\n  b[1]\n}\n", "truncate-length")
+  assertBufferRefuted(sig + "  ensures: true\n{\n  val b = truncate(x, 3)\n  0\n}\n", "truncate-longer")
+  assertBufferDischarged(sig + "  ensures: result == 2\n{\n  val s = toSlice(x)\n  s.length\n}\n", "to-slice-length")
+  assertBufferDischarged(
+    "func g(s: in slice[Int]): Int\n  ensures: result == s.length\n{\n  val b = fromSlice(s)\n  b.length\n}\n",
+    "from-slice-length"
+  )
+  // A write to the returned buffer is a write to that value alone.
+  assertBufferDischarged(
+    sig + "  ensures: result == 5\n{\n  var b: buffer[Int] = grow(x, 3, 0)\n  b[0] = 5\n  b[0] + x[0] * 0\n}\n",
+    "write-to-an-annotated-result"
+  )
+  // Unannotated, the element type may be a range type the call's sorts do
+  // not show, whose check on the store the verifier cannot state.
+  val unknown = proveWithBuffer(
+    "type Small = Int range 0 ..= 10\nfunc g(s: in Small): Int\n  ensures: true\n{\n  var b = filled(3, s)\n  b[0] = 99\n  0\n}\n"
+  )
+  assertTrue(summaryHasDiagCode(unknown, "V0026"), "unknown-element-type: V0026")
+  assertTrue(summaryHasErrorDiag(unknown), "unknown-element-type: the proof fails closed")
+  assertBufferRefuted(
+    "type Small = Int range 0 ..= 10\nfunc g(s: in Small): Int\n  ensures: true\n{\n  var b: buffer[Small] = filled(3, s)\n" +
+      "  b[0] = 99\n  0\n}\n",
+    "annotated-range-element"
+  )
+}
+
+test "for over an array, slice or buffer is a loop over a hidden index (#8394)" {
+  val small = "type Small = Int range 0 ..= 10\n"
+  // Each element read is in bounds and carries its type's range.
+  assertDischarged(
+    small +
+      "func f(x: in array[3, Small]): Int\n  ensures: true\n{\n  for v in x\n    invariant: true\n  {\n    assert(v <= 10)\n  }\n  0\n}\n",
+    "array-element-range"
+  )
+  assertDischarged(
+    small +
+      "func f(x: in slice[Small]): Int\n  ensures: true\n{\n  for v in x\n    invariant: true\n  {\n    assert(v >= 0)\n  }\n  0\n}\n",
+    "slice-element-range"
+  )
+  assertDischarged(
+    small + "func f(x: in buffer[Small]): Int\n  ensures: result >= 0\n{\n  var t = 0\n  for v in x\n" +
+      "    invariant: t >= 0\n  {\n    t = t + v\n  }\n  t\n}\n",
+    "buffer-sum-non-negative"
+  )
+  assertRefuted(
+    "func f(x: in buffer[Int]): Int\n  ensures: result >= 0\n{\n  var t = 0\n  for v in x\n" +
+      "    invariant: t >= 0\n  {\n    t = t + v\n  }\n  t\n}\n",
+    "invariant-not-preserved"
+  )
+  assertRefuted(
+    "func f(x: in buffer[Int]): Int\n  ensures: true\n{\n  var t = 1\n  for v in x\n    invariant: t == 0\n  {\n    t = 0\n  }\n  t\n}\n",
+    "invariant-not-established"
+  )
+  // The loop iterates the value it started with (docs/01 §2.7): a write to
+  // the variable in the body is not seen by the iteration.
+  assertDischarged(
+    "func f(x: in buffer[Int], y: in buffer[Int]): Int\n  ensures: true\n{\n  var b = x\n  var t = 0\n" +
+      "  for v in b\n    invariant: true\n  {\n    b = y\n    t = v\n  }\n  t\n}\n",
+    "iterates-a-snapshot"
+  )
+  assertDischarged(
+    "func f(x: in buffer[Int]): Int\n  requires: x.length > 0\n  ensures: result == x[0]\n{\n  var b = x\n" +
+      "  for _ in x\n    invariant: b.length == x.length\n  {\n    b[0] = 9\n  }\n  x[0]\n}\n",
+    "wildcard-and-copy-unchanged"
+  )
+  // A loop in a proved function states an invariant (V0005), `for` too.
+  assertFailsClosed(
+    "func f(x: in buffer[Int]): Int\n  ensures: true\n{\n  for v in x {\n    assert(v == v)\n  }\n  0\n}\n",
+    "V0005",
+    "for-without-invariant"
+  )
+  // The hidden index's step never overflows: it stays below the length.
+  assertCheckedDischarged(
+    small +
+      "func f(x: in buffer[Small]): Int\n{\n  for v in x\n    invariant: true\n  {\n    assert(v <= 10)\n  }\n  0\n}\n",
+    "checked-step"
+  )
+  assertFailsClosed(
+    "func f(n: in Int): Int\n  ensures: true\n{\n  var t = 0\n  for i in 0 ..< n\n    invariant: true\n  {\n    t = i\n  }\n  t\n}\n",
+    "V0026",
+    "range-loop"
+  )
+  assertFailsClosed(
+    "func f(x: in buffer[Int]): Int\n  ensures: true\n{\n  for v in x\n    invariant: true\n  {\n    break\n  }\n  0\n}\n",
+    "V0026",
+    "break-in-for"
+  )
+}
+
+test "Std.Buffer contracts are not applied where `buffer` names another type (#8753)" {
+  val t = proveWithBuffer(
+    "record buffer[T] {\n  v: T\n}\nfunc g(): Bool\n  ensures: result\n{\n  filled(3, 0).length == 3\n}\n"
+  )
+  assertTrue(summaryHasFailure(t) or summaryHasErrorDiag(t), "shadowed: the length is not known")
+}
+
+test "a statement's facts hold for the obligations after it (#8394)" {
+  assertDischarged(
+    "func f(x: in buffer[Int], i: in Int): Int\n  ensures: true\n{\n  assert(i >= 0 and i < x.length)\n  x[i]\n}\n",
+    "assert-then-index"
+  )
+  assertDischarged(
+    halfDecl() +
+      "func f(n: in Int): Int\n  requires: n >= 2\n  ensures: true\n{\n  val h = half(n)\n  10 / (h + 1)\n}\n",
+    "callee-ensures-then-divide"
+  )
+  // Never the other way: a later statement's facts do not reach back.
+  assertRefuted(
+    "func f(x: in buffer[Int], i: in Int): Int\n  ensures: true\n{\n  val v = x[i]\n  assert(i >= 0 and i < x.length)\n  v\n}\n",
+    "later-assert-does-not-reach-back"
+  )
+}
+
+test "a nested element write stores the changed inner array back (#8394)" {
+  val sig = "func f(x: in array[2, array[3, Int]]): Int\n"
+  assertDischarged(sig + "  ensures: result == 7\n{\n  var a = x\n  a[1][2] = 7\n  a[1][2]\n}\n", "write-then-read")
+  assertDischarged(
+    sig + "  ensures: result == x[1][1]\n{\n  var a = x\n  a[1][2] = 7\n  a[1][1]\n}\n",
+    "same-row-other-element"
+  )
+  assertDischarged(
+    sig + "  ensures: result == x[0][2]\n{\n  var a = x\n  a[1][2] = 7\n  a[0][2]\n}\n",
+    "other-row-unchanged"
+  )
+  assertDischarged(
+    sig + "  ensures: result == x[1][2]\n{\n  var a = x\n  a[1][2] = 7\n  x[1][2]\n}\n",
+    "copy-unchanged"
+  )
+  assertRefuted(sig + "  ensures: true\n{\n  var a = x\n  a[1][3] = 7\n  0\n}\n", "inner-out-of-range")
+  assertRefuted(sig + "  ensures: true\n{\n  var a = x\n  a[2][0] = 7\n  0\n}\n", "outer-out-of-range")
+  assertRefuted(
+    "type Small = Int range 0 ..= 10\nfunc f(x: in array[2, array[3, Small]]): Int\n  ensures: true\n{\n  var a = x\n" +
+      "  a[0][0] = 11\n  0\n}\n",
+    "inner-element-range"
+  )
+  assertDischarged(
+    "func f(x: in buffer[array[2, Int]]): Int\n  requires: x.length > 0\n  ensures: result == 4\n{\n  var b = x\n" +
+      "  b[0][1] = 4\n  b[0][1]\n}\n",
+    "buffer-of-arrays"
+  )
+}
+
 test "a type named `buffer` in scope is not the built-in buffer (#8394)" {
   // The user's own `buffer` is an ordinary record datatype, as the checker
   // has it.

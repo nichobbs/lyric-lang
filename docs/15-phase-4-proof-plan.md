@@ -276,8 +276,8 @@ Lyric.Verifier/
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read, or the result of a call to one of the record's own methods, is instantiated at the receiver's type arguments (#8356: a call of a record-body method is applied by the method's contract and, if `@pure`, its body, with the record's type parameters instantiated at the receiver's); a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
-| `array[N, T]`, `slice[T]` | the preamble datatype `(Lyric!Seq T)`: a length `Seq!len` and the elements `Seq!elems : (Array Int T)` | every value has `length >= 0`, an `array[N, T]` with a literal `N` has `length == N`; `xs[i]` on an array or a slice is `(select (Seq!elems xs) i)`, with the element type's range and width; `a[i] = v` makes `a` the same length with `(store (Seq!elems a) i v)`. The length is part of the value: over an element sort with one value (`Unit`) every SMT array is the same array, so a length computed from the elements would make two sequences of different lengths contradictory (#8394). SMT `=` on two `Lyric!Seq` values also compares the elements past their lengths; that costs completeness but not soundness, since nothing constrains a position past the length and every access carries its bounds obligation |
-| `buffer[T]`               | `(Lyric!Seq T)`, as an array, under a sort of its own (`SBuffer`) | where no type named `buffer` is in scope (declared, imported by name, or possibly brought in by a whole-package import outside `Std.*`), the checker's rule; otherwise `buffer[T]` is the user's type. `b[i]` is `(select (Seq!elems b) i)` with the element type's width and the bounds obligation against the runtime length; `b[i] = v` stores, as for an array. A copy, an `in` argument and a `spawn` are values of their own (docs/01 §2.7), so no other binding sees a write. The length changes only when the variable takes another buffer (`grow`, `truncate`, an assignment), so a loop or an `out`/`inout` argument that may change the variable keeps no length. `==` fails closed: the language defines no buffer equality (#8394). A buffer that a `Std.Buffer` function returns (`filled`, `fromSlice`, `grow`, `truncate`) is not yet a sequence term, so an index or `.length` on it fails closed (`V0033`, #8753) |
+| `array[N, T]`, `slice[T]` | the preamble datatype `(Lyric!Seq T)`: a length `Seq!len` and the elements `Seq!elems : (Array Int T)` | every value has `length >= 0`, an `array[N, T]` with a literal `N` has `length == N`; `xs[i]` on an array or a slice is `(select (Seq!elems xs) i)`, with the element type's range and width; `a[i] = v` makes `a` the same length with `(store (Seq!elems a) i v)`, and `a[i][j] = v` on an array of arrays stores the changed inner array back into `a`, with a bounds obligation at each level and the innermost element type's range obligation. The length is part of the value: over an element sort with one value (`Unit`) every SMT array is the same array, so a length computed from the elements would make two sequences of different lengths contradictory (#8394). SMT `=` on two `Lyric!Seq` values also compares the elements past their lengths; that costs completeness but not soundness, since nothing constrains a position past the length and every access carries its bounds obligation |
+| `buffer[T]`               | `(Lyric!Seq T)`, as an array, under a sort of its own (`SBuffer`) | where no type named `buffer` is in scope (declared, imported by name, or possibly brought in by a whole-package import outside `Std.*`), the checker's rule; otherwise `buffer[T]` is the user's type. `b[i]` is `(select (Seq!elems b) i)` with the element type's width and the bounds obligation against the runtime length; `b[i] = v` stores, as for an array. A copy, an `in` argument and a `spawn` are values of their own (docs/01 §2.7), so no other binding sees a write. The length changes only when the variable takes another buffer (`grow`, `truncate`, an assignment), so a loop or an `out`/`inout` argument that may change the variable keeps no length. `==` fails closed: the language defines no buffer equality (#8394). A buffer that a `Std.Buffer` function returns is the value its `ensures:` clauses describe: `filled(n, v)` has length `n` and every element `v`, `grow(b, n, f)` the elements of `b` then `f`, `truncate(b, n)` the first `n` elements of `b`, `fromSlice`, `view` and `toSlice` the lengths they state (#8753). An element write to a binding whose element type the verifier does not know (an unannotated binding a call initialises, whose element type may be a range type) fails closed with `V0026`; an annotation (`var b: buffer[Int] = filled(n, 0)`) gives the type |
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
 | function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise the call site's own result; `==`/`!=` on function values fail closed (#8109) |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
@@ -392,11 +392,34 @@ body's own obligations as separate goals, so a failed proof points to
 "the body does not preserve the invariant" rather than the lump "the
 loop is wrong."
 
-`for x in xs invariant: ι { S }` desugars to a `while` where the
-implicit iterator state is `(remaining: slice[T], processed: slice[T])`
-and the iteration step is `(processed.append(x), remaining.tail)`.
-The user-written invariant is conjoined with the implicit
-`xs == processed ++ remaining`.
+`for x in xs invariant: ι { S }` over an array, slice or buffer is the
+`while` over a hidden index into a hidden snapshot of `xs` (#8394):
+
+```
+val s = xs
+var k = 0
+while k < s.length invariant: 0 <= k and k <= s.length and ι {
+  val x = s[k]
+  S
+  k = k + 1
+}
+```
+
+The loop iterates the value `xs` has when it starts (docs/01 §2.7), so
+the snapshot is a binding no statement of `S` can reach, and a write to
+`xs` in the body changes neither the iteration nor its bounds. The hidden
+index cannot be named, so `ι` speaks of the variables in scope around the
+loop, and it is checked before `x` is bound; a property that needs the
+position (`t == sum of the first k elements`) is written as a `while` over
+an index. The pattern binds as a `val` pattern does. The index step
+`k + 1` stays below the length, which is an `Int`, so under
+`checked_arithmetic` it carries no overflow obligation a proof can fail.
+A `for` over a range, a `List`, a `Map` or any other value fails closed
+(`V0026`), as do `break` and `continue` in its body. The earlier sketch of
+this encoding, an iterator state `(remaining, processed)` with the
+implicit invariant `xs == processed ++ remaining`, is equivalent
+(`processed` is `s[0 ..< k]`) and was not built: it needs sequence
+concatenation, which the `Lyric!Seq` model does not have.
 
 ### 5.4 Overflow
 

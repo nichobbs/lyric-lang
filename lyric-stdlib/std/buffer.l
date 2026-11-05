@@ -13,6 +13,11 @@
 //! members, and they are usable only in this package.  `list.__lyric_buffer_from_list()`
 //! initialises a binding annotated with its `buffer[T]` type, which is where the
 //! dotnet and JVM lowering reads the element type from.
+//!
+//! The `ensures:` clauses state each result's length and, where the result
+//! is a buffer, its elements.  `lyric prove` applies them at a call (#8753);
+//! the element clauses quantify over indices, so a runtime-checked build
+//! skips them (W0002) and checks the lengths.
 @runtime_checked
 @pure
 package Std.Buffer
@@ -25,6 +30,7 @@ pub func filled[T](count: in Int, value: in T): buffer[T]
   where T: Plain
   requires: count >= 0
   ensures: result.length == count
+  ensures: forall (i: Int) where 0 <= i and i < count implies result[i] == value
 {
   val items: List[T] = newListWithCapacity(count)
   var i = 0
@@ -84,6 +90,8 @@ pub func grow[T](b: in buffer[T], length: in Int, fill: in T): buffer[T]
   where T: Plain
   requires: length >= b.length
   ensures: result.length == length
+  ensures: forall (i: Int) where 0 <= i and i < b.length implies result[i] == b[i]
+  ensures: forall (i: Int) where b.length <= i and i < length implies result[i] == fill
 {
   val dst: List[T] = newListWithCapacity(length)
   var i = 0
@@ -105,6 +113,7 @@ pub func truncate[T](b: in buffer[T], length: in Int): buffer[T]
   where T: Plain
   requires: length >= 0 and length <= b.length
   ensures: result.length == length
+  ensures: forall (i: Int) where 0 <= i and i < length implies result[i] == b[i]
 {
   val dst: List[T] = newListWithCapacity(length)
   var i = 0

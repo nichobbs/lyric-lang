@@ -123,7 +123,9 @@ pub func goalsForFileInScope(
     calleeDecls,
     calleeDiags
   )
-  registerImportedFunctions(file, pscope.imports, pscope.siblings.functions, callees)
+  val bufferBuiltin = not monadNameShadowed(file, "buffer") and siblingsKnown and
+    not siblingTypeNames.contains("buffer")
+  registerImportedFunctions(file, pscope.imports, pscope.siblings.functions, bufferBuiltin, callees)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -217,7 +219,7 @@ pub func goalsForFileInScope(
     }
     mi = mi + 1
   }
-  if not monadNameShadowed(file, "buffer") and siblingsKnown and not siblingTypeNames.contains("buffer") {
+  if bufferBuiltin {
     distinctMap.add(builtinBufferKey(), TypeExpr(kind = TUnit, span = file.packageDecl.path.span))
   }
 

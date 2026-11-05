@@ -188,7 +188,10 @@ func calleeSortInfoAt(env: in VEnv, decl: in FunctionDecl, targs: in List[Sort],
   if targs.count == 0 {
     si
   } else {
-    si.copy(sort = substSortParams(si.sort, typeParamNames(decl), targs))
+    // A type argument's range is not in its sort, so an element type that a
+    // type parameter gives is not known at the instance (#8753).
+    val unknown: List[SortInfo] = newList()
+    si.copy(sort = substSortParams(si.sort, typeParamNames(decl), targs), elem = unknown)
   }
 }
 

@@ -25,11 +25,13 @@ pub func runtimeArrayLength(): Int = 0 - 1
 /// Whether evaluating `e` twice is harmless: a buffer access reads the
 /// receiver's length as well as its element, so its receiver must be a
 /// variable, a field path or an element of one selected by a literal or
-/// variable (T0174).
+/// variable (T0174).  `result` in an `ensures:` clause is one: the contract
+/// elaborator binds the returned value to a local (#8753).
 pub func bufferReceiverIsStable(e: in Expr): Bool {
   match e.kind {
     case EPath(_) -> true
     case ESelf -> true
+    case EResult -> true
     case EParen(inner) -> bufferReceiverIsStable(inner)
     case EMember(recv, _) -> bufferReceiverIsStable(recv)
     case EIndex(recv, idxs) -> idxs.count == 1 and bufferReceiverIsStable(recv) and
