@@ -5461,7 +5461,7 @@ func maybeUnknownTypeParamMethodDiag(
       for b in sc.bounds {
         if b.name == tvName {
           for cname in b.constraints {
-            if not (isPlainMarker(cname) or isKnownDeriveMarker(cname)) {
+            if not (isPlainMarker(cname) or isSendMarker(cname) or isKnownDeriveMarker(cname)) {
               match constraintInterfaceSym(tbl, cname) {
                 case Some(ifaceSym) -> match ifaceSym.kind {
                   case DKInterface(ifaceId, _) -> {
@@ -11108,6 +11108,16 @@ func checkBoundsSatisfied(
             var why = ""
             if isPlainMarker(cname) {
               match plainViolation(tbl, concreteTy) {
+                case None -> {
+                  satisfied = true
+                }
+                case Some(reason) -> {
+                  why = ": " + reason
+                }
+              }
+            } else if isSendMarker(cname) {
+              val noBounds: List[ResolvedBound] = newList()
+              match sendViolation(tbl, noBounds, concreteTy) {
                 case None -> {
                   satisfied = true
                 }
@@ -17546,6 +17556,7 @@ func moduleValReadType(
     }
   }
   restoreScope(tbl, saved)
+  sendNoteModuleRead(tbl, sym.name, t)
   t
 }
 
@@ -18708,6 +18719,7 @@ func inferExprCore(
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           recordAsyncCallSite(tbl, e.span, sig.isAsync and not sig.isGenerator)
           recordEffectCallSite(tbl, e.span, sig, fn)
+          sendNoteCall(tbl, e.span, sig, calleeText(fn), args, argTypes, memberRecvTy, false)
           recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
           if callArgsHaveHoistHazard(args) {
             recordHoistedCallArgs(sc, tbl, args, argTypes, sigExpectedArgTypes(sig, None, args, argTypes))
@@ -18864,6 +18876,19 @@ func inferExprCore(
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
+                  match mp.fullSig {
+                    case Some(fullForSend) -> sendNoteCall(
+                      tbl,
+                      e.span,
+                      fullForSend,
+                      calleeText(fn),
+                      args,
+                      argTypes,
+                      memberRecvTy,
+                      false
+                    )
+                    case None -> sendNoteCall(tbl, e.span, mp.sig, calleeText(fn), args, argTypes, memberRecvTy, true)
+                  }
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
                   val mpHazard = callArgsHaveHoistHazard(args)
@@ -19316,6 +19341,7 @@ func inferExprCore(
     }
     case ESpawn(inner) -> {
       val result = inferExpr(sc, tbl, sigs, diag, inner)
+      checkSpawnSendable(sc, tbl, diag, inner)
       recordTaskHandleTypeAt(tbl, result, e.span)
       taskType(result)
     }

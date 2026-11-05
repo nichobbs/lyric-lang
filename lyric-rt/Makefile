@@ -69,7 +69,7 @@ TEST_LIBS := -lpthread -ldl
 SAN_CC ?= clang
 
 # What the scheduler test needs when it is compiled from source under a sanitizer.
-ASYNC_SANITIZED_SRCS := src/lyric_async.c src/lyric_rt.c src/lyric_weak.c src/lyric_posix.c \
+ASYNC_SANITIZED_SRCS := src/lyric_async.c src/lyric_parallel.c src/lyric_rt.c src/lyric_weak.c src/lyric_posix.c \
                         src/lyric_string.c src/lyric_collections.c
 
 .PHONY: all test test-asan test-asan-async test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows wasmhost test-wasmhost

@@ -17655,40 +17655,6 @@ func lowerFunctionEnv(
       )
     )
     ctx.curAsyncTask.add("coro.task")
-    // Deferred start (docs/67 G8, multi-threaded scheduler): a `spawn` call
-    // site raised the spawn hint just before this ramp, and when the
-    // scheduler runs on several threads `lyric_task_defer_start` consumes it
-    // and queues the task, so the first suspend point here hands the whole
-    // body to a worker.  With the default single-threaded scheduler it
-    // always returns 0 and the task stays hot.
-    body.add(
-      NCall(
-        dest = "coro.defer",
-        retTy = NI32,
-        fn = NGlobal(name = "lyric_task_defer_start"),
-        args = arg1(p8, NLocal(name = "coro.task"))
-      )
-    )
-    body.add(
-      NICmp(
-        dest = "coro.defer.b",
-        pred = INe,
-        ty = NI32,
-        a = NLocal(name = "coro.defer"),
-        b = NLitInt(v = 0i64, ty = NI32)
-      )
-    )
-    body.add(NCondBr(cond = NLocal(name = "coro.defer.b"), thenLabel = "coro.defer.susp", elseLabel = "coro.defer.cont"))
-    body.add(NLabel(name = "coro.defer.susp"))
-    val dsArgs: List[NArg] = newList()
-    dsArgs.add(NArg(ty = NToken, value = NLitTokenNone))
-    dsArgs.add(NArg(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
-    body.add(NCall(dest = "coro.ds", retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = dsArgs))
-    val dsCases: List[NSwitchCase] = newList()
-    dsCases.add(NSwitchCase(matchVal = 0i64, label = "coro.defer.cont"))
-    dsCases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
-    body.add(NSwitch(ty = NI8, scrutinee = NLocal(name = "coro.ds"), defaultLabel = "coro.exit", cases = dsCases))
-    body.add(NLabel(name = "coro.defer.cont"))
   }
   // Parameters land in allocas so `var`-style reads/writes and address
   // uniformity hold; mem2reg cleans this up at -O1+.  `in` params are
@@ -17796,6 +17762,43 @@ func lowerFunctionEnv(
       }
       rpi = rpi + 1
     }
+    // Deferred start (docs/67 G8, multi-threaded scheduler): a `spawn` call
+    // site raised the spawn hint just before this ramp, and when the
+    // scheduler runs on several threads `lyric_task_defer_start` consumes it
+    // and queues the task, so the first suspend point here hands the whole
+    // body to a worker.  With the single-threaded scheduler it always
+    // returns 0 and the task stays hot.  It comes after the parameter
+    // retains above: the spawner regains control at this suspend and may
+    // release a temporary argument (`spawn f("a" + b)`) before a worker
+    // runs the body (D404).
+    body.add(
+      NCall(
+        dest = "coro.defer",
+        retTy = NI32,
+        fn = NGlobal(name = "lyric_task_defer_start"),
+        args = arg1(p8, NLocal(name = "coro.task"))
+      )
+    )
+    body.add(
+      NICmp(
+        dest = "coro.defer.b",
+        pred = INe,
+        ty = NI32,
+        a = NLocal(name = "coro.defer"),
+        b = NLitInt(v = 0i64, ty = NI32)
+      )
+    )
+    body.add(NCondBr(cond = NLocal(name = "coro.defer.b"), thenLabel = "coro.defer.susp", elseLabel = "coro.defer.cont"))
+    body.add(NLabel(name = "coro.defer.susp"))
+    val dsArgs: List[NArg] = newList()
+    dsArgs.add(NArg(ty = NToken, value = NLitTokenNone))
+    dsArgs.add(NArg(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+    body.add(NCall(dest = "coro.ds", retTy = NI8, fn = NGlobal(name = "llvm.coro.suspend"), args = dsArgs))
+    val dsCases: List[NSwitchCase] = newList()
+    dsCases.add(NSwitchCase(matchVal = 0i64, label = "coro.defer.cont"))
+    dsCases.add(NSwitchCase(matchVal = 1i64, label = "coro.cleanup"))
+    body.add(NSwitch(ty = NI8, scrutinee = NLocal(name = "coro.ds"), defaultLabel = "coro.exit", cases = dsCases))
+    body.add(NLabel(name = "coro.defer.cont"))
   }
   val tailWant: Option[NType] = match retTy { case NVoid -> None; case rt -> Some(value = rt) }
   val tail = match fn.body {

@@ -125,6 +125,7 @@ import Std.String
 // =====================================================================
 // Extern types — JDK classes the helpers below reference.
 // =====================================================================
+@sendable
 extern type JHttpServer = "com.sun.net.httpserver.HttpServer"
 
 pub extern type HttpContext = "com.sun.net.httpserver.HttpExchange"
@@ -133,6 +134,7 @@ extern type JHeaders = "com.sun.net.httpserver.Headers"
 
 extern type JInetSocketAddress = "java.net.InetSocketAddress"
 
+@sendable
 extern type JQueue = "java.util.concurrent.LinkedBlockingQueue"
 
 extern type JExecutors = "java.util.concurrent.Executors"

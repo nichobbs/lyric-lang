@@ -313,39 +313,41 @@ test "early return from a scope drains the scope's defer, value preserved" {
 // computed from the task's ACTUAL first wake, so scheduler jitter far
 // below 20ms cannot reorder the events.
 test "two spawned sleepers interleave: effect order proves genuine concurrency" {
-  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
-    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
     "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, 20, 60)\n" +
     "    val b = spawn worker(log, 2, 40, 90)\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 1021112 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "log order 1,2,11,12: worker 2's first wake lands between worker 1's wakes")
 }
 
 // The same interleaving program under ASan: coroutine frame alloc/free,
-// task refcounts, and the List shared across suspended frames must all
-// balance.
+// task refcounts, and the protected log shared across suspended frames must
+// all balance.
 test "interleaving sleepers are leak-free under ASan" {
-  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
-    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
     "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, 20, 60)\n" +
     "    val b = spawn worker(log, 2, 40, 90)\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 1021112 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)
   assertEqualInt(r.exitCode, 77, "the interleaving run is clean under AddressSanitizer")
@@ -510,7 +512,8 @@ test "async runCapture: coroutine capture returns the child's output through the
 // capture blocked the scheduler thread.
 test "two spawned runCaptures interleave: the shorter child completes first" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
-    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, secs: in String): Unit {\n" +
     "  val args: List[String] = newList()\n" +
     "  args.add(\"-c\")\n" +
     "  args.add(\"sleep \" + secs)\n" +
@@ -518,13 +521,13 @@ test "two spawned runCaptures interleave: the shorter child completes first" {
     "  log.add(tag)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, \"0.35\")\n" +
     "    val b = spawn worker(log, 2, \"0.1\")\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 201 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "the 0.1s capture completes before the 0.35s capture spawned first")
@@ -534,7 +537,8 @@ test "two spawned runCaptures interleave: the shorter child completes first" {
 // Strings crossing the pump-loop suspends must all balance.
 test "interleaved runCaptures are leak-free under ASan" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
-    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, secs: in String): Unit {\n" +
     "  val args: List[String] = newList()\n" +
     "  args.add(\"-c\")\n" +
     "  args.add(\"sleep \" + secs + \"; echo t\" + tag.toString())\n" +
@@ -542,13 +546,13 @@ test "interleaved runCaptures are leak-free under ASan" {
     "  log.add(tag)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, \"0.35\")\n" +
     "    val b = spawn worker(log, 2, \"0.1\")\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 201 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)
   assertEqualInt(r.exitCode, 77, "overlapped captures are clean under AddressSanitizer")

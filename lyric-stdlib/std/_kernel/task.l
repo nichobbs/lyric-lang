@@ -122,10 +122,16 @@ import Std.Core
 import Std.Errors
 import Std.CollectionsHost
 
+@axiom("System.Threading.Tasks.Task is safe to use from several threads at once, as its .NET documentation states")
+@sendable
 extern type Task = "System.Threading.Tasks.Task"
 
+@axiom("System.Threading.CancellationToken is safe to use from several threads at once, as its .NET documentation states")
+@sendable
 extern type CancellationToken = "System.Threading.CancellationToken"
 
+@axiom("System.Threading.CancellationTokenSource is safe to use from several threads at once, as its .NET documentation states")
+@sendable
 extern type CancellationTokenSource = "System.Threading.CancellationTokenSource"
 
 extern type AsyncLocal[T] = "System.Threading.AsyncLocal`1"

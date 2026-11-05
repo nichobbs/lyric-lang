@@ -909,6 +909,9 @@ void       lyric_spawn_hint(void);
 int32_t    lyric_task_defer_start(LyricTask* t);
 void       lyric_ramp_done(void);
 int32_t    lyric_async_threads(void);
+/* The processors this process may run on (`sysconf(_SC_NPROCESSORS_ONLN)`,
+ * `GetActiveProcessorCount`), clamped to [1, 256]; 1 on wasm32-wasi. */
+int32_t    lyric_processor_count(void);
 /* Drive the scheduler until `root` completes (sync-context await). */
 void       lyric_task_block_on(LyricTask* root);
 /* Run every ready task without blocking (host-driven event loops).  Returns -1

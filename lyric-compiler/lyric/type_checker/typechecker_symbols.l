@@ -171,6 +171,35 @@ pub record MutableModuleVal {
   what: String
 }
 
+/// A module-level `val` of a non-`Send` type read by a function body (D404).
+pub record SendModuleRead {
+  name: String
+  ty: String
+  why: String
+}
+
+/// One argument of a resolved call, for T0225 (D404): `label` names it in a
+/// diagnostic (`argument 'xs'`, `the receiver`).
+pub record SendCallArg {
+  label: String
+  ty: Type
+  mode: ParamMode
+}
+
+/// A resolved call, keyed by its span in `SymbolTable.sendCallInfo`.
+pub record SendCallInfo {
+  calleeKey: String
+  calleeName: String
+  args: List[SendCallArg]
+}
+
+/// A `spawn` of a resolved call, for T0226 (D404).
+pub record SendSpawnSite {
+  calleeKey: String
+  calleeName: String
+  span: Span
+}
+
 /// A call to a generic dot-named function: the function's name, and whether
 /// it was written as a method call, whose receiver becomes the first
 /// argument (`b.get()`), rather than through the type (`Box.get(b)`).
@@ -706,6 +735,21 @@ pub record SymbolTable {
   /// or other extern host object, or a protected-type instance.
   /// `Lyric.Pipeline` reports them in a package that may not do I/O (Y0007).
   mutableModuleVals: List[MutableModuleVal]
+  /// The `spawn` rules (D404).  `sendFnStack` holds the key (`sendFnKey`) of
+  /// the function whose body is being checked; `sendCallEdges` maps it to
+  /// the keys of the functions its body calls, `sendModuleReads` to the
+  /// module-level values of a non-`Send` type it reads, `sendCallInfo` holds
+  /// each resolved call's callee and argument types by the call's span, and
+  /// `sendSpawns` every spawned call, for T0226 once every body is checked.
+  sendFnStack: List[String] = newList()
+  sendFnNames: Map[String, String] = newMap()
+  sendCallEdges: Map[String, List[String]] = newMap()
+  sendModuleReads: Map[String, List[SendModuleRead]] = newMap()
+  sendCallInfo: Map[String, SendCallInfo] = newMap()
+  sendSpawns: List[SendSpawnSite] = newList()
+  /// Whether the package being checked is annotated `@axiom`, where
+  /// `@sendable` may be asserted (T0227).
+  sendAxiomPackage: List[Bool] = newList()
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like

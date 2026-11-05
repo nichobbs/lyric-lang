@@ -1760,7 +1760,9 @@ pub func checkFunctionBody(
   if valueGeneric {
     tbl.valueGenericBodies.add(1)
   }
+  sendEnterFn(tbl, sig, fn.name)
   checkFunctionBodyAt(tbl, sigs, diag, fn, sig, extraLocals, selfFieldLocals, selfChecked, selfType)
+  sendLeaveFn(tbl)
   if valueGeneric {
     tbl.valueGenericBodies.removeAt(tbl.valueGenericBodies.count - 1)
   }

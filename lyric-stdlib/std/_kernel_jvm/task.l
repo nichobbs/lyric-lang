@@ -79,6 +79,8 @@ package Std.Task
 import Std.Core
 import Std.CollectionsHost
 
+@axiom("java.util.concurrent.atomic.AtomicBoolean is safe to use from several threads at once, as its JDK documentation states")
+@sendable
 extern type JAtomicBoolean = "java.util.concurrent.atomic.AtomicBoolean"
 
 extern type JAtomicReference = "java.util.concurrent.atomic.AtomicReference"

@@ -2078,8 +2078,9 @@ flowing un-awaited into a value position); sibling cancellation and
 failure aggregation are not applicable on native — a failing task
 aborts the process (panics abort, D-N-003).
 
-**Multi-threaded scheduler (D217).** A native program started with
-`LYRIC_ASYNC_THREADS=N` (`N >= 2`) runs coroutines on `N` threads: a
+**Multi-threaded scheduler (D217, D404).** A native program runs
+coroutines on as many threads as the processors it may use (at most
+256), or on `N` threads when started with `LYRIC_ASYNC_THREADS=N`: a
 `spawn` queues its task for a worker instead of running its body on the
 spawner, an awaited call still runs hot on the caller, and a suspended
 coroutine resumes on whichever thread completes what it waits for.
@@ -2097,8 +2098,57 @@ connections do not hold scheduler threads. TLS connections, connect, file
 I/O and `when:` barrier waits still block their thread (#8811).
 Tasks running at the same time may share mutable state only through
 `protected` types; collections and record `var` fields are
-unsynchronised. Unset or `1` keeps the cooperative single-threaded
-scheduler, which is the default.
+unsynchronised.
+`LYRIC_ASYNC_THREADS=1` selects the cooperative single-threaded
+scheduler; wasm32 always uses it.
+
+**What a spawned task may share (D404).** A spawned task runs at the
+same time as its spawner on every target, so the compiler checks what
+crosses a `spawn`. A type is **`Send`** when tasks can share one value of
+it without a race: the primitives (`String` included), `Unit` and enums;
+a distinct type or range subtype over a `Send` type; a tuple, nullable,
+`array[N, T]`, `slice[T]` or `buffer[T]` of `Send` elements; a record,
+exposed record or opaque type with no `var` field whose fields are all
+`Send`; a union whose case fields are all `Send` (so `Option[T]` and
+`Result[T, E]` follow their arguments); every `protected type`; a
+`Task[T]` handle of a `Send` `T`; and a type parameter bounded
+`where T: Send`. Collections (`List`, `Map`, `Set`) and other host
+objects, records with a `var` field, interfaces, function values and
+`NativePtr` are not `Send`. Like `Plain`, `Send` is computed from a
+type's structure: it is valid in `where` clauses, and `@derive(Send)` is
+**T0172**. A kernel that binds a host type built for sharing between
+threads (`CancellationToken`, a concurrent queue), or a record that
+guards its state with the runtime's locks, marks it `@sendable`, with an
+`@axiom("...")` on the declaration or its package saying why (docs/17
+audits it); `@sendable` on any other declaration, or without an axiom, is
+**T0227**.
+
+- **T0225** — an argument of a spawned call, or its receiver, whose type
+  is not `Send`, or that is passed `out` or `inout` (the task would
+  write the spawner's variable while the spawner runs). A `spawn` of a
+  call through a function value is T0225 too, since its captures cannot
+  be checked: spawn a named function. The message says which part of
+  the type is not `Send`; share the value through a `protected type`,
+  pass an immutable copy (a slice), or build it inside the task.
+- **T0226** — the spawned function, or a function of the same package it
+  calls directly or transitively, reads a module-level `val` whose type
+  is not `Send`. The message names the value and the call chain. Keep
+  such state in a `protected type`. Calls into other packages are not
+  followed (#8807).
+
+```
+async func total(xs: in slice[Int]): Int { ... }
+async func fill(xs: in List[Int]): Unit { ... }
+
+async func run(xs: in List[Int]): Int {
+  scope {
+    val a = spawn total(xs.toArray())   // a slice is Send
+    val b = spawn fill(xs)              // T0225: List[Int] is not Send
+    await b
+    return await a
+  }
+}
+```
 
 ### 7.5 Protected types
 

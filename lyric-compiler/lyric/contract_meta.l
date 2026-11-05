@@ -1265,7 +1265,8 @@ pub func isBuiltinMarkerName(name: in String): Bool {
     name == "Equals" or
     name == "Hash" or
     name == "Default" or
-    name == "Plain"
+    name == "Plain" or
+    name == "Send"
 }
 
 func hasAnnotationNamed(anns: in List[Annotation], name: in String): Bool {
