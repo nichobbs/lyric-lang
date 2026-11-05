@@ -655,6 +655,21 @@ func singleSegPath(name: in String): ModulePath {
   ModulePath(segments = segs, span = synSpan())
 }
 
+// The callee `fn` of a call renamed to the specialisation `name`.  A path keeps
+// its own span, which is what the checker keyed the callee's resolved
+// declaration by (`calleeSites`, D336): an alias-qualified call (`C.f`) is
+// flattened to a path whose span is its head's, not the whole expression's.
+func renamedCalleeExpr(name: in String, fn: in Expr): Expr {
+  match fn.kind {
+    case EPath(p) -> {
+      val segs: List[String] = newList()
+      segs.add(name)
+      Expr(kind = EPath(path = ModulePath(segments = segs, span = p.span)), span = fn.span)
+    }
+    case _ -> singleSegPathExpr(name, fn.span)
+  }
+}
+
 func singleSegPathExpr(name: in String, span: in Span): Expr {
   val segs: List[String] = newList()
   segs.add(name)
@@ -8213,7 +8228,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                               state.funcDecls.add(name, specDecl)
                             }
                           }
-                          val newFn = singleSegPathExpr(name, fn.span)
+                          val newFn = renamedCalleeExpr(name, fn)
                           return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                         }
                         noteUnspecialisableLocalCall(
@@ -8446,7 +8461,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           state.funcDecls.add(name, specDecl)
                         }
                       }
-                      val newFn = singleSegPathExpr(name, fn.span)
+                      val newFn = renamedCalleeExpr(name, fn)
                       return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                     }
                     if unsafeImportedFallback {
@@ -8491,7 +8506,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
             // registered for it (D-progress-946).
             val qTarget = qualifiedGenTargetMono(state, path)
             if qTarget.length > 0 {
-              return rewriteExpr(state, env, Expr(kind = ECall(fn = singleSegPathExpr(qTarget, fn.span), args = args), span = s))
+              return rewriteExpr(state, env, Expr(kind = ECall(fn = renamedCalleeExpr(qTarget, fn), args = args), span = s))
             }
             // Otherwise (a generic with no recorded origin): try the last
             // segment as a generic so `Validation.toResult(42,[])` specialises
@@ -8565,7 +8580,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         state.funcDecls.add(qName, qSpecDecl)
                       }
                     }
-                    val qNewFn = singleSegPathExpr(qName, fn.span)
+                    val qNewFn = renamedCalleeExpr(qName, fn)
                     return Expr(kind = ECall(fn = qNewFn, args = newArgs), span = s)
                   }
                 }
