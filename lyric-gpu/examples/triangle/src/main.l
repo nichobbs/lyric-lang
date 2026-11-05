@@ -40,7 +40,7 @@ func channelDiff(a: Byte, b: Byte): Int {
 }
 
 func render(d: Gpu.Device): Result[buffer[Byte], String] {
-  val target = Gpu.createRenderTarget(d, size, size)
+  val target = match Gpu.createRenderTarget(d, size, size) { case Ok(t) -> t; case Err(e) -> return Err(error = e) }
   val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, Gpu.formatRgba8, false) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
@@ -54,7 +54,8 @@ func render(d: Gpu.Device): Result[buffer[Byte], String] {
       vertexCount = 3,
       instanceCount = 1,
       firstInstance = 0,
-      scissor = None
+      scissor = None,
+      indices = None
     )
   )
   match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {

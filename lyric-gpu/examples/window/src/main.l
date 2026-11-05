@@ -61,7 +61,8 @@ func drawTo(
       vertexCount = 3,
       instanceCount = 1,
       firstInstance = 0,
-      scissor = None
+      scissor = None,
+      indices = None
     )
   )
   match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
@@ -73,12 +74,18 @@ func drawTo(
   }
 }
 
-// An unavailable frame (the window was resized or minimized) is answered by reconfiguring the
-// surface and trying again on the next iteration; any other failure ends the loop.
-func drawFrames(d: Gpu.Device, win: Window.Window, surface: Gpu.Surface, frames: Int): Result[Unit, String] {
+// A frame error is answered by `GpuWindow.recoverSurface` (reconfigure an outdated surface at the
+// window's pixel size, recreate a lost one) and the loop tries again on the next iteration; a
+// resize path must keep the surface that call returns.  Any other failure ends the loop.  The
+// loop owns the surface and releases the one it ends with.
+func drawFrames(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, frames: Int): Result[Unit, String] {
+  var surface = surface0
   val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, surface.format, false) {
     case Ok(p) -> p
-    case Err(e) -> return Err(error = e)
+    case Err(e) -> {
+      Gpu.releaseSurface(surface)
+      return Err(error = e)
+    }
   }
   var failed = false
   var reason = ""
@@ -86,12 +93,14 @@ func drawFrames(d: Gpu.Device, win: Window.Window, surface: Gpu.Surface, frames:
   var shown = false
   while frame < frames and not failed and not closeRequested() {
     match Gpu.tryAcquireFrame(d, surface) {
-      case Err(_) -> match Gpu.configureSurface(d, surface, Window.pixelSize(win).width, Window.pixelSize(win).height) {
+      case Err(e) -> match GpuWindow.recoverSurface(d, win, surface, e) {
         case Err(message) -> {
           failed = true
           reason = message
         }
-        case Ok(_) -> ()
+        case Ok(next) -> {
+          surface = next
+        }
       }
       case Ok(None) -> ()
       case Ok(Some(target)) -> match drawTo(d, surface, pipeline, target) {
@@ -106,29 +115,31 @@ func drawFrames(d: Gpu.Device, win: Window.Window, surface: Gpu.Surface, frames:
     frame = frame + 1
   }
   Gpu.releaseRenderPipeline(pipeline)
+  Gpu.releaseSurface(surface)
   if failed then Err(error = reason) else Ok(value = ())
 }
 
+func modeName(m: Gpu.PresentMode): String {
+  match m {
+    case Fifo -> "Fifo"
+    case FifoRelaxed -> "FifoRelaxed"
+    case Mailbox -> "Mailbox"
+    case Immediate -> "Immediate"
+  }
+}
+
+// The device is opened on an adapter that can present to the window.  The surface asks for
+// `Mailbox` and falls back to `Fifo` where the surface does not offer it; either is printed.
 func run(win: Window.Window, frames: Int): Int {
-  val pixels = Window.pixelSize(win)
-  val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.surfaceFor(d, win) {
+  val body: (Gpu.Device, Gpu.Surface) -> Int = { d: Gpu.Device, surface: Gpu.Surface ->
+    Console.println("surface format " + surface.format.toString())
+    Console.println("present mode " + modeName(surface.presentMode))
+    match drawFrames(d, win, surface, frames) {
+      case Ok(_) -> 0
       case Err(message) -> fail(message)
-      case Ok(created) -> match Gpu.configureSurface(d, created, pixels.width, pixels.height) {
-        case Err(message) -> fail(message)
-        case Ok(surface) -> {
-          Console.println("surface format " + surface.format.toString())
-          val outcome = drawFrames(d, win, surface, frames)
-          Gpu.releaseSurface(surface)
-          match outcome {
-            case Ok(_) -> 0
-            case Err(message) -> fail(message)
-          }
-        }
-      }
     }
   }
-  match Gpu.withDevice(body) {
+  match GpuWindow.withWindowDevice(win, Gpu.PresentMode.Mailbox, body) {
     case Err(message) -> fail(message)
     case Ok(rc) -> rc
   }

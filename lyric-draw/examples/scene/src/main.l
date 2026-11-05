@@ -136,7 +136,7 @@ func render(d: Gpu.Device, lib: Text.TextLib, latin: String, cjk: String): Resul
   title.add(match loadFont(lib, 2, cjk, 18) { case Ok(f) -> f; case Err(e) -> return Err(error = e) })
   body.add(match loadFont(lib, 3, latin, 14) { case Ok(f) -> f; case Err(e) -> return Err(error = e) })
   body.add(match loadFont(lib, 4, cjk, 14) { case Ok(f) -> f; case Err(e) -> return Err(error = e) })
-  val target = Gpu.createRenderTarget(d, width, height)
+  val target = match Gpu.createRenderTarget(d, width, height) { case Ok(t) -> t; case Err(e) -> return Err(error = e) }
   val painter = match Draw.newPainter(d, Gpu.formatRgba8) { case Ok(p) -> p; case Err(e) -> return Err(error = e) }
   Draw.beginFrame(painter, width, height)
   match paint(painter, title, body) {
@@ -190,7 +190,10 @@ func stress(d: Gpu.Device, lib: Text.TextLib, latin: String, cjk: String): Int {
   val fonts: List[Text.Font] = newList()
   fonts.add(match loadFont(lib, 1, latin, 16) { case Ok(f) -> f; case Err(e) -> return fail(e) })
   fonts.add(match loadFont(lib, 2, cjk, 16) { case Ok(f) -> f; case Err(e) -> return fail(e) })
-  val target = Gpu.createRenderTarget(d, stressWidth, stressHeight)
+  val target = match Gpu.createRenderTarget(d, stressWidth, stressHeight) {
+    case Ok(t) -> t
+    case Err(e) -> return fail(e)
+  }
   val painter = match Draw.newPainter(d, Gpu.formatRgba8) { case Ok(p) -> p; case Err(e) -> return fail(e) }
   val sentence = "The quick brown fox jumps over the lazy dog. مرحبا بالعالم 你好世界，这是文字测试。 "
   var page = ""

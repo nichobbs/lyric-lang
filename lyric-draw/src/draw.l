@@ -107,8 +107,8 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }
-  val sampler = G.createSampler(d, true)
-  val nearest = G.createSampler(d, false)
+  val sampler = match G.createSampler(d, true) { case Ok(x) -> x; case Err(e) -> return Err(error = e) }
+  val nearest = match G.createSampler(d, false) { case Ok(x) -> x; case Err(e) -> return Err(error = e) }
   val white = match G.createTexture(d, 1, 1, Buf.fromSlice([255u8, 255u8, 255u8, 255u8])) {
     case Ok(t) -> t
     case Err(e) -> return Err(error = e)
@@ -118,8 +118,14 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
     case Ok(t) -> t
     case Err(e) -> return Err(error = e)
   }
-  val view = G.createBuffer(d, 16, G.usageUniform + G.usageCopyDst)
-  val instances = G.createBuffer(d, (initialCapacity * floatsPerInstance * 4).toLong(), G.usageStorage + G.usageCopyDst)
+  val view = match G.createBuffer(d, 16, G.usageUniform + G.usageCopyDst) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = e)
+  }
+  val instances = match G.createBuffer(d, (initialCapacity * floatsPerInstance * 4).toLong(), G.usageStorage + G.usageCopyDst) {
+    case Ok(x) -> x
+    case Err(e) -> return Err(error = e)
+  }
   Ok(
     value = Painter(
       device = d,
@@ -580,8 +586,12 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
     while next < count {
       next = next * 2
     }
+    val grown = match G.createBuffer(p.device, (next * floatsPerInstance * 4).toLong(), G.usageStorage + G.usageCopyDst) {
+      case Ok(x) -> x
+      case Err(e) -> return Err(error = e)
+    }
     G.releaseBuffer(p.instances)
-    p.instances = G.createBuffer(p.device, (next * floatsPerInstance * 4).toLong(), G.usageStorage + G.usageCopyDst)
+    p.instances = grown
     p.capacity = next
   }
   var values = Buf.filled(p.data.count, 0.0f32)
@@ -590,11 +600,17 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
     values[i] = p.data[i]
     i = i + 1
   }
-  G.writeFloats(p.device, p.instances, 0, values)
+  match G.writeFloats(p.device, p.instances, 0, values) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
   var viewData = Buf.filled(4, 0.0f32)
   viewData[0] = target.width.toFloat()
   viewData[1] = target.height.toFloat()
-  G.writeFloats(p.device, p.view, 0, viewData)
+  match G.writeFloats(p.device, p.view, 0, viewData) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
 
   val groups: Map[Long, G.BindGroup] = newMap()
   val draws: List[G.Draw] = newList()
@@ -628,7 +644,8 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
         vertexCount = 6,
         instanceCount = b.count,
         firstInstance = b.first,
-        scissor = b.scissor
+        scissor = b.scissor,
+        indices = None
       )
     )
   }

@@ -1,0 +1,18 @@
+# Indexed draws into a depth-tested target with back-face culling, and a mipmapped texture drawn
+# at a quarter of its size, compared with a golden image (docs/67 G5).
+[package]
+name    = "Lyric.Gpu.Examples.Layers"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Gpu.Examples.Layers"
+
+[project.packages]
+"Gpu.Examples.Layers" = "src/main.l"
+
+[dependencies]
+"Lyric.Gpu" = { path = "../.." }
+
+# A macOS build also writes a .app bundle that carries the wgpu-native dylib (docs/67 G9, D233).
+[native.app]
+identifier = "org.lyric.examples.layers"
