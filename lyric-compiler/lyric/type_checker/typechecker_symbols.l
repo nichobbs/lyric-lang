@@ -750,6 +750,11 @@ pub record SymbolTable {
   /// Whether the package being checked is annotated `@axiom`, where
   /// `@sendable` may be asserted (T0227).
   sendAxiomPackage: List[Bool] = newList()
+  /// The ids of the types some declaration marks `@sendable`, and the
+  /// symbol count they were collected at (`declaredSendable` rebuilds the set
+  /// when more symbols have been added since).
+  sendableIds: Map[String, Bool] = newMap()
+  sendableIdsAt: List[Int] = newList()
   /// The declaring package and name (`Pkg.Sub.Name`) of the record, union,
   /// opaque, protected or distinct type each field-access or method-call receiver
   /// has, keyed like

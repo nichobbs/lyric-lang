@@ -3761,6 +3761,46 @@ test "@sendable needs an axiom, and applies only to extern types, records and op
   assertTrue(not hasDiagCode(r, "T0227") and not hasDiagCode(r, "T0225"), "an asserted type is Send: " + diagCodesOf(r))
 }
 
+// The receiver of a spawned method call and named arguments are labelled by
+// what they bind, whichever way the call is written.
+test "T0225: receivers and named arguments of a spawned call" {
+  val inBody = checkSpawn(
+    "record Cell {\n  var n: Int\n  async func get(self: in Cell): Int {\n    self.n\n  }\n}\n",
+    "    val c = Cell(n = 1)\n    val h = spawn c.get()\n    await h\n"
+  )
+  assertTrue(hasDiagCode(inBody, "T0225"), "a method declared in the type: " + diagCodesOf(inBody))
+  assertTrue(diagMessagesContain(inBody, "the receiver"), "names the receiver: " + diagMessageFor(inBody, "T0225"))
+  val ufcs = checkSpawn(
+    "record Cell { var n: Int }\nasync func Cell.peek(c: in Cell, k: in Int): Int {\n  k\n}\n",
+    "    val c = Cell(n = 1)\n    val h = spawn c.peek(2)\n    await h\n"
+  )
+  assertTrue(
+    diagMessagesContain(ufcs, "the receiver"),
+    "a dot-named function called as a method: " + diagMessageFor(ufcs, "T0225")
+  )
+  assertTrue(
+    not diagMessagesContain(ufcs, "argument 'k'"),
+    "the Int argument is Send: " + diagMessageFor(ufcs, "T0225")
+  )
+  val valueRecv = checkSpawn(
+    "record Pt {\n  x: Int\n  async func norm(self: in Pt): Int {\n    self.x\n  }\n}\n",
+    "    val p = Pt(x = 3)\n    val h = spawn p.norm()\n    await h\n"
+  )
+  assertTrue(not hasDiagCode(valueRecv, "T0225"), "a value receiver is Send: " + diagCodesOf(valueRecv))
+  val named = checkSpawn(
+    "async func two(a: in Int, xs: in List[Int]): Unit {\n}\n",
+    "    val l: List[Int] = newList()\n    val h = spawn two(xs = l, a = 1)\n    await h\n"
+  )
+  assertTrue(
+    diagMessagesContain(named, "argument 'xs'"),
+    "a named argument out of order: " + diagMessageFor(named, "T0225")
+  )
+  assertTrue(
+    not diagMessagesContain(named, "argument 'a'"),
+    "the Int stays unflagged: " + diagMessageFor(named, "T0225")
+  )
+}
+
 test "T0225: a spawned call of a function value" {
   val src = "package P\nasync func run(f: in () -> Int): Unit {\n  scope {\n    val h = spawn f()\n    await h\n  }\n}\n"
   val r = parseCheck(src)

@@ -25,21 +25,37 @@ pub func sendableMark(): String = "@sendable"
 
 // Whether any declaration of `tid` asserts `@sendable`.  One host type can be
 // declared in several packages and still be one type (`externTypeDefPath`).
+// Every module-value read asks, so the marked ids are collected as symbols
+// are added (the table only grows) rather than by a scan per question.
 func declaredSendable(tbl: in SymbolTable, tid: in SymbolId): Bool {
-  for sym in tbl.symbols {
-    val id = match sym.kind {
-      case DKExternType(i, _) -> Some(value = i)
-      case DKRecord(i, _) -> Some(value = i)
-      case DKExposedRec(i, _) -> Some(value = i)
-      case DKOpaque(i, _) -> Some(value = i)
-      case _ -> None
+  val n = tbl.symbols.count
+  val from = if tbl.sendableIdsAt.count == 0 { 0 } else { tbl.sendableIdsAt[0] }
+  if from < n {
+    var idx = from
+    while idx < n {
+      val sym = tbl.symbols[idx]
+      if sym.derives.contains(sendableMark()) {
+        val id = match sym.kind {
+          case DKExternType(i, _) -> Some(value = i)
+          case DKRecord(i, _) -> Some(value = i)
+          case DKExposedRec(i, _) -> Some(value = i)
+          case DKOpaque(i, _) -> Some(value = i)
+          case _ -> None
+        }
+        match id {
+          case Some(i) -> if not tbl.sendableIds.containsKey(toString(i.id)) { tbl.sendableIds.add(toString(i.id), true) }
+          case None -> ()
+        }
+      }
+      idx = idx + 1
     }
-    match id {
-      case Some(i) -> if symbolIdEq(i, tid) and sym.derives.contains(sendableMark()) { return true }
-      case None -> ()
+    if tbl.sendableIdsAt.count == 0 {
+      tbl.sendableIdsAt.add(n)
+    } else {
+      tbl.sendableIdsAt[0] = n
     }
   }
-  false
+  tbl.sendableIds.containsKey(toString(tid.id))
 }
 
 /// `None` when `t` is `Send`; otherwise why it is not.  `bounds` are the

@@ -2134,7 +2134,8 @@ audits it); `@sendable` on any other declaration, or without an axiom, is
   calls directly or transitively, reads a module-level `val` whose type
   is not `Send`. The message names the value and the call chain. Keep
   such state in a `protected type`. Calls into other packages are not
-  followed (#8807).
+  followed (#8807), and closures run by `Std.Task` or `Std.Parallel`
+  are not checked (#8808).
 
 ```
 async func total(xs: in slice[Int]): Int { ... }
