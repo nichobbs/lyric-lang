@@ -5030,6 +5030,76 @@ func collectBModeArgsFieldDiags(items: in List[Item]): List[Diagnostic] {
   diags
 }
 
+func importPathKey(imp: in ImportDecl): String {
+  segmentsJoin(imp.path.segments)
+}
+
+/// `imports` plus what the spliced advice of each template in `origins` needs
+/// to resolve in the consuming package (D392): the template's own package and
+/// every package its file imports, as the consumer would have to write them.
+/// An `import extern` is copied as written (its alias is the type name); any
+/// other import is added whole, without selector or alias, unless the
+/// consumer already imports that package.
+func withTemplateScopeImports(
+  imports: in List[ImportDecl],
+  consumerPkg: in String,
+  origins: in Map[String, CollectedTemplate],
+): List[ImportDecl] {
+  val result: List[ImportDecl] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for imp in imports {
+    result.add(imp)
+    if not imp.isExtern {
+      seen.add(importPathKey(imp), true)
+    }
+  }
+  for name in mapKeys(origins) {
+    match mapGet(origins, name) {
+      case Some(tpl) -> {
+        val tplScope = tpl.nameScope
+        if tplScope.pkg.length > 0 and tplScope.pkg != consumerPkg and not seen.containsKey(tplScope.pkg) {
+          seen.add(tplScope.pkg, true)
+          result.add(
+            ImportDecl(
+              path = ModulePath(segments = splitPackagePath(tplScope.pkg), span = tpl.decl.span),
+              selector = None,
+              asAlias = None,
+              isPubUse = false,
+              isExtern = false,
+              span = tpl.decl.span
+            )
+          )
+        }
+        for imp in tplScope.imports {
+          if imp.isExtern {
+            result.add(imp)
+          } else if not seen.containsKey(importPathKey(imp)) and importPathKey(imp) != consumerPkg {
+            seen.add(importPathKey(imp), true)
+            result.add(imp.copy(selector = None, asAlias = None, isPubUse = false))
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  result
+}
+
+func splitPackagePath(pkg: in String): List[String] {
+  val parts: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i < pkg.length {
+    if pkg.substring(i, 1) == "." {
+      parts.add(pkg.substring(start, i - start))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  parts.add(pkg.substring(start, pkg.length - start))
+  parts
+}
+
 /// Weave a SourceFile with cross-package aspect template resolution (#3414).
 /// Before running the standard weave, resolves `from`-instance aspects whose
 /// templates are found in `templates` by synthesising concrete `AspectDecl`
@@ -5079,12 +5149,13 @@ pub func weaveFileWithDiagsAndTemplates(
     allDiags.add(wr.diagnostics[di])
     di = di + 1
   }
+  val imports = if early { withTemplateScopeImports(file0.imports, pkgPath, resolvedFI.origins) } else { file0.imports }
   val newFile = SourceFile(
     moduleDoc = file0.moduleDoc,
     files = file0.files,
     fileAnnotations = file0.fileAnnotations,
     packageDecl = file0.packageDecl,
-    imports = file0.imports,
+    imports = imports,
     items = wr.items,
     span = file0.span
   )
