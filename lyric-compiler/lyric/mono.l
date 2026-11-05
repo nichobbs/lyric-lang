@@ -1667,7 +1667,7 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
 
 // The subset of `typeParams` `subst` has NOT yet bound, in declaration
 // order (#5970). Fed into `hasOpaqueErasureUnsafeGenericParam` right before
-// the imported-generic Object-defaulting fallback would otherwise fill them.
+// the call rewriter's erased-default fallback would otherwise fill them.
 func collectUnpinnedTypeParams(typeParams: in List[String], subst: in Map[String, TypeExpr]): List[String] {
   val acc: List[String] = newList()
   var i = 0
@@ -9069,9 +9069,10 @@ func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: i
   // A ZERO-ARGUMENT call to a GENERIC function (e.g. `newMap()`, `newList()`,
   // `newSet()`) can pin none of its type parameters from real argument
   // evidence — every one of them is necessarily filled by
-  // `inferReturnFromName`'s Object-defaulting fallback (#5604's own
-  // "importedFill" mechanism), so the "trust the callee's instantiation"
-  // rationale this function exists for does not apply: there is no real
+  // `inferReturnFromName`'s Object-defaulting fallback (#5604; deleted in
+  // D382, the checker reports an unpinned argument as T0224), so the
+  // "trust the callee's instantiation" rationale this function exists for
+  // does not apply: there is no real
   // instantiation to trust, only an all-`Object` placeholder.  Worse, these
   // three constructors are never actually monomorphised — codegen
   // intrinsically inlines them using the surrounding CONTEXT HINT (the
