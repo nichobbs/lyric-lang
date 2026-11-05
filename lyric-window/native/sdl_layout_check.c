@@ -15,7 +15,10 @@ CHECK("window high pixel density", SDL_WINDOW_HIGH_PIXEL_DENSITY == 8192);
 CHECK("default playback device", SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK == 0xFFFFFFFFu);
 
 CHECK("quit", SDL_EVENT_QUIT == 256);
+CHECK("window moved", SDL_EVENT_WINDOW_MOVED == 517);
 CHECK("window resized", SDL_EVENT_WINDOW_RESIZED == 518);
+CHECK("window focus gained", SDL_EVENT_WINDOW_FOCUS_GAINED == 526);
+CHECK("window focus lost", SDL_EVENT_WINDOW_FOCUS_LOST == 527);
 CHECK("window close requested", SDL_EVENT_WINDOW_CLOSE_REQUESTED == 528);
 CHECK("key down", SDL_EVENT_KEY_DOWN == 768);
 CHECK("key up", SDL_EVENT_KEY_UP == 769);

@@ -34,6 +34,7 @@ on:
       - 'lyric-unicode/**'
       - 'lyric-unicode-dict/**'
       - 'lyric-draw/**'
+      - 'lyric-access/**'
       - 'benchmarks/**'
       - 'scripts/ci/build-sdl3.sh'
       - 'scripts/ci/text-examples-e2e.sh'
@@ -43,6 +44,9 @@ on:
       - 'scripts/ci/window-examples-e2e.sh'
       - 'scripts/ci/game-examples-e2e.sh'
       - 'scripts/ci/ui-native-e2e.sh'
+      - 'scripts/ci/build-accesskit.sh'
+      - 'scripts/ci/atspi-smoke.py'
+      - 'scripts/ci/access-platform-e2e.sh'
       - 'scripts/ci/parallel-e2e.sh'
       - 'scripts/ci/async-mt-e2e.sh'
       - 'scripts/ci/native-plugin-e2e.sh'
@@ -252,6 +256,18 @@ jobs:
         shell: bash
         run: LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/bench-vec3-alloc.sh
 
+      # docs/67 G10: lyric-access's kernel, request layout and NSAccessibility adapter on a Cocoa
+      # window.  No macOS client reads the tree here: a hosted runner grants no Accessibility
+      # permission (#8799).
+      - name: lyric-access NSAccessibility adapter (arm64-apple-darwin)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="$RUNNER_TEMP/sdl3/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export DYLD_LIBRARY_PATH="$RUNNER_TEMP/sdl3/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          LYRIC_BIN="$LYRIC_BIN" bash scripts/ci/access-platform-e2e.sh
+
   linux-arm64:
     needs: [managed]
     runs-on: ubuntu-24.04-arm
@@ -357,9 +373,18 @@ jobs:
         if: always()
         run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/game-examples-e2e.sh
 
+      # accesskit-c's release archive has no Linux arm64 library, so lyric-access links a source
+      # build (scripts/ci/build-accesskit.sh --source, Rust from the runner image).
+      - name: Cache AccessKit
+        if: always()
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/accesskit
+          key: accesskit-linux-arm64-${{ hashFiles('scripts/ci/build-accesskit.sh') }}
+
       - name: Native lyric-ui host
         if: always()
-        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" bash scripts/ci/ui-native-e2e.sh
+        run: LYRIC_BIN="$LYRIC_BIN" SDL3_PREFIX="$RUNNER_TEMP/sdl3" ACCESSKIT_PREFIX="$RUNNER_TEMP/accesskit" bash scripts/ci/ui-native-e2e.sh
 
       # #8563 items 4 and 5.  ThreadSanitizer maps shadow memory at fixed addresses, which a high
       # ASLR entropy setting can collide with; the step prints the value it found and lowers it

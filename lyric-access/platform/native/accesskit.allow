@@ -1,0 +1,62 @@
+# What lyric bindgen binds from <accesskit.h> (accesskit-c 0.23.2): nodes, tree updates and the
+# platform adapters.  Each target's file is generated from the same list; an adapter's functions
+# exist only in its own platform's parse, so they are named by pattern.  Regenerate with (from
+# lyric-access/, the header from the release archive, see lyric.toml):
+#   lyric bindgen native/accesskit_bindings.h --package Access.Kernel.Accesskit --allow native/accesskit.allow \
+#     --library accesskit -o src/_kernel/accesskit_linux.l --cfg 'target_os = "linux"' -I <include dir>
+#   lyric bindgen native/accesskit_bindings.h --package Access.Kernel.Accesskit --allow native/accesskit.allow \
+#     --library accesskit -o src/_kernel/accesskit_macos.l --cfg 'target_os = "macos"' \
+#     --triple aarch64-apple-darwin -I <include dir>                                (on a macOS host)
+#   lyric bindgen native/accesskit_bindings.h --package Access.Kernel.Accesskit --allow native/accesskit.allow \
+#     --library accesskit -o src/_kernel/accesskit_windows.l --cfg 'target_os = "windows"' \
+#     --triple x86_64-pc-windows-msvc -I <include dir>                              (on a Windows host)
+accesskit_node_new
+accesskit_node_push_child
+accesskit_node_add_action
+accesskit_node_set_label
+accesskit_node_set_description
+accesskit_node_set_value
+accesskit_node_set_level
+accesskit_node_set_toggled
+accesskit_node_set_expanded
+accesskit_node_set_live
+accesskit_node_set_modal
+accesskit_node_set_disabled
+accesskit_node_set_invalid
+accesskit_node_set_required
+accesskit_node_set_read_only
+accesskit_node_set_sort_direction
+accesskit_node_set_row_count
+accesskit_node_set_column_count
+accesskit_node_set_row_index
+accesskit_node_set_column_index
+accesskit_node_set_bounds
+accesskit_node_set_character_lengths
+accesskit_node_set_text_selection
+accesskit_tree_info_new
+accesskit_tree_info_set_toolkit_name
+accesskit_tree_info_set_toolkit_version
+accesskit_tree_update_with_capacity_and_focus
+accesskit_tree_update_push_node
+accesskit_tree_update_set_tree_info
+accesskit_action_request_free
+accesskit_unix_adapter_new*
+accesskit_unix_adapter_free*
+accesskit_unix_adapter_set_root_window_bounds*
+accesskit_unix_adapter_update_if_active*
+accesskit_unix_adapter_update_window_focus_state*
+accesskit_macos_subclassing_adapter_for_window*
+accesskit_macos_subclassing_adapter_free*
+accesskit_macos_subclassing_adapter_update_if_active*
+accesskit_macos_subclassing_adapter_update_view_focus_state*
+accesskit_macos_queued_events_raise*
+accesskit_windows_subclassing_adapter_new*
+accesskit_windows_subclassing_adapter_free*
+accesskit_windows_subclassing_adapter_update_if_active*
+accesskit_windows_queued_events_raise*
+ACCESSKIT_ROLE_*
+ACCESSKIT_ACTION_*
+ACCESSKIT_TOGGLED_*
+ACCESSKIT_LIVE_*
+ACCESSKIT_SORT_DIRECTION_*
+ACCESSKIT_INVALID_*

@@ -13,10 +13,19 @@
 #     stepped through by screen position and by word, saving, the toast) and
 #     compares frames drawn by wgpu-native on lavapipe with the golden images;
 #   - it then runs in a window on an X server (Xvfb): a screenshot shows the customer list, a real
-#     mouse click on a customer opens the edit screen, and real typing changes the name.
+#     mouse click on a customer opens the edit screen, and real typing changes the name;
+#   - accessibility (lyric-access, AccessKit 0.23.2): the generated AccessKit kernel matches the
+#     header, the request layout the adapter reads matches it too, Access.Plan's tests pass, the
+#     `--check` run drives assistive-technology requests through the host, the lyric-access smoke
+#     program attaches an adapter, and the app runs again in a D-Bus session with the AT-SPI bus
+#     enabled while scripts/ci/atspi-smoke.py reads its tree over AT-SPI and clicks, focuses and
+#     sets text the way a screen reader does.
 #
 # Needs SDL3 built with --x11 (scripts/ci/build-sdl3.sh), xvfb, x11-apps, xdotool, imagemagick, lavapipe,
-# FreeType/HarfBuzz and DejaVu fonts.  It does not need libwebview: only the desktop host calls it, and a
+# FreeType/HarfBuzz and DejaVu fonts; at-spi2-core, python3-gi and gir1.2-atspi-2.0 (installed when
+# missing).  AccessKit comes from its release archive on Linux x86-64 (`lyric restore`); on other Linux
+# hosts it is built from source (scripts/ci/build-accesskit.sh --source, needs cargo) into
+# $ACCESSKIT_PREFIX.  It does not need libwebview: only the desktop host calls it, and a
 # dependency package is lowered by reachability (#8429), so this app never links it (checked below).
 # Usage: LYRIC_BIN=<lyric> SDL3_PREFIX=<prefix> bash scripts/ci/ui-native-e2e.sh
 # ---------------------------------------------------------------------------
@@ -45,6 +54,24 @@ export LYRIC_UI_FONT_BOLD="${LYRIC_UI_FONT_BOLD:-/usr/share/fonts/truetype/dejav
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+echo "=== AccessKit: header, layout and generated kernel ==="
+accesskit_prefix="${ACCESSKIT_PREFIX:-$work/accesskit}"
+if [ "$(uname -m)" = x86_64 ]; then
+  bash scripts/ci/build-accesskit.sh "$accesskit_prefix"
+else
+  # The release archive has no Linux library for this architecture: lyric-access finds a source
+  # build with pkg-config.
+  bash scripts/ci/build-accesskit.sh --source "$accesskit_prefix"
+  export PKG_CONFIG_PATH="$accesskit_prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
+  export LD_LIBRARY_PATH="$accesskit_prefix/lib:$LD_LIBRARY_PATH"
+fi
+cc -fsyntax-only -I "$accesskit_prefix/include" lyric-access/platform/native/accesskit_layout_check.c
+(cd lyric-access/platform && "$LYRIC_BIN" bindgen native/accesskit_bindings.h --package Access.Kernel.Accesskit \
+  --allow native/accesskit.allow --library accesskit -o src/_kernel/accesskit_linux.l \
+  --cfg 'target_os = "linux"' --check -I "$accesskit_prefix/include")
+echo "=== Access.Plan tests ==="
+"$LYRIC_BIN" test --manifest lyric-access/lyric.toml
+
 echo "=== Ui.Native.Core tests ==="
 "$LYRIC_BIN" test --manifest lyric-ui/native/lyric.toml
 echo "=== lyric-unicode: Unicode's conformance suites (BidiCharacterTest.txt, LineBreakTest.txt 15.1) on native ==="
@@ -72,8 +99,18 @@ if nm -D "$work/customers" 2>/dev/null | grep -q 'webview_'; then
   exit 1
 fi
 
-echo "=== scripted headless run against the golden frames ==="
-SDL_VIDEODRIVER=offscreen "$work/customers" --check "$golden"
+echo "=== scripted headless run against the golden frames, and assistive-technology requests ==="
+check_out="$(SDL_VIDEODRIVER=offscreen "$work/customers" --check "$golden")"
+echo "$check_out"
+echo "$check_out" | grep -q "^native ui accessibility check passed" || { echo "::error::the accessibility scenario did not pass"; exit 1; }
+
+echo "=== lyric-access smoke: an adapter on a window ==="
+smoke=lyric-access/platform/examples/smoke/lyric.toml
+"$LYRIC_BIN" restore --manifest "$smoke"
+"$LYRIC_BIN" build --target native --manifest "$smoke" -o "$work/access-smoke"
+smoke_out="$(SDL_VIDEODRIVER=offscreen "$work/access-smoke")"
+echo "$smoke_out"
+echo "$smoke_out" | grep -q "^adapter: detached" || { echo "::error::the lyric-access smoke program failed"; exit 1; }
 
 cat > "$work/session.sh" <<SESSION
 #!/usr/bin/env bash
@@ -136,4 +173,54 @@ if changed2 < 300:
     sys.exit("typing did not change the screen (%d sampled pixels differ)" % changed2)
 print("the live window reacted to a click (%d) and to typing (%d)" % (changed, changed2))
 PY
+echo "=== the customers example over AT-SPI (D-Bus session, Xvfb) ==="
+if ! command -v dbus-run-session >/dev/null || ! command -v gdbus >/dev/null || [ ! -x /usr/libexec/at-spi-bus-launcher ]; then
+  sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq at-spi2-core dbus libglib2.0-bin python3-gi gir1.2-atspi-2.0
+fi
+atspi_py=""
+for candidate in /usr/bin/python3 /usr/bin/python3.12 /usr/bin/python3.13 /usr/bin/python3.11 python3; do
+  if command -v "$candidate" >/dev/null && "$candidate" -I -c "import gi; gi.require_version('Atspi', '2.0'); from gi.repository import Atspi" 2>/dev/null; then
+    atspi_py="$candidate"
+    break
+  fi
+done
+[ -n "$atspi_py" ] || {
+  sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-gi gir1.2-atspi-2.0
+  atspi_py=/usr/bin/python3
+}
+
+cat > "$work/a11y-session.sh" <<SESSION
+#!/usr/bin/env bash
+set -uo pipefail
+# The AT-SPI bus, enabled as a screen reader enables it: AccessKit's adapter stays idle until
+# org.a11y.Status.IsEnabled is true.
+/usr/libexec/at-spi-bus-launcher --launch-immediately > "$work/a11y-bus.log" 2>&1 &
+for _ in \$(seq 1 100); do
+  gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress >/dev/null 2>&1 && break
+  sleep 0.1
+done
+gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \\
+  --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled '<true>' >/dev/null
+"$work/customers" > "$work/a11y-app.out" 2>&1 &
+pid=\$!
+for _ in \$(seq 1 150); do
+  grep -q '^presented' "$work/a11y-app.out" 2>/dev/null && break
+  kill -0 \$pid 2>/dev/null || break
+  sleep 0.1
+done
+"$atspi_py" -I "$REPO_ROOT/scripts/ci/atspi-smoke.py" customers "Acme Pty Ltd"
+rc=\$?
+kill \$pid 2>/dev/null || true
+wait \$pid 2>/dev/null || true
+exit \$rc
+SESSION
+chmod +x "$work/a11y-session.sh"
+if ! SDL_VIDEODRIVER=x11 xvfb-run -a -s "-screen 0 1280x800x24" dbus-run-session -- "$work/a11y-session.sh"; then
+  echo "--- the app's output ---"
+  cat "$work/a11y-app.out" || true
+  echo "::error::the AT-SPI smoke test failed"
+  exit 1
+fi
+
 echo "native lyric-ui e2e passed"

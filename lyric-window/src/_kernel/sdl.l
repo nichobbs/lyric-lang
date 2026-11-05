@@ -518,10 +518,16 @@ pub extern func SDL_SetWindowTitle(window: NativePtr[Byte], title: NativePtr[Byt
 pub extern func SDL_GetWindowTitle(window: NativePtr[Byte]): NativePtr[Byte] = "SDL_GetWindowTitle"
 
 @library("SDL3")
+pub extern func SDL_GetWindowPosition(window: NativePtr[Byte], x: NativePtr[Int], y: NativePtr[Int]): Byte = "SDL_GetWindowPosition"
+
+@library("SDL3")
 pub extern func SDL_SetWindowSize(window: NativePtr[Byte], w: Int, h: Int): Byte = "SDL_SetWindowSize"
 
 @library("SDL3")
 pub extern func SDL_GetWindowSize(window: NativePtr[Byte], w: NativePtr[Int], h: NativePtr[Int]): Byte = "SDL_GetWindowSize"
+
+@library("SDL3")
+pub extern func SDL_GetWindowBordersSize(window: NativePtr[Byte], top: NativePtr[Int], left: NativePtr[Int], bottom: NativePtr[Int], right: NativePtr[Int]): Byte = "SDL_GetWindowBordersSize"
 
 @library("SDL3")
 pub extern func SDL_GetWindowSizeInPixels(window: NativePtr[Byte], w: NativePtr[Int], h: NativePtr[Int]): Byte = "SDL_GetWindowSizeInPixels"

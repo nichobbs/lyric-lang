@@ -2,7 +2,8 @@
 # (docs/65 §13.3, docs/67 phase G10).
 #
 #   Ui.Native.Paint   the painter: boxes from Ui.Native.Layout drawn with lyric-draw and lyric-text
-#   Ui.Native.Run     the frame loop on lyric-window and lyric-gpu, and a headless renderer
+#   Ui.Native.Run     the frame loop on lyric-window and lyric-gpu, the accessibility adapter
+#                     (lyric-access), and a headless renderer
 #
 # The same `route(url): Option[Instance]` an application gives `Ui.Host.Web` or
 # `Ui.Host.Desktop` runs here unchanged: `Native.run(config, route)`.  `--target native` only.
@@ -30,3 +31,4 @@ output_assembly = "Lyric.Ui.Native.dll"
 "Lyric.Gpu"            = { path = "../../../lyric-gpu" }
 "Lyric.Draw"           = { path = "../../../lyric-draw" }
 "Lyric.Text"           = { path = "../../../lyric-text" }
+"Lyric.Access"         = { path = "../../../lyric-access/platform" }

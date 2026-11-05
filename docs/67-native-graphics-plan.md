@@ -28,10 +28,13 @@ clean, which also fixed a race in the protected-type monitor), and the coroutine
 tasks is multi-threaded by default (D217: `LYRIC_ASYNC_THREADS=N`, `spawn` started
 on workers, ThreadSanitizer and AddressSanitizer clean; D403: per-thread deques with work stealing and a
 task-throughput benchmark; D405: an I/O reactor so socket waits park only their task; D404: the compile-time
-`Send` check, T0225-T0227, and one scheduler thread per processor as the default). G10 is implemented except accessibility (D203, D268: the native
+`Send` check, T0225-T0227, and one scheduler thread per processor as the default). G10 is implemented (D203, D268: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
-the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489 (bidirectional text in single-line inputs, caret affinity and word movement are in D413; dictionary breaking of Thai, Lao, Khmer and Myanmar remains, #8497), and
+the accessibility tree is built host-free (D214) and published through AccessKit by `lyric-access` (D376:
+AT-SPI on Linux, checked by an AT-SPI client in CI; UI Automation on Windows, checked by a UI Automation
+client; NSAccessibility on macOS, attached but not yet read by a client, so the macOS screen-reader smoke
+test of the exit criterion remains, #8799); bidirectional text in single-line inputs, caret affinity and word movement are in D413; dictionary breaking of Thai, Lao, Khmer and Myanmar remains, #8497, and
 pruning the libraries of unused dependency kernels from the link, #8429). D268 also fixed two native
 backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
 enum-case patterns over two enums sharing a case name (#8421).

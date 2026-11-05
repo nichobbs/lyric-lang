@@ -24,6 +24,9 @@ func describe(e: Window.Event): String {
     case Quit -> "quit"
     case WindowCloseRequested(w) -> "close-requested"
     case WindowResized(w, width, height) -> "resized " + width.toString() + "x" + height.toString()
+    case WindowMoved(w, x, y) -> "moved " + x.toString() + "," + y.toString()
+    case WindowFocusGained(w) -> "focus gained"
+    case WindowFocusLost(w) -> "focus lost"
     case KeyDown(w, key, scancode, modifiers, repeat) -> "key-down " + key.toString() + " scancode " +
       scancode.toString() +
       " mods " +
