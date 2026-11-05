@@ -4202,24 +4202,26 @@ test "an array's or slice's length is part of its value, not a function of its e
   )
 }
 
-test "an element read is select of an array's elements, a slice's is a value of its own (#8394)" {
+test "an element read is select of an array's or a slice's elements (#8394, #8730)" {
   assertDischarged("func f(a: in array[3, Int]): Bool\n  ensures: result\n{\n  a[0] == a[0]\n}\n", "same-element-twice")
   assertDischarged(
     "func first(a: in array[3, Int]): Int\n  requires: a[0] > 0\n  ensures: result > 0\n{\n  a[0]\n}\n",
     "element-in-a-contract"
   )
-  // A slice's element is a value of its own at each read: its storage is
-  // shared by every binding of it and a kernel extern may fill it in place.
-  assertRefuted(
+  // A slice's elements never change (T0157, D400), so a contract can speak of
+  // them and two reads around a call agree.
+  assertDischarged(
     "func at(xs: in slice[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.length and xs[i] == 4\n  ensures: result == 4\n{\n  xs[i]\n}\n",
-    "slice-element-not-a-value"
+    "slice-element-in-a-contract"
   )
-  // A kernel extern may fill a slice in place (`streamReadInto`), so two
-  // reads around a call need not agree.
-  assertRefuted(
+  assertDischarged(
     "func g(xs: in slice[Int]): Unit {\n}\nfunc f(xs: in slice[Int]): Bool\n  requires: xs.length > 0\n" +
       "  ensures: result\n{\n  val before = xs[0]\n  g(xs)\n  before == xs[0]\n}\n",
     "slice-read-around-a-call"
+  )
+  assertRefuted(
+    "func f(xs: in slice[Int]): Bool\n  requires: xs.length > 1\n  ensures: result\n{\n  xs[0] == xs[1]\n}\n",
+    "different-slice-elements"
   )
   assertDischarged(
     "type Small = Int range 0 ..= 10\nfunc f(xs: in slice[Small]): Bool\n  requires: xs.length > 0\n  ensures: result\n{\n  xs[0] <= 10\n}\n",

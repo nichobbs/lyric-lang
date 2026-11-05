@@ -913,10 +913,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
     }
 
     // `xs[i]` panics unless `0 <= i < xs.length`, so a read is an obligation
-    // (#8157).  An array's element is `select` of its elements (#8394); a
-    // slice's and a `String`'s is a fresh value.  An array's or slice's
-    // element is a value of the element type when the receiver's type is
-    // known.
+    // (#8157).  An array's, buffer's or slice's element is `select` of its
+    // elements (#8394, #8730); a `String`'s is a fresh value.  An array's or
+    // slice's element is a value of the element type when the receiver's
+    // type is known.
     case EIndex(receiver, indices) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
       val diags: List[Diagnostic] = newList()
@@ -962,11 +962,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         sc.add(mkAnd(inRange))
         // An array's or buffer's element is the value's own: each binding
         // holds a copy, changed only by a write through it (#8394).  A
-        // slice's element is a value of its own at each read: every binding
-        // of a slice shares its storage, and a kernel extern may fill it in
-        // place (`streamReadInto`), so two reads need not agree.  Its length
-        // does not change.
-        val elemTerm = if isOwnedSequenceSort(recvSort) {
+        // slice's elements never change: Lyric code cannot write one (T0157)
+        // and no kernel extern writes a slice Lyric code holds (D400, #8730).
+        val isSlice = match recvSort { case SSlice(_) -> true; case _ -> false }
+        val elemTerm = if isOwnedSequenceSort(recvSort) or isSlice {
           TBuiltin(op = BOpSliceIndex, args = termList2(rR.term, it))
         } else {
           freshVar(env, "elem", elemSort)
