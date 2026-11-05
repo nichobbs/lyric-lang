@@ -17058,6 +17058,7 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
   while i < keys.count {
     match mapGet(tbl.unsolvedCallSites, keys[i]) {
       case Some(site) -> if site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
+        CensusConsole.error("DBGW " + site.callKey + " open=" + (if tbl.openBindingSites.containsKey(site.callKey) { "y" } else { "n" }) + " keys=" + joinStrs(mapKeys(tbl.openBindingSites), ";"))
         diag.add(
           warningDiagnostic(
             "W0038",
@@ -20683,6 +20684,13 @@ func inferExprExpectedCore(
         }
         TySlice(element = elemTy)
       } else {
+        // The literal is typed bottom-up, but each element is still a value
+        // of the slice's element type (D380).
+        if typeIsClosed(elemTy) {
+          for el in elems {
+            noteCallExpected(tbl, el, elemTy)
+          }
+        }
         inferExpr(sc, tbl, sigs, diag, e)
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
