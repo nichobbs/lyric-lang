@@ -123,6 +123,7 @@ test "a call the checker resolves another way is reported until its route record
   val census = calleeCensus(ctx, callSitesOf(file))
   assertEqualInt(census.count, 1, "the built-in call has no callee yet")
   assertTrue(census[0].startsWith("I0002"), "reported as I0002")
+  assertTrue(census[0].contains("call at 2:"), "names the call's position")
 }
 
 test "a method call has its callee recorded under the call's node id" {
