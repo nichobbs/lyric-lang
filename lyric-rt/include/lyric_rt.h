@@ -468,6 +468,10 @@ int32_t lyric_rmdir(const char* path);
  * ns <= 0), resuming after a signal interrupts it. */
 void lyric_sleep_nanos(int64_t ns);
 
+/* Give up the rest of the calling thread's time slice (a no-op on
+ * single-threaded wasm32-wasi). */
+void lyric_thread_yield(void);
+
 /* sizeof(pthread_mutex_t) for the running platform, so protected-type
  * codegen can size the inline mutex slot without a hardcoded table. */
 int32_t lyric_mutex_size(void);
@@ -851,10 +855,12 @@ typedef struct LyricTask {
     int64_t result;           /* 64-bit slot, valid when COMPLETE        */
     int32_t result_is_ref;    /* 0 scalar, 1 strong ref, 2 weak ref (#5545), 3 failed host task (result is the message String) */
     int64_t wake_deadline_ns; /* monotonic deadline while SLEEPING       */
-    struct LyricTask* waiters; /* tasks parked on this task's completion */
+    _Atomic(struct LyricTask*) waiters; /* lock-free stack of tasks parked on this task's completion; 1 once closed */
     struct LyricTask* next;    /* intrusive link (ready/sleeper/waiter)  */
     int32_t park_kind;         /* multi-threaded: registration recorded, not yet published */
     struct LyricTask* park_dep; /* the task a PARK_AWAIT registration waits on */
+    int32_t counted;           /* multi-threaded: included in the scheduler's ready-or-running count */
+    _Atomic int32_t joined;    /* multi-threaded: a lyric_task_block_on caller may be parked waiting for it */
 } LyricTask;
 
 /* Fresh rc=1 RUNNING task (called in the coroutine prologue). */

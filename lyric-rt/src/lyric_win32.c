@@ -617,6 +617,10 @@ int32_t lyric_rmdir(const char* path) {
 /* A high-resolution waitable timer sleeps for the requested time; Sleep()
  * rounds up to the scheduler tick (15.6 ms by default), which would make
  * every short async timer or `Time.sleep` up to a tick late. */
+void lyric_thread_yield(void) {
+    (void)SwitchToThread();
+}
+
 void lyric_sleep_nanos(int64_t ns) {
     if (ns <= 0) return;
     HANDLE t = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);

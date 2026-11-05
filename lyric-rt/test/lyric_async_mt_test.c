@@ -23,6 +23,7 @@
 #endif
 #include "lyric_rt.h"
 
+#include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -38,7 +39,7 @@
         }                                                                                  \
     } while (0)
 
-enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3 };
+enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3, K_FIB = 4 };
 
 typedef struct FakeCo {
     LyricTask* task;
@@ -50,6 +51,8 @@ typedef struct FakeCo {
     int64_t value;
     int sleep_ms;
     int work_us;
+    struct FakeCo* kids[2]; /* K_FIB: the two spawned subproblems */
+    pthread_t creator;
 } FakeCo;
 
 static _Atomic int inflight = 0;
@@ -65,6 +68,22 @@ static void busy_enter(FakeCo* c) {
 static void busy_leave(FakeCo* c) {
     atomic_store(&c->busy, 0);
 }
+
+/* K_FIB frames come from one pool: a destroyed frame stays allocated so its `dead` flag can be
+ * checked, and the pool is freed after the test. */
+static FakeCo* fib_pool = NULL;
+static _Atomic int fib_next = 0;
+static int fib_cap = 0;
+static _Atomic int fib_migrated = 0;
+
+static FakeCo* fib_frame(void) {
+    int i = atomic_fetch_add(&fib_next, 1);
+    CHECK(i < fib_cap);
+    return &fib_pool[i];
+}
+
+static LyricTask* co_call(struct FakeCo* c, int spawn);
+static void co_init(struct FakeCo* c, int kind, struct FakeCo* dep, int64_t value, int sleep_ms, int work_us);
 
 static void spin_us(int us) {
     struct timespec t0, t1;
@@ -115,6 +134,42 @@ static void body(FakeCo* c) {
         lyric_task_complete(c->task, lyric_task_result(c->dep->task) + 100, 0);
         c->step = -1;
         return;
+    case K_FIB:
+        /* Recursive fork-join: spawn fib(n-1) and fib(n-2), await both.  Most children are
+         * stolen by idle threads from the bottom of their spawner's deque. */
+        if (c->step == 0) {
+            if (!pthread_equal(c->creator, pthread_self())) {
+                atomic_fetch_add(&fib_migrated, 1);
+            }
+            if (c->value < 2) {
+                lyric_task_complete(c->task, c->value, 0);
+                c->step = -1;
+                return;
+            }
+            for (int k = 0; k < 2; k++) {
+                FakeCo* kid = fib_frame();
+                co_init(kid, K_FIB, NULL, c->value - 1 - k, 0, 0);
+                c->kids[k] = kid;
+                co_call(kid, 1);
+            }
+            c->step = 1;
+        }
+        while (c->step == 1 || c->step == 2) {
+            FakeCo* kid = c->kids[c->step - 1];
+            if (!lyric_task_is_complete(kid->task)) {
+                lyric_async_await(c->task, kid->task);
+                return;
+            }
+            c->step++;
+        }
+        {
+            int64_t sum = lyric_task_result(c->kids[0]->task) + lyric_task_result(c->kids[1]->task);
+            lyric_release(c->kids[0]->task);
+            lyric_release(c->kids[1]->task);
+            lyric_task_complete(c->task, sum, 0);
+            c->step = -1;
+        }
+        return;
     default:
         CHECK(0);
     }
@@ -162,6 +217,9 @@ static void co_init(FakeCo* c, int kind, FakeCo* dep, int64_t value, int sleep_m
     c->value = value;
     c->sleep_ms = sleep_ms;
     c->work_us = work_us;
+    c->kids[0] = NULL;
+    c->kids[1] = NULL;
+    c->creator = pthread_self();
 }
 
 static int64_t now_ms(void) {
@@ -337,6 +395,34 @@ static void test_dropped_handles(void) {
     free(sentinel);
 }
 
+/* Fine-grained recursive fork-join: thousands of tasks spawned from every thread, almost all of
+ * them taken from the oldest end of another thread's deque (work stealing, #8493). */
+static void test_fork_join_steal(void) {
+    enum { N = 18, FRAMES = 2 * 4181 * 2 + 16 }; /* fib(18) spawns 2 * fib(19) - 2 tasks */
+    reset_counters();
+    for (int round = 0; round < 3; round++) {
+        fib_cap = FRAMES;
+        fib_pool = (FakeCo*)calloc(FRAMES, sizeof(FakeCo));
+        atomic_store(&fib_next, 0);
+        atomic_store(&fib_migrated, 0);
+        atomic_store(&destroyed_count, 0);
+        FakeCo* root = fib_frame();
+        co_init(root, K_FIB, NULL, N, 0, 0);
+        LyricTask* rt = co_call(root, 1);
+        lyric_task_block_on(rt);
+        CHECK(lyric_task_result(rt) == 2584);
+        lyric_release(rt);
+        int frames = atomic_load(&fib_next);
+        CHECK(frames == 2 * 4181 - 1);
+        CHECK(wait_destroyed(frames));
+        if (sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
+            CHECK(atomic_load(&fib_migrated) > 0); /* other threads ran spawned children */
+        }
+        free(fib_pool);
+        fib_pool = NULL;
+    }
+}
+
 int main(void) {
     setenv("LYRIC_ASYNC_THREADS", "4", 1);
     CHECK(lyric_async_threads() == 1);
@@ -347,6 +433,7 @@ int main(void) {
     test_chain();
     test_nested_block_on();
     test_dropped_handles();
+    test_fork_join_steal();
     printf("lyric_async_mt_test: all tests passed\n");
     return 0;
 }
