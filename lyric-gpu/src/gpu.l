@@ -496,6 +496,44 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   if ptrToLong(inst) == 0 {
     return Err(error = "wgpu: cannot create an instance")
   }
+  openDevice(inst, nativeNullPtr(), body)
+}
+
+/// A window-system handle a surface presents to, as `Window.nativeWindow` returns them:
+/// an X11 `Display*` and window id, a Wayland `wl_display*` and `wl_surface*`, a Win32
+/// `HINSTANCE` and `HWND`, or a macOS `CAMetalLayer*` (which must outlive the surface).
+pub union SurfaceSource {
+  case XlibSource(display: Long, window: Long)
+  case WaylandSource(display: Long, surface: Long)
+  case WindowsSource(instance: Long, hwnd: Long)
+  case MetalSource(layer: Long)
+}
+
+/// `withDevice` on an adapter that can present to `source`, which matters on a machine with
+/// more than one GPU: `withDevice` takes the first adapter, which may not reach the window's
+/// display.  `body` gets the device and an unconfigured surface for `source`; it owns the
+/// surface, configures it (`configureSurface`) and releases it (`releaseSurface`).
+@unsafe_ffi
+pub func withDeviceFor[T](source: SurfaceSource, body: (Device, Surface) -> T): Result[T, String] {
+  val inst = wgpuCreateInstance(nativeNullPtr())
+  if ptrToLong(inst) == 0 {
+    return Err(error = "wgpu: cannot create an instance")
+  }
+  val raw = rawSurface(ptrToLong(inst), source)
+  if ptrToLong(raw) == 0 {
+    wgpuInstanceRelease(inst)
+    return Err(error = "wgpu could not create a surface for this window")
+  }
+  val surface = Surface(raw = ptrToLong(raw), format = 0, width = 0, height = 0, presentMode = PresentMode.Fifo)
+  val inner: (Device) -> T = { d: Device -> body(d, surface) }
+  openDevice(inst, raw, inner)
+}
+
+// Requests an adapter (one that can present to `surface` unless it is null) and its device on
+// `inst`, runs `body`, and releases everything but `surface`, which `body` owns.  On an early
+// `Err` it releases `surface` too, before the instance.
+@unsafe_ffi
+func openDevice[T](inst: NativePtr[Byte], surface: NativePtr[Byte], body: (Device) -> T): Result[T, String] {
   val instance = ptrToLong(inst)
 
   val adapterSlot = Slot(status = 0 - 1, handle = 0, message = "")
@@ -511,9 +549,18 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
     userdata1 = onAdapter,
     userdata2 = nativeNullPtr()
   )
-  val _f = wgpuInstanceRequestAdapter(inst, nativeNullPtr(), adapterInfo)
+  var adapterOptions = WGPURequestAdapterOptions(
+    nextInChain = nativeNullPtr(),
+    featureLevel = WGPUFeatureLevel_Core,
+    powerPreference = WGPUPowerPreference_Undefined,
+    forceFallbackAdapter = 0,
+    backendType = WGPUBackendType_Undefined,
+    compatibleSurface = surface
+  )
+  val _f = wgpuInstanceRequestAdapter(inst, nativeAddrOf(adapterOptions), adapterInfo)
   if not waitSlot(instance, 0, adapterSlot) {
     // Releasing the instance cancels the request, so its callback cannot run after this call.
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
     return Err(error = "wgpu: requesting an adapter timed out")
   }
@@ -521,8 +568,10 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
     if adapterSlot.handle != 0 {
       wgpuAdapterRelease(longToPtr(adapterSlot.handle))
     }
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
-    return Err(error = "wgpu: no adapter available: " + adapterSlot.message)
+    val which = if ptrToLong(surface) == 0 then "no adapter available" else "no adapter can present to this window"
+    return Err(error = "wgpu: " + which + ": " + adapterSlot.message)
   }
 
   val errorCell = Ffi.allocate(errorCellSize)
@@ -572,6 +621,7 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
       wgpuDeviceRelease(longToPtr(deviceSlot.handle))
     }
     wgpuAdapterRelease(longToPtr(adapterSlot.handle))
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
     Ffi.release(errorCell)
     return Err(
@@ -589,6 +639,13 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   val result = body(device)
   closeDevice(device)
   Ok(value = result)
+}
+
+@unsafe_ffi
+func releaseRawSurface(surface: NativePtr[Byte]): Unit {
+  if ptrToLong(surface) != 0 {
+    wgpuSurfaceRelease(surface)
+  }
 }
 
 /// Releases the device, its queue, the adapter and the instance.  The error cell goes last:
@@ -1622,59 +1679,79 @@ func finishSurface(d: Device, raw: NativePtr[Byte]): Result[Surface, String] {
   }
 }
 
-/// A surface for an X11 window: `display` is the `Display*` and `window` the window id, as
-/// `Window.nativeWindow` returns them.  The device's adapter must be able to present to it, which
-/// holds on a machine with one GPU or a software Vulkan device.
+// A surface on `instance` for `source`, or null when wgpu cannot make one.
 @unsafe_ffi
+func rawSurface(instance: Long, source: SurfaceSource): NativePtr[Byte] {
+  val inst = longToPtr(instance)
+  match source {
+    case XlibSource(display, window) -> {
+      var chained = WGPUSurfaceSourceXlibWindow(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceXlibWindow),
+        display = longToPtr(display),
+        window = window
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case WaylandSource(display, surface) -> {
+      var chained = WGPUSurfaceSourceWaylandSurface(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
+        display = longToPtr(display),
+        surface = longToPtr(surface)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case WindowsSource(hinstance, hwnd) -> {
+      var chained = WGPUSurfaceSourceWindowsHWND(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
+        hinstance = longToPtr(hinstance),
+        hwnd = longToPtr(hwnd)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case MetalSource(layer) -> {
+      var chained = WGPUSurfaceSourceMetalLayer(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceMetalLayer),
+        layer = longToPtr(layer)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+  }
+}
+
+/// A surface on `d` for `source`, such as a new one for a window whose surface was lost.  The
+/// device's adapter must be able to present to it: true for the device `withDeviceFor` opened
+/// for the same window, and on a machine with one GPU or a software Vulkan device.
+@unsafe_ffi
+pub func createSurface(d: Device, source: SurfaceSource): Result[Surface, String] {
+  finishSurface(d, rawSurface(d.instance, source))
+}
+
+/// `createSurface` for an X11 window.
 pub func createXlibSurface(d: Device, display: Long, window: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceXlibWindow(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceXlibWindow),
-    display = longToPtr(display),
-    window = window
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, XlibSource(display = display, window = window))
 }
 
-/// A surface for a Wayland window: `display` is the `wl_display*` and `surface` the `wl_surface*`.
-@unsafe_ffi
+/// `createSurface` for a Wayland window.
 pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceWaylandSurface(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
-    display = longToPtr(display),
-    surface = longToPtr(surface)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, WaylandSource(display = display, surface = surface))
 }
 
-/// A surface for a Win32 window: `instance` is the `HINSTANCE` and `hwnd` the `HWND`, as
-/// `Window.nativeWindow` returns them.
-@unsafe_ffi
+/// `createSurface` for a Win32 window.
 pub func createWindowsSurface(d: Device, instance: Long, hwnd: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceWindowsHWND(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
-    hinstance = longToPtr(instance),
-    hwnd = longToPtr(hwnd)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, WindowsSource(instance = instance, hwnd = hwnd))
 }
 
-/// A surface for a macOS window: `layer` is the `CAMetalLayer*`, as `Window.metalLayer` returns it.
-/// The layer must outlive the surface.
-@unsafe_ffi
+/// `createSurface` for a macOS window's `CAMetalLayer`, which must outlive the surface.
 pub func createMetalSurface(d: Device, layer: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceMetalLayer(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceMetalLayer),
-    layer = longToPtr(layer)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, MetalSource(layer = layer))
 }
 
 /// `s` asking for `mode` the next time it is configured.  `configureSurface` falls back to

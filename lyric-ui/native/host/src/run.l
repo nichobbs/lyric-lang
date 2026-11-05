@@ -1332,13 +1332,13 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
   if not navigate(host, cfg.startPath, false) {
     return fail("the application has no screen for " + cfg.startPath)
   }
-  val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.configuredSurfaceFor(d, win, Gpu.PresentMode.Fifo) {
-      case Err(m) -> fail(m)
-      case Ok(surface) -> loopWindow(d, win, surface, host)
-    }
+  val body: (Gpu.Device, Gpu.Surface) -> Int = { d: Gpu.Device, surface: Gpu.Surface ->
+    loopWindow(d, win, surface, host)
   }
-  val rc = match Gpu.withDevice(body) { case Err(m) -> fail(m); case Ok(code) -> code }
+  val rc = match GpuWindow.withWindowDevice(win, Gpu.PresentMode.Fifo, body) {
+    case Err(m) -> fail(m)
+    case Ok(code) -> code
+  }
   closeScreen(host)
   closeFonts(fonts)
   Text.closeText(lib)

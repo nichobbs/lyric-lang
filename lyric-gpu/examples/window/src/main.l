@@ -119,20 +119,27 @@ func drawFrames(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, frames
   if failed then Err(error = reason) else Ok(value = ())
 }
 
+func modeName(m: Gpu.PresentMode): String {
+  match m {
+    case Fifo -> "Fifo"
+    case FifoRelaxed -> "FifoRelaxed"
+    case Mailbox -> "Mailbox"
+    case Immediate -> "Immediate"
+  }
+}
+
+// The device is opened on an adapter that can present to the window.  The surface asks for
+// `Mailbox` and falls back to `Fifo` where the surface does not offer it; either is printed.
 func run(win: Window.Window, frames: Int): Int {
-  val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.configuredSurfaceFor(d, win, Gpu.PresentMode.Fifo) {
+  val body: (Gpu.Device, Gpu.Surface) -> Int = { d: Gpu.Device, surface: Gpu.Surface ->
+    Console.println("surface format " + surface.format.toString())
+    Console.println("present mode " + modeName(surface.presentMode))
+    match drawFrames(d, win, surface, frames) {
+      case Ok(_) -> 0
       case Err(message) -> fail(message)
-      case Ok(surface) -> {
-        Console.println("surface format " + surface.format.toString())
-        match drawFrames(d, win, surface, frames) {
-          case Ok(_) -> 0
-          case Err(message) -> fail(message)
-        }
-      }
     }
   }
-  match Gpu.withDevice(body) {
+  match GpuWindow.withWindowDevice(win, Gpu.PresentMode.Mailbox, body) {
     case Err(message) -> fail(message)
     case Ok(rc) -> rc
   }

@@ -58,6 +58,7 @@ echo "=== lyric-gpu window on X11 ==="
 SDL_VIDEODRIVER=x11 xvfb-run -a -s "-screen 0 640x480x24" "$work/session.sh"
 cat "$work/window.out"
 grep -q '^presented' "$work/window.out" || { echo "::error::the window example never presented a frame"; exit 1; }
+grep -Eq '^present mode (Mailbox|Fifo)$' "$work/window.out" || { echo "::error::the window example did not report the present mode it asked for (Mailbox) or its Fifo fallback"; exit 1; }
 
 python3 -I - "$work/shot.rgb" <<'PY'
 import sys

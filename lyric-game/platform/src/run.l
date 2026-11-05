@@ -325,13 +325,13 @@ pub func run[S](config: Config, game: Game[S]): Int {
   }
   Window.show(win)
   Window.raise(win)
-  val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
-    match GpuWindow.configuredSurfaceFor(d, win, Gpu.PresentMode.Fifo) {
-      case Err(m) -> fail(m)
-      case Ok(surface) -> frameLoop(d, win, surface, config, game)
-    }
+  val body: (Gpu.Device, Gpu.Surface) -> Int = { d: Gpu.Device, surface: Gpu.Surface ->
+    frameLoop(d, win, surface, config, game)
   }
-  val rc = match Gpu.withDevice(body) { case Err(m) -> fail(m); case Ok(code) -> code }
+  val rc = match GpuWindow.withWindowDevice(win, Gpu.PresentMode.Fifo, body) {
+    case Err(m) -> fail(m)
+    case Ok(code) -> code
+  }
   Window.destroyWindow(win)
   Window.quit()
   rc
