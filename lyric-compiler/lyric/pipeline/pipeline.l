@@ -2649,10 +2649,6 @@ pub func foreignCalleeSites(
     match mapGet(byOrigin, origin) {
       case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
         case Some(res) -> {
-          Console.error("DBGP origin=" + origin + " decls=" + toString(decls.count) + " sites=" + toString(res.symbols.calleeSites.count) + " diags=" + toString(res.diagnostics.count))
-          for dg in res.diagnostics {
-            Console.error("DBGP diag " + dg.code + " " + dg.message)
-          }
           for k in mapKeys(res.symbols.calleeSites) {
             if not acc.containsKey(origin + "|" + k) {
               match mapGet(res.symbols.calleeSites, k) {
@@ -2751,7 +2747,9 @@ func checkInOriginScope(
   }
   val checkFile = SourceFile(
     moduleDoc = file0.moduleDoc,
-    files = file0.files,
+    // The origin package's own imports, not the consumer's per-file headers:
+    // the resolver builds a file scope from each header it is given.
+    files = newList(),
     fileAnnotations = file0.fileAnnotations,
     packageDecl = PackageDecl(
       path = ModulePath(segments = dottedSegments(origin), span = file0.span),
@@ -3474,7 +3472,7 @@ func recheckSpecRound(
   }
   val checkFile = SourceFile(
     moduleDoc = file0.moduleDoc,
-    files = file0.files,
+    files = if origin == "" { file0.files } else { newList() },
     fileAnnotations = file0.fileAnnotations,
     packageDecl = pkgDecl,
     imports = imports,
