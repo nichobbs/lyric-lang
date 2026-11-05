@@ -98,6 +98,23 @@ pub record Texture {
   view: Long
   width: Int
   height: Int
+  /// 1, or the full mip chain of a `createMipmappedTexture` texture.
+  mipLevels: Int
+}
+
+/// A depth buffer of `width` by `height` pixels (32-bit float) for `renderWithDepth`.
+pub record DepthTarget {
+  texture: Long
+  view: Long
+  width: Int
+  height: Int
+}
+
+/// The index buffer of an indexed draw: `count` 32-bit indices from the start of `buffer`
+/// (written with `writeInts`; the buffer needs `usageIndex`).
+pub record Indices {
+  buffer: Buffer
+  count: Int
 }
 
 /// How a shader reads a texture: the filter and the edge handling set by `createSampler`.
@@ -135,8 +152,9 @@ pub record Scissor {
 
 /// One draw: the pipeline, its optional bind group, the vertex buffers (slot i is
 /// `vertexBuffers[i]`), the number of vertices, and how many instances of them to draw starting
-/// at `firstInstance` (`@builtin(instance_index)` counts from it).  `scissor` clips the draw to
-/// a rectangle of the target; `None` draws the whole target.
+/// at `firstInstance` (`@builtin(instance_index)` counts from it).  With `indices`, the draw
+/// reads that many vertices through the index buffer and `vertexCount` is not used.  `scissor`
+/// clips the draw to a rectangle of the target; `None` draws the whole target.
 pub record Draw {
   pipeline: RenderPipeline
   bindGroup: Option[BindGroup]
@@ -145,6 +163,23 @@ pub record Draw {
   instanceCount: Int
   firstInstance: Int
   scissor: Option[Scissor]
+  indices: Option[Indices]
+}
+
+/// Everything a render pipeline is built from.  `createRenderPipeline` is this with no depth
+/// test and no culling.  With `depthTest`, the pipeline draws only fragments nearer (a smaller
+/// depth) than the depth buffer holds and records their depth, so it must draw with
+/// `renderWithDepth`.  With `cullBack`, triangles whose vertices run clockwise on screen are not
+/// drawn.
+pub record RenderPipelineDesc {
+  source: String
+  vertexEntry: String
+  fragmentEntry: String
+  layouts: List[VertexLayout]
+  format: Int
+  blend: Bool
+  depthTest: Bool
+  cullBack: Bool
 }
 
 pub val usageMapRead: Long = 1
@@ -184,7 +219,8 @@ pub val vertexFloat32x4: Int = 31
 
 // The device's error cell, written by wgpu's callbacks: byte 0 counts the uncaptured errors
 // (to 255), byte 1 is set when the device is lost; the first uncaptured message is a
-// NUL-terminated string from `uncapturedAt`, the device-lost message one from `lostAt`.
+// NUL-terminated string from `uncapturedAt`, the device-lost message one from `lostAt`.  Both
+// are cut at `cellText` bytes; a call's own error comes from its scope and is not cut there.
 val errorCellSize: Long = 2056
 
 val uncapturedAt: Long = 8
@@ -460,6 +496,44 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   if ptrToLong(inst) == 0 {
     return Err(error = "wgpu: cannot create an instance")
   }
+  openDevice(inst, nativeNullPtr(), body)
+}
+
+/// A window-system handle a surface presents to, as `Window.nativeWindow` returns them:
+/// an X11 `Display*` and window id, a Wayland `wl_display*` and `wl_surface*`, a Win32
+/// `HINSTANCE` and `HWND`, or a macOS `CAMetalLayer*` (which must outlive the surface).
+pub union SurfaceSource {
+  case XlibSource(display: Long, window: Long)
+  case WaylandSource(display: Long, surface: Long)
+  case WindowsSource(instance: Long, hwnd: Long)
+  case MetalSource(layer: Long)
+}
+
+/// `withDevice` on an adapter that can present to `source`, which matters on a machine with
+/// more than one GPU: `withDevice` takes the first adapter, which may not reach the window's
+/// display.  `body` gets the device and an unconfigured surface for `source`; it owns the
+/// surface, configures it (`configureSurface`) and releases it (`releaseSurface`).
+@unsafe_ffi
+pub func withDeviceFor[T](source: SurfaceSource, body: (Device, Surface) -> T): Result[T, String] {
+  val inst = wgpuCreateInstance(nativeNullPtr())
+  if ptrToLong(inst) == 0 {
+    return Err(error = "wgpu: cannot create an instance")
+  }
+  val raw = rawSurface(ptrToLong(inst), source)
+  if ptrToLong(raw) == 0 {
+    wgpuInstanceRelease(inst)
+    return Err(error = "wgpu could not create a surface for this window")
+  }
+  val surface = Surface(raw = ptrToLong(raw), format = 0, width = 0, height = 0, presentMode = PresentMode.Fifo)
+  val inner: (Device) -> T = { d: Device -> body(d, surface) }
+  openDevice(inst, raw, inner)
+}
+
+// Requests an adapter (one that can present to `surface` unless it is null) and its device on
+// `inst`, runs `body`, and releases everything but `surface`, which `body` owns.  On an early
+// `Err` it releases `surface` too, before the instance.
+@unsafe_ffi
+func openDevice[T](inst: NativePtr[Byte], surface: NativePtr[Byte], body: (Device) -> T): Result[T, String] {
   val instance = ptrToLong(inst)
 
   val adapterSlot = Slot(status = 0 - 1, handle = 0, message = "")
@@ -475,9 +549,18 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
     userdata1 = onAdapter,
     userdata2 = nativeNullPtr()
   )
-  val _f = wgpuInstanceRequestAdapter(inst, nativeNullPtr(), adapterInfo)
+  var adapterOptions = WGPURequestAdapterOptions(
+    nextInChain = nativeNullPtr(),
+    featureLevel = WGPUFeatureLevel_Core,
+    powerPreference = WGPUPowerPreference_Undefined,
+    forceFallbackAdapter = 0,
+    backendType = WGPUBackendType_Undefined,
+    compatibleSurface = surface
+  )
+  val _f = wgpuInstanceRequestAdapter(inst, nativeAddrOf(adapterOptions), adapterInfo)
   if not waitSlot(instance, 0, adapterSlot) {
     // Releasing the instance cancels the request, so its callback cannot run after this call.
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
     return Err(error = "wgpu: requesting an adapter timed out")
   }
@@ -485,8 +568,10 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
     if adapterSlot.handle != 0 {
       wgpuAdapterRelease(longToPtr(adapterSlot.handle))
     }
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
-    return Err(error = "wgpu: no adapter available: " + adapterSlot.message)
+    val which = if ptrToLong(surface) == 0 then "no adapter available" else "no adapter can present to this window"
+    return Err(error = "wgpu: " + which + ": " + adapterSlot.message)
   }
 
   val errorCell = Ffi.allocate(errorCellSize)
@@ -536,6 +621,7 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
       wgpuDeviceRelease(longToPtr(deviceSlot.handle))
     }
     wgpuAdapterRelease(longToPtr(adapterSlot.handle))
+    releaseRawSurface(surface)
     wgpuInstanceRelease(inst)
     Ffi.release(errorCell)
     return Err(
@@ -553,6 +639,13 @@ pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   val result = body(device)
   closeDevice(device)
   Ok(value = result)
+}
+
+@unsafe_ffi
+func releaseRawSurface(surface: NativePtr[Byte]): Unit {
+  if ptrToLong(surface) != 0 {
+    wgpuSurfaceRelease(surface)
+  }
 }
 
 /// Releases the device, its queue, the adapter and the instance.  The error cell goes last:
@@ -922,6 +1015,50 @@ pub func releaseRenderTarget(t: RenderTarget): Unit {
   wgpuTextureRelease(longToPtr(t.texture))
 }
 
+/// A depth buffer for `renderWithDepth` into targets of the same size.
+@unsafe_ffi
+pub func createDepthTarget(d: Device, width: Int, height: Int): Result[DepthTarget, String] {
+  if width <= 0 or height <= 0 {
+    return Err(error = "a depth target needs a positive size, not " + width.toString() + "x" + height.toString())
+  }
+  var desc = WGPUTextureDescriptor(
+    nextInChain = nativeNullPtr(),
+    label = noString(),
+    usage = WGPUTextureUsage_RenderAttachment,
+    dimension = WGPUTextureDimension_2D,
+    size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1),
+    format = WGPUTextureFormat_Depth32Float,
+    mipLevelCount = 1,
+    sampleCount = 1,
+    viewFormatCount = 0,
+    viewFormats = nativeNullPtr()
+  )
+  openScope(d)
+  val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
+  val view = wgpuTextureCreateView(texture, nativeNullPtr())
+  match closeScope(d) {
+    case Some(message) -> {
+      wgpuTextureViewRelease(view)
+      wgpuTextureRelease(texture)
+      Err(error = message)
+    }
+    case None -> Ok(
+      value = DepthTarget(
+        texture = ptrToLong(texture),
+        view = ptrToLong(view),
+        width = width,
+        height = height
+      )
+    )
+  }
+}
+
+@unsafe_ffi
+pub func releaseDepthTarget(t: DepthTarget): Unit {
+  wgpuTextureViewRelease(longToPtr(t.view))
+  wgpuTextureRelease(longToPtr(t.texture))
+}
+
 /// A pipeline from one WGSL module's vertex and fragment entry points that draws triangle
 /// lists into targets of `format` (`formatRgba8` for `createRenderTarget`, `Surface.format` for
 /// a surface's frames).  `layouts[i]` describes vertex buffer slot i; an empty list is a
@@ -938,9 +1075,31 @@ pub func createRenderPipeline(
   format: Int,
   blend: Bool,
 ): Result[RenderPipeline, String] {
-  val shader = match createShader(d, source) { case Ok(m) -> m; case Err(e) -> return Err(error = e) }
-  val vertexName = Ffi.toCString(vertexEntry)
-  val fragmentName = Ffi.toCString(fragmentEntry)
+  createRenderPipelineFrom(
+    d,
+    RenderPipelineDesc(
+      source = source,
+      vertexEntry = vertexEntry,
+      fragmentEntry = fragmentEntry,
+      layouts = layouts,
+      format = format,
+      blend = blend,
+      depthTest = false,
+      cullBack = false
+    )
+  )
+}
+
+/// A render pipeline from a full description (`RenderPipelineDesc`), for a depth test or
+/// back-face culling.
+@unsafe_ffi
+pub func createRenderPipelineFrom(d: Device, desc: RenderPipelineDesc): Result[RenderPipeline, String] {
+  val layouts = desc.layouts
+  val format = desc.format
+  val blend = desc.blend
+  val shader = match createShader(d, desc.source) { case Ok(m) -> m; case Err(e) -> return Err(error = e) }
+  val vertexName = Ffi.toCString(desc.vertexEntry)
+  val fragmentName = Ffi.toCString(desc.fragmentEntry)
   val layoutCount = layouts.count
   val layoutArray = Ffi.allocate(vertexLayoutSize * (if layoutCount > 0 then layoutCount.toLong() else 1))
   val attributeArrays: List[Long] = newList()
@@ -1005,7 +1164,26 @@ pub func createRenderPipeline(
     targetCount = 1,
     targets = nativeAddrOf(target)
   )
-  var desc = WGPURenderPipelineDescriptor(
+  val keep = WGPUStencilFaceState(
+    compare = WGPUCompareFunction_Always,
+    failOp = WGPUStencilOperation_Keep,
+    depthFailOp = WGPUStencilOperation_Keep,
+    passOp = WGPUStencilOperation_Keep
+  )
+  var depthState = WGPUDepthStencilState(
+    nextInChain = nativeNullPtr(),
+    format = WGPUTextureFormat_Depth32Float,
+    depthWriteEnabled = WGPUOptionalBool_True,
+    depthCompare = WGPUCompareFunction_Less,
+    stencilFront = keep,
+    stencilBack = keep,
+    stencilReadMask = 0,
+    stencilWriteMask = 0,
+    depthBias = 0,
+    depthBiasSlopeScale = 0.0f32,
+    depthBiasClamp = 0.0f32
+  )
+  var pipelineDesc = WGPURenderPipelineDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
     layout = nativeNullPtr(),
@@ -1023,10 +1201,10 @@ pub func createRenderPipeline(
       topology = WGPUPrimitiveTopology_TriangleList,
       stripIndexFormat = 0,
       frontFace = WGPUFrontFace_CCW,
-      cullMode = WGPUCullMode_None,
+      cullMode = if desc.cullBack then WGPUCullMode_Back else WGPUCullMode_None,
       unclippedDepth = 0
     ),
-    depthStencil = nativeNullPtr(),
+    depthStencil = if desc.depthTest { nativeAddrOf(depthState) } else { nativeNullPtr() },
     multisample = WGPUMultisampleState(
       nextInChain = nativeNullPtr(),
       count = 1,
@@ -1036,7 +1214,7 @@ pub func createRenderPipeline(
     fragment = nativeAddrOf(fragment)
   )
   openScope(d)
-  val pipeline = wgpuDeviceCreateRenderPipeline(longToPtr(d.device), nativeAddrOf(desc))
+  val pipeline = wgpuDeviceCreateRenderPipeline(longToPtr(d.device), nativeAddrOf(pipelineDesc))
   wgpuShaderModuleRelease(shader)
   Ffi.release(vertexName)
   Ffi.release(fragmentName)
@@ -1064,6 +1242,56 @@ pub func releaseRenderPipeline(p: RenderPipeline): Unit {
 pub func render(
   d: Device, target: RenderTarget, red: Float, green: Float, blue: Float, alpha: Float, draws: List[Draw]
 ): Result[Unit, String] {
+  renderPass(d, target, None, red, green, blue, alpha, draws)
+}
+
+/// `render` with a depth buffer, cleared to the farthest depth (1.0) first, for pipelines built
+/// with `depthTest`.  The depth target must be the target's size.
+@unsafe_ffi
+pub func renderWithDepth(
+  d: Device,
+  target: RenderTarget,
+  depth: DepthTarget,
+  red: Float,
+  green: Float,
+  blue: Float,
+  alpha: Float,
+  draws: List[Draw],
+): Result[Unit, String] {
+  if depth.width != target.width or depth.height != target.height {
+    return Err(
+      error = "a " + depth.width.toString() + "x" + depth.height.toString() + " depth target cannot serve a " +
+        target.width.toString() +
+        "x" +
+        target.height.toString() +
+        " target"
+    )
+  }
+  renderPass(d, target, Some(value = depth), red, green, blue, alpha, draws)
+}
+
+@unsafe_ffi
+func renderPass(
+  d: Device,
+  target: RenderTarget,
+  depth: Option[DepthTarget],
+  red: Float,
+  green: Float,
+  blue: Float,
+  alpha: Float,
+  draws: List[Draw],
+): Result[Unit, String] {
+  for draw in draws {
+    match draw.indices {
+      case Some(ix) -> if ix.count < 0 or ix.count.toLong() * 4 > ix.buffer.size {
+        return Err(
+          error = "an index buffer of " + ix.buffer.size.toString() + " bytes cannot hold " + ix.count.toString() +
+            " indices"
+        )
+      }
+      case None -> ()
+    }
+  }
   openScope(d)
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   var attachment = WGPURenderPassColorAttachment(
@@ -1075,12 +1303,26 @@ pub func render(
     storeOp = WGPUStoreOp_Store,
     clearValue = WGPUColor(r = red, g = green, b = blue, a = alpha)
   )
+  val hasDepth = match depth { case Some(_) -> true; case None -> false }
+  val depthView = match depth { case Some(t) -> t.view; case None -> 0 }
+  var depthAttachment = WGPURenderPassDepthStencilAttachment(
+    nextInChain = nativeNullPtr(),
+    view = longToPtr(depthView),
+    depthLoadOp = WGPULoadOp_Clear,
+    depthStoreOp = WGPUStoreOp_Store,
+    depthClearValue = 1.0f32,
+    depthReadOnly = 0,
+    stencilLoadOp = WGPULoadOp_Undefined,
+    stencilStoreOp = WGPUStoreOp_Undefined,
+    stencilClearValue = 0,
+    stencilReadOnly = 0
+  )
   var passDesc = WGPURenderPassDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
     colorAttachmentCount = 1,
     colorAttachments = nativeAddrOf(attachment),
-    depthStencilAttachment = nativeNullPtr(),
+    depthStencilAttachment = if hasDepth { nativeAddrOf(depthAttachment) } else { nativeNullPtr() },
     occlusionQuerySet = nativeNullPtr(),
     timestampWrites = nativeNullPtr()
   )
@@ -1101,7 +1343,13 @@ pub func render(
       case Some(r) -> wgpuRenderPassEncoderSetScissorRect(pass, r.x, r.y, r.width, r.height)
       case None -> wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, target.width, target.height)
     }
-    wgpuRenderPassEncoderDraw(pass, draw.vertexCount, draw.instanceCount, 0, draw.firstInstance)
+    match draw.indices {
+      case Some(ix) -> {
+        wgpuRenderPassEncoderSetIndexBuffer(pass, longToPtr(ix.buffer.raw), WGPUIndexFormat_Uint32, 0, ix.buffer.size)
+        wgpuRenderPassEncoderDrawIndexed(pass, ix.count, draw.instanceCount, 0, 0, draw.firstInstance)
+      }
+      case None -> wgpuRenderPassEncoderDraw(pass, draw.vertexCount, draw.instanceCount, 0, draw.firstInstance)
+    }
   }
   wgpuRenderPassEncoderEnd(pass)
   wgpuRenderPassEncoderRelease(pass)
@@ -1113,10 +1361,10 @@ pub func render(
 }
 
 @unsafe_ffi
-func writePixels(d: Device, texture: NativePtr[Byte], width: Int, height: Int, pixels: buffer[Byte]): Unit {
+func writePixels(d: Device, texture: NativePtr[Byte], level: Int, width: Int, height: Int, pixels: buffer[Byte]): Unit {
   var destination = WGPUTexelCopyTextureInfo(
     texture = texture,
-    mipLevel = 0,
+    mipLevel = level,
     origin = WGPUOrigin3D(x = 0, y = 0, z = 0),
     aspect = WGPUTextureAspect_All
   )
@@ -1141,10 +1389,8 @@ func writePixels(d: Device, texture: NativePtr[Byte], width: Int, height: Int, p
   )
 }
 
-/// An RGBA8 texture of `width` by `height` pixels holding `pixels` (tightly packed rows, top
-/// row first), ready to bind with `TextureBinding`.
-@unsafe_ffi
-pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte]): Result[Texture, String] {
+// Checks a texture's size and that `pixels` holds exactly its RGBA8 texels.
+func checkPixels(width: Int, height: Int, pixels: buffer[Byte]): Result[Unit, String] {
   if width <= 0 or height <= 0 {
     return Err(error = "a texture needs a positive size, not " + width.toString() + "x" + height.toString())
   }
@@ -1156,6 +1402,84 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
         pixels.length.toString()
     )
   }
+  Ok(value = ())
+}
+
+/// The number of levels in a full mip chain for a `width` by `height` texture: one per halving of
+/// the larger side, down to 1 pixel.
+pub func mipLevelCount(width: Int, height: Int): Int {
+  var side = if width > height then width else height
+  var levels = 1
+  while side > 1 {
+    side = side / 2
+    levels = levels + 1
+  }
+  levels
+}
+
+// The next mip level of a `width` by `height` RGBA8 image: each texel is the average of the
+// (up to) 2x2 texels it covers, rounded to nearest; an odd last row or column is folded into
+// the texel beside it.
+func halve(width: Int, height: Int, pixels: buffer[Byte]): buffer[Byte] {
+  val w = if width > 1 then width / 2 else 1
+  val h = if height > 1 then height / 2 else 1
+  var half = Buf.filled(w * h * 4, 0u8)
+  var y = 0
+  while y < h {
+    val y0 = if height > 1 then y * 2 else 0
+    val y1 = if y == h - 1 then height - 1 else y0 + 1
+    var x = 0
+    while x < w {
+      val x0 = if width > 1 then x * 2 else 0
+      val x1 = if x == w - 1 then width - 1 else x0 + 1
+      var c = 0
+      while c < 4 {
+        var sum = 0
+        var count = 0
+        var sy = y0
+        while sy <= y1 {
+          var sx = x0
+          while sx <= x1 {
+            sum = sum + pixels[(sy * width + sx) * 4 + c].toInt()
+            count = count + 1
+            sx = sx + 1
+          }
+          sy = sy + 1
+        }
+        half[(y * w + x) * 4 + c] = ((sum + count / 2) / count).toByte()
+        c = c + 1
+      }
+      x = x + 1
+    }
+    y = y + 1
+  }
+  half
+}
+
+// Writes `pixels` to level 0 and, for a mipmapped texture, each smaller level from the one above.
+@unsafe_ffi
+func writeLevels(d: Device, texture: NativePtr[Byte], levels: Int, width: Int, height: Int, pixels: buffer[Byte]): Unit {
+  var level = 0
+  var w = width
+  var h = height
+  var current = pixels
+  while level < levels {
+    writePixels(d, texture, level, w, h, current)
+    level = level + 1
+    if level < levels {
+      current = halve(w, h, current)
+      w = if w > 1 then w / 2 else 1
+      h = if h > 1 then h / 2 else 1
+    }
+  }
+}
+
+@unsafe_ffi
+func makeTexture(d: Device, width: Int, height: Int, levels: Int, pixels: buffer[Byte]): Result[Texture, String] {
+  match checkPixels(width, height, pixels) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
+  }
   var desc = WGPUTextureDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
@@ -1163,14 +1487,14 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
     dimension = WGPUTextureDimension_2D,
     size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1),
     format = WGPUTextureFormat_RGBA8Unorm,
-    mipLevelCount = 1,
+    mipLevelCount = levels,
     sampleCount = 1,
     viewFormatCount = 0,
     viewFormats = nativeNullPtr()
   )
   openScope(d)
   val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
-  writePixels(d, texture, width, height, pixels)
+  writeLevels(d, texture, levels, width, height, pixels)
   val view = wgpuTextureCreateView(texture, nativeNullPtr())
   match closeScope(d) {
     case Some(message) -> {
@@ -1178,8 +1502,35 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
       wgpuTextureRelease(texture)
       Err(error = message)
     }
-    case None -> Ok(value = Texture(raw = ptrToLong(texture), view = ptrToLong(view), width = width, height = height))
+    case None -> Ok(
+      value = Texture(
+        raw = ptrToLong(texture),
+        view = ptrToLong(view),
+        width = width,
+        height = height,
+        mipLevels = levels
+      )
+    )
   }
+}
+
+/// An RGBA8 texture of `width` by `height` pixels holding `pixels` (tightly packed rows, top
+/// row first), ready to bind with `TextureBinding`.
+@unsafe_ffi
+pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte]): Result[Texture, String] {
+  makeTexture(d, width, height, 1, pixels)
+}
+
+/// `createTexture` with a full mip chain (`mipLevelCount` levels), each level the 2x2 box-filtered
+/// average of the one above, so a texture drawn smaller than its size is sampled from the level
+/// that matches instead of aliasing.  Sample it with a `createSampler(d, true)` sampler, which
+/// blends between levels.
+@unsafe_ffi
+pub func createMipmappedTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte]): Result[Texture, String] {
+  if width <= 0 or height <= 0 {
+    return Err(error = "a texture needs a positive size, not " + width.toString() + "x" + height.toString())
+  }
+  makeTexture(d, width, height, mipLevelCount(width, height), pixels)
 }
 
 @unsafe_ffi
@@ -1189,30 +1540,25 @@ pub func releaseTexture(t: Texture): Unit {
 }
 
 /// Replaces every pixel of `t` with `pixels` (tightly packed rows, top row first), for a texture
-/// whose contents change, such as a glyph atlas.  The count must be the texture's own size.
+/// whose contents change, such as a glyph atlas.  The count must be the texture's own size; a
+/// mipmapped texture's smaller levels are rebuilt from it.
 @unsafe_ffi
 pub func writeTexture(d: Device, t: Texture, pixels: buffer[Byte]): Result[Unit, String] {
-  val needed = t.width.toLong() * t.height.toLong() * 4
-  if pixels.length.toLong() != needed {
-    return Err(
-      error = "a " + t.width.toString() + "x" + t.height.toString() + " RGBA8 texture needs " + needed.toString() +
-        " bytes, not " +
-        pixels.length.toString()
-    )
+  match checkPixels(t.width, t.height, pixels) {
+    case Err(e) -> return Err(error = e)
+    case Ok(_) -> ()
   }
   openScope(d)
-  writePixels(d, longToPtr(t.raw), t.width, t.height, pixels)
-  match closeScope(d) {
-    case Some(message) -> Err(error = message)
-    case None -> Ok(value = ())
-  }
+  writeLevels(d, longToPtr(t.raw), t.mipLevels, t.width, t.height, pixels)
+  scopeResult(d)
 }
 
-/// A sampler that clamps to the texture's edge and filters linearly (`linear`) or takes the
-/// nearest texel.
+/// A sampler that clamps to the texture's edge and filters linearly (`linear`, also blending
+/// between the mip levels of a mipmapped texture) or takes the nearest texel of the nearest level.
 @unsafe_ffi
 pub func createSampler(d: Device, linear: Bool): Result[Sampler, String] {
   val filter = if linear then WGPUFilterMode_Linear else WGPUFilterMode_Nearest
+  val mipFilter = if linear then WGPUMipmapFilterMode_Linear else WGPUMipmapFilterMode_Nearest
   var desc = WGPUSamplerDescriptor(
     nextInChain = nativeNullPtr(),
     label = noString(),
@@ -1221,7 +1567,7 @@ pub func createSampler(d: Device, linear: Bool): Result[Sampler, String] {
     addressModeW = WGPUAddressMode_ClampToEdge,
     magFilter = filter,
     minFilter = filter,
-    mipmapFilter = WGPUMipmapFilterMode_Nearest,
+    mipmapFilter = mipFilter,
     lodMinClamp = 0.0f32,
     lodMaxClamp = 32.0f32,
     compare = WGPUCompareFunction_Undefined,
@@ -1333,59 +1679,79 @@ func finishSurface(d: Device, raw: NativePtr[Byte]): Result[Surface, String] {
   }
 }
 
-/// A surface for an X11 window: `display` is the `Display*` and `window` the window id, as
-/// `Window.nativeWindow` returns them.  The device's adapter must be able to present to it, which
-/// holds on a machine with one GPU or a software Vulkan device.
+// A surface on `instance` for `source`, or null when wgpu cannot make one.
 @unsafe_ffi
+func rawSurface(instance: Long, source: SurfaceSource): NativePtr[Byte] {
+  val inst = longToPtr(instance)
+  match source {
+    case XlibSource(display, window) -> {
+      var chained = WGPUSurfaceSourceXlibWindow(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceXlibWindow),
+        display = longToPtr(display),
+        window = window
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case WaylandSource(display, surface) -> {
+      var chained = WGPUSurfaceSourceWaylandSurface(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
+        display = longToPtr(display),
+        surface = longToPtr(surface)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case WindowsSource(hinstance, hwnd) -> {
+      var chained = WGPUSurfaceSourceWindowsHWND(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
+        hinstance = longToPtr(hinstance),
+        hwnd = longToPtr(hwnd)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+    case MetalSource(layer) -> {
+      var chained = WGPUSurfaceSourceMetalLayer(
+        chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceMetalLayer),
+        layer = longToPtr(layer)
+      )
+      val head: NativePtr[Byte] = nativeAddrOf(chained)
+      var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+      wgpuInstanceCreateSurface(inst, nativeAddrOf(desc))
+    }
+  }
+}
+
+/// A surface on `d` for `source`, such as a new one for a window whose surface was lost.  The
+/// device's adapter must be able to present to it: true for the device `withDeviceFor` opened
+/// for the same window, and on a machine with one GPU or a software Vulkan device.
+@unsafe_ffi
+pub func createSurface(d: Device, source: SurfaceSource): Result[Surface, String] {
+  finishSurface(d, rawSurface(d.instance, source))
+}
+
+/// `createSurface` for an X11 window.
 pub func createXlibSurface(d: Device, display: Long, window: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceXlibWindow(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceXlibWindow),
-    display = longToPtr(display),
-    window = window
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, XlibSource(display = display, window = window))
 }
 
-/// A surface for a Wayland window: `display` is the `wl_display*` and `surface` the `wl_surface*`.
-@unsafe_ffi
+/// `createSurface` for a Wayland window.
 pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceWaylandSurface(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
-    display = longToPtr(display),
-    surface = longToPtr(surface)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, WaylandSource(display = display, surface = surface))
 }
 
-/// A surface for a Win32 window: `instance` is the `HINSTANCE` and `hwnd` the `HWND`, as
-/// `Window.nativeWindow` returns them.
-@unsafe_ffi
+/// `createSurface` for a Win32 window.
 pub func createWindowsSurface(d: Device, instance: Long, hwnd: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceWindowsHWND(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
-    hinstance = longToPtr(instance),
-    hwnd = longToPtr(hwnd)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, WindowsSource(instance = instance, hwnd = hwnd))
 }
 
-/// A surface for a macOS window: `layer` is the `CAMetalLayer*`, as `Window.metalLayer` returns it.
-/// The layer must outlive the surface.
-@unsafe_ffi
+/// `createSurface` for a macOS window's `CAMetalLayer`, which must outlive the surface.
 pub func createMetalSurface(d: Device, layer: Long): Result[Surface, String] {
-  var source = WGPUSurfaceSourceMetalLayer(
-    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceMetalLayer),
-    layer = longToPtr(layer)
-  )
-  val head: NativePtr[Byte] = nativeAddrOf(source)
-  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
-  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+  createSurface(d, MetalSource(layer = layer))
 }
 
 /// `s` asking for `mode` the next time it is configured.  `configureSurface` falls back to

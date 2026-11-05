@@ -644,7 +644,8 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
         vertexCount = 6,
         instanceCount = b.count,
         firstInstance = b.first,
-        scissor = b.scissor
+        scissor = b.scissor,
+        indices = None
       )
     )
   }
