@@ -6720,6 +6720,8 @@ jobs:
             deps: "cache mail storage feature-flags mq session"
           - id: game
             deps: ""
+          - id: unicode
+            deps: ""
     # NOTE (#6165 follow-up): the original per-library gate
     #   fromJSON(needs.build.outputs.ecosystem_run_map)[matrix.id]
     # fails to LOAD on this runner's workflow engine (object-indexing a
@@ -7049,6 +7051,24 @@ jobs:
       - name: Run tests (game, dotnet and jvm)
         if: matrix.id == 'game'
         run: bash scripts/ci/game-managed-tests.sh
+
+      # lyric-unicode: UAX #9 and UAX #14 unit tests and Unicode's own conformance suites
+      # (BidiCharacterTest.txt, LineBreakTest.txt; D371) on dotnet and the JVM. The native run is
+      # in scripts/ci/ui-native-e2e.sh.
+      - name: Set up Java 22 (unicode)
+        if: matrix.id == 'unicode'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+      - name: Run tests (unicode, dotnet and jvm)
+        if: matrix.id == 'unicode'
+        run: |
+          set -euo pipefail
+          for target in dotnet jvm; do
+            "$LYRIC_CLI_PATH" test --manifest lyric-unicode/lyric.toml --target "$target"
+            "$LYRIC_CLI_PATH" test --manifest lyric-unicode/tests/conformance/lyric.toml --target "$target"
+          done
 
   # Trust-anchor reproducibility gate, split out of stdlib-builds (where it
   # was the longest step, ~3 min, run after everything else) so it runs on

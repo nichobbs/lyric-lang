@@ -1,12 +1,12 @@
 @test_module
-package Ui.Native.BidiTests
+package Unicode.BidiTests
 
 import Std.Core
 import Std.Collections
 import Std.String
 import Std.Testing
-import Ui.Native.Bidi
-import Ui.Native.UnicodeData
+import Unicode.Bidi
+import Unicode.Data as UnicodeData
 
 // Hebrew letters (right to left, class R), Arabic letters (AL) and Arabic-Indic digits (AN), by
 // code point so that no right to left text is in this file.

@@ -6,9 +6,14 @@
 #     visual order, rasterises and atlas-packs glyphs, falls back from a Latin to a
 #     CJK font, wraps lines and right-aligns an Arabic paragraph, and lays out runs of
 #     one direction (layoutRun) with their brackets swapped and their words ordered;
-#   - it renders a mixed Latin/Arabic/CJK scene and compares it with the checked-in
-#     golden image within a differing-pixel tolerance (another FreeType version
-#     rasterises edges a little differently).
+#   - it lays out paragraphs that mix directions (UAX #9 through lyric-unicode: runs
+#     in visual order, numbers, mirrored brackets, each wrapped line reordered by
+#     itself) and breaks lines at UAX #14 opportunities (a minus sign stays with its
+#     digits, an ideographic full stop never starts a line);
+#   - it renders a mixed Latin/Arabic/CJK scene and a mixed-direction scene (Hebrew and
+#     Arabic with English, numbers and brackets, a wrapped paragraph) and compares them
+#     with the checked-in golden images within a differing-pixel tolerance (another
+#     FreeType version rasterises edges a little differently).
 # FreeType and HarfBuzz are found with pkg-config; the fonts are DejaVu Sans and
 # WenQuanYi Zen Hei, from fonts-dejavu-core and fonts-wqy-zenhei.
 #
@@ -50,7 +55,9 @@ manifest=lyric-text/examples/shape/lyric.toml
 
 echo "=== lyric-text shape ==="
 out="$(LYRIC_TEXT_FONT_LATIN="$latin" LYRIC_TEXT_FONT_CJK="$cjk" \
-  LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm "$work/shape")"
+  LYRIC_TEXT_GOLDEN=lyric-text/examples/shape/golden/scene-384x160.pgm \
+  LYRIC_TEXT_GOLDEN_BIDI=lyric-text/examples/shape/golden/bidi-384x224.pgm "$work/shape")"
 echo "$out"
-echo "$out" | grep -q "fallback + wrap ok, runs ok"
+echo "$out" | grep -q "fallback + wrap ok, runs ok, mixed directions ok"
 echo "$out" | grep -q "^golden: "
+echo "$out" | grep -q "^golden bidi: "

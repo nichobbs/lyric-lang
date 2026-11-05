@@ -6,7 +6,8 @@
 #
 # FreeType's records use C `long`, which is 32 bits on Windows, so both kernels are generated twice:
 # <name>.l (LP64) and <name>_windows.l (LLP64), each gated by `@cfg(target_os = ...)`.
-#   Text                   the safe Lyric surface over them.
+#   Text                   the safe Lyric surface over them; paragraphs are reordered (UAX #9) and
+#                          broken into lines (UAX #14) with lyric-unicode.
 #
 # Both libraries are found with pkg-config (`freetype2`, `harfbuzz`): `libfreetype-dev` and
 # `libharfbuzz-dev` on Debian and Ubuntu, `freetype` and `harfbuzz` in Homebrew.
@@ -27,6 +28,9 @@ output_assembly = "Lyric.Text.dll"
 "Text.Kernel.Freetype" = ["src/_kernel/freetype.l", "src/_kernel/freetype_windows.l"]
 "Text.Kernel.Harfbuzz" = ["src/_kernel/harfbuzz.l", "src/_kernel/harfbuzz_windows.l"]
 "Text"                 = "src/text.l"
+
+[dependencies]
+"Lyric.Unicode" = { path = "../lyric-unicode" }
 
 [native.libs.freetype]
 version    = "2.10.0"

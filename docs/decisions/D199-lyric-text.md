@@ -31,6 +31,6 @@
 
 ## Not in this slice
 
-Mixed-direction reordering and full UAX #14 (#8410), glyph subpixel positioning and signed-distance
+Mixed-direction reordering and full UAX #14 (#8410; done in D372), glyph subpixel positioning and signed-distance
 glyphs (the atlas stores coverage; `lyric-draw` decides how to sample it), colour fonts (a
 non-8-bit strike is an `Err` from `rasterize`), variable-font axes, and a macOS CI lane.
