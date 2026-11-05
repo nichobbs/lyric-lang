@@ -16657,6 +16657,18 @@ func checkExplicitTypeArgCall(
   match explicitCallTypeArgs(sc, tbl, fn, found) {
     case Some(targs) -> {
       val inst = instantiateSigAt(found, targs)
+      val instNames: List[String] = newList()
+      for ip in inst.params {
+        instNames.add(ip.name)
+      }
+      val instIdx = argIndicesInParamOrder(args, instNames)
+      var ik = 0
+      while ik < instIdx.count and ik < inst.params.count {
+        if instIdx[ik] >= 0 and instIdx[ik] < args.count {
+          noteCallExpected(tbl, callArgExpr(args[instIdx[ik]]), inst.params[ik].ty)
+        }
+        ik = ik + 1
+      }
       var deferred = false
       for a in args {
         val ae = callArgExpr(a)
@@ -16810,6 +16822,16 @@ func noteCallExpected(tbl: in SymbolTable, e: in Expr, expected: in Type): Unit 
   }
   match e.kind {
     case EParen(inner) -> noteCallExpected(tbl, inner, expected)
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> if ets.count == elems.count {
+        var ti = 0
+        while ti < elems.count {
+          noteCallExpected(tbl, elems[ti], ets[ti])
+          ti = ti + 1
+        }
+      }
+      case _ -> ()
+    }
     case ECall(_, _) -> {
       val key = recordCopySiteKey(e.span)
       match mapGet(tbl.callExpectedSeen, key) {
@@ -17069,7 +17091,22 @@ func noteNestedCallFlow(
   while k < srcIdx.count and k < sig.params.count {
     val ai = srcIdx[k]
     if ai >= 0 and ai < args.count {
-      val child = stripExprParens(callArgExpr(args[ai]))
+      var child = stripExprParens(callArgExpr(args[ai]))
+      var childParamTy = sig.params[k].ty
+      // A lambda argument: its body's value fills the parameter's result.
+      match child.kind {
+        case ELambda(_, lbody) -> match unrefine(childParamTy) {
+          case TyFunction(_, lret, _) -> match blockValueExpr(lbody) {
+            case Some(lve) -> {
+              child = stripExprParens(lve)
+              childParamTy = lret
+            }
+            case None -> ()
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       val isCall = match child.kind { case ECall(_, _) -> true; case _ -> false }
       if isCall {
         if not computed {
@@ -17087,7 +17124,7 @@ func noteNestedCallFlow(
                 generics = sig.generics,
                 returnTy = sig.returnTy,
                 ownTargs = ownTargs,
-                paramTy = sig.params[k].ty
+                paramTy = childParamTy
               )
             )
           }
@@ -19509,6 +19546,17 @@ func inferLambda(
       )
       tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
       scopePop(sc)
+      // The body's value is a value of the declared result, even when the
+      // result names the enclosing function's type parameters (D380).
+      match expectedReturn {
+        case Some(ert) -> if bodyValuePos and typeIsClosedOver(unrefine(ert), sc.genericNames) {
+          match blockValueExpr(body) {
+            case Some(ve) -> noteCallExpected(tbl, ve, ert)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
       // A body whose every path `return`s has the type `Never`; the lambda's
       // result is then the type of the first value it returns.
       val bodyDiverges = match bodyTy {
