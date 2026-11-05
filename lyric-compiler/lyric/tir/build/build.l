@@ -10,6 +10,7 @@ package Lyric.Tir.Build
 
 import Std.Core
 import Std.Collections
+import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
 import Lyric.TypeChecker

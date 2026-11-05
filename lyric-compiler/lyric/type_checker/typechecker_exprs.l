@@ -4909,10 +4909,7 @@ func recordMethodCalleeNode(
   match pick {
     case None -> ()
     case Some(mp) -> {
-      val sig = match mp.fullSig {
-        case Some(full) -> full
-        case None -> mp.sig
-      }
+      val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
       val owner = dotNamedOwnerName(unrefine(recvTy))
       if owner.length == 0 {
         return
