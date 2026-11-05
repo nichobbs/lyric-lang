@@ -3447,17 +3447,6 @@ func inferReturnFromName(
       val subst: Map[String, TypeExpr] = newMap()
       val bareBound: Map[String, Bool] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
-      // Tracks, per processed argument index, whether that argument gave
-      // inference NO evidence at all (`lambdaShapeOfArg`/`ctorSynthOfArg`
-      // didn't match and `inferExprTE` returned `None`) — as opposed to a
-      // freshly-constructed value (a lambda literal, a union-case ctor call)
-      // or an already fully-typed expression that merely didn't happen to
-      // bind every slot. Consulted by `hasOpaqueErasureUnsafeGenericParam`
-      // below (#5970): a freshly-constructed argument's unpinned slots are
-      // self-consistent with whatever gets defaulted for them (the value
-      // genuinely IS that instantiation), but an OPAQUE argument's real
-      // runtime instantiation is unknown and may be anything.
-      val argOpaque: List[Bool] = newList()
       match explicitArgs {
         case Some(targs) -> {
           if targs.count == typeParams.count {
@@ -3476,7 +3465,6 @@ func inferReturnFromName(
             val slots = argSlotsMono(decl.params, args)
             var i = 0
             while i < slots.count {
-              var evidenced = false
               val ai = slots[i]
               if ai >= 0 {
                 match lambdaShapeOfArg(callArgExpr(args[ai])) {
@@ -3484,7 +3472,6 @@ func inferReturnFromName(
                     match lamE.kind {
                       case ELambda(lps, lbody) -> {
                         unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
-                        evidenced = true
                       }
                       case _ -> ()
                     }
@@ -3504,82 +3491,27 @@ func inferReturnFromName(
                       }
                       case None -> ()
                     }
-                    if handled {
-                      evidenced = true
-                    } else {
+                    if not handled {
                       match argTEForParamMono(state, env, callArgExpr(args[ai]), decl.params[i].ty) {
                         case Some(argTE) -> {
                           unifyArgMono(typeParams, decl.params[i].ty, decl.params[i].mode, argTE, subst, bareBound)
-                          evidenced = true
                         }
                         case None -> ()
                       }
                     }
-                    if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[ai])) {
-                      evidenced = true
-                    }
                   }
                 }
               }
-              argOpaque.add(not evidenced)
               i = i + 1
             }
           }
         }
       }
-      // Two decl classes report their UNPINNED type params as `Object`
-      // rather than failing the whole inference (#5604):
-      //   - Inference-only union-case ctor synths: mirrors exactly what
-      //     codegen constructs for the corresponding slot with no hint or an
-      //     erased hint (field-derived types win per slot; everything else
-      //     fills as `object`), so `Ok(value = 7)` infers as
-      //     `Result[Int, Object]`.
-      //   - IMPORTED (non-dropped-local, non-axiom) generics: the call-site
-      //     rewriter defaults exactly these params to Object when it
-      //     specialises, so the value a binding receives really carries the
-      //     filled instantiation (`val mapped = mapResult(Ok(5), f)` returns
-      //     the `Result[Int, Object]` of `mapResult__Int__Int__Object`).
-      //     Reporting `None` instead left the binding untyped, and a later
-      //     `isOk(mapped)` specialised at `__Object__Object` — an
-      //     instantiation the value never had, so its closed isinst missed
-      //     every arm. But when the unpinned params are only reachable through
-      //     an OPAQUE argument (no lambda/ctor-synth/inferred-TE evidence at
-      //     all — `hasOpaqueErasureUnsafeGenericParam`) against a
-      //     `Result`/`Map`/user-union param (not a plain `slice`), the
-      //     rewriter refuses the Object-defaulted specialisation entirely
-      //     (#5970) — mirror that here and report `None` too, rather than
-      //     promising a binding type no specialisation will ever back. A
-      //     freshly-constructed argument (`Ok(value = 7)`, a lambda literal)
-      //     stays exempt: its unpinned slots are self-consistent with
-      //     whatever gets defaulted, since the value genuinely IS that
-      //     instantiation (see `partially-pinned union-ctor argument mixes
-      //     concrete and Object slots` in mono_self_test.l).
-      // Same-package generics stay all-or-nothing: their uninferable call
-      // sites raise M0002 at the rewriter, never a defaulted specialisation.
+      // A type parameter nothing pins is left open: the checker reports it as
+      // T0224 (D339, D381), so no `Object` fill stands in for it here and a call
+      // whose parameters stay open is not typed (docs/70 section 5.2).
       if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
         fillCheckedTypeArgsMono(state, typeParams, subst, calleeSpan)
-      }
-      val importedFill = (not state.droppedLocalGenerics.containsKey(fname)) and not annsHaveAxiomMono(decl.annotations)
-      val ctorFill = annsInferenceOnlyMono(decl.annotations)
-      if typeParams.count > 0 and ctorFill {
-        var cf = 0
-        while cf < typeParams.count {
-          if not subst.containsKey(typeParams[cf]) {
-            subst.add(typeParams[cf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
-          }
-          cf = cf + 1
-        }
-      } else if typeParams.count > 0 and importedFill {
-        val unpinnedNow = collectUnpinnedTypeParams(typeParams, subst)
-        if unpinnedNow.count > 0 and not hasOpaqueErasureUnsafeGenericParam(decl, unpinnedNow, argOpaque) {
-          var uf = 0
-          while uf < typeParams.count {
-            if not subst.containsKey(typeParams[uf]) {
-              subst.add(typeParams[uf], TypeExpr(kind = TRef(path = singleSegPath("Object")), span = decl.span))
-            }
-            uf = uf + 1
-          }
-        }
       }
       if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
         None
