@@ -4615,6 +4615,7 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
 func unsolvedLib(): List[ImportedPackage] {
   val lib = parse(
     "package Lib\npub union Option[T] { case Some(value: T); case None }\n" +
+      "pub union Res[T, E] { case Ok2(value: T); case Err2(error: E) }\n" +
       "pub func none[T](): Option[T] { None }\n" +
       "pub func isNone[T](o: in Option[T]): Bool { true }\n" +
       "pub func orElse[T](o: in Option[T], d: in T): T { d }\n" +
@@ -4811,6 +4812,41 @@ test "a call fed by a read of an open-typed value is not judged, a construction 
     "a loop variable of a generic body"
   )
   assertEqualInt(count("func f(): Bool { isNone(None) }\n"), 1, "a bare case construction is still judged")
+}
+
+func unsolvedCtorWarnings(body: in String): Int {
+  val src = "package App\nimport Lib\n" + body
+  val cr = checkWithImportedPackages(parse(src).file, unsolvedLib())
+  var n = 0
+  for d in cr.diagnostics {
+    if d.code == "W0038" {
+      n = n + 1
+    }
+  }
+  n
+}
+
+test "a union-case construction nothing fixes is W0038 (D353)" {
+  assertEqualInt(
+    unsolvedCtorWarnings("func f(): Int {\n  val r = Ok2(value = 7)\n  1\n}\n"),
+    1,
+    "E of Ok2(value = 7) is unsolved and the binding is never used"
+  )
+  assertEqualInt(unsolvedCtorWarnings("func f(): Int {\n  val r = Some(value = 7)\n  1\n}\n"), 0, "T is the argument")
+}
+
+test "an expected type or a later use fixes a union-case construction (D353)" {
+  assertEqualInt(
+    unsolvedCtorWarnings("func f(): Int {\n  val r: Res[Int, String] = Ok2(value = 7)\n  1\n}\n"),
+    0,
+    "an annotated binding"
+  )
+  assertEqualInt(unsolvedCtorWarnings("func f(): Res[Int, String] { Ok2(value = 7) }\n"), 0, "the declared result")
+  assertEqualInt(
+    unsolvedCtorWarnings("func take(r: in Res[Int, String]): Int { 1 }\nfunc f(): Int { take(Ok2(value = 7)) }\n"),
+    0,
+    "a parameter type"
+  )
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type
