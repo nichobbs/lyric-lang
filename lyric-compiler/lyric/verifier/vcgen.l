@@ -262,7 +262,8 @@ func sortOfTypeExprDepth(
       intBits = si.intBits,
       fixedLen = si.fixedLen,
       elemRange = si.elemRange,
-      elemIntBits = si.elemIntBits
+      elemIntBits = si.elemIntBits,
+      elem = si.elem
     )
   } else {
     si

@@ -19,12 +19,16 @@ func unsupportedWp(what: in String, sp: in Span): WpResult {
   WpResult(wp = falseT(), sideGoals = sg, assumed = asList, diags = di)
 }
 
-// Each side goal of `src`, holding where `hyps` hold.
+// Each side goal of `src`, holding where `hyps` hold.  The goals take a copy
+// of `hyps`, so a fact a caller adds to the list afterwards never reaches
+// them.
 func guardSideGoals(src: in List[SideGoal], hyps: in List[Term], dst: in List[SideGoal]): Unit {
+  val held: List[Term] = newList()
+  appendTermList(held, hyps)
   var i = 0
   while i < src.count {
     val g = src[i]
-    val t = if hyps.count == 0 { g.term } else { mkImplies(mkAnd(hyps), g.term) }
+    val t = if held.count == 0 { g.term } else { mkImplies(mkAnd(held), g.term) }
     dst.add(SideGoal(term = t, kind = g.kind, span = g.span))
     i = i + 1
   }

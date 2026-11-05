@@ -82,17 +82,15 @@ func wpAssign(
     sg.add(SideGoal(term = rhsSide[si], kind = GKAssertion, span = sp))
     si = si + 1
   }
-  si = 0
-  while si < inner.sideGoals.count {
-    sg.add(inner.sideGoals[si])
-    si = si + 1
-  }
   val asList: List[Term] = newList()
   appendTermList(asList, rhsR.assumed)
   appendTermList(asList, after.hyps)
   // A range-typed variable is range-checked after every assignment
   // (docs/01 §2.2), so the assigned value is in range from here on.
   appendTermList(asList, rangeHypothesesForTerm(combined, info))
+  // The assignment's facts hold for the obligations of the statements after
+  // it.
+  guardSideGoals(inner.sideGoals, asList, sg)
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, rhsDiags)
@@ -158,38 +156,66 @@ func assignedValue(
   combinedOp
 }
 
-// An element write's variable and index: `a[i]` for an array or buffer
-// variable `a`.
+// An element write's variable and indices: `a[i]` for an array or buffer
+// variable `a`, `a[i][j]` (outermost index first) for an element of one of
+// its elements.
 record ElementTarget {
   name: String
-  index: Expr
+  indices: List[Expr]
 }
 
 func elementTarget(target: in Expr): Option[ElementTarget] {
   match target.kind {
     case EParen(inner) -> elementTarget(inner)
-    case EIndex(receiver, indices) -> {
+    case EIndex(rawReceiver, indices) -> {
       if indices.count != 1 {
         return None
       }
-      match receiver.kind {
+      val receiver = withoutParens(rawReceiver)
+      val outer: Option[ElementTarget] = match receiver.kind {
         case EPath(path) -> if path.segments.count == 1 {
-          Some(value = ElementTarget(name = path.segments[0], index = indices[0]))
+          val none: List[Expr] = newList()
+          Some(value = ElementTarget(name = path.segments[0], indices = none))
         } else {
           None
         }
+        case EIndex(_, _) -> elementTarget(receiver)
         case _ -> None
+      }
+      match outer {
+        case Some(o) -> {
+          val all: List[Expr] = newList()
+          for x in o.indices {
+            all.add(x)
+          }
+          all.add(indices[0])
+          Some(value = ElementTarget(name = o.name, indices = all))
+        }
+        case None -> None
       }
     }
     case _ -> None
   }
 }
 
-// `a[i] = v` / `a[i] op= v` on an array or buffer variable, then the rest of
-// the block: `i` must be in bounds (the write panics otherwise), the stored
+func withoutParens(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> withoutParens(inner)
+    case _ -> e
+  }
+}
+
+// `a[i] = v` / `a[i] op= v` on an array or buffer variable, and `a[i][j] = v`
+// on an element of one of its array elements, then the rest of the block:
+// each index must be in bounds (the write panics otherwise), the stored
 // value must lie in the element type's range, and `a` takes the sequence
-// with element `i` replaced (#8394).  A buffer's copies are values of their
-// own (docs/01 §2.7), so the store changes this variable alone.
+// with that element replaced, a nested write storing the changed inner
+// array back into the outer one (#8394).  A buffer's copies are values of
+// their own (docs/01 §2.7), so the store changes this variable alone.  An
+// array element type the verifier does not know (a binding a call
+// initialises) may be a range type whose check it cannot state, so a write
+// of a number into one fails closed; an annotation on the binding gives it
+// (#8753).
 func wpAssignElement(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -210,16 +236,42 @@ func wpAssignElement(
     )
   }
   val info = match envLookupSort(name, env) { case Some(si) -> si; case None -> sortInfoNoRange(SInt) }
-  if not isOwnedSequenceSort(info.sort) {
-    return unsupportedWp("an assignment to an element of anything but an array or buffer variable", target.span)
+  // The sort info of each sequence the write goes through, outermost first.
+  val levels: List[SortInfo] = newList()
+  var levelInfo = info
+  var li = 0
+  while li < et.indices.count {
+    if not isOwnedSequenceSort(levelInfo.sort) {
+      return unsupportedWp(
+        "an assignment to an element of anything but an array or buffer variable, or an array element of one",
+        target.span
+      )
+    }
+    levels.add(levelInfo)
+    levelInfo = elementSortInfo(levelInfo)
+    li = li + 1
+  }
+  val elemInfo = levelInfo
+  val innermost = levels[levels.count - 1]
+  // A buffer's elements are `Plain`, which no range subtype is (T0173), so
+  // only an array's element type can hide a range.
+  val inBuffer = match info.sort { case SBuffer(_) -> true; case _ -> false }
+  if not inBuffer and not elementTypeKnown(innermost) and sortMayCarryRange(elemInfo.sort) {
+    return unsupportedWp(
+      "an element write to '" + name +
+        "', whose element type the verifier does not know (annotate the binding with its type)",
+      target.span
+    )
   }
   val arr = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, info.sort) }
-  // The index and the value are evaluated before the store; an index that
+  // The indices and the value are evaluated before the store; an index that
   // changes a variable, or a value that changes the sequence, leaves no single
   // state to store into.
-  val idxEff = effectsOfExpr(env, et.index)
-  if idxEff.assigned.count > 0 or idxEff.outArgs.count > 0 or idxEff.jumps.count > 0 {
-    return unsupportedWp("an element index that assigns, passes `out`/`inout` or jumps", et.index.span)
+  for ix in et.indices {
+    val idxEff = effectsOfExpr(env, ix)
+    if idxEff.assigned.count > 0 or idxEff.outArgs.count > 0 or idxEff.jumps.count > 0 {
+      return unsupportedWp("an element index that assigns, passes `out`/`inout` or jumps", ix.span)
+    }
   }
   val valueEff = effectsOfExpr(env, value)
   if valueEff.assigned.count > 0 {
@@ -230,26 +282,47 @@ func wpAssignElement(
   }
   val diags: List[Diagnostic] = newList()
   val sides: List[Term] = newList()
-  val (idxR, idxDiags) = translateExpr(env, et.index)
-  appendTermList2(diags, idxDiags)
-  appendTermList(sides, idxR.sideConds)
-  val indexTerm = if sortEq(sortOf(idxR.term), SInt) {
-    idxR.term
-  } else {
-    diags.add(untranslatableDiag("an element index that is not a signed integer", et.index.span))
-    poisonTerm(idxR.term)
+  val idxAssumed: List[Term] = newList()
+  // The sequence at each level and the index into it: `a`, then `a[i]`, ...
+  val seqs: List[Term] = newList()
+  val idxTerms: List[Term] = newList()
+  var poisoned = false
+  var current = arr
+  for ix in et.indices {
+    val (idxR, idxDiags) = translateExpr(env, ix)
+    appendTermList2(diags, idxDiags)
+    appendTermList(sides, idxR.sideConds)
+    if termIsPoisoned(idxR.term) {
+      poisoned = true
+    }
+    val indexTerm = if sortEq(sortOf(idxR.term), SInt) {
+      idxR.term
+    } else {
+      diags.add(untranslatableDiag("an element index that is not a signed integer", ix.span))
+      poisoned = true
+      poisonTerm(idxR.term)
+    }
+    // An inner array has its type's length, as every element of the outer
+    // one does.
+    if seqs.count > 0 {
+      appendTermList(idxAssumed, valueFactsForTerm(current, levels[seqs.count]))
+    }
+    // `0 <= i < a.length`, each level's own bounds check, which holds once
+    // the indices before it have.
+    val inRange = termList2(
+      TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = 0i64), sort = SInt), indexTerm)),
+      TBuiltin(op = BOpLt, args = termList2(indexTerm, lengthTerm(current)))
+    )
+    appendTermList(idxAssumed, idxR.assumed)
+    appendTermList(sides, afterFacts(idxAssumed, termList1(mkAnd(inRange))))
+    seqs.add(current)
+    idxTerms.add(indexTerm)
+    current = TBuiltin(op = BOpSliceIndex, args = termList2(current, indexTerm))
   }
-  // `0 <= i < a.length`, the write's own bounds check.
-  val inRange = termList2(
-    TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = 0i64), sort = SInt), indexTerm)),
-    TBuiltin(op = BOpLt, args = termList2(indexTerm, lengthTerm(arr)))
-  )
-  appendTermList(sides, afterFacts(idxR.assumed, termList1(mkAnd(inRange))))
   val (rhsR, rhsDiags) = translateExpr(env, value)
   appendTermList2(diags, rhsDiags)
   appendTermList(sides, rhsR.sideConds)
-  val elemInfo = elementSortInfo(info)
-  val existing = TBuiltin(op = BOpSliceIndex, args = termList2(arr, indexTerm))
+  val existing = current
   val rawCombined = assignedValue(env, existing, rhsR.term, op, target, sp, sides, diags)
   val combined = coerceTermAt(rawCombined, elemInfo.sort, value.span, diags)
   match rangeObligationsForTerm(combined, elemInfo) {
@@ -257,23 +330,26 @@ func wpAssignElement(
     case Err(reason) -> diags.add(untranslatableDiag("the range of an element of `" + name + "`: " + reason, sp))
   }
   val after = havocOutArgs(env, value)
-  val stored = TBuiltin(op = BOpSliceStore, args = termList3(arr, indexTerm, combined))
+  var stored = combined
+  var k = seqs.count - 1
+  while k >= 0 {
+    stored = TBuiltin(op = BOpSliceStore, args = termList3(seqs[k], idxTerms[k], stored))
+    k = k - 1
+  }
   val env2 = envBindTerm(name, stored, info, after.env)
   val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   val sg: List[SideGoal] = newList()
-  if termIsPoisoned(idxR.term) or termIsPoisoned(rhsR.term) {
+  if poisoned or termIsPoisoned(rhsR.term) {
     sg.add(SideGoal(term = poisonTerm(falseT()), kind = GKAssertion, span = target.span))
   }
   for side in sides {
     sg.add(SideGoal(term = side, kind = GKAssertion, span = sp))
   }
-  for g in inner.sideGoals {
-    sg.add(g)
-  }
   val asList: List[Term] = newList()
-  appendTermList(asList, idxR.assumed)
+  appendTermList(asList, idxAssumed)
   appendTermList(asList, rhsR.assumed)
   appendTermList(asList, after.hyps)
+  guardSideGoals(inner.sideGoals, asList, sg)
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, diags)
@@ -473,4 +549,111 @@ func wpWhile(
   appendTermList(asList, exitHyps)
   appendTermList(asList, inner.assumed)
   WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
+}
+
+// `for x in a { invariant: ι; S }` over an array, slice or buffer `a`, by
+// the loop rule over a hidden index (docs/15 §5.3).  The loop iterates the
+// value `a` has when it starts (docs/01 §2.7), so `a` is bound once to a
+// hidden name no statement of the body can reach, and the loop is the
+// `while` over that binding:
+//
+//   val s = a
+//   var k = 0
+//   while k < s.length {
+//     invariant: 0 <= k and k <= s.length
+//     invariant: ι
+//     val x = s[k]
+//     S
+//     k = k + 1
+//   }
+//
+// The hidden index cannot be named, so `ι` speaks of the variables in scope
+// around the loop; it is evaluated before `x` is bound.  The pattern binds
+// as a `val` does.  A `for` over any other value (a range, a `List`, a
+// `Map`) fails closed (V0026), as do `break` and `continue` in the body,
+// which a `while` does not follow either (#8394).
+func wpFor(
+  env: in VEnv,
+  resultSort: in SortInfo,
+  postcond: in Term,
+  stmts: in List[Statement],
+  idx: in Int,
+  pat: in Pattern,
+  iter: in Expr,
+  body: in Block,
+  sp: in Span,
+): WpResult {
+  val (iterR, _) = translateExpr(env, iter)
+  if not isElementSequenceSort(sortOf(iterR.term)) {
+    return unsupportedWp("a `for` loop over a value other than an array, slice or buffer", iter.span)
+  }
+  val seqName = freshName(env, "for!seq")
+  val idxName = freshName(env, "for!k")
+  val seqE = forPathExpr(seqName, sp)
+  val idxE = forPathExpr(idxName, sp)
+  val lenE = Expr(kind = EMember(receiver = seqE, memberName = "length"), span = sp)
+  val zeroE = forIntExpr(0i64, sp)
+  val inRange = Expr(
+    kind = EBinop(
+      op = BAnd,
+      lhs = Expr(kind = EBinop(op = BLte, lhs = zeroE, rhs = idxE), span = sp),
+      rhs = Expr(kind = EBinop(op = BLte, lhs = idxE, rhs = lenE), span = sp)
+    ),
+    span = sp
+  )
+  val loopStmts: List[Statement] = newList()
+  loopStmts.add(Statement(kind = SInvariant(expr = inRange), span = sp))
+  val realStmts: List[Statement] = newList()
+  for st in body.statements {
+    match st.kind {
+      case SInvariant(_) -> loopStmts.add(st)
+      case _ -> realStmts.add(st)
+    }
+  }
+  val elementE = Expr(kind = EIndex(receiver = seqE, indices = forExprList(idxE)), span = sp)
+  loopStmts.add(Statement(kind = SLocal(binding = LBVal(pat = pat, ty = None, init = elementE)), span = sp))
+  appendStmtList(loopStmts, realStmts)
+  val stepE = Expr(kind = EBinop(op = BAdd, lhs = idxE, rhs = forIntExpr(1i64, sp)), span = sp)
+  loopStmts.add(Statement(kind = SAssign(target = idxE, op = AssEq, value = stepE), span = sp))
+  val condE = Expr(kind = EBinop(op = BLt, lhs = idxE, rhs = lenE), span = sp)
+
+  val spliced: List[Statement] = newList()
+  var i = 0
+  while i < idx {
+    spliced.add(stmts[i])
+    i = i + 1
+  }
+  val seqPat = Pattern(kind = PBinding(name = seqName, inner = None), span = sp)
+  spliced.add(Statement(kind = SLocal(binding = LBVal(pat = seqPat, ty = None, init = iter)), span = iter.span))
+  spliced.add(
+    Statement(kind = SLocal(binding = LBVar(name = idxName, ty = None, init = Some(value = zeroE))), span = sp)
+  )
+  spliced.add(
+    Statement(
+      kind = SWhile(label = None, cond = condE, body = Block(statements = loopStmts, span = body.span)),
+      span = sp
+    )
+  )
+  i = idx + 1
+  while i < stmts.count {
+    spliced.add(stmts[i])
+    i = i + 1
+  }
+  wpWalk(env, resultSort, postcond, spliced, idx)
+}
+
+func forPathExpr(name: in String, sp: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(name)
+  Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)
+}
+
+func forIntExpr(n: in Long, sp: in Span): Expr {
+  Expr(kind = ELiteral(lit = LInt(value = n, suffix = NoIntSuffix, raw = toString(n))), span = sp)
+}
+
+func forExprList(e: in Expr): List[Expr] {
+  val xs: List[Expr] = newList()
+  xs.add(e)
+  xs
 }

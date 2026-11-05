@@ -170,14 +170,12 @@ func wpAfterExpr(
     sg.add(SideGoal(term = r.sideConds[i], kind = GKAssertion, span = e.span))
     i = i + 1
   }
-  i = 0
-  while i < inner.sideGoals.count {
-    sg.add(inner.sideGoals[i])
-    i = i + 1
-  }
   val asList: List[Term] = newList()
   appendTermList(asList, r.assumed)
   appendTermList(asList, after.hyps)
+  // The statement's facts (a callee's `ensures:`) hold for the obligations
+  // of the statements after it.
+  guardSideGoals(inner.sideGoals, asList, sg)
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, rDiags)
@@ -250,14 +248,12 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
             val phiParts = ContractParts(sides = phiR.sideConds, facts = phiR.assumed, value = phiR.term, diags = phiDiags)
             val sg: List[SideGoal] = newList()
             sg.add(SideGoal(term = partsObligation(phiParts), kind = GKAssertion, span = callExpr.span))
-            var i = 0
-            while i < inner.sideGoals.count {
-              sg.add(inner.sideGoals[i])
-              i = i + 1
-            }
             val asList: List[Term] = newList()
             asList.add(phiR.term)
             appendTermList(asList, phiR.assumed)
+            // What the assertion establishes holds for every later
+            // statement's obligations too.
+            guardSideGoals(inner.sideGoals, asList, sg)
             appendTermList(asList, inner.assumed)
             val di: List[Diagnostic] = newList()
             appendTermList2(di, phiDiags)
@@ -308,6 +304,9 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
       }
       case SWhile(_, cond, body) -> {
         wpWhile(env, resultSort, postcond, stmts, idx, cond, body, st.span)
+      }
+      case SFor(_, pat, iter, body) -> {
+        wpFor(env, resultSort, postcond, stmts, idx, pat, iter, body, st.span)
       }
       case SInvariant(_) -> {
         // SInvariant outside a loop is a user error (lyric-lang #418 §7).
@@ -578,11 +577,18 @@ func wpLocal(
 
 // What an unannotated binding knows of its value: its initializer's sort and
 // width, and, for a copy of an array or slice variable, that variable's
-// length and element type (#8394).
+// length and element type (#8394).  A bracket literal of literals has
+// elements of a literal's type, which has no range; any other initializer
+// (a call, an element read) leaves the element type unknown (#8753).
 func inferredSortInfo(env: in VEnv, init: in Expr, sort: in Sort): SortInfo {
   val base = SortInfo(sort = sort, range = RBKNone, intBits = intBitsOfExpr(env, init))
   if not isElementSequenceSort(sort) {
     return base
+  }
+  if literalElementsOnly(init) {
+    val litElem: List[SortInfo] = newList()
+    litElem.add(sortInfoNoRange(elementSortInfo(base).sort))
+    return base.copy(elem = litElem)
   }
   match receiverSortInfo(env, init) {
     case Some(src) -> if sortEq(src.sort, sort) {
@@ -591,7 +597,8 @@ func inferredSortInfo(env: in VEnv, init: in Expr, sort: in Sort): SortInfo {
         range = RBKNone,
         fixedLen = src.fixedLen,
         elemRange = src.elemRange,
-        elemIntBits = src.elemIntBits
+        elemIntBits = src.elemIntBits,
+        elem = src.elem
       )
     } else {
       base
@@ -601,6 +608,23 @@ func inferredSortInfo(env: in VEnv, init: in Expr, sort: in Sort): SortInfo {
 }
 
 // The name a `val` pattern binds when it binds the whole value to one.
+// `e` is a bracket literal whose elements are all literals.
+func literalElementsOnly(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> literalElementsOnly(inner)
+    case EList(xs) -> {
+      for x in xs {
+        match x.kind {
+          case ELiteral(_) -> ()
+          case _ -> return false
+        }
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
 func simpleBindingName(pat: in Pattern): Option[String] {
   match pat.kind {
     case PBinding(n, None) -> Some(value = n)
@@ -667,15 +691,12 @@ func wpBindInit(
     sg.add(SideGoal(term = initR.sideConds[i], kind = GKAssertion, span = init.span))
     i = i + 1
   }
-  i = 0
-  while i < inner.sideGoals.count {
-    sg.add(inner.sideGoals[i])
-    i = i + 1
-  }
   val asList: List[Term] = newList()
   appendTermList(asList, initR.assumed)
   appendTermList(asList, after.hyps)
   appendTermList(asList, rangeHypothesesForTerm(boundTerm, info))
+  // The binding's facts hold for the obligations of the statements after it.
+  guardSideGoals(inner.sideGoals, asList, sg)
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, initDiags)

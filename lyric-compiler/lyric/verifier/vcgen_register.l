@@ -618,11 +618,15 @@ func genericTypeParamNames(generics: in Option[GenericParams]): List[String] {
 // verifier does not know (#7532).  `Std.Core` is left to the monad models.
 // A function is reachable by its package-qualified name, by its alias-
 // qualified name when the import is renamed, and by its bare name when
-// nothing else in scope, own or imported, has that name.
+// nothing else in scope, own or imported, has that name.  A function over
+// `buffer[T]` is left out where `buffer` names another type in the proved
+// file's scope (`bufferBuiltin` false): its signature would be read as that
+// type's (#8753).
 func registerImportedFunctions(
   file: in SourceFile,
   imports: in ImportScope,
   siblingFunctions: in List[FunctionArity],
+  bufferBuiltin: in Bool,
   callees: in Map[String, FunctionDecl],
 ): Unit {
   val bare: Map[String, Int] = newMap()
@@ -652,6 +656,9 @@ func registerImportedFunctions(
         if pkgName != "Std.Core" {
           imported.add(rp)
           for fn in rp.decls.callees {
+            if not bufferBuiltin and signatureNamesBuffer(fn) {
+              continue
+            }
             addCalleeIfAbsent(callees, pkgName + "." + fn.name, fn)
             match imp.asAlias {
               case Some(alias) -> addCalleeIfAbsent(callees, alias + "." + fn.name, fn)
@@ -664,9 +671,45 @@ func registerImportedFunctions(
   }
   for rp in imported {
     for fn in rp.decls.callees {
+      if not bufferBuiltin and signatureNamesBuffer(fn) {
+        continue
+      }
       if countOf(bare, fn.name) == 1 {
         addCalleeIfAbsent(callees, fn.name, fn)
       }
     }
+  }
+}
+
+// `fn`'s parameters or result mention a `buffer[...]` type.
+func signatureNamesBuffer(fn: in FunctionDecl): Bool {
+  for p in fn.params {
+    if typeExprNamesBuffer(p.ty) {
+      return true
+    }
+  }
+  match fn.ret {
+    case Some(rt) -> typeExprNamesBuffer(rt)
+    case None -> false
+  }
+}
+
+func typeExprNamesBuffer(te: in TypeExpr): Bool {
+  match te.kind {
+    case TSlice(elt) -> typeExprNamesBuffer(elt)
+    case TArray(_, elt) -> typeExprNamesBuffer(elt)
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and head.segments[0] == "buffer" {
+        return true
+      }
+      for a in args {
+        match a {
+          case TAType(t) -> if typeExprNamesBuffer(t) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case _ -> false
   }
 }
