@@ -2240,6 +2240,16 @@ func collectWovenSigsMatching(
           if not into.containsKey(qkey) {
             into.add(qkey, sig)
           }
+          // The package-scoped keys `resolveGeneralFuncSigExact` reads: the
+          // call is in this package, so no bare name is needed to find it.
+          val scopedKey = owner + "::" + decl.name
+          if not into.containsKey(scopedKey) {
+            into.add(scopedKey, sig)
+          }
+          val scopedAkey = scopedKey + "@" + toString(decl.params.count)
+          if not into.containsKey(scopedAkey) {
+            into.add(scopedAkey, sig)
+          }
           if not into.containsKey(decl.name) {
             into.add(decl.name, sig)
           }
@@ -2573,6 +2583,16 @@ func collectMonoSpecializedSigs(
           val qkey = owner + "/" + decl.name
           if not into.containsKey(qkey) {
             into.add(qkey, sig)
+          }
+          // The package-scoped keys `resolveGeneralFuncSigExact` reads: the
+          // call is in this package, so no bare name is needed to find it.
+          val scopedKey = owner + "::" + decl.name
+          if not into.containsKey(scopedKey) {
+            into.add(scopedKey, sig)
+          }
+          val scopedAkey = scopedKey + "@" + toString(decl.params.count)
+          if not into.containsKey(scopedAkey) {
+            into.add(scopedAkey, sig)
           }
           if not into.containsKey(decl.name) {
             into.add(decl.name, sig)
