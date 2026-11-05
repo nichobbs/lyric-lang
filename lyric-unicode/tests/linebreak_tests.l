@@ -167,6 +167,7 @@ test "quotation marks between ideographs break by their direction (LB19, LB19a)"
   assertEqual(marked("你“好”你"), "你|“好”|你", "an opening quote may start a line and a closing one end it")
   assertEqual(marked("你\"好\"你"), "你\"好\"你", "a straight quote has no direction and joins both sides")
   assertEqual(marked("a“b”c"), "a“b”c", "beside Latin letters a quote never breaks")
+  assertEqual(marked("你́“好”́你"), "你́|“好”́|你", "a combining mark keeps the East Asian width of what it follows")
 }
 
 test "a hyphen that starts a word stays with it (LB20a)" {
