@@ -9,7 +9,9 @@
 //! genuine suspension (an await on an incomplete task, or a
 //! `Std.Time.sleepMillis` call — the async leaf, which parks the task on
 //! the scheduler's timer list instead of blocking), and interleaves with
-//! other spawned tasks under the lyric-rt cooperative scheduler.  A task
+//! other spawned tasks under the lyric-rt cooperative scheduler (each
+//! program runs with LYRIC_ASYNC_THREADS=1; `llvm_self_test_async_mt.l`
+//! covers the multi-threaded default).  A task
 //! that never suspends completes inside the ramp, which reproduces the
 //! earlier passthrough behavior (D-N-019/D-N-021) as the degenerate case —
 //! so the pre-coroutine cases below double as a regression net for the
@@ -58,6 +60,15 @@ record RunOutcome {
   stdout: String
 }
 
+// These cases check the cooperative scheduler: its FIFO order and its
+// deadline-ordered wakes are what make their interleavings deterministic.  The
+// default is one scheduler thread per processor (D404), whose order is
+// unspecified (D403), so every program here runs with LYRIC_ASYNC_THREADS=1
+// (the child inherits it); `llvm_self_test_async_mt.l` covers the default.
+func cooperativeScheduler(): Unit {
+  Environment.setVar("LYRIC_ASYNC_THREADS", "1")
+}
+
 func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val pr = parse(source)
   if pr.diagnostics.count > 0 {
@@ -80,6 +91,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     case Err(_) -> panic("cannot write " + llPath)
   }
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
+  cooperativeScheduler()
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
@@ -113,6 +125,7 @@ func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome 
   if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "", true) {
     panic("native compilation failed for an async self-test program")
   }
+  cooperativeScheduler()
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
