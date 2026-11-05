@@ -1834,13 +1834,13 @@ pub func deriveFileWithImports(
   // Each derived item takes spans of its own, mapped back to the type that
   // caused it (D370), so the checker can tell generated nodes apart and a
   // diagnostic in one is reported at the `@derive`.
-  val alloc = newSpanAllocator(file)
+  val spanBase = generatedSpanBase(file)
   var i = 0
   while i < file.items.count {
     val batch: List[Item] = newList()
     deriveItem(file.items[i], file.items, batch, distincts, jsonTypes)
     if batch.count > 0 {
-      val respanned = respanGenerated(file, batch, alloc, file.items[i].span, origins)
+      val respanned = respanGenerated(file, batch, spanBase, file.items[i].span, origins)
       var r = 0
       while r < respanned.count {
         synths.add(respanned[r])

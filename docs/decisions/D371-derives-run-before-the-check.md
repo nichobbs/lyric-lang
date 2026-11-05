@@ -1,4 +1,4 @@
-# D371 - Derives run before the checker, with allocator spans mapped to the deriving type (docs/70 phase 3b slice S1, #8613)
+# D371 - Derives run before the checker, with generated spans mapped to the deriving type (docs/70 phase 3b slice S1, #8613)
 
 **Status:** shipped. First slice of D370.
 
@@ -18,10 +18,12 @@ type items), so they go first.
    `pipeCheckFront` called alone (`lyric prove`'s front, the JVM bridge's
    check-only path) is unchanged and does not derive.
 2. New package `Lyric.Expand` (`lyric-compiler/lyric/expand/expand.l`):
-   - `SpanAllocator` / `newSpanAllocator(file)`: offsets beyond every span of the
-     package, two apart so a span's start and end differ (the checker skips a
-     site whose span ends at or before its start);
-   - `respanGenerated(file, items, alloc, cause, origins)`: a fresh span on each
+   - `generatedSpanBase(file)`: the first offset beyond every span of the
+     package. A generated span takes `base + 2 * origins.count`, so spans are
+     unique with no mutable counter (a compiler source cannot use `ref record`
+     under the seed) and start and end differ (the checker skips a site whose
+     span ends at or before its start);
+   - `respanGenerated(file, items, base, cause, origins)`: a fresh span on each
      item, function, expression, statement and pattern of a batch of generated
      items. The span takes the line and column of the causing declaration (a
      line of 0 would mean "no source" and the checker records no site for such a

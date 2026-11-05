@@ -5,7 +5,7 @@
 //! generate is checked like user code, and the checker's span-keyed side
 //! tables (`spanKey`) need every generated node to carry a span of its own.
 //!
-//! A generated node takes a span from a `SpanAllocator`: a unique offset beyond
+//! A generated node takes a unique offset beyond
 //! the highest real offset of the package, with the line and column of the
 //! declaration that caused it. `origins` maps each allocated span key back to
 //! the span of that declaration, and `relocateDiagnostics` reports a
@@ -19,12 +19,6 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ContractElaborator
-
-/// Hands out the offsets of generated spans. `next` is the offset the next
-/// span takes.
-pub record SpanAllocator {
-  var next: Int
-}
 
 /// The highest offset any span of `file` ends at.
 func maxOffset(file: in SourceFile): Int {
@@ -42,9 +36,11 @@ func maxOffset(file: in SourceFile): Int {
   m
 }
 
-/// An allocator whose spans lie beyond every span of `file`.
-pub func newSpanAllocator(file: in SourceFile): SpanAllocator {
-  SpanAllocator(next = maxOffset(file) + 1)
+/// The first offset of generated spans for `file`: beyond every span of it. A
+/// generated span takes `base + 2 * origins.count` (the map gains one entry
+/// per span), so spans stay unique without a mutable counter.
+pub func generatedSpanBase(file: in SourceFile): Int {
+  maxOffset(file) + 1
 }
 
 /// The key under which `origins` records a generated span.
@@ -54,9 +50,8 @@ pub func generatedSpanKey(sp: in Span): String {
 
 /// A fresh span for a node generated because of the declaration at `cause`;
 /// records `cause` as its origin.
-func freshSpan(alloc: in SpanAllocator, cause: in Span, origins: in Map[String, Span]): Span {
-  val n = alloc.next
-  alloc.next = n + 2
+func freshSpan(base: in Int, cause: in Span, origins: in Map[String, Span]): Span {
+  val n = base + 2 * origins.count
   val fid = cause.startPos.fileId
   val sp = Span(
     startPos = Position(offset = n, line = cause.startPos.line, column = cause.startPos.column, fileId = fid),
@@ -77,19 +72,19 @@ func respanFunc(d: in FunctionDecl, sp: in Span): FunctionDecl {
 pub func respanGenerated(
   file: in SourceFile,
   items: in List[Item],
-  alloc: in SpanAllocator,
+  base: in Int,
   cause: in Span,
   origins: in Map[String, Span],
 ): List[Item] {
   val mapped = mapFileNodes(
     file.copy(items = items),
-    { e: Expr -> e.copy(span = freshSpan(alloc, cause, origins)) },
-    { s: Statement -> s.copy(span = freshSpan(alloc, cause, origins)) },
-    { p: Pattern -> p.copy(span = freshSpan(alloc, cause, origins)) }
+    { e: Expr -> e.copy(span = freshSpan(base, cause, origins)) },
+    { s: Statement -> s.copy(span = freshSpan(base, cause, origins)) },
+    { p: Pattern -> p.copy(span = freshSpan(base, cause, origins)) }
   )
   val res: List[Item] = newList()
   for it in mapped.items {
-    val sp = freshSpan(alloc, cause, origins)
+    val sp = freshSpan(base, cause, origins)
     match it.kind {
       case IFunc(d) -> res.add(it.copy(kind = IFunc(decl = respanFunc(d, sp)), span = sp))
       case _ -> res.add(it.copy(span = sp))
