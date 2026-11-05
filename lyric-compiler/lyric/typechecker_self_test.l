@@ -4849,6 +4849,52 @@ test "an expected type or a later use fixes a union-case construction (D353)" {
   )
 }
 
+test "the join of a try body and its catch fixes a construction (D380)" {
+  assertEqualInt(
+    unsolvedCtorWarnings(
+      "func g(): Int { 1 }\nfunc f(): Int {\n  match try { g(); Ok2(value = 1) } catch Bug as b { Err2(error = \"x\") } {\n    case Ok2(_) -> 1\n    case Err2(_) -> 2\n  }\n}\n"
+    ),
+    0,
+    "try as a match scrutinee"
+  )
+  assertEqualInt(
+    unsolvedCtorWarnings(
+      "func g(): Int { 1 }\nfunc f(): Int {\n  val r = try { g(); Ok2(value = 1) } catch Bug as b { Err2(error = \"x\") }\n  1\n}\n"
+    ),
+    0,
+    "try as a binding initialiser"
+  )
+}
+
+test "contexts that already fix a construction are not W0038 (D380)" {
+  assertEqualInt(
+    unsolvedCtorWarnings("func f(c: in Bool): Int {\n  val t = (Ok2(value = 2), Err2(error = \"abc\"))\n  1\n}\n"),
+    0,
+    "tuple elements"
+  )
+  assertEqualInt(
+    unsolvedCtorWarnings(
+      "func f(c: in Bool): Int {\n  val l = [Ok2(value = 1), Err2(error = \"ab\"), Ok2(value = 3)]\n  1\n}\n"
+    ),
+    0,
+    "list literal"
+  )
+  assertEqualInt(
+    unsolvedCtorWarnings(
+      "func f(c: in Bool): Res[Int, String] {\n  val s = (if c { Err2(error = \"a\") } else { Err2(error = \"b\") })?\n  Ok2(value = 1)\n}\n"
+    ),
+    0,
+    "branches of a ? operand"
+  )
+  assertEqualInt(
+    unsolvedCtorWarnings(
+      "func take(o: in Option[Res[Int, String]]): Int { 1 }\nfunc f(): Int { take(Some(value = Ok2(value = 7))) }\n"
+    ),
+    0,
+    "nested constructor argument"
+  )
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.
