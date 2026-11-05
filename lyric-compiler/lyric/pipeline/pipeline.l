@@ -2654,7 +2654,7 @@ pub func foreignCalleeSites(
   }
   for origin in mapKeys(byOrigin) {
     match mapGet(byOrigin, origin) {
-      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+      case Some(decls) -> match checkGenericsInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
         case Some(res) -> {
           for k in mapKeys(res.symbols.calleeSites) {
             if not acc.containsKey(origin + "|" + k) {
@@ -2764,6 +2764,84 @@ func checkInOriginScope(
     ),
     imports = imports,
     items = items,
+    span = file0.span
+  )
+  Some(
+    value = if native {
+      checkWithImportedPackagesForNative(checkFile, checkPkgs)
+    } else {
+      checkWithImportedPackages(checkFile, checkPkgs)
+    }
+  )
+}
+
+// The generics `decls` were specialised from, type-checked in the scope of
+// `origin` (the callee sites of a generic's body are the same for every
+// specialisation).  A specialisation names its type arguments in the
+// consumer's scope (`Box[Msg]`), which `origin` does not see, so checking the
+// specialisation itself leaves the calls that mention them unresolved; the
+// generic as written has no such names.  A specialisation whose generic is not
+// among `monoGenFuncs` is checked as is.
+func checkGenericsInOriginScope(
+  origin: in String,
+  decls: in List[FunctionDecl],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+): Option[CheckResult] {
+  val raws: List[FunctionDecl] = newList()
+  for d in decls {
+    var raw = d
+    for gf in monoGenFuncs {
+      if originPkgOf(gf.annotations) == origin and gf.span.startPos.offset == d.span.startPos.offset and gf.span.endPos.offset == d.span.endPos.offset {
+        match gf.generics {
+          case Some(_) -> {
+            raw = gf
+          }
+          case None -> ()
+        }
+      }
+    }
+    raws.add(raw)
+  }
+  val items: List[Item] = newList()
+  val imports: List[ImportDecl] = newList()
+  val checkPkgs: List[ImportedPackage] = newList()
+  if not addOriginScope(origin, file0, importedPkgs, monoGenFuncs, items, imports, checkPkgs) {
+    return None
+  }
+  // The generic's own signature-only item gives way to the generic with its body.
+  val kept: List[Item] = newList()
+  for it in items {
+    var replaced = false
+    match it.kind {
+      case IFunc(fd) -> {
+        for r in raws {
+          if r.name == fd.name and r.span.startPos.offset == fd.span.startPos.offset {
+            replaced = true
+          }
+        }
+      }
+      case _ -> ()
+    }
+    if not replaced {
+      kept.add(it)
+    }
+  }
+  for r in raws {
+    kept.add(funcItem(r))
+  }
+  val checkFile = SourceFile(
+    moduleDoc = file0.moduleDoc,
+    files = newList(),
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = PackageDecl(
+      path = ModulePath(segments = dottedSegments(origin), span = file0.span),
+      span = file0.span
+    ),
+    imports = imports,
+    items = kept,
     span = file0.span
   )
   Some(
