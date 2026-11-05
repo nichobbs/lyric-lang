@@ -361,6 +361,27 @@ pub func moveWord(value: in String, e: in TextEdit, delta: in Int, rtl: in Bool,
   moveCaret(value, c, p, select)
 }
 
+/// Whether `b` is a password input.  The host never draws, copies or cuts its value, and never
+/// splits it into words: word movement goes to its ends and a double click selects all of it.
+pub func isMasked(b: in Box): Bool {
+  b.kind == "textInput" and propOf(b.props, "type", "text") == "password"
+}
+
+/// What the input `b` draws of `value`: the value itself, or for a password one bullet (U+2022) per
+/// code point, so every caret position of the value is the same position of what is drawn.
+pub func shownValue(b: in Box, value: in String): String {
+  if not isMasked(b) {
+    return value
+  }
+  val sb = StringBuilder.new()
+  var i = cpCount(value)
+  while i > 0 {
+    StringBuilder.append(sb, "•")
+    i = i - 1
+  }
+  StringBuilder.toString(sb)
+}
+
 pub func selectAll(value: in String, e: in TextEdit): TextEdit {
   e.copy(anchor = 0, caret = cpCount(value))
 }
