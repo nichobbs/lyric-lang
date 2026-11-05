@@ -666,6 +666,10 @@ func freeOneShotSem(s: in Long): Unit {
 /// `stopListener`), and the pull queue every spawned connection thread
 /// shares. Opaque to consumers: observe it only through `nextContext` /
 /// `stopListener`.
+@sendable
+// The accept thread and request handlers share a listener through its queue's
+// mutex and semaphore (`lyric_mutex_*`, `lyric_sem_*`), so a listener may be
+// shared between tasks (D404).
 pub ref record HttpListener {
   transport: Listener
   acceptTid: Long

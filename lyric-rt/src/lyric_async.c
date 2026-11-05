@@ -9,14 +9,14 @@
  *
  * Two modes, chosen once per process by LYRIC_ASYNC_THREADS:
  *
- *   unset or 1  cooperative, single-threaded, run-to-completion
+ *   1           cooperative, single-threaded, run-to-completion
  *               (06-async-design.md, D-N-021's async-leaf follow-up).
  *               No lock is ever taken; ready tasks run in FIFO order.
- *   N >= 2      N-1 worker threads plus every thread blocked in
+ *   N >= 2      (unset: the processor count, D404) N-1 worker threads plus every thread blocked in
  *               lyric_task_block_on run ready tasks.  Each scheduler
  *               thread owns a work deque: it pushes and pops the newest
  *               end, idle threads steal the oldest end of another
- *               thread's deque (D217, D-progress for #8493).  A `spawn`
+ *               thread's deque (D217, D403).  A `spawn`
  *               call site raises a thread-local hint; the callee's
  *               prologue (lyric_task_defer_start) consumes it and queues
  *               the task on the spawner's deque instead of running its
@@ -247,7 +247,9 @@ static inline void set_state(LyricTask* t, int32_t s) {
 
 static void* async_worker_main(void* arg);
 
-/* LYRIC_ASYNC_THREADS: an integer >= 1; anything else (or unset) is 1. */
+/* LYRIC_ASYNC_THREADS: an integer >= 1 (1 selects the cooperative scheduler);
+ * unset or anything else is the processor count (D404: the compiler checks
+ * what crosses a spawn, so tasks may run in parallel by default). */
 static int detect_async_threads(void) {
 #if defined(__wasi__)
     return 1;
@@ -260,7 +262,8 @@ static int detect_async_threads(void) {
             return v > MAX_ASYNC_THREADS ? MAX_ASYNC_THREADS : (int)v;
         }
     }
-    return 1;
+    int n = lyric_processor_count();
+    return n > MAX_ASYNC_THREADS ? MAX_ASYNC_THREADS : n;
 #endif
 }
 
@@ -1518,7 +1521,7 @@ void lyric_task_block_on(LyricTask* root) {
 int64_t lyric_sched_poll(void) {
     sched_ensure();
     if (mt()) {
-        lyric_panic_msg("lyric_sched_poll needs the single-threaded scheduler (unset LYRIC_ASYNC_THREADS)",
+        lyric_panic_msg("lyric_sched_poll needs the single-threaded scheduler (LYRIC_ASYNC_THREADS=1)",
                         "lyric_async.c", __LINE__);
     }
     for (;;) {

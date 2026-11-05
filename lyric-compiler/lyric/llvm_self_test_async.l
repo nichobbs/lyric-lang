@@ -9,7 +9,9 @@
 //! genuine suspension (an await on an incomplete task, or a
 //! `Std.Time.sleepMillis` call — the async leaf, which parks the task on
 //! the scheduler's timer list instead of blocking), and interleaves with
-//! other spawned tasks under the lyric-rt cooperative scheduler.  A task
+//! other spawned tasks under the lyric-rt cooperative scheduler (each
+//! program runs with LYRIC_ASYNC_THREADS=1; `llvm_self_test_async_mt.l`
+//! covers the multi-threaded default).  A task
 //! that never suspends completes inside the ramp, which reproduces the
 //! earlier passthrough behavior (D-N-019/D-N-021) as the degenerate case —
 //! so the pre-coroutine cases below double as a regression net for the
@@ -58,6 +60,15 @@ record RunOutcome {
   stdout: String
 }
 
+// These cases check the cooperative scheduler: its FIFO order and its
+// deadline-ordered wakes are what make their interleavings deterministic.  The
+// default is one scheduler thread per processor (D404), whose order is
+// unspecified (D403), so every program here runs with LYRIC_ASYNC_THREADS=1
+// (the child inherits it); `llvm_self_test_async_mt.l` covers the default.
+func cooperativeScheduler(): Unit {
+  Environment.setVar("LYRIC_ASYNC_THREADS", "1")
+}
+
 func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val pr = parse(source)
   if pr.diagnostics.count > 0 {
@@ -80,6 +91,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     case Err(_) -> panic("cannot write " + llPath)
   }
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
+  cooperativeScheduler()
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
@@ -113,6 +125,7 @@ func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome 
   if not compileToNativeWithFlags(source, stem, stdlib, "", "0", flags, newList(), "", true) {
     panic("native compilation failed for an async self-test program")
   }
+  cooperativeScheduler()
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout)
@@ -313,39 +326,41 @@ test "early return from a scope drains the scope's defer, value preserved" {
 // computed from the task's ACTUAL first wake, so scheduler jitter far
 // below 20ms cannot reorder the events.
 test "two spawned sleepers interleave: effect order proves genuine concurrency" {
-  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
-    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
     "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, 20, 60)\n" +
     "    val b = spawn worker(log, 2, 40, 90)\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 1021112 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "log order 1,2,11,12: worker 2's first wake lands between worker 1's wakes")
 }
 
 // The same interleaving program under ASan: coroutine frame alloc/free,
-// task refcounts, and the List shared across suspended frames must all
-// balance.
+// task refcounts, and the protected log shared across suspended frames must
+// all balance.
 test "interleaving sleepers are leak-free under ASan" {
-  val src = "package T\n" + "import Std.Collections\n" + "import Std.Time as Time\n" +
-    "async func worker(log: in List[Int], tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
+  val src = "package T\n" + "import Std.Time as Time\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, d1: in Int, d2: in Int): Unit {\n" +
     "  Time.sleepMillis(d1)\n  log.add(tag)\n  Time.sleepMillis(d2)\n  log.add(tag + 10)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, 20, 60)\n" +
     "    val b = spawn worker(log, 2, 40, 90)\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 1021112 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)
   assertEqualInt(r.exitCode, 77, "the interleaving run is clean under AddressSanitizer")
@@ -510,7 +525,8 @@ test "async runCapture: coroutine capture returns the child's output through the
 // capture blocked the scheduler thread.
 test "two spawned runCaptures interleave: the shorter child completes first" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
-    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, secs: in String): Unit {\n" +
     "  val args: List[String] = newList()\n" +
     "  args.add(\"-c\")\n" +
     "  args.add(\"sleep \" + secs)\n" +
@@ -518,13 +534,13 @@ test "two spawned runCaptures interleave: the shorter child completes first" {
     "  log.add(tag)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, \"0.35\")\n" +
     "    val b = spawn worker(log, 2, \"0.1\")\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 201 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 77, "the 0.1s capture completes before the 0.35s capture spawned first")
@@ -534,7 +550,8 @@ test "two spawned runCaptures interleave: the shorter child completes first" {
 // Strings crossing the pump-loop suspends must all balance.
 test "interleaved runCaptures are leak-free under ASan" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
-    "async func worker(log: in List[Int], tag: in Int, secs: in String): Unit {\n" +
+    "protected type Seq {\n  var v: Int = 0\n  entry add(tag: in Int) {\n    v = v * 100 + tag\n  }\n  entry get(): Int {\n    return v\n  }\n}\n" +
+    "async func worker(log: in Seq, tag: in Int, secs: in String): Unit {\n" +
     "  val args: List[String] = newList()\n" +
     "  args.add(\"-c\")\n" +
     "  args.add(\"sleep \" + secs + \"; echo t\" + tag.toString())\n" +
@@ -542,13 +559,13 @@ test "interleaved runCaptures are leak-free under ASan" {
     "  log.add(tag)\n" +
     "}\n" +
     "func main(): Int {\n" +
-    "  val log: List[Int] = newList()\n" +
+    "  val log = Seq()\n" +
     "  scope {\n" +
     "    val a = spawn worker(log, 1, \"0.35\")\n" +
     "    val b = spawn worker(log, 2, \"0.1\")\n" +
     "    await a\n    await b\n" +
     "  }\n" +
-    "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
+    "  if log.get() == 201 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)
   assertEqualInt(r.exitCode, 77, "overlapped captures are clean under AddressSanitizer")

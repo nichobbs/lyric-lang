@@ -39,6 +39,10 @@ int32_t lyric_parallel_threads(void) {
     return 1;
 }
 
+int32_t lyric_processor_count(void) {
+    return 1;
+}
+
 /* A call from inside a body (in_body is thread-local) runs serially, so nesting cannot deadlock.
  * A call from a thread that is not a pool worker, such as a user pthread, takes submit_mu and
  * so runs one job at a time with the others. */
@@ -131,6 +135,14 @@ static long online_processors(void) {
     return sysconf(_SC_NPROCESSORS_ONLN);
 }
 #endif
+
+int32_t lyric_processor_count(void) {
+    long n = online_processors();
+    if (n < 1) {
+        n = 1;
+    }
+    return n > 256 ? 256 : (int32_t)n;
+}
 
 typedef struct {
     void (*body)(int64_t, void*);

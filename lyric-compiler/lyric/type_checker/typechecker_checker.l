@@ -209,7 +209,7 @@ func registerItem(
         DKRecord(id = tid, decl = decl),
         vis,
         span,
-        extractDerives(it.annotations)
+        withSendableMark(extractDerives(it.annotations), it.annotations)
       )
     }
     case IExposedRec(decl) -> {
@@ -223,7 +223,7 @@ func registerItem(
         DKExposedRec(id = tid, decl = decl),
         vis,
         span,
-        extractDerives(it.annotations)
+        withSendableMark(extractDerives(it.annotations), it.annotations)
       )
     }
     case IUnion(decl) -> {
@@ -258,7 +258,17 @@ func registerItem(
     }
     case IOpaque(decl) -> {
       val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKOpaque(id = tid, decl = decl), vis, span)
+      val _ = addSymDerived(
+        tbl,
+        diag,
+        isImported,
+        originPkg,
+        decl.name,
+        DKOpaque(id = tid, decl = decl),
+        vis,
+        span,
+        withSendableMark(newList(), it.annotations)
+      )
     }
     case IProtected(decl) -> {
       val tid = symTableTypeSymbolId(tbl, originPkg, decl.name)
@@ -287,7 +297,17 @@ func registerItem(
       } else {
         symTableTypeSymbolId(tbl, originPkg, decl.name)
       }
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExternType(id = tid, decl = decl), vis, span)
+      val _ = addSymDerived(
+        tbl,
+        diag,
+        isImported,
+        originPkg,
+        decl.name,
+        DKExternType(id = tid, decl = decl),
+        vis,
+        span,
+        withSendableMark(newList(), it.annotations)
+      )
     }
     case IFunc(decl) -> {
       checkReservedBuiltinFuncDecl(diag, isImported, originPkg, decl.name, span)
@@ -836,7 +856,11 @@ func checkWhereClause(
         while j < bound.constraints.count {
           val cr = bound.constraints[j]
           val cname = modulePathJoin(cr.head.segments)
-          val known = if cr.head.segments.count == 1 { isKnownDeriveMarker(cname) or isPlainMarker(cname) } else { false }
+          val known = if cr.head.segments.count == 1 {
+            isKnownDeriveMarker(cname) or isPlainMarker(cname) or isSendMarker(cname)
+          } else {
+            false
+          }
           if not known and not isInterfaceSym(tbl, cname) {
             diag.add(
               errorDiagnostic(
@@ -2785,6 +2809,61 @@ func typeExprNamesAny(te: in TypeExpr, names: in List[String]): String {
   }
 }
 
+// `@sendable` (D404) asserts that a host type, or a kernel record or opaque
+// type built over host state, is safe to share between tasks: its operations
+// synchronise themselves.  The compiler cannot see that, so the assertion
+// needs an `@axiom` stating why, on the declaration or its package (docs/17
+// audits both), and it is allowed only on the declarations whose sendability
+// is not computed from Lyric structure alone.
+func checkSendableAnnotation(diag: in List[Diagnostic], it: in Item, axiomPackage: in Bool): Unit {
+  var axiomHere = axiomPackage
+  for ann in it.annotations {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "axiom" {
+      axiomHere = true
+    }
+  }
+  for ann in it.annotations {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "sendable" {
+      val allowedKind = match it.kind {
+        case IExternType(_) -> true
+        case IRecord(_) -> true
+        case IExposedRec(_) -> true
+        case IOpaque(_) -> true
+        case _ -> false
+      }
+      if not allowedKind {
+        diag.add(
+          errorDiagnostic(
+            "T0227",
+            "'@sendable' applies only to an extern type, record or opaque type; the sendability of every other declaration is computed from its structure",
+            ann.span
+          )
+        )
+      } else if not axiomHere {
+        diag.add(
+          errorDiagnostic(
+            "T0227",
+            "'@sendable' asserts that a type synchronises itself, which the compiler cannot check, so it needs an @axiom(\"...\") saying why, on the declaration or its package",
+            ann.span
+          )
+        )
+      }
+    }
+  }
+}
+
+// The derive list of a declaration with the `@sendable` mark added when the
+// declaration carries the annotation (D404).
+func withSendableMark(derives: in List[String], anns: in List[Annotation]): List[String] {
+  for ann in anns {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "sendable" {
+      derives.add(sendableMark())
+      return derives
+    }
+  }
+  derives
+}
+
 // `Plain` is computed from a type's structure (D155), so a declaration cannot
 // ask for it: it is valid in a `where` clause only.
 func checkNoPlainDerive(diag: in List[Diagnostic], anns: in List[Annotation]): Unit {
@@ -2792,11 +2871,12 @@ func checkNoPlainDerive(diag: in List[Diagnostic], anns: in List[Annotation]): U
     if ann.name.segments.count == 1 and ann.name.segments[0] == "derive" {
       for a in ann.args {
         match a {
-          case ABare(nm, sp) -> if isPlainMarker(nm) {
+          case ABare(nm, sp) -> if isPlainMarker(nm) or isSendMarker(nm) {
             diag.add(
               errorDiagnostic(
                 "T0172",
-                "'Plain' cannot be derived: the compiler computes it from a type's structure, and it is valid only in a 'where' clause",
+                "'" + nm +
+                  "' cannot be derived: the compiler computes it from a type's structure, and it is valid only in a 'where' clause",
                 sp
               )
             )
@@ -5129,6 +5209,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
   var i = 0
   while i < items.count {
     checkNoPlainDerive(diag, items[i].annotations)
+    checkSendableAnnotation(diag, items[i], tbl.sendAxiomPackage.count > 0)
     match items[i].kind {
       case IRecord(decl) -> {
         if decl.isForeign {
@@ -7306,6 +7387,18 @@ func checkWithImportedPackagesCore(
       tbl.contractSourceFile.add(true)
     }
   }
+  for fa in file0.fileAnnotations {
+    if fa.name.segments.count == 1 and fa.name.segments[0] == "axiom" {
+      tbl.sendAxiomPackage.add(true)
+    }
+  }
+  for fh in file0.files {
+    for fa in fh.fileAnnotations {
+      if fa.name.segments.count == 1 and fa.name.segments[0] == "axiom" {
+        tbl.sendAxiomPackage.add(true)
+      }
+    }
+  }
   registerNativeIntrinsicTypes(tbl, nativeIntrinsics)
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
@@ -7521,6 +7614,10 @@ func checkWithImportedPackagesCore(
   // and is therefore exempt).  Leaking one pushes the BCL type into every
   // consumer's emitted IL (#3943).  Wrap it in an opaque Lyric type instead.
   checkExternBoundaryLeaks(tbl, diag, file.items)
+
+  // T0226: module state a spawned call reaches (D404), once every body has
+  // recorded its calls and reads.
+  reportSpawnModuleState(tbl, diag)
 
   // T7: `old(...)` only inside `ensures:` (T0080, #7731).
   checkOldPlacement(diag, file)

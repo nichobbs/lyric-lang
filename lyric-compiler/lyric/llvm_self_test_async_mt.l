@@ -1,9 +1,9 @@
 //! llvm_self_test_async_mt.l — end-to-end self-test for the multi-threaded
-//! native coroutine scheduler (docs/67 G8, D217).  Each case compiles a small
-//! async program through the full native bridge, then runs the binary with
-//! `LYRIC_ASYNC_THREADS` set, so `spawn`ed tasks start on worker threads
-//! and awaiting coroutines resume on whichever thread finished the awaited
-//! task.
+//! native coroutine scheduler (docs/67 G8, D217, D404).  Each case compiles a
+//! small async program through the full native bridge, then runs the binary
+//! with the default thread count (the processor count, D404) or with
+//! `LYRIC_ASYNC_THREADS` set, so `spawn`ed tasks start on worker threads and
+//! awaiting coroutines resume on whichever thread finished the awaited task.
 //!
 //! What the cases prove:
 //!   - real parallelism: three spawned tasks rendezvous at a gate that only
@@ -13,8 +13,9 @@
 //!   - fork-join correctness under contention: a recursive `fib` that spawns
 //!     and awaits at every level, a protected counter hammered from many
 //!     tasks, and sleep-driven tasks resumed on other threads;
-//!   - the default stays cooperative: with the variable unset the same
-//!     programs run on one thread and give the same answers;
+//!   - the default is multi-threaded: with the variable unset the same
+//!     programs run on every processor, and `LYRIC_ASYNC_THREADS=1` keeps the
+//!     cooperative scheduler, which gives the same answers;
 //!   - AddressSanitizer is clean on the fork-join and sleeper programs
 //!     (frames, task refcounts and the protected counter balance across
 //!     threads).  ThreadSanitizer runs from `scripts/ci/async-mt-e2e.sh`.
@@ -30,6 +31,8 @@ import Std.Collections
 import Std.Testing
 import Std.Environment as Environment
 import Std.Process as Process
+import Std.Parse as Parse
+import Std.String as Str
 import Std.Path as Path
 import Std.Uuid as Uuid
 import Lyric.Parser
@@ -47,7 +50,8 @@ record RunOutcome {
 
 // Compile with the full bridge (so `Std.Time` resolves to its native kernel),
 // then run the binary with LYRIC_ASYNC_THREADS = `threads` (the child inherits
-// the environment; "1" is the default cooperative scheduler).
+// the environment; "1" is the cooperative scheduler, "" the default: one
+// thread per processor).
 func compileAndRunWith(source: in String, sanitize: in Bool, threads: in String): RunOutcome {
   val stdlib = findStdlibSourcesNative()
   if stdlib.count == 0 {
@@ -99,12 +103,40 @@ val sleepersSrc: String = "package T\n" + "import Std.Time as Time\n" + "protect
 // Many tasks adding to one protected counter, then a sum check.
 val counterSrc: String = "package T\n" + "protected type Counter {\n  var n: Int = 0\n  entry bump() {\n    n = n + 1\n  }\n  entry get(): Int {\n    return n\n  }\n}\n" + "async func hammer(c: in Counter, times: in Int): Int {\n" + "  var i = 0\n  while i < times {\n    c.bump()\n    i = i + 1\n  }\n  return times\n}\n" + "async func run(c: in Counter): Int {\n" + "  scope {\n" + "    val a = spawn hammer(c, 5000)\n    val b = spawn hammer(c, 5000)\n    val d = spawn hammer(c, 5000)\n    val e = spawn hammer(c, 5000)\n" + "    return await a + await b + await d + await e\n" + "  }\n}\n" + "func main(): Int {\n  val c = Counter()\n  val done = await run(c)\n  if done == 20000 and c.get() == 20000 {\n    77\n  } else {\n    1\n  }\n}\n"
 
+// The processors this machine has, as the runtime counts them for the
+// default thread count.
+func processorCount(): Int {
+  val fromEnv = Environment.getVarOrDefault("NUMBER_OF_PROCESSORS", "")
+  if fromEnv.length > 0 {
+    return Parse.parseInt(fromEnv)
+  }
+  val args: List[String] = newList()
+  args.add("_NPROCESSORS_ONLN")
+  match Process.runCapture("getconf", args, 10000) {
+    case Ok(res) -> Parse.parseInt(Str.trim(res.stdout))
+    case Err(_) -> 1
+  }
+}
+
+test "the default thread count runs fork-join, sleepers and a contended counter" {
+  assertEqualInt(compileAndRunWith(fibSrc, false, "").exitCode, 77, "fib(14) on the default scheduler")
+  assertEqualInt(compileAndRunWith(sleepersSrc, false, "").exitCode, 77, "sleepers on the default scheduler")
+  assertEqualInt(compileAndRunWith(counterSrc, false, "").exitCode, 77, "the counter on the default scheduler")
+}
+
+test "the default thread count runs spawned tasks at once on a machine with three processors" {
+  if processorCount() >= 3 {
+    val r = compileAndRunWith(rendezvousSrc(8000), false, "")
+    assertEqualInt(r.exitCode, 77, "the default is one scheduler thread per processor")
+  }
+}
+
 test "three spawned tasks run at once: a rendezvous only a multi-threaded scheduler can satisfy" {
   val r = compileAndRunWith(rendezvousSrc(8000), false, "4")
   assertEqualInt(r.exitCode, 77, "all three bodies were inside the gate together")
 }
 
-test "without LYRIC_ASYNC_THREADS the rendezvous cannot complete: the default scheduler is cooperative" {
+test "LYRIC_ASYNC_THREADS=1 keeps the cooperative scheduler: the rendezvous cannot complete" {
   // Same program, one thread: each body runs to completion on the spawner before the next starts,
   // so none sees all three arrivals and the sum is 1 + 2 + 3, not 9.
   val r = compileAndRunWith(rendezvousSrc(300), false, "1")
@@ -116,7 +148,7 @@ test "recursive fork-join across threads computes fib" {
   assertEqualInt(r.exitCode, 77, "fib(14) == 377 with every level spawned and awaited")
 }
 
-test "recursive fork-join gives the same answer on the default scheduler" {
+test "recursive fork-join gives the same answer on the cooperative scheduler" {
   val r = compileAndRunWith(fibSrc, false, "1")
   assertEqualInt(r.exitCode, 77, "fib(14) == 377 on one thread")
 }
@@ -139,6 +171,16 @@ test "fork-join is clean under AddressSanitizer with several threads" {
 test "sleepers and a protected total are clean under AddressSanitizer with several threads" {
   val r = compileAndRunWith(sleepersSrc, true, "3")
   assertEqualInt(r.exitCode, 77, "frames and task refs balance when resumed on other threads")
+}
+
+// A spawned task's arguments are retained before its deferred-start suspend:
+// the spawner regains control there and releases the temporary Strings it
+// built for the call (`"le" + "ft"`) while the task is still queued (D404).
+val stringArgsSrc: String = "package T\n" + "import Std.Time as Time\n" + "async func tagIt(s: in String, ms: in Int): String {\n  Time.sleepMillis(ms)\n  return s + \"!\"\n}\n" + "async func run(): Int {\n  scope {\n" + "    val a = spawn tagIt(\"le\" + \"ft\", 5)\n    val b = spawn tagIt(\"ri\" + \"ght\", 10)\n" + "    val joined = await a + \"|\" + await b\n    return joined.length\n  }\n}\n" + "func main(): Int {\n  await run()\n}\n"
+
+test "temporary String arguments of spawned tasks are clean under AddressSanitizer with several threads" {
+  val r = compileAndRunWith(stringArgsSrc, true, "4")
+  assertEqualInt(r.exitCode, 12, "\"left!|right!\" with every argument retained before the task was queued")
 }
 
 test "rendezvous is clean under AddressSanitizer" {

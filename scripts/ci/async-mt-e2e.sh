@@ -7,7 +7,7 @@
 #     compiled with ThreadSanitizer: the generated LLVM IR gets `sanitize_thread` on every function
 #     (clang does not add it for an .ll input) and links the runtime built from source with
 #     -fsanitize=thread, so a race in generated code or in the scheduler fails the run;
-#   - the same driver as a plain build at LYRIC_ASYNC_THREADS = 1 (the cooperative default), 2, 4 and 8;
+#   - the same driver as a plain build at LYRIC_ASYNC_THREADS = 1 (the cooperative scheduler), 2, 4 and 8;
 #   - task throughput (`benchmarks/bench_async_tasks.l`, #8493): tasks per second for fork-join `fib(25)`,
 #     100k empty spawns and 1024 sleeping leaves woken together at LYRIC_ASYNC_THREADS = 1, 2, 4 and all cores, failing
 #     when the fastest fork-join run on all cores is slower than the fastest on one thread.
