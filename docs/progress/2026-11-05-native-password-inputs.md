@@ -12,5 +12,9 @@ clicks, steps the caret and gives the input method its caret rectangle over the 
 cut, moves Ctrl+Left and Ctrl+Right (Alt on macOS) to the ends of the value, and selects all of it on a
 double click.
 
-Tests: a core test in `lyric-ui/native/tests/interact_tests.l` (dotnet and JVM). The customers example's
-`--check` run and its golden frames are unchanged (it has no password input).
+Tests: a core test in `lyric-ui/native/tests/interact_tests.l` (dotnet and JVM), and a password scenario
+in the native customers example's `--check` run (`scripts/ci/ui-native-e2e.sh`), on a one-input screen of
+its own (`Customers.Native.Password`, since the example has no password field). It checks that Ctrl+Left and
+Ctrl+Right go to the ends, that copy and cut leave the clipboard and the value alone, and that a double
+click selects all, and that two different passwords of the same length draw the same pixels. With the
+masking turned off the scenario fails. The example's golden frames are unchanged.

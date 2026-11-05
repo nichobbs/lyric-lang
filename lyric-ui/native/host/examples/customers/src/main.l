@@ -1,6 +1,7 @@
 //! main.l - Customers.Native: the customers example on the native host.
 //!   customers-native                    a window
-//!   customers-native --check <dir>      scripted headless run against the golden images in <dir>
+//!   customers-native --check <dir>      scripted headless run against the golden images in <dir>,
+//!                                       then a password input's masking (Customers.Native.Password)
 //!   customers-native --check <dir> --update
 //!                                       as above, writing the frames as the new golden images
 //! Fonts: LYRIC_UI_FONT and LYRIC_UI_FONT_BOLD (DejaVu Sans by default).
@@ -22,6 +23,7 @@ import Unicode.LineBreak
 import Unicode.Data as UnicodeData
 import Customers.Store
 import Customers.App.{route}
+import Customers.Native.Password as Password
 
 val width: Int = 960
 
@@ -511,6 +513,107 @@ func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, Stri
   compare("saved", dir, update, savedFrame)
 }
 
+func doubleClick(hl: Native.Headless, b: Box): Unit {
+  val x = b.x + b.w / 2.0f32
+  val y = b.y + b.h / 2.0f32
+  val events: List[Window.Event] = newList()
+  events.add(Window.MouseMotion(window = 0, x = x, y = y, dx = 0.0f32, dy = 0.0f32))
+  events.add(Window.MouseButtonDown(window = 0, button = 1, x = x, y = y, clicks = 2))
+  events.add(Window.MouseButtonUp(window = 0, button = 1, x = x, y = y, clicks = 2))
+  Native.script(hl, events)
+}
+
+// A click on the empty page below the input, which takes the focus away (so no caret is drawn).
+func clickAway(hl: Native.Headless): Unit {
+  val x = width.toFloat() - 20.0f32
+  val y = height.toFloat() - 20.0f32
+  val events: List[Window.Event] = newList()
+  events.add(Window.MouseMotion(window = 0, x = x, y = y, dx = 0.0f32, dy = 0.0f32))
+  events.add(Window.MouseButtonDown(window = 0, button = 1, x = x, y = y, clicks = 1))
+  events.add(Window.MouseButtonUp(window = 0, button = 1, x = x, y = y, clicks = 1))
+  Native.script(hl, events)
+}
+
+func passwordInput(hl: Native.Headless): Result[Box, String] {
+  match Native.firstOfKind(hl, "textInput") {
+    case Some(b) -> Ok(value = b)
+    case None -> Err(error = "no password input")
+  }
+}
+
+func passwordValue(hl: Native.Headless): String {
+  match Native.firstOfKind(hl, "textInput") {
+    case Some(b) -> b.text
+    case None -> ""
+  }
+}
+
+// A password input (#8817): what it draws is the same for any value of the same length, it is never
+// copied or cut to the clipboard, Ctrl+Left and Ctrl+Right go to its ends, and a double click
+// selects all of it.
+func passwordScenario(hl: Native.Headless): Result[Unit, String] {
+  Native.settle(hl, 150, 5000)
+  val _ = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  val input = match passwordInput(hl) { case Ok(b) -> b; case Err(m) -> return Err(error = m) }
+  click(hl, input)
+  typed(hl, "pass word")
+  Native.settle(hl, 150, 5000)
+  match verify(passwordValue(hl) == "pass word", "typing into a password sets its value") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + passwordValue(hl))
+  }
+  key(hl, 1073741904, 0x40)
+  match verify(Native.caretOf(hl) == 0, "Ctrl+Left goes to the start of a password, not of its last word") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + Native.caretOf(hl).toString())
+  }
+  key(hl, 1073741903, 0x40)
+  match verify(Native.caretOf(hl) == 9, "Ctrl+Right goes to the end of a password, not of its first word") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + Native.caretOf(hl).toString())
+  }
+  val _ = Window.setClipboardText("unchanged")
+  key(hl, 97, 0x40)
+  key(hl, 99, 0x40)
+  key(hl, 120, 0x40)
+  Native.settle(hl, 150, 5000)
+  val clip = match Window.clipboardText() { case Some(t) -> t; case None -> "" }
+  match verify(clip == "unchanged", "copying or cutting a password leaves the clipboard alone") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + clip)
+  }
+  match verify(passwordValue(hl) == "pass word", "cutting a password does not delete it") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + passwordValue(hl))
+  }
+  key(hl, 1073741904, 0)
+  doubleClick(hl, input)
+  typed(hl, "qwertyuio")
+  Native.settle(hl, 150, 5000)
+  match verify(passwordValue(hl) == "qwertyuio", "a double click selects all of a password") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + ": " + passwordValue(hl))
+  }
+  clickAway(hl)
+  Native.settle(hl, 150, 5000)
+  val second = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  click(hl, input)
+  key(hl, 97, 0x40)
+  typed(hl, "pass word")
+  clickAway(hl)
+  Native.settle(hl, 150, 5000)
+  val first = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  var differ = 0
+  var i = 0
+  while i < first.length {
+    if first[i] != second[i] {
+      differ = differ + 1
+    }
+    i = i + 1
+  }
+  verify(differ == 0, "two passwords of the same length draw the same pixels (" + differ.toString() + " bytes differ)")
+}
+
 func check(dir: String, update: Bool): Int {
   match Window.init(Window.initVideo) {
     case Err(m) -> return fail(m)
@@ -527,11 +630,32 @@ func check(dir: String, update: Bool): Int {
     1.0f32,
     { hl: Native.Headless -> scenario(hl, dir, update) }
   )
-  Window.quit()
   match outcome {
+    case Err(m) -> {
+      Window.quit()
+      return fail(m)
+    }
+    case Ok(Err(m)) -> {
+      Window.quit()
+      return fail(m)
+    }
+    case Ok(Ok(_)) -> ()
+  }
+  val masked = Native.withHeadless(
+    cfg,
+    { url: String -> Some(value = Password.screen()) },
+    "/",
+    width,
+    height,
+    1.0f32,
+    { hl: Native.Headless -> passwordScenario(hl) }
+  )
+  Window.quit()
+  match masked {
     case Err(m) -> fail(m)
     case Ok(Err(m)) -> fail(m)
     case Ok(Ok(_)) -> {
+      Console.println("ok: a password input draws only bullets, is never copied, and moves by word to its ends")
       Console.println("native ui check passed")
       0
     }
