@@ -959,7 +959,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = 0i64), sort = SInt), it)),
           TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
         )
-        sc.add(mkAnd(inRange))
+        // The bound holds once the receiver and the index are evaluated:
+        // their facts (an inner array's length, a callee's `ensures:`)
+        // guard it (#8394).
+        appendTermList(sc, afterFacts(asList, termList1(mkAnd(inRange))))
         // An array's or buffer's element is the value's own: each binding
         // holds a copy, changed only by a write through it (#8394).  A
         // slice's elements never change: Lyric code cannot write one (T0157)
