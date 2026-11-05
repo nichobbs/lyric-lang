@@ -124,18 +124,51 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
     case TyArray(size, element, sizeVar) -> match tyOfType(ctx, element) {
       case Err(e) -> Err(error = e)
       case Ok(el) -> match size {
-        case Some(n) -> Ok(value = TArray(len = ALKnown(n = n), element = el))
+        case Some(n) -> Ok(
+          value = TArray(
+            len = ALKnown(n = n),
+            element = el
+          )
+        )
         case None -> match sizeVar {
-          case None -> Ok(value = TArray(len = ALUnsized, element = el))
+          case None -> Ok(
+            value = TArray(
+              len = ALUnsized,
+              element = el
+            )
+          )
           case Some(sv) -> match sv {
             case TyParam(name, owner) -> match mapGet(ctx.ownerSyms, owner) {
               case Some(osym) -> match paramIndex(ctx, name, owner) {
-                case Some(i) -> Ok(value = TArray(len = ALParam(owner = osym, index = i), element = el))
-                case None -> Err(error = i0002Type("an array length parameter", sv))
+                case Some(i) -> Ok(
+                  value = TArray(
+                    len = ALParam(
+                      owner = osym,
+                      index = i
+                    ),
+                    element = el
+                  )
+                )
+                case None -> Err(
+                  error = i0002Type(
+                    "an array length parameter",
+                    sv
+                  )
+                )
               }
-              case None -> Err(error = i0002Type("an array length parameter", sv))
+              case None -> Err(
+                error = i0002Type(
+                  "an array length parameter",
+                  sv
+                )
+              )
             }
-            case _ -> Err(error = i0002Type("an array length", sv))
+            case _ -> Err(
+              error = i0002Type(
+                "an array length",
+                sv
+              )
+            )
           }
         }
       }
@@ -147,12 +180,26 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
     case TyUser(id, _, args) -> match convList(ctx, args) {
       case Err(e) -> Err(error = e)
       case Ok(xs) -> match symTableExternDeclOf(ctx.tbl, id) {
-        case Some(decl) -> Ok(value = TExtern(host = HostTypeRef(name = decl.clrName, args = xs)))
+        case Some(decl) -> Ok(
+          value = TExtern(
+            host = HostTypeRef(
+              name = decl.clrName,
+              args = xs
+            )
+          )
+        )
         case None -> Ok(value = TNamed(sym = id, args = xs))
       }
     }
     case TyRefined(underlying, lo, hi, hiInclusive, _) -> match tyOfType(ctx, underlying) {
-      case Ok(x) -> Ok(value = TRefined(underlying = x, lo = lo, hi = hi, hiInclusive = hiInclusive))
+      case Ok(x) -> Ok(
+        value = TRefined(
+          underlying = x,
+          lo = lo,
+          hi = hi,
+          hiInclusive = hiInclusive
+        )
+      )
       case Err(e) -> Err(error = e)
     }
     case TySelf -> match ctx.selfIface {
@@ -164,7 +211,12 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
       case None -> Err(error = i0002Type("a type parameter with no registered binder", t))
       case Some(osym) -> match paramIndex(ctx, name, owner) {
         case Some(i) -> Ok(value = TParam(owner = osym, index = i))
-        case None -> Err(error = i0002Type("a type parameter its binder does not declare", t))
+        case None -> Err(
+          error = i0002Type(
+            "a type parameter its binder does not declare",
+            t
+          )
+        )
       }
     }
     case TyInfer(_) -> Err(error = i0002Type("an unsolved inference variable", t))

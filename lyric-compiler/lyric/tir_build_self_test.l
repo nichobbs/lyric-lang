@@ -77,13 +77,13 @@ test "composite types convert structurally" {
         assertEqualInt(xs.count, 2, "two elements")
         assertTrue(tyEq(xs[0], TPrim(kind = TPInt)), "first is Int")
       }
-      case _ -> fail("expected a tuple")
+      case _ -> assertTrue(false, "expected a tuple")
     }
-    case Err(e) -> fail(e)
+    case Err(e) -> assertTrue(false, e)
   }
   match tyOfType(ctx, TyPrim(pt = PtNever)) {
     case Ok(t) -> assertTrue(tyEq(t, TNever), "Never")
-    case Err(e) -> fail(e)
+    case Err(e) -> assertTrue(false, e)
   }
 }
 
@@ -97,7 +97,7 @@ test "a type parameter converts through its registered binder" {
   tyConvBind(ctx, "id", SymbolId(id = 77), names)
   match tyOfType(ctx, p) {
     case Ok(t) -> assertTrue(tyEq(t, TParam(owner = SymbolId(id = 77), index = 1)), "T is the second parameter")
-    case Err(e) -> fail(e)
+    case Err(e) -> assertTrue(false, e)
   }
   assertTrue(tyOfType(ctx, TyParam(name = "V", owner = "id")).isErr(), "not declared by its binder")
 }
