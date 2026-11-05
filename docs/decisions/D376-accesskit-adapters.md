@@ -1,4 +1,4 @@
-# D372 - AccessKit adapters for the native lyric-ui host (lyric-access)
+# D376 - AccessKit adapters for the native lyric-ui host (lyric-access)
 
 **Status:** accepted; implemented (docs/67 phase G10, #8489, completing the AccessKit half of #8430). Extends D214.
 
