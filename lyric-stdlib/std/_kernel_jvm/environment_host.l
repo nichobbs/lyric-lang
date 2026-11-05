@@ -202,6 +202,7 @@ pub func hostGetCommandLineArgs(): slice[String] {
 
 pub func hostExit(code: in Int): Never {
   JSystem.exit(code)
+  panic("System.exit returned")
 }
 
 // True when the JVM reports a Windows host.  `os.name` is a standard system

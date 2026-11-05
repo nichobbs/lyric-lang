@@ -182,7 +182,7 @@ func procIsAlive(p: in JProcess): Bool {
 // call whose receiver traces back to a parameter emits no invoke instruction
 // at all on this backend, issue #5379; tail position is unaffected).
 func procDestroyForcibly(p: in JProcess): Unit {
-  p.destroyForcibly()
+  val _ = p.destroyForcibly()
 }
 
 func procExitValue(p: in JProcess): Int {

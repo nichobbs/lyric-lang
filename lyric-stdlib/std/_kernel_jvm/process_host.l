@@ -74,18 +74,11 @@ pub func hostSpawn(fileName: in String, arguments: in String): ProcessHandle {
 // Block the calling thread until the process exits.  Backed by
 // `Process.waitFor()`.  The real method returns the exit code, which
 // `hostExitCode` re-reads via `exitValue()` per the existing two-call
-// contract this mirrors from `_kernel/process_host.l`; the value returned
-// here is discarded by the tail-position Int-to-Unit coercion.
-//
-// Written as a single tail expression, NOT `proc.waitFor(); ()`: a discarded
-// (non-tail) auto-FFI instance call whose receiver traces back to a
-// parameter emits no invoke instruction at all on this backend (confirmed
-// with a minimal `StringBuilder` repro independent of this kernel — a
-// general JVM codegen gap, tracked as issue #5379). The tail-position form
-// is unaffected and is what every other kernel written after this bug was
-// found should also prefer for the same reason.
+// contract this mirrors from `_kernel/process_host.l`; the value is bound to
+// `_`.  A bare discarded call whose receiver traces back to a parameter emits
+// no invoke on this backend (#5379), a bound one does.
 pub func hostWait(proc: in ProcessHandle): Unit {
-  proc.waitFor()
+  val _ = proc.waitFor()
 }
 
 // Return the OS exit code after the process has exited.  Only valid after

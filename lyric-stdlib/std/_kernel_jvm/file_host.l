@@ -112,7 +112,7 @@ pub func hostGetLastWriteTimeUtcResult(path: in String): Result[FileTime, IOErro
 /// result is discarded on both targets.
 pub func hostCreateDirectory(path: in String): Unit {
   val f = JFile.new(path)
-  f.mkdirs()
+  val _ = f.mkdirs()
 }
 
 // ── Bytes-mode I/O ────────────────────────────────────────────────────────────
@@ -258,7 +258,7 @@ pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
 // ── Deletion ──────────────────────────────────────────────────────────────────
 pub func hostDeleteFile(path: in String): Unit {
   val f = JFile.new(path)
-  f.delete()
+  val _ = f.delete()
 }
 
 pub func hostDeleteDirectory(path: in String): Unit {
@@ -307,7 +307,7 @@ func deleteRecursively(path: in String): Unit {
       i = i + 1
     }
   }
-  d.delete()
+  val _ = d.delete()
 }
 
 // Bytes-mode and enumeration Result seams (issue #4752, D-N-015
