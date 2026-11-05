@@ -23,6 +23,7 @@ import Std.Path
 import Std.Hash
 import Std.Environment
 import Std.Errors.{IOError}
+import Std.Encoding.{tryDecodeUtf8}
 import Unicode.Bidi
 import Unicode.LineBreak
 import Unicode.WordBreak
@@ -94,9 +95,9 @@ pub func pinnedText(name: in String, sha256: in String): Result[String, String] 
   if actual != sha256 {
     return Err(error = path + " has SHA-256 " + actual + ", not the pinned Unicode 16.0 revision " + sha256)
   }
-  match readText(path) {
-    case Ok(t) -> Ok(value = t)
-    case Err(e) -> Err(error = "cannot read " + path + ": " + IOError.message(e))
+  match tryDecodeUtf8(bytes) {
+    case Some(t) -> Ok(value = t)
+    case None -> Err(error = path + " is not UTF-8")
   }
 }
 
@@ -191,6 +192,14 @@ pub func runBidiCharacterTest(text: in String): SuiteResult {
     val content = contentOf(line)
     if content.length > 0 {
       val fields = split(content, ";")
+      if fields.length != 5 {
+        failures = failures + 1
+        cases = cases + 1
+        if failures <= maxReported {
+          report = report + "\n  not five fields separated by `;`: " + content
+        }
+        continue
+      }
       val cpsList: List[Int] = newList()
       for w in words(fields[0]) {
         cpsList.add(hexValue(w))
@@ -239,6 +248,14 @@ func runBoundaryTest(text: String, boundaries: (slice[Int]) -> List[Bool]): Suit
     if content.length > 0 {
       // Marks and code points in turn: "× 0023 ÷ 0020 × 0024 ÷".
       val tokens = words(content)
+      if tokens.count < 3 or tokens.count % 2 == 0 {
+        failures = failures + 1
+        cases = cases + 1
+        if failures <= maxReported {
+          report = report + "\n  not marks and code points in turn: " + content
+        }
+        continue
+      }
       val cpsList: List[Int] = newList()
       val expectBreak: List[Bool] = newList()
       var t = 0
