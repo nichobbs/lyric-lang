@@ -102,8 +102,17 @@ func isMidNumLetQ(c: Int): Bool {
 
 // Whether there is a word boundary before index `i`, 0 < i < n.  `base[k]` is the character rule
 // WB4 folds `k` into (an Extend, Format or ZWJ character joins the one before it, unless that is a
-// newline or the start of the text; then it stands for itself), `eff[k]` that character's class.
-func boundaryAt(i: Int, n: Int, cls: buffer[Int], pict: buffer[Int], base: buffer[Int], eff: buffer[Int]): Bool {
+// newline or the start of the text; then it stands for itself), `eff[k]` that character's class,
+// and `after[k]` the index of the first character after `k` that WB4 does not fold, or `n`.
+func boundaryAt(
+  i: Int,
+  n: Int,
+  cls: buffer[Int],
+  pict: buffer[Int],
+  base: buffer[Int],
+  eff: buffer[Int],
+  after: buffer[Int],
+): Bool {
   val prevRaw = cls[i - 1]
   val curRaw = cls[i]
   // WB3, WB3a, WB3b
@@ -129,10 +138,7 @@ func boundaryAt(i: Int, n: Int, cls: buffer[Int], pict: buffer[Int], base: buffe
   val a = eff[i - 1]
   val b = curRaw
   val beforeA = if aIdx > 0 { eff[aIdx - 1] } else { -1 }
-  var cIdx = i + 1
-  while cIdx < n and base[cIdx] != cIdx {
-    cIdx = cIdx + 1
-  }
+  val cIdx = after[i]
   val c = if cIdx < n { eff[cIdx] } else { -1 }
   // WB5
   if isAHLetter(a) and isAHLetter(b) {
@@ -197,7 +203,8 @@ func boundaryAt(i: Int, n: Int, cls: buffer[Int], pict: buffer[Int], base: buffe
 
 /// For each position of the text `cps[from ..< to]`, whether it is a word boundary.  Element `k` of
 /// the result is about the position before `cps[from + k]`; the first and the last (`to - from`)
-/// are boundaries unless the text is empty (WB1, WB2).
+/// are boundaries (WB1, WB2).  An empty text has one position, which is not a boundary: the result is
+/// `[false]`.
 pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] {
   val result: List[Bool] = newList()
   val n = to - from
@@ -222,10 +229,17 @@ pub func boundariesIn(cps: in slice[Int], from: in Int, to: in Int): List[Bool] 
     eff[i] = cls[base[i]]
     i = i + 1
   }
+  // Filled from the end so the whole pass stays linear however long a run of folded characters is.
+  var after = Buf.filled(n, n)
+  var k = n - 2
+  while k >= 0 {
+    after[k] = if base[k + 1] == k + 1 { k + 1 } else { after[k + 1] }
+    k = k - 1
+  }
   result.add(true)
   i = 1
   while i < n {
-    result.add(boundaryAt(i, n, cls, pict, base, eff))
+    result.add(boundaryAt(i, n, cls, pict, base, eff, after))
     i = i + 1
   }
   result.add(true)

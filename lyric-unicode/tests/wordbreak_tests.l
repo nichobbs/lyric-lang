@@ -114,3 +114,27 @@ test "an empty text has no boundaries to move to" {
   assertEqualInt(WordBreak.nextWordEnd(none, 0), 0, "right")
   assertEqualInt(WordBreak.previousWordStart(none, 0), 0, "left")
 }
+
+test "a long run of combining marks stays one word" {
+  val sb = StringBuilder.new()
+  StringBuilder.append(sb, "a")
+  var i = 0
+  while i < 20000 {
+    StringBuilder.append(sb, codepointToString(0x301))
+    i = i + 1
+  }
+  StringBuilder.append(sb, " b")
+  val all = codePoints(StringBuilder.toString(sb))
+  val bounds = WordBreak.boundariesIn(all, 0, all.length)
+  var inside = 0
+  var k = 1
+  while k <= 20000 {
+    if bounds[k] {
+      inside = inside + 1
+    }
+    k = k + 1
+  }
+  assertEqualInt(inside, 0, "no boundary inside the letter and its marks")
+  assertTrue(bounds[20001] and bounds[20002], "a boundary on each side of the space")
+  assertEqualInt(WordBreak.nextWordEnd(all, 0), 20001, "Ctrl+Right goes past every mark")
+}
