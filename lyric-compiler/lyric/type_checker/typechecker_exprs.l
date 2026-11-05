@@ -7071,6 +7071,7 @@ func resolveExprPath(
     match symTableTryFindInPackage(tbl, pkg, name) {
       case Some(csym) -> match csym.kind {
         case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
+        case DKEnumCase(pid, _) -> return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList())
         case _ -> ()
       }
       case None -> ()
@@ -7289,6 +7290,18 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
       if cand.originPackage != candidates[0].originPackage {
         sameOrigin = false
       }
+    }
+    // A package's own enum shadows an imported one of the same name: a bare
+    // `LogLevel.Info` inside the package declaring `LogLevel` names that one
+    // whatever other package declares a `LogLevel` too.
+    var ownCount = 0
+    for cand in candidates {
+      if not cand.isImported {
+        ownCount = ownCount + 1
+      }
+    }
+    if ownCount == 1 {
+      sameOrigin = true
     }
     if sameOrigin {
       // The declaration a written `Mode` resolves to, so the case's type is
@@ -15882,6 +15895,31 @@ func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
   symTableTryFindOne(tbl, name)
 }
 
+// The declared type of field `name` of the config block `recv` names
+// (`SecretCache.ttlSeconds`); None when `recv` is not a bare config name.
+func configFieldReadType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Type] {
+  val cname = match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  match scopeTryFind(sc, cname) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val sym = match symTableTryFindOne(tbl, cname) { case Some(s) -> s; case None -> return None }
+  val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
+  for f in cd.fields {
+    if f.name == name {
+      val saved = enterDeclaringScope(tbl, sym)
+      val scratch: List[Diagnostic] = newList()
+      val t = resolveType(tbl, newGenericContext(), scratch, f.ty)
+      restoreScope(tbl, saved)
+      return Some(value = t)
+    }
+  }
+  None
+}
+
 func symbolIsValue(sym: in Symbol): Bool {
   match sym.kind {
     case DKVal(_) -> true
@@ -19153,6 +19191,15 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // `Cfg.field` reads a `config Cfg { field: T = ... }` block's field at
+      // its declared type.  A name a local shadows is a value, not the block.
+      match configFieldReadType(sc, tbl, recv, name) {
+        case Some(ct) -> {
+          recordResultTypeAt(tbl, ct, e.span)
+          return ct
+        }
+        case None -> ()
+      }
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
@@ -19169,6 +19216,13 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
+              match symTableTryFindInPackage(tbl, qualPkg, name) {
+                case Some(esym) -> match esym.kind {
+                  case DKEnumCase(pid, _) -> return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList())
+                  case _ -> ()
+                }
+                case None -> ()
+              }
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
                 case Some(ft) -> return ft
                 case None -> ()
