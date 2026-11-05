@@ -4,8 +4,10 @@
 //! `breaksIn` gives, for the text of one paragraph, whether a line may break before each code point:
 //! every rule LB2 to LB31 of Unicode 15.1, in order, over the line break classes of
 //! `Ui.Native.UnicodeData` (kinsoku and the other closing and opening punctuation rules, numbers
-//! with their prefixes and suffixes, quotation marks by their initial or final category, Hangul
-//! syllables, regional-indicator pairs, emoji modifiers, hyphens before Hebrew letters).  There is no
+//! with their prefixes and suffixes by the tailoring of section 8.2 example 7 that Unicode's
+//! `LineBreakTest.txt` uses, quotation marks by their initial or final category, Hangul
+//! syllables, Brahmic orthographic syllables (LB28a), regional-indicator pairs, emoji modifiers,
+//! hyphens before Hebrew letters).  All of `LineBreakTest.txt` passes (`tests/unicode/`).  There is no
 //! dictionary-based breaking of Thai, Lao, Khmer and Myanmar, which UAX #14 leaves to the
 //! implementation: such text breaks only at its spaces and punctuation.
 //!
@@ -105,6 +107,18 @@ val lbEM: Int = 41
 
 val lbZWJ: Int = 42
 
+val lbAK: Int = 43
+
+val lbAP: Int = 44
+
+val lbAS: Int = 45
+
+val lbVF: Int = 46
+
+val lbVI: Int = 47
+
+val dottedCircle: Int = 9676
+
 val flagWide: Int = 64
 
 val flagPictographicUnassigned: Int = 128
@@ -150,9 +164,19 @@ func isAlphabetic(c: Int): Bool {
   c == lbAL or c == lbHL
 }
 
+// The index of the character that the mark at `k` belongs to (`k` itself when it is not a mark).
+func baseIndex(attached: buffer[Int], k: Int): Int {
+  var j = k
+  while j > 0 and attached[j] == 1 {
+    j = j - 1
+  }
+  j
+}
+
 // Whether a break is allowed before `cps[from + i]`, which comes after `cps[from + i - 1]`.
 // `eff` holds each code point's class once combining marks have joined the character before them
-// (LB9, LB10), `raw` the class itself, `flags` the properties of the character a mark belongs to.
+// (LB9, LB10), `raw` the class itself, `flags` the properties of the character a mark belongs to,
+// `aksara` 2 for an Aksara or a dotted circle and 1 for an Aksara-Start (the bases of LB28a).
 func decide(
   i: Int,
   n: Int,
@@ -160,6 +184,7 @@ func decide(
   eff: buffer[Int],
   flags: buffer[Int],
   attached: buffer[Int],
+  aksara: buffer[Int],
   lastNonSpace: Int,
   numberState: Int,
   regionalRun: Int,
@@ -212,7 +237,7 @@ func decide(
     return noBreak
   }
   // LB13
-  if b == lbCL or b == lbCP or b == lbEX or b == lbSY {
+  if b == lbCL or b == lbCP or b == lbEX or b == lbIS or b == lbSY {
     return noBreak
   }
   // LB14
@@ -231,13 +256,6 @@ func decide(
     if next == -1 or next == lbSP or next == lbGL or next == lbWJ or next == lbCL or next == lbQU or next == lbCP or next == lbEX or next == lbIS or next == lbSY or next == lbBK or next == lbCR or next == lbLF or next == lbNL or next == lbZW {
       return noBreak
     }
-  }
-  // LB15c, LB15d
-  if a == lbSP and b == lbIS and next == lbNU {
-    return breakAllowed
-  }
-  if b == lbIS {
-    return noBreak
   }
   // LB16, LB17
   if (base == lbCL or base == lbCP) and b == lbNS {
@@ -297,14 +315,20 @@ func decide(
   if isAlphabetic(a) and (b == lbPR or b == lbPO) {
     return noBreak
   }
-  // LB25
-  if (a == lbCL or a == lbCP or a == lbNU) and (b == lbPO or b == lbPR) {
+  // LB25, as the regular expression of UAX #14 section 8.2 example 7 (the form Unicode's own
+  // LineBreakTest.txt uses): a number is NU (NU | SY | IS)* (CL | CP)? with an optional prefix
+  // (PR | PO) (OP | HY)? and suffix (PO | PR).  `numberState` is 1 inside the digits and 2 after
+  // the closing punctuation that may end them.
+  if (a == lbPR or a == lbPO) and (b == lbNU or ((b == lbOP or b == lbHY) and next == lbNU)) {
     return noBreak
   }
-  if (a == lbPO or a == lbPR) and (b == lbOP or b == lbNU) {
+  if (a == lbOP or a == lbHY) and b == lbNU {
     return noBreak
   }
-  if (a == lbHY or a == lbIS or a == lbNU or a == lbSY) and b == lbNU {
+  if numberState == 1 and (b == lbNU or b == lbSY or b == lbIS or b == lbCL or b == lbCP) {
+    return noBreak
+  }
+  if numberState >= 1 and (b == lbPO or b == lbPR) {
     return noBreak
   }
   // LB26, LB27
@@ -323,10 +347,27 @@ func decide(
   if a == lbPR and isHangulOrJamo(b) {
     return noBreak
   }
-  // LB28, LB29
+  // LB28
   if isAlphabetic(a) and isAlphabetic(b) {
     return noBreak
   }
+  // LB28a: Brahmic orthographic syllables
+  if a == lbAP and aksara[i] != 0 {
+    return noBreak
+  }
+  if aksara[i - 1] != 0 and (b == lbVF or b == lbVI) {
+    return noBreak
+  }
+  if a == lbVI and aksara[i] == 2 {
+    val vi = baseIndex(attached, i - 1)
+    if vi > 0 and aksara[vi - 1] != 0 {
+      return noBreak
+    }
+  }
+  if aksara[i - 1] != 0 and aksara[i] != 0 and next == lbVF {
+    return noBreak
+  }
+  // LB29
   if a == lbIS and isAlphabetic(b) {
     return noBreak
   }
@@ -364,6 +405,7 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
   var eff = Buf.filled(n, 0)
   var flags = Buf.filled(n, 0)
   var attached = Buf.filled(n, 0)
+  var aksara = Buf.filled(n, 0)
   var i = 0
   while i < n {
     val v = UnicodeData.lineBreakValueOf(cps[from + i])
@@ -373,11 +415,13 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
     if (c == lbCM or c == lbZWJ) and i > 0 and not (isMandatoryClass(eff[i - 1]) or eff[i - 1] == lbSP or eff[i - 1] == lbZW) {
       eff[i] = eff[i - 1]
       flags[i] = flags[i - 1]
+      aksara[i] = aksara[i - 1]
       attached[i] = 1
     } else if c == lbCM or c == lbZWJ {
       eff[i] = lbAL
     } else {
       eff[i] = c
+      aksara[i] = if c == lbAK or cps[from + i] == dottedCircle { 2 } else if c == lbAS { 1 } else { 0 }
     }
     i = i + 1
   }
@@ -403,7 +447,7 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
       }
       regionalRun = if e == lbRI { regionalRun + 1 } else { 0 }
     }
-    result.add(decide(i, n, raw, eff, flags, attached, lastNonSpace, numberState, regionalRun))
+    result.add(decide(i, n, raw, eff, flags, attached, aksara, lastNonSpace, numberState, regionalRun))
     i = i + 1
   }
   result.add(breakRequired)

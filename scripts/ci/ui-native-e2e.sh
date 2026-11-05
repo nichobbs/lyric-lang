@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # ui-native-e2e.sh: the native lyric-ui host on examples/ui-customers (docs/67 G10, D203).
-#   - the host-free core (layout, protocol client, interaction) is tested with `lyric test`, and the
+#   - the host-free core (layout, protocol client, interaction) is tested with `lyric test`, Unicode's
+#     BidiCharacterTest.txt and LineBreakTest.txt run against its text algorithms on dotnet and on
+#     --target native (lyric-ui/native/tests/unicode), and the
 #     customers example (whose composition now lives in Customers.App) still builds and tests;
 #   - the customers example is built for --target native from its own, unchanged packages;
 #   - `--check` drives it headless with scripted window events (a link click, typing over a
@@ -43,6 +45,10 @@ trap 'rm -rf "$work"' EXIT
 
 echo "=== Ui.Native.Core tests ==="
 "$LYRIC_BIN" test --manifest lyric-ui/native/lyric.toml
+echo "=== Unicode conformance suites (BidiCharacterTest.txt, LineBreakTest.txt 15.1) on dotnet and native ==="
+"$LYRIC_BIN" test --manifest lyric-ui/native/tests/unicode/lyric.toml
+"$LYRIC_BIN" build --target native --manifest lyric-ui/native/tests/unicode/lyric.toml -o "$work/unicode-conformance"
+"$work/unicode-conformance"
 echo "=== examples/ui-customers tests (composition in Customers.App) ==="
 "$LYRIC_BIN" test --manifest examples/ui-customers/lyric.toml
 
