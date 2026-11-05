@@ -40,6 +40,12 @@ metadata is the signature, and only a backend bridge can read it.
    and `tyErrorUnresolved()` (-3, a member call no checker rule resolves, such as
    a package-private dot-named function of another package). `rg tyErrorHost`,
    `rg tyErrorGeneric` and `rg tyErrorUnresolved` are the remaining inventory.
+   On the JVM a descriptor the resolver does not map (a `short`, `float`, an
+   array) makes the whole member unchecked, as an overload set that cannot be
+   typed is; this is intended. A qualifier position (`isQualifierShape`) is
+   decided by the UpperCamelCase head of a name no local shadows, the rule the
+   member case applies to its receiver; a capitalised value it misreads is
+   exempted from the gate only, never given a wrong type.
    The first of them is `tyErrorHost()`, a
    `TyError` whose `DiagId` index is -1. It is still the cascade-suppressing
    wildcard (`typeEquiv`), but `isSilentTyError` is false, so the I0001 gate
