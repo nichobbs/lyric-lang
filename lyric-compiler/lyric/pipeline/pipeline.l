@@ -2078,6 +2078,41 @@ func qualifyEnumCasePattern(p: in Pattern, sites: in Map[String, String]): Patte
   }
 }
 
+/// The early weave (D391): wrappers for the package's own aspects, each
+/// generated run given spans of its own that map back to the function it wraps.
+func pipeWeaveEarly(file: in SourceFile, opts: in MiddleEndOptions): Option[SourceFile] {
+  val enabled = if ContractElaborator.isProofRequired(file.fileAnnotations) { true } else { opts.contractsEnabled }
+  val res = Weaver.weaveFileEarly(file, Weaver.newTypeOwnerIndex(), enabled)
+  if gateTo(opts.sink, opts.pkgLabel, opts.filePaths, res.diagnostics) {
+    return None
+  }
+  if res.generated.count == 0 {
+    return Some(value = res.file)
+  }
+  val base = Expand.generatedSpanBase(res.file)
+  val items: List[Item] = newList()
+  var cursor = 0
+  for run in res.generated {
+    while cursor < run.start {
+      items.add(res.file.items[cursor])
+      cursor = cursor + 1
+    }
+    val batch: List[Item] = newList()
+    while cursor < run.stop {
+      batch.add(res.file.items[cursor])
+      cursor = cursor + 1
+    }
+    for g in Expand.respanGenerated(res.file, batch, base, run.cause, opts.sink.origins) {
+      items.add(g)
+    }
+  }
+  while cursor < res.file.items.count {
+    items.add(res.file.items[cursor])
+    cursor = cursor + 1
+  }
+  Some(value = res.file.copy(items = items))
+}
+
 pub func pipeCheckAndMono(
   fileIn: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -2092,7 +2127,11 @@ pub func pipeCheckAndMono(
   // `opts.sink` must be the sink every later gate of this build uses: the
   // derive records the spans it generates in `opts.sink.origins`, and a gate
   // given another sink would not relocate a diagnostic found in them.
-  val file0 = deriveFileWithImports(fileIn, deriveImports, opts.sink.origins)
+  val derivedFile = deriveFileWithImports(fileIn, deriveImports, opts.sink.origins)
+  // Then the weave for aspects declared in this package, so the checker sees
+  // and checks the wrappers like code the user wrote (D391); the aspects a
+  // `from`-instance names are woven after mono, as before.
+  val file0 = match pipeWeaveEarly(derivedFile, opts) { case Some(f) -> f; case None -> return None }
   val front = match pipeCheckFront(file0, importedPkgs, opts, opts.sink) { case Some(f) -> f; case None -> return None }
   val tcRes = front.tcRes
   val valueSites = front.valueSites
