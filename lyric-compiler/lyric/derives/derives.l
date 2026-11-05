@@ -1885,7 +1885,7 @@ pub func deriveFileWithImports(
     newImports.add(stdJsonImportDecl())
   }
   // The decoders name `Std.JsonHost.JsonElement` by its package, which the
-  // checker resolves only through an import now that it sees this code (D371).
+  // checker resolves only through an import now that it sees this code (D390).
   if synthsUseJson(synths) and not importsStdPackage(file.imports, "JsonHost") {
     newImports.add(stdPackageImportDecl("JsonHost"))
   }

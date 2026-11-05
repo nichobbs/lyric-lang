@@ -1,4 +1,4 @@
-# D371 - Derives run before the checker, with generated spans mapped to the deriving type (docs/70 phase 3b slice S1, #8613)
+# D390 - Derives run before the checker, with generated spans mapped to the deriving type (docs/70 phase 3b slice S1, #8613)
 
 **Status:** shipped. First slice of D370.
 
