@@ -2,12 +2,12 @@
 //! G10, #8410, #8496).
 //!
 //! `breaksIn` gives, for the text of one paragraph, whether a line may break before each code point:
-//! every rule LB2 to LB31 of Unicode 15.1, in order, over the line break classes of
-//! `Unicode.Data` (kinsoku and the other closing and opening punctuation rules, numbers
-//! with their prefixes and suffixes by the tailoring of section 8.2 example 7 that Unicode's
-//! `LineBreakTest.txt` uses, quotation marks by their initial or final category, Hangul
-//! syllables, Brahmic orthographic syllables (LB28a), regional-indicator pairs, emoji modifiers,
-//! hyphens before Hebrew letters).  All of `LineBreakTest.txt` passes (`tests/conformance/`).  There is no
+//! every rule LB2 to LB31 of Unicode 16.0, in order, over the line break classes of
+//! `Unicode.Data` (kinsoku and the other closing and opening punctuation rules, numbers with
+//! their prefixes and suffixes, quotation marks by their initial or final category and the East
+//! Asian characters around them, word-initial hyphens, Hangul syllables, Brahmic orthographic
+//! syllables, regional-indicator pairs, emoji modifiers, hyphens after Hebrew letters).  All of
+//! Unicode's `LineBreakTest.txt` passes (`tests/conformance/`, D411).  There is no
 //! dictionary-based breaking of Thai, Lao, Khmer and Myanmar, which UAX #14 leaves to the
 //! implementation: such text breaks only at its spaces and punctuation.
 //!
@@ -119,6 +119,8 @@ val lbVI: Int = 47
 
 val dottedCircle: Int = 9676
 
+val unicodeHyphen: Int = 8208
+
 val flagWide: Int = 64
 
 val flagPictographicUnassigned: Int = 128
@@ -185,6 +187,7 @@ func decide(
   flags: buffer[Int],
   attached: buffer[Int],
   aksara: buffer[Int],
+  hyphen: buffer[Int],
   lastNonSpace: Int,
   numberState: Int,
   regionalRun: Int,
@@ -197,6 +200,11 @@ func decide(
     nextIdx = nextIdx + 1
   }
   val next = if nextIdx < n { eff[nextIdx] } else { -1 }
+  var afterNextIdx = nextIdx + 1
+  while afterNextIdx < n and attached[afterNextIdx] == 1 {
+    afterNextIdx = afterNextIdx + 1
+  }
+  val afterNext = if afterNextIdx < n { eff[afterNextIdx] } else { -1 }
   val base = if lastNonSpace >= 0 { eff[lastNonSpace] } else { -1 }
   // LB4, LB5
   if a == lbBK or a == lbLF or a == lbNL {
@@ -237,7 +245,7 @@ func decide(
     return noBreak
   }
   // LB13
-  if b == lbCL or b == lbCP or b == lbEX or b == lbIS or b == lbSY {
+  if b == lbCL or b == lbCP or b == lbEX or b == lbSY {
     return noBreak
   }
   // LB14
@@ -257,6 +265,13 @@ func decide(
       return noBreak
     }
   }
+  // LB15c, LB15d
+  if a == lbSP and b == lbIS and next == lbNU {
+    return breakAllowed
+  }
+  if b == lbIS {
+    return noBreak
+  }
   // LB16, LB17
   if (base == lbCL or base == lbCP) and b == lbNS {
     return noBreak
@@ -268,24 +283,50 @@ func decide(
   if a == lbSP {
     return breakAllowed
   }
-  // LB19
-  if b == lbQU or a == lbQU {
+  // LB19: not before a quotation mark that is not an opening one, nor after one that is not a closing one
+  if b == lbQU and flags[i].and(flagInitialQuote) == 0 {
     return noBreak
+  }
+  if a == lbQU and flags[i - 1].and(flagFinalQuote) == 0 {
+    return noBreak
+  }
+  // LB19a: around any other quotation mark, unless East Asian characters are on both sides
+  if b == lbQU {
+    if flags[i - 1].and(flagWide) == 0 {
+      return noBreak
+    }
+    if next == -1 or flags[nextIdx].and(flagWide) == 0 {
+      return noBreak
+    }
+  }
+  if a == lbQU {
+    if flags[i].and(flagWide) == 0 {
+      return noBreak
+    }
+    val quote = baseIndex(attached, i - 1)
+    if quote == 0 or flags[quote - 1].and(flagWide) == 0 {
+      return noBreak
+    }
   }
   // LB20
   if b == lbCB or a == lbCB {
     return breakAllowed
   }
+  // LB20a: not after a hyphen that starts a word
+  if b == lbAL and (a == lbHY or hyphen[i - 1] == 1) {
+    val h = baseIndex(attached, i - 1)
+    val before = if h == 0 { -1 } else { eff[h - 1] }
+    if before == -1 or before == lbBK or before == lbCR or before == lbLF or before == lbNL or before == lbSP or before == lbZW or before == lbCB or before == lbGL {
+      return noBreak
+    }
+  }
   // LB21
   if b == lbBA or b == lbHY or b == lbNS or a == lbBB {
     return noBreak
   }
-  // LB21a
-  if a == lbHY or a == lbBA {
-    var bi = i - 1
-    while bi > 0 and attached[bi] == 1 {
-      bi = bi - 1
-    }
+  // LB21a: not after the hyphen of a Hebrew letter and a hyphen, unless a Hebrew letter follows
+  if (a == lbHY or (a == lbBA and flags[i - 1].and(flagWide) == 0)) and b != lbHL {
+    val bi = baseIndex(attached, i - 1)
     if bi > 0 and eff[bi - 1] == lbHL {
       return noBreak
     }
@@ -315,20 +356,19 @@ func decide(
   if isAlphabetic(a) and (b == lbPR or b == lbPO) {
     return noBreak
   }
-  // LB25, as the regular expression of UAX #14 section 8.2 example 7 (the form Unicode's own
-  // LineBreakTest.txt uses): a number is NU (NU | SY | IS)* (CL | CP)? with an optional prefix
-  // (PR | PO) (OP | HY)? and suffix (PO | PR).  `numberState` is 1 inside the digits and 2 after
-  // the closing punctuation that may end them.
-  if (a == lbPR or a == lbPO) and (b == lbNU or ((b == lbOP or b == lbHY) and next == lbNU)) {
-    return noBreak
-  }
-  if (a == lbOP or a == lbHY) and b == lbNU {
-    return noBreak
-  }
-  if numberState == 1 and (b == lbNU or b == lbSY or b == lbIS or b == lbCL or b == lbCP) {
-    return noBreak
-  }
+  // LB25: a number is (PR | PO)? (OP | HY)? IS? NU (NU | SY | IS)* (CL | CP)? (PR | PO)?.
+  // `numberState` is 1 after a digit and the separators that follow it, 2 after the closing
+  // punctuation that may end the number.
   if numberState >= 1 and (b == lbPO or b == lbPR) {
+    return noBreak
+  }
+  if (a == lbPO or a == lbPR) and b == lbOP and (next == lbNU or (next == lbIS and afterNext == lbNU)) {
+    return noBreak
+  }
+  if (a == lbPO or a == lbPR or a == lbHY or a == lbIS) and b == lbNU {
+    return noBreak
+  }
+  if numberState == 1 and b == lbNU {
     return noBreak
   }
   // LB26, LB27
@@ -406,6 +446,7 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
   var flags = Buf.filled(n, 0)
   var attached = Buf.filled(n, 0)
   var aksara = Buf.filled(n, 0)
+  var hyphen = Buf.filled(n, 0)
   var i = 0
   while i < n {
     val v = UnicodeData.lineBreakValueOf(cps[from + i])
@@ -416,10 +457,14 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
       eff[i] = eff[i - 1]
       flags[i] = flags[i - 1]
       aksara[i] = aksara[i - 1]
+      hyphen[i] = hyphen[i - 1]
       attached[i] = 1
     } else if c == lbCM or c == lbZWJ {
+      // LB10: the properties of U+0041 (AL, not East Asian, not a quotation mark).
       eff[i] = lbAL
+      flags[i] = lbAL
     } else {
+      hyphen[i] = if cps[from + i] == unicodeHyphen { 1 } else { 0 }
       eff[i] = c
       aksara[i] = if c == lbAK or cps[from + i] == dottedCircle { 2 } else if c == lbAS { 1 } else { 0 }
     }
@@ -447,7 +492,7 @@ pub func breaksIn(cps: in slice[Int], from: in Int, to: in Int): List[Int] {
       }
       regionalRun = if e == lbRI { regionalRun + 1 } else { 0 }
     }
-    result.add(decide(i, n, raw, eff, flags, attached, aksara, lastNonSpace, numberState, regionalRun))
+    result.add(decide(i, n, raw, eff, flags, attached, aksara, hyphen, lastNonSpace, numberState, regionalRun))
     i = i + 1
   }
   result.add(breakRequired)
