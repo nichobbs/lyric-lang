@@ -1481,7 +1481,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
   // bare `line > 0` guard silently let every woven statement through and
   // produced spurious line-1 rows (#6285).
   val stmtLine = stmt.span.startPos.line
-  if not Lex.isNoSourceSpan(stmt.span) {
+  if not Lex.isNoSourceSpan(stmt.span) and not Lex.isGeneratedSpan(stmt.span) {
     insns.add(LLineMarker(label = "__line_" + freshLabel(ctx), line = stmtLine))
   }
   match stmt.kind {

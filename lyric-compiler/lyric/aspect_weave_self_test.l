@@ -582,3 +582,30 @@ test "arity overloads in a woven file are kept (#8662)" {
   assertEqualInt(twinArity(1), 2, "one argument")
   assertEqualInt(twinArity(1, 2), 3, "two arguments")
 }
+
+// A generic call in a local aspect's `ensures:` over `ULong` compares unsigned
+// (D391). The woven wrapper is checked and specialised like any function, so
+// the unsigned re-check applies to it; D304 refused this program (M0009) while
+// the wrapper only existed after mono.
+@pure
+func biggerThan[T](a: in T, b: in T): Bool
+  where T: Compare
+{
+  a > b
+}
+
+aspect UnsignedPositive {
+  matches: name in { passThroughULong }
+  ensures: biggerThan(result, 1u64)
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+func passThroughULong(x: ULong): ULong {
+  return x
+}
+
+test "a woven ensures: calling a generic compares ULong unsigned (D391)" {
+  assertTrue(passThroughULong(18446744073709551615u64) == 18446744073709551615u64, "max ULong satisfies result > 1")
+}

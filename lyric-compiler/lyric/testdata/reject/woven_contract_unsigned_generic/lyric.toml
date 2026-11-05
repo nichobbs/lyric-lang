@@ -1,7 +1,0 @@
-[package]
-name = "reject-woven-unsigned"
-version = "0.1.0"
-[project]
-name = "RejectWovenUnsigned"
-[project.packages]
-"App" = "app"

@@ -101,6 +101,14 @@ func functionIsAxiom(fn: in FunctionDecl): Bool {
   hasSimpleAnnotation("axiom", fn.annotations)
 }
 
+// An outermost wrapper the early weave generated (D391): it carries the
+// aspect's contract clauses for the verifier and the interface, and the weave
+// has already lowered them into its body, so elaborating it would check them
+// twice.
+func functionIsWoven(fn: in FunctionDecl): Bool {
+  hasSimpleAnnotation("woven", fn.annotations)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Synthetic-name counter.  The elaborator threads a `RenameCounter`
 //     through each function so generated locals in nested scopes do not
@@ -2943,7 +2951,7 @@ func elaborateMember(
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
-  if functionIsAxiom(fn) {
+  if functionIsAxiom(fn) or functionIsWoven(fn) {
     return fn
   }
 
