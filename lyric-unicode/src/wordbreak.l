@@ -62,6 +62,28 @@ val wbWSegSpace: Int = 18
 
 val flagPictographic: Int = 32
 
+// Line_Break values as `Unicode.Data` encodes them: indexes into the generator's `lineBreakNames`
+// (`tools/generate/generate.l`), the same numbering `Unicode.LineBreak` uses.
+val lbID: Int = 14
+
+val lbSA: Int = 24
+
+val lbH2: Int = 31
+
+val lbH3: Int = 32
+
+val lbJL: Int = 33
+
+val lbJT: Int = 34
+
+val lbJV: Int = 35
+
+val lbCJ: Int = 37
+
+val lbAK: Int = 43
+
+val lbAS: Int = 45
+
 func isIgnored(c: Int): Bool {
   c == wbExtend or c == wbFormat or c == wbZWJ
 }
@@ -223,7 +245,7 @@ pub func isWordLike(cps: in slice[Int], from: in Int, to: in Int): Bool {
     // Line_Break ID, Hangul and jamo, kana, SA, Aksara: words in the scripts UAX #29 gives no
     // letter value.
     val lb = UnicodeData.lineBreakValueOf(cps[i]).and(63)
-    if lb == 14 or (lb >= 31 and lb <= 35) or lb == 37 or lb == 24 or lb == 43 or lb == 45 {
+    if lb == lbID or lb == lbH2 or lb == lbH3 or lb == lbJL or lb == lbJT or lb == lbJV or lb == lbCJ or lb == lbSA or lb == lbAK or lb == lbAS {
       return true
     }
     i = i + 1
