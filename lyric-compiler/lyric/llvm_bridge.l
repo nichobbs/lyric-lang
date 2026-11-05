@@ -4142,7 +4142,7 @@ func noteConstructedImplType(
     return
   }
   val segs = Str.split(key, ".")
-  val bare = segs[segs.count - 1]
+  val bare = segs[segs.length - 1]
   if bare.length == 0 {
     return
   }

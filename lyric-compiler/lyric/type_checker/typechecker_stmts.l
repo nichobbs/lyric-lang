@@ -2318,8 +2318,8 @@ func checkForTuplePattern(diag: in List[Diagnostic], pat: in Pattern, ty: in Typ
 // iterable is not decidable here.
 func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Expr, iterType: in Type): Type {
   match unrefine(iterType) {
-    case TyError(_) -> tyErrorSilent()
-    case TyParam(_, _) -> tyErrorSilent()
+    case TyError(d) -> TyError(diag = d)
+    case TyParam(_, _) -> tyErrorGeneric()
     case TySelf -> tyErrorSilent()
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e
@@ -2534,7 +2534,7 @@ func externIterLoopElem(
   match symTableExternDeclOf(tbl, iterId) {
     case None -> tyErrorSilent()
     case Some(decl) -> match externIterInfoFor(tbl, decl) {
-      case None -> tyErrorSilent()
+      case None -> tyErrorHost()
       case Some(info) -> match info {
         case EIINone -> reportNotIterable(
           diag,
@@ -2566,7 +2566,7 @@ func externIterLoopElem(
             case None -> if missing.count > 0 {
               reportExternIterElemUnbound(diag, iter, iterType, "the host type '" + missing[0] + "'")
             } else {
-              tyErrorSilent()
+              tyErrorHost()
             }
           }
         }

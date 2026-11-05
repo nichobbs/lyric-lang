@@ -138,6 +138,34 @@ pub func tyErrorFor(diags: in List[Diagnostic]): Type {
   TyError(diag = DiagId(index = diags.count))
 }
 
+/// A `TyError` for a member the host boundary does not describe: the bridge
+/// could not read the host type (no reference pack, a type it cannot locate, an
+/// overload set whose results differ), or the host type it returns has no
+/// `extern type` in scope.  The value is deliberately unchecked (docs/70 5.3),
+/// so it is not silent: `DiagId` index -1 marks it for the I0001 gate.
+pub func tyErrorHost(): Type {
+  TyError(diag = DiagId(index = -1))
+}
+
+/// A `TyError` for a value whose type mentions a generic parameter that the
+/// checker erases on purpose (a pattern binding, a loop variable or a lambda
+/// parameter inside a generic body, see `eraseTyParams`): the `where`-bound
+/// operations that make such a value usable are not tracked yet.  Named like
+/// `tyErrorHost`, so the I0001 gate does not count it and `rg tyErrorGeneric`
+/// is the inventory of what typing generic bodies has left (`DiagId` index -2).
+pub func tyErrorGeneric(): Type {
+  TyError(diag = DiagId(index = -2))
+}
+
+/// A `TyError` for a member call no checker rule resolves although the
+/// backends do: a dot-named function the checker cannot see (a package-private
+/// `internal func` of another package of the same library).  Named, like
+/// `tyErrorHost`, so the I0001 gate does not count it; `rg tyErrorUnresolved`
+/// is the inventory (`DiagId` index -3).
+pub func tyErrorUnresolved(): Type {
+  TyError(diag = DiagId(index = -3))
+}
+
 /// True for a `TyError` that records no diagnostic.
 pub func isSilentTyError(t: in Type): Bool {
   match t {

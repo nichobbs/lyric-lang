@@ -603,10 +603,49 @@ pub record JvmHostIterIndex {
   known: Map[String, ExternIterInfo]
   bases: Map[String, List[String]]
   basesAnswered: Map[String, Bool]
+  members: Map[String, ExternMemberType]
+  membersAnswered: Map[String, Bool]
 }
 
 pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
-  JvmHostIterIndex(ctx = ctx, answered = newMap(), known = newMap(), bases = newMap(), basesAnswered = newMap())
+  JvmHostIterIndex(
+    ctx = ctx,
+    answered = newMap(),
+    known = newMap(),
+    bases = newMap(),
+    basesAnswered = newMap(),
+    members = newMap(),
+    membersAnswered = newMap()
+  )
+}
+
+// A JVM member descriptor as what the checker types the member: the Lyric
+// primitives the host ones map to and the classes, as host names.  A host
+// reference may be null, which a Lyric `String` or class value cannot be, so a
+// `java.lang.String` result is the host class, not Lyric's `String` (a kernel
+// that wants an `Option` declares it and the backend wraps the null).  A short,
+// float or array is None (the checker leaves it unchecked).
+func jvmMemberTypeOfDesc(desc: in String): Option[ExternMemberType] {
+  if desc == "V" {
+    Some(value = EMTVoid)
+  } else if desc == "I" {
+    Some(value = EMTType(elem = EIEPrim(name = "Int")))
+  } else if desc == "J" {
+    Some(value = EMTType(elem = EIEPrim(name = "Long")))
+  } else if desc == "Z" {
+    Some(value = EMTType(elem = EIEPrim(name = "Bool")))
+  } else if desc == "C" {
+    Some(value = EMTType(elem = EIEPrim(name = "Char")))
+  } else if desc == "D" {
+    Some(value = EMTType(elem = EIEPrim(name = "Double")))
+  } else if desc == "Ljava/lang/String;" {
+    Some(value = EMTType(elem = EIEHost(hostName = "java.lang.String", args = newList())))
+  } else if desc.length > 2 and desc.substring(0, 1) == "L" {
+    val cls = desc.substring(1, desc.length - 2).replace("/", ".")
+    Some(value = EMTType(elem = EIEHost(hostName = externHostBase(cls), args = newList())))
+  } else {
+    None
+  }
 }
 
 impl ExternIterResolver for JvmHostIterIndex {
@@ -634,6 +673,30 @@ impl ExternIterResolver for JvmHostIterIndex {
       }
     }
     mapGet(self.bases, clrName)
+  }
+
+  func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
+    val key = clrName + "#" + member + "#" + toString(argc) + "#" + (if isProperty { "p" } else { "m" })
+    if not self.membersAnswered.containsKey(key) {
+      self.membersAnswered.add(key, true)
+      match hostMemberDescsOfExternJvm(self.ctx, externHostBase(clrName), member, argc, isProperty) {
+        case Some(descs) -> {
+          val results: List[ExternMemberType] = newList()
+          for d in descs {
+            match jvmMemberTypeOfDesc(d) {
+              case Some(m) -> results.add(m)
+              case None -> return None
+            }
+          }
+          match externMemberAgreed(results) {
+            case Some(m) -> self.members.add(key, m)
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    mapGet(self.members, key)
   }
 }
 

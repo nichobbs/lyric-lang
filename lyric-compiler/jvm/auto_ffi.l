@@ -1569,6 +1569,53 @@ pub func hostSupertypesOfExternJvm(ctx: in AutoFfiCtx, binaryName: in String): O
   Some(value = acc)
 }
 
+/// The result descriptors of the members of `binaryName` named `member`,
+/// looked up on the class and every supertype (docs/70 5.3): methods taking
+/// `argc` arguments, or, with `isProperty`, public fields of that name (the
+/// field descriptor).  One entry per candidate overload, `V` for `void`.  None
+/// when the class or a supertype cannot be loaded; an empty list means no
+/// member of that shape was found.
+pub func hostMemberDescsOfExternJvm(
+  ctx: in AutoFfiCtx,
+  binaryName: in String,
+  member: in String,
+  argc: in Int,
+  isProperty: in Bool,
+): Option[List[String]] {
+  val chain: List[String] = newList()
+  chain.add(binaryName)
+  match hostSupertypesOfExternJvm(ctx, binaryName) {
+    case Some(supers) -> {
+      for sup in supers {
+        chain.add(sup)
+      }
+    }
+    case None -> return None
+  }
+  val found: List[String] = newList()
+  for cur in chain {
+    val ci = match loadClass(ctx, cur) { case Some(c) -> c; case None -> return None }
+    if isProperty {
+      for f in ci.fields {
+        if f.name == member {
+          found.add(f.descriptor)
+        }
+      }
+    } else {
+      for m in ci.methods {
+        if m.name == member and parseDescriptorParams(m.descriptor).count == argc {
+          var close = 0
+          while close < m.descriptor.length and Str.charAtOrReplacement(m.descriptor, close) != ')' {
+            close = close + 1
+          }
+          found.add(m.descriptor.substring(close + 1, m.descriptor.length - close - 1))
+        }
+      }
+    }
+  }
+  Some(value = found)
+}
+
 /// How the JVM class an `extern type` spells (`clrName`, a dotted or slashed
 /// binary name, with `arity` type parameters) iterates.  The element is
 /// written over `GSVar("#i")` for the i-th type parameter.  A class whose

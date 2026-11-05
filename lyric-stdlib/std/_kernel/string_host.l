@@ -50,11 +50,11 @@ pub func hostNewBuilder(): HostStringBuilder {
 }
 
 pub func hostAppend(sb: in HostStringBuilder, s: in String): Unit {
-  sb.Append(s)
+  val _ = sb.Append(s)
 }
 
 pub func hostAppendChar(sb: in HostStringBuilder, c: in Char): Unit {
-  sb.Append(c)
+  val _ = sb.Append(c)
 }
 
 pub func hostBuilderToString(sb: in HostStringBuilder): String {

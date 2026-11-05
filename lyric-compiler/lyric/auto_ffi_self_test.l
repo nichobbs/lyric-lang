@@ -268,7 +268,7 @@ test "auto-FFI resolves an instance method with an array-typed return" {
   assertEqualInt(direct.count, 2, "GetBytes(\"hi\") via raw auto-FFI returns 2 bytes")
   // (b) @externTarget wrapper with no explicit instance/static hint.
   val viaWrapper = externEncodingGetBytes(externUtf8Encoding(), "hi")
-  assertEqualInt(viaWrapper.count, 2, "GetBytes(\"hi\") via unhinted @externTarget wrapper returns 2 bytes")
+  assertEqualInt(viaWrapper.length, 2, "GetBytes(\"hi\") via unhinted @externTarget wrapper returns 2 bytes")
 }
 
 // #5562: instance members INHERITED from a base type resolve through the

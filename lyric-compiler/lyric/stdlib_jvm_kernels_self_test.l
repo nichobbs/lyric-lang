@@ -139,7 +139,7 @@ test "hostGetCommandLineArgs resolves to a real getstatic read (issue #5377) rat
   // slice) -- not a content/correctness check, since this harness's
   // synthesised JVM entry point never forwards real argv. The real
   // argv-content check lives in `lyric-compiler/jvm/env_args_jvm_main.l`.
-  assertTrue(a.count >= 0, "hostGetCommandLineArgs returns a real slice[String] instead of panicking")
+  assertTrue(a.length >= 0, "hostGetCommandLineArgs returns a real slice[String] instead of panicking")
 }
 
 // ── Std.ProcessHost ──────────────────────────────────────────────────────────

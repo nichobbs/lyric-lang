@@ -300,7 +300,7 @@ async func interpAwait(x: in Int): String {
 // not couple to.
 async func listElemAwait(x: in Int): Int {
   val xs = [1, await addOne(x)]
-  return xs.count * 100 + 5
+  return xs.length * 100 + 5
 }
 
 async func indexAwait(x: in Int): Int {

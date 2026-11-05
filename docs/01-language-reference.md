@@ -2847,7 +2847,9 @@ On `--target jvm` an `impl <ExternInterface>` method that spells a narrower type
 
 #### Extern upcast: `externAsObject` (D212)
 
-Extern types are unrelated to one another: no extern type is assignable to another, and none to the host's root object type. A kernel that keeps extern values in a `List[JObject]`, or passes one to an `Object`-typed parameter, converts explicitly with the built-in `externAsObject(x)`:
+An extern type is assignable to another extern type when the host's own hierarchy says so (D352): the compiler reads the actual type's base classes and interfaces from the reference assemblies (`--target dotnet`) or class files (`--target jvm`), and two spellings of one host class are interchangeable. Where the host type cannot be located the assignment is left unchecked. No extern type is assignable to the host's root object type.
+
+A member of an extern type, called or read through a value or through the type itself, has the type the host declares (D354): `void` is `Unit`, a host `int`, `long`, `bool`, `byte`, `double` or `char` is `Int`, `Long`, `Bool`, `Byte`, `Double` or `Char`, and a host class with an `extern type` in scope is that type. A host `String` (it may be null), the host's root object, arrays, and a class no `extern type` names are not typed: such a value is unchecked and flows wherever the code puts it. Every overload of the member's arity must agree on the result; otherwise it is unchecked too. `.count` on a `slice[T]` is the warning **W0042**, to become an error (a slice's size is `.length`). A kernel that keeps extern values in a `List[JObject]`, or passes one to an `Object`-typed parameter, converts explicitly with the built-in `externAsObject(x)`:
 
 ```lyric
 extern type JObject = "java.lang.Object"

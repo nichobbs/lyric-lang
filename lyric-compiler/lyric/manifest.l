@@ -2506,7 +2506,7 @@ pub func textHasSectionHeader(text: in String, section: in String): Bool {
   val header = "[" + section + "]"
   val lines = Str.split(text, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     if Str.trim(lines[i]) == header {
       return true
     }

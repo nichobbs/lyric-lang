@@ -100,7 +100,7 @@ func emptyIntArr[T](): slice[T] = ()
 
 test "Array.Empty<T>() alongside Enumerable.Empty<T>() does not collide (#6987)" {
   val arr = emptyIntArr[Int]()
-  assertEqualInt(arr.count, 0, "Array.Empty<Int>() returns a genuinely zero-length array")
+  assertEqualInt(arr.length, 0, "Array.Empty<Int>() returns a genuinely zero-length array")
 }
 
 // ── A `T[]` return instantiates `T` at the slice's element type (#7783) ──
@@ -118,14 +118,14 @@ func allocLongs(length: in Int, pinned: in Bool): slice[Long] = ()
 
 test "GC.AllocateArray<T> returning a slice[Int]/slice[Long] builds the typed array (#7783)" {
   val xs = allocInts(3, false)
-  assertEqualInt(xs.count, 3, "three elements")
+  assertEqualInt(xs.length, 3, "three elements")
   assertEqualInt(xs[1], 0, "zero-initialised")
   assertEqualInt(xs[0] + xs[2], 0, "int32 elements read back")
   val ls = allocLongs(2, false)
-  assertEqualInt(ls.count, 2, "two elements")
+  assertEqualInt(ls.length, 2, "two elements")
   assertEqualLong(ls[1] + ls[0], 0i64, "int64 elements read back")
   val empty = emptyIntArr[Int]()
-  assertEqualInt(empty.count, 0, "Array.Empty<Int>() is a zero-length int32[]")
+  assertEqualInt(empty.length, 0, "Array.Empty<Int>() is a zero-length int32[]")
 }
 
 // ── Gap 2 review follow-up (#6989): box a value-type argument, and unbox a ─
@@ -323,7 +323,7 @@ test "a closed generic with an array type argument (List<byte[]>) loads and work
   val a: slice[Byte] = [1, 2, 3]
   byteArrayListAdd(l, a)
   assertEqualInt(byteArrayListCount(l), 1, "one element added")
-  assertEqualInt(byteArrayListItem(l, 0).count, 3, "the byte[] round-trips through the typed list")
+  assertEqualInt(byteArrayListItem(l, 0).length, 3, "the byte[] round-trips through the typed list")
 }
 
 extern type ByteArrayListByInt = "System.Collections.Generic.Dictionary`2[System.Int32,System.Collections.Generic.List`1[System.Byte[]]]"
