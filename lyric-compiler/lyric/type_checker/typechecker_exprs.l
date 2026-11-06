@@ -17543,7 +17543,7 @@ func noteUnsolvedCallNamed(
   val sig = pick.sig
   // A generic of the package itself is specialised from its own declaration
   // (the monomorphiser reports what it cannot); an extern one has none (D384).
-  if sig.generics.count == 0 or (not sig.isExternFunc and (sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl))) {
+  if sig.generics.count == 0 or (not sig.hostBound and (sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl))) {
     return
   }
   if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
@@ -17552,7 +17552,7 @@ func noteUnsolvedCallNamed(
   val isMethod = match recvTy { case Some(_) -> true; case None -> false }
   // An extern function of the package is itself in scope; a local binding
   // that shadowed it would not have resolved to its signature (D384).
-  if not isMethod and not sig.isExternFunc and scopeHasName(sc, fname) {
+  if not isMethod and not sig.hostBound and scopeHasName(sc, fname) {
     return
   }
   val valueParams = valueGenericParamsOf(tbl, fn, args.count)
