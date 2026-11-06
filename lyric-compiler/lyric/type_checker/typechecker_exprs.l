@@ -4975,6 +4975,42 @@ func recordBuiltinCallee(tbl: in SymbolTable, callNode: in Int, name: in String)
   tbl.builtinByNode.add(callNode, name)
 }
 
+// Record a call through a function value (a local, a module-level `val`, a
+// function-typed field or any other expression) under the call's `NodeId`
+// (`indirectByNode`, D364): TIR names it `Callee.Indirect(fnValue)`, and the
+// builder reads the function value from the callee expression, so the table
+// only marks the call.
+func recordIndirectCall(tbl: in SymbolTable, callNode: in Int): Unit {
+  if callNode <= 0 {
+    return
+  }
+  if not tbl.indirectByNode.containsKey(callNode) {
+    tbl.indirectByNode.add(callNode, true)
+  }
+}
+
+// The built-in a member call resolved to without a typed signature: the
+// reserved accessors of `Result` and `Option` and the bitwise methods of an
+// integer.  Records `Receiver.member`.
+func recordUntypedBuiltinMember(
+  tbl: in SymbolTable,
+  callNode: in Int,
+  recvTy: in Option[Type],
+  memberName: in String,
+  argCount: in Int,
+  resultTy: in Type,
+): Unit {
+  match recvTy {
+    case Some(rt) -> {
+      val monadAccessor = argCount == 0 and isReservedMonadAccessorName(memberName) and not isSilentTyError(resultTy)
+      if monadAccessor or isPrimitiveIntrinsicMethod(rt, memberName, argCount) {
+        recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
+      }
+    }
+    case None -> ()
+  }
+}
+
 // The head of a built-in receiver type as TIR's built-in table names it.
 func builtinRecvHead(recv: in Type): String {
   match unrefine(recv) {
@@ -19505,6 +19541,9 @@ func inferExprCore(
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
                       if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
                         sendNoteFuncValueCall(tbl, e.span, calleeText(fn))
+                        if not tbl.builtinByNode.containsKey(e.nodeId) {
+                          recordIndirectCall(tbl, e.nodeId)
+                        }
                       }
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
@@ -19571,7 +19610,9 @@ func inferExprCore(
                             case None -> tyErrorSilent()
                           }
                           case None -> if isMemberCallee {
-                            untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
+                            val untypedTy = untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
+                            recordUntypedBuiltinMember(tbl, e.nodeId, memberRecvTy, memberName, args.count, untypedTy)
+                            untypedTy
                           } else {
                             tyErrorSilent()
                           }

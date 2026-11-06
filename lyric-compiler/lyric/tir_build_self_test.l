@@ -115,15 +115,16 @@ test "a call to a declared function has its callee recorded under the call's nod
   assertEqualInt(cr.symbols.calleeByNode.count, 1, "one entry")
 }
 
-test "a call through a function value is reported until its route records a callee" {
+test "a call through a function value is marked indirect" {
   val src = "package App\nfunc f(h: in (Int) -> Int): Int { h(1) }\n"
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
   val ctx = newTyConvCtx(cr.symbols)
-  val census = calleeCensus(ctx, callSitesOf(file))
-  assertEqualInt(census.count, 1, "the call through a function value has no callee yet")
-  assertTrue(census[0].startsWith("I0002"), "reported as I0002")
-  assertTrue(census[0].contains("call at 2:"), "names the call's position")
+  val calls = callSitesOf(file)
+  assertEqualInt(calls.count, 1, "one call")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "the indirect call is covered")
+  assertEqualInt(cr.symbols.indirectByNode.count, 1, "marked indirect")
+  assertEqualInt(cr.symbols.calleeByNode.count, 0, "and has no declared callee")
 }
 
 test "a method call has its callee recorded under the call's node id" {
@@ -146,7 +147,7 @@ test "nested calls and a call inside a lambda argument each have their callee re
   val calls = callSitesOf(file)
   val missing = calleeCensus(ctx, calls)
   assertEqualInt(calls.count, 4, "f(1), apply(..) and the lambda's outer and inner g calls")
-  assertEqualInt(missing.count, 1, "only the call through the function value f(1) has no callee yet")
+  assertEqualInt(missing.count, 0, "the call through the function value f(1) is marked indirect")
 }
 
 test "record and union-case constructor calls have their callee recorded" {
