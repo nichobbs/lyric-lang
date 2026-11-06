@@ -428,7 +428,7 @@ pub func compileToMsilWithVersion(
   // aspect in a file with no `import Std.Time`.
   //
   val noWeaveFiles: List[String] = newList()
-  val weavedFile = match pipeFinishWeave(file, path, noWeaveFiles, stdlibRecs, singleFileTypeArgCallees, pipeWovenGenerics(allMonoFuncs, singleFileGenericItems)) {
+  val weavedFile = match pipeFinishWeave(file, path, noWeaveFiles, stdlibRecs, singleFileTypeArgCallees) {
     case Some(f) -> f
     case None -> return false
   }
@@ -945,7 +945,6 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val perPkgCalleeSites: List[Map[String, String]] = newList()
   val perPkgRecvClasses: List[Map[String, String]] = newList()
   val perPkgTypeArgCallees: List[Map[String, Bool]] = newList()
-  val perPkgGenericItems: List[List[Item]] = newList()
   // The type-checked, `.copy`-desugared file per package: contract metadata
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val perPkgChecked: List[SourceFile] = newList()
@@ -1071,7 +1070,6 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     perPkgCalleeSites.add(projCalleeSites)
     perPkgRecvClasses.add(projOptsRecvOut)
     perPkgTypeArgCallees.add(projTypeArgCallees)
-    perPkgGenericItems.add(projGenericItems)
     perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
     perPkgIface.add(projIfaceOut)
     perPkgNames.add(pp.name)
@@ -1256,7 +1254,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeFinishWeave(perPkgFiles[li], parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li]), sink) {
+    val weaved = match pipeFinishWeave(perPkgFiles[li], parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], sink) {
       case Some(f) -> f
       case None -> return false
     }
