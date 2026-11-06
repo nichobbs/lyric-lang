@@ -1093,7 +1093,10 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   while osi < perPkgCalleeSites.count {
     for sk in mapKeys(perPkgCalleeSites[osi]) {
       match mapGet(perPkgCalleeSites[osi], sk) {
-        case Some(dp) -> cctx.originCalleeSites.add(perPkgNames[osi] + "|" + sk, dp)
+        // An entry for a body specialised from another package's generic
+        // (`foreignCalleeSites`) is already keyed `<origin>|<key>`; a
+        // package's own sites carry no `|`.
+        case Some(dp) -> cctx.originCalleeSites.add(if sk.contains("|") { sk } else { perPkgNames[osi] + "|" + sk }, dp)
         case None -> ()
       }
     }
