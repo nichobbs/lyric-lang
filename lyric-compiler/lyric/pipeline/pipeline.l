@@ -1761,6 +1761,14 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   for line in TirBuild.calleeCensusByName(ctx, calls, 12) {
     Console.error("  uncovered callee: " + line)
   }
+  val built = TirBuild.buildCensus(ctx, tcRes.symbols, file)
+  Console.error(
+    "TIR build census [" + label + "]: " + toString(built.built) + " of " + toString(built.total) +
+      " function bodies built"
+  )
+  for line in TirBuild.buildCensusLines(built, 12) {
+    Console.error("  no builder case: " + line)
+  }
 }
 
 func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[ImportedPackage]): List[Item] {

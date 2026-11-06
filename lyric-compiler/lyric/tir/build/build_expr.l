@@ -583,3 +583,82 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
   popScope(env)
   res
 }
+
+/// How many function bodies of a file the builder covers, and what it has no
+/// case for, by kind with the number of nodes (the `--verify-ir` census, D366).
+pub record BuildCensus {
+  total: Int
+  built: Int
+  uncovered: Map[String, Int]
+}
+
+/// Build every function body of `file` that has one, each with a fresh
+/// `BuildEnv`, and total the outcome.
+pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile): BuildCensus {
+  var total = 0
+  var built = 0
+  val sums: Map[String, Int] = newMap()
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> match decl.body {
+        case Some(_) -> {
+          total = total + 1
+          val env = newBuildEnv(ctx)
+          match buildFnBody(env, decl, tbl) {
+            case Some(_) -> {
+              built = built + 1
+            }
+            case None -> ()
+          }
+          for k in mapKeys(env.uncovered) {
+            val add = match mapGet(env.uncovered, k) {
+              case Some(n) -> n
+              case None -> 0
+            }
+            val had = match mapGet(sums, k) {
+              case Some(n) -> n
+              case None -> 0
+            }
+            if sums.containsKey(k) {
+              sums.remove(k)
+            }
+            sums.add(k, had + add)
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
+  BuildCensus(total = total, built = built, uncovered = sums)
+}
+
+/// The uncovered kinds of `c`, most frequent first, as `kind x count`.
+pub func buildCensusLines(c: in BuildCensus, limit: in Int): List[String] {
+  val res: List[String] = newList()
+  val taken: Map[String, Bool] = newMap()
+  var round = 0
+  while round < limit {
+    var best = ""
+    var bestN = 0
+    for k in mapKeys(c.uncovered) {
+      if not taken.containsKey(k) {
+        val n = match mapGet(c.uncovered, k) {
+          case Some(v) -> v
+          case None -> 0
+        }
+        if n > bestN {
+          best = k
+          bestN = n
+        }
+      }
+    }
+    if bestN == 0 {
+      return res
+    }
+    taken.add(best, true)
+    res.add(best + " x " + toString(bestN))
+    round = round + 1
+  }
+  res
+}
