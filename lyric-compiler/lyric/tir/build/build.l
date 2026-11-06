@@ -295,16 +295,17 @@ pub func callSitesOf(file: in SourceFile): List[CallSite] {
 }
 
 /// Whether the checker recorded the callee of the call at `id`: a declared
-/// one (`calleeByNode`) or a built-in's name (`builtinByNode`, D362).
+/// one (`calleeByNode`), a built-in's name (`builtinByNode`, D362) or a call
+/// through a function value (`indirectByNode`, D364).
 pub func callCovered(ctx: in TyConvCtx, id: in Int): Bool {
-  ctx.tbl.calleeByNode.containsKey(id) or ctx.tbl.builtinByNode.containsKey(id)
+  ctx.tbl.calleeByNode.containsKey(id) or ctx.tbl.builtinByNode.containsKey(id) or
+    ctx.tbl.indirectByNode.containsKey(id)
 }
 
 /// The calls of `calls` the checker recorded no resolved callee for
 /// (`SymbolTable.calleeByNode`), as I0002 messages naming the call's position.
-/// Calls the checker resolves by another route (built-ins, constructors,
-/// function values, interface and extern members) are counted until each route
-/// records its callee (D361).
+/// A call is covered by `callCovered`; interface and extern member calls are
+/// counted until their route records a callee (D361).
 pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String] {
   val res: List[String] = newList()
   for c in calls {

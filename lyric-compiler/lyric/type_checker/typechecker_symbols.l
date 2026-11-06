@@ -521,11 +521,16 @@ pub record SymbolTable {
   exprTypes: Map[Int, Type]
   /// The function each call resolved to, keyed by the call expression's
   /// `NodeId` (docs/70 §6.3, D361): the `SymbolId` of its DefPath.  Filled at
-  /// the points that fill `calleeSites`, which it does not replace; a call the
-  /// checker resolved some other way (a built-in, a constructor, a method of a
-  /// type, a function value) has no entry yet.
+  /// the points that fill `calleeSites`, which it does not replace.  A call to
+  /// a built-in is in `builtinByNode` and a call through a function value in
+  /// `indirectByNode`; an interface or extern member call has no entry yet.
   calleeByNode: Map[Int, SymbolId]
+  /// The built-in a call resolved to, keyed by the call's `NodeId` (D362): its
+  /// name in TIR's built-in table, `println` or `List.add`.
   builtinByNode: Map[Int, String]
+  /// The calls whose callee is a function value, keyed by the call's `NodeId`
+  /// (D364).  Only `true` is stored; membership is the mark.
+  indirectByNode: Map[Int, Bool]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -1126,6 +1131,7 @@ pub func newSymbolTable(): SymbolTable {
     exprTypes = newMap(),
     calleeByNode = newMap(),
     builtinByNode = newMap(),
+    indirectByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
