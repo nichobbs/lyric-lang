@@ -379,8 +379,11 @@ try_bootstrap_from_release() {
       actual_sha="$(sha256sum "$archive_path" | awk '{print tolower($1)}')"
     elif command -v shasum &>/dev/null; then
       actual_sha="$(shasum -a 256 "$archive_path" | awk '{print tolower($1)}')"
+    else
+      info "  ERROR: Neither sha256sum nor shasum found to verify ${archive_name}"
+      return 1
     fi
-    if [[ -n "$actual_sha" ]] && [[ "$actual_sha" != "$expected_sha" ]]; then
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
       info "  ERROR: SHA-256 mismatch for ${archive_name} (expected ${expected_sha}, got ${actual_sha})"
       return 1
     fi

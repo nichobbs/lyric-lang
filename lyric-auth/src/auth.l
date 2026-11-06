@@ -189,9 +189,9 @@ func extractHeaderAlg(header: in String): String {
   var pos = 0
   val key = "\"alg\""
   while pos + key.length < header.length {
-    val found = indexOfAfter(header, key, pos)
-    if found < 0 {
-      return lastAlg
+    val found = match indexOfFrom(header, key, pos) {
+      case Some(i) -> i
+      case None -> return lastAlg
     }
     var p = found + key.length
     while p < header.length {
