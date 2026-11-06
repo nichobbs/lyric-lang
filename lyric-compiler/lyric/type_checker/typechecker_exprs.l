@@ -19566,281 +19566,281 @@ func inferExprCore(
             case None -> match distinctCtorType(sc, tbl, diag, fn, args, argTypes, e.span) {
               case Some(dctorTy) -> dctorTy
               case None -> match unionOrEnumTypeSymbolOf(tbl, fn) {
-              case Some(uSym) -> {
-                val ctorHint = unionOrEnumCaseNamesHint(uSym)
-                val baseMsg = "cannot construct '" + uSym.name +
-                  "' by its type name; a union or enum is built through one of its cases, not the type itself"
-                val fullMsg = if ctorHint == "" { baseMsg } else { baseMsg + " (cases: " + ctorHint + ")" }
-                diag.add(errorDiagnostic("T0125", fullMsg, e.span))
-                tyErrorFor(diag)
-              }
-              case None -> match methodPick {
-                case Some(mp) -> {
-                  val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
-                  recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
-                  recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
-                  recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
-                  recordEffectCallSite(tbl, e.span, mp.sig, fn)
-                  match memberRecvTy {
-                    case Some(mrt) -> noteUnsolvedMethodCall(sc, tbl, fn, mp, mrt, args, argTypes, e.span)
-                    case None -> ()
-                  }
-                  match mp.fullSig {
-                    case Some(fullForSend) -> sendNoteCall(
-                      tbl,
-                      e.span,
-                      fullForSend,
-                      calleeText(fn),
-                      args,
-                      argTypes,
-                      memberRecvTy,
-                      false
-                    )
-                    case None -> sendNoteCall(tbl, e.span, mp.sig, calleeText(fn), args, argTypes, memberRecvTy, true)
-                  }
-                  checkContractCallPure(sc, diag, mp.sig, fn, e.span)
-                  checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
-                  val mpHazard = callArgsHaveHoistHazard(args)
-                  val mpNamed = callArgsHaveNamed(args)
-                  val mpElem = callArgsHaveElementPlace(args) or calleeReceiverIsElementPlace(fn)
-                  if mpHazard or mpNamed or mpElem {
-                    val mpExpected = match mp.fullSig {
-                      case Some(fullS) -> match memberRecvTy {
-                        case Some(_) -> sigExpectedArgTypes(fullS, memberRecvTy, args, argTypes)
-                        case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
-                      }
-                      case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
-                    }
-                    if mpHazard {
-                      recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
-                    }
-                    if mpNamed or mpHazard or mpElem {
-                      match rewrittenDotFullSig(tbl, methodPick, fn, memberRecvTy) {
-                        // The call becomes `T.m(recv, args)` (#8179, #8217),
-                        // so its argument order is recorded in that shape,
-                        // the receiver its first argument.
-                        case Some(fullS) -> {
-                          val fullArgs: List[CallArg] = newList()
-                          val fullArgTypes: List[Type] = newList()
-                          val fullExpected: List[Type] = newList()
-                          match fn.kind {
-                            case EMember(fr, _) -> fullArgs.add(CAPositional(expr = fr))
-                            case _ -> ()
-                          }
-                          fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> tyErrorSilent() })
-                          fullExpected.add(tyErrorSilent())
-                          for a in args {
-                            fullArgs.add(a)
-                          }
-                          for at in argTypes {
-                            fullArgTypes.add(at)
-                          }
-                          for xt in mpExpected {
-                            fullExpected.add(xt)
-                          }
-                          val noSegs: List[String] = newList()
-                          val plainCallee = Expr(kind = EPath(path = ModulePath(segments = noSegs, span = fn.span)), span = fn.span)
-                          val noRecvTy: Option[Type] = None
-                          recordSigArgOrderSite(sc, tbl, e.span, plainCallee, fullArgs, fullArgTypes, fullS, fullExpected, noRecvTy)
-                        }
-                        case None -> recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
-                      }
-                    }
-                  }
-                  checkBoundsSatisfied(tbl, diag, mp.sig, args, argTypes, e.span)
-                  match mp.fullSig {
-                    case Some(fullS) -> match memberRecvTy {
-                      case Some(_) -> recordGenericArgWidenings(tbl, fullS, memberRecvTy, args, argTypes)
+                case Some(uSym) -> {
+                  val ctorHint = unionOrEnumCaseNamesHint(uSym)
+                  val baseMsg = "cannot construct '" + uSym.name +
+                    "' by its type name; a union or enum is built through one of its cases, not the type itself"
+                  val fullMsg = if ctorHint == "" { baseMsg } else { baseMsg + " (cases: " + ctorHint + ")" }
+                  diag.add(errorDiagnostic("T0125", fullMsg, e.span))
+                  tyErrorFor(diag)
+                }
+                case None -> match methodPick {
+                  case Some(mp) -> {
+                    val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
+                    recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
+                    recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
+                    recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
+                    recordEffectCallSite(tbl, e.span, mp.sig, fn)
+                    match memberRecvTy {
+                      case Some(mrt) -> noteUnsolvedMethodCall(sc, tbl, fn, mp, mrt, args, argTypes, e.span)
                       case None -> ()
                     }
-                    case None -> recordGenericArgWidenings(tbl, mp.sig, None, args, argTypes)
-                  }
-                  match mp.fullSig {
-                    case Some(fullS) -> {
-                      match fn.kind {
-                        case EMember(byRecv, _) -> {
-                          match memberRecvTy {
-                            case Some(byRt) -> {
-                              val byTname = dotNamedOwnerName(byRt)
-                              if byTname.length > 0 {
-                                if receiverNeedsPlainDotCall(tbl, memberRecvTy) or isDotNamedExtension(tbl, byRt, fullS) {
-                                  recordDotCallRewrite(tbl, fn.span, byTname + "." + memberName, fullS, true)
-                                } else {
-                                  recordByRefDotCall(tbl, fn.span, byTname + "." + memberName, fullS, true)
-                                }
-                              }
-                            }
-                            case None -> ()
-                          }
-                          if fullS.params.count > 0 and modeNeedsLValue(fullS.params[0].mode) {
-                            checkByRefReceiver(sc, tbl, sigs, diag, byRecv, memberName, e.span)
-                          }
+                    match mp.fullSig {
+                      case Some(fullForSend) -> sendNoteCall(
+                        tbl,
+                        e.span,
+                        fullForSend,
+                        calleeText(fn),
+                        args,
+                        argTypes,
+                        memberRecvTy,
+                        false
+                      )
+                      case None -> sendNoteCall(tbl, e.span, mp.sig, calleeText(fn), args, argTypes, memberRecvTy, true)
+                    }
+                    checkContractCallPure(sc, diag, mp.sig, fn, e.span)
+                    checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
+                    val mpHazard = callArgsHaveHoistHazard(args)
+                    val mpNamed = callArgsHaveNamed(args)
+                    val mpElem = callArgsHaveElementPlace(args) or calleeReceiverIsElementPlace(fn)
+                    if mpHazard or mpNamed or mpElem {
+                      val mpExpected = match mp.fullSig {
+                        case Some(fullS) -> match memberRecvTy {
+                          case Some(_) -> sigExpectedArgTypes(fullS, memberRecvTy, args, argTypes)
+                          case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
                         }
-                        case _ -> ()
+                        case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
                       }
-                      val extArgs: List[Type] = newList()
-                      match memberRecvTy {
-                        case Some(rt4) -> extArgs.add(rt4)
-                        case None -> extArgs.add(tyErrorSilent())
+                      if mpHazard {
+                        recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                       }
-                      var xi = 0
-                      while xi < argTypes.count {
-                        extArgs.add(argTypes[xi])
-                        xi = xi + 1
-                      }
-                      val ambiguous = match memberRecvTy {
-                        case Some(amRt) -> reportAmbiguousDotNamed(
-                          tbl,
-                          sigs,
-                          diag,
-                          amRt,
-                          memberName,
-                          args.count,
-                          args,
-                          argTypes,
-                          fn.span
-                        )
-                        case None -> false
-                      }
-                      if ambiguous {
-                        tyErrorSilent()
-                      } else {
-                        dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
+                      if mpNamed or mpHazard or mpElem {
+                        match rewrittenDotFullSig(tbl, methodPick, fn, memberRecvTy) {
+                          // The call becomes `T.m(recv, args)` (#8179, #8217),
+                          // so its argument order is recorded in that shape,
+                          // the receiver its first argument.
+                          case Some(fullS) -> {
+                            val fullArgs: List[CallArg] = newList()
+                            val fullArgTypes: List[Type] = newList()
+                            val fullExpected: List[Type] = newList()
+                            match fn.kind {
+                              case EMember(fr, _) -> fullArgs.add(CAPositional(expr = fr))
+                              case _ -> ()
+                            }
+                            fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> tyErrorSilent() })
+                            fullExpected.add(tyErrorSilent())
+                            for a in args {
+                              fullArgs.add(a)
+                            }
+                            for at in argTypes {
+                              fullArgTypes.add(at)
+                            }
+                            for xt in mpExpected {
+                              fullExpected.add(xt)
+                            }
+                            val noSegs: List[String] = newList()
+                            val plainCallee = Expr(kind = EPath(path = ModulePath(segments = noSegs, span = fn.span)), span = fn.span)
+                            val noRecvTy: Option[Type] = None
+                            recordSigArgOrderSite(sc, tbl, e.span, plainCallee, fullArgs, fullArgTypes, fullS, fullExpected, noRecvTy)
+                          }
+                          case None -> recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                        }
                       }
                     }
-                    case None -> instantiateReturnType(mp.sig, 0, args, argTypes)
-                  }
-                }
-                case None -> {
-                  // No declared signature to pair against, but a name given
-                  // twice is never a valid call (#7846).
-                  val noSlots: List[String] = newList()
-                  val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, noSlots)
-                  if isMemberCallee {
-                    match fnT {
-                      case TyError(_) -> match memberRecvTy {
-                        case Some(rt5) -> {
-                          maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
-                          maybeUnknownTypeParamMethodDiag(sc, tbl, sigs, diag, rt5, memberName, fn.span)
+                    checkBoundsSatisfied(tbl, diag, mp.sig, args, argTypes, e.span)
+                    match mp.fullSig {
+                      case Some(fullS) -> match memberRecvTy {
+                        case Some(_) -> recordGenericArgWidenings(tbl, fullS, memberRecvTy, args, argTypes)
+                        case None -> ()
+                      }
+                      case None -> recordGenericArgWidenings(tbl, mp.sig, None, args, argTypes)
+                    }
+                    match mp.fullSig {
+                      case Some(fullS) -> {
+                        match fn.kind {
+                          case EMember(byRecv, _) -> {
+                            match memberRecvTy {
+                              case Some(byRt) -> {
+                                val byTname = dotNamedOwnerName(byRt)
+                                if byTname.length > 0 {
+                                  if receiverNeedsPlainDotCall(tbl, memberRecvTy) or isDotNamedExtension(tbl, byRt, fullS) {
+                                    recordDotCallRewrite(tbl, fn.span, byTname + "." + memberName, fullS, true)
+                                  } else {
+                                    recordByRefDotCall(tbl, fn.span, byTname + "." + memberName, fullS, true)
+                                  }
+                                }
+                              }
+                              case None -> ()
+                            }
+                            if fullS.params.count > 0 and modeNeedsLValue(fullS.params[0].mode) {
+                              checkByRefReceiver(sc, tbl, sigs, diag, byRecv, memberName, e.span)
+                            }
+                          }
+                          case _ -> ()
                         }
-                        case None -> {
+                        val extArgs: List[Type] = newList()
+                        match memberRecvTy {
+                          case Some(rt4) -> extArgs.add(rt4)
+                          case None -> extArgs.add(tyErrorSilent())
+                        }
+                        var xi = 0
+                        while xi < argTypes.count {
+                          extArgs.add(argTypes[xi])
+                          xi = xi + 1
+                        }
+                        val ambiguous = match memberRecvTy {
+                          case Some(amRt) -> reportAmbiguousDotNamed(
+                            tbl,
+                            sigs,
+                            diag,
+                            amRt,
+                            memberName,
+                            args.count,
+                            args,
+                            argTypes,
+                            fn.span
+                          )
+                          case None -> false
+                        }
+                        if ambiguous {
+                          tyErrorSilent()
+                        } else {
+                          dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
+                        }
+                      }
+                      case None -> instantiateReturnType(mp.sig, 0, args, argTypes)
+                    }
+                  }
+                  case None -> {
+                    // No declared signature to pair against, but a name given
+                    // twice is never a valid call (#7846).
+                    val noSlots: List[String] = newList()
+                    val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, noSlots)
+                    if isMemberCallee {
+                      match fnT {
+                        case TyError(_) -> match memberRecvTy {
+                          case Some(rt5) -> {
+                            maybeUnknownMemberDiag(tbl, sigs, diag, rt5, memberName, fn.span, true)
+                            maybeUnknownTypeParamMethodDiag(sc, tbl, sigs, diag, rt5, memberName, fn.span)
+                          }
+                          case None -> {
+                          }
+                        }
+                        case _ -> {
+                        }
+                      }
+                    }
+                    match collMemberParams {
+                      case Some(cps) -> match memberRecvTy {
+                        case Some(crt2) -> checkStdCollectionMemberArgs(
+                          tbl,
+                          diag,
+                          crt2,
+                          memberName,
+                          cps,
+                          args,
+                          argTypes,
+                          sc.genericNames,
+                          e.span
+                        )
+                        case None -> ()
+                      }
+                      case None -> ()
+                    }
+                    match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
+                      case TyFunction(paramTypes, ret, fnIsAsync) -> {
+                        recordAsyncCallSite(tbl, e.span, fnIsAsync)
+                        if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
+                          sendNoteFuncValueCall(tbl, e.span, calleeText(fn))
+                          if not tbl.builtinByNode.containsKey(e.nodeId) {
+                            recordIndirectCall(tbl, e.nodeId)
+                          }
+                        } else if isMemberCallee and not tbl.builtinByNode.containsKey(e.nodeId) {
+                          recordTypeMemberCallee(tbl, e.nodeId, memberRecvTy, memberName)
+                        }
+                        val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
+                        if argTypes.count > paramTypes.count or argTypes.count < minArgs {
+                          val expectedMsg = if minArgs == paramTypes.count {
+                            toString(paramTypes.count) + " argument(s)"
+                          } else {
+                            toString(minArgs) + "–" + toString(paramTypes.count) + " argument(s)"
+                          }
+                          diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(argTypes.count), e.span))
+                        } else {
+                          var k = 0
+                          while k < argTypes.count {
+                            if k < args.count {
+                              noteExpectedFlow(sc, tbl, callArgExpr(args[k]), paramTypes[k])
+                            }
+                            val kLiteralOk = k < args.count and literalArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
+                            if k < args.count {
+                              noteRangeSlot(tbl, paramTypes[k], callArgExpr(args[k]), "argument " + toString(k + 1))
+                            }
+                            if not (if k < args.count { argFlowSatisfies(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k])) } else { argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) }) and not kLiteralOk {
+                              diag.add(
+                                errorDiagnostic(
+                                  "T0043",
+                                  argTypeMismatchSubject(argTypes[k], args, k) + " does not match parameter type " + renderType(paramTypes[k]) +
+                                    typeMismatchHint(tbl, paramTypes[k], argTypes[k]),
+                                  e.span
+                                )
+                              )
+                            } else if unconvertibleWidening(paramTypes[k], argTypes[k]) {
+                              diag.add(
+                                errorDiagnostic(
+                                  "T0043",
+                                  "argument type " + renderType(argTypes[k]) + " cannot be widened to " + renderType(paramTypes[k]) +
+                                    " through a function value; pass a " +
+                                    renderType(paramTypes[k]) +
+                                    " value",
+                                  e.span
+                                )
+                              )
+                            } else if k < args.count {
+                              recordArgConversion(tbl, args[k], paramTypes[k], argTypes[k])
+                            }
+                            k = k + 1
+                          }
+                          recordFuncValueCall(sc, tbl, fn, memberRecvTy, memberName, fnT, args.count, e.span)
+                          if callArgsHaveHoistHazard(args) {
+                            recordHoistedCallArgs(sc, tbl, args, argTypes, paramTypes)
+                          }
+                        }
+                        ret
+                      }
+                      case TyError(_) -> match explicitValueGenericTy {
+                        case Some(vt) -> vt
+                        case None -> match explicitTypeArgCallType(sc, tbl, sigs, fn, args, argTypes) {
+                          case Some(et) -> et
+                          case None -> match collMemberParams {
+                            case Some(_) -> match memberRecvTy {
+                              case Some(crt3) -> stdCollectionMemberResult(
+                                tbl,
+                                crt3,
+                                memberName,
+                                args.count
+                              )
+                              case None -> tyErrorSilent()
+                            }
+                            case None -> if isMemberCallee {
+                              val untypedTy = untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
+                              recordUntypedBuiltinMember(tbl, e.nodeId, memberRecvTy, memberName, args.count, untypedTy)
+                              recordExternMemberCall(tbl, e.nodeId, fn, memberRecvTy, memberName, args.count)
+                              untypedTy
+                            } else {
+                              tyErrorSilent()
+                            }
+                          }
                         }
                       }
                       case _ -> {
+                        diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
+                        tyErrorFor(diag)
                       }
-                    }
-                  }
-                  match collMemberParams {
-                    case Some(cps) -> match memberRecvTy {
-                      case Some(crt2) -> checkStdCollectionMemberArgs(
-                        tbl,
-                        diag,
-                        crt2,
-                        memberName,
-                        cps,
-                        args,
-                        argTypes,
-                        sc.genericNames,
-                        e.span
-                      )
-                      case None -> ()
-                    }
-                    case None -> ()
-                  }
-                  match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
-                    case TyFunction(paramTypes, ret, fnIsAsync) -> {
-                      recordAsyncCallSite(tbl, e.span, fnIsAsync)
-                      if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
-                        sendNoteFuncValueCall(tbl, e.span, calleeText(fn))
-                        if not tbl.builtinByNode.containsKey(e.nodeId) {
-                          recordIndirectCall(tbl, e.nodeId)
-                        }
-                      } else if isMemberCallee and not tbl.builtinByNode.containsKey(e.nodeId) {
-                        recordTypeMemberCallee(tbl, e.nodeId, memberRecvTy, memberName)
-                      }
-                      val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
-                      if argTypes.count > paramTypes.count or argTypes.count < minArgs {
-                        val expectedMsg = if minArgs == paramTypes.count {
-                          toString(paramTypes.count) + " argument(s)"
-                        } else {
-                          toString(minArgs) + "–" + toString(paramTypes.count) + " argument(s)"
-                        }
-                        diag.add(errorDiagnostic("T0042", "expected " + expectedMsg + ", got " + toString(argTypes.count), e.span))
-                      } else {
-                        var k = 0
-                        while k < argTypes.count {
-                          if k < args.count {
-                            noteExpectedFlow(sc, tbl, callArgExpr(args[k]), paramTypes[k])
-                          }
-                          val kLiteralOk = k < args.count and literalArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
-                          if k < args.count {
-                            noteRangeSlot(tbl, paramTypes[k], callArgExpr(args[k]), "argument " + toString(k + 1))
-                          }
-                          if not (if k < args.count { argFlowSatisfies(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k])) } else { argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) }) and not kLiteralOk {
-                            diag.add(
-                              errorDiagnostic(
-                                "T0043",
-                                argTypeMismatchSubject(argTypes[k], args, k) + " does not match parameter type " + renderType(paramTypes[k]) +
-                                  typeMismatchHint(tbl, paramTypes[k], argTypes[k]),
-                                e.span
-                              )
-                            )
-                          } else if unconvertibleWidening(paramTypes[k], argTypes[k]) {
-                            diag.add(
-                              errorDiagnostic(
-                                "T0043",
-                                "argument type " + renderType(argTypes[k]) + " cannot be widened to " + renderType(paramTypes[k]) +
-                                  " through a function value; pass a " +
-                                  renderType(paramTypes[k]) +
-                                  " value",
-                                e.span
-                              )
-                            )
-                          } else if k < args.count {
-                            recordArgConversion(tbl, args[k], paramTypes[k], argTypes[k])
-                          }
-                          k = k + 1
-                        }
-                        recordFuncValueCall(sc, tbl, fn, memberRecvTy, memberName, fnT, args.count, e.span)
-                        if callArgsHaveHoistHazard(args) {
-                          recordHoistedCallArgs(sc, tbl, args, argTypes, paramTypes)
-                        }
-                      }
-                      ret
-                    }
-                    case TyError(_) -> match explicitValueGenericTy {
-                      case Some(vt) -> vt
-                      case None -> match explicitTypeArgCallType(sc, tbl, sigs, fn, args, argTypes) {
-                        case Some(et) -> et
-                        case None -> match collMemberParams {
-                          case Some(_) -> match memberRecvTy {
-                            case Some(crt3) -> stdCollectionMemberResult(
-                              tbl,
-                              crt3,
-                              memberName,
-                              args.count
-                            )
-                            case None -> tyErrorSilent()
-                          }
-                          case None -> if isMemberCallee {
-                            val untypedTy = untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
-                            recordUntypedBuiltinMember(tbl, e.nodeId, memberRecvTy, memberName, args.count, untypedTy)
-                            recordExternMemberCall(tbl, e.nodeId, fn, memberRecvTy, memberName, args.count)
-                            untypedTy
-                          } else {
-                            tyErrorSilent()
-                          }
-                        }
-                      }
-                    }
-                    case _ -> {
-                      diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
-                      tyErrorFor(diag)
                     }
                   }
                 }
               }
-            }
             }
           }
         }
