@@ -294,6 +294,12 @@ pub func callSitesOf(file: in SourceFile): List[CallSite] {
   sites
 }
 
+/// Whether the checker recorded the callee of the call at `id`: a declared
+/// one (`calleeByNode`) or a built-in's name (`builtinByNode`, D362).
+pub func callCovered(ctx: in TyConvCtx, id: in Int): Bool {
+  ctx.tbl.calleeByNode.containsKey(id) or ctx.tbl.builtinByNode.containsKey(id)
+}
+
 /// The calls of `calls` the checker recorded no resolved callee for
 /// (`SymbolTable.calleeByNode`), as I0002 messages naming the call's position.
 /// Calls the checker resolves by another route (built-ins, constructors,
@@ -302,7 +308,7 @@ pub func callSitesOf(file: in SourceFile): List[CallSite] {
 pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String] {
   val res: List[String] = newList()
   for c in calls {
-    if not ctx.tbl.calleeByNode.containsKey(c.id) {
+    if not callCovered(ctx, c.id) {
       res.add(
         "I0002: the checker recorded no callee for the call at " + toString(c.span.startPos.line) + ":" +
           toString(c.span.startPos.column) +
@@ -322,7 +328,7 @@ pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String]
 pub func calleeCensusByName(ctx: in TyConvCtx, calls: in List[CallSite], limit: in Int): List[String] {
   val counts: Map[String, Int] = newMap()
   for c in calls {
-    if not ctx.tbl.calleeByNode.containsKey(c.id) {
+    if not callCovered(ctx, c.id) {
       val n = match mapGet(counts, c.callee) { case Some(k) -> k; case None -> 0 }
       if counts.containsKey(c.callee) {
         counts.remove(c.callee)

@@ -115,13 +115,13 @@ test "a call to a declared function has its callee recorded under the call's nod
   assertEqualInt(cr.symbols.calleeByNode.count, 1, "one entry")
 }
 
-test "a call the checker resolves another way is reported until its route records a callee" {
-  val src = "package App\nfunc f(): Unit { println(\"x\") }\n"
+test "a call through a function value is reported until its route records a callee" {
+  val src = "package App\nfunc f(h: in (Int) -> Int): Int { h(1) }\n"
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
   val ctx = newTyConvCtx(cr.symbols)
   val census = calleeCensus(ctx, callSitesOf(file))
-  assertEqualInt(census.count, 1, "the built-in call has no callee yet")
+  assertEqualInt(census.count, 1, "the call through a function value has no callee yet")
   assertTrue(census[0].startsWith("I0002"), "reported as I0002")
   assertTrue(census[0].contains("call at 2:"), "names the call's position")
 }
@@ -158,4 +158,16 @@ test "record and union-case constructor calls have their callee recorded" {
   val calls = callSitesOf(file)
   assertEqualInt(calls.count, 2, "P(..) and A(..)")
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "both constructors are recorded")
+}
+
+test "built-in functions and collection members have their name recorded" {
+  val src = "package App\nimport Std.Collections\nfunc f(): Int {\n  val xs: List[Int] = newList()\n  xs.add(1)\n  println(\"a\")\n  if xs.contains(1) { 1 } else { 0 }\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  val missing = calleeCensus(ctx, calls)
+  assertEqualInt(missing.count, 1, "only newList() has no recorded callee")
+  assertEqualInt(cr.symbols.builtinByNode.count, 3, "add, println and contains")
 }
