@@ -3531,6 +3531,25 @@ pub func inferExprOrBlock(
   isValuePosition: in Bool,
   tailExpected: in Type,
 ): Type {
+  val t = inferExprOrBlockCore(sc, tbl, sigs, diag, eob, isValuePosition, tailExpected)
+  // An `if` or `match` is typed here without passing through `inferExpr`, so
+  // its node's type is recorded here (D366).
+  match eob {
+    case EOBExpr(ex) -> recordExprType(tbl, ex, t)
+    case EOBBlock(_) -> ()
+  }
+  t
+}
+
+func inferExprOrBlockCore(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  eob: in ExprOrBlock,
+  isValuePosition: in Bool,
+  tailExpected: in Type,
+): Type {
   match eob {
     case EOBExpr(ex) -> match ex.kind {
       case EIf(cond, thenBranch, elseBranch, _) -> inferIfExpr(
