@@ -17324,11 +17324,24 @@ func noteUnsolvedCall(
   argTypes: in List[Type],
   callSpan: in Span,
 ): Unit {
-  val fname = match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return }
+  val p = match fn.kind {
+    case EPath(p0) -> p0
     case _ -> return
   }
-  noteUnsolvedCallNamed(sc, tbl, fn, fname, MethodCallPick(sig = sig, fullSig = None), None, args, argTypes, callSpan)
+  if p.segments.count > 1 {
+    // `Pkg.f(x)`, alias-rewritten to a path: the qualifier must name the
+    // package the signature came from, and not a local value (D383).
+    val prefix: List[String] = newList()
+    var pi = 0
+    while pi < p.segments.count - 1 {
+      prefix.add(p.segments[pi])
+      pi = pi + 1
+    }
+    if scopeHasName(sc, prefix[0]) or not pkgNameEndsWith(sig.originPackage, prefix) {
+      return
+    }
+  }
+  noteUnsolvedCallNamed(sc, tbl, fn, p.segments[p.segments.count - 1], MethodCallPick(sig = sig, fullSig = None), None, args, argTypes, callSpan)
 }
 
 // A package-qualified call (`Pkg.f(x)`, the callee an `EMember` whose receiver
