@@ -21526,12 +21526,77 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
-  val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  val t = sharedEnumCaseAgainstExpected(tbl, e, inferExprExpectedCore(sc, tbl, sigs, diag, e, expected), expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).
   recordExprType(tbl, e, t)
   t
+}
+
+// A case name several enums share (`Lib.On` for `Beam.On` and `Ray.On`) reads
+// as an unresolved `TyError` on its own and is told apart by the expected
+// type (D355).  Against an enum that owns the case it is that enum; against a
+// primitive it is the first owning enum, so the caller's ordinary mismatch
+// check reports the annotation as the wrong kind (#8845); so is a record,
+// union or other enum.  Any other expected type is left to the caller, as an
+// interface an enum implements is.
+func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
+  match t {
+    case TyError(d) -> if d.index != -3 {
+      return t
+    }
+    case _ -> {
+      return t
+    }
+  }
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(e, segs) or segs.count == 0 {
+    return t
+  }
+  val name = segs[segs.count - 1]
+  val owners: List[SymbolId] = newList()
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if segs.count == 1 or cand.originPackage == qualifierOfSegs(segs) {
+      match cand.kind {
+        case DKEnumCase(pid, _) -> {
+          var seen = false
+          for o in owners {
+            if symbolIdEq(o, pid) {
+              seen = true
+            }
+          }
+          if not seen {
+            owners.add(pid)
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  if owners.count < 2 {
+    return t
+  }
+  match unrefine(expected) {
+    case TyUser(eid, ename, eargs) -> {
+      for o in owners {
+        if symbolIdEq(o, eid) {
+          return TyUser(id = eid, name = ename, args = eargs)
+        }
+      }
+      match symTableTypeSymbolOf(tbl, eid) {
+        case Some(esym) -> match esym.kind {
+          case DKEnum(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+          case DKRecord(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+          case DKUnion(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+          case _ -> t
+        }
+        case None -> t
+      }
+    }
+    case TyPrim(_) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+    case _ -> t
+  }
 }
 
 func inferExprExpectedCore(

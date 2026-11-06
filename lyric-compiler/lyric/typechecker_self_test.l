@@ -15417,6 +15417,15 @@ test "a case name two sibling enums share is left to the expected type (D355)" {
   assertEqual(silentSiteKinds(unshared), "", "and is not a silent site")
 }
 
+test "a shared case name is checked against an expected non-enum type (#8845)" {
+  val wrong = checkEnumCaseApp("  val n: Int = Lib.On")
+  assertTrue(errorCount(wrong) > 0, "an Int annotation is not Beam or Ray: " + diagCodesOf(wrong))
+  val other = checkEnumCaseApp("  val m: Mode = Lib.On")
+  assertTrue(errorCount(other) > 0, "the file's own Mode owns no On: " + diagCodesOf(other))
+  val right = checkEnumCaseApp("  val b: Lib.Beam = Lib.On\n  val r: Lib.Ray = Lib.On")
+  assertEqualInt(errorCount(right), 0, "an owning enum still picks its own case: " + diagCodesOf(right))
+}
+
 test "count on a slice is T0228, length is the slice's size" {
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.length\n}\n")),
