@@ -216,8 +216,8 @@ pub func publicKeyId(publicKey: in slice[Byte]): String
 // ---- The listing ------------------------------------------------------------
 func isControlCode(c: in Int): Bool = c < 32 or (c >= 127 and c < 160)
 
-// A listing path character: printable ASCII other than the backslash.
-func isListingChar(c: in Int): Bool = c >= 32 and c <= 126 and c != 92
+// A listing path character: printable ASCII other than the backslash or colon.
+func isListingChar(c: in Int): Bool = c >= 32 and c <= 126 and c != 92 and c != 58
 
 /// Why a relative listing path breaks the listing rules (D248 Decision 5 as
 /// narrowed by D263), if it does: every character must be printable ASCII

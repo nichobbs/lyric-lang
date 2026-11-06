@@ -1771,27 +1771,116 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   }
 }
 
+func pipeModeItemName(it: in Item): String {
+  match it.kind {
+    case IFunc(fn) -> fn.name
+    case IRecord(d) -> d.name
+    case IExposedRec(d) -> d.name
+    case IImpl(d) -> match d.target.kind {
+      case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+func pipeRenameModeItem(it: in Item, newName: in String): Item {
+  match it.kind {
+    case IFunc(fn) -> it.copy(kind = IFunc(decl = fn.copy(name = newName)))
+    case IRecord(d) -> it.copy(kind = IRecord(decl = d.copy(name = newName)))
+    case IExposedRec(d) -> it.copy(kind = IExposedRec(decl = d.copy(name = newName)))
+    case IImpl(d) -> {
+      val segs: List[String] = newList()
+      segs.add(newName)
+      val t = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = d.target.span)), span = d.target.span)
+      it.copy(kind = IImpl(decl = d.copy(target = t)))
+    }
+    case _ -> it
+  }
+}
+
+func pipeImportItemsOfSelector(sel: in ImportSelector): List[ImportItem] {
+  match sel {
+    case ISSingle(item) -> {
+      val xs: List[ImportItem] = newList()
+      xs.add(item)
+      xs
+    }
+    case ISGroup(items) -> items
+  }
+}
+
 func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[ImportedPackage]): List[Item] {
-  val wanted: Map[String, Bool] = newMap()
+  val selectedBareNames: Map[String, Bool] = newMap()
   for imp in file.imports {
-    val segs = imp.path.segments
-    if segs.count > 0 {
-      var nm = segs[0]
-      var si = 1
-      while si < segs.count {
-        nm = nm + "." + segs[si]
-        si = si + 1
+    match imp.selector {
+      case Some(sel) -> {
+        for item in pipeImportItemsOfSelector(sel) {
+          val localName = match item.asAlias { case Some(a) -> a; case None -> item.name }
+          if not selectedBareNames.containsKey(localName) {
+            selectedBareNames.add(localName, true)
+          }
+        }
       }
-      if not wanted.containsKey(nm) {
-        wanted.add(nm, true)
-      }
+      case None -> ()
     }
   }
   val acc: List[Item] = newList()
   for pkg in importedPkgs {
-    if pkg.name == "" or wanted.containsKey(pkg.name) {
+    if pkg.name == "" {
       for it in pkg.items {
         acc.add(it)
+      }
+    } else {
+      for imp in file.imports {
+        val segs = imp.path.segments
+        if segs.count > 0 {
+          var nm = segs[0]
+          var si = 1
+          while si < segs.count {
+            nm = nm + "." + segs[si]
+            si = si + 1
+          }
+          if nm == pkg.name {
+            match imp.selector {
+              case Some(sel) -> {
+                for item in pipeImportItemsOfSelector(sel) {
+                  val localName = match item.asAlias { case Some(a) -> a; case None -> item.name }
+                  for it in pkg.items {
+                    if pipeModeItemName(it) == item.name {
+                      if localName == item.name {
+                        acc.add(it)
+                      } else {
+                        acc.add(pipeRenameModeItem(it, localName))
+                      }
+                    }
+                  }
+                }
+              }
+              case None -> match imp.asAlias {
+                case Some(alias) -> {
+                  for it in pkg.items {
+                    val itemName = pipeModeItemName(it)
+                    if itemName != "" {
+                      acc.add(pipeRenameModeItem(it, alias + "." + itemName))
+                    }
+                  }
+                }
+                case None -> {
+                  for it in pkg.items {
+                    val itemName = pipeModeItemName(it)
+                    if itemName != "" {
+                      if not selectedBareNames.containsKey(itemName) {
+                        acc.add(it)
+                      }
+                      acc.add(pipeRenameModeItem(it, pkg.name + "." + itemName))
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

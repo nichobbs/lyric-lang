@@ -4230,8 +4230,42 @@ func inWriteBind(ctx: in InWriteCtx, name: in String, ty: in String): Unit {
   ctx.types.add(name, ty)
 }
 
+func inWritePathName(path: in ModulePath): String {
+  if path.segments.count == 0 {
+    return ""
+  }
+  var s = path.segments[0]
+  var i = 1
+  while i < path.segments.count {
+    s = s + "." + path.segments[i]
+    i = i + 1
+  }
+  s
+}
+
+func inWriteTypeName(t: in TypeExpr): String {
+  match t.kind {
+    case TRef(path) -> inWritePathName(path)
+    case TParen(inner) -> inWriteTypeName(inner)
+    case _ -> ""
+  }
+}
+
+func inWriteCtorTypeName(e: in Expr): String {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> inWritePathName(path)
+        case _ -> ""
+      }
+    }
+    case EParen(inner) -> inWriteCtorTypeName(inner)
+    case _ -> ""
+  }
+}
+
 func inWriteBindParam(ctx: in InWriteCtx, p: in Param): Unit {
-  inWriteBind(ctx, p.name, fieldWriteSimpleTypeName(p.ty))
+  inWriteBind(ctx, p.name, inWriteTypeName(p.ty))
   match p.mode {
     case PMIn -> ctx.inNames.add(p.name, true)
     case _ -> {
@@ -4253,7 +4287,7 @@ func inWriteLocalType(tyOpt: in Option[TypeExpr], initOpt: in Option[Expr]): Str
   var tn = ""
   match tyOpt {
     case Some(te) -> {
-      tn = fieldWriteSimpleTypeName(te)
+      tn = inWriteTypeName(te)
     }
     case None -> {
     }
@@ -4261,7 +4295,7 @@ func inWriteLocalType(tyOpt: in Option[TypeExpr], initOpt: in Option[Expr]): Str
   if tn == "" {
     match initOpt {
       case Some(e) -> {
-        tn = fieldWriteCtorTypeName(e)
+        tn = inWriteCtorTypeName(e)
       }
       case None -> {
       }
@@ -4486,8 +4520,8 @@ func inWriteCheckCall(ctx: in InWriteCtx, fn: in Expr, args: in List[CallArg]): 
         if not sibling {
           sigOpt = mapGet(ctx.funcSigs, name)
         }
-      } else if p.segments.count == 2 {
-        val key = p.segments[0] + "." + p.segments[1]
+      } else if p.segments.count >= 2 {
+        val key = inWritePathName(p)
         sigOpt = mapGet(ctx.methodSigs, key)
         if isNone(sigOpt) {
           sigOpt = mapGet(ctx.funcSigs, key)
@@ -4871,7 +4905,7 @@ func inWriteFieldTypesOf(members: in List[RecordMember]): Map[String, String] {
     match members[i] {
       case RMField(field) -> {
         if not m.containsKey(field.name) {
-          m.add(field.name, fieldWriteSimpleTypeName(field.ty))
+          m.add(field.name, inWriteTypeName(field.ty))
         }
       }
       case _ -> {
@@ -4969,7 +5003,7 @@ func inWriteSeedItems(
         }
       }
       case IImpl(decl) -> {
-        val tn = fieldWriteSimpleTypeName(decl.target)
+        val tn = inWriteTypeName(decl.target)
         if tn != "" and not skipNames.containsKey(tn) {
           var mi = 0
           while mi < decl.members.count {

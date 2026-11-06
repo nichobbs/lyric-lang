@@ -963,10 +963,7 @@ func hasOverlappingSpans(starts: in List[Long], ends: in List[Long]): Bool {
 }
 
 func zipNameIsUnsafe(name: in String): Bool {
-  if name.startsWith("/") or name.startsWith("\\") or name.contains("\u{0000}") or name.contains("\\") {
-    return true
-  }
-  if name.length >= 2 and name.substring(1, 1) == ":" {
+  if name.startsWith("/") or name.startsWith("\\") or name.contains("\u{0000}") or name.contains("\\") or name.contains(":") {
     return true
   }
   if name == ".." or name.startsWith("../") or name.endsWith("/..") or name.contains("/../") {
