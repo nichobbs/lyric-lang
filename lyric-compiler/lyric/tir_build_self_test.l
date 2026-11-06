@@ -175,3 +175,17 @@ test "built-in functions and built-in members have their name recorded" {
     "a member is named by its receiver"
   )
 }
+
+test "numeric conversions and string members have their name recorded" {
+  val src = "package App\nfunc f(n: in Int, s: in String): Bool {\n  val l = n.toLong()\n  s.startsWith(\"a\")\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  assertEqualInt(calls.count, 2, "toLong and startsWith")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "both are covered")
+  assertTrue(mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.toLong"), "a conversion is named by its receiver")
+  assertTrue(mapGet(cr.symbols.builtinByNode, calls[1].id) == Some(value = "String.startsWith"), "a string member too")
+}
+
