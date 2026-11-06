@@ -1266,12 +1266,12 @@ func buildDepSource(
   match findInlineStr(pairs, "git") {
     case Some(url) -> {
       if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\0") or Str.startsWith(url, "ext::") or
-        not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@")) {
+        not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
         return Err(
           error = InvalidField(
             section = section,
             field = depName,
-            message = "git dep URL must use https://, ssh://, or git@ and must not start with '-'"
+            message = "git dep URL must use https://, ssh://, git@, or file:// and must not start with '-'"
           )
         )
       }

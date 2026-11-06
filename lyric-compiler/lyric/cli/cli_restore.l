@@ -1258,13 +1258,20 @@ pub record NpmProbeRow {
 /// beside `node_modules` so bare specifiers resolve against the restored packages.
 pub func npmProbeScript(): String {
   r"import Module, { createRequire, syncBuiltinESMExports } from 'node:module';
+void process.stdout;
+void process.stderr;
 const req = createRequire(import.meta.url);
-const deny = (mod) => () => { throw new Error(mod + ' is disabled in lyric-npm-probe'); };
+const deny = (mod) => function() { throw new Error(mod + ' is disabled in lyric-npm-probe'); };
 for (const modName of ['node:child_process', 'node:net', 'node:http', 'node:https', 'node:tls', 'node:dgram', 'node:dns', 'node:worker_threads']) {
   try {
     const m = req(modName);
     for (const k of Object.keys(m)) {
-      try { m[k] = deny(modName); } catch {}
+      if (typeof m[k] === 'function') {
+        const origProto = m[k].prototype;
+        const fn = deny(modName + '.' + k);
+        if (origProto) fn.prototype = origProto;
+        try { m[k] = fn; } catch {}
+      }
     }
   } catch {}
 }

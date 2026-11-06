@@ -249,8 +249,8 @@ pub func resolve(
   url: in String, refKind: in String, refValue: in String, subdir: in Option[String]
 ): Result[GitDepResult, String] {
   if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\0") or Str.startsWith(url, "ext::") or
-    not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@")) {
-    return Err(error = "git dependency '" + url + "': URL must use https://, ssh://, or git@ and must not start with '-'")
+    not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
+    return Err(error = "git dependency '" + url + "': URL must use https://, ssh://, git@, or file:// and must not start with '-'")
   }
   if refValue.length == 0 or Str.startsWith(refValue, "-") or Str.contains(refValue, "..") or Str.contains(refValue, "\0") {
     return Err(error = "git dependency '" + url + "': invalid ref '" + refValue + "'")
