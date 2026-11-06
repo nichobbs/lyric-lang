@@ -8,7 +8,7 @@ import Std.String
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Symbols
-import Lyric.Resolve.{hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, resolvePath, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
+import Lyric.Resolve.{SKMethod, hiddenDecl, ReachDirect, ReachReexport, ResolverContext, bareVia, externVia, qualifiedVia, resolveBare, resolvePath, scopeOfFile, declOfId, funcDefPath, visibleDecls, importHint, ambiguousPackages, winningPackages, NameUse, UseValue, Resolution, RSymbol, ROverloads, RUnresolved, RPackage, RDeferred}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
@@ -810,6 +810,10 @@ pub record SymbolTable {
   /// One entry per symbol already folded into `typeSymbolsById` (its count is
   /// the index cursor).
   typeSymbolsIndexed: List[Int]
+  /// The resolver's method declarations by `<package>|<name>|<span>`, and how
+  /// many of its declarations are indexed (D365).
+  methodDeclBySpan: Map[String, List[SymbolId]]
+  methodDeclIndexed: List[Int]
   /// The `SymbolId` of each type `Std.CollectionsHost` declares (`List`, `Map`,
   /// `MapKeyCollection`, `MapValueCollection`, ...), keyed by name, filled
   /// lazily by `symTableStdCollectionsHostTypeId` as symbols are appended
@@ -1196,6 +1200,8 @@ pub func newSymbolTable(): SymbolTable {
     methodCallArities = newMap(),
     typeSymbolsById = newMap(),
     typeSymbolsIndexed = newList(),
+    methodDeclBySpan = newMap(),
+    methodDeclIndexed = newList(),
     stdCollectionsHostTypeIds = newMap(),
     stdCollectionsHostIndexed = stdCollectionsHostIndexed,
     distinctOpSites = newMap(),
@@ -1268,6 +1274,44 @@ pub func symTableTypeSymbolId(tbl: in SymbolTable, pkg: in String, name: in Stri
     symTableFreshSymbolId(tbl)
   } else {
     symTableInternDefPath(tbl, typeDefPath(pkg, name))
+  }
+}
+
+/// The resolver id of the method `name` that package `pkg` declares at `span`: a
+/// record-body, `impl` or interface method, which no dot-named function stands
+/// for.  `None` when the resolver has no such method, or two files of the
+/// package declare a method of that name at the same offsets.
+pub func symTableMethodDeclId(tbl: in SymbolTable, pkg: in String, name: in String, span: in Span): Option[SymbolId] {
+  if tbl.resolveCtx.count == 0 {
+    return None
+  }
+  val decls = tbl.resolveCtx[0].tbl
+  if tbl.methodDeclIndexed.count == 0 {
+    tbl.methodDeclIndexed.add(0)
+  }
+  var done = tbl.methodDeclIndexed[0]
+  while done < decls.decls.count {
+    val d = decls.decls[done]
+    match d.kind {
+      case SKMethod -> {
+        val key = d.pkg + "|" + d.name + "|" + spanKey(d.span)
+        match mapGet(tbl.methodDeclBySpan, key) {
+          case Some(ids) -> ids.add(d.id)
+          case None -> {
+            val ids: List[SymbolId] = newList()
+            ids.add(d.id)
+            tbl.methodDeclBySpan.add(key, ids)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    done = done + 1
+  }
+  tbl.methodDeclIndexed[0] = done
+  match mapGet(tbl.methodDeclBySpan, pkg + "|" + name + "|" + spanKey(span)) {
+    case Some(ids) -> if ids.count == 1 { Some(value = ids[0]) } else { None }
+    case None -> None
   }
 }
 

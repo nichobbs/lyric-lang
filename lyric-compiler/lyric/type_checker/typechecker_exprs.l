@@ -5163,15 +5163,30 @@ func recordMethodCalleeNode(
     case Some(mp) -> {
       val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
       val owner = dotNamedOwnerName(unrefine(recvTy))
-      if owner.length == 0 {
-        return
+      var target: Option[SymbolId] = None
+      if owner.length > 0 {
+        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+          case Some(dp) -> {
+            target = Some(value = internDefPathKey(tbl.interner, dp))
+          }
+          case None -> ()
+        }
       }
-      match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
-        case Some(dp) -> {
+      // A record-body, `impl` or interface method is a method declaration, not
+      // a dot-named function: the resolver's id of the declaration at the
+      // signature's span.
+      match target {
+        case Some(_) -> ()
+        case None -> {
+          target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span)
+        }
+      }
+      match target {
+        case Some(id) -> {
           if tbl.calleeByNode.containsKey(callNode) {
             tbl.calleeByNode.remove(callNode)
           }
-          tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, dp))
+          tbl.calleeByNode.add(callNode, id)
         }
         case None -> ()
       }
