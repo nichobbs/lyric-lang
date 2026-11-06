@@ -21001,8 +21001,10 @@ func inferCaseCtorExpected(
   cargs: in List[CallArg],
   caseSym: in Symbol,
   span: in Span,
+  callNode: in Int,
   expected: in Type,
 ): Type {
+  recordCtorCalleeNode(tbl, callNode, caseSym)
   val exps = caseCtorArgsExpected(tbl, caseSym, cargs, expected)
   val cargTypes = inferCtorArgsExpected(sc, tbl, sigs, diag, cargs, exps)
   // Before the construction records its own payload sites, so a payload is
@@ -21041,7 +21043,7 @@ func inferQualifiedCaseCtorExpected(
       noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
       if widensStructurally(expected, actual) {
         val scratch: List[Diagnostic] = newList()
-        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, expected)
+        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, e.nodeId, expected)
         if diagnosticsHaveError(scratch) {
           actual
         } else {
@@ -21291,7 +21293,7 @@ func inferExprExpectedCore(
       } else if p.segments.count == 1 {
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
-          case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, expected)
+          case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, e.nodeId, expected)
           case None -> if diag.count > diagCountBefore {
             tyErrorSilent()
           } else if callHasPropagateArg(tbl, cargs) {
