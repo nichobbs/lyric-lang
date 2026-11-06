@@ -1181,7 +1181,7 @@ test "binding from an imported generic call tracks the call's instantiation (#56
   assertTrue(hasFunc(res.file, "isOkLike2__Int__String"), "isOkLike2 over the binding reuses the call's instantiation")
 }
 
-test "an unconstrained imported generic call is T0224, not an Object default (#5604, D335)" {
+test "an unconstrained imported generic call the checker did not record is the internal M0002, not an Object default (#5604, D384)" {
   val callerSrc = "package Caller\n" + "func caller(): Bool { isEmptyLike(NoneLike) }\n"
   val libSrc = "package Lib\n" + "pub union OptLike[T] { case SomeLike(v: T)\n case NoneLike }\n" +
     "pub func isEmptyLike[T](o: in OptLike[T]): Bool { match o { case NoneLike -> true\n case _ -> false } }\n"
@@ -1189,7 +1189,7 @@ test "an unconstrained imported generic call is T0224, not an Object default (#5
   val libPr = parse(libSrc)
   val res = monoFileWithImports(callerPr.file, genericsAndUnionCtors(libPr.file))
   assertFalse(hasFunc(res.file, "isEmptyLike__Object"), "isEmptyLike's unbound T is no longer defaulted to Object")
-  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 1, "the unbound T is reported at the call")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "the unbound T is reported at the call")
 }
 
 // #3705: a generic union predicate (`isErrLike`, the shape of stdlib
@@ -1743,10 +1743,10 @@ test "lambda-arg call to dropped same-package generic raises M0002" {
   assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "lambda arg cannot drive inference — M0002 fires")
 }
 
-// B2 negative: the same uninferable shape against an IMPORTED generic must
-// stay silent — its unbound type params default to Object and the call
-// specialises (#5604); nothing dangles, so no diagnostic.
-test "uninferable call to imported generic stays silent" {
+// The same uninferable shape against an IMPORTED generic is the checker's T0224;
+// reaching the monomorphiser unrecorded it is the internal M0002 (D384), never a
+// silent drop (#5604).
+test "uninferable call to imported generic the checker did not record is the internal M0002 (D384)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { pickImported() }\n"
   val importedSrc = "package Lib\n" + "pub func pickImported[T](): Int { 0 }\n"
   val importedPr = parse(importedSrc)
@@ -1760,7 +1760,7 @@ test "uninferable call to imported generic stays silent" {
     i = i + 1
   }
   val res = monoFileWithImports(parse(callerSrc).file, importedGen)
-  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "imported generics keep the erased fallback — no M0002")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "an unrecorded imported call is loud, not dropped")
 }
 
 // B2 negative: the #3677 arity-overflow shape (call has MORE args than the
@@ -2660,7 +2660,7 @@ test "opaque binding fed into an imported generic with a Result-shaped param rai
 // genuinely tolerates any real reference-typed array argument. Confirms
 // #5970's fix is scoped to erasure-UNSAFE shapes and does not regress this
 // legitimate, pervasive usage.
-test "opaque argument to an imported generic with a slice-shaped param is T0224, not M0004 (#5970, D335)" {
+test "opaque argument to an imported generic with a slice-shaped param is the internal M0002, not M0004 (#5970, D384)" {
   val callerSrc = "package Caller\n" + "func caller(getXs: in () -> slice[Int]): Unit { val r = firstLike(getXs()) }\n"
   val libSrc = "package Lib\n" + "pub func firstLike[T](xs: in slice[T]): T { xs[0] }\n"
   val callerPr = parse(callerSrc)
@@ -2671,9 +2671,9 @@ test "opaque argument to an imported generic with a slice-shaped param is T0224,
     "the Object default no longer applies, even to the erasure-safe slice shape"
   )
   assertEqualInt(
-    diagCountCode(res.diagnostics, "T0224"),
+    diagCountCode(res.diagnostics, "M0002"),
     1,
-    "the unpinned T is T0224 (the pipeline pins it from the checker's sites)"
+    "the unpinned T is the internal M0002 (the checker reports T0224 in the pipeline)"
   )
   assertEqualInt(diagCountCode(res.diagnostics, "M0004"), 0, "no M0004 for the erasure-safe slice shape")
 }

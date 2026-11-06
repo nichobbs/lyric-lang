@@ -6982,7 +6982,9 @@ func unpinnedCallKeepsErasedDefault(
 // invariant failure, reported loudly because leaving the call generic would
 // make codegen drop it silently (#5604).  M0002 is the code of the same
 // condition for a local generic.
-func noteUnrecordedImportedCall(state: in MonoState, fname: in String, unpinned: in List[String], callSpan: in Span): Unit {
+func noteUnrecordedImportedCall(
+  state: in MonoState, fname: in String, unpinned: in List[String], callSpan: in Span
+): Unit {
   state.diags.add(
     errorDiagnostic(
       "M0002",
