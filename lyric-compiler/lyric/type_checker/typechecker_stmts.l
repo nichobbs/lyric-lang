@@ -1348,6 +1348,12 @@ pub func checkBlock(
             // stay lenient, mirroring `unifyBranchTypes`; a Unit handler beside
             // a non-Unit body is only absorbed in statement position (#3262).
             checkTryHandlerType(tbl, diag, resultTy, hTy, tryValuePos, c.span)
+            // The body and each handler yield through one temp, so a type
+            // argument one leaves open (`Ok(())`'s error type) is the one
+            // another fixes (`Err(e)`).
+            if tryValuePos and typeEquiv(resultTy, hTy) {
+              resultTy = joinOpenTypes(resultTy, hTy)
+            }
           }
           ci = ci + 1
         }

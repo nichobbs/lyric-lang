@@ -153,7 +153,7 @@ func codegenBuiltinType(name: in String): Option[Type] {
   }
   if name == "default" {
     val ps: List[Type] = newList()
-    return Some(value = TyFunction(params = ps, ret = tyErrorSilent(), isAsync = false))
+    return Some(value = TyFunction(params = ps, ret = tyErrorGeneric(), isAsync = false))
   }
   if name == "expect" {
     val ps: List[Type] = newList()
@@ -4273,25 +4273,20 @@ func untypedMemberCallResult(
   }
   if memberName == "new" and tbl.externIterResolver.count > 0 {
     match fn.kind {
-      case EMember(recv, _) -> match recv.kind {
-        case EPath(p) -> if p.segments.count == 1 {
-          match symTableTryFindOne(tbl, p.segments[0]) {
-            case Some(sym) -> match sym.kind {
-              case DKExternType(tid, d) -> {
-                if isHostStringTypeName(d.clrName) {
-                  return TyPrim(pt = PtString)
-                }
-                match d.generics {
-                  case None -> return TyUser(id = tid, name = d.name, args = newList())
-                  case Some(_) -> ()
-                }
-              }
-              case _ -> ()
+      case EMember(recv, _) -> match externTypeSymbolOfExpr(tbl, recv) {
+        case Some(sym) -> match sym.kind {
+          case DKExternType(tid, d) -> {
+            if isHostStringTypeName(d.clrName) {
+              return TyPrim(pt = PtString)
             }
-            case None -> ()
+            match d.generics {
+              case None -> return TyUser(id = tid, name = d.name, args = newList())
+              case Some(_) -> ()
+            }
           }
+          case _ -> ()
         }
-        case _ -> ()
+        case None -> ()
       }
       case _ -> ()
     }
@@ -4314,7 +4309,7 @@ func untypedMemberCallResult(
   }
   // A member of a value that is itself untyped is as untyped as the value.
   match recvTy {
-    case Some(TyError(d)) -> return TyError(diag = d)
+    case Some(TyError(d)) -> return if d.index == 0 { tyErrorUnresolved() } else { TyError(diag = d) }
     case _ -> ()
   }
   val universal = universalMethodResultType(memberName, argc)
@@ -4339,19 +4334,59 @@ func externMemberReceiver(tbl: in SymbolTable, recv: in Expr, recvTy: in Type): 
     }
     case _ -> ()
   }
-  match recv.kind {
-    case EPath(p) -> if p.segments.count == 1 {
-      match symTableTryFindOne(tbl, p.segments[0]) {
-        case Some(sym) -> match sym.kind {
-          case DKExternType(_, d) -> return Some(value = ExternReceiver(decl = d, targs = newList()))
-          case _ -> ()
-        }
-        case None -> ()
-      }
+  match externTypeSymbolOfExpr(tbl, recv) {
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, d) -> return Some(value = ExternReceiver(decl = d, targs = newList()))
+      case _ -> ()
     }
-    case _ -> ()
+    case None -> ()
   }
   None
+}
+
+// The `extern type` an expression names as a qualifier: a bare `T`, or a
+// package-qualified `Pkg.T` (`MailKernel.MailMessage.new()`), where `T` is the
+// only extern type of that name or `Pkg` is the package declaring it.  A name a
+// local binds is a value, never the type.
+func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
+  }
+  val last = segs[segs.count - 1]
+  if segs.count == 1 {
+    match symTableTryFindOne(tbl, last) {
+      case Some(sym) -> match sym.kind { case DKExternType(_, _) -> return Some(value = sym); case _ -> () }
+      case None -> ()
+    }
+    return None
+  }
+  val quals: List[String] = newList()
+  var qi = 0
+  while qi < segs.count - 1 {
+    quals.add(segs[qi])
+    qi = qi + 1
+  }
+  match symTableTryFindInPackage(tbl, modulePathJoin(quals), last) {
+    case Some(sym) -> match sym.kind { case DKExternType(_, _) -> return Some(value = sym); case _ -> () }
+    case None -> ()
+  }
+  var only: Option[Symbol] = None
+  var n = 0
+  for cand in symTableTryFindAllNamed(tbl, last) {
+    match cand.kind {
+      case DKExternType(_, _) -> {
+        only = Some(value = cand)
+        n = n + 1
+      }
+      case _ -> ()
+    }
+  }
+  if n == 1 {
+    only
+  } else {
+    None
+  }
 }
 
 // A host class result.  A host method returns a reference the language cannot
@@ -7106,6 +7141,10 @@ func resolveExprPath(
     match symTableTryFindInPackage(tbl, pkg, name) {
       case Some(csym) -> match csym.kind {
         case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
+        case DKEnumCase(_, _) -> match packageEnumCaseValueType(tbl, pkg, name) {
+          case Some(ct) -> return ct
+          case None -> ()
+        }
         case _ -> ()
       }
       case None -> ()
@@ -7279,6 +7318,9 @@ func resolveExprPath(
             val noArgs: List[Type] = newList()
             return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = noArgs)
           }
+          // A case name several enums share is told apart by the expected
+          // type, which an expression read on its own does not have.
+          return tyErrorUnresolved()
         }
         case _ -> {
         }
@@ -7325,6 +7367,18 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
         sameOrigin = false
       }
     }
+    // A package's own enum shadows an imported one of the same name: a bare
+    // `LogLevel.Info` inside the package declaring `LogLevel` names that one
+    // whatever other package declares a `LogLevel` too.
+    var ownCount = 0
+    for cand in candidates {
+      if not cand.isImported {
+        ownCount = ownCount + 1
+      }
+    }
+    if ownCount == 1 {
+      sameOrigin = true
+    }
     if sameOrigin {
       // The declaration a written `Mode` resolves to, so the case's type is
       // the parameter and annotation type of its own enum.
@@ -7356,6 +7410,78 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
       case _ -> None
     }
     case None -> None
+  }
+}
+
+// The case symbol of `Union.Case` read as a value (`PluginIssueKind.BadContributions`):
+// `recv` names a union (bare, or through its package) and `name` is one of its
+// cases.  A name a local binds is a value, never the union.
+func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Symbol] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
+  }
+  match scopeTryFind(sc, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val typeName = segs[segs.count - 1]
+  var usym: Option[Symbol] = None
+  if segs.count == 1 {
+    usym = symTableTryFindOne(tbl, typeName)
+  } else {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < segs.count - 1 {
+      quals.add(segs[qi])
+      qi = qi + 1
+    }
+    usym = symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+  }
+  val uid = match usym {
+    case Some(u) -> match u.kind { case DKUnion(id, _) -> id; case _ -> return None }
+    case None -> return None
+  }
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    match cand.kind {
+      case DKUnionCase(pid, _) -> if symbolIdEq(pid, uid) { return Some(value = cand) }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+// The type of `Pkg.Case` read as a value, `Case` a case of an enum of package
+// `pkg`: its enum when no other enum of the package has a case of that name,
+// unresolved when several do (`SiblingEnums.On` names `Beam.On` or `Ray.On`,
+// which the expected type tells apart); None when `pkg` has no such enum case.
+func packageEnumCaseValueType(tbl: in SymbolTable, pkg: in String, name: in String): Option[Type] {
+  var first: Option[SymbolId] = None
+  var shared = false
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if cand.originPackage == pkg {
+      match cand.kind {
+        case DKEnumCase(pid, _) -> match first {
+          case None -> {
+            first = Some(value = pid)
+          }
+          case Some(fid) -> {
+            if not symbolIdEq(fid, pid) {
+              shared = true
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  match first {
+    case None -> None
+    case Some(pid) -> if shared {
+      Some(value = tyErrorUnresolved())
+    } else {
+      Some(value = TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList()))
+    }
   }
 }
 
@@ -15927,6 +16053,31 @@ func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
   symTableTryFindOne(tbl, name)
 }
 
+// The declared type of field `name` of the config block `recv` names
+// (`SecretCache.ttlSeconds`); None when `recv` is not a bare config name.
+func configFieldReadType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Type] {
+  val cname = match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  match scopeTryFind(sc, cname) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val sym = match symTableTryFindOne(tbl, cname) { case Some(s) -> s; case None -> return None }
+  val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
+  for f in cd.fields {
+    if f.name == name {
+      val saved = enterDeclaringScope(tbl, sym)
+      val scratch: List[Diagnostic] = newList()
+      val t = resolveType(tbl, newGenericContext(), scratch, f.ty)
+      restoreScope(tbl, saved)
+      return Some(value = t)
+    }
+  }
+  None
+}
+
 func symbolIsValue(sym: in Symbol): Bool {
   match sym.kind {
     case DKVal(_) -> true
@@ -18862,6 +19013,11 @@ func inferExprCore(
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
             recordResultTypeAt(tbl, instRet, e.span)
+            // A result no argument fixes (`default()`, typed by where it is
+            // used) is an erased generic value, not an unreported error.
+            if isSilentTyError(instRet) {
+              return tyErrorGeneric()
+            }
           }
           instRet
         }
@@ -19202,6 +19358,10 @@ func inferExprCore(
         case Some(enumTy) -> return enumTy
         case None -> ()
       }
+      match qualifiedUnionCaseSymbol(sc, tbl, recv, name) {
+        case Some(csym) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), e.span, false)
+        case None -> ()
+      }
       // A package-qualified module-level `val` (`Pkg.v`, the file's own
       // package included) reads as the bare name does (#8283).
       match moduleValSymbolOfExpr(sc, tbl, e) {
@@ -19211,6 +19371,15 @@ func inferExprCore(
             return moduleValReadType(tbl, sigs, vsym, vd)
           }
           case _ -> ()
+        }
+        case None -> ()
+      }
+      // `Cfg.field` reads a `config Cfg { field: T = ... }` block's field at
+      // its declared type.  A name a local shadows is a value, not the block.
+      match configFieldReadType(sc, tbl, recv, name) {
+        case Some(ct) -> {
+          recordResultTypeAt(tbl, ct, e.span)
+          return ct
         }
         case None -> ()
       }
@@ -19230,6 +19399,10 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
+              match packageEnumCaseValueType(tbl, qualPkg, name) {
+                case Some(ct) -> return ct
+                case None -> ()
+              }
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
                 case Some(ft) -> return ft
                 case None -> ()
@@ -19351,7 +19524,11 @@ func inferExprCore(
       val typedRead = if isSilentTyError(readTy) and not tbl.calleePositionSites.containsKey(recordCopySiteKey(e.span)) {
         match externMemberReceiver(tbl, recv, rt) {
           case Some(er) -> externMemberResult(tbl, er, name, 0, true)
-          case None -> match rt { case TyError(d) -> TyError(diag = d); case _ -> readTy }
+          case None -> match unrefine(rt) {
+            case TyError(d) -> TyError(diag = d)
+            case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
+            case _ -> readTy
+          }
         }
       } else {
         readTy

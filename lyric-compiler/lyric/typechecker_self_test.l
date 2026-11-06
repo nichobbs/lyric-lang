@@ -14975,9 +14975,10 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
 }
 
-// A call whose result no rule types yet: `default()` with no expected type.
+// A read no rule types and no diagnostic reports: a member the receiver's type
+// does not have (the backends reject it later, T0121).
 func silentHostCallSource(): String {
-  "package P\nfunc f(): Unit {\n  val d = default()\n}\n"
+  "package P\nfunc f(a: in Int): Unit {\n  val d = a.bar\n}\n"
 }
 
 func silentSiteKinds(cr: in CheckResult): String {
@@ -15001,11 +15002,12 @@ test "a fully typed program has no silent TyError site (D341)" {
   assertEqual(diags.count.toString(), "0", "no W0036")
 }
 
-test "a callee typed TyError is exempt, its call result is not (D338, D341)" {
+test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
-  assertTrue(not Str.contains(kinds, "EPath"), "the callee default is exempt: " + kinds)
-  assertTrue(Str.contains(kinds, "ECall"), "the call result default() is a silent site: " + kinds)
+  assertTrue(Str.contains(kinds, "EMember"), "the read a.bar is a silent site: " + kinds)
+  val call = parseCheck("package P\nfunc f(a: in Int): Unit {\n  val d = a.bar()\n}\n")
+  assertEqual(silentSiteKinds(call), "", "the callee is exempt and the call result is named, not silent")
 }
 
 test "W0036 reports each silent site and is silent after an error (D341)" {
@@ -15235,6 +15237,35 @@ test "an erased generic value and a type qualifier are named, not silent" {
     "package P\nextern type NetM = \"System.Math\"\nfunc f(a: in Int, b: in Int): Int {\n  NetM.Max(a, b)\n}\n"
   )
   assertEqual(silentSiteKinds(qualifier), "", "the type receiver of a static member is not a value")
+}
+
+test "ecosystem shapes are typed or named, not silent (D355)" {
+  val config = parseCheck(
+    "package P\nconfig Cfg {\n  ttl: Int = 5\n}\nfunc f(): Int {\n  val b = Cfg.ttl\n  b + 1\n}\n"
+  )
+  assertEqual(silentSiteKinds(config), "", "a config field read has its declared type")
+  assertEqual(diagCodesOf(config), "", "and checks as an Int")
+  val unionCase = parseCheck(
+    "package P\nunion Kind {\n  case Bad\n  case Good\n}\nfunc code(k: in Kind): Int {\n  1\n}\nfunc f(): Int {\n  val k = Kind.Bad\n  code(k)\n}\n"
+  )
+  assertEqual(silentSiteKinds(unionCase), "", "a union case named through its type is typed")
+  assertEqual(diagCodesOf(unionCase), "", "and is accepted as that union")
+  val tryJoin = parseCheck(
+    "package P\nunion Res[T, E] {\n  case Good(v: T)\n  case Bad(e: E)\n}\nfunc f(): Int {\n  match try { Good(v = 1) } catch Bug as b { Bad(e = b.message) } {\n    case Bad(e) -> 0\n    case Good(v) -> v\n  }\n}\n"
+  )
+  val tryDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(tryJoin.symbols, tryDiags)
+  assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no W0036)")
+  val genericCr = parseCheck(
+    "package P\nrecord Row[D] {\n  draft: D\n}\nunion Opt[T] {\n  case Has(v: T)\n  case Nope\n}\nfunc f[D](r: in Row[D]): Unit {\n  val d = r.draft\n}\nfunc g[T](o: in Opt[T], d: in T): T {\n  match o {\n    case Has(x) -> x\n    case Nope -> d\n  }\n}\nfunc h(o: in Opt[Int]): Int {\n  g(o, default())\n}\n"
+  )
+  val genericDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(genericCr.symbols, genericDiags)
+  assertEqual(
+    genericDiags.count.toString(),
+    "0",
+    "an erased generic field read and a context-typed generic call are named"
+  )
 }
 
 test "count on a slice is W0042, length is the slice's size" {
