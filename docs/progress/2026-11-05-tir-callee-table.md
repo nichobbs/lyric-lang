@@ -7,3 +7,5 @@ is the work list for the remaining routes (built-ins, constructors, methods,
 interface methods, function values, extern members). See D361.
 
 Method calls (including UFCS dot-named picks) record their callee too, and the census names each uncovered call's line and column.
+
+Record and union-case constructor calls record their callee too, and the census prints the uncovered callees by frequency, which ranks the remaining routes (collection members, then the built-ins).

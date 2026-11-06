@@ -31,8 +31,17 @@ backends read it.
    declaring package, under the same key form as a free call. The census message
    names the call's line and column, and `LYRIC_VERIFY_IR=1` prints the first
    five.
-5. **Synthesised calls.** A call with no node id (id 0, a node a pass built
+5. **Constructors and union cases** record the `SymbolId` they build
+   (`recordCtorCalleeNode`): a record, opaque or exposed-record constructor is
+   its type's id, and a union case is `Pkg::Union::Case`, the DefPath the
+   resolver interns for it, so the id is the one TIR's `XConstruct` names.
+6. **The census ranks the work.** `LYRIC_VERIFY_IR=1` also prints the uncovered
+   callees by frequency (`uncovered callee: name x count`). On the stdlib tests
+   the order is: the test harness's own `println` calls, union-case and record
+   constructors (now covered), collection members (`.add`, `.contains`), then the
+   built-ins (`toString`, `println`).
+7. **Synthesised calls.** A call with no node id (id 0, a node a pass built
    after numbering) and a call whose span is `noSourceSpan` have no entry; they
    are counted until numbering follows the expansions (docs/70 phase 3b).
-6. **Instantiation** (the type arguments of a generic callee) is not recorded
+8. **Instantiation** (the type arguments of a generic callee) is not recorded
    yet; it comes with the routes above, since each knows its own substitution.
