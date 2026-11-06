@@ -26,12 +26,12 @@ slice has to settle before the weave can move ahead of the checker:
    left untouched for the late weave, which still weaves it with the whole
    chain; the early weave keeps every aspect declaration so the late weave sees
    them. The late weave is otherwise unchanged and runs after mono as before.
-2. The outermost wrapper carries `@woven`. `Lyric.ContractElaborator` skips a
-   function with `@woven` (as it skips `@axiom`): its aspect clauses are already
+2. The outermost wrapper carries `@__lyric_woven`. `Lyric.ContractElaborator` skips a
+   function with `@__lyric_woven` (as it skips `@axiom`): its aspect clauses are already
    in the body and its composed list is metadata. The renamed target is
    elaborated normally. This preserves where every contract runs, exactly.
 3. Neither weave touches a function a weave generated: `isWeaverGenerated`
-   (an `__aspect_` name or `@woven`) is passed through, so the late weave does
+   (an `__aspect_` name or `@__lyric_woven`) is passed through, so the late weave does
    not wrap the early wrappers again.
 4. `WeaveResult.generated` lists the runs of items the weave generated
    (wrappers, never the renamed target, whose body is the user's with its real

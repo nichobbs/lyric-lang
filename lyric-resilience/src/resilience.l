@@ -440,7 +440,7 @@ pub aspect Retry {
               Std.Log.warn("Retry: attempt " + attempt.toString() + " of " + maxAttempts.toString() + " failed: " + msg)
             }
             val delay = backoffDelay(initialDelayMs, backoffFactor, attempt - 1, maxDelayMs, jitterFraction)
-            sleepMs(delay)
+            Resilience.sleepMs(delay)
             ret = call.proceed()
             attempt = attempt + 1
           }
@@ -485,13 +485,13 @@ pub aspect CircuitBreaker {
     } else {
       val key = if name.length > 0 then name else call.qualifiedName
       checkCircuitConfig(failureThreshold, cooldownMs)
-      if circuitIsOpen(key, cooldownMs) {
+      if Resilience.circuitIsOpen(key, cooldownMs) {
         ret = Err("circuit open: " + key + " is temporarily unavailable")
       } else {
         ret = call.proceed()
         match ret {
-          case Ok(_) -> circuitRecordSuccess(key)
-          case Err(_) -> circuitRecordFailure(key, failureThreshold)
+          case Ok(_) -> Resilience.circuitRecordSuccess(key)
+          case Err(_) -> Resilience.circuitRecordFailure(key, failureThreshold)
         }
       }
     }

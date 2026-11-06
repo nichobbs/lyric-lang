@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# t0115-backstop-e2e.sh — pin both T0115 diagnostic tiers as negative
-# compiles, plus the dependency-aspect-template positive path at runtime
-# (#6351 / D-progress-781/782, PR #6504/#6506).
+# t0115-backstop-e2e.sh — pin the diagnostics for an unresolvable name as
+# negative compiles, plus the dependency-aspect-template positive path at
+# runtime (#6351 / D-progress-781/782, PR #6504/#6506, D392).
 #
-#   (a) the EXHAUSTED-tail panic in the EPath value-position lowering —
-#       reached via the one legitimate route that bypasses the type
-#       checker: a path-dependency aspect template whose advice body
-#       references an undefined qualifier, woven into a consumer.  The
-#       message must name the unresolved name AND the enclosing woven
-#       specialization (`__lyric_bmode_...`) so failures in synthesized
-#       code are locatable.
+#   (a) a path-dependency aspect template whose advice body references an
+#       undefined qualifier, woven into a consumer.  This used to be the one
+#       route that bypassed the type checker and reached the backend's
+#       EXHAUSTED-tail T0115; since the weave runs before the check (D392) the
+#       spliced body is checked in the consuming package, so the checker
+#       reports T0020 at the consuming aspect, "in code generated for this
+#       declaration".
 #   (b) a plain qualified typo (`NoSuchPkg.nope`) in user code: the type
 #       checker reports it as T0020 (docs/70 phase 1, D280), before the
 #       backend's T0115 tiers are reached.
@@ -124,10 +124,12 @@ rc=0
 ( cd "$work/bad" && timeout 60 "$bin_abs" restore && timeout 180 "$bin_abs" build --manifest lyric.toml ) > "$work/bad.out" 2>&1 || rc=$?
 echo "--- negative (tail) build output (rc=$rc) ---"; cat "$work/bad.out"
 test "$rc" -ne 0 || { echo "woven undefined qualifier should fail the build"; exit 1; }
-grep -q "error\[T0115\]: cannot resolve name 'Nonexistent'" "$work/bad.out" || {
-  echo "expected the exhausted-tail T0115 naming 'Nonexistent'"; exit 1; }
-grep -q "__lyric_bmode_Badlib_Advice" "$work/bad.out" || {
-  echo "expected the T0115 message to name the woven specialization function"; exit 1; }
+grep -q "error\[T0020\].*unknown name 'Nonexistent'" "$work/bad.out" || {
+  echo "expected the type checker's T0020 naming 'Nonexistent' in the spliced advice"; exit 1; }
+grep -q "in code generated for this declaration" "$work/bad.out" || {
+  echo "expected the T0020 to be reported at the consuming aspect, not at generated code"; exit 1; }
+if grep -q "error\[T0115\]" "$work/bad.out"; then
+  echo "the backend's T0115 must not be reached: the checker rejects the spliced body first"; exit 1; fi
 
 # (b) NEGATIVE: a plain qualified typo is the type checker's T0020.
 mkdir -p "$work/typo"

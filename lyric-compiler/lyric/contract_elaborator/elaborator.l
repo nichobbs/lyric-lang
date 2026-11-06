@@ -106,7 +106,7 @@ func functionIsAxiom(fn: in FunctionDecl): Bool {
 // has already lowered them into its body, so elaborating it would check them
 // twice.
 func functionIsWoven(fn: in FunctionDecl): Bool {
-  hasSimpleAnnotation("woven", fn.annotations)
+  hasSimpleAnnotation("__lyric_woven", fn.annotations)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

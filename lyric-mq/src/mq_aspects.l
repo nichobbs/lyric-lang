@@ -148,7 +148,10 @@ pub protected type IdempotencyLedger {
   }
 }
 
-val idempotencyLedger: IdempotencyLedger = IdempotencyLedger()
+/// The ledger every `Idempotent` instance claims ids from. Public because the
+/// aspect's body is spliced into the consuming package, where it names this value.
+@stable(since = "0.1")
+pub val idempotencyLedger: IdempotencyLedger = IdempotencyLedger()
 
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
 /// Route messages that exceed their delivery limit to a dead-letter store.
@@ -222,4 +225,7 @@ pub aspect DeadLetter {
 // Module-level dead-letter store shared by all DeadLetter instances.
 // Replace this with a custom DeadLetterStore implementation before the
 // aspect fires when persistence or a remote store is required.
-val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)
+/// The dead-letter store the DeadLetter aspect writes to. Public because the aspect's body is spliced into the consuming
+/// package, where it names this value.
+@stable(since = "0.1")
+pub val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)

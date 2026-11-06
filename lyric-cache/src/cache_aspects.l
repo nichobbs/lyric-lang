@@ -93,7 +93,10 @@ pub aspect FunctionCache {
 }
 
 // Module-level in-process cache shared by all FunctionCache instances.
-val functionCacheStore: CacheStore = Cache.inProcess()
+/// The store the function-cache aspect keeps its entries in. Public because the aspect's body is spliced into the consuming
+/// package, where it names this value.
+@stable(since = "0.1")
+pub val functionCacheStore: CacheStore = Cache.inProcess()
 
 // ─── ItemCache ────────────────────────────────────────────────────────────────
 /// Cache a matched handler's result by a caller-supplied per-item key.
@@ -167,4 +170,7 @@ pub aspect ItemCache {
 }
 
 // Module-level in-process cache shared by all ItemCache instances.
-val itemCacheStore: CacheStore = Cache.inProcess()
+/// The store the item-cache aspect keeps its entries in. Public because the aspect's body is spliced into the consuming
+/// package, where it names this value.
+@stable(since = "0.1")
+pub val itemCacheStore: CacheStore = Cache.inProcess()
