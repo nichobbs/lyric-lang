@@ -1984,7 +1984,7 @@ test "width driven nested match arm breaks (#2280 Class B repro)" {
   )
   val lines = Str.split(once, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     assertTrue(lines[i].length <= 120, "nested-match width: no output line exceeds the 120-column budget")
     i = i + 1
   }
@@ -2024,7 +2024,7 @@ test "width driven doubly nested match breaks at every level" {
   )
   val lines = Str.split(once, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     assertTrue(lines[i].length <= 120, "doubly-nested match width: no output line exceeds the 120-column budget")
     i = i + 1
   }
@@ -2056,7 +2056,7 @@ test "width driven if-else match-arm body breaks" {
   assertTrue(Str.contains(once, "} else {\n"), "if-else match-arm body width: else clause on its own line")
   val lines = Str.split(once, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     assertTrue(lines[i].length <= 120, "if-else match-arm body width: no output line exceeds the 120-column budget")
     i = i + 1
   }
@@ -2171,7 +2171,7 @@ test "width driven nested match arm threads the real absolute column (#6606 repr
   )
   val lines = Str.split(once, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     assertTrue(lines[i].length <= 120, "nested-column boundary: no output line exceeds the 120-column budget")
     i = i + 1
   }
@@ -2403,7 +2403,7 @@ test "short nested match arm body under the same deep nesting stays inline (#660
   )
   val lines = Str.split(once, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     assertTrue(lines[i].length <= 120, "short deep-nested arm: no output line exceeds the 120-column budget")
     i = i + 1
   }
