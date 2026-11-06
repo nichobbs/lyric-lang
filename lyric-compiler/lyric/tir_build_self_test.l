@@ -192,3 +192,15 @@ test "numeric conversions and string members have their name recorded" {
   )
   assertTrue(mapGet(cr.symbols.builtinByNode, calls[1].id) == Some(value = "String.startsWith"), "a string member too")
 }
+
+test "an integer's bitwise method has its name recorded" {
+  val src = "package App\nfunc f(n: in Int): Int { n.shl(2) }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "the call is covered")
+  assertTrue(mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.shl"), "named by its receiver")
+}
+

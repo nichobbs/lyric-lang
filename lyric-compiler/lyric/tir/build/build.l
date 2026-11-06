@@ -303,9 +303,8 @@ pub func callCovered(ctx: in TyConvCtx, id: in Int): Bool {
 
 /// The calls of `calls` the checker recorded no resolved callee for
 /// (`SymbolTable.calleeByNode`), as I0002 messages naming the call's position.
-/// Calls the checker resolves by another route (built-ins, constructors,
-/// function values, interface and extern members) are counted until each route
-/// records its callee (D361).
+/// A call is covered by `callCovered`; interface and extern member calls are
+/// counted until their route records a callee (D361).
 pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String] {
   val res: List[String] = newList()
   for c in calls {

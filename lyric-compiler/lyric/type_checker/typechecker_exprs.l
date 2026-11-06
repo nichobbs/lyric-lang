@@ -5046,6 +5046,8 @@ func recordBuiltinCall(
         }
         val typedAsFunction = match fnT { case TyFunction(_, _, _) -> true; case _ -> false }
         val userReceiver = match unrefine(rt) { case TyUser(_, _, _) -> true; case _ -> false }
+        // `toString()` is lowered by every backend on any receiver that declares no
+        // `toString` of its own; a user type's is a method pick, recorded as a callee.
         val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
         if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
           recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
