@@ -56,7 +56,7 @@ pub func getById(conn: in DbConnection, id: in Long): Result[Option[Transfer], L
   val sql = Db.sql("SELECT id, from_id, to_id, amount, note, created_at " + "FROM transfers WHERE id = @p0")
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
-    case Ok(rows) -> if rows.count == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToTransfer(r))) }
+    case Ok(rows) -> if rows.length == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToTransfer(r))) }
   }
 }
 
@@ -122,7 +122,7 @@ func writeAtomically(
       val _ = tx.rollback()
       Err(LedgerError.DatabaseError(message = e.message))
     }
-    case Ok(rows) -> if rows.count == 0 {
+    case Ok(rows) -> if rows.length == 0 {
       val _ = tx.rollback()
       Err(LedgerError.DatabaseError(message = "INSERT transfers returned no rows"))
     } else {
