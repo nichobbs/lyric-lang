@@ -298,7 +298,8 @@ pub func callSitesOf(file: in SourceFile): List[CallSite] {
 /// one (`calleeByNode`) or a built-in's name (`builtinByNode`, D362) or a call through a
 /// function value (`indirectByNode`, D364).
 pub func callCovered(ctx: in TyConvCtx, id: in Int): Bool {
-  ctx.tbl.calleeByNode.containsKey(id) or ctx.tbl.builtinByNode.containsKey(id) or ctx.tbl.indirectByNode.containsKey(id)
+  ctx.tbl.calleeByNode.containsKey(id) or ctx.tbl.builtinByNode.containsKey(id) or
+    ctx.tbl.indirectByNode.containsKey(id)
 }
 
 /// The calls of `calls` the checker recorded no resolved callee for

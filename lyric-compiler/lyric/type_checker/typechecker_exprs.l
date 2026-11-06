@@ -4990,8 +4990,7 @@ func recordIndirectCall(tbl: in SymbolTable, callNode: in Int): Unit {
 }
 
 // The built-in a member call resolved to without a typed signature: the
-// reserved accessors of `Result` and `Option` and the bitwise methods of an
-// integer.  Records `Receiver.member`.
+// reserved accessors of `Result` and `Option`.  Records `Receiver.member`.
 func recordUntypedBuiltinMember(
   tbl: in SymbolTable,
   callNode: in Int,
@@ -5003,7 +5002,7 @@ func recordUntypedBuiltinMember(
   match recvTy {
     case Some(rt) -> {
       val monadAccessor = argCount == 0 and isReservedMonadAccessorName(memberName) and not isSilentTyError(resultTy)
-      if monadAccessor or isPrimitiveIntrinsicMethod(rt, memberName, argCount) {
+      if monadAccessor {
         recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
       }
     }
@@ -18688,6 +18687,7 @@ func inferExprCore(
             if bName == "shr" {
               recordUnsignedOperand(tbl, bt, bRecv)
             }
+            recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(bt) + "." + bName)
             return unrefine(bt)
           }
         }

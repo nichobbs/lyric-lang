@@ -203,4 +203,3 @@ test "an integer's bitwise method has its name recorded" {
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "the call is covered")
   assertTrue(mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.shl"), "named by its receiver")
 }
-

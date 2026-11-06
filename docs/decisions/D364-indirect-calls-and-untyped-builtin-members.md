@@ -20,14 +20,15 @@ methods of an integer. TIR names the first `Callee.Indirect(fnValue)`, the other
    against the function type, and not for a call already recorded as a built-in.
 2. `isOk`/`isErr`/`isSome`/`isNone` (and the other reserved accessors) typed
    through the untyped-member fallback, and the bitwise methods of an integer
-   (`isPrimitiveIntrinsicMethod`), record `Receiver.member` in `builtinByNode`.
+   (`.and/.or/.xor/.shl/.shr`, which return before the general call path),
+   record `Receiver.member` in `builtinByNode`.
 3. `callCovered` counts a call covered by `calleeByNode`, `builtinByNode` or
    `indirectByNode`.
 
 ## Not covered
 
 Interface and extern member calls, channel and HTTP-style host members
-(`.get`, `.send`, `.post`), a few bitwise calls on non-`Int` receivers, the
+(`.get`, `.send`, `.post`), the
 instantiation, conversion and argument-order tables and the expression builder.
 The `Result`/`Option` accessor route and a dependency union case are checked
 through the census on real code, because the self-test harness checks single
