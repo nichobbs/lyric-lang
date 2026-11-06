@@ -81,7 +81,7 @@ func cmdUpdate(argv: in slice[String]): Int {
   }
 
   val noUpdates: List[String] = newList()
-  val rc = runRestoreWith(mfPath, false, noUpdates, carriedKeys)
+  val rc = runRestoreWith(mfPath, false, noUpdates, carriedKeys, "")
   // A failed re-resolution leaves the previous lock in place, so its pins
   // (generator keys among them) still hold for the next restore.
   if rc != 0 and oldLockText.length > 0 {

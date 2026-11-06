@@ -3749,7 +3749,7 @@ Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
 
-`lyric restore [--manifest <lyric.toml>] [--locked] [--update <name>]...` resolves and locks all dependencies declared in `lyric.toml`, writing `lyric.lock`. `--locked` verifies the existing lock rather than rewriting it (for reproducible CI builds).
+`lyric restore [--manifest <lyric.toml>] [--locked] [--update <name>]...` resolves and locks all dependencies declared in `lyric.toml`, writing `lyric.lock`. `--locked` verifies the existing lock rather than rewriting it (for reproducible CI builds). `--target native` skips the Maven resolver, so a native-only project restores without a Java runtime (a native build never links Maven artifacts, section 3.6); `lyric build --target native` restores that way on its own. `--target dotnet` and `--target jvm` restore as with no flag.
 
 A registry or git dependency whose restored package holds `lyric-plugin/<id>-<version>/` (a signed plugin artifact) and `lyric-plugin/signer.pub` is a source generator (D266). Restore verifies the artifact's `plugin.sig` (K0105-K0110) against the key the dependency pins (`Gen = { version = "1.0.0", key = "lyric-ed25519:..." }`, allowed on registry and git dependencies only) or, without a pin, the key in `signer.pub`, and records its key id as `key = "<id>"` in the dependency's `lyric.lock` entry. A later restore that finds a different key fails until `--update <name>` accepts it; `--locked` fails on a changed key and refuses `--update`.
 
