@@ -17591,9 +17591,9 @@ func callArgsIndeterminate(sc: in Scope, args: in List[CallArg], argTypes: in Li
 }
 
 // A union-case construction (`Ok(value = 7)`) whose arguments leave a type
-// argument of its union unsolved is kept in `SymbolTable.unsolvedCallSites`
-// like an unsolved function call (D353), as a constructor site; one that
-// nothing fixes is the error T0224, as for a function call (D381).
+// argument of its union unsolved is recorded in `SymbolTable.unsolvedCallSites`
+// as a constructor site, the way an unsolved function call is (D353). A site
+// that nothing later fixes is the error T0224, as for a function call (D381).
 // `caseTy` is the construction as `inferUnionCaseConstruction` typed it.
 func noteUnsolvedCaseCtor(
   sc: in Scope,

@@ -222,3 +222,10 @@ test "numbers of runs that went away are dropped" {
   val _ = Plan.planTree(n, screen("a", -1, -1))
   assertTrue(Plan.resolveNumber(n, num).isNone(), "line 223")
 }
+
+test "a focus that is not in the tree falls back to the root" {
+  val n = Plan.newNumbering()
+  val p = Plan.planTree(n, tree(screen("a", -1, -1).nodes, "gone"))
+  assertEqualLong(p.focusNum, p.rootNum, "line 232")
+  assertTrue(Plan.resolveNumber(n, p.focusNum).isSome(), "line 233")
+}
