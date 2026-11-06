@@ -12221,6 +12221,25 @@ func inferIfExpr(
   isValuePosition: in Bool,
   tailExpected: in Type,
 ): Type {
+  val t = inferIfExprCore(sc, tbl, sigs, diag, e, cond, thenBranch, elseBranch, isValuePosition, tailExpected)
+  // Typed here without passing through `inferExpr`, so the node's type is
+  // recorded here (D366).
+  recordExprType(tbl, e, t)
+  t
+}
+
+func inferIfExprCore(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  cond: in Expr,
+  thenBranch: in ExprOrBlock,
+  elseBranch: in Option[ExprOrBlock],
+  isValuePosition: in Bool,
+  tailExpected: in Type,
+): Type {
   val condT = inferExpr(sc, tbl, sigs, diag, cond)
   resolvePropagateOperand(sc, tbl, cond, TyPrim(pt = PtBool))
   match condT {
@@ -12313,6 +12332,24 @@ func recordBranchWidening(tbl: in SymbolTable, target: in Type, bt: in Type, b: 
 // for a statement-position `match`.
 // #7696: `tailExpected` — see `inferExprOrBlock`'s header comment.
 func inferMatchExpr(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  scrutinee: in Expr,
+  arms: in List[MatchArm],
+  isValuePosition: in Bool,
+  tailExpected: in Type,
+): Type {
+  val t = inferMatchExprCore(sc, tbl, sigs, diag, e, scrutinee, arms, isValuePosition, tailExpected)
+  // Typed here without passing through `inferExpr`, so the node's type is
+  // recorded here (D366).
+  recordExprType(tbl, e, t)
+  t
+}
+
+func inferMatchExprCore(
   sc: in Scope,
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -21491,6 +21528,9 @@ pub func inferExprExpected(
 ): Type {
   val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
+  // Some kinds are typed against the expected type without passing through
+  // `inferExpr`; the type settled on is the node's type (D366).
+  recordExprType(tbl, e, t)
   t
 }
 

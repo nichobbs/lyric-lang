@@ -887,7 +887,8 @@ need direction and have nothing else productive to do**.  Specifically:
     `tir/verify/` is `Lyric.Tir.Verify` (D323): the I0003 verifier, run by
     passes through `Lyric.Pipeline.pipeVerifyTir`; `tir_verify_self_test.l`.
     `tir/build/` is `Lyric.Tir.Build` (D360): the checker's `Type` to `Ty` conversion
-    and the I0002 census over `SymbolTable.exprTypes` (`LYRIC_VERIFY_IR=1`);
+    and the I0002 census over `SymbolTable.exprTypes` (`LYRIC_VERIFY_IR=1`); the
+    expression builder (`build_expr.l`, D366: `buildFnBody` and a builder census);
     `tir_build_self_test.l`.
   - `resolve/resolve_nodeids.l` — `renumberNodeIds` (docs/70 §6.1, D325): the
     dense per-file numbering of `Expr`/`Statement`/`Pattern` `nodeId`s, run after

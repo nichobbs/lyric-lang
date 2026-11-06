@@ -215,3 +215,71 @@ test "interface and impl method calls have their callee recorded" {
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "both are covered")
   assertEqualInt(cr.symbols.calleeByNode.count, 2, "each has a declared callee")
 }
+
+record FnBuilt {
+  env: BuildEnv
+  body: Option[TExpr]
+  diagnostics: Int
+}
+
+func buildFirstFn(src: in String): FnBuilt {
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  var found = false
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if not found { found = true; body = buildFnBody(env, decl, cr.symbols) }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count)
+}
+
+test "a function over locals and primitive operators builds" {
+  val r = buildFirstFn("package App\nfunc f(a: Int, b: Int): Int {\n  val c = a + b\n  c * 2\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XBlock(stmts, tail) -> {
+        assertEqualInt(stmts.count, 1, "the val is a statement")
+        assertTrue(tail.isSome(), "the last expression is the value")
+        assertTrue(tyEq(b.ty, tyInt()), "the block is an Int")
+      }
+      case _ -> assertTrue(false, "a block")
+    }
+    case None -> assertTrue(false, "a body")
+  }
+}
+
+test "if, short-circuit operators and comparisons build" {
+  val r = buildFirstFn("package App\nfunc g(x: Int): Bool {\n  if x > 1 and x < 9 { true } else { false }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "loops and string interpolation build" {
+  val r = buildFirstFn("package App\nfunc h(n: Int): String {\n  while true {\n    break\n  }\n  \"n=\${n}\"\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "a call is counted as uncovered, fails with I0002 and builds no body" {
+  val r = buildFirstFn("package App\nfunc m(): Int { k() }\nfunc k(): Int { 1 }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(not r.body.isSome(), "no body for a call the builder has no case for")
+  assertEqualInt(r.env.errors.count, 1, "one I0002")
+  assertTrue(r.env.errors[0].startsWith("I0002"), "reported as I0002")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a call"), 1, "counted by kind")
+}
+
+func mapGetOr0(m: in Map[String, Int], k: in String): Int {
+  match mapGet(m, k) {
+    case Some(n) -> n
+    case None -> 0
+  }
+}
