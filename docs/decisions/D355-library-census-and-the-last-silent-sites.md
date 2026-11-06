@@ -61,6 +61,10 @@ change; that is an independent defect, filed separately.
 - No new rejection: every site above built before and builds now. The gate
   stays a warning until a CI census over the libraries is wired in (the next
   slice), which is docs/70 §12.2 step one for I0001.
+- The library census is a CI gate (`scripts/ci/library-tyerr-census.sh`, job
+  `library-tyerr-census`): the count is zero, so any new silent site fails the
+  PR. Builds that stop before the checker finishes are listed as unchecked, not
+  counted as clean.
 - The remaining silent source is the `tyErrorSilent()` returns that do not
   follow a diagnostic; each is classified in the slice that switches W0036 to
   I0001.
