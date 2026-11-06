@@ -4935,7 +4935,14 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
       case Some(parentKey) -> {
         target = Some(value = internDefPathKey(tbl.interner, parentKey + "::" + uc.name))
       }
-      case None -> ()
+      // A dependency's union has no resolver DefPath: name the case by its
+      // package and union, the key the resolver would intern for it.
+      case None -> if sym.originPackage.length > 0 {
+        val unionName = typeNameOfId(tbl, parentId)
+        if unionName.length > 0 {
+          target = Some(value = internDefPathKey(tbl.interner, sym.originPackage + "::" + unionName + "::" + uc.name))
+        }
+      }
     }
     case _ -> {
       target = symbolTypeIdOpt(sym)
@@ -18547,6 +18554,7 @@ func inferExprCore(
               if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname, e.span) {
                 return tyErrorSilent()
               }
+              recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(rt) + "." + mname)
               return TyPrim(pt = target)
             }
             if isNonConvertiblePrimitive(rt) {
