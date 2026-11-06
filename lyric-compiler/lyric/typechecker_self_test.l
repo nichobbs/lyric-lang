@@ -4753,7 +4753,10 @@ func unsolvedLib(): List[ImportedPackage] {
       "pub func none[T](): Option[T] { None }\n" +
       "pub func isNone[T](o: in Option[T]): Bool { true }\n" +
       "pub func orElse[T](o: in Option[T], d: in T): T { d }\n" +
-      "pub func wrap[T](o: in Option[T]): Option[T] { o }\n"
+      "pub func wrap[T](o: in Option[T]): Option[T] { o }\n" +
+      "pub record Bx[T] { v: T }\n" +
+      "pub func Bx.conv[T, U](self: in Bx[T]): Option[U] { None }\n" +
+      "pub func Bx.get[T](self: in Bx[T]): T { self.v }\n"
   )
   val pkgs: List[ImportedPackage] = newList()
   pkgs.add(
@@ -4769,7 +4772,7 @@ func unsolvedLib(): List[ImportedPackage] {
 
 func unsolvedErrors(body: in String): Int {
   val src = "package App\nimport Lib\n" + body
-  val cr = checkWithImportedPackages(parse(src).file, unsolvedLib())
+  val cr = checkWithImportedPackages(rewriteFileReporting(parse(src).file).file, unsolvedLib())
   var n = 0
   for d in cr.diagnostics {
     if d.code == "T0224" {
@@ -4797,6 +4800,35 @@ test "an expected type, another argument or a written type argument fixes the ca
     unsolvedErrors("func take(o: in Option[Int]): Bool { true }\nfunc f(): Bool { take(none()) }\n"),
     0,
     "a parameter type"
+  )
+}
+
+test "a package-qualified imported generic call nothing fixes is T0224 (D383)" {
+  assertEqualInt(unsolvedErrors("func f(): Bool { Lib.isNone(Lib.none()) }\n"), 2, "neither qualified call is fixed")
+  assertEqualInt(
+    unsolvedErrors("func f(): Bool { Lib.isNone(Lib.none[Int]()) }\n"),
+    0,
+    "written type arguments fix both"
+  )
+  assertEqualInt(unsolvedErrors("func f(): Lib.Option[Int] { Lib.none() }\n"), 0, "the declared result type")
+  assertEqualInt(unsolvedErrors("func f(): Int { Lib.orElse(Lib.none(), 5) }\n"), 0, "a later argument fixes the other")
+}
+
+test "a method or UFCS imported generic call nothing fixes is T0224 (D383)" {
+  assertEqualInt(
+    unsolvedErrors("func g(b: in Bx[Int]): Bool {\n  val o = b.conv()\n  true\n}\n"),
+    1,
+    "a method type argument no argument or receiver fixes"
+  )
+  assertEqualInt(
+    unsolvedErrors("func g(b: in Bx[Int]): Option[String] { b.conv() }\n"),
+    0,
+    "the declared result type fixes it"
+  )
+  assertEqualInt(
+    unsolvedErrors("func g(b: in Bx[Int]): Int { b.get() }\n"),
+    0,
+    "the receiver fixes the type's parameter"
   )
 }
 

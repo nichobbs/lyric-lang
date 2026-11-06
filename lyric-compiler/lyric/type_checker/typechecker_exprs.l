@@ -17379,17 +17379,133 @@ func noteUnsolvedCall(
   argTypes: in List[Type],
   callSpan: in Span,
 ): Unit {
+  val p = match fn.kind { case EPath(p0) -> p0; case _ -> return }
+  if p.segments.count > 1 {
+    // `Pkg.f(x)`, alias-rewritten to a path: the qualifier must name the
+    // package the signature came from, and not a local value (D383).
+    val prefix: List[String] = newList()
+    var pi = 0
+    while pi < p.segments.count - 1 {
+      prefix.add(p.segments[pi])
+      pi = pi + 1
+    }
+    if scopeHasName(sc, prefix[0]) or not pkgNameEndsWith(sig.originPackage, prefix) {
+      return
+    }
+  }
+  noteUnsolvedCallNamed(
+    sc,
+    tbl,
+    fn,
+    p.segments[p.segments.count - 1],
+    MethodCallPick(sig = sig, fullSig = None),
+    None,
+    args,
+    argTypes,
+    callSpan
+  )
+}
+
+// A package-qualified call (`Pkg.f(x)`, the callee an `EMember` whose receiver
+// names a package, not a value) is recorded like a bare one, under the callee
+// name `f` (D383).  A dot-named call through its type (`Box.get(b)`) is not a
+// package-qualified one.
+func noteUnsolvedQualifiedCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  match fn.kind {
+    case EMember(recv, member) -> {
+      val segs: List[String] = newList()
+      if not calleeSegments(recv, segs) or segs.count == 0 or scopeHasName(sc, segs[0]) {
+        return
+      }
+      if sig.originPackage.length == 0 or not pkgNameEndsWith(sig.originPackage, segs) {
+        return
+      }
+      noteUnsolvedCallNamed(sc, tbl, fn, member, MethodCallPick(sig = sig, fullSig = None), None, args, argTypes, callSpan)
+    }
+    case _ -> ()
+  }
+}
+
+// A method or UFCS call (`recv.f(x)`) whose pick the method space resolved
+// (D383).  A type parameter the receiver fixes is solved: through the first
+// parameter of a dot-named function, and for a method of a generic type
+// through the type's own parameters.
+func noteUnsolvedMethodCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  pick: in MethodCallPick,
+  recvTy: in Type,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  val member = match fn.kind { case EMember(_, m) -> m; case _ -> return }
+  noteUnsolvedCallNamed(sc, tbl, fn, member, pick, Some(value = recvTy), args, argTypes, callSpan)
+}
+
+// Whether the receiver of a method call fixes the type parameter `gi` of the
+// pick: through the first parameter of a dot-named function, and for a method
+// of a generic type, any parameter the type itself declares (those are not the
+// method's own, so the call cannot leave them open).
+func genericBoundByReceiver(
+  pick: in MethodCallPick,
+  recvTy: in Option[Type],
+  gi: in Int,
+  callerGenerics: in List[String],
+): Bool {
+  val rt = match recvTy { case Some(t) -> t; case None -> return false }
+  match pick.fullSig {
+    case Some(full) -> {
+      if full.params.count == 0 or gi >= full.generics.count {
+        return false
+      }
+      match findGenericInPair(full.generics[gi], full.params[0].ty, rt) {
+        case Some(v) -> typeIsSolution(v, callerGenerics)
+        case None -> false
+      }
+    }
+    case None -> {
+      val sig = pick.sig
+      val owner = dotNamedOwnerName(unrefine(rt))
+      gi < sig.genericOwners.count and owner.length > 0 and sig.genericOwners[gi] == owner
+    }
+  }
+}
+
+func pkgNameEndsWith(origin: in String, segs: in List[String]): Bool {
+  val q = modulePathJoin(segs)
+  origin == q or origin.endsWith("." + q)
+}
+
+func noteUnsolvedCallNamed(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  fname: in String,
+  pick: in MethodCallPick,
+  recvTy: in Option[Type],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  callSpan: in Span,
+): Unit {
+  val sig = pick.sig
   if sig.generics.count == 0 or sig.isExternFunc or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
     return
   }
   if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
     return
   }
-  val fname = match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return }
-    case _ -> return
-  }
-  if scopeHasName(sc, fname) {
+  val isMethod = match recvTy { case Some(_) -> true; case None -> false }
+  if not isMethod and scopeHasName(sc, fname) {
     return
   }
   val valueParams = valueGenericParamsOf(tbl, fn, args.count)
@@ -17401,7 +17517,7 @@ func noteUnsolvedCall(
   val unsolved: List[String] = newList()
   var gi = 0
   while gi < sig.generics.count {
-    if not valueParams.contains(sig.generics[gi]) and not genericBoundByArgs(sig, srcIdx, argTypes, sig.generics[gi], sc.genericNames) {
+    if not valueParams.contains(sig.generics[gi]) and not genericBoundByArgs(sig, srcIdx, argTypes, sig.generics[gi], sc.genericNames) and not genericBoundByReceiver(pick, recvTy, gi, sc.genericNames) {
       unsolved.add(sig.generics[gi])
     }
     gi = gi + 1
@@ -19057,6 +19173,7 @@ func inferExprCore(
               noteUnsolvedCall(sc, tbl, fn, sig, args, argTypes, e.span)
               noteNestedCallFlow(sc, tbl, sig, args, argTypes, e.span)
             }
+            case EMember(_, _) -> noteUnsolvedQualifiedCall(sc, tbl, fn, sig, args, argTypes, e.span)
             case _ -> ()
           }
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
@@ -19186,6 +19303,10 @@ func inferExprCore(
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
+                  match memberRecvTy {
+                    case Some(mrt) -> noteUnsolvedMethodCall(sc, tbl, fn, mp, mrt, args, argTypes, e.span)
+                    case None -> ()
+                  }
                   match mp.fullSig {
                     case Some(fullForSend) -> sendNoteCall(
                       tbl,
