@@ -169,6 +169,7 @@ import Std.Time
 // hand-off. `ConcurrentQueue` + `cqTryDequeue` is the same idiom `lyric-mq`'s
 // kernel already uses.
 // =====================================================================
+@sendable
 extern type Task = "System.Threading.Tasks.Task"
 
 @externStatic
@@ -203,6 +204,7 @@ func ensureServerThreadCapacity(): Unit {
   ()
 }
 
+@sendable
 extern type ConcurrentQueue[T] = "System.Collections.Concurrent.ConcurrentQueue`1"
 
 @externTarget("System.Collections.Concurrent.ConcurrentQueue`1..ctor")
@@ -222,6 +224,7 @@ func cqTryDequeue[T](q: in ConcurrentQueue[T], result: out T): Bool = ()
 // `SemaphoreSlim` is the availability signal: one `Release()` per enqueued
 // item, one blocking `Wait()` per dequeue. All three members have unique arity
 // (ctor takes one `int` initialCount; `Wait()` / `Release()` take none).
+@sendable
 extern type Semaphore = "System.Threading.SemaphoreSlim"
 
 @externTarget("System.Threading.SemaphoreSlim..ctor")

@@ -70,6 +70,9 @@ extern func rtThreadSpawnDetached(start: (NativePtr[Byte]) -> NativePtr[Byte], a
 // Cancellation tokens.  A source owns the flag and an optional monotonic
 // deadline (0 = none); a token is a view of its source (or of none).
 // =====================================================================
+// Every read and write of `cancelled` holds the global lock, so a source may
+// be shared between tasks (D404).
+@sendable
 pub ref record CancellationTokenSource {
   var cancelled: Bool = false
   deadlineNanos: Long

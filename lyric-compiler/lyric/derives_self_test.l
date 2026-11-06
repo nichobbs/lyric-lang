@@ -1257,3 +1257,20 @@ test "a diagnostic in derived code is reported at the deriving type, a warning t
   assertTrue(reported[0].message.contains("generated"), "the message says it is generated code")
   assertEqual(reported[1].code, "T0002", "a diagnostic in user code is untouched")
 }
+
+test "a parsed span never has column 0, so column 0 marks generated code (D391)" {
+  val pr = parse("package P\n\nrecord Point { x: Int; y: Int }\n\nfunc f(a: Int): Int {\n  a + 1\n}\n")
+  var i = 0
+  while i < pr.file.items.count {
+    val sp = pr.file.items[i].span
+    assertTrue(sp.startPos.column > 0, "item start column is 1-based")
+    assertFalse(isGeneratedSpan(sp), "a source span is not a generated span")
+    i = i + 1
+  }
+  val gen = Span(
+    startPos = Position(offset = 5, line = 3, column = 0),
+    endPos = Position(offset = 6, line = 3, column = 0)
+  )
+  assertTrue(isGeneratedSpan(gen), "line above 0 and column 0 is generated")
+  assertFalse(isNoSourceSpan(gen), "a generated span still names a line, so the checker records sites for it")
+}

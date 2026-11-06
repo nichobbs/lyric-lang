@@ -108,21 +108,6 @@ impl Stepper for Num {
   }
 }
 
-func addThenRead(y: inout Int, d: in Int): Int {
-  y = y + d
-  y
-}
-
-// A spawned task is joined before the function returns, so it may pass the
-// caller's place on.
-func spawnBump(x: inout Int): Int {
-  scope {
-    val t = spawn addThenRead(x, 5)
-    val r = await t
-    return r + x
-  }
-}
-
 // A local declared in a module initialiser, a field default, a default
 // argument or a range bound is passed by reference like any other (the JVM
 // hoists it wherever its block is lowered).
@@ -415,12 +400,6 @@ test "a local passed by reference in a range bound, an initialiser and a default
   assertEqualInt(initialised, 41, "a module val initialiser")
   assertEqualInt(Defaulted().f, 8, "a field default")
   assertEqualInt(withDefault(), 4, "a default argument")
-}
-
-test "a spawned task passes the caller's place on" {
-  var x = 1
-  assertEqualInt(spawnBump(x), 12, "the task's write is seen by the function")
-  assertEqualInt(x, 6, "the caller")
 }
 
 test "a caller's local passed to a protected member, by concurrent callers" {

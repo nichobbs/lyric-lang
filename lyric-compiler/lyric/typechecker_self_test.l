@@ -3673,6 +3673,140 @@ test "Plain cannot be derived" {
   assertTrue(hasDiagCode(parseCheck(src), "T0172"), "T0172")
 }
 
+// The `spawn` rules (D404): what crosses a `spawn` must be `Send` (T0225), and
+// a spawned call must not reach a non-`Send` module-level value (T0226).
+func spawnSrc(decls: String, body: String): String {
+  "package P\nimport Std.CollectionsHost\nimport Std.Core\n" + decls + "async func run(): Unit {\n  scope {\n" + body +
+    "  }\n}\n"
+}
+
+func checkSpawn(decls: String, body: String): CheckResult {
+  checkWithImportedPackages(parse(spawnSrc(decls, body)).file, stdCtorPackages())
+}
+
+test "T0225: a List argument of a spawned call" {
+  val r = checkSpawn(
+    "async func fill(xs: in List[Int]): Unit {\n}\n",
+    "    val xs: List[Int] = newList()\n    val t = spawn fill(xs)\n    await t\n"
+  )
+  assertTrue(hasDiagCode(r, "T0225"), "a List is not Send: " + diagCodesOf(r))
+  assertTrue(diagMessagesContain(r, "argument 'xs'"), "names the argument: " + diagMessageFor(r, "T0225"))
+  assertTrue(diagMessagesContain(r, "protected type"), "says how to share it: " + diagMessageFor(r, "T0225"))
+}
+
+test "Send arguments of a spawned call are accepted" {
+  val decls = "protected type Total {\n  var sum: Int = 0\n  entry add(n: in Int) {\n    sum = sum + n\n  }\n}\n" +
+    "record Pt { x: Int\n y: Int }\nunion Shape { case Dot(p: Pt)\n case Empty }\n" +
+    "async func use(t: in Total, s: in slice[Int], p: in Pt, o: in Option[Shape], name: in String): Unit {\n  t.add(s.length)\n}\n"
+  val body = "    val t = Total()\n    val h = spawn use(t, [1, 2], Pt(x = 1, y = 2), Some(value = Empty), \"n\")\n    await h\n"
+  val r = checkSpawn(decls, body)
+  assertTrue(not hasDiagCode(r, "T0225"), "protected, slice, value record, union, String: " + diagCodesOf(r))
+}
+
+test "T0225: a record with a var field, a nested List, and an inout argument" {
+  val ref = checkSpawn(
+    "record Cell { var n: Int }\nasync func bump(c: in Cell): Unit {\n}\n",
+    "    val h = spawn bump(Cell(n = 1))\n    await h\n"
+  )
+  assertTrue(diagMessagesContain(ref, "'var' field"), "a var field gives identity: " + diagMessageFor(ref, "T0225"))
+  val nested = checkSpawn(
+    "record Bag { items: List[Int] }\nasync func look(b: in Bag): Unit {\n}\n",
+    "    val h = spawn look(Bag(items = newList()))\n    await h\n"
+  )
+  assertTrue(diagMessagesContain(nested, "field 'items'"), "the leaf field: " + diagMessageFor(nested, "T0225"))
+  val io = checkSpawn(
+    "async func set(n: inout Int): Unit {\n  n = 2\n}\n",
+    "    var n = 1\n    val h = spawn set(n)\n    await h\n"
+  )
+  assertTrue(diagMessagesContain(io, "'inout'"), "an inout argument: " + diagCodesOf(io))
+}
+
+test "T0225: a type parameter needs a Send bound" {
+  val bad = "package P\nasync func work[T](x: in T): Unit {\n}\nasync func run[T](x: in T): Unit {\n  scope {\n    val h = spawn work(x)\n    await h\n  }\n}\n"
+  val r = parseCheck(bad)
+  assertTrue(diagMessagesContain(r, "where T: Send"), "suggests the bound: " + diagCodesOf(r))
+  val good = "package P\nasync func work[T](x: in T): Unit where T: Send {\n}\nasync func run[T](x: in T): Unit where T: Send {\n  scope {\n    val h = spawn work(x)\n    await h\n  }\n}\n"
+  val g = parseCheck(good)
+  assertTrue(not hasDiagCode(g, "T0225") and not hasDiagCode(g, "T0051"), "a Send bound: " + diagCodesOf(g))
+  val inst = "package P\nimport Std.CollectionsHost\nfunc need[T](x: in T): Unit where T: Send {\n}\nfunc f(): Unit {\n  val xs: List[Int] = newList()\n  need(xs)\n}\n"
+  val ir = checkWithImportedPackages(parse(inst).file, stdCtorPackages())
+  assertTrue(hasDiagCode(ir, "T0108"), "a List does not satisfy Send: " + diagCodesOf(ir))
+}
+
+test "Send cannot be derived" {
+  val src = "package P\n@derive(Send)\nrecord V { x: Int }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0172"), "T0172")
+}
+
+test "T0226: a spawned call that reaches a module-level Map" {
+  val decls = "val cache: Map[String, Int] = newMap()\nfunc size(m: in Map[String, Int]): Int = 0\nfunc remember(k: in String): Int {\n  size(cache)\n}\nasync func work(k: in String): Unit {\n  if remember(k) > 0 {\n  }\n}\n"
+  val r = checkSpawn(decls, "    val h = spawn work(\"a\")\n    await h\n")
+  assertTrue(hasDiagCode(r, "T0226"), "the Map is reached: " + diagCodesOf(r))
+  assertTrue(diagMessagesContain(r, "work -> remember"), "the chain: " + diagMessageFor(r, "T0226"))
+  val safe = "val limit: Int = 3\nval names: slice[String] = [\"a\"]\nasync func work(k: in String): Unit {\n  if limit > names.length {\n  }\n}\n"
+  val s = checkSpawn(safe, "    val h = spawn work(\"a\")\n    await h\n")
+  assertTrue(not hasDiagCode(s, "T0226"), "Send module values are fine: " + diagCodesOf(s))
+  val shadow = "val xs: Map[String, Int] = newMap()\nasync func work(k: in String): Unit {\n  val xs = 3\n  if xs > 1 {\n  }\n}\n"
+  val sh = checkSpawn(shadow, "    val h = spawn work(\"a\")\n    await h\n")
+  assertTrue(not hasDiagCode(sh, "T0226"), "a local that shadows the value: " + diagCodesOf(sh))
+}
+
+test "@sendable needs an axiom, and applies only to extern types, records and opaque types (T0227)" {
+  val bare = parseCheck("package P\n@sendable\nrecord Cell { var n: Int }\n")
+  assertTrue(diagMessagesContain(bare, "@axiom"), "no axiom: " + diagCodesOf(bare))
+  val onFunc = parseCheck("package P\n@axiom(\"x\")\n@sendable\nfunc f(): Int = 1\n")
+  assertTrue(hasDiagCode(onFunc, "T0227"), "a function: " + diagCodesOf(onFunc))
+  val ok = "@axiom(\"Cell guards n with a lock\")\n@sendable\nref record Cell {\n  var n: Int\n}\nasync func bump(c: in Cell): Unit {\n}\n"
+  val r = checkSpawn(ok, "    val h = spawn bump(Cell(n = 1))\n    await h\n")
+  assertTrue(not hasDiagCode(r, "T0227") and not hasDiagCode(r, "T0225"), "an asserted type is Send: " + diagCodesOf(r))
+}
+
+// The receiver of a spawned method call and named arguments are labelled by
+// what they bind, whichever way the call is written.
+test "T0225: receivers and named arguments of a spawned call" {
+  val inBody = checkSpawn(
+    "record Cell {\n  var n: Int\n  async func get(self: in Cell): Int {\n    self.n\n  }\n}\n",
+    "    val c = Cell(n = 1)\n    val h = spawn c.get()\n    await h\n"
+  )
+  assertTrue(hasDiagCode(inBody, "T0225"), "a method declared in the type: " + diagCodesOf(inBody))
+  assertTrue(diagMessagesContain(inBody, "the receiver"), "names the receiver: " + diagMessageFor(inBody, "T0225"))
+  val ufcs = checkSpawn(
+    "record Cell { var n: Int }\nasync func Cell.peek(c: in Cell, k: in Int): Int {\n  k\n}\n",
+    "    val c = Cell(n = 1)\n    val h = spawn c.peek(2)\n    await h\n"
+  )
+  assertTrue(
+    diagMessagesContain(ufcs, "the receiver"),
+    "a dot-named function called as a method: " + diagMessageFor(ufcs, "T0225")
+  )
+  assertTrue(
+    not diagMessagesContain(ufcs, "argument 'k'"),
+    "the Int argument is Send: " + diagMessageFor(ufcs, "T0225")
+  )
+  val valueRecv = checkSpawn(
+    "record Pt {\n  x: Int\n  async func norm(self: in Pt): Int {\n    self.x\n  }\n}\n",
+    "    val p = Pt(x = 3)\n    val h = spawn p.norm()\n    await h\n"
+  )
+  assertTrue(not hasDiagCode(valueRecv, "T0225"), "a value receiver is Send: " + diagCodesOf(valueRecv))
+  val named = checkSpawn(
+    "async func two(a: in Int, xs: in List[Int]): Unit {\n}\n",
+    "    val l: List[Int] = newList()\n    val h = spawn two(xs = l, a = 1)\n    await h\n"
+  )
+  assertTrue(
+    diagMessagesContain(named, "argument 'xs'"),
+    "a named argument out of order: " + diagMessageFor(named, "T0225")
+  )
+  assertTrue(
+    not diagMessagesContain(named, "argument 'a'"),
+    "the Int stays unflagged: " + diagMessageFor(named, "T0225")
+  )
+}
+
+test "T0225: a spawned call of a function value" {
+  val src = "package P\nasync func run(f: in () -> Int): Unit {\n  scope {\n    val h = spawn f()\n    await h\n  }\n}\n"
+  val r = parseCheck(src)
+  assertTrue(diagMessagesContain(r, "function value"), "a closure's captures are unknown: " + diagCodesOf(r))
+}
+
 // `buffer[T]` (D185): a built-in type whose elements must be `Plain` (T0173),
 // indexed and written like an array (T0157), with a runtime `.length`.
 test "buffer[T] resolves, indexes and has a length" {

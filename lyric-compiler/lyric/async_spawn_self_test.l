@@ -404,34 +404,42 @@ async func awaitFailingSpawn(): Unit {
 // silent hang in `ThreadPerTaskExecutor.close`; now that path runs
 // `shutdownNow()` (interrupt, no wait) and rethrows immediately.
 //
-// A plain (non-async) func: it awaits nothing, and the MSIL async-SM
-// closure pre-pass has a pre-existing hole for a `var` captured by a lambda
-// declared inside a `scope` body (it panics "captured mutable local 'go' was
-// not hoisted"); the plain-func pre-pass handles the shape correctly.
-//
 // `loiter` is concurrency-conditional so the test is safe on MSIL's
-// degenerate-synchronous `spawn`: it polls the hoisted `go` flag (set AFTER
-// the spawn statement) for up to one second.  Run inline (MSIL), `go` is
-// still 0, so it exits after the bounded wait and the panic follows.  Run
-// concurrently (JVM), it observes `go == 1` and loiters in interruptible
-// sleeps until `shutdownNow()` interrupts it — before the fix this loitering
-// made the hang unbounded, which is exactly the regression this case guards.
+// degenerate-synchronous `spawn`: it polls the `go` flag (set AFTER the spawn
+// statement) for up to one second.  Run inline (MSIL), `go` is still 0, so it
+// exits after the bounded wait and the panic follows.  Run concurrently (JVM),
+// it observes `go == 1` and loiters in interruptible sleeps until
+// `shutdownNow()` interrupts it — before the fix this loitering made the hang
+// unbounded, which is exactly the regression this case guards.  The flag is a
+// protected type because the task reads it while the scope body writes it
+// (D404: a spawned call may share only `Send` values).
+protected type GoFlag {
+  var v: Int = 0
+  entry raise() {
+    v = 1
+  }
+  entry get(): Int {
+    return v
+  }
+}
+
+func loiter(go: in GoFlag): Int {
+  var waited = 0
+  while go.get() == 0 and waited < 20 {
+    sleepMillis(50)
+    waited = waited + 1
+  }
+  while go.get() == 1 {
+    sleepMillis(200)
+  }
+  0
+}
+
 func panicWithUnfinishedSpawn(): Unit {
-  var go = 0
+  val go = GoFlag()
   scope {
-    val loiter = { ->
-      var waited = 0
-      while go == 0 and waited < 20 {
-        sleepMillis(50)
-        waited = waited + 1
-      }
-      while go == 1 {
-        sleepMillis(200)
-      }
-      0
-    }
-    val t = spawn loiter()
-    go = 1
+    val t = spawn loiter(go)
+    go.raise()
     panic("boom-in-scope-body")
   }
 }

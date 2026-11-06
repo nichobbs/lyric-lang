@@ -326,6 +326,25 @@ pub func compileToMsilWithVersion(
   val singleFileTypeArgCallees: Map[String, Bool] = newMap()
   val singleFileGenericItems: List[Item] = newList()
   val singleFileIfaceOut: List[IfaceBuild.IfaceOutcome] = newList()
+  // Collect this file's OWN `pub aspect` templates before the weave (#4600),
+  // which now runs ahead of the type check (D392): a same-package
+  // `from`-instance (`aspect X from Template { ... }`, declared in the same
+  // single file being compiled) resolves against `pkgName + "." + fqn`
+  // (`Weaver.lookupFromTemplate`'s unqualified-name retry, #3543), so the
+  // template must be in the map even though no cross-package dependency is
+  // involved. `compileProjectToJarBundledWithFeatures` does the same for the
+  // JVM single-file path, so B'-mode from-instances (docs/55) resolve
+  // identically on both targets.
+  val singleFileTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
+  Weaver.collectAspectTemplates(
+    file0.items,
+    segmentsToString(file0.packageDecl.path.segments),
+    file0.imports,
+    singleFileTemplates
+  )
+  // #7496: the A0047 row-type check resolves type names against the same
+  // stdlib packages the type checker saw.
+  val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
   val singleFileOpts = MiddleEndOptions(
     externIterResolver = msilIterResolver(newMsilHostIterIndex(newList())),
     tcFatal = true,
@@ -348,7 +367,9 @@ pub func compileToMsilWithVersion(
     stringSurface = SMSClosed,
     buildInterface = true,
     interfaceTargets = dotnetTarget(),
-    interfaceOut = singleFileIfaceOut
+    interfaceOut = singleFileIfaceOut,
+    weaveTemplates = singleFileTemplates,
+    weaveTypeIndex = Some(value = weaveTypeIndex)
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -406,32 +427,8 @@ pub func compileToMsilWithVersion(
   // consumer.  Verified at runtime on both targets with a `call.elapsed`
   // aspect in a file with no `import Std.Time`.
   //
-  // Collect this file's OWN `pub aspect` templates before weaving (#4600):
-  // a same-package `from`-instance (`aspect X from Template { ... }`,
-  // declared in the same single file being compiled) resolves against
-  // `pkgName + "." + fqn` (`Weaver.lookupFromTemplate`'s unqualified-name
-  // retry, #3543), so the template must be in the map even though there is
-  // no cross-package dependency involved.  `compileProjectToJarBundledWithFeatures`
-  // already does this for the JVM single-file path (it scans `userFile.items`
-  // into `allTemplates`); this closes the matching MSIL gap so B'-mode
-  // from-instances (docs/55) resolve identically on both targets for a
-  // single-file build, not just multi-package project builds with a path
-  // dependency.
-  val singleFileTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
-  Weaver.collectAspectTemplates(file.items, pkgName, file.imports, singleFileTemplates)
-  // #6826 fast-follow: label with the real on-disk `path` (already in
-  // scope, and already used by the parse phase above), matching every
-  // other phase's attribution for a single-file build — a weave-time
-  // diagnostic (A0042/A0043/A0044) previously printed with no file
-  // attribution at all even on the single-file path.
   val noWeaveFiles: List[String] = newList()
-  // #6702: `stdlibRecs` is the same cross-file record list already threaded
-  // into `pipeCheckAndMono` above, reused here so an `impl` block targeting
-  // a stdlib record resolves its target's own fields in the await-hoist.
-  // #7496: the A0047 row-type check resolves type names against the same
-  // stdlib packages the type checker saw.
-  val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveFiles, stdlibRecs, singleFileTypeArgCallees, singleFileOpts.contractsEnabled, pipeWovenGenerics(allMonoFuncs, singleFileGenericItems)) {
+  val weavedFile = match pipeFinishWeave(file, path, noWeaveFiles, stdlibRecs, singleFileTypeArgCallees, pipeWovenGenerics(allMonoFuncs, singleFileGenericItems)) {
     case Some(f) -> f
     case None -> return false
   }
@@ -966,6 +963,55 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     hostIterDlls.add(np)
   }
   val hostIterIx = newMsilHostIterIndex(hostIterDlls)
+  // Collect aspect templates from every package in the bundle before any
+  // package is checked, because the weave runs ahead of the check (D392), so
+  // cross-package `from`-instance aspects (e.g.
+  // `aspect Guard from Lib.Aspects.Validate { matches: ... }`) can
+  // resolve their template body.  Only `pub` aspects with an `around` body
+  // are collected; same-package private aspects are intentionally excluded
+  // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
+  // Map-iteration primitives needed.
+  val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
+  // #7496: which package declares each type name, for the A0047 row-type
+  // check — the stdlib and restored packages every package type-checked
+  // against, plus every bundle package and path-dependency template source.
+  val weaveTypeIndex = pipeTypeOwnerIndex(baseImportedPkgs)
+  var tpi = 0
+  while tpi < parsedPkgs.count {
+    Weaver.collectAspectTemplates(
+      parsedPkgs[tpi].file.items,
+      parsedPkgs[tpi].name,
+      parsedPkgs[tpi].file.imports,
+      allTemplates
+    )
+    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, parsedPkgs[tpi].file)
+    tpi = tpi + 1
+  }
+  // Also collect templates from path-dependency source packages (#3498 partial fix).
+  // These are pre-compiled dependencies whose source files were passed by the CLI
+  // so cross-package `from`-instance aspects can resolve their template bodies.
+  var dti = 0
+  while dti < depTemplatePkgs.count {
+    val dtPkg = depTemplatePkgs[dti]
+    val dtParsed = parseDepTemplate(dtPkg, "dotnet", activeFeatures)
+    // #6351/#6504: the import-alias rewrite must run over a dependency's
+    // template source before collection, exactly as it runs over every
+    // in-bundle file (via `pipeExpandAndRewrite`).  A template body is
+    // spliced into CONSUMER packages that don't share the dependency's
+    // imports, so an alias-qualified (`WebPkg.unauthorized(...)` under
+    // `import Web as WebPkg`) or tail-segment-qualified
+    // (`Console.error(...)` under `import Std.Console`) reference only
+    // resolves post-splice if it was collapsed to the full package FQN
+    // here first.  Before this, such woven advice lowered to an
+    // "unsupported method" runtime-throw stub — a silent miscompile of
+    // every cross-package aspect error path (caught when the T0115
+    // ldnull backstop made the class loud).
+    val dtRewritten = Aliases.rewriteFile(dtParsed)
+    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
+    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
+    dti = dti + 1
+  }
+
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
@@ -1011,7 +1057,9 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       stringSurface = SMSClosed,
       buildInterface = true,
       interfaceTargets = dotnetTarget(),
-      interfaceOut = projIfaceOut
+      interfaceOut = projIfaceOut,
+      weaveTemplates = allTemplates,
+      weaveTypeIndex = Some(value = weaveTypeIndex)
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f
@@ -1170,49 +1218,6 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // (#5177).
   preSeedBundleAsyncRetTypesMsil(cctx, perPkgFiles, perPkgNames)
 
-  // Collect aspect templates from every package in the bundle before the
-  // weave loop so cross-package `from`-instance aspects (e.g.
-  // `aspect Guard from Lib.Aspects.Validate { matches: ... }`) can
-  // resolve their template body.  Only `pub` aspects with an `around` body
-  // are collected; same-package private aspects are intentionally excluded
-  // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
-  // Map-iteration primitives needed.
-  val allTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
-  // #7496: which package declares each type name, for the A0047 row-type
-  // check — the stdlib and restored packages every package type-checked
-  // against, plus every bundle package and path-dependency template source.
-  val weaveTypeIndex = pipeTypeOwnerIndex(baseImportedPkgs)
-  var tpi = 0
-  while tpi < perPkgFiles.count {
-    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], perPkgFiles[tpi].imports, allTemplates)
-    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, perPkgFiles[tpi])
-    tpi = tpi + 1
-  }
-  // Also collect templates from path-dependency source packages (#3498 partial fix).
-  // These are pre-compiled dependencies whose source files were passed by the CLI
-  // so cross-package `from`-instance aspects can resolve their template bodies.
-  var dti = 0
-  while dti < depTemplatePkgs.count {
-    val dtPkg = depTemplatePkgs[dti]
-    val dtParsed = parseDepTemplate(dtPkg, "dotnet", activeFeatures)
-    // #6351/#6504: the import-alias rewrite must run over a dependency's
-    // template source before collection, exactly as it runs over every
-    // in-bundle file (via `pipeExpandAndRewrite`).  A template body is
-    // spliced into CONSUMER packages that don't share the dependency's
-    // imports, so an alias-qualified (`WebPkg.unauthorized(...)` under
-    // `import Web as WebPkg`) or tail-segment-qualified
-    // (`Console.error(...)` under `import Std.Console`) reference only
-    // resolves post-splice if it was collapsed to the full package FQN
-    // here first.  Before this, such woven advice lowered to an
-    // "unsupported method" runtime-throw stub — a silent miscompile of
-    // every cross-package aspect error path (caught when the T0115
-    // ldnull backstop made the class loud).
-    val dtRewritten = Aliases.rewriteFile(dtParsed)
-    Weaver.collectAspectTemplates(dtRewritten.items, dtPkg.name, dtRewritten.imports, allTemplates)
-    Weaver.typeOwnerIndexAddFile(weaveTypeIndex, dtRewritten)
-    dti = dti + 1
-  }
-
   // Every package's type names and generic arities, in bundle order, before
   // any package is tokenised (see `preRegisterPackageTypeNames`).
   var pri = 0
@@ -1251,7 +1256,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled, pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li]), sink) {
+    val weaved = match pipeFinishWeave(perPkgFiles[li], parsedPkgs[li].label, parsedPkgs[li].files, allImportedRecordDecls, perPkgTypeArgCallees[li], pipeWovenGenerics(allImportedGenFuncs, perPkgGenericItems[li]), sink) {
       case Some(f) -> f
       case None -> return false
     }

@@ -1066,14 +1066,14 @@ All are provisional pending weaver integration.
 | `Std.HttpServer`         | `http_server.l`              | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| `Std.Task`               | `task.l`                     | 1      | 0           |
+| `Std.Task`               | `task.l`                     | 4      | 0           |
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
 | `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmBind`     | `plugin_wasm_bind.l`         | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **37** | **2**       |
+| **Total**                |                              | **40** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -1114,7 +1114,8 @@ recorded in the §19 baseline.
 | `Std.AnnotationMetaHost` | `annotation_meta_host.l`     | 1      | 0           |
 | `Std.ConfigOverrideHost` | `config_override_host.l`     | 1      | 0           |
 | `Std.PluginWasmLoad`     | `plugin_wasm_load.l`         | 1      | 0           |
-| **Total**                |                              | **30** | **0**       |
+| `Std.Task`               | `task.l`                     | 1      | 0           |
+| **Total**                |                              | **31** | **0**       |
 
 ### Combined total
 
@@ -1212,6 +1213,9 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
 | `dotnet` | `Std.StringHost` | `string_host.l` | System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts |
+| `dotnet` | `Std.Task` | `task.l` | System.Threading.Tasks.Task is safe to use from several threads at once, as its .NET documentation states |
+| `dotnet` | `Std.Task` | `task.l` | System.Threading.CancellationToken is safe to use from several threads at once, as its .NET documentation states |
+| `dotnet` | `Std.Task` | `task.l` | System.Threading.CancellationTokenSource is safe to use from several threads at once, as its .NET documentation states |
 | `dotnet` | `Std.Task` | `task.l` | System.Threading.Tasks.Task.Wait(int) — block the caller up to timeoutMs; returns false on timeout |
 | `dotnet` | `Std.TcpHost` | `tcp_host.l` | System.Net.Sockets and System.Net.Security operations conform to their documented .NET contracts |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts |
@@ -1244,6 +1248,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.RegexHost` | `regex_host.l` | java.util.regex.Pattern and java.util.regex.Matcher conform to their documented JVM contracts |
 | `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output |
 | `jvm` | `Std.StringHost` | `string_host.l` | java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts |
+| `jvm` | `Std.Task` | `task.l` | java.util.concurrent.atomic.AtomicBoolean is safe to use from several threads at once, as its JDK documentation states |
 | `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts |
 | `jvm` | `Std.TlsHost` | `tls_host.l` | java.security.cert / java.security.KeyFactory / java.security.Signature operations conform to their documented JVM contracts |
 | `jvm` | `Std.UnicodeHost` | `unicode_host.l` | java.lang.Character.getType conforms to its documented JVM contract; jvmCategoryToNetConvention correctly cross-references it to the .NET UnicodeCategory convention via Unicode General_Category |
