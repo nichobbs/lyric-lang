@@ -70,6 +70,15 @@ func freshSpan(
   sp
 }
 
+/// `e` with span `sp`; a path's own span too, because the checker keys a
+/// call's resolved callee by the callee path's span, not the expression's.
+func respanExpr(e: in Expr, sp: in Span): Expr {
+  match e.kind {
+    case EPath(p) -> e.copy(kind = EPath(path = p.copy(span = sp)), span = sp)
+    case _ -> e.copy(span = sp)
+  }
+}
+
 func respanFunc(d: in FunctionDecl, sp: in Span): FunctionDecl {
   d.copy(span = sp)
 }
@@ -88,7 +97,7 @@ pub func respanGenerated(
 ): List[Item] {
   val mapped = mapFileNodes(
     file.copy(items = items),
-    { e: Expr -> e.copy(span = freshSpan(base, e.span, cause, origins, keepSourceLines)) },
+    { e: Expr -> respanExpr(e, freshSpan(base, e.span, cause, origins, keepSourceLines)) },
     { s: Statement -> s.copy(span = freshSpan(base, s.span, cause, origins, keepSourceLines)) },
     { p: Pattern -> p.copy(span = freshSpan(base, p.span, cause, origins, keepSourceLines)) }
   )

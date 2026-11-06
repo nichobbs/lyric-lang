@@ -49,6 +49,7 @@ import Std.Encoding
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
+import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4433,11 +4434,27 @@ func expandFileMode(
   for it in file.items {
     items.add(strippedItem(it, component))
   }
+  val generated: List[Item] = newList()
   for c in chunks {
-    parseChunk(pkg, c, st, file.packageDecl.span, items)
+    parseChunk(pkg, c, st, file.packageDecl.span, generated)
   }
   if hasErrorDiag(st.diags) {
     return PluginExpandResult(file = file, diagnostics = st.diags)
+  }
+  // The chunks were parsed on their own, so their offsets restart at zero and
+  // would collide with the file's own spans in the checker's span-keyed
+  // tables (a generated call's resolved callee would be lost or overwritten).
+  // Each node takes a span of its own beyond the file's (docs/70 section 7.1).
+  val respanned = Expand.respanGenerated(
+    file,
+    generated,
+    Expand.generatedSpanBase(file),
+    file.packageDecl.span,
+    newMap(),
+    true
+  )
+  for g in respanned {
+    items.add(g)
   }
   val paths: List[String] = newList()
   paths.add("Std.Core")
