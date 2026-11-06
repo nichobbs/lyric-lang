@@ -681,7 +681,7 @@ union Mode {
 /// Lyric have assignable fields once a binding is in scope, so each
 /// helper can step the cursor and accumulate tokens / diagnostics
 /// without reconstructing the record.
-record LexerState {
+ref record LexerState {
   source: String
   fileId: Int
   offsetBase: Int

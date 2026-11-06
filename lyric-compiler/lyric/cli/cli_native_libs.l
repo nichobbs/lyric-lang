@@ -426,10 +426,13 @@ pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[
   val download = Path.join(dir, ".download")
   val curlArgs: List[String] = newList()
   curlArgs.add("-fsSL")
+  curlArgs.add("--proto")
+  curlArgs.add("=https,http,file")
   curlArgs.add("--retry")
   curlArgs.add("2")
   curlArgs.add("-o")
   curlArgs.add(download)
+  curlArgs.add("--")
   curlArgs.add(p.url)
   Console.println("restore: " + label + " <- " + p.url)
   val res = ProcessCapture.runCaptureWithDiagnosticsTimeout("curl", curlArgs, "", 900000)
@@ -570,6 +573,7 @@ func resolvePkgConfigLib(
   if spec.version.length > 0 {
     val vArgs: List[String] = newList()
     vArgs.add("--atleast-version=" + spec.version)
+    vArgs.add("--")
     vArgs.add(spec.pkgConfig)
     match Process.runCapture("pkg-config", vArgs, 30000) {
       case Err(e) -> {
@@ -587,6 +591,7 @@ func resolvePkgConfigLib(
   }
   val lArgs: List[String] = newList()
   lArgs.add("--libs")
+  lArgs.add("--")
   lArgs.add(spec.pkgConfig)
   match Process.runCapture("pkg-config", lArgs, 30000) {
     case Err(e) -> errors.add("native library '" + spec.name + "': pkg-config could not be started (" + e + ")")
@@ -598,12 +603,16 @@ func resolvePkgConfigLib(
         return
       }
       // Every token `pkg-config --libs` prints is a link argument (`-L`, `-l`, `-pthread`,
-      // `-Wl,...`, a static archive path); only blanks are dropped.
+      // `-Wl,...`, a static archive path); reject response files (`@...`) and compiler plugins.
       val flat = Str.replace(Str.replace(Str.replace(res.stdout, "\n", " "), "\t", " "), "\r", " ")
       val libDirs: List[String] = newList()
       val names: List[String] = newList()
       for tok in Str.split(Str.trim(flat), " ") {
         if tok.length > 0 {
+          if Str.startsWith(tok, "@") or Str.startsWith(tok, "-fplugin") or Str.contains(tok, "--plugin") {
+            errors.add("native library '" + spec.name + "': pkg-config returned disallowed linker flag '" + tok + "'")
+            return
+          }
           args.add(tok)
           if Str.startsWith(tok, "-L") and tok.length > 2 {
             libDirs.add(Str.substring(tok, 2))

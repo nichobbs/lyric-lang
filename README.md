@@ -2,7 +2,7 @@
 
 A safety-oriented application language targeting .NET, drawing on Ada's design principles while maintaining familiar syntax and ecosystem interoperability.
 
-**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The self-hosted `--target dotnet` path is not yet at the v1.0 production bar — the front end is still advisory and a few constructs (`?`, `await`, `defer`, `==`) need correctness work; the live gating list is `docs/41-self-hosted-compiler-gap-analysis.md` §10, sequenced as `docs/36-v1-roadmap.md` §R7.
+**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (`--target dotnet`), JVM bytecode (`--target jvm`), and LLVM IR (`--target native`). A 40+ module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The compiler is pre-1.0 while the cross-backend typed intermediate representation (`Lyric.Tir`, `docs/70`) and ecosystem target bindings complete.
 
 ## What Lyric is
 
@@ -16,7 +16,20 @@ A general-purpose application language for building services and APIs, with:
 - **Tiered visibility** — opaque domain types coexist with exposed wire-level types via compiler-generated projections
 - **Optional formal verification** via SMT-solver-backed proof of contracts (per-module opt-in)
 
-Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, value types, and Native AOT) and the JVM (`--target jvm`, emitting JVM bytecode via the self-hosted JVM emitter under `lyric-compiler/jvm/`).
+Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, value types, and Native AOT), the JVM (`--target jvm`, emitting JVM bytecode via the self-hosted JVM emitter under `lyric-compiler/jvm/`), and native machine code (`--target native`, emitting LLVM IR linked against `lyric-rt`).
+
+### Ecosystem Package Target Matrix
+
+| Package | `.NET` (`dotnet`) | `JVM` (`jvm`) | `Native` (`native`) | Notes |
+|---|---|---|---|---|
+| `lyric-stdlib` (`Std.*`) | Supported | Supported | Supported | Full cross-target standard library |
+| `lyric-web` / `lyric-ws` | Supported | Supported | Supported (`web`) | HTTP/1.1, TLS/mTLS, WebSocket, OpenAPI |
+| `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, Redis/in-memory session |
+| `lyric-cache` / `lyric-resilience` | Supported | Supported | Pure-Lyric subset | Redis/in-memory cache, retry/circuit-breaker |
+| `lyric-db` | Supported (Postgres, SQLite) | Returns `NOT_SUPPORTED_ON_TARGET` | — | JDBC kernel tracked separately |
+| `lyric-mq` | Supported (`inmemory`) | Returns `NOT_SUPPORTED_ON_TARGET` | — | Broker drivers return explicit `Err` |
+| `lyric-storage` | Supported (`connectLocal`) | Supported (`connectLocal`) | — | `connectS3` / `connectAzureBlob` return `NOT_IMPLEMENTED` |
+| `lyric-aws-xray` | Supported (`local`, `aws`) | Supported (`jvm`) | — | Lambda X-Ray active tracing aspect |
 
 ## Quick start
 

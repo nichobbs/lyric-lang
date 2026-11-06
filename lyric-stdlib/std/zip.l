@@ -779,6 +779,8 @@ func readDirectory(
   var at = (base + cdOffset).toInt()
   val cdEnd = (base + cdOffset + cdSize).toInt()
   var total = 0i64
+  val spanStarts: List[Long] = newList()
+  val spanEnds: List[Long] = newList()
   var i = 0
   while i < totalEntries {
     if at + 46 > cdEnd {
@@ -816,6 +818,9 @@ func readDirectory(
     }
     if name.length == 0 {
       return Err(error = Malformed(reason = "an entry has an empty name"))
+    }
+    if zipNameIsUnsafe(name) {
+      return Err(error = Malformed(reason = "the entry '" + name + "' has an unsafe path"))
     }
     if seen.containsKey(name) {
       return Err(error = Malformed(reason = "the entry '" + name + "' appears twice"))
@@ -870,9 +875,20 @@ func readDirectory(
       }
       k = k + 1
     }
-    if localOffset + 30i64 + localNameLen.toLong() + localExtraLen.toLong() + csize > cdOffset {
+    val spanStart = localOffset
+    val spanEnd = localOffset + 30i64 + localNameLen.toLong() + localExtraLen.toLong() + csize
+    if spanEnd > cdOffset {
       return Err(error = Malformed(reason = "the entry '" + name + "' runs past the data"))
     }
+    var si = 0
+    while si < spanStarts.count {
+      if spanStart < spanEnds[si] and spanStarts[si] < spanEnd {
+        return Err(error = Malformed(reason = "the entry '" + name + "' overlaps another entry"))
+      }
+      si = si + 1
+    }
+    spanStarts.add(spanStart)
+    spanEnds.add(spanEnd)
     entries.add(
       ZipEntryInfo(
         name = name,
@@ -890,6 +906,19 @@ func readDirectory(
     i = i + 1
   }
   Ok(value = entries)
+}
+
+func zipNameIsUnsafe(name: in String): Bool {
+  if name.startsWith("/") or name.startsWith("\\") or name.contains("\u{0000}") or name.contains("\\") {
+    return true
+  }
+  if name.length >= 2 and name.substring(1, 1) == ":" {
+    return true
+  }
+  if name == ".." or name.startsWith("../") or name.endsWith("/..") or name.contains("/../") {
+    return true
+  }
+  false
 }
 
 /// The contents of `entry` (from `readZipDirectory(data, ...)`), inflated if
@@ -931,6 +960,9 @@ pub func readZipEntry(data: in slice[Byte], entry: in ZipEntryInfo): Result[slic
 /// must be unique; directory entries are not written.
 @experimental
 pub func writeZip(files: in List[ZipFile]): slice[Byte] {
+  if files.count > 65535 {
+    panic("Std.Zip.writeZip: too many entries for non-ZIP64 archive (max 65535)")
+  }
   val acc: List[Byte] = newList()
   val central: List[Byte] = newList()
   // 1980-01-01 00:00:00 in DOS date and time.
@@ -938,6 +970,9 @@ pub func writeZip(files: in List[ZipFile]): slice[Byte] {
   val dosDate = 33
   for f in files {
     val nameBytes = encodeUtf8(f.name)
+    if nameBytes.length > 65535 {
+      panic("Std.Zip.writeZip: entry name exceeds 65535 bytes")
+    }
     val crc = crc32(f.data)
     val deflated = deflate(f.data)
     val useDeflate = deflated.length < f.data.length

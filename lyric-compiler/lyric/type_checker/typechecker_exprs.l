@@ -2089,8 +2089,8 @@ pub func recordRecordArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, op: 
   }
 }
 
-// A record whose `==` compares field by field (D164): one with no `var`
-// field (a value, D157), or one that derives `Equals`.
+// A record whose `==` compares field by field (D164): a value record (not
+// `ref record`, no `var` field; D157, D222), or one that derives `Equals`.
 pub func isStructuralEqRecord(tbl: in SymbolTable, t: in Type): Bool {
   match unrefine(t) {
     case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
@@ -2098,6 +2098,9 @@ pub func isStructuralEqRecord(tbl: in SymbolTable, t: in Type): Bool {
         val decl = match rs.kind { case DKRecord(_, rd) -> rd; case DKExposedRec(_, rd) -> rd; case _ -> return false }
         if hasDerive(tbl, "Equals", t) {
           return true
+        }
+        if decl.isRef {
+          return false
         }
         for m in decl.members {
           match m {
@@ -19258,6 +19261,9 @@ func inferExprCore(
                   match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
+                      if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
+                        sendNoteFuncValueCall(tbl, e.span, calleeText(fn))
+                      }
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
                         val expectedMsg = if minArgs == paramTypes.count {

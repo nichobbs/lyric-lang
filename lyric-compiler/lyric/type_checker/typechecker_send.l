@@ -175,7 +175,7 @@ func sendUserViolation(
     return None
   }
   if declaredSendable(tbl, tid) {
-    return None
+    return sendArgsViolation(tbl, bounds, seen, "type argument", args, depth)
   }
   seen.add(key)
   val verdict = sendDeclaredViolation(tbl, bounds, seen, t, tid, name, args, depth)
@@ -197,7 +197,7 @@ func sendDeclaredViolation(
     case None -> Some(value = "'" + name + "' is not a declared type")
     case Some(sym) -> match sym.kind {
       case DKEnum(_, _) -> None
-      case DKProtected(_, _) -> None
+      case DKProtected(_, _) -> sendArgsViolation(tbl, bounds, seen, "type argument", args, depth)
       case DKRecord(_, rd) -> sendRecordViolation(tbl, bounds, seen, tid, rd, name, args, depth)
       case DKExposedRec(_, rd) -> sendRecordViolation(tbl, bounds, seen, tid, rd, name, args, depth)
       case DKOpaque(_, od) -> sendOpaqueViolation(tbl, bounds, seen, od, name, args, depth)
@@ -402,7 +402,7 @@ pub func sendNoteCall(
       case Some(rt) -> collected.add(SendCallArg(label = "the receiver", ty = rt, mode = PMIn))
       case None -> ()
     }
-  } else if sig.params.count == args.count + 1 {
+  } else if sig.params.count > 0 {
     match recvTy {
       case Some(rt) -> {
         collected.add(SendCallArg(label = "the receiver", ty = rt, mode = sig.params[0].mode))
@@ -428,6 +428,17 @@ pub func sendNoteCall(
     tbl.sendCallInfo.remove(key)
   }
   tbl.sendCallInfo.add(key, SendCallInfo(calleeKey = calleeKey, calleeName = calleeName, args = collected))
+}
+
+/// Records a call through a function value (local, module `val`, record field,
+/// indexed element, lambda, or call result) so `checkSpawnSendable` rejects
+/// spawning it with T0225.
+pub func sendNoteFuncValueCall(tbl: in SymbolTable, span: in Span, calleeName: in String): Unit {
+  val key = recordCopySiteKey(span)
+  if tbl.sendCallInfo.containsKey(key) {
+    tbl.sendCallInfo.remove(key)
+  }
+  tbl.sendCallInfo.add(key, SendCallInfo(calleeKey = "<func-value>", calleeName = calleeName, args = newList()))
 }
 
 /// Records that the function being checked reads module-level value `name`
@@ -477,6 +488,18 @@ pub func checkSpawnSendable(sc: in Scope, tbl: in SymbolTable, diag: in List[Dia
   val call = unparenExpr(inner)
   match mapGet(tbl.sendCallInfo, recordCopySiteKey(call.span)) {
     case Some(info) -> {
+      if info.calleeKey == "<func-value>" {
+        val subj = if info.calleeName == "" { "the callee" } else { "'" + info.calleeName + "'" }
+        diag.add(
+          errorDiagnostic(
+            "T0225",
+            subj +
+              " is a function value, and a spawned call of one cannot be checked: the task would share whatever it captured with its spawner; spawn a named function and pass it the values it needs",
+            call.span
+          )
+        )
+        return
+      }
       for a in info.args {
         match a.mode {
           case PMIn -> match sendViolation(tbl, sc.bounds, a.ty) {

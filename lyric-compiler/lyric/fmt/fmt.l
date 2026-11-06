@@ -67,7 +67,7 @@ func harvestedOffset(h: in HarvestedItem): Int {
 /// trivia at every structural boundary (top-level item, statement,
 /// record / union / enum member).  Inline printers don't take it
 /// because nothing emits across multiple source lines.
-pub record FmtCtx {
+pub ref record FmtCtx {
   items: List[HarvestedItem]
   var cursor: Int
 }

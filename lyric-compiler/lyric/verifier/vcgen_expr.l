@@ -622,6 +622,36 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               appendTermList(recSc, argSides)
               val recAs: List[Term] = newList()
               appendTermList(recAs, argAssumed)
+              match mapGet(env.recordDefaults, "!invariant." + name) {
+                case Some(invs) -> {
+                  var invEnv = envInOwnContract(varlessEnv(env), recordKey)
+                  var ifi = 0
+                  while ifi < fieldNames.count and ifi < recPaired.terms.count and ifi < slotSorts.count {
+                    val fInfo = match mapGet(env.fieldInfos, name + "__" + fieldNames[ifi]) {
+                      case Some(fi0) -> fi0.copy(sort = slotSorts[ifi])
+                      case None -> SortInfo(sort = slotSorts[ifi], range = RBKNone)
+                    }
+                    invEnv = envBindTerm(fieldNames[ifi], recPaired.terms[ifi], fInfo, invEnv)
+                    ifi = ifi + 1
+                  }
+                  var ii = 0
+                  while ii < invs.count {
+                    match invs[ii] {
+                      case Some(invExpr) -> {
+                        val (invR, invDiags) = translateExpr(invEnv, invExpr)
+                        appendTermList2(allArgDiags, invDiags)
+                        appendTermList(recSc, afterFacts(argAssumed, invR.sideConds))
+                        appendTermList(recSc, afterFacts(argAssumed, termList1(invR.term)))
+                        appendTermList(recAs, invR.assumed)
+                        recAs.add(invR.term)
+                      }
+                      case None -> ()
+                    }
+                    ii = ii + 1
+                  }
+                }
+                case None -> ()
+              }
               val recTR = TranslateResult(term = recCallTerm, sideConds = recSc, assumed = recAs)
               val recPair: (TranslateResult, List[Diagnostic]) = (recTR, allArgDiags)
               return recPair
@@ -1003,15 +1033,23 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val asList: List[Term] = newList()
       val subs = evaluatedSubexprs(e)
       var subEnv = env
+      val isTryOrSpawn = match e.kind {
+        case ETry(_) | ESpawn(_) -> true
+        case _ -> false
+      }
       var si = 0
       while si < subs.count {
         val (subR, subDiags) = translateExpr(subEnv, subs[si])
         appendTermList2(diags, subDiags)
         appendTermList(sc, subR.sideConds)
-        appendTermList(asList, subR.assumed)
+        if not isTryOrSpawn {
+          appendTermList(asList, subR.assumed)
+        }
         // Subexpressions run in order (#8107).
         val afterSub = havocOutArgs(subEnv, subs[si])
-        appendTermList(asList, afterSub.hyps)
+        if not isTryOrSpawn {
+          appendTermList(asList, afterSub.hyps)
+        }
         subEnv = afterSub.env
         si = si + 1
       }

@@ -157,16 +157,24 @@ func headerChecksumOk(buf: in slice[Byte], off: in Int): Bool {
 
 /// The value of `key` in a pax extended header (`<length> <key>=<value>\n` records), or "".
 func paxValue(buf: in slice[Byte], off: in Int, size: in Int, key: in String): String {
+  if off < 0 or size <= 0 or off > buf.length - size {
+    return ""
+  }
   var pos = off
   val limit = off + size
   while pos < limit {
     var len = 0
     var p = pos
+    val maxLen = limit - pos
     while p < limit and buf[p].toInt() >= 48 and buf[p].toInt() <= 57 {
-      len = len * 10 + (buf[p].toInt() - 48)
+      val digit = buf[p].toInt() - 48
+      if len > (maxLen - digit) / 10 {
+        return ""
+      }
+      len = len * 10 + digit
       p += 1
     }
-    if len <= 0 or pos + len > limit {
+    if len <= (p - pos) + 1 or pos + len > limit {
       return ""
     }
     val record = cString(buf, p + 1, pos + len - (p + 1) - 1)
@@ -179,7 +187,17 @@ func paxValue(buf: in slice[Byte], off: in Int, size: in Int, key: in String): S
   ""
 }
 
-func roundUp512(n: in Int): Int = ((n + 511) / 512) * 512
+func roundUp512(n: in Int): Int {
+  if n <= 0 {
+    return 0
+  }
+  val rem = n % 512
+  if rem == 0 {
+    n
+  } else {
+    n + (512 - rem)
+  }
+}
 
 /// Reads the member headers of an uncompressed tar archive; a malformed header ends the list.
 pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
@@ -188,14 +206,14 @@ pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
   var pendingName = ""
   var pendingLink = ""
   var pendingSize = -1
-  while pos + 512 <= buf.length and not isZeroBlock(buf, pos) {
+  while pos >= 0 and pos <= buf.length - 512 and not isZeroBlock(buf, pos) {
     if not headerChecksumOk(buf, pos) {
       return Err(error = "the tar header at offset " + Str.fromInt(pos) + " has a bad checksum")
     }
     val kind = buf[pos + 156].toInt()
     val headerSize = parseTarNumber(buf, pos + 124, 12)
     val dataOff = pos + 512
-    if headerSize > buf.length - dataOff {
+    if headerSize < 0 or headerSize > buf.length - dataOff {
       return Err(error = "the tar archive is truncated")
     }
     if kind == 120 {
@@ -211,7 +229,9 @@ pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
       if sz.length > 0 {
         match Parse.parseOptInt(sz) {
           case Some(v) -> {
-            pendingSize = v
+            if v >= 0 {
+              pendingSize = v
+            }
           }
           case None -> ()
         }
@@ -233,7 +253,7 @@ pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
       val size = if pendingSize >= 0 { pendingSize } else { headerSize }
       val isData = kind == 0 or kind == 48 or kind == 55
       // A pax `size` replaces the header's, so it needs the same bounds check.
-      if isData and size > buf.length - dataOff {
+      if isData and (size < 0 or size > buf.length - dataOff) {
         return Err(error = "the tar archive is truncated")
       }
       entries.add(
@@ -248,10 +268,18 @@ pub func readTarEntries(buf: in slice[Byte]): Result[List[TarEntry], String] {
       pendingName = ""
       pendingLink = ""
       pendingSize = -1
-      pos = pos + 512 + roundUp512(if isData { size } else { headerSize })
+      val skip = roundUp512(if isData { size } else { headerSize })
+      if skip < 0 or skip > buf.length - dataOff {
+        break
+      }
+      pos = dataOff + skip
       continue
     }
-    pos = pos + 512 + roundUp512(headerSize)
+    val hSkip = roundUp512(headerSize)
+    if hSkip < 0 or hSkip > buf.length - dataOff {
+      break
+    }
+    pos = dataOff + hSkip
   }
   Ok(value = entries)
 }

@@ -27,6 +27,9 @@ func divisorSideConds(b: in Builtin, args: in List[Term], bits: in Int): List[Te
           // A width the verifier does not know (0) is either: excluding
           // only the narrower minimum would let a `Long`'s through.
           val widths: List[Int] = newList()
+          if bits == 8 or bits == 16 {
+            widths.add(bits)
+          }
           if bits == 0 or bits == 32 {
             widths.add(32)
           }
@@ -435,7 +438,7 @@ func translateResolvedCall(
     sorts = innerSorts,
     callees = env.callees,
     symbols = env.symbols,
-    checkedArithmetic = false,
+    checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults,
@@ -541,7 +544,8 @@ func translateResolvedCall(
             if termHasUnmodelledPattern(bodyR.term) and not termIsPoisoned(bodyR.term) {
               unfoldSkipped = true
             }
-            if not termIsPoisoned(bodyR.term) and not termHasUnmodelledPattern(bodyR.term) {
+            val isFloatResult = match resultSort { case SFloat32 | SFloat64 -> true; case _ -> false }
+            if not termIsPoisoned(bodyR.term) and not termHasUnmodelledPattern(bodyR.term) and not isFloatResult {
               match coerceToSort(bodyR.term, resultSort) {
                 case Ok(bodyAtSort) -> {
                   val bodySubst = substTerm(paramSubst, paramSubstNames, bodyAtSort)
@@ -648,7 +652,7 @@ func translateResolvedCall(
     sorts = resultSorts2,
     callees = env.callees,
     symbols = env.symbols,
-    checkedArithmetic = false,
+    checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults,
@@ -909,7 +913,7 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
       }
       case IRecord(d) -> {
         val tys: List[TypeExpr] = newList()
-        var mutable = false
+        var mutable = d.isRef
         var mi = 0
         while mi < d.members.count {
           match d.members[mi] {

@@ -1760,6 +1760,33 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
   }
 }
 
+func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[ImportedPackage]): List[Item] {
+  val wanted: Map[String, Bool] = newMap()
+  for imp in file.imports {
+    val segs = imp.path.segments
+    if segs.count > 0 {
+      var nm = segs[0]
+      var si = 1
+      while si < segs.count {
+        nm = nm + "." + segs[si]
+        si = si + 1
+      }
+      if not wanted.containsKey(nm) {
+        wanted.add(nm, true)
+      }
+    }
+  }
+  val acc: List[Item] = newList()
+  for pkg in importedPkgs {
+    if pkg.name == "" or wanted.containsKey(pkg.name) {
+      for it in pkg.items {
+        acc.add(it)
+      }
+    }
+  }
+  acc
+}
+
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
 /// check, with its diagnostics sent to `sink`.  None after an error.
 /// `lyric prove` runs exactly this, so it rejects what a build rejects up to
@@ -1946,7 +1973,7 @@ pub func pipeCheckFront(
   // overflow pass, which finds compound assignments by their own spans.
   val checked = insertRangeSiteChecks(overflowChecked, tcRes.symbols.rangeCheckSites, tcRes.symbols.rangeCompoundSites)
 
-  val mcRes = checkFile(checked)
+  val mcRes = checkFileWithExtraItems(checked, pipeImportedModeItems(checked, importedPkgs))
   if gateTo(sink, opts.pkgLabel, opts.filePaths, mcRes.diagnostics) {
     return None
   }

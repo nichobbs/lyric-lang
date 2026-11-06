@@ -6707,6 +6707,9 @@ func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
 }
 
 func recordHasVarField(rd: in RecordDecl): Bool {
+  if rd.isRef {
+    return true
+  }
   for f in recFieldsOf(rd) {
     if f.isMutable {
       return true

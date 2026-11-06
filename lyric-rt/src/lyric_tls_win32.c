@@ -242,12 +242,33 @@ static int key_matches_cert(NCRYPT_KEY_HANDLE key, PCCERT_CONTEXT cert) {
 /* ── Identities ────────────────────────────────────────────────────── */
 
 typedef struct {
-    HCERTSTORE chain;     /* leaf first, then any intermediates */
-    PCCERT_CONTEXT leaf;  /* bound to the persisted key */
-    wchar_t key_name[64]; /* empty when there is no persisted key */
+    HCERTSTORE chain;          /* leaf first, then any intermediates */
+    HCERTSTORE published_ca;   /* in-memory store of intermediates we newly added to "CA" */
+    PCCERT_CONTEXT leaf;       /* bound to the persisted key */
+    wchar_t key_name[64];      /* empty when there is no persisted key */
 } Identity;
 
+static void unpublish_intermediates(Identity* id) {
+    if (!id->published_ca) return;
+    HCERTSTORE ca = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                  CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, L"CA");
+    if (ca) {
+        PCCERT_CONTEXT c = NULL;
+        while ((c = CertEnumCertificatesInStore(id->published_ca, c)) != NULL) {
+            PCCERT_CONTEXT found = CertFindCertificateInStore(
+                ca, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING, c, NULL);
+            if (found) {
+                CertDeleteCertificateFromStore(found);
+            }
+        }
+        CertCloseStore(ca, 0);
+    }
+    CertCloseStore(id->published_ca, 0);
+    id->published_ca = NULL;
+}
+
 static void identity_free(Identity* id) {
+    unpublish_intermediates(id);
     if (id->leaf) CertFreeCertificateContext(id->leaf);
     if (id->chain) CertCloseStore(id->chain, 0);
     if (id->key_name[0]) {
@@ -262,8 +283,10 @@ static void identity_free(Identity* id) {
  * identity's intermediates are added to the user's Intermediate Certification
  * Authorities store (as .NET's SslStream does on Windows).  An intermediate
  * confers no trust: a peer still verifies the chain against its own roots.
- * Self-signed certificates (roots) are never added. */
-static void publish_intermediates(const Identity* id) {
+ * Self-signed certificates (roots) are never added.  Intermediates that did
+ * not already exist in "CA" are recorded in `id->published_ca` and removed
+ * when the identity is freed. */
+static void publish_intermediates(Identity* id) {
     HCERTSTORE ca = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
                                   CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, L"CA");
     if (!ca) return;
@@ -271,7 +294,14 @@ static void publish_intermediates(const Identity* id) {
     while ((c = CertEnumCertificatesInStore(id->chain, c)) != NULL) {
         if (CertCompareCertificate(X509_ASN_ENCODING, c->pCertInfo, id->leaf->pCertInfo)) continue;
         if (CertCompareCertificateName(X509_ASN_ENCODING, &c->pCertInfo->Subject, &c->pCertInfo->Issuer)) continue;
-        CertAddCertificateContextToStore(ca, c, CERT_STORE_ADD_USE_EXISTING, NULL);
+        if (CertAddCertificateContextToStore(ca, c, CERT_STORE_ADD_NEW, NULL)) {
+            if (!id->published_ca) {
+                id->published_ca = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, 0, NULL);
+            }
+            if (id->published_ca) {
+                CertAddCertificateContextToStore(id->published_ca, c, CERT_STORE_ADD_ALWAYS, NULL);
+            }
+        }
     }
     CertCloseStore(ca, 0);
 }

@@ -41,6 +41,9 @@ import Std.HttpEngine
 /// refused as `Malformed` (matches `EngineLimits` order of magnitude).
 pub val MAX_RESPONSE_HEAD_BYTES: Int = 65536
 
+/// Largest response body accepted before the response is refused as `Malformed`.
+pub val MAX_RESPONSE_BODY_BYTES: Int = 67108864
+
 /// A parsed response. `headers` keeps wire order and the sender's case.
 pub record ClientResponse {
   status: Int
@@ -330,7 +333,7 @@ union BodyParse {
 
 func decodeChunked(buf: in slice[Byte], start: in Int): BodyParse {
   var pos = start
-  var acc: slice[Byte] = []
+  val acc: List[Byte] = newList()
   while true {
     val lineEnd = findCrlf(buf, pos)
     if lineEnd < 0 {
@@ -339,22 +342,36 @@ func decodeChunked(buf: in slice[Byte], start: in Int): BodyParse {
       }
       return BodyIncomplete
     }
+    if lineEnd - pos > 1024 {
+      return BodyMalformed(message = "chunk-size line too long")
+    }
     val size = parseChunkSize(buf.slice(pos, lineEnd))
     if size < 0 {
       return BodyMalformed(message = "malformed chunk size")
     }
+    if size > MAX_RESPONSE_BODY_BYTES - acc.count {
+      return BodyMalformed(message = "chunked response body exceeds maximum allowed size")
+    }
     pos = lineEnd + 2
     if size == 0 {
       // Trailer section: header lines up to the empty line, discarded.
+      var trailerCount = 0
       while true {
+        if trailerCount > 128 {
+          return BodyMalformed(message = "chunked response has too many trailer lines")
+        }
         val tEnd = findCrlf(buf, pos)
         if tEnd < 0 {
+          if buf.length - pos > MAX_RESPONSE_HEAD_BYTES {
+            return BodyMalformed(message = "chunked response trailer line too long")
+          }
           return BodyIncomplete
         }
         if tEnd == pos {
-          return BodyOk(body = acc)
+          return BodyOk(body = acc.toArray())
         }
         pos = tEnd + 2
+        trailerCount = trailerCount + 1
       }
     }
     if buf.length < pos + size + 2 {
@@ -363,7 +380,11 @@ func decodeChunked(buf: in slice[Byte], start: in Int): BodyParse {
     if buf[pos + size].toInt() != 13 or buf[pos + size + 1].toInt() != 10 {
       return BodyMalformed(message = "chunk data is not followed by CRLF")
     }
-    acc = acc.concat(buf.slice(pos, pos + size))
+    var ci = 0
+    while ci < size {
+      acc.add(buf[pos + ci])
+      ci = ci + 1
+    }
     pos = pos + size + 2
   }
   BodyIncomplete
@@ -453,7 +474,7 @@ func finishResponse(
   }
   if cl.count > 0 {
     val first = parseDecimal(cl[0].trim())
-    if first < 0 {
+    if first < 0 or first > MAX_RESPONSE_BODY_BYTES {
       return Malformed(message = "invalid Content-Length")
     }
     var i = 1
@@ -477,6 +498,9 @@ func finishResponse(
         body = rest.slice(bodyStart, bodyStart + first)
       )
     )
+  }
+  if rest.length - bodyStart > MAX_RESPONSE_BODY_BYTES {
+    return Malformed(message = "response body exceeds maximum allowed size")
   }
   if not atEof {
     return Incomplete

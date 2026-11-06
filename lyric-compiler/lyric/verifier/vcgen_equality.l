@@ -180,7 +180,7 @@ func addStructuralEqualityTypes(
         val tys = fieldTypes[ni]
         var ti = 0
         while ti < tys.count {
-          if alive[ni] and not equalityModelledSort(assumed, noTypeParams(), sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+          if alive[ni] and not equalityModelledSort(assumed, noTypeParams(), sortOfTypeExprWith(distincts, tys[ti]).sort, 1) {
             alive[ni] = false
             changed = true
           }
@@ -200,6 +200,9 @@ func addStructuralEqualityTypes(
 }
 
 func recordHasVarField(d: in RecordDecl): Bool {
+  if d.isRef {
+    return true
+  }
   var mi = 0
   while mi < d.members.count {
     match d.members[mi] {
@@ -279,8 +282,8 @@ func equalityModelledSort(
     case SBool -> true
     case SInt -> true
     case SBitVec(_) -> true
-    case SFloat32 -> true
-    case SFloat64 -> true
+    case SFloat32 -> depth == 0
+    case SFloat64 -> depth == 0
     case SString -> true
     case SDatatype(n, args) -> {
       if n == unitSortName() {

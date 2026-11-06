@@ -1014,7 +1014,7 @@ pub record MField {
   fieldType: MsilType
 }
 
-pub record MFunc {
+pub ref record MFunc {
   flags: Int        // MethodAttributes (from Msil.Tables MDA_*)
   name: String
   params: List[MsilType]

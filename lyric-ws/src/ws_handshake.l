@@ -75,7 +75,8 @@ pub func buildAcceptResponse(secWebSocketKey: in String): slice[Byte] {
 /// A minimal bodyless error response for a rejected handshake.
 @stable(since = "0.1")
 pub func buildRejectResponse(status: in Int, reason: in String): slice[Byte] {
-  val text = "HTTP/1.1 " + status.toString() + " " + reason + "\r\n" + "Connection: close\r\n" +
+  val safeReason = reason.replace("\r", " ").replace("\n", " ")
+  val text = "HTTP/1.1 " + status.toString() + " " + safeReason + "\r\n" + "Connection: close\r\n" +
     "Content-Length: 0\r\n\r\n"
   encodeUtf8(text)
 }

@@ -1257,9 +1257,19 @@ pub record NpmProbeRow {
 /// `<package>\t<export>,<export>...` (or `<package>\t!<message>`).  It lives
 /// beside `node_modules` so bare specifiers resolve against the restored packages.
 pub func npmProbeScript(): String {
-  r"const [, , ...pkgs] = process.argv;
+  r"import childProcess from 'node:child_process';
+for (const k of Object.keys(childProcess)) {
+  try { childProcess[k] = () => { throw new Error('child_process disabled in lyric-npm-probe'); }; } catch {}
+}
+if (typeof globalThis.fetch === 'function') {
+  globalThis.fetch = () => Promise.reject(new Error('network disabled in lyric-npm-probe'));
+}
+const [, , ...pkgs] = process.argv;
 for (const p of pkgs) {
   try {
+    if (p.startsWith('.') || p.startsWith('/') || p.includes('\\') || p.includes('..')) {
+      throw new Error('invalid package specifier');
+    }
     const m = await import(p);
     const names = new Set(Object.keys(m));
     const d = m.default;
@@ -1988,12 +1998,15 @@ func runRestoreWith(
                 }
               }
               case Some(lockedHash) -> match resolved.sha512 {
-                case None -> printErr(
-                  "restore: --locked: warning: '" + resolved.name +
-                    "' could not be re-hashed; integrity check skipped (locked='" +
-                    lockedHash +
-                    "')"
-                )
+                case None -> {
+                  printErr(
+                    "restore: --locked: '" + resolved.name +
+                      "' could not be re-hashed to verify locked SHA-512 ('" +
+                      lockedHash +
+                      "')"
+                  )
+                  lockMismatch = true
+                }
                 case Some(resolvedHash) -> if lockedHash != resolvedHash {
                   printErr("restore: --locked: '" + resolved.name + "' content changed: locked SHA-512 != resolved SHA-512")
                   printErr("  locked   : " + lockedHash)

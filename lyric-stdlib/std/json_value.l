@@ -37,6 +37,7 @@ import Std.Encoding
 import Std.Parse
 import Std.Math
 import Std.String as Str
+import Std.String.{StringBuilder}
 
 // ── Data model ──────────────────────────────────────────────────────────────
 @stable(since = "0.1")
@@ -98,7 +99,7 @@ pub func JsonParseError.message(e: in JsonParseError): String {
 }
 
 // ── Parser state ───────────────────────────────────────────────────────────
-record JState {
+ref record JState {
   src: String
   var pos: Int
   maxDepth: Int
@@ -187,7 +188,8 @@ func jParseUnicode4(st: inout JState): Result[Int, JsonParseError] {
 // Parses a double-quoted JSON string body, starting just after the opening
 // '"'.  Rejects raw control characters and lone UTF-16 surrogates.
 func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
-  var result = ""
+  val sb = StringBuilder.new()
+  var runStart = st.pos
   var pendingHigh = 0 - 1
   // -1 = no pending high surrogate awaiting its low pair
   var pendingHighPos = 0
@@ -206,10 +208,16 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
           ok = false
           err = LoneSurrogate(pos = pendingHighPos, code = pendingHigh)
         } else {
+          if st.pos > runStart {
+            sb.append(st.src.substring(runStart, st.pos - runStart))
+          }
           st.pos = st.pos + 1
           done = true
         }
       } else if c == '\\' {
+        if st.pos > runStart {
+          sb.append(st.src.substring(runStart, st.pos - runStart))
+        }
         st.pos = st.pos + 1
         if jAtEnd(st) {
           ok = false
@@ -226,7 +234,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
               case Ok(code) -> {
                 if pendingHigh >= 0 {
                   if code >= 0xDC00 and code <= 0xDFFF {
-                    result = result + codepointToString(0x10000 + (pendingHigh - 0xD800) * 0x400 + (code - 0xDC00))
+                    sb.append(codepointToString(0x10000 + (pendingHigh - 0xD800) * 0x400 + (code - 0xDC00)))
                     pendingHigh = 0 - 1
                   } else {
                     ok = false
@@ -239,7 +247,7 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
                   ok = false
                   err = LoneSurrogate(pos = startCharPos, code = code)
                 } else {
-                  result = result + codepointToString(code)
+                  sb.append(codepointToString(code))
                 }
               }
             }
@@ -249,26 +257,27 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
           } else {
             st.pos = st.pos + 1
             if esc == '"' {
-              result = result + "\""
+              sb.append("\"")
             } else if esc == '\\' {
-              result = result + "\\"
+              sb.append("\\")
             } else if esc == '/' {
-              result = result + "/"
+              sb.append("/")
             } else if esc == 'n' {
-              result = result + "\n"
+              sb.append("\n")
             } else if esc == 'r' {
-              result = result + "\r"
+              sb.append("\r")
             } else if esc == 't' {
-              result = result + "\t"
+              sb.append("\t")
             } else if esc == 'b' {
-              result = result + "\u{0008}"
+              sb.append("\u{0008}")
             } else if esc == 'f' {
-              result = result + "\u{000c}"
+              sb.append("\u{000c}")
             } else {
               ok = false
               err = InvalidEscape(pos = startCharPos, detail = "\\" + Str.substring(st.src, startCharPos + 1, 1))
             }
           }
+          runStart = st.pos
         }
       } else if toInt(c) < 0x20 {
         ok = false
@@ -280,15 +289,12 @@ func jParseStringBody(st: inout JState): Result[String, JsonParseError] {
         ok = false
         err = LoneSurrogate(pos = pendingHighPos, code = pendingHigh)
       } else {
-        // The raw code unit, so unescaped supplementary-plane text (whose
-        // surrogate halves read as U+FFFD in `c`) is kept intact.
-        result = result + Str.substring(st.src, st.pos, 1)
         st.pos = st.pos + 1
       }
     }
   }
   if ok {
-    Ok(value = result)
+    Ok(value = sb.toString())
   } else {
     Err(error = err)
   }
@@ -530,33 +536,43 @@ pub func parseValueWithDepthLimit(src: in String, maxDepth: in Int): Result[Json
 
 // ── Writer ──────────────────────────────────────────────────────────────────
 func writeJsonString(s: in String): String {
-  var result = "\""
+  val sb = StringBuilder.new()
+  sb.append("\"")
+  var runStart = 0
   var i = 0
   while i < s.length {
     val c = Str.charAtOrReplacement(s, i)
     val code = toInt(c)
-    if c == '"' {
-      result = result + "\\\""
-    } else if c == '\\' {
-      result = result + "\\\\"
-    } else if c == '\n' {
-      result = result + "\\n"
-    } else if c == '\r' {
-      result = result + "\\r"
-    } else if c == '\t' {
-      result = result + "\\t"
-    } else if code == 0x08 {
-      result = result + "\\b"
-    } else if code == 0x0c {
-      result = result + "\\f"
-    } else if code < 0x20 {
-      result = result + "\\u" + hex4(code)
-    } else {
-      result = result + Str.substring(s, i, 1)
+    if c == '"' or c == '\\' or c == '\n' or c == '\r' or c == '\t' or code < 0x20 {
+      if i > runStart {
+        sb.append(s.substring(runStart, i - runStart))
+      }
+      if c == '"' {
+        sb.append("\\\"")
+      } else if c == '\\' {
+        sb.append("\\\\")
+      } else if c == '\n' {
+        sb.append("\\n")
+      } else if c == '\r' {
+        sb.append("\\r")
+      } else if c == '\t' {
+        sb.append("\\t")
+      } else if code == 0x08 {
+        sb.append("\\b")
+      } else if code == 0x0c {
+        sb.append("\\f")
+      } else {
+        sb.append("\\u" + hex4(code))
+      }
+      runStart = i + 1
     }
     i = i + 1
   }
-  result + "\""
+  if s.length > runStart {
+    sb.append(s.substring(runStart, s.length - runStart))
+  }
+  sb.append("\"")
+  sb.toString()
 }
 
 func writeDouble(f: in Double): String {
@@ -569,29 +585,35 @@ func writeDouble(f: in Double): String {
 }
 
 func writeArrayItems(items: in List[JsonValue]): String {
-  var result = "["
+  val sb = StringBuilder.new()
+  sb.append("[")
   var i = 0
   while i < items.count {
     if i > 0 {
-      result = result + ","
+      sb.append(",")
     }
-    result = result + writeValue(items[i])
+    sb.append(writeValue(items[i]))
     i = i + 1
   }
-  result + "]"
+  sb.append("]")
+  sb.toString()
 }
 
 func writeObjectFields(fields: in List[JsonField]): String {
-  var result = "{"
+  val sb = StringBuilder.new()
+  sb.append("{")
   var i = 0
   while i < fields.count {
     if i > 0 {
-      result = result + ","
+      sb.append(",")
     }
-    result = result + writeJsonString(fields[i].name) + ":" + writeValue(fields[i].value)
+    sb.append(writeJsonString(fields[i].name))
+    sb.append(":")
+    sb.append(writeValue(fields[i].value))
     i = i + 1
   }
-  result + "}"
+  sb.append("}")
+  sb.toString()
 }
 
 /// Serialize a `JsonValue` to compact JSON text (no insignificant
