@@ -21722,6 +21722,9 @@ func lowerBuiltinOrStaticCallMsil(
             // every import by bare name — that silently bound
             // `Widgets.field(...)` to another package's `field` (D-progress-946).
             val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
+            if sitedFqn.length == 0 and path.segments.count == 1 and funcName == "kindName" {
+              Console.error("MSILDBG " + fctx.pkgName + " " + funcName + " key=" + recordCopySiteKey(path.span) + " nsites=" + toString(cctx.calleeSites.count) + " raw=" + (match mapGet(cctx.calleeSites, recordCopySiteKey(path.span)) { case Some(v) -> v; case None -> "none" }) + " origin=" + fctx.originPkg)
+            }
             val importedFqn = if sitedFqn.length > 0 {
               ""
             } else {
