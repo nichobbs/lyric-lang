@@ -39,6 +39,10 @@ extern void __lsan_ignore_object(const void* p) __attribute__((weak));
 static _Thread_local uint64_t lyric_allocated_bytes = 0;
 
 void* lyric_alloc(uint64_t size) {
+    if ((int64_t)size < 0 || size > (uint64_t)(SIZE_MAX / 2)) {
+        fputs("lyric: allocation size overflow\n", stderr);
+        abort();
+    }
     void* p = malloc((size_t)size);
     if (!p) {
         fputs("lyric: out of memory\n", stderr);

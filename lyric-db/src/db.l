@@ -666,7 +666,11 @@ pub func connectSqlite(url: in String, connectTimeoutMs: in Int): Result[DbConne
 //
 // JsonValueKind ordinals: 0=Undefined 1=Object 2=Array 3=String 4=Number 5=True 6=False 7=Null
 func parseRows(json: in String): Result[slice[DbRow], DbError] {
-  val doc = StdJson.parseJson(json)
+  val doc = try {
+    StdJson.parseJson(json)
+  } catch Bug as b {
+    return Err(DbError(message = "Failed to parse driver JSON response: " + b.message, code = "PARSE_ERROR"))
+  }
   defer {
     StdJson.disposeJson(doc)
   }
@@ -697,7 +701,11 @@ func parseRows(json: in String): Result[slice[DbRow], DbError] {
 // Decode a single JSON value (as raw text) to a DbValue.
 // Re-parses the raw text so JsonElement does not escape this module.
 func parseDbValue(raw: in String): DbValue {
-  val doc = StdJson.parseJson(raw)
+  val doc = try {
+    StdJson.parseJson(raw)
+  } catch Bug as _ {
+    return DbNull
+  }
   defer {
     StdJson.disposeJson(doc)
   }

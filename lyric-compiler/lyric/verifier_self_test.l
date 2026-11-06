@@ -973,7 +973,7 @@ test "a proof through a loop break is rejected, not discharged (#7396)" {
 // protected-entry range goal above.
 // ─────────────────────────────────────────────────────────────────────────────
 func provePkg(body: in String): ProofSummary {
-  prove("@proof_required\npackage U\n" + body)
+  prove("@proof_required(unbounded_arithmetic)\npackage U\n" + body)
 }
 
 func assertDischarged(body: in String, label: in String): Unit {
@@ -4099,7 +4099,7 @@ test "an overload another file of the package declares is never stood in for (#8
   val pts: List[PackageTypes] = newList()
   pts.add(packageTypesOfSource(sibling))
   val pkgScope = scopeOfPackageTypes(pts)
-  val own = "@proof_required\npackage U\n" +
+  val own = "@proof_required(unbounded_arithmetic)\npackage U\n" +
     "pub func add(x: in Int, y: in Int = 100): Int\n  ensures: result == x + y\n{\n  x + y\n}\n"
   val viaDefault = proveSourceInScope(
     own + "pub func useIt(x: in Int): Int\n  ensures: result == x + 100\n{\n  add(x)\n}\n",
@@ -4767,5 +4767,44 @@ test "Double % fails closed instead of rendering ill-sorted SMT (#7883)" {
   assertUntranslatable(
     "func rem(x: in Double, y: in Double): Double\n  ensures: result == x % y\n{\n  x % y\n}\n",
     "double-mod"
+  )
+}
+
+test "bare @proof_required enforces checked arithmetic by default and unbounded_arithmetic opts out" {
+  val defaultRefuted = prove("@proof_required\npackage P\nfunc inc(x: in Int): Int {\n  x + 1\n}\n")
+  assertTrue(summaryHasCounterexample(defaultRefuted), "bare @proof_required refutes unconstrained Int + 1")
+  val defaultDischarged = prove(
+    "@proof_required\npackage P\nfunc inc(x: in Int): Int\n  requires: x < 2147483647\n{\n  x + 1\n}\n"
+  )
+  assertTrue(not summaryHasFailure(defaultDischarged), "bare @proof_required discharges bounded Int + 1")
+  val optOutDischarged = prove(
+    "@proof_required(unbounded_arithmetic)\npackage P\nfunc inc(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n"
+  )
+  assertTrue(not summaryHasFailure(optOutDischarged), "@proof_required(unbounded_arithmetic) opts out of overflow bounds")
+}
+
+test "Short and SByte overflow at 16-bit and 8-bit bounds" {
+  assertCheckedRefuted(
+    "func inc16(x: in Short): Short\n  requires: x == 32767\n{\n  x + 1i16\n}\n",
+    "short-overflow-at-max"
+  )
+  assertCheckedDischarged(
+    "func inc16(x: in Short): Short\n  requires: x >= 0 and x < 32767\n{\n  x + 1i16\n}\n",
+    "short-within-bounds"
+  )
+  assertCheckedRefuted(
+    "func inc8(x: in SByte): SByte\n  requires: x == 127\n{\n  x + 1i8\n}\n",
+    "sbyte-overflow-at-max"
+  )
+}
+
+test "record invariant is checked at construction in @proof_required" {
+  assertRefuted(
+    "record Pos {\n  x: Int\n  invariant: x > 0\n}\nfunc bad(): Pos {\n  Pos(x = 0)\n}\n",
+    "record-invariant-violated"
+  )
+  assertDischarged(
+    "record Pos {\n  x: Int\n  invariant: x > 0\n}\nfunc good(): Pos {\n  Pos(x = 1)\n}\n",
+    "record-invariant-satisfied"
   )
 }

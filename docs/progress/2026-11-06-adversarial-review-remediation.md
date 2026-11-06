@@ -1,0 +1,20 @@
+# Adversarial review remediation: toolchain sandboxing, checked-arithmetic proof default, runtime & HTTP/TLS hardening (#8854, #8855)
+
+Remediates the security, soundness, runtime, and consolidation findings from the pre-1.0 adversarial review across the compiler, verifier, native runtime, standard library, and first-party libraries (D415):
+
+1. **Toolchain & build-time security (`Lyric.Cli`, `Lyric.Generator`, `Lyric.GitDep`, `Lyric.Manifest`, `scripts/bootstrap.sh`):**
+   - `lyric check` sets `preferWasm = true`, restricts WASM generator filesystem grants to `ProjectRead`, and skips external process `[[generators]]` by default unless `--allow-generators` is passed; `loadRestoredGenerator` verifies a runnable WASM payload (`WasmPayload` + `wasmtime`) when process generators are disallowed.
+   - `lyric restore` runs `npm install --ignore-scripts` and sandboxes the Node ESM export-discovery probe by monkey-patching `child_process`, `net`, `http`, `https`, `tls`, `dgram`, `dns`, `worker_threads`, `process.dlopen`, `process.binding`, and `fs` write methods (with `module.syncBuiltinESMExports()`).
+   - `[native]` `extra_libs` and `linker_args` are validated against flag injection, `@file` response files, and `-plugin`/`--plugin`/`-rpath`/`-init`/`-fini` (including `-Wl,`/`-Wa,`/`-Wp,`/`-Xlinker`/`-Xclang` driver-wrapped tokens).
+   - `lyric.toml` and `lyric.lock` validate `subdir` against path traversal (`..`, leading `/` or `\`, Windows `:`) and `Lyric.GitDep` uses injective hex-escaped ref segment names (`_5f`, `_2f`, `_5c`, `_3a`) and `Path.joinWithin`.
+   - `scripts/bootstrap.sh` requires `SHASUMS256.txt` verification when downloading the stage-0 seed (failing closed unless `LYRIC_BOOTSTRAP_SKIP_CHECKSUM=1`).
+2. **Verifier & type-system soundness (`Lyric.Verifier.VcGen`, `Lyric.TypeChecker`, `Lyric.ModeChecker`, `Lyric.MsilCodegen`, `Lyric.LlvmTypes`):**
+   - `@proof_required` enables `checked_arithmetic` by default across 8/16/32/64-bit signed and unsigned integers (`Byte`, `SByte`, `Short`, `UShort`, `Int`, `UInt`, `Long`, `ULong`); `@proof_required(unbounded_arithmetic)` opts out to mathematical integers (D415).
+   - `ref record` enforces reference identity (`==`/`!=`) and heap allocation on all targets (`dotnet`, `jvm`, `native`) even when the record has no `var` fields (D415).
+   - Fixed array covariance (`T0060` on mismatched element types), generic interface method type-parameter substitution in `impl` checking, `spawn` capture `Sendable` checking through blocks/closures/collection literals, and `match` variable pattern shadowing against parameter/local bindings in VC generation.
+3. **Native runtime (`lyric-rt`) & stdlib/library hardening:**
+   - Fixed `lyric_async.c` multi-threaded `dep` retain/release across the spin-wait window and `lyric_task_complete` waiter list drain before releasing locks (verified by `test_ephemeral_dep_and_wake_release` under ASan and TSan); fixed `lyric_Parallel.c` work-stealing `top`/`bottom` CAS order.
+   - Replaced `sprintf`/`sscanf` float formatting with `snprintf` + `strtod` in `lyric_rt.c`; added overflow guards in `lyric_http.c` and `lyric_regex.c`; added reference-counted cleanup of published Schannel intermediate CA certificates in `lyric_tls_win32.c`; hardened `Std.TlsHost` temporary `key.pem` lifecycle (`chmod 600`, best-effort zero-overwrite before delete).
+   - Hardened `Std.HttpServer` (`MAX_HEADER_BYTES`, `MAX_HEADER_COUNT`, strict `Content-Length` / `Transfer-Encoding` validation), `Std.HttpClientWire` (bounded chunk line and trailer scanning, strict chunk-size hex parsing), `Std.Zip` (UTF-8 byte length in local headers and $O(N \log N)$ span overlap check), `Std.Decimal` (128-bit `BigInteger` intermediate multiply/divide), `Std.Log` (JSON control-character escaping), `Std.CollectionsHost` (rehash before insert on tombstone threshold), and `lyric-auth` / `lyric-web` / `lyric-lsp`.
+4. **Repository layout cleanup:**
+   - Consolidated the native backend planning directory into `docs/native-plan/` and updated references across `CLAUDE.md`, `docs/`, and `lyric-compiler/`.

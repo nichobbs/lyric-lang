@@ -170,7 +170,7 @@ import Std.HttpEngine.Hpack
 /// `Int` range: `initialWindowSize` is bounded to 2^31-1, `maxFrameSize` to
 /// [2^14, 2^24-1], and the advisory sizes are clamped). `enablePush` is 0/1.
 @experimental
-pub record H2Settings {
+pub ref record H2Settings {
   var headerTableSize: Int
   var enablePush: Int
   var maxConcurrentStreams: Int
@@ -346,7 +346,7 @@ pub ref record H2Stream {
 /// which the byte-budget guard alone would never stop) — see
 /// `maxContinuationFrames`.
 @experimental
-pub record ContinuationState {
+pub ref record ContinuationState {
   streamId: Int
   buffer: List[Byte]
   endStream: Bool
@@ -370,7 +370,7 @@ pub record ContinuationState {
 /// Grouping five fields here keeps the arity safely under that threshold.
 /// Filed as #6089.
 @experimental
-pub record H2ShutdownState {
+pub ref record H2ShutdownState {
   var goAwaySent: Bool
   var goAwayLastStreamId: Int
   var goAwayReceived: Bool
@@ -383,7 +383,7 @@ pub record H2ShutdownState {
 /// via the query functions and `feed`'s events. See the module header for its
 /// lifecycle contract.
 @experimental
-pub record H2Connection {
+pub ref record H2Connection {
   var dec: FrameDecoder
   hpackDec: HpackDecoder
   hpackEnc: HpackEncoder
@@ -833,9 +833,32 @@ func streamFail(
   code: in H2ErrorCode,
   message: in String,
 ): Unit {
+  val serverIncomplete = match findStream(state, streamId) {
+    case None -> false
+    case Some(st) -> {
+      val s: H2Stream = st
+      match s.state {
+        case H2SOpen -> true
+        case H2SHalfClosedRemote -> true
+        case _ -> false
+      }
+    }
+  }
   closeStream(state, streamId)
   appendBytes(outb, serializeFrame(RstStreamFrame(streamId = streamId, errorCode = code)))
   events.add(H2StreamErr(streamId = streamId, errorCode = code, message = message))
+  if serverIncomplete {
+    state.shutdown.rapidResetCount = state.shutdown.rapidResetCount + 1
+    if state.shutdown.rapidResetCount > maxRapidResets() and state.shutdown.rapidResetCount > state.shutdown.serverCompletedCount {
+      connFail(
+        state,
+        events,
+        outb,
+        H2EnhanceYourCalm,
+        "excessive stream errors before completion (RFC 9113; Rapid Reset / CVE-2023-44487 mitigation)"
+      )
+    }
+  }
 }
 
 // =============================================================================
@@ -1542,6 +1565,11 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
   var sawScheme = false
   var sawPath = false
   var sawAuthority = false
+  var authorityVal = ""
+  var sawHost = false
+  var hostVal = ""
+  var sawContentLength = false
+  var contentLengthVal = ""
   var sawProtocol = false
   var i = 0
   while i < headers.count {
@@ -1581,6 +1609,7 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
           return Some(value = "duplicate :authority")
         }
         sawAuthority = true
+        authorityVal = h.value
       } else if name == ":protocol" {
         if sawProtocol {
           return Some(value = "duplicate :protocol")
@@ -1600,8 +1629,28 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
       if name == "te" and h.value != "trailers" {
         return Some(value = "te header field other than 'trailers'")
       }
+      if name == "host" {
+        if sawHost and Str.toLower(hostVal) != Str.toLower(h.value) {
+          return Some(value = "conflicting host header fields")
+        }
+        sawHost = true
+        hostVal = h.value
+      }
+      if name == "content-length" {
+        if not isNonEmptyAsciiDigits(h.value) {
+          return Some(value = "invalid content-length header field")
+        }
+        if sawContentLength and contentLengthVal != h.value {
+          return Some(value = "conflicting content-length header fields")
+        }
+        sawContentLength = true
+        contentLengthVal = h.value
+      }
     }
     i = i + 1
+  }
+  if sawAuthority and sawHost and Str.toLower(authorityVal) != Str.toLower(hostVal) {
+    return Some(value = "conflicting :authority and host header fields (RFC 9113 section 8.3.1)")
   }
   if not sawMethod {
     return Some(value = "missing :method")
@@ -1610,6 +1659,20 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
     return Some(value = "missing :scheme or :path")
   }
   None
+}
+
+func isNonEmptyAsciiDigits(v: in String): Bool {
+  if v.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < v.length {
+    if not isAsciiDigit(charCodeAt(v, i)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 /// Why a decoded trailer block is malformed (RFC 9113 sections 8.1 and
@@ -1661,13 +1724,13 @@ func isValidH2FieldName(name: in String): Bool {
   name.length > 0
 }
 
-// No NUL, CR or LF anywhere, and no leading or trailing SP/HTAB
-// (RFC 9113 section 8.2.1).
+// No CTL bytes (0x00..0x1f except HTAB 0x09, or DEL 0x7f), and no leading or
+// trailing SP/HTAB (RFC 9113 section 8.2.1 / RFC 9110 section 5.5).
 func isValidH2FieldValue(v: in String): Bool {
   var i = 0
   while i < v.length {
     val c = charCodeAt(v, i)
-    if c == 0 or c == 10 or c == 13 {
+    if (c < 32 and c != 9) or c == 127 {
       return false
     }
     i = i + 1

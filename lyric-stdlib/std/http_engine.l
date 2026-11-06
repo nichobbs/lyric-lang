@@ -419,7 +419,7 @@ pub union ConnPhase {
 /// private despite the compiler not enforcing it: construct one only via
 /// `newConnection`, and observe it only via `shouldClose`/`isFailed`/`feed`.
 @experimental
-pub record Connection {
+pub ref record Connection {
   limits: EngineLimits
   var phase: ConnPhase
   var buf: slice[Byte]

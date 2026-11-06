@@ -100,19 +100,27 @@ pub func urlToHash(url: in String): String {
 // Derive the cache subdirectory name for a `(refKind, refValue)` pair.  Returns
 // "" for an unknown kind so `resolve` can fail gracefully.  Takes flat strings
 // rather than a `GitRef` union — see the note on `resolve`.
+func sanitizeRefSegment(s: in String): String {
+  s.replace("_", "_5f").replace("/", "_2f").replace("\\", "_5c").replace(":", "_3a")
+}
+
 func refDirName(refKind: in String, refValue: in String): String {
+  if refValue.length == 0 or Str.startsWith(refValue, "-") or Str.contains(refValue, "..") or Str.contains(refValue, "\0") {
+    return ""
+  }
+  val safeRef = sanitizeRefSegment(refValue)
   if refKind == "tag" {
-    return "tag-" + refValue
+    return "tag-" + safeRef
   }
   if refKind == "branch" {
-    return "branch-" + refValue
+    return "branch-" + safeRef
   }
   if refKind == "rev" {
     // Use only the first 12 characters of the SHA for readability.
-    if refValue.length >= 12 {
-      return "rev-" + Str.substring(refValue, 0, 12)
+    if safeRef.length >= 12 {
+      return "rev-" + Str.substring(safeRef, 0, 12)
     }
-    return "rev-" + refValue
+    return "rev-" + safeRef
   }
   ""
 }
@@ -146,6 +154,7 @@ func cloneTag(url: in String, tagName: in String, targetDir: in String): Result[
   args.add(tagName)
   args.add("--depth")
   args.add("1")
+  args.add("--")
   args.add(url)
   args.add(targetDir)
   match runGit(args) {
@@ -159,6 +168,7 @@ func cloneRev(url: in String, sha: in String, targetDir: in String): Result[Unit
   // Full clone — required so the SHA is reachable.
   val cloneArgs: List[String] = newList()
   cloneArgs.add("clone")
+  cloneArgs.add("--")
   cloneArgs.add(url)
   cloneArgs.add(targetDir)
   match runGit(cloneArgs) {
@@ -171,6 +181,7 @@ func cloneRev(url: in String, sha: in String, targetDir: in String): Result[Unit
   coArgs.add(targetDir)
   coArgs.add("checkout")
   coArgs.add(sha)
+  coArgs.add("--")
   match runGit(coArgs) {
     case Err(e) -> Err(error = "git checkout failed: " + IOError.message(e))
     case Ok(code) -> if code != 0 { Err(error = gitErrMsg("checkout", code)) } else { Ok(value = ()) }
@@ -185,6 +196,7 @@ func cloneBranch(url: in String, branchName: in String, targetDir: in String): R
   args.add(branchName)
   args.add("--depth")
   args.add("1")
+  args.add("--")
   args.add(url)
   args.add(targetDir)
   match runGit(args) {
@@ -236,6 +248,20 @@ func pullBranch(targetDir: in String): Result[Unit, String] {
 pub func resolve(
   url: in String, refKind: in String, refValue: in String, subdir: in Option[String]
 ): Result[GitDepResult, String] {
+  if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\0") or Str.startsWith(url, "ext::") or
+    not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
+    return Err(error = "git dependency '" + url + "': URL must use https://, ssh://, git@, or file:// and must not start with '-'")
+  }
+  if refValue.length == 0 or Str.startsWith(refValue, "-") or Str.contains(refValue, "..") or Str.contains(refValue, "\0") {
+    return Err(error = "git dependency '" + url + "': invalid ref '" + refValue + "'")
+  }
+  match subdir {
+    case Some(s) -> if s.length == 0 or Str.startsWith(s, "-") or Str.startsWith(s, "/") or Str.startsWith(s, "\\") or
+      Str.contains(s, ":") or Str.contains(s, "..") or Str.contains(s, "\0") {
+      return Err(error = "git dependency '" + url + "': subdir '" + s + "' must be a relative path without '..'")
+    }
+    case None -> ()
+  }
   // Derive cache paths.
   val cacheRoot = Path.join(cacheDir(), urlToHash(url))
   val refName = refDirName(refKind, refValue)
@@ -299,8 +325,14 @@ pub func resolve(
     return Err(error = "clone directory not found after git operation: " + targetDir)
   }
 
-  // Optionally descend into a subdirectory.
-  val resolvedDir = match subdir { case None -> targetDir; case Some(s) -> Path.join(targetDir, s) }
+  // Optionally descend into a subdirectory, ensuring it stays within targetDir.
+  val resolvedDir = match subdir {
+    case None -> targetDir
+    case Some(s) -> match Path.joinWithin(targetDir, s) {
+      case Ok(joined) -> joined
+      case Err(e) -> return Err(error = "git dependency '" + url + "': invalid subdir '" + s + "': " + IOError.message(e))
+    }
+  }
 
   if not Dir.exists(resolvedDir) {
     return Err(error = "subdir '" + resolvedDir + "' does not exist in cloned repository")

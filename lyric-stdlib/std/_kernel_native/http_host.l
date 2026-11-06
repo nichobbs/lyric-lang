@@ -22,7 +22,7 @@
 //! file drives the wire protocol itself over `Std.TcpHost`'s
 //! `hostConnect`/`hostConnectTls`/`hostRead`/`hostWrite`/`hostClose`.
 //!
-//! The issue text (and `native/plan/08-work-items.md`'s N9.4 entry, and
+//! The issue text (and `docs/native-plan/08-work-items.md`'s N9.4 entry, and
 //! docs/61 §7's "feeding the same engine and client core") anticipated
 //! reusing "the sans-IO engine's client connection FSM" from
 //! `Std.HttpEngine`. Reading that file in full (before writing anything

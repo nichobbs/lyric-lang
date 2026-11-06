@@ -187,7 +187,7 @@ pub func goalsForFileInScope(
     i = i + 1
   }
 
-  val checkedArith = match level { case VLProofRequiredChecked -> true; case _ -> false }
+  val checkedArith = vlIsProofRequired(level) and not fileHasUnboundedArithmetic(file)
   val sharedSymbols: List[SymbolDecl] = newList()
 
   // The records and distinct types the package's other files declare are in
@@ -268,6 +268,7 @@ pub func goalsForFileInScope(
           }
           val dtFields: List[DatatypeField] = newList()
           val dtDefaults: List[Option[Expr]] = newList()
+          val dtInvs: List[Option[Expr]] = newList()
           var fi = 0
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
@@ -283,6 +284,9 @@ pub func goalsForFileInScope(
                 )
                 dtDefaults.add(fld.dflt)
               }
+              case RMInvariant(inv) -> {
+                dtInvs.add(Some(value = inv.expr))
+              }
               case _ -> ()
             }
             fi = fi + 1
@@ -294,6 +298,11 @@ pub func goalsForFileInScope(
           if not recordDefaultsMap.containsKey(recDecl.name) {
             recordDefaultsMap.add(recDecl.name, dtDefaults)
             recordNames.add(recDecl.name)
+          }
+          val invKey = "!invariant." + recDecl.name
+          if dtInvs.count > 0 and not recordDefaultsMap.containsKey(invKey) {
+            recordDefaultsMap.add(invKey, dtInvs)
+            recordNames.add(invKey)
           }
         }
       }

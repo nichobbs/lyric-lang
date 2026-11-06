@@ -2089,8 +2089,8 @@ pub func recordRecordArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, op: 
   }
 }
 
-// A record whose `==` compares field by field (D164): one with no `var`
-// field (a value, D157), or one that derives `Equals`.
+// A record whose `==` compares field by field (D164): a value record (not
+// `ref record`, no `var` field; D157, D222), or one that derives `Equals`.
 pub func isStructuralEqRecord(tbl: in SymbolTable, t: in Type): Bool {
   match unrefine(t) {
     case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
@@ -2098,6 +2098,9 @@ pub func isStructuralEqRecord(tbl: in SymbolTable, t: in Type): Bool {
         val decl = match rs.kind { case DKRecord(_, rd) -> rd; case DKExposedRec(_, rd) -> rd; case _ -> return false }
         if hasDerive(tbl, "Equals", t) {
           return true
+        }
+        if decl.isRef {
+          return false
         }
         for m in decl.members {
           match m {
@@ -4935,7 +4938,14 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
       case Some(parentKey) -> {
         target = Some(value = internDefPathKey(tbl.interner, parentKey + "::" + uc.name))
       }
-      case None -> ()
+      // A dependency's union has no resolver DefPath: name the case by its
+      // package and union, the key the resolver would intern for it.
+      case None -> if sym.originPackage.length > 0 {
+        val unionName = typeNameOfId(tbl, parentId)
+        if unionName.length > 0 {
+          target = Some(value = internDefPathKey(tbl.interner, sym.originPackage + "::" + unionName + "::" + uc.name))
+        }
+      }
     }
     case _ -> {
       target = symbolTypeIdOpt(sym)
@@ -4975,22 +4985,35 @@ func builtinRecvHead(recv: in Type): String {
 }
 
 // A call whose callee is a built-in function (`println`) or a built-in member
-// of a primitive, slice or array receiver (`"x".length`-style typed members)
-// records the built-in's name; a member of a record field of function type is
-// not one (the field wins, as in the call arm).
+// of a primitive, slice or array receiver records the built-in's name.  Such a
+// receiver has no fields, so a member the checker typed as a function (`fnT`)
+// is a built-in, never a field of function type; `toString()` is the universal
+// method of every receiver and is a built-in on any of them.
 func recordBuiltinCall(
   tbl: in SymbolTable,
   callNode: in Int,
   fn: in Expr,
+  fnT: in Type,
   memberRecvTy: in Option[Type],
   isMemberCallee: in Bool,
   memberName: in String,
+  argCount: in Int,
 ): Unit {
   if isMemberCallee {
     match memberRecvTy {
-      case Some(rt) -> match builtinMember(tbl, rt, memberName) {
-        case Some(_) -> recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
-        case None -> ()
+      case Some(rt) -> {
+        val builtinReceiver = match unrefine(rt) {
+          case TyPrim(_) -> true
+          case TySlice(_) -> true
+          case TyArray(_, _, _) -> true
+          case _ -> false
+        }
+        val typedAsFunction = match fnT { case TyFunction(_, _, _) -> true; case _ -> false }
+        val userReceiver = match unrefine(rt) { case TyUser(_, _, _) -> true; case _ -> false }
+        val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
+        if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
+          recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
+        }
       }
       case None -> ()
     }
@@ -5004,6 +5027,13 @@ func recordBuiltinCall(
       }
     }
     case _ -> ()
+  }
+}
+
+func builtinMemberIsSome(tbl: in SymbolTable, rt: in Type, name: in String): Bool {
+  match builtinMember(tbl, rt, name) {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
@@ -17564,9 +17594,9 @@ func callArgsIndeterminate(sc: in Scope, args: in List[CallArg], argTypes: in Li
 }
 
 // A union-case construction (`Ok(value = 7)`) whose arguments leave a type
-// argument of its union unsolved is kept in `SymbolTable.unsolvedCallSites`
-// like an unsolved function call (D353), as a constructor site; one that
-// nothing fixes is the error T0224, as for a function call (D381).
+// argument of its union unsolved is recorded in `SymbolTable.unsolvedCallSites`
+// as a constructor site, the way an unsolved function call is (D353). A site
+// that nothing later fixes is the error T0224, as for a function call (D381).
 // `caseTy` is the construction as `inferUnionCaseConstruction` typed it.
 func noteUnsolvedCaseCtor(
   sc: in Scope,
@@ -18521,6 +18551,7 @@ func inferExprCore(
               if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname, e.span) {
                 return tyErrorSilent()
               }
+              recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(rt) + "." + mname)
               return TyPrim(pt = target)
             }
             if isNonConvertiblePrimitive(rt) {
@@ -18811,7 +18842,7 @@ func inferExprCore(
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
       match directSig {
         case Some(_) -> ()
-        case None -> recordBuiltinCall(tbl, e.nodeId, fn, memberRecvTy, isMemberCallee, memberName)
+        case None -> recordBuiltinCall(tbl, e.nodeId, fn, fnT, memberRecvTy, isMemberCallee, memberName, args.count)
       }
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
@@ -19472,6 +19503,9 @@ func inferExprCore(
                   match instantiateBuiltinCall(qualifiedBuiltinCalleeType(tbl, fn, fnT), argTypes) {
                     case TyFunction(paramTypes, ret, fnIsAsync) -> {
                       recordAsyncCallSite(tbl, e.span, fnIsAsync)
+                      if calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
+                        sendNoteFuncValueCall(tbl, e.span, calleeText(fn))
+                      }
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
                         val expectedMsg = if minArgs == paramTypes.count {
@@ -20967,8 +21001,10 @@ func inferCaseCtorExpected(
   cargs: in List[CallArg],
   caseSym: in Symbol,
   span: in Span,
+  callNode: in Int,
   expected: in Type,
 ): Type {
+  recordCtorCalleeNode(tbl, callNode, caseSym)
   val exps = caseCtorArgsExpected(tbl, caseSym, cargs, expected)
   val cargTypes = inferCtorArgsExpected(sc, tbl, sigs, diag, cargs, exps)
   // Before the construction records its own payload sites, so a payload is
@@ -21007,7 +21043,7 @@ func inferQualifiedCaseCtorExpected(
       noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
       if widensStructurally(expected, actual) {
         val scratch: List[Diagnostic] = newList()
-        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, expected)
+        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, e.nodeId, expected)
         if diagnosticsHaveError(scratch) {
           actual
         } else {
@@ -21257,7 +21293,7 @@ func inferExprExpectedCore(
       } else if p.segments.count == 1 {
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
-          case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, expected)
+          case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, e.nodeId, expected)
           case None -> if diag.count > diagCountBefore {
             tyErrorSilent()
           } else if callHasPropagateArg(tbl, cargs) {

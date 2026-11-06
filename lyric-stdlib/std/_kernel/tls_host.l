@@ -63,6 +63,7 @@
 package Std.TlsHost
 
 import Std.Core
+import Std.CollectionsHost
 
 extern type CertHandle = "System.Security.Cryptography.X509Certificates.X509Certificate2"
 
@@ -92,9 +93,26 @@ func newSecureTempDir(): String {
   info.FullName
 }
 
-func deleteTempDirQuietly(path: in String): Unit {
+// Overwrite `key.pem` with zeros of the same length before unlinking the
+// `0700` temp directory.  In-place overwriting is best-effort on journaled and
+// wear-levelled SSD filesystems, where the primary protection remains the
+// `0700` owner-only directory permissions from `CreateTempSubdirectory`.
+func scrubAndDeleteTempDirQuietly(dir: in String, keyPath: in String, keyLen: in Int): Unit {
   try {
-    NetDirectory.Delete(path, true)
+    if NetFile.Exists(keyPath) {
+      val zeros: List[Byte] = newListWithCapacity(keyLen)
+      var i = 0
+      while i < keyLen {
+        zeros.add(0u8)
+        i = i + 1
+      }
+      NetFile.WriteAllBytes(keyPath, zeros.toArray())
+    }
+  } catch Bug as _ {
+    ()
+  }
+  try {
+    NetDirectory.Delete(dir, true)
   } catch Bug as _ {
     ()
   }
@@ -136,10 +154,10 @@ pub func hostIdentityFromPemBytes(
     NetFile.WriteAllBytes(certPath, certBytes)
     NetFile.WriteAllBytes(keyPath, keyBytes)
     val handle = CertHandle.CreateFromPemFile(certPath, keyPath)
-    deleteTempDirQuietly(dir)
+    scrubAndDeleteTempDirQuietly(dir, keyPath, keyBytes.length)
     Ok(value = handle)
   } catch Bug as b {
-    deleteTempDirQuietly(dir)
+    scrubAndDeleteTempDirQuietly(dir, keyPath, keyBytes.length)
     Err(error = classifyIdentityError(b.message))
   }
 }

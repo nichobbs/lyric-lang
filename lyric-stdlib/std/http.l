@@ -1075,6 +1075,13 @@ pub func HttpResponse.statusCode(response: in HttpResponse): Int {
   return HostHttp.hostStatusCode(response.handle)
 }
 
+/// Return the request URL associated with this response.
+@pure
+@stable(since = "1.0")
+pub func HttpResponse.url(response: in HttpResponse): String {
+  return response.url
+}
+
 /// Return true for 2xx status codes.
 @pure
 @stable(since = "1.0")

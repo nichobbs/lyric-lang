@@ -160,11 +160,14 @@ pub func levelOfFile(file: in SourceFile, diag: in List[Diagnostic]): Verificati
           if mod == "checked_arithmetic" {
             return VLProofRequiredChecked
           }
+          if mod == "unbounded_arithmetic" {
+            return VLProofRequired
+          }
           // V0011: unknown modifier.
           diag.add(
             errorDiagnostic(
               "V0011",
-              "unknown @proof_required modifier '" + mod + "'; expected unsafe_blocks_allowed or checked_arithmetic",
+              "unknown @proof_required modifier '" + mod + "'; expected unsafe_blocks_allowed, checked_arithmetic, or unbounded_arithmetic",
               p.span
             )
           )
@@ -181,6 +184,18 @@ pub func levelOfFile(file: in SourceFile, diag: in List[Diagnostic]): Verificati
 
   // Default: @runtime_checked.
   VLRuntimeChecked
+}
+
+/// True when `file` explicitly opts into unbounded mathematical integer arithmetic
+/// via `@proof_required(unbounded_arithmetic)`.
+pub func fileHasUnboundedArithmetic(file: in SourceFile): Bool {
+  match findAnnotation("proof_required", file.fileAnnotations) {
+    case Some(a) -> match proofRequiredModifier(a) {
+      case Some(mod) -> mod == "unbounded_arithmetic"
+      case None -> false
+    }
+    case None -> false
+  }
 }
 
 // Per-function level: same as the file unless the function carries @axiom.

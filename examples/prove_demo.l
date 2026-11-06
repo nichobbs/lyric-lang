@@ -23,6 +23,7 @@ pub func tautology(): Bool
 
 pub func bumped(x: Int): Int
   requires: x >= 0
+  requires: x < 2147483647
   ensures: result > x
   = x + 1
 

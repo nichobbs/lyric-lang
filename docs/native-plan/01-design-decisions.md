@@ -360,4 +360,4 @@ new predicate grammar or erasure logic.
 Only `lyric-compiler/lyric/cfg.l` is modified. `Cfg.fs` is **not** touched.
 
 Full detail: `docs/03-decision-log.md` §D-N-013 and
-`native/plan/07-stdlib-port.md` §target-conditional imports.
+`docs/native-plan/07-stdlib-port.md` §target-conditional imports.

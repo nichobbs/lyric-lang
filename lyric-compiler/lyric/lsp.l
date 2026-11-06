@@ -468,17 +468,31 @@ func mkNotif(method: in String, params: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. JSON extraction helpers.
 // ─────────────────────────────────────────────────────────────────────────────
+func jElemStrOrEmpty(e: in JsonElement): String {
+  if isJsonString(e) {
+    getString(e)
+  } else {
+    ""
+  }
+}
+
 func jRootStr(json: in String, field: in String): String {
   val doc = parseJson(json)
+  defer {
+    disposeJson(doc)
+  }
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
     case None -> ""
-    case Some(e) -> getString(e)
+    case Some(e) -> jElemStrOrEmpty(e)
   }
 }
 
 func jRootInt(json: in String, field: in String): Int {
   val doc = parseJson(json)
+  defer {
+    disposeJson(doc)
+  }
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
     case None -> 0
@@ -488,6 +502,9 @@ func jRootInt(json: in String, field: in String): Int {
 
 func jRaw(json: in String, field: in String): String {
   val doc = parseJson(json)
+  defer {
+    disposeJson(doc)
+  }
   val root = rootElement(doc)
   match tryGetProperty(root, field) {
     case None -> "null"
@@ -499,7 +516,7 @@ func jNested2Str(doc: in JsonDoc, p1: in String, p2: in String): String {
   val root = rootElement(doc)
   match tryGetProperty(root, p1) {
     case None -> ""
-    case Some(e1) -> match tryGetProperty(e1, p2) { case None -> ""; case Some(e2) -> getString(e2) }
+    case Some(e1) -> match tryGetProperty(e1, p2) { case None -> ""; case Some(e2) -> jElemStrOrEmpty(e2) }
   }
 }
 

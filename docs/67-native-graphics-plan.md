@@ -46,7 +46,7 @@ AddressSanitizer and long paths (D213), and for the graphics libraries, whose G4
 (D219: `@cfg(target_os = ...)`, per-data-model bindings, Windows prebuilt archives and the Win32 surface).
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
-**Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
+**Builds on:** `docs/native-plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
 (profile axis, #6263), `docs/35-js-wasm-component-sketch.md` (future WASM
 target), `docs/39-package-registry.md` (lock-file checksums).
@@ -76,7 +76,7 @@ programs possible in Lyric:
 is the right backend for this work:
 
 - ARC means no garbage-collector pauses in a frame loop
-  (`native/plan/04-arc-design.md`).
+  (`docs/native-plan/04-arc-design.md`).
 - C FFI, `NativePtr[T]` and callback trampolines already exist (N4).
 - LLVM optimises and auto-vectorises scalar code well.
 - The same backend is the route to `wasm32` and browser WebGPU later
@@ -121,13 +121,13 @@ Each item was checked against the code, not only the plan documents.
 | Area | State | Where |
 |---|---|---|
 | `Float` | Lowered to `double` on native (`typeExprToNType` maps `Float` and `Double` to `NDouble`) and on MSIL (`Float` maps to `MDouble`). The reference says 32-bit IEEE 754; `.toFloat()` is documented as "reserved pending backend support". The lexer already accepts an `f32` suffix. About 38 uses in stdlib and ecosystem sources. | `lyric-compiler/lyric/llvm_codegen.l:610`, `lyric-compiler/msil/codegen.l:8047`, `docs/01` §2.1 |
-| Records | Always heap-allocated with an ARC header on native. The IR layer has no by-value aggregate ABI (D-N-016 note). On MSIL only all-primitive records become `readonly struct`. | `native/plan/03-type-mapping.md` "Record types" |
-| Unions, `Option` | Heap-allocated with an ARC header on native, so an `Option[Vec3]` per frame is a `malloc`. | `native/plan/03-type-mapping.md` "Union types" |
+| Records | Always heap-allocated with an ARC header on native. The IR layer has no by-value aggregate ABI (D-N-016 note). On MSIL only all-primitive records become `readonly struct`. | `docs/native-plan/03-type-mapping.md` "Record types" |
+| Unions, `Option` | Heap-allocated with an ARC header on native, so an `Option[Vec3]` per frame is a `malloc`. | `docs/native-plan/03-type-mapping.md` "Union types" |
 | `List[T]` / `slice[T]` | Shared `LyricList` representation with uniform 8-byte `int64_t` cells: no packed `Float` or record storage, so data cannot be handed to a GPU or C API without a copy and repack. `slice[T]` has no in-place mutation. | `lyric-rt/include/lyric_rt.h:233-241`, D-N-015, `docs/01` §2.7 |
 | `array[N, T]` | Parsed (`TArray`) and specified with range-subtype bounds-check elision; not lowered on native, and erased to an untyped object reference on MSIL and JVM. | `parser/parser_ast.l:261`, `docs/01` §2.7 |
-| FFI | `extern func` with scalars, `String` and `NativePtr[T]`. Structs only by pointer, and there is no way to declare a C-layout struct. Callback trampolines require the userdata pointer to be the **last** parameter. | `docs/01` §11.6, `native/plan/05-ffi-design.md` |
+| FFI | `extern func` with scalars, `String` and `NativePtr[T]`. Structs only by pointer, and there is no way to declare a C-layout struct. Callback trampolines require the userdata pointer to be the **last** parameter. | `docs/01` §11.6, `docs/native-plan/05-ffi-design.md` |
 | Platforms | Linux x86-64 and AArch64, macOS AArch64. No Windows. | `docs/01` §13.1 (`--target native`) |
-| Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `native/plan/06-async-design.md` |
+| Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `docs/native-plan/06-async-design.md` |
 | Dependencies | Path and workspace `[dependencies]` compile from source into a native build (#7833, closing #6815). No library package carries its own `extern func` kernel yet, so a dependency that binds C symbols, and the propagation of its link flags to the application, are untested. | `docs/01` §13.1, `cli/workspace_builder.l` |
 | Release codegen | Overflow checks are not gated on the build profile. | #6263 |
 | Positioning | Before D155, `docs/00` listed "game developers needing hot-path optimization" as not the audience and described the memory model as host GC only, and `docs/04` rejected operator overloading beyond numeric distinct types. D155 revised both (§4.9); `docs/04` still rejects SIMD intrinsics. | `docs/00`, `docs/04` |
@@ -593,7 +593,7 @@ XL (a quarter or more of focused work).
 | **G5** | `lyric-gpu` on wgpu-native; examples: triangle, textured quad, compute (a GPU prefix sum). Golden-image CI on lavapipe. | G4 | All three examples pass golden-image tests in CI. | L |
 | **G6** | `Std.Math` vectors and matrices (§4.6), `lyric-text`, `lyric-draw`. | G5 | A text-heavy stress scene renders within its frame budget on lavapipe and on real hardware; golden images for shaping (Latin, Arabic, CJK). | XL |
 | **G7** | `lyric-game` and a small, complete 2D sample game with recorded-input replay tests. | G6 | Sample game playable on Linux and macOS; replay tests in CI. | M |
-| **G8** | Multi-threaded native scheduler (native/plan Phase 2) and `Parallel.forChunks` (§4.4). | G2 | Parallel buffer processing scales across cores in `lyric bench`; ThreadSanitizer clean. | L |
+| **G8** | Multi-threaded native scheduler (docs/native-plan Phase 2) and `Parallel.forChunks` (§4.4). | G2 | Parallel buffer processing scales across cores in `lyric bench`; ThreadSanitizer clean. | L |
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 

@@ -99,9 +99,9 @@ the mode checker's own pre-codegen diagnostic gate (`N0100`).
   impls), `book/chapters/10-async-and-concurrency.md`,
   `book/chapters/appendix-b-quick-reference.md` (T0136 row, plus a new
   §B.11 "Native codegen / build diagnostics (N-series)" table listing
-  `N0001`-`N0006`), `native/plan/03-type-mapping.md`,
-  `native/plan/04-arc-design.md`, `native/plan/08-work-items.md`,
-  `native/plan/README.md`.
+  `N0001`-`N0006`), `docs/native-plan/03-type-mapping.md`,
+  `docs/native-plan/04-arc-design.md`, `docs/native-plan/08-work-items.md`,
+  `docs/native-plan/README.md`.
 
 ## Tests
 

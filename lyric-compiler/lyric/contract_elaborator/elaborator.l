@@ -115,7 +115,7 @@ func functionIsWoven(fn: in FunctionDecl): Bool {
 //     collide.  The counter is reset per function — no two synthetic
 //     names live in the same scope.
 // ─────────────────────────────────────────────────────────────────────────────
-pub record RenameCounter {
+pub ref record RenameCounter {
   var next: Int
   // The type each `__lyric_result_<n>` binding is annotated with: the
   // function's declared return type, the type the checker gave `result` in

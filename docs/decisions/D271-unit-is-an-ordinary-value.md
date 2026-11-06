@@ -75,7 +75,7 @@ the unit value, so the parameter must exist in the function's ABI.
 ## Consequences
 
 - docs/01 §2.1 states the rule; docs/09 (MSIL), docs/18 (JVM) and
-  `native/plan/03-type-mapping.md` record the representation.
+  `docs/native-plan/03-type-mapping.md` record the representation.
 - `lyric-compiler/lyric/unit_value_self_test.l` pins the behaviour on dotnet,
   the JVM and native.
 - No diagnostic is added: nothing that type checked before is rejected.

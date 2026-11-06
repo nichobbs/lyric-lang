@@ -1857,7 +1857,7 @@ pub func trustKeysAllowingUnsigned(keys: in List[TrustedKey]): TrustPolicy {
 /// Capabilities revoked from one plugin; shared by its process state and the
 /// server that answers its capability calls.
 @experimental
-pub record PluginRevocations {
+pub ref record PluginRevocations {
   var revoked: List[String]
 }
 
@@ -1866,7 +1866,7 @@ pub record PluginRevocations {
 /// it was loaded from) and the running process or in-process server, if any.
 /// Reached through `PluginConnection`; applications do not build it.
 @experimental
-pub record PluginProcessState {
+pub ref record PluginProcessState {
   manifest: PluginManifest
   dir: String
   points: List[PluginPointInfo]
@@ -1893,7 +1893,7 @@ pub record PluginProcessState {
 /// plugin's stdio (`peer`) or, for a trusted plugin in the host's process,
 /// directly (`link`). Every copy refers to the same connection.
 @experimental
-pub record PluginConnection {
+pub ref record PluginConnection {
   pluginId: String
   var peer: Option[RpcPeer]
   host: Option[PluginProcessState]
@@ -1910,7 +1910,7 @@ pub record PluginContributionJson {
 
 /// A plugin host: its configuration and its catalogue of loaded plugins.
 @experimental
-pub record PluginHost {
+pub ref record PluginHost {
   config: PluginHostConfig
   var plugins: List[PluginConnection]
 }
@@ -2155,7 +2155,7 @@ func plTrustedCandidate(
   )
 }
 
-record TrustedOpenCall {
+ref record TrustedOpenCall {
   loader: TrustedLoader
   path: String
   var outcome: Result[TrustedLibrary, String]
@@ -2197,7 +2197,7 @@ func plOpenTrusted(
 // The policy and provider calls run under `runCatchingBug`, so a panic in
 // application code refuses the plugin or fails the one capability call
 // instead of unwinding through the host (on native a panic ends the process).
-record PolicyCall {
+ref record PolicyCall {
   policy: GrantPolicy
   manifest: PluginManifest
   var decision: GrantDecision
@@ -2209,7 +2209,7 @@ impl BugGuarded for PolicyCall {
   }
 }
 
-record ServeCall {
+ref record ServeCall {
   provider: CapabilityProvider
   method: String
   params: Option[JsonValue]
@@ -3552,7 +3552,7 @@ impl HostLink for TrustedHostLink {
 // policy and provider calls do: on dotnet and the JVM a panic in the plugin
 // then fails that call instead of unwinding through the host.  Native has no
 // unwinding (D-N-003), so there a panic in a trusted plugin ends the process.
-record TrustedServerCall {
+ref record TrustedServerCall {
   library: TrustedLibrary
   var outcome: Result[PluginServer, String]
 }
@@ -3563,7 +3563,7 @@ impl BugGuarded for TrustedServerCall {
   }
 }
 
-record TrustedAttachCall {
+ref record TrustedAttachCall {
   server: PluginServer
   conn: PluginConnection
   grants: List[GrantedCapability]
@@ -3585,7 +3585,7 @@ impl BugGuarded for TrustedAttachCall {
   }
 }
 
-record TrustedDispatchCall {
+ref record TrustedDispatchCall {
   server: PluginServer
   method: String
   params: Option[JsonValue]
@@ -3951,7 +3951,7 @@ pub func openProtocolPlugin(
 /// fixed when the plugin is registered and apply to the requests the host
 /// routes through `callCapabilityAs`.
 @experimental
-pub record ProtocolSession {
+pub ref record ProtocolSession {
   pluginId: String
   pointId: String
   state: PluginProcessState
@@ -4155,7 +4155,7 @@ func plHelloAnswer(pluginId: in String, points: in List[PluginPointMethods]): Js
 }
 
 // The plugin process's handler: the handshake first, then point calls.
-record PluginSideHandler {
+ref record PluginSideHandler {
   server: PluginServer
   conn: PluginConnection
   pluginId: String

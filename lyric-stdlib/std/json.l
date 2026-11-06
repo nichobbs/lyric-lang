@@ -257,7 +257,7 @@ pub func valueKind(elem: in JsonElement): Int {
 // opaque Lyric record so callers iterate without naming (or emitting) the BCL
 // type.  Callers don't change: `var c = enumerateArray(e)` infers the cursor.
 // =====================================================================
-pub record JsonArrayCursor {
+pub ref record JsonArrayCursor {
   var en: JsonArrayEnumerator
 }
 
@@ -281,7 +281,7 @@ pub func arrayCurrent(cur: inout JsonArrayCursor): JsonElement {
 // same way as the array cursor above (the BCL `ObjectEnumerator` struct stays
 // behind `JsonObjectCursor`).
 // =====================================================================
-pub record JsonObjectCursor {
+pub ref record JsonObjectCursor {
   var en: JsonObjectEnumerator
 }
 

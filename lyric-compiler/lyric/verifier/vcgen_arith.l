@@ -82,7 +82,9 @@ func intBitsOfExprWith(env: in VEnv, e: in Expr, unknownWins: in Bool): Int {
     case ELiteral(lit) -> match lit {
       case LInt(v, suffix, _) -> match suffix {
         case I64 -> 64
-        case I32 | I16 | I8 -> 32
+        case I32 -> 32
+        case I16 -> 16
+        case I8 -> 8
         case NoIntSuffix -> {
           // Only a `Long` holds an unsuffixed literal beyond 32 bits.
           if v < signedMinOfBits(32) or v > signedMaxOfBits(32) {

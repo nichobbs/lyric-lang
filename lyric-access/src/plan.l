@@ -256,8 +256,11 @@ pub func planTree(n: in Numbering, tree: in AccessTree): Plan {
   for node in tree.nodes {
     nodes.add(planNode(n, node))
   }
-  retainOnly(n, liveIds(tree))
-  Plan(full = true, rootNum = numberOf(n, tree.rootId), focusNum = numberOf(n, tree.focus), nodes = nodes)
+  val live = liveIds(tree)
+  retainOnly(n, live)
+  val rootNum = numberOf(n, tree.rootId)
+  val focusNum = if live.contains(tree.focus) { numberOf(n, tree.focus) } else { rootNum }
+  Plan(full = true, rootNum = rootNum, focusNum = focusNum, nodes = nodes)
 }
 
 /// The nodes `update` changed, out of `whole` (the plan of the tree the update leads to).  `None`

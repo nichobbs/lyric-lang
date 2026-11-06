@@ -90,5 +90,5 @@ end-to-end through `Lyric.LlvmBridge.compileToNativeWithFlags` with
 D-progress-942 (`readTextOrPanic`'s half of #6961, the precedent this
 entry follows), D-N-027 (`Std.Time`'s native `Instant`/`Duration`
 epoch-nanoseconds representation, reused here as the field
-convention), `docs/10-bootstrap-progress.md`, `native/plan/08-work-items.md`
+convention), `docs/10-bootstrap-progress.md`, `docs/native-plan/08-work-items.md`
 N5.7.

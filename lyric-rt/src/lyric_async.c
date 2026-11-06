@@ -985,6 +985,7 @@ static void settle_pending(void) {
             count_ready(t);
             ready_push(t); /* the dependency finished while this task was suspending */
         }
+        lyric_release(dep);
         break;
     case PARK_SLEEP:
         lyric_mutex_lock(g_mu);
@@ -1071,6 +1072,10 @@ void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
     if (st == LYRIC_TASK_COMPLETE) {
         lyric_panic_msg("task completed twice (scheduler bug)", "lyric_async.c", __LINE__);
     }
+    /* Keep `t` alive across completion publication and waiter wakeup so a
+     * woken waiter or block_on caller on another worker cannot release the
+     * last reference before we read `t->joined` below. */
+    lyric_retain(t);
     /* lyric_task_complete only ever runs inside a coroutine body, which
      * only executes while its task is RUNNING (the ramp, or a resume
      * that take_task already flipped to RUNNING) or re-registers itself
@@ -1093,6 +1098,7 @@ void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
     if (had_sched_ref) {
         lyric_release(t);
     }
+    lyric_release(t);
 }
 
 /* ── Host-finished tasks (docs/35 section 11) ────────────────────────── */
@@ -1148,6 +1154,7 @@ void lyric_async_await(LyricTask* waiter, LyricTask* dep) {
     if (mt()) {
         settle_pending();
         lyric_retain(waiter); /* the sched ref, held while parked */
+        lyric_retain(dep);    /* keep dep alive until settle_pending inspects it */
         waiter->park_kind = PARK_AWAIT;
         waiter->park_dep = dep;
         tl_pending = waiter;

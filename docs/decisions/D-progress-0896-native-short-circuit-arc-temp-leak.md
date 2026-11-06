@@ -126,6 +126,6 @@ rejection.
 
 **Related:** #6645 (root-caused and fixed here), #6719, #6722 (both
 unblocked and landed here), D-progress-827 (the original discovery + the
-`BuiltRequestBytes` workaround this entry removes), `native/plan/08-work-items.md`
-N9.8, `native/plan/04-arc-design.md` (the temp-scope release rules this
+`BuiltRequestBytes` workaround this entry removes), `docs/native-plan/08-work-items.md`
+N9.8, `docs/native-plan/04-arc-design.md` (the temp-scope release rules this
 bug violated).

@@ -60,9 +60,21 @@ LyricList* lyric_list_new(int32_t elems_are_refs) {
 }
 
 static void list_grow(LyricList* l, int64_t need) {
+    if (need < 0) {
+        lyric_panic_msg("list capacity overflow", "lyric_collections.c", __LINE__);
+    }
     if (need <= l->cap) return;
     int64_t cap = l->cap < 8 ? 8 : l->cap;
-    while (cap < need) cap *= 2;
+    while (cap < need) {
+        if (cap > INT64_MAX / 2) {
+            cap = need;
+            break;
+        }
+        cap *= 2;
+    }
+    if ((uint64_t)cap > (SIZE_MAX / 2) / sizeof(int64_t)) {
+        lyric_panic_msg("list capacity overflow", "lyric_collections.c", __LINE__);
+    }
     int64_t* data = (int64_t*)lyric_alloc((uint64_t)cap * sizeof(int64_t));
     if (l->len > 0) memcpy(data, l->data, (size_t)l->len * sizeof(int64_t));
     free(l->data);
@@ -74,6 +86,9 @@ static void list_grow(LyricList* l, int64_t need) {
  * element first when the list owns references (#7282). */
 static void list_push_range(LyricList* list, const int64_t* src, int64_t n) {
     if (n <= 0) return;
+    if (n > INT64_MAX - list->len) {
+        lyric_panic_msg("list length overflow", "lyric_collections.c", __LINE__);
+    }
     list_grow(list, list->len + n);
     if (list->elems_are_refs) {
         for (int64_t i = 0; i < n; i++) elem_retain(list->elems_are_refs, src[i]);

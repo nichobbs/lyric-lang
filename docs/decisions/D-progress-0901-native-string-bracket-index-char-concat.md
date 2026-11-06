@@ -14,7 +14,7 @@ a from-source `Lyric.LlvmCodegen`. Both are widely-used stdlib idioms
 (`lyric-rt/src/lyric_string.c`) decodes the full Unicode scalar value
 starting at `byteIdx` via genuine UTF-8 iteration (reusing the existing
 `utf8_decode_at` helper `.trim()`/`.toLower()` already use) —
-deliberately NOT a raw byte read. `native/plan/03-type-mapping.md`'s own
+deliberately NOT a raw byte read. `docs/native-plan/03-type-mapping.md`'s own
 `Char` note settles this design question directly: "converting between
 Char and a position in a string buffer requires UTF-8 iteration, not
 byte indexing." The index itself stays a byte offset, consistent with
@@ -108,8 +108,8 @@ including every ASan-linked case in that list.
 audit this issue was split out of — #6588 already covered its other six
 named methods), #6755 (native `.lastIndexOf`, unaffected by this change
 and shipped separately), D-progress-831 (the #6588 fix this extends),
-`native/plan/03-type-mapping.md` (`Char`'s UTF-8-iteration note),
-`native/plan/08-work-items.md` (N9.3/N9.6/N9.7 write-ups updated),
+`docs/native-plan/03-type-mapping.md` (`Char`'s UTF-8-iteration note),
+`docs/native-plan/08-work-items.md` (N9.3/N9.6/N9.7 write-ups updated),
 `docs/01-language-reference.md` §12.1 (updated).
 
 **Addendum (#7010) — `Ctx.varIsChar` leaked stale entries across a name

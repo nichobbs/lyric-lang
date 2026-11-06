@@ -1154,7 +1154,7 @@ pub func defaultMaxFrameSize(): Int {
 /// is a **linear** value: never reuse the decoder passed into `feedFrames` —
 /// always rebind to `result.decoder`.
 @experimental
-pub record FrameDecoder {
+pub ref record FrameDecoder {
   var buf: slice[Byte]
   // Read cursor into `buf`: frames before `pos` are consumed. Advancing it
   // instead of re-slicing the remainder keeps each frame O(its own size);

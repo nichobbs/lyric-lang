@@ -3,7 +3,7 @@
 //! proves a `for` loop over the value it started with.
 //!
 //!   lyric prove examples/buffer_proof.l
-@proof_required
+@proof_required(unbounded_arithmetic)
 package BufferProof
 
 import Std.Buffer

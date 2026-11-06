@@ -68,6 +68,12 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
   if name == "Long" {
     return Some(value = SortInfo(sort = SInt, range = RBKNone, intBits = 64))
   }
+  if name == "Short" {
+    return Some(value = SortInfo(sort = SInt, range = RBKNone, intBits = 16))
+  }
+  if name == "SByte" {
+    return Some(value = SortInfo(sort = SInt, range = RBKNone, intBits = 8))
+  }
   if name == "Nat" {
     val natRange = RBKClosed(lo = 0i64, hi = 9223372036854775807i64)
     val natSortInfo = SortInfo(sort = SInt, range = natRange, intBits = 64)
@@ -78,6 +84,12 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
   }
   if name == "ULong" {
     return Some(value = sortInfoNoRange(SBitVec(width = 64)))
+  }
+  if name == "UShort" {
+    return Some(value = sortInfoNoRange(SBitVec(width = 16)))
+  }
+  if name == "UByte" {
+    return Some(value = sortInfoNoRange(SBitVec(width = 8)))
   }
   if name == "Byte" {
     return Some(value = sortInfoNoRange(SBitVec(width = 8)))
@@ -595,9 +607,13 @@ pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
   rangeHypothesesForTerm(TVar(name = binder, sort = info.sort), info)
 }
 
-// The least and greatest value of a `bits`-wide signed integer (32 or 64).
+// The least and greatest value of a `bits`-wide signed integer (8, 16, 32 or 64).
 pub func signedMinOfBits(bits: in Int): Long {
-  if bits == 32 {
+  if bits == 8 {
+    -128i64
+  } else if bits == 16 {
+    -32768i64
+  } else if bits == 32 {
     -2147483648i64
   } else {
     -9223372036854775807i64 - 1i64
@@ -605,7 +621,11 @@ pub func signedMinOfBits(bits: in Int): Long {
 }
 
 pub func signedMaxOfBits(bits: in Int): Long {
-  if bits == 32 {
+  if bits == 8 {
+    127i64
+  } else if bits == 16 {
+    32767i64
+  } else if bits == 32 {
     2147483647i64
   } else {
     9223372036854775807i64
@@ -832,7 +852,7 @@ pub func coerceToSort(t: in Term, target: in Sort): Result[Term, String] {
     case SInt -> {
       match src {
         case SBitVec(w) -> {
-          if w == 8 {
+          if w == 8 or w == 16 {
             Ok(value = TBuiltin(op = BOpBvToNat, args = termList1(t)))
           } else {
             Err(error = "a " + sortWord(src) + " value is used where a signed integer value is expected")
@@ -923,7 +943,7 @@ func unifyBitVecWithInt(bv: in Term, n: in Term, w: in Int, swapped: in Bool): R
       case Ok(n2) -> Ok(value = orderedPair(bv, n2, swapped))
       case Err(r) -> Err(error = r)
     }
-  } else if w == 8 {
+  } else if w == 8 or w == 16 {
     Ok(value = orderedPair(TBuiltin(op = BOpBvToNat, args = termList1(bv)), n, swapped))
   } else {
     Err(error = "an operation mixes a " + intToString(w) + "-bit unsigned operand with a signed integer operand")

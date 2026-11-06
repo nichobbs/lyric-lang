@@ -723,8 +723,8 @@ static bool jparse_value(JParser* jp, JNode* out) {
         } else {
             for (;;) {
                 if (out->count == cap) {
-                    cap = cap ? cap * 2 : 4;
-                    JNode* items = (JNode*)realloc(out->items, cap * sizeof(JNode));
+                    size_t new_cap = cap ? cap * 2 : 4;
+                    JNode* items = (JNode*)realloc(out->items, new_cap * sizeof(JNode));
                     if (items == NULL) {
                         jp->err = "out of memory";
                         ok = false;
@@ -732,8 +732,8 @@ static bool jparse_value(JParser* jp, JNode* out) {
                     }
                     out->items = items;
                     if (obj) {
-                        char** keys = (char**)realloc(out->keys, cap * sizeof(char*));
-                        size_t* klens = keys ? (size_t*)realloc(out->klens, cap * sizeof(size_t)) : NULL;
+                        char** keys = (char**)realloc(out->keys, new_cap * sizeof(char*));
+                        size_t* klens = keys ? (size_t*)realloc(out->klens, new_cap * sizeof(size_t)) : NULL;
                         if (keys) out->keys = keys;
                         if (klens) out->klens = klens;
                         if (keys == NULL || klens == NULL) {
@@ -742,6 +742,7 @@ static bool jparse_value(JParser* jp, JNode* out) {
                             break;
                         }
                     }
+                    cap = new_cap;
                 }
                 if (obj) {
                     jskip_ws(jp);

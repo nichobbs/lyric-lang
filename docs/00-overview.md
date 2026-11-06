@@ -32,7 +32,7 @@ Lyric is not Ada with new syntax. It deliberately drops or alters several Ada fe
 
 ## What Lyric is not
 
-**Not a systems language.** On the managed targets Lyric uses the host runtime's tracing GC; on the native target it uses automatic reference counting (`native/plan/04-arc-design.md`, D-N-005). Either way there is no ownership/borrowing and no manual memory management, and raw pointers exist only at the audited C boundary (`_kernel_native/` and `@unsafe_ffi`, §11.6 of the reference). Memory safety comes from the runtime and that boundary, not from a borrow checker. Mutable bulk data is a value type (`buffer[T]`, copy-on-write, D155), so performance-oriented code adds no shared mutable state.
+**Not a systems language.** On the managed targets Lyric uses the host runtime's tracing GC; on the native target it uses automatic reference counting (`docs/native-plan/04-arc-design.md`, D-N-005). Either way there is no ownership/borrowing and no manual memory management, and raw pointers exist only at the audited C boundary (`_kernel_native/` and `@unsafe_ffi`, §11.6 of the reference). Memory safety comes from the runtime and that boundary, not from a borrow checker. Mutable bulk data is a value type (`buffer[T]`, copy-on-write, D155), so performance-oriented code adds no shared mutable state.
 
 **Not a language without a runtime.** Lyric programs depend on the .NET BCL and the Lyric standard library. There is no freestanding mode, no OS-kernel target, no microcontroller target.
 

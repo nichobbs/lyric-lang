@@ -47646,12 +47646,15 @@ func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
 }
 
 // Whether a record compares field by field (D164): it derives `Equals`, or
-// none of its fields is `var`.  Such a record gets `Equals`/`GetHashCode`
-// overrides, so host collections and union payloads compare it as `==` does
-// (D172).
+// it is not a `ref record` and none of its fields is `var` (D222).  Such a
+// record gets `Equals`/`GetHashCode` overrides, so host collections and union
+// payloads compare it as `==` does (D172).
 func recordComparesByFieldsMsil(decl: in RecordDecl, anns: in List[Annotation]): Bool {
   if hasDeriveMarkerMsil(anns, "Equals") {
     return true
+  }
+  if decl.isRef {
+    return false
   }
   for m in decl.members {
     match m {

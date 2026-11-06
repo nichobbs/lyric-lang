@@ -435,15 +435,21 @@ func boundaryExitChecks(
     i = i + 1
   }
   match ret {
-    case Some(rt) -> match boundaryChecker(b.foreign, rt) {
-      case Some(c) -> acc.add(
-        SpannedExpr(
-          expr = checkerHolds(c, mkExpr(EResult, sp), sp),
-          span = sp,
-          message = "InvariantViolated: " + owner + " result"
+    case Some(rt) -> {
+      val checker = match boundaryChecker(b.foreign, rt) {
+        case Some(c) -> Some(value = c)
+        case None -> if owner.contains("__lyric_checked_") { None } else { boundaryChecker(b.local, rt) }
+      }
+      match checker {
+        case Some(c) -> acc.add(
+          SpannedExpr(
+            expr = checkerHolds(c, mkExpr(EResult, sp), sp),
+            span = sp,
+            message = "InvariantViolated: " + owner + " result"
+          )
         )
-      )
-      case None -> ()
+        case None -> ()
+      }
     }
     case None -> ()
   }

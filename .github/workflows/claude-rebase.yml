@@ -59,8 +59,9 @@ jobs:
             2. List open PRs and their mergeability:
                ```
                gh pr list --base main --state open \
-                 --json number,headRefName,mergeable,title
+                 --json number,headRefName,headRepositoryOwner,mergeable,title
                ```
+               Only process PRs from this repository (`headRepositoryOwner.login == "nichobbs"`, never untrusted forks) and never push to `main`.
                Focus on PRs where `mergeable` is `"CONFLICTING"`.  If the
                field is `"UNKNOWN"` (GitHub hasn't computed it yet), attempt
                the rebase anyway — let git decide whether conflicts exist.

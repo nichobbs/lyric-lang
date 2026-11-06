@@ -216,34 +216,13 @@ try_bootstrap_from_release() {
     fi
 
     if command -v jq &>/dev/null; then
-      # Use jq for robust JSON parsing if available.
-      # Strategy: prefer non-draft releases (stable), but fall back to draft releases
-      # (e.g., newly-published releases being finalized by the workflow).
-      # Note: draft field defaults to false if missing.
-
-      # First try non-draft releases
+      # Use jq for robust JSON parsing if available — only accept finalized non-draft releases.
       latest_release=$(echo "$api_response" | jq -r '.[] | select((.draft // false) != true) | .tag_name | select(. != null and . != "")' 2>/dev/null | head -1)
-
-      # If no non-draft found, fall back to the latest draft (in case a fresh release
-      # is being published and not yet finalized)
-      if [[ -z "$latest_release" ]]; then
-        info "  No non-draft release found; checking for draft releases..."
-        latest_release=$(echo "$api_response" | jq -r '.[0] | select(.tag_name != null and .tag_name != "") | .tag_name' 2>/dev/null)
-      fi
     else
-      # Fall back to basic grep+sed for systems without jq.
-      # Try non-draft releases first
+      # Fall back to basic grep+sed for systems without jq — only accept non-draft releases.
       if echo "$api_response" | grep -q '"draft": false'; then
-        # Find the portion with non-draft releases and extract the first tag_name
-        # Convert multiline JSON to single line, split on "}, then grep for non-draft
         latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
           grep '"draft": false' | head -1 | \
-          sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
-      else
-        # Fall back to the latest release (draft or not)
-        info "  No non-draft release found; checking for draft releases..."
-        latest_release=$(printf "%s" "$api_response" | tr '\n' ' ' | sed 's/"}, *"/"}\n"/g' | \
-          head -1 | \
           sed 's/.*"tag_name": "\([^"]*\)".*/\1/')
       fi
     fi
@@ -383,6 +362,47 @@ try_bootstrap_from_release() {
   else
     info "  SKIP: Neither curl nor wget found"
     return 1
+  fi
+
+  # Verify SHA-256 against the release's SHASUMS256.txt manifest (fail closed
+  # unless LYRIC_BOOTSTRAP_SKIP_CHECKSUM=1 is explicitly set).
+  if [[ "${LYRIC_BOOTSTRAP_SKIP_CHECKSUM:-0}" != "1" ]]; then
+    local shasums_url="https://github.com/nichobbs/lyric-lang/releases/download/${release_tag}/SHASUMS256.txt"
+    local shasums_path="${temp_dir}/SHASUMS256.txt"
+    if command -v curl &>/dev/null; then
+      if ! curl -fsSL "$shasums_url" -o "$shasums_path" 2>/dev/null || [[ ! -s "$shasums_path" ]]; then
+        info "  ERROR: Failed to download SHASUMS256.txt from ${shasums_url}"
+        return 1
+      fi
+    elif command -v wget &>/dev/null; then
+      if ! wget -q "$shasums_url" -O "$shasums_path" 2>/dev/null || [[ ! -s "$shasums_path" ]]; then
+        info "  ERROR: Failed to download SHASUMS256.txt from ${shasums_url}"
+        return 1
+      fi
+    else
+      info "  ERROR: Neither curl nor wget found to download SHASUMS256.txt"
+      return 1
+    fi
+    local expected_sha=""
+    expected_sha="$(awk -v name="$archive_name" '{ sub(/^\*/, "", $2); if ($2 == name) print tolower($1) }' "$shasums_path" | head -1)"
+    if [[ -z "$expected_sha" ]]; then
+      info "  ERROR: ${archive_name} missing from SHASUMS256.txt"
+      return 1
+    fi
+    local actual_sha=""
+    if command -v sha256sum &>/dev/null; then
+      actual_sha="$(sha256sum "$archive_path" | awk '{print tolower($1)}')"
+    elif command -v shasum &>/dev/null; then
+      actual_sha="$(shasum -a 256 "$archive_path" | awk '{print tolower($1)}')"
+    else
+      info "  ERROR: Neither sha256sum nor shasum found to verify ${archive_name}"
+      return 1
+    fi
+    if [[ "$actual_sha" != "$expected_sha" ]]; then
+      info "  ERROR: SHA-256 mismatch for ${archive_name} (expected ${expected_sha}, got ${actual_sha})"
+      return 1
+    fi
+    info "  SHA-256 verified against SHASUMS256.txt"
   fi
 
   # Extract to stage0-publish

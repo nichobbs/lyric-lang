@@ -1474,6 +1474,17 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
           mi = mi + 1
         }
       }
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -1482,7 +1493,7 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10. N0100 — native FFI boundary (native/plan/05-ffi-design.md).
+// §10. N0100 — native FFI boundary (docs/native-plan/05-ffi-design.md).
 // ─────────────────────────────────────────────────────────────────────────────
 // `NativePtr[T]` and the `nativeAddrOf` builtin are the raw side of the
 // native target's FFI.  Outside `_kernel_native/` package files (which
@@ -4334,6 +4345,14 @@ func inWriteRootOf(ctx: in InWriteCtx, e: in Expr): InWriteRoot {
         inWriteNoRoot(ft)
       }
     }
+    case EIndex(recv, _) -> {
+      val r = inWriteRootOf(ctx, recv)
+      if r.rooted and ctx.valueRecords.containsKey(r.ty) {
+        InWriteRoot(rooted = true, ty = "", steps = r.steps + 1, path = r.path + "[...]", base = r.base)
+      } else {
+        inWriteNoRoot("")
+      }
+    }
     case _ -> inWriteNoRoot("")
   }
 }
@@ -4478,7 +4497,11 @@ func inWriteCheckCall(ctx: in InWriteCtx, fn: in Expr, args: in List[CallArg]): 
     case EMember(r, m) -> {
       val rr = inWriteRootOf(ctx, r)
       if rr.ty != "" {
-        match mapGet(ctx.methodSigs, rr.ty + "." + m) {
+        var foundMethod: Option[FieldWriteFuncSig] = mapGet(ctx.methodSigs, rr.ty + "." + m)
+        if isNone(foundMethod) {
+          foundMethod = mapGet(ctx.funcSigs, rr.ty + "." + m)
+        }
+        match foundMethod {
           case Some(s) -> {
             if s.names.count > 0 and s.names[0] == "self" {
               sigOpt = Some(value = s)
@@ -4677,16 +4700,30 @@ func inWriteWalkStmt(ctx: in InWriteCtx, st: in Statement): Unit {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
           inWriteWalkExpr(ctx, init)
+          val initRoot = inWriteRootOf(ctx, init)
           inWriteBindPattern(ctx, pat)
           match pat.kind {
-            case PBinding(nm, _) -> inWriteBind(ctx, nm, inWriteLocalType(tyOpt, Some(value = init)))
+            case PBinding(nm, _) -> {
+              val locTy = inWriteLocalType(tyOpt, Some(value = init))
+              val effTy = if locTy != "" { locTy } else { initRoot.ty }
+              inWriteBind(ctx, nm, effTy)
+              if initRoot.rooted and effTy != "" and ctx.valueRecords.containsKey(effTy) {
+                ctx.inNames.add(nm, true)
+              }
+            }
             case _ -> {
             }
           }
         }
         case LBLet(name, tyOpt, init) -> {
           inWriteWalkExpr(ctx, init)
-          inWriteBind(ctx, name, inWriteLocalType(tyOpt, Some(value = init)))
+          val initRoot = inWriteRootOf(ctx, init)
+          val locTy = inWriteLocalType(tyOpt, Some(value = init))
+          val effTy = if locTy != "" { locTy } else { initRoot.ty }
+          inWriteBind(ctx, name, effTy)
+          if initRoot.rooted and effTy != "" and ctx.valueRecords.containsKey(effTy) {
+            ctx.inNames.add(name, true)
+          }
         }
         case LBVar(name, tyOpt, initOpt) -> {
           match initOpt {
@@ -4888,50 +4925,52 @@ func inWriteMarkNotValue(marks: in Map[String, Bool], name: in String): Unit {
   }
 }
 
-func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]): Unit {
-  val fieldTypes: Map[String, Map[String, String]] = newMap()
-  val valueRecords: Map[String, Map[String, Bool]] = newMap()
-  // A name declared twice in a file (`ref` in one place, not in another) is
-  // dropped from `valueRecords`, so it is never judged by the wrong one.
-  val refOrAmbiguous: Map[String, Bool] = newMap()
-  val funcSigs: Map[String, FieldWriteFuncSig] = newMap()
-  val ambiguousFuncs: Map[String, Bool] = newMap()
-  val methodSigs: Map[String, FieldWriteFuncSig] = newMap()
-  val ambiguousMethods: Map[String, Bool] = newMap()
-  collectFuncSigsOfFile(file, funcSigs, ambiguousFuncs)
+func inWriteSeedItems(
+  items: in List[Item],
+  skipNames: in Map[String, Bool],
+  fieldTypes: in Map[String, Map[String, String]],
+  valueRecords: in Map[String, Map[String, Bool]],
+  refOrAmbiguous: in Map[String, Bool],
+  methodSigs: in Map[String, FieldWriteFuncSig],
+  ambiguousMethods: in Map[String, Bool],
+): Unit {
   var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
+  while i < items.count {
+    match items[i].kind {
       case IRecord(decl) -> {
-        if fieldTypes.containsKey(decl.name) {
-          inWriteMarkNotValue(refOrAmbiguous, decl.name)
-        } else {
-          fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
-          if decl.isRef {
+        if not skipNames.containsKey(decl.name) {
+          if fieldTypes.containsKey(decl.name) {
             inWriteMarkNotValue(refOrAmbiguous, decl.name)
           } else {
-            valueRecords.add(decl.name, inWriteFieldMutabilityOf(decl.members))
-          }
-        }
-        var mi = 0
-        while mi < decl.members.count {
-          match decl.members[mi] {
-            case RMFunc(fn) -> inWriteRegisterMethod(methodSigs, ambiguousMethods, decl.name + "." + fn.name, fn)
-            case _ -> {
+            fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
+            if decl.isRef {
+              inWriteMarkNotValue(refOrAmbiguous, decl.name)
+            } else {
+              valueRecords.add(decl.name, inWriteFieldMutabilityOf(decl.members))
             }
           }
-          mi = mi + 1
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case RMFunc(fn) -> inWriteRegisterMethod(methodSigs, ambiguousMethods, decl.name + "." + fn.name, fn)
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
         }
       }
       case IExposedRec(decl) -> {
-        inWriteMarkNotValue(refOrAmbiguous, decl.name)
-        if not fieldTypes.containsKey(decl.name) {
-          fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
+        if not skipNames.containsKey(decl.name) {
+          inWriteMarkNotValue(refOrAmbiguous, decl.name)
+          if not fieldTypes.containsKey(decl.name) {
+            fieldTypes.add(decl.name, inWriteFieldTypesOf(decl.members))
+          }
         }
       }
       case IImpl(decl) -> {
         val tn = fieldWriteSimpleTypeName(decl.target)
-        if tn != "" {
+        if tn != "" and not skipNames.containsKey(tn) {
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
@@ -4948,6 +4987,56 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
     }
     i = i + 1
   }
+}
+
+func checkWritesThroughInParamsWithExtra(
+  file: in SourceFile,
+  extraItems: in List[Item],
+  diag: in List[Diagnostic],
+): Unit {
+  val fieldTypes: Map[String, Map[String, String]] = newMap()
+  val valueRecords: Map[String, Map[String, Bool]] = newMap()
+  // A name declared twice in a file (`ref` in one place, not in another) is
+  // dropped from `valueRecords`, so it is never judged by the wrong one.
+  val refOrAmbiguous: Map[String, Bool] = newMap()
+  val funcSigs: Map[String, FieldWriteFuncSig] = newMap()
+  val ambiguousFuncs: Map[String, Bool] = newMap()
+  val methodSigs: Map[String, FieldWriteFuncSig] = newMap()
+  val ambiguousMethods: Map[String, Bool] = newMap()
+  collectFuncSigsOfFile(file, funcSigs, ambiguousFuncs)
+  val localFuncNames: Map[String, Bool] = newMap()
+  val localTypeNames: Map[String, Bool] = newMap()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fn) -> if not localFuncNames.containsKey(fn.name) { localFuncNames.add(fn.name, true) }
+      case IRecord(decl) -> if not localTypeNames.containsKey(decl.name) { localTypeNames.add(decl.name, true) }
+      case IExposedRec(decl) -> if not localTypeNames.containsKey(decl.name) { localTypeNames.add(decl.name, true) }
+      case _ -> ()
+    }
+  }
+  val noSkip: Map[String, Bool] = newMap()
+  inWriteSeedItems(file.items, noSkip, fieldTypes, valueRecords, refOrAmbiguous, methodSigs, ambiguousMethods)
+  if extraItems.count > 0 {
+    var ei = 0
+    while ei < extraItems.count {
+      match extraItems[ei].kind {
+        case IFunc(fn) -> {
+          if not localFuncNames.containsKey(fn.name) {
+            if ambiguousFuncs.containsKey(fn.name) {
+            } else if funcSigs.containsKey(fn.name) {
+              funcSigs.remove(fn.name)
+              ambiguousFuncs.add(fn.name, true)
+            } else {
+              funcSigs.add(fn.name, inWriteSigOfFunc(fn))
+            }
+          }
+        }
+        case _ -> ()
+      }
+      ei = ei + 1
+    }
+    inWriteSeedItems(extraItems, localTypeNames, fieldTypes, valueRecords, refOrAmbiguous, methodSigs, ambiguousMethods)
+  }
   for k in mapKeys(refOrAmbiguous) {
     if valueRecords.containsKey(k) {
       valueRecords.remove(k)
@@ -4960,7 +5049,7 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
   while j < file.items.count {
     match file.items[j].kind {
       case IFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, "")
-      case IRecord(decl) -> {
+      case IRecord(decl) | IExposedRec(decl) -> {
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -4983,6 +5072,28 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
           mi = mi + 1
         }
       }
+      case IProtected(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, decl.name)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> inWriteCheckFunc(diag, fieldTypes, valueRecords, funcSigs, methodSigs, fn, "")
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -4990,17 +5101,26 @@ func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]):
   }
 }
 
+func checkWritesThroughInParams(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  val noExtra: List[Item] = newList()
+  checkWritesThroughInParamsWithExtra(file, noExtra, diag)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
+pub func checkFileWithImportsAndExtra(
+  file: in SourceFile,
+  imports: in List[ImportedMeta],
+  extraItems: in List[Item],
+): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
   checkAwaitInTry(file, fileLevel, diag)
   checkSpawnConsumption(file, fileLevel, diag)
   checkNativeFfiBoundary(file, diag)
   checkImmutableFieldWrites(file, diag)
-  checkWritesThroughInParams(file, diag)
+  checkWritesThroughInParamsWithExtra(file, extraItems, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }
@@ -5019,6 +5139,16 @@ pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta
   checkAssumeUsage(fileLevel, file, diag)
   checkImportLevels(fileLevel, file, imports, diag)
   ModeCheckResult(level = fileLevel, diagnostics = diag)
+}
+
+pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
+  val noExtra: List[Item] = newList()
+  checkFileWithImportsAndExtra(file, imports, noExtra)
+}
+
+pub func checkFileWithExtraItems(file: in SourceFile, extraItems: in List[Item]): ModeCheckResult {
+  val imports: List[ImportedMeta] = newList()
+  checkFileWithImportsAndExtra(file, imports, extraItems)
 }
 
 pub func checkFile(file: in SourceFile): ModeCheckResult {

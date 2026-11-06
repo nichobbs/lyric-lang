@@ -283,8 +283,9 @@ pub async func RestClient.delete(client: in RestClient, path: in String): Result
 /// Read the response body as a raw string.
 @stable(since = "1.0")
 pub async func RestClient.bodyText(response: in HttpResponse): Result[String, RestError] {
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
-    case Err(e) -> return Err(error = Http(error = Transport(url = "", error = e)))
+    case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> return Ok(value = text)
   }
 }
@@ -330,7 +331,7 @@ pub func RestClient.ensureSuccess(response: in HttpResponse, url: in String): Re
 /// - `Deserialize`: body is not valid JSON or the field is absent / not a string.
 @stable(since = "1.0")
 pub async func RestClient.jsonString(response: in HttpResponse, field: in String): Result[String, RestError] {
-  val url = ""
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
@@ -353,7 +354,7 @@ pub async func RestClient.jsonString(response: in HttpResponse, field: in String
 /// more than one field from the same response.
 @stable(since = "1.0")
 pub async func RestClient.jsonInt(response: in HttpResponse, field: in String): Result[Int, RestError] {
-  val url = ""
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
@@ -376,7 +377,7 @@ pub async func RestClient.jsonInt(response: in HttpResponse, field: in String): 
 /// more than one field from the same response.
 @stable(since = "1.0")
 pub async func RestClient.jsonBool(response: in HttpResponse, field: in String): Result[Bool, RestError] {
-  val url = ""
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {
@@ -397,7 +398,7 @@ pub async func RestClient.jsonBool(response: in HttpResponse, field: in String):
 /// inspection via Std.Json.
 @stable(since = "1.0")
 pub async func RestClient.jsonBody(response: in HttpResponse): Result[String, RestError] {
-  val url = ""
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> return Ok(value = text)
@@ -443,7 +444,7 @@ pub async func RestClient.jsonBody(response: in HttpResponse): Result[String, Re
 /// ```
 @stable(since = "1.0")
 pub async func RestClient.json(response: in HttpResponse): Result[JsonDoc, RestError] {
-  val url = ""
+  val url = HttpResponse.url(response)
   match await HttpResponse.bodyText(response) {
     case Err(e) -> return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) -> {

@@ -39,7 +39,7 @@ extern func exitProcess(code: Int): Unit = "exit"
 
 // open(2) flag values are platform-specific (O_CREAT differs between
 // Linux and macOS); lyric-rt exposes them as functions so no platform
-// table is hardcoded here (native/plan/07-stdlib-port.md).
+// table is hardcoded here (docs/native-plan/07-stdlib-port.md).
 extern func oRdonly(): Int = "lyric_o_rdonly"
 
 extern func oWronly(): Int = "lyric_o_wronly"
