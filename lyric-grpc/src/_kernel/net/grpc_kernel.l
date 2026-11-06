@@ -272,7 +272,7 @@ func newByteMarshaller(): NetMarshaller {
 func buildCallOptions(timeoutMs: in Int, metadata: in String): NetCallOptions {
   var o: NetCallOptions = default()
   val entries = Types.decodeMetadata(metadata)
-  if entries.count > 0 {
+  if entries.length > 0 {
     val md = newMetadata()
     for e in entries {
       metadataAdd(md, e.key, e.value)
