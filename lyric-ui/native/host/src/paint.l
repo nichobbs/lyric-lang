@@ -351,6 +351,19 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   if value.length == 0 and not (focused and ctx.composing.length > 0) {
     say(ctx, p, styleBody, placeholder, x0, ty, 0.0f32, t.muted)
   }
+  val composing = if focused { ctx.composing } else { "" }
+  val n = cpCount(value)
+  val caret = if e.caret > n { n } else if e.caret < 0 { 0 } else { e.caret }
+  val shown = if composing.length > 0 { cpSlice(value, 0, caret) + composing + cpSlice(value, caret, n) } else { value }
+  val lines = ctx.areaLines(b, shown)
+  if Wrap.isMixedAt(lines, 0) {
+    paintMixedLine(p, ctx, shown, lines, e, caret, composing, focused, x0, ty, lh)
+    Draw.popClip(p)
+    if focused {
+      focusRing(p, ctx, b, t.radius)
+    }
+    return
+  }
   if focused and e.anchor != e.caret {
     val a = if e.anchor < e.caret { e.anchor } else { e.caret }
     val z = if e.anchor < e.caret { e.caret } else { e.anchor }
@@ -378,6 +391,47 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   Draw.popClip(p)
   if focused {
     focusRing(p, ctx, b, t.radius)
+  }
+}
+
+// The one line of a single-line input whose text has right to left characters: its pieces in visual
+// order, the selection as one band per piece, the text being composed underlined, and the caret at
+// its place (on the side of a boundary between pieces its affinity says).
+func paintMixedLine(
+  p: Draw.Painter,
+  ctx: PaintCtx,
+  shown: String,
+  lines: List[Wrap.VisualLine],
+  e: TextEdit,
+  caret: Int,
+  composing: String,
+  focused: Bool,
+  x0: Float,
+  ty: Float,
+  lh: Float,
+): Unit {
+  val t = ctx.theme
+  val widthOfText = { s: String -> widthOf(ctx, styleBody, s) }
+  if focused and e.anchor != e.caret and composing.length == 0 {
+    val a = if e.anchor < e.caret { e.anchor } else { e.caret }
+    val z = if e.anchor < e.caret { e.caret } else { e.anchor }
+    for band in Wrap.selectionBands(shown, lines, a, z, widthOfText) {
+      Draw.fillRect(p, rect(x0 + band.x0, ty, band.x1 - band.x0, lh), col(withAlpha(t.accent, 0.3f32)))
+    }
+  }
+  for piece in Wrap.linePieces(shown, lines, 0, widthOfText) {
+    sayRun(ctx, p, styleBody, piece.text, piece.level % 2 == 1, x0 + piece.textX, ty, t.text)
+  }
+  if composing.length > 0 {
+    for band in Wrap.selectionBands(shown, lines, caret, caret + cpCount(composing), widthOfText) {
+      Draw.fillRect(p, rect(x0 + band.x0, ty + lh - 1.0f32, band.x1 - band.x0, 1.0f32), col(t.text))
+    }
+  }
+  if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
+    val at = caret + cpCount(composing)
+    val downstream = e.downstream and composing.length == 0
+    val cx = x0 + Wrap.offsetInRowAt(shown, lines, 0, at, downstream, widthOfText)
+    Draw.fillRect(p, rect(cx, ty, 1.0f32, lh), col(t.text))
   }
 }
 
@@ -436,7 +490,7 @@ func paintTextArea(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: 
   if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
     val at = caret + cpCount(composing)
     val caretRow = Wrap.lineIndexOf(lines, at)
-    val cx = left + Wrap.offsetInRow(shown, lines, caretRow, at, widthOfText)
+    val cx = left + Wrap.offsetInRowAt(shown, lines, caretRow, at, e.downstream and composing.length == 0, widthOfText)
     Draw.fillRect(p, rect(cx, top + caretRow.toFloat() * lh, 1.0f32, lh), col(t.text))
   }
   Draw.popClip(p)

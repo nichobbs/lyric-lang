@@ -31,7 +31,7 @@ task-throughput benchmark; D405: an I/O reactor so socket waits park only their 
 `Send` check, T0225-T0227, and one scheduler thread per processor as the default). G10 is implemented except accessibility (D203, D268: the native
 `lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
 input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
-the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489, as do bidirectional text in single-line inputs, #8497, and
+the accessibility tree is built host-free (D214) while the AccessKit binding, the platform adapters and the macOS screen-reader smoke test remain, #8489 (bidirectional text in single-line inputs, caret affinity and word movement are in D413; dictionary breaking of Thai, Lao, Khmer and Myanmar remains, #8497), and
 pruning the libraries of unused dependency kernels from the link, #8429). D268 also fixed two native
 backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
 enum-case patterns over two enums sharing a case name (#8421).

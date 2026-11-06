@@ -12,7 +12,8 @@
 //! and sorting, link navigation, select choices.  Application code is the same as for the web and
 //! desktop hosts; only the entry point differs.
 //!
-//! Input: mouse, keyboard with Tab focus traversal, a caret and selection in text inputs, clipboard
+//! Input: mouse, keyboard with Tab focus traversal, a caret and selection in text inputs (Left and
+//! Right by screen position in bidirectional text, with Ctrl or Alt by word), clipboard
 //! (Ctrl or Cmd with A, C, X and V), input-method composition (the candidate window follows the
 //! caret), mouse wheel scrolling of the page and of data grids, Enter to submit a form and to
 //! activate the focused control, Up and Down between grid rows and select options.
@@ -329,7 +330,8 @@ func editOf(h: Host, id: String): TextEdit {
   }
 }
 
-/// The wrapped lines of the text area `b` showing `shown`; cached, since measuring is not free.
+/// The lines of the text input `b` showing `shown`: wrapped for a text area, one unwrapped line for
+/// a single-line input; cached, since measuring is not free.
 func areaLinesOf(h: Host, b: Box, shown: String): List[Wrap.VisualLine] {
   val id = idOfBox(h, b)
   val width = b.w - 2.0f32 * h.theme.inputPadding
@@ -342,7 +344,12 @@ func areaLinesOf(h: Host, b: Box, shown: String): List[Wrap.VisualLine] {
     case None -> ()
   }
   val m = h.metrics
-  val lines = Wrap.wrapLines(shown, width, { t: String -> m.measure(t, 0, 0.0f32).w })
+  val measure = { t: String -> m.measure(t, 0, 0.0f32).w }
+  val lines = if b.kind == "textArea" {
+    Wrap.wrapLines(shown, width, measure)
+  } else {
+    Wrap.singleLine(shown, width, measure)
+  }
   if mapKeys(h.wraps).count > 64 {
     h.wraps = newMap()
   }
@@ -600,14 +607,14 @@ func setCaretFromClick(h: Host, b: Box, x: Float, y: Float, shift: Bool): Unit {
   if b.kind == "textArea" {
     val lines = areaLinesOf(h, b, b.text)
     val row = Wrap.rowAtY(lines, y - (b.y + textAreaPadding) + e.scrollY, m.lineHeight(0))
-    val pos = Wrap.positionAt(b.text, lines, row, x - (b.x + h.theme.inputPadding), widthOfText(h))
-    h.edits.add(id, Interact.moveCaret(b.text, e, pos, shift))
+    val place = Wrap.placeAt(b.text, lines, row, x - (b.x + h.theme.inputPadding), widthOfText(h))
+    h.edits.add(id, Interact.placeCaret(b.text, e, place, shift))
     revealCaret(h, id)
     return
   }
   val local = x - (b.x + h.theme.inputPadding) + e.scrollX
-  val pos = Interact.caretAt(b.text, local, { t: String -> advanceOf(m, t) })
-  h.edits.add(id, Interact.moveCaret(b.text, e, pos, shift))
+  val place = Wrap.placeAt(b.text, areaLinesOf(h, b, b.text), 0, local, widthOfText(h))
+  h.edits.add(id, Interact.placeCaret(b.text, e, place, shift))
 }
 
 // ─── Activating controls ──────────────────────────────────────────────────────
@@ -722,6 +729,11 @@ func hasShift(mods: Int): Bool {
 
 func hasCommand(mods: Int): Bool {
   mods.and(0x00C0).or(mods.and(0x0C00)) != 0
+}
+
+// Ctrl (Windows, Linux) or Alt, which is Option on macOS: Left and Right move by word.
+func hasWordModifier(mods: Int): Bool {
+  mods.and(0x00C0).or(mods.and(0x0300)) != 0
 }
 
 func scrollGrid(h: Host, body: Box, delta: Float): Unit {
@@ -877,7 +889,7 @@ func onKey(h: Host, key: Int, mods: Int): Unit {
     }
     case Some(b) -> {
       if isTextInput(b.kind) {
-        onTextKey(h, b, key, shift, cmd)
+        onTextKey(h, b, key, shift, cmd, hasWordModifier(mods))
         revealCaret(h, idOfBox(h, b))
       } else if b.kind == "select" {
         onSelectKey(h, b, key)
@@ -969,7 +981,7 @@ func onSelectKey(h: Host, b: Box, key: Int): Unit {
   }
 }
 
-func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool): Unit {
+func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool, word: Bool): Unit {
   val id = idOfBox(h, b)
   val e = editOf(h, id)
   val value = b.text
@@ -1001,17 +1013,14 @@ func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool): Unit {
     if not readonly {
       applyEdit(h, b, Interact.deleteForward(value, e))
     }
-  } else if key == keyLeft {
-    if b.kind == "textArea" {
-      h.edits.add(id, Interact.stepVisualCaret(value, areaLinesOf(h, b, value), e, -1, shift, widthOfText(h)))
+  } else if key == keyLeft or key == keyRight {
+    val delta = if key == keyLeft { -1 } else { 1 }
+    val lines = areaLinesOf(h, b, value)
+    if word {
+      val rtl = lines.count > 0 and lines[Wrap.lineIndexOf(lines, e.caret)].rtl
+      h.edits.add(id, Interact.moveWord(value, e, delta, rtl, shift))
     } else {
-      h.edits.add(id, Interact.stepCaret(value, e, -1, shift))
-    }
-  } else if key == keyRight {
-    if b.kind == "textArea" {
-      h.edits.add(id, Interact.stepVisualCaret(value, areaLinesOf(h, b, value), e, 1, shift, widthOfText(h)))
-    } else {
-      h.edits.add(id, Interact.stepCaret(value, e, 1, shift))
+      h.edits.add(id, Interact.stepVisualCaret(value, lines, e, delta, shift, widthOfText(h)))
     }
   } else if key == keyHome {
     if b.kind == "textArea" and not cmd {
@@ -1187,11 +1196,16 @@ pub func caretArea(h: Host): Option[Ui.Native.Layout.Box] {
         val lines = areaLinesOf(h, b, b.text)
         val lh = h.metrics.lineHeight(0)
         val row = Wrap.lineIndexOf(lines, e.caret)
-        val cx = b.x + h.theme.inputPadding + Wrap.offsetInRow(b.text, lines, row, e.caret, widthOfText(h))
+        val cx = b.x + h.theme.inputPadding + Wrap.offsetInRowAt(b.text, lines, row, e.caret, e.downstream, widthOfText(h))
         val cy = b.y + textAreaPadding - e.scrollY + row.toFloat() * lh
         Some(value = b.copy(x = cx, y = cy, w = 1.0f32, h = lh))
       } else if isTextInput(b.kind) {
-        Some(value = b)
+        val e = editOf(h, idOfBox(h, b))
+        val lines = areaLinesOf(h, b, b.text)
+        val lh = h.metrics.lineHeight(0)
+        val cx = b.x + h.theme.inputPadding - e.scrollX +
+          Wrap.offsetInRowAt(b.text, lines, 0, e.caret, e.downstream, widthOfText(h))
+        Some(value = b.copy(x = cx, y = b.y + (b.h - lh) / 2.0f32, w = 1.0f32, h = lh))
       } else {
         None
       }

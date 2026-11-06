@@ -390,3 +390,44 @@ test "the spaces that begin a plain line are room, and its text starts after the
   assertTrue(Wrap.offsetInRow(value, lines, 0, 2, tenW()) == 20.0f32, "the caret after the spaces")
   assertEqualInt(Wrap.positionAt(value, lines, 0, 24.0f32, tenW()), 2, "a click after them")
 }
+
+test "a single-line input is one line, never cut, laid out like a paragraph" {
+  val lines = Wrap.singleLine("alpha beta gamma", 50.0f32, tenW())
+  assertEqualInt(lines.count, 1, "one line however narrow the box")
+  assertEqualInt(lines[0].to, 16, "all of the text")
+  assertFalse(Wrap.isMixedAt(lines, 0), "left to right text is plain")
+  val hebrew = alef + bet + gimel
+  val rtl = Wrap.singleLine(hebrew, 100.0f32, tenW())
+  assertTrue(rtl[0].rtl, "a right to left value")
+  assertTrue(Wrap.offsetInRow(hebrew, rtl, 0, 0, tenW()) == 100.0f32, "starts at the right edge of the box")
+  assertEqualInt(Wrap.singleLine("", 100.0f32, tenW()).count, 1, "an empty value is one empty line")
+}
+
+test "a position between two pieces has two places, and Left and Right visit both" {
+  // ab_[ABC]_cd: the Hebrew word is drawn reversed between x 30 and 60.
+  val value = "ab " + alef + bet + gimel + " cd"
+  val lines = Wrap.wrapLines(value, 200.0f32, tenW())
+  assertTrue(Wrap.offsetInRowAt(value, lines, 0, 3, false, tenW()) == 30.0f32, "3 upstream: after the space")
+  assertTrue(Wrap.offsetInRowAt(value, lines, 0, 3, true, tenW()) == 60.0f32, "3 downstream: before alef")
+  assertTrue(Wrap.offsetInRowAt(value, lines, 0, 6, true, tenW()) == 60.0f32, "6 downstream: before the space")
+  assertTrue(Wrap.offsetInRowAt(value, lines, 0, 1, true, tenW()) == 10.0f32, "inside a piece both are one place")
+  // Right from the start of the line visits every place from left to right.
+  var place = Wrap.CaretPlace(position = 0, downstream = false)
+  var xs = ""
+  var steps = 0
+  while steps < 9 {
+    place = Wrap.stepVisualPlace(value, lines, place, 1, tenW())
+    xs = xs + " " + Wrap.offsetInRowAt(value, lines, 0, place.position, place.downstream, tenW()).toInt().toString()
+    steps = steps + 1
+  }
+  assertEqual(xs, " 10 20 30 40 50 60 70 80 90", "one stop at every x, 60 included")
+  val click = Wrap.placeAt(value, lines, 0, 59.0f32, tenW())
+  assertEqualInt(click.position, 3, "a click just left of the boundary at 60 is position 3")
+  assertTrue(click.downstream, "drawn before alef")
+  val moved = Interact.placeCaret(value, Interact.emptyEdit(), click, false)
+  assertTrue(moved.downstream, "the edit keeps the affinity")
+  assertFalse(Interact.moveCaret(value, moved, 4, false).downstream, "any other move is upstream")
+  val word = Interact.moveWord(value, moved, 1, false, false)
+  assertFalse(word.downstream, "a word move is upstream too")
+  assertEqualInt(word.caret, 6, "Ctrl+Right ends the Hebrew word")
+}
