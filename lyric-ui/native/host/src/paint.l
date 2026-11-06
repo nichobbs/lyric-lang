@@ -345,13 +345,14 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   val ty = b.y + (b.h - lh) / 2.0f32
   Draw.pushClip(p, rect(b.x + 1.0f32, b.y + 1.0f32, b.w - 2.0f32, b.h - 2.0f32))
   val e = if focused { ctx.editOf(id) } else { Ui.Native.Interact.emptyEdit() }
-  val value = b.text
+  // A password draws one bullet per code point, of what is typed and of what is being composed.
+  val value = Ui.Native.Interact.shownValue(b, b.text)
   val placeholder = propOf(b.props, "placeholder", "")
   val x0 = b.x + pad - (if focused { e.scrollX } else { 0.0f32 })
   if value.length == 0 and not (focused and ctx.composing.length > 0) {
     say(ctx, p, styleBody, placeholder, x0, ty, 0.0f32, t.muted)
   }
-  val composing = if focused { ctx.composing } else { "" }
+  val composing = if focused { Ui.Native.Interact.shownValue(b, ctx.composing) } else { "" }
   val n = cpCount(value)
   val caret = if e.caret > n { n } else if e.caret < 0 { 0 } else { e.caret }
   val shown = if composing.length > 0 { cpSlice(value, 0, caret) + composing + cpSlice(value, caret, n) } else { value }
@@ -371,13 +372,13 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
     val ex = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, z))
     Draw.fillRect(p, rect(sx, ty, ex - sx, lh), col(withAlpha(t.accent, 0.3f32)))
   }
-  if focused and ctx.composing.length > 0 {
+  if focused and composing.length > 0 {
     val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret))
     val before = cpSlice(value, 0, e.caret)
     val after = cpSlice(value, e.caret, cpCount(value))
     say(ctx, p, styleBody, before, x0, ty, 0.0f32, t.text)
-    val cw = widthOf(ctx, styleBody, ctx.composing)
-    say(ctx, p, styleBody, ctx.composing, cx, ty, 0.0f32, t.text)
+    val cw = widthOf(ctx, styleBody, composing)
+    say(ctx, p, styleBody, composing, cx, ty, 0.0f32, t.text)
     Draw.fillRect(p, rect(cx, ty + lh - 1.0f32, cw, 1.0f32), col(t.text))
     say(ctx, p, styleBody, after, cx + cw, ty, 0.0f32, t.text)
   } else {
@@ -385,7 +386,7 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   }
   if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
     val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret)) +
-      (if ctx.composing.length > 0 { widthOf(ctx, styleBody, ctx.composing) } else { 0.0f32 })
+      (if composing.length > 0 { widthOf(ctx, styleBody, composing) } else { 0.0f32 })
     Draw.fillRect(p, rect(cx, ty, 1.0f32, lh), col(t.text))
   }
   Draw.popClip(p)

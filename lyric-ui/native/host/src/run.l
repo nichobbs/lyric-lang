@@ -613,7 +613,8 @@ func setCaretFromClick(h: Host, b: Box, x: Float, y: Float, shift: Bool): Unit {
     return
   }
   val local = x - (b.x + h.theme.inputPadding) + e.scrollX
-  val place = Wrap.placeAt(b.text, areaLinesOf(h, b, b.text), 0, local, widthOfText(h))
+  val shown = Interact.shownValue(b, b.text)
+  val place = Wrap.placeAt(shown, areaLinesOf(h, b, shown), 0, local, widthOfText(h))
   h.edits.add(id, Interact.placeCaret(b.text, e, place, shift))
 }
 
@@ -818,7 +819,8 @@ func onMouseDown(h: Host, x: Float, y: Float, shift: Bool, clicks: Int): Unit {
           h.dragging = ""
         } else if clicks == 2 {
           val c = editOf(h, h.dragging)
-          h.edits.add(h.dragging, Interact.wordAt(b.text, c.caret))
+          val word = if Interact.isMasked(b) { Interact.selectAll(b.text, c) } else { Interact.wordAt(b.text, c.caret) }
+          h.edits.add(h.dragging, word)
           h.dragging = ""
         }
         return
@@ -990,7 +992,8 @@ func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool, word: Bool): U
     if key == 97 {
       h.edits.add(id, Interact.selectAll(value, e))
     } else if key == 99 or key == 120 {
-      val selected = Interact.selectedText(value, e)
+      // A password is never put on the clipboard, so it cannot be copied or cut.
+      val selected = if Interact.isMasked(b) { "" } else { Interact.selectedText(value, e) }
       if selected.length > 0 {
         val _ = Window.setClipboardText(selected)
         if key == 120 and not readonly {
@@ -1015,12 +1018,15 @@ func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool, word: Bool): U
     }
   } else if key == keyLeft or key == keyRight {
     val delta = if key == keyLeft { -1 } else { 1 }
-    val lines = areaLinesOf(h, b, value)
-    if word {
+    val shown = Interact.shownValue(b, value)
+    val lines = areaLinesOf(h, b, shown)
+    if word and Interact.isMasked(b) {
+      h.edits.add(id, Interact.moveCaret(value, e, if delta < 0 { 0 } else { Interact.cpCount(value) }, shift))
+    } else if word {
       val rtl = lines.count > 0 and lines[Wrap.lineIndexOf(lines, e.caret)].rtl
       h.edits.add(id, Interact.moveWord(value, e, delta, rtl, shift))
     } else {
-      h.edits.add(id, Interact.stepVisualCaret(value, lines, e, delta, shift, widthOfText(h)))
+      h.edits.add(id, Interact.stepVisualCaret(shown, lines, e, delta, shift, widthOfText(h)))
     }
   } else if key == keyHome {
     if b.kind == "textArea" and not cmd {
@@ -1201,10 +1207,11 @@ pub func caretArea(h: Host): Option[Ui.Native.Layout.Box] {
         Some(value = b.copy(x = cx, y = cy, w = 1.0f32, h = lh))
       } else if isTextInput(b.kind) {
         val e = editOf(h, idOfBox(h, b))
-        val lines = areaLinesOf(h, b, b.text)
+        val shown = Interact.shownValue(b, b.text)
+        val lines = areaLinesOf(h, b, shown)
         val lh = h.metrics.lineHeight(0)
         val cx = b.x + h.theme.inputPadding - e.scrollX +
-          Wrap.offsetInRowAt(b.text, lines, 0, e.caret, e.downstream, widthOfText(h))
+          Wrap.offsetInRowAt(shown, lines, 0, e.caret, e.downstream, widthOfText(h))
         Some(value = b.copy(x = cx, y = b.y + (b.h - lh) / 2.0f32, w = 1.0f32, h = lh))
       } else {
         None

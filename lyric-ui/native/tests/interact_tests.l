@@ -218,3 +218,22 @@ test "Ctrl+Left and Ctrl+Right move by word, in the direction the paragraph read
   val rtl = Interact.moveWord(v, start, -1, true, false)
   assertEqualInt(rtl.caret, 3, "in a right to left paragraph Left goes forward in the text")
 }
+
+func inputOf(kind: String, value: String): Box {
+  val kids: List[View[Msg]] = newList()
+  kids.add(Widgets.textInput(kind, value, { s: String -> Typed(s = s) }, Widgets.inputOpts()))
+  val order = Interact.focusOrder(lay(Widgets.column(kids)))
+  order[0]
+}
+
+test "a password shows one bullet per code point and nothing of its value" {
+  val pw = inputOf("password", "pässwörd 1")
+  assertTrue(Interact.isMasked(pw), "a password is masked")
+  val shown = Interact.shownValue(pw, pw.text)
+  assertEqualInt(Interact.cpCount(shown), Interact.cpCount(pw.text), "the same caret positions")
+  assertEqual(shown, "••••••••••", "only bullets")
+  assertEqual(Interact.shownValue(pw, ""), "", "an empty password draws nothing")
+  val email = inputOf("email", "a@b.c")
+  assertFalse(Interact.isMasked(email), "other inputs are not")
+  assertEqual(Interact.shownValue(email, email.text), "a@b.c", "and draw their value")
+}
