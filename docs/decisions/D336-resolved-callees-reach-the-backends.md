@@ -159,6 +159,22 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    written, not a specialisation, whose type arguments name the consumer's
    types (T0010).
 
+10. **The JVM's dot-named functions and bare function values no longer use
+   bundle-wide bare keys.** A call through a type, `Type.f(x)`, binds by the
+   checker's site first (`siteDotNamedSigJvm`: the rendered
+   `Pkg::Type.f(...)` names the declaring package, whose `pkg/Type.f` or
+   `pkg::Type.f` key answers), then the calling package's scoped key. A
+   function (a dot-named one included) registers no bare key; only a wire
+   factory (`AppWire.bootstrap`), which is not a function and has no checker
+   site, keeps its `Wire.method` key. The `bareref:` marker of a same-package
+   function used as a value is keyed `bareref:<package>::<name>` and read with
+   the calling package. `~byref~<name>` stays name-keyed on purpose: it only
+   decides whether a `var` argument gets a heap cell (never which function a
+   call binds) and runs before any call is resolved. Verified by the 132
+   `compiler-self-tests-jvm` files that run outside CI's environment (the
+   `LYRIC_FFI_JARS` and `config_block` environment variables aside) and
+   `multi-file-package-merge-e2e.sh dotnet jvm`.
+
 ## Consequences
 
 - A bare call resolves to what the checker resolved, whatever the bundle holds
