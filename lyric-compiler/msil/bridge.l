@@ -444,7 +444,9 @@ pub func compileToMsilWithVersion(
   val liftedFile = pipeCBindingsToFuncs(liftLambdasMsil(hoistLambdaDefaults(fnRefFile)))
 
   // Pre-scan the AST to assign deterministic MethodDef / FieldDef tokens for
-  // same-package types and functions.
+  // same-package types and functions.  The async pre-scan inside it types the
+  // awaited calls by the checker's resolved callees, so they are set first.
+  useCalleeSitesMsil(cctx, singleFileCalleeSites)
   addPackageTokens(cctx, liftedFile, pkgName)
 
   // Walk the AST and produce the MSIL package IR.  #6449/#6459: a codegen
@@ -463,7 +465,6 @@ pub func compileToMsilWithVersion(
   // same way the type-checker / mode-checker error lists just above in this
   // pipeline gate the build, instead of proceeding to lower invalid IR.
   useMethodCallAritiesMsil(cctx, singleFileCallArities)
-  useCalleeSitesMsil(cctx, singleFileCalleeSites)
   useMemberRecvClassesMsil(cctx, singleFileOptsRecvOut)
   val pkg = codegenMPackage(liftedFile, cctx)
   if abortOnCodegenDiagnosticsMsil(cctx) {
