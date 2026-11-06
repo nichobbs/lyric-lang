@@ -1,0 +1,15 @@
+# The generator of Unicode.Dictionary.Data's word lists (#8497): reads ICU's dictionaries pinned in
+# lyric-unicode-dict/dict/ and writes lyric-unicode-dict/src/dictionary_data.l.
+#
+#   lyric run --manifest lyric-unicode-dict/tools/generate/lyric.toml            rewrite the file
+#   lyric run --manifest lyric-unicode-dict/tools/generate/lyric.toml -- --check  fail when it differs
+[package]
+name    = "Lyric.Unicode.Dictionary.Generate"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[project]
+name = "Lyric.Unicode.Dictionary.Generate"
+
+[project.packages]
+"Unicode.Dictionary.Generate" = "generate.l"
