@@ -230,10 +230,7 @@ func buildFirstFn(src: in String): FnBuilt {
   var found = false
   for it in file.items {
     match it.kind {
-      case IFunc(decl) -> if not found {
-        found = true
-        body = buildFnBody(env, decl, cr.symbols)
-      }
+      case IFunc(decl) -> if not found { found = true; body = buildFnBody(env, decl, cr.symbols) }
       case _ -> ()
     }
   }

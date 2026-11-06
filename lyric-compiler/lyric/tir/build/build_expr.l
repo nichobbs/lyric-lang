@@ -72,10 +72,7 @@ func lookupLocal(env: in BuildEnv, name: in String): Option[LocalDecl] {
 
 /// Count a construct the builder has no case for.
 func noteUncovered(env: in BuildEnv, what: in String): Unit {
-  val n = match mapGet(env.uncovered, what) {
-    case Some(k) -> k
-    case None -> 0
-  }
+  val n = match mapGet(env.uncovered, what) { case Some(k) -> k; case None -> 0 }
   if env.uncovered.containsKey(what) {
     env.uncovered.remove(what)
   }
@@ -177,12 +174,7 @@ func stringPart(part: in TExpr): TExpr {
     case _ -> {
       val one: List[TExpr] = newList()
       one.add(part)
-      TExpr(
-        id = part.id,
-        ty = tyString(),
-        span = part.span,
-        kind = intrinsicCall(IoBuiltin(name = "toString"), one)
-      )
+      TExpr(id = part.id, ty = tyString(), span = part.span, kind = intrinsicCall(IoBuiltin(name = "toString"), one))
     }
   }
 }
@@ -213,14 +205,14 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       for seg in segs {
         match seg {
           case ISText(text, sp) -> parts.add(
-            TExpr(id = NodeId(id = e.nodeId), ty = tyString(), span = sp, kind = XLit(lit = TLString(text = text)))
+            TExpr(
+              id = NodeId(id = e.nodeId),
+              ty = tyString(),
+              span = sp,
+              kind = XLit(lit = TLString(text = text))
+            )
           )
-          case ISExpr(x) -> match buildExpr(env, x) {
-            case Some(t) -> parts.add(stringPart(t))
-            case None -> {
-              ok = false
-            }
-          }
+          case ISExpr(x) -> match buildExpr(env, x) { case Some(t) -> parts.add(stringPart(t)); case None -> { ok = false } }
         }
       }
       if ok {
@@ -260,11 +252,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     }
     case EResult -> Some(value = mkExpr(e, ty, XResult))
     case EPrefix(op, operand) -> {
-      val iop = match op {
-        case PreNeg -> Some(value = IoNeg)
-        case PreNot -> Some(value = IoNot)
-        case PreRef -> None
-      }
+      val iop = match op { case PreNeg -> Some(value = IoNeg); case PreNot -> Some(value = IoNot); case PreRef -> None }
       match iop {
         case None -> uncoveredExpr(env, e, "a reference prefix")
         case Some(o) -> match buildExpr(env, operand) {
@@ -285,7 +273,13 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       match l {
         case Some(lt) -> match r {
           case Some(rt) -> match shortOfBinop(op) {
-            case Some(sop) -> Some(value = mkExpr(e, ty, XShort(op = sop, lhs = lt, rhs = rt)))
+            case Some(sop) -> Some(
+              value = mkExpr(
+                e,
+                ty,
+                XShort(op = sop, lhs = lt, rhs = rt)
+              )
+            )
             case None -> match intrinsicOfBinop(op) {
               case Some(iop) -> if isPrimTy(lt.ty) {
                 val two: List[TExpr] = newList()
@@ -375,10 +369,7 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], owner: 
   val stmts: List[TStmt] = newList()
   var tail: Option[TExpr] = None
   var ok = true
-  val unitBlock = match known {
-    case Some(k) -> isUnitTy(k)
-    case None -> false
-  }
+  val unitBlock = match known { case Some(k) -> isUnitTy(k); case None -> false }
   var i = 0
   while i < b.statements.count {
     val s = b.statements[i]
@@ -401,12 +392,7 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], owner: 
           }
         }
       }
-      case _ -> match buildStmt(env, s) {
-        case Some(ts) -> stmts.add(ts)
-        case None -> {
-          ok = false
-        }
-      }
+      case _ -> match buildStmt(env, s) { case Some(ts) -> stmts.add(ts); case None -> { ok = false } }
     }
     i = i + 1
   }
@@ -414,13 +400,7 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], owner: 
   if not ok {
     return None
   }
-  val ty = match known {
-    case Some(k) -> k
-    case None -> match tail {
-      case Some(t) -> t.ty
-      case None -> tyUnit()
-    }
-  }
+  val ty = match known { case Some(k) -> k; case None -> match tail { case Some(t) -> t.ty; case None -> tyUnit() } }
   Some(value = TExpr(id = NodeId(id = owner.nodeId), ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
 }
 
@@ -611,14 +591,8 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
             case None -> ()
           }
           for k in mapKeys(env.uncovered) {
-            val add = match mapGet(env.uncovered, k) {
-              case Some(n) -> n
-              case None -> 0
-            }
-            val had = match mapGet(sums, k) {
-              case Some(n) -> n
-              case None -> 0
-            }
+            val add = match mapGet(env.uncovered, k) { case Some(n) -> n; case None -> 0 }
+            val had = match mapGet(sums, k) { case Some(n) -> n; case None -> 0 }
             if sums.containsKey(k) {
               sums.remove(k)
             }
@@ -643,10 +617,7 @@ pub func buildCensusLines(c: in BuildCensus, limit: in Int): List[String] {
     var bestN = 0
     for k in mapKeys(c.uncovered) {
       if not taken.containsKey(k) {
-        val n = match mapGet(c.uncovered, k) {
-          case Some(v) -> v
-          case None -> 0
-        }
+        val n = match mapGet(c.uncovered, k) { case Some(v) -> v; case None -> 0 }
         if n > bestN {
           best = k
           bestN = n
