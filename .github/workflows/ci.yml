@@ -4718,11 +4718,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
 
-      # The JVM unix-socket HTTP client (`_kernel_jvm/http_host.l`): a loopback
-      # server over a unix-domain socket, driven through `Std.HttpHost`
-      # (#8816; it stopped compiling when type parameters became rigid and
-      # was not run in CI).
-      - name: Std.HttpHost unix-socket test coverage on JVM (native lyric test --target jvm)
+      - name: Unix-socket HTTP test on JVM
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
