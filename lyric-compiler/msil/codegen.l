@@ -19593,12 +19593,7 @@ func lowerFuncValueInvokeMsil(
 // function is not such a copy, the call is qualified, or neither scope has
 // the callee — the caller then falls through to the calling package's own
 // resolution tiers (D-progress-946).
-func originScopedFqnMsil(
-  cctx: in CodegenCtx,
-  fctx: in FuncCtx,
-  path: in ModulePath,
-  funcName: in String,
-): String {
+func originScopedFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, path: in ModulePath, funcName: in String): String {
   if fctx.originPkg.length == 0 or fctx.originPkg == fctx.pkgName or path.segments.count != 1 {
     return ""
   }
