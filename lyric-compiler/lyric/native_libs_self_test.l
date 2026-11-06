@@ -641,7 +641,7 @@ test "a corrupt or truncated gzip stream is refused" {
   val archive = tarGzLibrary(scratch, root, "cdep-prebuilt.tar.gz")
   val good = match File.readBytes(archive) { case Ok(b) -> b; case Err(_) -> panic("cannot read " + archive) }
   match Cli.gunzip(good) {
-    case Ok(bytes) -> assertTrue(bytes.count > 0, "the intact archive inflates")
+    case Ok(bytes) -> assertTrue(bytes.length > 0, "the intact archive inflates")
     case Err(msg) -> assertTrue(false, "the intact archive inflates: " + msg)
   }
   // The trailer's length field no longer matches.

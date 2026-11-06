@@ -165,21 +165,21 @@ test "statusFromException: any other exception is Unknown and keeps its type and
 // ─── decodeMetadata: inverse of Grpc.metadataString ──────────────────────────
 test "decodeMetadata: key:value pairs split on commas" {
   val entries = decodeMetadata("a:1,b:2")
-  assertEqualInt(entries.count, 2, "two entries")
+  assertEqualInt(entries.length, 2, "two entries")
   assertEqual(entries[0].key, "a", "first key")
   assertEqual(entries[1].value, "2", "second value")
 }
 
 test "decodeMetadata: percent escapes restore reserved characters" {
   val entries = decodeMetadata("k%3Ax:v%2C1%25")
-  assertEqualInt(entries.count, 1, "one entry")
+  assertEqualInt(entries.length, 1, "one entry")
   assertEqual(entries[0].key, "k:x", "escaped colon in the key")
   assertEqual(entries[0].value, "v,1%", "escaped comma and percent in the value")
 }
 
 test "decodeMetadata: an empty string has no entries and a colon-less part is dropped" {
-  assertEqualInt(decodeMetadata("").count, 0, "empty")
-  assertEqualInt(decodeMetadata("novalue").count, 0, "dropped")
+  assertEqualInt(decodeMetadata("").length, 0, "empty")
+  assertEqualInt(decodeMetadata("novalue").length, 0, "dropped")
 }
 
 // ─── parseAddress ────────────────────────────────────────────────────────────

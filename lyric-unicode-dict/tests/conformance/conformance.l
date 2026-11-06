@@ -131,7 +131,7 @@ pub func runDictionaryBreakTest(text: in String): SuiteResult {
     }
     cases = cases + 1
     val fields = split(line, "\t")
-    if fields.count != 3 {
+    if fields.length != 3 {
       failures = failures + 1
       if failures <= maxReported {
         report = report + "\n  not text, line stops and word stops: " + line

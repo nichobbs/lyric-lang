@@ -82,7 +82,7 @@ test "arithmetic: an erased right operand beside a Long reports on the right" {
 test "arithmetic: every operator reports an erased operand" {
   val ops = ["+", "-", "*", "/", "%"]
   var i = 0
-  while i < ops.count {
+  while i < ops.length {
     val cctx = freshCtx()
     val e = nameExpr("x", 1, 1)
     requireTypedArithOperandsMsil(cctx, ops[i], e, e, MObject, MInt)

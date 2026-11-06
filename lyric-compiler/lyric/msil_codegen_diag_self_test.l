@@ -620,7 +620,7 @@ func shadowBlocksDllSize(n: in Int): Int {
   val stdlibSources: List[String] = newList()
   val ok = compileProjectToMsilWithFeatures(pkgs, label, outPath, stdlibSources, empty, empty)
   assertTrue(ok, "the " + toString(n) + "-shadow-block async function compiles")
-  val size = File.readBytesOrPanic(outPath).count
+  val size = File.readBytesOrPanic(outPath).length
   val _ = File.deleteFile(outPath)
   size
 }

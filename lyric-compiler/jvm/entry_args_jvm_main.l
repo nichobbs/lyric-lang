@@ -12,11 +12,11 @@ package Main
 import Std.Console
 
 func main(args: slice[String]): Int {
-  println("argc=" + args.count.toString())
+  println("argc=" + args.length.toString())
   var i = 0
-  while i < args.count {
+  while i < args.length {
     println("arg" + i.toString() + "=" + args[i])
     i = i + 1
   }
-  args.count
+  args.length
 }

@@ -15102,6 +15102,17 @@ test "a fully typed program has no silent TyError site (D341)" {
   assertEqual(diags.count.toString(), "0", "no W0036")
 }
 
+test "a distinct type's constructor call is typed, and its argument is checked (D357)" {
+  val src = "package P\n@derive(Equals)\ntype Score = Int\ntype Name = String\nfunc f(): Bool {\n  val a = Score(42)\n  val b = Name(\"x\")\n  a == Score(1) and b == b\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(silentSiteKinds(cr), "", "no silent site")
+  assertEqual(diagCodesOf(cr), "", "no diagnostic")
+  val bad = parseCheck("package P\ntype Name = String\nfunc f(): Name { Name(3) }\n")
+  assertTrue(Str.contains(diagCodesOf(bad), "T0043"), "an argument of the wrong type is T0043: " + diagCodesOf(bad))
+  val arity = parseCheck("package P\ntype Name = String\nfunc f(): Name { Name(\"a\", \"b\") }\n")
+  assertTrue(Str.contains(diagCodesOf(arity), "T0042"), "two arguments are T0042: " + diagCodesOf(arity))
+}
+
 test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
@@ -15406,15 +15417,15 @@ test "a case name two sibling enums share is left to the expected type (D355)" {
   assertEqual(silentSiteKinds(unshared), "", "and is not a silent site")
 }
 
-test "count on a slice is W0042, length is the slice's size" {
+test "count on a slice is T0228, length is the slice's size" {
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.length\n}\n")),
     "",
     "slice.length is fine"
   )
   assertTrue(
-    Str.contains(diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")), "W0042"),
-    "slice.count is W0042"
+    Str.contains(diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")), "T0228"),
+    "slice.count is T0228"
   )
 }
 

@@ -423,7 +423,7 @@ test "Arrays.copyOf(int[],int) GROWN tail-expression return zero-pads new slots"
 test "Arrays.copyOf(int[],int) GROWN explicit return zero-pads new slots" {
   val src: slice[Int] = [4, 5]
   val grown = growIntsExplicit(src, 4)
-  assertEqualInt(grown.count, 4, "copyOf(int[],4) grows to newLen")
+  assertEqualInt(grown.length, 4, "copyOf(int[],4) grows to newLen")
   assertEqualInt(grown[2], 0, "grown element 2 is boxed zero, not null")
   assertEqualInt(grown[3], 0, "grown element 3 is boxed zero, not null")
   val s = JArrays.toString(grown)
@@ -435,7 +435,7 @@ test "Arrays.copyOf(int[],int) GROWN explicit return zero-pads new slots" {
 test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
   val src: slice[Int] = [1, 2, 3]
   val copied = copyOfIntsTail(src, 2)
-  assertEqualInt(copied.count, 2, "copyOf(int[],2) truncates to newLen")
+  assertEqualInt(copied.length, 2, "copyOf(int[],2) truncates to newLen")
   val s = JArrays.toString(copied)
   assertEqual(s, "[1, 2]", "copyOf truncation round-trips through Arrays.toString(int[])")
 }
@@ -443,7 +443,7 @@ test "Arrays.copyOf(int[],int) tail-expression return coerces to slice[Int]" {
 test "Arrays.copyOf(int[],int) explicit return coerces to slice[Int]" {
   val src: slice[Int] = [4, 5]
   val copied = copyOfIntsExplicit(src, 2)
-  assertEqualInt(copied.count, 2, "copyOf(int[],2) same length")
+  assertEqualInt(copied.length, 2, "copyOf(int[],2) same length")
   val s = JArrays.toString(copied)
   assertEqual(s, "[4, 5]", "copyOf(int[],2) round-trips through Arrays.toString(int[])")
 }
@@ -467,7 +467,7 @@ func copyOfDoublesExplicit(src: in slice[Double], newLen: in Int): slice[Double]
 test "Arrays.copyOf(double[],int) tail-expression return coerces to slice[Double]" {
   val src: slice[Double] = [1.5, 2.5]
   val copied = copyOfDoublesTail(src, 1)
-  assertEqualInt(copied.count, 1, "copyOf(double[],1) truncates to newLen")
+  assertEqualInt(copied.length, 1, "copyOf(double[],1) truncates to newLen")
   val s = JArrays.toString(copied)
   assertEqual(s, "[1.5]", "copyOf truncation round-trips through Arrays.toString(double[])")
 }
@@ -475,7 +475,7 @@ test "Arrays.copyOf(double[],int) tail-expression return coerces to slice[Double
 test "Arrays.copyOf(double[],int) explicit return coerces to slice[Double]" {
   val src: slice[Double] = [3.5]
   val copied = copyOfDoublesExplicit(src, 1)
-  assertEqualInt(copied.count, 1, "copyOf(double[],1) same length")
+  assertEqualInt(copied.length, 1, "copyOf(double[],1) same length")
   val s = JArrays.toString(copied)
   assertEqual(s, "[3.5]", "copyOf(double[],1) round-trips through Arrays.toString(double[])")
 }

@@ -171,7 +171,7 @@ pub func listProducts(req: in ListProductsRequest, authToken: in String): Result
         case Err(e) -> return Err(dbErrToStatus(e))
         case Ok(rows) -> {
           val products = map(rows, rowToProduct)
-          return Ok(ListProductsResponse(products = products, total = products.count))
+          return Ok(ListProductsResponse(products = products, total = products.length))
         }
       }
     }

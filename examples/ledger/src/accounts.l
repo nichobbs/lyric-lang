@@ -28,7 +28,7 @@ pub func createAccount(
   val params = [name, accountKindLabel(kind), currency]
   match conn.query(sql, params) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
-    case Ok(rows) -> if rows.count == 0 {
+    case Ok(rows) -> if rows.length == 0 {
       Err(LedgerError.DatabaseError(message = "INSERT returned no rows"))
     } else {
       val r = rows[0]
@@ -43,7 +43,7 @@ pub func getById(conn: in DbConnection, id: in Long): Result[Option[Account], Le
   val sql = Db.sql("SELECT id, name, kind, currency, created_at FROM accounts WHERE id = @p0")
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
-    case Ok(rows) -> if rows.count == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToAccount(r))) }
+    case Ok(rows) -> if rows.length == 0 { Ok(None) } else { val r = rows[0]; Ok(Some(value = rowToAccount(r))) }
   }
 }
 
@@ -73,7 +73,7 @@ pub func getBalance(conn: in DbConnection, id: in Long): Result[Long, LedgerErro
   )
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
-    case Ok(rows) -> if rows.count == 0 {
+    case Ok(rows) -> if rows.length == 0 {
       Ok(0)
     } else {
       val r = rows[0]

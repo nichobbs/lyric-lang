@@ -20,9 +20,9 @@ import Std.Environment
 
 func main(): Unit {
   val a = args()
-  println("argc=" + a.count.toString())
+  println("argc=" + a.length.toString())
   var i = 0
-  while i < a.count {
+  while i < a.length {
     println("arg" + i.toString() + "=" + a[i])
     i = i + 1
   }
