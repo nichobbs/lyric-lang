@@ -241,28 +241,63 @@ static int key_matches_cert(NCRYPT_KEY_HANDLE key, PCCERT_CONTEXT cert) {
 
 /* ── Identities ────────────────────────────────────────────────────── */
 
+typedef struct PublishedCaEntry {
+    struct PublishedCaEntry* next;
+    DWORD cb;
+    BYTE* der;
+    size_t refs;
+} PublishedCaEntry;
+
+static SRWLOCK published_ca_lock = SRWLOCK_INIT;
+static PublishedCaEntry* published_ca_list = NULL;
+
 typedef struct {
     HCERTSTORE chain;          /* leaf first, then any intermediates */
-    HCERTSTORE published_ca;   /* in-memory store of intermediates we newly added to "CA" */
+    HCERTSTORE published_ca;   /* in-memory store of intermediates this Identity holds a ref on */
     PCCERT_CONTEXT leaf;       /* bound to the persisted key */
     wchar_t key_name[64];      /* empty when there is no persisted key */
 } Identity;
 
+static PublishedCaEntry** find_published_ca_slot(PCCERT_CONTEXT c) {
+    PublishedCaEntry** at = &published_ca_list;
+    while (*at) {
+        if ((*at)->cb == c->cbCertEncoded &&
+            memcmp((*at)->der, c->pbCertEncoded, c->cbCertEncoded) == 0) {
+            return at;
+        }
+        at = &(*at)->next;
+    }
+    return at;
+}
+
 static void unpublish_intermediates(Identity* id) {
     if (!id->published_ca) return;
+    AcquireSRWLockExclusive(&published_ca_lock);
     HCERTSTORE ca = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
                                   CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, L"CA");
-    if (ca) {
-        PCCERT_CONTEXT c = NULL;
-        while ((c = CertEnumCertificatesInStore(id->published_ca, c)) != NULL) {
-            PCCERT_CONTEXT found = CertFindCertificateInStore(
-                ca, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING, c, NULL);
-            if (found) {
-                CertDeleteCertificateFromStore(found);
+    PCCERT_CONTEXT c = NULL;
+    while ((c = CertEnumCertificatesInStore(id->published_ca, c)) != NULL) {
+        PublishedCaEntry** slot = find_published_ca_slot(c);
+        PublishedCaEntry* entry = *slot;
+        if (entry) {
+            if (entry->refs > 1) {
+                entry->refs--;
+            } else {
+                *slot = entry->next;
+                free(entry->der);
+                free(entry);
+                if (ca) {
+                    PCCERT_CONTEXT found = CertFindCertificateInStore(
+                        ca, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING, c, NULL);
+                    if (found) {
+                        CertDeleteCertificateFromStore(found);
+                    }
+                }
             }
         }
-        CertCloseStore(ca, 0);
     }
+    if (ca) CertCloseStore(ca, 0);
+    ReleaseSRWLockExclusive(&published_ca_lock);
     CertCloseStore(id->published_ca, 0);
     id->published_ca = NULL;
 }
@@ -284,26 +319,58 @@ static void identity_free(Identity* id) {
  * Authorities store (as .NET's SslStream does on Windows).  An intermediate
  * confers no trust: a peer still verifies the chain against its own roots.
  * Self-signed certificates (roots) are never added.  Intermediates that did
- * not already exist in "CA" are recorded in `id->published_ca` and removed
- * when the identity is freed. */
+ * not already exist in "CA" are reference-counted across live Identities in
+ * `published_ca_list` and removed when the last Identity holding them is freed. */
 static void publish_intermediates(Identity* id) {
+    AcquireSRWLockExclusive(&published_ca_lock);
     HCERTSTORE ca = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
                                   CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, L"CA");
-    if (!ca) return;
+    if (!ca) {
+        ReleaseSRWLockExclusive(&published_ca_lock);
+        return;
+    }
     PCCERT_CONTEXT c = NULL;
     while ((c = CertEnumCertificatesInStore(id->chain, c)) != NULL) {
         if (CertCompareCertificate(X509_ASN_ENCODING, c->pCertInfo, id->leaf->pCertInfo)) continue;
         if (CertCompareCertificateName(X509_ASN_ENCODING, &c->pCertInfo->Subject, &c->pCertInfo->Issuer)) continue;
-        if (CertAddCertificateContextToStore(ca, c, CERT_STORE_ADD_NEW, NULL)) {
+        if (id->published_ca) {
+            PCCERT_CONTEXT dup = CertFindCertificateInStore(
+                id->published_ca, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING, c, NULL);
+            if (dup) {
+                CertFreeCertificateContext(dup);
+                continue;
+            }
+        }
+        PublishedCaEntry** slot = find_published_ca_slot(c);
+        if (*slot) {
             if (!id->published_ca) {
                 id->published_ca = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, 0, NULL);
             }
-            if (id->published_ca) {
-                CertAddCertificateContextToStore(id->published_ca, c, CERT_STORE_ADD_ALWAYS, NULL);
+            if (id->published_ca && CertAddCertificateContextToStore(id->published_ca, c, CERT_STORE_ADD_ALWAYS, NULL)) {
+                (*slot)->refs++;
+            }
+        } else if (CertAddCertificateContextToStore(ca, c, CERT_STORE_ADD_NEW, NULL)) {
+            if (!id->published_ca) {
+                id->published_ca = CertOpenStore(CERT_STORE_PROV_MEMORY, 0, 0, 0, NULL);
+            }
+            PublishedCaEntry* entry = (PublishedCaEntry*)malloc(sizeof(PublishedCaEntry));
+            BYTE* der = entry ? (BYTE*)malloc(c->cbCertEncoded) : NULL;
+            if (entry && der && id->published_ca &&
+                CertAddCertificateContextToStore(id->published_ca, c, CERT_STORE_ADD_ALWAYS, NULL)) {
+                memcpy(der, c->pbCertEncoded, c->cbCertEncoded);
+                entry->cb = c->cbCertEncoded;
+                entry->der = der;
+                entry->refs = 1;
+                entry->next = published_ca_list;
+                published_ca_list = entry;
+            } else {
+                free(der);
+                free(entry);
             }
         }
     }
     CertCloseStore(ca, 0);
+    ReleaseSRWLockExclusive(&published_ca_lock);
 }
 
 /* Loads `cert_pem` (leaf, then intermediates) and `key_pem`, checks they

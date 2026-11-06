@@ -297,14 +297,14 @@ Use `unsafe { }` sparingly and document the manual justification. Every `unsafe`
 **What is Z3?** Z3 is an SMT (Satisfiability Modulo Theories) solver built by Microsoft Research. Given a formula in a supported theory, Z3 can prove it always true, prove it sometimes false (producing a counterexample), or report `unknown` when the formula is outside what it can decide. Lyric feeds it the verification conditions generated from your contracts. You do not need to understand SMT theory to use `lyric prove` — the VC generator handles the translation — but it helps to know that Z3 works with decidable fragments (linear arithmetic, algebraic datatypes, finite quantifiers, bit vectors) and struggles outside those fragments. When Z3 reports `unknown`, it is telling you the formula is in territory it cannot decide, not that the formula is false. Chapter 19 covers the decidable fragment and what to do at its edges.
 :::
 
-## §18.8 `@proof_required(checked_arithmetic)`
+## §18.8 Checked arithmetic (`@proof_required` vs `@proof_required(unbounded_arithmetic)`)
 
 Financial code has a particular concern: arithmetic operations that overflow silently. On 64-bit integers, `Long.max + 1` wraps around and becomes a large negative number, which can corrupt a balance.
 
-The `checked_arithmetic` modifier adds an overflow VC to every arithmetic operation in the package:
+By default, `@proof_required` (and its explicit synonym `@proof_required(checked_arithmetic)`) adds an overflow VC to every arithmetic operation in the package (D415):
 
 ```lyric
-@proof_required(checked_arithmetic)
+@proof_required
 package Account
 
 pub func credit(a: in Account, amount: in Amount): Result[Account, AccountError]
@@ -318,11 +318,11 @@ pub func credit(a: in Account, amount: in Amount): Result[Account, AccountError]
 }
 ```
 
-With `checked_arithmetic`, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. The bound is the operand's own width: an `Int` sum must stay within `Int.max` (2,147,483,647), a `Long` sum within `Long.max`, and an unsigned one must not wrap. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
+With checked arithmetic, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. The bound is the operand's own width: an `SByte` sum must stay within `SByte.max` (127), a `Short` sum within `Short.max` (32,767), an `Int` sum within `Int.max` (2,147,483,647), a `Long` sum within `Long.max`, and an unsigned one (`Byte`, `UShort`, `UInt`, `ULong`) must not wrap. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
 
-`lyric prove` does not depend on the build profile. It reasons as a debug build behaves: an overflow panics rather than producing a value. Without the modifier, a proof therefore covers only the executions that do not overflow, and a release build, where the same operation wraps, is outside it. With the modifier, overflow is ruled out altogether, so the proof holds whichever profile the program is built with. In either mode an `Int` parameter or callee result is known to lie within the `Int` range, and a `Long` one within the `Long` range.
+`lyric prove` does not depend on the build profile. It reasons as a debug build behaves: an overflow panics rather than producing a value. With checked arithmetic (the default for `@proof_required`), overflow is ruled out altogether, so the proof holds whichever profile (`debug` or `release`) the program is built with. If a package explicitly opts out with `@proof_required(unbounded_arithmetic)`, the body's signed arithmetic is modelled as mathematical unbounded integers, so the proof covers only the executions that do not overflow, and a release build, where the same operation wraps, is outside it. In either mode an `SByte`, `Short`, `Int`, or `Long` parameter or callee result is known to lie within its declared bit-width range.
 
-The modifier is optional because overflow VCs add goals, and goals take time. For non-financial code, the overhead is not worth it. For any package that handles monetary amounts, enabling it provides a static guarantee that arithmetic never wraps — a guarantee runtime checking cannot provide: a debug build panics only once an overflow happens, and a release build wraps silently.
+Checked arithmetic is the default for `@proof_required` because silent release-mode wraparound can otherwise violate an `ensures:` clause that was "proved" over unbounded integers. Packages that intentionally reason over mathematical integers without bounded-width obligations can opt out with `@proof_required(unbounded_arithmetic)`.
 
 ## Exercises
 

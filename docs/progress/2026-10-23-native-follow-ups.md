@@ -28,5 +28,5 @@
   (dependency packages lowered in full, `-lwebview`), #8430 (accessibility through AccessKit). Already
   tracked: bidi and UAX #14 (#8410), macOS surfaces and `.app` (#8401, #8419), the multi-threaded
   coroutine scheduler (#7947), Windows (#7948).
-- Docs: D268, docs/01 §3.3, docs/05, docs/12, docs/65 §13.3, docs/67, native/plan/06, book appendix B (T0123) and
+- Docs: D268, docs/01 §3.3, docs/05, docs/12, docs/65 §13.3, docs/67, docs/native-plan/06, book appendix B (T0123) and
   chapter 31, lyric-ui README, CLAUDE.md.

@@ -73,4 +73,4 @@ directly, all interface tests green).
 flake (unrelated, pre-existing, documented in the test's own comment)
 is what masked this bug from CI for as long as it did — fixing that
 flake is tracked separately and out of scope here.
-`native/plan/08-work-items.md` N9.10.
+`docs/native-plan/08-work-items.md` N9.10.

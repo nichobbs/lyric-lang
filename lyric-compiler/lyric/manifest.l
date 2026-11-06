@@ -1278,7 +1278,7 @@ func buildDepSource(
       val subdir = findInlineStr(pairs, "subdir")
       match subdir {
         case Some(sd) -> if sd.length == 0 or Str.startsWith(sd, "-") or Str.startsWith(sd, "/") or
-          Str.startsWith(sd, "\\") or Str.contains(sd, "..") or Str.contains(sd, "\0") {
+          Str.startsWith(sd, "\\") or Str.contains(sd, ":") or Str.contains(sd, "..") or Str.contains(sd, "\0") {
           return Err(
             error = InvalidField(
               section = section,

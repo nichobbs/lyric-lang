@@ -1140,12 +1140,18 @@ func checkImplementsGeneratorPoint(m: in Plugin.PluginManifest): Option[String] 
   )
 }
 
-// Whether manifest `m` carries a sandboxed WASM or Component payload.
-func manifestHasWasmPayload(m: in Plugin.PluginManifest): Bool {
+// Whether manifest `m` carries a sandboxed WASM payload and `wasmtime` is
+// available on the host so `selectPluginPayload` (with `preferWasm = true`)
+// is guaranteed to select the WASM payload without falling back to a process
+// payload.
+func manifestHasRunnableWasmPayload(m: in Plugin.PluginManifest): Bool {
+  match Plugin.findWasmtime() {
+    case None -> return false
+    case Some(_) -> ()
+  }
   for p in m.payloads {
     match p {
       case Plugin.WasmPayload(_) -> return true
-      case Plugin.ComponentPayload(_) -> return true
       case _ -> ()
     }
   }
@@ -1164,7 +1170,7 @@ func loadRestoredGenerator(h: in Plugin.PluginHost, rg: in RestoredGenerator): R
     case Some(why) -> return Err(error = why)
     case None -> ()
   }
-  if not processGeneratorsAllowed() and not manifestHasWasmPayload(m) {
+  if not processGeneratorsAllowed() and not manifestHasRunnableWasmPayload(m) {
     return Err(
       error = "external process source generators are disabled during 'lyric check' by default; pass --allow-generators to run them"
     )

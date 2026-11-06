@@ -367,6 +367,9 @@ func decodeChunked(buf: in slice[Byte], start: in Int): BodyParse {
           }
           return BodyIncomplete
         }
+        if tEnd - pos > MAX_RESPONSE_HEAD_BYTES {
+          return BodyMalformed(message = "chunked response trailer line too long")
+        }
         if tEnd == pos {
           return BodyOk(body = acc.toArray())
         }

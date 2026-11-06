@@ -469,9 +469,10 @@ func mkNotif(method: in String, params: in String): String {
 // §5. JSON extraction helpers.
 // ─────────────────────────────────────────────────────────────────────────────
 func jElemStrOrEmpty(e: in JsonElement): String {
-  match valueKind(e) {
-    case JsonString -> getString(e)
-    case _ -> ""
+  if isJsonString(e) {
+    getString(e)
+  } else {
+    ""
   }
 }
 

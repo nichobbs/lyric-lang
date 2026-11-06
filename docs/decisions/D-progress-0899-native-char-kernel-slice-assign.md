@@ -5,7 +5,7 @@
 **#6811 — `Std.Char` had no `_kernel_native` twin.** Added
 `lyric-stdlib/std/_kernel_native/char_host.l`. The code-point bridge
 (`hostCharToInt`/`hostIntToChar`) needs no extern at all: `Char` and `Int`
-are both lowered to `i32` on native (`native/plan/03-type-mapping.md`), so
+are both lowered to `i32` on native (`docs/native-plan/03-type-mapping.md`), so
 the bridge is exactly the identity conversion the `.toInt()`/`.toChar()`
 numeric-conversion builtin methods (#1901) already perform — `c.toInt()` /
 `n.toChar()` compile to the same no-op the BCL/JDK twins need a real

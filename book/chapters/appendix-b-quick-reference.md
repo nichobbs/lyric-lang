@@ -553,7 +553,10 @@ Contract expression rules: pure only — no side effects, no I/O, no mutation. M
 @runtime_checked          // default; contracts are runtime asserts
 package Account
 
-@proof_required           // SMT solver must discharge every obligation at compile time
+@proof_required           // SMT solver must discharge every obligation at compile time (checked arithmetic by default)
+package Transfer
+
+@proof_required(unbounded_arithmetic)    // as above, with mathematical unbounded integer arithmetic
 package Transfer
 
 @proof_required(unsafe_blocks_allowed)   // as above, with unsafe { } escape hatches
@@ -790,7 +793,8 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `@projectable` | `opaque type` | Generate a sibling `exposed record XView` and projection functions |
 | `@projectable(json, sql)` | `opaque type` | Restrict generated views to named targets |
 | `@projectionBoundary(asId)` | field | Break a projection cycle; emit the field as an opaque handle |
-| `@proof_required` | package | All contracts must be SMT-discharged at compile time |
+| `@proof_required` | package | All contracts and bounded-width arithmetic overflow obligations must be SMT-discharged at compile time (`checked_arithmetic` by default, D415) |
+| `@proof_required(unbounded_arithmetic)` | package | As above, opting out of bounded-width overflow VCs (mathematical integers) |
 | `@proof_required(unsafe_blocks_allowed)` | package | As above, with `unsafe { }` permitted |
 | `@no_aspect` | function | Opt out of all aspects in the package |
 | `@no_aspect("Name")` | function | Opt out of a specific named aspect (name is a string literal) |
@@ -1330,6 +1334,7 @@ lyric check <file1.l> <file2.l> ...    # type-check multiple files
 lyric check --target jvm <file.l>      # type-check against the JVM target
 lyric check                            # project mode: type-check all [project.packages]
 lyric check --manifest <lyric.toml>    # project mode: override manifest discovery
+lyric check --allow-generators         # also run external process [[generators]] during check (skipped by default)
 # Output is written to .lyric-check/; exit 0 = clean, 1 = type errors
 
 # Clean (remove build artifacts)

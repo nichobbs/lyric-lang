@@ -364,10 +364,25 @@ try_bootstrap_from_release() {
     return 1
   fi
 
-  # Verify SHA-256 against the release's SHASUMS256.txt manifest when present.
-  local shasums_url="https://github.com/nichobbs/lyric-lang/releases/download/${release_tag}/SHASUMS256.txt"
-  local shasums_path="${temp_dir}/SHASUMS256.txt"
-  if command -v curl &>/dev/null && curl -fsSL "$shasums_url" -o "$shasums_path" 2>/dev/null && [[ -s "$shasums_path" ]]; then
+  # Verify SHA-256 against the release's SHASUMS256.txt manifest (fail closed
+  # unless LYRIC_BOOTSTRAP_SKIP_CHECKSUM=1 is explicitly set).
+  if [[ "${LYRIC_BOOTSTRAP_SKIP_CHECKSUM:-0}" != "1" ]]; then
+    local shasums_url="https://github.com/nichobbs/lyric-lang/releases/download/${release_tag}/SHASUMS256.txt"
+    local shasums_path="${temp_dir}/SHASUMS256.txt"
+    if command -v curl &>/dev/null; then
+      if ! curl -fsSL "$shasums_url" -o "$shasums_path" 2>/dev/null || [[ ! -s "$shasums_path" ]]; then
+        info "  ERROR: Failed to download SHASUMS256.txt from ${shasums_url}"
+        return 1
+      fi
+    elif command -v wget &>/dev/null; then
+      if ! wget -q "$shasums_url" -O "$shasums_path" 2>/dev/null || [[ ! -s "$shasums_path" ]]; then
+        info "  ERROR: Failed to download SHASUMS256.txt from ${shasums_url}"
+        return 1
+      fi
+    else
+      info "  ERROR: Neither curl nor wget found to download SHASUMS256.txt"
+      return 1
+    fi
     local expected_sha=""
     expected_sha="$(awk -v name="$archive_name" '{ sub(/^\*/, "", $2); if ($2 == name) print tolower($1) }' "$shasums_path" | head -1)"
     if [[ -z "$expected_sha" ]]; then

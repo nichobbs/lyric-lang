@@ -1493,7 +1493,7 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10. N0100 — native FFI boundary (native/plan/05-ffi-design.md).
+// §10. N0100 — native FFI boundary (docs/native-plan/05-ffi-design.md).
 // ─────────────────────────────────────────────────────────────────────────────
 // `NativePtr[T]` and the `nativeAddrOf` builtin are the raw side of the
 // native target's FFI.  Outside `_kernel_native/` package files (which

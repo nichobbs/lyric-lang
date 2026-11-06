@@ -30,7 +30,7 @@ _Last verified against source and tracker: **2026-10-21**._
 - **Native (LLVM) backend.** N0-N8 and N9 (HTTP/TLS) shipped in substance:
   ARC, records/unions, closures, generics, interfaces, protected types,
   async/spawn/scope, FFI and callbacks, stdlib kernel twins, project
-  dependencies, `[native]` manifest table.  See `native/plan/08-work-items.md`.
+  dependencies, `[native]` manifest table.  See `docs/native-plan/08-work-items.md`.
 - **wasm32 and npm (docs/35, W0-W5 and the #8117/#8118 follow-ups).**  Module
   and component shapes, `[wasm]`/`[npm]`, shim generation, component async
   (D184).

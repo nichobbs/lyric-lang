@@ -1,5 +1,5 @@
 //! llvm/types.l — LLVM IR type and SSA-value model for the native backend
-//! (work item N0.2, native/plan/02-architecture.md).
+//! (work item N0.2, docs/native-plan/02-architecture.md).
 //!
 //! `NType` mirrors the LLVM first-class type grammar the backend needs;
 //! `NValue` is an SSA operand.  `nTypeToIrString` / `nValueToIrString`
@@ -85,7 +85,7 @@ pub union FCmpPred {
 /// Render an `NType` as its `.ll` spelling.  Struct types render as the
 /// `%Name` reference; the definition line is emitted separately by
 /// `Lyric.LlvmIr.emitTypeDefn`.
-/// `Unit` is an ordinary one-valued type (native/plan/03-type-mapping.md,
+/// `Unit` is an ordinary one-valued type (docs/native-plan/03-type-mapping.md,
 /// "Unit"): wherever it occupies an operand slot -- a function or function-
 /// pointer parameter, a call argument -- it is an `i8` placeholder carrying
 /// no data.  Only a *return* type renders `void`, and an expression nothing

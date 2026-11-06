@@ -562,6 +562,26 @@ pub func restoreTriples(manifest: in Mf.Manifest): List[String] {
   triples
 }
 
+func isDisallowedLinkerSubOpt(opt: in String): Bool {
+  Str.startsWith(opt, "@") or Str.startsWith(opt, "-plugin") or Str.startsWith(opt, "--plugin") or
+    Str.startsWith(opt, "-fplugin") or Str.startsWith(opt, "--dynamic-linker") or Str.startsWith(opt, "-dynamic-linker")
+}
+
+func isDisallowedLinkerToken(tok: in String): Bool {
+  if isDisallowedLinkerSubOpt(tok) or Str.startsWith(tok, "-Xlinker") or Str.startsWith(tok, "-Xclang") or
+    Str.contains(tok, "--plugin") {
+    return true
+  }
+  if (Str.startsWith(tok, "-Wl,") or Str.startsWith(tok, "-Wa,") or Str.startsWith(tok, "-Wp,")) and tok.length >= 4 {
+    for sub in Str.split(Str.substring(tok, 4), ",") {
+      if isDisallowedLinkerSubOpt(sub) {
+        return true
+      }
+    }
+  }
+  false
+}
+
 func resolvePkgConfigLib(
   decl: in NativeLibDecl,
   os: in String,
@@ -603,13 +623,14 @@ func resolvePkgConfigLib(
         return
       }
       // Every token `pkg-config --libs` prints is a link argument (`-L`, `-l`, `-pthread`,
-      // `-Wl,...`, a static archive path); reject response files (`@...`) and compiler plugins.
+      // `-Wl,...`, a static archive path); reject response files (`@...`), compiler/linker
+      // plugins, and driver-forwarded `-Xlinker`/`-Xclang` tokens.
       val flat = Str.replace(Str.replace(Str.replace(res.stdout, "\n", " "), "\t", " "), "\r", " ")
       val libDirs: List[String] = newList()
       val names: List[String] = newList()
       for tok in Str.split(Str.trim(flat), " ") {
         if tok.length > 0 {
-          if Str.startsWith(tok, "@") or Str.startsWith(tok, "-fplugin") or Str.contains(tok, "--plugin") {
+          if isDisallowedLinkerToken(tok) {
             errors.add("native library '" + spec.name + "': pkg-config returned disallowed linker flag '" + tok + "'")
             return
           }

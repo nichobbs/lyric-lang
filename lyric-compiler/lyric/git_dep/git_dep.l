@@ -101,7 +101,7 @@ pub func urlToHash(url: in String): String {
 // "" for an unknown kind so `resolve` can fail gracefully.  Takes flat strings
 // rather than a `GitRef` union — see the note on `resolve`.
 func sanitizeRefSegment(s: in String): String {
-  s.replace("/", "-").replace("\\", "-").replace(":", "-").replace("..", "-")
+  s.replace("_", "_5f").replace("/", "_2f").replace("\\", "_5c").replace(":", "_3a")
 }
 
 func refDirName(refKind: in String, refValue: in String): String {
@@ -257,7 +257,7 @@ pub func resolve(
   }
   match subdir {
     case Some(s) -> if s.length == 0 or Str.startsWith(s, "-") or Str.startsWith(s, "/") or Str.startsWith(s, "\\") or
-      Str.contains(s, "..") or Str.contains(s, "\0") {
+      Str.contains(s, ":") or Str.contains(s, "..") or Str.contains(s, "\0") {
       return Err(error = "git dependency '" + url + "': subdir '" + s + "' must be a relative path without '..'")
     }
     case None -> ()
@@ -325,8 +325,14 @@ pub func resolve(
     return Err(error = "clone directory not found after git operation: " + targetDir)
   }
 
-  // Optionally descend into a subdirectory.
-  val resolvedDir = match subdir { case None -> targetDir; case Some(s) -> Path.join(targetDir, s) }
+  // Optionally descend into a subdirectory, ensuring it stays within targetDir.
+  val resolvedDir = match subdir {
+    case None -> targetDir
+    case Some(s) -> match Path.joinWithin(targetDir, s) {
+      case Ok(joined) -> joined
+      case Err(e) -> return Err(error = "git dependency '" + url + "': invalid subdir '" + s + "': " + IOError.message(e))
+    }
+  }
 
   if not Dir.exists(resolvedDir) {
     return Err(error = "subdir '" + resolvedDir + "' does not exist in cloned repository")

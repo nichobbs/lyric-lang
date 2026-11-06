@@ -880,13 +880,6 @@ func readDirectory(
     if spanEnd > cdOffset {
       return Err(error = Malformed(reason = "the entry '" + name + "' runs past the data"))
     }
-    var si = 0
-    while si < spanStarts.count {
-      if spanStart < spanEnds[si] and spanStarts[si] < spanEnd {
-        return Err(error = Malformed(reason = "the entry '" + name + "' overlaps another entry"))
-      }
-      si = si + 1
-    }
     spanStarts.add(spanStart)
     spanEnds.add(spanEnd)
     entries.add(
@@ -905,7 +898,68 @@ func readDirectory(
     at = at + 46 + nameLen + extraLen + commentLen
     i = i + 1
   }
+  if hasOverlappingSpans(spanStarts, spanEnds) {
+    return Err(error = Malformed(reason = "archive entries overlap in local header data"))
+  }
   Ok(value = entries)
+}
+
+func hasOverlappingSpans(starts: in List[Long], ends: in List[Long]): Bool {
+  val n = starts.count
+  if n <= 1 {
+    return false
+  }
+  var aStarts: List[Long] = newListWithCapacity(n)
+  var aEnds: List[Long] = newListWithCapacity(n)
+  var bStarts: List[Long] = newListWithCapacity(n)
+  var bEnds: List[Long] = newListWithCapacity(n)
+  var idx = 0
+  while idx < n {
+    aStarts.add(starts[idx])
+    aEnds.add(ends[idx])
+    bStarts.add(0i64)
+    bEnds.add(0i64)
+    idx = idx + 1
+  }
+  var width = 1
+  while width < n {
+    var left = 0
+    while left < n {
+      val mid = if left + width < n { left + width } else { n }
+      val right = if left + 2 * width < n { left + 2 * width } else { n }
+      var p = left
+      var q = mid
+      var k = left
+      while k < right {
+        if p < mid and (q >= right or aStarts[p] < aStarts[q] or (aStarts[p] == aStarts[q] and aEnds[p] <= aEnds[q])) {
+          bStarts[k] = aStarts[p]
+          bEnds[k] = aEnds[p]
+          p = p + 1
+        } else {
+          bStarts[k] = aStarts[q]
+          bEnds[k] = aEnds[q]
+          q = q + 1
+        }
+        k = k + 1
+      }
+      left = left + 2 * width
+    }
+    var cp = 0
+    while cp < n {
+      aStarts[cp] = bStarts[cp]
+      aEnds[cp] = bEnds[cp]
+      cp = cp + 1
+    }
+    width = width * 2
+  }
+  var j = 1
+  while j < n {
+    if aStarts[j] < aEnds[j - 1] {
+      return true
+    }
+    j = j + 1
+  }
+  false
 }
 
 func zipNameIsUnsafe(name: in String): Bool {

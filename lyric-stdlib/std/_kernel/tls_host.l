@@ -93,6 +93,10 @@ func newSecureTempDir(): String {
   info.FullName
 }
 
+// Overwrite `key.pem` with zeros of the same length before unlinking the
+// `0700` temp directory.  In-place overwriting is best-effort on journaled and
+// wear-levelled SSD filesystems, where the primary protection remains the
+// `0700` owner-only directory permissions from `CreateTempSubdirectory`.
 func scrubAndDeleteTempDirQuietly(dir: in String, keyPath: in String, keyLen: in Int): Unit {
   try {
     if NetFile.Exists(keyPath) {

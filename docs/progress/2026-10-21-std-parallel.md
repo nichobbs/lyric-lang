@@ -8,5 +8,5 @@
 - `lyric_posix.c`: the protected-type monitor's `owner`/`depth` are atomics (a data race ThreadSanitizer found).
 - `benchmarks/bench_parallel.l`; `scripts/ci/parallel-e2e.sh` (unit tests, native tests, ThreadSanitizer on
   the generated IR, scaling >= 1.5x), wired into `native-backend-self-tests.sh`.
-- Docs: D202, docs/67, native/plan/06, book chapter 13, CLAUDE.md. Open: a multi-threaded coroutine
+- Docs: D202, docs/67, docs/native-plan/06, book chapter 13, CLAUDE.md. Open: a multi-threaded coroutine
   scheduler for `async` tasks, zero-copy chunk windows, pools on the managed targets.

@@ -3,7 +3,7 @@
 _Specced in D128. Implementation tracked under epic #5874 (one sub-issue per
 PR; see §8). Extends `docs/10-stdlib-plan.md` (Std.Http surface),
 `docs/44-jvm-production-readiness-plan.md` (JVM parity), and
-`native/plan/05-ffi-design.md` (native kernel boundary)._
+`docs/native-plan/05-ffi-design.md` (native kernel boundary)._
 
 ## 1. Motivation and current state
 
@@ -431,7 +431,7 @@ core. Considerations codified now so phase 5 doesn't rediscover them:
    dual-key policy can disable it (`Std.Environment`'s native twin already
    reads env vars).
 4. **Resource lifetime**: `SSL_CTX`/`SSL` are `NativePtr` resources with
-   deterministic free via the ARC destructor rules (`native/plan/04`); the
+   deterministic free via the ARC destructor rules (`docs/native-plan/04`); the
    ASan-compiled `llvm_*_self_test` discipline catches leaks/double-frees.
 5. **Concurrency**: blocking client calls are fine (same shape as the JVM
    lowering); the server starts thread-per-connection over the existing
@@ -459,7 +459,7 @@ system-trust discovery via `SSL_CTX_set_default_verify_paths` +
 `SSL_CERT_FILE`/`SSL_CERT_DIR`). Handles are raw resources freed explicitly.
 The seam is verified by real loopback OpenSSL handshakes in
 `lyric_tls_test.c` (clang + gcc + ASan in CI). The Lyric transport/server/
-client layers are banded as Phase N9.2–N9.5 in `native/plan/08-work-items.md`.
+client layers are banded as Phase N9.2–N9.5 in `docs/native-plan/08-work-items.md`.
 Q-TLS-001 (macOS trust) and Q-TLS-004 (resumption/0-RTT) remain open.
 
 **Item 4 status (D-progress-712, D-progress-713):** the ARC-managed lifetime
@@ -827,7 +827,7 @@ items marked ∥ are independent and can proceed in parallel.
 
 **Phase 5 — native (opens when native HTTP work starts)**
 15. `lyric_tls_*` OpenSSL seam in `lyric-rt` + socket transport + client;
-    server thread-per-connection; banded like N-items in `native/plan/`
+    server thread-per-connection; banded like N-items in `docs/native-plan/`
     (Phase N9). _Banded and started (D-progress-703, #5890): the C foundation
     **N9.1 — the `lyric_sock_*` + `lyric_tls_*` seam — shipped**. It is a
     blocking POSIX socket transport plus a TLS seam over OpenSSL 3.x loaded
@@ -998,7 +998,7 @@ items marked ∥ are independent and can proceed in parallel.
     issue #6808, depends on #6794), and the native build pipeline has no
     project/multi-package support at all, so no ecosystem library
     (`lyric-web` included) can be imported into a native build today —
-    issue #6809. See `native/plan/08-work-items.md` Phase N9 for the full
+    issue #6809. See `docs/native-plan/08-work-items.md` Phase N9 for the full
     banding and prerequisites.
     **N9.6 (D-progress-853, #6794)** ✅ SHIPPED: general native `out`/
     `inout` function-parameter lowering. Unblocks `Std.HttpEngine.H2Frame`'s

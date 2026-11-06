@@ -25,7 +25,7 @@ logging), which `docs/35` §4 lists as the module shape's interface.
 3. **Types.** `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` and
    `Unit`, the same kinds as exports (`N0014` otherwise). A String parameter is
    borrowed and decoded by the glue; a String result is created fresh for the
-   Lyric caller, which owns it (rule 6 of native/plan/04-arc-design.md).
+   Lyric caller, which owns it (rule 6 of docs/native-plan/04-arc-design.md).
 4. **Glue.** `instantiate(source, { imports: { module: { name: fn } } })` takes
    functions over decoded values; the generated wrappers lower and lift around
    them. A declared import the host does not supply fails instantiation with a
