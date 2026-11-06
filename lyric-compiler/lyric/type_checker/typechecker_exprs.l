@@ -17550,7 +17550,9 @@ func noteUnsolvedCallNamed(
     return
   }
   val isMethod = match recvTy { case Some(_) -> true; case None -> false }
-  if not isMethod and scopeHasName(sc, fname) {
+  // An extern function of the package is itself in scope; a local binding
+  // that shadowed it would not have resolved to its signature (D384).
+  if not isMethod and not sig.isExternFunc and scopeHasName(sc, fname) {
     return
   }
   val valueParams = valueGenericParamsOf(tbl, fn, args.count)
