@@ -262,7 +262,7 @@ test "cross-package generic record Pair[Int,String] both fields" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_pair: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_pair: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_pair: two output lines")
   assertEqual(lines[0], "7", "cpgen_pair: first = 7")
   assertEqual(lines[1], "seven", "cpgen_pair: second = seven")
 }
@@ -403,7 +403,7 @@ test "cross-package restored interface method with record param and return" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_iface_rec: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 3, "cpgen_iface_rec: three output lines")
+  assertEqualInt(lines.length, 3, "cpgen_iface_rec: three output lines")
   assertEqual(lines[0], "S/apple:2", "cpgen_iface_rec: interface-dispatch describe(record)")
   assertEqual(lines[1], "3", "cpgen_iface_rec: record-returning bump(record) round-trips")
   assertEqual(lines[2], "M/apple:3", "cpgen_iface_rec: concrete-record-dispatch describe(record)")
@@ -494,7 +494,7 @@ test "cross-package generic predicate over a consumer-defined type (#6365)" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_fn_predicate: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_fn_predicate: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_fn_predicate: two output lines")
   assertEqual(lines[0], "true", "cpgen_fn_predicate: isFullBox(Full(Widget)) = true")
   assertEqual(lines[1], "false", "cpgen_fn_predicate: isFullBox(Empty) = false")
 }
@@ -540,7 +540,7 @@ test "cross-package generic function over List[consumer-defined type] (#6364)" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_fn_list: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_fn_list: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_fn_list: two output lines")
   assertEqual(lines[0], "gizmo", "cpgen_fn_list: firstOrDefault(non-empty) = first element")
   assertEqual(lines[1], "fallback", "cpgen_fn_list: firstOrDefault(empty) = default")
 }
@@ -650,7 +650,7 @@ test "cross-package Result identity: consumer closure literal passed to a restor
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_result_closure: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_result_closure: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_result_closure: two output lines")
   assertEqual(lines[0], "42", "cpgen_result_closure: direct Ok(42) literal dispatches to the Ok arm")
   assertEqual(lines[1], "-1", "cpgen_result_closure: direct Err(\"boom\") literal dispatches to the Err arm")
 }
@@ -682,7 +682,7 @@ test "in-bundle val-bound closure passed by name preserves Result's type params 
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_valbound_result: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_valbound_result: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_valbound_result: two output lines")
   assertEqual(lines[0], "7", "cpgen_valbound_result: val-bound Ok(7) dispatches to the Ok arm")
   assertEqual(lines[1], "-1", "cpgen_valbound_result: val-bound Err(\"boom\") dispatches to the Err arm")
 }
@@ -1055,7 +1055,7 @@ test "cross-package operator-bounded generic at a scalar primitive (#7996)" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_op_scalar: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_op_scalar: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_op_scalar: two output lines")
   assertEqual(lines[0], "42", "cpgen_op_scalar: Int +")
   assertEqual(lines[1], "2.5", "cpgen_op_scalar: Double >")
 }

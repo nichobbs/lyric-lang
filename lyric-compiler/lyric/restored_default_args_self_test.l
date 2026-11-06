@@ -172,9 +172,9 @@ func runRestored(label: in String, jvm: in Bool, libSrc: in String, appSrc: in S
 
 func assertLines(label: in String, actual: in String, expected: in List[String]): Unit {
   val lines = Str.split(actual, "\n")
-  assertEqualInt(lines.count, expected.count, label + ": line count of\n" + actual)
+  assertEqualInt(lines.length, expected.count, label + ": line count of\n" + actual)
   var i = 0
-  while i < lines.count and i < expected.count {
+  while i < lines.length and i < expected.count {
     assertEqual(Str.trim(lines[i]), expected[i], label + ": line " + toString(i + 1))
     i = i + 1
   }
