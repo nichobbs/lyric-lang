@@ -88,6 +88,27 @@ test "the root is the window, layout helpers are flattened away" {
   assertEqualInt(countRole(t, "button"), 2, "two buttons")
 }
 
+test "a link that navigates by href can be clicked" {
+  val kids: List[View[Msg]] = newList()
+  kids.add(Widgets.link("Acme", "/customers/1"))
+  val page = lay(Widgets.column(kids))
+  val t = Access.buildTree(page, "Customers", idle(), { b: Box -> noId(b) })
+  val link = nodeWith(t, "link")
+  assertEqual(link.name, "Acme", "name")
+  assertEqual(link.description, "/customers/1", "href")
+  var clickable = false
+  for a in link.actions {
+    if a == "click" {
+      clickable = true
+    }
+  }
+  assertTrue(clickable, "click action")
+  match Access.resolveRequest(page, t, { b: Box -> noId(b) }, link.id, Access.AccessRequest(kind = Access.ReqClick, text = "")) {
+    case Access.HostClick(_) -> assertTrue(true, "host click")
+    case _ -> assertTrue(false, "a click on an href link is the host's own")
+  }
+}
+
 test "a heading carries its level" {
   val t = build(form(newList(), false))
   val h = nodeWith(t, "heading")
@@ -244,6 +265,24 @@ test "a data grid counts every row including unloaded ones and indexes the loade
   assertEqualInt(idx[0], 1, "header row is row 1")
   assertEqualInt(idx[1], 7, "row 5 is the seventh row")
   assertEqualInt(idx[3], 9, "and the loaded rows are consecutive")
+}
+
+test "a data grid row has one cell per column, holding the cell's text" {
+  val t = build(gridView(0, 10, 1))
+  assertEqualInt(countRole(t, "cell"), 2, "two cells in the one loaded row")
+  var label = ""
+  for n in t.nodes {
+    if Access.roleName(n.role) == "cell" and n.colIndex == 1 {
+      for k in n.childIds {
+        for m in t.nodes {
+          if m.id == k {
+            label = m.name
+          }
+        }
+      }
+    }
+  }
+  assertEqual(label, "n0", "the first cell holds its text")
 }
 
 test "a sortable column header carries its direction and a click action" {

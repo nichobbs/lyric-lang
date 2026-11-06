@@ -1,0 +1,27 @@
+# The lyric-access smoke test: an AccessKit adapter on a real window (docs/67 G10).
+#
+#   access-smoke                    attaches the adapter, publishes a one-button tree, detaches
+#   access-smoke --wait-click <s>   also waits up to <s> seconds for an assistive technology to
+#                                   click the button, and fails if none does
+#
+# CI runs it on Linux, macOS and Windows; on Windows a UI Automation client clicks the button
+# (scripts/ci/uia-smoke.ps1).  The native lyric-ui host's full AT-SPI test is
+# scripts/ci/ui-native-e2e.sh.
+[package]
+name    = "Lyric.Access.Examples.Smoke"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Access.Examples.Smoke"
+
+[project.packages]
+"Access.Smoke" = "src/main.l"
+
+[dependencies]
+"Lyric.Ui"             = { path = "../../../../lyric-ui" }
+"Lyric.Ui.Native.Core" = { path = "../../../../lyric-ui/native" }
+"Lyric.Access"         = { path = "../.." }
+"Lyric.Window"         = { path = "../../../../lyric-window" }
+
+[native.app]
+identifier = "org.lyric.examples.access-smoke"

@@ -47,6 +47,8 @@ import Ui.Native.Interact
 import Ui.Native.Wrap
 import Ui.Native.Interact.{TextEdit, Action}
 import Ui.Native.Paint.{Fonts, PaintCtx, metricsFor, paintPage, paintSelectPopup, paintToasts}
+import Ui.Native.Access.{AccessTree, AccessState, AccessRequest, Resolution, Unresolved, FocusBox, Send, HostClick, SetText, ScrollTo, buildTree, resolveRequest}
+import Access.Platform as A11y
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 /// The window and its fonts.  `fontPath` and `boldFontPath` are TrueType files; `cjkFontPath`, when
@@ -143,6 +145,10 @@ pub ref record Host {
   var quit: Bool
   /// The wrapped lines of each text area (by id) for the text and width they were made for.
   var wraps: Map[String, WrapEntry]
+  /// The accessibility tree of the last frame, which assistive technology requests are resolved
+  /// against, and the platform adapter it is published through (a window only).
+  var accessTree: Option[AccessTree]
+  var adapter: Option[A11y.Adapter]
 }
 
 pub record WrapEntry {
@@ -212,7 +218,9 @@ pub func openHost(
     page = emptyPage(),
     now = 0.0f32,
     quit = false,
-    wraps = newMap()
+    wraps = newMap(),
+    accessTree = None,
+    adapter = None
   )
 }
 
@@ -1067,6 +1075,9 @@ pub func handle(h: Host, e: Window.Event): Unit {
       h.quit = true
     }
     case WindowResized(_, w, ht) -> ()
+    case WindowMoved(_, _, _) -> ()
+    case WindowFocusGained(_) -> ()
+    case WindowFocusLost(_) -> ()
     case KeyDown(_, key, _, mods, _) -> onKey(h, key, mods)
     case KeyUp(_, _, _, _) -> ()
     case TextInput(_, text) -> {
@@ -1221,6 +1232,83 @@ pub func caretArea(h: Host): Option[Ui.Native.Layout.Box] {
   }
 }
 
+// ─── Accessibility ────────────────────────────────────────────────────────────
+// The accessibility tree of the frame last laid out (`Ui.Native.Access`), which the host
+// publishes to assistive technologies and resolves their requests against.
+func accessTreeOf(h: Host): AccessTree {
+  val st = AccessState(focusId = h.focus, openSelect = h.openSelect, edit = { id: String -> mapGet(h.edits, id) })
+  buildTree(h.page, h.cfg.title, st, { b: Box -> idOfBox(h, b) })
+}
+
+// Rebuilds the tree after a frame and hands it to the adapter, if there is one.
+func publishAccess(h: Host): Unit {
+  val tree = accessTreeOf(h)
+  h.accessTree = Some(value = tree)
+  match h.adapter {
+    case Some(a) -> A11y.publish(a, tree)
+    case None -> ()
+  }
+}
+
+// Carries out an assistive technology's request for the node `id`, as the pointer and keyboard
+// would: focus, a click, replacing an input's text, or scrolling it into view.  `false` when the
+// request names no node of the last frame's tree, or one that cannot do it (disabled, outside an
+// open dialog, or without that action).
+func carryOut(h: Host, id: String, req: AccessRequest): Bool {
+  val tree = match h.accessTree { case Some(t) -> t; case None -> accessTreeOf(h) }
+  match resolveRequest(h.page, tree, { b: Box -> idOfBox(h, b) }, id, req) {
+    case Unresolved -> false
+    case FocusBox(target) -> match findBox(h.page, target, h) {
+      case Some(b) -> {
+        focusBox(h, b)
+        true
+      }
+      case None -> false
+    }
+    case Send(actions) -> {
+      for a in actions {
+        send(h, a.path, a.name, a.data, 0)
+      }
+      true
+    }
+    case HostClick(target) -> match findBox(h.page, target, h) {
+      case Some(b) -> {
+        onMouseDown(h, b.x + b.w / 2.0f32, b.y + b.h / 2.0f32, false, 1)
+        true
+      }
+      case None -> false
+    }
+    case SetText(target, _, text) -> match findBox(h.page, target, h) {
+      case Some(b) -> {
+        focusBox(h, b)
+        val all = Interact.selectAll(b.text, editOf(h, target))
+        applyEdit(h, b, Interact.insertText(b.text, all, text, maxLengthOf(b)))
+        revealCaret(h, target)
+        true
+      }
+      case None -> false
+    }
+    case ScrollTo(_, y) -> {
+      if y < 0.0f32 or y > h.height - h.theme.controlHeight {
+        h.pageScroll = clampPage(h, h.pageScroll + y - h.theme.controlHeight)
+      }
+      true
+    }
+  }
+}
+
+// Carries out what assistive technologies asked for since the last frame.
+func drainAccessRequests(h: Host): Unit {
+  match h.adapter {
+    case Some(a) -> {
+      for r in A11y.takeRequests(a) {
+        val _ = carryOut(h, r.id, r.request)
+      }
+    }
+    case None -> ()
+  }
+}
+
 // ─── The window ───────────────────────────────────────────────────────────────
 func fail(message: String): Int {
   Console.println("FAIL: " + message)
@@ -1234,6 +1322,20 @@ func scaleOf(win: Window.Window): Float {
     pixels.width.toFloat() / logical.width.toFloat()
   } else {
     1.0f32
+  }
+}
+
+func windowFocus(h: Host, focused: Bool): Unit {
+  match h.adapter {
+    case Some(a) -> A11y.setWindowFocused(a, focused)
+    case None -> ()
+  }
+}
+
+func windowBounds(h: Host, win: Window.Window): Unit {
+  match h.adapter {
+    case Some(a) -> A11y.setWindowBounds(a, Window.windowBounds(win))
+    case None -> ()
   }
 }
 
@@ -1261,7 +1363,11 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
         }
         case Some(e) -> {
           match e {
+            case WindowFocusGained(_) -> windowFocus(h, true)
+            case WindowFocusLost(_) -> windowFocus(h, false)
+            case WindowMoved(_, _, _) -> windowBounds(h, win)
             case WindowResized(_, _, _) -> {
+              windowBounds(h, win)
               val sz = Window.windowSize(win)
               h.width = sz.width.toFloat()
               h.height = sz.height.toFloat()
@@ -1283,6 +1389,7 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
         }
       }
     }
+    drainAccessRequests(h)
     pump(h)
     match Gpu.tryAcquireFrame(d, surface) {
       case Err(e) -> {
@@ -1302,6 +1409,7 @@ func loopWindow(d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, h: Hos
       case Ok(Some(target)) -> {
         Draw.beginFrame(painter, target.width, target.height)
         renderFrame(h, painter)
+        publishAccess(h)
         match caretArea(h) {
           case Some(b) -> Window.setTextInputArea(win, b.x.toInt(), b.y.toInt(), b.w.toInt(), b.h.toInt(), 0)
           case None -> ()
@@ -1343,13 +1451,23 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
     case Ok(w) -> w
     case Err(m) -> return fail(m)
   }
+  val scale = scaleOf(win)
+  // UI Automation subclasses the window, which it must do before the window is first shown.
+  val adapter = match A11y.attach(win, cfg.title, scale) {
+    case Ok(a) -> Some(value = a)
+    case Err(m) -> {
+      Console.error("lyric-ui: no accessibility adapter: " + m)
+      None
+    }
+  }
   Window.show(win)
   Window.raise(win)
   val lib = match Text.initText() { case Ok(l) -> l; case Err(m) -> return fail(m) }
-  val scale = scaleOf(win)
   val fonts = match openFonts(lib, cfg, scale) { case Ok(f) -> f; case Err(m) -> return fail(m) }
   val size = Window.windowSize(win)
   val host = openHost(cfg, route, fonts, scale, size.width.toFloat(), size.height.toFloat())
+  host.adapter = adapter
+  windowBounds(host, win)
   if not navigate(host, cfg.startPath, false) {
     return fail("the application has no screen for " + cfg.startPath)
   }
@@ -1361,6 +1479,10 @@ pub func run(cfg: NativeConfig, route: (String) -> Option[Instance]): Int {
     case Ok(code) -> code
   }
   closeScreen(host)
+  match adapter {
+    case Some(a) -> A11y.detach(a)
+    case None -> ()
+  }
   closeFonts(fonts)
   Text.closeText(lib)
   Window.destroyWindow(win)
@@ -1580,4 +1702,22 @@ pub func toastTexts(hl: Headless): List[String] {
     acc.add(t.message)
   }
   acc
+}
+
+/// The accessibility tree of the current screen, as the window host publishes it to assistive
+/// technologies after a frame.
+pub func accessTree(hl: Headless): AccessTree {
+  val h = hl.host
+  h.page = layoutNow(h)
+  val tree = accessTreeOf(h)
+  h.accessTree = Some(value = tree)
+  tree
+}
+
+/// Makes the request an assistive technology would for node `id` of `accessTree`, carries it out
+/// as the window host does, and applies what the session answers.  `false` when it is refused.
+pub func accessRequest(hl: Headless, id: String, req: AccessRequest): Bool {
+  val done = carryOut(hl.host, id, req)
+  settle(hl, 60, 2000)
+  done
 }

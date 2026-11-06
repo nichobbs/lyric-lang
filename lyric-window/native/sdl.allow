@@ -13,6 +13,8 @@ SDL_DestroyWindow
 SDL_SetWindowTitle
 SDL_GetWindowTitle
 SDL_GetWindowSize
+SDL_GetWindowPosition
+SDL_GetWindowBordersSize
 SDL_SetWindowSize
 SDL_GetWindowSizeInPixels
 SDL_GetWindowDisplayScale

@@ -169,7 +169,7 @@ left is verification and release work, tracked in `docs/36`:
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
    pool (D202) and the native `lyric-ui` host (D203, D268) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
-   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), accessibility through AccessKit (G10, #8430) and pruning
+   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), the macOS screen-reader smoke test of G10 (#8799; AccessKit adapters D376) and pruning
    dependency kernels from the link (#8429); `layoutText` reordering
    mixed-direction paragraphs itself (#8496, D216 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
    (#8395); explicit mutable-record marker (D157 follow-up, #7955).

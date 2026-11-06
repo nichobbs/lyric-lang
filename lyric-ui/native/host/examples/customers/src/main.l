@@ -18,6 +18,7 @@ import Window
 import Ui.Native.Run as Native
 import Ui.Native.Layout.{Box}
 import Ui.Native.Interact as Interact
+import Ui.Native.Access.{AccessTree, AccessNode, AccessRequest, ReqClick, ReqFocus, ReqSetValue, roleName}
 import Unicode.Bidi
 import Unicode.LineBreak
 import Unicode.Data as UnicodeData
@@ -614,6 +615,75 @@ func passwordScenario(hl: Native.Headless): Result[Unit, String] {
   verify(differ == 0, "two passwords of the same length draw the same pixels (" + differ.toString() + " bytes differ)")
 }
 
+func accessNode(t: AccessTree, role: String, name: String): Option[AccessNode] {
+  for n in t.nodes {
+    if roleName(n.role) == role and n.name == name {
+      return Some(value = n)
+    }
+  }
+  None
+}
+
+func countRole(t: AccessTree, role: String): Int {
+  var c = 0
+  for n in t.nodes {
+    if roleName(n.role) == role {
+      c = c + 1
+    }
+  }
+  c
+}
+
+// What an assistive technology sees and does, carried out by the same code as in a window: the
+// list screen's tree, a click on a customer's link, focus and a new value for the name input.
+// The platform adapters themselves are checked over AT-SPI by scripts/ci/ui-native-e2e.sh.
+func accessScenario(hl: Native.Headless): Result[Unit, String] {
+  Native.settle(hl, 150, 5000)
+  val list = Native.accessTree(hl)
+  match verify(list.nodes.count > 0 and roleName(list.nodes[0].role) == "window" and list.nodes[0].name == "Customers", "the root is the window, named by its title") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match verify(countRole(list, "grid") == 1 and countRole(list, "heading") >= 1, "the list screen has a heading and a grid") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val link = match accessNode(list, "link", "Acme Pty Ltd") {
+    case Some(n) -> n
+    case None -> return Err(error = "the tree has no link named Acme Pty Ltd")
+  }
+  match verify(Native.accessRequest(hl, link.id, AccessRequest(kind = ReqClick, text = "")), "a click request on the link is carried out") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  Native.settle(hl, 150, 5000)
+  match verify(contains(Native.screenText(hl), "Customer 1"), "the click request opened the edit screen") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + "\n" + Native.screenText(hl))
+  }
+  val edit = Native.accessTree(hl)
+  val input = match accessNode(edit, "textbox", "Name") {
+    case Some(n) -> n
+    case None -> return Err(error = "the edit screen has no text box named Name")
+  }
+  match verify(input.value == "Acme Pty Ltd", "the name input's value is the customer's name") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match verify(Native.accessRequest(hl, input.id, AccessRequest(kind = ReqFocus, text = "")) and Native.accessTree(hl).focus == input.id, "a focus request moves focus to the input") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match verify(Native.accessRequest(hl, input.id, AccessRequest(kind = ReqSetValue, text = "Set By Access")) and contains(Native.screenText(hl), "<Set By Access>"), "a set-value request replaces the input's text") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m + "\n" + Native.screenText(hl))
+  }
+  verify(
+    not Native.accessRequest(hl, "no such node", AccessRequest(kind = ReqClick, text = "")),
+    "a request for a node that is not there is refused"
+  )
+}
+
 func check(dir: String, update: Bool): Int {
   match Window.init(Window.initVideo) {
     case Err(m) -> return fail(m)
@@ -650,13 +720,30 @@ func check(dir: String, update: Bool): Int {
     1.0f32,
     { hl: Native.Headless -> passwordScenario(hl) }
   )
+  val accessRepo = Store.seeded()
+  val accessOutcome = Native.withHeadless(
+    cfg,
+    { url: String -> route(accessRepo, url) },
+    "/customers",
+    width,
+    height,
+    1.0f32,
+    { hl: Native.Headless -> accessScenario(hl) }
+  )
   Window.quit()
   match masked {
+    case Err(m) -> return fail(m)
+    case Ok(Err(m)) -> return fail(m)
+    case Ok(Ok(_)) -> Console.println(
+      "ok: a password input draws only bullets, is never copied, and moves by word to its ends"
+    )
+  }
+  match accessOutcome {
     case Err(m) -> fail(m)
-    case Ok(Err(m)) -> fail(m)
+    case Ok(Err(m)) -> fail("accessibility: " + m)
     case Ok(Ok(_)) -> {
-      Console.println("ok: a password input draws only bullets, is never copied, and moves by word to its ends")
       Console.println("native ui check passed")
+      Console.println("native ui accessibility check passed")
       0
     }
   }

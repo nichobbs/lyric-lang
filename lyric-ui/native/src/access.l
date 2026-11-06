@@ -413,7 +413,8 @@ func buildBox(b: Box, st: AccessState, idOf: (Box) -> String, parentId: String, 
   if kind == "link" {
     val a: List[String] = newList()
     a.add("focus")
-    if hasEvent(b, "click") {
+    // A link either sends its click event or navigates to its href, as a pointer click does.
+    if hasEvent(b, "click") or propOf(b.props, "href", "").length > 0 {
       a.add("click")
     }
     return leaf(baseNode(id, RoleLink, b.text, b).copy(description = propOf(b.props, "href", ""), actions = a))
@@ -552,14 +553,44 @@ func buildField(b: Box, st: AccessState, idOf: (Box) -> String, parentId: String
   )
 }
 
+func samePath(a: List[Int], b: List[Int]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// A data grid's cell box wraps the laid-out cell element at the same path; the cell is one node.
+func cellContent(b: Box): List[Box] {
+  val kids: List[Box] = newList()
+  for c in b.children {
+    if (c.kind == "gridCell" or c.kind == "tableCell") and samePath(c.path, b.path) {
+      for k in c.children {
+        kids.add(k)
+      }
+    } else {
+      kids.add(c)
+    }
+  }
+  kids
+}
+
 func buildCell(b: Box, st: AccessState, idOf: (Box) -> String, id: String, index: Int): Built {
   val header = flagOf(b, "header")
   val role = if header { RoleColumnHeader } else { RoleCell }
   val n = baseNode(id, role, b.text, b).copy(colIndex = index + 1)
-  if b.children.count == 0 {
+  val content = cellContent(b)
+  if content.count == 0 {
     return leaf(n)
   }
-  parentOf(n, buildChildren(b.children, st, idOf, id, noCtx(), 0))
+  parentOf(n, buildChildren(content, st, idOf, id, noCtx(), 0))
 }
 
 func buildRow(b: Box, st: AccessState, idOf: (Box) -> String, id: String, rowIndex: Int): Built {

@@ -1,0 +1,28 @@
+# lyric-access - accessibility for the native lyric-ui host through AccessKit (docs/67 G10).
+#
+#   Access.Plan   numbers the host's accessibility tree for AccessKit, splits input values into
+#                 text runs and places the selection on them (host-free, every target)
+#
+# The AccessKit binding and the platform adapters (AT-SPI on Linux, NSAccessibility on macOS,
+# UI Automation on Windows) are the sibling `platform/` project, for `--target native`.
+
+[package]
+name        = "Lyric.Access.Core"
+version     = "0.1.0"
+description = "Numbering, text runs and selections of the native lyric-ui accessibility tree for AccessKit."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Access.Core"
+output          = "single"
+output_assembly = "Lyric.Access.Core.dll"
+
+[project.packages]
+"Access.Plan" = "src/plan.l"
+
+[project.tests]
+"Access.PlanTests" = "tests/plan_tests.l"
+
+[dependencies]
+"Lyric.Ui.Native.Core" = { path = "../lyric-ui/native" }

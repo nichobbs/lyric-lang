@@ -163,4 +163,8 @@ grep -q '^presented' "$work/play.out" || { echo "::error::the game never present
 grep -q '^recorded 900 steps' "$work/play.out" || { echo "::error::the loop did not play and record all 900 steps"; exit 1; }
 cmp "$example/replays/bot-seed5.replay" "$work/again.replay" || { echo "::error::the recorded input differs from the recording played"; exit 1; }
 
+# docs/67 G10: lyric-access (AccessKit) on Windows: the kernel and request layout against the Windows
+# headers, and the UI Automation adapter clicked by a UI Automation client.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/access-platform-e2e.sh
+
 echo "Windows graphics examples passed"

@@ -36,6 +36,12 @@ pub union Event {
   case Quit
   case WindowCloseRequested(window: Int)
   case WindowResized(window: Int, width: Int, height: Int)
+  /// The window moved; `x` and `y` are its client area's new position on the desktop.
+  case WindowMoved(window: Int, x: Int, y: Int)
+  /// The window gained keyboard focus.
+  case WindowFocusGained(window: Int)
+  /// The window lost keyboard focus.
+  case WindowFocusLost(window: Int)
   case KeyDown(window: Int, key: Int, scancode: Int, modifiers: Int, repeat: Bool)
   case KeyUp(window: Int, key: Int, scancode: Int, modifiers: Int)
   case TextInput(window: Int, text: String)
@@ -85,7 +91,13 @@ val defaultPlaybackDevice: Int = 0 - 1
 
 val eventQuit: Long = 256
 
+val eventWindowMoved: Long = 517
+
 val eventWindowResized: Long = 518
+
+val eventWindowFocusGained: Long = 526
+
+val eventWindowFocusLost: Long = 527
 
 val eventWindowCloseRequested: Long = 528
 
@@ -367,6 +379,44 @@ pub func pixelSize(w: Window): Size {
   Size(width = width, height = height)
 }
 
+/// Where a window is on the desktop: its client area (`x`, `y`, `width`, `height`, in the window
+/// system's units) and the thickness of the decorations around it.  A window system that does not
+/// tell an application where its windows are (Wayland) gives 0 for the position and borders.
+pub record Bounds {
+  x: Int
+  y: Int
+  width: Int
+  height: Int
+  top: Int
+  left: Int
+  bottom: Int
+  right: Int
+}
+
+/// The window's position, size and decorations.
+@unsafe_ffi
+pub func windowBounds(w: Window): Bounds {
+  val handle = longToPtr(w.handle)
+  var x = 0
+  var y = 0
+  if SDL_GetWindowPosition(handle, nativeAddrOf(x), nativeAddrOf(y)) == 0u8 {
+    x = 0
+    y = 0
+  }
+  var top = 0
+  var left = 0
+  var bottom = 0
+  var right = 0
+  if SDL_GetWindowBordersSize(handle, nativeAddrOf(top), nativeAddrOf(left), nativeAddrOf(bottom), nativeAddrOf(right)) == 0u8 {
+    top = 0
+    left = 0
+    bottom = 0
+    right = 0
+  }
+  val size = windowSize(w)
+  Bounds(x = x, y = y, width = size.width, height = size.height, top = top, left = left, bottom = bottom, right = right)
+}
+
 /// Pixels per unit of `windowSize`, for example 2.0 on a high-density display.
 @unsafe_ffi
 pub func displayScale(w: Window): Float {
@@ -424,6 +474,15 @@ func decode(cell: Long): Event {
   }
   if kind == eventWindowResized {
     return WindowResized(window = window, width = readI32(cell, offWindowData1), height = readI32(cell, offWindowData2))
+  }
+  if kind == eventWindowMoved {
+    return WindowMoved(window = window, x = readI32(cell, offWindowData1), y = readI32(cell, offWindowData2))
+  }
+  if kind == eventWindowFocusGained {
+    return WindowFocusGained(window = window)
+  }
+  if kind == eventWindowFocusLost {
+    return WindowFocusLost(window = window)
   }
   if kind == eventKeyDown {
     return KeyDown(
