@@ -5692,10 +5692,11 @@ func lowerMethodCall(
       case _ -> ()
     }
   }
-  // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
-  // Byte are signed and the JVM backend has no unsigned integer type, so the
-  // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses
-  // the int opcodes (JVM byte arithmetic is int-width).  Long shifts take an
+  // `shr` is arithmetic (ISHR/LSHR — sign-replicating) for the signed types;
+  // a `UInt`/`ULong` receiver shifts logically (IUSHR/LUSHR, docs/01 section
+  // 5).  The type checker spells that receiver as an unsigned operand
+  // (`recordUnsignedOperand`), which `spellsUnsigned` reads back here
+  // (#8708).  Byte uses the int opcodes (JVM byte arithmetic is int-width).  Long shifts take an
   // int shift count per the JVM spec, matching `.shl(n: Int)` / `.shr(n: Int)`.
   if (memberName == "and" or memberName == "or" or memberName == "xor" or memberName == "shl" or memberName == "shr") and args.count == 1 {
     lowerCallArg(ctx, insns, args[0])
@@ -5717,6 +5718,8 @@ func lowerMethodCall(
       insns.add(if isLong { LLxor } else { LIxor })
     } else if memberName == "shl" {
       insns.add(if isLong { LLshl } else { LIshl })
+    } else if spellsUnsigned(recv) {
+      insns.add(if isLong { LLushr } else { LIushr })
     } else {
       insns.add(if isLong { LLshr } else { LIshr })
     }

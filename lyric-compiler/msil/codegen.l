@@ -24156,9 +24156,10 @@ func lowerMethodCallMsil(
     MString
   } else if (memberName == "and" or memberName == "or" or memberName == "xor" or memberName == "shl" or memberName == "shr") and args.count == 1 {
     // For `shl`/`shr` the operand is the Int shift count.  `shr` is an
-    // arithmetic shift (MShr) — Lyric's Int/Long/Byte are signed and the
-    // MSIL backend has no unsigned integer type yet, so logical shift
-    // (MShrUn) is not reachable here.
+    // arithmetic shift (MShr) for the signed types; a `UInt`/`ULong` receiver
+    // shifts logically (MShrUn, docs/01 section 5).  The type checker spells
+    // that receiver as an unsigned operand (`recordUnsignedOperand`), which
+    // `spellsUnsigned` reads back here (#8708).
     lowerCallArgMsil(cctx, fctx, insns, args[0])
     if memberName == "and" {
       insns.add(MAnd)
@@ -24168,6 +24169,8 @@ func lowerMethodCallMsil(
       insns.add(MXor)
     } else if memberName == "shl" {
       insns.add(MShl)
+    } else if spellsUnsigned(recv) {
+      insns.add(MShrUn)
     } else {
       insns.add(MShr)
     }
