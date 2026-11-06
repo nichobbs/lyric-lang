@@ -4361,13 +4361,7 @@ func externTypeSymbolOfExpr(tbl: in SymbolTable, recv: in Expr): Option[Symbol] 
     }
     return None
   }
-  val quals: List[String] = newList()
-  var qi = 0
-  while qi < segs.count - 1 {
-    quals.add(segs[qi])
-    qi = qi + 1
-  }
-  match symTableTryFindInPackage(tbl, modulePathJoin(quals), last) {
+  match symTableTryFindInPackage(tbl, qualifierOfSegs(segs), last) {
     case Some(sym) -> match sym.kind { case DKExternType(_, _) -> return Some(value = sym); case _ -> () }
     case None -> ()
   }
@@ -7388,13 +7382,7 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
       }
     }
   } else {
-    val quals: List[String] = newList()
-    var qi = 0
-    while qi < segs.count - 1 {
-      quals.add(segs[qi])
-      qi = qi + 1
-    }
-    found = symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+    found = symTableTryFindInPackage(tbl, qualifierOfSegs(segs), typeName)
   }
   match found {
     case Some(sym) -> match sym.kind {
@@ -7430,13 +7418,7 @@ func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, 
   if segs.count == 1 {
     usym = symTableTryFindOne(tbl, typeName)
   } else {
-    val quals: List[String] = newList()
-    var qi = 0
-    while qi < segs.count - 1 {
-      quals.add(segs[qi])
-      qi = qi + 1
-    }
-    usym = symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+    usym = symTableTryFindInPackage(tbl, qualifierOfSegs(segs), typeName)
   }
   val uid = match usym {
     case Some(u) -> match u.kind { case DKUnion(id, _) -> id; case _ -> return None }
@@ -7449,6 +7431,18 @@ func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, 
     }
   }
   None
+}
+
+// The package qualifier of a dotted name: every segment but the last, joined
+// (`Std.Http.GET` -> `Std.Http`).
+func qualifierOfSegs(segs: in List[String]): String {
+  val quals: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    quals.add(segs[i])
+    i = i + 1
+  }
+  modulePathJoin(quals)
 }
 
 // The type of `Pkg.Case` read as a value, `Case` a case of an enum of package
@@ -19408,6 +19402,18 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // `Pkg.Case`, a case of an enum of package `Pkg` (any depth of qualifier),
+      // read as a value.  A root a local binds is a field chain, not a package.
+      val caseSegs: List[String] = newList()
+      if flattenCalleePathSegs(e, caseSegs) and caseSegs.count >= 2 {
+        match scopeTryFind(sc, caseSegs[0]) {
+          case Some(_) -> ()
+          case None -> match packageEnumCaseValueType(tbl, qualifierOfSegs(caseSegs), name) {
+            case Some(ct) -> return ct
+            case None -> ()
+          }
+        }
+      }
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
@@ -19424,10 +19430,6 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
-              match packageEnumCaseValueType(tbl, qualPkg, name) {
-                case Some(ct) -> return ct
-                case None -> ()
-              }
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
                 case Some(ft) -> return ft
                 case None -> ()

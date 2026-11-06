@@ -15281,6 +15281,12 @@ test "ecosystem shapes are typed or named, not silent (D355)" {
   val tryJoin = parseCheck(
     "package P\nunion Res[T, E] {\n  case Good(v: T)\n  case Bad(e: E)\n}\nfunc f(): Int {\n  match try { Good(v = 1) } catch Bug as b { Bad(e = b.message) } {\n    case Bad(e) -> 0\n    case Good(v) -> v\n  }\n}\n"
   )
+  val twoHandlers = parseCheck(
+    "package P\nunion Res[T, E] {\n  case Good(v: T)\n  case Bad(e: E)\n}\nfunc f(): Int {\n  match try { Good(v = 1) } catch Bug as b { Bad(e = b.message) } catch Bug as c { Bad(e = c.message) } {\n    case Bad(e) -> 0\n    case Good(v) -> v\n  }\n}\n"
+  )
+  val twoDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(twoHandlers.symbols, twoDiags)
+  assertEqual(twoDiags.count.toString(), "0", "the join accumulates across every handler (no W0036)")
   val tryDiags: List[Diagnostic] = newList()
   reportSilentTyErrors(tryJoin.symbols, tryDiags)
   assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no W0036)")
@@ -15294,6 +15300,38 @@ test "ecosystem shapes are typed or named, not silent (D355)" {
     "0",
     "an erased generic field read and a context-typed generic call are named"
   )
+}
+
+func enumCasePackages(): List[ImportedPackage] {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    rulePkg(
+      "Lib",
+      "package Lib\npub enum Mode {\n  case Fast\n  case Slow\n}\npub enum Beam {\n  case On\n  case Off\n}\npub enum Ray {\n  case On\n  case Idle\n}\n"
+    )
+  )
+  packages
+}
+
+func checkEnumCaseApp(body: in String): CheckResult {
+  val src = "package App\nimport Lib\nenum Mode {\n  case Fast\n  case Idle\n}\nfunc take(m: in Mode): Int {\n  0\n}\nfunc f(): Int {\n" +
+    body +
+    "\n  0\n}\n"
+  checkWithImportedPackages(parse(src).file, enumCasePackages())
+}
+
+test "a package's own enum shadows an imported one of the same name (D355)" {
+  val own = checkEnumCaseApp("  val a = take(Mode.Idle)\n  val m: Mode = Mode.Fast")
+  assertEqualInt(errorCount(own), 0, "Mode names the file's own enum: " + diagCodesOf(own))
+  assertEqual(silentSiteKinds(own), "", "and is typed, not silent")
+}
+
+test "a case name two sibling enums share is left to the expected type (D355)" {
+  val both = checkEnumCaseApp("  val b: Lib.Beam = Lib.On\n  val r: Lib.Ray = Lib.On")
+  assertEqualInt(errorCount(both), 0, "each annotation picks its own enum's On: " + diagCodesOf(both))
+  val unshared = checkEnumCaseApp("  val r: Lib.Ray = Lib.Idle\n  val m = Lib.Slow")
+  assertEqualInt(errorCount(unshared), 0, "an unshared case is typed as its enum: " + diagCodesOf(unshared))
+  assertEqual(silentSiteKinds(unshared), "", "and is not a silent site")
 }
 
 test "count on a slice is W0042, length is the slice's size" {
