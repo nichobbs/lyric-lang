@@ -55,7 +55,7 @@ func todoMarks(text: in String): List[Mark] {
   val acc: List[Mark] = newList()
   val lines = Str.split(text, "\n")
   var i = 0
-  while i < lines.count {
+  while i < lines.length {
     var from = 0
     while true {
       match Str.indexOfFrom(lines[i], "TODO", from) {
