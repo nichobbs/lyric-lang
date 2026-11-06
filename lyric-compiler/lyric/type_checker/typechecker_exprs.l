@@ -10138,16 +10138,6 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   }
 }
 
-// The union/enum TYPE symbol for a callee path — the shape behind #6838: a
-// call whose callee names a union or enum *type* itself
-// (`Pkg.Sub.DbError(message = "…")`) rather than one of its cases. There is no
-// such constructor — a union/enum value is built through a case
-// (`OpenFailed(message = "…")`) — so this callee never resolves to a function
-// token. `unionCaseSymbolOf` and `constructorSymbolOf` have both already
-// returned None (it is neither a case nor a record/opaque ctor) by the time
-// this runs. Mirrors `constructorSymbolOf`'s qualifier-first / flat-path
-// resolution exactly, matching the two TYPE kinds it deliberately skips, so a
-// value-receiver method chain (`x.Foo(...)`) can never mis-route here.
 // `Score(42)`: a distinct type built from a value of its underlying type
 // (docs/01 section 2.3).  The result is the distinct type; the argument is
 // checked against the underlying type.  A generic distinct type, a name the
@@ -10211,6 +10201,16 @@ func distinctCtorType(
   }
 }
 
+// The union/enum TYPE symbol for a callee path — the shape behind #6838: a
+// call whose callee names a union or enum *type* itself
+// (`Pkg.Sub.DbError(message = "…")`) rather than one of its cases. There is no
+// such constructor — a union/enum value is built through a case
+// (`OpenFailed(message = "…")`) — so this callee never resolves to a function
+// token. `unionCaseSymbolOf` and `constructorSymbolOf` have both already
+// returned None (it is neither a case nor a record/opaque ctor) by the time
+// this runs. Mirrors `constructorSymbolOf`'s qualifier-first / flat-path
+// resolution exactly, matching the two TYPE kinds it deliberately skips, so a
+// value-receiver method chain (`x.Foo(...)`) can never mis-route here.
 func unionOrEnumTypeSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
