@@ -4952,6 +4952,61 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
   }
 }
 
+// Record a call to a built-in or a member of a built-in type under the call's
+// `NodeId` (`builtinByNode`, D362): TIR names it `IoBuiltin(name)`, so the
+// table holds the name, `List.add` for a member and `println` for a function.
+func recordBuiltinCallee(tbl: in SymbolTable, callNode: in Int, name: in String): Unit {
+  if callNode <= 0 {
+    return
+  }
+  if tbl.builtinByNode.containsKey(callNode) {
+    tbl.builtinByNode.remove(callNode)
+  }
+  tbl.builtinByNode.add(callNode, name)
+}
+
+// The head of a built-in receiver type as TIR's built-in table names it.
+func builtinRecvHead(recv: in Type): String {
+  match unrefine(recv) {
+    case TySlice(_) -> "slice"
+    case TyArray(_, _, _) -> "array"
+    case _ -> dotNamedOwnerName(recv)
+  }
+}
+
+// A call whose callee is a built-in function (`println`) or a built-in member
+// of a primitive, slice or array receiver (`"x".length`-style typed members)
+// records the built-in's name; a member of a record field of function type is
+// not one (the field wins, as in the call arm).
+func recordBuiltinCall(
+  tbl: in SymbolTable,
+  callNode: in Int,
+  fn: in Expr,
+  memberRecvTy: in Option[Type],
+  isMemberCallee: in Bool,
+  memberName: in String,
+): Unit {
+  if isMemberCallee {
+    match memberRecvTy {
+      case Some(rt) -> match builtinMember(tbl, rt, memberName) {
+        case Some(_) -> recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
+        case None -> ()
+      }
+      case None -> ()
+    }
+    return
+  }
+  match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match codegenBuiltinType(p.segments[0]) {
+        case Some(_) -> recordBuiltinCallee(tbl, callNode, p.segments[0])
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // Record the method a member call resolved to under the call's `NodeId`
 // (`calleeByNode`, D361): a method of the receiver's type is the dot-named
 // function `Type.member` of its declaring package, the declaration whose span
@@ -18638,6 +18693,10 @@ func inferExprCore(
       }
       recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
+      match directSig {
+        case Some(_) -> ()
+        case None -> recordBuiltinCall(tbl, e.nodeId, fn, memberRecvTy, isMemberCallee, memberName)
+      }
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
       // (a function-typed FIELD keeps winning over a same-named method).
@@ -18680,6 +18739,13 @@ func inferExprCore(
             case _ -> None
           }
         }
+      }
+      match collMemberParams {
+        case Some(_) -> match memberRecvTy {
+          case Some(crt1) -> recordBuiltinCallee(tbl, e.nodeId, builtinRecvHead(crt1) + "." + memberName)
+          case None -> ()
+        }
+        case None -> ()
       }
       match directSig {
         case Some(_) -> ()

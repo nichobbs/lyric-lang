@@ -525,6 +525,7 @@ pub record SymbolTable {
   /// checker resolved some other way (a built-in, a constructor, a method of a
   /// type, a function value) has no entry yet.
   calleeByNode: Map[Int, SymbolId]
+  builtinByNode: Map[Int, String]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -1117,6 +1118,7 @@ pub func newSymbolTable(): SymbolTable {
     calleeSites = newMap(),
     exprTypes = newMap(),
     calleeByNode = newMap(),
+    builtinByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
