@@ -127,9 +127,12 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    declares it, so `Lyric.Pipeline.pipeCheckedDefaults` (which checks a bundled
    package before the entry package's code is generated) writes each bare call
    of a parameter or field default as the callee's package-qualified path,
-   from the checker's sites (`qualifyCheckedCallees`, #8850). The bare keys stay
-   registered for the secondary readers on #8612: `closureInvokeRetType`,
-   `funcSigRetType`, the dot-named lookups. The `println`/`print` and
+   from the checker's sites (`qualifyCheckedCallees`, #8850). A plain function
+   has no bundle-wide bare key any more: `closureInvokeRetType` and
+   `funcSigRetType` read its signature through `resolveGeneralFuncSig` too. A
+   dot-named function (`Type.member`) keeps its bare dotted key for the
+   member-call lookups, and the package overlay (`importAwareRegistry`) now
+   re-points enum cases and module vals only. The `println`/`print` and
    collection-intrinsic override check (`hasFuncOverrideJvm`) uses the same
    exact stage: a `Std.*` result never overrides an intrinsic, so a user
    function overrides one only when its site, its own package's scoped key or

@@ -773,9 +773,9 @@ builder (I0002) rather than on the current checker.
   is deleted, a copy of another package's generic reads that package's sites
   (`<package>|<key>`), and defaults mean the declaring package's names; the JVM
   binds a call to its site, scoped key or qualified key, and a default
-  expression's callees are qualified where their package is checked (#8850); the
-  bare-name keys stay for the secondary readers, the native bridge, #8752 and
-  #8690.
+  expression's callees are qualified where their package is checked (#8850); a
+  plain function has no bare key on the JVM any more (dot-named functions
+  keep theirs). The native bridge, #8752 and #8690 remain.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 
