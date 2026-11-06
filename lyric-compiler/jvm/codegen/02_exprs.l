@@ -1228,7 +1228,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                                   // codegen (see `lowerBareFuncRefValue`).  A name
                                   // outside that scope keeps the pre-existing panic
                                   // (unchanged, not a regression).
-                                  match mapGet(ctx.funcSigs, "bareref:" + name) {
+                                  match mapGet(ctx.funcSigs, "bareref:" + ctx.pkgName + "::" + name) {
                                     case Some(sig) -> lowerBareFuncRefValue(ctx, insns, name, sig.params.count)
                                     case None -> {
                                       // A genuinely unresolvable reference previously

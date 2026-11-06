@@ -5323,27 +5323,18 @@ pub func collectFileSigsSeeded(
         if bundleCallable and not into.containsKey(publicNameKey) {
           into.add(publicNameKey, sig)
         }
-        // A plain function is called by its site, its package-scoped key or its
-        // qualified key (`resolveGeneralFuncSig`), so it has no bundle-wide bare
-        // key.  A dot-named function (`Type.member`) is still read through its
-        // bare dotted key by the member-call lookups.
-        if bundleCallable and decl.name.contains(".") {
-          if not into.containsKey(decl.name) {
-            into.add(decl.name, sig)
-          }
-          val bkey = decl.name + "@" + toString(decl.params.count)
-          if not into.containsKey(bkey) {
-            into.add(bkey, sig)
-          }
-        }
+        // A function, dot-named ones included, is called by its site, its
+        // package-scoped key or its qualified key, so it has no bundle-wide bare
+        // key (`siteDotNamedSigJvm`, `resolveGeneralFuncSig`).  Only a wire's
+        // factory keeps a bare `Wire.method` key (`registerStaticWireSig`).
         // #6393: a "bareref:"-prefixed key marks `decl.name` as eligible to
         // be referenced bare as a first-class function value (`apply(double,
         // 21)`) — see `Lyric.BareFuncRef.isEligibleBareFuncRefTarget` and the
         // matching lookup at the `lowerExpr` EPath fallback
         // (`jvm/codegen/02_exprs.l`).  Reuses `sig` as-is: only its
         // `params.count` (the forwarding closure's arity) is read back.
-        if BareFuncRef.isEligibleBareFuncRefTarget(decl) and not into.containsKey("bareref:" + decl.name) {
-          into.add("bareref:" + decl.name, sig)
+        if BareFuncRef.isEligibleBareFuncRefTarget(decl) and not into.containsKey("bareref:" + scopedKey) {
+          into.add("bareref:" + scopedKey, sig)
         }
       }
       case IProtected(decl) -> {
