@@ -1,7 +1,10 @@
-# Name-based callee fallbacks are deleted on MSIL and the JVM (docs/70 phase 2d, D336 items 6, 8, 9)
+# MSIL's name-based callee fallback is deleted; the JVM's is narrowed (docs/70 phase 2d, D336 items 6, 8, 9)
 
-`findBareImportedFqnMsil` and the JVM's bundle-wide bare-name search are gone: a
-call binds by the checker's site, the package-scoped key or the qualified key.
+`findBareImportedFqnMsil` is gone and the JVM tries the checker's site, the
+package-scoped key and the qualified key before its bundle-wide bare-name
+search, which stays only for default expressions (a callee only the declaring
+package imports; #8850, regression tests in `emitter_project_self_test.l`).
+`Lyric.Stubbable` gives its synthesised items spans of their own.
 Phase 3b (weaving before the check) gave the weaver's and the aspect templates'
 calls sites; Mono's renamed callee keeps the path's span so a specialised
 generic's call finds its site on both backends; the MSIL bridge no longer
