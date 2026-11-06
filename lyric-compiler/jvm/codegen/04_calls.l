@@ -4443,14 +4443,11 @@ func lowerVirtualCallWithHolders(
 // call's argument count; a call that relies on parameter defaults misses the
 // arity key and takes the name key.
 //
-// Only a call none of those keys answers falls back to a bare name registered
-// by any package of the bundle.  What still needs it is a default expression:
-// a function parameter's or a record field's default is lowered in whichever
-// package calls the function or builds the record, but means the names of the
-// package that declares it, and the declaring package's sites are not those
-// of the caller.  MSIL resolves a default in its declaring package's scope
-// (`CodegenCtx.defaultDeclPkg`); the JVM has no counterpart yet (#8850).  The
-// fallback goes when it does.
+// A default expression is lowered in whichever package calls the function or
+// builds the record, but means the names of the package that declares it, so
+// `Lyric.Pipeline.pipeCheckedDefaults` writes each of its bare calls as the
+// declaring package's qualified path before the default is registered
+// (#8850); the qualified key answers it here.
 //
 // Shared by `lowerGeneralStaticCall` (the actual call site) and
 // `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a
@@ -4459,15 +4456,7 @@ func lowerVirtualCallWithHolders(
 pub func resolveGeneralFuncSig(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
-  match resolveGeneralFuncSigExact(ctx, funcName, path, argc) {
-    case Some(sig) -> return Some(value = sig)
-    case None -> ()
-  }
-  val argcSuffix = "@" + callArityText(ctx, path, argc)
-  match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-    case Some(sig) -> Some(value = sig)
-    case None -> mapGet(ctx.funcSigs, funcName)
-  }
+  resolveGeneralFuncSigExact(ctx, funcName, path, argc)
 }
 
 // The signature of the function the checker resolved the call at `path` to

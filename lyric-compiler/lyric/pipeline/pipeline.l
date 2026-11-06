@@ -5670,7 +5670,102 @@ pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[Importe
   // Only the JVM bundle calls this, and the JVM binds only the list literals
   // whose shape their position alone fixes
   // (`MiddleEndOptions.bindListLiteralTypes`).
-  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), shapeRequiredListLiteralSites(tcRes.symbols.listLiteralTypeSites), tcRes.symbols.hoistOperandTypeSites).file
+  val desugared = pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), shapeRequiredListLiteralSites(tcRes.symbols.listLiteralTypeSites), tcRes.symbols.hoistOperandTypeSites).file
+  qualifyCheckedCallees(desugared, tcRes.symbols.calleeSites)
+}
+
+/// `file` with each bare call whose callee the checker resolved (`sites`, keyed
+/// by the callee path's span) written as a call to that function's package-
+/// qualified path.  A default expression is lowered in whichever package
+/// builds the record or calls the function, but means the names of the package
+/// that declares it; qualifying it where the declaring package is checked lets
+/// the caller bind it without that package's imports (docs/70 section 11).
+pub func qualifyCheckedCallees(file: in SourceFile, sites: in Map[String, String]): SourceFile {
+  val qualify: (Expr) -> Expr = { x: Expr ->
+    match x.kind {
+      case ECall(fn, args) -> match fn.kind {
+        case EPath(p) -> if p.segments.count == 1 {
+          match mapGet(sites, recordCopySiteKey(p.span)) {
+            case Some(dp) -> {
+              val segs = qualifiedCalleeSegments(dp, p.segments[0])
+              if segs.count > 1 {
+                x.copy(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args))
+              } else {
+                x
+              }
+            }
+            case None -> x
+          }
+        } else {
+          x
+        }
+        case _ -> x
+      }
+      case _ -> x
+    }
+  }
+  val mapped = mapFileNodes(file, qualify, { s: Statement -> s }, { q: Pattern -> q })
+  val items: List[Item] = newList()
+  for it in mapped.items {
+    items.add(
+      match it.kind {
+        case IFunc(d) -> it.copy(kind = IFunc(decl = qualifyParamDefaults(d, qualify)))
+        case IImpl(d) -> {
+          val members: List[ImplMember] = newList()
+          for m in d.members {
+            members.add(match m { case IMplFunc(fn) -> IMplFunc(fn = qualifyParamDefaults(fn, qualify)); case other -> other })
+          }
+          it.copy(kind = IImpl(decl = d.copy(members = members)))
+        }
+        case _ -> it
+      }
+    )
+  }
+  mapped.copy(items = items)
+}
+
+func qualifyParamDefaults(fn: in FunctionDecl, qualify: in (Expr) -> Expr): FunctionDecl {
+  var hasDflt = false
+  for p in fn.params {
+    match p.dflt {
+      case Some(_) -> {
+        hasDflt = true
+      }
+      case None -> ()
+    }
+  }
+  if not hasDflt {
+    return fn
+  }
+  val params: List[Param] = newList()
+  for p in fn.params {
+    params.add(match p.dflt { case Some(d) -> p.copy(dflt = Some(value = mapExpr(d, qualify))); case None -> p })
+  }
+  fn.copy(params = params)
+}
+
+/// The path segments of the callee rendered as `dp` (`Pkg.Sub::name(P1,P2)`)
+/// when it is the function `name` itself, else just `[name]`.
+func qualifiedCalleeSegments(dp: in String, name: in String): List[String] {
+  val segs: List[String] = newList()
+  match Str.indexOf(dp, "::") {
+    case None -> segs.add(name)
+    case Some(i) -> {
+      val pkg = Str.substring(dp, 0, i)
+      val rest = Str.substring(dp, i + 2, dp.length - i - 2)
+      val declared = match Str.indexOf(rest, "(") { case Some(j) -> Str.substring(rest, 0, j); case None -> rest }
+      if pkg.length > 0 and declared == name {
+        val parts = Str.split(pkg, ".")
+        var pi = 0
+        while pi < parts.length {
+          segs.add(parts[pi])
+          pi = pi + 1
+        }
+      }
+      segs.add(name)
+    }
+  }
+  segs
 }
 
 /// The sites of `sites` whose literal's position alone fixes its shape
