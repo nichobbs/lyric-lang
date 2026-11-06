@@ -203,3 +203,15 @@ test "an integer's bitwise method has its name recorded" {
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "the call is covered")
   assertTrue(mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.shl"), "named by its receiver")
 }
+
+test "interface and impl method calls have their callee recorded" {
+  val src = "package App\ninterface Feed {\n  func priceOf(s: in String): Int\n}\nrecord R { x: Int }\nimpl Feed for R {\n  func priceOf(s: in String): Int { self.x }\n}\nrecord T { stub: R }\nimpl Feed for T {\n  func priceOf(s: in String): Int { self.stub.priceOf(s) }\n}\nfunc use(f: in Feed): Int { f.priceOf(\"a\") }\nfunc viaRecord(t: in T): Int { t.stub.priceOf(\"b\") }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  assertEqualInt(calls.count, 2, "the impl method call and the interface call")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "both are covered")
+  assertEqualInt(cr.symbols.calleeByNode.count, 2, "each has a declared callee")
+}

@@ -5012,7 +5012,10 @@ func recordExternMemberCall(
           if tbl.externByNode.containsKey(callNode) {
             tbl.externByNode.remove(callNode)
           }
-          tbl.externByNode.add(callNode, ExternCallSite(hostType = er.decl.clrName, targs = er.targs, name = memberName, argCount = argCount))
+          tbl.externByNode.add(
+            callNode,
+            ExternCallSite(hostType = er.decl.clrName, targs = er.targs, name = memberName, argCount = argCount)
+          )
         }
         case None -> ()
       }
@@ -5033,11 +5036,7 @@ func recordTypeMemberCallee(tbl: in SymbolTable, callNode: in Int, recvTy: in Op
     case Some(rt) -> match unrefine(rt) {
       case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
         case Some(ts) -> {
-          val hasMembers = match ts.kind {
-            case DKInterface(_, _) -> true
-            case DKProtected(_, _) -> true
-            case _ -> false
-          }
+          val hasMembers = match ts.kind { case DKInterface(_, _) -> true; case DKProtected(_, _) -> true; case _ -> false }
           if hasMembers {
             val typeKey = match defPathKeyOf(tbl.interner, tid) {
               case Some(k) -> k
