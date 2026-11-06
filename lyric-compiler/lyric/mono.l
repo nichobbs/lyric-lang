@@ -6976,19 +6976,20 @@ func unpinnedCallKeepsErasedDefault(
   annsHaveExternTargetMono(baseDecl.annotations) or env.containsKey(fname) or isNoSourceSpan(callSpan)
 }
 
-// T0224 (docs/70 section 5.2, D335): a call to an imported generic whose type
-// argument(s) neither its arguments, its expected type nor the checker's
-// resolved type arguments fix.  It was specialised at `Object` (the warning
-// W0034 while the sources migrated); it is now an error and the call is not
-// rewritten.
-func noteUnpinnedTypeArgs(state: in MonoState, fname: in String, unpinned: in List[String], callSpan: in Span): Unit {
+// An imported generic call whose type argument(s) nothing fixed reaches the
+// monomorphiser only when the checker did not record it: the checker reports
+// every such call as T0224 (D339, D381, D383), so this is an internal
+// invariant failure, reported loudly because leaving the call generic would
+// make codegen drop it silently (#5604).  M0002 is the code of the same
+// condition for a local generic.
+func noteUnrecordedImportedCall(
+  state: in MonoState, fname: in String, unpinned: in List[String], callSpan: in Span
+): Unit {
   state.diags.add(
     errorDiagnostic(
-      "T0224",
-      "cannot infer type argument(s) " + quotedStringList(unpinned) + " of '" + fname +
-        "' from the call's arguments or its expected type; write '" +
-        fname +
-        "[...](...)' or give the call an expected type",
+      "M0002",
+      "internal: call to imported generic function '" + fname + "' left type argument(s) " + quotedStringList(unpinned) +
+        " unresolved and the type checker did not report it (T0224); this is a compiler bug, please report it with the call's source",
       callSpan
     )
   )
@@ -8362,7 +8363,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           }
                         } else {
                           reportedUnpinned = true
-                          noteUnpinnedTypeArgs(state, fname, unpinnedNow, fn.span)
+                          noteUnrecordedImportedCall(state, fname, unpinnedNow, fn.span)
                         }
                       }
                     }
