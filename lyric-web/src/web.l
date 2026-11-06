@@ -102,6 +102,7 @@ extern type NetDirInfo = "System.IO.DirectoryInfo"
 func pathGetFullPath(path: in String): String {
   val win = isWindowsTarget()
   val full = if win { netGetFullPath(path).replace("\\", "/") } else { netGetFullPath(path) }
+  var isUnc = win and full.startsWith("//")
   var pending: List[String] = full.split("/").toList()
   var cur = ""
   var idx = 0
@@ -112,20 +113,22 @@ func pathGetFullPath(path: in String): String {
     if seg.length == 0 or seg == "." {
       continue
     }
-    if win and cur.length == 0 and seg.length == 2 and codeUnitAt(seg, 1) == 58 {
+    if win and not isUnc and cur.length == 0 and seg.length == 2 and codeUnitAt(seg, 1) == 58 {
       cur = seg
       continue
     }
     if seg == ".." {
       val cut = lastIndexOfRaw(cur, "/")
-      cur = if cut <= 0 {
+      cur = if isUnc and cut <= 1 {
+        cur
+      } else if cut <= 0 {
         if win and cur.length >= 2 and codeUnitAt(cur, 1) == 58 { cur.substring(0, 2) } else { "" }
       } else {
         cur.substring(0, cut)
       }
       continue
     }
-    val candidate = cur + "/" + seg
+    val candidate = if cur.length == 0 and isUnc { "//" + seg } else { cur + "/" + seg }
     val rawLink = NetDirInfo.new(candidate).LinkTarget ?? ""
     val link = if win { rawLink.replace("\\", "/") } else { rawLink }
     if link.length == 0 {
@@ -138,6 +141,7 @@ func pathGetFullPath(path: in String): String {
     }
     val isAbsLink = link.startsWith("/") or (win and link.length >= 2 and codeUnitAt(link, 1) == 58)
     val base = if isAbsLink { link } else { cur + "/" + link }
+    isUnc = win and base.startsWith("//")
     val next: List[String] = newList()
     for part in base.split("/") {
       next.add(part)
@@ -151,8 +155,8 @@ func pathGetFullPath(path: in String): String {
     cur = ""
   }
   if cur.length == 0 {
-    "/"
-  } else if win and cur.length == 2 and codeUnitAt(cur, 1) == 58 {
+    if isUnc { "//" } else { "/" }
+  } else if win and not isUnc and cur.length == 2 and codeUnitAt(cur, 1) == 58 {
     cur + "/"
   } else {
     cur
