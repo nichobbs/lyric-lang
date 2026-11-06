@@ -1747,12 +1747,17 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
     Console.error("  " + bad[i])
     i = i + 1
   }
-  val calls = TirBuild.callNodeIds(file)
+  val calls = TirBuild.callSitesOf(file)
   val noCallee = TirBuild.calleeCensus(ctx, calls)
   Console.error(
     "I0002 census [" + label + "]: " + toString(noCallee.count) + " of " + toString(calls.count) +
       " calls without a recorded callee"
   )
+  var j = 0
+  while j < noCallee.count and j < 5 {
+    Console.error("  " + noCallee[j])
+    j = j + 1
+  }
 }
 
 /// The front of `pipeCheckAndMono`: everything up to and including the mode

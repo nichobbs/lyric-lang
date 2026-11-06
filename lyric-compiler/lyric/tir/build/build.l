@@ -10,6 +10,7 @@ package Lyric.Tir.Build
 
 import Std.Core
 import Std.Collections
+import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -256,27 +257,46 @@ pub func exprNodeIds(file: in SourceFile): List[Int] {
   ids
 }
 
-/// Every call expression node id of `file`, in traversal order.
-pub func callNodeIds(file: in SourceFile): List[Int] {
-  val ids: List[Int] = newList()
+/// A call expression: its node id and where it is.
+pub record CallSite {
+  id: Int
+  span: Span
+}
+
+/// Every call expression of `file`, in traversal order.
+pub func callSitesOf(file: in SourceFile): List[CallSite] {
+  val sites: List[CallSite] = newList()
   mapFileNodes(
     file,
-    { e: Expr -> match e.kind { case ECall(_, _) -> ids.add(e.nodeId); case _ -> () }; e },
+    { e: Expr ->
+      match e.kind {
+        case ECall(_, _) -> sites.add(CallSite(id = e.nodeId, span = e.span))
+        case _ -> ()
+      }
+      e
+    },
     { s: Statement -> s },
     { p: Pattern -> p }
   )
-  ids
+  sites
 }
 
-/// The calls of `callIds` the checker recorded no resolved callee for
-/// (`SymbolTable.calleeByNode`), as I0002 messages.  Calls the checker
-/// resolves by another route (built-ins, constructors, methods, function
-/// values) are counted until each route records its callee (D361).
-pub func calleeCensus(ctx: in TyConvCtx, callIds: in List[Int]): List[String] {
+/// The calls of `calls` the checker recorded no resolved callee for
+/// (`SymbolTable.calleeByNode`), as I0002 messages naming the call's position.
+/// Calls the checker resolves by another route (built-ins, constructors,
+/// function values, interface and extern members) are counted until each route
+/// records its callee (D361).
+pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String] {
   val res: List[String] = newList()
-  for id in callIds {
-    if not ctx.tbl.calleeByNode.containsKey(id) {
-      res.add("I0002: the checker recorded no callee for call node #" + toString(id))
+  for c in calls {
+    if not ctx.tbl.calleeByNode.containsKey(c.id) {
+      res.add(
+        "I0002: the checker recorded no callee for the call at " + toString(c.span.startPos.line) + ":" +
+          toString(c.span.startPos.column) +
+          " (node #" +
+          toString(c.id) +
+          ")"
+      )
     }
   }
   res

@@ -109,7 +109,7 @@ test "a call to a declared function has its callee recorded under the call's nod
   val cr = check(file)
   assertEqualInt(cr.diagnostics.count, 0, "checks clean")
   val ctx = newTyConvCtx(cr.symbols)
-  val calls = callNodeIds(file)
+  val calls = callSitesOf(file)
   assertEqualInt(calls.count, 1, "one call")
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "its callee is recorded")
   assertEqualInt(cr.symbols.calleeByNode.count, 1, "one entry")
@@ -120,7 +120,31 @@ test "a call the checker resolves another way is reported until its route record
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
   val ctx = newTyConvCtx(cr.symbols)
-  val census = calleeCensus(ctx, callNodeIds(file))
+  val census = calleeCensus(ctx, callSitesOf(file))
   assertEqualInt(census.count, 1, "the built-in call has no callee yet")
   assertTrue(census[0].startsWith("I0002"), "reported as I0002")
+  assertTrue(census[0].contains("call at 2:"), "names the call's position")
+}
+
+test "a method call has its callee recorded under the call's node id" {
+  val src = "package App\nrecord P { x: Int }\nfunc P.get(self: in P): Int { self.x }\nfunc f(p: in P): Int { p.get() }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  assertEqualInt(calls.count, 1, "one call")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "its callee is recorded")
+}
+
+test "nested calls and a call inside a lambda argument each have their callee recorded" {
+  val src = "package App\nfunc g(x: Int): Int { x }\nfunc apply(f: in (Int) -> Int): Int { f(1) }\nfunc f(): Int { apply({ y: Int -> g(g(y)) }) }\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  val missing = calleeCensus(ctx, calls)
+  assertEqualInt(calls.count, 4, "f(1), apply(..) and the lambda's outer and inner g calls")
+  assertEqualInt(missing.count, 1, "only the call through the function value f(1) has no callee yet")
 }

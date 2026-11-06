@@ -4892,6 +4892,41 @@ record MethodCallPick {
   fullSig: Option[ResolvedSignature]
 }
 
+// Record the method a member call resolved to under the call's `NodeId`
+// (`calleeByNode`, D361): a method of the receiver's type is the dot-named
+// function `Type.member` of its declaring package, the declaration whose span
+// the signature carries.
+func recordMethodCalleeNode(
+  tbl: in SymbolTable,
+  callNode: in Int,
+  pick: in Option[MethodCallPick],
+  recvTy: in Type,
+  memberName: in String,
+): Unit {
+  if callNode <= 0 {
+    return
+  }
+  match pick {
+    case None -> ()
+    case Some(mp) -> {
+      val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
+      val owner = dotNamedOwnerName(unrefine(recvTy))
+      if owner.length == 0 {
+        return
+      }
+      match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+        case Some(dp) -> {
+          if tbl.calleeByNode.containsKey(callNode) {
+            tbl.calleeByNode.remove(callNode)
+          }
+          tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, dp))
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
 // The receiver-dropped copy of a full dot-named signature.
 func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
   val np: List[ResolvedParam] = newList()
@@ -18414,6 +18449,7 @@ func inferExprCore(
             case TyError(_) -> match memberRecvTy {
               case Some(rt3) -> {
                 methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes, ambiguousPick)
+                recordMethodCalleeNode(tbl, e.nodeId, methodPick, rt3, memberName)
               }
               case None -> {
               }
