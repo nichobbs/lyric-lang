@@ -377,6 +377,18 @@ pub union ExternIterInfo {
 }
 
 @stable(since = "0.1")
+/// A call to a member of an `extern type`, keyed by the call's `NodeId` in
+/// `SymbolTable.externByNode` (docs/70 §5.3, D365): the host type's name, the
+/// receiver's type arguments, the member's name and the call's argument count.
+/// `Lyric.Tir.Build` resolves the member from the host's metadata with these,
+/// as the checker did to type the call.  A constructor is the member `new`.
+pub record ExternCallSite {
+  hostType: String
+  targs: List[Type]
+  name: String
+  argCount: Int
+}
+
 pub record SymbolTable {
   symbols: List[Symbol]
   /// Preferred-package marker, boxed as a 0/1-element list (the
@@ -531,6 +543,8 @@ pub record SymbolTable {
   /// The calls whose callee is a function value, keyed by the call's `NodeId`
   /// (D364).  Only `true` is stored; membership is the mark.
   indirectByNode: Map[Int, Bool]
+  /// The member of an `extern type` each call resolved to (D365).
+  externByNode: Map[Int, ExternCallSite]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -1132,6 +1146,7 @@ pub func newSymbolTable(): SymbolTable {
     calleeByNode = newMap(),
     builtinByNode = newMap(),
     indirectByNode = newMap(),
+    externByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
