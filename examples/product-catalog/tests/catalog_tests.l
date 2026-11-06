@@ -165,7 +165,7 @@ test "ListProductsResponse with products" {
   )
   val resp = ListProductsResponse(products = [p], total = 1)
   assertTrue(resp.total == 1, "resp.total == 1")
-  assertTrue(resp.products.count == 1, "resp.products.count == 1")
+  assertTrue(resp.products.length == 1, "resp.products.length == 1")
 }
 
 // ─── Category + price helpers via Domain ─────────────────────────────────────
