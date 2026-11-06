@@ -237,7 +237,7 @@ func registerMakerSig(withCtors: in Bool): Option[Cg.JvmFuncSig] {
   val sigs: Map[String, Cg.JvmFuncSig] = newMap()
   val externSeed: Map[String, String] = newMap()
   Cg.collectFileSigsSeeded(makerFile, sigs, externSeed, ctorReg)
-  mapGet(sigs, "makeEntry")
+  mapGet(sigs, "MakerPkg4/makeEntry")
 }
 
 test "collectFileSigsSeeded alone resolves a cross-package generic return's record class from the bundle ctor registry (#7194)" {

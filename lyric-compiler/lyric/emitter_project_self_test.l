@@ -3448,6 +3448,38 @@ test "emitProject a default expression calls a function only its declaring packa
   assertEqual(Str.trim(result.stdout), "14", "default callee MSIL: output")
 }
 
+func chainedImportedCallPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.Lib",
+      "package EPCh.Lib\n" + "\n" + "pub func makeAdder(x: in Int): (Int) -> Int {\n" + "  { y: Int -> x + y }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPCh.App",
+      "package EPCh.App\n" + "\n" + "import EPCh.Lib\n" + "\n" + "func main(): Unit {\n" +
+        "  println(makeAdder(1)(2))\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a chained call of an imported function that returns a function (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-chain-jvm", chainedImportedCallPkgs(), "EPCh")
+  assertEqualInt(result.exitCode, 0, "chained imported call JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "chained imported call JVM: output")
+}
+
+test "emitProject a chained call of an imported function that returns a function (MSIL)" {
+  val result = runEmitProject("emitproj-chain", chainedImportedCallPkgs(), "EPCh")
+  assertEqualInt(result.exitCode, 0, "chained imported call MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "3", "chained imported call MSIL: output")
+}
+
 test "emitProject a specialised generic's callee is the declaring package's, not a same-named export of the caller's imports (JVM)" {
   val result = runEmitProjectJvmOpts("emitproj-originsited-jvm", originSitedCallPkgs(), "EPOs")
   assertEqualInt(result.exitCode, 0, "originsited JVM: exit 0 (stderr=" + result.stderr + ")")

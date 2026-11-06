@@ -5345,10 +5345,10 @@ pub func isVoidJvmType(t: in JvmType): Bool {
 // and `sig.ret` crashes (`E5/E7: receiver type JvmType is not a known record or
 // distinct type`).  The annotation resets `ExpectedType` to `Option[JvmFuncSig]`,
 // forcing the correct element type.
-func funcSigRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
+func funcSigRetType(ctx: in FuncCtx, fn: in Expr, argc: in Int): Option[JvmType] {
   match fn.kind {
     case EPath(p) -> {
-      val sigOpt: Option[JvmFuncSig] = mapGet(ctx.funcSigs, lastSegment(p))
+      val sigOpt: Option[JvmFuncSig] = resolveGeneralFuncSig(ctx, lastSegment(p), p, argc)
       match sigOpt {
         case Some(sig) -> {
           val rt = sig.ret
@@ -5357,7 +5357,7 @@ func funcSigRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
         case None -> None
       }
     }
-    case ETypeApp(inner2, _) -> funcSigRetType(ctx, inner2)
+    case ETypeApp(inner2, _) -> funcSigRetType(ctx, inner2, argc)
     case _ -> None
   }
 }
@@ -5370,7 +5370,7 @@ func funcSigRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
 pub func spawnInnerResultType(ctx: in FuncCtx, inner: in Expr): Option[JvmType] {
   match inner.kind {
     case EParen(e) -> spawnInnerResultType(ctx, e)
-    case ECall(fn, _) -> funcSigRetType(ctx, fn)
+    case ECall(fn, args) -> funcSigRetType(ctx, fn, args.count)
     case _ -> None
   }
 }

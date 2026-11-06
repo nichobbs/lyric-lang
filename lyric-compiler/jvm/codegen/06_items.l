@@ -5323,17 +5323,14 @@ pub func collectFileSigsSeeded(
         if bundleCallable and not into.containsKey(publicNameKey) {
           into.add(publicNameKey, sig)
         }
-        if bundleCallable {
+        // A plain function is called by its site, its package-scoped key or its
+        // qualified key (`resolveGeneralFuncSig`), so it has no bundle-wide bare
+        // key.  A dot-named function (`Type.member`) is still read through its
+        // bare dotted key by the member-call lookups.
+        if bundleCallable and decl.name.contains(".") {
           if not into.containsKey(decl.name) {
             into.add(decl.name, sig)
           }
-          // Bare arity-suffixed key so same-name OVERLOADS in one package
-          // resolve to the right descriptor: with name-only keys, first-wins
-          // collision made a 3-arg call link against the 2-arg overload's
-          // descriptor — VerifyError at class load (`Std.String.substring`'s
-          // two overloads, hit by lyric-storage's `basenameOf`). Call sites
-          // try the exact arity first and fall back to the name key (which
-          // also covers calls that rely on parameter defaults).
           val bkey = decl.name + "@" + toString(decl.params.count)
           if not into.containsKey(bkey) {
             into.add(bkey, sig)

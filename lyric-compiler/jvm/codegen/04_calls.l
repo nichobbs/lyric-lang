@@ -792,16 +792,12 @@ func lowerCallOnExprResult(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, 
 }
 
 // Recover the real STATIC return type of invoking the function value that
-// `fn` evaluates to (#6398), when `fn` is itself a call to a known
-// same-package top-level function whose OWN declared return type is
-// function-shaped (`func makeAdder(x: Int): (Int) -> Int`) — the shape a
-// chained call (`makeAdder(1)(2)`) produces as the outer call's callee.
-// Mirrors `lowerMethodCall`'s `qualArgcKey`-then-bare-key lookup precedence
-// (04_calls.l; #5790's overload-safety discipline: an arity-qualified key —
-// registered by `collectFileSigsSeeded`'s `akey`/`bkey` pair, 06_items.l —
-// is tried first so a same-name overload at a different arity can't steal
-// this call site's registration). Returns `None` for any other callee shape
-// (an index expression, a member-returning-a-function, a multi-segment
+// `fn` evaluates to (#6398), when `fn` is itself a call to a known top-level
+// function whose OWN declared return type is function-shaped
+// (`func makeAdder(x: Int): (Int) -> Int`) — the shape a chained call
+// (`makeAdder(1)(2)`) produces as the outer call's callee.  The callee binds
+// like any call (`resolveGeneralFuncSig`).  Returns `None` for any other callee
+// shape (an index expression, a member-returning-a-function, a multi-segment
 // path, a callee that isn't a known function, or a return type that isn't
 // function-shaped) — callers fall back to the pre-existing raw-`Object`
 // behaviour.
@@ -812,30 +808,9 @@ func closureInvokeRetType(ctx: in FuncCtx, fn: in Expr): Option[JvmType] {
       match callee.kind {
         case EPath(p) -> {
           if p.segments.count == 1 {
-            val name = p.segments[0]
-            val arityKey = name + "@" + toString(callArgs.count)
-            // Package-scoped key first (#6853): a same-package bare call to a
-            // package-private function is no longer in the bundle-wide bare
-            // keys `arityKey`/`name` fall back to below.
-            val scopedArityKey = ctx.pkgName + "::" + arityKey
-            match mapGet(ctx.funcSigs, scopedArityKey) {
+            match resolveGeneralFuncSig(ctx, p.segments[0], p, callArgs.count) {
               case Some(sig) -> sig.closureRetTy
-              case None -> {
-                match mapGet(ctx.funcSigs, ctx.pkgName + "::" + name) {
-                  case Some(sig1b) -> sig1b.closureRetTy
-                  case None -> {
-                    match mapGet(ctx.funcSigs, arityKey) {
-                      case Some(sig) -> sig.closureRetTy
-                      case None -> {
-                        match mapGet(ctx.funcSigs, name) {
-                          case Some(sig2) -> sig2.closureRetTy
-                          case None -> None
-                        }
-                      }
-                    }
-                  }
-                }
-              }
+              case None -> None
             }
           } else {
             None
