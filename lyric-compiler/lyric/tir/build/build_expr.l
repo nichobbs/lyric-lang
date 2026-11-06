@@ -192,7 +192,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
   val ty = match exprTy(env.ctx, e.nodeId) {
     case Ok(t) -> t
     case Err(msg) -> {
-      env.errors.add(msg)
+      env.errors.add(msg + " (at " + toString(e.span.startPos.line) + ":" + toString(e.span.startPos.column) + ")")
       return None
     }
   }

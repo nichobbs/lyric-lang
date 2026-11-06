@@ -21425,6 +21425,9 @@ pub func inferExprExpected(
 ): Type {
   val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
+  // Some kinds are typed against the expected type without passing through
+  // `inferExpr`; the type settled on is the node's type (D366).
+  recordExprType(tbl, e, t)
   t
 }
 

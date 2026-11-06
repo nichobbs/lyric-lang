@@ -260,12 +260,12 @@ test "a function over locals and primitive operators builds" {
 test "if, short-circuit operators and comparisons build" {
   val r = buildFirstFn("package App\nfunc g(x: Int): Bool {\n  if x > 1 and x < 9 { true } else { false }\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(r.body.isSome(), "a body")
 }
 
 test "loops and string interpolation build" {
-  val r = buildFirstFn("package App\nfunc h(n: Int): String {\n  var i = 0\n  loop {\n    break\n  }\n  \"n={n}\"\n}\n")
+  val r = buildFirstFn("package App\nfunc h(n: Int): String {\n  var i = 0\n  loop {\n    break\n  }\n  \"n=${n}\"\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   assertTrue(r.body.isSome(), "a body")
