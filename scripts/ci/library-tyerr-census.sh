@@ -64,31 +64,38 @@ sites_file="$(mktemp)"
 unchecked_file="$(mktemp)"
 checked=0
 attempted=${#jobs_list[@]}
-pending=("${jobs_list[@]}")
-
-for round in 1 2 3; do
-  retry=()
-  for job in "${pending[@]}"; do
-    manifest="${job%%|*}"
-    target="${job##*|}"
-    log="$(mktemp)"
-    timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1
-    if grep -q 'restored dep .* failed to load' "$log" && [[ "$round" -lt 3 ]]; then
-      retry+=("$job")
-      rm -f "$log"
-      continue
-    fi
-    grep 'W0036' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
-    if grep -qE 'B0001|error\[(T|P|L)[0-9]+\]' "$log"; then
-      reason="$(grep -m1 -E 'B0001|error\[(T|P|L)[0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
-      echo "$manifest ($target): $reason" >>"$unchecked_file"
-    else
-      checked=$((checked + 1))
-    fi
-    rm -f "$log"
+# One phase per target: a JVM build writes its jar under the same `.dll` name
+# in the library's bin/ as a dotnet build, so the dotnet dependents of a
+# library must all be built before any JVM build of it.
+for phase in dotnet jvm native; do
+  pending=()
+  for job in "${jobs_list[@]}"; do
+    [[ "${job##*|}" == "$phase" ]] && pending+=("$job")
   done
-  [[ ${#retry[@]} -gt 0 ]] || break
-  pending=("${retry[@]}")
+  for round in 1 2 3; do
+    [[ ${#pending[@]} -gt 0 ]] || break
+    retry=()
+    for job in "${pending[@]}"; do
+      manifest="${job%%|*}"
+      target="${job##*|}"
+      log="$(mktemp)"
+      timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1
+      if grep -q 'restored dep .* failed to load' "$log" && [[ "$round" -lt 3 ]]; then
+        retry+=("$job")
+        rm -f "$log"
+        continue
+      fi
+      grep 'W0036' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
+      if grep -qE 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log"; then
+        reason="$(grep -m1 -E 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
+        echo "$manifest ($target): $reason" >>"$unchecked_file"
+      else
+        checked=$((checked + 1))
+      fi
+      rm -f "$log"
+    done
+    pending=("${retry[@]+"${retry[@]}"}")
+  done
 done
 
 sort -u "$sites_file" -o "$sites_file"
