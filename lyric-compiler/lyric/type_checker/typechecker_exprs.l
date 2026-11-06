@@ -24316,6 +24316,10 @@ func recordCalleeSite(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignatur
           tbl.calleeByNode.remove(callNode)
         }
         tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, dp))
+        if tbl.callSigByNode.containsKey(callNode) {
+          tbl.callSigByNode.remove(callNode)
+        }
+        tbl.callSigByNode.add(callNode, sig)
       }
     }
     case None -> ()

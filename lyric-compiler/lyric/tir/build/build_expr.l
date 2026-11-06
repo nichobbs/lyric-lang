@@ -330,7 +330,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case Some(body) -> Some(value = mkExpr(e, ty, XUnsafe(body = body)))
       case None -> None
     }
-    case ECall(_, _) -> uncoveredExpr(env, e, "a call")
+    case ECall(fn, args) -> buildCall(env, e, ty, fn, args)
     case EMember(_, _) -> uncoveredExpr(env, e, "a member access")
     case EIndex(_, _) -> uncoveredExpr(env, e, "an index")
     case EMatch(_, _) -> uncoveredExpr(env, e, "a match")
@@ -632,4 +632,239 @@ pub func buildCensusLines(c: in BuildCensus, limit: in Int): List[String] {
     round = round + 1
   }
   res
+}
+
+
+/// The call's arguments as plain expressions, when none is named.
+func positionalArgs(args: in List[CallArg]): Option[List[Expr]] {
+  val res: List[Expr] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> res.add(x)
+      case CANamed(_, _, _) -> return None
+    }
+  }
+  Some(value = res)
+}
+
+func inArgs(ts: in List[TExpr]): List[TArg] {
+  val res: List[TArg] = newList()
+  for t in ts {
+    res.add(TArgIn(value = t))
+  }
+  res
+}
+
+/// The implicit widening the language allows from `from` to `to`
+/// (docs/01 §4.1: `Byte < Int < Long`, `Byte < UInt < ULong`, `Float < Double`).
+func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
+  match from {
+    case TPrim(f) -> match to {
+      case TPrim(t) -> {
+        val ok = match f {
+          case TPByte -> match t {
+            case TPInt -> true
+            case TPLong -> true
+            case TPUInt -> true
+            case TPULong -> true
+            case _ -> false
+          }
+          case TPInt -> match t {
+            case TPLong -> true
+            case _ -> false
+          }
+          case TPUInt -> match t {
+            case TPULong -> true
+            case _ -> false
+          }
+          case TPFloat -> match t {
+            case TPDouble -> true
+            case _ -> false
+          }
+          case _ -> false
+        }
+        if ok {
+          Some(value = CvWiden(to = t))
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// A call: a built-in by its recorded name, a call through a function value,
+/// or a call to a declared non-generic function with in-mode arguments.  Other
+/// calls (methods, constructors, generics, defaults, `out` and `inout`
+/// arguments, conversions other than widening) are counted and reported by what
+/// they need.
+func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  match mapGet(tbl.builtinByNode, e.nodeId) {
+    case Some(name) -> return buildBuiltinCall(env, e, ty, name, fn, args)
+    case None -> ()
+  }
+  if tbl.indirectByNode.containsKey(e.nodeId) {
+    return buildIndirectCall(env, e, ty, fn, args)
+  }
+  match mapGet(tbl.callSigByNode, e.nodeId) {
+    case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
+      case Some(sym) -> match fn.kind {
+        case EPath(_) -> return buildDirectCall(env, e, ty, sym, sig, args)
+        case _ -> return uncoveredExpr(env, e, "a package-qualified or static call")
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  if tbl.externByNode.containsKey(e.nodeId) {
+    return uncoveredExpr(env, e, "an extern call")
+  }
+  if tbl.calleeByNode.containsKey(e.nodeId) {
+    return uncoveredExpr(env, e, "a method, constructor or member call")
+  }
+  uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+func buildBuiltinCall(env: in BuildEnv, e: in Expr, ty: in Ty, name: in String, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
+  match positionalArgs(args) {
+    case None -> uncoveredExpr(env, e, "a built-in call with a named argument")
+    case Some(xs) -> {
+      val all: List[Expr] = newList()
+      match fn.kind {
+        case EMember(recv, _) -> all.add(recv)
+        case _ -> ()
+      }
+      for x in xs {
+        all.add(x)
+      }
+      match buildAll(env, all) {
+        case Some(ts) -> Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(ts))))
+        case None -> None
+      }
+    }
+  }
+}
+
+func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
+  match positionalArgs(args) {
+    case None -> uncoveredExpr(env, e, "an indirect call with a named argument")
+    case Some(xs) -> {
+      val fv = buildExpr(env, fn)
+      match buildAll(env, xs) {
+        case Some(ts) -> match fv {
+          case Some(f) -> Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(ts))))
+          case None -> None
+        }
+        case None -> None
+      }
+    }
+  }
+}
+
+/// The index of the parameter `name` of `sig`.
+func paramIndex(sig: in ResolvedSignature, name: in String): Option[Int] {
+  var i = 0
+  while i < sig.params.count {
+    if sig.params[i].name == name {
+      return Some(value = i)
+    }
+    i = i + 1
+  }
+  None
+}
+
+func buildDirectCall(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  sym: in SymbolId,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+): Option[TExpr] {
+  if sig.generics.count > 0 {
+    return uncoveredExpr(env, e, "a generic call")
+  }
+  val slots: List[Option[Expr]] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    slots.add(None)
+    pi = pi + 1
+  }
+  var nextPos = 0
+  for a in args {
+    match a {
+      case CAPositional(x) -> {
+        if nextPos >= slots.count {
+          return uncoveredExpr(env, e, "a call with extra arguments")
+        }
+        slots[nextPos] = Some(value = x)
+        nextPos = nextPos + 1
+      }
+      case CANamed(name, x, _) -> match paramIndex(sig, name) {
+        case Some(ix) -> {
+          slots[ix] = Some(value = x)
+        }
+        case None -> return uncoveredExpr(env, e, "a call with an unknown named argument")
+      }
+    }
+  }
+  val targs: List[TArg] = newList()
+  var ok = true
+  var i = 0
+  while i < sig.params.count {
+    val p = sig.params[i]
+    match slots[i] {
+      case None -> {
+        ok = false
+        if p.hasDefault {
+          noteUncovered(env, "a defaulted argument")
+        } else {
+          noteUncovered(env, "a missing argument")
+        }
+      }
+      case Some(x) -> match p.mode {
+        case PMIn -> match tyOfType(env.ctx, p.ty) {
+          case Err(msg) -> {
+            env.errors.add(msg)
+            ok = false
+          }
+          case Ok(pty) -> match buildExpr(env, x) {
+            case None -> {
+              ok = false
+            }
+            case Some(t) -> if tyEq(t.ty, pty) {
+              targs.add(TArgIn(value = t))
+            } else {
+              match widenKind(t.ty, pty) {
+                case Some(k) -> targs.add(
+                  TArgIn(value = TExpr(id = t.id, ty = pty, span = t.span, kind = XConvert(kind = k, inner = t)))
+                )
+                case None -> {
+                  noteUncovered(env, "an argument conversion")
+                  ok = false
+                }
+              }
+            }
+          }
+        }
+        case _ -> {
+          noteUncovered(env, "an out or inout argument")
+          ok = false
+        }
+      }
+    }
+    i = i + 1
+  }
+  if not ok {
+    env.errors.add(
+      "I0002: the builder cannot build the call at " + toString(e.span.startPos.line) + ":" +
+        toString(e.span.startPos.column) +
+        " yet"
+    )
+    return None
+  }
+  Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs)))
 }
