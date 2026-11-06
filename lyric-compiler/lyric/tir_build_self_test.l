@@ -265,7 +265,7 @@ test "if, short-circuit operators and comparisons build" {
 }
 
 test "loops and string interpolation build" {
-  val r = buildFirstFn("package App\nfunc h(n: Int): String {\n  loop {\n    break\n  }\n  \"n=\${n}\"\n}\n")
+  val r = buildFirstFn("package App\nfunc h(n: Int): String {\n  while true {\n    break\n  }\n  \"n=\${n}\"\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   assertTrue(r.body.isSome(), "a body")
