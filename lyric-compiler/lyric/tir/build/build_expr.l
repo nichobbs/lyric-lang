@@ -634,7 +634,6 @@ pub func buildCensusLines(c: in BuildCensus, limit: in Int): List[String] {
   res
 }
 
-
 /// The call's arguments as plain expressions, when none is named.
 func positionalArgs(args: in List[CallArg]): Option[List[Expr]] {
   val res: List[Expr] = newList()
@@ -669,18 +668,9 @@ func widenKind(from: in Ty, to: in Ty): Option[ConvKind] {
             case TPULong -> true
             case _ -> false
           }
-          case TPInt -> match t {
-            case TPLong -> true
-            case _ -> false
-          }
-          case TPUInt -> match t {
-            case TPULong -> true
-            case _ -> false
-          }
-          case TPFloat -> match t {
-            case TPDouble -> true
-            case _ -> false
-          }
+          case TPInt -> match t { case TPLong -> true; case _ -> false }
+          case TPUInt -> match t { case TPULong -> true; case _ -> false }
+          case TPFloat -> match t { case TPDouble -> true; case _ -> false }
           case _ -> false
         }
         if ok {
@@ -728,7 +718,9 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   uncoveredExpr(env, e, "a call the checker did not resolve")
 }
 
-func buildBuiltinCall(env: in BuildEnv, e: in Expr, ty: in Ty, name: in String, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
+func buildBuiltinCall(
+  env: in BuildEnv, e: in Expr, ty: in Ty, name: in String, fn: in Expr, args: in List[CallArg]
+): Option[TExpr] {
   match positionalArgs(args) {
     case None -> uncoveredExpr(env, e, "a built-in call with a named argument")
     case Some(xs) -> {
@@ -741,7 +733,9 @@ func buildBuiltinCall(env: in BuildEnv, e: in Expr, ty: in Ty, name: in String, 
         all.add(x)
       }
       match buildAll(env, all) {
-        case Some(ts) -> Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(ts))))
+        case Some(ts) -> Some(
+          value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(ts)))
+        )
         case None -> None
       }
     }
@@ -755,7 +749,9 @@ func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, arg
       val fv = buildExpr(env, fn)
       match buildAll(env, xs) {
         case Some(ts) -> match fv {
-          case Some(f) -> Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(ts))))
+          case Some(f) -> Some(
+            value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(ts)))
+          )
           case None -> None
         }
         case None -> None

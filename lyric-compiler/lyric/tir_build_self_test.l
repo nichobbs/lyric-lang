@@ -287,10 +287,7 @@ func mapGetOr0(m: in Map[String, Int], k: in String): Int {
 func firstCallArgs(b: in Option[TExpr]): Int {
   match b {
     case Some(body) -> match body.kind {
-      case XBlock(_, Some(t)) -> match t.kind {
-        case XCall(_, args) -> args.count
-        case _ -> -1
-      }
+      case XBlock(_, Some(t)) -> match t.kind { case XCall(_, args) -> args.count; case _ -> -1 }
       case XCall(_, args) -> args.count
       case _ -> -1
     }
@@ -349,4 +346,3 @@ test "a call omitting a defaulted argument is counted, not guessed" {
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
 }
-
