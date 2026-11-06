@@ -19402,6 +19402,18 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // `Pkg.Case`, a case of an enum of package `Pkg` (any depth of qualifier),
+      // read as a value.  A root a local binds is a field chain, not a package.
+      val caseSegs: List[String] = newList()
+      if flattenCalleePathSegs(e, caseSegs) and caseSegs.count >= 2 {
+        match scopeTryFind(sc, caseSegs[0]) {
+          case Some(_) -> ()
+          case None -> match packageEnumCaseValueType(tbl, qualifierOfSegs(caseSegs), name) {
+            case Some(ct) -> return ct
+            case None -> ()
+          }
+        }
+      }
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
@@ -19418,10 +19430,6 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
-              match packageEnumCaseValueType(tbl, qualPkg, name) {
-                case Some(ct) -> return ct
-                case None -> ()
-              }
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
                 case Some(ft) -> return ft
                 case None -> ()

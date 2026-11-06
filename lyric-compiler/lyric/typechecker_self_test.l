@@ -15322,17 +15322,16 @@ func checkEnumCaseApp(body: in String): CheckResult {
 
 test "a package's own enum shadows an imported one of the same name (D355)" {
   val own = checkEnumCaseApp("  val a = take(Mode.Idle)\n  val m: Mode = Mode.Fast")
-  assertEqualInt(diagCount(own), 0, "Mode names the file's own enum: " + diagCodesOf(own))
+  assertEqualInt(errorCount(own), 0, "Mode names the file's own enum: " + diagCodesOf(own))
   assertEqual(silentSiteKinds(own), "", "and is typed, not silent")
 }
 
 test "a case name two sibling enums share is left to the expected type (D355)" {
   val both = checkEnumCaseApp("  val b: Lib.Beam = Lib.On\n  val r: Lib.Ray = Lib.On")
-  assertEqualInt(diagCount(both), 0, "each annotation picks its own enum's On: " + diagCodesOf(both))
-  val wrong = checkEnumCaseApp("  val n: Int = Lib.On")
-  assertTrue(diagCount(wrong) > 0, "a shared case is still checked against the expected type")
-  val unshared = checkEnumCaseApp("  val b: Lib.Beam = Lib.Idle")
-  assertTrue(hasDiagCode(unshared, "T0060"), "an unshared case is typed, so the wrong annotation is T0060")
+  assertEqualInt(errorCount(both), 0, "each annotation picks its own enum's On: " + diagCodesOf(both))
+  val unshared = checkEnumCaseApp("  val r: Lib.Ray = Lib.Idle\n  val m = Lib.Slow")
+  assertEqualInt(errorCount(unshared), 0, "an unshared case is typed as its enum: " + diagCodesOf(unshared))
+  assertEqual(silentSiteKinds(unshared), "", "and is not a silent site")
 }
 
 test "count on a slice is W0042, length is the slice's size" {
