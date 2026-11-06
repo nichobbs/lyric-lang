@@ -3408,6 +3408,46 @@ func originSitedCallPkgs(): List[Emitter.ProjectPackage] {
   pkgs
 }
 
+// A default expression is lowered in whichever package calls the function or
+// builds the record, but means the names of the package that declares it
+// (#8850): `EPDf.App` imports only `EPDf.Lib`, whose parameter and field
+// defaults call a function of `EPDf.Dep`.
+func defaultCalleePkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EPDf.Dep", "package EPDf.Dep\n" + "\n" + "pub func seven(): Int {\n" + "  7\n" + "}\n"))
+  pkgs.add(
+    mkProjectPkg(
+      "EPDf.Lib",
+      "package EPDf.Lib\n" + "\n" + "import EPDf.Dep\n" + "\n" + "pub record R {\n" + "  pub v: Int = seven()\n" + "}\n" +
+        "\n" +
+        "pub func mk(x: in Int = seven()): Int {\n" +
+        "  x\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDf.App",
+      "package EPDf.App\n" + "\n" + "import EPDf.Lib\n" + "\n" + "func main(): Unit {\n" + "  val r = R()\n" +
+        "  println(mk() + r.v)\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a default expression calls a function only its declaring package imports (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-dfl-jvm", defaultCalleePkgs(), "EPDf")
+  assertEqualInt(result.exitCode, 0, "default callee JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "14", "default callee JVM: output")
+}
+
+test "emitProject a default expression calls a function only its declaring package imports (MSIL)" {
+  val result = runEmitProject("emitproj-dfl", defaultCalleePkgs(), "EPDf")
+  assertEqualInt(result.exitCode, 0, "default callee MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "14", "default callee MSIL: output")
+}
+
 test "emitProject a specialised generic's callee is the declaring package's, not a same-named export of the caller's imports (JVM)" {
   val result = runEmitProjectJvmOpts("emitproj-originsited-jvm", originSitedCallPkgs(), "EPOs")
   assertEqualInt(result.exitCode, 0, "originsited JVM: exit 0 (stderr=" + result.stderr + ")")
