@@ -4921,6 +4921,37 @@ record MethodCallPick {
   fullSig: Option[ResolvedSignature]
 }
 
+// Record the constructor or union case a call built under the call's `NodeId`
+// (`calleeByNode`, D361).  A record, opaque or exposed-record constructor is
+// its type's `SymbolId`; a union case is `Pkg::Union::Case`, the DefPath the
+// resolver interns for it (docs/70 §4.2).
+func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol): Unit {
+  if callNode <= 0 {
+    return
+  }
+  var target: Option[SymbolId] = None
+  match sym.kind {
+    case DKUnionCase(parentId, uc) -> match defPathKeyOf(tbl.interner, parentId) {
+      case Some(parentKey) -> {
+        target = Some(value = internDefPathKey(tbl.interner, parentKey + "::" + uc.name))
+      }
+      case None -> ()
+    }
+    case _ -> {
+      target = symbolTypeIdOpt(sym)
+    }
+  }
+  match target {
+    case Some(id) -> {
+      if tbl.calleeByNode.containsKey(callNode) {
+        tbl.calleeByNode.remove(callNode)
+      }
+      tbl.calleeByNode.add(callNode, id)
+    }
+    case None -> ()
+  }
+}
+
 // Record the method a member call resolved to under the call's `NodeId`
 // (`calleeByNode`, D361): a method of the receiver's type is the dot-named
 // function `Type.member` of its declaring package, the declaration whose span
@@ -19043,6 +19074,7 @@ func inferExprCore(
         case None -> match unionCaseSymbolOf(tbl, fn) {
           case Some(caseSym) -> {
             noteBareCalleeSym(tbl, fn, caseSym)
+            recordCtorCalleeNode(tbl, e.nodeId, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
             noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, args, argTypes, caseTy, e.span)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
@@ -19053,6 +19085,7 @@ func inferExprCore(
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> {
               noteBareCalleeSym(tbl, fn, ctorSym)
+              recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)

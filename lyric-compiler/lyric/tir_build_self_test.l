@@ -148,3 +148,14 @@ test "nested calls and a call inside a lambda argument each have their callee re
   assertEqualInt(calls.count, 4, "f(1), apply(..) and the lambda's outer and inner g calls")
   assertEqualInt(missing.count, 1, "only the call through the function value f(1) has no callee yet")
 }
+
+test "record and union-case constructor calls have their callee recorded" {
+  val src = "package App\nrecord P { x: Int }\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(): Int {\n  val p = P(x = 1)\n  val u = A(n = 2)\n  3\n}\n"
+  val file = renumberNodeIds(parse(src).file).file
+  val cr = check(file)
+  assertEqualInt(cr.diagnostics.count, 0, "checks clean")
+  val ctx = newTyConvCtx(cr.symbols)
+  val calls = callSitesOf(file)
+  assertEqualInt(calls.count, 2, "P(..) and A(..)")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "both constructors are recorded")
+}
