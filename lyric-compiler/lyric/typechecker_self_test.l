@@ -15417,15 +15417,15 @@ test "a case name two sibling enums share is left to the expected type (D355)" {
   assertEqual(silentSiteKinds(unshared), "", "and is not a silent site")
 }
 
-test "count on a slice is W0042, length is the slice's size" {
+test "count on a slice is T0228, length is the slice's size" {
   assertEqual(
     diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.length\n}\n")),
     "",
     "slice.length is fine"
   )
   assertTrue(
-    Str.contains(diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")), "W0042"),
-    "slice.count is W0042"
+    Str.contains(diagCodesOf(parseCheck("package P\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")), "T0228"),
+    "slice.count is T0228"
   )
 }
 

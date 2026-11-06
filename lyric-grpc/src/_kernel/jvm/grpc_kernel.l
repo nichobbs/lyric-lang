@@ -246,7 +246,7 @@ func interceptChannel(ch: in JManagedChannel, interceptors: in JList): JChannel 
 
 func attachMetadata(channel: in JManagedChannel, metadata: in String): JChannel {
   val entries = Types.decodeMetadata(metadata)
-  if entries.count == 0 {
+  if entries.length == 0 {
     return interceptChannel(channel, JCollections.emptyList())
   }
   val md = JMetadata.new()

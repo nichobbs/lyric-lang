@@ -19995,9 +19995,9 @@ func inferExprCore(
       match unrefine(rt) {
         case TySlice(_) -> if name == "count" {
           diag.add(
-            warningDiagnostic(
-              "W0042",
-              "'slice' has no member 'count'; use '.length' (only List, Map and Set have '.count'); this becomes an error",
+            errorDiagnostic(
+              "T0228",
+              "'slice' has no member 'count'; use '.length' (only List, Map and Set have '.count')",
               e.span
             )
           )
