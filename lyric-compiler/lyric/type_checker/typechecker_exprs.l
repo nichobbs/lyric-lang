@@ -17234,14 +17234,27 @@ func recordGenericCallTypeArgs(
   if allTargs.count != sig.generics.count {
     return
   }
+  recordGenericTypeArgsSite(tbl, genericNames, sig.generics, valueParams, allTargs, sp)
+}
+
+// Record the type arguments `allTargs` (one per generic of the callee, in
+// order) for the call whose callee is at `sp`.
+func recordGenericTypeArgsSite(
+  tbl: in SymbolTable,
+  genericNames: in List[String],
+  sigGenerics: in List[String],
+  valueParams: in List[String],
+  allTargs: in List[Type],
+  sp: in Span,
+): Unit {
   // A value generic parameter is bound by `bindValueGenericCall`, not here;
   // only the type parameters are recorded.
   val typeParamNames: List[String] = newList()
   val targs: List[Type] = newList()
   var gi = 0
-  while gi < sig.generics.count {
-    if not valueParams.contains(sig.generics[gi]) {
-      typeParamNames.add(sig.generics[gi])
+  while gi < sigGenerics.count {
+    if not valueParams.contains(sigGenerics[gi]) {
+      typeParamNames.add(sigGenerics[gi])
       targs.add(allTargs[gi])
     }
     gi = gi + 1
@@ -17528,7 +17541,7 @@ func noteUnsolvedCallNamed(
   callSpan: in Span,
 ): Unit {
   val sig = pick.sig
-  if sig.generics.count == 0 or sig.isExternFunc or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+  if sig.generics.count == 0 or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
     return
   }
   if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
@@ -17569,7 +17582,9 @@ func noteUnsolvedCallNamed(
         span = fn.span,
         callerGenerics = sc.genericNames,
         indeterminate = indeterminate,
-        ctor = false
+        ctor = false,
+        argTargs = if isMethod { newList() } else { sigCallTypeArgsInOrder(sig, None, srcIdx, argTypes) },
+        valueGenerics = valueParams
       )
     )
   }
@@ -17825,7 +17840,9 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
             site.span
           )
         )
-      } else if not site.ctor and not site.indeterminate and not unsolvedCallFixed(tbl, keys[i], site) {
+      } else if not site.ctor and not site.indeterminate and unsolvedCallFixed(tbl, keys[i], site) {
+        recordExpectedSolution(tbl, keys[i], site)
+      } else if not site.ctor and not site.indeterminate {
         diag.add(
           errorDiagnostic(
             "T0224",
@@ -17840,6 +17857,44 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
       case None -> ()
     }
     i = i + 1
+  }
+}
+
+// A call the expected type fixes (D384): the type arguments its arguments left
+// open are the expected type's solution, recorded like the ones its arguments
+// bound so the monomorphiser reads them (`fillCheckedTypeArgsMono`) instead of
+// guessing from its own view of the context.
+func recordExpectedSolution(tbl: in SymbolTable, key: in String, site: in UnsolvedCallSite): Unit {
+  if tbl.genericCallTypeArgSites.containsKey(key) or tbl.openBindingSites.containsKey(site.callKey) {
+    return
+  }
+  if site.argTargs.count != site.generics.count {
+    return
+  }
+  match effectiveCallExpected(tbl, site.callKey, 0) {
+    case Some(expected) -> {
+      val retTys: List[Type] = newList()
+      retTys.add(site.returnTy)
+      val expTys: List[Type] = newList()
+      expTys.add(expected)
+      val solved = inferGenericArgsDeep(site.generics, retTys, expTys)
+      val all: List[Type] = newList()
+      var gi = 0
+      while gi < site.generics.count {
+        val g = site.generics[gi]
+        if site.unsolved.contains(g) {
+          if gi >= solved.count or not typeIsSolution(solved[gi], site.callerGenerics) {
+            return
+          }
+          all.add(solved[gi])
+        } else {
+          all.add(site.argTargs[gi])
+        }
+        gi = gi + 1
+      }
+      recordGenericTypeArgsSite(tbl, site.callerGenerics, site.generics, site.valueGenerics, all, site.span)
+    }
+    case None -> ()
   }
 }
 
