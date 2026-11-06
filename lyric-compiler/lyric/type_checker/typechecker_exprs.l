@@ -17404,11 +17404,12 @@ func typeIsSolution(t: in Type, callerGenerics: in List[String]): Bool {
   not typeHasUnsolved(t) and typeIsClosedOver(t, callerGenerics)
 }
 
-// A call to an imported, non-extern generic whose arguments leave a type
-// argument unsolved is kept in `SymbolTable.unsolvedCallSites` for
-// `reportUnsolvedTypeArgs` (D339).  Mono exempts three calls and so does this:
-// an `@externTarget` generic, a name the local scope binds, and a call without
-// a source position.  A type parameter an argument binds to a closed type is
+// A call to a generic of another package, or to an `@externTarget` one of this
+// package, whose arguments leave a type argument unsolved is kept in
+// `SymbolTable.unsolvedCallSites` for `reportUnsolvedTypeArgs` (D339, D356).  A
+// name the local scope binds is a function value and is skipped, as is a call
+// without a source position (it has nowhere to report).  A type parameter an
+// argument binds to a closed type is
 // solved, even if another argument disagrees (that is T0043 or a widening, not
 // a missing annotation).  A call with an argument the checker could not type,
 // or one that passes an open binding, is `indeterminate`: the checker does not
@@ -17542,7 +17543,7 @@ func noteUnsolvedCallNamed(
 ): Unit {
   val sig = pick.sig
   // A generic of the package itself is specialised from its own declaration
-  // (the monomorphiser reports what it cannot); an extern one has none (D384).
+  // (the monomorphiser reports what it cannot); an extern one has none (D356).
   if sig.generics.count == 0 or (not sig.hostBound and (sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl))) {
     return
   }
@@ -17551,7 +17552,7 @@ func noteUnsolvedCallNamed(
   }
   val isMethod = match recvTy { case Some(_) -> true; case None -> false }
   // An extern function of the package is itself in scope; a local binding
-  // that shadowed it would not have resolved to its signature (D384).
+  // that shadowed it would not have resolved to its signature (D356).
   if not isMethod and not sig.hostBound and scopeHasName(sc, fname) {
     return
   }
@@ -17864,7 +17865,7 @@ pub func reportUnsolvedTypeArgs(tbl: in SymbolTable, diag: in List[Diagnostic]):
   }
 }
 
-// A call the expected type fixes (D384): the type arguments its arguments left
+// A call the expected type fixes (D356): the type arguments its arguments left
 // open are the expected type's solution, recorded like the ones its arguments
 // bound so the monomorphiser reads them (`fillCheckedTypeArgsMono`) instead of
 // guessing from its own view of the context.

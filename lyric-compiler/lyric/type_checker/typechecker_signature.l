@@ -77,7 +77,7 @@ pub record ResolvedSignature {
   /// Declared by an `extern func` (D-N-007, #7921): its arguments follow the
   /// native extern-call adaptation rules (`argSatisfiesExternParam`).
   isExternFunc: Bool
-  /// The function is bound to a host member by `@externTarget` (D384): its
+  /// The function is bound to a host member by `@externTarget` (D356): its
   /// type arguments are never inferred by the monomorphiser, so the checker
   /// judges a call of one even when it is the package's own.
   hostBound: Bool = false

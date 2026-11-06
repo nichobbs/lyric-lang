@@ -4834,7 +4834,7 @@ test "a method or UFCS imported generic call nothing fixes is T0224 (D383)" {
   )
 }
 
-test "an @externTarget generic call is judged like any other, and its expected-type solution is recorded (D384)" {
+test "an @externTarget generic call is judged like any other, and its expected-type solution is recorded (D356)" {
   assertEqualInt(unsolvedErrors("func f(): Bool { isNone(mk()) }\n"), 2, "neither an extern nor a plain generic call is exempt")
   assertEqualInt(unsolvedErrors("func f(): Bool { isNone(mk[Int]()) }\n"), 0, "written type arguments fix it")
   val src = "package App\nimport Lib\nrecord R { o: Option[Int] }\nfunc f(): R { R(o = mk()) }\n"
@@ -4847,7 +4847,7 @@ test "an @externTarget generic call is judged like any other, and its expected-t
   )
 }
 
-test "a generic @externTarget function of the package itself is judged too (D384)" {
+test "a generic @externTarget function of the package itself is judged too (D356)" {
   val body = "package App\nimport Lib\n@externTarget(\"Host.Make..ctor\")\nfunc mkLocal[T](): Option[T] = ()\n"
   val bad = checkWithImportedPackages(rewriteFileReporting(parse(body + "func f(): Bool { isNone(mkLocal()) }\n").file).file, unsolvedLib())
   var n = 0
