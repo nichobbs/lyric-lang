@@ -160,14 +160,18 @@ test "record and union-case constructor calls have their callee recorded" {
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "both constructors are recorded")
 }
 
-test "built-in functions and collection members have their name recorded" {
-  val src = "package App\nimport Std.Collections\nfunc f(): Int {\n  val xs: List[Int] = newList()\n  xs.add(1)\n  println(\"a\")\n  if xs.contains(1) { 1 } else { 0 }\n}\n"
+test "built-in functions and built-in members have their name recorded" {
+  val src = "package App\nfunc f(s: in slice[Int]): slice[Int] {\n  println(\"a\")\n  s.append(1)\n}\n"
   val file = renumberNodeIds(parse(src).file).file
   val cr = check(file)
   assertEqualInt(cr.diagnostics.count, 0, "checks clean")
   val ctx = newTyConvCtx(cr.symbols)
   val calls = callSitesOf(file)
-  val missing = calleeCensus(ctx, calls)
-  assertEqualInt(missing.count, 1, "only newList() has no recorded callee")
-  assertEqualInt(cr.symbols.builtinByNode.count, 3, "add, println and contains")
+  assertEqualInt(calls.count, 2, "println and append")
+  assertEqualInt(calleeCensus(ctx, calls).count, 0, "both are covered")
+  assertEqualInt(cr.symbols.builtinByNode.count, 2, "recorded by name")
+  assertTrue(
+    mapGet(cr.symbols.builtinByNode, calls[1].id) == Some(value = "slice.append"),
+    "a member is named by its receiver"
+  )
 }
