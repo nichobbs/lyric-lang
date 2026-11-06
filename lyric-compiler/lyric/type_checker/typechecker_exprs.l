@@ -7106,7 +7106,10 @@ func resolveExprPath(
     match symTableTryFindInPackage(tbl, pkg, name) {
       case Some(csym) -> match csym.kind {
         case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
-        case DKEnumCase(pid, _) -> return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList())
+        case DKEnumCase(_, _) -> match packageEnumCaseValueType(tbl, pkg, name) {
+          case Some(ct) -> return ct
+          case None -> ()
+        }
         case _ -> ()
       }
       case None -> ()
@@ -7411,6 +7414,40 @@ func qualifiedUnionCaseSymbol(sc: in Scope, tbl: in SymbolTable, recv: in Expr, 
     }
   }
   None
+}
+
+// The type of `Pkg.Case` read as a value, `Case` a case of an enum of package
+// `pkg`: its enum when no other enum of the package has a case of that name,
+// unresolved when several do (`SiblingEnums.On` names `Beam.On` or `Ray.On`,
+// which the expected type tells apart); None when `pkg` has no such enum case.
+func packageEnumCaseValueType(tbl: in SymbolTable, pkg: in String, name: in String): Option[Type] {
+  var first: Option[SymbolId] = None
+  var shared = false
+  for cand in symTableTryFindAllNamed(tbl, name) {
+    if cand.originPackage == pkg {
+      match cand.kind {
+        case DKEnumCase(pid, _) -> match first {
+          case None -> {
+            first = Some(value = pid)
+          }
+          case Some(fid) -> {
+            if not symbolIdEq(fid, pid) {
+              shared = true
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
+  match first {
+    case None -> None
+    case Some(pid) -> if shared {
+      Some(value = tyErrorUnresolved())
+    } else {
+      Some(value = TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList()))
+    }
+  }
 }
 
 // True when `t` can stand where a `Bool` is required.  `typeEquiv` treats a
@@ -19301,11 +19338,8 @@ func inferExprCore(
             }
             val qualPkg = modulePathJoin(qualSegs)
             if symTablePackageHasAnySymbol(tbl, qualPkg) or anyPackageEndsWithQualifier(tbl, qualPkg) {
-              match symTableTryFindInPackage(tbl, qualPkg, name) {
-                case Some(esym) -> match esym.kind {
-                  case DKEnumCase(pid, _) -> return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = newList())
-                  case _ -> ()
-                }
+              match packageEnumCaseValueType(tbl, qualPkg, name) {
+                case Some(ct) -> return ct
                 case None -> ()
               }
               match resolveQualifiedFuncValue(tbl, sigs, diag, qualPkg, name, e.span) {
