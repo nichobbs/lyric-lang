@@ -48,7 +48,7 @@ extern type JMethod = "java.lang.reflect.Method"
 
 extern type JObject = "java.lang.Object"
 
-func addArg[T](args: in List[JObject], value: in T): Unit {
+func addArg(args: in List[JObject], value: in JUnixAddress): Unit {
   args.add(value)
 }
 

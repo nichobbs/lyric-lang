@@ -499,3 +499,19 @@ test "generic bodies over a field, a method result and a closure (#7842)" {
   val sorted = sort(us, { a: UInt, b: UInt -> if a < b { -1 } else if a > b { 1 } else { 0 } })
   assertEqual("${sorted[0]},${sorted[1]},${sorted[2]}", "7,2147483648,4000000000", "a stdlib generic over UInt")
 }
+
+test "shr on UInt and ULong shifts logically (#8708)" {
+  val cu: UInt = 4000000000u32
+  assertEqual(toString(cu.shr(28)), "14", "UInt shr 28 has no sign extension")
+  assertEqual(toString(cu.shr(31)), "1", "UInt shr 31")
+  val cl: ULong = maxU64()
+  assertEqual(toString(cl.shr(63)), "1", "ULong shr 63")
+  assertEqual(toString(cl.shr(60)), "15", "ULong shr 60")
+  val h = Holder(v = maxU64(), u = 4000000000u32)
+  assertEqual(toString(h.getV().shr(32)), "4294967295", "ULong method result shr 32")
+  assertEqual(toString(h.u.shr(16)), "61035", "UInt field shr 16")
+  val neg: Int = -8
+  assertEqual(toString(neg.shr(1)), "-4", "Int shr stays arithmetic")
+  val negL: Long = -8
+  assertEqual(toString(negL.shr(1)), "-4", "Long shr stays arithmetic")
+}

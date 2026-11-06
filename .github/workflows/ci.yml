@@ -4718,6 +4718,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/file_tests.l
 
+      - name: Unix-socket HTTP test on JVM
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/http_unix_socket_jvm_tests.l
+
       # Std.Path.joinWithin confinement and the shared Std.ProcessArgs argv
       # encoder/decoder (#7246, #7234).
       - name: Std.Path / Std.ProcessArgs test coverage on JVM (native lyric test --target jvm)

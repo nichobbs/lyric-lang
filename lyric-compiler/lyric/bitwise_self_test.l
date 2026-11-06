@@ -21,13 +21,11 @@
 //! only `Std.*` (no compiler packages).  No new F#: discovery is the
 //! native Lyric path, mirroring `weaver_self_test.l` / `cfg_gate_self_test.l`.
 //!
-//! Coverage is restricted to signed `Int` and `Long`.  Both the MSIL
-//! (`lyric-compiler/msil/codegen.l`) and JVM (`lyric-compiler/jvm/codegen.l`)
-//! backends lower these to signed opcodes only — `shr` is arithmetic
-//! (sign-replicating), and neither backend has an unsigned integer
-//! type, so the logical-shift paths are unreachable and intentionally
-//! untested here.  Keeping to signed Int/Long makes every assertion
-//! below valid on both `--target dotnet` and `--target jvm`.
+//! Coverage is restricted to signed `Int` and `Long`, where `shr` is
+//! arithmetic (sign-replicating).  The logical `shr` of `UInt`/`ULong`
+//! is covered by `unsigned_typed_ops_self_test.l` (#8708).  Keeping to
+//! signed Int/Long makes every assertion below valid on both
+//! `--target dotnet` and `--target jvm`.
 @test_module
 package Lyric.BitwiseSelfTest
 
