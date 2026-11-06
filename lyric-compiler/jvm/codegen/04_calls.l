@@ -8,6 +8,7 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Console as CensusConsoleJvm
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4461,10 +4462,15 @@ pub func resolveGeneralFuncSig(
     case None -> ()
   }
   val argcSuffix = "@" + callArityText(ctx, path, argc)
-  match mapGet(ctx.funcSigs, funcName + argcSuffix) {
+  val bareHit = match mapGet(ctx.funcSigs, funcName + argcSuffix) {
     case Some(sig) -> Some(value = sig)
     case None -> mapGet(ctx.funcSigs, funcName)
   }
+  match bareHit {
+    case Some(_) -> CensusConsoleJvm.error("JVMCENSUS-BARE " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count))
+    case None -> ()
+  }
+  bareHit
 }
 
 // The signature of the function the checker resolved the call at `path` to
