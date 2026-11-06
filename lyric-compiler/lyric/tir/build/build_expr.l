@@ -16,6 +16,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Symbols
 import Lyric.Parser
+import Lyric.Parser as Px
 import Lyric.TypeChecker
 import Lyric.Tir
 import Lyric.Tir as TirT
@@ -496,7 +497,7 @@ func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[T
 /// A `val`, `let` or `var` of one name and no annotation: its local takes the
 /// initializer's type, declared after the initializer is built so the
 /// initializer cannot see it.  A pattern or an annotated binding has no case yet.
-func buildLocal(env: in BuildEnv, s: in Statement, binding: in LocalBinding): Option[TStmt] {
+func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
   match binding {
     case LBVal(pat, ann, init) -> match ann {
       case Some(_) -> uncoveredStmt(env, s, "an annotated binding")
