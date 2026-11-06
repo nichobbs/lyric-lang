@@ -10148,6 +10148,69 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 // this runs. Mirrors `constructorSymbolOf`'s qualifier-first / flat-path
 // resolution exactly, matching the two TYPE kinds it deliberately skips, so a
 // value-receiver method chain (`x.Foo(...)`) can never mis-route here.
+// `Score(42)`: a distinct type built from a value of its underlying type
+// (docs/01 section 2.3).  The result is the distinct type; the argument is
+// checked against the underlying type.  A generic distinct type, a name the
+// scope binds, and any other callee are left to the other rules.
+func distinctCtorType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+): Option[Type] {
+  val name = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  if scopeHasName(sc, name) {
+    return None
+  }
+  match symTableTryFindOne(tbl, name) {
+    case Some(sym) -> match sym.kind {
+      case DKDistinctType(did, dt) -> {
+        match dt.generics {
+          case Some(_) -> return None
+          case None -> ()
+        }
+        val noArgs: List[Type] = newList()
+        val dty = TyUser(id = did, name = sym.name, args = noArgs)
+        if args.count != 1 or argTypes.count != 1 {
+          diag.add(
+            errorDiagnostic(
+              "T0042",
+              "'" + sym.name + "' wraps one value of its underlying type but this call gives " + toString(args.count) +
+                " arguments",
+              span
+            )
+          )
+          return Some(value = tyErrorFor(diag))
+        }
+        val saved = enterDeclaringScope(tbl, sym)
+        val scratch: List[Diagnostic] = newList()
+        val underlying = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+        restoreScope(tbl, saved)
+        if not argFlowSatisfies(tbl, underlying, argTypes[0], callArgExpr(args[0])) {
+          diag.add(
+            errorDiagnostic(
+              "T0043",
+              "'" + sym.name + "' wraps a value of type " + renderType(underlying) + " but the argument has type " +
+                renderType(argTypes[0]),
+              callArgExpr(args[0]).span
+            )
+          )
+          return Some(value = tyErrorFor(diag))
+        }
+        Some(value = dty)
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 func unionOrEnumTypeSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
@@ -19500,7 +19563,9 @@ func inferExprCore(
             // callees). Runs only after `unionCaseSymbolOf` and
             // `constructorSymbolOf` both missed, so a valid case/record ctor is
             // never intercepted.
-            case None -> match unionOrEnumTypeSymbolOf(tbl, fn) {
+            case None -> match distinctCtorType(sc, tbl, diag, fn, args, argTypes, e.span) {
+              case Some(dctorTy) -> dctorTy
+              case None -> match unionOrEnumTypeSymbolOf(tbl, fn) {
               case Some(uSym) -> {
                 val ctorHint = unionOrEnumCaseNamesHint(uSym)
                 val baseMsg = "cannot construct '" + uSym.name +
@@ -19775,6 +19840,7 @@ func inferExprCore(
                   }
                 }
               }
+            }
             }
           }
         }
