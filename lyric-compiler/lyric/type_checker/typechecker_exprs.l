@@ -4989,6 +4989,75 @@ func recordIndirectCall(tbl: in SymbolTable, callNode: in Int): Unit {
   }
 }
 
+// Record a call to a member of an `extern type` (`externByNode`, D365),
+// including `T.new(..)`: the host type, the receiver's type arguments, the
+// member's name and the argument count, which the builder resolves against the
+// host's metadata as `externMemberResult` did.
+func recordExternMemberCall(
+  tbl: in SymbolTable,
+  callNode: in Int,
+  fn: in Expr,
+  recvTy: in Option[Type],
+  memberName: in String,
+  argCount: in Int,
+): Unit {
+  if callNode <= 0 {
+    return
+  }
+  match fn.kind {
+    case EMember(recvE, _) -> {
+      val rt = match recvTy { case Some(t) -> t; case None -> tyErrorSilent() }
+      match externMemberReceiver(tbl, recvE, rt) {
+        case Some(er) -> {
+          if tbl.externByNode.containsKey(callNode) {
+            tbl.externByNode.remove(callNode)
+          }
+          tbl.externByNode.add(
+            callNode,
+            ExternCallSite(hostType = er.decl.clrName, targs = er.targs, name = memberName, argCount = argCount)
+          )
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Record a call to a member of an interface or a protected type under the
+// call's `NodeId` (`calleeByNode`, D365): the member's DefPath is the type's
+// with the member's name, `Pkg::Type::member`, and the builder takes the
+// callee's kind from the type's declaration.
+func recordTypeMemberCallee(tbl: in SymbolTable, callNode: in Int, recvTy: in Option[Type], memberName: in String): Unit {
+  if callNode <= 0 {
+    return
+  }
+  match recvTy {
+    case Some(rt) -> match unrefine(rt) {
+      case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+        case Some(ts) -> {
+          val hasMembers = match ts.kind { case DKInterface(_, _) -> true; case DKProtected(_, _) -> true; case _ -> false }
+          if hasMembers {
+            val typeKey = match defPathKeyOf(tbl.interner, tid) {
+              case Some(k) -> k
+              case None -> if ts.originPackage.length > 0 { ts.originPackage + "::" + ts.name } else { "" }
+            }
+            if typeKey.length > 0 {
+              if tbl.calleeByNode.containsKey(callNode) {
+                tbl.calleeByNode.remove(callNode)
+              }
+              tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, typeKey + "::" + memberName))
+            }
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+}
+
 // The built-in a member call resolved to without a typed signature: the
 // reserved accessors of `Result` and `Option`.  Records `Receiver.member`.
 func recordUntypedBuiltinMember(
@@ -5093,15 +5162,30 @@ func recordMethodCalleeNode(
     case Some(mp) -> {
       val sig = match mp.fullSig { case Some(full) -> full; case None -> mp.sig }
       val owner = dotNamedOwnerName(unrefine(recvTy))
-      if owner.length == 0 {
-        return
+      var target: Option[SymbolId] = None
+      if owner.length > 0 {
+        match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
+          case Some(dp) -> {
+            target = Some(value = internDefPathKey(tbl.interner, dp))
+          }
+          case None -> ()
+        }
       }
-      match symTableFuncDefPathKey(tbl, sig, owner + "." + memberName, true) {
-        case Some(dp) -> {
+      // A record-body, `impl` or interface method is a method declaration, not
+      // a dot-named function: the resolver's id of the declaration at the
+      // signature's span.
+      match target {
+        case Some(_) -> ()
+        case None -> {
+          target = symTableMethodDeclId(tbl, sig.originPackage, memberName, sig.span)
+        }
+      }
+      match target {
+        case Some(id) -> {
           if tbl.calleeByNode.containsKey(callNode) {
             tbl.calleeByNode.remove(callNode)
           }
-          tbl.calleeByNode.add(callNode, internDefPathKey(tbl.interner, dp))
+          tbl.calleeByNode.add(callNode, id)
         }
         case None -> ()
       }
@@ -19606,6 +19690,8 @@ func inferExprCore(
                         if not tbl.builtinByNode.containsKey(e.nodeId) {
                           recordIndirectCall(tbl, e.nodeId)
                         }
+                      } else if isMemberCallee and not tbl.builtinByNode.containsKey(e.nodeId) {
+                        recordTypeMemberCallee(tbl, e.nodeId, memberRecvTy, memberName)
                       }
                       val minArgs = paramTypes.count - builtinOptionalTrailingArgs(fn, memberRecvTy)
                       if argTypes.count > paramTypes.count or argTypes.count < minArgs {
@@ -19674,6 +19760,7 @@ func inferExprCore(
                           case None -> if isMemberCallee {
                             val untypedTy = untypedMemberCallResult(tbl, fn, memberName, args.count, memberRecvTy)
                             recordUntypedBuiltinMember(tbl, e.nodeId, memberRecvTy, memberName, args.count, untypedTy)
+                            recordExternMemberCall(tbl, e.nodeId, fn, memberRecvTy, memberName, args.count)
                             untypedTy
                           } else {
                             tyErrorSilent()
