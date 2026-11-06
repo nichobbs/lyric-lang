@@ -4847,6 +4847,24 @@ test "an @externTarget generic call is judged like any other, and its expected-t
   )
 }
 
+test "a generic @externTarget function of the package itself is judged too (D384)" {
+  val body = "package App\nimport Lib\n@externTarget(\"Host.Make..ctor\")\nfunc mkLocal[T](): Option[T] = ()\n"
+  val bad = checkWithImportedPackages(rewriteFileReporting(parse(body + "func f(): Bool { isNone(mkLocal()) }\n").file).file, unsolvedLib())
+  var n = 0
+  for d in bad.diagnostics {
+    if d.code == "T0224" {
+      n = n + 1
+    }
+  }
+  assertEqualInt(n, 2, "the local extern call and isNone are both unfixed")
+  val ok = checkWithImportedPackages(
+    rewriteFileReporting(parse(body + "record R { o: Option[Int] }\nfunc f(): R { R(o = mkLocal()) }\n").file).file,
+    unsolvedLib()
+  )
+  assertEqualInt(diagCount(ok), 0, "a constructor field fixes it (" + diagCodesOf(ok) + ")")
+  assertEqualInt(ok.symbols.genericCallTypeArgSites.count, 1, "and its solution is recorded")
+}
+
 test "more positions that fix a call, and the cases the checker cannot decide (D339)" {
   assertEqualInt(
     unsolvedErrors("func f(): Option[Int] { wrap(none()) }\n"),

@@ -17541,7 +17541,9 @@ func noteUnsolvedCallNamed(
   callSpan: in Span,
 ): Unit {
   val sig = pick.sig
-  if sig.generics.count == 0 or sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+  // A generic of the package itself is specialised from its own declaration
+  // (the monomorphiser reports what it cannot); an extern one has none (D384).
+  if sig.generics.count == 0 or sig.originPackage.length == 0 or (sig.originPackage == symTableScopePkg(tbl) and not sig.isExternFunc) {
     return
   }
   if isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset or args.count > sig.params.count {
