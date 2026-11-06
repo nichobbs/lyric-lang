@@ -1758,6 +1758,9 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
     Console.error("  " + noCallee[j])
     j = j + 1
   }
+  for line in TirBuild.calleeCensusByName(ctx, calls, 12) {
+    Console.error("  uncovered callee: " + line)
+  }
 }
 
 /// The front of `pipeCheckAndMono`: everything up to and including the mode

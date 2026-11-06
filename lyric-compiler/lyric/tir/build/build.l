@@ -261,6 +261,19 @@ pub func exprNodeIds(file: in SourceFile): List[Int] {
 pub record CallSite {
   id: Int
   span: Span
+  /// The callee as written: a path (`Pkg.f`, `Some`), a member (`.get`), or
+  /// `<expr>` for a call through any other expression.
+  callee: String
+}
+
+func calleeText(fn: in Expr): String {
+  match fn.kind {
+    case EPath(path) -> modulePathJoin(path.segments)
+    case EMember(_, name) -> "." + name
+    case ETypeApp(inner, _) -> calleeText(inner)
+    case EParen(inner) -> calleeText(inner)
+    case _ -> "<expr>"
+  }
 }
 
 /// Every call expression of `file`, in traversal order.
@@ -270,7 +283,7 @@ pub func callSitesOf(file: in SourceFile): List[CallSite] {
     file,
     { e: Expr ->
       match e.kind {
-        case ECall(_, _) -> sites.add(CallSite(id = e.nodeId, span = e.span))
+        case ECall(fn, _) -> sites.add(CallSite(id = e.nodeId, span = e.span, callee = calleeText(fn)))
         case _ -> ()
       }
       e
@@ -295,9 +308,49 @@ pub func calleeCensus(ctx: in TyConvCtx, calls: in List[CallSite]): List[String]
           toString(c.span.startPos.column) +
           " (node #" +
           toString(c.id) +
-          ")"
+          ") to " +
+          c.callee
       )
     }
+  }
+  res
+}
+
+/// The callees of the uncovered calls with how many calls each has, most
+/// frequent first, at most `limit` of them, as `name x count` lines: which
+/// route to cover next (D361).
+pub func calleeCensusByName(ctx: in TyConvCtx, calls: in List[CallSite], limit: in Int): List[String] {
+  val counts: Map[String, Int] = newMap()
+  for c in calls {
+    if not ctx.tbl.calleeByNode.containsKey(c.id) {
+      val n = match mapGet(counts, c.callee) { case Some(k) -> k; case None -> 0 }
+      if counts.containsKey(c.callee) {
+        counts.remove(c.callee)
+      }
+      counts.add(c.callee, n + 1)
+    }
+  }
+  val res: List[String] = newList()
+  val taken: Map[String, Bool] = newMap()
+  var round = 0
+  while round < limit {
+    var best = ""
+    var bestN = 0
+    for k in mapKeys(counts) {
+      if not taken.containsKey(k) {
+        val n = match mapGet(counts, k) { case Some(v) -> v; case None -> 0 }
+        if n > bestN {
+          best = k
+          bestN = n
+        }
+      }
+    }
+    if bestN == 0 {
+      return res
+    }
+    taken.add(best, true)
+    res.add(best + " x " + toString(bestN))
+    round = round + 1
   }
   res
 }
