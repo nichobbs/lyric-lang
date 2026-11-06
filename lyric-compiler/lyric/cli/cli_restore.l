@@ -2049,10 +2049,7 @@ func runRestoreWith(
               case Some(lockedHash) -> match resolved.sha512 {
                 case None -> {
                   printErr(
-                    "restore: --locked: '" + resolved.name +
-                      "' could not be re-hashed to verify locked SHA-512 ('" +
-                      lockedHash +
-                      "')"
+                    "restore: --locked: '" + resolved.name + "' could not be re-hashed to verify locked SHA-512 ('" + lockedHash + "')"
                   )
                   lockMismatch = true
                 }

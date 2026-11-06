@@ -2869,10 +2869,7 @@ pub func buildProjectFromManifest(
   // without a manual `lyric restore`.  `--no-restore` opts out.
   if not noRestore and lockNeedsRestore(mfPath, manifest) {
     Console.println("build: resolving dependencies (lyric.lock missing or stale) ...")
-    val restoreTarget = match target {
-      case Emitter.Native -> "native"
-      case _ -> ""
-    }
+    val restoreTarget = match target { case Emitter.Native -> "native"; case _ -> "" }
     val rc = runRestoreFor(mfPath, false, restoreTarget)
     if rc != 0 {
       printErr("build: dependency restore failed")
