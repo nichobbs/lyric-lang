@@ -178,7 +178,7 @@ test "println of a Char prints the glyph, not the integer code" {
   val result = compileAndRun("charprint", packages, "CharPrint")
   assertEqualInt(result.exitCode, 0, "char_println_glyph: exit 0 (stderr=" + result.stderr + ")")
   val lines = Str.split(Str.trim(result.stdout), "\n")
-  assertEqualInt(lines.count, 3, "char_println_glyph: three output lines")
+  assertEqualInt(lines.length, 3, "char_println_glyph: three output lines")
   assertEqual(lines[0], "A", "char_println_glyph: println('A') prints A")
   assertEqual(lines[1], "z", "char_println_glyph: println(c) prints z")
   assertEqual(lines[2], "<z>", "char_println_glyph: interpolation agrees with println(char)")
