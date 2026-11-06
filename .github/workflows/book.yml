@@ -42,7 +42,15 @@ jobs:
           # that lacks --embed-resources (added in 3.0).
           PANDOC_VER=3.9.0.2
           wget -q "https://github.com/jgm/pandoc/releases/download/${PANDOC_VER}/pandoc-${PANDOC_VER}-1-amd64.deb"
+          wget -q -O pandoc-checksums.txt "https://github.com/jgm/pandoc/releases/download/${PANDOC_VER}/pandoc-${PANDOC_VER}-checksums.txt"
+          EXPECTED_SHA=$(awk "/pandoc-${PANDOC_VER}-1-amd64\\.deb\$/ { print \$1 }" pandoc-checksums.txt)
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "error: checksum for pandoc-${PANDOC_VER}-1-amd64.deb not found" >&2
+            exit 1
+          fi
+          echo "${EXPECTED_SHA}  pandoc-${PANDOC_VER}-1-amd64.deb" | sha256sum -c -
           sudo dpkg -i "pandoc-${PANDOC_VER}-1-amd64.deb"
+          rm -f "pandoc-${PANDOC_VER}-1-amd64.deb" pandoc-checksums.txt
           pandoc --version | head -1
 
       - name: Cache NuGet packages

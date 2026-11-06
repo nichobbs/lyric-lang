@@ -34,7 +34,7 @@
 //! the HTTP/1.1 parser (which would otherwise silently misinterpret h2's
 //! binary frame format as HTTP/1.1 text and either hang or emit garbage) —
 //! a loud, documented gap, not a silent miscompile. Native ALPN-selected h2
-//! is tracked as N9.5 (`native/plan/08-work-items.md`, issue #6106),
+//! is tracked as N9.5 (`docs/native-plan/08-work-items.md`, issue #6106),
 //! already gated on this item.
 //!
 //! ## Concurrency: mutex + counting semaphore over `lyric_mutex_*`/
@@ -66,7 +66,7 @@
 //!
 //! `List[HttpContext]`/`List[Long]` themselves are safe to share and mutate
 //! across threads through a `Long`-keyed-mutex-guarded record reference: per
-//! `native/plan/04-arc-design.md`, a Lyric `record` is a heap-allocated,
+//! `docs/native-plan/04-arc-design.md`, a Lyric `record` is a heap-allocated,
 //! ARC-refcounted object on this target (unlike the self-hosted MSIL
 //! emitter, which may lay out a generic record as a value type, docs/43) —
 //! refcount increments/decrements are atomic (`_Atomic int rc`), and a
@@ -217,7 +217,7 @@
 //! hand a closure to `pthread_create` and return without joining in the
 //! same scope (unlike this codebase's only other `pthread_create`
 //! precedent, `llvm_ffi_self_test.l`, which always joins immediately —
-//! see `native/plan/05-ffi-design.md`'s "Callback trampolines" ARC
+//! see `docs/native-plan/05-ffi-design.md`'s "Callback trampolines" ARC
 //! contract). Without an explicit retain, the spawning function's own
 //! scope-exit release could free the closure's backing memory before the
 //! new OS thread has finished reading its function pointer/environment
@@ -395,7 +395,7 @@ extern func pthreadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> Nati
 
 extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "lyric_thread_join"
 
-// ARC retain/release for a `pthread_create`d closure (#6797, `native/plan/
+// ARC retain/release for a `pthread_create`d closure (#6797, `docs/native-plan/
 // 05-ffi-design.md`'s "Callback trampolines" section: "If the C function
 // holds the callback across multiple calls ... the closure must be
 // retained before passing and released when the C API signals it is

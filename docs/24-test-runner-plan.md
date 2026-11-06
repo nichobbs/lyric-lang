@@ -365,7 +365,7 @@ straight-through call sequence instead: a passing suite prints normal
 TAP output and exits `0`; a failing assertion aborts the whole process
 (nonzero exit, no per-test isolation). See D-N-018 in
 `docs/03-decision-log.md` for the full rationale, and
-`native/plan/08-work-items.md` §N7.2 for the work-item writeup.
+`docs/native-plan/08-work-items.md` §N7.2 for the work-item writeup.
 
 The full `LyricTestEngine` JUnit 5 `TestEngine` implementation is
 deferred to B127+ (see `docs/32-junit-runner-sketch.md` §5 and §9

@@ -117,7 +117,7 @@ pub func trustedHostOpen(path: in String): Result[TrustedHostLibrary, String] {
 // which writes its server here, and takes it while it holds the load lock.
 // The slot is process-global, so `offerTrustedPluginServer` must only ever
 // be called from inside `trustedHostNewServer`, under `trustedLoadGate`.
-record TrustedOfferSlot {
+ref record TrustedOfferSlot {
   var offered: Option[PluginServer]
 }
 

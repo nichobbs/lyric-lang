@@ -46,7 +46,7 @@ import Std.PluginWasmLoad
 
 // Calls `bindAvailable`, which on dotnet and the JVM throws when the library
 // itself cannot be found.
-record AvailabilityProbe {
+ref record AvailabilityProbe {
   var available: Bool
 }
 
@@ -151,7 +151,7 @@ func serveImport(
   }
 }
 
-record ImportCall {
+ref record ImportCall {
   imports: ComponentImports
   instance: String
   function: String

@@ -29,6 +29,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version)
       case "$2" in
+        *[!0-9A-Za-z._+-]*|""|*..*) err "--version must be a valid semver string (e.g. 1.0.0)" ;;
         [0-9]*.[0-9]*.[0-9]*) VERSION="$2" ;;
         *) err "--version must be a semver string (e.g. 1.0.0)" ;;
       esac
@@ -55,7 +56,7 @@ download() {
   if command -v curl > /dev/null 2>&1; then
     curl --proto '=https' --tlsv1.2 -fsSL -o "$dest" "$url"
   elif command -v wget > /dev/null 2>&1; then
-    wget -q -O "$dest" "$url"
+    wget --https-only -q -O "$dest" "$url"
   else
     err "neither curl nor wget found; install one and retry"
   fi
@@ -146,7 +147,7 @@ install_lyric() {
     err "failed to download SHASUMS256.txt from ${SHASUMS_URL} — releases published before checksum manifests existed cannot be verified; pass a newer --version"
   fi
 
-  EXPECTED_HASH="$(awk -v name="$ARCHIVE_NAME" '$2 == name { print tolower($1) }' "$SHASUMS_FILE" | head -1)"
+  EXPECTED_HASH="$(awk -v name="$ARCHIVE_NAME" '{ sub(/^\*/, "", $2); if ($2 == name) print tolower($1) }' "$SHASUMS_FILE" | head -1)"
   if [ -z "$EXPECTED_HASH" ]; then
     rm -rf "$TMPDIR_INST"
     err "no SHASUMS256.txt entry for ${ARCHIVE_NAME}; aborting rather than installing an unverified archive"

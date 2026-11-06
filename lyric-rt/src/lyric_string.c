@@ -22,6 +22,9 @@ void lyric_string_dtor(void* obj) {
 }
 
 static LyricString* string_alloc(int64_t len) {
+    if (len < 0 || (uint64_t)len > (SIZE_MAX / 2) - sizeof(LyricString) - 1) {
+        lyric_panic_msg("string allocation size overflow", "lyric_string.c", __LINE__);
+    }
     /* +1 so the data can always carry a trailing NUL, which makes
      * lyric_string_to_cstring cheap and debugger-friendly. */
     LyricString* s = (LyricString*)lyric_alloc(sizeof(LyricString) + (uint64_t)len + 1);
@@ -43,6 +46,9 @@ LyricString* lyric_string_from_literal(const uint8_t* data, int64_t len) {
 LyricString* lyric_string_concat(LyricString* a, LyricString* b) {
     int64_t alen = a ? a->len : 0;
     int64_t blen = b ? b->len : 0;
+    if (alen < 0 || blen < 0 || alen > INT64_MAX - blen) {
+        lyric_panic_msg("string concatenation length overflow", "lyric_string.c", __LINE__);
+    }
     LyricString* s = string_alloc(alen + blen);
     if (alen > 0) memcpy(LYRIC_STRING_DATA(s), LYRIC_STRING_DATA(a), (size_t)alen);
     if (blen > 0) memcpy(LYRIC_STRING_DATA(s) + alen, LYRIC_STRING_DATA(b), (size_t)blen);
@@ -788,6 +794,9 @@ LyricString* lyric_string_replace(LyricString* s, LyricString* oldValue, LyricSt
         return lyric_string_from_literal(data, slen);
     }
 
+    if (newLen > oldLen && count > (INT64_MAX - slen) / (newLen - oldLen)) {
+        lyric_panic_msg("string replace length overflow", "lyric_string.c", __LINE__);
+    }
     LyricString* out = string_alloc(slen + count * (newLen - oldLen));
     uint8_t* dst = LYRIC_STRING_DATA(out);
     int64_t o = 0;

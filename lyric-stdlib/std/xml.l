@@ -61,7 +61,7 @@ pub record XmlDoc {
   // ── Parser state ───────────────────────────────────────────────────────────────
 }
 
-record XmlState {
+ref record XmlState {
   src: String
   var pos: Int
   // ── Low-level character utilities ──────────────────────────────────────────────
@@ -448,9 +448,26 @@ func xParseCData(st: inout XmlState): Result[XmlNode, XmlError] {
 func xSkipToGt(st: inout XmlState): Result[Unit, XmlError] {
   var depth = 0
   var found = false
+  var inQuote = false
+  var quoteCh = '"'
   while not found and not xAtEnd(st) {
     val c = charAtOrReplacement(st.src, st.pos)
-    if c == '<' {
+    if inQuote {
+      if c == quoteCh {
+        inQuote = false
+      }
+      st.pos = st.pos + 1
+    } else if xStartsWith(st, "<!--") {
+      st.pos = st.pos + 4
+      match xParseComment(st) {
+        case Err(e) -> return Err(error = e)
+        case Ok(_) -> ()
+      }
+    } else if c == '"' or c == '\'' {
+      inQuote = true
+      quoteCh = c
+      st.pos = st.pos + 1
+    } else if c == '<' {
       depth += 1
       st.pos = st.pos + 1
     } else if c == '>' {
@@ -737,7 +754,29 @@ pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
       }
       match xParseElement(st, 0) {
         case Err(e) -> Err(error = e)
-        case Ok(root) -> Ok(value = XmlDoc(version = None, encoding = None, root = root))
+        case Ok(root) -> {
+          while not xAtEnd(st) {
+            xSkipWs(st)
+            if xAtEnd(st) {
+              ()
+            } else if xStartsWith(st, "<!--") {
+              st.pos = st.pos + 4
+              match xParseComment(st) {
+                case Err(e) -> return Err(error = e)
+                case Ok(_) -> ()
+              }
+            } else if xStartsWith(st, "<?") {
+              st.pos = st.pos + 2
+              match xSkipPI(st) {
+                case Err(e) -> return Err(error = e)
+                case Ok(_) -> ()
+              }
+            } else {
+              return Err(error = UnexpectedChar(pos = st.pos, expected = "end of document after root element"))
+            }
+          }
+          Ok(value = XmlDoc(version = None, encoding = None, root = root))
+        }
       }
     }
   }

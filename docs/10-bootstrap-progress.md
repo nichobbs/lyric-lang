@@ -463,7 +463,7 @@ deferred to Phase 3 by design.
 | M4.3 — `lyric prove --explain --goal <n>` mode | **Shipped** | D-progress-113 (`Vcir.PrettyPrint.goal` + CLI dispatch + ProveTests CLI tests) |
 | M4.3 — `lyric prove --json` schema (frozen public surface) | **Shipped** | D-progress-113 (CLI emitter + appendix A in `docs/15-phase-4-proof-plan.md` + ProveTests schema tests) |
 | M4.3 — LSP integration: V0007/V0008 hover counterexamples + code actions | **Shipped** | D-progress-113 (`Server.fs` proof-failure hover section; V0007/V0008 downgrade-to-runtime_checked quickfix; ProtocolTests covers V0003 / V0007 / V0008 / V0009) |
-| M4.3 — `@proof_required(checked_arithmetic)` mode | **Shipped** | D-progress-113 (`VCGen.Env.CheckedArithmetic` + per-binop overflow side conditions on `+`/`-`/`*` for `SInt`; DriverTests coverage); unsigned no-wrap obligations (#7848); width-aware (`Int` 32-bit, `Long` 64-bit), unary `-` and compound assignments, debug-profile semantics (#7871, `docs/progress/2026-10-03-verifier-int-width-overflow.md`) |
+| M4.3 — `@proof_required(checked_arithmetic)` mode | **Shipped** | D-progress-113 (`VCGen.Env.CheckedArithmetic` + per-binop overflow side conditions on `+`/`-`/`*` for `SInt`; DriverTests coverage); unsigned no-wrap obligations (#7848); width-aware (`Int` 32-bit, `Long` 64-bit), unary `-` and compound assignments, debug-profile semantics (#7871, `docs/progress/2026-10-03-verifier-int-width-overflow.md`); enabled by default for all `@proof_required` modules across 8/16/32/64-bit signed and unsigned integers with `@proof_required(unbounded_arithmetic)` opt-out (D415, #8854, `docs/progress/2026-11-06-adversarial-review-remediation.md`) |
 | M4.3 — `@proof_required` builds keep every contract clause as a runtime check; `lyric prove` discharges them statically (build-time proving with per-obligation elision: #7431) | **Shipped** | D-progress-994 (#7227) |
 | `lyric prove` proves what the build compiles: `@cfg` erasure for the build's target and features before any verifier pass (#8325); record, `impl` and interface default methods verified, an `impl` method also against its interface's clauses (#8231); a goal that depends on an unmodelled `match` arm is error `V0027`, never discharged, and a bare union/enum case is never read as a binding (#8230) | **Shipped** | `docs/progress/2026-10-12-prove-cfg-methods-unmodelled-match.md` |
 | Generic records are parametric SMT datatypes, their fields read at the receiver's instance (#8340); a name declared more than once never makes the verifier, mode or stability check throw: overloads resolved by arity, duplicates reported (`V0033`) and not proved (#8341); the language server proves a document under the builds, features, import scope and labels `lyric prove <file>` uses, with inactive items as Information diagnostics (#8342) | **Shipped** | `docs/progress/2026-10-12-verifier-generic-records-duplicates-lsp-builds.md` |
@@ -26224,7 +26224,7 @@ unchanged) confirms the converted `ValidateKey` template still weaves and runs c
 ### D-progress-540 — LLVM native backend Phase 1 slice: `lyric build --target native` (D-N-001..014)
 
 **Shipped.** The first end-to-end slice of the native backend
-(`native/plan/`, work items N0.1–N0.4, N1.1–N1.7, N4.1, N4.6, and the
+(`docs/native-plan/`, work items N0.1–N0.4, N1.1–N1.7, N4.1, N4.6, and the
 N4.4/N5.1/N6.1–N6.3/N6.5 subsets a scalar program needs):
 
 - **`lyric-rt/`** — the native runtime C library (`lyric_rt.a`): ARC
@@ -26293,7 +26293,7 @@ entry points carry a `Native` suffix (bare-name collision with the
 MSIL/JVM `codegenPackage`/`lowerPackage` in the restored-bundle
 resolver).
 
-**Related:** D-N-001..014, docs/03 §D-N-014, `native/plan/08-work-items.md`.
+**Related:** D-N-001..014, docs/03 §D-N-014, `docs/native-plan/08-work-items.md`.
 
 ---
 
@@ -26581,8 +26581,8 @@ hardening opportunistically.
 ### D-progress-545 — Native backend Phase N2: records, unions, enums, distinct types, pattern matching, ARC
 
 **Shipped.** The second slice of the LLVM native backend
-(`native/plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
-rules of `native/plan/04-arc-design.md`), making heap types a working
+(`docs/native-plan/08-work-items.md` items N2.1–N2.4 plus the ARC insertion
+rules of `docs/native-plan/04-arc-design.md`), making heap types a working
 part of `--target native`:
 
 - **Records (N2.1)** — `{ i32 rc, i8* dtor, fields... }` heap structs
@@ -26643,8 +26643,8 @@ module-level `val`, collections (N5), async (Phase 2).  Bundled-
 package (stdlib) record methods are collected for registration but not
 lowered until the N5 stdlib port.
 
-**Related:** D-progress-540, `native/plan/04-arc-design.md`,
-`native/plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
+**Related:** D-progress-540, `docs/native-plan/04-arc-design.md`,
+`docs/native-plan/08-work-items.md` §N2, D037 (methods desugar), #4631.
 
 ---
 
@@ -26686,7 +26686,7 @@ is the next N3.1 slice), interfaces/vtables (N3.2), tuples (N3.3),
 closures (N2.6), `NativeWeak[T]` (N2.5 — now unblocked by
 instantiated `Option[T]`).
 
-**Related:** D-progress-545, `native/plan/08-work-items.md` §N3.1, #4631.
+**Related:** D-progress-545, `docs/native-plan/08-work-items.md` §N3.1, #4631.
 
 ---
 
@@ -26718,7 +26718,7 @@ case (27 total): multi-instantiation (`wrap(40)` / `wrap("hello")`),
 UFCS, identity, and a generic function returning a generic
 instantiation, ASan-verified with the rest of the suite.
 
-**Related:** D-progress-546, `native/plan/08-work-items.md` §N3.1, D-N-010.
+**Related:** D-progress-546, `docs/native-plan/08-work-items.md` §N3.1, D-N-010.
 
 ---
 
@@ -26751,7 +26751,7 @@ native backend:
 composition — capture retain/release and the closure destructor
 verified leak-free.
 
-**Related:** D-progress-547, `native/plan/08-work-items.md` §N2.6.
+**Related:** D-progress-547, `docs/native-plan/08-work-items.md` §N2.6.
 
 ---
 
@@ -26783,7 +26783,7 @@ plan's non-owning cycle-breaking reference (D-N-005):
 (29 total): upgrades of a live target across 200 iterations plus
 weak-to-temporary nodes, rc balancing leak-free.
 
-**Related:** D-progress-548, `native/plan/04-arc-design.md`
+**Related:** D-progress-548, `docs/native-plan/04-arc-design.md`
 §NativeWeak, D-N-005.
 
 ---
@@ -26808,7 +26808,7 @@ element-releasing destructors:
 destructuring in a 300-iteration loop with string elements —
 element release verified leak-free.
 
-**Related:** D-progress-549, `native/plan/08-work-items.md` §N3.3.
+**Related:** D-progress-549, `docs/native-plan/08-work-items.md` §N3.3.
 
 ---
 
@@ -26827,14 +26827,14 @@ returned `NativePtr[Byte]`.
 operands, no escaping — is front-end work shared by all targets and
 lands with the mode-checker N4.2 slice.
 
-**Related:** D-progress-550, `native/plan/05-ffi-design.md`
+**Related:** D-progress-550, `docs/native-plan/05-ffi-design.md`
 §nativeAddrOf, #4697.
 
 ---
 
 ### D-progress-552 — Native backend N4 remainder: N0100 FFI boundary, callback trampolines, FFI self-test
 
-**Shipped.** The rest of Phase N4 (`native/plan/08-work-items.md` §N4.2
+**Shipped.** The rest of Phase N4 (`docs/native-plan/08-work-items.md` §N4.2
 mode-checker half, §N4.5, §N4.7), plus the #4693 dedup refactor:
 
 - **N0100 (N4.2, mode checker)** — `Lyric.ModeChecker` gains a native
@@ -26867,7 +26867,7 @@ mode-checker half, §N4.5, §N4.7), plus the #4693 dedup refactor:
   registers and delivers the closure end-to-end.  Call-duration borrows
   need no retain; APIs that hold the callback across calls put
   retention on the `_kernel_native/` wrapper
-  (`native/plan/05-ffi-design.md`).  `nativeNullPtr()` ships alongside
+  (`docs/native-plan/05-ffi-design.md`).  `nativeNullPtr()` ships alongside
   as the C NULL producer (`NPtr(NI8)` null literal), N0100-gated like
   `nativeAddrOf`.
 - **FFI self-test (N4.7)** — `llvm_ffi_self_test.l` (6 cases, all but
@@ -26887,8 +26887,8 @@ non-userdata parameters) is implemented but exercised only with
 zero-parameter closures — a forwarded-parameter case lands with the
 first N5 kernel that needs one.
 
-**Related:** D-progress-551, `native/plan/05-ffi-design.md`,
-`native/plan/08-work-items.md` §N4, #4697, #4693.
+**Related:** D-progress-551, `docs/native-plan/05-ffi-design.md`,
+`docs/native-plan/08-work-items.md` §N4, #4697, #4693.
 
 ---
 
@@ -27171,7 +27171,7 @@ phantom-shim elimination pattern), D-progress-553.
 ### D-progress-556 — Native backend N5.8: List[T] / Map[K, V] on the lyric-rt kernels, `for` loops, indexing
 
 **Shipped.** `Std.Collections` becomes usable on `--target native`
-(`native/plan/08-work-items.md` §N5.8, plus the `for`-loop lowering the
+(`docs/native-plan/08-work-items.md` §N5.8, plus the `for`-loop lowering the
 plan folds into Phase N2):
 
 - **Type mapping** — `List[T]` / `Map[K, V]` lower to the fixed
@@ -27218,8 +27218,8 @@ plan folds into Phase N2):
 produce slices), list literals (`EList`), `Set[T]`, and map iteration
 without a snapshot.
 
-**Related:** D-progress-552, `native/plan/08-work-items.md` §N5.8,
-`native/plan/07-stdlib-port.md` §collections, D-N-012.
+**Related:** D-progress-552, `docs/native-plan/08-work-items.md` §N5.8,
+`docs/native-plan/07-stdlib-port.md` §collections, D-N-012.
 
 ---
 
@@ -27327,7 +27327,7 @@ pure layer becomes a thin target-neutral delegation.
   existing stdlib test suite (`lyric-stdlib/tests/`) in CI.
 
 **Related:** D-progress-556, `docs/01-language-reference.md` §11 (FFI),
-`native/plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.
+`docs/native-plan/07-stdlib-port.md`, issue #4752, D-N-003, D-N-014.
 
 ### D-progress-558 — JVM: in-process multi-package project builds; overload/assignment/ldc codegen fixes; math/uuid/char/json kernels; `lyric test --features` (band J6, epic #2663)
 
@@ -27761,7 +27761,7 @@ next tranche of #4752's native-side deferrals: bytes-mode file I/O
   were renamed rather than skipped.
 
 **Related:** D-N-015 (`docs/03-decision-log.md`), D-progress-556,
-D-progress-557, `native/plan/03-type-mapping.md`, issues #4752, #4778,
+D-progress-557, `docs/native-plan/03-type-mapping.md`, issues #4752, #4778,
 #4795, #4809, #4827, #4833.
 
 ### D-progress-563 — JVM: mixed-width match bindings — verifier-type-aware slot reuse (band J4, epic #2663)
@@ -27908,7 +27908,7 @@ is the JVM-side coverage.  `pattern_lowering` / `bitwise` regression-clean.
 
 **Shipped.** `lyric.toml` gains an optional `[native]` table that supplies
 defaults for `--target native` (LLVM backend) builds, closing work item
-N6.4 from `native/plan/08-work-items.md`.
+N6.4 from `docs/native-plan/08-work-items.md`.
 
 - **Parsing** (`manifest.l`): a new `NativeConfig` record (`triple`,
   `optLevel`, `extraLibs`) and `Option[NativeConfig]` field on `Manifest`,
@@ -27938,7 +27938,7 @@ N6.4 from `native/plan/08-work-items.md`.
   precedence) and the `--target native` CLI paragraph; book
   `appendix-b-quick-reference.md` (manifest table + native build note).
 
-**Related:** D-progress-540/562 (native backend), `native/plan/08-work-items.md`
+**Related:** D-progress-540/562 (native backend), `docs/native-plan/08-work-items.md`
 §N6.4, `docs/20-project-as-dll.md`.
 
 ---
@@ -27989,13 +27989,13 @@ codegen epics #3511/#3512.
 
 **Shipped.** `--target native` now lowers non-generic interfaces and their
 `impl I for Record` blocks, closing work item N3.2 from
-`native/plan/08-work-items.md`. Interfaces were previously rejected with a
+`docs/native-plan/08-work-items.md`. Interfaces were previously rejected with a
 construct-naming diagnostic.
 
 - **Representation** (`llvm_codegen.l`): an interface value is a heap-boxed
   fat pointer `{ i32 rc, i8* dtor, i8* obj, vtable* }` — an ordinary RC'd
   object — rather than the by-value fat pointer of
-  `native/plan/03-type-mapping.md` / `04-arc-design.md` Rule 8. This fits the
+  `docs/native-plan/03-type-mapping.md` / `04-arc-design.md` Rule 8. This fits the
   pointer-centric IR (no `insertvalue`/`extractvalue`, no aggregate ABI) and
   makes ARC fall out of the existing owned-temp/destructor machinery
   (D-N-016). Each interface synthesises a vtable struct of `i8*` slots; each
@@ -28020,7 +28020,7 @@ construct-naming diagnostic.
   object leak-/double-free-free (single release, a 50-upcast loop, and an
   interface stored in a record field). 10/10.
 - **Docs**: language reference native-surface paragraph; book
-  `appendix-b-quick-reference.md`; decision log D-N-016; `native/plan`
+  `appendix-b-quick-reference.md`; decision log D-N-016; `docs/native-plan`
   README + `08-work-items.md` marked shipped.
 
 Deferred (tracked): generic interfaces / generic impl methods, default methods
@@ -28034,7 +28034,7 @@ runs before every backend, so the copy is an ordinary impl member; only the
 vtable-dispatch half of default methods remains deferred here.)
 
 **Related:** D-N-016, D-progress-540/545/562 (native backend),
-`native/plan/08-work-items.md` §N3.2.
+`docs/native-plan/08-work-items.md` §N3.2.
 
 ### D-progress-569 — JVM: variable-bound `match` scrutinee unboxes an erased generic payload (band J4, #4938)
 
@@ -28188,7 +28188,7 @@ lowering this mirrors).
 ### D-progress-573 — Native backend N3.4: protected types
 
 **Shipped.** `--target native` now lowers non-generic `protected type`
-declarations, closing work item N3.4 from `native/plan/08-work-items.md`.
+declarations, closing work item N3.4 from `docs/native-plan/08-work-items.md`.
 Protected types were previously rejected with a construct-naming diagnostic.
 
 - **Representation** (`llvm_codegen.l`): a protected type is a record-shaped
@@ -28227,7 +28227,7 @@ Protected types were previously rejected with a construct-naming diagnostic.
   and an ASan case proving the ref-typed field and mutex buffer are both torn
   down cleanly across 30 constructions. 4/4.
 - **Docs**: language reference native-surface paragraph; book
-  `appendix-b-quick-reference.md`; decision log D-N-017; `native/plan`
+  `appendix-b-quick-reference.md`; decision log D-N-017; `docs/native-plan`
   README + `08-work-items.md` marked shipped.
 
 Deferred (tracked): `when:` barrier re-evaluation (needs `pthread_cond_t`),
@@ -28235,7 +28235,7 @@ invariant re-checking after each operation, generic protected types, and the
 read/write concurrency distinction the language reference leaves open.
 
 **Related:** D-N-017, D-progress-568 (N3.2, the same heap-boxing/no-aggregate-
-ABI reasoning), `native/plan/08-work-items.md` §N3.4.
+ABI reasoning), `docs/native-plan/08-work-items.md` §N3.4.
 
 ### D-progress-574 — JVM: closure body inherits the enclosing scope's generic instantiations (band J4, #4945)
 
@@ -28325,7 +28325,7 @@ premature closure), #4982 (newly-surfaced follow-ups), D-progress-558 (the
 **Shipped.** `lyric test <source.l> --target native` compiles the
 synthesised test program through the LLVM native backend and runs the
 resulting self-contained binary directly, closing work item N7.2 from
-`native/plan/08-work-items.md` (`--target` previously accepted only
+`docs/native-plan/08-work-items.md` (`--target` previously accepted only
 `dotnet`/`jvm`).
 
 - **CLI** (`cli_test.l`): `--target native` compiles via
@@ -28364,11 +28364,11 @@ resulting self-contained binary directly, closing work item N7.2 from
 Deferred (tracked): per-test isolation for native (would need real
 unwinding support, a Phase 2 concern), manifest (multi-package) native
 test suites, `--triple`/`--opt` flags on `lyric test`, and the originally
-envisioned 3-OS CI matrix (`native/plan/08-work-items.md` §N7.1) — the
+envisioned 3-OS CI matrix (`docs/native-plan/08-work-items.md` §N7.1) — the
 existing single-OS (Linux) native CI job already exercises the backend on
 every PR; a dedicated multi-OS workflow is left for a follow-up.
 
-**Related:** D-N-018, D-N-003, `native/plan/08-work-items.md` §N7.2,
+**Related:** D-N-018, D-N-003, `docs/native-plan/08-work-items.md` §N7.2,
 `docs/24-test-runner-plan.md`.
 
 ### D-progress-577 — JVM: `@derive(Equals)`/`@derive(Hash)` records get real `equals(Object)`/`hashCode()` classfile overrides (band J4, #4982 Finding 1)
@@ -28458,7 +28458,7 @@ operators and container keys).
 
 **Shipped.** A non-generator `async func` and `await` compile and run
 correctly on `--target native`, closing the first slice of Phase N8
-(`native/plan/08-work-items.md`).
+(`docs/native-plan/08-work-items.md`).
 
 - **Design correction before any codegen was written:** `06-async-design.md`
   specified real LLVM-coroutine suspension (`llvm.coro.*` intrinsics, an
@@ -28510,8 +28510,8 @@ the last of which is also the point at which the hand-verified
 LLVM-coroutine mechanism becomes necessary, superseding this slice's
 synchronous-passthrough model.
 
-**Related:** D-N-019, D-N-004, `native/plan/06-async-design.md`,
-`native/plan/08-work-items.md` §Phase N8, `docs/01-language-reference.md`
+**Related:** D-N-019, D-N-004, `docs/native-plan/06-async-design.md`,
+`docs/native-plan/08-work-items.md` §Phase N8, `docs/01-language-reference.md`
 §7.1, upstream #1490 (async-iterator generators, MSIL).
 
 ### D-progress-579 — Native backend `defer` for normal-exit paths (P2.D1, D-N-020)
@@ -28558,13 +28558,13 @@ paths — fall-off, `return`, `break`, `continue` — closing the first
   self-tests loop in `ci.yml`.
 
 **Deferred (tracked):** a `defer` registered before a `panic` still does
-not run — the landingpad-based mechanism `native/plan/01-design-
+not run — the landingpad-based mechanism `docs/native-plan/01-design-
 decisions.md`'s D-N-003 entry originally sketched for that case remains
 unimplemented, since it needs real unwinding support (a materially larger,
 separate undertaking from this slice).
 
-**Related:** D-N-020, D-N-003, `native/plan/01-design-decisions.md`,
-`native/plan/08-work-items.md` §"Phase N8 (cont'd)",
+**Related:** D-N-020, D-N-003, `docs/native-plan/01-design-decisions.md`,
+`docs/native-plan/08-work-items.md` §"Phase N8 (cont'd)",
 `docs/01-language-reference.md` §4.3, `lyric-compiler/lyric/defer_self_test.l`
 (the dotnet/jvm reference test this ports the non-panic cases of).
 
@@ -28828,7 +28828,7 @@ become load-bearing; §7.4's cancellation/failure-aggregation machinery
 (absent from the MSIL emitter too — not a native-only gap).
 
 **Related:** D-N-021, D-N-019, D-N-020, `docs/01-language-reference.md`
-§7.4, `native/plan/06-async-design.md`, `native/plan/08-work-items.md`
+§7.4, `docs/native-plan/06-async-design.md`, `docs/native-plan/08-work-items.md`
 §Phase N8.
 
 ### D-progress-584 — JVM: `inferMaxLocals` never accounted for the parameter frame, so a body that never touches its own params under-declared `max_locals` (#5022)
@@ -29385,7 +29385,7 @@ generators (`N0099`); an un-awaited spawned task that never completes
 is abandoned at process exit (documented in D-N-022's semantics note).
 
 **Related:** D-N-022 (the decision entry), D-progress-583/D-N-021 (the
-gate this opens), `native/plan/06-async-design.md` (status header
+gate this opens), `docs/native-plan/06-async-design.md` (status header
 documents shipped-vs-sketch deltas), `lyric-rt/test/lyric_rt_test.c`.
 
 ### D-progress-594 — Attempted bootstrap seed cutover (#3936): sandbox verification passed, real CI caught a genuine v0.4.14-seed-only regression; reverted, filed #5094
@@ -31473,7 +31473,7 @@ leaked SSL_CTX/SSL/fd or a use-after-free fails the run. Green against OpenSSL
 
 Boundary (honest): the seam is the verified C foundation (N9.1). The Lyric-level
 transport/server/client layers are banded as follow-on N-items in
-`native/plan/08-work-items.md` Phase N9, each gated on a stdlib native port:
+`docs/native-plan/08-work-items.md` Phase N9, each gated on a stdlib native port:
 N9.2 `Std.TcpHost` native twin (`_kernel_native/tcp_host.l`, where the seam's
 `extern func` bindings and a native loopback self-test belong) — gated on
 `Std.Encoding`/`Std.Tls` native ports; N9.3 `Std.HttpServer` native twin
@@ -31485,7 +31485,7 @@ network-blocked) and the published `lyric` tool's native backend is behind
 D-progress-543); the C test is the load-bearing runtime verification.
 
 **Related:** `docs/03-decision-log.md` D-progress-703; docs/61 §7/§8, D128; #5890,
-#5874, `native/plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540.
+#5874, `docs/native-plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540.
 
 ## `Std.TcpHost`/`Std.TlsHost`/`Std.EncodingHost` native twins ship over the N9.1 seam, TLS phase 5 band N9.2 (2026-07-20)
 
@@ -31499,7 +31499,7 @@ C seam to Lyric code, gated in dependency order: `Std.Encoding` → `Std.Tls`
 (D-N-003: no try/catch on native).
 
 Two corrections to the original N9.2 plan text (docs/61 §7 item 4,
-`native/plan/08-work-items.md`), both forced by reading the compiler/seam
+`docs/native-plan/08-work-items.md`), both forced by reading the compiler/seam
 source before implementing rather than assuming the plan held:
 
 - **Not `opaque type`.** At the time this item shipped, the native
@@ -31587,7 +31587,7 @@ has since shipped too — see D-progress-807.
 
 **Related:** `docs/03-decision-log.md` D-progress-712, D-progress-713,
 D-progress-807; docs/61 §7 item 4 / §8 item 15;
-`native/plan/08-work-items.md` N9.2; #6103, #5874; #6234 (native `opaque
+`docs/native-plan/08-work-items.md` N9.2; #6103, #5874; #6234 (native `opaque
 type` codegen — part 1 shipped, part 2 custom-destructor still open).
 
 ## Native backend: `opaque type` codegen ships — `Llvm.Codegen` `IOpaque` dispatch, #6234 part 1 (2026-07-20)
@@ -31681,7 +31681,7 @@ compiled-Lyric run of either test was possible; CI's
 **Related:** `docs/03-decision-log.md` D-progress-713, D-progress-807;
 #6234 (part 1 resolved, part 2 open); #6239 (the `@projectable` finding,
 resolved here); #6103 (N9.2, merged as #6235); #6104–#6106; docs/61 §7
-item 4; `native/plan/08-work-items.md` Phase N9; D-N-014;
+item 4; `docs/native-plan/08-work-items.md` Phase N9; D-N-014;
 D-progress-540, D-progress-545, D-progress-703.
 
 ## `Std.Http` native client twin ships over the N9.2 seam, TLS phase 5 band N9.4 (2026-08-27)
@@ -31699,7 +31699,7 @@ verification stay hard-wired on for every trust mode; the dual-key insecure
 policy (docs/61 §4) is reused as-is.
 
 Two premises in the original N9.4 plan text (docs/61 §7 item 15,
-`native/plan/08-work-items.md`'s original N9.4 wording) turned out to be
+`docs/native-plan/08-work-items.md`'s original N9.4 wording) turned out to be
 false once the source was read rather than assumed: **(1)** `Std.HttpEngine`
 — the plan's "drive the sans-IO engine's client connection FSM" — has no
 client half anywhere in the tree (`_kernel/http_server.l`'s `Connection`
@@ -31758,7 +31758,7 @@ green, and the self-test genuinely green across four consecutive local runs
 validator going forward.
 
 **Related:** `docs/03-decision-log.md` D-progress-823; #6105; #6103 (N9.2);
-docs/61 §7 item 15; `native/plan/08-work-items.md` Phase N9 (N9.4);
+docs/61 §7 item 15; `docs/native-plan/08-work-items.md` Phase N9 (N9.4);
 D-progress-712, D-progress-703.
 
 ### D-progress-630 — `lyric build --release --target jvm`: GraalVM `native-image` binaries (#1975, #675; D131)
@@ -32749,7 +32749,7 @@ fixing commit was isolated. Added the missing coverage to
 
 ### Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
-`native/plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
+`docs/native-plan/08-work-items.md`'s N9.3 (`Std.HttpServer` native twin,
 #6104) surfaced that native `String` scalar-method support was far
 narrower than the dotnet/JVM targets: only `.toString()`/`.substring()`
 existed, so any native build touching `Std.HttpEngine` (or any other
@@ -33828,7 +33828,7 @@ cross-thread half (anything touching `pthread_create`) is CI-verified only.
 
 **Related:** `docs/03-decision-log.md` D-progress-850 (full account,
 including addendum 5's #6802/#6803/#6804/#6805 fixes), #6104,
-`native/plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
+`docs/native-plan/08-work-items.md` N9.3, D-progress-809 (the `lyric_sem_*`
 prerequisite), D-progress-830/831 (the two blockers this item's own kernel
 depends on).
 
@@ -33868,7 +33868,7 @@ self-test suite was re-verified green with no regressions
 **Related:** `docs/03-decision-log.md` D-progress-852 (full account,
 evidence, and verification commands), #6106 (left open), #6808, #6809,
 #6794, #6237, D-progress-850 (N9.3, the prerequisite this follow-on builds
-on), `native/plan/08-work-items.md` N9.5, `docs/61-https-tls-http-versions.md`
+on), `docs/native-plan/08-work-items.md` N9.5, `docs/61-https-tls-http-versions.md`
 §6.4/§7 item 5.
 
 ## Native `out`/`inout` function-parameter lowering ships, TLS phase 5 band N9.6 (#6794; unblocks #6808's h2-frame half)
@@ -33920,7 +33920,7 @@ reasoning, exact scope cuts, and the H2Conn/H2Frame/Hpack verification
 trail), #6794 (closed by this fix), #6808 (partially unblocked — its
 `inout` half is fixed, its `Std.Char` half is #6811), #6811 (new, the
 remaining h2-stack blocker), D-progress-852 (the investigation that filed
-#6794/#6808), `native/plan/08-work-items.md` N9.6,
+#6794/#6808), `docs/native-plan/08-work-items.md` N9.6,
 `docs/61-https-tls-http-versions.md` §6.4/§7 item 5.
 
 ## Native multi-package project builds ship, TLS phase 5 band N9.7 (#6809)
@@ -33981,7 +33981,7 @@ triggered the main-detection bug) passes and is wired into
 **Related:** `docs/03-decision-log.md` D-progress-854 (full account),
 #6809 (fixed by this PR), #6815 (new, the three deferred slices),
 D-progress-852 (the investigation that filed #6809),
-`native/plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
+`docs/native-plan/08-work-items.md` N9.7, `docs/20-project-as-dll.md`
 (the dotnet/jvm design this is the native analog of).
 
 ## Three native-codegen review-finding fixes ship, TLS phase 5 band N9.9 (#6740, #6813, #6625)
@@ -34041,8 +34041,8 @@ no regressions.
 
 **Related:** `docs/03-decision-log.md` D-progress-882 (full account,
 including the #6952 review fix),
-#6740/#6813/#6625 (fixed by this PR), `native/plan/08-work-items.md`
-N9.9, `native/plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
+#6740/#6813/#6625 (fixed by this PR), `docs/native-plan/08-work-items.md`
+N9.9, `docs/native-plan/04-arc-design.md` Rule 5 (the by-ref-argument-ownership
 rule #6813's fix protects).
 
 ## Native codegen: #6740's fix scoped to the scrutinee's own enum type, closing a bundle-wide `Int`/`Char` collision hazard (#6969)
@@ -34079,7 +34079,7 @@ failing before the fix and passing after. Full re-verification:
 
 **Related:** `docs/03-decision-log.md` D-progress-883 (full account),
 #6969 (fixed here), D-progress-882/#6740 (the fix this closes a gap in),
-`native/plan/08-work-items.md` N9.9.
+`docs/native-plan/08-work-items.md` N9.9.
 
 ## Native codegen: the #6969 fix's "empty hint" rule dropped #6740's coverage for hint-less scrutinees; fixed with a three-way sentinel (#6976)
 
@@ -34120,7 +34120,7 @@ per the review's SUGGESTION. Full re-verification:
 **Related:** `docs/03-decision-log.md` D-progress-884 (full account),
 #6976 (fixed here), D-progress-883/#6969 (the fix this corrects),
 D-progress-882/#6740 (the original fix both are follow-ups to),
-`native/plan/08-work-items.md` N9.9.
+`docs/native-plan/08-work-items.md` N9.9.
 
 ## Weak-aware List/Map/Task kernels ship, TLS phase 5 band N9.8 (#5545)
 
@@ -34154,8 +34154,8 @@ keep the target strongly alive once its only strong owner goes out of
 scope, leak-free in every case; full suite 37/37, no regressions.
 
 **Related:** `docs/03-decision-log.md` D-progress-879 (full account),
-#5545 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
-`native/plan/04-arc-design.md`'s `NativeWeak[T]` section.
+#5545 (fixed by this PR), `docs/native-plan/08-work-items.md` N9.8,
+`docs/native-plan/04-arc-design.md`'s `NativeWeak[T]` section.
 
 ## Native codegen function-pointer double-indirection bitcast fix ships, TLS phase 5 band N9.10
 
@@ -34191,7 +34191,7 @@ or `llvm_self_test_n3.l` (10/10, exercising the vtable-dispatch path
 directly).
 
 **Related:** `docs/decisions/D-progress-0887-native-fnptr-double-indirection.md`
-(full account), `native/plan/08-work-items.md` N9.10.
+(full account), `docs/native-plan/08-work-items.md` N9.10.
 
 ## lyric-lambda: JVM custom-runtime decision, proven WebBridge registry, mock Runtime API server test (#5412)
 
@@ -34352,8 +34352,8 @@ dedicated `-fsanitize=address` cases in `llvm_heap_self_test.l` cover the
 fixes.
 
 **Related:** `docs/decisions/D-progress-0896-native-short-circuit-arc-temp-leak.md` (full account),
-#6645/#6719/#6722 (fixed by this PR), `native/plan/08-work-items.md` N9.8,
-`native/plan/04-arc-design.md` (the ARC temp-scope rules this bug violated).
+#6645/#6719/#6722 (fixed by this PR), `docs/native-plan/08-work-items.md` N9.8,
+`docs/native-plan/04-arc-design.md` (the ARC temp-scope rules this bug violated).
 
 ## Native `String` gains `.lastIndexOf` (#6755)
 
@@ -34383,7 +34383,7 @@ form). `make -C lyric-rt test` and the full native self-test list pass
 with zero regressions.
 
 **Related:** `docs/decisions/D-progress-0897-native-string-lastindexof.md` (D-progress-831 is the #6588 fix
-this extends), `native/plan/08-work-items.md`'s N9.3 write-up (updated
+this extends), `docs/native-plan/08-work-items.md`'s N9.3 write-up (updated
 above), #6755, #6240 (the broader native `String` search-method audit
 this issue was split out of), `docs/01-language-reference.md` §12.1
 (updated).
@@ -34468,7 +34468,7 @@ that one remaining blocker.
 including the bisection trail that isolated the `?`-propagation gap),
 #6811 (closed by this PR), #6858 (new, non-ASCII Unicode follow-up), #6237
 (the remaining, separately-owned blocker), #6808 (re-scoped, not closed),
-`native/plan/08-work-items.md` N9.8, `docs/61-https-tls-http-versions.md`
+`docs/native-plan/08-work-items.md` N9.8, `docs/61-https-tls-http-versions.md`
 §6.4's N9.5/N9.6/N9.8 narrative.
 
 ## Native `String.toLower`/`.toUpper` widen to the full Unicode Character Database (#6779)
@@ -34530,7 +34530,7 @@ stdlib level rather than fix.
 
 `lyric_string_char_at(s, byteIdx)` decodes the full Unicode scalar
 value starting at `byteIdx` via genuine UTF-8 iteration — NOT the raw
-byte at that offset. `native/plan/03-type-mapping.md`'s own `Char` note
+byte at that offset. `docs/native-plan/03-type-mapping.md`'s own `Char` note
 is explicit that "converting between Char and a position in a string
 buffer requires UTF-8 iteration, not byte indexing," so a plain
 `lyric_string_byte_at` reuse would have been wrong for any non-ASCII
@@ -34572,8 +34572,8 @@ intervening binding. The full existing native self-test suite passes
 unmodified alongside these additions.
 
 **Related:** `docs/decisions/D-progress-0901-native-string-bracket-index-char-concat.md`
-(D-progress-831 is the #6588 fix these extend), `native/plan/03-type-mapping.md` (`Char`'s UTF-8-iteration
-note), `native/plan/08-work-items.md`'s N9.3/N9.6/N9.7 write-ups
+(D-progress-831 is the #6588 fix these extend), `docs/native-plan/03-type-mapping.md` (`Char`'s UTF-8-iteration
+note), `docs/native-plan/08-work-items.md`'s N9.3/N9.6/N9.7 write-ups
 (updated above), #6237, #6240 (the broader native `String`
 search-method audit this issue was split out of), #6755 (native
 `.lastIndexOf`, unaffected by this change and shipped separately).
@@ -34634,7 +34634,7 @@ addendum for the full account.
 (full account), #6806 (fixed by this PR), #6804 (the original disclosed
 gap, now closed), #6883 (the TOCTOU fd-reuse race, also fixed by this PR),
 D-progress-850 (N9.3, where the gap was found and filed),
-`native/plan/08-work-items.md` N9.2's follow-up subsection,
+`docs/native-plan/08-work-items.md` N9.2's follow-up subsection,
 `docs/61-https-tls-http-versions.md` §7's N9.3 item.
 
 ## Native `Std.ProcessPipedHost` ships — real fork/pipe long-lived piped-child-stdio kernel (issue #6142)
@@ -34710,7 +34710,7 @@ second addendum for the full account.
 blockers found and filed), #6237 (the bracket-indexing gap this entry's
 own `parseArgString` worked around), #6975/#6993 (the double-free/NULL-deref
 fixed by the addenda above),
-`native/plan/08-work-items.md` N5.7,
+`docs/native-plan/08-work-items.md` N5.7,
 `docs/62-jsonrpc-mcp.md` §5.2 (the motivating lyric-mcp stdio transport).
 
 ## Native N5 slice B residual-seam audit closes out issue #4752
@@ -34764,7 +34764,7 @@ entry's scope).
 (full account), #4752 (audited and recommended for closing by this entry),
 #6901 (new, the `Never`-typed-extern-func gap), #6937 (closed below,
 `hostAppBaseDirectory`'s tracking issue), #6961 (closed below, the
-`Std.File` try/catch-on-native gaps), `native/plan/08-work-items.md` N5.7.
+`Std.File` try/catch-on-native gaps), `docs/native-plan/08-work-items.md` N5.7.
 
 ## #6268 closed: manifest-declared `[build] shape` on `--target native` raises `F0043` instead of silent override
 
@@ -35242,7 +35242,7 @@ regression from the shared `std/file.l` change.
 (full account), D-progress-910 (`#4752`'s residual-seam audit, corrected
 inline above), #6806 (the original accept-interrupt fix), #6887 (the
 `Std.Process` sibling of #6961's D-N-003 root cause), #6937/#6961/#6962
-(closed by this entry), `native/plan/08-work-items.md` N5.7.
+(closed by this entry), `docs/native-plan/08-work-items.md` N5.7.
 
 ## #6533 closed: restored `exposed record` (plain or generic) now round-trips through contract metadata
 
@@ -35440,7 +35440,7 @@ missing-path classification through `Lyric.LlvmBridge
 (full account), D-progress-942 (`readTextOrPanic`'s half of #6961, the
 precedent this entry follows), D-N-027 (`Std.Time`'s native `Instant`
 epoch-nanoseconds representation), #6961 (closed by this entry),
-`native/plan/08-work-items.md` N5.7.
+`docs/native-plan/08-work-items.md` N5.7.
 
 ## String search and case conversion no longer depend on the process locale
 

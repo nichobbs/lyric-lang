@@ -66,7 +66,7 @@ pub union YamlValue {
 }
 
 // ── Parser state ───────────────────────────────────────────────────────────────
-record YamlState {
+ref record YamlState {
   src: String
   var pos: Int
   isJson: Bool
@@ -847,18 +847,18 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
       // Plain scalar (rest of line)
       val scStart = st.pos
       var scEnd = st.pos
-      while scEnd < st.src.length and charAtOrReplacement(st.src, scEnd) != '\n' {
+      var hitComment = false
+      while not hitComment and scEnd < st.src.length and charAtOrReplacement(st.src, scEnd) != '\n' {
         if charAtOrReplacement(st.src, scEnd) == '#' {
-          scEnd = st.src.length  // break sentinel
+          hitComment = true
         } else {
           scEnd = scEnd + 1
         }
       }
-      if scEnd > st.src.length {
-        scEnd = st.src.length
-      }
       val raw = st.src.substring(scStart, scEnd - scStart)
-      st.pos = scEnd
+      while st.pos < st.src.length and charAtOrReplacement(st.src, st.pos) != '\n' {
+        st.pos = st.pos + 1
+      }
       Ok(value = yInterpretScalar(raw))
     }
   }

@@ -17,7 +17,7 @@
 //! Runtime-checked packages (Ledger.Accounts, Ledger.Transfers) call these
 //! functions; the mode checker (V0002) permits runtime-checked → proof-required
 //! calls in that direction only.
-@proof_required
+@proof_required(unbounded_arithmetic)
 package Ledger.Accounting
 
 import Std.Core

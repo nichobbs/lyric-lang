@@ -440,10 +440,33 @@ func lowerFirst(s: in String): String {
   }
 }
 
+func isValidJsExportIdent(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    val ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (i > 0 and c >= '0' and c <= '9') or c == '_' or c == '$'
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func sanitizeSingleLine(s: in String): String {
+  s.replace("\r", " ").replace("\n", " ").replace("\"", "'").replace("\\", "/")
+}
+
 /// The skip reason of `f` for use as a host import, or "" when its signature is
 /// plain enough: only `string`, `number`, `boolean` and `bigint` parameters, no
 /// optional ones, and one of those or `void` as the result.
 func importSkipReason(f: in DtsFunc): String {
+  if not isValidJsExportIdent(f.exportName) {
+    return "export name is not a plain identifier"
+  }
   if f.skip.length > 0 {
     return f.skip
   }
@@ -499,10 +522,10 @@ pub func npmShimIsPristine(text: in String): Bool {
 /// The shim text for `e` from the functions of its declaration file `typesFile`.
 pub func renderGeneratedShim(e: in Mf.NpmEntry, typesFile: in String, funcs: in List[DtsFunc]): String {
   val lines: List[String] = newList()
-  lines.add("@axiom(\"from npm " + e.name + " " + e.version + "\")")
-  lines.add("package " + e.ident)
+  lines.add("@axiom(\"from npm " + sanitizeSingleLine(e.name) + " " + sanitizeSingleLine(e.version) + "\")")
+  lines.add("package " + lyricIdent(e.ident))
   lines.add("")
-  lines.add(npmShimGeneratedMarker() + " from " + typesFile + ".")
+  lines.add(npmShimGeneratedMarker() + " from " + sanitizeSingleLine(typesFile) + ".")
   lines.add("// Only plain string/number/boolean/bigint functions are declared (a number is a Double);")
   lines.add("// anything else is listed as skipped: declare it by hand below.")
   lines.add(
@@ -513,7 +536,7 @@ pub func renderGeneratedShim(e: in Mf.NpmEntry, typesFile: in String, funcs: in 
   for f in funcs {
     val reason = importSkipReason(f)
     if reason.length > 0 {
-      lines.add("// skipped " + f.exportName + ": " + reason)
+      lines.add("// skipped " + sanitizeSingleLine(f.exportName) + ": " + sanitizeSingleLine(reason))
     } else {
       val base = if f.exportName == "default" { lowerFirst(Mf.npmPackageIdent(e.name)) } else { lyricIdent(f.exportName) }
       var fname = lyricIdent(base)
@@ -528,8 +551,8 @@ pub func renderGeneratedShim(e: in Mf.NpmEntry, typesFile: in String, funcs: in 
       val r = Str.trim(f.ret)
       val retText = if r == "void" or r == "undefined" { "" } else { ": " + tsToLyricType(r) }
       lines.add("")
-      lines.add("@wasmImport(\"npm:" + e.name + "\")")
-      lines.add("pub extern func " + fname + "(" + Str.joinList(", ", ps) + ")" + retText + " = \"" + f.exportName + "\"")
+      lines.add("@wasmImport(\"npm:" + sanitizeSingleLine(e.name) + "\")")
+      lines.add("pub extern func " + fname + "(" + Str.joinList(", ", ps) + ")" + retText + " = \"" + sanitizeSingleLine(f.exportName) + "\"")
     }
   }
   val text = Str.joinList("\n", lines) + "\n"

@@ -38,7 +38,7 @@ All items in these modules are annotated `@stable(since="1.0")` unless noted.
 | `Std.Format` | `std/format.l` | `format1`–`format4` string interpolation helpers |
 | `Std.Http` | `std/http.l` | HTTP client (`get`, `post`, `put`, `delete`) |
 | `Std.Iter` | `std/iter.l` | `Iter[T]` iterator protocol |
-| `Std.Json` | `std/json.l` | JSON parse and serialise (.NET only; `@stable`) |
+| `Std.Json` | `std/json.l` | JSON parse and serialise (`.NET`, `JVM`, and `native`; `@stable`) |
 | `Std.Log` | `std/log.l` | Structured logging (`LogLevel`, `log`) |
 | `Std.Math` | `std/math.l` | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil`, trig |
 | `Std.Parse` | `std/parse.l` | `parseInt`, `parseFloat`, `parseBool` |

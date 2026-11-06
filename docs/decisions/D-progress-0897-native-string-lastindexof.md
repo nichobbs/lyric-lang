@@ -47,13 +47,13 @@ freshly staged `<libdir>/selfhosted/` compiler DLLs), and
 native` all pass with zero regressions across the full existing native
 self-test suite.
 
-`native/plan/08-work-items.md`'s N9.3 write-up is updated to record
+`docs/native-plan/08-work-items.md`'s N9.3 write-up is updated to record
 #6755 as shipped.
 
 **Related:** #6755 (this fix), #6588/D-progress-831 (the fix this
 extends), #6752 (the import-sensitivity gate `.indexOf`'s arm
 introduced, now shared by `.lastIndexOf` too), #6240 (the broader native
 `String` search-method audit this issue was split out of),
-`docs/01-language-reference.md` §12.1 (updated), `native/plan/03-type-mapping.md`
+`docs/01-language-reference.md` §12.1 (updated), `docs/native-plan/03-type-mapping.md`
 (D-N-006, native's byte-indexed `String` model both `.indexOf` and
 `.lastIndexOf` share).

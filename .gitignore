@@ -120,6 +120,7 @@ lyric-rt/build-address-io/
 # Ephemeral lyric build/check output
 .lyric-check/
 *.dll
+*.pdb
 *.runtimeconfig.json
 worktrees/
 .worktrees/

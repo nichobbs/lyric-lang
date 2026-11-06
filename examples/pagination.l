@@ -1,4 +1,4 @@
-@proof_required
+@proof_required(unbounded_arithmetic)
 package Pagination
 
 // Pagination helper: given a 0-based page index and a positive page

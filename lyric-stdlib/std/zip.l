@@ -779,6 +779,8 @@ func readDirectory(
   var at = (base + cdOffset).toInt()
   val cdEnd = (base + cdOffset + cdSize).toInt()
   var total = 0i64
+  val spanStarts: List[Long] = newList()
+  val spanEnds: List[Long] = newList()
   var i = 0
   while i < totalEntries {
     if at + 46 > cdEnd {
@@ -816,6 +818,9 @@ func readDirectory(
     }
     if name.length == 0 {
       return Err(error = Malformed(reason = "an entry has an empty name"))
+    }
+    if zipNameIsUnsafe(name) {
+      return Err(error = Malformed(reason = "the entry '" + name + "' has an unsafe path"))
     }
     if seen.containsKey(name) {
       return Err(error = Malformed(reason = "the entry '" + name + "' appears twice"))
@@ -870,9 +875,13 @@ func readDirectory(
       }
       k = k + 1
     }
-    if localOffset + 30i64 + localNameLen.toLong() + localExtraLen.toLong() + csize > cdOffset {
+    val spanStart = localOffset
+    val spanEnd = localOffset + 30i64 + localNameLen.toLong() + localExtraLen.toLong() + csize
+    if spanEnd > cdOffset {
       return Err(error = Malformed(reason = "the entry '" + name + "' runs past the data"))
     }
+    spanStarts.add(spanStart)
+    spanEnds.add(spanEnd)
     entries.add(
       ZipEntryInfo(
         name = name,
@@ -889,7 +898,81 @@ func readDirectory(
     at = at + 46 + nameLen + extraLen + commentLen
     i = i + 1
   }
+  if hasOverlappingSpans(spanStarts, spanEnds) {
+    return Err(error = Malformed(reason = "archive entries overlap in local header data"))
+  }
   Ok(value = entries)
+}
+
+func hasOverlappingSpans(starts: in List[Long], ends: in List[Long]): Bool {
+  val n = starts.count
+  if n <= 1 {
+    return false
+  }
+  var aStarts: List[Long] = newListWithCapacity(n)
+  var aEnds: List[Long] = newListWithCapacity(n)
+  var bStarts: List[Long] = newListWithCapacity(n)
+  var bEnds: List[Long] = newListWithCapacity(n)
+  var idx = 0
+  while idx < n {
+    aStarts.add(starts[idx])
+    aEnds.add(ends[idx])
+    bStarts.add(0i64)
+    bEnds.add(0i64)
+    idx = idx + 1
+  }
+  var width = 1
+  while width < n {
+    var left = 0
+    while left < n {
+      val mid = if left + width < n { left + width } else { n }
+      val right = if left + 2 * width < n { left + 2 * width } else { n }
+      var p = left
+      var q = mid
+      var k = left
+      while k < right {
+        if p < mid and (q >= right or aStarts[p] < aStarts[q] or (aStarts[p] == aStarts[q] and aEnds[p] <= aEnds[q])) {
+          bStarts[k] = aStarts[p]
+          bEnds[k] = aEnds[p]
+          p = p + 1
+        } else {
+          bStarts[k] = aStarts[q]
+          bEnds[k] = aEnds[q]
+          q = q + 1
+        }
+        k = k + 1
+      }
+      left = left + 2 * width
+    }
+    var cp = 0
+    while cp < n {
+      aStarts[cp] = bStarts[cp]
+      aEnds[cp] = bEnds[cp]
+      cp = cp + 1
+    }
+    width = width * 2
+  }
+  var j = 1
+  while j < n {
+    if aStarts[j] < aEnds[j - 1] {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
+func zipNameIsUnsafe(name: in String): Bool {
+  if name.startsWith("/") or name.startsWith("\\") or name.contains("\u{0000}") or name.contains("\\") {
+    return true
+  }
+  if name.length >= 2 and name.substring(1, 1) == ":" {
+    return true
+  }
+  if name == ".." or name.startsWith("../") or name.endsWith("/..") or name.contains("/../") {
+    return true
+  }
+  false
 }
 
 /// The contents of `entry` (from `readZipDirectory(data, ...)`), inflated if
@@ -931,6 +1014,9 @@ pub func readZipEntry(data: in slice[Byte], entry: in ZipEntryInfo): Result[slic
 /// must be unique; directory entries are not written.
 @experimental
 pub func writeZip(files: in List[ZipFile]): slice[Byte] {
+  if files.count > 65535 {
+    panic("Std.Zip.writeZip: too many entries for non-ZIP64 archive (max 65535)")
+  }
   val acc: List[Byte] = newList()
   val central: List[Byte] = newList()
   // 1980-01-01 00:00:00 in DOS date and time.
@@ -938,6 +1024,9 @@ pub func writeZip(files: in List[ZipFile]): slice[Byte] {
   val dosDate = 33
   for f in files {
     val nameBytes = encodeUtf8(f.name)
+    if nameBytes.length > 65535 {
+      panic("Std.Zip.writeZip: entry name exceeds 65535 bytes")
+    }
     val crc = crc32(f.data)
     val deflated = deflate(f.data)
     val useDeflate = deflated.length < f.data.length

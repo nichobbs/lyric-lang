@@ -1,6 +1,6 @@
 //! Functions overloaded by arity are each proved, and a call reaches the one
 //! taking its argument count (#8341).
-@proof_required
+@proof_required(unbounded_arithmetic)
 package Overloads
 
 pub func add(x: in Int): Int

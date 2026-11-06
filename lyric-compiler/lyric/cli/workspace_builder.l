@@ -1065,6 +1065,8 @@ pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generat
                 ") declares no @plugin record " +
                 "implementing Lyric.GeneratorSdk.SourceGenerator"
             )
+          } else if not Generator.processGeneratorsAllowed() {
+            gens.dlls[dep.name] = ""
           } else {
             val stack: List[String] = newList()
             match buildGeneratorTree(dep.name, depDir, stack) {

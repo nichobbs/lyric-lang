@@ -33,7 +33,7 @@ runtime (or a hand-written freestanding libc) just for the browser.
    JS), `Float` is `f32`. A `String` argument is created in linear memory by the
    glue (`lyric_wasm_string_new`), passed borrowed and released after the
    call; a returned `String` is owned by the caller and released after the
-   glue copies it out (native/plan/04-arc-design.md rules 5 and 6). The
+   glue copies it out (docs/native-plan/04-arc-design.md rules 5 and 6). The
    helpers live in `lyric-rt/src/lyric_wasm.c` behind an ABI version the glue
    checks at instantiation.
 5. **Artifacts.** `lyric build --target native --triple wasm32-wasi --shape

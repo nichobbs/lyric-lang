@@ -783,6 +783,24 @@ val sourceGeneratorPoint: String = "Lyric.GeneratorSdk.SourceGenerator"
 
 val projectReadCapability: String = "Lyric.GeneratorSdk.ProjectRead"
 
+val allowProcessGenFlag: List[Bool] = newList()
+
+pub func setAllowProcessGenerators(allow: in Bool): Unit {
+  if allowProcessGenFlag.count == 0 {
+    allowProcessGenFlag.add(allow)
+  } else {
+    allowProcessGenFlag[0] = allow
+  }
+}
+
+pub func processGeneratorsAllowed(): Bool {
+  if allowProcessGenFlag.count == 0 {
+    true
+  } else {
+    allowProcessGenFlag[0]
+  }
+}
+
 /// The plugin host a build's generators run in.  It starts at the first
 /// `@generate`, and each generator's process then serves every annotated
 /// type of the build until `stopGenerators`.
@@ -1010,7 +1028,29 @@ record GeneratorGrantPolicy {
 
 impl Plugin.GrantPolicy for GeneratorGrantPolicy {
   func decide(manifest: in Plugin.PluginManifest): Plugin.GrantDecision {
-    Plugin.grantAllRequested(manifest)
+    val grants: List[Plugin.GrantedCapability] = newList()
+    var i = 0
+    while i < manifest.required.count {
+      val req = manifest.required[i]
+      if req.name != projectReadCapability {
+        return Plugin.GrantDecision(
+          allow = false,
+          reason = "source generators may only request capability " + projectReadCapability + " (requested '" + req.name + "')",
+          grants = newList()
+        )
+      }
+      grants.add(Plugin.GrantedCapability(capability = req.name, grant = req.grant))
+      i = i + 1
+    }
+    i = 0
+    while i < manifest.optional.count {
+      val opt = manifest.optional[i]
+      if opt.name == projectReadCapability {
+        grants.add(Plugin.GrantedCapability(capability = opt.name, grant = opt.grant))
+      }
+      i = i + 1
+    }
+    Plugin.GrantDecision(allow = true, reason = "", grants = grants)
   }
 }
 
@@ -1043,7 +1083,7 @@ func generatorHost(gens: in GeneratorSet, projectRoot: in String): Plugin.Plugin
           trust = Some(value = Plugin.trustKeys(keys)),
           callTimeoutMs = generatorTimeoutMs,
           maxRestarts = 0,
-          preferWasm = false
+          preferWasm = true
         )
       )
       gens.runtime.host = Some(value = h)
@@ -1100,6 +1140,24 @@ func checkImplementsGeneratorPoint(m: in Plugin.PluginManifest): Option[String] 
   )
 }
 
+// Whether manifest `m` carries a sandboxed WASM payload and `wasmtime` is
+// available on the host so `selectPluginPayload` (with `preferWasm = true`)
+// is guaranteed to select the WASM payload without falling back to a process
+// payload.
+func manifestHasRunnableWasmPayload(m: in Plugin.PluginManifest): Bool {
+  match Plugin.findWasmtime() {
+    case None -> return false
+    case Some(_) -> ()
+  }
+  for p in m.payloads {
+    match p {
+      case Plugin.WasmPayload(_) -> return true
+      case _ -> ()
+    }
+  }
+  false
+}
+
 // Loads a restored generator's artifact through `discoverPlugins`, which
 // verifies its signature against the host's trust (the pinned key) and that
 // its files still match the signed listing.  Returns its plugin id.
@@ -1111,6 +1169,11 @@ func loadRestoredGenerator(h: in Plugin.PluginHost, rg: in RestoredGenerator): R
   match checkImplementsGeneratorPoint(m) {
     case Some(why) -> return Err(error = why)
     case None -> ()
+  }
+  if not processGeneratorsAllowed() and not manifestHasRunnableWasmPayload(m) {
+    return Err(
+      error = "external process source generators are disabled during 'lyric check' by default; pass --allow-generators to run them"
+    )
   }
   val dirs: List[String] = newList()
   dirs.add(rg.pluginDir)
@@ -1126,6 +1189,11 @@ func loadRestoredGenerator(h: in Plugin.PluginHost, rg: in RestoredGenerator): R
 // `dotnet exec` payload.  Built in the workspace, it is the project's own
 // code and not signed (D248 Decision 7).  Returns its plugin id.
 func registerBuiltGenerator(h: in Plugin.PluginHost, dllPath: in String): Result[String, String] {
+  if not processGeneratorsAllowed() {
+    return Err(
+      error = "external process source generators are disabled during 'lyric check' by default; pass --allow-generators to run them"
+    )
+  }
   val probeArgs: List[String] = newList()
   probeArgs.add("exec")
   probeArgs.add(dllPath)

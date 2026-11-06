@@ -19,7 +19,7 @@ pub record NameAndSpan {
   // ─────────────────────────────────────────────────────────────────────────────
 }
 
-pub record ParseState {
+pub ref record ParseState {
   tokens: List[SpannedToken]
   var pos: Int
   diags: List[Diagnostic]

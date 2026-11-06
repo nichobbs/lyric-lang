@@ -66,5 +66,5 @@ change.
 all three issues), #6806 (the original accept-interrupt fix #6962 is a
 follow-up to), #6887 (the `Std.Process` piped-API sibling of #6961's D-N-003
 root cause), `docs/10-bootstrap-progress.md` ("Native N5 slice B residual-seam
-audit closes out issue #4752", corrected inline), `native/plan/08-work-items.md`
+audit closes out issue #4752", corrected inline), `docs/native-plan/08-work-items.md`
 N5.7.

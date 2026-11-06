@@ -1089,6 +1089,9 @@ func serializeSessionJson(data: in SessionData): String {
 // Wire format: {"id":"...","createdAt":N,"lastAccessedAt":N,"expiresAt":N,"entries":{...}}
 func parseSessionJson(sessionId: in String, json: in String): SessionData {
   val doc = parseJson(json)
+  defer {
+    disposeJson(doc)
+  }
   val root = rootElement(doc)
   var createdAt: Long = 0i64
   var lastAccessedAt: Long = 0i64

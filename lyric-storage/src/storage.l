@@ -754,6 +754,9 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
   } catch Bug as b {
     return Err(StorageError(message = "cannot parse metadata sidecar JSON: " + b.message, code = "META_PARSE_ERROR"))
   }
+  defer {
+    disposeJson(doc)
+  }
   val root = rootElement(doc)
   if valueKind(root) != jkObject() {
     return Err(StorageError(message = "malformed metadata sidecar", code = "META_PARSE_ERROR"))
@@ -879,6 +882,9 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
           }
           match parsed {
             case Some(doc) -> {
+              defer {
+                disposeJson(doc)
+              }
               val root = rootElement(doc)
               if valueKind(root) == jkObject() {
                 etag = getString(getProperty(root, "etag"))
@@ -1086,6 +1092,9 @@ pub func auditLog(operation: in String, level: in String, detail: in String): Un
 func parseStringMap(rawJson: in String): Map[String, String] {
   var m = newMap()
   val doc = parseJson(rawJson)
+  defer {
+    disposeJson(doc)
+  }
   val elem = rootElement(doc)
   if valueKind(elem) != jkObject() {
     return m

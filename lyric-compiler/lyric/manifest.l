@@ -451,7 +451,7 @@ record Entry {
 }
 
 // Parsing cursor; pos/line/col are mutated via inout parameter passing.
-record Cursor {
+ref record Cursor {
   text: String
   var pos: Int
   var line: Int
@@ -1265,7 +1265,30 @@ func buildDepSource(
   // Check for git = "..."
   match findInlineStr(pairs, "git") {
     case Some(url) -> {
+      if url.length == 0 or Str.startsWith(url, "-") or Str.contains(url, "\0") or Str.startsWith(url, "ext::") or
+        not (Str.startsWith(url, "https://") or Str.startsWith(url, "ssh://") or Str.startsWith(url, "git@") or Str.startsWith(url, "file://")) {
+        return Err(
+          error = InvalidField(
+            section = section,
+            field = depName,
+            message = "git dep URL must use https://, ssh://, git@, or file:// and must not start with '-'"
+          )
+        )
+      }
       val subdir = findInlineStr(pairs, "subdir")
+      match subdir {
+        case Some(sd) -> if sd.length == 0 or Str.startsWith(sd, "-") or Str.startsWith(sd, "/") or
+          Str.startsWith(sd, "\\") or Str.contains(sd, ":") or Str.contains(sd, "..") or Str.contains(sd, "\0") {
+          return Err(
+            error = InvalidField(
+              section = section,
+              field = depName,
+              message = "git dep subdir must be a relative path within the repository without '..'"
+            )
+          )
+        }
+        case None -> ()
+      }
       // Construct the GitRef inline in each branch and return immediately,
       // rather than binding `val ref: GitRef = match ...` and storing it in the
       // record afterwards.  The F# stage-0 emitter reads a union value produced
@@ -1273,15 +1296,48 @@ func buildDepSource(
       // field, so `Git.ref` arrived null at the consumer (#2126); the
       // early-return form sidesteps that.
       match findInlineStr(pairs, "tag") {
-        case Some(t) -> return Ok(value = Git(url = url, refKind = "tag", refValue = t, subdir = subdir))
+        case Some(t) -> {
+          if t.length == 0 or Str.startsWith(t, "-") or Str.contains(t, "..") or Str.contains(t, "\0") {
+            return Err(
+              error = InvalidField(
+                section = section,
+                field = depName,
+                message = "git dep tag must not be empty, start with '-', or contain '..'"
+              )
+            )
+          }
+          return Ok(value = Git(url = url, refKind = "tag", refValue = t, subdir = subdir))
+        }
         case None -> ()
       }
       match findInlineStr(pairs, "rev") {
-        case Some(r) -> return Ok(value = Git(url = url, refKind = "rev", refValue = r, subdir = subdir))
+        case Some(r) -> {
+          if r.length == 0 or Str.startsWith(r, "-") or Str.contains(r, "..") or Str.contains(r, "\0") {
+            return Err(
+              error = InvalidField(
+                section = section,
+                field = depName,
+                message = "git dep rev must not be empty, start with '-', or contain '..'"
+              )
+            )
+          }
+          return Ok(value = Git(url = url, refKind = "rev", refValue = r, subdir = subdir))
+        }
         case None -> ()
       }
       match findInlineStr(pairs, "branch") {
-        case Some(b) -> return Ok(value = Git(url = url, refKind = "branch", refValue = b, subdir = subdir))
+        case Some(b) -> {
+          if b.length == 0 or Str.startsWith(b, "-") or Str.contains(b, "..") or Str.contains(b, "\0") {
+            return Err(
+              error = InvalidField(
+                section = section,
+                field = depName,
+                message = "git dep branch must not be empty, start with '-', or contain '..'"
+              )
+            )
+          }
+          return Ok(value = Git(url = url, refKind = "branch", refValue = b, subdir = subdir))
+        }
         case None -> ()
       }
       return Err(
@@ -2059,9 +2115,19 @@ pub func prebuiltMemberFileName(member: in String): String {
 func assemblePrebuilt(
   entries: in List[Entry], section: in String, triple: in String
 ): Result[NativePrebuilt, ManifestError] {
+  if triple.length == 0 or Str.startsWith(triple, ".") or Str.startsWith(triple, "-") or Str.contains(triple, "/") or
+    Str.contains(triple, "\\") or Str.contains(triple, "..") {
+    return Err(
+      error = InvalidField(
+        section = section,
+        field = "triple",
+        message = "target triple '" + triple + "' must not contain path separators or '..'"
+      )
+    )
+  }
   val url = unwrapOr(findString(entries, section, "url"), "")
   val sha = unwrapOr(findString(entries, section, "sha256"), "")
-  if url.length == 0 or not (Str.startsWith(url, "https://") or Str.startsWith(url, "http://") or Str.startsWith(url, "file://")) {
+  if url.length == 0 or Str.startsWith(url, "-") or not (Str.startsWith(url, "https://") or Str.startsWith(url, "http://") or Str.startsWith(url, "file://")) {
     return Err(
       error = InvalidField(
         section = section,
@@ -2086,7 +2152,8 @@ func assemblePrebuilt(
   }
   for m in members {
     val name = prebuiltMemberFileName(m)
-    if name.length == 0 or Str.contains(name, "/") or Str.contains(name, "\\") or prebuiltMemberPath(m).length == 0 {
+    if name.length == 0 or Str.startsWith(name, ".") or Str.contains(name, "..") or Str.contains(name, "/") or
+      Str.contains(name, "\\") or prebuiltMemberPath(m).length == 0 {
       return Err(
         error = InvalidField(
           section = section,
@@ -2150,6 +2217,24 @@ func assembleNativeLibs(entries: in List[Entry]): Result[List[NativeLibSpec], Ma
           section = section,
           field = "link",
           message = "library names must be non-empty, whitespace-free bare names (not a \"-l\" flag)"
+        )
+      )
+    }
+    if pkg.length > 0 and invalidLibName(pkg) {
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = "pkg_config",
+          message = "pkg_config package name must be a non-empty, whitespace-free bare name (not starting with '-')"
+        )
+      )
+    }
+    if version.length > 0 and (Str.startsWith(version, "-") or Str.contains(version, " ") or Str.contains(version, "\t")) {
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = "version",
+          message = "version constraint must not start with '-' or contain whitespace"
         )
       )
     }

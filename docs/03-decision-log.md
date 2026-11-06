@@ -4690,7 +4690,7 @@ library headers or linkage are required by the Lyric compiler itself.
   with a single invocation.
 - The `.ll` format is stable across LLVM major versions.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-001.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-001.
 
 ---
 
@@ -4712,7 +4712,7 @@ dtor), a 32-bit discriminant, and an inline payload sized to the largest case.
 - The monomorphizer knows all payload sizes at compile time.
 - Stack allocation (escape analysis) is a clean future optimisation (Phase 3).
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-002.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-002.
 
 ---
 
@@ -4735,7 +4735,7 @@ LLVM landingpads, no DWARF unwind tables, no `defer` in Phase 1.
 - If `defer` is added in Phase 2, cleanup-only landingpads can be added without
   changing the abort architecture — the designs are compatible.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-003.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-003.
 
 ---
 
@@ -4758,11 +4758,11 @@ ramp / resume / destroy functions. Phase 1 emits a hard error (N0099) for any
   the optimiser does the frame extraction and split.
 - No platform-specific stack-switching code.
 - Compatible with LLVM's ARC analysis passes in Phase 2.
-- The mechanism is fully designed in `native/plan/06-async-design.md`; Phase 2
+- The mechanism is fully designed in `docs/native-plan/06-async-design.md`; Phase 2
   agents have no design work to do.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-004 and
-`native/plan/06-async-design.md`.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-004 and
+`docs/native-plan/06-async-design.md`.
 
 ---
 
@@ -4785,7 +4785,7 @@ background cycle detector in Phase 1. A strong reference increments RC;
   graphs and requires `NativeWeak`) is a purely additive Phase 2 analysis that
   does not change runtime behaviour.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-005.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-005.
 
 ---
 
@@ -4810,8 +4810,8 @@ emitted as static constants with `rc = INT32_MAX` (saturated, never freed).
   for Phase 1.
 - Interning requires a global hash table; not appropriate for general-purpose strings.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-006 and
-`native/plan/03-type-mapping.md` §String.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-006 and
+`docs/native-plan/03-type-mapping.md` §String.
 
 ---
 
@@ -4835,8 +4835,8 @@ The existing `@externTarget` annotation machinery is NOT reused.
 - A dedicated syntax makes it obvious which declarations cross the native ABI
   boundary.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-007 and
-`native/plan/05-ffi-design.md`.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-007 and
+`docs/native-plan/05-ffi-design.md`.
 
 ---
 
@@ -4860,7 +4860,7 @@ Windows (PE/COFF, Win32 API, MSVC/MinGW toolchain) is deferred to Phase 2.
 - Windows requires a separate `_kernel_native/win32/` layer and different linker
   conventions; the added scope is not justified for Phase 1.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-008.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-008.
 
 ---
 
@@ -4875,7 +4875,7 @@ from `<compiler_bin>/../lib/` (installed) or `<repo_root>/lyric-rt/build/` (dev)
 **Rationale:** See D-N-001 — this is the same clang-as-driver decision applied to
 the link step. No separate `lld` or `ld` invocation is needed.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-009.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-009.
 
 ---
 
@@ -4897,7 +4897,7 @@ Monomorphized type names follow the existing convention (e.g., `Lyric.Option__In
 - Full monomorphization produces better-optimised code than dict-passing.
 - The LLVM backend gets concrete types with no erasure.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-010.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-010.
 
 ---
 
@@ -4921,8 +4921,8 @@ Lyric-compiled code.
 - LLVM function attributes (`nounwind`, `willreturn`, `memory(argmem: readwrite)`)
   allow LLVM to reason about them in a future optimisation pass.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-011 and
-`native/plan/04-arc-design.md`.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-011 and
+`docs/native-plan/04-arc-design.md`.
 
 ---
 
@@ -4949,8 +4949,8 @@ Full detail: `native/plan/01-design-decisions.md` §D-N-011 and
 - SipHash-2-4 with a random seed is the standard defence against hash-flooding
   DoS on map keys.
 
-Full detail: `native/plan/01-design-decisions.md` §D-N-012 and
-`native/plan/03-type-mapping.md` §slice and §List.
+Full detail: `docs/native-plan/01-design-decisions.md` §D-N-012 and
+`docs/native-plan/03-type-mapping.md` §slice and §List.
 
 ---
 
@@ -4999,8 +4999,8 @@ that target sees no import for the aliased identifier, which is a type error.
 The F# bootstrap `Cfg.fs` does **not** need updating — the native target is
 only reachable through the self-hosted Lyric CLI.
 
-Full detail: `native/plan/07-stdlib-port.md` §target-conditional imports and
-`native/plan/08-work-items.md` §N4.6.
+Full detail: `docs/native-plan/07-stdlib-port.md` §target-conditional imports and
+`docs/native-plan/08-work-items.md` §N4.6.
 
 ---
 
@@ -5008,7 +5008,7 @@ Full detail: `native/plan/07-stdlib-port.md` §target-conditional imports and
 
 **Status:** ACCEPTED — native backend Phase 1 (N0–N1 + N4/N6 slices shipped).
 
-**Context:** `native/plan/02-architecture.md` sketched the backend as `Llvm.*`
+**Context:** `docs/native-plan/02-architecture.md` sketched the backend as `Llvm.*`
 packages under a new `lyric-compiler/llvm/` directory, mirroring `msil/` and
 `jvm/`.  Implementation surfaced two bootstrap constraints the plan predates:
 
@@ -5042,7 +5042,7 @@ packages under a new `lyric-compiler/llvm/` directory, mirroring `msil/` and
   entry-point names (`codegenPackage`, `lowerPackage`) mis-resolves when the
   compiler bundle is linked.
 
-**Consequence:** `native/plan/*` file paths and package names are read with
+**Consequence:** `docs/native-plan/*` file paths and package names are read with
 this mapping in mind; the plan documents remain the design source for
 everything else (IR shape, ARC model, FFI, phasing).
 
@@ -5120,7 +5120,7 @@ by RETURN VALUE plus an `Int` ok-flag out-param
 out-param: overwriting a `var xs = newList()` slot from C would leak
 the initialiser (unlike the immortal `""` used by the string seams).
 
-**Related:** D-N-012, D-N-014, `native/plan/03-type-mapping.md`,
+**Related:** D-N-012, D-N-014, `docs/native-plan/03-type-mapping.md`,
 issue #4752.
 
 
@@ -5133,7 +5133,7 @@ issue #4752.
 **heap-boxed** fat pointer — an ordinary RC'd object
 `__iface.<m> = { i32 rc, i8* dtor, i8* obj, %__ifacevt.<m>* vtbl }` —
 rather than the by-value `{ i8* obj, vtable* }` aggregate specified in
-`native/plan/03-type-mapping.md` §"Interface dispatch" and
+`docs/native-plan/03-type-mapping.md` §"Interface dispatch" and
 `04-arc-design.md` Rule 8.  The `obj` slot holds the (type-erased)
 implementing object; a per-interface destructor releases it.  Each
 interface has a vtable struct of one `i8*` slot per method; each
@@ -5177,12 +5177,12 @@ interface inheritance, async interface methods (Phase 2), `impl` for
 non-record targets, and direct impl-method calls on a concrete
 (non-interface-typed) receiver.
 
-**Related:** D-N-014, `native/plan/03-type-mapping.md`,
-`native/plan/04-arc-design.md` Rule 8, `native/plan/08-work-items.md`
+**Related:** D-N-014, `docs/native-plan/03-type-mapping.md`,
+`docs/native-plan/04-arc-design.md` Rule 8, `docs/native-plan/08-work-items.md`
 N3.2.
 
 
-## D-N-017 — Native protected types: heap-buffer mutex field + lock/unlock wrapper/inner split (revises the "inline slot" phrasing of `native/plan`)
+## D-N-017 — Native protected types: heap-buffer mutex field + lock/unlock wrapper/inner split (revises the "inline slot" phrasing of `docs/native-plan`)
 
 **Date:** 2026-07-03
 **Status:** ACCEPTED (N3.4; two representation divergences from the plan's literal phrasing)
@@ -5191,7 +5191,7 @@ N3.2.
 record-shaped heap object as a plain record
 (`{ i32 rc, i8* dtor, ...user fields }`), plus one trailing
 `__mutex: i8*` field, with two divergences from a literal reading of
-`native/plan`:
+`docs/native-plan`:
 
 1. **The mutex is a heap-allocated buffer pointed to by the field, not an
    inline slot.** `lyric_mutex_size()` is a runtime C call (the
@@ -5262,7 +5262,7 @@ before `when:` barrier / `pthread_cond_wait` support is added (a panicking
 entry would otherwise leave condition waiters blocked forever ahead of the
 abort).
 
-**Related:** `native/plan/08-work-items.md` N3.4,
+**Related:** `docs/native-plan/08-work-items.md` N3.4,
 `docs/01-language-reference.md` §7.5, D-N-016 (the same "no by-value
 aggregate ABI" constraint that forced interfaces to heap-box also shapes
 the mutex-as-pointer choice here).
@@ -5324,7 +5324,7 @@ test runner); `--triple`/`--opt` CLI flags on `lyric test` (native build
 defaults are used unconditionally, matching the no-manifest case of
 `lyric build --target native`).
 
-**Related:** D-N-003 (no unwinding), `native/plan/08-work-items.md` §N7.2,
+**Related:** D-N-003 (no unwinding), `docs/native-plan/08-work-items.md` §N7.2,
 `docs/01-language-reference.md` §"lyric test", `docs/24-test-runner-plan.md`.
 
 ## D-N-019 — Native `async func`/`await` Phase 2 first slice: synchronous `Task[T]` wrapper, not LLVM coroutines; generators, cancellation, and `spawn`/`scope` separately tracked (revises `06-async-design.md`'s coroutine mechanism for the no-`spawn` subset)
@@ -5332,7 +5332,7 @@ defaults are used unconditionally, matching the no-manifest case of
 **Date:** 2026-07-04
 **Status:** ACCEPTED (scope AND mechanism decision for the first native async slice)
 
-**Context — scope.** `native/plan/06-async-design.md` (D-N-004) specifies
+**Context — scope.** `docs/native-plan/06-async-design.md` (D-N-004) specifies
 `Task[T]`, `await` lowering via LLVM `llvm.coro.*` intrinsics, and a
 single-threaded cooperative scheduler, stating it "fully specifies the
 mechanism so Phase 2 agents have no design work to do." Re-reading
@@ -5356,7 +5356,7 @@ that design doc covers:
   basic `async`/`await` correctness.
 - §7.4 **`spawn` expr / `scope { }` structured concurrency** — concurrent
   awaits with structured cancellation/error propagation. Not mentioned in
-  `native/plan/06-async-design.md` at all.
+  `docs/native-plan/06-async-design.md` at all.
 
 **Context — mechanism.** Before writing any codegen, the coroutine
 lowering pipeline itself was hand-verified end-to-end with `clang` 18
@@ -5450,7 +5450,7 @@ slice:**
   caller holding a dangling handle, the bug the verification round hit
   and fixed before concluding the mechanism itself was sound).
 
-**Related:** D-N-004, `native/plan/06-async-design.md`,
+**Related:** D-N-004, `docs/native-plan/06-async-design.md`,
 `docs/01-language-reference.md` §7, upstream #1490 (async-iterator
 generators, MSIL).
 
@@ -5539,7 +5539,7 @@ regressions).
 
 **Related:** D-N-003, D-N-018, D-N-019 (the parallel "extend the
 existing scope-exit mechanism rather than invent a new one" reasoning),
-`native/plan/08-work-items.md`, `docs/01-language-reference.md` (defer
+`docs/native-plan/08-work-items.md`, `docs/01-language-reference.md` (defer
 semantics), `lyric-compiler/lyric/defer_self_test.l` (the dotnet/jvm
 reference test this ports the non-panic cases of).
 
@@ -5620,7 +5620,7 @@ full native self-test suite, `make ilverify`, and an end-to-end `lyric
 build --target native` check.
 
 **Related:** D-N-019 (refined by this entry), D-N-020 (`scope` reuses
-its scope-exit discipline), D-N-003, `native/plan/06-async-design.md`
+its scope-exit discipline), D-N-003, `docs/native-plan/06-async-design.md`
 (the preserved coroutine mechanism this entry's follow-up will need),
 `docs/01-language-reference.md` §7.4, `msil/codegen.l` `ESpawn`/`SScope`
 (the reference lowering matched here).
@@ -5719,7 +5719,7 @@ run THROUGH the coroutine path as the regression net.
 **Related:** D-N-019, D-N-021 (both superseded on the lowering
 mechanism; their semantic analyses remain the ground for the hot-task
 model), D-N-003 (panics abort; no cancellation machinery),
-`native/plan/06-async-design.md` (the coroutine mechanism realized
+`docs/native-plan/06-async-design.md` (the coroutine mechanism realized
 here), `lyric-rt/src/lyric_async.c`, `lyric-compiler/lyric/llvm_codegen.l`.
 
 ## D-N-023 — The first async I/O leaf: `Std.Process.runCapture` inside a coroutine drives a nonblocking capture op through the sleep leaf (no new stdlib surface, timeout honored)
@@ -14401,7 +14401,7 @@ memory-safety hole in a shipped type.
 is added to `LyricObjectHeader` (and its `LyricString`/`List`/`Map`/`Task`
 twins); it occupies the existing 4-byte alignment padding between `rc` and
 `dtor`, so `sizeof` and every generated LLVM struct field offset are unchanged
-(the earlier `native/plan/04-arc-design.md` claim that the fix "shifts field
+(the earlier `docs/native-plan/04-arc-design.md` claim that the fix "shifts field
 offsets … out of scope for a source change" was mistaken — corrected there).
 `weak` counts live weak references plus one while any strong ref exists; the
 allocation is freed only when `weak` reaches 0. `lyric_release` runs the
@@ -14426,7 +14426,7 @@ case.
 
 **Related:** D-progress-549 (superseded on the ARC-exclusion point),
 D-progress-638/640 (the tracking note, now marked resolved above),
-`native/plan/04-arc-design.md` §NativeWeak (KNOWN UNSOUNDNESS → RESOLVED),
+`docs/native-plan/04-arc-design.md` §NativeWeak (KNOWN UNSOUNDNESS → RESOLVED),
 D-N-005, #5504, #5539.
 
 ## D-progress-643 — JVM lambdas bridge to JDK functional interfaces at auto-FFI boundaries (SAM conversion)
@@ -17317,9 +17317,9 @@ D-progress-697.
 stack and the pure-Lyric sans-IO `Std.HttpEngine`. Phase 5 (issue #5890) is
 the native target, which per docs/61 §7 decomposes into a transport kernel
 (sockets + TLS) feeding the same engine. The issue explicitly left phase 5 to
-be "banded into N-items in a `native/plan/` follow-on before implementation".
+be "banded into N-items in a `docs/native-plan/` follow-on before implementation".
 
-**Decision.** Band phase 5 as Phase N9 in `native/plan/08-work-items.md`
+**Decision.** Band phase 5 as Phase N9 in `docs/native-plan/08-work-items.md`
 (N9.1–N9.5) and ship the C foundation, **N9.1 — the `lyric_sock_*` +
 `lyric_tls_*` seam** — at production quality, deferring the Lyric-level
 transport/server/client layers to gated follow-on PRs.
@@ -17395,7 +17395,7 @@ the `Std.TcpHost` surface); N9.3 `Std.HttpServer` native twin
 N9.4 `Std.Http` native client; N9.5 lyric-web `serveTls` + ALPN h2.
 
 **Related:** #5890, #5874, docs/61-https-tls-http-versions.md §7/§8, D128,
-`native/plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540,
+`docs/native-plan/08-work-items.md` Phase N9, D-N-007, D-N-014, D-progress-540,
 D-progress-543.
 
 ---
@@ -18069,7 +18069,7 @@ skip.
 
 **Related:** docs/61, docs/59 §cross-target divergences, docs/44 (JVM
 `https://` rejection), docs/23 §TLS, docs/14 §HTTP transport,
-native/plan/04+05, D065 (pure-Lyric parser precedent), D119/D120
+docs/native-plan/04+05, D065 (pure-Lyric parser precedent), D119/D120
 (`scope`/`spawn`), D122 (delegate-valued extern properties), #2663, #5874.
 
 ---
@@ -20185,7 +20185,7 @@ Tracked as a follow-up rather than folded into this change.
 ## D-progress-713 — Native backend: `opaque type` codegen, part 1 of #6234 (`Llvm.Codegen` `IOpaque` dispatch)
 
 **Context.** Discovered while implementing N9.2 (`Std.TcpHost` native twin,
-#6103): docs/61 §7 item 4 and `native/plan/08-work-items.md`'s N9.2 entry
+#6103): docs/61 §7 item 4 and `docs/native-plan/08-work-items.md`'s N9.2 entry
 call for wrapping each raw `lyric_tls_*`/`lyric_sock_*` seam handle "in an
 opaque type whose destructor calls the matching free" — the ARC-idiomatic
 shape, and the same shape `Std.Tls`'s `Certificate`/`Identity`
@@ -20344,7 +20344,7 @@ panic content, not just that some panic happened" discipline the existing
 hook — remains open), #6239 (the `@projectable` review finding, resolved
 here), #6103 (N9.2, the concrete consumer this unblocks — merged as #6235),
 #6104–#6106 (N9.3–N9.5, downstream of N9.2), docs/61 §7 item 4, D128,
-`native/plan/08-work-items.md` Phase N9, D-N-014, D-progress-540,
+`docs/native-plan/08-work-items.md` Phase N9, D-N-014, D-progress-540,
 D-progress-545, D-progress-703, D-progress-543.
 
 ## D131 — `lyric build --release --target jvm`: GraalVM `native-image` fills the `JvmNativeImage` arm (#1975, D079)
@@ -32771,7 +32771,7 @@ package compiler follow-up), D-progress-543 (sandbox exception: no
 either #6564's or #6578's root cause).
 ## D-progress-809 — Native prerequisites for N9.3 (`Std.HttpServer` native twin, #6104): `lyric_sem_*` counting semaphore + `slice[T]` `.slice`/`.concat`/`.append`
 
-**Context.** Issue #6104 (native/plan/08-work-items.md N9.3, docs/61 §7 item 5)
+**Context.** Issue #6104 (docs/native-plan/08-work-items.md N9.3, docs/61 §7 item 5)
 needs a thread-per-connection native `Std.HttpServer` twin driving
 `Std.HttpEngine`. Two prerequisites were missing entirely: native had no
 blocking wait/signal primitive (only `lyric_mutex_*`, mutual exclusion with
@@ -32868,14 +32868,14 @@ because enums erase to a bare `NI32` with no distinguishing type by then.
 Both block `Std.HttpEngine`/`Std.String` from compiling for `--target
 native` at all, independent of this entry's two fixes. Neither is
 scopeable around; both are tracked as follow-up issues (linked from
-native/plan/08-work-items.md's N9.3 entry). The draft kernel could not be
+docs/native-plan/08-work-items.md's N9.3 entry). The draft kernel could not be
 made to compile against these gaps and was **not committed** — neither
 `_kernel_native/http_server.l` nor a self-test for it exist anywhere in
 this repository (not in this PR, not on `main`); a future contributor
 picking up #6104/N9.3 starts from zero on the kernel itself once #6588
 and #6589 are resolved.
 
-**Related:** #6104, `native/plan/08-work-items.md` N9.3, docs/61 §7 item 5,
+**Related:** #6104, `docs/native-plan/08-work-items.md` N9.3, docs/61 §7 item 5,
 D-progress-543 (the sandbox-exception precedent this sharpens).
 
 ---
@@ -35394,7 +35394,7 @@ constant's own doc comment.
 maxInterimResponses` form exactly.
 
 A second, unrelated SUGGESTION from the same review round — a
-doc-precision mismatch in `native/plan/08-work-items.md`'s N9.4
+doc-precision mismatch in `docs/native-plan/08-work-items.md`'s N9.4
 write-up, which said `buildServerCtx` had "three pre-existing UFCS
 calls" while listing only two example call sites (matching
 D-progress-823's own "two" wording) — was also fixed in the same commit
@@ -35583,7 +35583,7 @@ the new one. `lyric fmt --write` applied clean (no refusals) to
 **Related:** #6589 (this entry's fix), D-progress-823 item D (the
 same-file/record-default half of this bug, documented-but-unfixed there),
 #6740 (the separate pattern-position bare-enum-case gap filed, not fixed,
-during this investigation), `native/plan/08-work-items.md` N9.3 (the
+during this investigation), `docs/native-plan/08-work-items.md` N9.3 (the
 `Std.HttpServer` native twin this unblocks half of — N9.3 remains blocked
 on #6588, the native `String` method gaps, independently),
 `Msil.Codegen.registerEnumDeclMsil` (the shipped-MSIL pattern this fix
@@ -35674,7 +35674,7 @@ workaround).
 
 ## D-progress-831 — Native `String` gains `.trim`/`.toLower`/`.indexOf`/`.startsWith`/`.contains`/`.endsWith` (#6588)
 
-**Context.** N9.3 (`native/plan/08-work-items.md`), drafting the
+**Context.** N9.3 (`docs/native-plan/08-work-items.md`), drafting the
 `_kernel_native/http_server.l` kernel for issue #6104, needed
 `Std.HttpEngine`/`Std.String` to compile for `--target native`. Only
 `.toString()`/`.substring()` were implemented as native `String` scalar
@@ -35759,7 +35759,7 @@ zero regressions, including the exact `Std.HttpHost` native client suite
 (`llvm_http_client_self_test.l`) this issue's own #6104/#6105 lineage
 depends on.
 
-`native/plan/08-work-items.md`'s N9.3 write-up is updated to record
+`docs/native-plan/08-work-items.md`'s N9.3 write-up is updated to record
 #6588 as shipped; N9.3 itself remains open pending #6589 (the unrelated
 bare cross-package enum-case resolution gap).
 
@@ -37209,7 +37209,7 @@ http_server.l` (dotnet) drives the sans-IO `Std.HttpEngine`'s
 per-connection FSM over `Std.TcpHost`'s transport; `_kernel_jvm/
 http_server.l` bypasses `Std.HttpEngine` entirely in favour of the JDK's
 own `com.sun.net.httpserver.HttpServer`. The issue's own text ("driving the
-sans-IO `Std.HttpEngine`'s FSM") and `native/plan/08-work-items.md`'s N9.3
+sans-IO `Std.HttpEngine`'s FSM") and `docs/native-plan/08-work-items.md`'s N9.3
 banding both point at the dotnet shape, so `_kernel_native/http_server.l`
 mirrors it: a real HTTP/1.1 parser/serializer (`Std.HttpEngine`, already
 native-buildable end to end since D-progress-830/831 fixed the two blockers
@@ -37255,7 +37255,7 @@ frame"), but `ServerQueue`/`HttpContext` must survive across many separate
 calls on many separate threads, so a pointer is reinterpreted as the `i64`
 it already is at the machine-word level (identical on every `--target
 native` triple, x86-64/AArch64, both LP64). `ServerQueue`/`HttpContext`
-themselves are plain (non-opaque) records — per `native/plan/
+themselves are plain (non-opaque) records — per `docs/native-plan/
 04-arc-design.md`, a Lyric `record` is heap-allocated with atomically
 refcounted ARC on this target (unlike the self-hosted MSIL emitter, which
 may lay a generic record out as a value type, docs/43), and a
@@ -37405,7 +37405,7 @@ invented fresh syntax, and CI's own `lyric fmt --check` (or an explicit
 `lyric fmt --write` pass before merge, per this repo's standing convention)
 is the load-bearing formatting check, same as the compilation claims above.
 
-**Related:** #6104 (this entry's issue), `native/plan/08-work-items.md` N9.3,
+**Related:** #6104 (this entry's issue), `docs/native-plan/08-work-items.md` N9.3,
 D-progress-809 (`lyric_sem_*`/`slice` prerequisites), D-progress-830/831
 (the two blockers this item's kernel depends on, both already shipped),
 D-progress-712/823 (N9.2/N9.4, whose `Long`-as-pointer idiom and
@@ -37718,7 +37718,7 @@ other verification pass on this file — panics only at the pre-existing,
 unrelated `--target native` `.indexOf` codegen gap). `lyric fmt --write`
 applied cleanly, no refusals. Synced the "six cases" → "seven cases"
 count across `docs/61-https-tls-http-versions.md`,
-`native/plan/08-work-items.md`, `docs/10-bootstrap-progress.md`, and
+`docs/native-plan/08-work-items.md`, `docs/10-bootstrap-progress.md`, and
 `.github/workflows/ci.yml`'s job comment alongside this addendum, rather
 than leaving them for a follow-up review round the way addendum 1's
 "three cases" mentions initially were (issue #6793).
@@ -38107,7 +38107,7 @@ concurrent `enqueueContext` activity racing the drain the instant
 `stopListener` runs; every client thread is joined, so the pass/fail
 signal is `stopListener` (and every client join) still returning
 promptly and cleanly. Case-count references synced in
-`docs/61-https-tls-http-versions.md`, `native/plan/08-work-items.md`,
+`docs/61-https-tls-http-versions.md`, `docs/native-plan/08-work-items.md`,
 and `docs/10-bootstrap-progress.md`.
 
 **Full verification (2026-08-31, real `--target native` build via the
@@ -38221,7 +38221,7 @@ merged as PR #6789 just before this session started): `lyric-web`'s
 `serveTls` dispatching through the native `Std.HttpServer.startListenerTls`
 (mirroring the dotnet/JVM wiring), and ALPN-selected h2 driving
 `Std.HttpEngine.H2Conn` from the native accept loop, "once the engine's h2
-stack is target-independent" (docs/61 §6.4, `native/plan/08-work-items.md`
+stack is target-independent" (docs/61 §6.4, `docs/native-plan/08-work-items.md`
 N9.5). Neither premise holds. This entry documents both blockers with
 direct evidence, files the two tracked follow-ups, and scopes this PR down
 to documentation only, per this repo's "smaller, fully-finished slice over
@@ -38335,7 +38335,7 @@ D-progress-850 (N9.3, the native `Std.HttpServer` twin this issue is a
 follow-on to, and the source of both the addendum-4 `inout` rewrite
 precedent and the `LYRIC_BOOTSTRAP_VERSION` sandbox substitute), D-progress-699/704
 (the h2 FSM and its dotnet ALPN wiring), `docs/61-https-tls-http-versions.md`
-§6.4/§7 item 5, `native/plan/08-work-items.md` N9.5.
+§6.4/§7 item 5, `docs/native-plan/08-work-items.md` N9.5.
 
 ---
 
@@ -38555,14 +38555,14 @@ otherwise a complete, verified compiler fix).
 `lyric-compiler/lyric/llvm_inout_self_test.l` (new),
 `scripts/ci/native-backend-self-tests.sh` (test wired in),
 `.github/workflows/ci.yml` (job comment documents the new test),
-`native/plan/08-work-items.md` (new N9.6 entry; N9.5 updated with the
+`docs/native-plan/08-work-items.md` (new N9.6 entry; N9.5 updated with the
 re-scoped blocker-1 status).
 
 **Related:** #6794 (this entry's issue, closed), #6808 (partially
 unblocked — its `inout`/`out` half is fixed; its `Std.Char` half is
 tracked as #6811), #6106/D-progress-852 (the investigation that surfaced
 both), D-progress-850 (N9.3, the addendum-4 `inout`-avoidance precedent
-this fix makes unnecessary going forward), `native/plan/04-arc-design.md`
+this fix makes unnecessary going forward), `docs/native-plan/04-arc-design.md`
 (Rules 3-5, the ARC protocol this fix reuses unchanged),
 `lyric-compiler/msil/codegen.l` (`MByRef`, the reference semantics this
 fix mirrors), `lyric-compiler/lyric/type_checker/typechecker_exprs.l`
@@ -38743,7 +38743,7 @@ PR's scope.
   native`). This is exactly the depth of validation the task asked for:
   proof the project-resolution MECHANISM works, with `lyric-web`'s
   remaining gaps being separate, already-tracked, smaller work
-  (`native/plan/08-work-items.md` N9.5's update).
+  (`docs/native-plan/08-work-items.md` N9.5's update).
 
 **Regression verification.** Full existing native self-test suite — 12
 files, 166 cases (`llvm_ir_self_test` 14, `llvm_codegen_self_test` 32,
@@ -38779,7 +38779,7 @@ added), `lyric-compiler/lyric/emitter.l` (`emitNativeProject` new;
 native branch), `lyric-compiler/lyric/cli/workspace_builder.l` (stale
 comment fix — no behavior change), `lyric-compiler/lyric/llvm_project_self_test.l`
 (new), `scripts/ci/native-backend-self-tests.sh` (test wired in),
-`native/plan/08-work-items.md` (new N9.7 entry).
+`docs/native-plan/08-work-items.md` (new N9.7 entry).
 
 **Related:** #6809 (this entry's issue, closed), #6815 (the follow-up:
 cross-project `[dependencies]`, `--triple`/`--opt` project-mode
@@ -40681,7 +40681,7 @@ the shadowing local got past the `.Sub` access cleanly, then hit an
 UNRELATED, pre-existing native multi-package immaturity (`cannot resolve
 call target 'println/1' for --target native`) — native's multi-package
 bundling has rough edges well beyond this one bug class, consistent with
-`native/plan/`'s framing of native multi-package linking as an earlier-
+`docs/native-plan/`'s framing of native multi-package linking as an earlier-
 phase, less mature axis than MSIL/JVM. `lowerCallEx`'s `EMember` handling
 (`llvm_codegen.l` ~line 2828, `case EMember(receiver, memberName) -> { if
 not isPackagePathExpr(ctx, receiver) { ... } }`) has no visible fallback
@@ -41377,7 +41377,7 @@ diagnostics, or the `addPkgImports` merge fix.
 **Related:** #6740, #6813, #6625 (all fixed here), #6952 (review-finding
 follow-up, fixed here too), #6645 (the sibling native-codegen ARC bug
 also fixed this session, in a separate PR, #6905),
-`native/plan/08-work-items.md` N9.9, `native/plan/04-arc-design.md`
+`docs/native-plan/08-work-items.md` N9.9, `docs/native-plan/04-arc-design.md`
 (Rule 5, the by-ref-argument-ownership rule #6813's fix protects).
 
 ## D-progress-883 — Native codegen: #6740's enum-case pattern fix was reachable by an unrelated `Int`/`Char` scrutinee sharing a bind name with any enum case in the bundle (#6969)
@@ -41456,7 +41456,7 @@ no regressions. `lyric fmt --write` applied clean (no refusals) to
 
 **Related:** #6969 (fixed here), D-progress-882 (#6740, the fix this
 entry closes a soundness gap in), `Msil.Codegen.inferScrutineeEnumHintMsil`
-(#5995, the mirrored mechanism), `native/plan/08-work-items.md` N9.9.
+(#5995, the mirrored mechanism), `docs/native-plan/08-work-items.md` N9.9.
 
 ## D-progress-884 — Native codegen: D-progress-883's #6969 fix dropped #6740's coverage for any scrutinee shape lacking a declared-type hint (#6976)
 
@@ -41526,7 +41526,7 @@ applied clean (no refusals) to both changed `.l` files.
 entry corrects), D-progress-882 (#6740, the original fix both #6969 and
 #6976 are follow-ups to), `Msil.Codegen.inferScrutineeEnumHintMsil`
 (#5995, the mirrored mechanism and accepted fallback trade-off),
-`native/plan/08-work-items.md` N9.9.
+`docs/native-plan/08-work-items.md` N9.9.
 
 ## D-progress-877 — `lyric-grpc`: server hosting confirmed blocked by the same #6581 gap as unary/streaming; no bindable non-generic subset found (#6592, #5409)
 
@@ -41686,8 +41686,8 @@ weak count, caught by ASan's LeakSanitizer. Full `llvm_heap_self_test.l`
 suite re-run: 37/37 (34 pre-existing + 3 new), no regressions.
 
 **Related:** #5545 (fixed here), #5504/D-progress-… (the original
-`NativeWeak` ARC two-count design this builds on), `native/plan/08-work-items.md`
-N9.8, `native/plan/04-arc-design.md`'s "Weak references: `NativeWeak[T]`"
+`NativeWeak` ARC two-count design this builds on), `docs/native-plan/08-work-items.md`
+N9.8, `docs/native-plan/04-arc-design.md`'s "Weak references: `NativeWeak[T]`"
 section.
 
 ## D-progress-878 — lyric-web: `Web.addWorker`'s registered worker actually fires on `--target dotnet` (#5359)

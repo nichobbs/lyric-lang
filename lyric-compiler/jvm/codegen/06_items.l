@@ -1612,6 +1612,9 @@ func recordComparesByFieldsJvm(decl: in RecordDecl, anns: in List[Annotation]): 
   if hasDeriveMarkerJvm(anns, "Equals") {
     return true
   }
+  if decl.isRef {
+    return false
+  }
   for m in decl.members {
     match m {
       case RMField(fd) -> if fd.isMutable { return false }

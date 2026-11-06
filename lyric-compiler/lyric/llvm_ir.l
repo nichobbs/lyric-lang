@@ -2,7 +2,7 @@
 //!
 //! Defines the instruction set (`NInsn`), function/global/package shapes,
 //! and renders them as clang-acceptable textual IR.  The shapes follow
-//! native/plan/02-architecture.md with these corrections, applied because
+//! docs/native-plan/02-architecture.md with these corrections, applied because
 //! the plan's sketches would render invalid IR:
 //!
 //!   * Binary-op operands render the type once (`add i32 %a, 1`), not

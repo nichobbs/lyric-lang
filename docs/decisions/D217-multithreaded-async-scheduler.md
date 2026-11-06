@@ -1,6 +1,6 @@
 # D217 - A multi-threaded scheduler for native `async` tasks
 
-**Status:** accepted, implemented (docs/67 phase G8, #7947; phase 2 of `native/plan/06-async-design.md`); builds on D-N-021, D-N-022 and D202
+**Status:** accepted, implemented (docs/67 phase G8, #7947; phase 2 of `docs/native-plan/06-async-design.md`); builds on D-N-021, D-N-022 and D202
 
 ## Decision
 

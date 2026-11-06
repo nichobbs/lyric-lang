@@ -470,7 +470,7 @@ func addH2BodyChunk(exchange: in H2Exchange, bytes: in slice[Byte]): Unit {
 // Per-stream request accumulation on the connection task: the HPACK-decoded
 // request `headers` and the DATA-frame `body` gathered until END_STREAM, at
 // which point the stream is dispatched as an `HttpContext`.
-record H2ReqAccum {
+ref record H2ReqAccum {
   var headers: List[HeaderField]
   body: List[Byte]
   var haveHeaders: Bool

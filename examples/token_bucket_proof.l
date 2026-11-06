@@ -34,6 +34,7 @@ pub protected type Bucket {
   let capacity: Long
   invariant: tokens >= 0
   invariant: tokens <= capacity
+  invariant: capacity <= 1_000_000_000_000
   pub entry tryAcquire(count: in Long): Bool
 
     // Attempt to consume `count` tokens.  Returns true on success,
@@ -54,6 +55,7 @@ pub protected type Bucket {
 
     // Add `added` tokens, capped at capacity.
     requires: added > 0
+    requires: added <= capacity
   {
     val newTokens = tokens + added
     tokens = if newTokens > capacity then capacity else newTokens
@@ -66,6 +68,7 @@ pub protected type Bucket {
 // token count equals the capacity, satisfying the invariant at construction.
 pub func make(capacity: in Long): Bucket
   requires: capacity > 0
+  requires: capacity <= 1_000_000_000_000
   ensures: result.tokens == capacity
   ensures: result.capacity == capacity
 {

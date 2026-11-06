@@ -11,6 +11,7 @@ import Lyric.Manifest as Mf
 import Lyric.Lexer
 import Lyric.Emitter as Emitter
 import Lyric.Discovery as Disc
+import Lyric.Generator as Generator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §11f. Check command — type-check without producing a usable output artifact
@@ -18,6 +19,7 @@ import Lyric.Discovery as Disc
 func cmdCheck(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var targetJvm = false
+  var allowGenerators = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -31,6 +33,9 @@ func cmdCheck(argv: in slice[String]): Int {
         printErr("check: --manifest requires a path")
         return 1
       }
+    } else if arg == "--allow-generators" {
+      allowGenerators = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -57,6 +62,10 @@ func cmdCheck(argv: in slice[String]): Int {
 
   val checkTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
   val checkExt = if targetJvm { ".jar" } else { ".dll" }
+  Generator.setAllowProcessGenerators(allowGenerators)
+  defer {
+    Generator.setAllowProcessGenerators(true)
+  }
 
   // Project-mode: type-check all packages without producing a usable bin/ artifact.
   if positional.count == 0 {

@@ -8,7 +8,7 @@
 //! Hpack`'s Huffman codec calls `Std.Char`'s char<->int bridge).
 //!
 //! Code-point bridge: `Char` and `Int` are BOTH lowered to `i32` on native
-//! (`native/plan/03-type-mapping.md`), so unlike the BCL/JDK twins (which
+//! (`docs/native-plan/03-type-mapping.md`), so unlike the BCL/JDK twins (which
 //! need a real conversion call — `Convert.ToInt32`/`ToChar`,
 //! `Character.hashCode`/`toString`), the bridge here is the same identity
 //! bitcast the numeric-conversion builtin methods (`.toInt()`/`.toChar()`,

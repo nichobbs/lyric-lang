@@ -6,7 +6,7 @@ backend. The original revision assumed a .NET AOT `wasi-wasm` route; that
 premise is withdrawn (§3). Open questions (none blocking now; Q-JS-001, 003, 004, 005, 006 and 008 are resolved, Q-JS-002, 007 and 009 remain open) are
 in §13. Backed by D-progress-1028 (route, phase order (§12) and the resolved
 questions (§13.1)).
-**Builds on:** `native/plan/` (LLVM backend, D-N-001..D-N-017),
+**Builds on:** `docs/native-plan/` (LLVM backend, D-N-001..D-N-017),
 `docs/14-native-stdlib-plan.md` (extern kernel pattern),
 `docs/63-build-profiles-and-debugger.md` (profile and shape axes),
 `docs/65-ui-library-sketch.md` §13.1 (client WASM host),
@@ -70,7 +70,7 @@ Out of scope: see §14.
   verified that the self-hosted MSIL emitter's output survives the WASI
   runtime pack.
 - **Async already lowers.** The native backend lowers `async` through LLVM
-  coroutines (`native/plan/06-async-design.md`), which is a plain state
+  coroutines (`docs/native-plan/06-async-design.md`), which is a plain state
   machine on wasm32 and needs no host stack switching.
 - **Parity.** `wasm32` is a new target triple on an existing backend, not a
   fourth backend. The MSIL/JVM/native parity rule is satisfied by the existing

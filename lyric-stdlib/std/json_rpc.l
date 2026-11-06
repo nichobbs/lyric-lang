@@ -203,7 +203,7 @@ pub interface RpcTransport {
 
 // ── Peer ────────────────────────────────────────────────────────────────────
 @stable(since = "0.1")
-pub record RpcPeer {
+pub ref record RpcPeer {
   transport: RpcTransport
   handler: RpcHandler
   var nextId: Long
@@ -416,7 +416,7 @@ impl BugGuarded for NotificationCall {
   }
 }
 
-record RequestCall {
+ref record RequestCall {
   handler: RpcHandler
   method: String
   params: Option[JsonValue]

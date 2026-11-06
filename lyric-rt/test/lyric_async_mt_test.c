@@ -39,7 +39,7 @@
         }                                                                                  \
     } while (0)
 
-enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3, K_FIB = 4, K_IO = 5 };
+enum { K_LEAF = 0, K_AWAIT_DEP = 1, K_NESTED = 2, K_AWAIT_RACE = 3, K_FIB = 4, K_IO = 5, K_AWAIT_EPHEMERAL = 6 };
 
 typedef struct FakeCo {
     LyricTask* task;
@@ -128,6 +128,18 @@ static void body(FakeCo* c) {
             return;
         }
         lyric_task_complete(c->task, lyric_task_result(c->dep->task) + 1, 0);
+        c->step = -1;
+        return;
+    case K_AWAIT_EPHEMERAL:
+        /* Registers on `dep`, then drops the caller's reference so only the scheduler's
+         * `park_dep` retain and `worker_run_task`'s completion retain keep `dep` alive. */
+        if (c->step == 0) {
+            c->step = 1;
+            lyric_async_await(c->task, c->dep->task);
+            lyric_release(c->dep->task);
+            return;
+        }
+        lyric_task_complete(c->task, c->value + 1, 0);
         c->step = -1;
         return;
     case K_NESTED:
@@ -416,6 +428,31 @@ static void test_dropped_handles(void) {
     free(sentinel);
 }
 
+/* Regression test for `park_dep` and `worker_run_task` reference retention:
+ * waiters register on a dependency and immediately release their own reference
+ * before suspending, while the dependency finishes concurrently on another worker. */
+static void test_ephemeral_dep_and_wake_release(void) {
+    enum { N = 64 };
+    FakeCo* deps = (FakeCo*)calloc(N, sizeof(FakeCo));
+    FakeCo* waiters = (FakeCo*)calloc(N, sizeof(FakeCo));
+    LyricTask* wt[N];
+    reset_counters();
+    for (int i = 0; i < N; i++) {
+        co_init(&deps[i], K_LEAF, NULL, i, 1, 50);
+        co_call(&deps[i], 1);
+        co_init(&waiters[i], K_AWAIT_EPHEMERAL, &deps[i], i, 0, 0);
+        wt[i] = co_call(&waiters[i], 1);
+    }
+    for (int i = 0; i < N; i++) {
+        lyric_task_block_on(wt[i]);
+        CHECK(lyric_task_result(wt[i]) == i + 1);
+        lyric_release(wt[i]);
+    }
+    CHECK(wait_destroyed(2 * N));
+    free(deps);
+    free(waiters);
+}
+
 /* Fine-grained recursive fork-join: thousands of tasks spawned from every thread, almost all of
  * them taken from the oldest end of another thread's deque (work stealing, #8493). */
 static void test_fork_join_steal(void) {
@@ -588,6 +625,7 @@ int main(void) {
     test_chain();
     test_nested_block_on();
     test_dropped_handles();
+    test_ephemeral_dep_and_wake_release();
     test_fork_join_steal();
     test_fd_wait_sync();
     test_io_wake(0);

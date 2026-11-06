@@ -2,7 +2,7 @@
 //!
 //! Walks parsed + middle-ended `SourceFile`s and produces an `NPackage`
 //! for `Lyric.LlvmLowering.lowerPackage`.  Phase N1 scope (scalar codegen,
-//! native/plan/08-work-items.md):
+//! docs/native-plan/08-work-items.md):
 //!
 //!   * Int/Long/Float/Bool/Char/Byte scalars, String references.
 //!   * Arithmetic, comparison, short-circuit `and`/`or`, `not`,
@@ -401,7 +401,7 @@ record Ctx {
   // panic on rebind, since every write site removes first.
   varEnumTypes: Map[String, String]
   // #6237: `Char` and `Int` both erase to `NI32` with no runtime tag
-  // (native/plan/03-type-mapping.md), so `NVal.ty` alone can never
+  // (docs/native-plan/03-type-mapping.md), so `NVal.ty` alone can never
   // distinguish them. Local bindings with an explicit `Char` type
   // annotation (or a `Char`-literal initializer) are recorded here so
   // `.toString()` and `String + Char` concatenation — the two codegen
@@ -6707,6 +6707,9 @@ func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
 }
 
 func recordHasVarField(rd: in RecordDecl): Bool {
+  if rd.isRef {
+    return true
+  }
   for f in recFieldsOf(rd) {
     if f.isMutable {
       return true

@@ -3,7 +3,7 @@
 //! counterexample, and `noCubeSum`'s is undecided — `x^3 + y^3 + z^3 == 42`
 //! has a solution in `Long`, which the solver cannot find within its time
 //! limit.
-@proof_required
+@proof_required(unbounded_arithmetic)
 package ProveJsonSummary
 
 func copy(x: in Int): Int

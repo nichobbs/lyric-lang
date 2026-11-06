@@ -180,6 +180,98 @@ func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
   return -1
 }
 
+// Scan `header` for the last top-level `"alg" : "<value>"` key-value pair,
+// tolerating optional RFC 8259 JSON whitespace (` `, `\t`, `\r`, `\n`) around
+// `:`.  Uses last-wins semantics at top-level object depth (`depth == 1`) so
+// neither a crafted earlier `"alg":"RS256"` nor a nested `"extra":{"alg":...}`
+// can mask the effective top-level `"alg"`.
+func extractHeaderAlg(header: in String): String {
+  var lastAlg = ""
+  var pos = 0
+  var depth = 0
+  val n = header.length
+  while pos < n {
+    val c = charAtOrReplacement(header, pos)
+    if c == '{' or c == '[' {
+      depth = depth + 1
+      pos = pos + 1
+    } else if c == '}' or c == ']' {
+      if depth > 0 {
+        depth = depth - 1
+      }
+      pos = pos + 1
+    } else if c == '"' {
+      // Read string literal starting at `pos`.
+      var endQuote = pos + 1
+      var escaped = false
+      while endQuote < n {
+        val sc = charAtOrReplacement(header, endQuote)
+        if escaped {
+          escaped = false
+        } else if sc == '\\' {
+          escaped = true
+        } else if sc == '"' {
+          break
+        }
+        endQuote = endQuote + 1
+      }
+      if endQuote >= n {
+        return ""
+      }
+      val keyText = header.substring(pos + 1, endQuote - (pos + 1))
+      var p = endQuote + 1
+      while p < n {
+        val ws = charAtOrReplacement(header, p)
+        if ws == ' ' or ws == '\t' or ws == '\r' or ws == '\n' {
+          p = p + 1
+        } else {
+          break
+        }
+      }
+      if depth == 1 and keyText == "alg" and p < n and charAtOrReplacement(header, p) == ':' {
+        p = p + 1
+        while p < n {
+          val ws = charAtOrReplacement(header, p)
+          if ws == ' ' or ws == '\t' or ws == '\r' or ws == '\n' {
+            p = p + 1
+          } else {
+            break
+          }
+        }
+        if p < n and charAtOrReplacement(header, p) == '"' {
+          val vs = p + 1
+          var ve = vs
+          var vEsc = false
+          while ve < n {
+            val vc = charAtOrReplacement(header, ve)
+            if vEsc {
+              vEsc = false
+            } else if vc == '\\' {
+              vEsc = true
+            } else if vc == '"' {
+              break
+            }
+            ve = ve + 1
+          }
+          if ve < n {
+            lastAlg = header.substring(vs, ve - vs)
+            pos = ve + 1
+          } else {
+            return ""
+          }
+        } else {
+          pos = p
+        }
+      } else {
+        pos = p
+      }
+    } else {
+      pos = pos + 1
+    }
+  }
+  return lastAlg
+}
+
 // Extract the `alg` value from a JWT's base64url-encoded header segment.
 // Returns "" when the token is malformed or the `alg` key is absent.
 // Uses pure-Lyric base64url decode so no extern is needed — this function
@@ -210,21 +302,7 @@ func jwtAlg(token: in String): String {
     case Some(bytes) -> {
       match tryDecodeUtf8(bytes) {
         case None -> return ""
-        case Some(header) -> {
-          // Scan for the "alg":"VALUE" key-value pair in the header JSON.
-          // Use lastIndexOf so duplicate alg keys resolve to the last occurrence,
-          // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
-          // many JWT libraries use the last value).  This prevents a crafted first
-          // alg=RS256 from masking a final alg=none in the same header.
-          val pfx = "\"alg\":\""
-          val pfxPos = match header.lastIndexOf(pfx) { case Some(i) -> i; case None -> return "" }
-          val vs = pfxPos + pfx.length
-          val ve = indexOfCharAfter(header, '"', vs)
-          if ve < 0 {
-            return ""
-          }
-          header.substring(vs, ve - vs)
-        }
+        case Some(header) -> extractHeaderAlg(header)
       }
     }
   }
@@ -254,26 +332,7 @@ func jwtAlg(token: in String): String {
   }
   match tryDecodeUtf8(headerBytes) {
     case None -> ""
-    case Some(header) -> {
-      // Scan for the "alg":"VALUE" key-value pair in the header JSON.
-      // Use lastIndexOf so duplicate alg keys resolve to the last occurrence,
-      // matching last-wins parser semantics (RFC 8259 §4 permits duplicates;
-      // many JWT libraries use the last value).  This prevents a crafted first
-      // alg=RS256 from masking a final alg=none in the same header.
-      val pfx = "\"alg\":\""
-      match header.lastIndexOf(pfx) {
-        case None -> ""
-        case Some(pfxPos) -> {
-          val vs = pfxPos + pfx.length
-          val ve = indexOfCharAfter(header, '"', vs)
-          if ve < 0 {
-            ""
-          } else {
-            header.substring(vs, ve - vs)
-          }
-        }
-      }
-    }
+    case Some(header) -> extractHeaderAlg(header)
   }
 }
 

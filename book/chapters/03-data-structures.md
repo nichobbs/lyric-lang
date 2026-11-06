@@ -65,7 +65,7 @@ A record with a `var` field keeps identity, as a key too, unless it derives `Equ
 
 A tuple is a key by structure too, on dotnet and the JVM: `m.add((1, 2), "a")` then `m.containsKey((1, 2))` is `true`, and `(1, 0.0)` and `(1, -0.0)` are one key. Native still rejects a tuple key (N0007).
 
-A record with a `var` field has identity, and you say so by declaring it `ref record` (see "Values and mutable records" in the reference). A `var` field in a plain `record` is the warning W0031, and the fix is to add `ref`; `ref` on a record with no `var` field is accepted and changes nothing. With the marker, `==` asks whether two bindings refer to the same instance: `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead:
+A record with a `var` field has identity, and you say so by declaring it `ref record` (see "Values and mutable records" in the reference). A `var` field in a plain `record` is the warning W0031, and the fix is to add `ref`; `ref` on a record with no `var` field is also accepted and gives the record reference identity and heap allocation on every target (D415). With the marker, `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead:
 
 ```lyric
 @derive(Equals)
