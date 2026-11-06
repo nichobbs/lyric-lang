@@ -4,7 +4,8 @@
 # the web and desktop hosts take; only the entry point differs, which is why this manifest points at
 # the example's own sources.  `customers-native` opens a window; `customers-native --check <dir>`
 # drives the app headless with scripted input and compares what it draws with the golden images
-# in <dir> (scripts/ci/ui-native-e2e.sh).
+# in <dir> (scripts/ci/ui-native-e2e.sh), then checks a password input's masking on a one-input screen
+# of its own (Customers.Native.Password, src/password.l).
 [package]
 name    = "Lyric.Ui.Native.Examples.Customers"
 version = "0.1.0"
@@ -24,6 +25,7 @@ name = "Lyric.Ui.Native.Examples.Customers"
 "Customers.List.View"    = "../../../../../examples/ui-customers/src/list_view.l"
 "Customers.Store"        = "../../../../../examples/ui-customers/src/store.l"
 "Customers.App"          = "../../../../../examples/ui-customers/src/app.l"
+"Customers.Native.Password" = "src/password.l"
 "Customers.Native"       = "src/main.l"
 
 [dependencies]

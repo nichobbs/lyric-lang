@@ -4948,36 +4948,36 @@ test "a call fed by a read of an open-typed value is not judged, a construction 
   assertEqualInt(count("func f(): Bool { isNone(None) }\n"), 1, "a bare case construction is still judged")
 }
 
-func unsolvedCtorWarnings(body: in String): Int {
+func unsolvedCtorErrors(body: in String): Int {
   val src = "package App\nimport Lib\n" + body
   val cr = checkWithImportedPackages(parse(src).file, unsolvedLib())
   var n = 0
   for d in cr.diagnostics {
-    if d.code == "W0038" {
+    if d.code == "T0224" {
       n = n + 1
     }
   }
   n
 }
 
-test "a union-case construction nothing fixes is W0038 (D353)" {
+test "a union-case construction nothing fixes is T0224 (D353, D381)" {
   assertEqualInt(
-    unsolvedCtorWarnings("func f(): Int {\n  val r = Ok2(value = 7)\n  1\n}\n"),
+    unsolvedCtorErrors("func f(): Int {\n  val r = Ok2(value = 7)\n  1\n}\n"),
     1,
     "E of Ok2(value = 7) is unsolved and the binding is never used"
   )
-  assertEqualInt(unsolvedCtorWarnings("func f(): Int {\n  val r = Some(value = 7)\n  1\n}\n"), 0, "T is the argument")
+  assertEqualInt(unsolvedCtorErrors("func f(): Int {\n  val r = Some(value = 7)\n  1\n}\n"), 0, "T is the argument")
 }
 
 test "an expected type or a later use fixes a union-case construction (D353)" {
   assertEqualInt(
-    unsolvedCtorWarnings("func f(): Int {\n  val r: Res[Int, String] = Ok2(value = 7)\n  1\n}\n"),
+    unsolvedCtorErrors("func f(): Int {\n  val r: Res[Int, String] = Ok2(value = 7)\n  1\n}\n"),
     0,
     "an annotated binding"
   )
-  assertEqualInt(unsolvedCtorWarnings("func f(): Res[Int, String] { Ok2(value = 7) }\n"), 0, "the declared result")
+  assertEqualInt(unsolvedCtorErrors("func f(): Res[Int, String] { Ok2(value = 7) }\n"), 0, "the declared result")
   assertEqualInt(
-    unsolvedCtorWarnings("func take(r: in Res[Int, String]): Int { 1 }\nfunc f(): Int { take(Ok2(value = 7)) }\n"),
+    unsolvedCtorErrors("func take(r: in Res[Int, String]): Int { 1 }\nfunc f(): Int { take(Ok2(value = 7)) }\n"),
     0,
     "a parameter type"
   )
@@ -4985,14 +4985,14 @@ test "an expected type or a later use fixes a union-case construction (D353)" {
 
 test "the join of a try body and its catch fixes a construction (D380)" {
   assertEqualInt(
-    unsolvedCtorWarnings(
+    unsolvedCtorErrors(
       "func g(): Int { 1 }\nfunc f(): Int {\n  match try { g(); Ok2(value = 1) } catch Bug as b { Err2(error = \"x\") } {\n    case Ok2(_) -> 1\n    case Err2(_) -> 2\n  }\n}\n"
     ),
     0,
     "try as a match scrutinee"
   )
   assertEqualInt(
-    unsolvedCtorWarnings(
+    unsolvedCtorErrors(
       "func g(): Int { 1 }\nfunc f(): Int {\n  val r = try { g(); Ok2(value = 1) } catch Bug as b { Err2(error = \"x\") }\n  1\n}\n"
     ),
     0,
@@ -5000,23 +5000,51 @@ test "the join of a try body and its catch fixes a construction (D380)" {
   )
 }
 
-test "contexts that already fix a construction are not W0038 (D380)" {
+test "contexts that already fix a construction are not T0224 (D380)" {
   assertEqualInt(
-    unsolvedCtorWarnings(
+    unsolvedCtorErrors(
+      "func c[S](x: in S): Res[Option[S], String] {\n  val body: (Int) -> Res[Option[S], String] = { d: Int ->\n    if d == 0 { return Err2(error = \"x\") }\n    Ok2(value = Some(value = x))\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a return in a generic lambda"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
+      "record Game[S] { init: (Int) -> S }\nrecord Rendered[S] { state: S; width: Int }\nfunc c[S](game: Game[S]): Res[Rendered[S], String] {\n  val body: (Int) -> Res[Rendered[S], String] = { d: Int ->\n    val cur = game.init(1)\n    match d { case 0 -> Ok2(value = Rendered(state = cur, width = 1)); case _ -> Err2(error = \"x\") }\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a generic lambda whose tail is a match over constructions"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
+      "record Game[S] { init: (Int) -> S }\nrecord Rendered[S] { state: S; width: Int }\nfunc c[S](game: Game[S]): Res[Rendered[S], String] {\n  val body: (Int) -> Res[Rendered[S], String] = { d: Int ->\n    val cur = game.init(1)\n    if d == 0 { Ok2(value = Rendered(state = cur, width = 1)) } else { Err2(error = \"x\") }\n  }\n  body(0)\n}\n"
+    ),
+    0,
+    "a generic lambda whose tail is an if over constructions"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
+      "func g[S](x: in S): Res[Option[S], String] {\n  val body: () -> Res[Option[S], String] = { -> match true { case true -> Ok2(value = Some(value = x)); case false -> Err2(error = \"e\") } }\n  body()\n}\n"
+    ),
+    0,
+    "a lambda whose tail is a match"
+  )
+  assertEqualInt(
+    unsolvedCtorErrors(
       "func f(c: in Bool): Int {\n  val l = [Ok2(value = 1), Err2(error = \"ab\"), Ok2(value = 3)]\n  l.count\n}\n"
     ),
     0,
     "list literal"
   )
   assertEqualInt(
-    unsolvedCtorWarnings(
+    unsolvedCtorErrors(
       "func f(c: in Bool): Res[Int, String] {\n  val s = (if c { Err2(error = \"a\") } else { Err2(error = \"b\") })?\n  Ok2(value = 1)\n}\n"
     ),
     0,
     "branches of a ? operand"
   )
   assertEqualInt(
-    unsolvedCtorWarnings(
+    unsolvedCtorErrors(
       "func take(o: in Option[Res[Int, String]]): Int { 1 }\nfunc f(): Int { take(Some(value = Ok2(value = 7))) }\n"
     ),
     0,
@@ -14975,9 +15003,10 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
 }
 
-// A call whose result no rule types yet: `default()` with no expected type.
+// A read no rule types and no diagnostic reports: a member the receiver's type
+// does not have (the backends reject it later, T0121).
 func silentHostCallSource(): String {
-  "package P\nfunc f(): Unit {\n  val d = default()\n}\n"
+  "package P\nfunc f(a: in Int): Unit {\n  val d = a.bar\n}\n"
 }
 
 func silentSiteKinds(cr: in CheckResult): String {
@@ -15001,11 +15030,12 @@ test "a fully typed program has no silent TyError site (D341)" {
   assertEqual(diags.count.toString(), "0", "no W0036")
 }
 
-test "a callee typed TyError is exempt, its call result is not (D338, D341)" {
+test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
-  assertTrue(not Str.contains(kinds, "EPath"), "the callee default is exempt: " + kinds)
-  assertTrue(Str.contains(kinds, "ECall"), "the call result default() is a silent site: " + kinds)
+  assertTrue(Str.contains(kinds, "EMember"), "the read a.bar is a silent site: " + kinds)
+  val call = parseCheck("package P\nfunc f(a: in Int): Unit {\n  val d = a.bar()\n}\n")
+  assertEqual(silentSiteKinds(call), "", "the callee is exempt and the call result is named, not silent")
 }
 
 test "W0036 reports each silent site and is silent after an error (D341)" {
@@ -15235,6 +15265,35 @@ test "an erased generic value and a type qualifier are named, not silent" {
     "package P\nextern type NetM = \"System.Math\"\nfunc f(a: in Int, b: in Int): Int {\n  NetM.Max(a, b)\n}\n"
   )
   assertEqual(silentSiteKinds(qualifier), "", "the type receiver of a static member is not a value")
+}
+
+test "ecosystem shapes are typed or named, not silent (D355)" {
+  val config = parseCheck(
+    "package P\nconfig Cfg {\n  ttl: Int = 5\n}\nfunc f(): Int {\n  val b = Cfg.ttl\n  b + 1\n}\n"
+  )
+  assertEqual(silentSiteKinds(config), "", "a config field read has its declared type")
+  assertEqual(diagCodesOf(config), "", "and checks as an Int")
+  val unionCase = parseCheck(
+    "package P\nunion Kind {\n  case Bad\n  case Good\n}\nfunc code(k: in Kind): Int {\n  1\n}\nfunc f(): Int {\n  val k = Kind.Bad\n  code(k)\n}\n"
+  )
+  assertEqual(silentSiteKinds(unionCase), "", "a union case named through its type is typed")
+  assertEqual(diagCodesOf(unionCase), "", "and is accepted as that union")
+  val tryJoin = parseCheck(
+    "package P\nunion Res[T, E] {\n  case Good(v: T)\n  case Bad(e: E)\n}\nfunc f(): Int {\n  match try { Good(v = 1) } catch Bug as b { Bad(e = b.message) } {\n    case Bad(e) -> 0\n    case Good(v) -> v\n  }\n}\n"
+  )
+  val tryDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(tryJoin.symbols, tryDiags)
+  assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no W0036)")
+  val genericCr = parseCheck(
+    "package P\nrecord Row[D] {\n  draft: D\n}\nunion Opt[T] {\n  case Has(v: T)\n  case Nope\n}\nfunc f[D](r: in Row[D]): Unit {\n  val d = r.draft\n}\nfunc g[T](o: in Opt[T], d: in T): T {\n  match o {\n    case Has(x) -> x\n    case Nope -> d\n  }\n}\nfunc h(o: in Opt[Int]): Int {\n  g(o, default())\n}\n"
+  )
+  val genericDiags: List[Diagnostic] = newList()
+  reportSilentTyErrors(genericCr.symbols, genericDiags)
+  assertEqual(
+    genericDiags.count.toString(),
+    "0",
+    "an erased generic field read and a context-typed generic call are named"
+  )
 }
 
 test "count on a slice is W0042, length is the slice's size" {

@@ -17,6 +17,7 @@ import Std.Parse.{parseOptInt}
 import Ui.Core.{Prop}
 import Ui.Native.Layout.{Box, Metrics, propOf, gridColumns}
 import Ui.Native.Wrap
+import Unicode.WordBreak
 
 // ─── Focus ────────────────────────────────────────────────────────────────────
 /// The boxes Tab visits, in tree order.
@@ -179,13 +180,17 @@ func chainTo(b: Box, path: List[Int]): Option[List[Box]] {
 /// A caret and the other stop of the selection (equal to the caret when nothing is selected), in
 /// code points, the horizontal scroll of a single-line input and the vertical scroll of a text
 /// area, and the column (pixels from the left of its line) that Up and Down keep to across lines
-/// of different length, or negative when there is none.
+/// of different length, or negative when there is none.  `downstream` is the caret's affinity: at
+/// a boundary of two pieces of bidirectional text a position has two places on screen, the trailing
+/// edge of the character before it (false) and the leading edge of the one after (true); Left and
+/// Right and a click choose between them, anything else puts the caret upstream.
 pub record TextEdit {
   caret: Int
   anchor: Int
   scrollX: Float
   goalX: Float = -1.0f32
   scrollY: Float = 0.0f32
+  downstream: Bool = false
 }
 
 pub func emptyEdit(): TextEdit {
@@ -295,7 +300,13 @@ pub func deleteForward(value: in String, e: in TextEdit): Edited {
 pub func moveCaret(value: in String, e: in TextEdit, position: in Int, select: in Bool): TextEdit {
   val n = cpCount(value)
   val p = if position < 0 { 0 } else if position > n { n } else { position }
-  e.copy(caret = p, anchor = if select { e.anchor } else { p }, goalX = -1.0f32)
+  e.copy(caret = p, anchor = if select { e.anchor } else { p }, goalX = -1.0f32, downstream = false)
+}
+
+/// The caret at a place on screen (a click or a step in bidirectional text), with `select` keeping
+/// the other end of the selection.
+pub func placeCaret(value: in String, e: in TextEdit, place: in Wrap.CaretPlace, select: in Bool): TextEdit {
+  moveCaret(value, e, place.position, select).copy(downstream = place.downstream)
 }
 
 /// Left or right by one code point; with a selection and no `select`, to its edge.
@@ -303,7 +314,7 @@ pub func stepCaret(value: in String, e: in TextEdit, delta: in Int, select: in B
   val c = clampEdit(value, e)
   if not select and hi(c) > lo(c) {
     val p = if delta < 0 { lo(c) } else { hi(c) }
-    return c.copy(caret = p, anchor = p, goalX = -1.0f32)
+    return c.copy(caret = p, anchor = p, goalX = -1.0f32, downstream = false)
   }
   moveCaret(value, c, c.caret + delta, select)
 }
@@ -329,24 +340,49 @@ pub func stepVisualCaret(
   if not select and hi(c) > lo(c) {
     val towardsStart = (delta < 0) != lines[row].rtl
     val p = if towardsStart { lo(c) } else { hi(c) }
-    return c.copy(caret = p, anchor = p, goalX = -1.0f32)
+    return c.copy(caret = p, anchor = p, goalX = -1.0f32, downstream = false)
   }
   if not Wrap.isMixedAt(lines, c.caret) {
     return stepCaret(value, c, delta, select)
   }
-  moveCaret(value, c, Wrap.stepVisual(value, lines, c.caret, delta, widthOf), select)
+  val from = Wrap.CaretPlace(position = c.caret, downstream = c.downstream)
+  placeCaret(value, c, Wrap.stepVisualPlace(value, lines, from, delta, widthOf), select)
+}
+
+/// Ctrl+Left (`delta` -1) or Ctrl+Right (1): to the start of the word before the caret or the end
+/// of the word after it, by the word boundaries of UAX #29 (`Unicode.WordBreak`), so it works in
+/// every script.  `rtl` is the direction of the caret's paragraph: in right to left text Left goes
+/// forward in the text and Right back, as the words read.
+pub func moveWord(value: in String, e: in TextEdit, delta: in Int, rtl: in Bool, select: in Bool): TextEdit {
+  val c = clampEdit(value, e)
+  val cps = codePoints(value)
+  val forward = (delta > 0) != rtl
+  val p = if forward { WordBreak.nextWordEnd(cps, c.caret) } else { WordBreak.previousWordStart(cps, c.caret) }
+  moveCaret(value, c, p, select)
+}
+
+/// Whether `b` is a password input.  The host never draws, copies or cuts its value, and never
+/// splits it into words: word movement goes to its ends and a double click selects all of it.
+pub func isMasked(b: in Box): Bool {
+  b.kind == "textInput" and propOf(b.props, "type", "text") == "password"
+}
+
+/// What the input `b` draws of `value`: the value itself, or for a password one bullet (U+2022) per
+/// code point, so every caret position of the value is the same position of what is drawn.
+pub func shownValue(b: in Box, value: in String): String {
+  if not isMasked(b) {
+    return value
+  }
+  repeat("•", cpCount(value))
 }
 
 pub func selectAll(value: in String, e: in TextEdit): TextEdit {
   e.copy(anchor = 0, caret = cpCount(value))
 }
 
-func isWordPoint(cp: Int): Bool {
-  not (cp == 32 or cp == 9 or cp == 10 or cp == 13 or cp == 160 or cp == 12288)
-}
-
-/// The selection a double click at code point `position` makes: the run of non-space code points
-/// around it (or the run of spaces when it is on one), as an edit with the caret at the end.
+/// The selection a double click at code point `position` makes: the segment between the word
+/// boundaries of UAX #29 around it (a word, a run of spaces, a punctuation mark), as an edit with the
+/// caret at its end.
 pub func wordAt(value: in String, position: in Int): TextEdit {
   val cps = codePoints(value)
   val n = cps.length
@@ -354,13 +390,13 @@ pub func wordAt(value: in String, position: in Int): TextEdit {
     return emptyEdit()
   }
   val at = if position >= n { n - 1 } else if position < 0 { 0 } else { position }
-  val word = isWordPoint(cps[at])
+  val bounds = WordBreak.boundariesIn(cps, 0, n)
   var from = at
-  while from > 0 and isWordPoint(cps[from - 1]) == word {
+  while from > 0 and not bounds[from] {
     from = from - 1
   }
-  var to = at
-  while to < n and isWordPoint(cps[to]) == word {
+  var to = at + 1
+  while to < n and not bounds[to] {
     to = to + 1
   }
   TextEdit(caret = to, anchor = from, scrollX = 0.0f32)
@@ -419,24 +455,6 @@ pub func moveToLineEdge(
   val c = clampEdit(value, e)
   val row = Wrap.lineIndexOf(lines, c.caret)
   moveCaret(value, c, if toEnd { Wrap.lastCaret(lines, row) } else { Wrap.firstCaret(lines, row) }, select)
-}
-
-/// The caret position nearest to pixel `x` (relative to the text's left edge).
-pub func caretAt(value: in String, x: in Float, widthOf: in (String) -> Float): Int {
-  val n = cpCount(value)
-  var best = 0
-  var bestDist = 1000000.0f32
-  var i = 0
-  while i <= n {
-    val w = widthOf(cpSlice(value, 0, i))
-    val d = if w > x { w - x } else { x - w }
-    if d < bestDist {
-      bestDist = d
-      best = i
-    }
-    i = i + 1
-  }
-  best
 }
 
 // ─── Data grid scrolling ──────────────────────────────────────────────────────

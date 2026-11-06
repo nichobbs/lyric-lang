@@ -32,6 +32,7 @@ on:
       - 'lyric-ui/native/**'
       - 'lyric-text/**'
       - 'lyric-unicode/**'
+      - 'lyric-unicode-dict/**'
       - 'lyric-draw/**'
       - 'benchmarks/**'
       - 'scripts/ci/build-sdl3.sh'

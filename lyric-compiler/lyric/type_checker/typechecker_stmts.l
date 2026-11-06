@@ -662,6 +662,9 @@ pub func checkStatement(
         // `List[T]`-annotated binding's initialiser (docs/decisions/
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
+        if tbl.lambdaExpectedReturns.count > 0 and (match returnTy { case TyError(_) -> true; case _ -> false }) {
+          noteCallExpected(tbl, e, tbl.lambdaExpectedReturns[tbl.lambdaExpectedReturns.count - 1])
+        }
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
         if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError(_) -> true; case _ -> false }) {
           tbl.lambdaReturnFrames[tbl.lambdaReturnFrames.count - 1].add(t)
@@ -1348,6 +1351,12 @@ pub func checkBlock(
             // stay lenient, mirroring `unifyBranchTypes`; a Unit handler beside
             // a non-Unit body is only absorbed in statement position (#3262).
             checkTryHandlerType(tbl, diag, resultTy, hTy, tryValuePos, c.span)
+            // The body and each handler yield through one temp, so a type
+            // argument one leaves open (`Ok(())`'s error type) is the one
+            // another fixes (`Err(e)`).
+            if tryValuePos and typeEquiv(resultTy, hTy) {
+              resultTy = joinOpenTypes(resultTy, hTy)
+            }
           }
           ci = ci + 1
         }

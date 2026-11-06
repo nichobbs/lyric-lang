@@ -368,6 +368,13 @@ Auto-hoist was rejected because:
 
 Explicit imports keep the dependency surface visible.
 
+Template authors: a spliced body is type-checked in the consuming package
+(docs/decisions D392), so every name it uses must resolve there. A value the
+body names (a ledger, a store) must be `pub`, and a function name that the
+consumer's own imports also declare must be qualified with the template's
+package (`Resilience.sleepMs`). The symptom is T0020 or T0123 reported "in code
+generated for this declaration" at the `use` site.
+
 ### 6.3 Why no `@runtime_dispatch` (Option A) escape hatch
 
 A typed-erased delegate ABI is the standard AOP shape elsewhere

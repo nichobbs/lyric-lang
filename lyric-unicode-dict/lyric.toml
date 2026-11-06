@@ -1,0 +1,32 @@
+# lyric-unicode-dict - dictionary-based word segmentation for the scripts written without spaces
+# between words (Thai, Lao, Khmer, Myanmar), on top of lyric-unicode's line breaking (UAX #14) and
+# word boundaries (UAX #29), which leave such runs whole.  A separate library because its word
+# lists, from ICU's dictionaries, are 1.6 MB: only programs that ask for it carry them (D414).
+#
+#   Unicode.Dictionary.Data  the word lists of ICU 74.2's thaidict, laodict, khmerdict and
+#                            burmesedict, written by tools/generate from the files pinned in dict/
+#   Unicode.Dictionary       ICU's dictionary break engines for the four scripts, and line breaks
+#                            and word boundaries with their breaks inside runs of them
+#
+# The results are checked against ICU 74.2's own break iterators in tests/conformance.
+[package]
+name        = "Lyric.Unicode.Dictionary"
+version     = "0.1.0"
+description = "Dictionary word segmentation of Thai, Lao, Khmer and Myanmar text, with ICU's dictionaries and engines, for every target."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0 AND Unicode-3.0"
+
+[project]
+name            = "Lyric.Unicode.Dictionary"
+output          = "single"
+output_assembly = "Lyric.Unicode.Dictionary.dll"
+
+[project.packages]
+"Unicode.Dictionary.Data" = "src/dictionary_data.l"
+"Unicode.Dictionary"      = "src/dictionary.l"
+
+[project.tests]
+"Unicode.DictionaryTests" = "tests/dictionary_tests.l"
+
+[dependencies]
+"Lyric.Unicode" = { path = "../lyric-unicode" }

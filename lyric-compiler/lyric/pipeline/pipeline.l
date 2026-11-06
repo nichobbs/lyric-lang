@@ -1747,12 +1747,17 @@ func pipeReportTirCensus(label: in String, file: in SourceFile, tcRes: in CheckR
     Console.error("  " + bad[i])
     i = i + 1
   }
-  val calls = TirBuild.callNodeIds(file)
+  val calls = TirBuild.callSitesOf(file)
   val noCallee = TirBuild.calleeCensus(ctx, calls)
   Console.error(
     "I0002 census [" + label + "]: " + toString(noCallee.count) + " of " + toString(calls.count) +
       " calls without a recorded callee"
   )
+  var j = 0
+  while j < noCallee.count and j < 5 {
+    Console.error("  " + noCallee[j])
+    j = j + 1
+  }
 }
 
 /// The front of `pipeCheckAndMono`: everything up to and including the mode
@@ -5300,7 +5305,6 @@ pub func pipeFinishWeave(
   files: in List[String],
   extraRecordDecls: in List[RecordDecl],
   typeArgCallees: in Map[String, Bool],
-  wovenGenerics: in List[FunctionDecl] = newList(),
   sink: in DiagSink = printDiagnostics(),
 ): Option[SourceFile] {
   // The aspect declarations stay through the check, which checks them, and go
@@ -5309,11 +5313,7 @@ pub func pipeFinishWeave(
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(woven, lowerFormatBuiltin)
-  val specialised = match specialiseWovenContracts(formatted, wovenGenerics, extraRecordDecls, pkgLabel, files, sink) {
-    case Some(f) -> f
-    case None -> return None
-  }
-  Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(specialised, extraRecordDecls, typeArgCallees))
+  Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(formatted, extraRecordDecls, typeArgCallees))
 }
 
 func pipeWithoutAspects(items: in List[Item]): List[Item] {
@@ -5325,163 +5325,6 @@ func pipeWithoutAspects(items: in List[Item]): List[Item] {
     }
   }
   kept
-}
-
-/// The generics a woven wrapper's aspect contract can call (#7530): every
-/// function visible to mono (`monoFuncs`, the list `pipeCheckAndMono` took)
-/// plus the generic functions the file itself declared, which mono erased
-/// from the file and recorded in `MiddleEndOptions.genericItemsOut`.
-pub func pipeWovenGenerics(monoFuncs: in List[FunctionDecl], ownGenericItems: in List[Item]): List[FunctionDecl] {
-  val all: List[FunctionDecl] = newList()
-  for f in monoFuncs {
-    all.add(f)
-  }
-  for gi in ownGenericItems {
-    match gi.kind {
-      case IFunc(fd) -> all.add(fd)
-      case _ -> ()
-    }
-  }
-  all
-}
-
-/// Aspect contracts exist only once the weaver has built a wrapper, after
-/// `pipeCheckAndMono`, so a generic call in one (`ensures: isSome(result)`)
-/// was never specialised and codegen found no function for it (T0123).  A
-/// second mono run over the woven file specialises those calls, using the
-/// wrapper's declared return type for `result`.  Specialisations the first run
-/// already produced are not added twice.  A file the weaver did not wrap is
-/// returned as it is.
-func specialiseWovenContracts(
-  woven: in SourceFile,
-  generics: in List[FunctionDecl],
-  extraRecordDecls: in List[RecordDecl],
-  pkgLabel: in String,
-  files: in List[String],
-  sink: in DiagSink,
-): Option[SourceFile] {
-  if generics.count == 0 or not fileHasWovenWrapper(woven) {
-    return Some(value = woven)
-  }
-  val noIfaces: List[InterfaceDecl] = newList()
-  val noTypes: Map[String, TypeExpr] = newMap()
-  val noCallTypes: Map[String, TypeExpr] = newMap()
-  val noTypeArgSites: Map[String, GenericCallTypeArgsSite] = newMap()
-  val noValueSites: Map[String, Map[String, Int]] = newMap()
-  val noLambdaSites: Map[String, LambdaParamTypesSite] = newMap()
-  val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
-  val res = monoFileWithLambdaTypes(
-    woven,
-    generics,
-    noIfaces,
-    extraRecordDecls,
-    noTypes,
-    noCallTypes,
-    noTypeArgSites,
-    noValueSites,
-    noLambdaSites,
-    noSpecSites
-  )
-  if gateTo(sink, pkgLabel, files, res.diagnostics) {
-    return None
-  }
-  // `pipeCheckAndMono` re-checks a specialisation binding a type parameter to
-  // `UInt`/`ULong`, using `==` on a named type, or needing an operator bound
-  // (#7842, D172 item 4, M0008) before its second mono pass.  This run has
-  // none of those checks, so a woven contract that needs one would be
-  // specialised with the wrong operand semantics; it is refused instead of
-  // compiled silently wrong (#8665).
-  val needsRecheck: List[UnsignedSpecRequest] = newList()
-  for us in res.unsignedSpecs {
-    needsRecheck.add(us)
-  }
-  for ss in res.structSpecs {
-    if (ss.originPkg == "" and (specUsesEquality(ss.specDecl) or specMayRender(ss.specDecl))) or ss.opBound {
-      needsRecheck.add(ss)
-    }
-  }
-  if needsRecheck.count > 0 {
-    val diags: List[Diagnostic] = newList()
-    for nr in needsRecheck {
-      diags.add(
-        errorDiagnostic(
-          "M0009",
-          "cannot specialise '" + nr.specName +
-            "' in an aspect contract: its body needs the unsigned, equality or operator semantics of its type arguments, which are not applied to a specialisation made after weaving. Call a non-generic function from the contract, or move the check into the woven function's own contract",
-          nr.callSpan
-        )
-      )
-    }
-    if gateTo(sink, pkgLabel, files, diags) {
-      return None
-    }
-  }
-  // A specialisation the first run already made has the same name and arity
-  // as the one made again; same-named functions of other arities are
-  // overloads and stay.  Each key admits as many items as `woven` held, so
-  // overloads that were already there are all kept.
-  val allowed: Map[String, Int] = newMap()
-  for it in woven.items {
-    match it.kind {
-      case IFunc(fd) -> bumpFuncKeyCount(allowed, funcKeyOf(fd))
-      case _ -> ()
-    }
-  }
-  val kept: Map[String, Int] = newMap()
-  val items: List[Item] = newList()
-  for it in res.file.items {
-    match it.kind {
-      case IFunc(fd) -> {
-        val key = funcKeyOf(fd)
-        val limit = match mapGet(allowed, key) { case Some(n) -> n; case None -> 1 }
-        val have = match mapGet(kept, key) { case Some(n) -> n; case None -> 0 }
-        if have >= limit {
-          continue
-        }
-        bumpFuncKeyCount(kept, key)
-      }
-      case _ -> ()
-    }
-    items.add(it)
-  }
-  Some(
-    value = SourceFile(
-      fileAnnotations = res.file.fileAnnotations,
-      moduleDoc = res.file.moduleDoc,
-      packageDecl = res.file.packageDecl,
-      imports = res.file.imports,
-      items = items,
-      span = res.file.span,
-      files = res.file.files
-    )
-  )
-}
-
-func funcKeyOf(fd: in FunctionDecl): String {
-  fd.name + "/" + toString(fd.params.count)
-}
-
-func bumpFuncKeyCount(counts: in Map[String, Int], key: in String): Unit {
-  val n = match mapGet(counts, key) { case Some(c) -> c; case None -> 0 }
-  if counts.containsKey(key) {
-    counts.remove(key)
-  }
-  counts.add(key, n + 1)
-}
-
-// True when the weaver renamed a function to `<name>__aspect_target`.
-func fileHasWovenWrapper(file: in SourceFile): Bool {
-  for it in file.items {
-    match it.kind {
-      case IFunc(fd) -> {
-        if Str.endsWith(fd.name, "__aspect_target") {
-          return true
-        }
-      }
-      case _ -> ()
-    }
-  }
-  false
 }
 
 /// `formatN(template, a1, ..., aN)` becomes
@@ -5950,7 +5793,6 @@ pub func pipeMiddleEnd(
       opts.filePaths,
       monoRecordDecls,
       opts.typeArgCalleesOut,
-      pipeWovenGenerics(monoGenFuncs, opts.genericItemsOut),
       opts.sink
     )
     case None -> None
