@@ -5005,14 +5005,8 @@ func recordBuiltinCall(
           case TyArray(_, _, _) -> true
           case _ -> false
         }
-        val typedAsFunction = match fnT {
-          case TyFunction(_, _, _) -> true
-          case _ -> false
-        }
-        val userReceiver = match unrefine(rt) {
-          case TyUser(_, _, _) -> true
-          case _ -> false
-        }
+        val typedAsFunction = match fnT { case TyFunction(_, _, _) -> true; case _ -> false }
+        val userReceiver = match unrefine(rt) { case TyUser(_, _, _) -> true; case _ -> false }
         val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
         if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
           recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)

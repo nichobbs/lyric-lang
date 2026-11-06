@@ -185,7 +185,9 @@ test "numeric conversions and string members have their name recorded" {
   val calls = callSitesOf(file)
   assertEqualInt(calls.count, 2, "toLong and startsWith")
   assertEqualInt(calleeCensus(ctx, calls).count, 0, "both are covered")
-  assertTrue(mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.toLong"), "a conversion is named by its receiver")
+  assertTrue(
+    mapGet(cr.symbols.builtinByNode, calls[0].id) == Some(value = "Int.toLong"),
+    "a conversion is named by its receiver"
+  )
   assertTrue(mapGet(cr.symbols.builtinByNode, calls[1].id) == Some(value = "String.startsWith"), "a string member too")
 }
-
