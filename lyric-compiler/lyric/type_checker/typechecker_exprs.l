@@ -4975,22 +4975,41 @@ func builtinRecvHead(recv: in Type): String {
 }
 
 // A call whose callee is a built-in function (`println`) or a built-in member
-// of a primitive, slice or array receiver (`"x".length`-style typed members)
-// records the built-in's name; a member of a record field of function type is
-// not one (the field wins, as in the call arm).
+// of a primitive, slice or array receiver records the built-in's name.  Such a
+// receiver has no fields, so a member the checker typed as a function (`fnT`)
+// is a built-in, never a field of function type; `toString()` is the universal
+// method of every receiver and is a built-in on any of them.
 func recordBuiltinCall(
   tbl: in SymbolTable,
   callNode: in Int,
   fn: in Expr,
+  fnT: in Type,
   memberRecvTy: in Option[Type],
   isMemberCallee: in Bool,
   memberName: in String,
+  argCount: in Int,
 ): Unit {
   if isMemberCallee {
     match memberRecvTy {
-      case Some(rt) -> match builtinMember(tbl, rt, memberName) {
-        case Some(_) -> recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
-        case None -> ()
+      case Some(rt) -> {
+        val builtinReceiver = match unrefine(rt) {
+          case TyPrim(_) -> true
+          case TySlice(_) -> true
+          case TyArray(_, _, _) -> true
+          case _ -> false
+        }
+        val typedAsFunction = match fnT {
+          case TyFunction(_, _, _) -> true
+          case _ -> false
+        }
+        val userReceiver = match unrefine(rt) {
+          case TyUser(_, _, _) -> true
+          case _ -> false
+        }
+        val universalToString = memberName == "toString" and argCount == 0 and not userReceiver
+        if (builtinReceiver and typedAsFunction) or universalToString or builtinMemberIsSome(tbl, rt, memberName) {
+          recordBuiltinCallee(tbl, callNode, builtinRecvHead(rt) + "." + memberName)
+        }
       }
       case None -> ()
     }
@@ -5004,6 +5023,13 @@ func recordBuiltinCall(
       }
     }
     case _ -> ()
+  }
+}
+
+func builtinMemberIsSome(tbl: in SymbolTable, rt: in Type, name: in String): Bool {
+  match builtinMember(tbl, rt, name) {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
@@ -18811,7 +18837,7 @@ func inferExprCore(
       reportExplicitCtorTypeArgs(sc, tbl, diag, fn)
       match directSig {
         case Some(_) -> ()
-        case None -> recordBuiltinCall(tbl, e.nodeId, fn, memberRecvTy, isMemberCallee, memberName)
+        case None -> recordBuiltinCall(tbl, e.nodeId, fn, fnT, memberRecvTy, isMemberCallee, memberName, args.count)
       }
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
