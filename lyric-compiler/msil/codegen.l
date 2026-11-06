@@ -21722,31 +21722,10 @@ func lowerBuiltinOrStaticCallMsil(
             // every import by bare name — that silently bound
             // `Widgets.field(...)` to another package's `field` (D-progress-946).
             val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
-            val importedFqn = if sitedFqn.length > 0 {
-              ""
-            } else {
-              match mapGet(cctx.pkgImports, fctx.pkgName) {
-              case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
-                findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
-              } else {
-                findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
-              }
-              case None -> ""
-              }
-            }
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
             val originFqn = if sitedFqn.length > 0 { "" } else { originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint) }
-            // `println` and `print` are language builtins the checker types
-            // itself, so a call has no recorded callee.  With a function of the
-            // same name in scope the call is that function (the tiers above:
-            // a user function shadows the builtin), else the stdlib console one.
-            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
-              "Std.Console." + funcName
-            } else {
-              ""
-            }
             // A BARE (single-segment) call inside an instance method body
             // prefers a same-named sibling method over any free function —
             // matching the JVM backend's `ctx.selfClass` arm (which is
@@ -21760,6 +21739,30 @@ func lowerBuiltinOrStaticCallMsil(
             // keeps it out of this gate and `qualifiedFqn` resolves it below.
             val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
               cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
+            // The imports are searched only for a call nothing above resolved:
+            // no site, no qualified or origin-scoped or local function, no
+            // sibling method.
+            val importedFqn = if sitedFqn.length > 0 or bareSiblingHit or originFqn.length > 0 or cctx.funcTokens.containsKey(localFqn) or (qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn)) {
+              ""
+            } else {
+              match mapGet(cctx.pkgImports, fctx.pkgName) {
+                case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
+                  findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
+                } else {
+                  findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
+                }
+                case None -> ""
+              }
+            }
+            // `println` and `print` are language builtins the checker types
+            // itself, so a call has no recorded callee.  With a function of the
+            // same name in scope the call is that function (the tiers above:
+            // a user function shadows the builtin), else the stdlib console one.
+            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
+              "Std.Console." + funcName
+            } else {
+              ""
+            }
             // The function the checker resolved this call to (D336): the
             // declaring package's own, whatever tier below would have found.
             // Empty for a call the checker did not record, and for one a
