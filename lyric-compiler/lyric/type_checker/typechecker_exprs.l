@@ -17324,10 +17324,7 @@ func noteUnsolvedCall(
   argTypes: in List[Type],
   callSpan: in Span,
 ): Unit {
-  val p = match fn.kind {
-    case EPath(p0) -> p0
-    case _ -> return
-  }
+  val p = match fn.kind { case EPath(p0) -> p0; case _ -> return }
   if p.segments.count > 1 {
     // `Pkg.f(x)`, alias-rewritten to a path: the qualifier must name the
     // package the signature came from, and not a local value (D383).
@@ -17341,7 +17338,17 @@ func noteUnsolvedCall(
       return
     }
   }
-  noteUnsolvedCallNamed(sc, tbl, fn, p.segments[p.segments.count - 1], MethodCallPick(sig = sig, fullSig = None), None, args, argTypes, callSpan)
+  noteUnsolvedCallNamed(
+    sc,
+    tbl,
+    fn,
+    p.segments[p.segments.count - 1],
+    MethodCallPick(sig = sig, fullSig = None),
+    None,
+    args,
+    argTypes,
+    callSpan
+  )
 }
 
 // A package-qualified call (`Pkg.f(x)`, the callee an `EMember` whose receiver
@@ -17386,10 +17393,7 @@ func noteUnsolvedMethodCall(
   argTypes: in List[Type],
   callSpan: in Span,
 ): Unit {
-  val member = match fn.kind {
-    case EMember(_, m) -> m
-    case _ -> return
-  }
+  val member = match fn.kind { case EMember(_, m) -> m; case _ -> return }
   noteUnsolvedCallNamed(sc, tbl, fn, member, pick, Some(value = recvTy), args, argTypes, callSpan)
 }
 
@@ -17397,11 +17401,13 @@ func noteUnsolvedMethodCall(
 // pick: through the first parameter of a dot-named function, and for a method
 // of a generic type, any parameter the type itself declares (those are not the
 // method's own, so the call cannot leave them open).
-func genericBoundByReceiver(pick: in MethodCallPick, recvTy: in Option[Type], gi: in Int, callerGenerics: in List[String]): Bool {
-  val rt = match recvTy {
-    case Some(t) -> t
-    case None -> return false
-  }
+func genericBoundByReceiver(
+  pick: in MethodCallPick,
+  recvTy: in Option[Type],
+  gi: in Int,
+  callerGenerics: in List[String],
+): Bool {
+  val rt = match recvTy { case Some(t) -> t; case None -> return false }
   match pick.fullSig {
     case Some(full) -> {
       if full.params.count == 0 or gi >= full.generics.count {

@@ -4805,7 +4805,11 @@ test "an expected type, another argument or a written type argument fixes the ca
 
 test "a package-qualified imported generic call nothing fixes is T0224 (D383)" {
   assertEqualInt(unsolvedErrors("func f(): Bool { Lib.isNone(Lib.none()) }\n"), 2, "neither qualified call is fixed")
-  assertEqualInt(unsolvedErrors("func f(): Bool { Lib.isNone(Lib.none[Int]()) }\n"), 0, "written type arguments fix both")
+  assertEqualInt(
+    unsolvedErrors("func f(): Bool { Lib.isNone(Lib.none[Int]()) }\n"),
+    0,
+    "written type arguments fix both"
+  )
   assertEqualInt(unsolvedErrors("func f(): Lib.Option[Int] { Lib.none() }\n"), 0, "the declared result type")
   assertEqualInt(unsolvedErrors("func f(): Int { Lib.orElse(Lib.none(), 5) }\n"), 0, "a later argument fixes the other")
 }
@@ -4821,7 +4825,11 @@ test "a method or UFCS imported generic call nothing fixes is T0224 (D383)" {
     0,
     "the declared result type fixes it"
   )
-  assertEqualInt(unsolvedErrors("func g(b: in Bx[Int]): Int { b.get() }\n"), 0, "the receiver fixes the type's parameter")
+  assertEqualInt(
+    unsolvedErrors("func g(b: in Bx[Int]): Int { b.get() }\n"),
+    0,
+    "the receiver fixes the type's parameter"
+  )
 }
 
 test "more positions that fix a call, and the cases the checker cannot decide (D339)" {
