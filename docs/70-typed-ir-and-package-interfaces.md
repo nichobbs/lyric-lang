@@ -772,8 +772,9 @@ builder (I0002) rather than on the current checker.
   bare-import search (`findBareImportedFqnMsil`) is deleted; `pkgImportAliases` is deleted, a copy of another package's
   generic reads that package's sites (`<package>|<key>`), and defaults mean
   the declaring package's names; the JVM binds a call to its site, scoped key or
-  qualified key before its bare-name keys, which stay for default expressions
-  (#8850), the native bridge, #8752 and #8690.
+  qualified key, and a default expression's callees are qualified where their
+  package is checked (#8850); the bare-name keys stay for the secondary readers,
+  the native bridge, #8752 and #8690.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 

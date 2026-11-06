@@ -119,16 +119,17 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    `Jvm.Codegen.originScopedExternTypes`). `emitter_project_self_test.l` has
    the selective-import and same-named-export cases on both targets.
 8. **The JVM resolves a call by its site, its package's scoped key or its
-   qualified key first; the bundle-wide bare name is the last resort, kept
-   for default expressions only (#8850).** `resolveGeneralFuncSig` tries
+   qualified key, and no longer by a bare name.** `resolveGeneralFuncSig` is
    `resolveGeneralFuncSigExact`: the checker's site, then `<package>::<name>`
    (a package-private function included), then the `Pkg/name` key of the
-   qualified path, and only then the bare name. A default expression is
-   lowered in the caller, so a callee only the declaring package imports
-   (`makeStubCounter` in a synthesised `Stub` record) is found only that way;
-   #8850 lowers defaults in the declaring package and deletes the fallback.
-   The keys stay registered for that and for the secondary readers on #8612:
-   `closureInvokeRetType`, `funcSigRetType`, the dot-named lookups. The `println`/`print` and
+   qualified path. A default expression is lowered in whichever package calls
+   the function or builds the record but means the names of the package that
+   declares it, so `Lyric.Pipeline.pipeCheckedDefaults` (which checks a bundled
+   package before the entry package's code is generated) writes each bare call
+   of a parameter or field default as the callee's package-qualified path,
+   from the checker's sites (`qualifyCheckedCallees`, #8850). The bare keys stay
+   registered for the secondary readers on #8612: `closureInvokeRetType`,
+   `funcSigRetType`, the dot-named lookups. The `println`/`print` and
    collection-intrinsic override check (`hasFuncOverrideJvm`) uses the same
    exact stage: a `Std.*` result never overrides an intrinsic, so a user
    function overrides one only when its site, its own package's scoped key or

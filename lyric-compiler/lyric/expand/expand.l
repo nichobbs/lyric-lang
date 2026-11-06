@@ -88,7 +88,20 @@ pub func respanGenerated(
 ): List[Item] {
   val mapped = mapFileNodes(
     file.copy(items = items),
-    { e: Expr -> e.copy(span = freshSpan(base, e.span, cause, origins, keepSourceLines)) },
+    { e: Expr ->
+      val sp = freshSpan(base, e.span, cause, origins, keepSourceLines)
+      match e.kind {
+        case EPath(p) -> {
+          // The checker keys a call's resolved callee by the callee path's own
+          // span, so a path takes a span of its own as well: the expression's
+          // for a single segment (where the parser has them equal), another
+          // fresh one for a qualified path.
+          val ps = if p.segments.count == 1 { sp } else { freshSpan(base, p.span, cause, origins, keepSourceLines) }
+          e.copy(kind = EPath(path = p.copy(span = ps)), span = sp)
+        }
+        case _ -> e.copy(span = sp)
+      }
+    },
     { s: Statement -> s.copy(span = freshSpan(base, s.span, cause, origins, keepSourceLines)) },
     { p: Pattern -> p.copy(span = freshSpan(base, p.span, cause, origins, keepSourceLines)) }
   )
