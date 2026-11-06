@@ -32,6 +32,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Expand as Expand
 
 func isStubbable(a: in Annotation): Bool {
   a.name.segments.count > 0 and a.name.segments[0] == "stubbable"
@@ -342,6 +343,43 @@ pub func synthesiseItems(items: in List[Item]): List[Item] {
   result
 }
 
+// `synthesiseItems` for `file`, each interface's synthesised items given spans
+// of their own that map back to the interface (docs/70 section 7.1).  The
+// checker keys a call's resolved callee by its span, and a replacement of an
+// earlier entry is how it handles a call inferred twice, so generated calls
+// sharing one span (the interface method's) would overwrite each other's
+// sites: `makeStubCounter()` in a counter field's default lost its site to
+// the next call generated for the same method.
+pub func synthesiseItemsRespanned(file: in SourceFile): List[Item] {
+  val items = file.items
+  val result: List[Item] = newList()
+  var c = 0
+  while c < items.count {
+    result.add(items[c])
+    c = c + 1
+  }
+  val origins: Map[String, Span] = newMap()
+  val base = Expand.generatedSpanBase(file)
+  var j = 0
+  while j < items.count {
+    match items[j].kind {
+      case IInterface(id) -> {
+        val batch: List[Item] = newList()
+        appendStubsForInterface(batch, items[j], id)
+        if batch.count > 0 {
+          for g in Expand.respanGenerated(file, batch, base, items[j].span, origins) {
+            result.add(g)
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    j = j + 1
+  }
+  result
+}
+
 // Return true if the file already has `import Std.Testing.Mocking`.
 func hasMockingImport(imports: in List[ImportDecl]): Bool {
   var i = 0
@@ -396,7 +434,7 @@ func buildImports(file: in SourceFile, stubsAdded: in Bool): List[ImportDecl] {
 // Return `file` with the synthesised `@stubbable` items appended and, when
 // stubs are present, `import Std.Testing.Mocking` ensured in the import list.
 pub func stubbableRewriteFile(file: in SourceFile): SourceFile {
-  val newItems = synthesiseItems(file.items)
+  val newItems = synthesiseItemsRespanned(file)
   val stubsAdded = newItems.count > file.items.count
   SourceFile(
     moduleDoc = file.moduleDoc,

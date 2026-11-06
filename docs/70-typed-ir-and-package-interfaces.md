@@ -768,15 +768,12 @@ builder (I0002) rather than on the current checker.
   MSIL binds such a call to it before any of its own tiers, which fixed two
   calls the tiers bound to a package-private function of another package.
   Specialised generic calls and `Type.f(x)` calls keep their site too, and
-  MSIL's bundle-wide name search (`findBundleFqnByName`) is deleted. Still
-  open: MSIL's bare-import search (`findBareImportedFqnMsil`) is narrowed to
-  the fallback for a call with no site (aspect-template splices,
-  weaver-synthesised calls, calls in an imported generic whose package
-  recorded none); `pkgImportAliases` is deleted, a copy of another package's
+  MSIL's bundle-wide name search (`findBundleFqnByName`) is deleted. MSIL's
+  bare-import search (`findBareImportedFqnMsil`) is deleted; `pkgImportAliases` is deleted, a copy of another package's
   generic reads that package's sites (`<package>|<key>`), and defaults mean
-  the declaring package's names; the JVM binds a call to its site before its
-  bare-name keys, which stay for the calls with no site, the JVM and native
-  bridges, #8752 and #8690.
+  the declaring package's names; the JVM binds a call to its site, scoped key or
+  qualified key before its bare-name keys, which stay for default expressions
+  (#8850), the native bridge, #8752 and #8690.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 

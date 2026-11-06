@@ -49,6 +49,7 @@ import Std.Encoding
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
+import Lyric.Expand as Expand
 import Lyric.ComponentGlue as Glue
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4052,12 +4053,13 @@ record Chunk {
   line: Int
 }
 
-func parseChunk(pkg: in String, c: in Chunk, st: in St, sp: in Span, into: in List[Item]): Unit {
+func parseChunk(pkg: in String, c: in Chunk, st: in St, sp: in Span, into: in List[Item]): Int {
   var pad = ""
   if c.line > 2 {
     pad = Str.repeat("\n", c.line - 2)
   }
-  val pr = parse("package " + pkg + "\n" + pad + c.text)
+  val source = "package " + pkg + "\n" + pad + c.text
+  val pr = parse(source)
   if pr.diagnostics.count > 0 {
     val d = pr.diagnostics[0]
     k(
@@ -4069,11 +4071,12 @@ func parseChunk(pkg: in String, c: in Chunk, st: in St, sp: in Span, into: in Li
         "); please report it",
       sp
     )
-    return ()
+    return 0
   }
   for it in pr.file.items {
     into.add(it)
   }
+  source.length
 }
 
 func hasWholeImport(imports: in List[ImportDecl], path: in String): Bool {
@@ -4433,11 +4436,26 @@ func expandFileMode(
   for it in file.items {
     items.add(strippedItem(it, component))
   }
+  // The chunks were parsed on their own, so their offsets restart at zero and
+  // would collide with the file's own spans in the checker's span-keyed
+  // tables (a generated call's resolved callee would be lost or overwritten).
+  // Each chunk moves beyond the file's offsets and the earlier chunks'
+  // (docs/70 section 7.1).
+  val respanned: List[Item] = newList()
+  var delta = Expand.generatedSpanBase(file)
   for c in chunks {
-    parseChunk(pkg, c, st, file.packageDecl.span, items)
+    val generated: List[Item] = newList()
+    val used = parseChunk(pkg, c, st, file.packageDecl.span, generated)
+    for g in Expand.shiftGenerated(file, generated, delta) {
+      respanned.add(g)
+    }
+    delta = delta + used + 1
   }
   if hasErrorDiag(st.diags) {
     return PluginExpandResult(file = file, diagnostics = st.diags)
+  }
+  for g in respanned {
+    items.add(g)
   }
   val paths: List[String] = newList()
   paths.add("Std.Core")

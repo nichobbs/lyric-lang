@@ -4443,11 +4443,14 @@ func lowerVirtualCallWithHolders(
 // call's argument count; a call that relies on parameter defaults misses the
 // arity key and takes the name key.
 //
-// Only a call with none of these keys (an aspect-library template spliced
-// into the caller carries the library's span, so the checker recorded no site
-// for it, and the weaver's synthesised calls) falls back to a bare name
-// registered by any package of the bundle.  That fallback goes when the
-// weaver qualifies what it splices (docs/70 phase 3b, tracked on #8612).
+// Only a call none of those keys answers falls back to a bare name registered
+// by any package of the bundle.  What still needs it is a default expression:
+// a function parameter's or a record field's default is lowered in whichever
+// package calls the function or builds the record, but means the names of the
+// package that declares it, and the declaring package's sites are not those
+// of the caller.  MSIL resolves a default in its declaring package's scope
+// (`CodegenCtx.defaultDeclPkg`); the JVM has no counterpart yet (#8850).  The
+// fallback goes when it does.
 //
 // Shared by `lowerGeneralStaticCall` (the actual call site) and
 // `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a

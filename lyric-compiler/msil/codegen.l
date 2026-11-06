@@ -19593,14 +19593,7 @@ func lowerFuncValueInvokeMsil(
 // function is not such a copy, the call is qualified, or neither scope has
 // the callee — the caller then falls through to the calling package's own
 // resolution tiers (D-progress-946).
-func originScopedFqnMsil(
-  cctx: in CodegenCtx,
-  fctx: in FuncCtx,
-  path: in ModulePath,
-  funcName: in String,
-  arity: in Int,
-  retHint: in MsilType,
-): String {
+func originScopedFqnMsil(cctx: in CodegenCtx, fctx: in FuncCtx, path: in ModulePath, funcName: in String): String {
   if fctx.originPkg.length == 0 or fctx.originPkg == fctx.pkgName or path.segments.count != 1 {
     return ""
   }
@@ -19608,35 +19601,7 @@ func originScopedFqnMsil(
   if cctx.funcTokens.containsKey(own) {
     return own
   }
-  findBareImportedFqnMsil(cctx, fctx.originPkg, funcName, arity, retHint)
-}
-
-// The fallback for a call the checker recorded no callee for (an aspect
-// template spliced into the caller, a call the weaver synthesised, a call in an
-// imported generic whose declaring package recorded none): the function a bare
-// `funcName` in `pkg` resolves to through its imports
-// (docs/01 §9.2): the imports that admit the name, directly imported ones
-// first, so a return-type hint (`findImportedFqnWithHint`) chooses among a
-// tier's candidates but never reaches past a direct import to a package
-// reached only transitively.  "" when no import declares it.
-func findBareImportedFqnMsil(
-  cctx: in CodegenCtx,
-  pkg: in String,
-  funcName: in String,
-  arity: in Int,
-  retHint: in MsilType,
-): String {
-  val direct = findImportedFqnWithHint(
-    cctx,
-    directBareImportsForNameMsil(cctx, pkg, funcName),
-    funcName,
-    arity,
-    retHint
-  )
-  if direct.length > 0 {
-    return direct
-  }
-  findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, funcName), funcName, arity, retHint)
+  ""
 }
 
 // `pkg`'s direct imports that admit `name` bare: whole imports and the
@@ -21716,27 +21681,11 @@ func lowerBuiltinOrStaticCallMsil(
             // (full path, or trailing segment(s) of an `import A.B`), never
             // every import by bare name — that silently bound
             // `Widgets.field(...)` to another package's `field` (D-progress-946).
-            val importedFqn = match mapGet(cctx.pkgImports, fctx.pkgName) {
-              case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
-                findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
-              } else {
-                findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
-              }
-              case None -> ""
-            }
+            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
-            val originFqn = originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint)
-            // `println` and `print` are language builtins the checker types
-            // itself, so a call has no recorded callee.  With a function of the
-            // same name in scope the call is that function (the tiers above:
-            // a user function shadows the builtin), else the stdlib console one.
-            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
-              "Std.Console." + funcName
-            } else {
-              ""
-            }
+            val originFqn = if sitedFqn.length > 0 { "" } else { originScopedFqnMsil(cctx, fctx, path, funcName) }
             // A BARE (single-segment) call inside an instance method body
             // prefers a same-named sibling method over any free function —
             // matching the JVM backend's `ctx.selfClass` arm (which is
@@ -21750,11 +21699,34 @@ func lowerBuiltinOrStaticCallMsil(
             // keeps it out of this gate and `qualifiedFqn` resolves it below.
             val bareSiblingHit = path.segments.count == 1 and fctx.className.length > 0 and
               cctx.methodTokens.containsKey(fctx.className + "/" + funcName)
+            // The imports are searched only for a call nothing above resolved:
+            // no site, no qualified or origin-scoped or local function, no
+            // sibling method.
+            val importedFqn = if sitedFqn.length > 0 or bareSiblingHit or originFqn.length > 0 or cctx.funcTokens.containsKey(localFqn) or (qualifiedFqn.length > 0 and cctx.funcTokens.containsKey(qualifiedFqn)) {
+              ""
+            } else {
+              match mapGet(cctx.pkgImports, fctx.pkgName) {
+                case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
+                  findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
+                } else {
+                  ""
+                }
+                case None -> ""
+              }
+            }
+            // `println` and `print` are language builtins the checker types
+            // itself, so a call has no recorded callee.  With a function of the
+            // same name in scope the call is that function (the tiers above:
+            // a user function shadows the builtin), else the stdlib console one.
+            val bundleFqn = if (funcName == "println" or funcName == "print") and qualifiedFqn.length == 0 and importedFqn.length == 0 and not cctx.funcTokens.containsKey(localFqn) and cctx.funcTokens.containsKey("Std.Console." + funcName) {
+              "Std.Console." + funcName
+            } else {
+              ""
+            }
             // The function the checker resolved this call to (D336): the
             // declaring package's own, whatever tier below would have found.
             // Empty for a call the checker did not record, and for one a
             // later pass renamed (a monomorphised copy), which keep the tiers.
-            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
             val resolvedFqn = if bareSiblingHit {
               ""
             } else if sitedFqn.length > 0 {
@@ -32324,10 +32296,7 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
-  if bareImp.length > 0 {
-    candidates.add(bareImp)
-  }
+
   var result = MObject
   var ci = 0
   var done = false
@@ -32614,10 +32583,7 @@ func inferCallReturnTypePB(
                 case None -> ()
               }
               candidates.add(pkgName + "." + field)
-              val bareImp = findBareImportedFqnMsil(cctx, pkgName, field, cnt, MObject)
-              if bareImp.length > 0 {
-                candidates.add(bareImp)
-              }
+
               var result = MObject
               var ci = 0
               var done = false

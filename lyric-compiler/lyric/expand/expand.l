@@ -124,3 +124,43 @@ pub func relocateDiagnostics(origins: in Map[String, Span], diags: in List[Diagn
   }
   res
 }
+
+func shiftPos(p: in Position, delta: in Int): Position {
+  p.copy(offset = p.offset + delta)
+}
+
+func shiftSpan(sp: in Span, delta: in Int): Span {
+  Span(startPos = shiftPos(sp.startPos, delta), endPos = shiftPos(sp.endPos, delta))
+}
+
+/// `items`, parsed on their own from generated text, moved by `delta` offsets
+/// so they sit beyond every span of the package they join: each node's offsets
+/// move together, so spans still nest as they did in the parse, and a callee
+/// path (which the checker keys a call's resolved callee by) is moved with its
+/// expression.  `delta` must put the items beyond every offset of the file and
+/// of the other items moved (docs/70 section 7.1).
+pub func shiftGenerated(file: in SourceFile, items: in List[Item], delta: in Int): List[Item] {
+  val mapped = mapFileNodes(
+    file.copy(items = items),
+    { e: Expr ->
+      match e.kind {
+        case EPath(p) -> e.copy(
+          kind = EPath(path = p.copy(span = shiftSpan(p.span, delta))),
+          span = shiftSpan(e.span, delta)
+        )
+        case _ -> e.copy(span = shiftSpan(e.span, delta))
+      }
+    },
+    { s: Statement -> s.copy(span = shiftSpan(s.span, delta)) },
+    { p: Pattern -> p.copy(span = shiftSpan(p.span, delta)) }
+  )
+  val res: List[Item] = newList()
+  for it in mapped.items {
+    val sp = shiftSpan(it.span, delta)
+    match it.kind {
+      case IFunc(d) -> res.add(it.copy(kind = IFunc(decl = d.copy(span = sp)), span = sp))
+      case _ -> res.add(it.copy(span = sp))
+    }
+  }
+  res
+}

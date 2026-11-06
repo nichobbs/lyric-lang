@@ -289,6 +289,28 @@ test "an API package expands without diagnostics" {
   expectClean(expandOne(apiSource()), "api")
 }
 
+test "generated items take spans beyond the source file's, one each" {
+  val pr = parse(apiSource())
+  var top = pr.file.span.endPos.offset
+  for it in pr.file.items {
+    if it.span.endPos.offset > top {
+      top = it.span.endPos.offset
+    }
+  }
+  val r = expandOne(apiSource())
+  val seen: List[Int] = newList()
+  var generated = 0
+  for it in r.file.items {
+    if it.span.startPos.offset > top {
+      generated = generated + 1
+      assertFalse(seen.contains(it.span.startPos.offset), "each generated item has its own offset")
+      seen.add(it.span.startPos.offset)
+    }
+  }
+  assertTrue(generated > 0, "the expansion generated items")
+  assertEqualInt(r.file.items.count - generated, pr.file.items.count, "every source item keeps its span")
+}
+
 test "codecs for every reached boundary type" {
   val r = expandOne(apiSource())
   for t in ["DocId", "Severity", "Position", "Edit", "Note", "WorkspaceReadGrant", "EditorContributions"] {
