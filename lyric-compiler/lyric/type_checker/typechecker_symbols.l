@@ -376,7 +376,6 @@ pub union ExternIterInfo {
   case EIIElem(elem: ExternIterElem)
 }
 
-@stable(since = "0.1")
 /// A call to a member of an `extern type`, keyed by the call's `NodeId` in
 /// `SymbolTable.externByNode` (docs/70 §5.3, D365): the host type's name, the
 /// receiver's type arguments, the member's name and the call's argument count.
@@ -389,6 +388,7 @@ pub record ExternCallSite {
   argCount: Int
 }
 
+@stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
   /// Preferred-package marker, boxed as a 0/1-element list (the
