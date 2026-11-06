@@ -678,6 +678,7 @@ func cmdRestore(argv: in slice[String]): Int {
   var lockedMode = false
   var generateShims = false
   var forceShims = false
+  var restoreTarget = ""
   val updates: List[String] = newList()
 
   var i = 1
@@ -697,6 +698,14 @@ func cmdRestore(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("restore: --manifest requires an argument")
+        return 1
+      }
+    } else if arg == "--target" {
+      if i + 1 < argv.length and (argv[i + 1] == "dotnet" or argv[i + 1] == "jvm" or argv[i + 1] == "native") {
+        restoreTarget = argv[i + 1]
+        i += 2
+      } else {
+        printErr("restore: --target requires one of dotnet, jvm, native")
         return 1
       }
     } else if arg == "--locked" {
@@ -725,7 +734,7 @@ func cmdRestore(argv: in slice[String]): Int {
   val mfPath = match discoverManifest(manifestArg) { case Some(p) -> p; case None -> "lyric.toml" }
 
   val noCarried: Map[String, String] = newMap()
-  val rc = runRestoreWith(mfPath, lockedMode, updates, noCarried)
+  val rc = runRestoreWith(mfPath, lockedMode, updates, noCarried, restoreTarget)
   if rc != 0 or not generateShims {
     return rc
   }
@@ -1578,9 +1587,17 @@ func keyText(key: in Option[String]): String {
 }
 
 func runRestore(mfPath: in String, lockedMode: in Bool): Int {
+  runRestoreFor(mfPath, lockedMode, "")
+}
+
+/// `runRestore` for a build `restoreTarget` (`dotnet`, `jvm`, `native`, or
+/// empty for none given).  A native build never links Maven artifacts
+/// (docs/01 section 3.6), so it does not run the Maven resolver, which would
+/// otherwise need a Java 21+ runtime just to restore (#8836).
+func runRestoreFor(mfPath: in String, lockedMode: in Bool, restoreTarget: in String): Int {
   val noUpdates: List[String] = newList()
   val noCarried: Map[String, String] = newMap()
-  runRestoreWith(mfPath, lockedMode, noUpdates, noCarried)
+  runRestoreWith(mfPath, lockedMode, noUpdates, noCarried, restoreTarget)
 }
 
 /// `runRestore`, accepting a new signing key for each generator in `updates`
@@ -1591,6 +1608,7 @@ func runRestoreWith(
   lockedMode: in Bool,
   updates: in List[String],
   carriedKeys: in Map[String, String],
+  restoreTarget: in String,
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2031,10 +2049,7 @@ func runRestoreWith(
               case Some(lockedHash) -> match resolved.sha512 {
                 case None -> {
                   printErr(
-                    "restore: --locked: '" + resolved.name +
-                      "' could not be re-hashed to verify locked SHA-512 ('" +
-                      lockedHash +
-                      "')"
+                    "restore: --locked: '" + resolved.name + "' could not be re-hashed to verify locked SHA-512 ('" + lockedHash + "')"
                   )
                   lockMismatch = true
                 }
@@ -2083,7 +2098,7 @@ func runRestoreWith(
     }
   }
 
-  val mavenRc = restoreMavenJars(manifest, mfDir)
+  val mavenRc = if restoreTarget == "native" { 0 } else { restoreMavenJars(manifest, mfDir) }
   if mavenRc != 0 {
     return mavenRc
   }
