@@ -6973,7 +6973,7 @@ func unpinnedCallKeepsErasedDefault(
   fname: in String,
   callSpan: in Span,
 ): Bool {
-  annsHaveExternTargetMono(baseDecl.annotations) or env.containsKey(fname) or isNoSourceSpan(callSpan)
+  env.containsKey(fname)
 }
 
 // An imported generic call whose type argument(s) nothing fixed reaches the
