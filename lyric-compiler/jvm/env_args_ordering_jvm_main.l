@@ -41,5 +41,5 @@ import Std.Environment
 val badArgv: slice[String] = args()
 
 func main(): Unit {
-  println("FAIL: reached main() with argc=" + badArgv.count.toString() + " -- expected a class-init-time panic (#6587)")
+  println("FAIL: reached main() with argc=" + badArgv.length.toString() + " -- expected a class-init-time panic (#6587)")
 }
