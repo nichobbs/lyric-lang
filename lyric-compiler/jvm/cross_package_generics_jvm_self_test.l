@@ -265,7 +265,7 @@ test "cross-package generic record Pair[Int,String] both fields (jvm)" {
   cleanup(tmpDir)
   assertEqualInt(captured.exitCode, 0, "cpgen_pair_jvm: exit 0 (stderr=" + captured.stderr + ")")
   val lines = Str.split(Str.trim(captured.stdout), "\n")
-  assertEqualInt(lines.count, 2, "cpgen_pair_jvm: two output lines")
+  assertEqualInt(lines.length, 2, "cpgen_pair_jvm: two output lines")
   assertEqual(lines[0], "7", "cpgen_pair_jvm: first = 7")
   assertEqual(lines[1], "seven", "cpgen_pair_jvm: second = seven")
 }
