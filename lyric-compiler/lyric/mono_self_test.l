@@ -1101,9 +1101,9 @@ test "imported functions differing only in parameter mode are ambiguous (#5962)"
     "mode-differing same-name imports are ambiguous; U is no longer defaulted to Object"
   )
   assertEqualInt(
-    diagCountCode(res.diagnostics, "T0224"),
+    diagCountCode(res.diagnostics, "M0002"),
     1,
-    "the ambiguous lambda body leaves U unpinned: T0224 (D335)"
+    "the ambiguous lambda body leaves U unpinned and unrecorded: the internal M0002 (the checker reports T0224)"
   )
 }
 
@@ -1133,12 +1133,12 @@ test "explicit type arguments specialise a partially-pinned union-ctor argument 
 
 // T0224 (D335): a type argument of an imported generic that nothing fixes is an
 // error, not a specialisation at Object (docs/70 section 5.2).
-test "an unpinned type argument is T0224, with no Object specialisation" {
+test "an unpinned type argument the checker did not record is the internal M0002, with no Object specialisation" {
   val callerSrc = "package Caller\n" + "func caller(): Bool { isOkLike2(MkOk(v = 7)) }\n"
   val libSrc = "package Lib\n" + "pub union ResLike[T, E] { case MkOk(v: T)\n case MkErr(e: E) }\n" +
     "pub func isOkLike2[T, E](r: in ResLike[T, E]): Bool { match r { case MkOk(x) -> true\n case _ -> false } }\n"
   val res = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(libSrc).file))
-  assertEqualInt(diagCountCode(res.diagnostics, "T0224"), 1, "the unpinned E is reported once, at the call")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 1, "the unpinned E is reported once, at the call")
   assertFalse(hasFunc(res.file, "isOkLike2__Int__Object"), "the call is not specialised at Object")
 }
 
@@ -1150,11 +1150,11 @@ test "an @externTarget generic keeps its erased default and is not T0224 (D335)"
   val plain = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(plainLib).file))
   val hosted = monoFileWithImports(parse(callerSrc).file, genericsAndUnionCtors(parse(externLib).file))
   assertEqualInt(
-    diagCountCode(plain.diagnostics, "T0224"),
+    diagCountCode(plain.diagnostics, "M0002"),
     1,
-    "control: the same unpinned call to a plain generic is T0224"
+    "control: the same unpinned call to a plain generic is the internal M0002"
   )
-  assertEqualInt(diagCountCode(hosted.diagnostics, "T0224"), 0, "an @externTarget generic is exempt")
+  assertEqualInt(diagCountCode(hosted.diagnostics, "M0002"), 0, "an @externTarget generic is exempt")
 }
 
 test "a fully pinned imported generic call has no T0224" {
