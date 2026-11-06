@@ -994,6 +994,13 @@ pub record UnsolvedCallSite {
   /// binding that holds it counts as fixing it only once the binding got an
   /// annotation. Both are the error T0224 (D353, D381).
   ctor: Bool
+  /// The callee's type arguments as the arguments bound them, one per generic
+  /// with a hole where they bound none (empty when the checker cannot say, as
+  /// for a method).  The expected type's solution fills the holes when the
+  /// end of the file records the call's type arguments for the monomorphiser.
+  argTargs: List[Type] = newList()
+  /// The callee's value generic parameters, which are not type arguments.
+  valueGenerics: List[String] = newList()
 }
 
 /// A call that is an argument of a generic call (D339): the parent's callee,

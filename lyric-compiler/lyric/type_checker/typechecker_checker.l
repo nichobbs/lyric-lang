@@ -1520,7 +1520,13 @@ func addFuncSigOrigin(
   }
   val sg00 = resolveFunctionSig(tbl, diag, pkgName, decl)
   val sg0 = if originPkg == pkgName { sg00 } else { withOriginPackage(sg00, originPkg) }
-  val sg = if isExternFunc { asExternFuncSig(sg0) } else { sg0 }
+  val sg = if isExternFunc {
+    asExternFuncSig(sg0)
+  } else if hasExternTargetAnnotation(decl.annotations) {
+    sg0.copy(hostBound = true)
+  } else {
+    sg0
+  }
   val name = canonicalDotNamedName(tbl, diag, decl, isImported, pkgName)
   val arityKey = name + "/" + toString(decl.params.count)
   // Sig-map insertion policy.  Imported items use first-in-wins

@@ -4756,7 +4756,9 @@ func unsolvedLib(): List[ImportedPackage] {
       "pub func wrap[T](o: in Option[T]): Option[T] { o }\n" +
       "pub record Bx[T] { v: T }\n" +
       "pub func Bx.conv[T, U](self: in Bx[T]): Option[U] { None }\n" +
-      "pub func Bx.get[T](self: in Bx[T]): T { self.v }\n"
+      "pub func Bx.get[T](self: in Bx[T]): T { self.v }\n" +
+      "@externTarget(\"Host.Make..ctor\")\n" +
+      "pub func mk[T](): Option[T] = ()\n"
   )
   val pkgs: List[ImportedPackage] = newList()
   pkgs.add(
@@ -4830,6 +4832,44 @@ test "a method or UFCS imported generic call nothing fixes is T0224 (D383)" {
     0,
     "the receiver fixes the type's parameter"
   )
+}
+
+test "an @externTarget generic call is judged like any other, and its expected-type solution is recorded (D356)" {
+  assertEqualInt(
+    unsolvedErrors("func f(): Bool { isNone(mk()) }\n"),
+    2,
+    "neither an extern nor a plain generic call is exempt"
+  )
+  assertEqualInt(unsolvedErrors("func f(): Bool { isNone(mk[Int]()) }\n"), 0, "written type arguments fix it")
+  val src = "package App\nimport Lib\nrecord R { o: Option[Int] }\nfunc f(): R { R(o = mk()) }\n"
+  val cr = checkWithImportedPackages(rewriteFileReporting(parse(src).file).file, unsolvedLib())
+  assertEqualInt(diagCount(cr), 0, "a constructor field fixes it (" + diagCodesOf(cr) + ")")
+  assertEqualInt(
+    cr.symbols.genericCallTypeArgSites.count,
+    1,
+    "the field's solution is recorded for the monomorphiser, which has no view of constructor fields"
+  )
+}
+
+test "a generic @externTarget function of the package itself is judged too (D356)" {
+  val body = "package App\nimport Lib\n@externTarget(\"Host.Make..ctor\")\nfunc mkLocal[T](): Option[T] = ()\n"
+  val bad = checkWithImportedPackages(
+    rewriteFileReporting(parse(body + "func f(): Bool { isNone(mkLocal()) }\n").file).file,
+    unsolvedLib()
+  )
+  var n = 0
+  for d in bad.diagnostics {
+    if d.code == "T0224" {
+      n = n + 1
+    }
+  }
+  assertEqualInt(n, 2, "the local extern call and isNone are both unfixed")
+  val ok = checkWithImportedPackages(
+    rewriteFileReporting(parse(body + "record R { o: Option[Int] }\nfunc f(): R { R(o = mkLocal()) }\n").file).file,
+    unsolvedLib()
+  )
+  assertEqualInt(diagCount(ok), 0, "a constructor field fixes it (" + diagCodesOf(ok) + ")")
+  assertEqualInt(ok.symbols.genericCallTypeArgSites.count, 1, "and its solution is recorded")
 }
 
 test "more positions that fix a call, and the cases the checker cannot decide (D339)" {

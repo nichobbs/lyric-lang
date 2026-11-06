@@ -1142,7 +1142,7 @@ test "an unpinned type argument the checker did not record is the internal M0002
   assertFalse(hasFunc(res.file, "isOkLike2__Int__Object"), "the call is not specialised at Object")
 }
 
-test "an @externTarget generic keeps its erased default and is not T0224 (D335)" {
+test "an @externTarget generic is judged like a plain one, not exempt (D356)" {
   val callerSrc = "package Caller\n" + "func caller(): Int { mkThing() }\n"
   val plainLib = "package Lib\n" + "pub func mkThing[T](): Int = 0\n"
   val externLib = "package Lib\n" + "@externTarget(\"System.Collections.Generic.List`1..ctor\")\n" +
@@ -1154,7 +1154,7 @@ test "an @externTarget generic keeps its erased default and is not T0224 (D335)"
     1,
     "control: the same unpinned call to a plain generic is the internal M0002"
   )
-  assertEqualInt(diagCountCode(hosted.diagnostics, "M0002"), 0, "an @externTarget generic is exempt")
+  assertEqualInt(diagCountCode(hosted.diagnostics, "M0002"), 1, "an @externTarget generic is no longer exempt")
 }
 
 test "a fully pinned imported generic call has no T0224" {
