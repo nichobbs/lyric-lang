@@ -19598,8 +19598,6 @@ func originScopedFqnMsil(
   fctx: in FuncCtx,
   path: in ModulePath,
   funcName: in String,
-  arity: in Int,
-  retHint: in MsilType,
 ): String {
   if fctx.originPkg.length == 0 or fctx.originPkg == fctx.pkgName or path.segments.count != 1 {
     return ""
@@ -19608,40 +19606,7 @@ func originScopedFqnMsil(
   if cctx.funcTokens.containsKey(own) {
     return own
   }
-  findBareImportedFqnMsil(cctx, fctx.originPkg, funcName, arity, retHint)
-}
-
-// The fallback for a call the checker recorded no callee for (an aspect
-// template spliced into the caller, a call the weaver synthesised, a call in an
-// imported generic whose declaring package recorded none): the function a bare
-// `funcName` in `pkg` resolves to through its imports
-// (docs/01 §9.2): the imports that admit the name, directly imported ones
-// first, so a return-type hint (`findImportedFqnWithHint`) chooses among a
-// tier's candidates but never reaches past a direct import to a package
-// reached only transitively.  "" when no import declares it.
-func findBareImportedFqnMsil(
-  cctx: in CodegenCtx,
-  pkg: in String,
-  funcName: in String,
-  arity: in Int,
-  retHint: in MsilType,
-): String {
-  val direct = findImportedFqnWithHint(
-    cctx,
-    directBareImportsForNameMsil(cctx, pkg, funcName),
-    funcName,
-    arity,
-    retHint
-  )
-  if direct.length > 0 {
-    Console.error("MSILCENSUS direct " + pkg + " " + funcName + " -> " + direct)
-    return direct
-  }
-  val viaClosure = findImportedFqnWithHint(cctx, bareImportListForNameMsil(cctx, pkg, funcName), funcName, arity, retHint)
-  if viaClosure.length > 0 {
-    Console.error("MSILCENSUS closure " + pkg + " " + funcName + " -> " + viaClosure)
-  }
-  viaClosure
+  ""
 }
 
 // `pkg`'s direct imports that admit `name` bare: whole imports and the
@@ -21725,7 +21690,7 @@ func lowerBuiltinOrStaticCallMsil(
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
-            val originFqn = if sitedFqn.length > 0 { "" } else { originScopedFqnMsil(cctx, fctx, path, funcName, args.count, importRetHint) }
+            val originFqn = if sitedFqn.length > 0 { "" } else { originScopedFqnMsil(cctx, fctx, path, funcName) }
             // A BARE (single-segment) call inside an instance method body
             // prefers a same-named sibling method over any free function —
             // matching the JVM backend's `ctx.selfClass` arm (which is
@@ -21749,7 +21714,7 @@ func lowerBuiltinOrStaticCallMsil(
                 case Some(imps) -> if path.segments.count >= 2 and importsMatchingQualifierMsil(imps, path).count > 0 {
                   findImportedFqnWithHint(cctx, importsMatchingQualifierMsil(imps, path), funcName, args.count, importRetHint)
                 } else {
-                  findBareImportedFqnMsil(cctx, fctx.pkgName, funcName, args.count, importRetHint)
+                  ""
                 }
                 case None -> ""
               }
@@ -32285,18 +32250,6 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
 // spawnNms/spawnTys are parallel lists tracking `val x = spawn f()` bindings:
 // spawnNms[i] is the local name, spawnTys[i] is its Task<T> type.
 // This lets `await x` resolve to the correct TaskAwaiter<T> field.
-// Whether some candidate FQN already has a registered return type for a call
-// of `cnt` arguments: the first that does decides the call's type, so the
-// bare-import search only matters when none does.
-func anyCandidateRetRegisteredMsil(cctx: in CodegenCtx, candidates: in List[String], cnt: in Int): Bool {
-  for c in candidates {
-    if cctx.funcRetTypes.containsKey(c + "/" + toString(cnt)) or cctx.funcRetTypes.containsKey(c) {
-      return true
-    }
-  }
-  false
-}
-
 // Resolve a qualified free-function call's return type by mirroring the
 // call-EMISSION resolution order (qualified path -> current package ->
 // imported package). The imported fallback is essential for cross-package
@@ -32348,12 +32301,7 @@ func resolveQualifiedFreeCallRetTypePB(
     }
   }
   candidates.add(pkgName + "." + lastSeg)
-  if not anyCandidateRetRegisteredMsil(cctx, candidates, cnt) {
-    val bareImp = findBareImportedFqnMsil(cctx, pkgName, lastSeg, cnt, MObject)
-    if bareImp.length > 0 {
-      candidates.add(bareImp)
-    }
-  }
+
   var result = MObject
   var ci = 0
   var done = false
@@ -32640,12 +32588,7 @@ func inferCallReturnTypePB(
                 case None -> ()
               }
               candidates.add(pkgName + "." + field)
-              if not anyCandidateRetRegisteredMsil(cctx, candidates, cnt) {
-                val bareImp = findBareImportedFqnMsil(cctx, pkgName, field, cnt, MObject)
-                if bareImp.length > 0 {
-                  candidates.add(bareImp)
-                }
-              }
+
               var result = MObject
               var ci = 0
               var done = false

@@ -79,17 +79,16 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    `__lyric_bmode_*` names; specialisations inside another package's generic
    bodies; and a few functions whose site is not recorded, `get`,
    `setWithTtl`, `verifyApiKey`), each tracked on #8612.
-6. **MSIL's bare-import search is now only the fallback for a call with no
-   site.** A census of every manifest, the stdlib tests and every compiler
-   self-test (466) shows which calls still need it: a call spliced from an
-   aspect library template into the caller (`checkRetryConfig`,
-   `checkFlagName`, `nowEpochMillis`: it carries the library's span, not the
-   caller's), a call the weaver synthesises (span 0:0, `monotonicNanos`), and
-   a call inside an imported generic whose declaring package recorded no site
-   (`rootPath` in `Ui.Forms.formFields`), with the async pre-scan's candidate
-   lookups that predict the same bindings. These keep
-   `findBareImportedFqnMsil`, documented as that fallback; deleting it needs
-   the weaver to qualify what it splices (tracked on #8612).
+6. **MSIL's bare-import search (`findBareImportedFqnMsil`) is deleted.** It
+   was kept for the calls the checker recorded no callee for: a call spliced
+   from an aspect library template into the caller, a call the weaver
+   synthesises, and a call inside an imported generic whose declaring package
+   recorded none. Phase 3b weaves before the check (D390-D392), so the first
+   two have sites like user code; the third was a keying bug (item 9). The
+   import search had also been computed for every call whatever won; it is
+   reached now only for the calls nothing above resolved, and a census over
+   every `TEST_EMITTER_FILES` self-test and 24 ecosystem libraries found it
+   used by none.
    What is removed: `pkgImportAliases` and the pre-scan's alias candidates (an
    alias-qualified call binds through its site), and the origin-scoped import
    search is reached only after the site. A body specialised from another
@@ -119,31 +118,38 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    reads these as `<origin>|<key>` entries (`foreignCalleeSites`,
    `Jvm.Codegen.originScopedExternTypes`). `emitter_project_self_test.l` has
    the selective-import and same-named-export cases on both targets.
-8. **The JVM tries exact keys first and falls back to a bare name only for
-   a call with no site.** `resolveGeneralFuncSig` looks a call up by the
-   checker's site, then `<package>::<name>` (a package-private function
-   included), then the `Pkg/name` key of the qualified path
-   (`resolveGeneralFuncSigExact`); only a call with none of them searches the
-   bundle's bare-name keys. The `println`/`print` and collection-intrinsic
-   override check (`hasFuncOverrideJvm`) uses the exact stage alone: a `Std.*`
-   result never overrides an intrinsic, so a user function overrides one only
-   when its site, its own package's scoped key or a qualified path names it.
-   A census over the JVM self-tests (`lyric-compiler/jvm/`, bitwise,
-   aspect-weave, async-spawn, block-shadow, pattern-lowering, the kernel
-   tests) and the auth, cache, validation and resilience libraries found the
-   bare keys needed for: a specialised generic's call (Mono's renamed callee
-   carried the whole expression's span, not the path's the checker keyed the
-   site by), a specialisation and a weaver-synthesised function registered
-   without the package-scoped key, the intrinsic override check, and the calls
-   spliced from an aspect-library template (`checkRetryConfig` in
-   `lyric-resilience`, which carry the library's span and so have no site).
-   Mono's renamed callee now keeps the path's span (`renamedCalleeExpr`),
-   which also makes MSIL's sites for alias-qualified generic calls hit
-   instead of its fallback, and both registrations add the scoped keys. What
-   is left of the bare-name fallback is the spliced and weaver-synthesised
-   calls; it goes, with the bare keys the secondary readers
-   (`closureInvokeRetType`, `funcSigRetType`, the dot-named lookups) use,
-   when the weaver gives its output sites (docs/70 phase 3b, #8612).
+8. **The JVM resolves a call by its site, its package's scoped key or its
+   qualified key, and no longer by a bare name.** `resolveGeneralFuncSig` is
+   `resolveGeneralFuncSigExact`: the checker's site, then `<package>::<name>`
+   (a package-private function included), then the `Pkg/name` key of the
+   qualified path. The bundle-wide bare-name search is deleted (the keys stay
+   registered for the secondary readers on #8612: `closureInvokeRetType`,
+   `funcSigRetType`, the dot-named lookups). The `println`/`print` and
+   collection-intrinsic override check (`hasFuncOverrideJvm`) uses the same
+   exact stage: a `Std.*` result never overrides an intrinsic, so a user
+   function overrides one only when its site, its own package's scoped key or
+   a qualified path names it. A census over the JVM self-tests
+   (`lyric-compiler/jvm/`, bitwise, aspect-weave, async-spawn, block-shadow,
+   pattern-lowering, the kernel tests) and the auth, cache, validation,
+   resilience and mq libraries found the bare keys needed for: a specialised
+   generic's call (Mono's renamed callee carried the whole expression's span,
+   not the path's the checker keyed the site by), a specialisation and a
+   weaver-synthesised function registered without the package-scoped key, the
+   intrinsic override check, and, until phase 3b, the calls spliced from an
+   aspect-library template (`checkRetryConfig` in `lyric-resilience`). Mono's
+   renamed callee now keeps the path's span (`renamedCalleeExpr`), which also
+   makes MSIL's sites for alias-qualified generic calls hit, and both
+   registrations add the scoped keys.
+9. **Sites for a body specialised from a package outside the bundle.** A
+   consumer that specialises a restored or prebuilt package's generic (a test
+   package over a built library) records that body's callees by re-checking the
+   generic in its declaring package's scope (`foreignCalleeSites`, item 7),
+   under `<origin>|<key>` in its own `calleeSitesOut`. The MSIL bridge prefixed
+   every entry with the consumer's name again, so none was found and the
+   import search answered (147 calls in `lyric-ui` alone); an entry whose key
+   already holds `|` is kept as it is. The re-check also checks the generic as
+   written, not a specialisation, whose type arguments name the consumer's
+   types (T0010).
 
 ## Consequences
 

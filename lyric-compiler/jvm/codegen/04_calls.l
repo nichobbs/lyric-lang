@@ -8,7 +8,6 @@ package Jvm.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Console as CensusConsoleJvm
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
@@ -4442,13 +4441,9 @@ func lowerVirtualCallWithHolders(
 // `Lyric.AliasRewriter`).  Exact-arity keys (`...@<argc>`) are tried before
 // the name keys so same-name overloads pick the descriptor matching this
 // call's argument count; a call that relies on parameter defaults misses the
-// arity key and takes the name key.
-//
-// Only a call with none of these keys (an aspect-library template spliced
-// into the caller carries the library's span, so the checker recorded no site
-// for it, and the weaver's synthesised calls) falls back to a bare name
-// registered by any package of the bundle.  That fallback goes when the
-// weaver qualifies what it splices (docs/70 phase 3b, tracked on #8612).
+// arity key and takes the name key.  A bare name is never searched across the
+// bundle: a call with none of these keys is unresolved (an extern member, an
+// intrinsic or an unknown name).
 //
 // Shared by `lowerGeneralStaticCall` (the actual call site) and
 // `scrutineeGenericArgs` (03_match.l's generic-instantiation recovery for a
@@ -4457,20 +4452,7 @@ func lowerVirtualCallWithHolders(
 pub func resolveGeneralFuncSig(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
-  match resolveGeneralFuncSigExact(ctx, funcName, path, argc) {
-    case Some(sig) -> return Some(value = sig)
-    case None -> ()
-  }
-  val argcSuffix = "@" + callArityText(ctx, path, argc)
-  val bareHit = match mapGet(ctx.funcSigs, funcName + argcSuffix) {
-    case Some(sig) -> Some(value = sig)
-    case None -> mapGet(ctx.funcSigs, funcName)
-  }
-  match bareHit {
-    case Some(_) -> CensusConsoleJvm.error("JVMCENSUS-BARE " + ctx.pkgName + " " + funcName + " segs=" + toString(path.segments.count))
-    case None -> ()
-  }
-  bareHit
+  resolveGeneralFuncSigExact(ctx, funcName, path, argc)
 }
 
 // The signature of the function the checker resolved the call at `path` to
