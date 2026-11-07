@@ -15175,7 +15175,10 @@ test "a call of a protected function-valued field from outside is T0221 (D359)" 
   val outside = parseCheck(decl + "func call(h: in Holder): Int {\n  h.cb(1)\n}\n")
   assertTrue(Str.contains(diagCodesOf(outside), "T0221"), "an outside call is refused: " + diagCodesOf(outside))
   val inside = parseCheck(decl)
-  assertTrue(not Str.contains(diagCodesOf(inside), "T0221"), "the type's own member may call it: " + diagCodesOf(inside))
+  assertTrue(
+    not Str.contains(diagCodesOf(inside), "T0221"),
+    "the type's own member may call it: " + diagCodesOf(inside)
+  )
 }
 
 test "a config field read through its package is typed (D359)" {
