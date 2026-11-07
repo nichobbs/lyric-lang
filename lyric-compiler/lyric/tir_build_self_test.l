@@ -220,6 +220,7 @@ record FnBuilt {
   env: BuildEnv
   body: Option[TExpr]
   diagnostics: Int
+  symbols: SymbolTable
 }
 
 func buildFirstFn(src: in String): FnBuilt {
@@ -234,7 +235,7 @@ func buildFirstFn(src: in String): FnBuilt {
       case _ -> ()
     }
   }
-  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count)
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
 }
 
 test "a function over locals and primitive operators builds" {
@@ -500,4 +501,43 @@ test "a non-generic function used as a value builds as a global reference" {
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   assertTrue(bodyKindName(r.body) == "global", "the function value is an XGlobal")
+}
+
+func firstGlobalOrConstruct(b: in Option[TExpr]): Option[SymbolId] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XConstruct(sym, _) -> Some(value = sym)
+        case XGlobal(sym, _) -> Some(value = sym)
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a bare case two unions share builds as the case of the expected union" {
+  val r = buildFirstFn("package App\nunion Left {\n  case Idle\n}\nunion Right {\n  case Idle\n}\nfunc f(): Left {\n  Idle\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "construct0", "an XConstruct")
+  var named = ""
+  match firstGlobalOrConstruct(r.body) {
+    case Some(sym) -> match defPathKeyOf(r.symbols.interner, sym) {
+      case Some(k) -> {
+        named = k
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+  assertTrue(named == "App::Left::Idle", "the case of Left, not Right")
+}
+
+test "a generic nullary case builds with the expected type" {
+  val r = buildFirstFn("package App\nfunc f(): Option[Int] {\n  None\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "construct0", "an XConstruct")
 }

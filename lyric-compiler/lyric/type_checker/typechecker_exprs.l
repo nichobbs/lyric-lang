@@ -4924,10 +4924,9 @@ record MethodCallPick {
   fullSig: Option[ResolvedSignature]
 }
 
-// Record the constructor or union case a call built under the call's `NodeId`
-// (`calleeByNode`, D361).  A record, opaque or exposed-record constructor is
-// its type's `SymbolId`; a union case is `Pkg::Union::Case`, the DefPath the
-// resolver interns for it (docs/70 §4.2).
+// The `SymbolId` of the union or enum case `caseName` of the type `parentId`, the
+// DefPath the resolver interns (docs/70 4.2); a dependency's union has none, so
+// it is named by its package and type.
 func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
   match defPathKeyOf(tbl.interner, parentId) {
     case Some(parentKey) -> Some(value = internDefPathKey(tbl.interner, parentKey + "::" + caseName))
@@ -4946,6 +4945,10 @@ func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, ca
   }
 }
 
+// Record the constructor or union case a call built under the call's `NodeId`
+// (`calleeByNode`, D361).  A record, opaque or exposed-record constructor is
+// its type's `SymbolId`; a union case is `Pkg::Union::Case`, the DefPath the
+// resolver interns for it (docs/70 §4.2).
 func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol): Unit {
   if callNode <= 0 {
     return
@@ -7447,7 +7450,10 @@ func resolveExprPath(
         }
         case DKEnumCase(_, _) -> match packageEnumCaseValueType(tbl, pkg, name) {
           case Some(ct) -> {
-            recordRefNode(tbl, node, csym)
+            // Sibling enums sharing the case name leave it unresolved.
+            if not isTyErrorValue(ct) {
+              recordRefNode(tbl, node, csym)
+            }
             return ct
           }
           case None -> ()
@@ -21740,6 +21746,7 @@ func inferExprExpectedCore(
     case EPath(p) -> match sharedBareCaseOfExpected(sc, tbl, p, expected) {
       case Some(caseSym) -> {
         symTableNoteBareUse(tbl, caseSym, e.span)
+        recordRefNode(tbl, e.nodeId, caseSym)
         adoptUnionCaseExpected(
           tbl,
           true,
