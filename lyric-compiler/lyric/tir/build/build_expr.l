@@ -239,9 +239,19 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       for seg in segs {
         match seg {
           case ISText(text, sp) -> parts.add(
-            TExpr(id = freshNodeId(env), ty = tyString(), span = sp, kind = XLit(lit = TLString(text = text)))
+            TExpr(
+              id = freshNodeId(env),
+              ty = tyString(),
+              span = sp,
+              kind = XLit(lit = TLString(text = text))
+            )
           )
-          case ISExpr(x) -> match buildExpr(env, x) { case Some(t) -> parts.add(stringPart(env, t)); case None -> { ok = false } }
+          case ISExpr(x) -> match buildExpr(env, x) {
+            case Some(t) -> parts.add(stringPart(env, t))
+            case None -> {
+              ok = false
+            }
+          }
         }
       }
       if ok {
@@ -748,7 +758,12 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
   }
   match widenKind(t.ty, pty) {
     case Some(k) -> Some(
-      value = TExpr(id = freshNodeId(env), ty = pty, span = t.span, kind = XConvert(kind = k, inner = t))
+      value = TExpr(
+        id = freshNodeId(env),
+        ty = pty,
+        span = t.span,
+        kind = XConvert(kind = k, inner = t)
+      )
     )
     case None -> {
       noteUncovered(env, "an argument conversion")
@@ -863,10 +878,7 @@ func buildBuiltinCall(
       match buildAll(env, xs) {
         case None -> None
         case Some(ts) -> {
-          val expected: Option[List[Ty]] = match recvT {
-            case Some(r) -> memberArgTys(r.ty, name, ts.count)
-            case None -> None
-          }
+          val expected: Option[List[Ty]] = match recvT { case Some(r) -> memberArgTys(r.ty, name, ts.count); case None -> None }
           val res: List[TExpr] = newList()
           match recvT {
             case Some(r) -> res.add(r)
@@ -930,7 +942,11 @@ func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, arg
               }
               Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(res))))
             }
-            case _ -> uncoveredExpr(env, e, "a call of a value that is not a function type")
+            case _ -> uncoveredExpr(
+              env,
+              e,
+              "a call of a value that is not a function type"
+            )
           }
         }
       }

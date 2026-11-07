@@ -349,10 +349,7 @@ test "a call omitting a defaulted argument is counted, not guessed" {
 
 func firstTail(b: in Option[TExpr]): Option[TExpr] {
   match b {
-    case Some(body) -> match body.kind {
-      case XBlock(_, t) -> t
-      case _ -> Some(value = body)
-    }
+    case Some(body) -> match body.kind { case XBlock(_, t) -> t; case _ -> Some(value = body) }
     case None -> None
   }
 }
@@ -389,7 +386,9 @@ test "a named argument keeps its slot and a positional one takes the free slot" 
 }
 
 test "named arguments that reorder effects are refused, plain ones are not" {
-  val bad = buildFirstFn("package App\nfunc m(): Int { k(b = f(), a = g()) }\nfunc k(a: Int, b: Int): Int { a }\nfunc f(): Int { 1 }\nfunc g(): Int { 2 }\n")
+  val bad = buildFirstFn(
+    "package App\nfunc m(): Int { k(b = f(), a = g()) }\nfunc k(a: Int, b: Int): Int { a }\nfunc f(): Int { 1 }\nfunc g(): Int { 2 }\n"
+  )
   assertEqualInt(bad.diagnostics, 0, "checks clean")
   assertTrue(not bad.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(bad.env.uncovered, "a call whose named arguments reorder effects"), 1, "counted")
@@ -427,4 +426,3 @@ test "a built-in call with an argument the builder cannot check is counted" {
   val r = buildFirstFn("package App\nfunc m(x: Int): Int { max(x, 2) }\nfunc max(a: Int, b: Int): Int { a }\n")
   assertEqualInt(r.env.errors.count, 0, "a declared max is a direct call")
 }
-

@@ -28,7 +28,29 @@ conversions the checker accepts implicitly made explicit.
    `Float < Double`) is wrapped in `XConvert(CvWiden(to))`. Any other
    difference is not guessed: it is an I0002 counted as "an argument
    conversion".
-4. Not built, each counted by its own kind: generic calls (they need the
+4. Arguments of every kind of call are checked against the parameter types and
+   converted only along the implicit widenings, as a node of its own:
+   - a call through a function value against the function type's parameters;
+   - the element-taking members of `List`, `Map` and `Set` and the `slice`
+     members against the receiver's type arguments (`xs.add(i)` on a
+     `List[Long]` widens `i`);
+   - any other built-in is built only when its arguments cannot need a
+     conversion (the generic `println`, `print`, `toString`, `hashCode`, or no
+     widenable primitive argument), else it is counted as "a built-in call with
+     an argument the builder cannot check".
+5. Named arguments take their parameter's slot first and the positional ones
+   fill the free slots in order, as the checker pairs them; a parameter named
+   twice is not built. TIR evaluates arguments in parameter order and the
+   language in written order, so a call whose written order differs from
+   parameter order is built only when every argument is plain (a literal or a
+   name); otherwise it is counted as "a call whose named arguments reorder
+   effects".
+6. Every node the builder makes up has an id of its own, drawn above the ids
+   `renumberNodeIds` hands out and shared by the functions of a file: a
+   conversion, the `toString` call of an interpolation part, an interpolation
+   text part, and a block with no node of its own (a branch, a loop body, the
+   body of `unsafe`, a function body). TIR's `node-unique` rule holds.
+7. Not built, each counted by its own kind: generic calls (they need the
    instantiation), a defaulted or missing argument (the default expression is
    the callee's, not the call's), `out` and `inout` arguments (they need
    places), method, constructor, member, package-qualified and extern calls, and
