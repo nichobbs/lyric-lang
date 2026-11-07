@@ -24664,7 +24664,9 @@ func isPackageDottedCallee(
     full.add(sg)
   }
   full.add(member)
-  match packageDottedSig(tbl, sigs, full, arity, argTypes) {
+  // Existence by count only: no argument types.
+  val noTypes: List[Type] = newList()
+  match packageDottedSig(tbl, sigs, full, arity, noTypes) {
     case Some(_) -> true
     case None -> false
   }
