@@ -1570,7 +1570,7 @@ pub func hostSupertypesOfExternJvm(ctx: in AutoFfiCtx, binaryName: in String): O
 }
 
 /// One overload of a host member as `hostMemberSigDescsOfExternJvm` reports it
-/// (D390): whether it is static, its parameter descriptors and its result
+/// (D387): whether it is static, its parameter descriptors and its result
 /// descriptor (`V` for `void`, the field descriptor for a field).
 pub record JvmMemberSigDesc {
   isStatic: Bool

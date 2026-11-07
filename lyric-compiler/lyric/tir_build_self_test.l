@@ -18,6 +18,7 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
+import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
   check(renumberNodeIds(parse(src).file).file)
@@ -995,4 +996,47 @@ test "an extern call with a named argument is counted" {
   val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Int {\n  Math.Max(a, b = b)\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "an extern call with a named argument"), 1, "counted")
+}
+
+func buildFirstFnMsil(src: in String): FnBuilt {
+  val file = renumberNodeIds(parse(src).file).file
+  val noPkgs: List[ImportedPackage] = newList()
+  val iter: Map[String, ExternIterInfo] = newMap()
+  val rs = Mb.msilIterResolver(Mb.newMsilHostIterIndex(newList()))
+  val cr = checkWithImportedPackagesExternIter(file, noPkgs, false, iter, rs)
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  var found = false
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if not found { found = true; body = buildFnBody(env, decl, cr.symbols) }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
+}
+
+test "the real MSIL metadata gives a static overload, an instance one and a constructor" {
+  val head = "package App\nextern type Math = \"System.Math\"\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(a: Double): Double {\n  Math.Sqrt(a)\n}\n")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.isStatic, "Sqrt is static")
+      assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPDouble)), "over Double")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+  val ct = buildFirstFnMsil(head + "func f(): SB {\n  SB.new()\n}\n")
+  assertTrue(ct.env.errors.count == 0, if ct.env.errors.count > 0 { ct.env.errors[0] } else { "no I0002" })
+  match externCallOf(ct.body) {
+    case Some(m) -> {
+      assertTrue(m.isStatic, "a constructor is static")
+      match m.kind {
+        case HMConstructor -> ()
+        case _ -> assertTrue(false, "a constructor")
+      }
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
 }

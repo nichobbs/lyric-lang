@@ -311,7 +311,7 @@ pub interface ExternIterResolver {
   func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType]
 
   /// Every candidate overload of a member, with its parameter and result types
-  /// (docs/70 6.3, D390): the methods named `member` taking `argc` arguments
+  /// (docs/70 6.3, D387): the methods named `member` taking `argc` arguments
   /// (`isProperty` false), or the property or field read (`isProperty` true),
   /// looked up on the type and its supertypes; the member `new` is the host
   /// type's own constructors.  `Lyric.Tir.Build` picks the overload from the

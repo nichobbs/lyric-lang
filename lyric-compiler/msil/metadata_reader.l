@@ -4865,7 +4865,7 @@ pub func hostMemberReturnsOfExtern(
   Some(value = found)
 }
 
-/// One overload of a host member as the resolver reports it (D390).
+/// One overload of a host member as the resolver reports it (D387).
 pub record HostMemberSigInfo {
   isStatic: Bool
   params: List[SigType]
@@ -4926,7 +4926,7 @@ pub func hostMemberSigsOfExtern(
           return None
         }
         val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
-        found.add(HostMemberSigInfo(isStatic = m.isStatic and not isCtor, params = m.paramTypes, ret = ret))
+        found.add(HostMemberSigInfo(isStatic = m.isStatic or isCtor, params = m.paramTypes, ret = ret))
       }
     }
     if isProperty {
