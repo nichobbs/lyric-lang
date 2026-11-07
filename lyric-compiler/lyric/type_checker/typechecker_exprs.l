@@ -10420,6 +10420,28 @@ func noteCtorZeroArgs(
 // authoritative site for a bare callee name — adding a second check here
 // would double-emit T0123 for one source reference, the exact hazard #6539
 // fixed for the pattern-head path).
+// `Pkg.Sub.Rec(...)` where a local shadows only the first segment `Pkg`
+// (#6838): the full package path still names a record, so the call is its
+// construction, not a method chain on the local (D359).
+func shadowedQualifiedCtor(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Bool {
+  match fn.kind {
+    case EMember(_, _) -> {
+      val segs: List[String] = newList()
+      if not flattenCalleePathSegs(fn, segs) or segs.count < 2 {
+        return false
+      }
+      match scopeTryFind(sc, segs[0]) {
+        case Some(_) -> match constructorSymbolOf(tbl, fn) {
+          case Some(_) -> true
+          case None -> false
+        }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
@@ -18723,8 +18745,12 @@ func moduleValReadType(
     }
   }
   restoreScope(tbl, saved)
-  sendNoteModuleRead(tbl, sym.name, t)
-  t
+  // An initializer over a declaration of the owning package the reader cannot
+  // see (a package-private helper) has no type here; the backends resolve it
+  // (#7777), so it is unchecked, and named so (D359).
+  val read = if isSilentTyError(t) { tyErrorUnresolved() } else { t }
+  sendNoteModuleRead(tbl, sym.name, read)
+  read
 }
 
 // Whether `p` names a module-level `val` that no local of that name shadows:
@@ -19433,7 +19459,7 @@ func inferExprCore(
         case _ -> false
       }
       match fn.kind {
-        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal {
+        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal and not shadowedQualifiedCtor(sc, tbl, fn) {
           isMemberCallee = true
           memberName = mname2
           match cachedRecvType {
@@ -19507,7 +19533,11 @@ func inferExprCore(
           checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
           inferMemberBase(tbl, rt, memberName)
         }
-        case None -> inferExpr(sc, tbl, sigs, diag, fn)
+        case None -> if shadowedQualifiedCtor(sc, tbl, fn) {
+          tyErrorUnresolved()
+        } else {
+          inferExpr(sc, tbl, sigs, diag, fn)
+        }
       }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }
@@ -20321,7 +20351,10 @@ func inferExprCore(
                               recordExternMemberCall(tbl, e.nodeId, fn, memberRecvTy, memberName, args.count)
                               untypedTy
                             } else {
-                              tyErrorSilent()
+                              // A bare call of a name that has no type here and
+                              // is no error (T0020 reports an unknown one): the
+                              // backends resolve it (D359).
+                              tyErrorUnresolved()
                             }
                           }
                         }
