@@ -3679,42 +3679,80 @@ test "compilerPackageDllName follows the per-package assembly name" {
   assertEqual(Emitter.compilerPackageDllName("Lyric.Tir.Verify"), "Lyric.Lyric.TirVerify.dll", "three segments")
 }
 
-test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fields, and keeps hoisted methods" {
-  val pkgASrc = "package A.Sub\npub record Inner {\n  var n: Int\n  pub func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\npub record Outer {\n  var k: Int\n  inner: Inner\n}\n"
-  val pkgBSrc = "package B\npub ref record Outer {\n  var k: Int\n}\npub func f(): Int { 1 }\n"
-  val pkgA = ImplDefaults.hoistByRefReceiverMethods(Parser.parse(pkgASrc).file)
-  val pkgB = ImplDefaults.hoistByRefReceiverMethods(Parser.parse(pkgBSrc).file)
-  val imported: List[Pipe.ImportedPackage] = newList()
-  imported.add(Pipe.ImportedPackage(name = "A.Sub", items = pkgA.items))
-  imported.add(Pipe.ImportedPackage(name = "B", items = pkgB.items))
-  val appSrc = "package App\nimport A.Sub\nimport A.Sub\nimport A.Sub as Alias\nimport A.Sub.{Outer, Inner as In}\nimport B.{f}\nfunc bad(o1: in Outer, o2: in A.Sub.Outer, o3: in Alias.Outer, i: in In): Unit {\n  o1.k = 1\n  o1.inner.n = 2\n  o2.inner.n = 3\n  o3.inner.n = 4\n  i.reset()\n}\n"
-  val appFile = Parser.parse(appSrc).file
-  val extra = Pipe.pipeImportedModeItems(appFile, imported)
-  var sawCanonInner = false
-  var sawAliasOuter = false
-  var sawRenamedReset = false
-  var bareOuterCount = 0
-  for it in extra {
-    match it.kind {
-      case IRecord(d) -> {
-        if d.name == "A.Sub.Inner" {
-          sawCanonInner = true
-        } else if d.name == "Alias.Outer" {
-          sawAliasOuter = true
-        } else if d.name == "Outer" {
-          bareOuterCount = bareOuterCount + 1
-        }
-      }
-      case IFunc(fn) -> {
-        if fn.name == "In.reset" {
-          sawRenamedReset = true
-        }
-      }
-      case _ -> ()
+func assertEmitProjectRejected(label: in String, pkgs: in List[Emitter.ProjectPackage], assemblyName: in String): Unit {
+  val tmpDir = freshTempDir(label)
+  val dllPath = Path.join(tmpDir, assemblyName + ".dll")
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = assemblyName,
+    outputPath = dllPath,
+    target = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> ()
+    case Some(_) -> {
+      cleanup(tmpDir)
+      panic(label + ": expected emitProject to reject with mode/type diagnostic")
     }
   }
-  assertTrue(sawCanonInner, "canonical A.Sub.Inner emitted")
-  assertTrue(sawAliasOuter, "aliased Alias.Outer emitted")
-  assertTrue(sawRenamedReset, "hoisted In.reset emitted for selected Inner as In")
-  assertEqualInt(bareOuterCount, 1, "bare Outer emitted once despite duplicate import A.Sub and selective import B.{f}")
+  cleanup(tmpDir)
+}
+
+test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fields, and keeps hoisted methods" {
+  val pkgASrc = "package A.Sub\npub record Inner {\n  var n: Int\n  func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\npub record Outer {\n  var k: Int\n  inner: Inner\n}\npub func overloaded(x: inout Int): Unit {\n  x = 0\n}\npub func overloaded(x: in Int, y: in Int): Int {\n  x + y\n}\n"
+  val pkgBSrc = "package B\npub ref record Outer {\n  var k: Int\n}\npub func f(): Int { 1 }\n"
+
+  val pkgsValid: List[Emitter.ProjectPackage] = newList()
+  pkgsValid.add(mkProjectPkg("A.Sub", pkgASrc))
+  pkgsValid.add(mkProjectPkg("B", pkgBSrc))
+  pkgsValid.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport Std.Core\nimport A.Sub\nimport A.Sub\nimport A.Sub as Alias\nimport A.Sub.{Inner as In}\nimport B.{f}\nfunc readOnlyOverload(o: in Outer): Int {\n  overloaded(o.k, 1)\n}\nfunc ok(o1: inout Outer, o3: inout Alias.Outer, i: inout In): Int {\n  o1.inner.n = 2\n  o3.inner.n = 4\n  i.reset()\n  o1.inner.n + o3.inner.n + i.n + f() + readOnlyOverload(o1)\n}\nfunc main(): Unit {\n  var o1 = Outer(k = 1, inner = Inner(n = 10))\n  var o3 = Alias.Outer(k = 2, inner = Inner(n = 20))\n  var i = In(n = 30)\n  println(ok(o1, o3, i))\n}\n"
+    )
+  )
+  val validRes = runEmitProject("mode-imported-valid-control", pkgsValid, "ModeImpValid")
+  assertEqualInt(validRes.exitCode, 0, "mode-imported-valid-control: exit 0 (stderr=" + validRes.stderr + ")")
+  assertEqual(Str.trim(validRes.stdout), "9", "mode-imported-valid-control: 2 + 4 + 0 + 1 + 2 = 9")
+
+  val pkgsNestedBare: List[Emitter.ProjectPackage] = newList()
+  pkgsNestedBare.add(mkProjectPkg("A.Sub", pkgASrc))
+  pkgsNestedBare.add(mkProjectPkg("B", pkgBSrc))
+  pkgsNestedBare.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport Std.Core\nimport A.Sub\nimport A.Sub\nimport B.{f}\nfunc bad(o1: in Outer): Unit {\n  o1.inner.n = 2\n}\nfunc main(): Unit { println(f()) }\n"
+    )
+  )
+  assertEmitProjectRejected("mode-imported-nested-bare", pkgsNestedBare, "ModeImpNestedBare")
+
+  val pkgsNestedAlias: List[Emitter.ProjectPackage] = newList()
+  pkgsNestedAlias.add(mkProjectPkg("A.Sub", pkgASrc))
+  pkgsNestedAlias.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport A.Sub as Alias\nfunc bad(o3: in Alias.Outer): Unit {\n  o3.inner.n = 4\n}\nfunc main(): Unit { () }\n"
+    )
+  )
+  assertEmitProjectRejected("mode-imported-nested-alias", pkgsNestedAlias, "ModeImpNestedAlias")
+
+  val pkgsRenamedHoisted: List[Emitter.ProjectPackage] = newList()
+  pkgsRenamedHoisted.add(mkProjectPkg("A.Sub", pkgASrc))
+  pkgsRenamedHoisted.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport A.Sub.{Inner as In}\nrecord LocalHolder {\n  var inner: In\n}\nfunc bad(h: in LocalHolder): Unit {\n  h.inner.reset()\n}\nfunc main(): Unit { () }\n"
+    )
+  )
+  assertEmitProjectRejected("mode-imported-renamed-hoisted", pkgsRenamedHoisted, "ModeImpRenamedHoisted")
 }

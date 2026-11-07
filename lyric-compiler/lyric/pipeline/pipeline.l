@@ -1786,7 +1786,17 @@ func pipeModeItemName(it: in Item): String {
 
 func pipeModeItemTag(it: in Item): String {
   match it.kind {
-    case IFunc(_) -> "F"
+    case IFunc(fn) -> {
+      var sig = "F:" + toString(fn.span.startPos.offset) + ":" + toString(fn.span.endPos.offset) + ":" +
+        toString(fn.params.count)
+      var pi = 0
+      while pi < fn.params.count {
+        val m = match fn.params[pi].mode { case PMIn -> "in"; case PMOut -> "out"; case PMInout -> "inout" }
+        sig = sig + ":" + fn.params[pi].name + "=" + m
+        pi = pi + 1
+      }
+      sig
+    }
     case IRecord(_) -> "R"
     case IExposedRec(_) -> "E"
     case IImpl(d) -> {
