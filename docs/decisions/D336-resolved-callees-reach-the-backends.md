@@ -192,6 +192,26 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    package only its declaring package imports, MSIL and JVM) and
    `multi-file-package-merge-e2e.sh dotnet jvm`.
 
+11. **Native binds a call to its site first.** `calleeSitesOut` reaches the
+    native bridge per own file (as `methodCallAritiesOut` does) and codegen
+    looks the function up under the declaring package's `Pkg.name/arity` key
+    (`sitedSig`) before its own-package and import-narrowed bare-name lookups,
+    in the free-call, qualified-callee and return-type paths. A callee written
+    with a package prefix must name exactly the site's package, and a bare one
+    a function of the caller's own package or one it imports (directly or
+    through a facade's `pub use`), so a default expression of another package,
+    lowered in the caller's context with its own source offsets, cannot pick up
+    an unrelated caller entry. Reachability pruning is unchanged: it already
+    marks every import-visible candidate of a name, which includes the function
+    a site names, and seeding it from the sites would retain code (and extern
+    libraries) that no emitted body calls. A pruned dependency package gets no
+    sites. A bundled stdlib unit has no sites and keeps the name lookups, which
+    stay for it and for a call with no site (a specialisation renamed by Mono, a
+    synthesised call); deleting them follows once every unit is checked (#8612).
+    `llvm_project_self_test.l` has a package-private function of an imported
+    package that captured a bare call (the checker binds the exported one in
+    another package; native ran the private one), by value and by return type.
+
 ## Consequences
 
 - A bare call resolves to what the checker resolved, whatever the bundle holds

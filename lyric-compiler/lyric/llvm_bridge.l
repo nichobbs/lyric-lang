@@ -1511,6 +1511,7 @@ pub func compileToNativeWithFeatures(
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
   val optsCallArities: Map[String, Int] = newMap()
+  val optsCallees: Map[String, String] = newMap()
   val opts = nativeMiddleEndOptions(
     path,
     noSingleFileFiles,
@@ -1520,7 +1521,10 @@ pub func compileToNativeWithFeatures(
     newList(),
     newList(),
     "",
-    contractsEnabled
+    contractsEnabled,
+    false,
+    newList(),
+    optsCallees
   )
   val userFileChecked = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -1661,7 +1665,7 @@ pub func compileToNativeWithFeatures(
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
-  units.add(unitOf(userFile, reachable, true, optsCallArities))
+  units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees))
   appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(
@@ -1845,6 +1849,8 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
+  // Each own file's `calleeSitesOut` (docs/70 phase 2d), parallel to `ownFiles`.
+  val ownCallees: List[Map[String, String]] = newList()
   // Each own file's `memberRecvClassesOut` (#8413), parallel to `ownFiles`.
   val ownRecvClasses: List[Map[String, String]] = newList()
   val noDeriveImports: List[Item] = newList()
@@ -1866,6 +1872,7 @@ pub func compileProjectToNativeWithShape(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
+    val optsCallees: Map[String, String] = newMap()
     val optsGenericItems: List[Item] = newList()
     val optsForeignRecords: List[ForeignValueRecord] = newList()
     val optsIface: List[IfaceBuild.IfaceOutcome] = newList()
@@ -1881,7 +1888,8 @@ pub func compileProjectToNativeWithShape(
       if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       contractsEnabled,
       ownLibrary,
-      optsIface
+      optsIface,
+      optsCallees
     )
     val siblingValueGenerics = siblingValueGenericFuncs(
       importedPkgs,
@@ -1902,6 +1910,7 @@ pub func compileProjectToNativeWithShape(
       case None -> ()
     }
     ownCallArities.add(optsCallArities)
+    ownCallees.add(optsCallees)
     ownRecvClasses.add(optsRecvOut)
     for fr in optsForeignRecords {
       foreignRecords.add(fr)
@@ -2099,14 +2108,24 @@ pub func compileProjectToNativeWithShape(
     }
     moi = moi + 1
   }
+  val noSites: Map[String, String] = newMap()
   val units: List[CodegenUnit] = newList()
   if mainOwnIdx >= 0 {
-    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx]))
+    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx], false, ownCallees[mainOwnIdx]))
   }
   var uoi = 0
   while uoi < ownFiles.count {
     if uoi != mainOwnIdx {
-      units.add(unitOf(ownFiles[uoi], reachable, not prunedPkg[uoi], ownCallArities[uoi], prunedPkg[uoi]))
+      units.add(
+        unitOf(
+          ownFiles[uoi],
+          reachable,
+          not prunedPkg[uoi],
+          ownCallArities[uoi],
+          prunedPkg[uoi],
+          if prunedPkg[uoi] { noSites } else { ownCallees[uoi] }
+        )
+      )
     }
     uoi = uoi + 1
   }
@@ -2429,6 +2448,7 @@ func nativeMiddleEndOptions(
   contractsEnabled: in Bool,
   buildInterface: in Bool = false,
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
+  calleesOut: in Map[String, String] = newMap(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
@@ -2443,6 +2463,7 @@ func nativeMiddleEndOptions(
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
+    calleeSitesOut = calleesOut,
     typeArgCalleesOut = newMap(),
     genericItemsOut = genericItemsOut,
     foreignValueRecordsOut = foreignRecordsOut,
@@ -4868,6 +4889,7 @@ func unitOf(
   lowerAll: in Bool,
   arities: in Map[String, Int],
   isDep: in Bool = false,
+  callees: in Map[String, String] = newMap(),
 ): CodegenUnit {
   // A member body's bare field references as `self.<name>` (#8264), as
   // `unitOfFile` does; a no-op for a file the middle end processed.
@@ -5014,6 +5036,7 @@ func unitOf(
     importsStdString = fileImportsStdString(f),
     imports = fileImportPackages(f),
     methodCallArities = arities,
+    calleeSites = callees,
     deadProtecteds = deadProtecteds
   )
 }
