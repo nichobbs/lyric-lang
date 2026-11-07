@@ -15181,6 +15181,13 @@ test "a call of a protected function-valued field from outside is T0221 (D359)" 
   )
 }
 
+test "a missing member of a package-qualified name is T0020, not accepted (D359)" {
+  val cr = parseCheck("package P\nfunc f(): Int {\n  P.missing\n}\n")
+  assertTrue(Str.contains(diagCodesOf(cr), "T0020"), "P.missing is an unknown name: " + diagCodesOf(cr))
+  val other = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  Other.Cfg.n\n}\n")
+  assertTrue(diagCodesOf(other) != "", "another package's config block is not reachable: " + diagCodesOf(other))
+}
+
 test "a config field read through its package is typed (D359)" {
   val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))

@@ -16837,10 +16837,14 @@ func configFieldReadType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name:
     case None -> ()
   }
   val cname = segs[segs.count - 1]
+  // Config blocks are package-private (docs/25 2.2): the package qualifier may
+  // only name the package being checked.
   val found = if segs.count == 1 {
     symTableTryFindOne(tbl, cname)
-  } else {
+  } else if qualifierOfSegs(segs) == symTableScopePkg(tbl) {
     symTableTryFindInPackage(tbl, qualifierOfSegs(segs), cname)
+  } else {
+    None
   }
   val sym = match found { case Some(s) -> s; case None -> return None }
   val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
@@ -20551,11 +20555,21 @@ func inferExprCore(
         match externMemberReceiver(tbl, recv, rt) {
           case Some(er) -> externMemberResult(tbl, er, name, 0, true)
           case None -> match unrefine(rt) {
-            // A member of a name the checker cannot see (`Pkg.Cfg.field` of a
-            // package-private config another package of the project declares)
-            // is unresolved here, not silent (D359).
+            // A member of a package-qualified name no rule resolves
+            // (`P.missing`, or another package's package-private config) is the
+            // error it is, not a silent value (D359, docs/25 2.2).
             case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) {
-              tyErrorUnresolved()
+              val written: List[String] = newList()
+              val shown = if flattenCalleePathSegs(e, written) { modulePathJoin(written) } else { name }
+              diag.add(
+                errorDiagnostic(
+                  "T0020",
+                  "unknown name '" + shown +
+                    "': it names no member of a package this file can see (a package exports only its `pub` declarations, and a config block is package-private, docs/25 2.2)",
+                  e.span
+                )
+              )
+              tyErrorFor(diag)
             } else {
               TyError(diag = d)
             }

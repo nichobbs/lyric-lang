@@ -26,6 +26,12 @@ config Worker {
   pollIntervalMs: Int = 2000
 }
 
+/// How often the poller fires, in milliseconds.  The config block is
+/// package-private (docs/25 section 2.2), so other packages read it here.
+pub func pollIntervalMs(): Int {
+  Worker.pollIntervalMs
+}
+
 // ─── Dispatch ─────────────────────────────────────────────────────────────────
 // Execute a claimed job.  Returns Ok(()) on success, Err(msg) on failure.
 // Add new job kinds here as the application grows.

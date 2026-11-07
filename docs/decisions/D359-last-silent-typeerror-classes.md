@@ -45,6 +45,13 @@ gate would reject programs the backends compile.
    `Arrays.toString(xs)` and `Objects.hash(xs)` on an extern type were typed by the
    arity-0 intrinsic rule and came out untyped on the JVM.
 
+8. **A package-qualified config read** (`P.Cfg.field`) is typed only inside `P`:
+   config blocks are package-private (docs/25 2.2), so a read through another
+   package's name is not resolved, and a read no rule resolves whose receiver is
+   a package-qualified name is the error T0020 ("unknown name"), never a silent
+   or merely named value. `examples/jobqueue` read `Worker`'s config from
+   another package; it now goes through a `pub func pollIntervalMs()`.
+
 ## Tests
 
 `typechecker_self_test.l`: the open generic value, the protected field (and T0221
