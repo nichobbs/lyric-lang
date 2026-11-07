@@ -138,6 +138,44 @@ test "two-package project: entry package first, imports a sibling function (ASan
   assertTrue(Str.contains(outcome.stdout, "hi native"), "sibling package function output made it to stdout")
 }
 
+// A name two packages declare, one of them package-private: the type checker binds the
+// exported one (the private one is not visible from another package), and the call has to
+// call that package's function (docs/70 phase 2d).
+test "a package-private function of an imported package does not capture a bare call (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel.App",
+      sources = [
+        "package Sel.App\n" + "import Sel.A\n" + "import Sel.B\n" + "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(pick())\n" +
+          "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel.A",
+      sources = [
+        "package Sel.A\n" + "pub func other(): Int {\n" + "  0\n" + "}\n" + "func pick(): String {\n" +
+          "  \"from A\"\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel.B",
+      sources = ["package Sel.B\n" + "pub func pick(): String {\n" + "  \"from B\"\n" + "}\n"]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "private-versus-exported project exit code")
+  assertTrue(Str.contains(outcome.stdout, "from B"), "the exported function ran (stdout=" + outcome.stdout + ")")
+}
+
 // #8417: instantiating a `pub` generic of another package compiles its body in the caller's
 // package, and that body may call a PRIVATE generic of its own package (here `twice`, reached
 // from `pub func run` both directly and through a lambda).  Before the fix the private generic

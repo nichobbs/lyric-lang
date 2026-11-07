@@ -1511,6 +1511,7 @@ pub func compileToNativeWithFeatures(
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
   val optsCallArities: Map[String, Int] = newMap()
+  val optsCallees: Map[String, String] = newMap()
   val opts = nativeMiddleEndOptions(
     path,
     noSingleFileFiles,
@@ -1520,7 +1521,10 @@ pub func compileToNativeWithFeatures(
     newList(),
     newList(),
     "",
-    contractsEnabled
+    contractsEnabled,
+    false,
+    newList(),
+    optsCallees
   )
   val userFileChecked = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
     case Some(f) -> f
@@ -1656,12 +1660,13 @@ pub func compileToNativeWithFeatures(
     indexBundledImpls(toBundle[bi4], implTypes)
     bi4 = bi4 + 1
   }
+  seedSitedCallees(optsCallees, canonical, reachable, fnWorklist)
   walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune1)
 
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
-  units.add(unitOf(userFile, reachable, true, optsCallArities))
+  units.add(unitOf(userFile, reachable, true, optsCallArities, false, optsCallees))
   appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(
@@ -1845,6 +1850,8 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
+  // Each own file's `calleeSitesOut` (docs/70 phase 2d), parallel to `ownFiles`.
+  val ownCallees: List[Map[String, String]] = newList()
   // Each own file's `memberRecvClassesOut` (#8413), parallel to `ownFiles`.
   val ownRecvClasses: List[Map[String, String]] = newList()
   val noDeriveImports: List[Item] = newList()
@@ -1866,6 +1873,7 @@ pub func compileProjectToNativeWithShape(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
+    val optsCallees: Map[String, String] = newMap()
     val optsGenericItems: List[Item] = newList()
     val optsForeignRecords: List[ForeignValueRecord] = newList()
     val optsIface: List[IfaceBuild.IfaceOutcome] = newList()
@@ -1881,7 +1889,8 @@ pub func compileProjectToNativeWithShape(
       if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       contractsEnabled,
       ownLibrary,
-      optsIface
+      optsIface,
+      optsCallees
     )
     val siblingValueGenerics = siblingValueGenericFuncs(
       importedPkgs,
@@ -1902,6 +1911,7 @@ pub func compileProjectToNativeWithShape(
       case None -> ()
     }
     ownCallArities.add(optsCallArities)
+    ownCallees.add(optsCallees)
     ownRecvClasses.add(optsRecvOut)
     for fr in optsForeignRecords {
       foreignRecords.add(fr)
@@ -2078,6 +2088,11 @@ pub func compileProjectToNativeWithShape(
     }
     dpi = dpi + 1
   }
+  var sci = 0
+  while sci < ownCallees.count {
+    seedSitedCallees(ownCallees[sci], canonical, reachable, fnWorklist)
+    sci = sci + 1
+  }
   walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune)
 
   // Assemble the codegen units: the package declaring a top-level `func
@@ -2101,12 +2116,12 @@ pub func compileProjectToNativeWithShape(
   }
   val units: List[CodegenUnit] = newList()
   if mainOwnIdx >= 0 {
-    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx]))
+    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx], false, ownCallees[mainOwnIdx]))
   }
   var uoi = 0
   while uoi < ownFiles.count {
     if uoi != mainOwnIdx {
-      units.add(unitOf(ownFiles[uoi], reachable, not prunedPkg[uoi], ownCallArities[uoi], prunedPkg[uoi]))
+      units.add(unitOf(ownFiles[uoi], reachable, not prunedPkg[uoi], ownCallArities[uoi], prunedPkg[uoi], ownCallees[uoi]))
     }
     uoi = uoi + 1
   }
@@ -2429,6 +2444,7 @@ func nativeMiddleEndOptions(
   contractsEnabled: in Bool,
   buildInterface: in Bool = false,
   ifaceOut: in List[IfaceBuild.IfaceOutcome] = newList(),
+  calleesOut: in Map[String, String] = newMap(),
 ): MiddleEndOptions {
   // #7198, audited in #7201: see `compileToNativeWithFeatures`.
   MiddleEndOptions(
@@ -2443,6 +2459,7 @@ func nativeMiddleEndOptions(
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
+    calleeSitesOut = calleesOut,
     typeArgCalleesOut = newMap(),
     genericItemsOut = genericItemsOut,
     foreignValueRecordsOut = foreignRecordsOut,
@@ -3977,6 +3994,41 @@ func paramHasDefault(p: in Param): Bool {
   }
 }
 
+// Marks reachable every function a call of the own files resolved to by the
+// type checker (`calleeSites`, rendered `Pkg::name(P1,P2)`), at any arity the
+// package declares: codegen binds a call to its site, so the function it names
+// has to be emitted whatever the name-based walk below resolves the same call
+// to (docs/70 phase 2d).
+func seedSitedCallees(
+  callees: in Map[String, String],
+  canonical: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  for ck in mapKeys(callees) {
+    match mapGet(callees, ck) {
+      case Some(dp) -> {
+        val sep = Str.indexOfRaw(dp, "::")
+        if sep > 0 {
+          val pkg = Str.substring(dp, 0, sep)
+          val rest = Str.substring(dp, sep + 2, dp.length - sep - 2)
+          val paren = Str.indexOfRaw(rest, "(")
+          val name = if paren >= 0 { Str.substring(rest, 0, paren) } else { rest }
+          var arity = 0
+          while arity <= 16 {
+            match mapGet(canonical, pkg + "." + name + "/" + arity.toString()) {
+              case Some(id) -> if not reachable.containsKey(id) { reachable.add(id, true); fnWorklist.add(id) }
+              case None -> ()
+            }
+            arity = arity + 1
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
 func registerFileFns(
   f: in SourceFile, canonical: in Map[String, String], bareTrailing: in Map[String, List[String]]
 ): Unit {
@@ -4868,6 +4920,7 @@ func unitOf(
   lowerAll: in Bool,
   arities: in Map[String, Int],
   isDep: in Bool = false,
+  callees: in Map[String, String] = newMap(),
 ): CodegenUnit {
   // A member body's bare field references as `self.<name>` (#8264), as
   // `unitOfFile` does; a no-op for a file the middle end processed.
@@ -5014,6 +5067,7 @@ func unitOf(
     importsStdString = fileImportsStdString(f),
     imports = fileImportPackages(f),
     methodCallArities = arities,
+    calleeSites = callees,
     deadProtecteds = deadProtecteds
   )
 }

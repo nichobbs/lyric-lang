@@ -144,6 +144,9 @@ pub record CodegenUnit {
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
+  // The type checker's `calleeSites` for this package's file (empty for a
+  // bundled package): see `Ctx.calleeSites` (docs/70 phase 2d).
+  calleeSites: Map[String, String] = newMap()
   // Names of the `protecteds` whose members the bridge did not lower because
   // nothing reachable uses them (a pruned dependency package, #8429): the
   // type itself registers, since a signature or field may still name it, but
@@ -441,6 +444,11 @@ record Ctx {
   // `methodCallArities` under its package): a method call looks its
   // overload up by this count rather than by the arguments written (#7828).
   methodCallArities: Map[String, Int]
+  // The function each call resolved to, as the checker's rendered DefPath
+  // (`Pkg::name(P1,P2)`) keyed `<pkg>|<callee site key>` (each unit's
+  // `calleeSites` under its package): a call binds that function before any
+  // name lookup (`sitedSig`, docs/70 phase 2d).
+  calleeSites: Map[String, String]
   // Package the function being lowered belongs to (self-package call
   // resolution).
   curPkg: List[String]
@@ -2431,6 +2439,38 @@ func flattenMemberPathSegs(e: in Expr): Option[List[String]] {
 func freeCallArity(ctx: in Ctx, fnExpr: in Expr, written: in Int): Int {
   val originKey = if ctx.curOrigin.count > 0 { ctx.curOrigin[0] + "|" } else { "" }
   methodCallTarget(ctx.methodCallArities, ctx.curPkg[0] + "|" + originKey + methodCallSiteKey(fnExpr), written).arity
+}
+
+/// The signature of the function the type checker resolved the call at
+/// `fnExpr` to (`Ctx.calleeSites`: a rendered `Pkg::name(P1,P2)`), found under
+/// the declaring package's `Pkg.name/arity` key; `key` is the call's
+/// `name/arity` (or `Pkg.name/arity`) registry key.  `None` when the checker
+/// recorded no site, the callee was renamed afterwards (a specialisation), or
+/// the declaring package has no such function here (docs/70 phase 2d).
+func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
+  if ctx.calleeSites.count == 0 or ctx.curPkg.count == 0 {
+    return None
+  }
+  val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
+  val siteKey = match inner.kind { case EPath(p) -> recordCopySiteKey(p.span); case _ -> methodCallSiteKey(inner) }
+  val originKey = if ctx.curOrigin.count > 0 { ctx.curOrigin[0] + "|" } else { "" }
+  val dp = match mapGet(ctx.calleeSites, ctx.curPkg[0] + "|" + originKey + siteKey) {
+    case Some(d) -> d
+    case None -> return None
+  }
+  val sep = match Str.indexOf(dp, "::") { case Some(i) -> i; case None -> return None }
+  val pkg = Str.substring(dp, 0, sep)
+  val rest = Str.substring(dp, sep + 2, dp.length - sep - 2)
+  val name = match Str.indexOf(rest, "(") { case Some(j) -> Str.substring(rest, 0, j); case None -> rest }
+  val slash = Str.lastIndexOfRaw(key, "/")
+  if name.length == 0 or slash <= 0 {
+    return None
+  }
+  val written = Str.substring(key, 0, slash)
+  if written != name and not Str.endsWith(written, "." + name) {
+    return None
+  }
+  mapGet(ctx.sigs, pkg + "." + name + Str.substring(key, slash, key.length - slash))
 }
 
 /// The registry key for a call target, or "" when the callee shape is
@@ -5714,13 +5754,15 @@ func lowerCallEx(
   // then heap-type constructors (records, union cases, distinct types).
   val selfKey = ctx.curPkg[0] + "." + key
   // var-mutation shape (#4631).
-  var sigOpt: Option[NFuncSig] = None
-  match mapGet(ctx.sigs, selfKey) {
-    case Some(s) -> {
-      sigOpt = Some(value = s)
-    }
-    case None -> {
-      sigOpt = bareSig(ctx, key)
+  var sigOpt: Option[NFuncSig] = sitedSig(ctx, fnExpr, key)
+  if not isSome(sigOpt) {
+    match mapGet(ctx.sigs, selfKey) {
+      case Some(s) -> {
+        sigOpt = Some(value = s)
+      }
+      case None -> {
+        sigOpt = bareSig(ctx, key)
+      }
     }
   }
   // A bare name no import of this package makes visible as a non-generic
@@ -5846,7 +5888,10 @@ func tryLowerQualifiedCallee(
   val plainName = modulePathJoin(segs)
   val key = plainName + "/" + freeCallArity(ctx, fnExpr, args.count).toString()
   val selfKey = ctx.curPkg[0] + "." + key
-  var sigOpt = mapGet(ctx.sigs, selfKey)
+  var sigOpt = sitedSig(ctx, fnExpr, key)
+  if not isSome(sigOpt) {
+    sigOpt = mapGet(ctx.sigs, selfKey)
+  }
   match sigOpt {
     case Some(_) -> {
     }
@@ -17304,6 +17349,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     sigAlts = mod.sigAlts,
     pkgImports = mod.pkgImports,
     methodCallArities = mod.methodCallArities,
+    calleeSites = mod.calleeSites,
     curPkg = curPkg,
     curOrigin = curOrigin,
     curRet = curRet,
@@ -18344,6 +18390,17 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
       }
     }
   }
+  val calleeSites: Map[String, String] = newMap()
+  for cu in units {
+    for ck in mapKeys(cu.calleeSites) {
+      match mapGet(cu.calleeSites, ck) {
+        case Some(dp) -> if not calleeSites.containsKey(cu.pkgName + "|" + ck) {
+          calleeSites.add(cu.pkgName + "|" + ck, dp)
+        }
+        case None -> ()
+      }
+    }
+  }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyEnumTypes: Map[String, String] = newMap()
@@ -18385,6 +18442,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     sigAlts = buildSigAlts(units, sigs),
     pkgImports = buildPkgImports(units),
     methodCallArities = methodCallArities,
+    calleeSites = calleeSites,
     curPkg = newList(),
     curOrigin = newList(),
     curRet = newList(),
@@ -18934,7 +18992,8 @@ pub func unitOfFile(pkgName: in String, file0: in SourceFile): CodegenUnit {
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(file),
     imports = fileImportPackages(file),
-    methodCallArities = newMap()
+    methodCallArities = newMap(),
+    calleeSites = newMap()
   )
 }
 
