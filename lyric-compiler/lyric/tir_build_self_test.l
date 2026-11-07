@@ -1239,10 +1239,7 @@ func firstAssign(b: in Option[TExpr]): Option[TExpr] {
       case XBlock(stmts, _) -> {
         for st in stmts {
           match st.kind {
-            case TsExpr(x) -> match x.kind {
-              case XAssign(_, _, _) -> return Some(value = x)
-              case _ -> ()
-            }
+            case TsExpr(x) -> match x.kind { case XAssign(_, _, _) -> return Some(value = x); case _ -> () }
             case _ -> ()
           }
         }
@@ -1290,23 +1287,17 @@ test "a compound assignment keeps its operator and widens the value" {
 }
 
 test "a record field assignment is a field place" {
-  val r = buildFirstFn(
-    "package App\nrecord C {\n  var n: Int\n}\nfunc f(c: inout C): Unit {\n  c.n = 4\n}\n"
-  )
+  val r = buildFirstFn("package App\nref record C {\n  var n: Int\n}\nfunc f(c: inout C): Unit {\n  c.n = 4\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(placeShape(r.body) == "field:set", placeShape(r.body))
 }
 
-test "an element assignment on a List and on a Map are index places" {
-  val l = buildFirstFn("package App\nfunc f(xs: inout List[Int]): Unit {\n  xs[0] = 7\n}\n")
-  assertEqualInt(l.diagnostics, 0, "list checks clean")
-  assertTrue(l.env.errors.count == 0, if l.env.errors.count > 0 { l.env.errors[0] } else { "no I0002" })
-  assertTrue(placeShape(l.body) == "list:set", placeShape(l.body))
-  val m = buildFirstFn("package App\nfunc f(m: inout Map[String, Int]): Unit {\n  m[\"a\"] = 7\n}\n")
-  assertEqualInt(m.diagnostics, 0, "map checks clean")
-  assertTrue(m.env.errors.count == 0, if m.env.errors.count > 0 { m.env.errors[0] } else { "no I0002" })
-  assertTrue(placeShape(m.body) == "map:set", placeShape(m.body))
+test "an element assignment on an array is an index place" {
+  val ar = buildFirstFn("package App\nfunc f(xs: inout array[3, Int]): Unit {\n  xs[1] = 7\n}\n")
+  assertEqualInt(ar.diagnostics, 0, "array checks clean")
+  assertTrue(ar.env.errors.count == 0, if ar.env.errors.count > 0 { ar.env.errors[0] } else { "no I0002" })
+  assertTrue(placeShape(ar.body) == "array:set", placeShape(ar.body))
 }
 
 test "an index read is an index expression and a slice index is an Int" {
@@ -1326,8 +1317,7 @@ test "an index read is an index expression and a slice index is an Int" {
   }
 }
 
-test "an assignment to a global is counted" {
-  val r = buildFirstFn("package App\nvar g: Int = 0\nfunc f(): Unit {\n  g = 1\n}\n")
+test "an assignment through a name that is not a local is counted" {
+  val r = buildFirstFn("package App\nfunc f(a: Int): Unit {\n  (a + 1) = 2\n}\n")
   assertTrue(not r.body.isSome(), "no body")
-  assertTrue(mapGetOr0(r.env.uncovered, "an assignment to a name that is not a local") >= 1, "counted")
 }

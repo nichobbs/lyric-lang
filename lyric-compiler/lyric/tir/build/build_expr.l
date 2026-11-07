@@ -1232,7 +1232,9 @@ func buildExternCall(
 }
 
 /// The field `name` of the record type `ty` declares, by its position among the record's
-/// declared fields (the order a construction places them in).
+/// declared fields (the order a construction places them in).  `fieldsOfRecord` is empty
+/// for a declared type that is not a record (a union, an enum, a distinct type), so such a
+/// type has no field here.
 func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] {
   match ty {
     case TNamed(sym, _) -> {
@@ -1265,7 +1267,7 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
 /// their type, the stdlib `List` and `Map` by the name the checker typed the receiver
 /// with (their host types differ per target).  A record's `index` method and a host
 /// indexer are not derived here.
-func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[IndexKind] {
+func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[TirT.IndexKind] {
   match rt.ty {
     case TArray(_, _) -> return Some(value = IkArray)
     case TSlice(_) -> return Some(value = IkSlice)
@@ -1288,7 +1290,7 @@ func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[Inde
 
 /// The type an index of kind `how` takes on a receiver of type `recv`: `Int` for
 /// sequences, the key type for a map.
-func indexKeyTy(how: in IndexKind, recv: in Ty): Option[Ty] {
+func indexKeyTy(how: in TirT.IndexKind, recv: in Ty): Option[Ty] {
   match how {
     case IkMap -> match recv {
       case TExtern(h) -> if h.args.count == 2 { Some(value = h.args[0]) } else { None }
@@ -1330,7 +1332,7 @@ func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[
 record IndexParts {
   recv: TExpr
   idx: TExpr
-  how: IndexKind
+  how: TirT.IndexKind
 }
 
 func buildIndexRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, idxs: in List[Expr]): Option[TExpr] {
@@ -1373,7 +1375,12 @@ func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
       }
     }
     case EIndex(r, idxs) -> match buildIndexParts(env, target, r, idxs) {
-      case Some(p) -> Some(value = TPlace(ty = pty, kind = PlIndex(recv = p.recv, idx = p.idx, how = p.how)))
+      case Some(p) -> Some(
+        value = TPlace(
+          ty = pty,
+          kind = PlIndex(recv = p.recv, idx = p.idx, how = p.how)
+        )
+      )
       case None -> None
     }
     case _ -> {
