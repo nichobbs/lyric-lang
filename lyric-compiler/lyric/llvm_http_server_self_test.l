@@ -1485,28 +1485,58 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 2\n" +
     "  }\n" +
-    "  match hostWrite(c2, encodeUtf8(\"GET /second HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\")) {\n" +
+    "  match hostWrite(c1, encodeUtf8(\"GET /first HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\")) {\n" +
     "    case Ok(_) -> ()\n" +
     "    case Err(_) -> return 3\n" +
     "  }\n" +
-    "  hostClose(c1)\n" +
-    "  val ctx = nextContext(listener)\n" +
-    "  if requestPath(ctx) != \"/second\" {\n" +
+    "  val ctx1 = nextContext(listener)\n" +
+    "  if requestPath(ctx1) != \"/first\" {\n" +
     "    return 4\n" +
     "  }\n" +
-    "  respondText(ctx, 200, \"second-ok\")\n" +
-    "  val acc: List[String] = newList()\n" +
-    "  if not readUntil(c2, acc, \"second-ok\") {\n" +
+    "  respondText(ctx1, 200, \"first-ok\")\n" +
+    "  val acc1: List[String] = newList()\n" +
+    "  if not readUntil(c1, acc1, \"first-ok\") {\n" +
     "    return 5\n" +
+    "  }\n" +
+    "  // c1 is still open in keep-alive and holds the single connection permit.\n" +
+    "  // Send c2's request now and queue c1's second request after it; while c1\n" +
+    "  // holds the permit, nextContext must deliver c1's second request rather\n" +
+    "  // than c2's.\n" +
+    "  match hostWrite(c2, encodeUtf8(\"GET /second HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 6\n" +
+    "  }\n" +
+    "  match hostWrite(c1, encodeUtf8(\"GET /first-again HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 7\n" +
+    "  }\n" +
+    "  val ctx1b = nextContext(listener)\n" +
+    "  if requestPath(ctx1b) != \"/first-again\" {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  respondText(ctx1b, 200, \"first-again-ok\")\n" +
+    "  val acc1b: List[String] = newList()\n" +
+    "  if not readUntil(c1, acc1b, \"first-again-ok\") {\n" +
+    "    return 9\n" +
+    "  }\n" +
+    "  hostClose(c1)\n" +
+    "  val ctx2 = nextContext(listener)\n" +
+    "  if requestPath(ctx2) != \"/second\" {\n" +
+    "    return 10\n" +
+    "  }\n" +
+    "  respondText(ctx2, 200, \"second-ok\")\n" +
+    "  val acc2: List[String] = newList()\n" +
+    "  if not readUntil(c2, acc2, \"second-ok\") {\n" +
+    "    return 11\n" +
     "  }\n" +
     "  hostClose(c2)\n" +
     "  val c3 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
     "    case Ok(c) -> c\n" +
-    "    case Err(_) -> return 6\n" +
+    "    case Err(_) -> return 12\n" +
     "  }\n" +
     "  val c4 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
     "    case Ok(c) -> c\n" +
-    "    case Err(_) -> return 7\n" +
+    "    case Err(_) -> return 13\n" +
     "  }\n" +
     "  stopListener(listener)\n" +
     "  hostClose(c3)\n" +

@@ -1918,17 +1918,30 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
   }
   val acc: List[Item] = newList()
   val emitted: Map[String, Bool] = newMap()
-  val emittedCanonPkg: Map[String, Bool] = newMap()
+  val pkgRecordsByPkg: Map[String, Map[String, Bool]] = newMap()
   for pkg in importedPkgs {
-    val pkgRecordNames: Map[String, Bool] = newMap()
     if pkg.name != "" {
+      val recMap = match mapGet(pkgRecordsByPkg, pkg.name) {
+        case Some(m) -> m
+        case None -> {
+          val fresh: Map[String, Bool] = newMap()
+          pkgRecordsByPkg.add(pkg.name, fresh)
+          fresh
+        }
+      }
       for it in pkg.items {
         match it.kind {
-          case IRecord(d) -> if not pkgRecordNames.containsKey(d.name) { pkgRecordNames.add(d.name, true) }
-          case IExposedRec(d) -> if not pkgRecordNames.containsKey(d.name) { pkgRecordNames.add(d.name, true) }
+          case IRecord(d) -> if not recMap.containsKey(d.name) { recMap.add(d.name, true) }
+          case IExposedRec(d) -> if not recMap.containsKey(d.name) { recMap.add(d.name, true) }
           case _ -> ()
         }
       }
+    }
+  }
+  for pkg in importedPkgs {
+    val pkgRecordNames: Map[String, Bool] = match mapGet(pkgRecordsByPkg, pkg.name) {
+      case Some(m) -> m
+      case None -> newMap()
     }
     if pkg.name == "" {
       for it in pkg.items {
@@ -1938,13 +1951,10 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
         }
       }
     } else {
-      if not emittedCanonPkg.containsKey(pkg.name) {
-        emittedCanonPkg.add(pkg.name, true)
-        for it in pkg.items {
-          val itemName = pipeModeItemName(it)
-          if itemName != "" {
-            pipeEmitModeItemOnce(acc, emitted, pkg.name, pkg.name + "." + itemName, it, pkgRecordNames)
-          }
+      for it in pkg.items {
+        val itemName = pipeModeItemName(it)
+        if itemName != "" {
+          pipeEmitModeItemOnce(acc, emitted, pkg.name, pkg.name + "." + itemName, it, pkgRecordNames)
         }
       }
       for imp in file.imports {
