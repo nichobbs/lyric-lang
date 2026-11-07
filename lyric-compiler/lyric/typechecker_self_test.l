@@ -6153,14 +6153,18 @@ test "a valid for still reports a mistyped use of its element (#7781)" {
 // case below pairs a generator `each` with a non-generator reached under the
 // same name and arity; the loop variable must take the type of whichever the
 // call actually calls.  `diagCodesOf` names the codes in each failure message.
-func diagCodesOf(cr: in CheckResult): String {
+func diagCodesOfList(ds: in List[Diagnostic]): String {
   var acc = ""
   var i = 0
-  while i < cr.diagnostics.count {
-    acc = acc + cr.diagnostics[i].code + ": " + cr.diagnostics[i].message + "; "
+  while i < ds.count {
+    acc = acc + ds[i].code + ": " + ds[i].message + "; "
     i = i + 1
   }
   acc
+}
+
+func diagCodesOf(cr: in CheckResult): String {
+  diagCodesOfList(cr.diagnostics)
 }
 
 func genEachPackage(src: in String, name: in String): List[ImportedPackage] {
@@ -15075,10 +15079,18 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
   assertTrue(not isSilentTyError(TyPrim(pt = PtInt)), "a non-error type is not a silent error")
 }
 
-// A read no rule types and no diagnostic reports: a member the receiver's type
-// does not have (the backends reject it later, T0121).
+// A checked program with one silent site recorded by hand: since the typing
+// rules of D338 to D359 no ordinary source leaves a silent site, so the gate's
+// own reporting is tested on a recorded one.
 func silentHostCallSource(): String {
-  "package P\nrecord R { x: Int }\nfunc f(r: in R): Unit {\n  val d = r.bar\n}\n"
+  "package P\nfunc f(a: in Int): Unit {\n  val d = a\n}\n"
+}
+
+func checkWithRecordedSilentSite(): CheckResult {
+  val cr = parseCheck(silentHostCallSource())
+  val sp = makeSpan(Position(offset = 40, line = 3, column = 11), Position(offset = 41, line = 3, column = 12))
+  cr.symbols.silentTyErrorSites.add("40|EMember", SilentTyErrorSite(kind = "EMember", span = sp))
+  cr
 }
 
 func silentSiteKinds(cr: in CheckResult): String {
@@ -15212,22 +15224,22 @@ test "a conversion of an unchecked host value is unchecked, not silent (D359)" {
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
 }
 
-test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
-  val cr = parseCheck(silentHostCallSource())
-  val kinds = silentSiteKinds(cr)
-  assertTrue(Str.contains(kinds, "EMember"), "the read a.bar is a silent site: " + kinds)
+test "a member of a primitive is T0113 and a call of one is named, not silent (D338, D341, D355)" {
+  val read = parseCheck("package P\nfunc f(a: in Int): Unit {\n  val d = a.bar\n}\n")
+  assertEqual(silentSiteKinds(read), "", "the read is an error, not a silent site")
+  assertTrue(Str.contains(diagCodesOf(read), "T0113"), "a.bar on an Int is T0113: " + diagCodesOf(read))
   val call = parseCheck("package P\nfunc f(a: in Int): Unit {\n  val d = a.bar()\n}\n")
   assertEqual(silentSiteKinds(call), "", "the callee is exempt and the call result is named, not silent")
 }
 
 test "I0001 reports each silent site and is silent after an error (D341, D359)" {
-  val cr = parseCheck(silentHostCallSource())
+  val cr = checkWithRecordedSilentSite()
   val n = mapKeys(cr.symbols.silentTyErrorSites).count
   assertTrue(n > 0, "the program has a silent site")
-  assertTrue(Str.contains(diagCodesOf(cr), "I0001"), "the check itself reports I0001, an error: " + diagCodesOf(cr))
   val diags: List[Diagnostic] = newList()
   reportSilentTyErrors(cr.symbols, diags)
   assertEqual(diags.count.toString(), n.toString(), "one I0001 per silent site")
+  assertTrue(Str.contains(diagCodesOfList(diags), "I0001"), "each is the error I0001")
   val withError: List[Diagnostic] = newList()
   withError.add(
     errorDiagnostic(

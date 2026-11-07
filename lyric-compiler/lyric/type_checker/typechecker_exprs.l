@@ -10395,6 +10395,30 @@ func noteCtorZeroArgs(
   }
 }
 
+// Whether the last segment of a qualifier names a type of the program (an enum,
+// record, union, opaque, protected, distinct, interface or extern type).
+func qualifierNamesAType(tbl: in SymbolTable, recv: in Expr): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return false
+  }
+  for cand in symTableTryFindAllNamed(tbl, segs[segs.count - 1]) {
+    match cand.kind {
+      case DKEnum(_, _) -> return true
+      case DKRecord(_, _) -> return true
+      case DKExposedRec(_, _) -> return true
+      case DKUnion(_, _) -> return true
+      case DKOpaque(_, _) -> return true
+      case DKProtected(_, _) -> return true
+      case DKDistinctType(_, _) -> return true
+      case DKInterface(_, _) -> return true
+      case DKExternType(_, _) -> return true
+      case _ -> ()
+    }
+  }
+  false
+}
+
 // A `String`: its members are open host members the checker does not enumerate.
 func isHostStringPrim(pt: in PrimType): Bool {
   match pt {
@@ -20616,7 +20640,11 @@ func inferExprCore(
             // A member of a package-qualified name no rule resolves
             // (`P.missing`, or another package's package-private config) is the
             // error it is, not a silent value (D359, docs/25 2.2).
-            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) {
+            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) and qualifierNamesAType(tbl, recv) {
+              // `LogLevel.Info` with two enums named `LogLevel` in the program:
+              // left to the backends, as `qualifiedEnumCaseType` documents.
+              tyErrorUnresolved()
+            } else if d.index == 0 and isQualifierShape(sc, recv) {
               val written: List[String] = newList()
               val shown = if flattenCalleePathSegs(e, written) { modulePathJoin(written) } else { name }
               diag.add(
