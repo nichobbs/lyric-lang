@@ -21526,7 +21526,8 @@ pub func inferExprExpected(
   e: in Expr,
   expected: in Type,
 ): Type {
-  val t = sharedEnumCaseAgainstExpected(tbl, e, inferExprExpectedCore(sc, tbl, sigs, diag, e, expected), expected)
+  val core = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  val t = sharedEnumCaseAgainstExpected(sc, tbl, e, core, expected)
   noteValueUnionCaseExpected(sc, tbl, e, t, expected)
   // Some kinds are typed against the expected type without passing through
   // `inferExpr`; the type settled on is the node's type (D366).
@@ -21537,20 +21538,22 @@ pub func inferExprExpected(
 // A case name several enums share (`Lib.On` for `Beam.On` and `Ray.On`) reads
 // as an unresolved `TyError` on its own and is told apart by the expected
 // type (D355).  Against an enum that owns the case it is that enum; against a
-// primitive it is the first owning enum, so the caller's ordinary mismatch
-// check reports the annotation as the wrong kind (#8845); so is a record,
-// union or other enum.  Any other expected type is left to the caller, as an
-// interface an enum implements is.
-func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
-  match t {
-    case TyError(d) -> if d.index != -3 { return t }
-    case _ -> {
-      return t
-    }
+// primitive, tuple, function, array or slice, or a record, union or other enum
+// that does not own it, it is the first owning enum, so the caller's ordinary
+// mismatch check reports the wrong kind (#8845).  Any other expected type is
+// left to the caller, as an interface an enum implements is.  A local or
+// module value of that name is a value, not the case.
+func sharedEnumCaseAgainstExpected(sc: in Scope, tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
+  if not isUnresolvedTyError(t) {
+    return t
   }
   val segs: List[String] = newList()
-  if not flattenCalleePathSegs(e, segs) or segs.count == 0 {
+  if not flattenCalleePathSegs(e, segs) or segs.count == 0 or scopeHasName(sc, segs[0]) {
     return t
+  }
+  match moduleValSymbolOfExpr(sc, tbl, e) {
+    case Some(_) -> return t
+    case None -> ()
   }
   val name = segs[segs.count - 1]
   val owners: List[SymbolId] = newList()
@@ -21575,6 +21578,7 @@ func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, 
   if owners.count < 2 {
     return t
   }
+  val firstOwner = TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
   match unrefine(expected) {
     case TyUser(eid, ename, eargs) -> {
       for o in owners {
@@ -21583,29 +21587,28 @@ func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, 
         }
       }
       match symTableTypeSymbolOf(tbl, eid) {
-        case Some(esym) -> match esym.kind {
-          case DKEnum(_, _) -> TyUser(
-            id = owners[0],
-            name = typeNameOfId(tbl, owners[0]),
-            args = newList()
-          )
-          case DKRecord(_, _) -> TyUser(
-            id = owners[0],
-            name = typeNameOfId(tbl, owners[0]),
-            args = newList()
-          )
-          case DKUnion(_, _) -> TyUser(
-            id = owners[0],
-            name = typeNameOfId(tbl, owners[0]),
-            args = newList()
-          )
-          case _ -> t
-        }
+        case Some(esym) -> if isDataTypeKind(esym.kind) { firstOwner } else { t }
         case None -> t
       }
     }
-    case TyPrim(_) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+    case TyPrim(_) -> firstOwner
+    case TyTuple(_) -> firstOwner
+    case TyFunction(_, _, _) -> firstOwner
+    case TyArray(_, _, _) -> firstOwner
+    case TySlice(_) -> firstOwner
     case _ -> t
+  }
+}
+
+// A declaration that is a plain data type: an enum, record, union or exposed
+// record (not an interface, which an enum may implement).
+func isDataTypeKind(k: in DeclKind): Bool {
+  match k {
+    case DKEnum(_, _) -> true
+    case DKRecord(_, _) -> true
+    case DKUnion(_, _) -> true
+    case DKExposedRec(_, _) -> true
+    case _ -> false
   }
 }
 
@@ -22347,7 +22350,8 @@ func checkPairedCallArgs(
     val p = sig.params[k]
     val ai = srcIdx[k]
     if ai >= 0 {
-      val argTy = if ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() }
+      val rawArgTy = if ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() }
+      val argTy = sharedEnumCaseAgainstExpected(sc, tbl, callArgExpr(args[ai]), rawArgTy, p.ty)
       noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
       if (match p.mode { case PMIn -> true; case _ -> false }) {
         recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))

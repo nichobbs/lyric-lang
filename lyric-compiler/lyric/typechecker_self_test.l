@@ -15419,11 +15419,26 @@ test "a case name two sibling enums share is left to the expected type (D355)" {
 
 test "a shared case name is checked against an expected non-enum type (#8845)" {
   val wrong = checkEnumCaseApp("  val n: Int = Lib.On")
-  assertTrue(errorCount(wrong) > 0, "an Int annotation is not Beam or Ray: " + diagCodesOf(wrong))
+  assertTrue(Str.contains(diagCodesOf(wrong), "T0060"), "an Int annotation is not Beam or Ray: " + diagCodesOf(wrong))
   val other = checkEnumCaseApp("  val m: Mode = Lib.On")
-  assertTrue(errorCount(other) > 0, "the file's own Mode owns no On: " + diagCodesOf(other))
+  assertTrue(Str.contains(diagCodesOf(other), "T0060"), "the file's own Mode owns no On: " + diagCodesOf(other))
+  val slice = checkEnumCaseApp("  val xs: slice[Int] = Lib.On")
+  assertTrue(Str.contains(diagCodesOf(slice), "T0060"), "a slice annotation is not an enum: " + diagCodesOf(slice))
   val right = checkEnumCaseApp("  val b: Lib.Beam = Lib.On\n  val r: Lib.Ray = Lib.On")
   assertEqualInt(errorCount(right), 0, "an owning enum still picks its own case: " + diagCodesOf(right))
+}
+
+test "a shared case name passed for the wrong parameter type is T0043 (#8845)" {
+  val src = "package App\nimport Lib\nfunc takeInt(n: in Int): Int {\n  n\n}\nfunc takeBeam(b: in Lib.Beam): Int {\n  0\n}\nfunc f(): Int {\n"
+  val bad = checkWithImportedPackages(parse(src + "  takeInt(Lib.On)\n  0\n}\n").file, enumCasePackages())
+  assertTrue(Str.contains(diagCodesOf(bad), "T0043"), "an Int parameter takes no enum case: " + diagCodesOf(bad))
+  val good = checkWithImportedPackages(parse(src + "  takeBeam(Lib.On)\n  0\n}\n").file, enumCasePackages())
+  assertEqualInt(errorCount(good), 0, "the owning enum's parameter takes it: " + diagCodesOf(good))
+}
+
+test "a local that shares a case name is a value, not the case (#8845)" {
+  val shadow = checkEnumCaseApp("  val k = 1\n  val On = k.bar\n  val n: Int = On")
+  assertFalse(Str.contains(diagCodesOf(shadow), "T0060"), "On is the local here: " + diagCodesOf(shadow))
 }
 
 test "count on a slice is T0228, length is the slice's size" {
