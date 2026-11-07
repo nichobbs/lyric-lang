@@ -867,9 +867,9 @@ func buildBuiltinCall(
             case Some(r) -> memberArgTys(r.ty, name, ts.count)
             case None -> None
           }
-          val out: List[TExpr] = newList()
+          val res: List[TExpr] = newList()
           match recvT {
-            case Some(r) -> out.add(r)
+            case Some(r) -> res.add(r)
             case None -> ()
           }
           match expected {
@@ -877,7 +877,7 @@ func buildBuiltinCall(
               var i = 0
               while i < ts.count {
                 match coerceArg(env, ts[i], tys[i]) {
-                  case Some(c) -> out.add(c)
+                  case Some(c) -> res.add(c)
                   case None -> return uncoveredExpr(env, e, "a built-in call needing a conversion")
                 }
                 i = i + 1
@@ -892,11 +892,11 @@ func buildBuiltinCall(
                 }
               }
               for t in ts {
-                out.add(t)
+                res.add(t)
               }
             }
           }
-          Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(out))))
+          Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(res))))
         }
       }
     }
@@ -919,16 +919,16 @@ func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, arg
               if params.count != ts.count {
                 return uncoveredExpr(env, e, "an indirect call whose arguments do not match the function type")
               }
-              val out: List[TExpr] = newList()
+              val res: List[TExpr] = newList()
               var i = 0
               while i < ts.count {
                 match coerceArg(env, ts[i], params[i].ty) {
-                  case Some(c) -> out.add(c)
+                  case Some(c) -> res.add(c)
                   case None -> return uncoveredExpr(env, e, "an indirect call needing a conversion")
                 }
                 i = i + 1
               }
-              Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(out))))
+              Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(res))))
             }
             case _ -> uncoveredExpr(env, e, "a call of a value that is not a function type")
           }
@@ -1076,7 +1076,7 @@ func buildDirectCall(
           }
         }
         case _ -> {
-          noteUncovered(env, "an out or inout argument")
+          noteUncovered(env, "an res or inout argument")
           ok = false
         }
       }
