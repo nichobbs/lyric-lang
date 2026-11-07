@@ -1656,3 +1656,37 @@ test "dot-named overloads that both fit by argument count are chosen by type (AS
   assertEqualInt(outcome.exitCode, 0, "dot-named overload exit code")
   assertTrue(Str.contains(outcome.stdout, "1\n105"), "each call lowers the overload it names: " + outcome.stdout)
 }
+
+test "a default expression of an imported package calls a function only that package imports (ASan, #8850)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Dflt.App",
+      sources = [
+        "package Dflt.App\n" + "import Dflt.Lib\n" + "import Std.Console as Console\n" +
+          "func factor(): Int { 1000 }\n" +
+          "func main(): Int {\n" +
+          "  Console.println(toString(scaled(2)))\n" +
+          "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Dflt.Lib",
+      sources = [
+        "package Dflt.Lib\n" + "import Dflt.Util\n" +
+          "pub func scaled(x: in Int, k: in Int = factor()): Int {\n" +
+          "  x * k\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(name = "Dflt.Util", sources = ["package Dflt.Util\n" + "pub func factor(): Int { 10 }\n"])
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "default-expression exit code")
+  assertEqual(Str.trim(outcome.stdout), "20", "the default means Dflt.Lib's import of factor, not the caller's (2000)")
+}

@@ -6076,7 +6076,26 @@ pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[Importe
 /// that declares it; qualifying it where the declaring package is checked lets
 /// the caller bind it without that package's imports (docs/70 section 11).
 pub func qualifyCheckedCallees(file: in SourceFile, sites: in Map[String, String]): SourceFile {
-  val qualify: (Expr) -> Expr = { x: Expr ->
+  val qualify = calleeQualifier(sites)
+  val mapped = mapFileNodes(file, qualify, { s: Statement -> s }, { q: Pattern -> q })
+  qualifyItemParamDefaults(mapped, qualify)
+}
+
+/// `file` with the bare calls of its parameter defaults (functions and `impl`
+/// methods) written as calls to the package-qualified function the checker
+/// resolved them to (`sites`), and nothing else changed.  A backend that
+/// lowers a default in the calling package (native) then binds it to the
+/// declaring package's function, whatever the caller declares or imports
+/// under that name (docs/70 phase 2d, #8850).
+pub func qualifyDefaultCallees(file: in SourceFile, sites: in Map[String, String]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  qualifyItemParamDefaults(file, calleeQualifier(sites))
+}
+
+func calleeQualifier(sites: in Map[String, String]): (Expr) -> Expr {
+  { x: Expr ->
     match x.kind {
       case ECall(fn, args) -> match fn.kind {
         case EPath(p) -> if p.segments.count == 1 {
@@ -6134,7 +6153,9 @@ pub func qualifyCheckedCallees(file: in SourceFile, sites: in Map[String, String
       case _ -> x
     }
   }
-  val mapped = mapFileNodes(file, qualify, { s: Statement -> s }, { q: Pattern -> q })
+}
+
+func qualifyItemParamDefaults(mapped: in SourceFile, qualify: in (Expr) -> Expr): SourceFile {
   val items: List[Item] = newList()
   for it in mapped.items {
     items.add(
