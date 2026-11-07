@@ -10395,31 +10395,35 @@ func noteCtorZeroArgs(
   }
 }
 
-// Whether the last segment of a qualifier names a type of the program (an enum,
-// record, union, opaque, protected, distinct, interface or extern type).
-func qualifierNamesAType(tbl: in SymbolTable, recv: in Expr): Bool {
+// Whether `Enum.Case` is the ambiguity `qualifiedEnumCaseType` leaves to the
+// backends: a bare enum name that two or more enums of the program share, one
+// of which declares the case `member`.
+func isAmbiguousEnumCase(tbl: in SymbolTable, recv: in Expr, member: in String): Bool {
   val segs: List[String] = newList()
-  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+  if not flattenCalleePathSegs(recv, segs) or segs.count != 1 {
     return false
   }
-  for cand in symTableTryFindAllNamed(tbl, segs[segs.count - 1]) {
+  var enums = 0
+  var declaresCase = false
+  for cand in symTableTryFindAllNamed(tbl, segs[0]) {
     match cand.kind {
-      case DKEnum(_, _) -> return true
-      case DKRecord(_, _) -> return true
-      case DKExposedRec(_, _) -> return true
-      case DKUnion(_, _) -> return true
-      case DKOpaque(_, _) -> return true
-      case DKProtected(_, _) -> return true
-      case DKDistinctType(_, _) -> return true
-      case DKInterface(_, _) -> return true
-      case DKExternType(_, _) -> return true
+      case DKEnum(_, decl) -> {
+        enums = enums + 1
+        for c in decl.cases {
+          if c.name == member {
+            declaresCase = true
+          }
+        }
+      }
       case _ -> ()
     }
   }
-  false
+  enums >= 2 and declaresCase
 }
 
-// A `String`: its members are open host members the checker does not enumerate.
+// A `String`: its members are open host members the checker does not enumerate
+// (a read of an unknown one reaches the backends, which reject it; enumerating
+// the members is the follow-up that closes this).
 func isHostStringPrim(pt: in PrimType): Bool {
   match pt {
     case PtString -> true
@@ -10441,7 +10445,10 @@ func shadowedQualifiedCallee(
   match fn.kind {
     case EMember(_, member) -> {
       val segs: List[String] = newList()
-      if not flattenCalleePathSegs(fn, segs) or segs.count < 2 {
+      // At least three segments: `P.f(...)` with a local `P` is the local's
+      // method call; only a nested package path (`A.B.f`) whose first segment
+      // a local shadows names the package's declaration (D359).
+      if not flattenCalleePathSegs(fn, segs) or segs.count < 3 {
         return false
       }
       match scopeTryFind(sc, segs[0]) {
@@ -20640,7 +20647,7 @@ func inferExprCore(
             // A member of a package-qualified name no rule resolves
             // (`P.missing`, or another package's package-private config) is the
             // error it is, not a silent value (D359, docs/25 2.2).
-            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) and qualifierNamesAType(tbl, recv) {
+            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) and isAmbiguousEnumCase(tbl, recv, name) {
               // `LogLevel.Info` with two enums named `LogLevel` in the program:
               // left to the backends, as `qualifiedEnumCaseType` documents.
               tyErrorUnresolved()

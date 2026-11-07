@@ -15209,6 +15209,15 @@ test "a missing member of a package-qualified name is T0020, not accepted (D359)
   assertTrue(diagCodesOf(other) != "", "another package's config block is not reachable: " + diagCodesOf(other))
 }
 
+test "a bare local receiver keeps method dispatch, and a coincidental type name does not hide an unresolved read (D359)" {
+  val local = parseCheck(
+    "package P\nrecord Box { n: Int }\nfunc f(x: in Int): Int { x }\nfunc g(P: in Box): Int {\n  P.f(1)\n}\n"
+  )
+  assertTrue(diagCodesOf(local) != "", "P.f(1) on a local Box is not the package's f: " + diagCodesOf(local))
+  val coincidence = parseCheck("package P\nrecord Box { n: Int }\nfunc f(): Int {\n  Missing.Box.nope\n}\n")
+  assertTrue(diagCodesOf(coincidence) != "", "Missing.Box.nope names nothing: " + diagCodesOf(coincidence))
+}
+
 test "a config field read through its package is typed (D359)" {
   val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
