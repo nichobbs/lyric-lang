@@ -1465,6 +1465,8 @@ pub record MsilHostIterIndex {
   basesAnswered: Map[String, Bool]
   members: Map[String, ExternMemberType]
   membersAnswered: Map[String, Bool]
+  memberSigs: Map[String, List[ExternMemberSig]]
+  memberSigsAnswered: Map[String, Bool]
 }
 
 pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
@@ -1480,7 +1482,9 @@ pub func newMsilHostIterIndex(extraDlls: in List[String]): MsilHostIterIndex {
     bases = newMap(),
     basesAnswered = newMap(),
     members = newMap(),
-    membersAnswered = newMap()
+    membersAnswered = newMap(),
+    memberSigs = newMap(),
+    memberSigsAnswered = newMap()
   )
 }
 
@@ -1569,6 +1573,35 @@ impl ExternIterResolver for MsilHostIterIndex {
       }
     }
     mapGet(self.members, key)
+  }
+
+  func resolveMemberSigs(
+    clrName: in String, member: in String, argc: in Int, isProperty: in Bool
+  ): Option[List[ExternMemberSig]] {
+    val key = externMemberCacheKey(clrName, member, argc, isProperty)
+    if not self.memberSigsAnswered.containsKey(key) {
+      self.memberSigsAnswered.add(key, true)
+      ensureMsilHostIterIndex(self)
+      match Mdr.hostMemberSigsOfExtern(self.parsedPaths, self.parsed, self.typeIndex, self.pathIndex, clrName, member, argc, isProperty) {
+        case Some(infos) -> {
+          val sigs: List[ExternMemberSig] = newList()
+          for inf in infos {
+            val ps: List[ExternIterElem] = newList()
+            for p in inf.params {
+              ps.add(iterElemOfSig(p))
+            }
+            val ret = match inf.ret {
+              case Mdr.STPrim(b) -> if b == 0x01 { EMTVoid } else { EMTType(elem = iterElemOfSig(inf.ret)) }
+              case _ -> EMTType(elem = iterElemOfSig(inf.ret))
+            }
+            sigs.add(ExternMemberSig(isStatic = inf.isStatic, params = ps, ret = ret))
+          }
+          self.memberSigs.add(key, sigs)
+        }
+        case None -> ()
+      }
+    }
+    mapGet(self.memberSigs, key)
   }
 }
 
