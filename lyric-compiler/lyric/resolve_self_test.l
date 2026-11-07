@@ -607,3 +607,67 @@ test "a second renumbering keeps ids dense from 1 and drops none" {
   }
   assertEqualInt(seen, twice.count, "every node has an id")
 }
+
+func targetText(targets: in Map[String, TypeExpr], name: in String): String {
+  match mapGet(targets, name) {
+    case Some(te) -> match te.kind {
+      case TRef(p) -> modulePathJoin(p.segments)
+      case TGenericApp(h, _) -> modulePathJoin(h.segments) + "[..]"
+      case _ -> "<other>"
+    }
+    case None -> "<none>"
+  }
+}
+
+test "an alias whose target is a renamed-import type resolves through the rename (#8752)" {
+  val one = "package A.One\npub record Seed { n: Int }\n"
+  val two = "package A.Two\npub record Seed { n: Int }\n"
+  val deps: List[String] = newList()
+  deps.add(one)
+  deps.add(two)
+  val ctx = ctxOf(deps, "package P\nimport A.One\nimport A.Two as T\nalias Pick = T.Seed\n")
+  val targets = aliasTargetsFor(ctx, scopeOfFile(ctx, 0))
+  assertEqual(targetText(targets, "Pick"), "A.Two.Seed", "T.Seed is A.Two's Seed")
+}
+
+test "an alias whose target is a selectively renamed type resolves to the renamed declaration (#8752)" {
+  val two = "package A.Two\npub record Seed { n: Int }\n"
+  val deps: List[String] = newList()
+  deps.add(two)
+  val ctx = ctxOf(deps, "package P\nimport A.Two.{Seed as S}\nalias Pick = S\n")
+  assertEqual(targetText(aliasTargetsFor(ctx, scopeOfFile(ctx, 0)), "Pick"), "A.Two.Seed", "S is A.Two.Seed")
+}
+
+test "a file sees the pub aliases of the packages it imports, its own winning a name both declare" {
+  val lib = "package Lib\npub alias Meters = Long\nalias Hidden = Int\npub alias Both = Int\n"
+  val deps: List[String] = newList()
+  deps.add(lib)
+  val ctx = ctxOf(deps, "package P\nimport Lib\nalias Both = Long\n")
+  val targets = aliasTargetsFor(ctx, scopeOfFile(ctx, 0))
+  assertEqual(targetText(targets, "Meters"), "Long", "imported pub alias")
+  assertEqual(targetText(targets, "Hidden"), "<none>", "a private alias is not reached")
+  assertEqual(targetText(targets, "Both"), "Long", "own alias wins")
+}
+
+test "a package the file does not import contributes no alias" {
+  val lib = "package Lib\npub alias Meters = Long\n"
+  val deps: List[String] = newList()
+  deps.add(lib)
+  val ctx = ctxOf(deps, "package P\n")
+  assertEqual(targetText(aliasTargetsFor(ctx, scopeOfFile(ctx, 0)), "Meters"), "<none>", "not imported")
+}
+
+test "a renamed import of an alias is reachable under its local name" {
+  val lib = "package Lib\npub alias Meters = Long\n"
+  val deps: List[String] = newList()
+  deps.add(lib)
+  val ctx = ctxOf(deps, "package P\nimport Lib.{Meters as M}\n")
+  assertEqual(targetText(aliasTargetsFor(ctx, scopeOfFile(ctx, 0)), "M"), "Long", "M names Lib.Meters")
+}
+
+test "a parameterized alias and a self-named alias have no target" {
+  val ctx = ctxOf(newList(), "package P\nalias MyList[T] = List[T]\nalias Random = Other.Random\n")
+  val targets = aliasTargetsFor(ctx, scopeOfFile(ctx, 0))
+  assertEqual(targetText(targets, "MyList"), "<none>", "parameterized")
+  assertEqual(targetText(targets, "Random"), "<none>", "self-named")
+}
