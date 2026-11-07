@@ -33,6 +33,9 @@ pub record BuildEnv {
   /// node of its own, an interpolation text part).  Shared by the envs of one file so
   /// that ids stay unique; it starts above every id the numbering gives a node.
   nextNode: List[Int]
+  /// The generic context of the function being built (empty or one entry): the type
+  /// parameters an annotation may name.
+  generics: List[GenericContext]
 }
 
 /// The first `NodeId` of a made-up node: above any id `renumberNodeIds` hands out.
@@ -56,7 +59,8 @@ pub func newBuildEnvSharing(ctx: in TyConvCtx, counter: in List[Int]): BuildEnv 
     nextLocal = next,
     errors = newList(),
     uncovered = newMap(),
-    nextNode = counter
+    nextNode = counter,
+    generics = newList()
   )
 }
 
@@ -716,43 +720,77 @@ func uncoveredStmt(env: in BuildEnv, s: in Statement, what: in String): Option[T
   None
 }
 
-/// A `val`, `let` or `var` of one name and no annotation: its local takes the
-/// initializer's type, declared after the initializer is built so the
-/// initializer cannot see it.  A pattern or an annotated binding has no case yet.
+/// A `val`, `let` or `var` of one name: its local takes the annotation's type when
+/// there is one (the initializer is converted to it) and the initializer's otherwise,
+/// declared after the initializer is built so the initializer cannot see it.  A
+/// pattern, or a `var` without an initializer, has no case yet.
 func buildLocal(env: in BuildEnv, s: in Statement, binding: in Px.LocalBinding): Option[TStmt] {
   match binding {
-    case LBVal(pat, ann, init) -> match ann {
-      case Some(_) -> uncoveredStmt(env, s, "an annotated binding")
-      case None -> match pat.kind {
-        case PBinding(name, None) -> buildLet(env, s, pat, name, init)
-        case _ -> uncoveredStmt(env, s, "a binding pattern")
+    case LBVal(pat, ann, init) -> match pat.kind {
+      case PBinding(name, None) -> buildLet(env, s, pat, name, ann, init)
+      case _ -> uncoveredStmt(env, s, "a binding pattern")
+    }
+    case LBLet(name, ann, init) -> {
+      val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = s.nodeId)
+      buildLet(env, s, pat, name, ann, init)
+    }
+    case LBVar(name, ann, init) -> match init {
+      case None -> uncoveredStmt(env, s, "a var without an initializer")
+      case Some(x) -> match buildInit(env, s, ann, x) {
+        case Some(t) -> {
+          val d = declareLocal(env, name, t.ty, true)
+          Some(value = stmtOf(s, TsVar(decl = d, init = Some(value = t))))
+        }
+        case None -> None
       }
     }
-    case LBLet(name, ann, init) -> match ann {
-      case Some(_) -> uncoveredStmt(env, s, "an annotated binding")
-      case None -> {
-        val pat = Pattern(kind = PBinding(name = name, inner = None), span = s.span, nodeId = s.nodeId)
-        buildLet(env, s, pat, name, init)
+  }
+}
+
+/// The initializer of a binding as a value of the annotated type, or as built when
+/// there is no annotation.
+func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init: in Expr): Option[TExpr] {
+  val t = match buildExpr(env, init) { case Some(x) -> x; case None -> return None }
+  match ann {
+    case None -> Some(value = t)
+    case Some(te) -> {
+      val diag: List[Diagnostic] = newList()
+      val gc = if env.generics.count > 0 {
+        env.generics[0]
+      } else {
+        GenericContext(params = newList(), owners = newList(), stackDepths = newList())
       }
-    }
-    case LBVar(name, ann, init) -> match ann {
-      case Some(_) -> uncoveredStmt(env, s, "an annotated binding")
-      case None -> match init {
-        case None -> uncoveredStmt(env, s, "a var without an initializer")
-        case Some(x) -> match buildExpr(env, x) {
-          case Some(t) -> {
-            val d = declareLocal(env, name, t.ty, true)
-            Some(value = stmtOf(s, TsVar(decl = d, init = Some(value = t))))
-          }
-          case None -> None
+      val want = match tyOfType(env.ctx, resolveType(env.ctx.tbl, gc, diag, te)) {
+        case Ok(w) -> w
+        case Err(msg) -> {
+          env.errors.add(msg)
+          return None
+        }
+      }
+      match convertValue(env, t, want) {
+        case Some(c) -> Some(value = c)
+        case None -> {
+          noteUncovered(env, "an annotated binding conversion")
+          env.errors.add(
+            "I0002: the builder has no case for an annotated binding conversion at " + toString(s.span.startPos.line) + ":" +
+              toString(s.span.startPos.column)
+          )
+          None
         }
       }
     }
   }
 }
 
-func buildLet(env: in BuildEnv, s: in Statement, pat: in Pattern, name: in String, init: in Expr): Option[TStmt] {
-  match buildExpr(env, init) {
+func buildLet(
+  env: in BuildEnv,
+  s: in Statement,
+  pat: in Pattern,
+  name: in String,
+  ann: in Option[TypeExpr],
+  init: in Expr,
+): Option[TStmt] {
+  match buildInit(env, s, ann, init) {
     case Some(t) -> {
       val d = declareLocal(env, name, t.ty, false)
       val tp = TPat(id = NodeId(id = pat.nodeId), ty = t.ty, span = pat.span, kind = TpBind(decl = d, inner = None))
@@ -764,7 +802,7 @@ func buildLet(env: in BuildEnv, s: in Statement, pat: in Pattern, name: in Strin
 
 /// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
 /// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol; a function with contracts and a function with an expression body are not covered yet.
+/// parameters to its symbol.  A function with contracts is not covered yet.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   match fn.generics {
@@ -785,6 +823,8 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
     case None -> ()
   }
   pushScope(env)
+  env.generics.clear()
+  env.generics.add(gc)
   val diag: List[Diagnostic] = newList()
   var ok = true
   for p in fn.params {
@@ -1183,21 +1223,54 @@ func buildExternCall(
   Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
 }
 
-/// An argument as the parameter `pty` takes it: as is, widened by a node of its own,
-/// or not at all (counted), never converted by guessing.
-func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
-  if tyEq(t.ty, pty) {
+/// The implicit conversion that takes a value of type `from` to `to`, derived from the
+/// two types alone: numeric widening, `Never` used as a value, `T` used as `T?`, a value
+/// of a refinement's underlying type checked into the refinement, and a refined value
+/// used as its underlying type.  None for any other pair: a distinct wrap, an interface
+/// upcast, a host boxing or a slice/list conversion needs the declaration, not the
+/// types, and stays counted.
+pub func convKindOf(from: in Ty, to: in Ty): Option[ConvKind] {
+  match widenKind(from, to) {
+    case Some(k) -> return Some(value = k)
+    case None -> ()
+  }
+  match from {
+    case TNever -> return Some(value = CvFromNever)
+    case _ -> ()
+  }
+  match to {
+    case TNullable(inner) -> if tyEq(from, inner) { return Some(value = CvLiftNullable) }
+    case TRefined(u, _, _, _) -> if tyEq(from, u) { return Some(value = CvRangeCheck) }
+    case _ -> ()
+  }
+  match from {
+    case TRefined(u, _, _, _) -> if tyEq(u, to) { return Some(value = CvUnrefine) }
+    case _ -> ()
+  }
+  None
+}
+
+func convertNode(env: in BuildEnv, t: in TExpr, to: in Ty, k: in ConvKind): TExpr {
+  TExpr(id = freshNodeId(env), ty = to, span = t.span, kind = XConvert(kind = k, inner = t))
+}
+
+/// `t` as a value of type `ty`: as is, converted by a node of its own, or not at all
+/// (None, uncounted), never converted by guessing.
+func convertValue(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  if tyEq(t.ty, ty) {
     return Some(value = t)
   }
-  match widenKind(t.ty, pty) {
-    case Some(k) -> Some(
-      value = TExpr(
-        id = freshNodeId(env),
-        ty = pty,
-        span = t.span,
-        kind = XConvert(kind = k, inner = t)
-      )
-    )
+  match convKindOf(t.ty, ty) {
+    case Some(k) -> Some(value = convertNode(env, t, ty, k))
+    case None -> None
+  }
+}
+
+/// An argument as the parameter `pty` takes it: as is, converted by a node of its own,
+/// or not at all (counted), never converted by guessing.
+func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
+  match convertValue(env, t, pty) {
+    case Some(c) -> Some(value = c)
     case None -> {
       noteUncovered(env, "an argument conversion")
       None
@@ -1224,10 +1297,8 @@ func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
     case TNever -> return Some(value = t)
     case _ -> ()
   }
-  match widenKind(t.ty, ty) {
-    case Some(k) -> Some(
-      value = TExpr(id = freshNodeId(env), ty = ty, span = t.span, kind = XConvert(kind = k, inner = t))
-    )
+  match convKindOf(t.ty, ty) {
+    case Some(k) -> Some(value = convertNode(env, t, ty, k))
     case None -> {
       noteUncovered(env, "a branch conversion")
       env.errors.add(
