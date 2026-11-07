@@ -798,7 +798,7 @@ jobs:
           fi
           exit $exit_code
 
-  # W0036 silent-TyError census over the library manifests (D355); zero.
+  # I0001 silent-TyError census over the library manifests (D355); zero.
   library-tyerr-census:
     runs-on: ubuntu-latest
     needs: [build]

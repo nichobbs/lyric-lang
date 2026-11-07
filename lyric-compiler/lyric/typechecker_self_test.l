@@ -15099,7 +15099,7 @@ test "a fully typed program has no silent TyError site (D341)" {
   assertEqual(silentSiteKinds(cr), "", "no silent site")
   val diags: List[Diagnostic] = newList()
   reportSilentTyErrors(cr.symbols, diags)
-  assertEqual(diags.count.toString(), "0", "no W0036")
+  assertEqual(diags.count.toString(), "0", "no I0001")
 }
 
 test "a distinct type's constructor call is typed, and its argument is checked (D357)" {
@@ -15123,6 +15123,31 @@ test "a read of an open generic value is not a silent site, it is the named open
   assertTrue(not isSilentTyError(tyErrorOpen()), "tyErrorOpen is not silent")
 }
 
+test "a protected type's field read in an ensures clause is typed (D359)" {
+  val src = "package P\nprotected type Bucket {\n  var tokens: Long\n  let capacity: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc make(c: in Long): Bucket\n  ensures: result.tokens == c\n{\n  Bucket(tokens = c, capacity = c)\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
+  assertEqual(diagCodesOf(cr), "", "no diagnostic")
+  val bad = parseCheck("package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc peek(b: in Bucket): Long { b.tokens }\n")
+  assertTrue(Str.contains(diagCodesOf(bad), "T0221"), "a read outside the type is still T0221: " + diagCodesOf(bad))
+  val wrong = parseCheck("package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc make(c: in Long): Bucket\n  ensures: result.tokens == \"x\"\n{\n  Bucket(tokens = c)\n}\n")
+  assertTrue(diagCodesOf(wrong) != "", "the field has its declared type: " + diagCodesOf(wrong))
+}
+
+test "a generic distinct type's constructor call takes its arguments from the value (D359)" {
+  val src = "package P\ntype Wrapped[T] = slice[T]\nfunc wrap(xs: in slice[Int]): Wrapped[Int] {\n  Wrapped(xs)\n}\n"
+  val cr = parseCheck(src)
+  assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
+  assertEqual(diagCodesOf(cr), "", "Wrapped(xs) is a Wrapped[Int]: " + diagCodesOf(cr))
+  val bad = parseCheck("package P\ntype Wrapped[T] = slice[T]\nfunc wrap(xs: in slice[Int]): Wrapped[String] {\n  Wrapped(xs)\n}\n")
+  assertTrue(diagCodesOf(bad) != "", "a Wrapped[Int] is not a Wrapped[String]")
+}
+
+test "a conversion of an unchecked host value is unchecked, not silent (D359)" {
+  val cr = parseCheck("package P\nextern type Arr = \"System.IO.MemoryStream\"\nfunc f(a: in Arr): Int {\n  val b = a.ToArray()\n  b[0].toInt()\n}\n")
+  assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
+}
+
 test "a member read no rule types is a silent site, a call of one is named (D338, D341, D355)" {
   val cr = parseCheck(silentHostCallSource())
   val kinds = silentSiteKinds(cr)
@@ -15131,13 +15156,14 @@ test "a member read no rule types is a silent site, a call of one is named (D338
   assertEqual(silentSiteKinds(call), "", "the callee is exempt and the call result is named, not silent")
 }
 
-test "W0036 reports each silent site and is silent after an error (D341)" {
+test "I0001 reports each silent site and is silent after an error (D341, D359)" {
   val cr = parseCheck(silentHostCallSource())
   val n = mapKeys(cr.symbols.silentTyErrorSites).count
   assertTrue(n > 0, "the program has a silent site")
+  assertTrue(Str.contains(diagCodesOf(cr), "I0001"), "the check itself reports I0001, an error: " + diagCodesOf(cr))
   val diags: List[Diagnostic] = newList()
   reportSilentTyErrors(cr.symbols, diags)
-  assertEqual(diags.count.toString(), n.toString(), "one W0036 per silent site")
+  assertEqual(diags.count.toString(), n.toString(), "one I0001 per silent site")
   val withError: List[Diagnostic] = newList()
   withError.add(
     errorDiagnostic(
@@ -15379,10 +15405,10 @@ test "ecosystem shapes are typed or named, not silent (D355)" {
   )
   val twoDiags: List[Diagnostic] = newList()
   reportSilentTyErrors(twoHandlers.symbols, twoDiags)
-  assertEqual(twoDiags.count.toString(), "0", "the join accumulates across every handler (no W0036)")
+  assertEqual(twoDiags.count.toString(), "0", "the join accumulates across every handler (no I0001)")
   val tryDiags: List[Diagnostic] = newList()
   reportSilentTyErrors(tryJoin.symbols, tryDiags)
-  assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no W0036)")
+  assertEqual(tryDiags.count.toString(), "0", "a try body and its handler join their open type arguments (no I0001)")
   val genericCr = parseCheck(
     "package P\nrecord Row[D] {\n  draft: D\n}\nunion Opt[T] {\n  case Has(v: T)\n  case Nope\n}\nfunc f[D](r: in Row[D]): Unit {\n  val d = r.draft\n}\nfunc g[T](o: in Opt[T], d: in T): T {\n  match o {\n    case Has(x) -> x\n    case Nope -> d\n  }\n}\nfunc h(o: in Opt[Int]): Int {\n  g(o, default())\n}\n"
   )

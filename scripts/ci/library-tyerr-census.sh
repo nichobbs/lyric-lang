@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# library-tyerr-census.sh - the silent-TyError census (W0036, D341, D355) over
+# library-tyerr-census.sh - the silent-TyError census (I0001, D341, D355) over
 # every library manifest.
 #
 # The stage 2 emit covers the compiler and the standard library; the ecosystem
 # libraries are checked by the same checker and the I0001 gate rejects a silent
-# site in any program, so each library manifest is built with
-# LYRIC_TYERR_GATE=1 and every W0036 it reports is a site.  The count is zero
+# site in any program, so each library manifest is
+# built, and every I0001 it reports is a site.  The count is zero
 # (D355), so any site fails the run: a new silent site is a regression of the
 # census, not a number to track.
 #
-# W0036 is reported only for a program that type-checks (a file that already
+# I0001 is reported only for a program that type-checks (a file that already
 # has an error reports its own error, not its cascades), so a build that stops
 # on a parse, type or dependency error proves nothing about its sites.  Such a
 # build is listed as UNCHECKED, never counted as clean.  A build that fails
 # loading a library dependency that is built later in the run is retried once
 # the dependency exists.  A build that fails after checking (a missing JVM
-# jar, a link step) still counts: its W0036 lines were printed first.
+# jar, a link step) still counts: its I0001 lines were printed first.
 #
 # Libraries written for `--target native` build only there; the rest build on
 # dotnet and the JVM.
@@ -36,7 +36,6 @@ NATIVE_ONLY=(
 )
 
 export NuGetAudit=false
-export LYRIC_TYERR_GATE=1
 
 cd "$REPO_ROOT"
 
@@ -85,7 +84,7 @@ for phase in dotnet jvm native; do
         rm -f "$log"
         continue
       fi
-      grep 'W0036' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
+      grep 'I0001' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
       if grep -qE 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log"; then
         reason="$(grep -m1 -E 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
         echo "$manifest ($target): $reason" >>"$unchecked_file"
@@ -101,7 +100,7 @@ done
 sort -u "$sites_file" -o "$sites_file"
 count=$(grep -c . "$sites_file" || true)
 unchecked=$(grep -c . "$unchecked_file" || true)
-echo "::notice::W0036 silent TyError sites across the library manifests: ${count} (${checked}/${attempted} builds checked, ${unchecked} unchecked)"
+echo "::notice::I0001 silent TyError sites across the library manifests: ${count} (${checked}/${attempted} builds checked, ${unchecked} unchecked)"
 if [[ "$unchecked" -gt 0 ]]; then
   echo "UNCHECKED builds (stopped before the census could see them):"
   cat "$unchecked_file"

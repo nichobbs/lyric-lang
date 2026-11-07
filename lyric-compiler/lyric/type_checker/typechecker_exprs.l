@@ -4501,7 +4501,9 @@ func untypedMemberCallResult(
       case _ -> ()
     }
   }
-  if isUniversalMethodName(memberName) {
+  // A universal method name with another arity is an ordinary member (a host
+  // `Arrays.toString(xs)` or `Objects.hash(xs)`, D359), not the codegen intrinsic.
+  if isUniversalMethodName(memberName) and not isSilentTyError(universalMethodResultType(memberName, argc)) {
     return universalMethodResultType(memberName, argc)
   }
   match fn.kind {
@@ -13072,10 +13074,11 @@ func isTyErrorValue(t: in Type): Bool {
   }
 }
 
-// W0036 (D341): the warning-mode form of the I0001 gate (docs/70 5.3).  Each
-// non-callee expression typed `TyError` with no diagnostic is reported, unless
-// the file already has an error: then the `TyError` is a cascade of a reported
-// one.  It becomes the error I0001 when the census reaches zero.
+// I0001 (docs/70 5.3, Q-TIR-001, D341, D359): each non-callee expression typed
+// `TyError` with no diagnostic is an internal error that always stops the
+// build, unless the file already has an error: then the `TyError` is a cascade
+// of a reported one.  (It was the opt-in warning W0036 while the census was
+// open.)
 pub func reportSilentTyErrors(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
   for d in diag {
     match d.severity {
@@ -13090,9 +13093,9 @@ pub func reportSilentTyErrors(tbl: in SymbolTable, diag: in List[Diagnostic]): U
   while i < keys.count {
     match mapGet(tbl.silentTyErrorSites, keys[i]) {
       case Some(site) -> diag.add(
-        warningDiagnostic(
-          "W0036",
-          "internal: this " + site.kind + " expression has no type and no error was reported (I0001)",
+        errorDiagnostic(
+          "I0001",
+          "internal: this " + site.kind + " expression has no type and no error was reported",
           site.span
         )
       )
