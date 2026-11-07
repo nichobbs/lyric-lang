@@ -1905,6 +1905,44 @@ func pipeEmitModeItemOnce(
   acc.add(pipeRenameModeItem(it, targetName, pkgTypeTargets))
 }
 
+func pipeRecordNamesOfPkg(pkg: in ImportedPackage): List[String] {
+  val names: List[String] = newList()
+  for it in pkg.items {
+    match it.kind {
+      case IRecord(d) -> names.add(d.name)
+      case IExposedRec(d) -> names.add(d.name)
+      case _ -> ()
+    }
+  }
+  names
+}
+
+func pipeReexportClosure(startPkg: in String, importedPkgs: in List[ImportedPackage]): List[String] {
+  val queue: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  if startPkg != "" {
+    queue.add(startPkg)
+    seen.add(startPkg, true)
+  }
+  var qi = 0
+  while qi < queue.count {
+    val cur = queue[qi]
+    for p in importedPkgs {
+      if p.name == cur {
+        val reexports = mergeImportNames(collectReexportNames(p.importDecls), p.reexports)
+        for r in reexports {
+          if r != "" and not seen.containsKey(r) {
+            seen.add(r, true)
+            queue.add(r)
+          }
+        }
+      }
+    }
+    qi = qi + 1
+  }
+  queue
+}
+
 pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[ImportedPackage]): List[Item] {
   val selectedBareNames: Map[String, Bool] = newMap()
   for imp in file.imports {
@@ -1922,77 +1960,56 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
   }
   val acc: List[Item] = newList()
   val emitted: Map[String, Bool] = newMap()
-  val pkgRecordSet: Map[String, Bool] = newMap()
-  for pkg in importedPkgs {
-    if pkg.name != "" {
-      for it in pkg.items {
-        match it.kind {
-          case IRecord(d) -> {
-            val key = pkg.name + "|" + d.name
-            if not pkgRecordSet.containsKey(key) {
-              pkgRecordSet.add(key, true)
-            }
-          }
-          case IExposedRec(d) -> {
-            val key = pkg.name + "|" + d.name
-            if not pkgRecordSet.containsKey(key) {
-              pkgRecordSet.add(key, true)
-            }
-          }
-          case _ -> ()
-        }
-      }
-    }
-  }
   for pkg in importedPkgs {
     val pkgTypeTargets: Map[String, String] = newMap()
     if pkg.name != "" {
-      for it in pkg.items {
-        match it.kind {
-          case IRecord(d) -> if not pkgTypeTargets.containsKey(d.name) { pkgTypeTargets.add(d.name, pkg.name + "." + d.name) }
-          case IExposedRec(d) -> if not pkgTypeTargets.containsKey(d.name) {
-            pkgTypeTargets.add(d.name, pkg.name + "." + d.name)
-          }
-          case _ -> ()
+      for recName in pipeRecordNamesOfPkg(pkg) {
+        if not pkgTypeTargets.containsKey(recName) {
+          pkgTypeTargets.add(recName, pkg.name + "." + recName)
         }
       }
       for imp in pkg.importDecls {
         if not imp.isExtern and imp.path.segments.count > 0 {
           val impPkg = Str.joinList(".", imp.path.segments)
-          match imp.selector {
-            case Some(sel) -> {
-              for item in pipeImportItemsOfSelector(sel) {
-                if pkgRecordSet.containsKey(impPkg + "|" + item.name) {
-                  val localName = match item.asAlias { case Some(a) -> a; case None -> item.name }
-                  if not pkgTypeTargets.containsKey(localName) {
-                    pkgTypeTargets.add(localName, impPkg + "." + item.name)
+          val candPkgs = pipeReexportClosure(impPkg, importedPkgs)
+          for candPkg in candPkgs {
+            for otherPkg in importedPkgs {
+              if otherPkg.name == candPkg {
+                val recNames = pipeRecordNamesOfPkg(otherPkg)
+                for recName in recNames {
+                  val canon = candPkg + "." + recName
+                  val impQual = impPkg + "." + recName
+                  if not pkgTypeTargets.containsKey(impQual) {
+                    pkgTypeTargets.add(impQual, canon)
                   }
                 }
-              }
-            }
-            case None -> match imp.asAlias {
-              case Some(alias) -> {
-                for otherPkg in importedPkgs {
-                  if otherPkg.name == impPkg {
-                    for oit in otherPkg.items {
-                      val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
-                      if recName != "" {
-                        val aliased = alias + "." + recName
-                        if not pkgTypeTargets.containsKey(aliased) {
-                          pkgTypeTargets.add(aliased, impPkg + "." + recName)
+                match imp.selector {
+                  case Some(sel) -> {
+                    for item in pipeImportItemsOfSelector(sel) {
+                      for recName in recNames {
+                        if item.name == recName {
+                          val localName = match item.asAlias { case Some(a) -> a; case None -> item.name }
+                          if not pkgTypeTargets.containsKey(localName) {
+                            pkgTypeTargets.add(localName, candPkg + "." + recName)
+                          }
                         }
                       }
                     }
                   }
-                }
-              }
-              case None -> {
-                for otherPkg in importedPkgs {
-                  if otherPkg.name == impPkg {
-                    for oit in otherPkg.items {
-                      val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
-                      if recName != "" and not pkgTypeTargets.containsKey(recName) {
-                        pkgTypeTargets.add(recName, impPkg + "." + recName)
+                  case None -> match imp.asAlias {
+                    case Some(alias) -> {
+                      for recName in recNames {
+                        val aliased = alias + "." + recName
+                        if not pkgTypeTargets.containsKey(aliased) {
+                          pkgTypeTargets.add(aliased, candPkg + "." + recName)
+                        }
+                      }
+                    }
+                    case None -> {
+                      for recName in recNames {
+                        if not pkgTypeTargets.containsKey(recName) {
+                          pkgTypeTargets.add(recName, candPkg + "." + recName)
+                        }
                       }
                     }
                   }
@@ -2007,20 +2024,41 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
           case Some(idx) -> if idx > 0 {
             val impPkg = Str.substring(sel, 0, idx)
             val recName = Str.substring(sel, idx + 2, sel.length - idx - 2)
-            if pkgRecordSet.containsKey(impPkg + "|" + recName) and not pkgTypeTargets.containsKey(recName) {
-              pkgTypeTargets.add(recName, impPkg + "." + recName)
+            for candPkg in pipeReexportClosure(impPkg, importedPkgs) {
+              for otherPkg in importedPkgs {
+                if otherPkg.name == candPkg {
+                  for candRec in pipeRecordNamesOfPkg(otherPkg) {
+                    if candRec == recName {
+                      val canon = candPkg + "." + recName
+                      val impQual = impPkg + "." + recName
+                      if not pkgTypeTargets.containsKey(impQual) {
+                        pkgTypeTargets.add(impQual, canon)
+                      }
+                      if not pkgTypeTargets.containsKey(recName) {
+                        pkgTypeTargets.add(recName, canon)
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
           case None -> ()
         }
       }
       for wPkg in pkg.wholeImports {
-        for otherPkg in importedPkgs {
-          if otherPkg.name == wPkg {
-            for oit in otherPkg.items {
-              val recName = match oit.kind { case IRecord(od) -> od.name; case IExposedRec(od) -> od.name; case _ -> "" }
-              if recName != "" and not pkgTypeTargets.containsKey(recName) {
-                pkgTypeTargets.add(recName, wPkg + "." + recName)
+        for candPkg in pipeReexportClosure(wPkg, importedPkgs) {
+          for otherPkg in importedPkgs {
+            if otherPkg.name == candPkg {
+              for recName in pipeRecordNamesOfPkg(otherPkg) {
+                val canon = candPkg + "." + recName
+                val wQual = wPkg + "." + recName
+                if not pkgTypeTargets.containsKey(wQual) {
+                  pkgTypeTargets.add(wQual, canon)
+                }
+                if not pkgTypeTargets.containsKey(recName) {
+                  pkgTypeTargets.add(recName, canon)
+                }
               }
             }
           }
@@ -2050,7 +2088,15 @@ pub func pipeImportedModeItems(file: in SourceFile, importedPkgs: in List[Import
             nm = nm + "." + segs[si]
             si = si + 1
           }
-          if nm == pkg.name {
+          if pipeReexportClosure(nm, importedPkgs).contains(pkg.name) {
+            if pkg.name != nm {
+              for it in pkg.items {
+                val itemName = pipeModeItemName(it)
+                if itemName != "" {
+                  pipeEmitModeItemOnce(acc, emitted, pkg.name, nm + "." + itemName, it, pkgTypeTargets)
+                }
+              }
+            }
             match imp.selector {
               case Some(sel) -> {
                 for item in pipeImportItemsOfSelector(sel) {
