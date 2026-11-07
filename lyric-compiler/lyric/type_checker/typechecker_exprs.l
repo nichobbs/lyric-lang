@@ -10431,10 +10431,7 @@ func shadowedQualifiedCtor(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Bool
         return false
       }
       match scopeTryFind(sc, segs[0]) {
-        case Some(_) -> match constructorSymbolOf(tbl, fn) {
-          case Some(_) -> true
-          case None -> false
-        }
+        case Some(_) -> match constructorSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
         case None -> false
       }
     }
