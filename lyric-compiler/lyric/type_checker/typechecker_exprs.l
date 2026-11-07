@@ -763,9 +763,7 @@ func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[Match
   // so only `_` or a lowercase binding proves an arm matches everything.
   for arm in arms {
     match arm.guard {
-      case None -> if patternSurelyIrrefutable(arm.pattern, noNames) {
-        return true
-      }
+      case None -> if patternSurelyIrrefutable(arm.pattern, noNames) { return true }
       case Some(_) -> ()
     }
   }
