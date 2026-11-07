@@ -15078,7 +15078,7 @@ test "TyError carries the diagnostic that caused it (docs/70 5.1)" {
 // A read no rule types and no diagnostic reports: a member the receiver's type
 // does not have (the backends reject it later, T0121).
 func silentHostCallSource(): String {
-  "package P\nfunc f(a: in Int): Unit {\n  val d = a.bar\n}\n"
+  "package P\nrecord R { x: Int }\nfunc f(r: in R): Unit {\n  val d = r.bar\n}\n"
 }
 
 func silentSiteKinds(cr: in CheckResult): String {
@@ -15179,6 +15179,15 @@ test "a call of a protected function-valued field from outside is T0221 (D359)" 
     not Str.contains(diagCodesOf(inside), "T0221"),
     "the type's own member may call it: " + diagCodesOf(inside)
   )
+}
+
+test "a member read off a primitive or a slice that names none is T0113 (D359)" {
+  val prim = parseCheck("package P\nfunc peek(n: in Int): Int {\n  n.bogus\n}\n")
+  assertTrue(Str.contains(diagCodesOf(prim), "T0113"), "n.bogus on an Int: " + diagCodesOf(prim))
+  val sl = parseCheck("package P\nfunc first(xs: in slice[Int]): Int {\n  xs.bogus\n}\n")
+  assertTrue(Str.contains(diagCodesOf(sl), "T0113"), "xs.bogus on a slice: " + diagCodesOf(sl))
+  val len = parseCheck("package P\nfunc size(xs: in slice[Int]): Int {\n  xs.length\n}\n")
+  assertEqual(diagCodesOf(len), "", "length is a slice member: " + diagCodesOf(len))
 }
 
 test "a missing member of a package-qualified name is T0020, not accepted (D359)" {

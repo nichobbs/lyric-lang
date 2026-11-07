@@ -10423,6 +10423,13 @@ func noteCtorZeroArgs(
 // `Pkg.Sub.Rec(...)` where a local shadows only the first segment `Pkg`
 // (#6838): the full package path still names a record, so the call is its
 // construction, not a method chain on the local (D359).
+func isHostStringPrim(pt: in PrimType): Bool {
+  match pt {
+    case PtString -> true
+    case _ -> false
+  }
+}
+
 func shadowedQualifiedCtor(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Bool {
   match fn.kind {
     case EMember(_, _) -> {
@@ -20604,6 +20611,20 @@ func inferExprCore(
               TyError(diag = d)
             }
             case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
+            // A member read off a primitive (a `String` keeps its open host
+            // members) or a slice that names none of its built-in members is
+            // the user's error, not a value the backends find (D359; the
+            // backends' J010 and J011 stay as defence in depth).
+            case TyPrim(pt) -> if isHostStringPrim(pt) {
+              readTy
+            } else {
+              diag.add(errorDiagnostic("T0113", "no member '" + name + "' on type '" + primName(pt) + "'", e.span))
+              tyErrorFor(diag)
+            }
+            case TySlice(_) -> {
+              diag.add(errorDiagnostic("T0113", "no member '" + name + "' on type '" + renderType(rt) + "'", e.span))
+              tyErrorFor(diag)
+            }
             case _ -> readTy
           }
         }
