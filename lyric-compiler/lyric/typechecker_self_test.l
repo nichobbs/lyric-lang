@@ -15230,6 +15230,16 @@ test "a call through a nested package path a local shadows is checked as the pac
   assertTrue(diagCodesOf(wrongResult) != "", "a result of the wrong type is checked: " + diagCodesOf(wrongResult))
 }
 
+test "a generic protected field keeps its rigid type parameter, and an unimported package stays unreachable (D359)" {
+  val cell = "package P\nprotected type Cell[T] {\n  var value: T\n  entry same(other: in Cell[T]): Int {\n    val n: Int = other.value\n    n\n  }\n}\n"
+  assertTrue(
+    Str.contains(diagCodesOf(parseCheck(cell)), "T0060"),
+    "other.value is a T, not an Int: " + diagCodesOf(parseCheck(cell))
+  )
+  val unimported = parseCheck("package P\nfunc f(Lib: in Int): Int {\n  Lib.Rest.ping()\n}\n")
+  assertTrue(diagCodesOf(unimported) != "", "Lib.Rest is not imported: " + diagCodesOf(unimported))
+}
+
 test "a config field read through its package is typed (D359)" {
   val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))

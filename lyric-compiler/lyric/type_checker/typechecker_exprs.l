@@ -3628,7 +3628,10 @@ func protectedFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Ty
             val fd = protectedFieldAsFieldDecl(pf)
             if fd.name == name and not have {
               have = true
-              found = Some(value = eraseTyParams(substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
+              val substituted = substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)
+              // A receiver of `Cell[T]` in a generic body reads its `value: T` as
+              // that `T`, rigid; only a raw receiver erases (D359).
+              found = Some(value = if targs.count == gnames.count { substituted } else { eraseTyParams(substituted) })
             }
           }
           case _ -> ()
@@ -10472,12 +10475,17 @@ func shadowedQualifiedCallee(
       }
       match scopeTryFind(sc, segs[0]) {
         case Some(_) -> {
+          // The package must be reachable: the one being checked, or one the
+          // file imports (a local does not make an unimported one visible).
+          val wantPkg = qualifierOfSegs(segs)
+          if wantPkg != symTableScopePkg(tbl) and not listContainsStr(tbl.scopeImports, wantPkg) {
+            return false
+          }
           match constructorSymbolOf(tbl, fn) {
             case Some(_) -> return true
             case None -> ()
           }
           // The same for a function the named package declares.
-          val wantPkg = qualifierOfSegs(segs)
           for qc in qualifiedCallCandidates(sigs, member, args) {
             if qc.originPackage == wantPkg {
               return true
