@@ -183,7 +183,8 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    of a default as `Pkg.Type.f` the way it writes a bare one, and leaves a call
    on a local (`w.f(x)`) alone because only a `Type` receiver has a site. Two
    packages that each declare a same-named type with a same-named dot-named
-   function still bind by the checker's choice of callee (#8874).
+   function bind the one of the package whose type is in scope
+   (`dotSigOfVisibleType` in the checker, #8874).
 
    Verified by the compiler-self-tests-jvm files (all but two that need CI's
    `LYRIC_FFI_JARS` fixture and `config_block` environment variables),
