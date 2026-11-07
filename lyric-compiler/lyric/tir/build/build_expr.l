@@ -387,10 +387,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     }
     case ECall(fn, args) -> buildCall(env, e, ty, fn, args)
     case EMember(r, name) -> buildFieldRead(env, e, ty, r, name)
-    case EIndex(_, _) -> uncoveredExpr(env, e, "an index")
+    case EIndex(r, idxs) -> buildIndexRead(env, e, ty, r, idxs)
     case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
     case ELambda(_, _) -> uncoveredExpr(env, e, "a lambda")
-    case EAssign(_, _, _) -> uncoveredExpr(env, e, "an assignment")
+    case EAssign(t, op, v) -> buildAssign(env, e, t, op, v)
     case ERange(_) -> uncoveredExpr(env, e, "a range")
     case ESelf -> uncoveredExpr(env, e, "self")
     case ETry(_) -> uncoveredExpr(env, e, "a try expression")
@@ -700,7 +700,13 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SFor(_, _, _, _) -> uncoveredStmt(env, s, "a for loop")
-    case SAssign(_, _, _) -> uncoveredStmt(env, s, "an assignment")
+    case SAssign(t, op, v) -> {
+      val ae = Expr(kind = EAssign(target = t, op = op, value = v), span = s.span, nodeId = s.nodeId)
+      match buildAssign(env, ae, t, op, v) {
+        case Some(x) -> Some(value = stmtOf(s, TsExpr(expr = x)))
+        case None -> None
+      }
+    }
     case SThrow(_) -> uncoveredStmt(env, s, "a throw")
     case STry(_, _, _) -> uncoveredStmt(env, s, "a try statement")
     case SDefer(_) -> uncoveredStmt(env, s, "a defer")
@@ -1225,26 +1231,183 @@ func buildExternCall(
   Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
 }
 
-/// `recv.name` where `recv` is a value of a record type declaring a field `name`: the
-/// receiver built, then the field by its position among the record's declared fields (the
-/// order a construction places them in).  Any other member (a collection's `count`, a
-/// host property, a config field, a tuple or union payload) is counted.
-func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
-  val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
-  match rt.ty {
+/// The field `name` of the record type `ty` declares, by its position among the record's
+/// declared fields (the order a construction places them in).  `fieldsOfRecord` is empty
+/// for a declared type that is not a record (a union, an enum, a distinct type), so such a
+/// type has no field here.
+func fieldRefOf(env: in BuildEnv, ty: in Ty, name: in String): Option[FieldRef] {
+  match ty {
     case TNamed(sym, _) -> {
       val fields = fieldsOfRecord(env.ctx.tbl, sym)
       var i = 0
       while i < fields.count {
         if fields[i].name == name {
-          return Some(value = mkExpr(e, ty, XField(recv = rt, field = FieldRef(owner = sym, name = name, index = i))))
+          return Some(value = FieldRef(owner = sym, name = name, index = i))
         }
         i = i + 1
       }
-      uncoveredExpr(env, e, "a member access that is not a record field")
+      None
     }
-    case _ -> uncoveredExpr(env, e, "a member access that is not a record field")
+    case _ -> None
   }
+}
+
+/// `recv.name` where `recv` is a value of a record type declaring a field `name`: the
+/// receiver built, then the field.  Any other member (a collection's `count`, a host
+/// property, a config field, a tuple or union payload) is counted.
+func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  match fieldRefOf(env, rt.ty, name) {
+    case Some(f) -> Some(value = mkExpr(e, ty, XField(recv = rt, field = f)))
+    case None -> uncoveredExpr(env, e, "a member access that is not a record field")
+  }
+}
+
+/// How `recv[idx]` is performed, from the receiver's type: arrays, slices and strings by
+/// their type, the stdlib `List` and `Map` by the name the checker typed the receiver
+/// with (their host types differ per target).  A record's `index` method and a host
+/// indexer are not derived here.
+func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[TirT.IndexKind] {
+  match rt.ty {
+    case TArray(_, _) -> return Some(value = IkArray)
+    case TSlice(_) -> return Some(value = IkSlice)
+    case TPrim(TPString) -> return Some(value = IkString)
+    case _ -> ()
+  }
+  match mapGet(env.ctx.tbl.exprTypes, recvExpr.nodeId) {
+    case Some(TyUser(_, name, _)) -> {
+      if name == "List" {
+        return Some(value = IkList)
+      }
+      if name == "Map" {
+        return Some(value = IkMap)
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// The type an index of kind `how` takes on a receiver of type `recv`: `Int` for
+/// sequences, the key type for a map.
+func indexKeyTy(how: in TirT.IndexKind, recv: in Ty): Option[Ty] {
+  match how {
+    case IkMap -> match recv {
+      case TExtern(h) -> if h.args.count == 2 { Some(value = h.args[0]) } else { None }
+      case TNamed(_, targs) -> if targs.count == 2 { Some(value = targs[0]) } else { None }
+      case _ -> None
+    }
+    case IkMethod(_) -> None
+    case IkHost(_) -> None
+    case _ -> Some(value = tyInt())
+  }
+}
+
+/// The receiver and index of `recv[idx]`, built and converted: a single index only.
+func buildIndexParts(env: in BuildEnv, e: in Expr, recv: in Expr, idxs: in List[Expr]): Option[IndexParts] {
+  if idxs.count != 1 {
+    val _ = uncoveredExpr(env, e, "an index with several indices")
+    return None
+  }
+  val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  val how = match indexKindOf(env, recv, rt) {
+    case Some(h) -> h
+    case None -> {
+      val _ = uncoveredExpr(env, e, "an index on a receiver that is not an array, slice, string, List or Map")
+      return None
+    }
+  }
+  val it = match buildExpr(env, idxs[0]) { case Some(t) -> t; case None -> return None }
+  val keyTy = match indexKeyTy(how, rt.ty) {
+    case Some(k) -> k
+    case None -> {
+      val _ = uncoveredExpr(env, e, "an index with an unknown key type")
+      return None
+    }
+  }
+  val idx = match coerceArg(env, it, keyTy) { case Some(c) -> c; case None -> return None }
+  Some(value = IndexParts(recv = rt, idx = idx, how = how))
+}
+
+record IndexParts {
+  recv: TExpr
+  idx: TExpr
+  how: TirT.IndexKind
+}
+
+func buildIndexRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, idxs: in List[Expr]): Option[TExpr] {
+  match buildIndexParts(env, e, recv, idxs) {
+    case Some(p) -> Some(value = mkExpr(e, ty, XIndex(recv = p.recv, idx = p.idx, how = p.how)))
+    case None -> None
+  }
+}
+
+/// The place an assignment writes: a local, a record field or an element.  An assignment
+/// to a global, or through `self` or a host member, is counted.
+func buildPlace(env: in BuildEnv, target: in Expr): Option[TPlace] {
+  val pty = match exprTy(env.ctx, target.nodeId) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
+  match target.kind {
+    case EParen(inner) -> buildPlace(env, inner)
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        match lookupLocal(env, p.segments[0]) {
+          case Some(d) -> return Some(value = TPlace(ty = d.ty, kind = PlLocal(local = d.id)))
+          case None -> ()
+        }
+      }
+      val _ = uncoveredExpr(env, target, "an assignment to a name that is not a local")
+      None
+    }
+    case EMember(r, name) -> {
+      val rt = match buildExpr(env, r) { case Some(t) -> t; case None -> return None }
+      match fieldRefOf(env, rt.ty, name) {
+        case Some(f) -> Some(value = TPlace(ty = pty, kind = PlField(recv = rt, field = f)))
+        case None -> {
+          val _ = uncoveredExpr(env, target, "an assignment to a member that is not a record field")
+          None
+        }
+      }
+    }
+    case EIndex(r, idxs) -> match buildIndexParts(env, target, r, idxs) {
+      case Some(p) -> Some(
+        value = TPlace(
+          ty = pty,
+          kind = PlIndex(recv = p.recv, idx = p.idx, how = p.how)
+        )
+      )
+      case None -> None
+    }
+    case _ -> {
+      val _ = uncoveredExpr(env, target, "an assignment target that is not a local, field or element")
+      None
+    }
+  }
+}
+
+func assignKindOf(op: in AssignOp): AssignKind {
+  match op {
+    case AssEq -> AkSet
+    case AssPlus -> AkAdd
+    case AssMinus -> AkSub
+    case AssStar -> AkMul
+    case AssSlash -> AkDiv
+    case AssPercent -> AkMod
+  }
+}
+
+/// `target op= value`: the place and the value converted to the place's type.  The
+/// result is a `Unit` node (`XAssign`).
+func buildAssign(env: in BuildEnv, e: in Expr, target: in Expr, op: in AssignOp, value: in Expr): Option[TExpr] {
+  val place = match buildPlace(env, target) { case Some(p) -> p; case None -> return None }
+  val vt = match buildExpr(env, value) { case Some(t) -> t; case None -> return None }
+  val v = match coerceArg(env, vt, place.ty) { case Some(c) -> c; case None -> return None }
+  Some(value = mkExpr(e, tyUnit(), XAssign(place = place, op = assignKindOf(op), value = v)))
 }
 
 /// The implicit conversion that takes a value of type `from` to `to`, derived from the

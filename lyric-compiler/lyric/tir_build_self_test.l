@@ -1231,3 +1231,93 @@ test "a member that is not a record field is counted" {
   assertTrue(not r.body.isSome(), "no body")
   assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
 }
+
+// ─── Assignments and indexing (docs/70 §6.3, D398) ───────────────────────────
+func firstAssign(b: in Option[TExpr]): Option[TExpr] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(stmts, _) -> {
+        for st in stmts {
+          match st.kind {
+            case TsExpr(x) -> match x.kind { case XAssign(_, _, _) -> return Some(value = x); case _ -> () }
+            case _ -> ()
+          }
+        }
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func placeShape(b: in Option[TExpr]): String {
+  match firstAssign(b) {
+    case Some(x) -> match x.kind {
+      case XAssign(p, op, _) -> {
+        val k = match p.kind {
+          case PlLocal(_) -> "local"
+          case PlGlobal(_) -> "global"
+          case PlField(_, _) -> "field"
+          case PlIndex(_, _, IkList) -> "list"
+          case PlIndex(_, _, IkMap) -> "map"
+          case PlIndex(_, _, IkArray) -> "array"
+          case PlIndex(_, _, _) -> "index"
+        }
+        k + ":" + (match op { case AkSet -> "set"; case AkAdd -> "add"; case _ -> "other" })
+      }
+      case _ -> "none"
+    }
+    case None -> "absent"
+  }
+}
+
+test "an assignment to a mutable local is a place assignment" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Int {\n  var a = n\n  a = 3\n  a\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(placeShape(r.body) == "local:set", placeShape(r.body))
+}
+
+test "a compound assignment keeps its operator and widens the value" {
+  val r = buildFirstFn("package App\nfunc f(n: Int): Long {\n  var a: Long = 1\n  a += n\n  a\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(placeShape(r.body) == "local:add", placeShape(r.body))
+}
+
+test "a record field assignment is a field place" {
+  val r = buildFirstFn("package App\nref record C {\n  var n: Int\n}\nfunc f(c: inout C): Unit {\n  c.n = 4\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(placeShape(r.body) == "field:set", placeShape(r.body))
+}
+
+test "an element assignment on an array is an index place" {
+  val ar = buildFirstFn("package App\nfunc f(xs: inout array[3, Int]): Unit {\n  xs[1] = 7\n}\n")
+  assertEqualInt(ar.diagnostics, 0, "array checks clean")
+  assertTrue(ar.env.errors.count == 0, if ar.env.errors.count > 0 { ar.env.errors[0] } else { "no I0002" })
+  assertTrue(placeShape(ar.body) == "array:set", placeShape(ar.body))
+}
+
+test "an index read is an index expression and a slice index is an Int" {
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int], i: Int): Int {\n  xs[i]\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.kind {
+      case XIndex(_, _, IkSlice) -> ()
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XIndex(_, _, IkSlice) -> ()
+        case _ -> assertTrue(false, "a slice index")
+      }
+      case _ -> assertTrue(false, "a slice index")
+    }
+    case None -> assertTrue(false, "a body")
+  }
+}
+
+test "an assignment through a name that is not a local is counted" {
+  val r = buildFirstFn("package App\nfunc f(a: Int): Unit {\n  (a + 1) = 2\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+}
