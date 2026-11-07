@@ -5139,7 +5139,7 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
 }
 
 // Record the fields of a non-generic record or union-case construction as a
-// signature under the call's `NodeId` (`ctorSigByNode`, D370), so the builder
+// signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
 // places the arguments by field as it does for a function's parameters.
 func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type): Unit {
   if node <= 0 {
