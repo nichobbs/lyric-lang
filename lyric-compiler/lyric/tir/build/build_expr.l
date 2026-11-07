@@ -29,12 +29,41 @@ pub record BuildEnv {
   nextLocal: List[Int]
   errors: List[String]
   uncovered: Map[String, Int]
+  /// The next `NodeId` for a node the builder makes up (a conversion, a block with no
+  /// node of its own, an interpolation text part).  Shared by the envs of one file so
+  /// that ids stay unique; it starts above every id the numbering gives a node.
+  nextNode: List[Int]
+}
+
+/// The first `NodeId` of a made-up node: above any id `renumberNodeIds` hands out.
+pub func firstSynthNodeId(): Int {
+  100000000
 }
 
 pub func newBuildEnv(ctx: in TyConvCtx): BuildEnv {
+  val counter: List[Int] = newList()
+  counter.add(firstSynthNodeId())
+  newBuildEnvSharing(ctx, counter)
+}
+
+/// An env that draws made-up `NodeId`s from `counter`, shared with other envs.
+pub func newBuildEnvSharing(ctx: in TyConvCtx, counter: in List[Int]): BuildEnv {
   val next: List[Int] = newList()
   next.add(0)
-  BuildEnv(ctx = ctx, scopes = newList(), nextLocal = next, errors = newList(), uncovered = newMap())
+  BuildEnv(
+    ctx = ctx,
+    scopes = newList(),
+    nextLocal = next,
+    errors = newList(),
+    uncovered = newMap(),
+    nextNode = counter
+  )
+}
+
+func freshNodeId(env: in BuildEnv): NodeId {
+  val n = env.nextNode[0]
+  env.nextNode[0] = n + 1
+  NodeId(id = n)
 }
 
 func pushScope(env: in BuildEnv): Unit {
@@ -168,13 +197,18 @@ func intrinsicCall(op: in IntrinsicOp, args: in List[TExpr]): TExprKind {
 
 /// The interpolation part as a `String` expression: a part of another type is
 /// converted by the built-in `toString`.
-func stringPart(part: in TExpr): TExpr {
+func stringPart(env: in BuildEnv, part: in TExpr): TExpr {
   match part.ty {
     case TPrim(TPString) -> part
     case _ -> {
       val one: List[TExpr] = newList()
       one.add(part)
-      TExpr(id = part.id, ty = tyString(), span = part.span, kind = intrinsicCall(IoBuiltin(name = "toString"), one))
+      TExpr(
+        id = freshNodeId(env),
+        ty = tyString(),
+        span = part.span,
+        kind = intrinsicCall(IoBuiltin(name = "toString"), one)
+      )
     }
   }
 }
@@ -205,14 +239,9 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       for seg in segs {
         match seg {
           case ISText(text, sp) -> parts.add(
-            TExpr(
-              id = NodeId(id = e.nodeId),
-              ty = tyString(),
-              span = sp,
-              kind = XLit(lit = TLString(text = text))
-            )
+            TExpr(id = freshNodeId(env), ty = tyString(), span = sp, kind = XLit(lit = TLString(text = text)))
           )
-          case ISExpr(x) -> match buildExpr(env, x) { case Some(t) -> parts.add(stringPart(t)); case None -> { ok = false } }
+          case ISExpr(x) -> match buildExpr(env, x) { case Some(t) -> parts.add(stringPart(env, t)); case None -> { ok = false } }
         }
       }
       if ok {
@@ -299,11 +328,11 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     }
     case EIf(cond, thenBranch, elseBranch, _) -> {
       val c = buildExpr(env, cond)
-      val t = buildOrBlock(env, thenBranch, e, ty)
+      val t = buildOrBlock(env, thenBranch, ty)
       var el: Option[TExpr] = None
       var elOk = true
       match elseBranch {
-        case Some(eb) -> match buildOrBlock(env, eb, e, ty) {
+        case Some(eb) -> match buildOrBlock(env, eb, ty) {
           case Some(x) -> {
             el = Some(value = x)
           }
@@ -325,8 +354,8 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
         case None -> None
       }
     }
-    case EBlock(b) -> buildBlock(env, b, Some(value = ty), e)
-    case EUnsafe(b) -> match buildBlock(env, b, Some(value = ty), e) {
+    case EBlock(b) -> buildBlock(env, b, Some(value = ty), NodeId(id = e.nodeId))
+    case EUnsafe(b) -> match buildBlock(env, b, Some(value = ty), freshNodeId(env)) {
       case Some(body) -> Some(value = mkExpr(e, ty, XUnsafe(body = body)))
       case None -> None
     }
@@ -347,10 +376,10 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
 }
 
 /// A branch of an `if`: an expression, or a block typed as the `if` is.
-func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, owner: in Expr, ty: in Ty): Option[TExpr] {
+func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, ty: in Ty): Option[TExpr] {
   match b {
     case EOBExpr(x) -> buildExpr(env, x)
-    case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), owner)
+    case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), freshNodeId(env))
   }
 }
 
@@ -364,7 +393,7 @@ func isUnitTy(t: in Ty): Bool {
 /// Build a block as an `XBlock` typed `known`, or as its last expression's type
 /// when none is given.  A last expression statement is the block's value unless
 /// the block is `Unit`, where it stays a statement.
-pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], owner: in Expr): Option[TExpr] {
+pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], id: in NodeId): Option[TExpr] {
   pushScope(env)
   val stmts: List[TStmt] = newList()
   var tail: Option[TExpr] = None
@@ -401,21 +430,15 @@ pub func buildBlock(env: in BuildEnv, b: in Block, known: in Option[Ty], owner: 
     return None
   }
   val ty = match known { case Some(k) -> k; case None -> match tail { case Some(t) -> t.ty; case None -> tyUnit() } }
-  Some(value = TExpr(id = NodeId(id = owner.nodeId), ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
+  Some(value = TExpr(id = id, ty = ty, span = b.span, kind = XBlock(stmts = stmts, tail = tail)))
 }
 
-func loopBody(env: in BuildEnv, b: in Block, owner: in Expr): Option[TExpr] {
-  buildBlock(env, b, Some(value = tyUnit()), owner)
+func loopBody(env: in BuildEnv, b: in Block): Option[TExpr] {
+  buildBlock(env, b, Some(value = tyUnit()), freshNodeId(env))
 }
 
 func stmtOf(s: in Statement, kind: in TStmtKind): TStmt {
   TStmt(id = NodeId(id = s.nodeId), span = s.span, kind = kind)
-}
-
-/// A statement's owner expression for blocks it contains: the blocks of
-/// statements have no node of their own, so they take the statement's number.
-func stmtOwner(s: in Statement, e: in Expr): Expr {
-  Expr(kind = e.kind, span = s.span, nodeId = s.nodeId)
 }
 
 func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
@@ -436,8 +459,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
     case SLocal(binding) -> buildLocal(env, s, binding)
     case SWhile(label, cond, body) -> {
       val c = buildExpr(env, cond)
-      val owner = Expr(kind = EError, span = s.span, nodeId = s.nodeId)
-      val bd = loopBody(env, body, owner)
+      val bd = loopBody(env, body)
       match c {
         case Some(ct) -> match bd {
           case Some(bt) -> Some(value = stmtOf(s, TsWhile(label = label, cond = ct, body = bt)))
@@ -447,8 +469,7 @@ func buildStmt(env: in BuildEnv, s: in Statement): Option[TStmt] {
       }
     }
     case SLoop(label, body) -> {
-      val owner = Expr(kind = EError, span = s.span, nodeId = s.nodeId)
-      match loopBody(env, body, owner) {
+      match loopBody(env, body) {
         case Some(bt) -> Some(value = stmtOf(s, TsLoop(label = label, body = bt)))
         case None -> None
       }
@@ -551,8 +572,7 @@ pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable)
   if ok {
     match fn.body {
       case Some(FBBlock(b)) -> {
-        val owner = Expr(kind = EError, span = fn.span, nodeId = 0)
-        res = buildBlock(env, b, None, owner)
+        res = buildBlock(env, b, None, freshNodeId(env))
       }
       case Some(FBExpr(x)) -> {
         res = buildExpr(env, x)
@@ -578,12 +598,14 @@ pub func buildCensus(ctx: in TyConvCtx, tbl: in SymbolTable, file: in SourceFile
   var total = 0
   var built = 0
   val sums: Map[String, Int] = newMap()
+  val counter: List[Int] = newList()
+  counter.add(firstSynthNodeId())
   for it in file.items {
     match it.kind {
       case IFunc(decl) -> match decl.body {
         case Some(_) -> {
           total = total + 1
-          val env = newBuildEnv(ctx)
+          val env = newBuildEnvSharing(ctx, counter)
           match buildFnBody(env, decl, tbl) {
             case Some(_) -> {
               built = built + 1
@@ -718,43 +740,199 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
   uncoveredExpr(env, e, "a call the checker did not resolve")
 }
 
+/// An argument as the parameter `pty` takes it: as is, widened by a node of its own,
+/// or not at all (counted), never converted by guessing.
+func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
+  if tyEq(t.ty, pty) {
+    return Some(value = t)
+  }
+  match widenKind(t.ty, pty) {
+    case Some(k) -> Some(
+      value = TExpr(id = freshNodeId(env), ty = pty, span = t.span, kind = XConvert(kind = k, inner = t))
+    )
+    case None -> {
+      noteUncovered(env, "an argument conversion")
+      None
+    }
+  }
+}
+
+/// The built-ins whose parameter is any `T`: no argument converts.
+func genericBuiltin(name: in String): Bool {
+  name == "println" or name == "print" or name == "toString" or name == "hashCode"
+}
+
+/// A primitive an implicit widening can change.
+func isWidenablePrim(t: in Ty): Bool {
+  match t {
+    case TPrim(p) -> match p {
+      case TPByte -> true
+      case TPInt -> true
+      case TPUInt -> true
+      case TPFloat -> true
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+/// The parameter types of the element-taking members of `List`, `Map` and `Set` and of
+/// the `slice` members, from the receiver's type arguments (docs/01 member table).
+/// `None` for any other built-in: its parameter types are not derived here.
+func memberArgTys(recv: in Ty, name: in String, argc: in Int): Option[List[Ty]] {
+  val res: List[Ty] = newList()
+  match recv {
+    case TNamed(_, targs) -> {
+      if name.startsWith("List.") and targs.count == 1 {
+        val op = name.substring(5, name.length - 5)
+        if op == "add" and argc == 2 {
+          res.add(tyInt())
+          res.add(targs[0])
+          return Some(value = res)
+        }
+        if argc == 1 and (op == "add" or op == "contains" or op == "indexOf" or op == "lastIndexOf" or op == "remove") {
+          res.add(targs[0])
+          return Some(value = res)
+        }
+        if argc == 1 and op == "removeAt" {
+          res.add(tyInt())
+          return Some(value = res)
+        }
+      }
+      if name.startsWith("Map.") and targs.count == 2 {
+        val op = name.substring(4, name.length - 4)
+        if op == "add" and argc == 2 {
+          res.add(targs[0])
+          res.add(targs[1])
+          return Some(value = res)
+        }
+        if argc == 1 and (op == "containsKey" or op == "remove") {
+          res.add(targs[0])
+          return Some(value = res)
+        }
+      }
+      if name.startsWith("Set.") and targs.count == 1 {
+        val op = name.substring(4, name.length - 4)
+        if argc == 1 and (op == "add" or op == "contains" or op == "remove") {
+          res.add(targs[0])
+          return Some(value = res)
+        }
+      }
+      None
+    }
+    case TSlice(elem) -> {
+      if name == "slice.append" and argc == 1 {
+        res.add(elem)
+        return Some(value = res)
+      }
+      if name == "slice.concat" and argc == 1 {
+        res.add(TSlice(element = elem))
+        return Some(value = res)
+      }
+      if name == "slice.slice" and argc == 2 {
+        res.add(tyInt())
+        res.add(tyInt())
+        return Some(value = res)
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// A built-in call.  Its arguments are checked against the parameter types derived for
+/// the collection and slice members; a generic built-in (`println`) converts nothing; any
+/// other built-in given an argument an implicit widening could change is counted, since
+/// its parameter types are not known here.
 func buildBuiltinCall(
   env: in BuildEnv, e: in Expr, ty: in Ty, name: in String, fn: in Expr, args: in List[CallArg]
 ): Option[TExpr] {
   match positionalArgs(args) {
     case None -> uncoveredExpr(env, e, "a built-in call with a named argument")
     case Some(xs) -> {
-      val all: List[Expr] = newList()
+      var recvT: Option[TExpr] = None
       match fn.kind {
-        case EMember(recv, _) -> all.add(recv)
+        case EMember(recv, _) -> match buildExpr(env, recv) {
+          case Some(r) -> {
+            recvT = Some(value = r)
+          }
+          case None -> return None
+        }
         case _ -> ()
       }
-      for x in xs {
-        all.add(x)
-      }
-      match buildAll(env, all) {
-        case Some(ts) -> Some(
-          value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(ts)))
-        )
+      match buildAll(env, xs) {
         case None -> None
+        case Some(ts) -> {
+          val expected: Option[List[Ty]] = match recvT {
+            case Some(r) -> memberArgTys(r.ty, name, ts.count)
+            case None -> None
+          }
+          val out: List[TExpr] = newList()
+          match recvT {
+            case Some(r) -> out.add(r)
+            case None -> ()
+          }
+          match expected {
+            case Some(tys) -> {
+              var i = 0
+              while i < ts.count {
+                match coerceArg(env, ts[i], tys[i]) {
+                  case Some(c) -> out.add(c)
+                  case None -> return uncoveredExpr(env, e, "a built-in call needing a conversion")
+                }
+                i = i + 1
+              }
+            }
+            case None -> {
+              if not genericBuiltin(name) {
+                for t in ts {
+                  if isWidenablePrim(t.ty) {
+                    return uncoveredExpr(env, e, "a built-in call with an argument the builder cannot check")
+                  }
+                }
+              }
+              for t in ts {
+                out.add(t)
+              }
+            }
+          }
+          Some(value = mkExpr(e, ty, XCall(callee = Intrinsic(op = IoBuiltin(name = name)), args = inArgs(out))))
+        }
       }
     }
   }
 }
 
+/// A call through a function value: the arguments are checked against the function
+/// type's parameters.
 func buildIndirectCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in List[CallArg]): Option[TExpr] {
   match positionalArgs(args) {
     case None -> uncoveredExpr(env, e, "an indirect call with a named argument")
     case Some(xs) -> {
       val fv = buildExpr(env, fn)
       match buildAll(env, xs) {
-        case Some(ts) -> match fv {
-          case Some(f) -> Some(
-            value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(ts)))
-          )
-          case None -> None
-        }
         case None -> None
+        case Some(ts) -> match fv {
+          case None -> None
+          case Some(f) -> match f.ty {
+            case TFunc(params, _, _) -> {
+              if params.count != ts.count {
+                return uncoveredExpr(env, e, "an indirect call whose arguments do not match the function type")
+              }
+              val out: List[TExpr] = newList()
+              var i = 0
+              while i < ts.count {
+                match coerceArg(env, ts[i], params[i].ty) {
+                  case Some(c) -> out.add(c)
+                  case None -> return uncoveredExpr(env, e, "an indirect call needing a conversion")
+                }
+                i = i + 1
+              }
+              Some(value = mkExpr(e, ty, XCall(callee = Indirect(fnValue = f), args = inArgs(out))))
+            }
+            case _ -> uncoveredExpr(env, e, "a call of a value that is not a function type")
+          }
+        }
       }
     }
   }
@@ -772,6 +950,21 @@ func paramIndex(sig: in ResolvedSignature, name: in String): Option[Int] {
   None
 }
 
+/// An argument whose evaluation has no effect and cannot fail, so the order it is
+/// evaluated in does not matter.
+func isPlainArg(x: in Expr): Bool {
+  match x.kind {
+    case ELiteral(_) -> true
+    case EPath(_) -> true
+    case EParen(inner) -> isPlainArg(inner)
+    case _ -> false
+  }
+}
+
+/// A call to a declared non-generic function.  Named arguments take their parameter's
+/// slot first and the positional ones fill the free slots in order, as the checker pairs
+/// them.  The arguments run in parameter order in TIR, so a call whose source order
+/// differs is built only when every argument is plain.
 func buildDirectCall(
   env: in BuildEnv,
   e: in Expr,
@@ -784,26 +977,69 @@ func buildDirectCall(
     return uncoveredExpr(env, e, "a generic call")
   }
   val slots: List[Option[Expr]] = newList()
+  val srcIdx: List[Int] = newList()
   var pi = 0
   while pi < sig.params.count {
     slots.add(None)
+    srcIdx.add(-1)
     pi = pi + 1
   }
-  var nextPos = 0
+  var si = 0
+  for a in args {
+    match a {
+      case CANamed(name, x, _) -> match paramIndex(sig, name) {
+        case Some(ix) -> {
+          match slots[ix] {
+            case Some(_) -> return uncoveredExpr(env, e, "a call naming one parameter twice")
+            case None -> ()
+          }
+          slots[ix] = Some(value = x)
+          srcIdx[ix] = si
+        }
+        case None -> return uncoveredExpr(env, e, "a call with an unknown named argument")
+      }
+      case CAPositional(_) -> ()
+    }
+    si = si + 1
+  }
+  var nextFree = 0
+  si = 0
   for a in args {
     match a {
       case CAPositional(x) -> {
-        if nextPos >= slots.count {
+        while nextFree < slots.count and slots[nextFree].isSome() {
+          nextFree = nextFree + 1
+        }
+        if nextFree >= slots.count {
           return uncoveredExpr(env, e, "a call with extra arguments")
         }
-        slots[nextPos] = Some(value = x)
-        nextPos = nextPos + 1
+        slots[nextFree] = Some(value = x)
+        srcIdx[nextFree] = si
+        nextFree = nextFree + 1
       }
-      case CANamed(name, x, _) -> match paramIndex(sig, name) {
-        case Some(ix) -> {
-          slots[ix] = Some(value = x)
+      case CANamed(_, _, _) -> ()
+    }
+    si = si + 1
+  }
+  var reordered = false
+  var last = -1
+  var k = 0
+  while k < srcIdx.count {
+    if srcIdx[k] >= 0 {
+      if srcIdx[k] < last {
+        reordered = true
+      }
+      last = srcIdx[k]
+    }
+    k = k + 1
+  }
+  if reordered {
+    for sl in slots {
+      match sl {
+        case Some(x) -> if not isPlainArg(x) {
+          return uncoveredExpr(env, e, "a call whose named arguments reorder effects")
         }
-        case None -> return uncoveredExpr(env, e, "a call with an unknown named argument")
+        case None -> ()
       }
     }
   }
@@ -831,17 +1067,10 @@ func buildDirectCall(
             case None -> {
               ok = false
             }
-            case Some(t) -> if tyEq(t.ty, pty) {
-              targs.add(TArgIn(value = t))
-            } else {
-              match widenKind(t.ty, pty) {
-                case Some(k) -> targs.add(
-                  TArgIn(value = TExpr(id = t.id, ty = pty, span = t.span, kind = XConvert(kind = k, inner = t)))
-                )
-                case None -> {
-                  noteUncovered(env, "an argument conversion")
-                  ok = false
-                }
+            case Some(t) -> match coerceArg(env, t, pty) {
+              case Some(c) -> targs.add(TArgIn(value = c))
+              case None -> {
+                ok = false
               }
             }
           }

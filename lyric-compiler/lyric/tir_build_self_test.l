@@ -346,3 +346,85 @@ test "a call omitting a defaulted argument is counted, not guessed" {
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
 }
+
+func firstTail(b: in Option[TExpr]): Option[TExpr] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, t) -> t
+      case _ -> Some(value = body)
+    }
+    case None -> None
+  }
+}
+
+func callArgAt(b: in Option[TExpr], i: in Int): Option[TExpr] {
+  match firstTail(b) {
+    case Some(t) -> match t.kind {
+      case XCall(_, args) -> if i < args.count {
+        match args[i] {
+          case TArgIn(v) -> Some(value = v)
+          case _ -> None
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func isWidenTo(t: in TExpr, want: in Ty): Bool {
+  match t.kind {
+    case XConvert(CvWiden(_), inner) -> tyEq(t.ty, want) and t.id.id != inner.id.id
+    case _ -> false
+  }
+}
+
+test "a named argument keeps its slot and a positional one takes the free slot" {
+  val r = buildFirstFn("package App\nfunc m(): Int { k(a = 1, 2) }\nfunc k(a: Int, b: Int): Int { a }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertEqualInt(firstCallArgs(r.body), 2, "two arguments")
+}
+
+test "named arguments that reorder effects are refused, plain ones are not" {
+  val bad = buildFirstFn("package App\nfunc m(): Int { k(b = f(), a = g()) }\nfunc k(a: Int, b: Int): Int { a }\nfunc f(): Int { 1 }\nfunc g(): Int { 2 }\n")
+  assertEqualInt(bad.diagnostics, 0, "checks clean")
+  assertTrue(not bad.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(bad.env.uncovered, "a call whose named arguments reorder effects"), 1, "counted")
+  val ok = buildFirstFn("package App\nfunc m(x: Int): Int { k(b = 1, a = x) }\nfunc k(a: Int, b: Int): Int { a }\n")
+  assertTrue(ok.body.isSome(), "plain arguments reorder freely")
+}
+
+test "an argument widened to a Long parameter is a node of its own" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Long { w(x) }\nfunc w(v: Long): Long { v }\n")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match callArgAt(r.body, 0) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "a widening with its own id")
+    case None -> assertTrue(false, "an argument")
+  }
+}
+
+test "a slice member and a function value widen their arguments" {
+  val s = buildFirstFn("package App\nfunc m(s: in slice[Long], i: in Int): slice[Long] { s.append(i) }\n")
+  assertEqualInt(s.diagnostics, 0, "checks clean")
+  assertEqualInt(s.env.errors.count, 0, "no I0002")
+  match callArgAt(s.body, 1) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "append widens the element")
+    case None -> assertTrue(false, "an argument")
+  }
+  val f = buildFirstFn("package App\nfunc m(h: in (Long) -> Long, x: Int): Long { h(x) }\n")
+  assertEqualInt(f.diagnostics, 0, "checks clean")
+  assertEqualInt(f.env.errors.count, 0, "no I0002")
+  match callArgAt(f.body, 0) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "the indirect call widens")
+    case None -> assertTrue(false, "an argument")
+  }
+}
+
+test "a built-in call with an argument the builder cannot check is counted" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Int { max(x, 2) }\nfunc max(a: Int, b: Int): Int { a }\n")
+  assertEqualInt(r.env.errors.count, 0, "a declared max is a direct call")
+}
+
