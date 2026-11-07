@@ -8328,7 +8328,10 @@ func inferPropagate(
       )
     }
   }
-  propagateUnwrap(closed)
+  // A success type nothing fixes yet is the open hole (`None?`, `Err(...)?`):
+  // the consumer or `closeOpenPropagateOperands` settles it (#8181, D359).
+  val unwrapped = propagateUnwrap(closed)
+  if isSilentTyError(unwrapped) { tyErrorOpen() } else { unwrapped }
 }
 
 // A construction that is a branch of an `if`/`match`/block used as the operand
@@ -20617,7 +20620,16 @@ func inferExprCore(
         case TyError(d) -> return TyError(diag = d)
         case _ -> ()
       }
-      indexElementType(tbl, rt)
+      val elemTy = indexElementType(tbl, rt)
+      // An extern type's indexer is the host's: its result is unchecked (D359).
+      match unrefine(rt) {
+        case TyUser(rid, _, _) -> if isSilentTyError(elemTy) and symTableIsExternTypeId(tbl, rid) {
+          tyErrorHost()
+        } else {
+          elemTy
+        }
+        case _ -> elemTy
+      }
     }
     // ETypeApp: a type-application expression `foo[T]`.  Pass through to the
     // inner function so `ECall(ETypeApp(fn, targs), vargs)` finds the function
