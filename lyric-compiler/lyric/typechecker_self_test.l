@@ -15170,6 +15170,14 @@ test "a protected field's type is read in the declaring package's scope (D359)" 
   assertEqual(diagCodesOf(parseCheck(src)), "", "the own-package read is typed")
 }
 
+test "a config field read through its package is typed (D359)" {
+  val cr = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): Int {\n  P.Cfg.n\n}\n")
+  assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
+  assertEqual(diagCodesOf(cr), "", "P.Cfg.n is an Int: " + diagCodesOf(cr))
+  val bad = parseCheck("package P\nconfig Cfg {\n  n: Int = 2\n}\nfunc f(): String {\n  P.Cfg.n\n}\n")
+  assertTrue(diagCodesOf(bad) != "", "the field has its declared type")
+}
+
 test "a conversion of an unchecked host value is unchecked, not silent (D359)" {
   val cr = parseCheck(
     "package P\nextern type Arr = \"System.IO.MemoryStream\"\nfunc f(a: in Arr): Int {\n  val b = a.ToArray()\n  b[0].toInt()\n}\n"
