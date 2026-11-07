@@ -24109,7 +24109,42 @@ func typeQualifiedDotSig(
       case _ -> ()
     }
   }
+  match dotSigOfVisibleType(tbl, sigs, owner, member, arity) {
+    case Some(vs) -> return Some(value = vs)
+    case None -> ()
+  }
   dottedSigLookup(sigs, owner + "." + member, arity)
+}
+
+// The dot-named function `typeName.member` declared by the package of the one
+// type `typeName` that is in scope (#8874).  Two packages can each declare a
+// type of that name with a function of that name; the bare lookup by the
+// dotted name alone answers with whichever registered first, whatever the
+// file imports.  `None` when the type is not a single visible declaration.
+func dotSigOfVisibleType(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  typeName: in String,
+  member: in String,
+  arity: in Int,
+): Option[ResolvedSignature] {
+  var pkg = ""
+  var types = 0
+  for sym in symTableTryFindAllVisible(tbl, typeName) {
+    if symbolIsType(sym) {
+      pkg = sym.originPackage
+      types = types + 1
+    }
+  }
+  if types != 1 or pkg.length == 0 {
+    return None
+  }
+  for c in gatherOverloadCandidates(sigs, typeName + "." + member + "/" + toString(arity)) {
+    if c.originPackage == pkg {
+      return Some(value = c)
+    }
+  }
+  None
 }
 
 // The applicable method named `name` in the body of the receiver's type,
