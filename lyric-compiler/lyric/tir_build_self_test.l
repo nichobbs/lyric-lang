@@ -672,15 +672,12 @@ func constructLits(b: in Option[TExpr]): String {
     case Some(body) -> match body.kind {
       case XBlock(_, Some(t)) -> match t.kind {
         case XConstruct(_, fs) -> {
-          var out = ""
+          var acc = ""
           for f in fs {
-            val one = match f.kind {
-              case XLit(TLInt(v)) -> toString(v)
-              case _ -> "?"
-            }
-            out = if out.length == 0 { one } else { out + "," + one }
+            val one = match f.kind { case XLit(TLInt(v)) -> toString(v); case _ -> "?" }
+            acc = if acc.length == 0 { one } else { acc + "," + one }
           }
-          out
+          acc
         }
         case _ -> "other"
       }
