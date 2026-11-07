@@ -15222,11 +15222,16 @@ test "a bare local receiver keeps method dispatch, and a coincidental type name 
 
 test "a call through a nested package path a local shadows is checked as the package's call (D359)" {
   val pre = "package P.Sub\nrecord Box { n: Int }\nfunc target(x: in Int): Int { x }\n"
-  val good = parseCheck(pre + "func g(P: in Box): Int {\n  P.Sub.target(1)\n}\n")
+  val good = parseCheck(pre + "func g(P: in Int): Int {\n  P.Sub.target(1)\n}\n")
   assertEqual(diagCodesOf(good), "", "the call is the package's target: " + diagCodesOf(good))
-  val wrongArg = parseCheck(pre + "func g(P: in Box): Int {\n  P.Sub.target(\"wrong\")\n}\n")
+  val wrongArg = parseCheck(pre + "func g(P: in Int): Int {\n  P.Sub.target(\"wrong\")\n}\n")
   assertTrue(diagCodesOf(wrongArg) != "", "an argument of the wrong type is checked: " + diagCodesOf(wrongArg))
-  val wrongResult = parseCheck(pre + "func g(P: in Box): String {\n  P.Sub.target(1)\n}\n")
+  val refLocal = parseCheck(pre + "func g(P: in Box): Int {\n  P.Sub.target(1)\n}\n")
+  assertTrue(
+    Str.contains(diagCodesOf(refLocal), "T0113"),
+    "a record-typed local keeps its value chain: " + diagCodesOf(refLocal)
+  )
+  val wrongResult = parseCheck(pre + "func g(P: in Int): String {\n  P.Sub.target(1)\n}\n")
   assertTrue(diagCodesOf(wrongResult) != "", "a result of the wrong type is checked: " + diagCodesOf(wrongResult))
 }
 
