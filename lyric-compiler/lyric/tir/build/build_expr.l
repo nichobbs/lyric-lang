@@ -540,7 +540,18 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
     match arm.guard {
       case Some(g) -> match buildExpr(env, g) {
         case Some(t) -> {
-          guard = Some(value = t)
+          // The checker accepts a guard that never completes; the verifier wants a Bool.
+          guard = match t.ty {
+            case TNever -> Some(
+              value = TExpr(
+                id = freshNodeId(env),
+                ty = tyBool(),
+                span = t.span,
+                kind = XConvert(kind = CvFromNever, inner = t)
+              )
+            )
+            case _ -> Some(value = t)
+          }
         }
         case None -> {
           armOk = false
@@ -970,6 +981,15 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
 /// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
 /// its own, or not at all (counted).  A branch that never completes fits any type.
 func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  // A block is typed as the whole, but its tail keeps its own type, which is
+  // the value that needs converting.
+  match t.kind {
+    case XBlock(stmts, Some(tail)) -> match coerceBranch(env, tail, ty) {
+      case Some(nt) -> return Some(value = TExpr(id = t.id, ty = ty, span = t.span, kind = XBlock(stmts = stmts, tail = Some(value = nt))))
+      case None -> return None
+    }
+    case _ -> ()
+  }
   if tyEq(t.ty, ty) {
     return Some(value = t)
   }

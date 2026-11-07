@@ -634,3 +634,35 @@ test "an enum case in a payload is refutable, so the match is not proved exhaust
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(matchSummary(r.body) == "1:open", matchSummary(r.body))
 }
+
+test "a block arm's tail is widened with the block" {
+  val r = buildFirstFn(
+    "package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  match b {\n    case true -> { i }\n    case false -> l\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an if whose branch needs widening builds" {
+  val r = buildFirstFn("package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  if b { i } else { l }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "a bare name for a case with a payload is counted, not built with no fields" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A -> 1\n    case B -> 0\n  }\n}\n"
+  )
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
+}
+
+test "a guarded arm never proves a match exhaustive" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) if n > 0 -> n\n    case B -> 0\n  }\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
+}
