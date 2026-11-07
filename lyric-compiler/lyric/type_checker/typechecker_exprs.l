@@ -10395,6 +10395,53 @@ func noteCtorZeroArgs(
   }
 }
 
+// A `String`: its members are open host members the checker does not enumerate.
+func isHostStringPrim(pt: in PrimType): Bool {
+  match pt {
+    case PtString -> true
+    case _ -> false
+  }
+}
+
+// `Pkg.Sub.Rec(...)` or `Pkg.Sub.fn(...)` where a local shadows only the first
+// segment `Pkg` (#6838): the full package path still names a record or a
+// function, so the call is that construction or call, not a method chain on the
+// local (D359).
+func shadowedQualifiedCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+): Bool {
+  match fn.kind {
+    case EMember(_, member) -> {
+      val segs: List[String] = newList()
+      if not flattenCalleePathSegs(fn, segs) or segs.count < 2 {
+        return false
+      }
+      match scopeTryFind(sc, segs[0]) {
+        case Some(_) -> {
+          match constructorSymbolOf(tbl, fn) {
+            case Some(_) -> return true
+            case None -> ()
+          }
+          // The same for a function the named package declares.
+          val wantPkg = qualifierOfSegs(segs)
+          for qc in qualifiedCallCandidates(sigs, member, args) {
+            if qc.originPackage == wantPkg {
+              return true
+            }
+          }
+          false
+        }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 // A QUALIFIED constructor call (`Pkg.Type(...)` or `Pkg.Sub.Type(...)`, the
 // latter a nested `EMember` chain over an `EPath` head) previously returned
 // `None` here unconditionally — the single-segment-only match below is the
@@ -10420,32 +10467,6 @@ func noteCtorZeroArgs(
 // authoritative site for a bare callee name — adding a second check here
 // would double-emit T0123 for one source reference, the exact hazard #6539
 // fixed for the pattern-head path).
-// `Pkg.Sub.Rec(...)` where a local shadows only the first segment `Pkg`
-// (#6838): the full package path still names a record, so the call is its
-// construction, not a method chain on the local (D359).
-func isHostStringPrim(pt: in PrimType): Bool {
-  match pt {
-    case PtString -> true
-    case _ -> false
-  }
-}
-
-func shadowedQualifiedCtor(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Bool {
-  match fn.kind {
-    case EMember(_, _) -> {
-      val segs: List[String] = newList()
-      if not flattenCalleePathSegs(fn, segs) or segs.count < 2 {
-        return false
-      }
-      match scopeTryFind(sc, segs[0]) {
-        case Some(_) -> match constructorSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
-        case None -> false
-      }
-    }
-    case _ -> false
-  }
-}
-
 func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   val flatSegs: List[String] = newList()
   if not flattenCalleePathSegs(fn, flatSegs) or flatSegs.count == 0 {
@@ -19463,7 +19484,7 @@ func inferExprCore(
         case _ -> false
       }
       match fn.kind {
-        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal and not shadowedQualifiedCtor(sc, tbl, fn) {
+        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal and not shadowedQualifiedCallee(sc, tbl, sigs, fn, args) {
           isMemberCallee = true
           memberName = mname2
           match cachedRecvType {
@@ -19537,7 +19558,7 @@ func inferExprCore(
           checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
           inferMemberBase(tbl, rt, memberName)
         }
-        case None -> if shadowedQualifiedCtor(sc, tbl, fn) {
+        case None -> if shadowedQualifiedCallee(sc, tbl, sigs, fn, args) {
           tyErrorUnresolved()
         } else {
           inferExpr(sc, tbl, sigs, diag, fn)
