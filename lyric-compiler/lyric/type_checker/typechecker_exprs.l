@@ -12251,8 +12251,24 @@ func bindPatternTyped(
           if scrutineeHasCaseNamed(tbl, ty, name) {
             recordCasePatternUnion(tbl, pat.span, ty)
             recordEnumCasePattern(tbl, pat.span, ty)
+            // A bare name for a case that has a payload is not recorded: TIR wants a
+            // pattern per payload field, which the name does not give.
             match scrutineeCaseNamed(tbl, ty, name) {
-              case Some(cs) -> match casePatternSymbolId(tbl, cs) { case Some(id) -> recordPatSym(tbl, pat, id); case None -> () }
+              case Some(cs) -> {
+                var hasPayload = false
+                match cs.kind {
+                  case DKUnionCase(_, uc) -> if uc.fields.count > 0 {
+                    hasPayload = true
+                  }
+                  case _ -> ()
+                }
+                if not hasPayload {
+                  match casePatternSymbolId(tbl, cs) {
+                    case Some(id) -> recordPatSym(tbl, pat, id)
+                    case None -> ()
+                  }
+                }
+              }
               case None -> ()
             }
           }
