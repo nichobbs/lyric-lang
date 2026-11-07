@@ -170,15 +170,25 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    function used as a value is keyed `bareref:<package>::<name>` and read with
    the calling package. `~byref~<name>` stays name-keyed on purpose: it only
    decides whether a `var` argument gets a heap cell (never which function a
-   call binds) and runs before any call is resolved. Verified by the 132
-   `compiler-self-tests-jvm` files that run outside CI's environment (the
-   A call whose callee has no recorded site (a dependency package
-   compiled without one, a default lowered in another package) binds through
-   the file's import-scoped type map (`typeOwnerDotNamedSigJvm`: `externTypes[Type]`
-   names the declaring package), never a bundle-wide name; `qualifyCheckedCallees`
-   (shared by both backends) writes a dot-named callee of a default as
-   `Pkg.Type.f` the way it writes a bare one, and leaves a call on a local
-   (`w.f(x)`) alone because only a `Type` receiver has a site. `LYRIC_FFI_JARS` and `config_block` environment variables aside) and
+   call binds) and runs before any call is resolved.
+
+   A call whose callee has no recorded site (a dependency package compiled
+   without one, or a default lowered in another package) binds through the
+   file's import-scoped type map (`typeOwnerDotNamedSigJvm`: `externTypes[Type]`
+   names the declaring package, so `Std.HttpHost`'s `Identity.rawHandle` binds
+   to `Std.Tls`), never a bundle-wide name. The rendered callee is
+   `Pkg::Type.member(P1,P2)`; `siteDotNamedSigJvm` and `qualifiedCalleeSegments`
+   (in `Lyric.Pipeline`) both read it by splitting at `::` and `(`.
+   `qualifyCheckedCallees`, shared by both backends, writes a dot-named callee
+   of a default as `Pkg.Type.f` the way it writes a bare one, and leaves a call
+   on a local (`w.f(x)`) alone because only a `Type` receiver has a site. Two
+   packages that each declare a same-named type with a same-named dot-named
+   function still bind by the checker's choice of callee (#8874).
+
+   Verified by the compiler-self-tests-jvm files (all but two that need CI's
+   `LYRIC_FFI_JARS` fixture and `config_block` environment variables),
+   `emitter_project_self_test.l` (a default calling a dot-named function of a
+   package only its declaring package imports, MSIL and JVM) and
    `multi-file-package-merge-e2e.sh dotnet jvm`.
 
 ## Consequences
