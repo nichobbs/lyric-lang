@@ -2208,7 +2208,7 @@ func collectDeriveFreeSigs(
           if bundleCallable and not into.containsKey(publicNameKey) {
             into.add(publicNameKey, sig)
           }
-          if bundleCallable and not into.containsKey(decl.name) {
+          if bundleCallable and not decl.name.contains(".") and not into.containsKey(decl.name) {
             into.add(decl.name, sig)
           }
         }

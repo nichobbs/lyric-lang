@@ -66,6 +66,17 @@ func make(): Int {
 
 type Age = Int range 0 ..= 150
 
+// Two overloads of one dot-named function whose generic return types differ:
+// a call that leaves out the defaulted argument binds the checker's resolved
+// overload, so the matched payload below is an Int, not a String.
+func Widget.pick(w: in Widget, a: in Int, b: in Int = 0): Option[Int] {
+  Some(value = w.id + a + b)
+}
+
+func Widget.pick(w: in Widget, s: in String): Option[String] {
+  Some(value = s)
+}
+
 test "Widget.make and the unrelated free make() both compile and run (#7501)" {
   val w = Widget.make(5)
   assertEqualInt(w.id, 5, "Widget.make(5).id == 5")
@@ -80,5 +91,13 @@ test "a genuine per-type static (Age.tryFrom) in the same package still resolves
   match Age.tryFrom(200) {
     case Ok(_) -> assertTrue(false, "Age.tryFrom(200) should have been rejected (out of range)")
     case Err(_) -> assertTrue(true, "Age.tryFrom(200) correctly rejected")
+  }
+}
+
+test "a dot-named call with an omitted default recovers the resolved overload's payload type" {
+  val w = Widget.make(5)
+  match Widget.pick(w, 1) {
+    case Some(n) -> assertEqualInt(n + 1, 7, "Widget.pick(w, 1) is the Int overload: 5 + 1 + 0, plus 1")
+    case None -> assertTrue(false, "Widget.pick(w, 1) unexpectedly None")
   }
 }

@@ -904,7 +904,7 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
                   case None -> match recv.kind {
                     case EPath(p) -> {
                       val dotKey = lastSegment(p) + "." + memberName
-                      match siteDotNamedSigJvm(ctx, methodCallSiteKey(fn), dotKey, callArgs.count) {
+                      match siteDotNamedSigJvm(ctx, methodCallSiteKey(fn), dotKey, resolvedArityJvm(ctx, methodCallSiteKey(fn), callArgs.count)) {
                         case Some(ssig) -> ssig.retGenericArgs
                         case None -> match mapGet(ctx.funcSigs, ctx.pkgName + "::" + dotKey) {
                           case Some(ssig) -> ssig.retGenericArgs
