@@ -772,9 +772,7 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
         case None -> {
           noteUncovered(env, "an annotated binding conversion")
           env.errors.add(
-            "I0002: the builder has no case for an annotated binding conversion at " +
-              toString(s.span.startPos.line) +
-              ":" +
+            "I0002: the builder has no case for an annotated binding conversion at " + toString(s.span.startPos.line) + ":" +
               toString(s.span.startPos.column)
           )
           None
@@ -804,7 +802,7 @@ func buildLet(
 
 /// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
 /// parameters become the outermost locals; a generic function binds its type
-/// parameters to its symbol; a function with contracts and a function with an expression body are not covered yet.
+/// parameters to its symbol.  A function with contracts is not covered yet.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
   val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   match fn.generics {
@@ -1231,7 +1229,7 @@ func buildExternCall(
 /// used as its underlying type.  None for any other pair: a distinct wrap, an interface
 /// upcast, a host boxing or a slice/list conversion needs the declaration, not the
 /// types, and stays counted.
-func convKindOf(from: in Ty, to: in Ty): Option[ConvKind] {
+pub func convKindOf(from: in Ty, to: in Ty): Option[ConvKind] {
   match widenKind(from, to) {
     case Some(k) -> return Some(value = k)
     case None -> ()
@@ -1241,18 +1239,12 @@ func convKindOf(from: in Ty, to: in Ty): Option[ConvKind] {
     case _ -> ()
   }
   match to {
-    case TNullable(inner) -> if tyEq(from, inner) {
-      return Some(value = CvLiftNullable)
-    }
-    case TRefined(u, _, _, _) -> if tyEq(from, u) {
-      return Some(value = CvRangeCheck)
-    }
+    case TNullable(inner) -> if tyEq(from, inner) { return Some(value = CvLiftNullable) }
+    case TRefined(u, _, _, _) -> if tyEq(from, u) { return Some(value = CvRangeCheck) }
     case _ -> ()
   }
   match from {
-    case TRefined(u, _, _, _) -> if tyEq(u, to) {
-      return Some(value = CvUnrefine)
-    }
+    case TRefined(u, _, _, _) -> if tyEq(u, to) { return Some(value = CvUnrefine) }
     case _ -> ()
   }
   None

@@ -1138,9 +1138,6 @@ func convShape(e: in Option[TExpr]): String {
   match e {
     case Some(x) -> match x.kind {
       case XConvert(CvWiden(_), _) -> "widen"
-      case XConvert(CvLiftNullable, _) -> "lift"
-      case XConvert(CvRangeCheck, _) -> "range"
-      case XConvert(CvUnrefine, _) -> "unrefine"
       case XConvert(_, _) -> "other"
       case _ -> "none"
     }
@@ -1161,13 +1158,6 @@ test "an annotated binding that needs no conversion has none" {
   assertTrue(convShape(firstLetInit(r.body)) == "none", convShape(firstLetInit(r.body)))
 }
 
-test "a value bound to an optional annotation is lifted" {
-  val r = buildFirstFn("package App\nfunc f(n: Int): Int? {\n  val a: Int? = n\n  a\n}\n")
-  assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
-  assertTrue(convShape(firstLetInit(r.body)) == "lift", convShape(firstLetInit(r.body)))
-}
-
 test "an annotated var and a let build the same way" {
   val r = buildFirstFn("package App\nfunc f(n: Int): Long {\n  var a: Long = n\n  a\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
@@ -1181,7 +1171,7 @@ test "a binding annotated with the enclosing type parameter builds" {
 }
 
 test "conversions are derived from the two types alone" {
-  val age = TRefined(underlying = tyInt(), lo = Some(value = 0L), hi = Some(value = 150L), hiInclusive = true)
+  val age = TirT.TRefined(underlying = tyInt(), lo = Some(value = 0i64), hi = Some(value = 150i64), hiInclusive = true)
   assertTrue(
     match convKindOf(tyInt(), age) { case Some(CvRangeCheck) -> true; case _ -> false },
     "an Int into a range subtype is checked"
@@ -1193,6 +1183,10 @@ test "conversions are derived from the two types alone" {
   assertTrue(
     match convKindOf(TirT.TNever, tyString()) { case Some(CvFromNever) -> true; case _ -> false },
     "Never as a value"
+  )
+  assertTrue(
+    match convKindOf(tyInt(), TirT.TNullable(inner = tyInt())) { case Some(CvLiftNullable) -> true; case _ -> false },
+    "T used as T?"
   )
   assertTrue(convKindOf(tyString(), tyInt()).isNone(), "unrelated types have no conversion")
 }
