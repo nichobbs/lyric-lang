@@ -81,4 +81,9 @@ pub record ResolvedSignature {
   /// type arguments are never inferred by the monomorphiser, so the checker
   /// judges a call of one even when it is the package's own.
   hostBound: Bool = false
+  /// The mode of the explicit `self` receiver a method declared in a type body
+  /// had before the signature dropped it, or of the first parameter of a
+  /// dot-named function `T.f(self, ...)` the receiver-dropped copy came from
+  /// (D389).  `None` when the signature has no receiver or does not know it.
+  recvMode: Option[ParamMode] = None
 }

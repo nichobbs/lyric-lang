@@ -959,6 +959,13 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     }
     case None -> ()
   }
+  match mapGet(tbl.methodCallByNode, e.nodeId) {
+    case Some(site) -> match mapGet(tbl.calleeByNode, e.nodeId) {
+      case Some(sym) -> return buildMethodCall(env, e, ty, sym, site, fn, args)
+      case None -> ()
+    }
+    case None -> ()
+  }
   if tbl.externByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "an extern call")
   }
@@ -1261,6 +1268,59 @@ func buildDirectCall(
     )
     case None -> None
   }
+}
+
+/// A method call `recv.m(args)`: the receiver first, then the arguments placed by
+/// parameter, to the method the checker resolved (`Direct`, or `Interface` for an
+/// interface-typed receiver).  Only a receiver passed `in` is built; a mutating
+/// receiver would be a place argument, and an unknown mode is not guessed.
+func buildMethodCall(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  sym: in SymbolId,
+  site: in MethodCallSite,
+  fn: in Expr,
+  args: in List[CallArg],
+): Option[TExpr] {
+  val recvExpr = match fn.kind {
+    case EMember(r, _) -> r
+    case _ -> return uncoveredExpr(env, e, "a method call whose callee is not a member access")
+  }
+  match site.sig.recvMode {
+    case Some(PMIn) -> ()
+    case Some(_) -> return uncoveredExpr(env, e, "a method call with a mutating receiver")
+    case None -> return uncoveredExpr(env, e, "a method call with no declared receiver")
+  }
+  val declared = match tyOfType(env.ctx, site.recvTy) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg)
+      return None
+    }
+  }
+  val rt = match buildExpr(env, recvExpr) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  val recv = match coerceArg(env, rt, declared) {
+    case Some(c) -> c
+    case None -> return None
+  }
+  val rest = match buildCallArgs(env, e, site.sig, args) {
+    case Some(a) -> a
+    case None -> return None
+  }
+  val all: List[TArg] = newList()
+  all.add(TArgIn(value = recv))
+  for a in rest {
+    all.add(a)
+  }
+  val callee = match site.iface {
+    case Some(i) -> Interface(iface = i, ifaceArgs = newList(), method = sym, typeArgs = newList())
+    case None -> Direct(sym = sym, typeArgs = newList())
+  }
+  Some(value = mkExpr(e, ty, XCall(callee = callee, args = all)))
 }
 
 /// A record or union-case construction: the fields in declaration order, placed and

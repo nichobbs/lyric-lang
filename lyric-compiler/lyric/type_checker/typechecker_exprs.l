@@ -4746,7 +4746,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     isPure = entry.sig.isPure,
     isIo = entry.sig.isIo,
     isEntry = entry.sig.isEntry,
-    isExternFunc = entry.sig.isExternFunc
+    isExternFunc = entry.sig.isExternFunc,
+    recvMode = entry.sig.recvMode
   )
 }
 
@@ -5561,11 +5562,49 @@ func recordMethodCalleeNode(
             tbl.calleeByNode.remove(callNode)
           }
           tbl.calleeByNode.add(callNode, id)
+          recordMethodCallSite(tbl, callNode, mp, recvTy)
         }
         case None -> ()
       }
     }
   }
+}
+
+// The method call's shape under its `NodeId` (`methodCallByNode`, D389): its
+// receiver-dropped signature and receiver type, and the interface the receiver
+// is a value of.  A non-generic call on a closed receiver only; a generic one
+// waits for the generic-call step.
+func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCallPick, recvTy: in Type): Unit {
+  if mp.sig.generics.count > 0 {
+    return
+  }
+  val recv = unrefine(recvTy)
+  var iface: Option[SymbolId] = None
+  match recv {
+    case TyUser(id, _, targs) -> {
+      if targs.count > 0 {
+        return
+      }
+      match symbolOfDefId(tbl, id) {
+        case Some(s) -> match s.kind {
+          case DKInterface(_, _) -> {
+            iface = Some(value = id)
+          }
+          case _ -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> return
+  }
+  val declared = match mp.fullSig {
+    case Some(full) -> if full.params.count > 0 { full.params[0].ty } else { recv }
+    case None -> recv
+  }
+  if tbl.methodCallByNode.containsKey(callNode) {
+    tbl.methodCallByNode.remove(callNode)
+  }
+  tbl.methodCallByNode.add(callNode, MethodCallSite(sig = mp.sig, recvTy = declared, iface = iface))
 }
 
 // The receiver-dropped copy of a full dot-named signature.
@@ -5590,7 +5629,8 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
     isPure = full.isPure,
     isIo = full.isIo,
     isEntry = full.isEntry,
-    isExternFunc = full.isExternFunc
+    isExternFunc = full.isExternFunc,
+    recvMode = if full.params.count > 0 { Some(value = full.params[0].mode) } else { None }
   )
 }
 

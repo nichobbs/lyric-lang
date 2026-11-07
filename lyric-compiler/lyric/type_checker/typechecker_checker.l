@@ -1821,7 +1821,8 @@ func resolveMethodSigParts(
     isPure = fnIsPure,
     isIo = fnIsIo,
     isEntry = fnIsEntry,
-    isExternFunc = false
+    isExternFunc = false,
+    recvMode = if fnParams.count > 0 and fnParams[0].name == "self" { Some(value = fnParams[0].mode) } else { None }
   )
 }
 
