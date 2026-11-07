@@ -1190,3 +1190,44 @@ test "conversions are derived from the two types alone" {
   )
   assertTrue(convKindOf(tyString(), tyInt()).isNone(), "unrelated types have no conversion")
 }
+
+// ─── Field reads (docs/70 §6.3, D397) ────────────────────────────────────────
+func fieldOf(b: in Option[TExpr]): Option[FieldRef] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XField(_, f) -> Some(value = f)
+      case XBlock(_, Some(t)) -> fieldOf(Some(value = t))
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a record field read is a field by its declared position" {
+  val r = buildFirstFn("package App\nrecord P {\n  x: Int\n  y: String\n}\nfunc f(p: P): String {\n  p.y\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match fieldOf(r.body) {
+    case Some(f) -> {
+      assertEqualInt(f.index, 1, "y is the second field")
+      assertTrue(f.name == "y", "named y")
+    }
+    case None -> assertTrue(false, "a field read")
+  }
+}
+
+test "a field of a generic record builds at the receiver's instantiation" {
+  val r = buildFirstFn("package App\nrecord Box[T] {\n  v: T\n  n: Int\n}\nfunc f(b: Box[String]): Int {\n  b.n\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match fieldOf(r.body) {
+    case Some(f) -> assertEqualInt(f.index, 1, "n is the second field")
+    case None -> assertTrue(false, "a field read")
+  }
+}
+
+test "a member that is not a record field is counted" {
+  val r = buildFirstFn("package App\nfunc f(xs: in slice[Int]): Int {\n  xs.count\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(mapGetOr0(r.env.uncovered, "a member access that is not a record field") >= 1, "counted")
+}
