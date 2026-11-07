@@ -1260,7 +1260,9 @@ func buildDirectCall(
     return uncoveredExpr(env, e, "a generic call")
   }
   match buildCallArgs(env, e, sig, args) {
-    case Some(targs) -> Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs)))
+    case Some(targs) -> Some(
+      value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs))
+    )
     case None -> None
   }
 }

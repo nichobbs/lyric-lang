@@ -5145,10 +5145,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
   if node <= 0 {
     return
   }
-  val closed = match unrefine(resultTy) {
-    case TyUser(_, _, a) -> a.count == 0
-    case _ -> false
-  }
+  val closed = match unrefine(resultTy) { case TyUser(_, _, a) -> a.count == 0; case _ -> false }
   if not closed {
     return
   }
@@ -5166,9 +5163,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
             if k >= fes.count {
               return
             }
-            params.add(
-              ResolvedParam(name = fd.name, ty = fes[k].ty, mode = PMIn, hasDefault = fd.dflt.isSome(), span = fd.span)
-            )
+            params.add(ResolvedParam(name = fd.name, ty = fes[k].ty, mode = PMIn, hasDefault = fd.dflt.isSome(), span = fd.span))
             k = k + 1
           }
           case _ -> ()
@@ -5188,7 +5183,13 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
             ResolvedParam(name = n, ty = ftypes[k], mode = PMIn, hasDefault = false, span = sp)
           )
           case UFPos(_, sp) -> params.add(
-            ResolvedParam(name = "#" + toString(k), ty = ftypes[k], mode = PMIn, hasDefault = false, span = sp)
+            ResolvedParam(
+              name = "#" + toString(k),
+              ty = ftypes[k],
+              mode = PMIn,
+              hasDefault = false,
+              span = sp
+            )
           )
         }
         k = k + 1
