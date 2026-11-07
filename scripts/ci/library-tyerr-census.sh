@@ -42,9 +42,12 @@ NATIVE_ONLY=(
 
 # Builds the census cannot judge for a reason the census does not own, each with
 # the tracked issue that fixes it ("manifest|target|issue").  They are reported,
-# not failed; any other unchecked build fails the run (D386).
+# not failed; any other unchecked build fails the run (D386).  The fourth field
+# is the diagnostic code the issue covers: the build is known only when that code
+# is present and no other coded error and no timeout is (a new failure in the same
+# build stays unchecked).  Format: "manifest|target|issue|code".
 KNOWN_UNCHECKED=(
-  "lyric-ui/lyric.toml|jvm|#8886"
+  "lyric-ui/lyric.toml|jvm|#8886|M0004"
 )
 
 export NuGetAudit=false
@@ -113,7 +116,12 @@ for phase in dotnet jvm native; do
         [[ -n "$reason" ]] || reason="exit $rc: $(tail -n1 "$log" | cut -c1-140)"
         known=""
         for k in "${KNOWN_UNCHECKED[@]+"${KNOWN_UNCHECKED[@]}"}"; do
-          [[ "${k%|*}" == "$manifest|$target" ]] && known="${k##*|}"
+          IFS='|' read -r km kt ki kc <<<"$k"
+          if [[ "$km|$kt" == "$manifest|$target" && "$rc" -ne 124 ]] \
+            && grep -qF "error[$kc]" "$log" \
+            && ! grep -oE 'error\[[A-Z][0-9]+\]' "$log" | grep -qvF "error[$kc]"; then
+            known="$ki"
+          fi
         done
         if [[ -n "$known" ]]; then
           echo "$manifest ($target): tracked in $known: $reason" >>"$known_file"
