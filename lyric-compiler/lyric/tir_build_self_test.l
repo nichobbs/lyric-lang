@@ -428,7 +428,9 @@ test "a built-in call with an argument the builder cannot check is counted" {
 }
 
 test "collection members take their parameter types from a host or a declared receiver" {
-  val host = TirT.TExtern(host = HostTypeRef(name = "System.Collections.Generic.List`1", args = [TirT.TPrim(kind = TPLong)]))
+  val host = TirT.TExtern(
+    host = HostTypeRef(name = "System.Collections.Generic.List`1", args = [TirT.TPrim(kind = TPLong)])
+  )
   match memberArgTys(host, "List.add", 1) {
     case Some(tys) -> {
       assertEqualInt(tys.count, 1, "one parameter")
@@ -437,7 +439,10 @@ test "collection members take their parameter types from a host or a declared re
     case None -> assertTrue(false, "a host List has derived parameter types")
   }
   match memberArgTys(host, "List.add", 2) {
-    case Some(tys) -> assertTrue(tyEq(tys[0], tyInt()) and tyEq(tys[1], TirT.TPrim(kind = TPLong)), "index then element")
+    case Some(tys) -> assertTrue(
+      tyEq(tys[0], tyInt()) and tyEq(tys[1], TirT.TPrim(kind = TPLong)),
+      "index then element"
+    )
     case None -> assertTrue(false, "the two-argument add")
   }
   match memberArgTys(host, "Map.add", 2) {
@@ -452,4 +457,3 @@ test "a refined argument to a built-in the builder cannot check is counted, not 
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
 }
-
