@@ -1321,3 +1321,70 @@ test "an assignment through a name that is not a local is counted" {
   val r = buildFirstFn("package App\nfunc f(a: Int): Unit {\n  (a + 1) = 2\n}\n")
   assertTrue(not r.body.isSome(), "no body")
 }
+
+// ─── Lambdas (docs/70 §6.3, D399) ────────────────────────────────────────────
+func lambdaOf(b: in Option[TExpr]): Option[TExpr] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XLambda(_, _, _) -> Some(value = body)
+      case XBlock(stmts, tail) -> {
+        for st in stmts {
+          match st.kind {
+            case TsLet(_, init) -> match init.kind {
+              case XLambda(_, _, _) -> return Some(value = init)
+              case _ -> ()
+            }
+            case _ -> ()
+          }
+        }
+        match tail {
+          case Some(t) -> lambdaOf(Some(value = t))
+          case None -> None
+        }
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a lambda over its parameter has no captures" {
+  val r = buildFirstFn("package App\nfunc f(): (Int) -> Int {\n  { x: Int -> x + 1 }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match lambdaOf(r.body) {
+    case Some(l) -> match l.kind {
+      case XLambda(ps, caps, _) -> {
+        assertEqualInt(ps.count, 1, "one parameter")
+        assertEqualInt(caps.count, 0, "no captures")
+      }
+      case _ -> assertTrue(false, "a lambda")
+    }
+    case None -> assertTrue(false, "a lambda")
+  }
+}
+
+test "a lambda captures an outer value by value and a var by reference" {
+  val r = buildFirstFn(
+    "package App\nfunc f(n: Int): (Int) -> Int {\n  var c = 0\n  val g = { x: Int -> x + n + c }\n  g\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match lambdaOf(r.body) {
+    case Some(l) -> match l.kind {
+      case XLambda(_, caps, _) -> {
+        assertEqualInt(caps.count, 2, "n and c")
+        var byRef = 0
+        for c in caps {
+          match c.mode {
+            case CmByRef -> byRef = byRef + 1
+            case CmByValue -> ()
+          }
+        }
+        assertEqualInt(byRef, 1, "only the var is by reference")
+      }
+      case _ -> assertTrue(false, "a lambda")
+    }
+    case None -> assertTrue(false, "a lambda")
+  }
+}

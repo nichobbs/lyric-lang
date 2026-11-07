@@ -36,6 +36,16 @@ pub record BuildEnv {
   /// The generic context of the function being built (empty or one entry): the type
   /// parameters an annotation may name.
   generics: List[GenericContext]
+  /// The lambdas being built, innermost last: a local resolved from outside one is a
+  /// capture of it.
+  lambdas: List[LambdaFrame]
+}
+
+/// A lambda being built: the highest local number declared before it began (a local
+/// numbered at most this is outside it) and the captures found so far.
+pub record LambdaFrame {
+  start: Int
+  caps: List[Capture]
 }
 
 /// The first `NodeId` of a made-up node: above any id `renumberNodeIds` hands out.
@@ -60,7 +70,8 @@ pub func newBuildEnvSharing(ctx: in TyConvCtx, counter: in List[Int]): BuildEnv 
     errors = newList(),
     uncovered = newMap(),
     nextNode = counter,
-    generics = newList()
+    generics = newList(),
+    lambdas = newList()
   )
 }
 
@@ -95,12 +106,33 @@ func lookupLocal(env: in BuildEnv, name: in String): Option[LocalDecl] {
   var i = env.scopes.count - 1
   while i >= 0 {
     match mapGet(env.scopes[i], name) {
-      case Some(d) -> return Some(value = d)
+      case Some(d) -> {
+        noteCapture(env, d)
+        return Some(value = d)
+      }
       case None -> ()
     }
     i = i - 1
   }
   None
+}
+
+/// A local used inside a lambda but declared before it began is captured by it, and by
+/// every enclosing lambda it is also outside of.  A `var` is captured by reference.
+func noteCapture(env: in BuildEnv, d: in LocalDecl): Unit {
+  for f in env.lambdas {
+    if d.id.id <= f.start {
+      var seen = false
+      for c in f.caps {
+        if c.local.id == d.id.id {
+          seen = true
+        }
+      }
+      if not seen {
+        f.caps.add(Capture(local = d.id, mode = if d.mutable { CmByRef } else { CmByValue }))
+      }
+    }
+  }
 }
 
 /// Count a construct the builder has no case for.
@@ -389,7 +421,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case EMember(r, name) -> buildFieldRead(env, e, ty, r, name)
     case EIndex(r, idxs) -> buildIndexRead(env, e, ty, r, idxs)
     case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
-    case ELambda(_, _) -> uncoveredExpr(env, e, "a lambda")
+    case ELambda(ps, b) -> buildLambda(env, e, ty, ps, b)
     case EAssign(t, op, v) -> buildAssign(env, e, t, op, v)
     case ERange(_) -> uncoveredExpr(env, e, "a range")
     case ESelf -> uncoveredExpr(env, e, "self")
@@ -1340,6 +1372,39 @@ func buildIndexRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, idxs
     case Some(p) -> Some(value = mkExpr(e, ty, XIndex(recv = p.recv, idx = p.idx, how = p.how)))
     case None -> None
   }
+}
+
+/// A lambda: its parameters take the types of the function type the checker gave it, its
+/// body is built with the parameters in scope and converted to the result type, and its
+/// captures are the outer locals the body used.
+func buildLambda(
+  env: in BuildEnv, e: in Expr, ty: in Ty, params: in List[Px.LambdaParam], body: in Block
+): Option[TExpr] {
+  val sig = match ty {
+    case TFunc(ps, r, _) -> if ps.count == params.count { Some(value = LambdaSig(params = ps, ret = r)) } else { None }
+    case _ -> None
+  }
+  val ls = match sig { case Some(x) -> x; case None -> return uncoveredExpr(env, e, "a lambda whose type has other parameters") }
+  pushScope(env)
+  val frame = LambdaFrame(start = env.nextLocal[0], caps = newList())
+  env.lambdas.add(frame)
+  val decls: List[LocalDecl] = newList()
+  var i = 0
+  while i < params.count {
+    decls.add(declareLocal(env, params[i].name, ls.params[i].ty, false))
+    i = i + 1
+  }
+  val built = buildBlock(env, body, None, freshNodeId(env))
+  env.lambdas.removeAt(env.lambdas.count - 1)
+  popScope(env)
+  val b = match built { case Some(x) -> x; case None -> return None }
+  val conv = match coerceBranch(env, b, ls.ret) { case Some(c) -> c; case None -> return None }
+  Some(value = mkExpr(e, ty, XLambda(params = decls, captures = frame.caps, body = conv)))
+}
+
+record LambdaSig {
+  params: List[TParamTy]
+  ret: Ty
 }
 
 /// The place an assignment writes: a local, a record field or an element.  An assignment
