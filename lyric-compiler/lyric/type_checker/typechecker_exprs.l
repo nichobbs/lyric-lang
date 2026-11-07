@@ -8331,7 +8331,11 @@ func inferPropagate(
   // A success type nothing fixes yet is the open hole (`None?`, `Err(...)?`):
   // the consumer or `closeOpenPropagateOperands` settles it (#8181, D359).
   val unwrapped = propagateUnwrap(closed)
-  if isSilentTyError(unwrapped) { tyErrorOpen() } else { unwrapped }
+  if isSilentTyError(unwrapped) {
+    tyErrorOpen()
+  } else {
+    unwrapped
+  }
 }
 
 // A construction that is a branch of an `if`/`match`/block used as the operand

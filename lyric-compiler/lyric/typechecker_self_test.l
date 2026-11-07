@@ -15128,9 +15128,13 @@ test "a protected type's field read in an ensures clause is typed (D359)" {
   val cr = parseCheck(src)
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
   assertEqual(diagCodesOf(cr), "", "no diagnostic")
-  val bad = parseCheck("package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc peek(b: in Bucket): Long { b.tokens }\n")
+  val bad = parseCheck(
+    "package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc peek(b: in Bucket): Long { b.tokens }\n"
+  )
   assertTrue(Str.contains(diagCodesOf(bad), "T0221"), "a read outside the type is still T0221: " + diagCodesOf(bad))
-  val wrong = parseCheck("package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc make(c: in Long): Bucket\n  ensures: result.tokens == \"x\"\n{\n  Bucket(tokens = c)\n}\n")
+  val wrong = parseCheck(
+    "package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc make(c: in Long): Bucket\n  ensures: result.tokens == \"x\"\n{\n  Bucket(tokens = c)\n}\n"
+  )
   assertTrue(diagCodesOf(wrong) != "", "the field has its declared type: " + diagCodesOf(wrong))
 }
 
@@ -15139,12 +15143,16 @@ test "a generic distinct type's constructor call takes its arguments from the va
   val cr = parseCheck(src)
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
   assertEqual(diagCodesOf(cr), "", "Wrapped(xs) is a Wrapped[Int]: " + diagCodesOf(cr))
-  val bad = parseCheck("package P\ntype Wrapped[T] = slice[T]\nfunc wrap(xs: in slice[Int]): Wrapped[String] {\n  Wrapped(xs)\n}\n")
+  val bad = parseCheck(
+    "package P\ntype Wrapped[T] = slice[T]\nfunc wrap(xs: in slice[Int]): Wrapped[String] {\n  Wrapped(xs)\n}\n"
+  )
   assertTrue(diagCodesOf(bad) != "", "a Wrapped[Int] is not a Wrapped[String]")
 }
 
 test "a conversion of an unchecked host value is unchecked, not silent (D359)" {
-  val cr = parseCheck("package P\nextern type Arr = \"System.IO.MemoryStream\"\nfunc f(a: in Arr): Int {\n  val b = a.ToArray()\n  b[0].toInt()\n}\n")
+  val cr = parseCheck(
+    "package P\nextern type Arr = \"System.IO.MemoryStream\"\nfunc f(a: in Arr): Int {\n  val b = a.ToArray()\n  b[0].toInt()\n}\n"
+  )
   assertEqual(silentSiteKinds(cr), "", "no silent site: " + silentSiteKinds(cr))
 }
 
