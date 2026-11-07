@@ -270,13 +270,17 @@ test "loops and string interpolation build" {
   assertTrue(r.body.isSome(), "a body")
 }
 
-test "a generic function's own body is counted as uncovered and builds no body" {
-  val r = buildFirstFn("package App\nfunc id[T](x: T): T { x }\n")
+test "a generic function's body builds with its type parameter as a rigid parameter" {
+  val r = buildFirstFn("package App\nfunc id[T](x: in T): T { x }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertTrue(not r.body.isSome(), "no body")
-  assertTrue(r.env.errors.count >= 1, "an I0002")
-  assertTrue(r.env.errors[0].startsWith("I0002"), "reported as I0002")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a generic function"), 1, "counted by kind")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match r.body {
+    case Some(b) -> match b.ty {
+      case TParam(_, idx) -> assertEqualInt(idx, 0, "T is the first parameter")
+      case _ -> assertTrue(false, "the body has the type parameter's type")
+    }
+    case None -> assertTrue(false, "a body")
+  }
 }
 
 func mapGetOr0(m: in Map[String, Int], k: in String): Int {
@@ -1093,6 +1097,19 @@ test "an argument of a non-generic parameter is widened beside a generic one" {
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match directTypeArgs(r.body) {
     case Some(ts) -> assertTrue(tyEq(ts[0], tyString()), "T is String")
+    case None -> assertTrue(false, "a direct call")
+  }
+}
+
+test "a generic call inside a generic body carries the enclosing parameter" {
+  val r = buildFirstFn("package App\nfunc twice[T](x: in T): T {\n  id(x)\n}\nfunc id[T](x: in T): T { x }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match directTypeArgs(r.body) {
+    case Some(ts) -> match ts[0] {
+      case TParam(_, idx) -> assertEqualInt(idx, 0, "T of twice")
+      case _ -> assertTrue(false, "the enclosing function's parameter")
+    }
     case None -> assertTrue(false, "a direct call")
   }
 }

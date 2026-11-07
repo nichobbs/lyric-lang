@@ -2161,6 +2161,21 @@ pub func symTableFuncDefPathKey(
   None
 }
 
+/// The resolver's id of the top-level function `fn` declares: the symbol of its
+/// name whose declaration is at `fn`'s span (D395).  None for a function the table
+/// does not hold (a method, a local function or one that never registered).
+pub func symTableFuncSymOf(tbl: in SymbolTable, fn: in FunctionDecl): Option[SymbolId] {
+  for s in symTableTryFindAllNamed(tbl, fn.name) {
+    match s.kind {
+      case DKFunc(decl) -> if spanKey(s.declSpan) == spanKey(fn.span) {
+        return Some(value = internDefPath(tbl.interner, funcDefPath(s.originPackage, s.name, decl.params)))
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
 // The symbol named `name` when no scope judges the lookup (a synthesised
 // contract surface, or no package being checked): the checked package's own
 // first, else the newest registration.

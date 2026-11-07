@@ -763,20 +763,29 @@ func buildLet(env: in BuildEnv, s: in Statement, pat: in Pattern, name: in Strin
 }
 
 /// A function's body as TIR, or `None` with the reasons in `env.errors`.  The
-/// parameters become the outermost locals; a generic function, a function with
-/// contracts and a function with an expression body are not covered yet.
+/// parameters become the outermost locals; a generic function binds its type
+/// parameters to its symbol; a function with contracts and a function with an expression body are not covered yet.
 pub func buildFnBody(env: in BuildEnv, fn: in FunctionDecl, tbl: in SymbolTable): Option[TExpr] {
+  val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   match fn.generics {
     case Some(_) -> {
-      noteUncovered(env, "a generic function")
-      env.errors.add("I0002: the builder has no case for a generic function: " + fn.name)
-      return None
+      val names = extractGenericNames(fn.generics)
+      match symTableFuncSymOf(tbl, fn) {
+        case Some(sym) -> {
+          tyConvBind(env.ctx, fn.name, sym, names)
+          gctxPushOwned(gc, names, fn.name)
+        }
+        case None -> {
+          noteUncovered(env, "a generic function with no symbol")
+          env.errors.add("I0002: the builder has no symbol for the generic function: " + fn.name)
+          return None
+        }
+      }
     }
     case None -> ()
   }
   pushScope(env)
   val diag: List[Diagnostic] = newList()
-  val gc = GenericContext(params = newList(), owners = newList(), stackDepths = newList())
   var ok = true
   for p in fn.params {
     match tyOfType(env.ctx, resolveType(tbl, gc, diag, p.ty)) {
