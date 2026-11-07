@@ -5665,6 +5665,8 @@ func lowerMethodCall(
       case Some(JByte) -> true
       case Some(JChar) -> true
       case Some(JShort) -> true
+      // A `Unit` local is stored as `JVoid` and has no members either.
+      case Some(JVoid) -> true
       case _ -> false
     }
   if qualSegs.count > 0 and (not qualHeadIsLocal or (qualSegs.count >= 2 and qualHeadIsPrimitiveLocal)) {
