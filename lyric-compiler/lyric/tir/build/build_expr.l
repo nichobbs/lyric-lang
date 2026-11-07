@@ -118,11 +118,7 @@ func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr]
 }
 
 func uncoveredArgs(env: in BuildEnv, e: in Expr, what: in String): Option[List[TArg]] {
-  noteUncovered(env, what)
-  env.errors.add(
-    "I0002: the builder has no case for " + what + " at " + toString(e.span.startPos.line) + ":" +
-      toString(e.span.startPos.column)
-  )
+  val _ = uncoveredExpr(env, e, what)
   None
 }
 

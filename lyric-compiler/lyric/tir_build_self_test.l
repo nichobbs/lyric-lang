@@ -667,6 +667,29 @@ test "a guarded arm never proves a match exhaustive" {
   assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
 }
 
+func constructLits(b: in Option[TExpr]): String {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XConstruct(_, fs) -> {
+          var out = ""
+          for f in fs {
+            val one = match f.kind {
+              case XLit(TLInt(v)) -> toString(v)
+              case _ -> "?"
+            }
+            out = if out.length == 0 { one } else { out + "," + one }
+          }
+          out
+        }
+        case _ -> "other"
+      }
+      case _ -> "block"
+    }
+    case None -> "none"
+  }
+}
+
 func constructSummary(b: in Option[TExpr]): String {
   match b {
     case Some(body) -> match body.kind {
@@ -685,6 +708,7 @@ test "a record construction builds with its fields in declaration order" {
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(constructSummary(r.body) == "construct2", constructSummary(r.body))
+  assertTrue(constructLits(r.body) == "1,2", constructLits(r.body))
 }
 
 test "a union case construction builds with its payload" {
@@ -698,4 +722,10 @@ test "a construction leaving a defaulted field out is counted, not filled by gue
   val r = buildFirstFn("package App\nrecord P { x: Int\n y: Int = 5 }\nfunc f(): P {\n  P(x = 1)\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
+}
+
+test "an array field is counted as defaulted, not missing, when left out" {
+  val r = buildFirstFn("package App\nrecord P { xs: array[2, Int] }\nfunc f(): P {\n  P()\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted as defaulted")
 }

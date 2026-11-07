@@ -5163,7 +5163,7 @@ func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, result
             if k >= fes.count {
               return
             }
-            params.add(ResolvedParam(name = fd.name, ty = fes[k].ty, mode = PMIn, hasDefault = fd.dflt.isSome(), span = fd.span))
+            params.add(ResolvedParam(name = fd.name, ty = fes[k].ty, mode = PMIn, hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fes[k].ty, fd.span), span = fd.span))
             k = k + 1
           }
           case _ -> ()
