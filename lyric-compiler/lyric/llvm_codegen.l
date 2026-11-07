@@ -863,7 +863,10 @@ func callReturnsChar(ctx: in Ctx, fn: in Expr, argc: in Int): Bool {
   if key.length == 0 {
     return false
   }
-  var sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + key)
+  var sigOpt = sitedSig(ctx, fn, key)
+  if not isSome(sigOpt) {
+    sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + key)
+  }
   match sigOpt {
     case Some(_) -> {
     }

@@ -2088,9 +2088,14 @@ pub func compileProjectToNativeWithShape(
     }
     dpi = dpi + 1
   }
+  // Only a fully lowered package: every function of it is emitted, so the
+  // functions its calls name are needed.  A pruned dependency package keeps
+  // the name-based walk (its unreachable bodies must not pull anything in).
   var sci = 0
   while sci < ownCallees.count {
-    seedSitedCallees(ownCallees[sci], canonical, reachable, fnWorklist)
+    if not prunedPkg[sci] {
+      seedSitedCallees(ownCallees[sci], canonical, reachable, fnWorklist)
+    }
     sci = sci + 1
   }
   walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune)
@@ -2114,6 +2119,7 @@ pub func compileProjectToNativeWithShape(
     }
     moi = moi + 1
   }
+  val noSites: Map[String, String] = newMap()
   val units: List[CodegenUnit] = newList()
   if mainOwnIdx >= 0 {
     units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx], false, ownCallees[mainOwnIdx]))
@@ -2121,7 +2127,16 @@ pub func compileProjectToNativeWithShape(
   var uoi = 0
   while uoi < ownFiles.count {
     if uoi != mainOwnIdx {
-      units.add(unitOf(ownFiles[uoi], reachable, not prunedPkg[uoi], ownCallArities[uoi], prunedPkg[uoi], ownCallees[uoi]))
+      units.add(
+        unitOf(
+          ownFiles[uoi],
+          reachable,
+          not prunedPkg[uoi],
+          ownCallArities[uoi],
+          prunedPkg[uoi],
+          if prunedPkg[uoi] { noSites } else { ownCallees[uoi] }
+        )
+      )
     }
     uoi = uoi + 1
   }

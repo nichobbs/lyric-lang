@@ -176,6 +176,45 @@ test "a package-private function of an imported package does not capture a bare 
   assertTrue(Str.contains(outcome.stdout, "from B"), "the exported function ran (stdout=" + outcome.stdout + ")")
 }
 
+// The same shape with different return types: the call binds the exported `Char`
+// function, so the concatenation prints a character, not the private `Int`'s number.
+test "a bare call's Char-ness comes from the function the checker resolved it to (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel2.App",
+      sources = [
+        "package Sel2.App\n" + "import Sel2.A\n" + "import Sel2.B\n" + "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(\"x\" + pick())\n" +
+          "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel2.A",
+      sources = [
+        "package Sel2.A\n" + "pub func other(): Int {\n" + "  0\n" + "}\n" + "func pick(): Int {\n" + "  66\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel2.B",
+      sources = ["package Sel2.B\n" + "pub func pick(): Char {\n" + "  'B'\n" + "}\n"]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "private-versus-exported Char project exit code")
+  assertTrue(
+    Str.contains(outcome.stdout, "xB"),
+    "the exported Char function's character printed (stdout=" + outcome.stdout + ")"
+  )
+}
+
 // #8417: instantiating a `pub` generic of another package compiles its body in the caller's
 // package, and that body may call a PRIVATE generic of its own package (here `twice`, reached
 // from `pub func run` both directly and through a lambda).  Before the fix the private generic
