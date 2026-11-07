@@ -605,6 +605,8 @@ pub record JvmHostIterIndex {
   basesAnswered: Map[String, Bool]
   members: Map[String, ExternMemberType]
   membersAnswered: Map[String, Bool]
+  memberSigs: Map[String, List[ExternMemberSig]]
+  memberSigsAnswered: Map[String, Bool]
 }
 
 pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
@@ -615,7 +617,9 @@ pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
     bases = newMap(),
     basesAnswered = newMap(),
     members = newMap(),
-    membersAnswered = newMap()
+    membersAnswered = newMap(),
+    memberSigs = newMap(),
+    memberSigsAnswered = newMap()
   )
 }
 
@@ -625,6 +629,16 @@ pub func newJvmHostIterIndex(ctx: in AutoFfiCtx): JvmHostIterIndex {
 // `java.lang.String` result is the host class, not Lyric's `String` (a kernel
 // that wants an `Option` declares it and the backend wraps the null).  A short,
 // float or array is None (the checker leaves it unchecked).
+// A JVM parameter descriptor as an element: what `jvmMemberTypeOfDesc` makes of a
+// result, and for an array or an unmapped primitive (`short`, `float`) the host
+// name that matches no Lyric type.
+func jvmElemOfDesc(desc: in String): ExternIterElem {
+  match jvmMemberTypeOfDesc(desc) {
+    case Some(EMTType(elem)) -> elem
+    case _ -> EIEHost(hostName = "an array, pointer or by-reference type", args = newList())
+  }
+}
+
 func jvmMemberTypeOfDesc(desc: in String): Option[ExternMemberType] {
   if desc == "V" {
     Some(value = EMTVoid)
@@ -699,6 +713,31 @@ impl ExternIterResolver for JvmHostIterIndex {
       }
     }
     mapGet(self.members, key)
+  }
+
+  func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]] {
+    val key = externMemberCacheKey(clrName, member, argc, isProperty)
+    if not self.memberSigsAnswered.containsKey(key) {
+      self.memberSigsAnswered.add(key, true)
+      match hostMemberSigDescsOfExternJvm(self.ctx, externHostBase(clrName), member, argc, isProperty) {
+        case Some(descs) -> {
+          val sigs: List[ExternMemberSig] = newList()
+          for d in descs {
+            val ps: List[ExternIterElem] = newList()
+            for pd in d.params {
+              ps.add(jvmElemOfDesc(pd))
+            }
+            match jvmMemberTypeOfDesc(d.ret) {
+              case Some(m) -> sigs.add(ExternMemberSig(isStatic = d.isStatic, params = ps, ret = m))
+              case None -> return None
+            }
+          }
+          self.memberSigs.add(key, sigs)
+        }
+        case None -> ()
+      }
+    }
+    mapGet(self.memberSigs, key)
   }
 }
 

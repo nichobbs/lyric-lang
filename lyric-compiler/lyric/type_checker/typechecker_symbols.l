@@ -309,6 +309,26 @@ pub interface ExternIterResolver {
   /// the overloads of that arity disagree on the result.  The checker then
   /// leaves the member's value unchecked.
   func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType]
+
+  /// Every candidate overload of a member, with its parameter and result types
+  /// (docs/70 6.3, D390): the methods named `member` taking `argc` arguments
+  /// (`isProperty` false), or the property or field read (`isProperty` true),
+  /// looked up on the type and its supertypes; the member `new` is the host
+  /// type's own constructors.  `Lyric.Tir.Build` picks the overload from the
+  /// call's argument types and records it in a `HostMemberRef`.  None when the
+  /// bridge cannot say: the type or a supertype is not located, or a candidate
+  /// is a generic method whose signature mentions its own type parameters.
+  func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]]
+}
+
+/// One overload of a host member: whether it is static, its parameter types
+/// (host types as `ExternIterElem`s; a by-reference, pointer or array type is
+/// the host name "an array, pointer or by-reference type", which matches no
+/// Lyric type) and its result.
+pub record ExternMemberSig {
+  isStatic: Bool
+  params: List[ExternIterElem]
+  ret: ExternMemberType
 }
 
 /// What a host member yields.

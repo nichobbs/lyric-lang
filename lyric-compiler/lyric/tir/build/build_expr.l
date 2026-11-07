@@ -966,13 +966,219 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     }
     case None -> ()
   }
-  if tbl.externByNode.containsKey(e.nodeId) {
-    return uncoveredExpr(env, e, "an extern call")
+  match mapGet(tbl.externByNode, e.nodeId) {
+    case Some(site) -> return buildExternCall(env, e, ty, site, fn, args)
+    case None -> ()
   }
   if tbl.calleeByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "a method, constructor or member call")
   }
   uncoveredExpr(env, e, "a call the checker did not resolve")
+}
+
+/// A host element as a `Ty`: the receiver's type argument, a Lyric primitive, or a
+/// host type.  `hint` is the type of the argument (or the call) the element is matched
+/// with: a host class the hint already names keeps the hint's own name, and a host
+/// string takes Lyric's `String` when the hint is one.
+func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Option[Ty] {
+  match elem {
+    case EIEArg(i) -> if i >= 0 and i < targs.count { Some(value = targs[i]) } else { None }
+    case EIEPrim(name) -> match primFromString(name) {
+      case Some(p) -> Some(value = primOf(p))
+      case None -> None
+    }
+    case EIEHost(h, hargs) -> {
+      if h == "System.Char" {
+        return Some(value = TPrim(kind = TPChar))
+      }
+      if h == "System.String" or h == "java.lang.String" {
+        match hint {
+          case TPrim(TPString) -> return Some(value = hint)
+          case _ -> ()
+        }
+      }
+      match hint {
+        case TExtern(r) -> if externHostBase(r.name) == h {
+          return Some(value = hint)
+        }
+        case _ -> ()
+      }
+      val conv: List[Ty] = newList()
+      for a in hargs {
+        match hostElemTy(a, targs, TirT.TNever) {
+          case Some(t) -> conv.add(t)
+          case None -> return None
+        }
+      }
+      Some(value = TExtern(host = HostTypeRef(name = h, args = conv)))
+    }
+  }
+}
+
+/// An overload that fits the argument types: its parameters and how well.
+record OverloadFit {
+  params: List[Ty]
+  score: Int
+}
+
+/// The parameters of one overload as `Ty`s matched against the argument types, with
+/// the score of the match (2 per exact argument, 1 per widened one), or None when
+/// an argument does not fit.
+func scoreOverload(sig: in ExternMemberSig, targs: in List[Ty], argTys: in List[Ty]): Option[OverloadFit] {
+  val ps: List[Ty] = newList()
+  var score = 0
+  var i = 0
+  while i < sig.params.count {
+    val p = match hostElemTy(sig.params[i], targs, argTys[i]) { case Some(t) -> t; case None -> return None }
+    if tyEq(p, argTys[i]) {
+      score = score + 2
+    } else {
+      match widenKind(argTys[i], p) {
+        case Some(_) -> {
+          score = score + 1
+        }
+        case None -> return None
+      }
+    }
+    ps.add(p)
+    i = i + 1
+  }
+  Some(value = OverloadFit(params = ps, score = score))
+}
+
+/// A call to a member of a host type (`ExternCallSite`): the overload the argument
+/// types select among the candidates the bridge read from the host's metadata, as a
+/// `HostMemberRef`.  An instance member takes its receiver as the first argument and
+/// first parameter.  Named arguments, an ambiguous or missing overload and a host
+/// type the metadata cannot say are counted.
+func buildExternCall(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  site: in ExternCallSite,
+  fn: in Expr,
+  args: in List[CallArg],
+): Option[TExpr] {
+  val tbl = env.ctx.tbl
+  if tbl.externIterResolver.count == 0 {
+    return uncoveredExpr(env, e, "an extern call with no host metadata")
+  }
+  val recvExpr = match fn.kind {
+    case EMember(r, _) -> r
+    case _ -> return uncoveredExpr(env, e, "an extern call whose callee is not a member access")
+  }
+  val targs: List[Ty] = newList()
+  for t in site.targs {
+    match tyOfType(env.ctx, t) {
+      case Ok(x) -> targs.add(x)
+      case Err(msg) -> {
+        env.errors.add(msg)
+        return None
+      }
+    }
+  }
+  val built: List[TExpr] = newList()
+  for a in args {
+    match a {
+      case CAPositional(x) -> match buildExpr(env, x) {
+        case Some(t) -> built.add(t)
+        case None -> return None
+      }
+      case CANamed(_, _, _) -> return uncoveredExpr(env, e, "an extern call with a named argument")
+    }
+  }
+  val argTys: List[Ty] = newList()
+  for b in built {
+    argTys.add(b.ty)
+  }
+  val cands = match tbl.externIterResolver[0].resolveMemberSigs(site.hostType, site.name, site.argCount, false) {
+    case Some(c) -> c
+    case None -> return uncoveredExpr(env, e, "an extern call the host metadata cannot resolve")
+  }
+  var bestSig: Option[ExternMemberSig] = None
+  var bestParams: List[Ty] = newList()
+  var bestScore = -1
+  var ambiguous = false
+  for c in cands {
+    if c.params.count == argTys.count {
+      match scoreOverload(c, targs, argTys) {
+        case Some(fit) -> {
+          val ps = fit.params
+          val sc = fit.score
+          if sc > bestScore {
+            bestScore = sc
+            bestSig = Some(value = c)
+            bestParams = ps
+            ambiguous = false
+          } else if sc == bestScore {
+            var same = bestParams.count == ps.count
+            var k = 0
+            while same and k < ps.count {
+              if not tyEq(bestParams[k], ps[k]) {
+                same = false
+              }
+              k = k + 1
+            }
+            match bestSig {
+              case Some(b) -> if b.isStatic != c.isStatic {
+                same = false
+              }
+              case None -> ()
+            }
+            if not same {
+              ambiguous = true
+            }
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  val sig = match bestSig { case Some(c) -> c; case None -> return uncoveredExpr(env, e, "an extern call no host overload fits") }
+  if ambiguous {
+    return uncoveredExpr(env, e, "an extern call with ambiguous host overloads")
+  }
+  val isCtor = site.name == "new"
+  val ret = if isCtor {
+    ty
+  } else {
+    match sig.ret {
+      case EMTVoid -> tyUnit()
+      case EMTType(el) -> match hostElemTy(el, targs, ty) {
+        case Some(t) -> t
+        case None -> return uncoveredExpr(env, e, "an extern call with a host result the builder cannot type")
+      }
+    }
+  }
+  val owner = HostTypeRef(name = site.hostType, args = targs)
+  val params: List[TParamTy] = newList()
+  val targsOut: List[TArg] = newList()
+  if not sig.isStatic {
+    val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
+    val want = TExtern(host = owner)
+    if not tyEq(rt.ty, want) {
+      return uncoveredExpr(env, e, "an extern call on a receiver that is not the host type itself")
+    }
+    params.add(TParamTy(mode = TMIn, ty = want))
+    targsOut.add(TArgIn(value = rt))
+  }
+  var i = 0
+  while i < built.count {
+    val want = bestParams[i]
+    params.add(TParamTy(mode = TMIn, ty = want))
+    val c = match coerceArg(env, built[i], want) { case Some(x) -> x; case None -> return None }
+    targsOut.add(TArgIn(value = c))
+    i = i + 1
+  }
+  val member = HostMemberRef(
+    owner = owner,
+    name = site.name,
+    kind = if isCtor { HMConstructor } else { HMMethod },
+    isStatic = sig.isStatic,
+    params = params,
+    ret = ret
+  )
+  Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
 }
 
 /// An argument as the parameter `pty` takes it: as is, widened by a node of its own,

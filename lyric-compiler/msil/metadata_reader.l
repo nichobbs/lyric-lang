@@ -4865,6 +4865,80 @@ pub func hostMemberReturnsOfExtern(
   Some(value = found)
 }
 
+/// One overload of a host member as the resolver reports it (D390).
+pub record HostMemberSigInfo {
+  isStatic: Bool
+  params: List[SigType]
+  ret: SigType
+}
+
+/// The overloads of `member` on `fqn` and every supertype, as
+/// `hostMemberReturnsOfExtern` finds them but with each overload's parameters
+/// and static flag.  `new` is the type's own `.ctor`s (the result is then the
+/// type itself, reported as a plain `STNamed` without its type arguments).  None when the type
+/// or a supertype cannot be located, or a candidate is a generic method.
+pub func hostMemberSigsOfExtern(
+  cachePaths: in List[String],
+  cacheParsed: in List[MdrParsedAssembly],
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  fqn: in String,
+  member: in String,
+  argc: in Int,
+  isProperty: in Bool,
+): Option[List[HostMemberSigInfo]] {
+  val chain: List[String] = newList()
+  chain.add(fqn)
+  val isCtor = member == "new" and not isProperty
+  if not isCtor {
+    match hostSupertypesOfExtern(cachePaths, cacheParsed, typeIndex, pathIndex, fqn) {
+      case Some(supers) -> {
+        for sup in supers {
+          chain.add(sup)
+        }
+      }
+      case None -> return None
+    }
+  }
+  val getter = "get_" + member
+  val found: List[HostMemberSigInfo] = newList()
+  for cur in chain {
+    val asmName = match assemblyForType(typeIndex, cur) { case Some(n) -> n; case None -> return None }
+    val asmPath = match mapGet(pathIndex, asmName) { case Some(pp) -> pp; case None -> return None }
+    val parsed = match loadParsedAssemblyCached(cachePaths, cacheParsed, asmPath) {
+      case Some(pa) -> pa
+      case None -> return None
+    }
+    val methods = match allMethodSigsOn(parsed.img, parsed.layout, parsed.th, cur) {
+      case Some(ms) -> ms
+      case None -> return None
+    }
+    for m in methods {
+      val wanted = if isProperty {
+        m.name == getter and m.paramTypes.count == 0
+      } else if isCtor {
+        m.name == ".ctor" and m.paramTypes.count == argc
+      } else {
+        m.name == member and m.paramTypes.count == argc
+      }
+      if wanted {
+        if m.genericArity > 0 {
+          return None
+        }
+        val ret = if isCtor { STNamed(fqn = fqn, valueType = false) } else { m.returnType }
+        found.add(HostMemberSigInfo(isStatic = m.isStatic and not isCtor, params = m.paramTypes, ret = ret))
+      }
+    }
+    if isProperty {
+      match findFieldExternIn(parsed.img, parsed.layout, parsed.th, cur, member) {
+        case Some(fi) -> found.add(HostMemberSigInfo(isStatic = fi.isStatic, params = newList(), ret = fi.fieldType))
+        case None -> ()
+      }
+    }
+  }
+  Some(value = found)
+}
+
 func iterWalk(
   cachePaths: in List[String],
   cacheParsed: in List[MdrParsedAssembly],

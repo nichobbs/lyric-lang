@@ -1569,6 +1569,76 @@ pub func hostSupertypesOfExternJvm(ctx: in AutoFfiCtx, binaryName: in String): O
   Some(value = acc)
 }
 
+/// One overload of a host member as `hostMemberSigDescsOfExternJvm` reports it
+/// (D390): whether it is static, its parameter descriptors and its result
+/// descriptor (`V` for `void`, the field descriptor for a field).
+pub record JvmMemberSigDesc {
+  isStatic: Bool
+  params: List[String]
+  ret: String
+}
+
+/// The overloads of `member` on `binaryName` and every supertype with their
+/// parameters, as `hostMemberDescsOfExternJvm` finds them.  `new` is the class's
+/// own constructors.  None when the class or a supertype cannot be loaded.
+pub func hostMemberSigDescsOfExternJvm(
+  ctx: in AutoFfiCtx,
+  binaryName: in String,
+  member: in String,
+  argc: in Int,
+  isProperty: in Bool,
+): Option[List[JvmMemberSigDesc]] {
+  val chain: List[String] = newList()
+  chain.add(binaryName)
+  val isCtor = member == "new" and not isProperty
+  if not isCtor {
+    match hostSupertypesOfExternJvm(ctx, binaryName) {
+      case Some(supers) -> {
+        for sup in supers {
+          chain.add(sup)
+        }
+      }
+      case None -> return None
+    }
+  }
+  val found: List[JvmMemberSigDesc] = newList()
+  for cur in chain {
+    val ci = match loadClass(ctx, cur) { case Some(c) -> c; case None -> return None }
+    if isProperty {
+      for f in ci.fields {
+        if f.name == member {
+          found.add(JvmMemberSigDesc(isStatic = f.isStatic, params = newList(), ret = f.descriptor))
+        }
+      }
+    } else if isCtor {
+      for m in ci.constructors {
+        val ps = parseDescriptorParams(m.descriptor)
+        if ps.count == argc {
+          found.add(JvmMemberSigDesc(isStatic = true, params = ps, ret = "L" + binaryName.replace(".", "/") + ";"))
+        }
+      }
+    } else {
+      for m in ci.methods {
+        val ps = parseDescriptorParams(m.descriptor)
+        if m.name == member and ps.count == argc {
+          var close = 0
+          while close < m.descriptor.length and Str.charAtOrReplacement(m.descriptor, close) != ')' {
+            close = close + 1
+          }
+          found.add(
+            JvmMemberSigDesc(
+              isStatic = m.isStatic,
+              params = ps,
+              ret = m.descriptor.substring(close + 1, m.descriptor.length - close - 1)
+            )
+          )
+        }
+      }
+    }
+  }
+  Some(value = found)
+}
+
 /// The result descriptors of the members of `binaryName` named `member`,
 /// looked up on the class and every supertype (docs/70 5.3): methods taking
 /// `argc` arguments, or, with `isProperty`, public fields of that name (the
