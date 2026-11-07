@@ -18,6 +18,7 @@ import Lyric.Symbols
 import Lyric.Tir
 import Lyric.Tir as TirT
 import Lyric.Tir.Build
+import Msil.Bridge as Mb
 
 func checkNumbered(src: in String): CheckResult {
   check(renumberNodeIds(parse(src).file).file)
@@ -817,4 +818,225 @@ test "a dot-named function called on an interface value is a direct call" {
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(calleeShape(r.body) == "direct:recv", calleeShape(r.body))
+}
+
+// ─── Extern member calls through host metadata (docs/70 §6.3, D390) ──────────
+record FakeHost {
+  sigs: Map[String, List[ExternMemberSig]]
+}
+
+func fhPrim(n: in String): ExternIterElem {
+  EIEPrim(name = n)
+}
+
+func fhHost(n: in String): ExternIterElem {
+  EIEHost(hostName = n, args = newList())
+}
+
+func fhSig(isStatic: in Bool, ps: in List[ExternIterElem], ret: in ExternMemberType): ExternMemberSig {
+  ExternMemberSig(isStatic = isStatic, params = ps, ret = ret)
+}
+
+func fhParams2(a: in ExternIterElem, b: in ExternIterElem): List[ExternIterElem] {
+  val xs: List[ExternIterElem] = newList()
+  xs.add(a)
+  xs.add(b)
+  xs
+}
+
+func fhParams1(a: in ExternIterElem): List[ExternIterElem] {
+  val xs: List[ExternIterElem] = newList()
+  xs.add(a)
+  xs
+}
+
+func fhKey(t: in String, m: in String, argc: in Int): String {
+  t + "#" + m + "#" + toString(argc)
+}
+
+func fakeHost(): FakeHost {
+  val sigs: Map[String, List[ExternMemberSig]] = newMap()
+  val max: List[ExternMemberSig] = newList()
+  max.add(fhSig(true, fhParams2(fhPrim("Int"), fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
+  max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Math", "Max", 2), max)
+  val append: List[ExternMemberSig] = newList()
+  append.add(fhSig(false, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Int"))))
+  append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Text.StringBuilder", "IndexOf", 1), append)
+  val ctor: List[ExternMemberSig] = newList()
+  ctor.add(fhSig(true, newList(), EMTType(elem = fhHost("System.Text.StringBuilder"))))
+  sigs.add(fhKey("System.Text.StringBuilder", "new", 0), ctor)
+  FakeHost(sigs = sigs)
+}
+
+impl ExternIterResolver for FakeHost {
+  func resolveIter(clrName: in String, arity: in Int): Option[ExternIterInfo] {
+    None
+  }
+
+  func resolveBases(clrName: in String): Option[List[String]] {
+    None
+  }
+
+  func resolveMember(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[ExternMemberType] {
+    match mapGet(self.sigs, fhKey(clrName, member, argc)) {
+      case Some(cs) -> {
+        val rets: List[ExternMemberType] = newList()
+        for c in cs {
+          rets.add(c.ret)
+        }
+        externMemberAgreed(rets)
+      }
+      case None -> None
+    }
+  }
+
+  func resolveMemberSigs(
+    clrName: in String, member: in String, argc: in Int, isProperty: in Bool
+  ): Option[List[ExternMemberSig]] {
+    mapGet(self.sigs, fhKey(clrName, member, argc))
+  }
+}
+
+func buildFirstFnHost(src: in String): FnBuilt {
+  val file = renumberNodeIds(parse(src).file).file
+  val noPkgs: List[ImportedPackage] = newList()
+  val iter: Map[String, ExternIterInfo] = newMap()
+  val rs: List[ExternIterResolver] = newList()
+  rs.add(fakeHost())
+  val cr = checkWithImportedPackagesExternIter(file, noPkgs, false, iter, rs)
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  var found = false
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if not found { found = true; body = buildFnBody(env, decl, cr.symbols) }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
+}
+
+func externHead(): String {
+  "package App\nextern type Math = \"System.Math\"\nextern type SB = \"System.Text.StringBuilder\"\n"
+}
+
+func externCallOf(b: in Option[TExpr]): Option[HostMemberRef] {
+  match b {
+    case Some(x) -> match x.kind {
+      case XBlock(_, tail) -> match tail {
+        case Some(t) -> externCallOf(Some(value = t))
+        case None -> None
+      }
+      case XCall(Extern(m), _) -> Some(value = m)
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a static extern call picks the overload the argument types select" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Int {\n  Math.Max(a, b)\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertTrue(m.isStatic, "static")
+      assertEqualInt(m.params.count, 2, "two parameters")
+      assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
+      assertTrue(m.name == "Max", "named Max")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an extern argument is widened to the overload's parameter" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Int {\n  Math.Max(a, b)\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an instance extern call has its receiver first" {
+  val r = buildFirstFnHost(externHead() + "func f(sb: in SB): Int {\n  sb.IndexOf(\"x\")\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertTrue(not m.isStatic, "an instance member")
+      assertEqualInt(m.params.count, 2, "the receiver and the argument")
+      assertTrue(tyEq(m.params[1].ty, TPrim(kind = TPString)), "the String overload")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an extern constructor is a static member named new" {
+  val r = buildFirstFnHost(externHead() + "func f(): SB {\n  SB.new()\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  match externCallOf(r.body) {
+    case Some(m) -> {
+      assertTrue(m.isStatic, "static")
+      assertEqualInt(m.params.count, 0, "no parameters")
+      match m.kind {
+        case HMConstructor -> ()
+        case _ -> assertTrue(false, "a constructor")
+      }
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+}
+
+test "an extern call with a named argument is counted" {
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Int {\n  Math.Max(a, b = b)\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "an extern call with a named argument"), 1, "counted")
+}
+
+func buildFirstFnMsil(src: in String): FnBuilt {
+  val file = renumberNodeIds(parse(src).file).file
+  val noPkgs: List[ImportedPackage] = newList()
+  val iter: Map[String, ExternIterInfo] = newMap()
+  val rs = Mb.msilIterResolver(Mb.newMsilHostIterIndex(newList()))
+  val cr = checkWithImportedPackagesExternIter(file, noPkgs, false, iter, rs)
+  val env = newBuildEnv(newTyConvCtx(cr.symbols))
+  var body: Option[TExpr] = None
+  var found = false
+  for it in file.items {
+    match it.kind {
+      case IFunc(decl) -> if not found { found = true; body = buildFnBody(env, decl, cr.symbols) }
+      case _ -> ()
+    }
+  }
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
+}
+
+test "the real MSIL metadata gives a static overload and static constructors" {
+  val head = "package App\nextern type Math = \"System.Math\"\nextern type SB = \"System.Text.StringBuilder\"\n"
+  val st = buildFirstFnMsil(head + "func f(a: Double): Double {\n  Math.Sqrt(a)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
+  assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
+  match externCallOf(st.body) {
+    case Some(m) -> {
+      assertTrue(m.isStatic, "Sqrt is static")
+      assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPDouble)), "over Double")
+    }
+    case None -> assertTrue(false, "an extern call")
+  }
+  val rs = Mb.msilIterResolver(Mb.newMsilHostIterIndex(newList()))
+  match rs[0].resolveMemberSigs("System.Text.StringBuilder", "new", 0, false) {
+    case Some(cands) -> {
+      assertTrue(cands.count >= 1, "the parameterless constructor is a candidate")
+      for c in cands {
+        assertTrue(c.isStatic, "a constructor is a static member")
+        assertEqualInt(c.params.count, 0, "of no parameters")
+      }
+    }
+    case None -> assertTrue(false, "the metadata resolves the constructors")
+  }
 }
