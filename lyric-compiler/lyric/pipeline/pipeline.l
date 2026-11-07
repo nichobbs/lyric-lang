@@ -1816,37 +1816,32 @@ func pipeModeItemTag(it: in Item): String {
   }
 }
 
+func pipeQualifyRecordType(ty: in TypeExpr, pkgName: in String, pkgRecordNames: in Map[String, Bool]): TypeExpr {
+  match ty.kind {
+    case TRef(p) -> if p.segments.count == 1 and pkgRecordNames.containsKey(p.segments[0]) {
+      val segs: List[String] = newList()
+      segs.add(pkgName + "." + p.segments[0])
+      TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = ty.span)), span = ty.span)
+    } else {
+      ty
+    }
+    case TParen(inner) -> {
+      val qInner = pipeQualifyRecordType(inner, pkgName, pkgRecordNames)
+      TypeExpr(kind = TParen(inner = qInner), span = ty.span)
+    }
+    case _ -> ty
+  }
+}
+
 func pipeQualifyRecordFields(
   members: in List[RecordMember], pkgName: in String, pkgRecordNames: in Map[String, Bool]
 ): List[RecordMember] {
-  var changed = false
-  for m in members {
-    match m {
-      case RMField(f) -> match f.ty.kind {
-        case TRef(p) -> if p.segments.count == 1 and pkgRecordNames.containsKey(p.segments[0]) {
-          changed = true
-        }
-        case _ -> ()
-      }
-      case _ -> ()
-    }
-  }
-  if not changed {
-    return members
-  }
   val res: List[RecordMember] = newList()
   for m in members {
     match m {
-      case RMField(f) -> match f.ty.kind {
-        case TRef(p) -> if p.segments.count == 1 and pkgRecordNames.containsKey(p.segments[0]) {
-          val segs: List[String] = newList()
-          segs.add(pkgName + "." + p.segments[0])
-          val newTy = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = f.ty.span)), span = f.ty.span)
-          res.add(RMField(field = f.copy(ty = newTy)))
-        } else {
-          res.add(m)
-        }
-        case _ -> res.add(m)
+      case RMField(f) -> {
+        val newTy = pipeQualifyRecordType(f.ty, pkgName, pkgRecordNames)
+        res.add(RMField(field = f.copy(ty = newTy)))
       }
       case _ -> res.add(m)
     }

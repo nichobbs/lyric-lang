@@ -3709,7 +3709,7 @@ func assertEmitProjectRejected(label: in String, pkgs: in List[Emitter.ProjectPa
 }
 
 test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fields, and keeps hoisted methods" {
-  val pkgASrc = "package A.Sub\npub record Inner {\n  var n: Int\n  func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\npub record Outer {\n  var k: Int\n  inner: Inner\n}\npub func overloaded(x: inout Int): Unit {\n  x = 0\n}\npub func overloaded(x: in Int, y: in Int): Int {\n  x + y\n}\n"
+  val pkgASrc = "package A.Sub\npub record Inner {\n  var n: Int\n  func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\npub record Outer {\n  var k: Int\n  inner: (Inner)\n}\npub func overloaded(x: inout Int): Unit {\n  x = 0\n}\npub func overloaded(x: in Int, y: in Int): Int {\n  x + y\n}\n"
   val pkgBSrc = "package B\npub ref record Outer {\n  var k: Int\n}\npub func f(): Int { 1 }\n"
 
   val pkgsValid: List[Emitter.ProjectPackage] = newList()
@@ -3735,6 +3735,16 @@ test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fie
     )
   )
   assertEmitProjectRejected("mode-imported-nested-bare", pkgsNestedBare, "ModeImpNestedBare")
+
+  val pkgsNestedSelective: List[Emitter.ProjectPackage] = newList()
+  pkgsNestedSelective.add(mkProjectPkg("A.Sub", pkgASrc))
+  pkgsNestedSelective.add(
+    mkProjectPkg(
+      "App",
+      "package App\nimport A.Sub.{Outer}\nfunc bad(o1: in Outer): Unit {\n  o1.inner.n = 2\n}\nfunc main(): Unit { () }\n"
+    )
+  )
+  assertEmitProjectRejected("mode-imported-nested-selective", pkgsNestedSelective, "ModeImpNestedSelective")
 
   val pkgsNestedAlias: List[Emitter.ProjectPackage] = newList()
   pkgsNestedAlias.add(mkProjectPkg("A.Sub", pkgASrc))
