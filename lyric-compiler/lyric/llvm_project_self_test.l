@@ -215,6 +215,52 @@ test "a bare call's Char-ness comes from the function the checker resolved it to
   )
 }
 
+// The exported function reaches the entry through a facade's `pub use`, not a direct
+// import, so the call has to bind it although the entry imports only the facade.
+test "a bare call through a facade's pub use binds the re-exported function (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel3.App",
+      sources = [
+        "package Sel3.App\n" + "import Sel3.A\n" + "import Sel3.F\n" + "import Std.Console as Console\n" +
+          "func main(): Int {\n" +
+          "  Console.println(pick())\n" +
+          "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel3.A",
+      sources = [
+        "package Sel3.A\n" + "pub func other(): Int {\n" + "  0\n" + "}\n" + "func pick(): String {\n" +
+          "  \"from A\"\n" +
+          "}\n"
+      ]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel3.B",
+      sources = ["package Sel3.B\n" + "pub func pick(): String {\n" + "  \"from B\"\n" + "}\n"]
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Sel3.F",
+      sources = [
+        "package Sel3.F\n" + "import Sel3.B\n" + "pub use Sel3.B\n" + "pub func marker(): Int {\n" + "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "facade project exit code")
+  assertTrue(Str.contains(outcome.stdout, "from B"), "the re-exported function ran (stdout=" + outcome.stdout + ")")
+}
+
 // #8417: instantiating a `pub` generic of another package compiles its body in the caller's
 // package, and that body may call a PRIVATE generic of its own package (here `twice`, reached
 // from `pub func run` both directly and through a lambda).  Before the fix the private generic
