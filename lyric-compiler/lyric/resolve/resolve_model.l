@@ -99,6 +99,10 @@ pub record Decl {
   parent: Option[SymbolId]
   bare: Bool
   span: Span
+  /// For `SKAlias`: the aliased type, as written.  `None` for a parameterized
+  /// alias and for one whose target is a type of its own name (the stdlib's
+  /// `pub alias Random = <extern Random>`), which no pass substitutes.
+  aliasTarget: Option[TypeExpr] = None
 }
 
 /// What the resolver knows of a package other than its declarations: the

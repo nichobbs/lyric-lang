@@ -135,6 +135,8 @@ import Std.Collections
 import Lyric.Parser
 import Lyric.Lexer.{IntSuffix}
 import Lyric.BareFuncRef as BFR
+import Lyric.Symbols
+import Lyric.Resolve
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Small helpers.
@@ -1830,36 +1832,37 @@ pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item 
 // of #6404).
 /// The alias targets of `file` for `resolveAliasesInFile` in a project
 /// build: the aliases it declares, then the `pub` aliases of the packages of
-/// `projectFiles` it imports, its own winning a name both declare.  A
-/// parameterized alias is never registered (see `addFileAliasTargetsInto`).
+/// `projectFiles` its imports reach, its own winning a name both declare.
+/// The resolver answers (`Lyric.Resolve.aliasTargetsFor`, #8752), so a target
+/// that names a type through a renamed import is spelled out as the declaring
+/// package's.  A parameterized alias is never registered.
 pub func projectAliasTargets(file: in SourceFile, projectFiles: in List[SourceFile]): Map[String, TypeExpr] {
-  val targets = BFR.collectFuncAliasTargets(file)
-  for imp in file.imports {
-    if not imp.isExtern {
-      val pkg = joinSegs(imp.path.segments)
-      for other in projectFiles {
-        if joinSegs(other.packageDecl.path.segments) == pkg {
-          for it in other.items {
-            match it.kind {
-              case ITypeAlias(d) -> {
-                val isPub = match it.visibility { case Some(_) -> true; case None -> false }
-                val parameterized = match d.generics { case Some(_) -> true; case None -> false }
-                val selfNamed = match d.rhs.kind {
-                  case TRef(p) -> p.segments.count > 0 and p.segments[p.segments.count - 1] == d.name
-                  case _ -> false
-                }
-                if isPub and not parameterized and not selfNamed and not targets.containsKey(d.name) {
-                  targets.add(d.name, d.rhs)
-                }
-              }
-              case _ -> ()
-            }
-          }
+  val own = joinSegs(file.packageDecl.path.segments)
+  val deps: List[DepPackage] = newList()
+  for other in projectFiles {
+    val name = joinSegs(other.packageDecl.path.segments)
+    if name != own {
+      deps.add(
+        DepPackage(name = name, items = other.items, reexports = reexportsOf(other.imports), imports = other.imports)
+      )
+    }
+  }
+  val ctx = buildResolverContext(deps, file, newDefPathInterner())
+  // The pass rewrites a whole package, so a file's imports serve every file's
+  // references: the files' tables merge, the first file's winning a name.
+  val merged: Map[String, TypeExpr] = newMap()
+  for fsc in ctx.scopes {
+    val perFile = aliasTargetsFor(ctx, fsc)
+    for k in mapKeys(perFile) {
+      if not merged.containsKey(k) {
+        match mapGet(perFile, k) {
+          case Some(v) -> merged.add(k, v)
+          case None -> ()
         }
       }
     }
   }
-  targets
+  merged
 }
 
 func joinSegs(segs: in List[String]): String {

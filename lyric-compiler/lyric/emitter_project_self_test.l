@@ -311,6 +311,45 @@ test "emitProject aliased cross-package call" {
   assertEqual(Str.trim(result.stdout), "40", "alias_cross_package_call: stdout matches expected")
 }
 
+// ─── An alias whose target is a renamed-import type (#8752) ──────────────────
+// `alias Pick = T.Seed` under `import A.Two as T` names package Two's `Seed`,
+// not the first `Seed` any package registered (package One's).
+func renamedImportAliasPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "AliasRen.One",
+      "package AliasRen.One\n\npub record Seed {\n  n: Int\n}\n\npub func Seed.base(): Int { 1 }\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "AliasRen.Two",
+      "package AliasRen.Two\n\npub record Seed {\n  n: Int\n}\n\npub func Seed.base(): Int { 2 }\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "AliasRen.App",
+      "package AliasRen.App\n\nimport AliasRen.One\nimport AliasRen.Two as T\n\nalias Pick = T.Seed\n\n" +
+        "func main(): Unit {\n  println(Pick.base())\n}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject alias of a renamed-import type (MSIL)" {
+  val result = runEmitProject("alias-ren-msil", renamedImportAliasPkgs(), "AliasRen")
+  assertEqualInt(result.exitCode, 0, "alias_renamed_import_msil: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "alias_renamed_import_msil: Two's Seed, not One's")
+}
+
+test "emitProject alias of a renamed-import type (JVM)" {
+  val result = runEmitProjectJvmOpts("alias-ren-jvm", renamedImportAliasPkgs(), "AliasRen")
+  assertEqualInt(result.exitCode, 0, "alias_renamed_import_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "2", "alias_renamed_import_jvm: Two's Seed, not One's")
+}
+
 // ─── Alias-qualified extern type in a function SIGNATURE (#6338) ────────────
 // An `import X as Y` + `Y.ExternType` reference used as a function
 // PARAMETER type: `Lyric.AliasRewriter` flattens it to the fully-qualified

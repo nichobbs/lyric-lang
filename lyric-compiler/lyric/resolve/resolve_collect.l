@@ -142,6 +142,21 @@ func addDecl(
   bare: in Bool,
   span: in Span,
 ): SymbolId {
+  addDeclWithTarget(tbl, pkg, path, name, kind, vis, parent, bare, span, None)
+}
+
+func addDeclWithTarget(
+  tbl: in DeclTable,
+  pkg: in String,
+  path: in DefPath,
+  name: in String,
+  kind: in SymKind,
+  vis: in DeclVis,
+  parent: in Option[SymbolId],
+  bare: in Bool,
+  span: in Span,
+  aliasTarget: in Option[TypeExpr],
+): SymbolId {
   val id = internDefPath(tbl.interner, path)
   val ix = tbl.decls.count
   tbl.decls.add(
@@ -154,7 +169,8 @@ func addDecl(
       pkg = pkg,
       parent = parent,
       bare = bare,
-      span = span
+      span = span,
+      aliasTarget = aliasTarget
     )
   )
   if tbl.byId.containsKey(toString(id.id)) {
@@ -196,6 +212,21 @@ func addMethod(tbl: in DeclTable, pkg: in String, owner: in DefPath, fn: in Func
 
 func addSigMethod(tbl: in DeclTable, pkg: in String, owner: in DefPath, sig: in FunctionSig, vis: in DeclVis): Unit {
   val _ = addDecl(tbl, pkg, methodDefPath(owner, sig.name, sig.params), sig.name, SKMethod, vis, None, false, sig.span)
+}
+
+// The target a pass may substitute for an alias: none for a parameterized alias
+// (its parameters would dangle) or one that names a type of its own name.
+func aliasTargetOf(decl: in TypeAliasDecl): Option[TypeExpr] {
+  val parameterized = match decl.generics { case Some(_) -> true; case None -> false }
+  val selfNamed = match decl.rhs.kind {
+    case TRef(p) -> p.segments.count > 0 and p.segments[p.segments.count - 1] == decl.name
+    case _ -> false
+  }
+  if parameterized or selfNamed {
+    None
+  } else {
+    Some(value = decl.rhs)
+  }
 }
 
 /// Register the declarations of `items`, which package `pkg` declares.
@@ -253,7 +284,18 @@ func registerItem(tbl: in DeclTable, pkg: in String, it: in Item): Unit {
       val _ = addDecl(tbl, pkg, typeDefPath(pkg, decl.name), decl.name, SKDistinct, vis, None, true, span)
     }
     case ITypeAlias(decl) -> {
-      val _ = addDecl(tbl, pkg, typeDefPath(pkg, decl.name), decl.name, SKAlias, vis, None, true, span)
+      val _ = addDeclWithTarget(
+        tbl,
+        pkg,
+        typeDefPath(pkg, decl.name),
+        decl.name,
+        SKAlias,
+        vis,
+        None,
+        true,
+        span,
+        aliasTargetOf(decl)
+      )
     }
     case IInterface(decl) -> {
       val path = typeDefPath(pkg, decl.name)

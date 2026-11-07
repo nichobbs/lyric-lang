@@ -1389,18 +1389,9 @@ pub func canonicalAliasDotNamedAll(files: in List[SourceFile]): List[SourceFile]
 }
 
 func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): SourceFile {
-  val raw: Map[String, TypeExpr] = newMap()
-  addAliasDecls(file, false, raw)
-  for imp in file.imports {
-    if not imp.isExtern {
-      val pkg = modulePathJoin(imp.path.segments)
-      for other in files {
-        if modulePathJoin(other.packageDecl.path.segments) == pkg {
-          addAliasDecls(other, true, raw)
-        }
-      }
-    }
-  }
+  // The resolver's table: a target that names its type through a renamed
+  // import is spelled with the declaring package (#8752).
+  val raw = TypeAliasResolve.projectAliasTargets(file, files)
   if raw.count == 0 {
     return file
   }
@@ -1430,6 +1421,15 @@ func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): So
   if targets.count == 0 {
     return file
   }
+  // A bare alias head whose target names its package is spelled with it, so
+  // two packages that declare a type of that name are told apart.
+  val qualified: Map[String, List[String]] = newMap()
+  for name in mapKeys(targets) {
+    match aliasQualifiedPath(raw, name) {
+      case Some(segs) -> qualified.add(name, segs)
+      case None -> ()
+    }
+  }
   val items: List[Item] = newList()
   for it in file.items {
     match it.kind {
@@ -1449,7 +1449,13 @@ func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): So
             val segs: List[String] = newList()
             var i = 0
             while i < p.segments.count {
-              segs.add(if i == p.segments.count - 2 { aliasTargetOr(targets, p.segments[i]) } else { p.segments[i] })
+              if i == p.segments.count - 2 {
+                for s in aliasHeadSegments(targets, qualified, p.segments[i], i == 0) {
+                  segs.add(s)
+                }
+              } else {
+                segs.add(p.segments[i])
+              }
               i = i + 1
             }
             Expr(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args), span = e.span)
@@ -1461,7 +1467,13 @@ func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): So
               val segs: List[String] = newList()
               var i = 0
               while i < rp.segments.count {
-                segs.add(if i == rp.segments.count - 1 { aliasTargetOr(targets, rp.segments[i]) } else { rp.segments[i] })
+                if i == rp.segments.count - 1 {
+                  for s in aliasHeadSegments(targets, qualified, rp.segments[i], i == 0) {
+                    segs.add(s)
+                  }
+                } else {
+                  segs.add(rp.segments[i])
+                }
                 i = i + 1
               }
               val newRecv = recv.copy(kind = EPath(path = rp.copy(segments = segs)))
@@ -1487,23 +1499,6 @@ func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): So
   )
 }
 
-// The aliases `file` declares (only its `pub` ones when `pubOnly`) into
-// `into`, a name already there winning.
-func addAliasDecls(file: in SourceFile, pubOnly: in Bool, into: in Map[String, TypeExpr]): Unit {
-  for it in file.items {
-    match it.kind {
-      case ITypeAlias(d) -> {
-        val isPub = match it.visibility { case Some(_) -> true; case None -> false }
-        val plain = match d.generics { case Some(_) -> false; case None -> true }
-        if plain and (isPub or not pubOnly) and not into.containsKey(d.name) {
-          into.add(d.name, d.rhs)
-        }
-      }
-      case _ -> ()
-    }
-  }
-}
-
 // The plain named type the alias `name` stands for, following chains
 // through `raw`; `None` for an alias of any other type, or a cycle.
 func aliasPlainTarget(raw: in Map[String, TypeExpr], name: in String): Option[String] {
@@ -1524,6 +1519,50 @@ func aliasPlainTarget(raw: in Map[String, TypeExpr], name: in String): Option[St
     steps = steps + 1
   }
   None
+}
+
+// The package-qualified path of the plain type the alias `name` stands for,
+// when its target is written with one (the resolver spells a renamed import
+// out); `None` for a bare target.
+func aliasQualifiedPath(raw: in Map[String, TypeExpr], name: in String): Option[List[String]] {
+  var cur = name
+  var steps = 0
+  while steps < 32 {
+    match mapGet(raw, cur) {
+      case Some(te) -> match te.kind {
+        case TRef(p) -> if p.segments.count == 0 {
+          return None
+        } else if p.segments.count >= 2 {
+          return Some(value = p.segments)
+        } else {
+          cur = p.segments[0]
+        }
+        case _ -> return None
+      }
+      case None -> return None
+    }
+    steps = steps + 1
+  }
+  None
+}
+
+// The segments that stand for the alias head `name` in a call: the qualified
+// path of its target when the head is bare, else the aliased type's name.
+func aliasHeadSegments(
+  targets: in Map[String, String],
+  qualified: in Map[String, List[String]],
+  name: in String,
+  bare: in Bool,
+): List[String] {
+  if bare {
+    match mapGet(qualified, name) {
+      case Some(segs) -> return segs
+      case None -> ()
+    }
+  }
+  val one: List[String] = newList()
+  one.add(aliasTargetOr(targets, name))
+  one
 }
 
 func isPathExpr(e: in Expr): Bool {
