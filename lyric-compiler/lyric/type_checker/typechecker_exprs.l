@@ -3445,7 +3445,7 @@ func nonIndexableNativeKind(tbl: in SymbolTable, recvRaw: in Type): String {
   }
 }
 
-func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry] {
+pub func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry] {
   val result: List[FieldEntry] = newList()
   var i = 0
   while i < tbl.symbols.count {
@@ -3476,7 +3476,7 @@ func fieldsOfRecord(tbl: in SymbolTable, tid: in SymbolId): List[FieldEntry] {
   result
 }
 
-record FieldEntry {
+pub record FieldEntry {
   name: String
   ty: Type
 }

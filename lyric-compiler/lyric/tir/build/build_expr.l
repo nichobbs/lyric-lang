@@ -386,7 +386,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
       case None -> None
     }
     case ECall(fn, args) -> buildCall(env, e, ty, fn, args)
-    case EMember(_, _) -> uncoveredExpr(env, e, "a member access")
+    case EMember(r, name) -> buildFieldRead(env, e, ty, r, name)
     case EIndex(_, _) -> uncoveredExpr(env, e, "an index")
     case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
     case ELambda(_, _) -> uncoveredExpr(env, e, "a lambda")
@@ -1221,6 +1221,30 @@ func buildExternCall(
     ret = ret
   )
   Some(value = mkExpr(e, ty, XCall(callee = Extern(member = member), args = targsOut)))
+}
+
+/// `recv.name` where `recv` is a value of a record type declaring a field `name`: the
+/// receiver built, then the field by its position among the record's declared fields (the
+/// order a construction places them in).  Any other member (a collection's `count`, a
+/// host property, a config field, a tuple or union payload) is counted.
+func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name: in String): Option[TExpr] {
+  val rt = match buildExpr(env, recv) { case Some(t) -> t; case None -> return None }
+  match rt.ty {
+    case TNamed(sym, _) -> {
+      val fields = fieldsOfRecord(env.ctx.tbl, sym)
+      var i = 0
+      while i < fields.count {
+        if fields[i].name == name {
+          return Some(
+            value = mkExpr(e, ty, XField(recv = rt, field = FieldRef(owner = sym, name = name, index = i)))
+          )
+        }
+        i = i + 1
+      }
+      uncoveredExpr(env, e, "a member access that is not a record field")
+    }
+    case _ -> uncoveredExpr(env, e, "a member access that is not a record field")
+  }
 }
 
 /// The implicit conversion that takes a value of type `from` to `to`, derived from the
