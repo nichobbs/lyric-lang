@@ -576,6 +576,15 @@ func translateResolvedCall(
 
   // Requires clauses → side conditions.
   val preConds: List[Term] = newList()
+  var pii = 0
+  while pii < decl.params.count and pii < argTerms.count {
+    val pp0 = decl.params[pii]
+    val checkEntryInv = match pp0.mode { case PMOut -> false; case _ -> true }
+    if checkEntryInv {
+      appendTermList(preConds, recordInvariantObligations(env, argTerms[pii], paramSorts[pii], callSpan, allArgDiags))
+    }
+    pii = pii + 1
+  }
   var ci = 0
   while ci < decl.contracts.count {
     match decl.contracts[ci] {
@@ -624,6 +633,8 @@ func translateResolvedCall(
     case _ -> ()
   }
   val outRoots = outParamRoots(decl, args)
+  val outPostTerms: List[Term] = newList()
+  val outPostSorts: List[Sort] = newList()
   var psi = 0
   while psi < decl.params.count {
     val pp = decl.params[psi]
@@ -638,6 +649,8 @@ func translateResolvedCall(
         postSubstNames.add(oldKey)
         val postVar = TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi])
         postSubst.add(pp.name, postVar)
+        outPostTerms.add(postVar)
+        outPostSorts.add(paramSorts[psi])
         if paired.paired and aliased.length == 0 and psi < outRoots.count and outRoots[psi].length > 0 {
           env.outPosts.add(outPostKey(outRoots[psi], callSpan), postVar)
         }
@@ -701,6 +714,12 @@ func translateResolvedCall(
   appendTermList(asList, pureUnfold)
   // The callee proves its result is in its declared range (#7872).
   appendTermList(asList, valueFactsForTerm(callTerm, resultInfo))
+  appendTermList(asList, recordInvariantFacts(env, callTerm, resultInfo.sort))
+  var opi = 0
+  while opi < outPostTerms.count {
+    appendTermList(asList, recordInvariantFacts(env, outPostTerms[opi], outPostSorts[opi]))
+    opi = opi + 1
+  }
   // A goal this call reaches without its body is reported as V0027 when it
   // is not discharged (`unfoldSkippedMarker`).
   val knownCalleeTR = TranslateResult(
@@ -912,6 +931,28 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
         }
       }
       case IRecord(d) -> {
+        val tys: List[TypeExpr] = newList()
+        var mutable = d.isRef
+        var mi = 0
+        while mi < d.members.count {
+          match d.members[mi] {
+            case RMField(fld) -> {
+              if fld.isMutable {
+                mutable = true
+              }
+              tys.add(fld.ty)
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+        if not mutable {
+          candidates.add(d.name)
+          candidateFields.add(tys)
+          candidateParams.add(genericTypeParamNames(d.generics))
+        }
+      }
+      case IExposedRec(d) -> {
         val tys: List[TypeExpr] = newList()
         var mutable = d.isRef
         var mi = 0

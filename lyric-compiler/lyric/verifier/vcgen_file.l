@@ -34,12 +34,20 @@ func withSiblingTypes(file: in SourceFile, typeItems: in List[Item]): SourceFile
     items.add(it)
     match it.kind {
       case IRecord(d) -> declared.add(d.name)
+      case IExposedRec(d) -> declared.add(d.name)
+      case IOpaque(d) -> declared.add(d.name)
       case IDistinctType(d) -> declared.add(d.name)
       case _ -> ()
     }
   }
   for it in typeItems {
-    val name = match it.kind { case IRecord(d) -> d.name; case IDistinctType(d) -> d.name; case _ -> "" }
+    val name = match it.kind {
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IOpaque(d) -> d.name
+      case IDistinctType(d) -> d.name
+      case _ -> ""
+    }
     if name.length > 0 and not declared.contains(name) {
       declared.add(name)
       items.add(it)
@@ -246,64 +254,41 @@ pub func goalsForFileInScope(
       // prefixing them with `<TypeName>__` — `Bucket__capacity` for a
       // Bucket-field reading.  EMember's record-field translation mirrors
       // this prefix when it emits the selector TApp.
-      case IRecord(recDecl) -> {
-        val recTypeParams = genericTypeParamNames(recDecl.generics)
-        // A generic record named like the standard library's `Result` or
-        // `Option` is taken for neither: its sorts are renamed apart from
-        // the preamble's (`unshadowMonadSort`) and stay uninterpreted.
-        val monadNamed = recTypeParams.count > 0 and (recDecl.name == "Result" or recDecl.name == "Option")
-        // A generic record whose fields name the record itself (`next:
-        // Option[Node[T]]`) would be a parametric datatype nested through
-        // another, which the solver rejects as not well-founded: it stays
-        // an uninterpreted sort, its field reads failing closed.
-        val selfNested = recTypeParams.count > 0 and recordFieldsNameRecord(recDecl, recTypeParams, distinctMap)
-        if not monadNamed and not selfNested {
-          val sortParams: List[String] = newList()
-          val sortParamSorts: List[Sort] = newList()
-          for tp in recTypeParams {
-            val sp = recordSortParamName(recDecl.name, tp)
-            sortParams.add(sp)
-            val noArgs: List[Sort] = newList()
-            sortParamSorts.add(SDatatype(name = sp, args = noArgs))
-          }
-          val dtFields: List[DatatypeField] = newList()
-          val dtDefaults: List[Option[Expr]] = newList()
-          val dtInvs: List[Option[Expr]] = newList()
-          var fi = 0
-          while fi < recDecl.members.count {
-            match recDecl.members[fi] {
-              case RMField(fld) -> {
-                addGenericDatatypeField(
-                  dtFields,
-                  fieldInfosMap,
-                  distinctMap,
-                  recDecl.name + "__" + fld.name,
-                  fld.ty,
-                  recTypeParams,
-                  sortParamSorts
-                )
-                dtDefaults.add(fld.dflt)
-              }
-              case RMInvariant(inv) -> {
-                dtInvs.add(Some(value = inv.expr))
-              }
-              case _ -> ()
+      case IRecord(recDecl) -> registerRecordDatatype(
+        recDecl,
+        sharedSymbols,
+        fieldInfosMap,
+        distinctMap,
+        recordDefaultsMap,
+        recordNames
+      )
+      case IExposedRec(recDecl) -> registerRecordDatatype(
+        recDecl,
+        sharedSymbols,
+        fieldInfosMap,
+        distinctMap,
+        recordDefaultsMap,
+        recordNames
+      )
+      case IOpaque(opDecl) -> {
+        if opDecl.hasBody {
+          val opMembers: List[RecordMember] = newList()
+          var oi = 0
+          while oi < opDecl.members.count {
+            match opDecl.members[oi] {
+              case OMField(f) -> opMembers.add(RMField(field = f))
+              case OMInvariant(inv) -> opMembers.add(RMInvariant(inv = inv))
             }
-            fi = fi + 1
+            oi = oi + 1
           }
-          addRecordMethodResults(recDecl, recTypeParams, sortParamSorts, fieldInfosMap, distinctMap)
-          val dtCtors: List[DatatypeCtor] = newList()
-          dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
-          sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors, params = sortParams))
-          if not recordDefaultsMap.containsKey(recDecl.name) {
-            recordDefaultsMap.add(recDecl.name, dtDefaults)
-            recordNames.add(recDecl.name)
-          }
-          val invKey = "!invariant." + recDecl.name
-          if dtInvs.count > 0 and not recordDefaultsMap.containsKey(invKey) {
-            recordDefaultsMap.add(invKey, dtInvs)
-            recordNames.add(invKey)
-          }
+          val asRec = RecordDecl(
+            name = opDecl.name,
+            generics = opDecl.generics,
+            whereClause = opDecl.whereClause,
+            members = opMembers,
+            span = opDecl.span
+          )
+          registerRecordDatatype(asRec, sharedSymbols, fieldInfosMap, distinctMap, recordDefaultsMap, recordNames)
         }
       }
       // Same as IRecord above, but for protected types.  Lets
@@ -353,50 +338,8 @@ pub func goalsForFileInScope(
   var rmi = 0
   while rmi < modelFile.items.count {
     match modelFile.items[rmi].kind {
-      case IRecord(rmDecl) -> {
-        val rmSiblings: List[SiblingMethod] = newList()
-        var rms = 0
-        while rms < rmDecl.members.count {
-          match rmDecl.members[rms] {
-            case RMFunc(sibFn) -> rmSiblings.add(SiblingMethod(name = sibFn.name, ret = sibFn.ret))
-            case _ -> ()
-          }
-          rms = rms + 1
-        }
-        val rmFields = SelfFields.recordFieldNames(rmDecl.members)
-        val rmSelf = Some(value = typeOfDeclaration(rmDecl.name, rmDecl.generics))
-        var rmj = 0
-        while rmj < rmDecl.members.count {
-          match rmDecl.members[rmj] {
-            case RMFunc(rmFn) -> {
-              val rmKey = rmDecl.name + "." + rmFn.name
-              if not recordMethodsMap.containsKey(rmKey) {
-                recordMethodsMap.add(rmKey, true)
-              }
-              // A method is a callee when no other method of its record
-              // has its name and it takes a `self` receiver; its contract
-              // and `@pure` body are then applied at a call like a
-              // function's (#8356).
-              var sameName = 0
-              for sm in rmSiblings {
-                if sm.name == rmFn.name {
-                  sameName = sameName + 1
-                }
-              }
-              if sameName == 1 and rmFn.params.count >= 1 and rmFn.params[0].name == "self" {
-                val calleeKey = recordMethodCalleeKey(rmDecl.name, rmFn.name)
-                if not callees.containsKey(calleeKey) {
-                  val md = methodAsFunction(rmDecl.name + "::" + rmFn.name, rmFields, rmDecl.generics, rmSelf, rmSiblings, rmFn)
-                  callees.add(calleeKey, md)
-                  calleeDecls.add(md)
-                }
-              }
-            }
-            case _ -> ()
-          }
-          rmj = rmj + 1
-        }
-      }
+      case IRecord(rmDecl) -> registerRecordMethodCallees(rmDecl, recordMethodsMap, callees, calleeDecls)
+      case IExposedRec(rmDecl) -> registerRecordMethodCallees(rmDecl, recordMethodsMap, callees, calleeDecls)
       case _ -> ()
     }
     rmi = rmi + 1
@@ -497,4 +440,122 @@ pub func goalsForFileInScope(
   };
 
   (allGoals, dedupeDiagnostics(allDiags))
+}
+
+func registerRecordDatatype(
+  recDecl: in RecordDecl,
+  sharedSymbols: in List[SymbolDecl],
+  fieldInfosMap: in Map[String, SortInfo],
+  distinctMap: in Map[String, TypeExpr],
+  recordDefaultsMap: in Map[String, List[Option[Expr]]],
+  recordNames: in List[String],
+): Unit {
+  val recTypeParams = genericTypeParamNames(recDecl.generics)
+  // A generic record named like the standard library's `Result` or
+  // `Option` is taken for neither: its sorts are renamed apart from
+  // the preamble's (`unshadowMonadSort`) and stay uninterpreted.
+  val monadNamed = recTypeParams.count > 0 and (recDecl.name == "Result" or recDecl.name == "Option")
+  // A generic record whose fields name the record itself (`next:
+  // Option[Node[T]]`) would be a parametric datatype nested through
+  // another, which the solver rejects as not well-founded: it stays
+  // an uninterpreted sort, its field reads failing closed.
+  val selfNested = recTypeParams.count > 0 and recordFieldsNameRecord(recDecl, recTypeParams, distinctMap)
+  if not monadNamed and not selfNested {
+    val sortParams: List[String] = newList()
+    val sortParamSorts: List[Sort] = newList()
+    for tp in recTypeParams {
+      val sp = recordSortParamName(recDecl.name, tp)
+      sortParams.add(sp)
+      val noArgs: List[Sort] = newList()
+      sortParamSorts.add(SDatatype(name = sp, args = noArgs))
+    }
+    val dtFields: List[DatatypeField] = newList()
+    val dtDefaults: List[Option[Expr]] = newList()
+    val dtInvs: List[Option[Expr]] = newList()
+    var fi = 0
+    while fi < recDecl.members.count {
+      match recDecl.members[fi] {
+        case RMField(fld) -> {
+          addGenericDatatypeField(
+            dtFields,
+            fieldInfosMap,
+            distinctMap,
+            recDecl.name + "__" + fld.name,
+            fld.ty,
+            recTypeParams,
+            sortParamSorts
+          )
+          dtDefaults.add(fld.dflt)
+        }
+        case RMInvariant(inv) -> {
+          dtInvs.add(Some(value = inv.expr))
+        }
+        case _ -> ()
+      }
+      fi = fi + 1
+    }
+    addRecordMethodResults(recDecl, recTypeParams, sortParamSorts, fieldInfosMap, distinctMap)
+    val dtCtors: List[DatatypeCtor] = newList()
+    dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
+    sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors, params = sortParams))
+    if not recordDefaultsMap.containsKey(recDecl.name) {
+      recordDefaultsMap.add(recDecl.name, dtDefaults)
+      recordNames.add(recDecl.name)
+    }
+    val invKey = "!invariant." + recDecl.name
+    if dtInvs.count > 0 and not recordDefaultsMap.containsKey(invKey) {
+      recordDefaultsMap.add(invKey, dtInvs)
+      recordNames.add(invKey)
+    }
+  }
+}
+
+func registerRecordMethodCallees(
+  rmDecl: in RecordDecl,
+  recordMethodsMap: in Map[String, Bool],
+  callees: in Map[String, FunctionDecl],
+  calleeDecls: in List[FunctionDecl],
+): Unit {
+  val rmSiblings: List[SiblingMethod] = newList()
+  var rms = 0
+  while rms < rmDecl.members.count {
+    match rmDecl.members[rms] {
+      case RMFunc(sibFn) -> rmSiblings.add(SiblingMethod(name = sibFn.name, ret = sibFn.ret))
+      case _ -> ()
+    }
+    rms = rms + 1
+  }
+  val rmFields = SelfFields.recordFieldNames(rmDecl.members)
+  val rmSelf = Some(value = typeOfDeclaration(rmDecl.name, rmDecl.generics))
+  var rmj = 0
+  while rmj < rmDecl.members.count {
+    match rmDecl.members[rmj] {
+      case RMFunc(rmFn) -> {
+        val rmKey = rmDecl.name + "." + rmFn.name
+        if not recordMethodsMap.containsKey(rmKey) {
+          recordMethodsMap.add(rmKey, true)
+        }
+        // A method is a callee when no other method of its record
+        // has its name and it takes a `self` receiver; its contract
+        // and `@pure` body are then applied at a call like a
+        // function's (#8356).
+        var sameName = 0
+        for sm in rmSiblings {
+          if sm.name == rmFn.name {
+            sameName = sameName + 1
+          }
+        }
+        if sameName == 1 and rmFn.params.count >= 1 and rmFn.params[0].name == "self" {
+          val calleeKey = recordMethodCalleeKey(rmDecl.name, rmFn.name)
+          if not callees.containsKey(calleeKey) {
+            val md = methodAsFunction(rmDecl.name + "::" + rmFn.name, rmFields, rmDecl.generics, rmSelf, rmSiblings, rmFn)
+            callees.add(calleeKey, md)
+            calleeDecls.add(md)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    rmj = rmj + 1
+  }
 }

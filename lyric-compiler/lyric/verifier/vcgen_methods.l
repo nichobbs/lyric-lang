@@ -132,7 +132,10 @@ func goalsForImplMethods(
   }
   val ownerName = implTargetName(decl.target)
   val noRecords: List[RecordDecl] = newList()
-  val fields = SelfFields.implTargetFieldNames(SelfFields.typeFieldIndex(file, noRecords), decl.target)
+  val fields = SelfFields.implTargetFieldNames(
+    SelfFields.typeFieldIndex(withSiblingTypes(file, pscope.siblings.typeItems), noRecords),
+    decl.target
+  )
   var anyProved = false
   for m in decl.members {
     match m {

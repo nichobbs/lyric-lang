@@ -247,16 +247,11 @@
 //! connection thread already `freeOneShotSem`'d, a use-after-free). Both
 //! panic loudly rather than silently corrupting memory.
 //!
-//! No backpressure cap (the dotnet twin's `LYRIC_HTTP_MAX_CONNECTIONS`/
-//! `resolveMaxConcurrentConnections`, #6071) ships in this v1: it needs
-//! `Std.Parse.tryParseInt` to read the environment override, and
-//! `Std.Parse` has no `_kernel_native/parse_host.l` twin yet (confirmed:
-//! only `_kernel/parse_host.l` and `_kernel_jvm/parse_host.l` exist), so
-//! depending on it here would either fail to build or silently punch a new
-//! hole in the audited native stdlib-kernel boundary. A future
-//! `Std.Parse` native twin removes this gap; until then, an unbounded
-//! native listener is a disclosed, deliberate v1 scope decision, not a
-//! silent omission.
+//! Concurrent connections are bounded by `ServerQueue.connLimit`, a counting
+//! semaphore initialized to `resolveMaxConcurrentConnections()` (default 1000,
+//! overridable via `LYRIC_HTTP_MAX_CONNECTIONS`, matching the dotnet twin's
+//! #6071 backpressure guarantee). `spawnConnectionThread` acquires a permit
+//! before spawning each handler thread and releases it when the thread exits.
 //!
 //! String scanning avoids `String[i]` bracket indexing throughout (not a
 //! supported native codegen shape — `Lyric.LlvmCodegen.lowerCollectionIndex`
@@ -458,6 +453,7 @@ pub func TlsListenError.message(e: in TlsListenError): String {
 pub ref record ServerQueue {
   mutex: Long
   available: Long
+  connLimit: Long
   items: List[HttpContext]
   workerTids: List[Long]
   // The retained closure-environment pointer for each `workerTids` entry
@@ -505,6 +501,8 @@ func newServerQueue(): ServerQueue {
   rtMutexInit(m)
   val s = rtMalloc(rtSemSize().toLong())
   rtSemInit(s, 0)
+  val c = rtMalloc(rtSemSize().toLong())
+  rtSemInit(c, resolveMaxConcurrentConnections())
   val items: List[HttpContext] = newList()
   val tids: List[Long] = newList()
   val closures: List[Long] = newList()
@@ -512,6 +510,7 @@ func newServerQueue(): ServerQueue {
   ServerQueue(
     mutex = m,
     available = s,
+    connLimit = c,
     items = items,
     workerTids = tids,
     workerClosures = closures,
@@ -1055,11 +1054,24 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
 // connection rather than leaking it.
 @unsafe_ffi
 func spawnConnectionThread(conn: in Conn, queue: in ServerQueue, body: () -> Unit): Unit {
+  // Bound the number of connections served concurrently (#6071): acquire a
+  // permit before spawning the connection thread so the accept loop blocks
+  // (backpressure) once `resolveMaxConcurrentConnections()` connections are
+  // in flight, matching the dotnet twin.
+  rtSemWait(queue.connLimit)
+  rtMutexLock(queue.mutex)
+  val isStopping = queue.stopping
+  rtMutexUnlock(queue.mutex)
+  if isStopping {
+    hostClose(conn)
+    rtSemPost(queue.connLimit)
+    return
+  }
   // Register BEFORE spawning (#6792, `registerConn`'s doc comment) -- never
   // the other way around.
   registerConn(queue, conn)
   var tid: Long = 0
-  val worker: () -> NativePtr[Byte] = { -> body(); nativeNullPtr() }
+  val worker: () -> NativePtr[Byte] = { -> body(); rtSemPost(queue.connLimit); nativeNullPtr() }
   // Retain BEFORE pthreadCreate, matching the ARC contract for a callback
   // the C API holds beyond the initiating call (#6797, extern-decl comment
   // above): this function returns immediately without joining, so nothing
@@ -1078,6 +1090,7 @@ func spawnConnectionThread(conn: in Conn, queue: in ServerQueue, body: () -> Uni
     rtRelease(worker)
     unregisterConn(queue, conn)
     hostClose(conn)
+    rtSemPost(queue.connLimit)
   }
 }
 
@@ -1146,6 +1159,15 @@ func spawnTlsHandler(
 val tlsHandshakeTimeoutMsDefault: Int = 10000
 
 val connectionIdleTimeoutMsDefault: Int = 120000
+
+val maxConcurrentConnectionsDefault: Int = 1000
+
+/// The concurrent-connection cap a listener enforces: the
+/// `LYRIC_HTTP_MAX_CONNECTIONS` environment variable when it is an integer in
+/// 1..86400000, otherwise 1000. Read once per listener at start.
+pub func resolveMaxConcurrentConnections(): Int {
+  positiveIntFromEnv("LYRIC_HTTP_MAX_CONNECTIONS", maxConcurrentConnectionsDefault)
+}
 
 // A positive integer from `name`, otherwise `fallback` (a zero or negative
 // timeout would silently disable the protection it exists for). Parsed
@@ -1382,6 +1404,8 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
         rtFree(queue.mutex)
         rtSemDestroy(queue.available)
         rtFree(queue.available)
+        rtSemDestroy(queue.connLimit)
+        rtFree(queue.connLimit)
         hostReleaseServerTls(serverTls)
         return Err(error = InvalidConfig(message = "failed to spawn the accept thread"))
       }
@@ -1436,6 +1460,12 @@ pub func stopListener(l: in HttpListener): Unit {
   l.queue.stopping = true
   rtMutexUnlock(l.queue.mutex)
   hostStopListener(l.transport)
+  // Unblock the accept thread if it is currently parked in
+  // `spawnConnectionThread`'s `rtSemWait(queue.connLimit)` at the connection
+  // cap while all active connections are idle; the extra permit lets it finish
+  // spawning that accepted connection (which the `activeConns` shutdown loop
+  // below then interrupts) and exit on its next `hostAccept`.
+  rtSemPost(l.queue.connLimit)
   // Join the accept thread FIRST, before touching `activeConns`: its own
   // loop only ends once `hostAccept` observes the wake-pipe
   // interrupt `hostStopListener` just signaled, and every connection it
@@ -1556,8 +1586,10 @@ pub func stopListener(l: in HttpListener): Unit {
     rtRelease(workerPtr)
     i = i + 1
   }
-  // Every connection thread is joined, so no handshake can still be using
-  // the shared TLS context (#7268).
+  // Every connection thread and the accept thread are joined, so nothing can
+  // touch `connLimit` or the shared TLS context (#7268) again.
+  rtSemDestroy(l.queue.connLimit)
+  rtFree(l.queue.connLimit)
   hostReleaseServerTls(l.serverTls)
   // A CALLER-owned puller thread -- one blocked inside `nextContext` ->
   // `dequeueContext` -> `rtSemWait(q.available)` -- may still be genuinely

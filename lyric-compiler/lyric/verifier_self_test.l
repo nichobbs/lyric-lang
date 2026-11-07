@@ -4452,10 +4452,7 @@ test "a buffer Std.Buffer returns is the buffer its contract describes (#8753)" 
   )
   // A slice's elements never change (D400), so the slice functions state
   // theirs too.
-  assertBufferDischarged(
-    sig + "  ensures: result == x[1]\n{\n  val s = toSlice(x)\n  s[1]\n}\n",
-    "to-slice-elements"
-  )
+  assertBufferDischarged(sig + "  ensures: result == x[1]\n{\n  val s = toSlice(x)\n  s[1]\n}\n", "to-slice-elements")
   assertBufferDischarged(
     "func g(s: in slice[Int]): Int\n  requires: s.length > 0\n  ensures: result == s[0]\n{\n  val b = fromSlice(s)\n  b[0]\n}\n",
     "from-slice-elements"
@@ -4780,7 +4777,10 @@ test "bare @proof_required enforces checked arithmetic by default and unbounded_
   val optOutDischarged = prove(
     "@proof_required(unbounded_arithmetic)\npackage P\nfunc inc(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n"
   )
-  assertTrue(not summaryHasFailure(optOutDischarged), "@proof_required(unbounded_arithmetic) opts out of overflow bounds")
+  assertTrue(
+    not summaryHasFailure(optOutDischarged),
+    "@proof_required(unbounded_arithmetic) opts out of overflow bounds"
+  )
 }
 
 test "Short and SByte overflow at 16-bit and 8-bit bounds" {
@@ -4806,5 +4806,32 @@ test "record invariant is checked at construction in @proof_required" {
   assertDischarged(
     "record Pos {\n  x: Int\n  invariant: x > 0\n}\nfunc good(): Pos {\n  Pos(x = 1)\n}\n",
     "record-invariant-satisfied"
+  )
+}
+
+test "exposed record and opaque type invariants are checked at construction and assumed on parameters" {
+  assertRefuted(
+    "exposed record ExpPos {\n  x: Int\n  invariant: x > 0\n}\nfunc bad(): ExpPos {\n  ExpPos(x = 0)\n}\n",
+    "exposed-record-invariant-violated"
+  )
+  assertDischarged(
+    "exposed record ExpPos {\n  x: Int\n  invariant: x > 0\n  func get(self: in ExpPos): Int\n    ensures: result > 0\n  {\n    self.x\n  }\n}\nfunc good(p: in ExpPos): Int\n  ensures: result > 0\n{\n  p.get()\n}\n",
+    "exposed-record-invariant-assumed-and-method-callee"
+  )
+  assertRefuted(
+    "opaque type OpaquePos {\n  x: Int\n  invariant: x > 0\n}\nfunc bad(): OpaquePos {\n  OpaquePos(x = 0)\n}\n",
+    "opaque-invariant-violated"
+  )
+  assertDischarged(
+    "opaque type OpaquePos {\n  x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in OpaquePos): Int\n  ensures: result > 0\n{\n  p.x\n}\n",
+    "opaque-invariant-assumed-on-param"
+  )
+  assertRefuted(
+    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc breakReturn(p: in Pos): Pos {\n  var q = p\n  q.x = 0\n  q\n}\n",
+    "record-invariant-checked-on-return"
+  )
+  assertRefuted(
+    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in Pos): Int\n  ensures: result > 0\n{\n  p.x\n}\nfunc breakCall(p: in Pos): Int {\n  var q = p\n  q.x = 0\n  readPos(q)\n}\n",
+    "record-invariant-checked-at-call-site"
   )
 }

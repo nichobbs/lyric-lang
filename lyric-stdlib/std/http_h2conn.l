@@ -336,6 +336,8 @@ pub ref record H2Stream {
   var state: H2StreamState
   var sendWindow: Int
   var recvWindow: Int
+  var expectedContentLength: Long = -1i64
+  var receivedDataBytes: Long = 0i64
 }
 
 /// In-progress HEADERS + CONTINUATION reassembly (§6.10). `accepted` is false
@@ -613,7 +615,9 @@ func createStream(state: inout H2Connection, streamId: in Int): H2Stream {
     id = streamId,
     state = H2SOpen,
     sendWindow = state.remoteSettings.initialWindowSize,
-    recvWindow = state.localSettings.initialWindowSize
+    recvWindow = state.localSettings.initialWindowSize,
+    expectedContentLength = -1i64,
+    receivedDataBytes = 0i64
   )
   state.streams.add(st)
   state.streamIndex[streamId] = st
@@ -1244,10 +1248,26 @@ func receiveData(
       "DATA overruns a stream receive window (RFC 9113 section 6.9.1)"
     )
   } else {
-    st.recvWindow = st.recvWindow - wireLength
-    events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
-    if endStream {
-      markEndStreamReceived(state, st.id)
+    val nextBytes = st.receivedDataBytes + data.length.toLong()
+    val clMismatch = st.expectedContentLength >= 0i64 and
+      (nextBytes > st.expectedContentLength or (endStream and nextBytes != st.expectedContentLength))
+    if clMismatch {
+      reclaimConnectionWindow(state, outb, wireLength)
+      streamFail(
+        state,
+        events,
+        outb,
+        st.id,
+        H2ProtocolError,
+        "DATA payload length does not match content-length (RFC 9113 section 8.1.1)"
+      )
+    } else {
+      st.recvWindow = st.recvWindow - wireLength
+      st.receivedDataBytes = nextBytes
+      events.add(H2RequestData(streamId = st.id, data = data, endStream = endStream, wireLength = wireLength))
+      if endStream {
+        markEndStreamReceived(state, st.id)
+      }
     }
   }
 }
@@ -1541,9 +1561,43 @@ func finalizeHeaders(
         match problem {
           case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
           case None -> {
-            events.add(H2RequestHeaders(streamId = streamId, headers = headers, endStream = endStream))
-            if endStream {
-              markEndStreamReceived(state, streamId)
+            val clProblem = if isTrailer {
+              match findStream(state, streamId) {
+                case Some(st) -> {
+                  val s: H2Stream = st
+                  if s.expectedContentLength >= 0i64 and s.receivedDataBytes != s.expectedContentLength {
+                    Some(value = "DATA payload length does not match content-length before trailers (RFC 9113 section 8.1.1)")
+                  } else {
+                    noHeaderProblem()
+                  }
+                }
+                case None -> noHeaderProblem()
+              }
+            } else {
+              val cl = extractRequestContentLength(headers)
+              if endStream and cl > 0i64 {
+                Some(value = "request HEADERS with END_STREAM has non-zero content-length (RFC 9113 section 8.1.1)")
+              } else {
+                if cl >= 0i64 {
+                  match findStream(state, streamId) {
+                    case Some(st) -> {
+                      val s: H2Stream = st
+                      s.expectedContentLength = cl
+                    }
+                    case None -> ()
+                  }
+                }
+                noHeaderProblem()
+              }
+            }
+            match clProblem {
+              case Some(reason) -> streamFail(state, events, outb, streamId, H2ProtocolError, reason)
+              case None -> {
+                events.add(H2RequestHeaders(streamId = streamId, headers = headers, endStream = endStream))
+                if endStream {
+                  markEndStreamReceived(state, streamId)
+                }
+              }
             }
           }
         }
@@ -1637,7 +1691,7 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
         hostVal = h.value
       }
       if name == "content-length" {
-        if not isNonEmptyAsciiDigits(h.value) {
+        if parseH2ContentLength(h.value) < 0i64 {
           return Some(value = "invalid content-length header field")
         }
         if sawContentLength and contentLengthVal != h.value {
@@ -1661,18 +1715,43 @@ pub func malformedRequestReason(headers: in List[HeaderField]): Option[String] {
   None
 }
 
-func isNonEmptyAsciiDigits(v: in String): Bool {
+func noHeaderProblem(): Option[String] {
+  val p: Option[String] = None
+  p
+}
+
+func parseH2ContentLength(v: in String): Long {
   if v.length == 0 {
-    return false
+    return -1i64
   }
+  val maxBeforeMul = 922337203685477580i64
+  var acc = 0i64
   var i = 0
   while i < v.length {
-    if not isAsciiDigit(charCodeAt(v, i)) {
-      return false
+    val c = charCodeAt(v, i)
+    if not isAsciiDigit(c) {
+      return -1i64
+    }
+    val d = (c - 48).toLong()
+    if acc > maxBeforeMul or (acc == maxBeforeMul and d > 7i64) {
+      return -1i64
+    }
+    acc = acc * 10i64 + d
+    i = i + 1
+  }
+  acc
+}
+
+func extractRequestContentLength(headers: in List[HeaderField]): Long {
+  var i = 0
+  while i < headers.count {
+    val h = headers[i]
+    if h.name == "content-length" {
+      return parseH2ContentLength(h.value)
     }
     i = i + 1
   }
-  true
+  -1i64
 }
 
 /// Why a decoded trailer block is malformed (RFC 9113 sections 8.1 and

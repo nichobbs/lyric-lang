@@ -81,8 +81,12 @@ func goalsForFunctionInheriting(
     val p = decl.params[i]
     val info = sortOfTypeExprE(env0, p.ty)
     val passedOut = match p.mode { case PMIn -> false; case _ -> true }
+    val hasEntryValue = match p.mode { case PMOut -> false; case _ -> true }
     envWithParams = envSetMutable(envBind(p.name, info, envWithParams), p.name, passedOut)
     appendTermList(paramHyps, valueFactsForTerm(TVar(name = p.name, sort = info.sort), info))
+    if hasEntryValue {
+      appendTermList(paramHyps, recordInvariantFacts(env0, TVar(name = p.name, sort = info.sort), info.sort))
+    }
     i = i + 1
   }
 
@@ -178,6 +182,9 @@ func goalsForFunctionInheriting(
   // the parameter holds there (`finishPost`); `old(p)` is its value on entry
   // (#8102).
   val paramFinals: List[FinalSlot] = newList()
+  val outParamFinalVars: List[Term] = newList()
+  val outParamFinalSorts: List[Sort] = newList()
+  val outParamFinalSpans: List[Span] = newList()
   var envForPost = envWithOld
   i = 0
   while i < decl.params.count {
@@ -188,7 +195,11 @@ func goalsForFunctionInheriting(
         val info = sortOfTypeExprE(env0, p.ty)
         val placeholder = freshName(env0, p.name + "!final")
         paramFinals.add(FinalSlot(varName = p.name, placeholder = placeholder))
-        envForPost = envBindTerm(p.name, TVar(name = placeholder, sort = info.sort), info, envForPost)
+        val finalTerm = TVar(name = placeholder, sort = info.sort)
+        envForPost = envBindTerm(p.name, finalTerm, info, envForPost)
+        outParamFinalVars.add(finalTerm)
+        outParamFinalSorts.add(info.sort)
+        outParamFinalSpans.add(p.span)
       }
     }
     i = i + 1
@@ -250,13 +261,13 @@ func goalsForFunctionInheriting(
 
   // Build postcondition term with result variable (will be substituted by WP).
   val resultVar = TVar(name = "result", sort = resultSort.sort)
+  val retSpan = match decl.ret { case Some(te) -> te.span; case None -> decl.span }
   // A declared result range whose bound cannot be translated fails closed
   // (V0033) rather than dropping the obligation (#7848).
   val rangeDiags: List[Diagnostic] = newList()
   val rangeTerms: List[Term] = match rangeObligationsForTerm(resultVar, resultSort) {
     case Ok(ts) -> ts
     case Err(reason) -> {
-      val retSpan = match decl.ret { case Some(te) -> te.span; case None -> decl.span }
       rangeDiags.add(untranslatableDiag("the result's declared range: " + reason, retSpan))
       // The obligation stays in the goal, failed, so the postcondition is
       // never reported discharged while weaker than declared (#7874).
@@ -268,6 +279,17 @@ func goalsForFunctionInheriting(
   val allPostParts: List[Term] = newList()
   allPostParts.add(postTerm)
   appendTermList(allPostParts, rangeTerms)
+  if isSome(decl.body) {
+    appendTermList(allPostParts, recordInvariantObligations(env0, resultVar, resultSort.sort, retSpan, rangeDiags))
+    i = 0
+    while i < outParamFinalVars.count {
+      appendTermList(
+        allPostParts,
+        recordInvariantObligations(env0, outParamFinalVars[i], outParamFinalSorts[i], outParamFinalSpans[i], rangeDiags)
+      )
+      i = i + 1
+    }
+  }
   val combinedPost = mkAnd(allPostParts)
 
   val wpRes = wpBody(envWithFinals(envWithOld, paramFinals), resultSort, combinedPost, body)
@@ -350,6 +372,136 @@ func goalsForFunctionInheriting(
   appendTermList2(allDiags, wpRes.diags)
   val goalPair: (List[Goal], List[Diagnostic]) = (goals, allDiags)
   goalPair
+}
+
+// The invariant facts of a constructed record, exposed record, or opaque
+// value `v` of sort `srt` (`!invariant.<name>`), with each field bound to its
+// selector on `v`.
+func recordInvariantFacts(env: in VEnv, v: in Term, srt: in Sort): List[Term] {
+  val facts: List[Term] = newList()
+  match srt {
+    case SDatatype(rName, targs) -> {
+      val invKey = "!invariant." + rName
+      if env.cyclic.contains(invKey) or env.contractStack.contains(invKey) {
+        return facts
+      }
+      match mapGet(env.recordDefaults, invKey) {
+        case Some(invs) -> match findRecordFields(env, rName) {
+          case Some(fields) -> {
+            val rParams = recordSortParams(env, rName)
+            if rParams.count != targs.count {
+              return facts
+            }
+            var invEnv = envInOwnContract(varlessEnv(env), invKey)
+            val prefix = rName + "__"
+            var fi = 0
+            while fi < fields.count {
+              val rf = fields[fi]
+              val fieldName = if rf.name.startsWith(prefix) {
+                rf.name.substring(prefix.length, rf.name.length - prefix.length)
+              } else {
+                rf.name
+              }
+              val fSort = if rParams.count == 0 { rf.sort } else { substSortParams(rf.sort, rParams, targs) }
+              val fInfo = match mapGet(env.fieldInfos, rf.name) {
+                case Some(fi0) -> fi0.copy(sort = fSort)
+                case None -> SortInfo(sort = fSort, range = RBKNone)
+              }
+              val selTerm = TApp(name = rf.name, args = termList1(v), retSort = fSort)
+              invEnv = envBindTerm(fieldName, selTerm, fInfo, invEnv)
+              appendTermList(facts, valueFactsForTerm(selTerm, fInfo))
+              fi = fi + 1
+            }
+            var ii = 0
+            while ii < invs.count {
+              match invs[ii] {
+                case Some(invExpr) -> {
+                  val (invR, invDiags) = translateExpr(invEnv, invExpr)
+                  if invDiags.count == 0 and not termIsPoisoned(invR.term) and not termHasUnmodelledPattern(invR.term) {
+                    appendTermList(facts, invR.sideConds)
+                    appendTermList(facts, invR.assumed)
+                    facts.add(invR.term)
+                  }
+                }
+                case None -> ()
+              }
+              ii = ii + 1
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  facts
+}
+
+// The invariant obligations a value `v` of sort `srt` must satisfy at a
+// function's exit or call site (`!invariant.<name>`), failing closed when an
+// invariant clause is cyclic or untranslatable.
+pub func recordInvariantObligations(
+  env: in VEnv, v: in Term, srt: in Sort, span: in Span, diags: in List[Diagnostic]
+): List[Term] {
+  val obls: List[Term] = newList()
+  match srt {
+    case SDatatype(rName, targs) -> {
+      val invKey = "!invariant." + rName
+      match mapGet(env.recordDefaults, invKey) {
+        case Some(invs) -> {
+          if env.cyclic.contains(invKey) or env.contractStack.contains(invKey) {
+            diags.add(untranslatableDiag("a cyclic invariant on '" + rName + "'", span))
+            obls.add(poisonTerm(falseT()))
+            return obls
+          }
+          match findRecordFields(env, rName) {
+            case Some(fields) -> {
+              val rParams = recordSortParams(env, rName)
+              if rParams.count != targs.count {
+                return obls
+              }
+              var invEnv = envInOwnContract(varlessEnv(env), invKey)
+              val prefix = rName + "__"
+              var fi = 0
+              while fi < fields.count {
+                val rf = fields[fi]
+                val fieldName = if rf.name.startsWith(prefix) {
+                  rf.name.substring(prefix.length, rf.name.length - prefix.length)
+                } else {
+                  rf.name
+                }
+                val fSort = if rParams.count == 0 { rf.sort } else { substSortParams(rf.sort, rParams, targs) }
+                val fInfo = match mapGet(env.fieldInfos, rf.name) {
+                  case Some(fi0) -> fi0.copy(sort = fSort)
+                  case None -> SortInfo(sort = fSort, range = RBKNone)
+                }
+                val selTerm = TApp(name = rf.name, args = termList1(v), retSort = fSort)
+                invEnv = envBindTerm(fieldName, selTerm, fInfo, invEnv)
+                fi = fi + 1
+              }
+              var ii = 0
+              while ii < invs.count {
+                match invs[ii] {
+                  case Some(invExpr) -> {
+                    val parts = translateContractParts(invEnv, invExpr)
+                    keepUntranslatableDiags(parts.diags, diags)
+                    obls.add(partsObligation(parts))
+                  }
+                  case None -> ()
+                }
+                ii = ii + 1
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  obls
 }
 
 // `env` where each interface parameter name in `ifaceNames` stands for the

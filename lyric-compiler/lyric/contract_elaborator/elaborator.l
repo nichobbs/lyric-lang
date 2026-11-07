@@ -2949,6 +2949,7 @@ func elaborateMember(
   selfScope: in SelfScope,
   typeInvariants: in List[InvariantClause] = newList(),
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
+  selfType: in Option[TypeExpr] = None,
 ): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) or functionIsWoven(fn) {
@@ -2977,8 +2978,8 @@ func elaborateMember(
   }
   // A construction checker is the check itself, never subject to one.
   val checked = if Str.startsWith(fn.name, "__lyric_checked_") { emptyInvariantBoundary() } else { boundary }
-  val entryInv = boundaryEntryChecks(fn.params, checked)
-  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span)
+  val entryInv = boundaryEntryChecks(fn.params, checked, selfType)
+  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span, selfType)
   val hasBoundary = entryInv.count > 0 or exitInv.count > 0
   if not hasReq and not hasEns and not hasInv and not hasRange and not hasBoundary {
     return fn
@@ -3409,6 +3410,8 @@ func elaborateFunctionWith(
   contractsEnabled: in Bool,
   selfScope: in SelfScope,
   releaseElide: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
+  selfType: in Option[TypeExpr] = None,
 ): FunctionDecl {
   // Under the release policy an impl method is reached through its interface,
   // a public boundary, so its own and inherited `requires:` stay and every
@@ -3418,9 +3421,17 @@ func elaborateFunctionWith(
   val extraKept = if releaseElide { releaseKeptInherited(extra) } else { extra }
   if extraKept.count == 0 {
     if not releaseElide {
-      return elaborateMember(fn, owner, contractsEnabled, selfScope)
+      return elaborateMember(fn, owner, contractsEnabled, selfScope, newList(), boundary, selfType)
     }
-    val doneOwn = elaborateMember(withContracts(fn, ownKept), owner, contractsEnabled, selfScope)
+    val doneOwn = elaborateMember(
+      withContracts(fn, ownKept),
+      owner,
+      contractsEnabled,
+      selfScope,
+      newList(),
+      boundary,
+      selfType
+    )
     return withContracts(doneOwn, fn.contracts)
   }
   val merged: List[ContractClause] = newList()
@@ -3438,7 +3449,10 @@ func elaborateFunctionWith(
     withContracts(fn, merged),
     owner,
     contractsEnabled,
-    selfScope.copy(inherited = extraKept.count)
+    selfScope.copy(inherited = extraKept.count),
+    newList(),
+    boundary,
+    selfType
   )
   withContracts(acc, fn.contracts)
 }
@@ -3476,15 +3490,25 @@ func elaborateRecordDecl(
   contractsEnabled: in Bool = true,
   releaseElide: in Bool = false,
   typeIsPub: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): RecordDecl {
   val selfScope = SelfScope(fields = SelfFields.recordFieldNames(decl.members), cases = cases, inherited = 0)
+  val selfTy = Some(value = selfTypeExpr(decl.name, decl.generics, decl.span))
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
       case RMFunc(fn) -> {
         val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, typeIsPub)) } else { fn }
-        val done = elaborateMember(view, qualify(pkg, decl.name + "." + fn.name), contractsEnabled, selfScope)
+        val done = elaborateMember(
+          view,
+          qualify(pkg, decl.name + "." + fn.name),
+          contractsEnabled,
+          selfScope,
+          newList(),
+          boundary,
+          selfTy
+        )
         members.add(RMFunc(fn = if releaseElide { withContracts(done, fn.contracts) } else { done }))
       }
       case other -> members.add(other)
@@ -3510,12 +3534,14 @@ func elaborateImplDecl(
   pkg: in String,
   contractsEnabled: in Bool = true,
   releaseElide: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): ImplDecl {
   val implScope = SelfScope(
     fields = SelfFields.implTargetFieldNames(typeFields, decl.target),
     cases = cases,
     inherited = 0
   )
+  val selfTy = Some(value = decl.target)
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3538,7 +3564,9 @@ func elaborateImplDecl(
               qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name),
               contractsEnabled,
               memberScope(implScope, fn.annotations),
-              releaseElide
+              releaseElide,
+              boundary,
+              selfTy
             )
           )
         )
@@ -3642,7 +3670,8 @@ func elaborateItem(
           pkg,
           contractsEnabled,
           releaseElide,
-          itemIsPub(it)
+          itemIsPub(it),
+          publicBoundary(it, boundary)
         )
       )
     )
@@ -3655,7 +3684,8 @@ func elaborateItem(
           pkg,
           contractsEnabled,
           releaseElide,
-          itemIsPub(it)
+          itemIsPub(it),
+          publicBoundary(it, boundary)
         )
       )
     )
@@ -3669,7 +3699,8 @@ func elaborateItem(
           cases,
           pkg,
           contractsEnabled,
-          releaseElide
+          releaseElide,
+          boundary
         )
       )
     )

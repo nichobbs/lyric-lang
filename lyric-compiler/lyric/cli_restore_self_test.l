@@ -523,3 +523,41 @@ test "lyric.lock keeps a generator's pinned key id" {
     case Err(e) -> assertTrue(false, "the lock file does not parse back: " + e)
   }
 }
+
+test "runRestore --locked: fails closed when neither lock file nor resolved dependency has a SHA-512 digest" {
+  val dir = npmTempDir()
+  val depDir = Path.join(dir, "unhashed-dep")
+  match File.createDir(depDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + depDir + ": " + IOError.message(e))
+  }
+  val mfPath = Path.join(dir, "lyric.toml")
+  putFile(
+    mfPath,
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nUnhashed = { path = \"" + depDir + "\" }\n"
+  )
+  val lockEntry = LF.LockedPackage(
+    name = "Unhashed",
+    version = "",
+    source = "path:" + depDir,
+    sha512 = None,
+    path = Some(value = depDir)
+  )
+  val lf = LF.addOrUpdatePackage(LF.emptyLockFile(), lockEntry)
+  putFile(Path.join(dir, "lyric.lock"), LF.serializeLockFile(lf))
+
+  // Neither the lock entry nor the resolved directory (which lacks lyric.toml)
+  // has a SHA-512 digest: --locked must fail closed rather than soft-passing.
+  assertEqualInt(Cli.runRestore(mfPath, true), 1, "--locked fails closed when both SHA-512 digests are None")
+
+  // Once the dependency's lyric.toml exists and non-locked restore populates
+  // the digest, --locked succeeds.
+  putFile(Path.join(depDir, "lyric.toml"), "[package]\nname = \"Unhashed\"\nversion = \"0.1.0\"\n")
+  assertEqualInt(Cli.runRestore(mfPath, false), 0, "restore populates SHA-512")
+  assertEqualInt(Cli.runRestore(mfPath, true), 0, "--locked succeeds once SHA-512 is present and matches")
+
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
