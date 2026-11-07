@@ -5723,7 +5723,10 @@ pub func qualifyCheckedCallees(file: in SourceFile, sites: in Map[String, String
                   x.copy(
                     kind = ECall(
                       fn = fn.copy(
-                        kind = EMember(recv = recv.copy(kind = EPath(path = rp.copy(segments = segs))), member = member)
+                        kind = EMember(
+                          receiver = recv.copy(kind = EPath(path = rp.copy(segments = segs))),
+                          memberName = member
+                        )
                       ),
                       args = args
                     )
