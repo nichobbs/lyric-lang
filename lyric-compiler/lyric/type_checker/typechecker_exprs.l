@@ -24664,7 +24664,7 @@ func isPackageDottedCallee(
     full.add(sg)
   }
   full.add(member)
-  match packageDottedSig(tbl, sigs, full, arity) {
+  match packageDottedSig(tbl, sigs, full, arity, argTypes) {
     case Some(_) -> true
     case None -> false
   }
@@ -24692,13 +24692,17 @@ func qualifiedTypeDotSig(
     case Some(m) -> return Some(value = withReceiverParam(m, argTypes[0]))
     case None -> ()
   }
-  packageDottedSig(tbl, sigs, segs, arity)
+  packageDottedSig(tbl, sigs, segs, arity, argTypes)
 }
 
 // The dot-named function `T.m` declared by the package the leading
 // segments of `Pkg.T.m` name, one taking `arity` arguments first.
 func packageDottedSig(
-  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  segs: in List[String],
+  arity: in Int,
+  argTypes: in List[Type],
 ): Option[ResolvedSignature] {
   val n = segs.count
   val dotted = canonicalOwnerName(tbl, segs[n - 2]) + "." + segs[n - 1]
@@ -24708,7 +24712,31 @@ func packageDottedSig(
     pkgSegs.add(segs[i])
     i = i + 1
   }
-  dotSigInPackage(tbl, sigs, dotted, modulePathJoin(pkgSegs), arity)
+  dotSigInPackage(tbl, sigs, dotted, modulePathJoin(pkgSegs), arity, argTypes)
+}
+
+// Whether some declaration of `dotted` in `pkg` takes `arity` arguments of
+// the types `argTypes` (#8880).
+func anyTypedDotCandidate(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  dotted: in String,
+  pkg: in String,
+  arity: in Int,
+  argTypes: in List[Type],
+): Bool {
+  if argTypes.count != arity {
+    return false
+  }
+  val noArgs: List[CallArg] = newList()
+  for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
+    if sigPackage(tbl, c) == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
+      if suppliedArgsMatch(tbl, c, argTypesInSigOrder(c, 0, noArgs, argTypes)) {
+        return true
+      }
+    }
+  }
+  false
 }
 
 // The function `dotted` (`T.m`) that package `pkg` declares, one taking
@@ -24719,12 +24747,19 @@ func dotSigInPackage(
   dotted: in String,
   pkg: in String,
   arity: in Int,
+  argTypes: in List[Type],
 ): Option[ResolvedSignature] {
   var other: Option[ResolvedSignature] = None
   var fewest: Option[ResolvedSignature] = None
+  val noArgs: List[CallArg] = newList()
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
     if sigPackage(tbl, c) == pkg {
-      if arity <= c.params.count and arity >= minRequiredParams(c) {
+      // Of the declarations that take this many arguments, one whose
+      // parameters accept the argument types answers, the one leaving the
+      // fewest parameters to their defaults first (#8880); when none does the
+      // call is reported against the first by count.
+      val typed = argTypes.count == arity and suppliedArgsMatch(tbl, c, argTypesInSigOrder(c, 0, noArgs, argTypes))
+      if arity <= c.params.count and arity >= minRequiredParams(c) and (typed or not anyTypedDotCandidate(tbl, sigs, dotted, pkg, arity, argTypes)) {
         match fewest {
           case Some(f) -> if c.params.count < f.params.count { fewest = Some(value = c) }
           case None -> {
@@ -24813,7 +24848,7 @@ func typeQualifiedDotSig(
     }
   }
   match typeDeclaringPackage(tbl, typeName) {
-    case Some(declPkg) -> match dotSigInPackage(tbl, sigs, owner + "." + member, declPkg, arity) {
+    case Some(declPkg) -> match dotSigInPackage(tbl, sigs, owner + "." + member, declPkg, arity, argTypes) {
       case Some(vs) -> return Some(value = vs)
       case None -> ()
     }

@@ -311,6 +311,33 @@ test "emitProject aliased cross-package call" {
   assertEqual(Str.trim(result.stdout), "40", "alias_cross_package_call: stdout matches expected")
 }
 
+// ─── Dot-named overloads that both fit by argument count (#8880) ─────────────
+func dotNamedOverloadPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "DotOv.App",
+      "package DotOv.App\n\nrecord Seed {\n  n: Int\n}\n\n" +
+        "func Seed.base(x: in String, y: in Int = 0): Int { 100 + y }\n\n" +
+        "func Seed.base(x: in Int, y: in Int = 0, z: in Int = 0): Int { x + y + z }\n\n" +
+        "func main(): Unit {\n  println(Seed.base(1))\n  println(Seed.base(\"a\", 5))\n}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject dot-named overloads chosen by argument type (MSIL)" {
+  val result = runEmitProject("dot-ov-msil", dotNamedOverloadPkgs(), "DotOv")
+  assertEqualInt(result.exitCode, 0, "dot_named_overload_msil: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n105", "dot_named_overload_msil: each call lowers the overload it names")
+}
+
+test "emitProject dot-named overloads chosen by argument type (JVM)" {
+  val result = runEmitProjectJvmOpts("dot-ov-jvm", dotNamedOverloadPkgs(), "DotOv")
+  assertEqualInt(result.exitCode, 0, "dot_named_overload_jvm: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "1\n105", "dot_named_overload_jvm: each call lowers the overload it names")
+}
+
 // ─── Alias-qualified extern type in a function SIGNATURE (#6338) ────────────
 // An `import X as Y` + `Y.ExternType` reference used as a function
 // PARAMETER type: `Lyric.AliasRewriter` flattens it to the fully-qualified
