@@ -2480,7 +2480,7 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
     case None -> return None
   }
   if written == name {
-    if sig.pkg != ctx.curPkg[0] and not bareNameVisible(ctx, sig) {
+    if sig.pkg != ctx.curPkg[0] and not bareNameVisible(ctx, sig) and not importClosureHas(ctx, sig.pkg) {
       return None
     }
   } else if written != pkg + "." + name {
@@ -2654,6 +2654,35 @@ func bareNameVisible(ctx: in Ctx, sig: in NFuncSig): Bool {
     }
     case None -> false
   }
+}
+
+/// Whether `pkg` is among the packages the current package imports,
+/// directly or through the imports of those (a package a facade re-exports
+/// with `pub use` is reached this way).
+func importClosureHas(ctx: in Ctx, pkg: in String): Bool {
+  val seen: Map[String, Bool] = newMap()
+  val work: List[String] = newList()
+  work.add(ctx.curPkg[0])
+  var wi = 0
+  while wi < work.count {
+    val cur = work[wi]
+    wi = wi + 1
+    match mapGet(ctx.pkgImports, cur) {
+      case Some(imps) -> {
+        for p in imps {
+          if p == pkg {
+            return true
+          }
+          if not seen.containsKey(p) {
+            seen.add(p, true)
+            work.add(p)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  false
 }
 
 /// A top-level (non-generic) function named as a value, e.g. `intEq` passed

@@ -1660,7 +1660,6 @@ pub func compileToNativeWithFeatures(
     indexBundledImpls(toBundle[bi4], implTypes)
     bi4 = bi4 + 1
   }
-  seedSitedCallees(optsCallees, canonical, reachable, fnWorklist)
   walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune1)
 
   // Assemble the codegen units: the user package in full, then each
@@ -2087,16 +2086,6 @@ pub func compileProjectToNativeWithShape(
       indexBundledImpls(ownFiles[dpi], implTypes)
     }
     dpi = dpi + 1
-  }
-  // Only a fully lowered package: every function of it is emitted, so the
-  // functions its calls name are needed.  A pruned dependency package keeps
-  // the name-based walk (its unreachable bodies must not pull anything in).
-  var sci = 0
-  while sci < ownCallees.count {
-    if not prunedPkg[sci] {
-      seedSitedCallees(ownCallees[sci], canonical, reachable, fnWorklist)
-    }
-    sci = sci + 1
   }
   walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune)
 
@@ -4006,78 +3995,6 @@ func paramHasDefault(p: in Param): Bool {
   match p.dflt {
     case Some(_) -> true
     case None -> false
-  }
-}
-
-// Marks reachable the function each call of a fully lowered own file resolved
-// to by the type checker (`calleeSites`, rendered `Pkg::name(P1,P2)`): exactly
-// the declaration whose parameter count the rendered list gives (a call that
-// leaves out defaulted arguments reaches it through the shorter-arity keys
-// `registerFileFns` adds).  Codegen binds a call to its site, so the function it
-// names has to be emitted whatever the name-based walk below resolves the same
-// call to (docs/70 phase 2d).
-func seedSitedCallees(
-  callees: in Map[String, String],
-  canonical: in Map[String, String],
-  reachable: in Map[String, Bool],
-  fnWorklist: in List[String],
-): Unit {
-  for ck in mapKeys(callees) {
-    match mapGet(callees, ck) {
-      case Some(dp) -> {
-        val sep = Str.indexOfRaw(dp, "::")
-        if sep > 0 {
-          val pkg = Str.substring(dp, 0, sep)
-          val rest = Str.substring(dp, sep + 2, dp.length - sep - 2)
-          val paren = Str.indexOfRaw(rest, "(")
-          val name = if paren >= 0 { Str.substring(rest, 0, paren) } else { rest }
-          // Only the declaration the call resolved to: its parameter count is
-          // the rendered list's, and a call that leaves out defaulted arguments
-          // reaches the same function through the shorter-arity keys.
-          match mapGet(canonical, pkg + "." + name + "/" + renderedParamCount(rest).toString()) {
-            case Some(id) -> if not reachable.containsKey(id) { reachable.add(id, true); fnWorklist.add(id) }
-            case None -> ()
-          }
-        }
-      }
-      case None -> ()
-    }
-  }
-}
-
-// The number of parameters in a rendered DefPath tail `name(P1,P2)`: the
-// top-level commas of the list plus one, `0` for `name()`; a type argument
-// list or a nested parameter list (`Map[K,V]`, `(A,B) -> C`) does not count.
-func renderedParamCount(tail: in String): Int {
-  val open = Str.indexOfRaw(tail, "(")
-  if open < 0 {
-    return 0
-  }
-  var depth = 0
-  var count = 0
-  var sawParam = false
-  var i = open + 1
-  while i < tail.length {
-    val c = tail[i]
-    if c == '(' or c == '[' {
-      depth = depth + 1
-      sawParam = true
-    } else if c == ')' or c == ']' {
-      if depth == 0 {
-        return if sawParam { count + 1 } else { 0 }
-      }
-      depth = depth - 1
-    } else if c == ',' and depth == 0 {
-      count = count + 1
-    } else {
-      sawParam = true
-    }
-    i = i + 1
-  }
-  if sawParam {
-    count + 1
-  } else {
-    0
   }
 }
 
