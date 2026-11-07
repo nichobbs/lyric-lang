@@ -22350,8 +22350,7 @@ func checkPairedCallArgs(
     val p = sig.params[k]
     val ai = srcIdx[k]
     if ai >= 0 {
-      val rawArgTy = if ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() }
-      val argTy = sharedEnumCaseAgainstExpected(sc, tbl, callArgExpr(args[ai]), rawArgTy, p.ty)
+      val argTy = if ai < argTypes.count { argTypes[ai] } else { tyErrorSilent() }
       noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
       if (match p.mode { case PMIn -> true; case _ -> false }) {
         recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
