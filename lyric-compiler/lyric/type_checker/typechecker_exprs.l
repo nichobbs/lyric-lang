@@ -10386,6 +10386,34 @@ func noteCtorZeroArgs(
   }
 }
 
+// Whether the package-qualified path `e` goes through a package other than the
+// one being checked that the file imports or that has symbols in the table.
+func memberOfImportedPackage(tbl: in SymbolTable, e: in Expr): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(e, segs) or segs.count < 2 {
+    return false
+  }
+  val own = symTableScopePkg(tbl)
+  val prefix: List[String] = newList()
+  var k = 0
+  while k < segs.count - 1 {
+    prefix.add(segs[k])
+    val pkg = modulePathJoin(prefix)
+    if pkg != own {
+      if listContainsStr(tbl.scopeImports, pkg) {
+        return true
+      }
+      for sym in tbl.symbols {
+        if sym.originPackage == pkg {
+          return true
+        }
+      }
+    }
+    k = k + 1
+  }
+  false
+}
+
 // Whether `Enum.Case` is the ambiguity `qualifiedEnumCaseType` leaves to the
 // backends: a bare enum name that two or more enums of the program share, one
 // of which declares the case `member`.
@@ -20642,6 +20670,12 @@ func inferExprCore(
             case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) and isAmbiguousEnumCase(tbl, recv, name) {
               // `LogLevel.Info` with two enums named `LogLevel` in the program:
               // left to the backends, as `qualifiedEnumCaseType` documents.
+              tyErrorUnresolved()
+            } else if d.index == 0 and isQualifierShape(sc, recv) and memberOfImportedPackage(tbl, e) {
+              // A member of a package the file imports whose declarations the
+              // checker does not all see (a restored dependency's non-literal
+              // `pub val`): the backends resolve it or refuse it with their own
+              // code (T0115), so it is unchecked here and named (D359).
               tyErrorUnresolved()
             } else if d.index == 0 and isQualifierShape(sc, recv) {
               val written: List[String] = newList()
