@@ -1902,7 +1902,9 @@ pub func compileProjectToNativeWithShape(
     }
     // Mono erased the package's visible generic functions; put them back so
     // codegen can instantiate them for a call from another package.
-    ownFiles.add(lowerConfigBlocksNative(withGenericItems(checked, optsGenericItems)))
+    // A default expression is lowered in the calling package but means the
+    // names of the package that declares it (#8850).
+    ownFiles.add(lowerConfigBlocksNative(withGenericItems(qualifyDefaultCallees(checked, optsCallees), optsGenericItems)))
     match IfaceBuild.builtBytesOf(optsIface) {
       case Some(bytes) -> ifaceFiles.add(
         NativeInterfaceFile(pkg = dottedPath(ownFiles0[mei].packageDecl.path), bytes = bytes)

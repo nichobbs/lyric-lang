@@ -212,6 +212,17 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
     package that captured a bare call (the checker binds the exported one in
     another package; native ran the private one), by value and by return type.
 
+12. **Native qualifies a default's callees where its package is checked.** A
+    parameter default is lowered in whichever package calls the function but
+    means the names of the package that declares it. The native bridge applies
+    `Lyric.Pipeline.qualifyDefaultCallees` (the parameter-default half of the
+    JVM's `qualifyCheckedCallees`, #8850) to each own package's checked file with
+    that package's callee sites, so the default binds the declaring package's
+    function, not a same-named one of the caller. `llvm_project_self_test.l`
+    has a default calling a function only the declaring package imports, with the
+    caller declaring its own of that name. A bundled stdlib unit is unchecked and
+    keeps the name lookups (#8896).
+
 ## Consequences
 
 - A bare call resolves to what the checker resolved, whatever the bundle holds

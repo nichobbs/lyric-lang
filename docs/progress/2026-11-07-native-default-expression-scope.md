@@ -1,9 +1,11 @@
 # Native: a default expression of an imported package binds that package's names (#8850)
 
-`llvm_project_self_test.l` has a project whose imported package declares
-`pub func scaled(x, k = factor())` with `factor` imported from a third package the
-caller does not import, while the caller declares its own different `factor`. Native
-prints the product with the declaring package's `factor`: the checker's callee site
-(D336 item 11, `sitedSig`) binds the default's call in the declaring package, so the JVM's
-`pipeCheckedDefaults` qualification does not need porting. No compiler change; the test
-pins the behaviour.
+A parameter default is lowered in the calling package but means the names of the package
+that declares it. The JVM already wrote each default's bare calls as the declaring
+package's qualified path (`pipeCheckedDefaults`); native did not, so an imported
+`pub func scaled(x, k = factor())` whose `factor` the declaring package alone imports
+bound to the caller's own `factor` (the call printed `2000` where `20` was right).
+The native bridge now applies `Lyric.Pipeline.qualifyDefaultCallees` to each own
+package's checked file with that package's callee sites. `llvm_project_self_test.l` pins
+it with an exact assertion (`20`; a first draft that matched `"20"` as a substring also
+accepted `2000`). Recorded as D336 item 12.

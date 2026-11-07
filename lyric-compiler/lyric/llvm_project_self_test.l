@@ -1688,5 +1688,5 @@ test "a default expression of an imported package calls a function only that pac
   )
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 0, "default-expression exit code")
-  assertTrue(Str.contains(outcome.stdout, "20"), "the default means Dflt.Lib's import of factor: " + outcome.stdout)
+  assertEqual(Str.trim(outcome.stdout), "20", "the default means Dflt.Lib's import of factor, not the caller's (2000)")
 }
