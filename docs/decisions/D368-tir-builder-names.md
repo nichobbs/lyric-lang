@@ -26,3 +26,8 @@ a union or enum case used as a value, a function used as a value.
    `XGlobal(sym, [])` of a value or function. A name with no entry stays an I0002.
 4. `caseSymbolId` is the one place a union or enum case becomes a `SymbolId`;
    `recordCtorCalleeNode` uses it too.
+5. Known limit: a bare generic nullary case (`None`, `Nothing`) is typed with an
+   unsolved type argument, which the checker fixes from the expected type only
+   after the expression is recorded, so the builder reports it as an I0002
+   (`tir_build_self_test.l` pins this). Recording the expected-type solution
+   comes with the generic-call step.

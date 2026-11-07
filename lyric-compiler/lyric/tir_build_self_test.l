@@ -532,9 +532,11 @@ test "a bare case two unions share builds as the case of the expected union" {
   assertTrue(named == "App::Left::Idle", "the case of Left, not Right")
 }
 
-test "a generic nullary case builds with the expected type" {
-  val r = buildFirstFn("package App\nfunc f(): Option[Int] {\n  None\n}\n")
+test "a generic nullary case whose type argument is unsolved is counted, not guessed" {
+  val r = buildFirstFn(
+    "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc f(): Maybe[Int] {\n  Nothing\n}\n"
+  )
   assertEqualInt(r.diagnostics, 0, "checks clean")
-  assertEqualInt(r.env.errors.count, 0, "no I0002")
-  assertTrue(bodyKindName(r.body) == "construct0", "an XConstruct")
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
 }
