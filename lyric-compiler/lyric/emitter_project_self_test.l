@@ -3678,3 +3678,43 @@ test "compilerPackageDllName follows the per-package assembly name" {
   assertEqual(Emitter.compilerPackageDllName("Lyric.Lexer"), "Lyric.Lyric.Lexer.dll", "two segments")
   assertEqual(Emitter.compilerPackageDllName("Lyric.Tir.Verify"), "Lyric.Lyric.TirVerify.dll", "three segments")
 }
+
+test "pipeImportedModeItems: deduplicates repeated imports, qualifies nested fields, and keeps hoisted methods" {
+  val pkgASrc = "package A.Sub\npub record Inner {\n  var n: Int\n  pub func reset(self: inout Inner): Unit {\n    n = 0\n  }\n}\npub record Outer {\n  var k: Int\n  inner: Inner\n}\n"
+  val pkgBSrc = "package B\npub ref record Outer {\n  var k: Int\n}\npub func f(): Int { 1 }\n"
+  val pkgA = ImplDefaults.hoistByRefReceiverMethods(Parser.parse(pkgASrc).file)
+  val pkgB = ImplDefaults.hoistByRefReceiverMethods(Parser.parse(pkgBSrc).file)
+  val imported: List[Pipe.ImportedPackage] = newList()
+  imported.add(Pipe.ImportedPackage(name = "A.Sub", items = pkgA.items))
+  imported.add(Pipe.ImportedPackage(name = "B", items = pkgB.items))
+  val appSrc = "package App\nimport A.Sub\nimport A.Sub\nimport A.Sub as Alias\nimport A.Sub.{Outer, Inner as In}\nimport B.{f}\nfunc bad(o1: in Outer, o2: in A.Sub.Outer, o3: in Alias.Outer, i: in In): Unit {\n  o1.k = 1\n  o1.inner.n = 2\n  o2.inner.n = 3\n  o3.inner.n = 4\n  i.reset()\n}\n"
+  val appFile = Parser.parse(appSrc).file
+  val extra = Pipe.pipeImportedModeItems(appFile, imported)
+  var sawCanonInner = false
+  var sawAliasOuter = false
+  var sawRenamedReset = false
+  var bareOuterCount = 0
+  for it in extra {
+    match it.kind {
+      case IRecord(d) -> {
+        if d.name == "A.Sub.Inner" {
+          sawCanonInner = true
+        } else if d.name == "Alias.Outer" {
+          sawAliasOuter = true
+        } else if d.name == "Outer" {
+          bareOuterCount = bareOuterCount + 1
+        }
+      }
+      case IFunc(fn) -> {
+        if fn.name == "In.reset" {
+          sawRenamedReset = true
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertTrue(sawCanonInner, "canonical A.Sub.Inner emitted")
+  assertTrue(sawAliasOuter, "aliased Alias.Outer emitted")
+  assertTrue(sawRenamedReset, "hoisted In.reset emitted for selected Inner as In")
+  assertEqualInt(bareOuterCount, 1, "bare Outer emitted once despite duplicate import A.Sub and selective import B.{f}")
+}
