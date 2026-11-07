@@ -117,11 +117,10 @@ for phase in dotnet jvm native; do
         known=""
         for k in "${KNOWN_UNCHECKED[@]+"${KNOWN_UNCHECKED[@]}"}"; do
           IFS='|' read -r km kt ki kc <<<"$k"
-          if [[ "$km|$kt" == "$manifest|$target" && "$rc" -ne 124 ]] \
-            && grep -qF "error[$kc]" "$log" \
-            && ! grep -oE 'error\[[A-Z][0-9]+\]' "$log" | grep -qvF "error[$kc]"; then
-            known="$ki"
-          fi
+          [[ "$km|$kt" == "$manifest|$target" && "$rc" -ne 124 ]] || continue
+          grep -qF "error[$kc]" "$log" || continue
+          other="$(grep -oE 'error\[[A-Z][0-9]+\]' "$log" | grep -vF "error[$kc]" || true)"
+          [[ -z "$other" ]] && known="$ki"
         done
         if [[ -n "$known" ]]; then
           echo "$manifest ($target): tracked in $known: $reason" >>"$known_file"
