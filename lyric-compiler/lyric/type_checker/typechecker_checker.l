@@ -881,7 +881,7 @@ func checkWhereClause(
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Function signature resolution (T3).
 // ─────────────────────────────────────────────────────────────────────────────
-func extractGenericNames(gps: in Option[GenericParams]): List[String] {
+pub func extractGenericNames(gps: in Option[GenericParams]): List[String] {
   val names: List[String] = newList()
   match gps {
     case None -> {
