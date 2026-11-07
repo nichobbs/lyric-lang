@@ -1102,9 +1102,7 @@ test "an argument of a non-generic parameter is widened beside a generic one" {
 }
 
 test "a generic call inside a generic body carries the enclosing parameter" {
-  val r = buildFirstFn(
-    "package App\nfunc twice[T](x: in T): T {\n  id(x)\n}\nfunc id[T](x: in T): T { x }\n"
-  )
+  val r = buildFirstFn("package App\nfunc twice[T](x: in T): T {\n  id(x)\n}\nfunc id[T](x: in T): T { x }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match directTypeArgs(r.body) {
