@@ -4029,18 +4029,53 @@ func seedSitedCallees(
           val rest = Str.substring(dp, sep + 2, dp.length - sep - 2)
           val paren = Str.indexOfRaw(rest, "(")
           val name = if paren >= 0 { Str.substring(rest, 0, paren) } else { rest }
-          var arity = 0
-          while arity <= 16 {
-            match mapGet(canonical, pkg + "." + name + "/" + arity.toString()) {
-              case Some(id) -> if not reachable.containsKey(id) { reachable.add(id, true); fnWorklist.add(id) }
-              case None -> ()
-            }
-            arity = arity + 1
+          // Only the declaration the call resolved to: its parameter count is
+          // the rendered list's, and a call that leaves out defaulted arguments
+          // reaches the same function through the shorter-arity keys.
+          match mapGet(canonical, pkg + "." + name + "/" + renderedParamCount(rest).toString()) {
+            case Some(id) -> if not reachable.containsKey(id) { reachable.add(id, true); fnWorklist.add(id) }
+            case None -> ()
           }
         }
       }
       case None -> ()
     }
+  }
+}
+
+// The number of parameters in a rendered DefPath tail `name(P1,P2)`: the
+// top-level commas of the list plus one, `0` for `name()`; a type argument
+// list or a nested parameter list (`Map[K,V]`, `(A,B) -> C`) does not count.
+func renderedParamCount(tail: in String): Int {
+  val open = Str.indexOfRaw(tail, "(")
+  if open < 0 {
+    return 0
+  }
+  var depth = 0
+  var count = 0
+  var sawParam = false
+  var i = open + 1
+  while i < tail.length {
+    val c = tail[i]
+    if c == '(' or c == '[' {
+      depth = depth + 1
+      sawParam = true
+    } else if c == ')' or c == ']' {
+      if depth == 0 {
+        return if sawParam { count + 1 } else { 0 }
+      }
+      depth = depth - 1
+    } else if c == ',' and depth == 0 {
+      count = count + 1
+    } else {
+      sawParam = true
+    }
+    i = i + 1
+  }
+  if sawParam {
+    count + 1
+  } else {
+    0
   }
 }
 

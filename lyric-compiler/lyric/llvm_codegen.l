@@ -2470,10 +2470,23 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
     return None
   }
   val written = Str.substring(key, 0, slash)
-  if written != name and not Str.endsWith(written, "." + name) {
+  // A callee written with a package prefix names exactly the site's package; a
+  // bare one names a function the caller sees bare.  A default expression of
+  // another package is lowered in the caller's context with its own source
+  // offsets, which can match an unrelated caller entry: that entry's package
+  // fails this check and the name lookups answer instead.
+  val sig = match mapGet(ctx.sigs, pkg + "." + name + Str.substring(key, slash, key.length - slash)) {
+    case Some(sg) -> sg
+    case None -> return None
+  }
+  if written == name {
+    if sig.pkg != ctx.curPkg[0] and not bareNameVisible(ctx, sig) {
+      return None
+    }
+  } else if written != pkg + "." + name {
     return None
   }
-  mapGet(ctx.sigs, pkg + "." + name + Str.substring(key, slash, key.length - slash))
+  Some(value = sig)
 }
 
 /// The registry key for a call target, or "" when the callee shape is
