@@ -4826,4 +4826,12 @@ test "exposed record and opaque type invariants are checked at construction and 
     "opaque type OpaquePos {\n  x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in OpaquePos): Int\n  ensures: result > 0\n{\n  p.x\n}\n",
     "opaque-invariant-assumed-on-param"
   )
+  assertRefuted(
+    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc breakReturn(p: in Pos): Pos {\n  var q = p\n  q.x = 0\n  q\n}\n",
+    "record-invariant-checked-on-return"
+  )
+  assertRefuted(
+    "record Pos {\n  var x: Int\n  invariant: x > 0\n}\nfunc readPos(p: in Pos): Int\n  ensures: result > 0\n{\n  p.x\n}\nfunc breakCall(p: in Pos): Int {\n  var q = p\n  q.x = 0\n  readPos(q)\n}\n",
+    "record-invariant-checked-at-call-site"
+  )
 }

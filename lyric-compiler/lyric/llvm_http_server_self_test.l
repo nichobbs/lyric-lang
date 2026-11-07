@@ -1271,6 +1271,10 @@ test "native Std.HttpServer timeout overrides parse with the same fallback rules
     "  Env.setVar(\"LYRIC_HTTP_IDLE_TIMEOUT_MS\", raw)\n" +
     "  resolveConnectionIdleTimeoutMs()\n" +
     "}\n" +
+    "func maxConnFor(raw: in String): Int {\n" +
+    "  Env.setVar(\"LYRIC_HTTP_MAX_CONNECTIONS\", raw)\n" +
+    "  resolveMaxConcurrentConnections()\n" +
+    "}\n" +
     "func main(): Int {\n" +
     "  if handshakeFor(\"2500\") != 2500 { return 1 }\n" +
     "  if handshakeFor(\"86400000\") != 86400000 { return 2 }\n" +
@@ -1282,6 +1286,9 @@ test "native Std.HttpServer timeout overrides parse with the same fallback rules
     "  if handshakeFor(\"99999999999999999999\") != 10000 { return 8 }\n" +
     "  if idleFor(\"45000\") != 45000 { return 9 }\n" +
     "  if idleFor(\"soon\") != 120000 { return 10 }\n" +
+    "  if maxConnFor(\"1\") != 1 { return 11 }\n" +
+    "  if maxConnFor(\"0\") != 1000 { return 12 }\n" +
+    "  if maxConnFor(\"invalid\") != 1000 { return 13 }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)
@@ -1459,4 +1466,57 @@ test "native Std.HttpServer chunked response streams chunks and terminates with 
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native chunked response (item P)")
+}
+
+test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connection until a permit returns and shuts down cleanly when saturated (item Q, #6071)" {
+  val src = "package Q\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    "import Std.Environment as Env\n" +
+    connHelpersSource() +
+    "func main(): Int {\n" +
+    "  Env.setVar(\"LYRIC_HTTP_MAX_CONNECTIONS\", \"1\")\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19735/\")\n" +
+    "  val c1 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val c2 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  match hostWrite(c2, encodeUtf8(\"GET /second HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 3\n" +
+    "  }\n" +
+    "  hostClose(c1)\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  if requestPath(ctx) != \"/second\" {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  respondText(ctx, 200, \"second-ok\")\n" +
+    "  val acc: List[String] = newList()\n" +
+    "  if not readUntil(c2, acc, \"second-ok\") {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  hostClose(c2)\n" +
+    "  val c3 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 6\n" +
+    "  }\n" +
+    "  val c4 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 7\n" +
+    "  }\n" +
+    "  stopListener(listener)\n" +
+    "  hostClose(c3)\n" +
+    "  hostClose(c4)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "Std.HttpServer native LYRIC_HTTP_MAX_CONNECTIONS=1 gating and saturated shutdown (item Q)"
+  )
 }

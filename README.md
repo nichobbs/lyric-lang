@@ -22,20 +22,22 @@ Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, 
 
 | Package | `.NET` (`dotnet`) | `JVM` (`jvm`) | `Native` (`native`) | Notes |
 |---|---|---|---|---|
-| `lyric-stdlib` (`Std.*`) | Supported | Supported | Supported | Full cross-target standard library (`String.normalize` / `isNormalized` require `.NET` or `JVM` unless using `lyric-unicode`) |
+| `lyric-stdlib` (`Std.*`) | Supported | Supported | Supported | Full cross-target standard library (`String.normalize` / `isNormalized` require `.NET` or `JVM`) |
 | `lyric-web` / `lyric-ws` | Supported | Supported | Supported (`web`) | HTTP/1.1, HTTP/2 (`dotnet`), TLS/mTLS, WebSocket, OpenAPI |
 | `lyric-auth` / `lyric-session` | Supported | Supported | In-memory (`session`) | HS256 JWT, API key, Redis/in-memory session |
 | `lyric-cache` / `lyric-resilience` | Supported | Supported | Pure-Lyric subset | Redis/in-memory cache, retry/circuit-breaker/rate-limiter |
 | `lyric-logging` / `lyric-otel` / `lyric-health` | Supported | Supported | Pure-Lyric subset | Structured logging, OpenTelemetry spans/metrics, health checks |
 | `lyric-validation` / `lyric-forms` / `lyric-i18n` | Supported | Supported | Supported | Pure-Lyric schema validation, form models, locale bundles |
-| `lyric-unicode` / `lyric-text` / `lyric-search` | Supported | Supported | Supported | Pure-Lyric UAX #15/#29/#14, text layout, BM25/inverted-index search |
+| `lyric-unicode` / `lyric-search` | Supported | Supported | Supported | Pure-Lyric UAX #9 bidi / UAX #14 line breaking / UAX #29 word boundaries, BM25/inverted-index search |
+| `lyric-text` | — | — | Supported | Native-only FreeType / HarfBuzz text shaping and layout |
 | `lyric-proto` / `lyric-grpc` / `lyric-mcp` | Supported | Supported | Pure-Lyric (`proto`, `mcp`) | Protobuf wire codec, gRPC over HTTP/2, Model Context Protocol |
 | `lyric-lambda` / `lyric-aws-secrets` / `lyric-aws-xray` | Supported | Supported | — | AWS Lambda runtime API, Secrets Manager, X-Ray tracing |
 | `lyric-mail` / `lyric-jobs` / `lyric-feature-flags` / `lyric-docker` | Supported | Supported | Pure-Lyric subset | SMTP/SES mail, cron/job runner, feature flags, Docker Engine API |
 | `lyric-db` | Supported (Postgres, SQLite) | Returns `NOT_SUPPORTED_ON_TARGET` | — | JDBC kernel tracked separately |
 | `lyric-mq` | Supported (`inmemory`) | Returns `NOT_SUPPORTED_ON_TARGET` | — | Broker drivers (`redis://`, `amqp://`, `sqs://`) return explicit `Err` |
 | `lyric-storage` | Supported (`connectLocal`) | Supported (`connectLocal`) | — | `connectS3` / `connectAzureBlob` return `NOT_IMPLEMENTED` |
-| `lyric-window` / `lyric-gpu` / `lyric-draw` / `lyric-ui` / `lyric-game` / `lyric-access` | Supported | Supported | Supported | Cross-platform windowing, WebGPU (`wgpu`), 2D vector drawing, UI toolkit, 2D game engine, AccessKit |
+| `lyric-window` / `lyric-gpu` / `lyric-draw` | — | — | Supported | Native-only cross-platform windowing, WebGPU (`wgpu`), 2D GPU vector drawing |
+| `lyric-ui` / `lyric-game` / `lyric-access` | Supported | Supported | Supported | Pure-Lyric UI toolkit, 2D game engine, AccessKit tree |
 
 ## Quick start
 

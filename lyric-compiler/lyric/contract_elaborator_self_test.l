@@ -1682,12 +1682,12 @@ test "contractsEnabled = false still checks a protected invariant after a traili
   assertTrue(isAssertCall(blk.statements[blk.statements.count - 1]), "the last statement is the invariant assert")
 }
 
-test "public record, exposed record, and impl methods enforce InvariantBoundary on inout receivers" {
+test "public record, exposed record, and impl methods enforce InvariantBoundary on inout receivers and Self" {
   val src = "package P\n" +
-    "pub record Counter {\n  var n: Int\n  invariant: n >= 0\n  func reset(self: inout Counter): Unit {\n    self.n = 0\n  }\n}\n" +
+    "pub record Counter {\n  var n: Int\n  invariant: n >= 0\n  func reset(self: inout Self): Unit {\n    self.n = 0\n  }\n}\n" +
     "pub exposed record ExpCounter {\n  var n: Int\n  invariant: n >= 0\n  func reset(self: inout ExpCounter): Unit {\n    self.n = 0\n  }\n}\n" +
-    "interface Resettable { func resetIt(self: inout Counter): Unit }\n" +
-    "impl Resettable for Counter {\n  func resetIt(self: inout Counter): Unit {\n    self.n = 0\n  }\n}\n"
+    "interface Resettable { func resetIt(self: inout Self): Self }\n" +
+    "impl Resettable for Counter {\n  func resetIt(self: inout Self): Self {\n    self.n = 0\n    self\n  }\n}\n"
   val pr = parse(src)
   val foreignMap: Map[String, String] = newMap()
   val localMap: Map[String, String] = newMap()
@@ -1751,7 +1751,11 @@ test "public record, exposed record, and impl methods enforce InvariantBoundary 
       case _ -> ()
     }
   }
-  assertEqualInt(recResetAsserts, 1, "pub record method has boundary exit invariant assert")
+  assertEqualInt(recResetAsserts, 1, "pub record method with Self receiver has boundary exit invariant assert")
   assertEqualInt(expResetAsserts, 1, "pub exposed record method has boundary exit invariant assert")
-  assertEqualInt(implResetAsserts, 1, "impl method has boundary exit invariant assert")
+  assertEqualInt(
+    implResetAsserts,
+    2,
+    "impl method with Self receiver and Self return has 2 boundary exit invariant asserts"
+  )
 }

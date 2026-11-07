@@ -333,7 +333,7 @@ func boundaryIsEmpty(b: in InvariantBoundary): Bool {
   b.foreign.count == 0 and b.local.count == 0
 }
 
-func boundaryTypeKey(t: in TypeExpr): Option[String] {
+func boundaryTypeKey(t: in TypeExpr, selfType: in Option[TypeExpr] = None): Option[String] {
   match t.kind {
     case TRef(path) -> {
       val parts: List[String] = newList()
@@ -344,13 +344,14 @@ func boundaryTypeKey(t: in TypeExpr): Option[String] {
       }
       Some(value = Str.joinList(".", parts))
     }
-    case TParen(inner) -> boundaryTypeKey(inner)
+    case TSelf -> match selfType { case Some(st) -> boundaryTypeKey(st, None); case None -> None }
+    case TParen(inner) -> boundaryTypeKey(inner, selfType)
     case _ -> None
   }
 }
 
-func boundaryChecker(m: in Map[String, String], t: in TypeExpr): Option[String] {
-  match boundaryTypeKey(t) {
+func boundaryChecker(m: in Map[String, String], t: in TypeExpr, selfType: in Option[TypeExpr] = None): Option[String] {
+  match boundaryTypeKey(t, selfType) {
     case Some(k) -> mapGet(m, k)
     case None -> None
   }
@@ -381,14 +382,16 @@ func checkerHolds(checker: in String, arg: in Expr, sp: in Span): Expr {
 
 /// Entry checks of a public function: each `in` or `inout` parameter of a
 /// foreign invariant-bearing type is checked before any `requires:`.
-func boundaryEntryChecks(params: in List[Param], b: in InvariantBoundary): List[Statement] {
+func boundaryEntryChecks(
+  params: in List[Param], b: in InvariantBoundary, selfType: in Option[TypeExpr] = None
+): List[Statement] {
   val acc: List[Statement] = newList()
   var i = 0
   while i < params.count {
     val p = params[i]
     val isOut = match p.mode { case PMOut -> true; case _ -> false }
     if not isOut {
-      match boundaryChecker(b.foreign, p.ty) {
+      match boundaryChecker(b.foreign, p.ty, selfType) {
         case Some(checker) -> {
           val arg = mkPath(p.name, p.span)
           acc.add(mkStmt(SExpr(expr = checkerCall(checker, arg, p.span)), p.span))
@@ -410,6 +413,7 @@ func boundaryExitChecks(
   b: in InvariantBoundary,
   owner: in String,
   sp: in Span,
+  selfType: in Option[TypeExpr] = None,
 ): List[SpannedExpr] {
   val acc: List[SpannedExpr] = newList()
   var i = 0
@@ -417,9 +421,9 @@ func boundaryExitChecks(
     val p = params[i]
     val written = match p.mode { case PMIn -> false; case _ -> true }
     if written {
-      val checker = match boundaryChecker(b.foreign, p.ty) {
+      val checker = match boundaryChecker(b.foreign, p.ty, selfType) {
         case Some(c) -> Some(value = c)
-        case None -> boundaryChecker(b.local, p.ty)
+        case None -> boundaryChecker(b.local, p.ty, selfType)
       }
       match checker {
         case Some(c) -> acc.add(
@@ -436,9 +440,13 @@ func boundaryExitChecks(
   }
   match ret {
     case Some(rt) -> {
-      val checker = match boundaryChecker(b.foreign, rt) {
+      val checker = match boundaryChecker(b.foreign, rt, selfType) {
         case Some(c) -> Some(value = c)
-        case None -> if owner.contains("__lyric_checked_") { None } else { boundaryChecker(b.local, rt) }
+        case None -> if owner.contains("__lyric_checked_") {
+          None
+        } else {
+          boundaryChecker(b.local, rt, selfType)
+        }
       }
       match checker {
         case Some(c) -> acc.add(

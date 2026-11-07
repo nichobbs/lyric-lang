@@ -1059,6 +1059,14 @@ func spawnConnectionThread(conn: in Conn, queue: in ServerQueue, body: () -> Uni
   // (backpressure) once `resolveMaxConcurrentConnections()` connections are
   // in flight, matching the dotnet twin.
   rtSemWait(queue.connLimit)
+  rtMutexLock(queue.mutex)
+  val isStopping = queue.stopping
+  rtMutexUnlock(queue.mutex)
+  if isStopping {
+    hostClose(conn)
+    rtSemPost(queue.connLimit)
+    return
+  }
   // Register BEFORE spawning (#6792, `registerConn`'s doc comment) -- never
   // the other way around.
   registerConn(queue, conn)

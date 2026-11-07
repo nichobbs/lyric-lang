@@ -2949,6 +2949,7 @@ func elaborateMember(
   selfScope: in SelfScope,
   typeInvariants: in List[InvariantClause] = newList(),
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
+  selfType: in Option[TypeExpr] = None,
 ): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) or functionIsWoven(fn) {
@@ -2977,8 +2978,8 @@ func elaborateMember(
   }
   // A construction checker is the check itself, never subject to one.
   val checked = if Str.startsWith(fn.name, "__lyric_checked_") { emptyInvariantBoundary() } else { boundary }
-  val entryInv = boundaryEntryChecks(fn.params, checked)
-  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span)
+  val entryInv = boundaryEntryChecks(fn.params, checked, selfType)
+  val exitInv = boundaryExitChecks(fn.params, fn.ret, checked, owner, fn.span, selfType)
   val hasBoundary = entryInv.count > 0 or exitInv.count > 0
   if not hasReq and not hasEns and not hasInv and not hasRange and not hasBoundary {
     return fn
@@ -3410,6 +3411,7 @@ func elaborateFunctionWith(
   selfScope: in SelfScope,
   releaseElide: in Bool = false,
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
+  selfType: in Option[TypeExpr] = None,
 ): FunctionDecl {
   // Under the release policy an impl method is reached through its interface,
   // a public boundary, so its own and inherited `requires:` stay and every
@@ -3419,9 +3421,17 @@ func elaborateFunctionWith(
   val extraKept = if releaseElide { releaseKeptInherited(extra) } else { extra }
   if extraKept.count == 0 {
     if not releaseElide {
-      return elaborateMember(fn, owner, contractsEnabled, selfScope, newList(), boundary)
+      return elaborateMember(fn, owner, contractsEnabled, selfScope, newList(), boundary, selfType)
     }
-    val doneOwn = elaborateMember(withContracts(fn, ownKept), owner, contractsEnabled, selfScope, newList(), boundary)
+    val doneOwn = elaborateMember(
+      withContracts(fn, ownKept),
+      owner,
+      contractsEnabled,
+      selfScope,
+      newList(),
+      boundary,
+      selfType
+    )
     return withContracts(doneOwn, fn.contracts)
   }
   val merged: List[ContractClause] = newList()
@@ -3441,7 +3451,8 @@ func elaborateFunctionWith(
     contractsEnabled,
     selfScope.copy(inherited = extraKept.count),
     newList(),
-    boundary
+    boundary,
+    selfType
   )
   withContracts(acc, fn.contracts)
 }
@@ -3482,6 +3493,7 @@ func elaborateRecordDecl(
   boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): RecordDecl {
   val selfScope = SelfScope(fields = SelfFields.recordFieldNames(decl.members), cases = cases, inherited = 0)
+  val selfTy = Some(value = selfTypeExpr(decl.name, decl.generics, decl.span))
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
@@ -3494,7 +3506,8 @@ func elaborateRecordDecl(
           contractsEnabled,
           selfScope,
           newList(),
-          boundary
+          boundary,
+          selfTy
         )
         members.add(RMFunc(fn = if releaseElide { withContracts(done, fn.contracts) } else { done }))
       }
@@ -3528,6 +3541,7 @@ func elaborateImplDecl(
     cases = cases,
     inherited = 0
   )
+  val selfTy = Some(value = decl.target)
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3551,7 +3565,8 @@ func elaborateImplDecl(
               contractsEnabled,
               memberScope(implScope, fn.annotations),
               releaseElide,
-              boundary
+              boundary,
+              selfTy
             )
           )
         )
