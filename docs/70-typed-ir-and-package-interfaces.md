@@ -778,13 +778,25 @@ builder (I0002) rather than on the current checker.
   dot-named one (#8869: `Type.f(x)` binds by its site, then the file's
   import-scoped type map; only a wire factory keeps a `Wire.method` key), and a
   `Type.f` call binds the function of the package whose `Type` is in scope on
-  both backends (#8878). Remaining: the JVM's import-scope maps for bare
-  constructors and cases (`~ctor-import~`, `~selimport~`, and
-  `importAwareRegistry`'s enum case and module val overlay, which need the
-  checker to record a constructor site), the native bridge (it has no callee
-  sites at all; inventory on #8612), #8752 (alias targets in the resolver; a
-  renamed-import alias target is still resolved by name), #8690, and two
-  overload gaps (#8880).
+  both backends (#8878). Native binds a call to its site (`sitedSig`, D336
+  item 11), and a default expression of another package binds that package's
+  names without a port of the JVM's qualification (#8850). The alias table the
+  passes read comes from `Lyric.Resolve.aliasTargetsFor` (D344, #8888): an alias
+  of a renamed-import type now names its own package. Dot-named overloads that
+  both fit by argument count are chosen by type, and all three backends lower the
+  declaration the site names by its own parameter count (D345, #8893).
+
+  What 2d leaves, and where it goes. Phase 4 (backends lowering TIR) deletes:
+  the `AliasRewriter` tree walk, `TypeAliasResolve` and the backends' alias layers
+  (#8894); the JVM's constructor, pattern and type import-scope maps
+  (`~ctor-import~`, `~selimport~`, `importAwareRegistry`'s overlays; #8895); and
+  native's name lookups for bundled stdlib units, Mono-renamed specialisations and
+  synthesised calls (#8896). Two overloads with the same parameter count are
+  keyed alike by the backends (#8897). Still open in phase 2: the passes that read
+  the union of the files' imports (#8690: plugin expansion, component glue, the
+  JVM rename maps, the weaver, the alias rewriter's rename fallback and
+  synthesised-item environment), which gate retiring `B0012`, the cross-file
+  `T0148` and the cross-file `T0123`.
 
 2a and 2b can run in parallel; 2c needs both; 2d needs 2c. Release after.
 
