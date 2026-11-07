@@ -17,7 +17,10 @@ the JVM, where `accesskit_rect` does not resolve (T0010).
 1. An UNCHECKED build fails the run (exit 1) with a message naming the builds. A
    manifest the census cannot judge is a hole in the census: it is fixed or listed
    as native-only, never counted as clean.
-2. Any error code other than I0001 (`error[A-HJ-Z]NNNN`, not just `T`, `P`, `L`)
-   marks a build unchecked, since only an I0001 is a site.
+2. A build is checked when it succeeds or reports I0001 (the checker reports it only
+   for a program that type-checks). A build that exits non-zero without an I0001 is
+   unchecked, whatever the error class and even when it prints no code at all (a
+   malformed dependency manifest); only the exact diagnostic `error[I0001]` is a site.
+   The sites are printed before the unchecked builds, so a run with both shows both.
 3. `lyric-access/platform` is listed in `NATIVE_ONLY` with the other libraries
    that build only on `--target native`.

@@ -12,13 +12,14 @@
 #
 # I0001 is reported only for a program that type-checks (a file that already
 # has an error reports its own error, not its cascades), so a build that stops
-# on a parse, type or dependency error proves nothing about its sites.  Such a
-# build is listed as UNCHECKED, never counted as clean.  A build that fails
+# before the checker finishes proves nothing about its sites.  The checker has
+# finished when the build succeeds or reports I0001; a build that exits non-zero
+# without one (an error of any class, or a failure with no code, such as a
+# malformed dependency manifest) is listed as UNCHECKED, never counted as clean,
+# and fails the run (D386): a manifest the census cannot judge is a hole in it,
+# so it is fixed or listed as native-only, not tolerated.  A build that fails
 # loading a library dependency that is built later in the run is retried once
-# the dependency exists.  A build that fails after checking (a missing JVM
-# jar, a link step) still counts: its I0001 lines were printed first.  An
-# UNCHECKED build fails the run (D386): a manifest the census cannot judge
-# is a hole in it, so it is fixed or listed as native-only, not tolerated.
+# the dependency exists.  The sites are printed before the unchecked builds.
 #
 # Libraries written for `--target native` build only there; the rest build on
 # dotnet and the JVM.
@@ -80,17 +81,23 @@ for phase in dotnet jvm native; do
       manifest="${job%%|*}"
       target="${job##*|}"
       log="$(mktemp)"
-      timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1
+      rc=0
+      timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1 || rc=$?
       if grep -q 'restored dep .* failed to load' "$log" && [[ "$round" -lt 3 ]]; then
         retry+=("$job")
         rm -f "$log"
         continue
       fi
       grep 'I0001' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
-      # Any error that is not I0001 (the site itself) stopped the build before
-      # the checker finished: the manifest is unchecked, not clean.
-      if grep -qE 'restored dep .* failed to load|error\[[A-HJ-Z][0-9]+\]' "$log"; then
-        reason="$(grep -m1 -E 'restored dep .* failed to load|error\[[A-HJ-Z][0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
+      # The checker completed when the build succeeded or reported I0001 (it
+      # reports them only for a program that type-checks).  A build that exits
+      # non-zero without one stopped on something else, an error of any class
+      # or a failure with no code (a malformed dependency manifest): the
+      # manifest is unchecked, not clean.  Only the exact I0001 diagnostic is
+      # a site.
+      if [[ "$rc" -ne 0 ]] && ! grep -qF 'error[I0001]' "$log"; then
+        reason="$(grep -vF 'error[I0001]' "$log" | grep -m1 -iE 'error|failed|malformed|missing|cannot' | sed "s|$REPO_ROOT/||" | cut -c1-160)"
+        [[ -n "$reason" ]] || reason="exit $rc: $(tail -n1 "$log" | cut -c1-140)"
         echo "$manifest ($target): $reason" >>"$unchecked_file"
       else
         checked=$((checked + 1))
@@ -105,15 +112,21 @@ sort -u "$sites_file" -o "$sites_file"
 count=$(grep -c . "$sites_file" || true)
 unchecked=$(grep -c . "$unchecked_file" || true)
 echo "::notice::I0001 silent TyError sites across the library manifests: ${count} (${checked}/${attempted} builds checked, ${unchecked} unchecked)"
+# The sites first: a run with both findings must show where the sites are.
+if [[ "$count" -gt 0 ]]; then
+  head -200 "$sites_file"
+fi
 if [[ "$unchecked" -gt 0 ]]; then
   echo "UNCHECKED builds (stopped before the census could see them):"
   cat "$unchecked_file"
-  echo "library-tyerr-census: ${unchecked} build(s) stopped before the census could judge them; fix the build or list the manifest as native-only, never count it as clean" >&2
-  exit 1
 fi
 if [[ "$count" -gt 0 ]]; then
-  head -200 "$sites_file"
   echo "library-tyerr-census: ${count} silent TyError site(s); type each one or name it (see docs/decisions/D355)" >&2
+fi
+if [[ "$unchecked" -gt 0 ]]; then
+  echo "library-tyerr-census: ${unchecked} build(s) stopped before the census could judge them; fix the build or list the manifest as native-only, never count it as clean (D386)" >&2
+fi
+if [[ "$count" -gt 0 || "$unchecked" -gt 0 ]]; then
   exit 1
 fi
 if [[ "$checked" -eq 0 ]]; then
