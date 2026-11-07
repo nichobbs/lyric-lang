@@ -727,12 +727,11 @@ func casePatternSymbolId(tbl: in SymbolTable, sym: in Symbol): Option[SymbolId] 
 
 // A pattern of a case arm whose payload patterns match any value, so naming
 // the case covers it whole.
-func armCoversWholeCase(p: in Pattern): Bool {
+func armCoversWholeCase(tbl: in SymbolTable, p: in Pattern): Bool {
   match p.kind {
     case PConstructor(_, args) -> {
-      val noNames: List[String] = newList()
       for a in args {
-        if not patternSurelyIrrefutable(a, noNames) {
+        if not patIrrefutableBound(tbl, a) {
           return false
         }
       }
@@ -740,10 +739,10 @@ func armCoversWholeCase(p: in Pattern): Bool {
     }
     case PBinding(_, None) -> true
     case PWildcard -> true
-    case PParen(inner) -> armCoversWholeCase(inner)
+    case PParen(inner) -> armCoversWholeCase(tbl, inner)
     case POr(ps) -> {
       for q in ps {
-        if not armCoversWholeCase(q) {
+        if not armCoversWholeCase(tbl, q) {
           return false
         }
       }
@@ -758,12 +757,11 @@ func armCoversWholeCase(p: in Pattern): Bool {
 // only `Bool`, unbounded scalars and finite-case types, and looks at case
 // names, not payloads.
 func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[MatchArm]): Bool {
-  val noNames: List[String] = newList()
-  // Without the scrutinee's case names a bare capitalised name may be a case,
-  // so only `_` or a lowercase binding proves an arm matches everything.
+  // A name the checker bound as a local, not one it read as a case, proves an
+  // arm matches everything.
   for arm in arms {
     match arm.guard {
-      case None -> if patternSurelyIrrefutable(arm.pattern, noNames) { return true }
+      case None -> if patIrrefutableBound(tbl, arm.pattern) { return true }
       case Some(_) -> ()
     }
   }
@@ -776,7 +774,7 @@ func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[Match
       val covered: List[String] = newList()
       for arm in arms {
         match arm.guard {
-          case None -> if armCoversWholeCase(arm.pattern) { collectCoveredCases(arm.pattern, caseNames, covered) }
+          case None -> if armCoversWholeCase(tbl, arm.pattern) { collectCoveredCases(arm.pattern, caseNames, covered) }
           case Some(_) -> ()
         }
       }
@@ -12590,7 +12588,23 @@ func inferMatchExpr(
   isValuePosition: in Bool,
   tailExpected: in Type,
 ): Type {
+  val diagsBefore = diag.count
   val t = inferMatchExprCore(sc, tbl, sigs, diag, e, scrutinee, arms, isValuePosition, tailExpected)
+  // The proof is read after the arms are bound: which bare names are bindings
+  // and which are cases is the checker's decision made while binding them.
+  var missing = false
+  var di = diagsBefore
+  while di < diag.count {
+    if diag[di].code == "T0016" {
+      missing = true
+    }
+    di = di + 1
+  }
+  val scrutTy = match mapGet(tbl.exprTypes, scrutinee.nodeId) {
+    case Some(x) -> x
+    case None -> tyErrorSilent()
+  }
+  recordMatchExhaustive(tbl, e, not missing and matchProvedExhaustive(tbl, scrutTy, arms))
   // Typed here without passing through `inferExpr`, so the node's type is
   // recorded here (D366).
   recordExprType(tbl, e, t)
@@ -12609,9 +12623,7 @@ func inferMatchExprCore(
   tailExpected: in Type,
 ): Type {
   val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
-  val diagsBefore = diag.count
   checkMatchExhaustive(tbl, diag, st, arms, e.span)
-  recordMatchExhaustive(tbl, e, diag.count == diagsBefore and matchProvedExhaustive(tbl, st, arms))
   checkUnreachableArms(tbl, diag, st, arms)
   checkOpaquePatternHiding(tbl, diag, st, arms)
   // Branch-type unification (#2142): a `match` used as a value takes the

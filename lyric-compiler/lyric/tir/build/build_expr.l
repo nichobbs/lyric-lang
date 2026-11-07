@@ -456,6 +456,9 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
       if not patIsBinding(env.ctx, p.nodeId) {
         return uncoveredPat(env, p, "a bare name the checker did not bind")
       }
+      // The name is bound before the sub-pattern, as the checker binds it, so a
+      // sub-pattern binding the same name shadows it.
+      val d = declareLocal(env, name, ty, false)
       var innerPat: Option[TPat] = None
       match inner {
         case Some(ip) -> match buildPat(env, ip) {
@@ -466,7 +469,6 @@ func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
         }
         case None -> ()
       }
-      val d = declareLocal(env, name, ty, false)
       Some(value = mkPat(p, ty, TpBind(decl = d, inner = innerPat)))
     }
     case PConstructor(_, args) -> match patSym(env.ctx, p.nodeId) {
@@ -576,9 +578,13 @@ func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: i
 
 /// A branch of an `if`: an expression, or a block typed as the `if` is.
 func buildOrBlock(env: in BuildEnv, b: in ExprOrBlock, ty: in Ty): Option[TExpr] {
-  match b {
+  val built = match b {
     case EOBExpr(x) -> buildExpr(env, x)
     case EOBBlock(blk) -> buildBlock(env, blk, Some(value = ty), freshNodeId(env))
+  }
+  match built {
+    case Some(t) -> coerceBranch(env, t, ty)
+    case None -> None
   }
 }
 
@@ -956,6 +962,36 @@ func coerceArg(env: in BuildEnv, t: in TExpr, pty: in Ty): Option[TExpr] {
     )
     case None -> {
       noteUncovered(env, "an argument conversion")
+      None
+    }
+  }
+}
+
+/// A branch of an `if` or `match` as the whole takes it: as is, widened by a node of
+/// its own, or not at all (counted).  A branch that never completes fits any type.
+func coerceBranch(env: in BuildEnv, t: in TExpr, ty: in Ty): Option[TExpr] {
+  if tyEq(t.ty, ty) {
+    return Some(value = t)
+  }
+  match t.ty {
+    case TNever -> return Some(value = t)
+    case _ -> ()
+  }
+  match widenKind(t.ty, ty) {
+    case Some(k) -> Some(
+      value = TExpr(
+        id = freshNodeId(env),
+        ty = ty,
+        span = t.span,
+        kind = XConvert(kind = k, inner = t)
+      )
+    )
+    case None -> {
+      noteUncovered(env, "a branch conversion")
+      env.errors.add(
+        "I0002: the builder has no case for a branch conversion at " + toString(t.span.startPos.line) + ":" +
+          toString(t.span.startPos.column)
+      )
       None
     }
   }

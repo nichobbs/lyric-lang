@@ -608,3 +608,23 @@ test "an or-pattern is counted, not guessed" {
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern"), 1, "counted")
 }
+
+test "an as-pattern binds its name before its sub-pattern" {
+  val r = buildFirstFn("package App\nfunc f(a: Int, b: Int): Int {\n  match (a, b) {\n    case x @ (x, y) -> x\n  }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an Int arm in a Long match is widened, not left to the verifier" {
+  val r = buildFirstFn("package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  match b {\n    case true -> i\n    case false -> l\n  }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an enum case in a payload is refutable, so the match is not proved exhaustive" {
+  val r = buildFirstFn("package App\nenum Choice { case small; case large }\nunion U {\n  case A(c: Choice)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(small) -> 1\n  }\n}\n")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "1:open", matchSummary(r.body))
+}
