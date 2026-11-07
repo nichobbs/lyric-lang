@@ -1830,3 +1830,59 @@ test "sendData requires data within the peer max frame size (#7251)" {
   val limit = H2.peerMaxFrameSize(c)
   assertPanics("DATA larger than one frame", { -> val _ = H2.sendData(c, 1, mkBytes(limit + 1, 66), false) })
 }
+
+test "RFC 9113 section 8.1.1: content-length vs DATA payload length enforcement" {
+  // 1. HEADERS with END_STREAM and content-length > 0 is a stream PROTOCOL_ERROR.
+  var conn1 = setupDefault()
+  val req1 = hdrs(
+    [
+      ":method",
+      "POST",
+      ":scheme",
+      "https",
+      ":path",
+      "/upload",
+      ":authority",
+      "example.com",
+      "content-length",
+      "5"
+    ]
+  )
+  val r1 = H2.feed(conn1, headersFrame(1, encodeBlock(req1), true, true))
+  expectStreamError(r1.events, 1, H2ProtocolError, "END_STREAM on HEADERS with content-length > 0")
+  assertFalse(H2.isFailed(r1.conn), "stream error does not poison connection")
+
+  // 2. DATA exceeding content-length is a stream PROTOCOL_ERROR and reclaims connection window.
+  var conn2 = setupDefault()
+  val initialConnWin = H2.connectionReceiveWindow(conn2)
+  val r2h = H2.feed(conn2, headersFrame(1, encodeBlock(req1), false, true))
+  val r2d = H2.feed(r2h.conn, dataFrame(1, mkBytes(6, 65), false))
+  expectStreamError(r2d.events, 1, H2ProtocolError, "DATA exceeding content-length")
+  assertEqualInt(
+    H2.connectionReceiveWindow(r2d.conn),
+    initialConnWin,
+    "connection receive window reclaimed on content-length overrun"
+  )
+
+  // 3. DATA with END_STREAM falling short of content-length is a stream PROTOCOL_ERROR.
+  var conn3 = setupDefault()
+  val r3h = H2.feed(conn3, headersFrame(1, encodeBlock(req1), false, true))
+  val r3d = H2.feed(r3h.conn, dataFrame(1, mkBytes(4, 65), true))
+  expectStreamError(r3d.events, 1, H2ProtocolError, "END_STREAM on DATA before content-length reached")
+
+  // 4. Trailer HEADERS arriving before content-length bytes are received is a stream PROTOCOL_ERROR.
+  var conn4 = setupDefault()
+  val r4h = H2.feed(conn4, headersFrame(1, encodeBlock(req1), false, true))
+  val r4d = H2.feed(r4h.conn, dataFrame(1, mkBytes(3, 65), false))
+  val trailers = hdrs(["x-checksum", "abc"])
+  val r4t = H2.feed(r4d.conn, headersFrame(1, encodeBlock(trailers), true, true))
+  expectStreamError(r4t.events, 1, H2ProtocolError, "trailer HEADERS before content-length reached")
+
+  // 5. Exact content-length match across multiple DATA frames succeeds.
+  var conn5 = setupDefault()
+  val r5h = H2.feed(conn5, headersFrame(1, encodeBlock(req1), false, true))
+  val r5d1 = H2.feed(r5h.conn, dataFrame(1, mkBytes(2, 65), false))
+  val r5d2 = H2.feed(r5d1.conn, dataFrame(1, mkBytes(3, 66), true))
+  assertEqualLong(streamErrorCodeLong(r5d2.events, 1), -1i64, "exact content-length match produces no stream error")
+  assertTrue(stateIs(H2.streamState(r5d2.conn, 1), "hcr"), "stream transitions to half-closed-remote cleanly")
+}

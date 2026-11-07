@@ -701,6 +701,7 @@ func translateResolvedCall(
   appendTermList(asList, pureUnfold)
   // The callee proves its result is in its declared range (#7872).
   appendTermList(asList, valueFactsForTerm(callTerm, resultInfo))
+  appendTermList(asList, recordInvariantFacts(env, callTerm, resultInfo.sort))
   // A goal this call reaches without its body is reported as V0027 when it
   // is not discharged (`unfoldSkippedMarker`).
   val knownCalleeTR = TranslateResult(
@@ -912,6 +913,28 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
         }
       }
       case IRecord(d) -> {
+        val tys: List[TypeExpr] = newList()
+        var mutable = d.isRef
+        var mi = 0
+        while mi < d.members.count {
+          match d.members[mi] {
+            case RMField(fld) -> {
+              if fld.isMutable {
+                mutable = true
+              }
+              tys.add(fld.ty)
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+        if not mutable {
+          candidates.add(d.name)
+          candidateFields.add(tys)
+          candidateParams.add(genericTypeParamNames(d.generics))
+        }
+      }
+      case IExposedRec(d) -> {
         val tys: List[TypeExpr] = newList()
         var mutable = d.isRef
         var mi = 0

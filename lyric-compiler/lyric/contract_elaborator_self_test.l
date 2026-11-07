@@ -1681,3 +1681,77 @@ test "contractsEnabled = false still checks a protected invariant after a traili
   assertTrue(blk.statements.count >= 2, "the invariant check follows the assignment")
   assertTrue(isAssertCall(blk.statements[blk.statements.count - 1]), "the last statement is the invariant assert")
 }
+
+test "public record, exposed record, and impl methods enforce InvariantBoundary on inout receivers" {
+  val src = "package P\n" +
+    "pub record Counter {\n  var n: Int\n  invariant: n >= 0\n  func reset(self: inout Counter): Unit {\n    self.n = 0\n  }\n}\n" +
+    "pub exposed record ExpCounter {\n  var n: Int\n  invariant: n >= 0\n  func reset(self: inout ExpCounter): Unit {\n    self.n = 0\n  }\n}\n" +
+    "interface Resettable { func resetIt(self: inout Counter): Unit }\n" +
+    "impl Resettable for Counter {\n  func resetIt(self: inout Counter): Unit {\n    self.n = 0\n  }\n}\n"
+  val pr = parse(src)
+  val foreignMap: Map[String, String] = newMap()
+  val localMap: Map[String, String] = newMap()
+  localMap.add("Counter", "P.__lyric_checked_Counter")
+  localMap.add("ExpCounter", "P.__lyric_checked_ExpCounter")
+  val boundary = InvariantBoundary(foreign = foreignMap, local = localMap)
+  val noIfaces: List[InterfaceDecl] = newList()
+  val noRecs: List[RecordDecl] = newList()
+  val noCases: Map[String, Bool] = newMap()
+  val elab = elaborateFileWithTypes(pr.file, noIfaces, noRecs, noCases, true, boundary)
+  var recResetAsserts = 0
+  var expResetAsserts = 0
+  var implResetAsserts = 0
+  for it in elab.items {
+    match it.kind {
+      case IRecord(rd) -> {
+        for m in rd.members {
+          match m {
+            case RMFunc(fn) -> {
+              val blk = bodyBlockOf(fn)
+              for st in blk.statements {
+                if isAssertCall(st) {
+                  recResetAsserts = recResetAsserts + 1
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case IExposedRec(rd) -> {
+        for m in rd.members {
+          match m {
+            case RMFunc(fn) -> {
+              val blk = bodyBlockOf(fn)
+              for st in blk.statements {
+                if isAssertCall(st) {
+                  expResetAsserts = expResetAsserts + 1
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case IImpl(id) -> {
+        for m in id.members {
+          match m {
+            case IMplFunc(fn) -> {
+              val blk = bodyBlockOf(fn)
+              for st in blk.statements {
+                if isAssertCall(st) {
+                  implResetAsserts = implResetAsserts + 1
+                }
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(recResetAsserts, 1, "pub record method has boundary exit invariant assert")
+  assertEqualInt(expResetAsserts, 1, "pub exposed record method has boundary exit invariant assert")
+  assertEqualInt(implResetAsserts, 1, "impl method has boundary exit invariant assert")
+}

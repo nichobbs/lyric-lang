@@ -3409,6 +3409,7 @@ func elaborateFunctionWith(
   contractsEnabled: in Bool,
   selfScope: in SelfScope,
   releaseElide: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): FunctionDecl {
   // Under the release policy an impl method is reached through its interface,
   // a public boundary, so its own and inherited `requires:` stay and every
@@ -3418,9 +3419,9 @@ func elaborateFunctionWith(
   val extraKept = if releaseElide { releaseKeptInherited(extra) } else { extra }
   if extraKept.count == 0 {
     if not releaseElide {
-      return elaborateMember(fn, owner, contractsEnabled, selfScope)
+      return elaborateMember(fn, owner, contractsEnabled, selfScope, newList(), boundary)
     }
-    val doneOwn = elaborateMember(withContracts(fn, ownKept), owner, contractsEnabled, selfScope)
+    val doneOwn = elaborateMember(withContracts(fn, ownKept), owner, contractsEnabled, selfScope, newList(), boundary)
     return withContracts(doneOwn, fn.contracts)
   }
   val merged: List[ContractClause] = newList()
@@ -3438,7 +3439,9 @@ func elaborateFunctionWith(
     withContracts(fn, merged),
     owner,
     contractsEnabled,
-    selfScope.copy(inherited = extraKept.count)
+    selfScope.copy(inherited = extraKept.count),
+    newList(),
+    boundary
   )
   withContracts(acc, fn.contracts)
 }
@@ -3476,6 +3479,7 @@ func elaborateRecordDecl(
   contractsEnabled: in Bool = true,
   releaseElide: in Bool = false,
   typeIsPub: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): RecordDecl {
   val selfScope = SelfScope(fields = SelfFields.recordFieldNames(decl.members), cases = cases, inherited = 0)
   val members: List[RecordMember] = newList()
@@ -3484,7 +3488,14 @@ func elaborateRecordDecl(
     match decl.members[i] {
       case RMFunc(fn) -> {
         val view = if releaseElide { withContracts(fn, releaseKeptClauses(fn, typeIsPub)) } else { fn }
-        val done = elaborateMember(view, qualify(pkg, decl.name + "." + fn.name), contractsEnabled, selfScope)
+        val done = elaborateMember(
+          view,
+          qualify(pkg, decl.name + "." + fn.name),
+          contractsEnabled,
+          selfScope,
+          newList(),
+          boundary
+        )
         members.add(RMFunc(fn = if releaseElide { withContracts(done, fn.contracts) } else { done }))
       }
       case other -> members.add(other)
@@ -3510,6 +3521,7 @@ func elaborateImplDecl(
   pkg: in String,
   contractsEnabled: in Bool = true,
   releaseElide: in Bool = false,
+  boundary: in InvariantBoundary = emptyInvariantBoundary(),
 ): ImplDecl {
   val implScope = SelfScope(
     fields = SelfFields.implTargetFieldNames(typeFields, decl.target),
@@ -3538,7 +3550,8 @@ func elaborateImplDecl(
               qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name),
               contractsEnabled,
               memberScope(implScope, fn.annotations),
-              releaseElide
+              releaseElide,
+              boundary
             )
           )
         )
@@ -3642,7 +3655,8 @@ func elaborateItem(
           pkg,
           contractsEnabled,
           releaseElide,
-          itemIsPub(it)
+          itemIsPub(it),
+          publicBoundary(it, boundary)
         )
       )
     )
@@ -3655,7 +3669,8 @@ func elaborateItem(
           pkg,
           contractsEnabled,
           releaseElide,
-          itemIsPub(it)
+          itemIsPub(it),
+          publicBoundary(it, boundary)
         )
       )
     )
@@ -3669,7 +3684,8 @@ func elaborateItem(
           cases,
           pkg,
           contractsEnabled,
-          releaseElide
+          releaseElide,
+          boundary
         )
       )
     )

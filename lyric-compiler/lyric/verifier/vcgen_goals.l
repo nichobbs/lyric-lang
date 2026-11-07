@@ -81,8 +81,12 @@ func goalsForFunctionInheriting(
     val p = decl.params[i]
     val info = sortOfTypeExprE(env0, p.ty)
     val passedOut = match p.mode { case PMIn -> false; case _ -> true }
+    val hasEntryValue = match p.mode { case PMOut -> false; case _ -> true }
     envWithParams = envSetMutable(envBind(p.name, info, envWithParams), p.name, passedOut)
     appendTermList(paramHyps, valueFactsForTerm(TVar(name = p.name, sort = info.sort), info))
+    if hasEntryValue {
+      appendTermList(paramHyps, recordInvariantFacts(env0, TVar(name = p.name, sort = info.sort), info.sort))
+    }
     i = i + 1
   }
 
@@ -350,6 +354,70 @@ func goalsForFunctionInheriting(
   appendTermList2(allDiags, wpRes.diags)
   val goalPair: (List[Goal], List[Diagnostic]) = (goals, allDiags)
   goalPair
+}
+
+// The invariant facts of a constructed record, exposed record, or opaque
+// value `v` of sort `srt` (`!invariant.<name>`), with each field bound to its
+// selector on `v`.
+func recordInvariantFacts(env: in VEnv, v: in Term, srt: in Sort): List[Term] {
+  val facts: List[Term] = newList()
+  match srt {
+    case SDatatype(rName, targs) -> {
+      val invKey = "!invariant." + rName
+      if env.cyclic.contains(invKey) or env.contractStack.contains(invKey) {
+        return facts
+      }
+      match mapGet(env.recordDefaults, invKey) {
+        case Some(invs) -> match findRecordFields(env, rName) {
+          case Some(fields) -> {
+            val rParams = recordSortParams(env, rName)
+            if rParams.count != targs.count {
+              return facts
+            }
+            var invEnv = envInOwnContract(varlessEnv(env), invKey)
+            val prefix = rName + "__"
+            var fi = 0
+            while fi < fields.count {
+              val rf = fields[fi]
+              val fieldName = if rf.name.startsWith(prefix) {
+                rf.name.substring(prefix.length, rf.name.length - prefix.length)
+              } else {
+                rf.name
+              }
+              val fSort = if rParams.count == 0 { rf.sort } else { substSortParams(rf.sort, rParams, targs) }
+              val fInfo = match mapGet(env.fieldInfos, rf.name) {
+                case Some(fi0) -> fi0.copy(sort = fSort)
+                case None -> SortInfo(sort = fSort, range = RBKNone)
+              }
+              val selTerm = TApp(name = rf.name, args = termList1(v), retSort = fSort)
+              invEnv = envBindTerm(fieldName, selTerm, fInfo, invEnv)
+              appendTermList(facts, valueFactsForTerm(selTerm, fInfo))
+              fi = fi + 1
+            }
+            var ii = 0
+            while ii < invs.count {
+              match invs[ii] {
+                case Some(invExpr) -> {
+                  val (invR, invDiags) = translateExpr(invEnv, invExpr)
+                  if invDiags.count == 0 and not termIsPoisoned(invR.term) and not termHasUnmodelledPattern(invR.term) {
+                    appendTermList(facts, invR.sideConds)
+                    appendTermList(facts, invR.assumed)
+                    facts.add(invR.term)
+                  }
+                }
+                case None -> ()
+              }
+              ii = ii + 1
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  facts
 }
 
 // `env` where each interface parameter name in `ifaceNames` stands for the

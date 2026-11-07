@@ -1,0 +1,14 @@
+# v1.0 readiness: verifier & contract elaborator boundary invariants, HTTP/2 content-length enforcement, and native server backpressure
+
+Completes the remaining verifier/contract-elaborator soundness items (Section B), toolchain/stdlib hardening (Section C), and target support documentation (Section D):
+
+1. **Contract elaborator & formal verifier soundness (`Lyric.ContractElaborator`, `Lyric.Verifier`, `Lyric.Verifier.VcGen`):**
+   - `elaborateRecordDecl` and `elaborateImplDecl` now thread `boundary: InvariantBoundary` (`publicBoundary(it, boundary)` for `IRecord`/`IExposedRec` and `boundary` for `IImpl`) so cross-package `@runtime_checked` invariant entry/exit checks and `self` exit checks fire inside record, exposed record, and `impl` methods just as they do in top-level functions.
+   - `appendScopeDecls` in `Lyric.Verifier` and `withSiblingTypes`, `registerRecordDatatype`, and `registerRecordMethodCallees` in `Lyric.Verifier.VcGen` now include `IExposedRec` and same-package `IOpaque` declarations alongside `IRecord`, and `goalsForImplMethods` indexes sibling type fields so `impl` methods resolve bare `self` field names.
+   - `paramHyps` (for `in` and `inout` parameters) and `translateResolvedCall` (for call return values) now assume declared record/exposed-record/same-package-opaque type `invariant:` clauses as SMT hypotheses in `Lyric.Verifier.VcGen`.
+2. **Toolchain & stdlib hardening (`Lyric.Cli`, `Std.HttpEngine.H2Conn`, `Std.HttpServer`):**
+   - `lyric restore --locked` now fails closed (`lockMismatch = true`) when neither the `lyric.lock` entry nor the resolved dependency carries a SHA-512 content digest, eliminating the pre-#738 soft-pass warning.
+   - `Std.HttpEngine.H2Conn` tracks `expectedContentLength` and `receivedDataBytes` on each `H2Stream` and enforces RFC 9113 §8.1.1: rejecting `HEADERS` with `END_STREAM` when `content-length > 0`, `DATA` frames whose payload bytes exceed `content-length` or end the stream short of `content-length` (while reclaiming the connection receive window), and trailer `HEADERS` arriving before `content-length` bytes are received.
+   - Native `Std.HttpServer` (`_kernel_native/http_server.l`) now enforces `LYRIC_HTTP_MAX_CONNECTIONS` (default 1000 via `resolveMaxConcurrentConnections()`) with a counting semaphore (`ServerQueue.connLimit`), matching the `.NET` server kernel's connection backpressure.
+3. **Target & ecosystem support matrix (`README.md`):**
+   - Expanded the Ecosystem Package Target Matrix in `README.md` to cover all first-party libraries and documented the `String.normalize` / `String.isNormalized` target status on `--target native`.

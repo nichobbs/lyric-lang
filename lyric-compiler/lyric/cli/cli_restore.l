@@ -1586,7 +1586,7 @@ func keyText(key: in Option[String]): String {
   }
 }
 
-func runRestore(mfPath: in String, lockedMode: in Bool): Int {
+pub func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   runRestoreFor(mfPath, lockedMode, "")
 }
 
@@ -2033,11 +2033,13 @@ func runRestoreWith(
             // to detect.
             match locked.sha512 {
               case None -> match resolved.sha512 {
-                case None -> printErr(
-                  "restore: --locked: warning: '" + resolved.name +
-                    "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)"
-                )
-                // Both None — soft-pass with a warning so the operator knows the integrity check was skipped (typical for pre-#738 lock files).
+                case None -> {
+                  printErr(
+                    "restore: --locked: '" + resolved.name +
+                      "' has no SHA-512 on either side; refusing to proceed without a verifiable content digest (regenerate lyric.lock with 'lyric restore' to populate digests)"
+                  )
+                  lockMismatch = true
+                }
                 case Some(_) -> {
                   printErr(
                     "restore: --locked: '" + resolved.name +

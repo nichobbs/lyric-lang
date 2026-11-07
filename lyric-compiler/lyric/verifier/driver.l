@@ -415,6 +415,8 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
         }
       }
       case IRecord(_) -> acc.typeItems.add(it)
+      case IExposedRec(_) -> acc.typeItems.add(it)
+      case IOpaque(_) -> acc.typeItems.add(it)
       case IDistinctType(_) -> acc.typeItems.add(it)
       case _ -> ()
     }
