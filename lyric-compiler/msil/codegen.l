@@ -16985,6 +16985,74 @@ func calleeNameOfDefPathMsil(dp: in String): String {
   }
 }
 
+// The parameter count of the declaration a rendered DefPath `Pkg::name(P1,P2)`
+// names, counted at the top nesting level (`Map[String,Int]` is one), else -1.
+func calleeParamCountOfDefPathMsil(dp: in String): Int {
+  val open = match String.indexOf(dp, "(") { case Some(i) -> i; case None -> return -1 }
+  if not String.endsWith(dp, ")") {
+    return -1
+  }
+  val inner = String.substring(dp, open + 1, dp.length - open - 2)
+  if inner.length == 0 {
+    return 0
+  }
+  var depth = 0
+  var n = 1
+  var i = 0
+  while i < inner.length {
+    val c = String.substring(inner, i, 1)
+    if c == "[" or c == "(" or c == "<" {
+      depth = depth + 1
+    } else if c == "]" or c == ")" or c == ">" {
+      depth = depth - 1
+    } else if c == "," and depth == 0 {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+// Whether the function the checker resolved the call at `siteKey` to is a
+// dot-named one (`Type.member`), whose overloads are told apart by their
+// declared parameter count (#8880).
+func dotNamedSiteMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String): Bool {
+  val key = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    fctx.originPkg + "|" + siteKey
+  } else {
+    siteKey
+  }
+  val sites = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    cctx.originCalleeSites
+  } else {
+    cctx.calleeSites
+  }
+  match mapGet(sites, key) {
+    case Some(dp) -> String.contains(calleeNameOfDefPathMsil(dp), ".")
+    case None -> false
+  }
+}
+
+// The declared parameter count of the function the checker resolved the call
+// at `siteKey` to, else -1: what picks one of several overloads of a name that
+// all take the call's arguments (#8880).
+func siteDeclaredParamCountMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String): Int {
+  val key = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    fctx.originPkg + "|" + siteKey
+  } else {
+    siteKey
+  }
+  val sites = if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    cctx.originCalleeSites
+  } else {
+    cctx.calleeSites
+  }
+  match mapGet(sites, key) {
+    case Some(dp) -> calleeParamCountOfDefPathMsil(dp)
+    case None -> -1
+  }
+}
+
 // The callee FQN the checker recorded at `siteKey` when it is the function
 // `funcName` (the declared name, a dot-named function's member, or a
 // specialisation Mono renamed it to, `f__Int`), else "" (D336).  The
@@ -20837,6 +20905,7 @@ func lowerBuiltinOrStaticCallMsil(
   funcName: in String,
   path: in ModulePath,
   args: in List[CallArg],
+  declaredArity: in Int = -1,
 ): MsilType {
   val hasQualifiedOverride = hasFuncOverrideMsil(cctx, fctx, funcName, path, args.count)
   if funcName == "__lyric_protected_wait" or funcName == "__lyric_protected_notify" {
@@ -21681,7 +21750,26 @@ func lowerBuiltinOrStaticCallMsil(
             // (full path, or trailing segment(s) of an `import A.B`), never
             // every import by bare name — that silently bound
             // `Widgets.field(...)` to another package's `field` (D-progress-946).
-            val sitedFqn = sitedCalleeFqnMsil(cctx, fctx, recordCopySiteKey(path.span), funcName)
+            val pathSiteKey = recordCopySiteKey(path.span)
+            // A dot-named callee (`Type.member`) is recorded under its callee's
+            // span with the member name when it was a member expression.
+            val dotSiteKey = if String.contains(funcName, ".") {
+              pathSiteKey + ":" +
+                String.substring(
+                  funcName,
+                  String.lastIndexOfRaw(funcName, ".") + 1,
+                  funcName.length - String.lastIndexOfRaw(funcName, ".") - 1
+                )
+            } else {
+              pathSiteKey
+            }
+            val sitedPathFqn = sitedCalleeFqnMsil(cctx, fctx, pathSiteKey, funcName)
+            val sitedFqn = if sitedPathFqn.length > 0 {
+              sitedPathFqn
+            } else {
+              sitedCalleeFqnMsil(cctx, fctx, dotSiteKey, funcName)
+            }
+            val sitedDotKey = if sitedPathFqn.length > 0 { pathSiteKey } else { dotSiteKey }
             // A monomorphized copy of an imported generic resolves its bare
             // callees in the DECLARING package's scope first: its own
             // functions, then its imports (D-progress-946).
@@ -21755,7 +21843,15 @@ func lowerBuiltinOrStaticCallMsil(
               // the type checker resolved it to (its parameter count), not the
               // one whose count equals the arguments written (#8355).
               val callArityKey = resolvedFqn + "/" +
-                toString(methodCallTargetMsil(cctx, fctx, methodCallPathKey(path), args.count).arity)
+                toString(
+                  if declaredArity >= 0 {
+                    declaredArity
+                  } else if sitedFqn.length > 0 and dotNamedSiteMsil(cctx, fctx, sitedDotKey) {
+                    siteDeclaredParamCountMsil(cctx, fctx, sitedDotKey)
+                  } else {
+                    methodCallTargetMsil(cctx, fctx, methodCallPathKey(path), args.count).arity
+                  }
+                )
               val tokKey = if cctx.funcTokens.containsKey(callArityKey) { callArityKey } else { resolvedFqn }
               match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {
@@ -22978,7 +23074,8 @@ func lowerMethodCallMsil(
         insns,
         memberName,
         ModulePath(segments = sitedPath, span = recv.span),
-        args
+        args,
+        siteDeclaredParamCountMsil(cctx, fctx, siteKey)
       )
     }
     if cctx.funcTokens.containsKey(callArityFqn) or cctx.funcTokens.containsKey(callFqn) {

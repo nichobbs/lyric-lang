@@ -1634,3 +1634,25 @@ test "a Windows triple other than x86_64-pc-windows-msvc stops the build (N0025)
     assertTrue(not File.fileExists(stem + ".exe") and not File.fileExists(stem), "no binary is written for " + t)
   }
 }
+
+test "dot-named overloads that both fit by argument count are chosen by type (ASan, #8880)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "DotOv.App",
+      sources = [
+        "package DotOv.App\n" + "import Std.Console as Console\n" + "record Seed {\n" + "  n: Int\n" + "}\n" +
+          "func Seed.base(x: in String, y: in Int = 0): Int { 100 + y }\n" +
+          "func Seed.base(x: in Int, y: in Int = 0, z: in Int = 0): Int { x + y + z }\n" +
+          "func main(): Int {\n" +
+          "  Console.println(toString(Seed.base(1)))\n" +
+          "  Console.println(toString(Seed.base(\"a\", 5)))\n" +
+          "  0\n" +
+          "}\n"
+      ]
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "dot-named overload exit code")
+  assertTrue(Str.contains(outcome.stdout, "1\n105"), "each call lowers the overload it names: " + outcome.stdout)
+}
