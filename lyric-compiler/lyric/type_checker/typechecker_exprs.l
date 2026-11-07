@@ -21543,9 +21543,7 @@ pub func inferExprExpected(
 // interface an enum implements is.
 func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, expected: in Type): Type {
   match t {
-    case TyError(d) -> if d.index != -3 {
-      return t
-    }
+    case TyError(d) -> if d.index != -3 { return t }
     case _ -> {
       return t
     }
@@ -21586,9 +21584,21 @@ func sharedEnumCaseAgainstExpected(tbl: in SymbolTable, e: in Expr, t: in Type, 
       }
       match symTableTypeSymbolOf(tbl, eid) {
         case Some(esym) -> match esym.kind {
-          case DKEnum(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
-          case DKRecord(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
-          case DKUnion(_, _) -> TyUser(id = owners[0], name = typeNameOfId(tbl, owners[0]), args = newList())
+          case DKEnum(_, _) -> TyUser(
+            id = owners[0],
+            name = typeNameOfId(tbl, owners[0]),
+            args = newList()
+          )
+          case DKRecord(_, _) -> TyUser(
+            id = owners[0],
+            name = typeNameOfId(tbl, owners[0]),
+            args = newList()
+          )
+          case DKUnion(_, _) -> TyUser(
+            id = owners[0],
+            name = typeNameOfId(tbl, owners[0]),
+            args = newList()
+          )
           case _ -> t
         }
         case None -> t
