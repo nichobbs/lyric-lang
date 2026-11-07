@@ -232,6 +232,35 @@ pub func refSite(ctx: in TyConvCtx, node: in Int): Option[RefSite] {
   mapGet(ctx.tbl.refByNode, node)
 }
 
+/// The type the checker recorded for the pattern numbered `node`, as `Ty` (D369).
+pub func patTy(ctx: in TyConvCtx, node: in Int): Result[Ty, String] {
+  match mapGet(ctx.tbl.patTypes, node) {
+    case None -> Err(error = "I0002: the checker recorded no type for pattern node #" + toString(node))
+    case Some(t) -> tyOfType(ctx, t)
+  }
+}
+
+/// The case or record symbol a pattern resolved to (D369).
+pub func patSym(ctx: in TyConvCtx, node: in Int): Option[SymbolId] {
+  mapGet(ctx.tbl.patSymByNode, node)
+}
+
+/// Whether the checker bound this `PBinding` as a local (D369).
+pub func patIsBinding(ctx: in TyConvCtx, node: in Int): Bool {
+  ctx.tbl.patBindingNodes.containsKey(node)
+}
+
+/// The index of the record field `name`, for a `FieldRef` (D369).
+pub func recordFieldPos(ctx: in TyConvCtx, rec: in SymbolId, name: in String): Option[Int] {
+  recordFieldIndex(ctx.tbl, rec, name)
+}
+
+/// Whether the checker proved a `match` covers every value (D369); `None` when
+/// it recorded no verdict.
+pub func matchProved(ctx: in TyConvCtx, node: in Int): Option[Bool] {
+  mapGet(ctx.tbl.matchExhaustive, node)
+}
+
 /// The type the checker recorded for the expression numbered `node`, as `Ty`,
 /// or the I0002 message: no entry (the checker never typed the node) or an
 /// entry with no `Ty`.

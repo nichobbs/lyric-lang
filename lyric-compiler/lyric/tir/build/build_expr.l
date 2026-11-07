@@ -379,7 +379,7 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case ECall(fn, args) -> buildCall(env, e, ty, fn, args)
     case EMember(_, _) -> uncoveredExpr(env, e, "a member access")
     case EIndex(_, _) -> uncoveredExpr(env, e, "an index")
-    case EMatch(_, _) -> uncoveredExpr(env, e, "a match")
+    case EMatch(scrut, arms) -> buildMatch(env, e, ty, scrut, arms)
     case ELambda(_, _) -> uncoveredExpr(env, e, "a lambda")
     case EAssign(_, _, _) -> uncoveredExpr(env, e, "an assignment")
     case ERange(_) -> uncoveredExpr(env, e, "a range")
@@ -389,6 +389,188 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
     case EForall(_, _, _, _) -> uncoveredExpr(env, e, "a quantifier")
     case EExists(_, _, _, _) -> uncoveredExpr(env, e, "a quantifier")
     case EError -> uncoveredExpr(env, e, "an error node")
+  }
+}
+
+func mkPat(p: in Pattern, ty: in Ty, kind: in TPatKind): TPat {
+  TPat(id = NodeId(id = p.nodeId), ty = ty, span = p.span, kind = kind)
+}
+
+func uncoveredPat(env: in BuildEnv, p: in Pattern, what: in String): Option[TPat] {
+  noteUncovered(env, what)
+  env.errors.add(
+    "I0002: the builder has no case for " + what + " at " + toString(p.span.startPos.line) + ":" +
+      toString(p.span.startPos.column)
+  )
+  None
+}
+
+func buildPats(env: in BuildEnv, ps: in List[Pattern]): Option[List[TPat]] {
+  val res: List[TPat] = newList()
+  var ok = true
+  for q in ps {
+    match buildPat(env, q) {
+      case Some(t) -> res.add(t)
+      case None -> {
+        ok = false
+      }
+    }
+  }
+  if ok {
+    Some(value = res)
+  } else {
+    None
+  }
+}
+
+/// Build a pattern, declaring the locals it binds in the innermost scope.
+func buildPat(env: in BuildEnv, p: in Pattern): Option[TPat] {
+  val ty = match patTy(env.ctx, p.nodeId) {
+    case Ok(t) -> t
+    case Err(msg) -> {
+      env.errors.add(msg + " (at " + toString(p.span.startPos.line) + ":" + toString(p.span.startPos.column) + ")")
+      return None
+    }
+  }
+  match p.kind {
+    case PWildcard -> Some(value = mkPat(p, ty, TpWild))
+    case PParen(inner) -> buildPat(env, inner)
+    case PLiteral(l) -> Some(value = mkPat(p, ty, TpLit(lit = litOf(l))))
+    case PTuple(ps) -> match buildPats(env, ps) {
+      case Some(ts) -> Some(value = mkPat(p, ty, TpTuple(elems = ts)))
+      case None -> None
+    }
+    case PBinding(name, inner) -> {
+      if name == "_" {
+        return Some(value = mkPat(p, ty, TpWild))
+      }
+      match patSym(env.ctx, p.nodeId) {
+        case Some(sym) -> {
+          return match inner {
+            case None -> Some(value = mkPat(p, ty, TpCtor(sym = sym, args = newList())))
+            case Some(_) -> uncoveredPat(env, p, "a case name with a sub-pattern")
+          }
+        }
+        case None -> ()
+      }
+      if not patIsBinding(env.ctx, p.nodeId) {
+        return uncoveredPat(env, p, "a bare name the checker did not bind")
+      }
+      var innerPat: Option[TPat] = None
+      match inner {
+        case Some(ip) -> match buildPat(env, ip) {
+          case Some(t) -> {
+            innerPat = Some(value = t)
+          }
+          case None -> return None
+        }
+        case None -> ()
+      }
+      val d = declareLocal(env, name, ty, false)
+      Some(value = mkPat(p, ty, TpBind(decl = d, inner = innerPat)))
+    }
+    case PConstructor(_, args) -> match patSym(env.ctx, p.nodeId) {
+      case Some(sym) -> match buildPats(env, args) {
+        case Some(ts) -> Some(
+          value = mkPat(
+            p,
+            ty,
+            TpCtor(sym = sym, args = ts)
+          )
+        )
+        case None -> None
+      }
+      case None -> uncoveredPat(
+        env,
+        p,
+        "a constructor pattern the checker did not resolve"
+      )
+    }
+    case PRecord(_, fields, _) -> match patSym(env.ctx, p.nodeId) {
+      case Some(sym) -> {
+        val fps: List[TFieldPat] = newList()
+        for f in fields {
+          match f {
+            case RPFNamed(fname, fp, _) -> match recordFieldPos(env.ctx, sym, fname) {
+              case Some(ix) -> match buildPat(env, fp) {
+                case Some(t) -> fps.add(
+                  TFieldPat(
+                    field = FieldRef(
+                      owner = sym,
+                      name = fname,
+                      index = ix
+                    ),
+                    pat = t
+                  )
+                )
+                case None -> return None
+              }
+              case None -> return uncoveredPat(env, p, "a record pattern field the builder cannot place")
+            }
+            case RPFShort(_, _) -> return uncoveredPat(env, p, "a shorthand record pattern field")
+          }
+        }
+        Some(value = mkPat(p, ty, TpRecord(sym = sym, fields = fps)))
+      }
+      case None -> uncoveredPat(env, p, "a record pattern the checker did not resolve")
+    }
+    case PRange(_, _, _, _) -> uncoveredPat(env, p, "a range pattern")
+    case POr(_) -> uncoveredPat(env, p, "an or-pattern")
+    case PTypeTest(_, _) -> uncoveredPat(env, p, "a type-test pattern")
+    case PConstRef(_) -> uncoveredPat(env, p, "a constant pattern")
+    case PError -> uncoveredPat(env, p, "an error pattern")
+  }
+}
+
+func buildMatch(env: in BuildEnv, e: in Expr, ty: in Ty, scrut: in Expr, arms: in List[MatchArm]): Option[TExpr] {
+  val proved = match matchProved(env.ctx, e.nodeId) {
+    case Some(b) -> b
+    case None -> return uncoveredExpr(env, e, "a match the checker recorded no verdict for")
+  }
+  val s = buildExpr(env, scrut)
+  val tarms: List[TArm] = newList()
+  var ok = true
+  for arm in arms {
+    pushScope(env)
+    val pat = buildPat(env, arm.pattern)
+    var guard: Option[TExpr] = None
+    var armOk = true
+    match arm.guard {
+      case Some(g) -> match buildExpr(env, g) {
+        case Some(t) -> {
+          guard = Some(value = t)
+        }
+        case None -> {
+          armOk = false
+        }
+      }
+      case None -> ()
+    }
+    val body = buildOrBlock(env, arm.body, ty)
+    popScope(env)
+    match pat {
+      case Some(tp) -> match body {
+        case Some(tb) -> if armOk {
+          tarms.add(TArm(pat = tp, guard = guard, body = tb))
+        } else {
+          ok = false
+        }
+        case None -> {
+          ok = false
+        }
+      }
+      case None -> {
+        ok = false
+      }
+    }
+  }
+  match s {
+    case Some(st) -> if ok {
+      Some(value = mkExpr(e, ty, XMatch(scrutinee = st, arms = tarms, exhaustive = proved)))
+    } else {
+      None
+    }
+    case None -> None
   }
 }
 
