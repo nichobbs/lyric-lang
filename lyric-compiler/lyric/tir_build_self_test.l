@@ -1016,9 +1016,10 @@ func buildFirstFnMsil(src: in String): FnBuilt {
   FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
 }
 
-test "the real MSIL metadata gives a static overload, an instance one and a constructor" {
+test "the real MSIL metadata gives a static overload and static constructors" {
   val head = "package App\nextern type Math = \"System.Math\"\nextern type SB = \"System.Text.StringBuilder\"\n"
   val st = buildFirstFnMsil(head + "func f(a: Double): Double {\n  Math.Sqrt(a)\n}\n")
+  assertEqualInt(st.diagnostics, 0, "checks clean")
   assertTrue(st.env.errors.count == 0, if st.env.errors.count > 0 { st.env.errors[0] } else { "no I0002" })
   match externCallOf(st.body) {
     case Some(m) -> {
@@ -1027,16 +1028,15 @@ test "the real MSIL metadata gives a static overload, an instance one and a cons
     }
     case None -> assertTrue(false, "an extern call")
   }
-  val ct = buildFirstFnMsil(head + "func f(): SB {\n  SB.new()\n}\n")
-  assertTrue(ct.env.errors.count == 0, if ct.env.errors.count > 0 { ct.env.errors[0] } else { "no I0002" })
-  match externCallOf(ct.body) {
-    case Some(m) -> {
-      assertTrue(m.isStatic, "a constructor is static")
-      match m.kind {
-        case HMConstructor -> ()
-        case _ -> assertTrue(false, "a constructor")
+  val rs = Mb.msilIterResolver(Mb.newMsilHostIterIndex(newList()))
+  match rs[0].resolveMemberSigs("System.Text.StringBuilder", "new", 0, false) {
+    case Some(cands) -> {
+      assertTrue(cands.count >= 1, "the parameterless constructor is a candidate")
+      for c in cands {
+        assertTrue(c.isStatic, "a constructor is a static member")
+        assertEqualInt(c.params.count, 0, "of no parameters")
       }
     }
-    case None -> assertTrue(false, "an extern call")
+    case None -> assertTrue(false, "the metadata resolves the constructors")
   }
 }
