@@ -730,10 +730,7 @@ test "an array field is counted as defaulted, not missing, when left out" {
 func callArgCount(b: in Option[TExpr]): Int {
   match b {
     case Some(body) -> match body.kind {
-      case XBlock(_, Some(t)) -> match t.kind {
-        case XCall(_, args) -> args.count
-        case _ -> -1
-      }
+      case XBlock(_, Some(t)) -> match t.kind { case XCall(_, args) -> args.count; case _ -> -1 }
       case _ -> -2
     }
     case None -> -3
@@ -741,28 +738,36 @@ func callArgCount(b: in Option[TExpr]): Int {
 }
 
 test "a method declared in a record body builds with the receiver first" {
-  val r = buildFirstFn("package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n")
+  val r = buildFirstFn(
+    "package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n"
+  )
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
 }
 
 test "a dot-named function called as a method builds with the receiver first" {
-  val r = buildFirstFn("package App\nrecord P { x: Int }\nfunc P.plus(self: in P, n: Int): Int { self.x + n }\nfunc f(p: P): Int {\n  p.plus(2)\n}\n")
+  val r = buildFirstFn(
+    "package App\nrecord P { x: Int }\nfunc f(p: P): Int {\n  p.plus(2)\n}\nfunc P.plus(self: in P, n: Int): Int { self.x + n }\n"
+  )
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
 }
 
 test "a method called on an interface value builds as an interface call" {
-  val r = buildFirstFn("package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n")
+  val r = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n"
+  )
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
 }
 
 test "a method with a mutating receiver is counted, not built as an in argument" {
-  val r = buildFirstFn("package App\nrecord C {\n  var n: Int\n  func bump(self: inout C): Unit { self.n = self.n + 1 }\n}\nfunc f(c: inout C): Unit {\n  c.bump()\n}\n")
+  val r = buildFirstFn(
+    "package App\nrecord C {\n  var n: Int\n  func bump(self: inout C): Unit { self.n = self.n + 1 }\n}\nfunc f(c: inout C): Unit {\n  c.bump()\n}\n"
+  )
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a method call with a mutating receiver"), 1, "counted")
 }

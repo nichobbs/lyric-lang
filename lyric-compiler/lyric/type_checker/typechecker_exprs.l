@@ -5586,12 +5586,7 @@ func recordMethodCallSite(tbl: in SymbolTable, callNode: in Int, mp: in MethodCa
         return
       }
       match symbolOfDefId(tbl, id) {
-        case Some(s) -> match s.kind {
-          case DKInterface(_, _) -> {
-            iface = Some(value = id)
-          }
-          case _ -> ()
-        }
+        case Some(s) -> match s.kind { case DKInterface(_, _) -> { iface = Some(value = id) }; case _ -> () }
         case None -> ()
       }
     }

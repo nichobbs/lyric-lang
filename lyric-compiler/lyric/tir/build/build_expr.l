@@ -1299,18 +1299,9 @@ func buildMethodCall(
       return None
     }
   }
-  val rt = match buildExpr(env, recvExpr) {
-    case Some(t) -> t
-    case None -> return None
-  }
-  val recv = match coerceArg(env, rt, declared) {
-    case Some(c) -> c
-    case None -> return None
-  }
-  val rest = match buildCallArgs(env, e, site.sig, args) {
-    case Some(a) -> a
-    case None -> return None
-  }
+  val rt = match buildExpr(env, recvExpr) { case Some(t) -> t; case None -> return None }
+  val recv = match coerceArg(env, rt, declared) { case Some(c) -> c; case None -> return None }
+  val rest = match buildCallArgs(env, e, site.sig, args) { case Some(a) -> a; case None -> return None }
   val all: List[TArg] = newList()
   all.add(TArgIn(value = recv))
   for a in rest {
