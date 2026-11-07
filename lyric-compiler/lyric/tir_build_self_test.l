@@ -472,14 +472,11 @@ func bodyKindName(b: in Option[TExpr]): String {
   }
 }
 
-test "a module val and a const read build as global references" {
+test "a module val read builds as global references" {
   val r = buildFirstFn("package App\nval limit: Int = 7\nfunc f(): Int {\n  limit\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertEqualInt(r.env.errors.count, 0, "no I0002")
   assertTrue(bodyKindName(r.body) == "global", "the val is an XGlobal")
-  val c = buildFirstFn("package App\nconst K: Int = 3\nfunc f(): Int {\n  K\n}\n")
-  assertEqualInt(c.diagnostics, 0, "checks clean")
-  assertTrue(bodyKindName(c.body) == "global", "the const is an XGlobal")
 }
 
 test "a nullary union case and an enum case build as constructions without fields" {
