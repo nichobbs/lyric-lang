@@ -24,8 +24,9 @@ the JVM, where `accesskit_rect` does not resolve (T0010).
    hunts. Any other non-zero exit is unchecked, whatever the error class and even
    when it prints no code (a malformed dependency manifest, a timeout); only the
    exact diagnostic `error[I0001]` is a site. A build with a tracked cause is listed
-   in `KNOWN_UNCHECKED` as "manifest|target|issue|code" (known only while that code is the only coded error and the build did not time out) and reported separately without
-   failing. The sites are printed before the unchecked builds.
+   in `KNOWN_UNCHECKED` as "manifest|target|issue|code" (known only while that
+   code is the only coded error and the build did not time out) and reported
+   separately without failing. The sites are printed before the unchecked builds.
 3. A build that stops because a local dependency is not built yet is retried once
    the dependency exists, as one that fails to load a restored one already was (the
    first run of the strict census flagged `lyric-access` and `lyric-unicode-dict`
