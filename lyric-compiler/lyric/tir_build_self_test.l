@@ -220,6 +220,7 @@ record FnBuilt {
   env: BuildEnv
   body: Option[TExpr]
   diagnostics: Int
+  symbols: SymbolTable
 }
 
 func buildFirstFn(src: in String): FnBuilt {
@@ -234,7 +235,7 @@ func buildFirstFn(src: in String): FnBuilt {
       case _ -> ()
     }
   }
-  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count)
+  FnBuilt(env = env, body = body, diagnostics = cr.diagnostics.count, symbols = cr.symbols)
 }
 
 test "a function over locals and primitive operators builds" {
@@ -456,4 +457,86 @@ test "a refined argument to a built-in the builder cannot check is counted, not 
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
+}
+
+func bodyKindName(b: in Option[TExpr]): String {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XGlobal(_, _) -> "global"
+        case XConstruct(_, fs) -> "construct" + toString(fs.count)
+        case _ -> "other"
+      }
+      case _ -> "block"
+    }
+    case None -> "none"
+  }
+}
+
+test "a module val read builds as global references" {
+  val r = buildFirstFn("package App\nval limit: Int = 7\nfunc f(): Int {\n  limit\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "global", "the val is an XGlobal")
+}
+
+test "a nullary union case and an enum case build as constructions without fields" {
+  val u = buildFirstFn("package App\nunion U {\n  case A\n  case B(n: Int)\n}\nfunc f(): U {\n  A\n}\n")
+  assertEqualInt(u.diagnostics, 0, "checks clean")
+  assertEqualInt(u.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(u.body) == "construct0", "the nullary case is an XConstruct with no fields")
+  val e = buildFirstFn("package App\nenum Color { case Red; case Green }\nfunc f(): Color {\n  Red\n}\n")
+  assertEqualInt(e.diagnostics, 0, "checks clean")
+  assertTrue(bodyKindName(e.body) == "construct0", "the enum case too")
+}
+
+test "a case with a payload used as a name stays uncovered" {
+  val r = buildFirstFn("package App\nunion U {\n  case A\n  case B(n: Int)\n}\nfunc f(): U {\n  val g = B\n  A\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
+}
+
+test "a non-generic function used as a value builds as a global reference" {
+  val r = buildFirstFn("package App\nfunc f(): (Int) -> Int {\n  inc\n}\nfunc inc(x: Int): Int { x + 1 }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "global", "the function value is an XGlobal")
+}
+
+func firstGlobalOrConstruct(b: in Option[TExpr]): Option[SymbolId] {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XConstruct(sym, _) -> Some(value = sym)
+        case XGlobal(sym, _) -> Some(value = sym)
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+test "a bare case two unions share builds as the case of the expected union" {
+  val r = buildFirstFn(
+    "package App\nunion Left {\n  case Idle\n}\nunion Right {\n  case Idle\n}\nfunc f(): Left {\n  Idle\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "construct0", "an XConstruct")
+  var named = ""
+  match firstGlobalOrConstruct(r.body) {
+    case Some(sym) -> match defPathKeyOf(r.symbols.interner, sym) { case Some(k) -> { named = k }; case None -> () }
+    case None -> ()
+  }
+  assertTrue(named == "App::Left::Idle", "the case of Left, not Right")
+}
+
+test "a generic nullary case whose type argument is unsolved is counted, not guessed" {
+  val r = buildFirstFn(
+    "package App\nunion Maybe[T] {\n  case Nothing\n  case Just(v: T)\n}\nfunc f(): Maybe[Int] {\n  Nothing\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
 }

@@ -267,6 +267,13 @@ pub func buildExpr(env: in BuildEnv, e: in Expr): Option[TExpr] {
           case None -> ()
         }
       }
+      match refSite(env.ctx, e.nodeId) {
+        case Some(r) -> match r.kind {
+          case RkNullaryCase -> return Some(value = mkExpr(e, ty, XConstruct(sym = r.sym, fields = newList())))
+          case _ -> return Some(value = mkExpr(e, ty, XGlobal(sym = r.sym, typeArgs = newList())))
+        }
+        case None -> ()
+      }
       uncoveredExpr(env, e, "a name that is not a local")
     }
     case EAwait(inner) -> match buildExpr(env, inner) {

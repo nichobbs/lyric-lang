@@ -227,6 +227,11 @@ pub func tyOfType(ctx: in TyConvCtx, t: in Type): Result[Ty, String] {
   }
 }
 
+/// The declaration a name expression that is not a local resolved to (D368).
+pub func refSite(ctx: in TyConvCtx, node: in Int): Option[RefSite] {
+  mapGet(ctx.tbl.refByNode, node)
+}
+
 /// The type the checker recorded for the expression numbered `node`, as `Ty`,
 /// or the I0002 message: no entry (the checker never typed the node) or an
 /// entry with no `Ty`.

@@ -388,6 +388,26 @@ pub record ExternCallSite {
   argCount: Int
 }
 
+/// What a name that is not a local resolved to (`SymbolTable.refByNode`, docs/70
+/// §6.3, D368).
+pub union RefKind {
+  /// A non-generic function used as a value.
+  case RkFunc
+  /// A module-level `val` or `const`.
+  case RkValue
+  /// A union or enum case with no payload.
+  case RkNullaryCase
+}
+
+/// The declaration a bare or package-qualified name resolved to, keyed by the
+/// name expression's `NodeId`: its `SymbolId` (the DefPath the resolver interns,
+/// docs/70 §4.2) and what kind of declaration it is.  `Lyric.Tir.Build` makes
+/// `XGlobal` of a value or function and `XConstruct` of a nullary case.
+pub record RefSite {
+  sym: SymbolId
+  kind: RefKind
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -549,6 +569,9 @@ pub record SymbolTable {
   callSigByNode: Map[Int, ResolvedSignature]
   /// The member of an `extern type` each call resolved to (D365).
   externByNode: Map[Int, ExternCallSite]
+  /// The declaration each name expression that is not a local resolved to,
+  /// keyed by its `NodeId` (D368).
+  refByNode: Map[Int, RefSite]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -1156,6 +1179,7 @@ pub func newSymbolTable(): SymbolTable {
     indirectByNode = newMap(),
     callSigByNode = newMap(),
     externByNode = newMap(),
+    refByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
