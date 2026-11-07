@@ -117,6 +117,11 @@ func uncoveredExpr(env: in BuildEnv, e: in Expr, what: in String): Option[TExpr]
   None
 }
 
+func uncoveredArgs(env: in BuildEnv, e: in Expr, what: in String): Option[List[TArg]] {
+  val _ = uncoveredExpr(env, e, what)
+  None
+}
+
 func mkExpr(e: in Expr, ty: in Ty, kind: in TExprKind): TExpr {
   TExpr(id = NodeId(id = e.nodeId), ty = ty, span = e.span, kind = kind)
 }
@@ -947,6 +952,13 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
     }
     case None -> ()
   }
+  match mapGet(tbl.ctorSigByNode, e.nodeId) {
+    case Some(sig) -> match mapGet(tbl.calleeByNode, e.nodeId) {
+      case Some(sym) -> return buildConstructCall(env, e, ty, sym, sig, args)
+      case None -> ()
+    }
+    case None -> ()
+  }
   if tbl.externByNode.containsKey(e.nodeId) {
     return uncoveredExpr(env, e, "an extern call")
   }
@@ -1243,6 +1255,42 @@ func buildDirectCall(
   if sig.generics.count > 0 {
     return uncoveredExpr(env, e, "a generic call")
   }
+  match buildCallArgs(env, e, sig, args) {
+    case Some(targs) -> Some(
+      value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs))
+    )
+    case None -> None
+  }
+}
+
+/// A record or union-case construction: the fields in declaration order, placed and
+/// converted as a call's arguments are.  A field left to its default is counted.
+func buildConstructCall(
+  env: in BuildEnv,
+  e: in Expr,
+  ty: in Ty,
+  sym: in SymbolId,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+): Option[TExpr] {
+  match buildCallArgs(env, e, sig, args) {
+    case Some(targs) -> {
+      val fields: List[TExpr] = newList()
+      for a in targs {
+        match a {
+          case TArgIn(v) -> fields.add(v)
+          case _ -> return uncoveredExpr(env, e, "a construction field passed by reference")
+        }
+      }
+      Some(value = mkExpr(e, ty, XConstruct(sym = sym, fields = fields)))
+    }
+    case None -> None
+  }
+}
+
+/// The arguments of a call placed by parameter, in parameter order, each built and
+/// converted to its parameter's type; `None` after counting why not.
+func buildCallArgs(env: in BuildEnv, e: in Expr, sig: in ResolvedSignature, args: in List[CallArg]): Option[List[TArg]] {
   val slots: List[Option[Expr]] = newList()
   val srcIdx: List[Int] = newList()
   var pi = 0
@@ -1257,13 +1305,13 @@ func buildDirectCall(
       case CANamed(name, x, _) -> match paramIndex(sig, name) {
         case Some(ix) -> {
           match slots[ix] {
-            case Some(_) -> return uncoveredExpr(env, e, "a call naming one parameter twice")
+            case Some(_) -> return uncoveredArgs(env, e, "a call naming one parameter twice")
             case None -> ()
           }
           slots[ix] = Some(value = x)
           srcIdx[ix] = si
         }
-        case None -> return uncoveredExpr(env, e, "a call with an unknown named argument")
+        case None -> return uncoveredArgs(env, e, "a call with an unknown named argument")
       }
       case CAPositional(_) -> ()
     }
@@ -1278,7 +1326,7 @@ func buildDirectCall(
           nextFree = nextFree + 1
         }
         if nextFree >= slots.count {
-          return uncoveredExpr(env, e, "a call with extra arguments")
+          return uncoveredArgs(env, e, "a call with extra arguments")
         }
         slots[nextFree] = Some(value = x)
         srcIdx[nextFree] = si
@@ -1304,7 +1352,7 @@ func buildDirectCall(
     for sl in slots {
       match sl {
         case Some(x) -> if not isPlainArg(x) {
-          return uncoveredExpr(env, e, "a call whose named arguments reorder effects")
+          return uncoveredArgs(env, e, "a call whose named arguments reorder effects")
         }
         case None -> ()
       }
@@ -1358,5 +1406,5 @@ func buildDirectCall(
     )
     return None
   }
-  Some(value = mkExpr(e, ty, XCall(callee = Direct(sym = sym, typeArgs = newList()), args = targs)))
+  Some(value = targs)
 }

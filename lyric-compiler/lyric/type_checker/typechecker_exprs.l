@@ -5138,6 +5138,94 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
   }
 }
 
+// Record the fields of a non-generic record or union-case construction as a
+// signature under the call's `NodeId` (`ctorSigByNode`, D388), so the builder
+// places the arguments by field as it does for a function's parameters.
+func recordCtorSigNode(tbl: in SymbolTable, node: in Int, sym: in Symbol, resultTy: in Type): Unit {
+  if node <= 0 {
+    return
+  }
+  val closed = match unrefine(resultTy) { case TyUser(_, _, a) -> a.count == 0; case _ -> false }
+  if not closed {
+    return
+  }
+  val params: List[ResolvedParam] = newList()
+  match sym.kind {
+    case DKRecord(id, rd) -> {
+      if rd.generics.isSome() {
+        return
+      }
+      val fes = fieldsOfRecord(tbl, id)
+      var k = 0
+      for m in rd.members {
+        match m {
+          case RMField(fd) -> {
+            if k >= fes.count {
+              return
+            }
+            params.add(
+              ResolvedParam(
+                name = fd.name,
+                ty = fes[k].ty,
+                mode = PMIn,
+                hasDefault = fd.dflt.isSome() or fieldHasZeroDefault(tbl, fes[k].ty, fd.span),
+                span = fd.span
+              )
+            )
+            k = k + 1
+          }
+          case _ -> ()
+        }
+      }
+    }
+    case DKUnionCase(_, uc) -> {
+      val scratch: List[Diagnostic] = newList()
+      val ftypes = caseFieldTypesInstantiated(tbl, scratch, sym, resultTy)
+      if ftypes.count != uc.fields.count {
+        return
+      }
+      var k = 0
+      for f in uc.fields {
+        match f {
+          case UFNamed(n, _, sp) -> params.add(
+            ResolvedParam(name = n, ty = ftypes[k], mode = PMIn, hasDefault = false, span = sp)
+          )
+          case UFPos(_, sp) -> params.add(
+            ResolvedParam(
+              name = "#" + toString(k),
+              ty = ftypes[k],
+              mode = PMIn,
+              hasDefault = false,
+              span = sp
+            )
+          )
+        }
+        k = k + 1
+      }
+    }
+    case _ -> return
+  }
+  val sig = ResolvedSignature(
+    generics = newList(),
+    bounds = newList(),
+    params = params,
+    returnTy = resultTy,
+    isAsync = false,
+    isHot = false,
+    isGenerator = false,
+    originPackage = sym.originPackage,
+    span = sym.declSpan,
+    isPure = false,
+    isIo = false,
+    isEntry = false,
+    isExternFunc = false
+  )
+  if tbl.ctorSigByNode.containsKey(node) {
+    tbl.ctorSigByNode.remove(node)
+  }
+  tbl.ctorSigByNode.add(node, sig)
+}
+
 // Record the declaration a name expression that is not a local resolved to,
 // under the expression's `NodeId` (`refByNode`, D368): a module-level `val` or
 // `const`, or a union or enum case with no payload.  A case with a payload is
@@ -19874,6 +19962,7 @@ func inferExprCore(
             noteBareCalleeSym(tbl, fn, caseSym)
             recordCtorCalleeNode(tbl, e.nodeId, caseSym)
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
+            recordCtorSigNode(tbl, e.nodeId, caseSym, caseTy)
             noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, args, argTypes, caseTy, e.span)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
@@ -19885,6 +19974,7 @@ func inferExprCore(
               noteBareCalleeSym(tbl, fn, ctorSym)
               recordCtorCalleeNode(tbl, e.nodeId, ctorSym)
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
+              recordCtorSigNode(tbl, e.nodeId, ctorSym, ctorTy)
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
               recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
@@ -21611,6 +21701,7 @@ func inferCaseCtorExpected(
     inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, span, true),
     expected
   )
+  recordCtorSigNode(tbl, callNode, caseSym, caseTy)
   noteUnsolvedCaseCtor(sc, tbl, fn, caseSym, cargs, cargTypes, caseTy, span)
   recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
   caseTy
