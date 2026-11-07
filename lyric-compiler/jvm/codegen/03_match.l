@@ -908,7 +908,10 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
                         case Some(ssig) -> ssig.retGenericArgs
                         case None -> match mapGet(ctx.funcSigs, ctx.pkgName + "::" + dotKey) {
                           case Some(ssig) -> ssig.retGenericArgs
-                          case None -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, dotKey))
+                          case None -> match typeOwnerDotNamedSigJvm(ctx, lastSegment(p), memberName, resolvedArityJvm(ctx, methodCallSiteKey(fn), callArgs.count)) {
+                            case Some(tsig) -> tsig.retGenericArgs
+                            case None -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, dotKey))
+                          }
                         }
                       }
                     }

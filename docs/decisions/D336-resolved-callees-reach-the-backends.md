@@ -130,8 +130,8 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    from the checker's sites (`qualifyCheckedCallees`, #8850). A plain function
    has no bundle-wide bare key any more: `closureInvokeRetType` and
    `funcSigRetType` read its signature through `resolveGeneralFuncSig` too. A
-   dot-named function (`Type.member`) keeps its bare dotted key for the
-   member-call lookups, and the package overlay (`importAwareRegistry`) now
+   dot-named function (`Type.member`) kept its bare dotted key for the
+   member-call lookups until item 10, and the package overlay (`importAwareRegistry`) now
    re-points enum cases and module vals only. The `println`/`print` and
    collection-intrinsic override check (`hasFuncOverrideJvm`) uses the same
    exact stage: a `Std.*` result never overrides an intrinsic, so a user
@@ -172,7 +172,13 @@ docs/70 §13 (2d) asks for the callee `SymbolId` per call through the existing
    decides whether a `var` argument gets a heap cell (never which function a
    call binds) and runs before any call is resolved. Verified by the 132
    `compiler-self-tests-jvm` files that run outside CI's environment (the
-   `LYRIC_FFI_JARS` and `config_block` environment variables aside) and
+   A call whose callee has no recorded site (a dependency package
+   compiled without one, a default lowered in another package) binds through
+   the file's import-scoped type map (`typeOwnerDotNamedSigJvm`: `externTypes[Type]`
+   names the declaring package), never a bundle-wide name; `qualifyCheckedCallees`
+   (shared by both backends) writes a dot-named callee of a default as
+   `Pkg.Type.f` the way it writes a bare one, and leaves a call on a local
+   (`w.f(x)`) alone because only a `Type` receiver has a site. `LYRIC_FFI_JARS` and `config_block` environment variables aside) and
    `multi-file-package-merge-e2e.sh dotnet jvm`.
 
 ## Consequences

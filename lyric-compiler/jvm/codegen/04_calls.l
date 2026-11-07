@@ -4485,20 +4485,10 @@ func siteFuncSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath, a
   None
 }
 
-// The signature of the dot-named function (`Type.member`) the checker resolved
-// the call at `siteKey` to (`~callee~<site key>`, a rendered
-// `Pkg::Type.member(P1,P2)`), found under the declaring package's qualified
-// key (D336).  `argc` is the parameter count the call binds.
-func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String, argc: in Int): Option[JvmFuncSig] {
-  val dp = match mapGet(ctx.externTypes, "~callee~" + siteKey) { case Some(d) -> d; case None -> return None }
-  val sep = match dp.indexOf("::") { case Some(i) -> i; case None -> return None }
-  val pkg = dp.substring(0, sep)
-  val rest = dp.substring(sep + 2, dp.length - sep - 2)
-  val name = match rest.indexOf("(") { case Some(j) -> rest.substring(0, j); case None -> rest }
-  if name != dotName {
-    return None
-  }
-  val owner = pkg.replace(".", "/")
+// The signature registered for the dot-named function `dotName` of the package
+// `owner` (a `/`-separated path): its qualified key, then its package-scoped
+// one, each with the exact parameter count before without.
+func dotNamedSigOfOwnerJvm(ctx: in FuncCtx, owner: in String, dotName: in String, argc: in Int): Option[JvmFuncSig] {
   val argcSuffix = "@" + toString(argc)
   val keys: List[String] = newList()
   keys.add(owner + "/" + dotName)
@@ -4514,6 +4504,23 @@ func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String,
     }
   }
   None
+}
+
+// The signature of the dot-named function (`Type.member`) the checker resolved
+// the call at `siteKey` to (`~callee~<site key>`, a rendered
+// `Pkg::Type.member(P1,P2)`), found under the declaring package's qualified
+// key (D336).  `argc` is the parameter count the call binds.
+func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String, argc: in Int): Option[JvmFuncSig] {
+  val dp = match mapGet(ctx.externTypes, "~callee~" + siteKey) { case Some(d) -> d; case None -> return None }
+  val sep = match dp.indexOf("::") { case Some(i) -> i; case None -> return None }
+  val pkg = dp.substring(0, sep)
+  val rest = dp.substring(sep + 2, dp.length - sep - 2)
+  val name = match rest.indexOf("(") { case Some(j) -> rest.substring(0, j); case None -> rest }
+  if name != dotName {
+    return None
+  }
+  val owner = pkg.replace(".", "/")
+  dotNamedSigOfOwnerJvm(ctx, owner, dotName, argc)
 }
 
 // The dot-named function `Type.member` of the package that declares `Type`, as
@@ -4532,21 +4539,7 @@ func typeOwnerDotNamedSigJvm(
   }
   val owner = fqn.substring(0, cut).replace(".", "/")
   val dotName = typeName + "." + memberName
-  val argcSuffix = "@" + toString(argc)
-  val keys: List[String] = newList()
-  keys.add(owner + "/" + dotName)
-  keys.add(owner + "::" + dotName)
-  for k in keys {
-    match mapGet(ctx.funcSigs, k + argcSuffix) {
-      case Some(sig) -> return Some(value = sig)
-      case None -> ()
-    }
-    match mapGet(ctx.funcSigs, k) {
-      case Some(sig) -> return Some(value = sig)
-      case None -> ()
-    }
-  }
-  None
+  dotNamedSigOfOwnerJvm(ctx, owner, dotName, argc)
 }
 
 // The parameter count a call binds: the overload the type checker resolved it

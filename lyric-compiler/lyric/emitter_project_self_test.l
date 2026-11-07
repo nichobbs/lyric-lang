@@ -3492,6 +3492,54 @@ test "emitProject a default calling a dot-named function only its declaring pack
   assertEqual(Str.trim(result.stdout), "8", "dot-named default MSIL: output")
 }
 
+// Two packages declare a type named `Seed` with a dot-named `Seed.base()`; the
+// app imports only the second, so `Seed.base()` and a match on its result bind
+// to that package's function and payload type, not the first's (#8869).
+func dotNamedCollisionPkgs(): List[Emitter.ProjectPackage] {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.One",
+      "package EPDc.One\n" + "\n" + "pub record Seed {\n" + "  pub n: Int\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Option[Int] {\n" +
+        "  Some(value = 1)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.Two",
+      "package EPDc.Two\n" + "\n" + "pub record Seed {\n" + "  pub s: String\n" + "}\n" + "\n" +
+        "pub func Seed.base(): Option[String] {\n" +
+        "  Some(value = \"two\")\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    mkProjectPkg(
+      "EPDc.App",
+      "package EPDc.App\n" + "\n" + "import EPDc.Two\n" + "\n" + "func main(): Unit {\n" + "  match Seed.base() {\n" +
+        "    case Some(s) -> println(s)\n" +
+        "    case None -> println(\"none\")\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs
+}
+
+test "emitProject a dot-named call binds to the imported package's same-named type (JVM)" {
+  val result = runEmitProjectJvmOpts("emitproj-dotcoll-jvm", dotNamedCollisionPkgs(), "EPDc")
+  assertEqualInt(result.exitCode, 0, "dot-named collision JVM: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "two", "dot-named collision JVM: output")
+}
+
+test "emitProject a dot-named call binds to the imported package's same-named type (MSIL)" {
+  val result = runEmitProject("emitproj-dotcoll", dotNamedCollisionPkgs(), "EPDc")
+  assertEqualInt(result.exitCode, 0, "dot-named collision MSIL: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "two", "dot-named collision MSIL: output")
+}
+
 func chainedImportedCallPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
