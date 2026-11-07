@@ -2457,9 +2457,21 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
   val inner = match fnExpr.kind { case ETypeApp(f, _) -> f; case _ -> fnExpr }
   val siteKey = match inner.kind { case EPath(p) -> recordCopySiteKey(p.span); case _ -> methodCallSiteKey(inner) }
   val originKey = if ctx.curOrigin.count > 0 { ctx.curOrigin[0] + "|" } else { "" }
+  // A dot-named callee (`Type.member`) written as a path is recorded under its
+  // span with the member name when the checker saw a member expression.
+  val dotCut = Str.lastIndexOfRaw(key, ".")
+  val slashAt = Str.lastIndexOfRaw(key, "/")
+  val memberSiteKey = if dotCut >= 0 and slashAt > dotCut {
+    siteKey + ":" + Str.substring(key, dotCut + 1, slashAt - dotCut - 1)
+  } else {
+    siteKey
+  }
   val dp = match mapGet(ctx.calleeSites, ctx.curPkg[0] + "|" + originKey + siteKey) {
     case Some(d) -> d
-    case None -> return None
+    case None -> match mapGet(ctx.calleeSites, ctx.curPkg[0] + "|" + originKey + memberSiteKey) {
+      case Some(d) -> d
+      case None -> return None
+    }
   }
   val sep = match Str.indexOf(dp, "::") { case Some(i) -> i; case None -> return None }
   val pkg = Str.substring(dp, 0, sep)
@@ -2475,9 +2487,17 @@ func sitedSig(ctx: in Ctx, fnExpr: in Expr, key: in String): Option[NFuncSig] {
   // another package is lowered in the caller's context with its own source
   // offsets, which can match an unrelated caller entry: that entry's package
   // fails this check and the name lookups answer instead.
-  val sig = match mapGet(ctx.sigs, pkg + "." + name + Str.substring(key, slash, key.length - slash)) {
+  // The declaration the site names has its own parameter count, which the
+  // arguments written do not give when two overloads both take them (#8880).
+  val declared = if Str.contains(name, ".") { defPathParamCount(rest) } else { -1 }
+  val written0 = Str.substring(key, slash, key.length - slash)
+  val declaredSig = if declared >= 0 { mapGet(ctx.sigs, pkg + "." + name + "/" + toString(declared)) } else { None }
+  val sig = match declaredSig {
     case Some(sg) -> sg
-    case None -> return None
+    case None -> match mapGet(ctx.sigs, pkg + "." + name + written0) {
+      case Some(sg) -> sg
+      case None -> return None
+    }
   }
   if written == name {
     if sig.pkg != ctx.curPkg[0] and not bareNameVisible(ctx, sig) and not importClosureHas(ctx, sig.pkg) {

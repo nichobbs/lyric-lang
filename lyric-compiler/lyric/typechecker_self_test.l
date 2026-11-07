@@ -15668,3 +15668,12 @@ test "a type the host cannot locate leaves an extern assignment unchecked" {
     "no verdict from the host means no diagnostic"
   )
 }
+
+test "dot-named overloads that both take the arguments by count are chosen by their types (#8880)" {
+  val decls = "package P\nrecord Seed { n: Int }\n" + "func Seed.base(x: in String, y: in Int = 0): Int { 100 + y }\n" +
+    "func Seed.base(x: in Int, y: in Int = 0, z: in Int = 0): Int { x + y + z }\n"
+  val ok = parseCheck(decls + "func main(): Int { Seed.base(1) }\nfunc other(): Int { Seed.base(\"a\", 5) }\n")
+  assertEqualInt(errorCount(ok), 0, "each call finds the overload its arguments fit")
+  val bad = parseCheck(decls + "func main(): Int { Seed.base(true) }\n")
+  assertTrue(hasDiagCode(bad, "T0043"), "a call no overload accepts is still reported against the first by count")
+}

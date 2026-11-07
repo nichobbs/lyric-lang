@@ -4524,7 +4524,31 @@ func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String,
     return None
   }
   val owner = pkg.replace(".", "/")
-  dotNamedSigOfOwnerJvm(ctx, owner, dotName, argc)
+  // The declaration the checker picked has its own parameter count, which two
+  // overloads that both take the call's arguments (one defaulting more) do not
+  // share (#8880).
+  dotNamedSigOfOwnerJvm(ctx, owner, dotName, if defPathParamCount(rest) >= 0 { defPathParamCount(rest) } else { argc })
+}
+
+// The signature of the dot-named function (`Type.member`) the checker resolved
+// a call lowered as the static call `funcName` through `path` to, found by the
+// declaration's own parameter count (#8880); `None` for any other call.  The
+// checker records the call under its callee's span, with the member name when
+// the callee was a member expression.
+func siteDotNamedPathSigJvm(ctx: in FuncCtx, funcName: in String, path: in ModulePath): Option[JvmFuncSig] {
+  val dotted = if funcName.contains(".") {
+    funcName
+  } else if path.segments.count == 2 {
+    path.segments[0] + "." + path.segments[1]
+  } else {
+    return None
+  }
+  val cut = lastIndexOfRaw(dotted, ".")
+  val member = if cut >= 0 { dotted.substring(cut + 1, dotted.length - cut - 1) } else { dotted }
+  match siteDotNamedSigJvm(ctx, recordCopySiteKey(path.span), dotted, 0) {
+    case Some(sig) -> Some(value = sig)
+    case None -> siteDotNamedSigJvm(ctx, recordCopySiteKey(path.span) + ":" + member, dotted, 0)
+  }
 }
 
 // The dot-named function `Type.member` of the package that declares `Type`, as
@@ -4565,6 +4589,10 @@ func resolveGeneralFuncSigExact(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
   match siteFuncSigJvm(ctx, funcName, path, argc) {
+    case Some(sig) -> return Some(value = sig)
+    case None -> ()
+  }
+  match siteDotNamedPathSigJvm(ctx, funcName, path) {
     case Some(sig) -> return Some(value = sig)
     case None -> ()
   }
