@@ -16,7 +16,9 @@
 # build is listed as UNCHECKED, never counted as clean.  A build that fails
 # loading a library dependency that is built later in the run is retried once
 # the dependency exists.  A build that fails after checking (a missing JVM
-# jar, a link step) still counts: its I0001 lines were printed first.
+# jar, a link step) still counts: its I0001 lines were printed first.  An
+# UNCHECKED build fails the run (D386): a manifest the census cannot judge
+# is a hole in it, so it is fixed or listed as native-only, not tolerated.
 #
 # Libraries written for `--target native` build only there; the rest build on
 # dotnet and the JVM.
@@ -31,7 +33,7 @@ shift || true
 OVERRIDE_TARGETS=("$@")
 
 NATIVE_ONLY=(
-  lyric-draw lyric-gpu lyric-gpu-window lyric-text lyric-window
+  lyric-access/platform lyric-draw lyric-gpu lyric-gpu-window lyric-text lyric-window
   lyric-game/platform lyric-ui/native/host
 )
 
@@ -85,8 +87,10 @@ for phase in dotnet jvm native; do
         continue
       fi
       grep 'I0001' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
-      if grep -qE 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log"; then
-        reason="$(grep -m1 -E 'restored dep .* failed to load|error\[(T|P|L)[0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
+      # Any error that is not I0001 (the site itself) stopped the build before
+      # the checker finished: the manifest is unchecked, not clean.
+      if grep -qE 'restored dep .* failed to load|error\[[A-HJ-Z][0-9]+\]' "$log"; then
+        reason="$(grep -m1 -E 'restored dep .* failed to load|error\[[A-HJ-Z][0-9]+\]' "$log" | sed "s|$REPO_ROOT/||" | cut -c1-160)"
         echo "$manifest ($target): $reason" >>"$unchecked_file"
       else
         checked=$((checked + 1))
@@ -104,6 +108,8 @@ echo "::notice::I0001 silent TyError sites across the library manifests: ${count
 if [[ "$unchecked" -gt 0 ]]; then
   echo "UNCHECKED builds (stopped before the census could see them):"
   cat "$unchecked_file"
+  echo "library-tyerr-census: ${unchecked} build(s) stopped before the census could judge them; fix the build or list the manifest as native-only, never count it as clean" >&2
+  exit 1
 fi
 if [[ "$count" -gt 0 ]]; then
   head -200 "$sites_file"
