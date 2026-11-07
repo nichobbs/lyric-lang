@@ -673,6 +673,171 @@ func tryResolveConstBool(tbl: in SymbolTable, name: in String): Option[Bool] {
   }
 }
 
+// Record the type a pattern is matched at under its `NodeId` (`patTypes`, D369).
+func recordPatType(tbl: in SymbolTable, pat: in Pattern, ty: in Type): Unit {
+  if pat.nodeId <= 0 {
+    return
+  }
+  if tbl.patTypes.containsKey(pat.nodeId) {
+    tbl.patTypes.remove(pat.nodeId)
+  }
+  tbl.patTypes.add(pat.nodeId, ty)
+}
+
+func recordPatSym(tbl: in SymbolTable, pat: in Pattern, id: in SymbolId): Unit {
+  if pat.nodeId <= 0 {
+    return
+  }
+  if tbl.patSymByNode.containsKey(pat.nodeId) {
+    tbl.patSymByNode.remove(pat.nodeId)
+  }
+  tbl.patSymByNode.add(pat.nodeId, id)
+}
+
+func recordPatBinding(tbl: in SymbolTable, pat: in Pattern): Unit {
+  if pat.nodeId > 0 and not tbl.patBindingNodes.containsKey(pat.nodeId) {
+    tbl.patBindingNodes.add(pat.nodeId, true)
+  }
+}
+
+// The case `name` of the enum or union the scrutinee type `ty` is, when it has one.
+func scrutineeCaseNamed(tbl: in SymbolTable, ty: in Type, name: in String): Option[Symbol] {
+  match unrefine(ty) {
+    case TyUser(sid, _, _) -> {
+      for cand in symTableTryFindAllNamed(tbl, name) {
+        match cand.kind {
+          case DKUnionCase(pid, _) -> if symbolIdEq(pid, sid) { return Some(value = cand) }
+          case DKEnumCase(pid, _) -> if symbolIdEq(pid, sid) { return Some(value = cand) }
+          case _ -> ()
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+func casePatternSymbolId(tbl: in SymbolTable, sym: in Symbol): Option[SymbolId] {
+  match sym.kind {
+    case DKUnionCase(pid, uc) -> caseSymbolId(tbl, sym, pid, uc.name)
+    case DKEnumCase(pid, ec) -> caseSymbolId(tbl, sym, pid, ec.name)
+    case _ -> None
+  }
+}
+
+// A pattern that matches every value of its type, by the checker's own reading
+// of each bare name: a name it bound as a local, not one it took for a case.
+func patIrrefutableBound(tbl: in SymbolTable, p: in Pattern): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PParen(inner) -> patIrrefutableBound(tbl, inner)
+    case PBinding(name, inner) -> {
+      if name != "_" and not tbl.patBindingNodes.containsKey(p.nodeId) {
+        return false
+      }
+      match inner {
+        case None -> true
+        case Some(ip) -> patIrrefutableBound(tbl, ip)
+      }
+    }
+    case PTuple(ps) -> {
+      for q in ps {
+        if not patIrrefutableBound(tbl, q) {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
+// A pattern of a case arm whose payload patterns match any value, so naming
+// the case covers it whole.
+func armCoversWholeCase(tbl: in SymbolTable, p: in Pattern): Bool {
+  match p.kind {
+    case PConstructor(_, args) -> {
+      for a in args {
+        if not patIrrefutableBound(tbl, a) {
+          return false
+        }
+      }
+      true
+    }
+    case PBinding(_, None) -> true
+    case PWildcard -> true
+    case PParen(inner) -> armCoversWholeCase(tbl, inner)
+    case POr(ps) -> {
+      for q in ps {
+        if not armCoversWholeCase(tbl, q) {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
+// Whether the arms are proved to cover every value of `st` (`matchExhaustive`,
+// D369).  `false` means not proved: the existing exhaustiveness check judges
+// only `Bool`, unbounded scalars and finite-case types, and looks at case
+// names, not payloads.
+func matchProvedExhaustive(tbl: in SymbolTable, st: in Type, arms: in List[MatchArm]): Bool {
+  // A name the checker bound as a local, not one it read as a case, proves an
+  // arm matches everything.
+  for arm in arms {
+    match arm.guard {
+      case None -> if patIrrefutableBound(tbl, arm.pattern) { return true }
+      case Some(_) -> ()
+    }
+  }
+  match finiteCaseNames(tbl, st) {
+    case None -> false
+    case Some(caseNames) -> {
+      if armsHaveCatchAll(arms, caseNames) {
+        return true
+      }
+      val covered: List[String] = newList()
+      for arm in arms {
+        match arm.guard {
+          case None -> if armCoversWholeCase(tbl, arm.pattern) { collectCoveredCases(arm.pattern, caseNames, covered) }
+          case Some(_) -> ()
+        }
+      }
+      for c in caseNames {
+        if not listContainsStr(covered, c) {
+          return false
+        }
+      }
+      true
+    }
+  }
+}
+
+// The index of the field `name` among the record's declared fields.
+pub func recordFieldIndex(tbl: in SymbolTable, tid: in SymbolId, name: in String): Option[Int] {
+  val fs = fieldsOfRecord(tbl, tid)
+  var i = 0
+  while i < fs.count {
+    if fs[i].name == name {
+      return Some(value = i)
+    }
+    i = i + 1
+  }
+  None
+}
+
+func recordMatchExhaustive(tbl: in SymbolTable, e: in Expr, proved: in Bool): Unit {
+  if e.nodeId <= 0 {
+    return
+  }
+  if tbl.matchExhaustive.containsKey(e.nodeId) {
+    tbl.matchExhaustive.remove(e.nodeId)
+  }
+  tbl.matchExhaustive.add(e.nodeId, proved)
+}
+
 func checkMatchExhaustive(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -12048,6 +12213,7 @@ func bindPatternTyped(
   ty: in Type,
   bindingOnly: in Bool = false,
 ): Unit {
+  recordPatType(tbl, pat, ty)
   match pat.kind {
     case PBinding(name, inner) -> {
       // The language has no `null` literal or null pattern (docs/01 §FFI,
@@ -12085,8 +12251,27 @@ func bindPatternTyped(
           if scrutineeHasCaseNamed(tbl, ty, name) {
             recordCasePatternUnion(tbl, pat.span, ty)
             recordEnumCasePattern(tbl, pat.span, ty)
+            // A bare name for a case that has a payload is not recorded: TIR wants a
+            // pattern per payload field, which the name does not give.
+            match scrutineeCaseNamed(tbl, ty, name) {
+              case Some(cs) -> {
+                var hasPayload = false
+                match cs.kind {
+                  case DKUnionCase(_, uc) -> if uc.fields.count > 0 { hasPayload = true }
+                  case _ -> ()
+                }
+                if not hasPayload {
+                  match casePatternSymbolId(tbl, cs) {
+                    case Some(id) -> recordPatSym(tbl, pat, id)
+                    case None -> ()
+                  }
+                }
+              }
+              case None -> ()
+            }
           }
         } else {
+          recordPatBinding(tbl, pat)
           scopeAdd(sc, LocalBinding(name = name, ty = eraseTyParams(ty), isMutable = false))
         }
       }
@@ -12104,6 +12289,10 @@ func bindPatternTyped(
         case Some(caseSym) -> {
           if checkCasePatternScrutinee(tbl, diag, caseSym, ty, pat.span) {
             recordCasePatternUnion(tbl, pat.span, ty)
+            match casePatternSymbolId(tbl, caseSym) {
+              case Some(id) -> recordPatSym(tbl, pat, id)
+              case None -> ()
+            }
             caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
           } else {
             newList()
@@ -12159,6 +12348,10 @@ func bindPatternTyped(
       // "owner" per the #6540 comment on `checkConstRefPattern`'s own
       // `PConstructor` arm below).
       checkRecordPatternHead(tbl, diag, head, pat.span, ty)
+      match unrefine(ty) {
+        case TyUser(tid, _, _) -> recordPatSym(tbl, pat, tid)
+        case _ -> ()
+      }
       // Resolve the record's declared field types from the scrutinee type so a
       // bound field carries its real type (e.g. `Point{x = a}` types `a` as
       // `Int`) rather than `TyError`.
@@ -12436,7 +12629,22 @@ func inferMatchExpr(
   isValuePosition: in Bool,
   tailExpected: in Type,
 ): Type {
+  val diagsBefore = diag.count
   val t = inferMatchExprCore(sc, tbl, sigs, diag, e, scrutinee, arms, isValuePosition, tailExpected)
+  // The proof is read after the arms are bound: which bare names are bindings
+  // and which are cases is the checker's decision made while binding them.  A
+  // T0016 from a `match` nested in an arm also clears this one, which only
+  // withholds the proof, the safe direction.
+  var missing = false
+  var di = diagsBefore
+  while di < diag.count {
+    if diag[di].code == "T0016" {
+      missing = true
+    }
+    di = di + 1
+  }
+  val scrutTy = match mapGet(tbl.exprTypes, scrutinee.nodeId) { case Some(x) -> x; case None -> tyErrorSilent() }
+  recordMatchExhaustive(tbl, e, not missing and matchProvedExhaustive(tbl, scrutTy, arms))
   // Typed here without passing through `inferExpr`, so the node's type is
   // recorded here (D366).
   recordExprType(tbl, e, t)

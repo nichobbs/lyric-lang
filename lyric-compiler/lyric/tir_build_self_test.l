@@ -540,3 +540,129 @@ test "a generic nullary case whose type argument is unsolved is counted, not gue
   assertTrue(not r.body.isSome(), "no body")
   assertTrue(r.env.errors.count > 0, "an I0002")
 }
+
+func matchSummary(b: in Option[TExpr]): String {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XMatch(_, arms, exhaustive) -> toString(arms.count) +
+          (
+            if exhaustive {
+              ":exhaustive"
+            } else {
+              ":open"
+            }
+          )
+        case _ -> "not a match"
+      }
+      case _ -> "not a block"
+    }
+    case None -> "none"
+  }
+}
+
+test "a match over every case of a union builds as exhaustive" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) -> n\n    case B -> 0\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "2:exhaustive", matchSummary(r.body))
+}
+
+test "a refutable payload pattern is not proved exhaustive" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A(1) -> 1\n    case B -> 0\n  }\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
+}
+
+test "a wildcard arm makes a match over a tuple exhaustive" {
+  val r = buildFirstFn(
+    "package App\nfunc f(a: Int, b: Int): Int {\n  match (a, b) {\n    case (0, y) -> y\n    case _ -> 1\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "2:exhaustive", matchSummary(r.body))
+}
+
+test "a record pattern and an enum case pattern build" {
+  val r = buildFirstFn(
+    "package App\nrecord P { x: Int\n y: Int }\nfunc f(p: P): Int {\n  match p {\n    case P{x = a, y = b} -> a + b\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  val e = buildFirstFn(
+    "package App\nenum Color { case Red; case Green }\nfunc f(c: Color): Int {\n  match c {\n    case Red -> 1\n    case Green -> 2\n  }\n}\n"
+  )
+  assertEqualInt(e.diagnostics, 0, "checks clean")
+  assertTrue(e.env.errors.count == 0, if e.env.errors.count > 0 { e.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(e.body) == "2:exhaustive", matchSummary(e.body))
+}
+
+test "an or-pattern is counted, not guessed" {
+  val r = buildFirstFn(
+    "package App\nfunc f(n: Int): Int {\n  match n {\n    case 1 | 2 -> 1\n    case _ -> 0\n  }\n}\n"
+  )
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "an or-pattern"), 1, "counted")
+}
+
+test "an as-pattern binds its name before its sub-pattern" {
+  val r = buildFirstFn(
+    "package App\nfunc f(a: Int, b: Int): Int {\n  match (a, b) {\n    case x @ (x, y) -> x\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an Int arm in a Long match is widened, not left to the verifier" {
+  val r = buildFirstFn(
+    "package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  match b {\n    case true -> i\n    case false -> l\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an enum case in a payload is refutable, so the match is not proved exhaustive" {
+  val r = buildFirstFn(
+    "package App\nenum Choice { case small; case large }\nunion U {\n  case A(c: Choice)\n}\nfunc f(u: U): Int {\n  match u {\n    case A(small) -> 1\n  }\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "1:open", matchSummary(r.body))
+}
+
+test "a block arm's tail is widened with the block" {
+  val r = buildFirstFn(
+    "package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  match b {\n    case true -> { i }\n    case false -> l\n  }\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "an if whose branch needs widening builds" {
+  val r = buildFirstFn("package App\nfunc f(b: Bool, i: Int, l: Long): Long {\n  if b { i } else { l }\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "a bare name for a case with a payload is counted, not built with no fields" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A -> 1\n    case B -> 0\n  }\n}\n"
+  )
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
+}
+
+test "a guarded arm never proves a match exhaustive" {
+  val r = buildFirstFn(
+    "package App\nunion U {\n  case A(n: Int)\n  case B\n}\nfunc f(u: U): Int {\n  match u {\n    case A(n) if n > 0 -> n\n    case B -> 0\n  }\n}\n"
+  )
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(matchSummary(r.body) == "2:open", matchSummary(r.body))
+}

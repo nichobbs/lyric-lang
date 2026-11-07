@@ -572,6 +572,21 @@ pub record SymbolTable {
   /// The declaration each name expression that is not a local resolved to,
   /// keyed by its `NodeId` (D368).
   refByNode: Map[Int, RefSite]
+  /// The type each pattern is matched at, keyed by the pattern's `NodeId`
+  /// (docs/70 §6.3, D369): a binding's local has this type, a constructor
+  /// pattern's payload is read from it.
+  patTypes: Map[Int, Type]
+  /// The union or enum case, or the record type, a constructor, record or
+  /// bare-case pattern resolved to, keyed by the pattern's `NodeId` (D369).
+  patSymByNode: Map[Int, SymbolId]
+  /// The `PBinding` patterns the checker bound as a local rather than read as a
+  /// bare case name (D369).  Only `true` is stored.
+  patBindingNodes: Map[Int, Bool]
+  /// The `match` expressions whose arms are proved to cover every value, keyed
+  /// by the `match`'s `NodeId` (D369): a catch-all arm, or every case of a
+  /// finite-case scrutinee covered by unguarded arms whose payloads match
+  /// anything.  `false` says nothing was proved, never that a case is missing.
+  matchExhaustive: Map[Int, Bool]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -1180,6 +1195,10 @@ pub func newSymbolTable(): SymbolTable {
     callSigByNode = newMap(),
     externByNode = newMap(),
     refByNode = newMap(),
+    patTypes = newMap(),
+    patSymByNode = newMap(),
+    patBindingNodes = newMap(),
+    matchExhaustive = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),
     covariantHelpers = newList(),
