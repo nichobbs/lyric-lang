@@ -1472,6 +1472,7 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
   val src = "package Q\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
+    "import Std.Time\n" +
     "import Std.Environment as Env\n" +
     connHelpersSource() +
     "func main(): Int {\n" +
@@ -1499,13 +1500,20 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "    return 5\n" +
     "  }\n" +
     "  // c1 is still open in keep-alive and holds the single connection permit.\n" +
-    "  // Send c2's request now and queue c1's second request after it; while c1\n" +
-    "  // holds the permit, nextContext must deliver c1's second request rather\n" +
-    "  // than c2's.\n" +
-    "  match hostWrite(c2, encodeUtf8(\"GET /second HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\")) {\n" +
+    "  // c2 sends an Expect: 100-continue POST; if c2 were not gated at the\n" +
+    "  // accept-to-spawn boundary, its handler thread would immediately write\n" +
+    "  // 100 Continue before enqueueing the request. Verify with a 100ms read\n" +
+    "  // timeout that no bytes arrive on c2 while c1 holds the permit.\n" +
+    "  match hostWrite(c2, encodeUtf8(\"POST /second HTTP/1.1\\r\\nHost: x\\r\\nExpect: 100-continue\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\nok\")) {\n" +
     "    case Ok(_) -> ()\n" +
     "    case Err(_) -> return 6\n" +
     "  }\n" +
+    "  hostSetIoTimeout(c2, 100)\n" +
+    "  match hostRead(c2, 64) {\n" +
+    "    case Ok(_) -> return 18\n" +
+    "    case Err(_) -> ()\n" +
+    "  }\n" +
+    "  hostSetIoTimeout(c2, 5000)\n" +
     "  match hostWrite(c1, encodeUtf8(\"GET /first-again HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\")) {\n" +
     "    case Ok(_) -> ()\n" +
     "    case Err(_) -> return 7\n" +
@@ -1530,17 +1538,45 @@ test "native Std.HttpServer LYRIC_HTTP_MAX_CONNECTIONS=1 gates a second connecti
     "    return 11\n" +
     "  }\n" +
     "  hostClose(c2)\n" +
+    "  // Now establish a saturated listener before calling stopListener:\n" +
+    "  // c3 completes a keep-alive roundtrip so it is proven to hold the single\n" +
+    "  // permit, and c4 connects and waits 50ms so the accept thread has accepted\n" +
+    "  // c4 and is blocked at rtSemWait(queue.connLimit) when shutdown starts.\n" +
+    "  // stopListener posts connLimit and spawnConnectionThread closes c4 on\n" +
+    "  // seeing queue.stopping without ever serving /fourth.\n" +
     "  val c3 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
     "    case Ok(c) -> c\n" +
     "    case Err(_) -> return 12\n" +
     "  }\n" +
-    "  val c4 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
-    "    case Ok(c) -> c\n" +
+    "  match hostWrite(c3, encodeUtf8(\"GET /third HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n\")) {\n" +
+    "    case Ok(_) -> ()\n" +
     "    case Err(_) -> return 13\n" +
     "  }\n" +
+    "  val ctx3 = nextContext(listener)\n" +
+    "  if requestPath(ctx3) != \"/third\" {\n" +
+    "    return 14\n" +
+    "  }\n" +
+    "  respondText(ctx3, 200, \"third-ok\")\n" +
+    "  val acc3: List[String] = newList()\n" +
+    "  if not readUntil(c3, acc3, \"third-ok\") {\n" +
+    "    return 15\n" +
+    "  }\n" +
+    "  val c4 = match hostConnect(\"127.0.0.1\", 19735) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 16\n" +
+    "  }\n" +
+    "  sleepMillis(50)\n" +
     "  stopListener(listener)\n" +
+    "  hostSetIoTimeout(c4, 1000)\n" +
+    "  val c4Closed = match hostRead(c4, 64) {\n" +
+    "    case Ok(b) -> b.length == 0\n" +
+    "    case Err(_) -> false\n" +
+    "  }\n" +
     "  hostClose(c3)\n" +
     "  hostClose(c4)\n" +
+    "  if not c4Closed {\n" +
+    "    return 19\n" +
+    "  }\n" +
     "  42\n" +
     "}\n"
   val r = compileAndRunNative(src)

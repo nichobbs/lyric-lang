@@ -39,6 +39,23 @@ pub func goalsForFunctionWithState(
   goalsForFunctionInheriting(envIn, decl, extraHyps, stateVars, noInheritedClauses())
 }
 
+// Whether `decl` is an invariant boundary (docs/01 §6.2, docs/08 §7.1–7.2,
+// §10.2): a `pub` top-level function, a method of a `pub` record or exposed
+// record, an `impl` method, or a protected entry.  In modular verification
+// (§10.2), a public boundary assumes `Inv(p)` on entry for its `in`/`inout`
+// parameters and proves `Inv` on exit for its result and `inout`/`out`
+// parameters, while `vcgen_calls.l` correspondingly requires `Inv(arg)` at
+// call sites of public callees.  A non-`pub` intra-package helper may
+// accept, manipulate, or repair a temporarily broken value without entry/exit
+// invariant obligations; the enclosing public boundary re-establishes the
+// invariant before returning or calling another public API.
+func isInvariantBoundary(decl: in FunctionDecl): Bool {
+  match decl.visibility {
+    case Some(VisPub(_)) -> not decl.name.startsWith("__lyric_checked_")
+    case _ -> false
+  }
+}
+
 // Like `goalsForFunctionWithState`, where `decl` also carries the `inherited`
 // clauses of the interface method it implements (#8231): each `requires:`
 // is a precondition and each `ensures:` an obligation beside `decl`'s own,
@@ -53,6 +70,7 @@ func goalsForFunctionInheriting(
   inherited: in InheritedClauses,
 ): (List[Goal], List[Diagnostic]) {
   val env0 = envWithTypeParams(envIn, typeParamNames(decl))
+  val boundary = isInvariantBoundary(decl)
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -84,7 +102,7 @@ func goalsForFunctionInheriting(
     val hasEntryValue = match p.mode { case PMOut -> false; case _ -> true }
     envWithParams = envSetMutable(envBind(p.name, info, envWithParams), p.name, passedOut)
     appendTermList(paramHyps, valueFactsForTerm(TVar(name = p.name, sort = info.sort), info))
-    if hasEntryValue {
+    if boundary and hasEntryValue {
       appendTermList(paramHyps, recordInvariantFacts(env0, TVar(name = p.name, sort = info.sort), info.sort))
     }
     i = i + 1
@@ -279,7 +297,7 @@ func goalsForFunctionInheriting(
   val allPostParts: List[Term] = newList()
   allPostParts.add(postTerm)
   appendTermList(allPostParts, rangeTerms)
-  if isSome(decl.body) {
+  if boundary and isSome(decl.body) {
     appendTermList(allPostParts, recordInvariantObligations(env0, resultVar, resultSort.sort, retSpan, rangeDiags))
     i = 0
     while i < outParamFinalVars.count {
@@ -632,7 +650,7 @@ func goalsForProtectedEntry(
   val synthDecl: FunctionDecl = FunctionDecl(
     docComments = noDocComments,
     annotations = ed.annotations,
-    visibility = ed.visibility,
+    visibility = Some(value = VisPub(span = ed.span)),
     isAsync = false,
     name = protName + "::" + ed.name,
     generics = None,

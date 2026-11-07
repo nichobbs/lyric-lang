@@ -169,7 +169,7 @@ pub func goalsForFileInScope(
               val entryFn: FunctionDecl = FunctionDecl(
                 docComments = noDoc,
                 annotations = noAnn,
-                visibility = ed.visibility,
+                visibility = Some(value = VisPub(span = ed.span)),
                 isAsync = false,
                 name = decl.name + "::" + ed.name,
                 generics = None,
@@ -338,8 +338,20 @@ pub func goalsForFileInScope(
   var rmi = 0
   while rmi < modelFile.items.count {
     match modelFile.items[rmi].kind {
-      case IRecord(rmDecl) -> registerRecordMethodCallees(rmDecl, recordMethodsMap, callees, calleeDecls)
-      case IExposedRec(rmDecl) -> registerRecordMethodCallees(rmDecl, recordMethodsMap, callees, calleeDecls)
+      case IRecord(rmDecl) -> registerRecordMethodCallees(
+        modelFile.items[rmi].visibility,
+        rmDecl,
+        recordMethodsMap,
+        callees,
+        calleeDecls
+      )
+      case IExposedRec(rmDecl) -> registerRecordMethodCallees(
+        modelFile.items[rmi].visibility,
+        rmDecl,
+        recordMethodsMap,
+        callees,
+        calleeDecls
+      )
       case _ -> ()
     }
     rmi = rmi + 1
@@ -429,8 +441,26 @@ pub func goalsForFileInScope(
       }
       // Methods are verified like functions, the receiver `self` a
       // parameter and the type's parameters in scope (#8231).
-      case IRecord(rd) -> goalsForRecordMethods(level, env0, rd.name, rd.generics, rd.members, allGoals, allDiags)
-      case IExposedRec(rd) -> goalsForRecordMethods(level, env0, rd.name, rd.generics, rd.members, allGoals, allDiags)
+      case IRecord(rd) -> goalsForRecordMethods(
+        level,
+        env0,
+        file.items[i].visibility,
+        rd.name,
+        rd.generics,
+        rd.members,
+        allGoals,
+        allDiags
+      )
+      case IExposedRec(rd) -> goalsForRecordMethods(
+        level,
+        env0,
+        file.items[i].visibility,
+        rd.name,
+        rd.generics,
+        rd.members,
+        allGoals,
+        allDiags
+      )
       case IImpl(id) -> goalsForImplMethods(level, env0, file, pscope, id, allGoals, allDiags)
       case IInterface(iface) -> goalsForInterfaceDefaults(level, env0, iface, allGoals, allDiags)
       case _ -> {
@@ -511,6 +541,7 @@ func registerRecordDatatype(
 }
 
 func registerRecordMethodCallees(
+  typeVis: in Option[Visibility],
   rmDecl: in RecordDecl,
   recordMethodsMap: in Map[String, Bool],
   callees: in Map[String, FunctionDecl],
@@ -548,7 +579,15 @@ func registerRecordMethodCallees(
         if sameName == 1 and rmFn.params.count >= 1 and rmFn.params[0].name == "self" {
           val calleeKey = recordMethodCalleeKey(rmDecl.name, rmFn.name)
           if not callees.containsKey(calleeKey) {
-            val md = methodAsFunction(rmDecl.name + "::" + rmFn.name, rmFields, rmDecl.generics, rmSelf, rmSiblings, rmFn)
+            val md = methodAsFunction(
+              rmDecl.name + "::" + rmFn.name,
+              typeVis,
+              rmFields,
+              rmDecl.generics,
+              rmSelf,
+              rmSiblings,
+              rmFn
+            )
             callees.add(calleeKey, md)
             calleeDecls.add(md)
           }

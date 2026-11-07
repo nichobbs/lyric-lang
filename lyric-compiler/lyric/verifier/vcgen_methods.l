@@ -35,10 +35,12 @@ record SiblingMethod {
 }
 
 // The methods declared in a record's body.  `self: in Self` is the record
-// itself, at its own type parameters.
+// itself, at its own type parameters.  A record method has no visibility of
+// its own; it takes its declaring record's (`typeVis`, docs/01 §6.2).
 func goalsForRecordMethods(
   level: in VerificationLevel,
   env0: in VEnv,
+  typeVis: in Option[Visibility],
   recordName: in String,
   generics: in Option[GenericParams],
   members: in List[RecordMember],
@@ -59,6 +61,7 @@ func goalsForRecordMethods(
       case RMFunc(fn) -> goalsForMethod(
         level,
         env0,
+        typeVis,
         recordName,
         fields,
         generics,
@@ -168,6 +171,7 @@ func goalsForImplMethods(
         goalsForMethod(
           level,
           env0,
+          Some(value = VisPub(span = decl.span)),
           ownerName,
           fields,
           decl.generics,
@@ -315,6 +319,7 @@ func goalsForInterfaceDefaults(
         goalsForMethod(
           level,
           env0,
+          Some(value = VisPub(span = iface.span)),
           iface.name,
           noFields,
           iface.generics,
@@ -408,6 +413,7 @@ func implTargetName(target: in TypeExpr): String {
 // the method's.
 func methodAsFunction(
   name: in String,
+  typeVis: in Option[Visibility],
   fields: in Map[String, Bool],
   typeGenerics: in Option[GenericParams],
   selfType: in Option[TypeExpr],
@@ -451,7 +457,7 @@ func methodAsFunction(
   FunctionDecl(
     docComments = fn.docComments,
     annotations = fn.annotations,
-    visibility = fn.visibility,
+    visibility = typeVis,
     isAsync = fn.isAsync,
     name = name,
     generics = mergeGenerics(typeGenerics, fn.generics),
@@ -476,6 +482,7 @@ func methodAsFunction(
 func goalsForMethod(
   level: in VerificationLevel,
   env0: in VEnv,
+  typeVis: in Option[Visibility],
   owner: in String,
   fields: in Map[String, Bool],
   typeGenerics: in Option[GenericParams],
@@ -496,7 +503,7 @@ func goalsForMethod(
       noInheritedClauses()
     }
   }
-  val method = methodAsFunction(owner + "." + fn.name, fields, typeGenerics, selfType, siblings, fn)
+  val method = methodAsFunction(owner + "." + fn.name, typeVis, fields, typeGenerics, selfType, siblings, fn)
   // A call of a sibling method on `self` has the sibling's declared result
   // type; it is otherwise not interpreted.
   val distincts: Map[String, TypeExpr] = newMap()
