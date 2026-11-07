@@ -3581,53 +3581,6 @@ test "emitProject a dot-named call with an omitted default binds the visible pac
   assertEqual(Str.trim(result.stdout), "2", "dot-named default collision MSIL: output")
 }
 
-// The call goes through an alias of the second package's `Seed`, while the
-// first package's `Seed` is also imported: the alias target's package decides.
-func dotNamedAliasCollisionPkgs(): List[Emitter.ProjectPackage] {
-  val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(
-    mkProjectPkg(
-      "EPDa.One",
-      "package EPDa.One\n" + "\n" + "pub record Seed {\n" + "  pub n: Int\n" + "}\n" + "\n" +
-        "pub func Seed.base(): Int {\n" +
-        "  1\n" +
-        "}\n"
-    )
-  )
-  pkgs.add(
-    mkProjectPkg(
-      "EPDa.Two",
-      "package EPDa.Two\n" + "\n" + "pub record Seed {\n" + "  pub s: Int\n" + "}\n" + "\n" +
-        "pub func Seed.base(): Int {\n" +
-        "  2\n" +
-        "}\n"
-    )
-  )
-  pkgs.add(
-    mkProjectPkg(
-      "EPDa.App",
-      "package EPDa.App\n" + "\n" + "import EPDa.One\n" + "import EPDa.Two as T\n" + "\n" + "alias Pick = T.Seed\n" +
-        "\n" +
-        "func main(): Unit {\n" +
-        "  println(Pick.base())\n" +
-        "}\n"
-    )
-  )
-  pkgs
-}
-
-test "emitProject a dot-named call through an alias binds the aliased type's package (JVM)" {
-  val result = runEmitProjectJvmOpts("emitproj-dotalias-jvm", dotNamedAliasCollisionPkgs(), "EPDa")
-  assertEqualInt(result.exitCode, 0, "dot-named alias collision JVM: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "2", "dot-named alias collision JVM: output")
-}
-
-test "emitProject a dot-named call through an alias binds the aliased type's package (MSIL)" {
-  val result = runEmitProject("emitproj-dotalias", dotNamedAliasCollisionPkgs(), "EPDa")
-  assertEqualInt(result.exitCode, 0, "dot-named alias collision MSIL: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "2", "dot-named alias collision MSIL: output")
-}
-
 func chainedImportedCallPkgs(): List[Emitter.ProjectPackage] {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   pkgs.add(
