@@ -24016,7 +24016,18 @@ func packageDottedSig(
     pkgSegs.add(segs[i])
     i = i + 1
   }
-  val pkg = modulePathJoin(pkgSegs)
+  dotSigInPackage(tbl, sigs, dotted, modulePathJoin(pkgSegs), arity)
+}
+
+// The function `dotted` (`T.m`) that package `pkg` declares, one taking
+// `arity` arguments first (defaults and generics included).
+func dotSigInPackage(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  dotted: in String,
+  pkg: in String,
+  arity: in Int,
+): Option[ResolvedSignature] {
   var other: Option[ResolvedSignature] = None
   var fewest: Option[ResolvedSignature] = None
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
@@ -24109,42 +24120,37 @@ func typeQualifiedDotSig(
       case _ -> ()
     }
   }
-  match dotSigOfVisibleType(tbl, sigs, owner, member, arity) {
-    case Some(vs) -> return Some(value = vs)
+  match typeDeclaringPackage(tbl, typeName) {
+    case Some(declPkg) -> match dotSigInPackage(tbl, sigs, owner + "." + member, declPkg, arity) {
+      case Some(vs) -> return Some(value = vs)
+      case None -> ()
+    }
     case None -> ()
   }
   dottedSigLookup(sigs, owner + "." + member, arity)
 }
 
-// The dot-named function `typeName.member` declared by the package of the one
-// type `typeName` that is in scope (#8874).  Two packages can each declare a
-// type of that name with a function of that name; the bare lookup by the
-// dotted name alone answers with whichever registered first, whatever the
-// file imports.  `None` when the type is not a single visible declaration.
-func dotSigOfVisibleType(
-  tbl: in SymbolTable,
-  sigs: in Map[String, ResolvedSignature],
-  typeName: in String,
-  member: in String,
-  arity: in Int,
-): Option[ResolvedSignature] {
-  var pkg = ""
-  var types = 0
-  for sym in symTableTryFindAllVisible(tbl, typeName) {
-    if symbolIsType(sym) {
-      pkg = sym.originPackage
-      types = types + 1
+// The package that declares the type the name `typeName` means in the current
+// scope, followed through an alias (#8874): two packages can each declare a
+// type of that name, and the file's scope says which one.  `None` when the
+// name is not a user type with a known package (the callers then keep the
+// lookup by the dotted name alone).
+func typeDeclaringPackage(tbl: in SymbolTable, typeName: in String): Option[String] {
+  val segs: List[String] = newList()
+  segs.add(typeName)
+  val scratch: List[Diagnostic] = newList()
+  val sp = noSourceSpan()
+  match unrefine(resolveType(tbl, newGenericContext(), scratch, TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp))) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> if sym.originPackage.length > 0 {
+        Some(value = sym.originPackage)
+      } else {
+        None
+      }
+      case None -> None
     }
+    case _ -> None
   }
-  if types != 1 or pkg.length == 0 {
-    return None
-  }
-  for c in gatherOverloadCandidates(sigs, typeName + "." + member + "/" + toString(arity)) {
-    if c.originPackage == pkg {
-      return Some(value = c)
-    }
-  }
-  None
 }
 
 // The applicable method named `name` in the body of the receiver's type,
