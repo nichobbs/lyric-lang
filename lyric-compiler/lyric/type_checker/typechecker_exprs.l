@@ -4928,24 +4928,32 @@ record MethodCallPick {
 // (`calleeByNode`, D361).  A record, opaque or exposed-record constructor is
 // its type's `SymbolId`; a union case is `Pkg::Union::Case`, the DefPath the
 // resolver interns for it (docs/70 §4.2).
+func caseSymbolId(tbl: in SymbolTable, sym: in Symbol, parentId: in SymbolId, caseName: in String): Option[SymbolId] {
+  match defPathKeyOf(tbl.interner, parentId) {
+    case Some(parentKey) -> Some(value = internDefPathKey(tbl.interner, parentKey + "::" + caseName))
+    // A dependency's union has no resolver DefPath: name the case by its
+    // package and union, the key the resolver would intern for it.
+    case None -> if sym.originPackage.length > 0 {
+      val unionName = typeNameOfId(tbl, parentId)
+      if unionName.length > 0 {
+        Some(value = internDefPathKey(tbl.interner, sym.originPackage + "::" + unionName + "::" + caseName))
+      } else {
+        None
+      }
+    } else {
+      None
+    }
+  }
+}
+
 func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol): Unit {
   if callNode <= 0 {
     return
   }
   var target: Option[SymbolId] = None
   match sym.kind {
-    case DKUnionCase(parentId, uc) -> match defPathKeyOf(tbl.interner, parentId) {
-      case Some(parentKey) -> {
-        target = Some(value = internDefPathKey(tbl.interner, parentKey + "::" + uc.name))
-      }
-      // A dependency's union has no resolver DefPath: name the case by its
-      // package and union, the key the resolver would intern for it.
-      case None -> if sym.originPackage.length > 0 {
-        val unionName = typeNameOfId(tbl, parentId)
-        if unionName.length > 0 {
-          target = Some(value = internDefPathKey(tbl.interner, sym.originPackage + "::" + unionName + "::" + uc.name))
-        }
-      }
+    case DKUnionCase(parentId, uc) -> {
+      target = caseSymbolId(tbl, sym, parentId, uc.name)
     }
     case _ -> {
       target = symbolTypeIdOpt(sym)
@@ -4958,6 +4966,66 @@ func recordCtorCalleeNode(tbl: in SymbolTable, callNode: in Int, sym: in Symbol)
       }
       tbl.calleeByNode.add(callNode, id)
     }
+    case None -> ()
+  }
+}
+
+// Record the declaration a name expression that is not a local resolved to,
+// under the expression's `NodeId` (`refByNode`, D368): a module-level `val` or
+// `const`, or a union or enum case with no payload.  A case with a payload is
+// a constructor, built by the call that supplies it.
+func recordRefNode(tbl: in SymbolTable, node: in Int, sym: in Symbol): Unit {
+  if node <= 0 {
+    return
+  }
+  var kind: Option[RefKind] = None
+  var id: Option[SymbolId] = None
+  match sym.kind {
+    case DKVal(_) -> {
+      kind = Some(value = RkValue)
+      id = refValueId(tbl, sym)
+    }
+    case DKConst(_) -> {
+      kind = Some(value = RkValue)
+      id = refValueId(tbl, sym)
+    }
+    case DKUnionCase(parentId, uc) -> if uc.fields.count == 0 {
+      kind = Some(value = RkNullaryCase)
+      id = caseSymbolId(tbl, sym, parentId, uc.name)
+    }
+    case DKEnumCase(parentId, ec) -> {
+      kind = Some(value = RkNullaryCase)
+      id = caseSymbolId(tbl, sym, parentId, ec.name)
+    }
+    case _ -> ()
+  }
+  match kind {
+    case Some(k) -> match id { case Some(i) -> putRefSite(tbl, node, RefSite(sym = i, kind = k)); case None -> () }
+    case None -> ()
+  }
+}
+
+func refValueId(tbl: in SymbolTable, sym: in Symbol): Option[SymbolId] {
+  if sym.originPackage.length == 0 {
+    return None
+  }
+  Some(value = internDefPathKey(tbl.interner, defPathKey(topDefPath(sym.originPackage, sym.name))))
+}
+
+func putRefSite(tbl: in SymbolTable, node: in Int, site: in RefSite): Unit {
+  if tbl.refByNode.containsKey(node) {
+    tbl.refByNode.remove(node)
+  }
+  tbl.refByNode.add(node, site)
+}
+
+// A non-generic function used as a value, under the reference's `NodeId`.
+func recordFuncRefNode(tbl: in SymbolTable, node: in Int, sig: in ResolvedSignature, name: in String): Unit {
+  if node <= 0 or sig.generics.count > 0 {
+    return
+  }
+  match symTableFuncDefPathKey(tbl, sig, name, false) {
+    case Some(key) -> putRefSite(tbl, node, RefSite(sym = internDefPathKey(tbl.interner, key), kind = RkFunc))
     case None -> ()
   }
 }
@@ -7306,6 +7374,7 @@ func resolveExprPath(
   diag: in List[Diagnostic],
   path: in ModulePath,
   span: in Span,
+  node: in Int,
 ): Type {
   if path.segments.count != 1 {
     // A multi-segment `EPath` reaching here was always collapsed by
@@ -7347,6 +7416,7 @@ func resolveExprPath(
       case Some(vsym) -> match vsym.kind {
         case DKVal(vd) -> {
           checkImportedVisibility(tbl, vsym, span, diag)
+          recordRefNode(tbl, node, vsym)
           return moduleValReadType(tbl, sigs, vsym, vd)
         }
         case _ -> ()
@@ -7371,9 +7441,15 @@ func resolveExprPath(
     // A union case named through its package (`Emitter.Jvm`), read as a value.
     match symTableTryFindInPackage(tbl, pkg, name) {
       case Some(csym) -> match csym.kind {
-        case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
+        case DKUnionCase(_, _) -> {
+          recordRefNode(tbl, node, csym)
+          return inferUnionCaseConstruction(tbl, diag, csym, newList(), newList(), span, false)
+        }
         case DKEnumCase(_, _) -> match packageEnumCaseValueType(tbl, pkg, name) {
-          case Some(ct) -> return ct
+          case Some(ct) -> {
+            recordRefNode(tbl, node, csym)
+            return ct
+          }
           case None -> ()
         }
         case _ -> ()
@@ -7456,6 +7532,9 @@ func resolveExprPath(
                   if not recordFuncRefSite(tbl, diag, scopedSig, name, span) {
                     return tyErrorSilent()
                   }
+                  if not isCallee {
+                    recordFuncRefNode(tbl, node, scopedSig, name)
+                  }
                   return funcValueType(scopedSig)
                 }
                 case None -> ()
@@ -7487,6 +7566,9 @@ func resolveExprPath(
         i = i + 1
       }
       recordOwnFuncValueSite(tbl, sig, name, span)
+      if not tbl.funcRefCallees.containsKey(recordCopySiteKey(span)) {
+        recordFuncRefNode(tbl, node, sig, name)
+      }
       return TyFunction(params = pts, ret = sig.returnTy, isAsync = sig.isAsync)
     }
     case None -> {
@@ -7513,6 +7595,7 @@ func resolveExprPath(
           // A bare constructor reference like `Some` without call args infers as the
           // parent union with TyError type-args (uninferable without arguments).
           // The enclosing ECall arm re-infers with actual arg types and wins.
+          recordRefNode(tbl, node, sym)
           return inferUnionCaseConstruction(tbl, diag, sym, newList(), newList(), span, false)
         }
         // A val's or const's declared type, and an untyped val's initializer,
@@ -7523,9 +7606,13 @@ func resolveExprPath(
           val saved = enterDeclaringScopeIfForeign(tbl, sym)
           val t = resolveType(tbl, ctx, diag, cd.ty)
           restoreScope(tbl, saved)
+          recordRefNode(tbl, node, sym)
           return t
         }
-        case DKVal(vd) -> return moduleValReadType(tbl, sigs, sym, vd)
+        case DKVal(vd) -> {
+          recordRefNode(tbl, node, sym)
+          return moduleValReadType(tbl, sigs, sym, vd)
+        }
         // A bare enum case with no expected type is a value of its enum, so
         // `println(Green)` renders by case name and `val s: String = Green` is
         // rejected (#8652). Only a case name no other enum or union shares is typed:
@@ -7547,6 +7634,7 @@ func resolveExprPath(
           }
           if unshared {
             val noArgs: List[Type] = newList()
+            recordRefNode(tbl, node, sym)
             return TyUser(id = pid, name = typeNameOfId(tbl, pid), args = noArgs)
           }
           // A case name several enums share is told apart by the expected
@@ -18522,7 +18610,7 @@ func inferExprCore(
   match e.kind {
     case ELiteral(lit) -> typeOfLiteral(lit)
 
-    case EPath(path) -> resolveExprPath(sc, tbl, sigs, diag, path, e.span)
+    case EPath(path) -> resolveExprPath(sc, tbl, sigs, diag, path, e.span, e.nodeId)
 
     case EParen(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
 

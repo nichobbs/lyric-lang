@@ -457,3 +457,50 @@ test "a refined argument to a built-in the builder cannot check is counted, not 
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
 }
+
+func bodyKindName(b: in Option[TExpr]): String {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XGlobal(_, _) -> "global"
+        case XConstruct(_, fs) -> "construct" + toString(fs.count)
+        case _ -> "other"
+      }
+      case _ -> "block"
+    }
+    case None -> "none"
+  }
+}
+
+test "a module val and a const read build as global references" {
+  val r = buildFirstFn("package App\nval limit: Int = 7\nfunc f(): Int {\n  limit\n}\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "global", "the val is an XGlobal")
+  val c = buildFirstFn("package App\nconst K: Int = 3\nfunc f(): Int {\n  K\n}\n")
+  assertEqualInt(c.diagnostics, 0, "checks clean")
+  assertTrue(bodyKindName(c.body) == "global", "the const is an XGlobal")
+}
+
+test "a nullary union case and an enum case build as constructions without fields" {
+  val u = buildFirstFn("package App\nunion U {\n  case A\n  case B(n: Int)\n}\nfunc f(): U {\n  A\n}\n")
+  assertEqualInt(u.diagnostics, 0, "checks clean")
+  assertEqualInt(u.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(u.body) == "construct0", "the nullary case is an XConstruct with no fields")
+  val e = buildFirstFn("package App\nenum Color { case Red; case Green }\nfunc f(): Color {\n  Red\n}\n")
+  assertEqualInt(e.diagnostics, 0, "checks clean")
+  assertTrue(bodyKindName(e.body) == "construct0", "the enum case too")
+}
+
+test "a case with a payload used as a name stays uncovered" {
+  val r = buildFirstFn("package App\nunion U {\n  case A\n  case B(n: Int)\n}\nfunc f(): U {\n  val g = B\n  A\n}\n")
+  assertTrue(not r.body.isSome(), "no body")
+  assertTrue(r.env.errors.count > 0, "an I0002")
+}
+
+test "a non-generic function used as a value builds as a global reference" {
+  val r = buildFirstFn("package App\nfunc f(): (Int) -> Int {\n  inc\n}\nfunc inc(x: Int): Int { x + 1 }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(bodyKindName(r.body) == "global", "the function value is an XGlobal")
+}

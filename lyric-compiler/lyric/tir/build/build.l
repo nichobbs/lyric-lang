@@ -239,6 +239,11 @@ pub func exprTy(ctx: in TyConvCtx, node: in Int): Result[Ty, String] {
 
 /// The nodes of `exprIds` with no usable recorded type, as I0002 messages, in
 /// the order given.  The census the `--verify-ir` flag reports.
+/// The declaration a name expression that is not a local resolved to (D368).
+pub func refSite(ctx: in TyConvCtx, node: in Int): Option[RefSite] {
+  mapGet(ctx.tbl.refByNode, node)
+}
+
 pub func exprTypeCensus(ctx: in TyConvCtx, exprIds: in List[Int]): List[String] {
   val res: List[String] = newList()
   for id in exprIds {
