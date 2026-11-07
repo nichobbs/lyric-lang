@@ -21,6 +21,8 @@ extern type JStringBuilder = "java.lang.StringBuilder"
 
 extern type JArrayList = "java.util.ArrayList"
 
+extern type JFloat = "java.lang.Float"
+
 func describe(o: in JObject): String = o.toString()
 
 test "extern values are added to a List[JObject] through the upcast" {
@@ -47,4 +49,9 @@ test "upcasting a JObject is the identity" {
   val o: JObject = externAsObject(sb)
   val again: JObject = externAsObject(o)
   assertEqual(describe(again), "x", "JObject upcast to JObject")
+}
+
+test "an unchecked primitive host result is boxed by the upcast (D359)" {
+  val o: JObject = externAsObject(JFloat.parseFloat("2.5"))
+  assertEqual(describe(o), "2.5", "the primitive float reaches the object slot boxed")
 }

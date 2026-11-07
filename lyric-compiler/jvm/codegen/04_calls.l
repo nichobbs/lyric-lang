@@ -1349,8 +1349,12 @@ func lowerBuiltinOrStaticCall(
     JVoid
   } else if (not hasOverride) and funcName == "externAsObject" and args.count == 1 {
     // D212: every JVM extern type is a reference type, so the upcast to the
-    // root object is the operand itself.
-    val _ = lowerCallArg(ctx, insns, args[0])
+    // root object is the operand itself.  An operand the checker leaves
+    // unchecked (a host call returning a primitive the language has no type
+    // for, `Float.parseFloat`) may be a primitive on the stack: it is boxed so
+    // the value reported as an object is one (D359).
+    val operandTy = lowerCallArg(ctx, insns, args[0])
+    boxIfNeeded(insns, operandTy)
     JRef(className = "java/lang/Object")
   } else if (not hasOverride) and funcName == "nativeNullPtr" and args.count == 0 {
     // A `NativePtr[T]` is a `long` address on the JVM (D158).
