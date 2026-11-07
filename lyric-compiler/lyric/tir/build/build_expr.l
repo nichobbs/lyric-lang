@@ -983,10 +983,7 @@ func buildCall(env: in BuildEnv, e: in Expr, ty: in Ty, fn: in Expr, args: in Li
 func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Option[Ty] {
   match elem {
     case EIEArg(i) -> if i >= 0 and i < targs.count { Some(value = targs[i]) } else { None }
-    case EIEPrim(name) -> match primFromString(name) {
-      case Some(p) -> Some(value = primOf(p))
-      case None -> None
-    }
+    case EIEPrim(name) -> match primFromString(name) { case Some(p) -> Some(value = primOf(p)); case None -> None }
     case EIEHost(h, hargs) -> {
       if h == "System.Char" {
         return Some(value = TPrim(kind = TPChar))
@@ -998,9 +995,7 @@ func hostElemTy(elem: in ExternIterElem, targs: in List[Ty], hint: in Ty): Optio
         }
       }
       match hint {
-        case TExtern(r) -> if externHostBase(r.name) == h {
-          return Some(value = hint)
-        }
+        case TExtern(r) -> if externHostBase(r.name) == h { return Some(value = hint) }
         case _ -> ()
       }
       val conv: List[Ty] = newList()
@@ -1080,10 +1075,7 @@ func buildExternCall(
   val built: List[TExpr] = newList()
   for a in args {
     match a {
-      case CAPositional(x) -> match buildExpr(env, x) {
-        case Some(t) -> built.add(t)
-        case None -> return None
-      }
+      case CAPositional(x) -> match buildExpr(env, x) { case Some(t) -> built.add(t); case None -> return None }
       case CANamed(_, _, _) -> return uncoveredExpr(env, e, "an extern call with a named argument")
     }
   }
@@ -1120,9 +1112,7 @@ func buildExternCall(
               k = k + 1
             }
             match bestSig {
-              case Some(b) -> if b.isStatic != c.isStatic {
-                same = false
-              }
+              case Some(b) -> if b.isStatic != c.isStatic { same = false }
               case None -> ()
             }
             if not same {
@@ -1134,7 +1124,10 @@ func buildExternCall(
       }
     }
   }
-  val sig = match bestSig { case Some(c) -> c; case None -> return uncoveredExpr(env, e, "an extern call no host overload fits") }
+  val sig = match bestSig {
+    case Some(c) -> c
+    case None -> return uncoveredExpr(env, e, "an extern call no host overload fits")
+  }
   if ambiguous {
     return uncoveredExpr(env, e, "an extern call with ambiguous host overloads")
   }

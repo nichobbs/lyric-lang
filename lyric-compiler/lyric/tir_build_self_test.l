@@ -891,7 +891,9 @@ impl ExternIterResolver for FakeHost {
     }
   }
 
-  func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]] {
+  func resolveMemberSigs(
+    clrName: in String, member: in String, argc: in Int, isProperty: in Bool
+  ): Option[List[ExternMemberSig]] {
     mapGet(self.sigs, fhKey(clrName, member, argc))
   }
 }

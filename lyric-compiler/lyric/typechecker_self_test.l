@@ -15411,7 +15411,9 @@ impl ExternIterResolver for FakeHostHierarchy {
     mapGet(self.known, clrName)
   }
 
-  func resolveMemberSigs(clrName: in String, member: in String, argc: in Int, isProperty: in Bool): Option[List[ExternMemberSig]] {
+  func resolveMemberSigs(
+    clrName: in String, member: in String, argc: in Int, isProperty: in Bool
+  ): Option[List[ExternMemberSig]] {
     None
   }
 }
