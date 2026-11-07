@@ -857,12 +857,12 @@ func fakeHost(): FakeHost {
   val sigs: Map[String, List[ExternMemberSig]] = newMap()
   val max: List[ExternMemberSig] = newList()
   max.add(fhSig(true, fhParams2(fhPrim("Int"), fhPrim("Int")), EMTType(elem = fhPrim("Int"))))
-  max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Long"))))
+  max.add(fhSig(true, fhParams2(fhPrim("Long"), fhPrim("Long")), EMTType(elem = fhPrim("Int"))))
   sigs.add(fhKey("System.Math", "Max", 2), max)
   val append: List[ExternMemberSig] = newList()
-  append.add(fhSig(false, fhParams1(fhPrim("Int")), EMTType(elem = fhHost("System.Text.StringBuilder"))))
-  append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhHost("System.Text.StringBuilder"))))
-  sigs.add(fhKey("System.Text.StringBuilder", "Append", 1), append)
+  append.add(fhSig(false, fhParams1(fhPrim("Char")), EMTType(elem = fhPrim("Int"))))
+  append.add(fhSig(false, fhParams1(fhPrim("String")), EMTType(elem = fhPrim("Int"))))
+  sigs.add(fhKey("System.Text.StringBuilder", "IndexOf", 1), append)
   val ctor: List[ExternMemberSig] = newList()
   ctor.add(fhSig(true, newList(), EMTType(elem = fhHost("System.Text.StringBuilder"))))
   sigs.add(fhKey("System.Text.StringBuilder", "new", 0), ctor)
@@ -934,7 +934,7 @@ func externCallOf(b: in Option[TExpr]): Option[HostMemberRef] {
 }
 
 test "a static extern call picks the overload the argument types select" {
-  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Long {\n  Math.Max(a, b)\n}\n")
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Int {\n  Math.Max(a, b)\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
@@ -942,7 +942,7 @@ test "a static extern call picks the overload the argument types select" {
       assertTrue(m.isStatic, "static")
       assertEqualInt(m.params.count, 2, "two parameters")
       assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
-      assertTrue(tyEq(m.ret, TPrim(kind = TPLong)), "returns Long")
+      assertTrue(tyEq(m.ret, TPrim(kind = TPInt)), "returns Int")
       assertTrue(m.name == "Max", "named Max")
     }
     case None -> assertTrue(false, "an extern call")
@@ -950,7 +950,7 @@ test "a static extern call picks the overload the argument types select" {
 }
 
 test "an extern argument is widened to the overload's parameter" {
-  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Long {\n  Math.Max(a, b)\n}\n")
+  val r = buildFirstFnHost(externHead() + "func f(a: Int, b: Long): Int {\n  Math.Max(a, b)\n}\n")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
     case Some(m) -> assertTrue(tyEq(m.params[0].ty, TPrim(kind = TPLong)), "the Long overload")
@@ -959,7 +959,7 @@ test "an extern argument is widened to the overload's parameter" {
 }
 
 test "an instance extern call has its receiver first" {
-  val r = buildFirstFnHost(externHead() + "func f(sb: in SB): SB {\n  sb.Append(\"x\")\n}\n")
+  val r = buildFirstFnHost(externHead() + "func f(sb: in SB): Int {\n  sb.IndexOf(\"x\")\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match externCallOf(r.body) {
@@ -990,7 +990,7 @@ test "an extern constructor is a static member named new" {
 }
 
 test "an extern call with a named argument is counted" {
-  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Long {\n  Math.Max(a, b = b)\n}\n")
+  val r = buildFirstFnHost(externHead() + "func f(a: Long, b: Long): Int {\n  Math.Max(a, b = b)\n}\n")
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "an extern call with a named argument"), 1, "counted")
 }
