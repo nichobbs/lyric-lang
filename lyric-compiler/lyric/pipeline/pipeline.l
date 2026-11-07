@@ -5707,6 +5707,38 @@ pub func qualifyCheckedCallees(file: in SourceFile, sites: in Map[String, String
         } else {
           x
         }
+        case EMember(recv, member) -> match recv.kind {
+          case EPath(rp) -> if rp.segments.count == 1 {
+            match mapGet(sites, methodCallSiteKey(fn)) {
+              case Some(dp) -> {
+                val declared = qualifiedCalleeSegments(dp, rp.segments[0] + "." + member)
+                if declared.count > 1 {
+                  val segs: List[String] = newList()
+                  var si = 0
+                  while si < declared.count - 1 {
+                    segs.add(declared[si])
+                    si = si + 1
+                  }
+                  segs.add(rp.segments[0])
+                  x.copy(
+                    kind = ECall(
+                      fn = fn.copy(
+                        kind = EMember(recv = recv.copy(kind = EPath(path = rp.copy(segments = segs))), member = member)
+                      ),
+                      args = args
+                    )
+                  )
+                } else {
+                  x
+                }
+              }
+              case None -> x
+            }
+          } else {
+            x
+          }
+          case _ -> x
+        }
         case _ -> x
       }
       case _ -> x

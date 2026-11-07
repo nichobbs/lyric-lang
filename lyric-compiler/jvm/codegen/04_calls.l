@@ -4516,6 +4516,39 @@ func siteDotNamedSigJvm(ctx: in FuncCtx, siteKey: in String, dotName: in String,
   None
 }
 
+// The dot-named function `Type.member` of the package that declares `Type`, as
+// the file's import-scoped type map names it (`externTypes[Type]` is the
+// dotted `Pkg.Type` of a type the file's own package or an import brings into
+// scope).  Used where the checker recorded no site (a dependency package
+// compiled without one), so a bare type name still binds to the package the
+// file sees it from, never to another package's same-named type.
+func typeOwnerDotNamedSigJvm(
+  ctx: in FuncCtx, typeName: in String, memberName: in String, argc: in Int
+): Option[JvmFuncSig] {
+  val fqn = match mapGet(ctx.externTypes, typeName) { case Some(f) -> f; case None -> return None }
+  val cut = lastIndexOfRaw(fqn, ".")
+  if cut <= 0 or fqn.substring(cut + 1, fqn.length - cut - 1) != typeName {
+    return None
+  }
+  val owner = fqn.substring(0, cut).replace(".", "/")
+  val dotName = typeName + "." + memberName
+  val argcSuffix = "@" + toString(argc)
+  val keys: List[String] = newList()
+  keys.add(owner + "/" + dotName)
+  keys.add(owner + "::" + dotName)
+  for k in keys {
+    match mapGet(ctx.funcSigs, k + argcSuffix) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> ()
+    }
+    match mapGet(ctx.funcSigs, k) {
+      case Some(sig) -> return Some(value = sig)
+      case None -> ()
+    }
+  }
+  None
+}
+
 // The parameter count a call binds: the overload the type checker resolved it
 // to (its parameter count, the `~arity~` seed entry under the callee's site
 // key) when the call leaves out defaulted arguments (#8355), else the number
@@ -5557,9 +5590,12 @@ func lowerMethodCall(
       }
       val dotSig = match scopedDotSig {
         case Some(_) -> scopedDotSig
-        case None -> match mapGet(ctx.funcSigs, distinctDotKey + "@" + dotCount) {
+        case None -> match typeOwnerDotNamedSigJvm(ctx, lastSegment(path), memberName, resolvedArityJvm(ctx, siteKey, args.count)) {
           case Some(sg) -> Some(value = sg)
-          case None -> mapGet(ctx.funcSigs, distinctDotKey)
+          case None -> match mapGet(ctx.funcSigs, distinctDotKey + "@" + dotCount) {
+            case Some(sg) -> Some(value = sg)
+            case None -> mapGet(ctx.funcSigs, distinctDotKey)
+          }
         }
       }
       match dotSig {
