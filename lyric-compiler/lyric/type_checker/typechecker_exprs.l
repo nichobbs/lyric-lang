@@ -3623,18 +3623,31 @@ func protectedFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Ty
       val ctx = newGenericContext()
       gctxPushOwned(ctx, gnames, pd.name)
       val scratch: List[Diagnostic] = newList()
+      // The field's type names what the declaring package sees, not what the
+      // reading file imports.
+      val saved = match symTableTypeSymbolOf(tbl, tid) {
+        case Some(sym) -> Some(value = enterDeclaringScopeIfForeign(tbl, sym))
+        case None -> None
+      }
+      var found: Option[Type] = None
+      var have = false
       for m in pd.members {
         match m {
           case PMField(pf) -> {
             val fd = protectedFieldAsFieldDecl(pf)
-            if fd.name == name {
-              return Some(value = eraseTyParams(substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
+            if fd.name == name and not have {
+              have = true
+              found = Some(value = eraseTyParams(substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
             }
           }
           case _ -> ()
         }
       }
-      None
+      match saved {
+        case Some(sv) -> restoreScope(tbl, sv)
+        case None -> ()
+      }
+      found
     }
     case None -> None
   }
@@ -10514,11 +10527,63 @@ func distinctCtorType(
           )
           return Some(value = tyErrorFor(diag))
         }
+        noteUnsolvedDistinctCtor(sc, tbl, fn, did, sym.name, gnames, args, argTypes, targs, span)
         Some(value = dty)
       }
       case _ -> None
     }
     case None -> None
+  }
+}
+
+// A generic distinct type's constructor call whose argument leaves a type
+// parameter unsolved (`Tagged(3)` with `type Tagged[T] = Int`) is recorded like
+// an unsolved union-case construction: an expected type or a later use fixes
+// it, otherwise `reportUnsolvedTypeArgs` reports T0224 (D359).
+func noteUnsolvedDistinctCtor(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  did: in SymbolId,
+  name: in String,
+  gnames: in List[String],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  targs: in List[Type],
+  callSpan: in Span,
+): Unit {
+  if gnames.count == 0 or targs.count != gnames.count or isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset {
+    return
+  }
+  val unsolved: List[String] = newList()
+  val selfArgs: List[Type] = newList()
+  var gi = 0
+  while gi < gnames.count {
+    if not typeIsSolution(targs[gi], sc.genericNames) {
+      unsolved.add(gnames[gi])
+    }
+    selfArgs.add(TyParam(name = gnames[gi], owner = ""))
+    gi = gi + 1
+  }
+  if unsolved.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if not tbl.unsolvedCallSites.containsKey(key) {
+    tbl.unsolvedCallSites.add(
+      key,
+      UnsolvedCallSite(
+        fname = name,
+        unsolved = unsolved,
+        generics = gnames,
+        returnTy = TyUser(id = did, name = name, args = selfArgs),
+        callKey = recordCopySiteKey(callSpan),
+        span = fn.span,
+        callerGenerics = sc.genericNames,
+        indeterminate = callArgsIndeterminate(sc, args, argTypes),
+        ctor = true
+      )
+    )
   }
 }
 
@@ -19169,7 +19234,7 @@ func inferExprCore(
               )
               return tyErrorFor(diag)
             }
-            case TyError(_) -> return tyErrorSilent()
+            case TyError(d) -> return if d.index == 0 { tyErrorSilent() } else { TyError(diag = d) }
             case _ -> ()
           }
           cachedRecvType = Some(value = urt)

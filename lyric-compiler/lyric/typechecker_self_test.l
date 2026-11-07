@@ -15149,6 +15149,27 @@ test "a generic distinct type's constructor call takes its arguments from the va
   assertTrue(diagCodesOf(bad) != "", "a Wrapped[Int] is not a Wrapped[String]")
 }
 
+test "an unsolved generic distinct constructor is T0224 unless its context fixes it (D359)" {
+  val pre = "package P\ntype Tagged[T] = Int\n"
+  val bare = parseCheck(pre + "func f(): Int {\n  val x = Tagged(3)\n  0\n}\n")
+  assertTrue(Str.contains(diagCodesOf(bare), "T0224"), "nothing fixes T: " + diagCodesOf(bare))
+  val fixed = parseCheck(pre + "func f(): Tagged[Int] {\n  val x: Tagged[Int] = Tagged(3)\n  x\n}\n")
+  assertEqual(diagCodesOf(fixed), "", "an annotation fixes T: " + diagCodesOf(fixed))
+}
+
+test "unsigned conversions of an unchecked host value keep its kind (D359)" {
+  val pre = "package P\nextern type Arr = \"System.IO.MemoryStream\"\n"
+  val u = parseCheck(pre + "func f(a: in Arr): UInt {\n  val b = a.ToArray()\n  b[0].toUInt()\n}\n")
+  assertEqual(silentSiteKinds(u), "", "toUInt: " + silentSiteKinds(u))
+  val ul = parseCheck(pre + "func f(a: in Arr): ULong {\n  val b = a.ToArray()\n  b[0].toULong()\n}\n")
+  assertEqual(silentSiteKinds(ul), "", "toULong: " + silentSiteKinds(ul))
+}
+
+test "a protected field's type is read in the declaring package's scope (D359)" {
+  val src = "package P\nprotected type Bucket {\n  var tokens: Long\n  entry take(n: in Long): Unit { tokens = tokens - n }\n}\nfunc make(c: in Long): Bucket\n  ensures: result.tokens == c\n{\n  Bucket(tokens = c)\n}\n"
+  assertEqual(diagCodesOf(parseCheck(src)), "", "the own-package read is typed")
+}
+
 test "a conversion of an unchecked host value is unchecked, not silent (D359)" {
   val cr = parseCheck(
     "package P\nextern type Arr = \"System.IO.MemoryStream\"\nfunc f(a: in Arr): Int {\n  val b = a.ToArray()\n  b[0].toInt()\n}\n"

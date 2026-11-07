@@ -1,6 +1,6 @@
 # D385 - The silent-TyError gate is the error I0001 (docs/70 5.3, 12.2, Q-TIR-001, #8613)
 
-**Status:** shipped. Supersedes the opt-in form of D341.
+**Status:** shipped. Supersedes the opt-in form of D341: D341, D354, D355 and D357 describe the retired opt-in gate (W0036, `LYRIC_TYERR_GATE`); their text stays frozen.
 
 ## Context
 
