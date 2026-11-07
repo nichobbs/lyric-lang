@@ -52,6 +52,17 @@ gate would reject programs the backends compile.
    or merely named value. `examples/jobqueue` read `Worker`'s config from
    another package; it now goes through a `pub func pollIntervalMs()`.
 
+9. **A member read off a primitive or a slice** (`n.bogus`, `xs.bogus`) that names
+   none of its built-in members is the error T0113 ("no member"), as a call of
+   one already was; a `String` keeps its open host members. The backends' J010
+   and J011 aborts stay as defence in depth; the two JVM source tests that could
+   reach them only through the checker's silence (`jvm_trycatch_bridge_self_test.l`)
+   are replaced by a checker test, since no source reaches them any more.
+
+New user-visible diagnostics: T0020 for a package-qualified read no rule resolves
+(item 8) and T0113 for an unknown member of a primitive or slice (item 9); both
+codes already existed and their book rows cover them.
+
 ## Tests
 
 `typechecker_self_test.l`: the open generic value, the protected field (and T0221
