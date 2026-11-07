@@ -21,8 +21,10 @@
 # loading a library dependency that is built later in the run is retried once
 # the dependency exists.  The sites are printed before the unchecked builds.
 #
-# Libraries written for `--target native` build only there; the rest build on
-# dotnet and the JVM.
+# Libraries written for `--target native` are not built here: resolving their
+# system libraries and the runtime archive precedes compilation, so a runner
+# without that toolchain could never judge them.  Their native-platforms.yml e2e
+# jobs build them with it, and I0001 is an error there too.
 #
 # Usage: library-tyerr-census.sh [path/to/lyric] [dotnet|jvm|native ...]
 # ---------------------------------------------------------------------------
@@ -49,6 +51,7 @@ is_native_only() {
 }
 
 jobs_list=()
+skipped_native=()
 for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.toml; do
   [[ -f "$manifest" ]] || continue
   dir="$(dirname "$manifest")"
@@ -56,7 +59,7 @@ for manifest in lyric-*/lyric.toml lyric-*/*/lyric.toml lyric-ui/native/*/lyric.
   if [[ ${#OVERRIDE_TARGETS[@]} -gt 0 ]]; then
     for t in "${OVERRIDE_TARGETS[@]}"; do jobs_list+=("$manifest|$t"); done
   elif is_native_only "$dir"; then
-    jobs_list+=("$manifest|native")
+    skipped_native+=("$dir")
   else
     jobs_list+=("$manifest|dotnet" "$manifest|jvm")
   fi
@@ -83,20 +86,21 @@ for phase in dotnet jvm native; do
       log="$(mktemp)"
       rc=0
       timeout 900 "$LYRIC" build --manifest "$manifest" --target "$target" >"$log" 2>&1 || rc=$?
-      if grep -q 'restored dep .* failed to load' "$log" && [[ "$round" -lt 3 ]]; then
+      if grep -qE "restored dep .* failed to load|local dep '.*' not built" "$log" && [[ "$round" -lt 3 ]]; then
         retry+=("$job")
         rm -f "$log"
         continue
       fi
       grep 'I0001' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
-      # The checker completed when the build succeeded or reported I0001 (it
-      # reports them only for a program that type-checks).  A build that exits
-      # non-zero without one stopped on something else, an error of any class
-      # or a failure with no code (a malformed dependency manifest): the
-      # manifest is unchecked, not clean.  Only the exact I0001 diagnostic is
-      # a site.
-      if [[ "$rc" -ne 0 ]] && ! grep -qF 'error[I0001]' "$log"; then
-        reason="$(grep -vF 'error[I0001]' "$log" | grep -m1 -iE 'error|failed|malformed|missing|cannot' | sed "s|$REPO_ROOT/||" | cut -c1-160)"
+      # The checker completed when the build succeeded, reported I0001, or failed
+      # in a later stage: JVM codegen (J) and the middle end (M) run only on a
+      # program that type-checked, so a missing JVM jar there says nothing about
+      # sites.  A build that exits non-zero otherwise stopped before the checker
+      # finished (an error of any other class, or a failure with no code such as
+      # a malformed dependency manifest or a timeout): the manifest is unchecked,
+      # not clean.  Only the exact I0001 diagnostic is a site.
+      if [[ "$rc" -ne 0 ]] && ! grep -qF 'error[I0001]' "$log" && ! grep -qE 'error\[(J|M)[0-9]+\]' "$log"; then
+        reason="$(grep -vF 'error[I0001]' "$log" | grep -m1 -iE 'error|failed|malformed|missing|cannot|not built' | sed "s|$REPO_ROOT/||" | cut -c1-160)"
         [[ -n "$reason" ]] || reason="exit $rc: $(tail -n1 "$log" | cut -c1-140)"
         echo "$manifest ($target): $reason" >>"$unchecked_file"
       else
@@ -111,6 +115,9 @@ done
 sort -u "$sites_file" -o "$sites_file"
 count=$(grep -c . "$sites_file" || true)
 unchecked=$(grep -c . "$unchecked_file" || true)
+if [[ ${#skipped_native[@]} -gt 0 ]]; then
+  echo "::notice::native-only libraries not built here (their native-platforms.yml e2e jobs build them with the real toolchain, where the always-on I0001 fails a silent site): ${skipped_native[*]}"
+fi
 echo "::notice::I0001 silent TyError sites across the library manifests: ${count} (${checked}/${attempted} builds checked, ${unchecked} unchecked)"
 # The sites first: a run with both findings must show where the sites are.
 if [[ "$count" -gt 0 ]]; then

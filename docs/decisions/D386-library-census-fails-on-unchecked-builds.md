@@ -17,10 +17,22 @@ the JVM, where `accesskit_rect` does not resolve (T0010).
 1. An UNCHECKED build fails the run (exit 1) with a message naming the builds. A
    manifest the census cannot judge is a hole in the census: it is fixed or listed
    as native-only, never counted as clean.
-2. A build is checked when it succeeds or reports I0001 (the checker reports it only
-   for a program that type-checks). A build that exits non-zero without an I0001 is
-   unchecked, whatever the error class and even when it prints no code at all (a
-   malformed dependency manifest); only the exact diagnostic `error[I0001]` is a site.
-   The sites are printed before the unchecked builds, so a run with both shows both.
-3. `lyric-access/platform` is listed in `NATIVE_ONLY` with the other libraries
-   that build only on `--target native`.
+2. A build is checked when it succeeds, reports I0001 (the checker reports it only
+   for a program that type-checks), or fails in a later stage: JVM codegen (`J`
+   codes, a missing JVM jar) and the middle end (`M` codes) run only on a program
+   that type-checked. Any other non-zero exit is unchecked, whatever the error
+   class and even when it prints no code (a malformed dependency manifest, a
+   timeout); only the exact diagnostic `error[I0001]` is a site. The sites are
+   printed before the unchecked builds, so a run with both shows both.
+3. A build that stops because a local dependency is not built yet is retried once
+   the dependency exists, as one that fails to load a restored one already was (the
+   first run of the strict census flagged `lyric-access` and `lyric-unicode-dict`
+   for exactly that).
+4. Native-only libraries (`lyric-access/platform`, `lyric-draw`, `lyric-gpu`,
+   `lyric-gpu-window`, `lyric-text`, `lyric-window`, `lyric-game/platform`,
+   `lyric-ui/native/host`) are not built by the census. Resolving their system
+   libraries (`pkg-config`) and the runtime archive precedes compilation, so the
+   old census counted them as checked without ever type-checking them. Their
+   `native-platforms.yml` e2e jobs build them with the real toolchain, and with I0001
+   always an error a silent site fails those jobs. The census prints which libraries
+   it skipped.
