@@ -572,6 +572,11 @@ pub record SymbolTable {
   /// The declaration each name expression that is not a local resolved to,
   /// keyed by its `NodeId` (D368).
   refByNode: Map[Int, RefSite]
+  /// The fields of the record or union case a constructor call built, as the
+  /// parameters of a signature (names, types, defaults), keyed by the call's
+  /// `NodeId` (D370).  Only non-generic constructions: a generic one waits for
+  /// the generic-call step.
+  ctorSigByNode: Map[Int, ResolvedSignature]
   /// The type each pattern is matched at, keyed by the pattern's `NodeId`
   /// (docs/70 §6.3, D369): a binding's local has this type, a constructor
   /// pattern's payload is read from it.
@@ -1195,6 +1200,7 @@ pub func newSymbolTable(): SymbolTable {
     callSigByNode = newMap(),
     externByNode = newMap(),
     refByNode = newMap(),
+    ctorSigByNode = newMap(),
     patTypes = newMap(),
     patSymByNode = newMap(),
     patBindingNodes = newMap(),
