@@ -20554,7 +20554,11 @@ func inferExprCore(
             // A member of a name the checker cannot see (`Pkg.Cfg.field` of a
             // package-private config another package of the project declares)
             // is unresolved here, not silent (D359).
-            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) { tyErrorUnresolved() } else { TyError(diag = d) }
+            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) {
+              tyErrorUnresolved()
+            } else {
+              TyError(diag = d)
+            }
             case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
             case _ -> readTy
           }
