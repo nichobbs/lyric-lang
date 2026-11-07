@@ -19497,7 +19497,12 @@ func inferExprCore(
         }
       }
       val fnT = match memberRecvTy {
-        case Some(rt) -> inferMemberBase(tbl, rt, memberName)
+        case Some(rt) -> {
+          // A function-valued protected field called from outside is as
+          // refused as a read of it (T0221, D359).
+          checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
+          inferMemberBase(tbl, rt, memberName)
+        }
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
       match memberRecvTy {
