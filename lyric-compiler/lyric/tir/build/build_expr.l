@@ -754,6 +754,8 @@ func buildInit(env: in BuildEnv, s: in Statement, ann: in Option[TypeExpr], init
   match ann {
     case None -> Some(value = t)
     case Some(te) -> {
+      // The checker has already reported an annotation that does not resolve, so the
+      // diagnostics of this second resolution are not read.
       val diag: List[Diagnostic] = newList()
       val gc = if env.generics.count > 0 {
         env.generics[0]
@@ -1235,9 +1237,7 @@ func buildFieldRead(env: in BuildEnv, e: in Expr, ty: in Ty, recv: in Expr, name
       var i = 0
       while i < fields.count {
         if fields[i].name == name {
-          return Some(
-            value = mkExpr(e, ty, XField(recv = rt, field = FieldRef(owner = sym, name = name, index = i)))
-          )
+          return Some(value = mkExpr(e, ty, XField(recv = rt, field = FieldRef(owner = sym, name = name, index = i))))
         }
         i = i + 1
       }

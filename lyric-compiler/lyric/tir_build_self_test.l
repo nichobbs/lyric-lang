@@ -1217,9 +1217,7 @@ test "a record field read is a field by its declared position" {
 }
 
 test "a field of a generic record builds at the receiver's instantiation" {
-  val r = buildFirstFn(
-    "package App\nrecord Box[T] {\n  v: T\n  n: Int\n}\nfunc f(b: Box[String]): Int {\n  b.n\n}\n"
-  )
+  val r = buildFirstFn("package App\nrecord Box[T] {\n  v: T\n  n: Int\n}\nfunc f(b: Box[String]): Int {\n  b.n\n}\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   match fieldOf(r.body) {
