@@ -1330,10 +1330,7 @@ func lambdaOf(b: in Option[TExpr]): Option[TExpr] {
       case XBlock(stmts, tail) -> {
         for st in stmts {
           match st.kind {
-            case TsLet(_, init) -> match init.kind {
-              case XLambda(_, _, _) -> return Some(value = init)
-              case _ -> ()
-            }
+            case TsLet(_, init) -> match init.kind { case XLambda(_, _, _) -> return Some(value = init); case _ -> () }
             case _ -> ()
           }
         }
@@ -1377,7 +1374,9 @@ test "a lambda captures an outer value by value and a var by reference" {
         var byRef = 0
         for c in caps {
           match c.mode {
-            case CmByRef -> byRef = byRef + 1
+            case CmByRef -> {
+              byRef = byRef + 1
+            }
             case CmByValue -> ()
           }
         }

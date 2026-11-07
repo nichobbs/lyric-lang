@@ -1307,11 +1307,16 @@ func indexKindOf(env: in BuildEnv, recvExpr: in Expr, rt: in TExpr): Option[TirT
     case _ -> ()
   }
   match mapGet(env.ctx.tbl.exprTypes, recvExpr.nodeId) {
-    case Some(TyUser(_, name, _)) -> {
-      if name == "List" {
+    case Some(TyUser(id, name, _)) -> {
+      // A user type that happens to be named `List` or `Map` is not the stdlib's.
+      val stdlib = match symTableTypeSymbolOf(env.ctx.tbl, id) {
+        case Some(ts) -> ts.originPackage == "Std.CollectionsHost"
+        case None -> false
+      }
+      if stdlib and name == "List" {
         return Some(value = IkList)
       }
-      if name == "Map" {
+      if stdlib and name == "Map" {
         return Some(value = IkMap)
       }
       None
@@ -1381,10 +1386,17 @@ func buildLambda(
   env: in BuildEnv, e: in Expr, ty: in Ty, params: in List[Px.LambdaParam], body: in Block
 ): Option[TExpr] {
   val sig = match ty {
-    case TFunc(ps, r, _) -> if ps.count == params.count { Some(value = LambdaSig(params = ps, ret = r)) } else { None }
+    case TFunc(ps, r, _) -> if ps.count == params.count {
+      Some(value = LambdaSig(params = ps, ret = r))
+    } else {
+      None
+    }
     case _ -> None
   }
-  val ls = match sig { case Some(x) -> x; case None -> return uncoveredExpr(env, e, "a lambda whose type has other parameters") }
+  val ls = match sig {
+    case Some(x) -> x
+    case None -> return uncoveredExpr(env, e, "a lambda whose type has other parameters")
+  }
   pushScope(env)
   val frame = LambdaFrame(start = env.nextLocal[0], caps = newList())
   env.lambdas.add(frame)
