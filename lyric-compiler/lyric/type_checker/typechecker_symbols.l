@@ -408,6 +408,16 @@ pub record RefSite {
   kind: RefKind
 }
 
+/// A method call's resolved shape, keyed by the call's `NodeId` in
+/// `SymbolTable.methodCallByNode` (D389): the receiver-dropped signature (with
+/// `recvMode`), the receiver's declared type, and the interface when the
+/// receiver is an interface-typed value (the call is then dispatched on it).
+pub record MethodCallSite {
+  sig: ResolvedSignature
+  recvTy: Type
+  iface: Option[SymbolId]
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -577,6 +587,9 @@ pub record SymbolTable {
   /// `NodeId` (D388).  Only non-generic constructions: a generic one waits for
   /// the generic-call step.
   ctorSigByNode: Map[Int, ResolvedSignature]
+  /// The method each member call resolved to, keyed by the call's `NodeId`
+  /// (D389), recorded beside `calleeByNode`.
+  methodCallByNode: Map[Int, MethodCallSite]
   /// The type each pattern is matched at, keyed by the pattern's `NodeId`
   /// (docs/70 §6.3, D369): a binding's local has this type, a constructor
   /// pattern's payload is read from it.
@@ -1201,6 +1214,7 @@ pub func newSymbolTable(): SymbolTable {
     externByNode = newMap(),
     refByNode = newMap(),
     ctorSigByNode = newMap(),
+    methodCallByNode = newMap(),
     patTypes = newMap(),
     patSymByNode = newMap(),
     patBindingNodes = newMap(),

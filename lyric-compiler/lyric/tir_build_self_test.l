@@ -726,3 +726,95 @@ test "an array field is counted as defaulted, not missing, when left out" {
   assertTrue(not r.body.isSome(), "no body")
   assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted as defaulted")
 }
+
+func calleeShape(b: in Option[TExpr]): String {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XCall(callee, args) -> {
+          val first = if args.count > 0 {
+            match args[0] {
+              case TArgIn(v) -> match v.kind { case XLocal(_) -> "recv"; case _ -> "other" }
+              case _ -> "place"
+            }
+          } else {
+            "none"
+          }
+          match callee {
+            case Direct(_, _) -> "direct:" + first
+            case Interface(_, _, _, _) -> "interface:" + first
+            case _ -> "other:" + first
+          }
+        }
+        case _ -> "not a call"
+      }
+      case _ -> "not a block"
+    }
+    case None -> "none"
+  }
+}
+
+func callArgCount(b: in Option[TExpr]): Int {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind { case XCall(_, args) -> args.count; case _ -> -1 }
+      case _ -> -2
+    }
+    case None -> -3
+  }
+}
+
+test "a method declared in a record body builds with the receiver first" {
+  val r = buildFirstFn(
+    "package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
+}
+
+test "a dot-named function called as a method builds with the receiver first" {
+  val r = buildFirstFn(
+    "package App\nrecord P { x: Int }\nfunc f(p: P): Int {\n  p.plus(2)\n}\nfunc P.plus(self: in P, n: Int): Int { self.x + n }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
+}
+
+test "a method called on an interface value builds as an interface call" {
+  val r = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertEqualInt(callArgCount(r.body), 2, "the receiver and the argument")
+}
+
+test "a method with a mutating receiver is counted, not built as an in argument" {
+  val r = buildFirstFn(
+    "package App\nrecord C {\n  var n: Int\n  func bump(self: inout C): Unit { self.n = self.n + 1 }\n}\nfunc f(c: inout C): Unit {\n  c.bump()\n}\n"
+  )
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a method call with a mutating receiver"), 1, "counted")
+}
+
+test "the callee shape and the receiver position of a method call are pinned" {
+  val rec = buildFirstFn(
+    "package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n"
+  )
+  assertTrue(calleeShape(rec.body) == "direct:recv", calleeShape(rec.body))
+  val ifc = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n"
+  )
+  assertTrue(calleeShape(ifc.body) == "interface:recv", calleeShape(ifc.body))
+}
+
+test "a dot-named function called on an interface value is a direct call" {
+  val r = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.double(2)\n}\nfunc Feed.double(self: in Feed, n: Int): Int { n + n }\n"
+  )
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
+  assertTrue(calleeShape(r.body) == "direct:recv", calleeShape(r.body))
+}
