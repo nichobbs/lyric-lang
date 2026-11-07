@@ -725,6 +725,33 @@ func casePatternSymbolId(tbl: in SymbolTable, sym: in Symbol): Option[SymbolId] 
   }
 }
 
+// A pattern that matches every value of its type, by the checker's own reading
+// of each bare name: a name it bound as a local, not one it took for a case.
+func patIrrefutableBound(tbl: in SymbolTable, p: in Pattern): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PParen(inner) -> patIrrefutableBound(tbl, inner)
+    case PBinding(name, inner) -> {
+      if name != "_" and not tbl.patBindingNodes.containsKey(p.nodeId) {
+        return false
+      }
+      match inner {
+        case None -> true
+        case Some(ip) -> patIrrefutableBound(tbl, ip)
+      }
+    }
+    case PTuple(ps) -> {
+      for q in ps {
+        if not patIrrefutableBound(tbl, q) {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
 // A pattern of a case arm whose payload patterns match any value, so naming
 // the case covers it whole.
 func armCoversWholeCase(tbl: in SymbolTable, p: in Pattern): Bool {
@@ -12591,7 +12618,9 @@ func inferMatchExpr(
   val diagsBefore = diag.count
   val t = inferMatchExprCore(sc, tbl, sigs, diag, e, scrutinee, arms, isValuePosition, tailExpected)
   // The proof is read after the arms are bound: which bare names are bindings
-  // and which are cases is the checker's decision made while binding them.
+  // and which are cases is the checker's decision made while binding them.  A
+  // T0016 from a `match` nested in an arm also clears this one, which only
+  // withholds the proof, the safe direction.
   var missing = false
   var di = diagsBefore
   while di < diag.count {

@@ -30,3 +30,10 @@ patterns, which also gates `for` loops and binding patterns.
    Counted as I0002 and not built: or-patterns (the alternatives must share
    `LocalId`s), range, type-test and constant patterns, shorthand record fields,
    and a pattern the checker did not resolve.
+4. `buildOrBlock` converts a branch to the type of the whole through `coerceBranch`
+   (a widening as an `XConvert` node; a branch that never completes fits any type;
+   any other difference is an I0002), for `if` branches as well as `match` arms,
+   so the verifier's branch-type rule holds for both.
+5. The proof is read after the arms are bound, from the checker's own decision
+   about each bare name (`patBindingNodes`), because a lowercase name can be an
+   enum case (`A(small)`), which spelling alone cannot tell.
