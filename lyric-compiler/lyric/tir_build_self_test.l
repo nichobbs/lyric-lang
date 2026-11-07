@@ -426,3 +426,30 @@ test "a built-in call with an argument the builder cannot check is counted" {
   val r = buildFirstFn("package App\nfunc m(x: Int): Int { max(x, 2) }\nfunc max(a: Int, b: Int): Int { a }\n")
   assertEqualInt(r.env.errors.count, 0, "a declared max is a direct call")
 }
+
+test "collection members take their parameter types from a host or a declared receiver" {
+  val host = TirT.TExtern(host = HostTypeRef(name = "System.Collections.Generic.List`1", args = [TirT.TPrim(kind = TPLong)]))
+  match memberArgTys(host, "List.add", 1) {
+    case Some(tys) -> {
+      assertEqualInt(tys.count, 1, "one parameter")
+      assertTrue(tyEq(tys[0], TirT.TPrim(kind = TPLong)), "the element type")
+    }
+    case None -> assertTrue(false, "a host List has derived parameter types")
+  }
+  match memberArgTys(host, "List.add", 2) {
+    case Some(tys) -> assertTrue(tyEq(tys[0], tyInt()) and tyEq(tys[1], TirT.TPrim(kind = TPLong)), "index then element")
+    case None -> assertTrue(false, "the two-argument add")
+  }
+  match memberArgTys(host, "Map.add", 2) {
+    case Some(_) -> assertTrue(false, "a List receiver has no Map members")
+    case None -> ()
+  }
+}
+
+test "a refined argument to a built-in the builder cannot check is counted, not passed through" {
+  val r = buildFirstFn("package App\nfunc m(s: in String, i: in Int range 0 ..= 9): String { s.substring(i) }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
+}
+

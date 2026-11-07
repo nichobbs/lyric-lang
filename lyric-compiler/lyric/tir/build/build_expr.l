@@ -777,7 +777,9 @@ func genericBuiltin(name: in String): Bool {
   name == "println" or name == "print" or name == "toString" or name == "hashCode"
 }
 
-/// A primitive an implicit widening can change.
+/// A primitive an implicit widening can change, or a refined number an unrefinement or
+/// widening is owed for: an argument the builder cannot check against an unknown
+/// parameter type.
 func isWidenablePrim(t: in Ty): Bool {
   match t {
     case TPrim(p) -> match p {
@@ -787,72 +789,81 @@ func isWidenablePrim(t: in Ty): Bool {
       case TPFloat -> true
       case _ -> false
     }
+    case TRefined(_, _, _, _) -> true
     case _ -> false
   }
 }
 
 /// The parameter types of the element-taking members of `List`, `Map` and `Set` and of
 /// the `slice` members, from the receiver's type arguments (docs/01 member table).
-/// `None` for any other built-in: its parameter types are not derived here.
-func memberArgTys(recv: in Ty, name: in String, argc: in Int): Option[List[Ty]] {
-  val res: List[Ty] = newList()
+/// The stdlib collections are host types (`TExtern`) to the type conversion, a declared
+/// generic is a `TNamed`; both carry the arguments.  `None` for any other built-in: its
+/// parameter types are not derived here.
+pub func memberArgTys(recv: in Ty, name: in String, argc: in Int): Option[List[Ty]] {
   match recv {
-    case TNamed(_, targs) -> {
-      if name.startsWith("List.") and targs.count == 1 {
-        val op = name.substring(5, name.length - 5)
-        if op == "add" and argc == 2 {
-          res.add(tyInt())
-          res.add(targs[0])
-          return Some(value = res)
-        }
-        if argc == 1 and (op == "add" or op == "contains" or op == "indexOf" or op == "lastIndexOf" or op == "remove") {
-          res.add(targs[0])
-          return Some(value = res)
-        }
-        if argc == 1 and op == "removeAt" {
-          res.add(tyInt())
-          return Some(value = res)
-        }
-      }
-      if name.startsWith("Map.") and targs.count == 2 {
-        val op = name.substring(4, name.length - 4)
-        if op == "add" and argc == 2 {
-          res.add(targs[0])
-          res.add(targs[1])
-          return Some(value = res)
-        }
-        if argc == 1 and (op == "containsKey" or op == "remove") {
-          res.add(targs[0])
-          return Some(value = res)
-        }
-      }
-      if name.startsWith("Set.") and targs.count == 1 {
-        val op = name.substring(4, name.length - 4)
-        if argc == 1 and (op == "add" or op == "contains" or op == "remove") {
-          res.add(targs[0])
-          return Some(value = res)
-        }
-      }
-      None
-    }
-    case TSlice(elem) -> {
-      if name == "slice.append" and argc == 1 {
-        res.add(elem)
-        return Some(value = res)
-      }
-      if name == "slice.concat" and argc == 1 {
-        res.add(TSlice(element = elem))
-        return Some(value = res)
-      }
-      if name == "slice.slice" and argc == 2 {
-        res.add(tyInt())
-        res.add(tyInt())
-        return Some(value = res)
-      }
-      None
-    }
+    case TSlice(elem) -> sliceMemberArgTys(elem, name, argc)
+    case TNamed(_, targs) -> collMemberArgTys(targs, name, argc)
+    case TExtern(host) -> collMemberArgTys(host.args, name, argc)
     case _ -> None
   }
+}
+
+func sliceMemberArgTys(elem: in Ty, name: in String, argc: in Int): Option[List[Ty]] {
+  val res: List[Ty] = newList()
+  if name == "slice.append" and argc == 1 {
+    res.add(elem)
+    return Some(value = res)
+  }
+  if name == "slice.concat" and argc == 1 {
+    res.add(TSlice(element = elem))
+    return Some(value = res)
+  }
+  if name == "slice.slice" and argc == 2 {
+    res.add(tyInt())
+    res.add(tyInt())
+    return Some(value = res)
+  }
+  None
+}
+
+func collMemberArgTys(targs: in List[Ty], name: in String, argc: in Int): Option[List[Ty]] {
+  val res: List[Ty] = newList()
+  if name.startsWith("List.") and targs.count == 1 {
+    val op = name.substring(5, name.length - 5)
+    if op == "add" and argc == 2 {
+      res.add(tyInt())
+      res.add(targs[0])
+      return Some(value = res)
+    }
+    if argc == 1 and (op == "add" or op == "contains" or op == "indexOf" or op == "lastIndexOf" or op == "remove") {
+      res.add(targs[0])
+      return Some(value = res)
+    }
+    if argc == 1 and op == "removeAt" {
+      res.add(tyInt())
+      return Some(value = res)
+    }
+  }
+  if name.startsWith("Map.") and targs.count == 2 {
+    val op = name.substring(4, name.length - 4)
+    if op == "add" and argc == 2 {
+      res.add(targs[0])
+      res.add(targs[1])
+      return Some(value = res)
+    }
+    if argc == 1 and (op == "containsKey" or op == "remove") {
+      res.add(targs[0])
+      return Some(value = res)
+    }
+  }
+  if name.startsWith("Set.") and targs.count == 1 {
+    val op = name.substring(4, name.length - 4)
+    if argc == 1 and (op == "add" or op == "contains" or op == "remove") {
+      res.add(targs[0])
+      return Some(value = res)
+    }
+  }
+  None
 }
 
 /// A built-in call.  Its arguments are checked against the parameter types derived for
