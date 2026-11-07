@@ -18,12 +18,14 @@ the JVM, where `accesskit_rect` does not resolve (T0010).
    manifest the census cannot judge is a hole in the census: it is fixed or listed
    as native-only, never counted as clean.
 2. A build is checked when it succeeds, reports I0001 (the checker reports it only
-   for a program that type-checks), or fails in a later stage: JVM codegen (`J`
-   codes, a missing JVM jar) and the middle end (`M` codes) run only on a program
-   that type-checked. Any other non-zero exit is unchecked, whatever the error
-   class and even when it prints no code (a malformed dependency manifest, a
-   timeout); only the exact diagnostic `error[I0001]` is a site. The sites are
-   printed before the unchecked builds, so a run with both shows both.
+   for a program that type-checks), or fails with "JVM codegen failed" (emission runs
+   only on a program that type-checked). Middle-end `M` codes are not evidence: a
+   Mono failure can be caused by a silent unchecked type, which is what the census
+   hunts. Any other non-zero exit is unchecked, whatever the error class and even
+   when it prints no code (a malformed dependency manifest, a timeout); only the
+   exact diagnostic `error[I0001]` is a site. A build with a tracked cause is listed
+   in `KNOWN_UNCHECKED` as "manifest|target|issue" and reported separately without
+   failing. The sites are printed before the unchecked builds.
 3. A build that stops because a local dependency is not built yet is retried once
    the dependency exists, as one that fails to load a restored one already was (the
    first run of the strict census flagged `lyric-access` and `lyric-unicode-dict`

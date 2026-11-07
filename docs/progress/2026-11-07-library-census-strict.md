@@ -9,8 +9,9 @@
   illusory: native-only libraries failed on `pkg-config` and `lyric_rt.a` before any
   type-checking, so they are no longer built by the census (their native e2e jobs
   build them for real); two dotnet libraries were flagged only because a local
-  dependency was not built yet, so that case is retried; JVM codegen and middle-end
-  failures happen after checking and count as checked. `lyric-ui` on the JVM fails in
-  the middle end (M0004, `toWire` cannot infer `Msg`); that is a separate JVM build
-  problem the census now makes visible, not a silent site.
+  dependency was not built yet, so that case is retried; JVM codegen failures
+  happen after checking and count as checked; middle-end failures do not (Mono can
+  fail on a silent unchecked type) and are listed in `KNOWN_UNCHECKED` with an issue. `lyric-ui` on the JVM fails in
+  the middle end (M0004, `toWire` cannot infer `Msg`), which the census now makes
+  visible (#8886, listed in `KNOWN_UNCHECKED`; it predates the I0001 flip).
 

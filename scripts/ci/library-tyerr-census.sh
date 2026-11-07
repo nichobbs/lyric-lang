@@ -40,6 +40,13 @@ NATIVE_ONLY=(
   lyric-game/platform lyric-ui/native/host
 )
 
+# Builds the census cannot judge for a reason the census does not own, each with
+# the tracked issue that fixes it ("manifest|target|issue").  They are reported,
+# not failed; any other unchecked build fails the run (D386).
+KNOWN_UNCHECKED=(
+  "lyric-ui/lyric.toml|jvm|#8886"
+)
+
 export NuGetAudit=false
 
 cd "$REPO_ROOT"
@@ -67,6 +74,7 @@ done
 
 sites_file="$(mktemp)"
 unchecked_file="$(mktemp)"
+known_file="$(mktemp)"
 checked=0
 attempted=${#jobs_list[@]}
 # One phase per target: a JVM build writes its jar under the same `.dll` name
@@ -92,17 +100,26 @@ for phase in dotnet jvm native; do
         continue
       fi
       grep 'I0001' "$log" | sed "s|$REPO_ROOT/||" | sed "s|^|[$target] |" >>"$sites_file" || true
-      # The checker completed when the build succeeded, reported I0001, or failed
-      # in a later stage: JVM codegen (J) and the middle end (M) run only on a
-      # program that type-checked, so a missing JVM jar there says nothing about
-      # sites.  A build that exits non-zero otherwise stopped before the checker
-      # finished (an error of any other class, or a failure with no code such as
-      # a malformed dependency manifest or a timeout): the manifest is unchecked,
-      # not clean.  Only the exact I0001 diagnostic is a site.
-      if [[ "$rc" -ne 0 ]] && ! grep -qF 'error[I0001]' "$log" && ! grep -qE 'error\[(J|M)[0-9]+\]' "$log"; then
+      # The checker completed for the whole program when the build succeeded,
+      # reported I0001, or reached JVM code generation, which runs only after
+      # every package type-checked.  Nothing else proves it: the JVM front end
+      # rejects a `main` return type (J001) before checking, and the middle end
+      # (M) stops on one package before checking the next.  A build that exits
+      # non-zero otherwise is unchecked (an error of any class, or a failure
+      # with no code such as a malformed dependency manifest or a timeout), not
+      # clean.  Only the exact I0001 diagnostic is a site.
+      if [[ "$rc" -ne 0 ]] && ! grep -qF 'error[I0001]' "$log" && ! grep -qF 'JVM codegen failed' "$log"; then
         reason="$(grep -vF 'error[I0001]' "$log" | grep -m1 -iE 'error|failed|malformed|missing|cannot|not built' | sed "s|$REPO_ROOT/||" | cut -c1-160)"
         [[ -n "$reason" ]] || reason="exit $rc: $(tail -n1 "$log" | cut -c1-140)"
-        echo "$manifest ($target): $reason" >>"$unchecked_file"
+        known=""
+        for k in "${KNOWN_UNCHECKED[@]+"${KNOWN_UNCHECKED[@]}"}"; do
+          [[ "${k%|*}" == "$manifest|$target" ]] && known="${k##*|}"
+        done
+        if [[ -n "$known" ]]; then
+          echo "$manifest ($target): tracked in $known: $reason" >>"$known_file"
+        else
+          echo "$manifest ($target): $reason" >>"$unchecked_file"
+        fi
       else
         checked=$((checked + 1))
       fi
@@ -123,6 +140,10 @@ echo "::notice::I0001 silent TyError sites across the library manifests: ${count
 if [[ "$count" -gt 0 ]]; then
   head -200 "$sites_file"
 fi
+if [[ -s "$known_file" ]]; then
+  echo "Known unchecked builds (tracked, not failing):"
+  cat "$known_file"
+fi
 if [[ "$unchecked" -gt 0 ]]; then
   echo "UNCHECKED builds (stopped before the census could see them):"
   cat "$unchecked_file"
@@ -140,4 +161,4 @@ if [[ "$checked" -eq 0 ]]; then
   echo "library-tyerr-census: no manifest was checked, so the census proves nothing" >&2
   exit 1
 fi
-rm -f "$sites_file" "$unchecked_file"
+rm -f "$sites_file" "$unchecked_file" "$known_file"
