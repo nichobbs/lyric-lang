@@ -1802,7 +1802,19 @@ func externUpcastCallType(
     return Some(value = tyErrorFor(diag))
   }
   match argTypes[0] {
-    case TyError(_) -> return Some(value = tyErrorSilent())
+    // An operand the checker leaves unchecked on purpose (a host call's
+    // result, D354) is upcast like any extern value: the result is the root
+    // type, so what it is added to or passed as is judged against it.
+    case TyError(d) -> return Some(
+      value = if d.index == 0 {
+        tyErrorSilent()
+      } else {
+        match rootExternObjectType(tbl) {
+          case Some(t) -> t
+          case None -> TyError(diag = d)
+        }
+      }
+    )
     case TyUser(id, name, _) -> if not symTableIsExternTypeId(tbl, id) {
       diag.add(
         errorDiagnostic(
@@ -3604,6 +3616,30 @@ func ownOpaqueFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Ty
   None
 }
 
+func protectedFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type], name: in String): Option[Type] {
+  match findProtectedDeclByTypeId(tbl, tid) {
+    case Some(pd) -> {
+      val gnames = extractGenericNames(pd.generics)
+      val ctx = newGenericContext()
+      gctxPushOwned(ctx, gnames, pd.name)
+      val scratch: List[Diagnostic] = newList()
+      for m in pd.members {
+        match m {
+          case PMField(pf) -> {
+            val fd = protectedFieldAsFieldDecl(pf)
+            if fd.name == name {
+              return Some(value = eraseTyParams(substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
+            }
+          }
+          case _ -> ()
+        }
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
 func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in List[Type], name: in String): Option[Type] {
   val gnames = extractGenericNames(od.generics)
   val ctx = newGenericContext()
@@ -4213,6 +4249,12 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
       }
       match ownOpaqueFieldType(tbl, tid, targs, name) {
         case Some(ot) -> return ot
+        case None -> ()
+      }
+      // A protected type's field, read where the language allows it (a contract
+      // clause, the type's own members; T0221 refuses the rest, D359).
+      match protectedFieldType(tbl, tid, targs, name) {
+        case Some(pt) -> return pt
         case None -> ()
       }
       // Builtin members on nominal receivers (`List.toArray`/`count`, #2126)
@@ -10399,7 +10441,8 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 
 // `Score(42)`: a distinct type built from a value of its underlying type
 // (docs/01 section 2.3).  The result is the distinct type; the argument is
-// checked against the underlying type.  A generic distinct type, a name the
+// checked against the underlying type; a generic distinct type takes its
+// arguments from the wrapped value.  A name the
 // scope binds, and any other callee are left to the other rules.
 func distinctCtorType(
   sc: in Scope,
@@ -10420,12 +10463,8 @@ func distinctCtorType(
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> match sym.kind {
       case DKDistinctType(did, dt) -> {
-        match dt.generics {
-          case Some(_) -> return None
-          case None -> ()
-        }
+        val gnames = extractGenericNames(dt.generics)
         val noArgs: List[Type] = newList()
-        val dty = TyUser(id = did, name = sym.name, args = noArgs)
         if args.count != 1 or argTypes.count != 1 {
           diag.add(
             errorDiagnostic(
@@ -10439,8 +10478,22 @@ func distinctCtorType(
         }
         val saved = enterDeclaringScope(tbl, sym)
         val scratch: List[Diagnostic] = newList()
-        val underlying = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+        val gctx = newGenericContext()
+        gctxPushOwned(gctx, gnames, sym.name)
+        val rawUnderlying = resolveType(tbl, gctx, scratch, dt.underlying)
         restoreScope(tbl, saved)
+        // A generic distinct type's arguments are what the wrapped value fixes
+        // (`Wrapped(xs)` with `xs: List[Int]` is `Wrapped[Int]`); one nothing
+        // fixes stays the open hole a later use may solve (D359).
+        val targs: List[Type] = if gnames.count == 0 {
+          noArgs
+        } else {
+          val oneParam: List[Type] = newList()
+          oneParam.add(rawUnderlying)
+          inferGenericArgsDeep(gnames, oneParam, argTypes)
+        }
+        val underlying = if gnames.count == 0 { rawUnderlying } else { substituteTyParams(rawUnderlying, gnames, targs) }
+        val dty = TyUser(id = did, name = sym.name, args = targs)
         if not argFlowSatisfies(tbl, underlying, argTypes[0], callArgExpr(args[0])) {
           diag.add(
             errorDiagnostic(
@@ -12960,10 +13013,18 @@ func noteCalleePosition(sc: in Scope, tbl: in SymbolTable, e: in Expr): Unit {
 // is the rule the member case uses for its receiver already.
 func markQualifierPosition(sc: in Scope, tbl: in SymbolTable, recv: in Expr): Unit {
   if isQualifierShape(sc, recv) {
-    markCalleePosition(tbl, recv)
     match recv.kind {
-      case EMember(inner, _) -> markQualifierPosition(sc, tbl, inner)
-      case _ -> ()
+      case EMember(inner, _) -> {
+        // `NetChar.MaxValue.toInt()`: a member of an `extern type` named through
+        // the type is a host constant or property, a value the member read
+        // types (D359); only the type name is the qualifier.
+        match externTypeSymbolOfExpr(tbl, inner) {
+          case Some(_) -> ()
+          case None -> markCalleePosition(tbl, recv)
+        }
+        markQualifierPosition(sc, tbl, inner)
+      }
+      case _ -> markCalleePosition(tbl, recv)
     }
   }
 }
@@ -19143,8 +19204,10 @@ func inferExprCore(
               )
               return tyErrorFor(diag)
             }
+            // A conversion of a value left unchecked on purpose (a host array's
+            // element) is as unchecked as the value (D354 4, D359).
             match rt {
-              case TyError(_) -> return tyErrorSilent()
+              case TyError(d) -> return if d.index == 0 { tyErrorSilent() } else { TyError(diag = d) }
               case _ -> {
               }
             }
@@ -24768,6 +24831,16 @@ func findDirectSigPick(
       }
       if typeName.length == 0 or scopeHasName(sc, typeName) {
         return None
+      }
+      // `T.new(args)` on an `extern type` the file declares or imports binds the
+      // host constructor, not a same-named Lyric type's `new` another package
+      // exports (`import extern System.Text.{StringBuilder}` shadows
+      // `Std.String.StringBuilder`, D359): the backends already do.
+      if member == "new" {
+        match externTypeSymbolOfExpr(tbl, recv) {
+          case Some(_) -> return None
+          case None -> ()
+        }
       }
       typeQualifiedDotSig(tbl, sigs, typeName, member, arity, argTypes)
     }
