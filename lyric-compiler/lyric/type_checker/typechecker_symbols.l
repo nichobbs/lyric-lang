@@ -543,6 +543,10 @@ pub record SymbolTable {
   /// The calls whose callee is a function value, keyed by the call's `NodeId`
   /// (D364).  Only `true` is stored; membership is the mark.
   indirectByNode: Map[Int, Bool]
+  /// The signature each call to a declared function resolved against, keyed by
+  /// the call's `NodeId` (D367): the parameters' names, types, modes and
+  /// defaults, which the builder orders the arguments by.
+  callSigByNode: Map[Int, ResolvedSignature]
   /// The member of an `extern type` each call resolved to (D365).
   externByNode: Map[Int, ExternCallSite]
   /// Implicit conversions made explicit after the check, keyed like
@@ -1150,6 +1154,7 @@ pub func newSymbolTable(): SymbolTable {
     calleeByNode = newMap(),
     builtinByNode = newMap(),
     indirectByNode = newMap(),
+    callSigByNode = newMap(),
     externByNode = newMap(),
     argConversionSites = newMap(),
     covariantSites = newMap(),

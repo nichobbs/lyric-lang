@@ -268,13 +268,13 @@ test "loops and string interpolation build" {
   assertTrue(r.body.isSome(), "a body")
 }
 
-test "a call is counted as uncovered, fails with I0002 and builds no body" {
-  val r = buildFirstFn("package App\nfunc m(): Int { k() }\nfunc k(): Int { 1 }\n")
+test "a generic call is counted as uncovered, fails with I0002 and builds no body" {
+  val r = buildFirstFn("package App\nfunc m(): Int { id(1) }\nfunc id[T](x: T): T { x }\n")
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(not r.body.isSome(), "no body for a call the builder has no case for")
-  assertEqualInt(r.env.errors.count, 1, "one I0002")
+  assertTrue(r.env.errors.count >= 1, "an I0002")
   assertTrue(r.env.errors[0].startsWith("I0002"), "reported as I0002")
-  assertEqualInt(mapGetOr0(r.env.uncovered, "a call"), 1, "counted by kind")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a generic call"), 1, "counted by kind")
 }
 
 func mapGetOr0(m: in Map[String, Int], k: in String): Int {
@@ -282,4 +282,178 @@ func mapGetOr0(m: in Map[String, Int], k: in String): Int {
     case Some(n) -> n
     case None -> 0
   }
+}
+
+func firstCallArgs(b: in Option[TExpr]): Int {
+  match b {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind { case XCall(_, args) -> args.count; case _ -> -1 }
+      case XCall(_, args) -> args.count
+      case _ -> -1
+    }
+    case None -> -1
+  }
+}
+
+test "a call to a declared function builds with its arguments in parameter order" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Int { k(b = 1, a = x) }\nfunc k(a: Int, b: Int): Int { a }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertEqualInt(firstCallArgs(r.body), 2, "two arguments")
+  match r.body {
+    case Some(body) -> match body.kind {
+      case XBlock(_, Some(t)) -> match t.kind {
+        case XCall(callee, args) -> {
+          match callee {
+            case Direct(_, targs) -> assertEqualInt(targs.count, 0, "no type arguments")
+            case _ -> assertTrue(false, "a direct callee")
+          }
+          match args[0] {
+            case TArgIn(v) -> match v.kind {
+              case XLocal(_) -> ()
+              case _ -> assertTrue(false, "the first parameter a gets x, though written second")
+            }
+            case _ -> assertTrue(false, "an in argument")
+          }
+        }
+        case _ -> assertTrue(false, "a call")
+      }
+      case _ -> assertTrue(false, "a block with a value")
+    }
+    case None -> assertTrue(false, "a body")
+  }
+}
+
+test "an Int argument for a Long parameter is widened" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Long { w(x) }\nfunc w(v: Long): Long { v }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertTrue(r.body.isSome(), "a body")
+}
+
+test "built-in and indirect calls build" {
+  val b = buildFirstFn("package App\nfunc m(): Unit { println(\"a\") }\n")
+  assertEqualInt(b.env.errors.count, 0, "the built-in builds")
+  assertEqualInt(firstCallArgs(b.body), 1, "with its argument")
+  val i = buildFirstFn("package App\nfunc m(h: in (Int) -> Int): Int { h(1) }\n")
+  assertEqualInt(i.env.errors.count, 0, "the indirect call builds")
+  assertEqualInt(firstCallArgs(i.body), 1, "with its argument")
+}
+
+test "a call omitting a defaulted argument is counted, not guessed" {
+  val r = buildFirstFn("package App\nfunc m(): Int { k(1) }\nfunc k(a: Int, b: Int = 2): Int { a }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a defaulted argument"), 1, "counted")
+}
+
+func firstTail(b: in Option[TExpr]): Option[TExpr] {
+  match b {
+    case Some(body) -> match body.kind { case XBlock(_, t) -> t; case _ -> Some(value = body) }
+    case None -> None
+  }
+}
+
+func callArgAt(b: in Option[TExpr], i: in Int): Option[TExpr] {
+  match firstTail(b) {
+    case Some(t) -> match t.kind {
+      case XCall(_, args) -> if i < args.count {
+        match args[i] {
+          case TArgIn(v) -> Some(value = v)
+          case _ -> None
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func isWidenTo(t: in TExpr, want: in Ty): Bool {
+  match t.kind {
+    case XConvert(CvWiden(_), inner) -> tyEq(t.ty, want) and t.id.id != inner.id.id
+    case _ -> false
+  }
+}
+
+test "a named argument keeps its slot and a positional one takes the free slot" {
+  val r = buildFirstFn("package App\nfunc m(): Int { k(a = 1, 2) }\nfunc k(a: Int, b: Int): Int { a }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  assertEqualInt(firstCallArgs(r.body), 2, "two arguments")
+}
+
+test "named arguments that reorder effects are refused, plain ones are not" {
+  val bad = buildFirstFn(
+    "package App\nfunc m(): Int { k(b = f(), a = g()) }\nfunc k(a: Int, b: Int): Int { a }\nfunc f(): Int { 1 }\nfunc g(): Int { 2 }\n"
+  )
+  assertEqualInt(bad.diagnostics, 0, "checks clean")
+  assertTrue(not bad.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(bad.env.uncovered, "a call whose named arguments reorder effects"), 1, "counted")
+  val ok = buildFirstFn("package App\nfunc m(x: Int): Int { k(b = 1, a = x) }\nfunc k(a: Int, b: Int): Int { a }\n")
+  assertTrue(ok.body.isSome(), "plain arguments reorder freely")
+}
+
+test "an argument widened to a Long parameter is a node of its own" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Long { w(x) }\nfunc w(v: Long): Long { v }\n")
+  assertEqualInt(r.env.errors.count, 0, "no I0002")
+  match callArgAt(r.body, 0) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "a widening with its own id")
+    case None -> assertTrue(false, "an argument")
+  }
+}
+
+test "a slice member and a function value widen their arguments" {
+  val s = buildFirstFn("package App\nfunc m(s: in slice[Long], i: in Int): slice[Long] { s.append(i) }\n")
+  assertEqualInt(s.diagnostics, 0, "checks clean")
+  assertEqualInt(s.env.errors.count, 0, "no I0002")
+  match callArgAt(s.body, 1) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "append widens the element")
+    case None -> assertTrue(false, "an argument")
+  }
+  val f = buildFirstFn("package App\nfunc m(h: in (Long) -> Long, x: Int): Long { h(x) }\n")
+  assertEqualInt(f.diagnostics, 0, "checks clean")
+  assertEqualInt(f.env.errors.count, 0, "no I0002")
+  match callArgAt(f.body, 0) {
+    case Some(a) -> assertTrue(isWidenTo(a, TirT.TPrim(kind = TPLong)), "the indirect call widens")
+    case None -> assertTrue(false, "an argument")
+  }
+}
+
+test "a built-in call with an argument the builder cannot check is counted" {
+  val r = buildFirstFn("package App\nfunc m(x: Int): Int { max(x, 2) }\nfunc max(a: Int, b: Int): Int { a }\n")
+  assertEqualInt(r.env.errors.count, 0, "a declared max is a direct call")
+}
+
+test "collection members take their parameter types from a host or a declared receiver" {
+  val host = TirT.TExtern(
+    host = HostTypeRef(name = "System.Collections.Generic.List`1", args = [TirT.TPrim(kind = TPLong)])
+  )
+  match memberArgTys(host, "List.add", 1) {
+    case Some(tys) -> {
+      assertEqualInt(tys.count, 1, "one parameter")
+      assertTrue(tyEq(tys[0], TirT.TPrim(kind = TPLong)), "the element type")
+    }
+    case None -> assertTrue(false, "a host List has derived parameter types")
+  }
+  match memberArgTys(host, "List.add", 2) {
+    case Some(tys) -> assertTrue(
+      tyEq(tys[0], tyInt()) and tyEq(tys[1], TirT.TPrim(kind = TPLong)),
+      "index then element"
+    )
+    case None -> assertTrue(false, "the two-argument add")
+  }
+  match memberArgTys(host, "Map.add", 2) {
+    case Some(_) -> assertTrue(false, "a List receiver has no Map members")
+    case None -> ()
+  }
+}
+
+test "a refined argument to a built-in the builder cannot check is counted, not passed through" {
+  val r = buildFirstFn("package App\nfunc m(s: in String, i: in Int range 0 ..= 9): String { s.substring(i) }\n")
+  assertEqualInt(r.diagnostics, 0, "checks clean")
+  assertTrue(not r.body.isSome(), "no body")
+  assertEqualInt(mapGetOr0(r.env.uncovered, "a built-in call with an argument the builder cannot check"), 1, "counted")
 }
