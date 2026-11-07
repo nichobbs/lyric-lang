@@ -115,11 +115,11 @@ func forRangeElemType(
     )
     case RBLowerOpen(hi) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, hi)
-      tyErrorSilent()
+      tyErrorUnresolved()
     }
     case RBUpperOpen(lo) -> {
       val _ = inferExpr(sc, tbl, sigs, diag, lo)
-      tyErrorSilent()
+      tyErrorUnresolved()
     }
   }
 }
@@ -139,7 +139,10 @@ func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
   if unrefinesToLong(loTy) and (unrefinesToLong(hiTy) or hiUnknown) {
     return TyPrim(pt = PtLong)
   }
-  tyErrorSilent()
+  // Another pairing (Int with Long, a bound no rule types) is lowered by the
+  // backends from the low bound; the loop variable is unchecked, and named so
+  // (D359).
+  tyErrorUnresolved()
 }
 
 // When a binding is declared with an inline refined type (`Int range lo .. hi`)

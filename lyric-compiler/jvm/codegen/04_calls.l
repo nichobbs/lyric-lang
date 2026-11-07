@@ -1349,8 +1349,12 @@ func lowerBuiltinOrStaticCall(
     JVoid
   } else if (not hasOverride) and funcName == "externAsObject" and args.count == 1 {
     // D212: every JVM extern type is a reference type, so the upcast to the
-    // root object is the operand itself.
-    val _ = lowerCallArg(ctx, insns, args[0])
+    // root object is the operand itself.  An operand the checker leaves
+    // unchecked (a host call returning a primitive the language has no type
+    // for, `Float.parseFloat`) may be a primitive on the stack: it is boxed so
+    // the value reported as an object is one (D359).
+    val operandTy = lowerCallArg(ctx, insns, args[0])
+    boxIfNeeded(insns, operandTy)
     JRef(className = "java/lang/Object")
   } else if (not hasOverride) and funcName == "nativeNullPtr" and args.count == 0 {
     // A `NativePtr[T]` is a `long` address on the JVM (D158).
@@ -5647,7 +5651,25 @@ func lowerMethodCall(
   val qualSegs = flattenPathExprSegsJvm(recv)
   val qualHeadIsLocal = qualSegs.count > 0 and
     match lookupSlot(ctx, qualSegs[0]) { case Some(_) -> true; case None -> false }
-  if qualSegs.count > 0 and not qualHeadIsLocal {
+  // A primitive-typed local shadowing only the first of two or more segments is
+  // no value chain, it has no members (the same reasoning as the record
+  // construction below, #6838): the checker reads such a call as the package's
+  // (D359), so it lowers as one.  A local of a reference type keeps the chain.
+  val qualHeadIsPrimitiveLocal = qualHeadIsLocal and
+    match lookupType(ctx, qualSegs[0]) {
+      case Some(JInt) -> true
+      case Some(JLong) -> true
+      case Some(JDouble) -> true
+      case Some(JFloat) -> true
+      case Some(JBoolean) -> true
+      case Some(JByte) -> true
+      case Some(JChar) -> true
+      case Some(JShort) -> true
+      // A `Unit` local is stored as `JVoid` and has no members either.
+      case Some(JVoid) -> true
+      case _ -> false
+    }
+  if qualSegs.count > 0 and (not qualHeadIsLocal or (qualSegs.count >= 2 and qualHeadIsPrimitiveLocal)) {
     val qualKey = joinSegments(qualSegs, "/") + "/" + memberName
     val qualArgcKey = qualKey + "@" + toString(args.count)
     val qualSigOpt = match mapGet(ctx.funcSigs, qualArgcKey) {

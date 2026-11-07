@@ -1802,7 +1802,10 @@ func externUpcastCallType(
     return Some(value = tyErrorFor(diag))
   }
   match argTypes[0] {
-    case TyError(_) -> return Some(value = tyErrorSilent())
+    // An operand the checker leaves unchecked on purpose (a host call's
+    // result, D354) is upcast like any extern value: the result is the root
+    // type, so what it is added to or passed as is judged against it.
+    case TyError(d) -> if d.index == 0 { return Some(value = tyErrorSilent()) }
     case TyUser(id, name, _) -> if not symTableIsExternTypeId(tbl, id) {
       diag.add(
         errorDiagnostic(
@@ -3604,6 +3607,46 @@ func ownOpaqueFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Ty
   None
 }
 
+func protectedFieldType(tbl: in SymbolTable, tid: in SymbolId, targs: in List[Type], name: in String): Option[Type] {
+  match findProtectedDeclByTypeId(tbl, tid) {
+    case Some(pd) -> {
+      val gnames = extractGenericNames(pd.generics)
+      val ctx = newGenericContext()
+      gctxPushOwned(ctx, gnames, pd.name)
+      val scratch: List[Diagnostic] = newList()
+      // The field's type names what the declaring package sees, not what the
+      // reading file imports.
+      val saved = match symTableTypeSymbolOf(tbl, tid) {
+        case Some(sym) -> Some(value = enterDeclaringScopeIfForeign(tbl, sym))
+        case None -> None
+      }
+      var found: Option[Type] = None
+      var have = false
+      for m in pd.members {
+        match m {
+          case PMField(pf) -> {
+            val fd = protectedFieldAsFieldDecl(pf)
+            if fd.name == name and not have {
+              have = true
+              val substituted = substituteTyParams(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)
+              // A receiver of `Cell[T]` in a generic body reads its `value: T` as
+              // that `T`, rigid; only a raw receiver erases (D359).
+              found = Some(value = if targs.count == gnames.count { substituted } else { eraseTyParams(substituted) })
+            }
+          }
+          case _ -> ()
+        }
+      }
+      match saved {
+        case Some(sv) -> restoreScope(tbl, sv)
+        case None -> ()
+      }
+      found
+    }
+    case None -> None
+  }
+}
+
 func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in List[Type], name: in String): Option[Type] {
   val gnames = extractGenericNames(od.generics)
   val ctx = newGenericContext()
@@ -4215,6 +4258,12 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
         case Some(ot) -> return ot
         case None -> ()
       }
+      // A protected type's field, read where the language allows it (a contract
+      // clause, the type's own members; T0221 refuses the rest, D359).
+      match protectedFieldType(tbl, tid, targs, name) {
+        case Some(pt) -> return pt
+        case None -> ()
+      }
       // Builtin members on nominal receivers (`List.toArray`/`count`, #2126)
       // — consulted after fields so a same-named user field wins.
       match builtinMember(tbl, recv, name) {
@@ -4459,7 +4508,9 @@ func untypedMemberCallResult(
       case _ -> ()
     }
   }
-  if isUniversalMethodName(memberName) {
+  // A universal method name with another arity is an ordinary member (a host
+  // `Arrays.toString(xs)` or `Objects.hash(xs)`, D359), not the codegen intrinsic.
+  if isUniversalMethodName(memberName) and not isSilentTyError(universalMethodResultType(memberName, argc)) {
     return universalMethodResultType(memberName, argc)
   }
   match fn.kind {
@@ -8372,7 +8423,14 @@ func inferPropagate(
       )
     }
   }
-  propagateUnwrap(closed)
+  // A success type nothing fixes yet is the open hole (`None?`, `Err(...)?`):
+  // the consumer or `closeOpenPropagateOperands` settles it (#8181, D359).
+  val unwrapped = propagateUnwrap(closed)
+  if isSilentTyError(unwrapped) {
+    tyErrorOpen()
+  } else {
+    unwrapped
+  }
 }
 
 // A construction that is a branch of an `if`/`match`/block used as the operand
@@ -10419,6 +10477,141 @@ func noteCtorZeroArgs(
   }
 }
 
+// Whether the qualifier `recv` names a config block of a package other than the
+// one being checked (config blocks are package-private, docs/25 2.2).
+func isForeignConfigBlock(tbl: in SymbolTable, recv: in Expr): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count < 2 {
+    return false
+  }
+  val pkg = qualifierOfSegs(segs)
+  if pkg == symTableScopePkg(tbl) {
+    return false
+  }
+  match symTableTryFindInPackage(tbl, pkg, segs[segs.count - 1]) {
+    case Some(sym) -> match sym.kind { case DKConfig(_) -> true; case _ -> false }
+    case None -> false
+  }
+}
+
+// Whether the package-qualified path `e` goes through a package other than the
+// one being checked that the file imports or that has symbols in the table.
+func memberOfImportedPackage(tbl: in SymbolTable, e: in Expr): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(e, segs) or segs.count < 2 {
+    return false
+  }
+  val own = symTableScopePkg(tbl)
+  val prefix: List[String] = newList()
+  var k = 0
+  while k < segs.count - 1 {
+    prefix.add(segs[k])
+    val pkg = modulePathJoin(prefix)
+    if pkg != own {
+      if listContainsStr(tbl.scopeImports, pkg) {
+        return true
+      }
+      for sym in tbl.symbols {
+        if sym.originPackage == pkg {
+          return true
+        }
+      }
+    }
+    k = k + 1
+  }
+  false
+}
+
+// Whether `Enum.Case` is the ambiguity `qualifiedEnumCaseType` leaves to the
+// backends: a bare enum name that two or more enums of the program share, one
+// of which declares the case `member`.
+func isAmbiguousEnumCase(tbl: in SymbolTable, recv: in Expr, member: in String): Bool {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count != 1 {
+    return false
+  }
+  var enums = 0
+  var declaresCase = false
+  for cand in symTableTryFindAllNamed(tbl, segs[0]) {
+    match cand.kind {
+      case DKEnum(_, decl) -> {
+        enums = enums + 1
+        for c in decl.cases {
+          if c.name == member {
+            declaresCase = true
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  enums >= 2 and declaresCase
+}
+
+// The path a shadowed qualified callee spells, as the `EPath` an unshadowed one
+// is, at the same span and node.
+func shadowedCalleeAsPath(fn: in Expr): Expr {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(fn, segs) {
+    return fn
+  }
+  Expr(kind = EPath(ModulePath(segments = segs, span = fn.span)), span = fn.span, nodeId = fn.nodeId)
+}
+
+// `Pkg.Sub.Rec(...)` or `Pkg.Sub.fn(...)` where a local shadows only the first
+// segment `Pkg` (#6838): the full package path still names a record or a
+// function, so the call is that construction or call, not a method chain on the
+// local (D359).
+func shadowedQualifiedCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+): Bool {
+  match fn.kind {
+    case EMember(_, member) -> {
+      val segs: List[String] = newList()
+      // At least three segments: `P.f(...)` with a local `P` is the local's
+      // method call; only a nested package path (`A.B.f`) whose first segment
+      // a local shadows names the package's declaration (D359).
+      if not flattenCalleePathSegs(fn, segs) or segs.count < 3 {
+        return false
+      }
+      match scopeTryFind(sc, segs[0]) {
+        case Some(headBinding) -> {
+          // A local of a primitive type has no members, so the path can only be
+          // the package's (the JVM lowering applies the same rule); a `String` or
+          // a record may hold the member and keeps its value chain.
+          match unrefine(headBinding.ty) {
+            case TyPrim(headPt) -> match headPt { case PtString -> return false; case _ -> () }
+            case _ -> return false
+          }
+          // The package must be reachable: the one being checked, or one the
+          // file imports (a local does not make an unimported one visible).
+          val wantPkg = qualifierOfSegs(segs)
+          if wantPkg != symTableScopePkg(tbl) and not listContainsStr(tbl.scopeImports, wantPkg) {
+            return false
+          }
+          match constructorSymbolOf(tbl, fn) {
+            case Some(_) -> return true
+            case None -> ()
+          }
+          // The same for a function the named package declares.
+          for qc in qualifiedCallCandidates(sigs, member, args) {
+            if qc.originPackage == wantPkg {
+              return true
+            }
+          }
+          false
+        }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 // A QUALIFIED constructor call (`Pkg.Type(...)` or `Pkg.Sub.Type(...)`, the
 // latter a nested `EMember` chain over an `EPath` head) previously returned
 // `None` here unconditionally — the single-segment-only match below is the
@@ -10487,7 +10680,8 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
 
 // `Score(42)`: a distinct type built from a value of its underlying type
 // (docs/01 section 2.3).  The result is the distinct type; the argument is
-// checked against the underlying type.  A generic distinct type, a name the
+// checked against the underlying type; a generic distinct type takes its
+// arguments from the wrapped value.  A name the
 // scope binds, and any other callee are left to the other rules.
 func distinctCtorType(
   sc: in Scope,
@@ -10508,12 +10702,8 @@ func distinctCtorType(
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> match sym.kind {
       case DKDistinctType(did, dt) -> {
-        match dt.generics {
-          case Some(_) -> return None
-          case None -> ()
-        }
+        val gnames = extractGenericNames(dt.generics)
         val noArgs: List[Type] = newList()
-        val dty = TyUser(id = did, name = sym.name, args = noArgs)
         if args.count != 1 or argTypes.count != 1 {
           diag.add(
             errorDiagnostic(
@@ -10527,8 +10717,22 @@ func distinctCtorType(
         }
         val saved = enterDeclaringScope(tbl, sym)
         val scratch: List[Diagnostic] = newList()
-        val underlying = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+        val gctx = newGenericContext()
+        gctxPushOwned(gctx, gnames, sym.name)
+        val rawUnderlying = resolveType(tbl, gctx, scratch, dt.underlying)
         restoreScope(tbl, saved)
+        // A generic distinct type's arguments are what the wrapped value fixes
+        // (`Wrapped(xs)` with `xs: List[Int]` is `Wrapped[Int]`); one nothing
+        // fixes stays the open hole a later use may solve (D359).
+        val targs: List[Type] = if gnames.count == 0 {
+          noArgs
+        } else {
+          val oneParam: List[Type] = newList()
+          oneParam.add(rawUnderlying)
+          inferGenericArgsDeep(gnames, oneParam, argTypes)
+        }
+        val underlying = if gnames.count == 0 { rawUnderlying } else { substituteTyParams(rawUnderlying, gnames, targs) }
+        val dty = TyUser(id = did, name = sym.name, args = targs)
         if not argFlowSatisfies(tbl, underlying, argTypes[0], callArgExpr(args[0])) {
           diag.add(
             errorDiagnostic(
@@ -10540,11 +10744,63 @@ func distinctCtorType(
           )
           return Some(value = tyErrorFor(diag))
         }
+        noteUnsolvedDistinctCtor(sc, tbl, fn, did, sym.name, gnames, args, argTypes, targs, span)
         Some(value = dty)
       }
       case _ -> None
     }
     case None -> None
+  }
+}
+
+// A generic distinct type's constructor call whose argument leaves a type
+// parameter unsolved (`Tagged(3)` with `type Tagged[T] = Int`) is recorded like
+// an unsolved union-case construction: an expected type or a later use fixes
+// it, otherwise `reportUnsolvedTypeArgs` reports T0224 (D359).
+func noteUnsolvedDistinctCtor(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  fn: in Expr,
+  did: in SymbolId,
+  name: in String,
+  gnames: in List[String],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  targs: in List[Type],
+  callSpan: in Span,
+): Unit {
+  if gnames.count == 0 or targs.count != gnames.count or isNoSourceSpan(fn.span) or fn.span.endPos.offset <= fn.span.startPos.offset {
+    return
+  }
+  val unsolved: List[String] = newList()
+  val selfArgs: List[Type] = newList()
+  var gi = 0
+  while gi < gnames.count {
+    if not typeIsSolution(targs[gi], sc.genericNames) {
+      unsolved.add(gnames[gi])
+    }
+    selfArgs.add(TyParam(name = gnames[gi], owner = ""))
+    gi = gi + 1
+  }
+  if unsolved.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if not tbl.unsolvedCallSites.containsKey(key) {
+    tbl.unsolvedCallSites.add(
+      key,
+      UnsolvedCallSite(
+        fname = name,
+        unsolved = unsolved,
+        generics = gnames,
+        returnTy = TyUser(id = did, name = name, args = selfArgs),
+        callKey = recordCopySiteKey(callSpan),
+        span = fn.span,
+        callerGenerics = sc.genericNames,
+        indeterminate = callArgsIndeterminate(sc, args, argTypes),
+        ctor = true
+      )
+    )
   }
 }
 
@@ -11708,7 +11964,7 @@ func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTy
 // Infer the binding for a single generic `name` across all parameter/argument
 // pairs, returning `TyError` when unbound or when two occurrences disagree.
 func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
-  var bound: Type = tyErrorSilent()
+  var bound: Type = tyErrorOpen()
   var haveBinding = false
   // Whether every occurrence behind `bound` is a bare `T` parameter, whose
   // argument widens at the call like any numeric argument.
@@ -13048,10 +13304,18 @@ func noteCalleePosition(sc: in Scope, tbl: in SymbolTable, e: in Expr): Unit {
 // is the rule the member case uses for its receiver already.
 func markQualifierPosition(sc: in Scope, tbl: in SymbolTable, recv: in Expr): Unit {
   if isQualifierShape(sc, recv) {
-    markCalleePosition(tbl, recv)
     match recv.kind {
-      case EMember(inner, _) -> markQualifierPosition(sc, tbl, inner)
-      case _ -> ()
+      case EMember(inner, _) -> {
+        // `NetChar.MaxValue.toInt()`: a member of an `extern type` named through
+        // the type is a host constant or property, a value the member read
+        // types (D359); only the type name is the qualifier.
+        match externTypeSymbolOfExpr(tbl, inner) {
+          case Some(_) -> ()
+          case None -> markCalleePosition(tbl, recv)
+        }
+        markQualifierPosition(sc, tbl, inner)
+      }
+      case _ -> markCalleePosition(tbl, recv)
     }
   }
 }
@@ -13099,10 +13363,11 @@ func isTyErrorValue(t: in Type): Bool {
   }
 }
 
-// W0036 (D341): the warning-mode form of the I0001 gate (docs/70 5.3).  Each
-// non-callee expression typed `TyError` with no diagnostic is reported, unless
-// the file already has an error: then the `TyError` is a cascade of a reported
-// one.  It becomes the error I0001 when the census reaches zero.
+// I0001 (docs/70 5.3, Q-TIR-001, D341, D359): each non-callee expression typed
+// `TyError` with no diagnostic is an internal error that always stops the
+// build, unless the file already has an error: then the `TyError` is a cascade
+// of a reported one.  (It was the opt-in warning W0036 while the census was
+// open.)
 pub func reportSilentTyErrors(tbl: in SymbolTable, diag: in List[Diagnostic]): Unit {
   for d in diag {
     match d.severity {
@@ -13117,9 +13382,9 @@ pub func reportSilentTyErrors(tbl: in SymbolTable, diag: in List[Diagnostic]): U
   while i < keys.count {
     match mapGet(tbl.silentTyErrorSites, keys[i]) {
       case Some(site) -> diag.add(
-        warningDiagnostic(
-          "W0036",
-          "internal: this " + site.kind + " expression has no type and no error was reported (I0001)",
+        errorDiagnostic(
+          "I0001",
+          "internal: this " + site.kind + " expression has no type and no error was reported",
           site.span
         )
       )
@@ -16779,15 +17044,26 @@ func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
 // The declared type of field `name` of the config block `recv` names
 // (`SecretCache.ttlSeconds`); None when `recv` is not a bare config name.
 func configFieldReadType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Type] {
-  val cname = match recv.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
-    case _ -> return None
+  // `Cfg.field`, or the block named through its package (`Pkg.Cfg.field`, D359).
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
   }
-  match scopeTryFind(sc, cname) {
+  match scopeTryFind(sc, segs[0]) {
     case Some(_) -> return None
     case None -> ()
   }
-  val sym = match symTableTryFindOne(tbl, cname) { case Some(s) -> s; case None -> return None }
+  val cname = segs[segs.count - 1]
+  // Config blocks are package-private (docs/25 2.2): the package qualifier may
+  // only name the package being checked.
+  val found = if segs.count == 1 {
+    symTableTryFindOne(tbl, cname)
+  } else if qualifierOfSegs(segs) == symTableScopePkg(tbl) {
+    symTableTryFindInPackage(tbl, qualifierOfSegs(segs), cname)
+  } else {
+    None
+  }
+  val sym = match found { case Some(s) -> s; case None -> return None }
   val cd = match sym.kind { case DKConfig(d) -> d; case _ -> return None }
   for f in cd.fields {
     if f.name == name {
@@ -18664,8 +18940,12 @@ func moduleValReadType(
     }
   }
   restoreScope(tbl, saved)
-  sendNoteModuleRead(tbl, sym.name, t)
-  t
+  // An initializer over a declaration of the owning package the reader cannot
+  // see (a package-private helper) has no type here; the backends resolve it
+  // (#7777), so it is unchecked, and named so (D359).
+  val read = if isSilentTyError(t) { tyErrorUnresolved() } else { t }
+  sendNoteModuleRead(tbl, sym.name, read)
+  read
 }
 
 // Whether `p` names a module-level `val` that no local of that name shadows:
@@ -19075,7 +19355,12 @@ func inferExprCore(
       binT
     }
 
-    case ECall(fn, args) -> {
+    case ECall(fn0, args) -> {
+      // `A.B.f(...)` where a local shadows only `A` still names the package's
+      // function or record: the callee is read as the path it spells, so the
+      // normal direct-call and construction checks run (#6838, D359).
+      val shadowedFn = shadowedQualifiedCallee(sc, tbl, sigs, fn0, args)
+      val fn = if shadowedFn { shadowedCalleeAsPath(fn0) } else { fn0 }
       // #7495: a qualified callee (`Pkg.Sub.fn(...)`) left un-collapsed by the
       // alias rewriter never passes through the `EMember` arm below.
       match fn.kind {
@@ -19186,7 +19471,7 @@ func inferExprCore(
               )
               return tyErrorFor(diag)
             }
-            case TyError(_) -> return tyErrorSilent()
+            case TyError(d) -> return if d.index == 0 { tyErrorSilent() } else { TyError(diag = d) }
             case _ -> ()
           }
           cachedRecvType = Some(value = urt)
@@ -19231,8 +19516,10 @@ func inferExprCore(
               )
               return tyErrorFor(diag)
             }
+            // A conversion of a value left unchecked on purpose (a host array's
+            // element) is as unchecked as the value (D354 4, D359).
             match rt {
-              case TyError(_) -> return tyErrorSilent()
+              case TyError(d) -> return if d.index == 0 { tyErrorSilent() } else { TyError(diag = d) }
               case _ -> {
               }
             }
@@ -19440,8 +19727,13 @@ func inferExprCore(
         }
       }
       val fnT = match memberRecvTy {
-        case Some(rt) -> inferMemberBase(tbl, rt, memberName)
-        case None -> inferExpr(sc, tbl, sigs, diag, fn)
+        case Some(rt) -> {
+          // A function-valued protected field called from outside is as
+          // refused as a read of it (T0221, D359).
+          checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
+          inferMemberBase(tbl, rt, memberName)
+        }
+        case None -> if shadowedFn { tyErrorUnresolved() } else { inferExpr(sc, tbl, sigs, diag, fn) }
       }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }
@@ -20257,7 +20549,10 @@ func inferExprCore(
                               recordExternMemberCall(tbl, e.nodeId, fn, memberRecvTy, memberName, args.count)
                               untypedTy
                             } else {
-                              tyErrorSilent()
+                              // A bare call of a name that has no type here and
+                              // is no error (T0020 reports an unknown one): the
+                              // backends resolve it (D359).
+                              tyErrorUnresolved()
                             }
                           }
                         }
@@ -20491,8 +20786,57 @@ func inferExprCore(
         match externMemberReceiver(tbl, recv, rt) {
           case Some(er) -> externMemberResult(tbl, er, name, 0, true)
           case None -> match unrefine(rt) {
-            case TyError(d) -> TyError(diag = d)
+            // A member of a package-qualified name no rule resolves
+            // (`P.missing`, or another package's package-private config) is the
+            // error it is, not a silent value (D359, docs/25 2.2).
+            case TyError(d) -> if d.index == 0 and isQualifierShape(sc, recv) and isAmbiguousEnumCase(tbl, recv, name) {
+              // `LogLevel.Info` with two enums named `LogLevel` in the program:
+              // left to the backends, as `qualifiedEnumCaseType` documents.
+              tyErrorUnresolved()
+            } else if d.index == 0 and isQualifierShape(sc, recv) and isForeignConfigBlock(tbl, recv) {
+              diag.add(
+                errorDiagnostic(
+                  "T0020",
+                  "unknown name '" + name +
+                    "': the config block is package-private (docs/25 2.2); another package reaches its value through a `pub func` of the declaring package",
+                  e.span
+                )
+              )
+              tyErrorFor(diag)
+            } else if d.index == 0 and isQualifierShape(sc, recv) and memberOfImportedPackage(tbl, e) {
+              // A member of a package the file imports whose declarations the
+              // checker does not all see (a restored dependency's non-literal
+              // `pub val`): the backends resolve it or refuse it with their own
+              // code (T0115), so it is unchecked here and named (D359).
+              tyErrorUnresolved()
+            } else if d.index == 0 and isQualifierShape(sc, recv) {
+              val written: List[String] = newList()
+              val shown = if flattenCalleePathSegs(e, written) { modulePathJoin(written) } else { name }
+              diag.add(
+                errorDiagnostic(
+                  "T0020",
+                  "unknown name '" + shown +
+                    "': it names no member of a package this file can see (a package exports only its `pub` declarations, and a config block is package-private, docs/25 2.2)",
+                  e.span
+                )
+              )
+              tyErrorFor(diag)
+            } else {
+              TyError(diag = d)
+            }
             case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
+            // A member read off a primitive or a slice that names none of its
+            // built-in members is the user's error, not a value the backends
+            // find (D359; the backends' J010 and J011 stay as defence in depth).
+            // A call of an open host `String` method is a call, handled apart.
+            case TyPrim(pt) -> {
+              diag.add(errorDiagnostic("T0113", "no member '" + name + "' on type '" + primName(pt) + "'", e.span))
+              tyErrorFor(diag)
+            }
+            case TySlice(_) -> {
+              diag.add(errorDiagnostic("T0113", "no member '" + name + "' on type '" + renderType(rt) + "'", e.span))
+              tyErrorFor(diag)
+            }
             case _ -> readTy
           }
         }
@@ -20641,7 +20985,16 @@ func inferExprCore(
         case TyError(d) -> return TyError(diag = d)
         case _ -> ()
       }
-      indexElementType(tbl, rt)
+      val elemTy = indexElementType(tbl, rt)
+      // An extern type's indexer is the host's: its result is unchecked (D359).
+      match unrefine(rt) {
+        case TyUser(rid, _, _) -> if isSilentTyError(elemTy) and symTableIsExternTypeId(tbl, rid) {
+          tyErrorHost()
+        } else {
+          elemTy
+        }
+        case _ -> elemTy
+      }
     }
     // ETypeApp: a type-application expression `foo[T]`.  Pass through to the
     // inner function so `ECall(ETypeApp(fn, targs), vargs)` finds the function
@@ -24859,6 +25212,16 @@ func findDirectSigPick(
       }
       if typeName.length == 0 or scopeHasName(sc, typeName) {
         return None
+      }
+      // `T.new(args)` on an `extern type` the file declares or imports binds the
+      // host constructor, not a same-named Lyric type's `new` another package
+      // exports (`import extern System.Text.{StringBuilder}` shadows
+      // `Std.String.StringBuilder`, D359): the backends already do.
+      if member == "new" {
+        match externTypeSymbolOfExpr(tbl, recv) {
+          case Some(_) -> return None
+          case None -> ()
+        }
       }
       typeQualifiedDotSig(tbl, sigs, typeName, member, arity, argTypes)
     }

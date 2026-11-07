@@ -748,7 +748,7 @@ build_stage2() {
   } > "$driver_dir/driver.l"
 
   info "  emitting compiler + full stdlib closure (per-package) -> $STAGE2_LIB_DIR"
-  LYRIC_TYERR_GATE=1 "$AOT_OUT" --internal-perpackage-build "$driver_dir/driver.l" \
+  "$AOT_OUT" --internal-perpackage-build "$driver_dir/driver.l" \
     "$STAGE2_LIB_DIR" --target dotnet > "$BUILD_DIR/stage2-emit.log" 2>&1 \
     || { cat "$BUILD_DIR/stage2-emit.log" >&2;
          die "stage-2 closure emit FAILED — see $BUILD_DIR/stage2-emit.log"; }
@@ -757,7 +757,7 @@ build_stage2() {
   local n
   n="$(ls "$STAGE2_LIB_DIR"/*.dll 2>/dev/null | wc -l | tr -d ' ')"
   ok "  emitted $n self-hosted DLLs (compiler + stdlib)"
-  # W0036 (D341): the silent-TyError census of this closure.
+  # I0001 (D341): the silent-TyError census of this closure.
   bash "$(dirname "${BASH_SOURCE[0]}")/ci/tyerr-census.sh" "$BUILD_DIR/stage2-emit.log"
 
   # 3b. Build the SINGLE full stdlib bundle (`Lyric.Stdlib.dll`).  Post-collapse

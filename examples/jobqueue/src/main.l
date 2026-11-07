@@ -103,14 +103,9 @@ pub func main(): Unit {
   var router = JobQueue.Api.routes()
 
   // Register the background worker poller.  Fires every
-  // Worker.pollIntervalMs milliseconds (default 2 s) on a real background
+  // Worker.pollIntervalMs() milliseconds (default 2 s) on a real background
   // loop (issue #5359).
-  val router = Web.addWorker(
-    router,
-    "job-poller",
-    JobQueue.Worker.Worker.pollIntervalMs,
-    JobQueue.Worker.JobPollerWorker()
-  )
+  val router = Web.addWorker(router, "job-poller", JobQueue.Worker.pollIntervalMs(), JobQueue.Worker.JobPollerWorker())
 
   val router = Web.addGet(router, "/health/live", HealthLiveHandler())
   val router = Web.addGet(router, "/health/ready", HealthReadyHandler())

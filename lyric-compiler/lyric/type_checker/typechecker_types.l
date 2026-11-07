@@ -166,8 +166,17 @@ pub func tyErrorUnresolved(): Type {
   TyError(diag = DiagId(index = -3))
 }
 
+/// A `TyError` for a type argument no argument has fixed yet: the open hole
+/// (`List[<hole>]` from `newList()`).  A later use fixes it (`resolveOpenBindingSites`)
+/// or `reportUnsolvedTypeArgs` reports T0224, so it never reaches the backends
+/// untyped without a diagnostic.  Named, like `tyErrorHost`, so the I0001 gate
+/// does not count the reads of it (`DiagId` index -4).
+pub func tyErrorOpen(): Type {
+  TyError(diag = DiagId(index = -4))
+}
+
 /// True for a `TyError` the checker leaves unchecked on purpose and says so
-/// (`tyErrorHost`, `tyErrorGeneric`, `tyErrorUnresolved`: a negative `DiagId`),
+/// (`tyErrorHost`, `tyErrorGeneric`, `tyErrorUnresolved`, `tyErrorOpen`: a negative `DiagId`),
 /// which the I0001 gate does not count.
 pub func isNamedUncheckedTyError(t: in Type): Bool {
   match t {
