@@ -734,10 +734,7 @@ func calleeShape(b: in Option[TExpr]): String {
         case XCall(callee, args) -> {
           val first = if args.count > 0 {
             match args[0] {
-              case TArgIn(v) -> match v.kind {
-                case XLocal(_) -> "recv"
-                case _ -> "other"
-              }
+              case TArgIn(v) -> match v.kind { case XLocal(_) -> "recv"; case _ -> "other" }
               case _ -> "place"
             }
           } else {
@@ -803,14 +800,20 @@ test "a method with a mutating receiver is counted, not built as an in argument"
 }
 
 test "the callee shape and the receiver position of a method call are pinned" {
-  val rec = buildFirstFn("package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n")
+  val rec = buildFirstFn(
+    "package App\nrecord P {\n  x: Int\n  func plus(self: in P, n: Int): Int { self.x + n }\n}\nfunc f(p: P): Int {\n  p.plus(2)\n}\n"
+  )
   assertTrue(calleeShape(rec.body) == "direct:recv", calleeShape(rec.body))
-  val ifc = buildFirstFn("package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n")
+  val ifc = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.priceOf(\"a\")\n}\n"
+  )
   assertTrue(calleeShape(ifc.body) == "interface:recv", calleeShape(ifc.body))
 }
 
 test "a dot-named function called on an interface value is a direct call" {
-  val r = buildFirstFn("package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.double(2)\n}\nfunc Feed.double(self: in Feed, n: Int): Int { n + n }\n")
+  val r = buildFirstFn(
+    "package App\ninterface Feed {\n  func priceOf(self: in Feed, s: in String): Int\n}\nfunc f(x: in Feed): Int {\n  x.double(2)\n}\nfunc Feed.double(self: in Feed, n: Int): Int { n + n }\n"
+  )
   assertEqualInt(r.diagnostics, 0, "checks clean")
   assertTrue(r.env.errors.count == 0, if r.env.errors.count > 0 { r.env.errors[0] } else { "no I0002" })
   assertTrue(calleeShape(r.body) == "direct:recv", calleeShape(r.body))
