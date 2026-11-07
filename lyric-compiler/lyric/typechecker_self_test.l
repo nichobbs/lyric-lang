@@ -15198,6 +15198,8 @@ test "a member read off a primitive or a slice that names none is T0113 (D359)" 
   assertTrue(Str.contains(diagCodesOf(prim), "T0113"), "n.bogus on an Int: " + diagCodesOf(prim))
   val sl = parseCheck("package P\nfunc first(xs: in slice[Int]): Int {\n  xs.bogus\n}\n")
   assertTrue(Str.contains(diagCodesOf(sl), "T0113"), "xs.bogus on a slice: " + diagCodesOf(sl))
+  val str = parseCheck("package P\nfunc f(s: in String): Int {\n  s.bogus\n}\n")
+  assertTrue(Str.contains(diagCodesOf(str), "T0113"), "s.bogus on a String: " + diagCodesOf(str))
   val len = parseCheck("package P\nfunc size(xs: in slice[Int]): Int {\n  xs.length\n}\n")
   assertEqual(diagCodesOf(len), "", "length is a slice member: " + diagCodesOf(len))
 }
@@ -15216,6 +15218,16 @@ test "a bare local receiver keeps method dispatch, and a coincidental type name 
   assertTrue(diagCodesOf(local) != "", "P.f(1) on a local Box is not the package's f: " + diagCodesOf(local))
   val coincidence = parseCheck("package P\nrecord Box { n: Int }\nfunc f(): Int {\n  Missing.Box.nope\n}\n")
   assertTrue(diagCodesOf(coincidence) != "", "Missing.Box.nope names nothing: " + diagCodesOf(coincidence))
+}
+
+test "a call through a nested package path a local shadows is checked as the package's call (D359)" {
+  val pre = "package P.Sub\nrecord Box { n: Int }\nfunc target(x: in Int): Int { x }\n"
+  val good = parseCheck(pre + "func g(P: in Box): Int {\n  P.Sub.target(1)\n}\n")
+  assertEqual(diagCodesOf(good), "", "the call is the package's target: " + diagCodesOf(good))
+  val wrongArg = parseCheck(pre + "func g(P: in Box): Int {\n  P.Sub.target(\"wrong\")\n}\n")
+  assertTrue(diagCodesOf(wrongArg) != "", "an argument of the wrong type is checked: " + diagCodesOf(wrongArg))
+  val wrongResult = parseCheck(pre + "func g(P: in Box): String {\n  P.Sub.target(1)\n}\n")
+  assertTrue(diagCodesOf(wrongResult) != "", "a result of the wrong type is checked: " + diagCodesOf(wrongResult))
 }
 
 test "a config field read through its package is typed (D359)" {

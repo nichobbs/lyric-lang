@@ -1805,16 +1805,7 @@ func externUpcastCallType(
     // An operand the checker leaves unchecked on purpose (a host call's
     // result, D354) is upcast like any extern value: the result is the root
     // type, so what it is added to or passed as is judged against it.
-    case TyError(d) -> return Some(
-      value = if d.index == 0 {
-        tyErrorSilent()
-      } else {
-        match rootExternObjectType(tbl) {
-          case Some(t) -> t
-          case None -> TyError(diag = d)
-        }
-      }
-    )
+    case TyError(d) -> if d.index == 0 { return Some(value = tyErrorSilent()) }
     case TyUser(id, name, _) -> if not symTableIsExternTypeId(tbl, id) {
       diag.add(
         errorDiagnostic(
@@ -10421,14 +10412,14 @@ func isAmbiguousEnumCase(tbl: in SymbolTable, recv: in Expr, member: in String):
   enums >= 2 and declaresCase
 }
 
-// A `String`: its members are open host members the checker does not enumerate
-// (a read of an unknown one reaches the backends, which reject it; enumerating
-// the members is the follow-up that closes this).
-func isHostStringPrim(pt: in PrimType): Bool {
-  match pt {
-    case PtString -> true
-    case _ -> false
+// The path a shadowed qualified callee spells, as the `EPath` an unshadowed one
+// is, at the same span and node.
+func shadowedCalleeAsPath(fn: in Expr): Expr {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(fn, segs) {
+    return fn
   }
+  Expr(kind = EPath(ModulePath(segments = segs, span = fn.span)), span = fn.span, nodeId = fn.nodeId)
 }
 
 // `Pkg.Sub.Rec(...)` or `Pkg.Sub.fn(...)` where a local shadows only the first
@@ -19216,7 +19207,12 @@ func inferExprCore(
       binT
     }
 
-    case ECall(fn, args) -> {
+    case ECall(fn0, args) -> {
+      // `A.B.f(...)` where a local shadows only `A` still names the package's
+      // function or record: the callee is read as the path it spells, so the
+      // normal direct-call and construction checks run (#6838, D359).
+      val shadowedFn = shadowedQualifiedCallee(sc, tbl, sigs, fn0, args)
+      val fn = if shadowedFn { shadowedCalleeAsPath(fn0) } else { fn0 }
       // #7495: a qualified callee (`Pkg.Sub.fn(...)`) left un-collapsed by the
       // alias rewriter never passes through the `EMember` arm below.
       match fn.kind {
@@ -19515,7 +19511,7 @@ func inferExprCore(
         case _ -> false
       }
       match fn.kind {
-        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal and not shadowedQualifiedCallee(sc, tbl, sigs, fn, args) {
+        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal {
           isMemberCallee = true
           memberName = mname2
           match cachedRecvType {
@@ -19589,11 +19585,7 @@ func inferExprCore(
           checkProtectedFieldAccess(sc, tbl, diag, rt, memberName, fn.span)
           inferMemberBase(tbl, rt, memberName)
         }
-        case None -> if shadowedQualifiedCallee(sc, tbl, sigs, fn, args) {
-          tyErrorUnresolved()
-        } else {
-          inferExpr(sc, tbl, sigs, diag, fn)
-        }
+        case None -> if shadowedFn { tyErrorUnresolved() } else { inferExpr(sc, tbl, sigs, diag, fn) }
       }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }
@@ -20667,13 +20659,11 @@ func inferExprCore(
               TyError(diag = d)
             }
             case TyUser(_, _, targs) -> if targs.count > 0 { tyErrorGeneric() } else { readTy }
-            // A member read off a primitive (a `String` keeps its open host
-            // members) or a slice that names none of its built-in members is
-            // the user's error, not a value the backends find (D359; the
-            // backends' J010 and J011 stay as defence in depth).
-            case TyPrim(pt) -> if isHostStringPrim(pt) {
-              readTy
-            } else {
+            // A member read off a primitive or a slice that names none of its
+            // built-in members is the user's error, not a value the backends
+            // find (D359; the backends' J010 and J011 stay as defence in depth).
+            // A call of an open host `String` method is a call, handled apart.
+            case TyPrim(pt) -> {
               diag.add(errorDiagnostic("T0113", "no member '" + name + "' on type '" + primName(pt) + "'", e.span))
               tyErrorFor(diag)
             }
