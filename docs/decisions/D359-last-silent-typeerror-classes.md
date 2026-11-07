@@ -54,7 +54,8 @@ gate would reject programs the backends compile.
 
 9. **A member read off a primitive or a slice** (`n.bogus`, `xs.bogus`) that names
    none of its built-in members is the error T0113 ("no member"), as a call of
-   one already was; a `String` keeps its open host members. The backends' J010
+   one already was. A `String` is no exception for a plain member read (`s.bogus`);
+   a call of an open host `String` method is a call and is handled apart. The backends' J010
    and J011 aborts stay as defence in depth; the two JVM source tests that could
    reach them only through the checker's silence (`jvm_trycatch_bridge_self_test.l`)
    are replaced by a checker test, since no source reaches them any more.
